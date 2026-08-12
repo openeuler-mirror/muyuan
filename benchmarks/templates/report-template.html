@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ benchmark_name }} 实验报告</title>
+  <style>
+    :root {
+      --ink: #18212f;
+      --muted: #667085;
+      --line: #d6dee8;
+      --navy: #18324d;
+      --blue: #27628f;
+      --pale-blue: #eef6fc;
+      --pale-gray: #f5f7fa;
+      --white: #fff;
+      --good: #166534;
+      --warn: #8a5a00;
+      --bad: #b42318;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: #f4f7fb;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.6;
+    }
+
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 28px 56px;
+    }
+
+    header {
+      padding: 34px 38px;
+      color: var(--white);
+      background: linear-gradient(135deg, #18324d, #27628f);
+      border-radius: 14px;
+      box-shadow: 0 16px 40px rgba(24, 50, 77, 0.18);
+    }
+
+    header h1 { margin: 0 0 10px; font-size: 32px; line-height: 1.25; }
+    header p { margin: 0; color: #dce8f4; }
+
+    .meta, .metrics {
+      display: grid;
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .meta { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+
+    .meta-item, .metric {
+      padding: 12px 14px;
+      border-radius: 9px;
+    }
+
+    .meta-item { background: rgba(255, 255, 255, 0.1); }
+    .meta-item span, .metric span { display: block; font-size: 12px; }
+    .meta-item strong { display: block; margin-top: 3px; font-size: 14px; }
+
+    main { display: grid; gap: 22px; margin-top: 24px; }
+
+    section {
+      padding: 25px 28px;
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(24, 50, 77, 0.06);
+    }
+
+    h2 { margin: 0 0 16px; color: var(--navy); font-size: 22px; }
+    h3 { margin: 22px 0 10px; color: #23445f; font-size: 17px; }
+    p { margin: 8px 0; }
+
+    .metric { border: 1px solid var(--line); background: #fbfcfe; }
+    .metric span { color: var(--muted); }
+    .metric strong { display: block; margin-top: 4px; font-size: 22px; color: var(--navy); }
+    .metric.good strong { color: var(--good); }
+    .metric.warn strong { color: var(--warn); }
+    .metric.bad strong { color: var(--bad); }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin: 14px 0 6px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+    }
+
+    table { width: 100%; border-collapse: collapse; min-width: 760px; font-size: 14px; }
+    th, td { padding: 9px 10px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th:last-child, td:last-child { border-right: 0; }
+    tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
+    thead th { color: var(--white); background: var(--blue); white-space: nowrap; }
+    tbody th { color: var(--navy); background: var(--pale-gray); }
+
+    .callout {
+      margin-top: 14px;
+      padding: 13px 15px;
+      background: var(--pale-blue);
+      border-left: 4px solid var(--blue);
+      border-radius: 7px;
+    }
+
+    code { padding: 1px 5px; background: var(--pale-gray); border-radius: 4px; }
+    ul { margin: 8px 0; padding-left: 22px; }
+    footer { padding-top: 22px; color: var(--muted); text-align: center; font-size: 13px; }
+
+    @media (max-width: 850px) {
+      .page { padding: 16px 12px 36px; }
+      header, section { padding: 22px 18px; }
+      .meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media print {
+      body { background: var(--white); }
+      .page { max-width: none; padding: 0; }
+      header, section { box-shadow: none; break-inside: avoid; }
+      section { margin-top: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>{{ benchmark_name }} 实验报告</h1>
+      <p>{{ experiment_name }} · {{ report_summary }}</p>
+      <div class="meta">
+        <div class="meta-item"><span>Case 集合</span><strong>{{ case_set }}</strong></div>
+        <div class="meta-item"><span>被测对象</span><strong>{{ system_under_test }}</strong></div>
+        <div class="meta-item"><span>模型</span><strong>{{ model }}</strong></div>
+        <div class="meta-item"><span>代码版本</span><strong>{{ code_version }}</strong></div>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>一、结果摘要</h2>
+        <div class="metrics">
+          <div class="metric"><span>Case 数</span><strong>{{ case_count }}</strong></div>
+          <div class="metric good"><span>{{ primary_metric_name }}</span><strong>{{ primary_metric_value }}</strong></div>
+          <div class="metric"><span>总体耗时</span><strong>{{ wall_time }}</strong></div>
+          <div class="metric"><span>Token / 成本</span><strong>{{ token_or_cost }}</strong></div>
+          <div class="metric"><span>相对基线</span><strong>{{ baseline_delta }}</strong></div>
+        </div>
+        <div class="callout"><strong>核心结论：</strong>{{ headline_conclusion }}</div>
+      </section>
+
+      <section>
+        <h2>二、实验配置</h2>
+        <div class="table-wrap">
+          <table>
+            <tbody>
+              <tr><th>实验时间</th><td>{{ started_at }}</td><th>运行环境</th><td>{{ environment }}</td></tr>
+              <tr><th>并发数</th><td>{{ concurrency }}</td><th>超时</th><td>{{ timeout }}</td></tr>
+              <tr><th>预算</th><td>{{ budget }}</td><th>其他配置</th><td>{{ configuration }}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>三、配置对比</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>配置</th><th>Agent 与模型</th><th>有效 Case</th><th>主指标</th>
+                <th>总耗时</th><th>Token / 成本</th><th>相对基线</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Baseline</td><td>{{ baseline_system }}</td><td>{{ baseline_valid_cases }}</td>
+                <td>{{ baseline_metric }}</td><td>{{ baseline_time }}</td><td>{{ baseline_cost }}</td><td>基线</td>
+              </tr>
+              <tr>
+                <td>Candidate</td><td>{{ candidate_system }}</td><td>{{ candidate_valid_cases }}</td>
+                <td>{{ candidate_metric }}</td><td>{{ candidate_time }}</td><td>{{ candidate_cost }}</td><td>{{ candidate_delta }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>四、分项结果</h2>
+        <p>{{ breakdown_description }}</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>分组</th><th>Case 数</th><th>Baseline</th><th>Candidate</th><th>变化</th><th>备注</th></tr></thead>
+            <tbody><tr><td>{{ group_name }}</td><td>{{ group_cases }}</td><td>{{ group_baseline }}</td><td>{{ group_candidate }}</td><td>{{ group_delta }}</td><td>{{ group_notes }}</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>五、失败分析</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>失败类型</th><th>数量</th><th>占比</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>任务失败</td><td>{{ task_failure_count }}</td><td>{{ task_failure_rate }}</td><td>{{ task_failure_notes }}</td></tr>
+              <tr><td>模型或 Agent 失败</td><td>{{ agent_failure_count }}</td><td>{{ agent_failure_rate }}</td><td>{{ agent_failure_notes }}</td></tr>
+              <tr><td>工具或环境失败</td><td>{{ infra_failure_count }}</td><td>{{ infra_failure_rate }}</td><td>{{ infra_failure_notes }}</td></tr>
+              <tr><td>判分失败</td><td>{{ grader_failure_count }}</td><td>{{ grader_failure_rate }}</td><td>{{ grader_failure_notes }}</td></tr>
+              <tr><td>超时或预算耗尽</td><td>{{ budget_failure_count }}</td><td>{{ budget_failure_rate }}</td><td>{{ budget_failure_notes }}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>六、成本与效率</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>指标</th><th>Baseline</th><th>Candidate</th><th>变化</th></tr></thead>
+            <tbody>
+              <tr><td>总墙钟</td><td>{{ efficiency_baseline_time }}</td><td>{{ efficiency_candidate_time }}</td><td>{{ efficiency_time_delta }}</td></tr>
+              <tr><td>总 Token</td><td>{{ efficiency_baseline_tokens }}</td><td>{{ efficiency_candidate_tokens }}</td><td>{{ efficiency_token_delta }}</td></tr>
+              <tr><td>模型调用</td><td>{{ efficiency_baseline_calls }}</td><td>{{ efficiency_candidate_calls }}</td><td>{{ efficiency_call_delta }}</td></tr>
+              <tr><td>工具调用</td><td>{{ efficiency_baseline_tools }}</td><td>{{ efficiency_candidate_tools }}</td><td>{{ efficiency_tool_delta }}</td></tr>
+              <tr><td>估算成本</td><td>{{ efficiency_baseline_cost }}</td><td>{{ efficiency_candidate_cost }}</td><td>{{ efficiency_cost_delta }}</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>未采集的数据保持为空，不填写为 <code>0</code>。</p>
+      </section>
+
+      <section>
+        <h2>七、Benchmark 专属结果</h2>
+        <p>{{ benchmark_specific_results }}</p>
+      </section>
+
+      <section>
+        <h2>八、结论</h2>
+        <ul>
+          <li><strong>主要收益：</strong>{{ primary_gain }}</li>
+          <li><strong>主要代价：</strong>{{ primary_cost }}</li>
+          <li><strong>证据边界：</strong>{{ evidence_boundary }}</li>
+          <li><strong>后续工作：</strong>{{ next_step }}</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>九、产物</h2>
+        <div class="table-wrap">
+          <table>
+            <tbody>
+              <tr><th>实验配置</th><td><code>{{ config_path }}</code></td></tr>
+              <tr><th>原始结果</th><td><code>{{ result_path }}</code></td></tr>
+              <tr><th>日志</th><td><code>{{ log_path }}</code></td></tr>
+              <tr><th>其他产物</th><td><code>{{ artifact_path }}</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer>Muyuan · Agentic Scaling Benchmark Report</footer>
+  </div>
+</body>
+</html>
