@@ -1,0 +1,36 @@
+{
+  "objective": "maximize the numeric workspace value",
+  "metric_name": "combined_score",
+  "metric_direction": "maximize",
+  "source_path": "examples/workspace-backends/source",
+  "edit_surface": {
+    "allow": [
+      "initial_program.py"
+    ],
+    "deny": [
+      "evaluator.py"
+    ]
+  },
+  "budget": {
+    "max_parallel": 3
+  },
+  "process_verifiers": [
+    {
+      "name": "workspace_value",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        "evaluator.py"
+      ],
+      "timeout_seconds": 30
+    }
+  ],
+  "strategy": {
+    "name": "random",
+    "worker_host": "codex",
+    "worker_agent_type": "search_candidate_agent"
+  },
+  "workspace": {
+    "backend": "git_worktree"
+  }
+}

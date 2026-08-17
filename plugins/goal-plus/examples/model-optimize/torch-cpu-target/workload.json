@@ -1,0 +1,7 @@
+{
+  "name": "single-core-vector-tail-workload",
+  "batch_size": 32,
+  "feature_dim": 64,
+  "decode_steps": 48,
+  "expected_checksum": 24592.941406
+}

@@ -1,0 +1,46 @@
+{
+  "objective": "maximize the summed EdgeBench-format ad placement score on public deterministic cases",
+  "metric_name": "local_score_sum",
+  "metric_direction": "maximize",
+  "source_path": "examples/edgebench-ad-placement/workspace",
+  "edit_surface": {
+    "allow": [
+      "solution.cpp"
+    ],
+    "deny": [
+      "README.md",
+      "tools/**",
+      ".goal-plus-verifiers/**"
+    ]
+  },
+  "process_verifiers": [
+    {
+      "name": "local_ad_score",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/ad_local_score.py"
+      ],
+      "timeout_seconds": 90
+    }
+  ],
+  "promotion_verifiers": [],
+  "budget": {
+    "max_parallel": 2
+  },
+  "strategy": {
+    "name": "agent_guided",
+    "worker_host": "pi-rpc",
+    "worker_budget": {
+      "max_runtime_seconds": 240,
+      "max_turns": 6,
+      "on_exceed": "interrupt"
+    }
+  },
+  "constraints": {
+    "suggested_batch_size": 4,
+    "task_summary": "Edit solution.cpp. Read n followed by n x/y/r triples and print n non-overlapping integer rectangles. Use tools/bin/gen with a seed file and tools/bin/tester for public local scoring.",
+    "edgebench_alignment": "The submitted file, text I/O, generator CLI, tester CLI, Score = <integer> output, compiler mode, five-second per-case limit, CPU-only/no-internet rule, and documented 1 GB memory limit match EdgeBench ad_placement_optimization. Cases and scoring remain public synthetic fixtures; no hidden judge is wired into GP."
+  },
+  "root_hypotheses": []
+}
