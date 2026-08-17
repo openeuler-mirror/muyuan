@@ -1,0 +1,10 @@
+# Production model: GLM-5.2 via OpenAI-compatible endpoint
+# Secrets and host come from environment (.env), not this file.
+name: glm-5.2
+provider: openai_compat
+model: GLM-5.2
+base_url: null  # uses OPENAI_BASE_URL / AIBENCH_BASE_URL
+api_key_env: OPENAI_API_KEY
+temperature: 0
+max_tokens: 8192
+extra: {}

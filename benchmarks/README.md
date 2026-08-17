@@ -2,7 +2,7 @@
 
 本目录包含：
 
-- `coding/`：AI 辅助编码能力评测。
+- `coding/`：AI 辅助编码能力评测（自包含 aibench 模块，在该目录安装和运行）。
 - `swebench/`：软件工程修复评测。
 - `vulnerability/`：漏洞发现与验证评测。
 - `cannbench/`：CANN/算子生成、正确性与性能评测。

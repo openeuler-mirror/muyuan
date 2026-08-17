@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/aibench/case.schema.json",
+  "title": "AICodingAssistCase",
+  "type": "object",
+  "required": [
+    "case_id",
+    "schema_version",
+    "task_type",
+    "language",
+    "prompt",
+    "context",
+    "grader"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "case_id": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "string" },
+    "task_type": {
+      "type": "string",
+      "enum": [
+        "bugfix",
+        "feature",
+        "refactor",
+        "explain_to_edit",
+        "test_gen",
+        "pairwise"
+      ]
+    },
+    "language": { "type": "string" },
+    "prompt": { "type": "string", "minLength": 1 },
+    "context": {
+      "type": "object",
+      "required": ["files"],
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "content"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string" },
+              "content": { "type": "string" },
+              "role": {
+                "type": "string",
+                "enum": ["impl", "test", "distractor", "spec"],
+                "default": "impl",
+                "description": "impl=待修改实现; test=可见测试; distractor=干扰文件(与解无关); spec=规格说明"
+              }
+            }
+          }
+        },
+        "notes": { "type": ["string", "null"] },
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["inline", "snapshot", "git", "mixed"],
+              "default": "inline"
+            },
+            "snapshot": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Directory, .tar/.tar.gz/.zip relative to case-set or absolute"
+                }
+              }
+            },
+            "git": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "url": { "type": "string" },
+                "ref": {
+                  "type": "string",
+                  "description": "commit SHA / tag / branch"
+                },
+                "subdir": { "type": "string" },
+                "sparse_paths": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            },
+            "setup_commands": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Shell commands run after files are laid down (cwd=workspace)"
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "strict": {
+              "type": "boolean",
+              "default": true,
+              "description": "Fail case if snapshot/git materialization fails"
+            }
+          }
+        }
+      }
+    },
+    "grader": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["script", "gold", "llm_judge", "composite"]
+        },
+        "command": { "type": ["string", "null"] },
+        "gold_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "content"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string" },
+              "content": { "type": "string" }
+            }
+          }
+        },
+        "match": {
+          "type": "string",
+          "enum": ["exact", "normalized", "contains_key_lines"],
+          "default": "normalized"
+        },
+        "key_lines": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "judge_rubric": { "type": ["string", "null"] },
+        "judge_threshold": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "hidden_tests": {
+          "type": "array",
+          "description": "Written into the workspace only at grading time, after the agent stops. The agent never sees them.",
+          "items": {
+            "type": "object",
+            "required": ["path", "content"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string" },
+              "content": { "type": "string" }
+            }
+          }
+        },
+        "protected_paths": {
+          "type": "array",
+          "description": "Workspace paths whose bytes must equal context.files at grading time. Any change fails the case as reward_hack.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "source": { "type": "string" },
+        "source_session_id": { "type": ["string", "null"] },
+        "difficulty": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "split": { "type": "string" },
+        "tier": {
+          "type": "string",
+          "enum": ["T1", "T2", "T3", "T4", "T5"],
+          "description": "Discrimination tier; see src/aibench/tiers.py for the structural invariants of each."
+        },
+        "capability_axes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Capability axes this case is meant to separate (A1..A6)"
+        },
+        "trace_signals": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Process signals mined from the source production trace; basis for the tier suggestion"
+        }
+      }
+    }
+  }
+}

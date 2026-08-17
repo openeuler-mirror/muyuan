@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI-Coding-Assist Benchmark · 文档站</title>
+  <link rel="stylesheet" href="assets/site.css" />
+</head>
+<body>
+<nav class="site-nav" aria-label="文档导航"><div class="site-nav-inner"><a class="brand" href="index.html">aibench · docs/html</a><a href="index.html" class="active">首页</a><a href="overview.html">项目介绍</a><a href="manual.html">用户手册</a><a href="reference.html">参考资料</a></div></nav>
+<div class="page">
+
+<header class="hero">
+  <h1>AI-Coding-Assist Benchmark</h1>
+  <p>从真实会话 trace 提取有能力区分度的编程评测用例，并在固定集合上做消融。</p>
+  <div class="meta">
+    <span class="pill">数据来源 · 现网 trace</span>
+    <span class="pill">主线 · 反向构造</span>
+    <span class="pill">用途 · 消融实验</span>
+  </div>
+</header>
+<section class="md-body" style="margin-top:22px">
+  <h2 style="margin-top:0">文档导航</h2>
+  <div class="card-grid">
+    <a class="card" href="overview.html"><h3>项目介绍</h3>
+      <p>为什么正向编题不够、反向构造怎么工作、流水线各步产物</p>
+      <span class="tag">打开 →</span></a>
+    <a class="card" href="manual.html"><h3>用户手册</h3>
+      <p>环境准备、抽取 / 生成 / 校准 / 消融。逐步命令以仓库内 docs/USER_GUIDE.md 为准</p>
+      <span class="tag">打开 →</span></a>
+    <a class="card" href="reference.html"><h3>参考资料</h3>
+      <p>数据格式、效度门禁、已发布校准清单。CLI 参数见 docs/REFERENCE.md</p>
+      <span class="tag">打开 →</span></a>
+  </div>
+
+  <h2>怎么工作</h2>
+  <p>让模型直接编题，会稳定产出送分题。本模块改用<strong>反向构造</strong>：
+     从真实会话重放文件修改前 / 后两个版本，以前者为 stub、后者为参考解，
+     模型只写能区分两版的测试与现象态题面。再用锚点面板校准，留下有区分度的题，
+     供后续消融比较 Agent 与模型。</p>
+  <p>逐步命令见仓库内 <code>docs/USER_GUIDE.md</code>。CLI 与配置字段见
+     <code>docs/REFERENCE.md</code>。</p>
+
+  <h2>重建本站</h2>
+  <p><code>uv run python scripts/build_docs_html.py</code>　—　内容源文件位于 <code>docs/html/_src/</code>。</p>
+</section>
+
+<footer class="site-footer">
+  AI-Coding-Assist Benchmark · 文档站点 docs/html · 本地打开即可浏览
+</footer>
+</div>
+</body>
+</html>

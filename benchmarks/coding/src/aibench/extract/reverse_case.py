@@ -1,0 +1,508 @@
+"""Build a case whose defect is the one an engineer actually made.
+
+Ordinary generation asks a model to invent a benchmark case, and it answers with a two-file,
+thirty-line exercise no matter what it was given — three separate interventions failed to move
+the difficulty of what comes out. Here the defect is not up for negotiation: the stub is the
+file as the trace found it, the reference solution is the file as the trace left it, and the
+model's only job is to write tests that tell the two apart.
+
+That job is verifiable without any new machinery. ``check_stub_fails`` already requires the
+tests to fail on the stub and ``check_reference_solution`` requires them to pass on the gold,
+so a model that writes tests which do not separate the two versions produces a case the
+existing gates reject. The model cannot make the task easier, only fail to describe it.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from aibench.extract.sessions import (
+    redact_paths,
+    redact_source,
+    redact_source_path,
+    task_fingerprint,
+)
+from aibench.extract.tier_shaping import label_tier, protect_visible_tests, split_tests_for_hiding
+from aibench.languages import LanguageSpec, spec_for_path
+
+#: Enough of each version for the model to see the change without paying for whole large files.
+_MAX_FILE_CHARS = 6000
+
+#: Rewrites bought when the model's tests fail a static gate. One, because the second request
+#: carries new information — the gate's own complaint — and a third would carry none.
+_MAX_TEST_REWRITES = 1
+
+
+def _unified_ish_diff(pre: str, post: str, limit: int = 60) -> str:
+    """The changed lines, so the model is told what the fix was rather than made to find it."""
+    import difflib
+
+    lines = list(
+        difflib.unified_diff(
+            pre.splitlines(), post.splitlines(), fromfile="before", tofile="after", lineterm="", n=2
+        )
+    )
+    return "\n".join(lines[:limit])
+
+
+#: How to ask each runner for a test file. Asking for "a pytest file" when the grader runs
+#: `node --test` produced a suite that passed on the pre-edit file every time: all 7 JavaScript
+#: cases in an 11-case build failed on `stub_passed_grader`, against 0 of 4 Python ones.
+_TEST_STYLE = {
+    "python": (
+        "a pytest file",
+        "import the module under test by its module name",
+        "def test_*() functions using plain `assert`",
+    ),
+    "javascript": (
+        "a Node.js test file using the built-in `node:test` runner",
+        "import the module under test with a relative specifier such as `./module.js`",
+        "`test(...)` blocks from `node:test` with assertions from `node:assert`",
+    ),
+}
+
+
+def build_prompt(
+    fv: dict[str, Any], user_request: str, *, language: str = "python", test_name: str = ""
+) -> tuple[str, str]:
+    """The system and user messages that ask for tests and a symptom-only description."""
+    from aibench.languages import spec_for
+
+    kind, import_hint, shape = _TEST_STYLE.get(language, _TEST_STYLE["python"])
+    if not test_name:
+        impl = re.split(r"[\\/]", str(fv.get("path") or "module.py"))[-1]
+        test_name = spec_for(language).test_filename(impl)
+    system = (
+        "You are given a source file BEFORE and AFTER a real bug fix, and the request the "
+        f"engineer was working on. Write {kind} that FAILS on the BEFORE version and "
+        "PASSES on the AFTER version, plus a short task description.\n"
+        "Return ONLY one JSON object with keys: prompt, test_path, test_content.\n"
+        f"- test_content: {kind}, complete and runnable, with at least 4 tests written as "
+        f"{shape}. {import_hint.capitalize()}. Cover the boundary the fix changed and at "
+        "least one case that already worked, so a solver cannot pass by rewriting blindly.\n"
+        "- prompt: describes ONLY the observable symptom — what was expected and what "
+        "happened. Never name the cause, the mechanism, the line, or the function that "
+        "changes. Do not mention 'before' or 'after'.\n"
+        "- Write `prompt` in the SAME LANGUAGE the engineer used in their request below. "
+        "If they wrote in Chinese, write the prompt in Chinese. These cases are meant to "
+        "read like the task the engineer actually faced, and translating it changes what is "
+        "being measured.\n"
+        "Do not restate or fix the code. The fix already exists; you are writing the test that "
+        "would have caught it."
+    )
+    path = str(fv.get("path") or "module.py")
+    impl_name = re.split(r"[\\/]", path)[-1]
+    module = impl_name.rsplit(".", 1)[0]
+    # The workspace is flat and holds exactly two files. Saying only "File: <original path>"
+    # got tests that imported `src.odoo_client.config_loader`, `./lifecycleTypes.js` for a
+    # `.ts` file, and a test placed under `projects/smart-todo-app/prototype/` — every one a
+    # faithful reference to a repository layout the case does not reproduce.
+    where = f"`{module}`" if language == "python" else f"`./{impl_name}` (exactly this filename)"
+    user = (
+        f"Engineer's request:\n{user_request[:600]}\n\n"
+        f"The graded workspace contains ONLY two files, side by side in one flat directory:\n"
+        f"  {impl_name}   <- the file below\n"
+        f"  {test_name}   <- the file you are writing; use exactly this name for test_path\n"
+        f"Import the module under test as {where}. Do not reference any other path, package "
+        f"or directory from the original repository — nothing else exists in the workspace.\n\n"
+        f"Original path (for context only): {path}\n\n"
+        f"--- BEFORE ---\n{str(fv.get('pre') or '')[:_MAX_FILE_CHARS]}\n\n"
+        f"--- AFTER ---\n{str(fv.get('post') or '')[:_MAX_FILE_CHARS]}\n\n"
+        f"--- WHAT CHANGED ---\n{_unified_ish_diff(str(fv.get('pre') or ''), str(fv.get('post') or ''))}\n\n"
+        "Output the JSON now."
+    )
+    return system, user
+
+
+def _test_gate_failures(case: dict[str, Any]) -> list[str]:
+    """The static gates that judge only the test file the model wrote.
+
+    Both need no workspace and no runner, yet they ran after generation had been paid for. Of
+    the 64 cases that failed audit in the 133-case build, 30 failed on nothing else — 19 on a
+    hidden test naming a symbol the solver cannot learn, 11 on a suite that greps the
+    implementation instead of running it. Each of those cost a model call and was discarded.
+
+    The case handed here is the finished one, split and protected, so what passes in the loop
+    is byte-for-byte what `audit-cases` will judge afterwards.
+    """
+    from aibench.models import Case
+    from aibench.validity import check_hidden_tests_are_inferable, check_test_reads_source
+
+    parsed = Case.from_dict(case)
+    return [
+        i.message
+        for i in (*check_test_reads_source(parsed), *check_hidden_tests_are_inferable(parsed))
+    ]
+
+
+def _rewrite_request(problems: list[str]) -> str:
+    """What to send back. Naming the fault is the only reason a second call is worth paying for.
+
+    The original instructions are restated rather than assumed. Rule 1 takes away the easiest
+    way to separate the two versions — reading the source — so a rewrite told only that will
+    reach for a suite that passes on both, trading a free static rejection for one that costs a
+    workspace to find. And a shorter suite satisfies the hidden-symbol rule trivially, because
+    a single test leaves nothing to hide.
+    """
+    return (
+        "Your test file was rejected:\n"
+        + "\n".join(f"- {p}" for p in problems)
+        + "\n\nWrite it again, same JSON keys, keeping everything the first instructions asked "
+        "for: at least 4 tests, failing on the BEFORE version and passing on the AFTER one, "
+        "importing the module from the same flat directory.\n"
+        "Two further rules decide it:\n"
+        "- Never read the implementation's source text — no readFileSync, no read_text, no "
+        "inspect.getsource, no asserting on substrings of the file. Import the module and call "
+        "it, and assert on what it returns or raises. Source text always separates the two "
+        "versions, so such a suite grades transcription rather than behaviour.\n"
+        "- Every symbol your tests call must appear in the BEFORE version, or in your own "
+        "prompt. The solver is given BEFORE, not AFTER, so a test for a name that only the "
+        "fix introduces is unanswerable rather than difficult — if the fix adds a name, say "
+        "what it should be called in the prompt.\n"
+        "Note the suite is split before grading: the first test stays visible to the solver and "
+        "the rest are hidden, so put a test that exercises each name you rely on first."
+    )
+
+
+def reverse_case_from_versions(
+    fv: dict[str, Any],
+    *,
+    draft: dict[str, Any],
+    chat: Any,
+    tier: str = "T2",
+    hide_tests: bool = True,
+) -> dict[str, Any]:
+    """Assemble a case from a real before/after pair plus model-written tests.
+
+    Raises when the model's answer cannot be used. The caller treats that as a failed
+    generation rather than falling back to something weaker, because the whole point is that
+    this defect came from a trace and not from a model.
+    """
+    from aibench.extract.generate_case import _extract_json_object
+
+    path = str(fv.get("path") or "")
+    spec = spec_for_path(path)
+    if spec is None:
+        raise ValueError(f"no registered runner for {path!r}")
+    pre, post = str(fv.get("pre") or ""), str(fv.get("post") or "")
+    if not pre or not post or pre == post:
+        raise ValueError("before/after pair is empty or unchanged")
+
+    module = re.split(r"[\\/]", path)[-1]
+    prescribed_test = spec.test_filename(module)
+    system, user = build_prompt(
+        fv, str(draft.get("prompt") or ""), language=spec.name, test_name=prescribed_test
+    )
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    data = _extract_json_object(chat(messages))
+
+    for attempt in range(_MAX_TEST_REWRITES + 1):
+        case = _assemble_case(
+            data,
+            spec=spec,
+            fv=fv,
+            draft=draft,
+            module=module,
+            prescribed_test=prescribed_test,
+            tier=tier,
+            hide_tests=hide_tests,
+        )
+        problems = _test_gate_failures(case)
+        if not problems:
+            return case
+        if attempt == _MAX_TEST_REWRITES:
+            # The rewrite failed too. Asking again buys nothing new to tell the model.
+            break
+        # One rewrite, and only because the request changes: it now names what was wrong.
+        # Asking again unchanged would just repeat the bill — the lesson `chat_json` already
+        # records for truncation.
+        messages = [
+            *messages,
+            {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)},
+            {"role": "user", "content": _rewrite_request(problems)},
+        ]
+        try:
+            data = _extract_json_object(chat(messages))
+        except Exception as e:
+            # Without this the rewrite's own failure is all the caller sees, and the static
+            # gate that actually rejected the material never appears in the log — which is
+            # exactly the number this change exists to move.
+            raise ValueError(
+                f"rewrite after static test gates failed ({'; '.join(problems)}): {e}"
+            ) from e
+    raise ValueError(
+        "suite still fails the static test gates after a rewrite: " + "; ".join(problems)
+    )
+
+
+def _assemble_case(
+    data: dict[str, Any],
+    *,
+    spec: LanguageSpec,
+    fv: dict[str, Any],
+    draft: dict[str, Any],
+    module: str,
+    prescribed_test: str,
+    tier: str,
+    hide_tests: bool,
+) -> dict[str, Any]:
+    """Turn one model answer into a case, or raise if the answer is unusable."""
+    path = str(fv.get("path") or "")
+    pre, post = str(fv.get("pre") or ""), str(fv.get("post") or "")
+    test_content = str(data.get("test_content") or "")
+    if not test_content.strip():
+        raise ValueError("model returned no test_content")
+    if spec.parses(test_content) is False:
+        raise ValueError("model's test file does not parse")
+
+    # Only the basename is kept: a test at `projects/smart-todo-app/prototype/app.test.js`
+    # sits in a directory the impl is not in, so its relative import of the impl cannot
+    # resolve. The workspace is flat and the test belongs beside the file it tests.
+    test_path = re.split(r"[\\/]", str(data.get("test_path") or ""))[-1]
+    if not spec.is_test_path(test_path):
+        test_path = prescribed_test
+
+    prompt = redact_paths(redact_source(str(data.get("prompt") or "").strip()))
+    if len(prompt) < 20:
+        raise ValueError("model returned no usable prompt")
+
+    impl_name = module
+    case_id = f"rev-{task_fingerprint(prompt, [impl_name])}"
+    case = {
+        "case_id": case_id,
+        "schema_version": "0.1",
+        "task_type": "bugfix",
+        "language": spec.name,
+        "prompt": prompt,
+        "context": {
+            "files": [
+                {
+                    "path": impl_name,
+                    "content": redact_paths(redact_source(pre, path=impl_name), path=impl_name),
+                    "role": "impl",
+                },
+                {
+                    "path": test_path,
+                    "content": redact_paths(
+                        redact_source(test_content, path=test_path), path=test_path
+                    ),
+                    "role": "test",
+                },
+            ],
+            "notes": f"reverse-constructed from {draft.get('case_id')}; defect is a real edit",
+        },
+        "grader": {
+            "mode": "script",
+            "command": "python -m pytest -q" if spec.name == "python" else "node --test",
+            "gold_files": [
+                {
+                    "path": impl_name,
+                    "content": redact_paths(redact_source(post, path=impl_name), path=impl_name),
+                }
+            ],
+        },
+        "metadata": {
+            "generation": "reverse",
+            "source": "llm_chat_records",
+            "source_session_id": (draft.get("metadata") or {}).get("source_session_id"),
+            "review_status": "needs_review",
+            "split": "auto",
+            "weak_grader": False,
+            "tier_requested": tier,
+            # The filename plus a digest, never the full path: keeping it whole published an
+            # engineer's account name and an unreleased project name in every case built.
+            "reverse_source": redact_source_path(path),
+            "reverse_edits": fv.get("edits"),
+        },
+    }
+    # Measured on 31 calibrated reverse cases: strong-tool-loop passes 90.3%, and on 23 of
+    # them all three of its attempts pass — which puts p_hat >= 1/3 arithmetically, so those
+    # cases cannot reach the hard band at all. An agent that can run the tests iterates until
+    # they are green, so leaving the whole specification visible is what sets that ceiling.
+    # Keeping one smoke test and grading against the rest is the only lever that acts on it;
+    # no property of the input does, which is why edits, diff size and line count all came in
+    # insignificant.
+    if hide_tests:
+        split_tests_for_hiding(case, keep_visible=1)
+    # Without this the visible test file is the whole grading signal on the 24 of 31 cases that
+    # end up with nothing hidden, and it is writable: dropping in a conftest or deleting the
+    # failing test both pass. Every reverse case built before this line shipped with
+    # `protected_paths` empty, because this path never went through `settle_tier`.
+    protect_visible_tests(case)
+    # Labelled, not reshaped. `settle_tier` would run `strip_defect_markers` over the stub and
+    # not over `gold_files`, breaking the property this construction rests on — that both sides
+    # are the real file. But leaving the tier unset is not free either: `audit_case` skips
+    # `check_tier_invariants` *and* the prompt-disclosure verdict whenever it is falsy, so "the
+    # prompt gives the defect away" was never checked on a single reverse case.
+    settled, notes = label_tier(case)
+    case["metadata"]["tier_settled_from"] = tier
+    if notes:
+        case["metadata"]["tier_notes"] = notes
+    if not settled:
+        # Honest, and rare: two files with a symptom-only prompt and no defect marker meets T2.
+        case["metadata"].pop("tier", None)
+    return case
+
+
+#: A reasoning model spends its budget thinking before it answers, and the answer here is a
+#: whole test file. Measured on a real draft: at 4096 the model used every token on reasoning
+#: and returned empty content; the same draft at 16384 finished in 3996 with valid JSON.
+DEFAULT_MAX_TOKENS = 16384
+#: Escalation ceiling, so a model that reasons without converging fails instead of costing more.
+MAX_MAX_TOKENS = 49152
+
+
+class TruncatedAnswer(RuntimeError):
+    """The model ran out of output budget before emitting an answer.
+
+    Distinct from a malformed answer, because it says what to do about it: spend more tokens.
+    The first reverse run lost 20 of 22 drafts to this and reported it as ten "Expecting
+    property name" plus eight "no JSON object" — the JSON parser's opinion of a reasoning
+    transcript, which named neither the cause nor the fix.
+    """
+
+
+def chat_json(settings: dict[str, Any], *, timeout_s: float = 300.0) -> Any:
+    """A `chat(messages) -> str` bound to the configured gateway."""
+    import httpx
+
+    from aibench.retry import retry_call
+
+    base = str(settings["base_url"]).rstrip("/")
+
+    def _ask(messages: list[dict[str, str]], max_tokens: int) -> str:
+        def _once() -> str:
+            with httpx.Client(timeout=timeout_s) as client:
+                resp = client.post(
+                    f"{base}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings['api_key']}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": settings["model"],
+                        "temperature": 0,
+                        "max_tokens": max_tokens,
+                        "messages": messages,
+                    },
+                )
+                resp.raise_for_status()
+                choice = resp.json()["choices"][0]
+                msg = choice.get("message") or {}
+                content = str(msg.get("content") or "").strip()
+                if content:
+                    return content
+                # Only now consider the reasoning stream. Some gateways put the whole answer
+                # there, but a truncated response puts *thinking* there, and returning that
+                # hands prose to a JSON parser and blames the model for malformed output.
+                if str(choice.get("finish_reason") or "") == "length":
+                    raise TruncatedAnswer(
+                        f"model hit the {max_tokens}-token output cap before answering"
+                    )
+                reasoning = str(msg.get("reasoning_content") or "").strip()
+                if not reasoning:
+                    raise ValueError("empty content from gateway")
+                return reasoning
+
+        return retry_call(_once, label="reverse_case_chat")
+
+    def _chat(messages: list[dict[str, str]], max_tokens: int = DEFAULT_MAX_TOKENS) -> str:
+        budget = max_tokens
+        while True:
+            try:
+                return _ask(messages, budget)
+            except TruncatedAnswer:
+                if budget >= MAX_MAX_TOKENS:
+                    raise
+                budget = min(budget * 2, MAX_MAX_TOKENS)
+
+    return _chat
+
+
+def _is_test_file(path: str) -> bool:
+    spec = spec_for_path(path)
+    return bool(spec and spec.is_test_path(path))
+
+
+def _with_vouched_pre(fv: dict[str, Any]) -> dict[str, Any] | None:
+    """``fv`` with a ``pre`` the trace demonstrably read in full, or None if it has none.
+
+    Drafts written before provenance was recorded carry no ``pre_origin``. They are not exempt —
+    an unvouched-for ``pre`` is exactly what this refuses — but they do not need to be, because
+    the read tool's footer is still in the stored text and says which of the three cases it is.
+    """
+    from aibench.extract.file_versions import PRE_FROM_READ
+    from aibench.extract.history_parse import READ_COMPLETE, split_read_footer
+
+    pre, post = str(fv.get("pre") or ""), str(fv.get("post") or "")
+    origin = fv.get("pre_origin")
+    if origin is not None:
+        return fv if origin == PRE_FROM_READ else None
+    pre_body, how = split_read_footer(pre)
+    if how != READ_COMPLETE:
+        # No footer at all means the text is not evidence of a read: 182 of the 278 such pairs
+        # in the pool name a file that appears in no read anywhere, and the rest cannot be told
+        # apart from those. Refusing what cannot be vouched for is the whole point.
+        return None
+    # `post` is stripped too. It becomes `grader.gold_files`, and leaving the footer there while
+    # cleaning the stub ships a valid stub against a reference solution that does not parse —
+    # the same failure as `rev-d098848d56868e13`, moved to the other side and paid for first.
+    return {**fv, "pre": pre_body, "post": split_read_footer(post)[0]}
+
+
+def iter_file_versions(
+    draft: dict[str, Any],
+    *,
+    require_imports_satisfiable: bool = True,
+    require_read_pre: bool = True,
+) -> list[dict[str, Any]]:
+    """The before/after pairs a draft carries, largest change first.
+
+    Pairs whose file needs imports a one-file workspace cannot provide are dropped here rather
+    than after generation, because generation is the expensive step and the predicate is exact:
+    of 22 cases built without it, all 16 with an unsatisfiable import failed the validity gate,
+    and 5 of them had first passed it for the wrong reason.
+
+    Two more predicates join it for the same reason — they cost nothing and each rejects
+    material that would otherwise survive every downstream gate:
+
+    * A test file as the thing under test produces a case that asks for tests over tests. Three
+      of the eleven differentially-analysable Python candidates in ``_rev_raw4`` were test
+      files, one of them mutating a class whose own docstring says ``Mock ...``.
+    * An edit that changed only comments is not a defect fix, and
+      :func:`aibench.extract.file_versions.defect_is_not_semantic` is the only thing that can
+      say so — a suite that greps the source separates the two versions on the comment alone,
+      so both validity gates pass.
+    """
+    from aibench.extract.file_versions import defect_is_not_semantic, unsatisfiable_imports
+
+    fvs = [
+        fv
+        for fv in ((draft.get("metadata") or {}).get("file_versions") or [])
+        if isinstance(fv, dict)
+    ]
+    if require_read_pre:
+        fvs = [g for fv in fvs if (g := _with_vouched_pre(fv)) is not None]
+    fvs = [fv for fv in fvs if not _is_test_file(str(fv.get("path") or ""))]
+    fvs = [
+        fv
+        for fv in fvs
+        if not defect_is_not_semantic(
+            str(fv.get("path") or ""), str(fv.get("pre") or ""), str(fv.get("post") or "")
+        )
+    ]
+    if require_imports_satisfiable:
+        fvs = [
+            fv
+            for fv in fvs
+            if not (
+                unsatisfiable_imports(str(fv.get("path") or ""), str(fv.get("pre") or ""))
+                | unsatisfiable_imports(str(fv.get("path") or ""), str(fv.get("post") or ""))
+            )
+        ]
+    return sorted(
+        fvs,
+        key=lambda f: -abs(len(str(f.get("post") or "")) - len(str(f.get("pre") or ""))),
+    )

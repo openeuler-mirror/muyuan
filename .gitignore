@@ -22,3 +22,6 @@ node_modules/
 # Local secrets and credentials
 credentials/
 secrets/
+
+# Agent task state
+.agent/
