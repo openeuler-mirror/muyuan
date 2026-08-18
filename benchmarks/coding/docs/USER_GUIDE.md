@@ -130,7 +130,7 @@ uv run python -m aibench ablation \
   --export-csv
 ```
 
-矩阵每一行只改一条轴，否则 McNemar 配对差异无法归因。命令行请显式传 `--parallel`；只写 YAML 时 CLI 默认值可能把它短路成串行。
+矩阵每一行只改一条轴，否则 McNemar 配对差异无法归因。矩阵里的 `parallel:` 会被读到（`ablation --parallel` 的 argparse 默认值是 `None`），命令行只在要覆盖它时才传。`configs/runs/ablation-matrix.yaml` 自己写的是 `parallel: 1`，所以上面这条命令本来就是串行跑。
 
 ### 3.5 一键流水线
 

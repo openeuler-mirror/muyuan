@@ -51,8 +51,7 @@ uv run python -m aibench run --run-config configs/runs/baseline.yaml
 # 同上，并加入经验校准与按区分度选题（成本 = 锚点数 × repeats 次全量跑测）
 ./scripts/e2e_pipeline.sh --limit 100 --max-cases 8 --calibrate --repeats 3
 
-# 对网关的实际并发 ≈ parallel × case_workers。请在命令行显式传 --parallel，
-# 只写 YAML 时 CLI 默认值可能把它短路成串行。
+# 对网关的实际并发 ≈ parallel × case_workers。
 uv run python -m aibench calibrate-cases --case-set auto-v0 --repeats 2 \
   --parallel 3 --workers 5
 

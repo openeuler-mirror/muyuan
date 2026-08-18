@@ -229,11 +229,14 @@
 <p>模型消融过程中查出三个 agent 适配器缺陷，其中两个位于 <code>tool_loop</code> ——
 而它是<strong>所有校准面板的最强锚点</strong>：截断响应时把推理正文当答案、
 <code>json.loads</code> 直吃整个回复、固定 8192 输出预算。三者共同<strong>系统性地惩罚重推理模型</strong>。</p>
-<p>影响量级：同一批用例、同一模型，同一批用例、同一模型，修 harness 后 GLM-5.2 从 25.8% 升到 83.9%，跨度 <strong>58pp</strong>。<strong>这个跨度同时含协议变更</strong>——前三轮是 <code>openai_compat</code>，第四轮才是 <code>tool_loop</code>，<code>runs/</code> 下没有修复前的 <code>tool_loop</code> 测量，所以无法把它单独归给「修 harness」这一件事，
-跨度 58 个百分点，期间未改动任何模型参数。</p>
+<p>影响量级：同一批用例、同一模型，修 harness 后 GLM-5.2 从 25.8% 升到 83.9%，
+跨度 <strong>58 个百分点</strong>，期间未改动任何模型参数。
+<strong>但这个跨度同时含协议变更</strong>——前三轮是 <code>openai_compat</code>，第四轮才是
+<code>tool_loop</code>，<code>runs/</code> 下没有修复前的 <code>tool_loop</code> 测量，
+所以无法把 58pp 单独归给「修 harness」这一件事。</p>
 <p>因此下列数字<strong>暂不可作为结论使用</strong>：本节的难度分布、按能力档次的分类占比、
 隐藏测试剂量曲线的各测点、以及「最强锚点通过率 90.3%」。
-修复见提交 <code>85a3688</code> 与 <code>d5a44b5</code>，重新校准进行中，完成后本节将按实测更新。</p>
+修复只存在于模块的<strong>上游历史</strong>里 —— 本仓库以单个提交引入本模块，未携带那段历史，改动内容需向模块所有者索取。重新校准进行中，完成后本节将按实测更新。</p>
 </div>
 
 
@@ -535,8 +538,10 @@ GLM-5.1 77.4% / 64.5% / 77.4%（极差 12.9pp）—— <strong>模型自身的�
 </figure>
 
 <div class="callout warn">
-<p><strong>脚手架颠倒了排序。</strong> 裸模型：GLM-5.1 (90.3%) 高于 Deepseek (83.9%)；
-工具循环：Deepseek (90.3%) 高于 GLM-5.1 (71.0%)。同一批用例、同两个模型，方向相反。</p>
+<p><strong>脚手架颠倒了排序。</strong> 两侧都按三轮合并的 93 次观测计：
+裸模型 GLM-5.1 84/93 (90.3%) 高于 Deepseek 79/93 (84.9%)；
+工具循环 Deepseek 75/93 (80.6%) 高于 GLM-5.1 68/93 (73.1%)。同一批用例、同两个模型，方向相反。
+工具循环那一侧 Deepseek 只赢后两轮，第一轮是 22/31 对 24/31。</p>
 <p>三轮合并配对 McNemar：GLM-5.1 独赢 7、Deepseek 独赢 2，<strong>p = 0.1797 不显著</strong>，
 三轮都稳定分开两模型的用例仍为 <strong>0 条</strong>。
 即便在最干净的测量下，这批用例也区分不出这两个模型。</p>

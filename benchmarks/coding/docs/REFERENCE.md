@@ -572,7 +572,7 @@ runs:
 | `--output-root` | Path | `runs/` | 生成 `ablation_<timestamp>/` |
 | `--case-set` | str | 矩阵 `case_set` | CLI 覆盖矩阵默认集 |
 | `--allow-weak-grader` | flag | 关 | 默认 **剥离** `metadata.weak_grader=true` 的 case 再跑 |
-| `--parallel` | int | `1` | 矩阵行（实验）并行度。各行的 case 集会在开跑前一次性过滤好，不在 worker 里做 —— 否则两行共用同一集合时会互相 rmtree，输家跑在半拷贝的集合上 |
+| `--parallel` | int | 矩阵的 `parallel:`，都没有时 `1` | 矩阵行（实验）并行度。argparse 默认值是 `None`，正是为了让 YAML 里的 `parallel:` 能生效；只在要覆盖它时才传这个 flag。各行的 case 集会在开跑前一次性过滤好，不在 worker 里做 —— 否则两行共用同一集合时会互相 rmtree，输家跑在半拷贝的集合上 |
 | `--baseline-experiment` | str | 矩阵字段或无 | 用于计算「相对基线收益」百分点 |
 | `--export-csv` | flag | 关 | 写 `ablation_overview.csv` |
 | `--export-xlsx` | flag | 关 | 写 xlsx（依赖 openpyxl） |
@@ -728,10 +728,13 @@ hidden_tests 四个字段，而 `metadata.file_versions[].pre/post`（草稿里�
 不在其中 —— 三个真实 `sk-` 密钥、一个邮箱授权码由此进入草稿池而无人报告。
 字段清单在新增字段时要同步修改，这一步被跳过过；遍历没有这一步。
 
-**两处例外**，按位置而非按名字排除：`grader.key_lines` 与 `metadata.validity_issues`。
-前者可能存着消毒器自己的 `sk-***` 占位符，后者是 runner 的原始输出且 `export-bundle`
-写盘前就删掉 —— 报它们等于让门禁因自己产生的文本拒绝用例。
-只按名字排除会连带豁免任何恰好用了这两个键名的子树，所以匹配的是完整路径。
+**一处例外**，按位置而非按名字排除：`metadata.validity_issues`。它是 runner 的原始输出，
+`export-bundle` 写盘前就删掉 —— 报它等于让门禁因自己产生的文本拒绝用例。
+只按名字排除会连带豁免任何恰好用了这个键名的子树，所以匹配的是完整路径。
+
+`grader.key_lines` **不在**例外里：`grading.py` 靠它判分，`promote` 与 `export-bundle`
+都会写它，它是用例内容。消毒器留在里面的 `sk-***` 占位符由 `_REDACTED` 排除，不靠豁免路径。
+权威是 `secrets_scan.py` 的 `_HARNESS_RECORDS`，只有一项。
 
 **规则**（`secrets_scan.py`）：
 
@@ -1093,9 +1096,9 @@ uv run python -m aibench plan-sample-size --delta 10 --from-ablation runs/ablati
 |----|------|-----------------------------------------------|--------------|
 | T1 | 直接修复 | ≤3 文件；允许题面/注释给出缺陷位置 | 地板锚（几乎全过） |
 | T2 | 定位修复 | 2–4 文件；题面**无**机制泄露；stub **无** BUG/FIXME 标记 | A1 定位诊断 |
-| T3 | 隐藏规格 | T2 + ≥2 个隐藏测试函数 + 参考解 + 保护可见测试 | A5 规格遵从、A6 抗过拟合 |
+| T3 | 隐藏规格 | T2（**文件上限放宽到 6**）+ ≥2 个隐藏测试函数 + 参考解 + 保护可见测试 | A5 规格遵从、A6 抗过拟合 |
 | T4 | 上下文检索 | T3 + ≥5 文件 + ≥1 干扰文件 + ≥3 隐藏测试（参考解**仍只需 1 个文件**） | A1、A2 检索、A5、A6 |
-| T5 | 迭代自修复 | T4 + ≥4 个隐藏测试函数 | A3 迭代自修复 |
+| T5 | 迭代自修复 | T4 + ≥4 个隐藏测试函数 + 参考解**≥2 个文件**（缺陷跨文件） | A3 迭代自修复、A4 跨文件一致性 |
 
 能力轴：`A1` 定位诊断、`A2` 上下文检索、`A3` 迭代自修复、`A4` 跨文件一致性、
 `A5` 规格遵从、`A6` 抗过拟合。
@@ -1536,8 +1539,8 @@ JS 侧的模板字面量内容**逐字节比较**，只有它周围的代码走�
 
 为什么需要它：隐藏测试是本项目**唯一**动过难度的杠杆，实测把真实编码 agent 从 19/19 压到 11/19。
 但同样是「变难」，来源有两种。8 条变难的用例里 7 条挂在断言上 ——
-考的是可见测试没钉住的行为，这正是目的；另有 2 条挂在
-`module 'parse_reports' has no attribute 'create_shared_strings'` 这类错误上 ——
+考的是可见测试没钉住的行为，这正是目的；另有 1 条挂在
+`module 'parse_reports' has no attribute 'create_shared_strings'` 上 ——
 隐藏测试调用的函数名在实现、可见测试、题面里**都不存在**。
 
 后者不是难题，是无解题：所有解题者以同一原因失败，因此**区分不了任何东西，

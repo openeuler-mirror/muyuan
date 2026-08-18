@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import json
 import re
+from typing import ClassVar
 
 import pytest
 import yaml
 
+from aibench import secrets_scan
 from aibench.io_util import repo_root
+from aibench.tiers import TIER_SPECS
 
 ROOT = repo_root()
 SRC = ROOT / "docs/html/_src"
@@ -437,3 +440,339 @@ class TestEveryExportGateSaysWhetherItHasAnEscape:
         for relative in ("docs/REFERENCE.md", "docs/html/_src/manual.html"):
             body = (ROOT / relative).read_text(encoding="utf-8")
             assert "无豁免开关" not in body, f"{relative} still says the gate has no escape"
+
+
+class TestTheSecretsExclusionListIsTheOneInTheCode:
+    """§8.15 said the scanner has 「两处例外」 and named `grader.key_lines` as one of them.
+    `_HARNESS_RECORDS` holds one entry, and the comment above it says in so many words that
+    `key_lines` is deliberately not in the set — `grading.py` decides pass/fail from it, so it
+    is case content. A reader who trusts the manual believes a scanned field is exempt."""
+
+    #: 一/二/三 rather than a formatted number: the section is prose, and the digit forms do not
+    #: appear in it.
+    COUNT_WORDS: ClassVar[dict[int, str]] = {1: "一处例外", 2: "两处例外", 3: "三处例外"}
+
+    def _section(self) -> str:
+        body = (ROOT / "docs/REFERENCE.md").read_text(encoding="utf-8")
+        return body[body.index("### 8.15") : body.index("### 8.16")]
+
+    def test_the_section_states_the_count_the_code_holds(self):
+        excluded = secrets_scan._HARNESS_RECORDS
+        assert excluded, "_HARNESS_RECORDS is empty; the check below would be vacuous"
+        assert len(excluded) in self.COUNT_WORDS, (
+            f"_HARNESS_RECORDS now holds {len(excluded)} paths; extend COUNT_WORDS"
+        )
+        section = self._section()
+        expected = self.COUNT_WORDS[len(excluded)]
+        assert expected in section, (
+            f"_HARNESS_RECORDS holds {len(excluded)} path(s); §8.15 must say {expected!r}"
+        )
+        wrong = [w for n, w in self.COUNT_WORDS.items() if n != len(excluded) and w in section]
+        assert not wrong, f"§8.15 also still says {wrong}, which contradicts the code"
+
+    def test_the_sentence_naming_the_exclusions_names_only_real_ones(self):
+        excluded = {p.replace(":", ".") for p in secrets_scan._HARNESS_RECORDS}
+        section = self._section()
+        start = section.index("例外")
+        sentence = section[start : section.index("。", start) + 1]
+        named = set(re.findall(r"`((?:grader|metadata)\.[a-z_]+)`", sentence))
+        # Guard on the guard, on the variable actually asserted: a rephrased sentence that
+        # names nothing would make the comparison below trivially true.
+        assert named, f"no field path found in the sentence that names the exclusions: {sentence!r}"
+        assert named <= excluded, (
+            f"§8.15 presents {sorted(named - excluded)} as excluded, but the code scans them; "
+            f"_HARNESS_RECORDS holds {sorted(excluded)}"
+        )
+
+    def test_the_section_says_key_lines_is_scanned_while_the_code_scans_it(self):
+        """The half a bare count cannot express. The old text's damage was not the number, it
+        was naming a scanned field as exempt."""
+        if "grader.key_lines" in {p.replace(":", ".") for p in secrets_scan._HARNESS_RECORDS}:
+            return  # the code changed; the section may legitimately say the opposite
+        section = self._section()
+        assert "`grader.key_lines` **不在**例外里" in section, (
+            "§8.15 must say that `grader.key_lines` is scanned, not merely omit it"
+        )
+
+
+class TestTheHiddenSymbolBreakdownAddsUp:
+    """§14.3.8 split 8 harder cases into 「7 条挂在断言上」 plus 「另有 2 条」. Seven and two are
+    nine. `check_hidden_tests_are_inferable`'s docstring says seven and one."""
+
+    #: The docstring writes its counts as English words.
+    WORDS: ClassVar[dict[str, int]] = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+    }
+
+    def _section(self) -> str:
+        body = (ROOT / "docs/REFERENCE.md").read_text(encoding="utf-8")
+        return body[body.index("#### 14.3.8") : body.index("#### 14.3.9")]
+
+    def _stated(self) -> dict[str, int]:
+        section = self._section()
+        found = {}
+        for name, pattern in (
+            ("total", r"(\d+) 条变难的用例里"),
+            ("assertions", r"(\d+) 条挂在断言上"),
+            ("unknowable", r"另有 (\d+) 条挂在"),
+        ):
+            match = re.search(pattern, section)
+            # Guard on the guard: a rephrased sentence must fail here with a readable message,
+            # not raise AttributeError on `None.group` and read as a broken test.
+            assert match, f"§14.3.8 no longer states {name}; pattern {pattern!r} matched nothing"
+            found[name] = int(match.group(1))
+        return found
+
+    def test_the_two_addends_equal_the_total(self):
+        stated = self._stated()
+        assert stated["assertions"] + stated["unknowable"] == stated["total"], (
+            f"§14.3.8 splits {stated['total']} into {stated['assertions']} + {stated['unknowable']}"
+        )
+
+    def test_the_split_is_the_docstring_s_split(self):
+        source = (ROOT / "src/aibench/validity.py").read_text(encoding="utf-8")
+        start = source.index("def check_hidden_tests_are_inferable")
+        doc = source[start : start + 2000]
+        pair = re.search(r"(\w+) failed on assertions .*? and (\w+) failed with", doc, re.S)
+        assert pair, "the docstring no longer states the assertions/unknowable split"
+        words = [pair.group(1).lower(), pair.group(2).lower()]
+        unknown = [w for w in words if w not in self.WORDS]
+        assert not unknown, f"docstring counts {unknown} are not words this test can read"
+        stated = self._stated()
+        assert (stated["assertions"], stated["unknowable"]) == (
+            self.WORDS[words[0]],
+            self.WORDS[words[1]],
+        ), (
+            f"§14.3.8 says {stated['assertions']}/{stated['unknowable']}; the docstring says "
+            f"{self.WORDS[words[0]]}/{self.WORDS[words[1]]}"
+        )
+
+
+class TestTheTierTableCarriesEveryStructuralInvariant:
+    """§13.5.2's column is headed 「结构不变量……逐条校验」. The T5 row omitted
+    `min_solution_files=2` — the invariant that makes T5 a cross-file tier at all — and the T3
+    row inherited T2's file ceiling of 4 while the code raises it to 6."""
+
+    #: Each row is written as an increment on the row it names, so a field the child changes
+    #: has to be restated or the reader inherits the wrong value.
+    PARENT: ClassVar[dict[str, str]] = {"T3": "T2", "T4": "T3", "T5": "T4"}
+
+    def _rows(self) -> dict[str, str]:
+        """The invariants cell only. Matching the whole row let `A6` in the 能力轴 column stand
+        in for a file ceiling of 6, so this check passed on the very text it was written for."""
+        body = (ROOT / "docs/REFERENCE.md").read_text(encoding="utf-8")
+        section = body[body.index("### 13.5.2") : body.index("### 13.5.3")]
+        rows = {}
+        for line in re.findall(r"^\| T\d \|.*$", section, re.M):
+            cells = [c.strip() for c in line.split("|")]
+            assert len(cells) >= 6, f"§13.5.2 row is not a four-column row: {line}"
+            rows[cells[1]] = cells[3]
+        assert len(rows) == len(TIER_SPECS), (
+            f"§13.5.2 has {len(rows)} tier rows for {len(TIER_SPECS)} specs"
+        )
+        return rows
+
+    def test_every_tier_that_needs_two_solution_files_says_so(self):
+        rows = self._rows()
+        checked = 0
+        for tier, spec in TIER_SPECS.items():
+            if spec.min_solution_files >= 2:
+                checked += 1
+                assert f"≥{spec.min_solution_files} 个文件" in rows[tier], (
+                    f"{tier} requires {spec.min_solution_files} solution files; "
+                    f"its invariants cell does not say so: {rows[tier]}"
+                )
+        assert checked, "no tier requires two solution files; the check would be vacuous"
+
+    def test_every_tier_that_raises_the_file_ceiling_says_so(self):
+        rows = self._rows()
+        checked = 0
+        for tier, parent in self.PARENT.items():
+            spec, parent_spec = TIER_SPECS[tier], TIER_SPECS[parent]
+            if spec.max_files is None or spec.max_files == parent_spec.max_files:
+                continue
+            checked += 1
+            assert str(spec.max_files) in rows[tier], (
+                f"{tier} raises the file ceiling from {parent_spec.max_files} to "
+                f"{spec.max_files}; its invariants cell inherits {parent}'s without restating "
+                f"it: {rows[tier]}"
+            )
+        assert checked, "no tier raises a finite file ceiling; the check would be vacuous"
+
+    def test_every_tier_row_states_its_hidden_test_floor(self):
+        rows = self._rows()
+        for tier, spec in TIER_SPECS.items():
+            if not spec.min_hidden_test_fns:
+                continue
+            # Rows write this as 「≥2 个隐藏测试函数」 or 「≥3 隐藏测试」; both are the floor.
+            assert re.search(rf"≥\s*{spec.min_hidden_test_fns}\s*个?隐藏测试", rows[tier]), (
+                f"{tier} needs {spec.min_hidden_test_fns} hidden test functions; "
+                f"its invariants cell does not state that floor: {rows[tier]}"
+            )
+
+
+class TestTheDocumentedFlagDefaultsAreArgparseDefaults:
+    """§8.8 gave `ablation --parallel` a default of `1`. It is `None`, and the difference is the
+    whole point of the change that made it `None`: with `1` the CLI short-circuited the matrix's
+    own `parallel:` key, and eleven of twelve shipped matrices ran serially."""
+
+    #: The workaround the defect required. Once the defect is fixed, a document still telling a
+    #: reader to apply the workaround documents behaviour that no longer exists.
+    STALE_ADVICE = "短路成串行"
+
+    def test_ablation_parallel_still_defaults_to_none(self):
+        cli = (ROOT / "src/aibench/cli.py").read_text(encoding="utf-8")
+        start = cli.index('sub.add_parser("ablation"')
+        block = cli[start : cli.index("sub.add_parser(", start + 10)]
+        assert '"--parallel"' in block, "the ablation parser no longer declares --parallel"
+        declaration = block[block.index('"--parallel"') :][:200]
+        assert "default=None" in declaration, (
+            "ablation --parallel no longer defaults to None; §8.8 and USER_GUIDE §3.4 both "
+            "describe the None behaviour and need rechecking"
+        )
+
+    def test_the_default_column_does_not_claim_a_value_argparse_does_not_set(self):
+        body = (ROOT / "docs/REFERENCE.md").read_text(encoding="utf-8")
+        section = body[body.index("### 8.8") : body.index("### 8.9")]
+        rows = [ln for ln in section.splitlines() if ln.startswith("| `--parallel`")]
+        assert len(rows) == 1, f"expected one --parallel row in §8.8, found {len(rows)}"
+        cells = [c.strip() for c in rows[0].split("|")]
+        assert len(cells) >= 5, f"§8.8's --parallel row is not a four-column row: {rows[0]}"
+        default = cells[3]
+        assert default != "`1`", (
+            "§8.8 states `1` as the default for ablation --parallel, which is the value that "
+            f"short-circuited the matrix key: {rows[0]}"
+        )
+        assert "`parallel:`" in default or "parallel:" in default, (
+            f"§8.8's default cell must say the effective default comes from the matrix: {default!r}"
+        )
+
+    def test_no_document_still_prescribes_the_workaround(self):
+        offenders = []
+        for path in ROOT.rglob("*"):
+            if path.suffix.lower() not in {".md", ".html"} or not path.is_file():
+                continue
+            if any(part in {".venv", "runs", ".agent", ".git"} for part in path.parts):
+                continue
+            if self.STALE_ADVICE in path.read_text(encoding="utf-8"):
+                offenders.append(str(path.relative_to(ROOT)))
+        assert not offenders, (
+            f"these documents still tell the reader to work around the fixed short-circuit: "
+            f"{offenders}"
+        )
+
+
+class TestTheRankingReversalIsRecomputableFromOneCorpus:
+    """The reversal sentence paired bare-model rates from `bare-model-two-models` with
+    tool-loop rates lifted from the single-run five-model ablation — the batch the same file
+    voids one section later. Both halves now come from the three-repeat pair, and the same
+    wrong pair had a third home in `manual.html`'s 胜者 column."""
+
+    #: Every document that states the reversal. Correcting two of three is how a wrong number
+    #: gets re-imported from the copy nobody edited.
+    SITES = (
+        "benchmarks/ai_coding/calibrations/README.md",
+        "docs/html/_src/overview.html",
+        "docs/html/overview.html",
+    )
+
+    def _bare_totals(self) -> dict[str, tuple[int, int]]:
+        stored = json.loads(
+            (CALIBRATIONS / "bare-model-two-models_20260810.json").read_text(encoding="utf-8")
+        )
+        totals: dict[str, list[int]] = {}
+        for row in stored["rows"]:
+            seen = totals.setdefault(row["model"], [0, 0])
+            seen[0] += 1 if row["passed"] else 0
+            seen[1] += 1
+        return {k: (v[0], v[1]) for k, v in totals.items()}
+
+    def _tool_loop_totals(self) -> dict[str, tuple[int, int]]:
+        stored = json.loads(
+            (CALIBRATIONS / "ablation-two-models-3reps_20260810.json").read_text(encoding="utf-8")
+        )
+        totals: dict[str, list[int]] = {}
+        for run in stored["runs"]:
+            seen = totals.setdefault(run["algorithm_name"], [0, 0])
+            seen[0] += run["success_count"]
+            seen[1] += run["effective_case_count"]
+        return {k: (v[0], v[1]) for k, v in totals.items()}
+
+    @staticmethod
+    def _short(model: str) -> str:
+        """`Deepseek-V4-Flash-0731` in the JSON, `Deepseek` in the prose."""
+        return model.split("-V4")[0] if model.startswith("Deepseek") else model
+
+    def _assert_winner_stated(self, text: str, totals: dict[str, tuple[int, int]], where: str):
+        """The winner's own count and rate, on the winning side. A test that only looks for the
+        two fractions anywhere in the file passes on a sentence that swaps the models — which
+        is precisely the defect, since the claim is about ordering."""
+        ranked = sorted(totals.items(), key=lambda kv: kv[1][0] / kv[1][1], reverse=True)
+        (winner, (wp, wn)), (loser, (lp, ln)) = ranked[0], ranked[1]
+        for model, passed, n in ((winner, wp, wn), (loser, lp, ln)):
+            assert f"{passed}/{n}" in text, (
+                f"{where}: {model} is {passed}/{n}; the sentence does not state that"
+            )
+            assert f"{passed / n * 100:.1f}%" in text, (
+                f"{where}: {model} is {passed / n * 100:.1f}%; the sentence does not state that"
+            )
+        head = text[: text.index(f"{lp}/{ln}")]
+        assert f"{wp}/{wn}" in head, (
+            f"{where}: {self._short(winner)} ({wp}/{wn}) outscores {self._short(loser)} "
+            f"({lp}/{ln}), but the sentence puts the loser first"
+        )
+
+    @pytest.mark.parametrize("relative", SITES)
+    def test_each_site_states_both_halves_with_the_winner_first(self, relative):
+        body = (ROOT / relative).read_text(encoding="utf-8")
+        marker = "排序反转" if "排序反转" in body else "颠倒了排序"
+        assert marker in body, f"{relative} no longer states the reversal"
+        claim = body[body.index(marker) :]
+        # Stop before the correction note, which quotes the old wrong pair on purpose.
+        for stop in ("（此前", "<p>三轮合并"):
+            if stop in claim:
+                claim = claim[: claim.index(stop)]
+        assert len(claim) > 40, f"{relative}: the reversal claim sliced down to {claim!r}"
+        self._assert_winner_stated(claim, self._bare_totals(), f"{relative} (bare)")
+        self._assert_winner_stated(claim, self._tool_loop_totals(), f"{relative} (tool_loop)")
+
+    def test_the_voided_single_run_rate_is_not_part_of_any_claim(self):
+        for relative in self.SITES:
+            body = (ROOT / relative).read_text(encoding="utf-8")
+            marker = "排序反转" if "排序反转" in body else "颠倒了排序"
+            claim = body[body.index(marker) :]
+            for stop in ("（此前", "<p>三轮合并"):
+                if stop in claim:
+                    claim = claim[: claim.index(stop)]
+            assert len(claim) > 40, f"{relative}: the reversal claim sliced down to {claim!r}"
+            assert "71.0" not in claim, (
+                f"{relative}: the reversal claim still quotes the single-run five-model rate, "
+                f"which calibrations/README.md voids in 「单次运行的消融结论一律不可用」"
+            )
+
+    def test_no_page_labels_the_tool_loop_winner_with_the_single_run_rate(self):
+        """`manual.html`'s 胜者 column sat in a table whose caption says 各 3 次重复 and whose
+        other three columns come from the three-repeat file."""
+        totals = self._tool_loop_totals()
+        passed, n = totals["Deepseek-V4-Flash"]
+        rate = f"{passed / n * 100:.1f}%"
+        lines = (SRC / "manual.html").read_text(encoding="utf-8").splitlines()
+        # The 胜者 table specifically. `<code>tool_loop</code>` also appears in the anchor-panel
+        # table above it, and matching that one made this check pass on the wrong row.
+        heads = [i for i, ln in enumerate(lines) if "<th>胜者</th>" in ln]
+        assert len(heads) == 1, f"expected one 胜者 table in manual.html, found {len(heads)}"
+        rows = [ln for ln in lines[heads[0] : heads[0] + 10] if "<code>tool_loop</code>" in ln]
+        assert len(rows) == 1, f"expected one tool_loop row under the 胜者 header, found {rows}"
+        assert rate in rows[0], (
+            f"tool_loop's winner rate over three repeats is {rate} ({passed}/{n}); "
+            f"the row says: {rows[0].strip()}"
+        )

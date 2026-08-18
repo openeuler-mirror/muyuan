@@ -193,13 +193,13 @@ uv run aibench ablation --matrix configs/runs/ablation-matrix.yaml \
 </tbody>
 </table></div>
 
-<p>实测证据（同一批 31 条用例、同两个模型、各 3 次重复）：</p>
+<p>实测证据（同一批 31 条用例、同两个模型、各 3 次重复；胜者一列是三轮合并的 93 次观测通过率）：</p>
 
 <div class="table-wrap"><table>
 <thead><tr><th>口径</th><th>GLM-5.1 轮间极差</th><th>Deepseek 轮间极差</th><th>GLM-5.1 逐用例翻转率</th><th>胜者</th></tr></thead>
 <tbody>
 <tr><td><code>bare_model</code></td><td><strong>0.0pp</strong></td><td>3.2pp</td><td><strong>0.0%</strong></td><td>GLM-5.1 (90.3%)</td></tr>
-<tr><td><code>tool_loop</code></td><td>12.9pp</td><td>16.1pp</td><td>32.3%</td><td>Deepseek (90.3%)</td></tr>
+<tr><td><code>tool_loop</code></td><td>12.9pp</td><td>16.1pp</td><td>32.3%</td><td>Deepseek (80.6%)</td></tr>
 </tbody>
 </table></div>
 
