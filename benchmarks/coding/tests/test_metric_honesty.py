@@ -285,6 +285,12 @@ class TestARunThatMeasuredNothingRendersAsUnmeasured:
         assert tables["general_row"]["主指标值"] is None
         assert tables["general_row"]["成功率"] is None
 
+    def test_the_wilson_interval_is_a_dash_not_the_word_none(self):
+        _, md, _ = self._rendered(infra=True)
+        # `format_wilson_ci(0, 0)` is None, and the row printed it verbatim.
+        assert "| 成功率 95% CI | - |" in md
+        assert "| 成功率 95% CI | None |" not in md
+
     def test_a_run_that_measured_something_still_reports_it(self):
         summary, md, tables = self._rendered(infra=False)
         assert summary["success_rate"] == 1.0

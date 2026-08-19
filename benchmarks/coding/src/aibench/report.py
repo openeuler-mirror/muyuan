@@ -404,7 +404,8 @@ def render_report_md(summary: dict[str, Any], case_results: list[dict[str, Any]]
         f"| 总模型调用次数 | {summary.get('total_model_calls')} |",
         f"| 总成本(USD估) | {summary.get('total_cost')} |",
         f"| 计价口径 | {(summary.get('cost_rate') or {}).get('source')} |",
-        f"| 成功率 95% CI | {summary.get('confidence_interval')} |",
+        # `format_wilson_ci(0, 0)` is None, which rendered as the literal word "None".
+        f"| 成功率 95% CI | {summary.get('confidence_interval') or '-'} |",
         f"| Case set fingerprint | {summary.get('case_set_fingerprint')} |",
         "",
     ]

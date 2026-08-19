@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,61 @@ def test_a_candidate_that_measured_nothing_gets_no_lift(tmp_path: Path, monkeypa
     assert unmeasured["overview_row"]["主指标值"] == "-"
     # The row that did measure something is unaffected.
     assert rows["baseline-mock-a"]["relative_success_lift"] == 0.0
+
+
+def test_an_unmeasured_row_reads_as_unmeasured_in_every_artifact(tmp_path: Path, monkeypatch):
+    """`0.0%` beside `有效Case 0` is a rate for a run that never produced one.
+
+    The markdown warns about such rows further down, but the overview table, the Runs table and
+    the XLSX are what get quoted, and the XLSX carries no warning at all.
+    """
+    import aibench.ablation as ablation
+    from aibench.export_results import export_ablation_csv, export_ablation_xlsx
+    from aibench.io_util import write_json
+
+    original_run = ablation.run_benchmark
+
+    def nothing_measured_on_b(**kwargs):
+        run_dir = original_run(**kwargs)
+        if kwargs.get("run_id") == "abl-mock-b":
+            summary = load_json(run_dir / "summary.json")
+            summary["success_rate"] = None
+            summary["primary_metric_value"] = None
+            summary["success_count"] = 0
+            summary["effective_case_count"] = 0
+            summary["infra_error_count"] = summary["case_count"]
+            write_json(run_dir / "summary.json", summary)
+        return run_dir
+
+    monkeypatch.setattr(ablation, "run_benchmark", nothing_measured_on_b)
+    matrix = repo_root() / "tests/fixtures/configs/runs/ablation-matrix.mock.yaml"
+    abl_dir = ablation.run_ablation(matrix, output_root=tmp_path, allow_weak_grader=True)
+
+    def cells(line: str) -> list[str]:
+        return [c.strip() for c in line.strip().strip("|").split("|")]
+
+    report = (abl_dir / "ablation_report.md").read_text(encoding="utf-8")
+    overview = next(ln for ln in report.splitlines() if ln.startswith("| Baseline-repeat |"))
+    runs = next(ln for ln in report.splitlines() if ln.startswith("| baseline-mock-b |"))
+    assert cells(overview)[6] == "-"  # 主指标值
+    assert cells(runs)[2] == "-"  # success_rate
+    measured = next(ln for ln in report.splitlines() if ln.startswith("| baseline-mock-a |"))
+    assert cells(measured)[2] == "1.000"
+
+    export_ablation_csv(abl_dir)
+    csv_rows = list(csv.DictReader((abl_dir / "ablation_overview.csv").read_text().splitlines()))
+    by_name = {r["experiment_name"]: r for r in csv_rows}
+    assert by_name["baseline-mock-b"]["success_rate"] == ""
+    assert by_name["baseline-mock-b"]["relative_success_lift"] == ""
+
+    pytest.importorskip("openpyxl")
+    import openpyxl
+
+    export_ablation_xlsx(abl_dir)
+    ws = openpyxl.load_workbook(abl_dir / "ablation_overview.xlsx").active
+    cells = {row[0]: row[6] for row in ws.iter_rows(values_only=True)}
+    assert cells["Baseline-repeat"] == "-"
+    assert cells["Baseline"] == "100.0%"
 
 
 def test_every_experiment_failing_is_still_an_error(tmp_path: Path, monkeypatch):

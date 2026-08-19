@@ -537,14 +537,13 @@ def _render_ablation_report(
     ]
     for r in rows:
         o = r.get("overview_row") or {}
-        sr = float(r.get("success_rate") or 0) * 100
         lift = o.get("相对基线收益")
         if lift is None and r.get("relative_success_lift") is not None:
             lift = f"{float(r['relative_success_lift']) * 100:+.1f}pp"
         lines.append(
             f"| {o.get('算法名称')} | {o.get('Agent与模型')} | {o.get('基础/主模型')} "
             f"| {o.get('Benchmark')} | {o.get('Case数')} | {o.get('主指标名称')} "
-            f"| {sr:.1f}% | {format_hours(o.get('总体耗时(h)'))} "
+            f"| {format_pct(r.get('success_rate'))} | {format_hours(o.get('总体耗时(h)'))} "
             f"| {o.get('总体Token消耗')} | {lift if lift is not None else ''} |"
         )
     lines.extend(
@@ -559,8 +558,10 @@ def _render_ablation_report(
     )
     for r in rows:
         basis = "oracle 上界" if r.get("selection_is_oracle") else "提交"
+        # `0.000` beside `有效Case 0` is a rate for a run that never produced one.
+        rate = "-" if r.get("success_rate") is None else f"{float(r['success_rate']):.3f}"
         lines.append(
-            f"| {r['experiment_name']} | {r['run_id']} | {float(r['success_rate'] or 0):.3f} "
+            f"| {r['experiment_name']} | {r['run_id']} | {rate} "
             f"| {basis} | {r.get('effective_case_count')} | {r.get('infra_error_count')} "
             f"| {r['total_tokens']} | {r.get('total_cost')} | {r['run_dir']} |"
         )
