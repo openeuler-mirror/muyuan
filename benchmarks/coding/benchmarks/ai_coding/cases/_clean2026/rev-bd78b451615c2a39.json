@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-bd78b451615c2a39",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "javascript",
+  "prompt": "配置第三方 OpenAI 兼容模型（如 qwen2.5-72b、qwen-max、gpt-4o、claude-sonnet 等）时，getContextWindowFallback 返回 undefined，无法获取到这些模型的上下文窗口大小回退值，而已有的 GLM、Gemini 等模型则正常返回。",
+  "context": {
+    "files": [
+      {
+        "path": "context-window-sizes.ts",
+        "content": "/*\n * *\n *  * Copyright (C) Huawei Technologies Co., Ltd. 2026. All rights reserved.\n *\n */\n\n/**\n * Context Window Size Fallback Table\n * F24: Hardcoded model → context window mapping for cats whose CLI\n * doesn't report window size (Codex exec, Gemini -p).\n *\n * Claude CLI reports exact values via modelUsage[model].contextWindow,\n * so these entries are fallback only.\n * Update when new models are released or window sizes change.\n */\n\nexport const CONTEXT_WINDOW_SIZES: Record<string, number> = {\n  // Claude (exact values from CLI, these are fallback)\n  'claude-opus-4-6': 200_000,\n  'claude-sonnet-4-5': 200_000,\n  'claude-haiku-4-5': 200_000,\n  // Codex/GPT\n  'gpt-5.3': 128_000,\n  'gpt-5.2': 128_000,\n  'gpt-5.1-codex': 400_000,\n  o3: 200_000,\n  'o4-mini': 200_000,\n  // Gemini\n  'gemini-2.5-pro': 1_000_000,\n  'gemini-2.5-flash': 1_000_000,\n  'gemini-3-pro': 1_000_000,\n  'gemini-3.1-pro-preview': 1_000_000,\n  // Huawei MaaS / common OpenAI-compatible (relay context fallback)\n  'deepseek-v3.1-128k': 128_000,\n  'qwen3-30b-a3b-128k': 128_000,\n  'qwen3-32b': 128_000,\n  'kimi-k2': 128_000,\n  'qwen3-235b-a22b': 128_000,\n  'longcat-flash-chat': 128_000,\n  'deepseek-r1-0528': 128_000,\n  'qwen3-coder-480b-a35b-instruct': 128_000,\n  'deepseek-v3.2': 160_000,\n  'deepseek-v3': 128_000,\n  // Huawei ModelArts (GLM)\n  'glm-5': 196_608,\n  'glm-5.1': 196_608,\n  'glm-4': 128_000,\n};\n\nexport function getContextWindowFallback(model: string): number | undefined {\n  if (CONTEXT_WINDOW_SIZES[model]) return CONTEXT_WINDOW_SIZES[model];\n  const modelLower = model.toLowerCase();\n  if (CONTEXT_WINDOW_SIZES[modelLower]) return CONTEXT_WINDOW_SIZES[modelLower];\n  // Strip provider prefix (e.g. 'huawei-modelarts/glm-5' → 'glm-5', 'z-ai/glm-4.7' → 'glm-4.7')\n  const bare = model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : model;\n  if (bare !== model && CONTEXT_WINDOW_SIZES[bare]) return CONTEXT_WINDOW_SIZES[bare];\n  // Longest key first so e.g. deepseek-v3.2 / deepseek-v3.1-128k beat deepseek-v3.\n  const bareLower = bare.toLowerCase();\n  if (CONTEXT_WINDOW_SIZES[bareLower]) return CONTEXT_WINDOW_SIZES[bareLower];\n  const prefixEntries = Object.entries(CONTEXT_WINDOW_SIZES).sort((a, b) => b[0].length - a[0].length);\n  for (const [key, value] of prefixEntries) {\n    if (bareLower.startsWith(key)) return value;\n  }\n  return undefined;\n}\n",
+        "role": "impl"
+      },
+      {
+        "path": "context-window-sizes.test.ts",
+        "content": "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { CONTEXT_WINDOW_SIZES, getContextWindowFallback } from './context-window-sizes.ts';\n\n\ntest('returns fallback for existing Claude models', () => {\n  assert.equal(getContextWindowFallback('claude-opus-4-6'), 200_000);\n  assert.equal(getContextWindowFallback('claude-sonnet-4-5'), 200_000);\n  assert.equal(getContextWindowFallback('claude-haiku-4-5'), 200_000);\n});\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-c95389ee-b73-d00c6352f3f03592; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "node --test",
+    "gold_files": [
+      {
+        "path": "context-window-sizes.ts",
+        "content": "/*\n * *\n *  * Copyright (C) Huawei Technologies Co., Ltd. 2026. All rights reserved.\n *\n */\n\n/**\n * Context Window Size Fallback Table\n * F24: Hardcoded model → context window mapping for cats whose CLI\n * doesn't report window size (Codex exec, Gemini -p).\n *\n * Claude CLI reports exact values via modelUsage[model].contextWindow,\n * so these entries are fallback only.\n * Update when new models are released or window sizes change.\n */\n\nexport const CONTEXT_WINDOW_SIZES: Record<string, number> = {\n  // Claude (exact values from CLI, these are fallback)\n  'claude-opus-4-6': 200_000,\n  'claude-sonnet-4-5': 200_000,\n  'claude-haiku-4-5': 200_000,\n  // Codex/GPT\n  'gpt-5.3': 128_000,\n  'gpt-5.2': 128_000,\n  'gpt-5.1-codex': 400_000,\n  o3: 200_000,\n  'o4-mini': 200_000,\n  // Gemini\n  'gemini-2.5-pro': 1_000_000,\n  'gemini-2.5-flash': 1_000_000,\n  'gemini-3-pro': 1_000_000,\n  'gemini-3.1-pro-preview': 1_000_000,\n  // Huawei MaaS / common OpenAI-compatible (relay context fallback)\n  'deepseek-v3.1-128k': 128_000,\n  'qwen3-30b-a3b-128k': 128_000,\n  'qwen3-32b': 128_000,\n  'kimi-k2': 128_000,\n  'qwen3-235b-a22b': 128_000,\n  'longcat-flash-chat': 128_000,\n  'deepseek-r1-0528': 128_000,\n  'qwen3-coder-480b-a35b-instruct': 128_000,\n  'deepseek-v3.2': 160_000,\n  'deepseek-v3': 128_000,\n  // Huawei ModelArts (GLM)\n  'glm-5': 196_608,\n  'glm-5.1': 196_608,\n  'glm-4': 128_000,\n  // Third-party OpenAI-compatible (SiliconFlow, ModelScope, OpenRouter, etc.)\n  'qwen2.5-72b': 131_072,\n  'qwen2.5-coder-32b': 131_072,\n  'qwen-max': 8_000,\n  'qwen-plus': 131_072,\n  'deepseek-r1': 128_000,\n  'gpt-4o': 128_000,\n  'claude-sonnet': 200_000,\n  'claude-opus': 200_000,\n};\n\nexport function getContextWindowFallback(model: string): number | undefined {\n  if (CONTEXT_WINDOW_SIZES[model]) return CONTEXT_WINDOW_SIZES[model];\n  const modelLower = model.toLowerCase();\n  if (CONTEXT_WINDOW_SIZES[modelLower]) return CONTEXT_WINDOW_SIZES[modelLower];\n  // Strip provider prefix (e.g. 'huawei-modelarts/glm-5' → 'glm-5', 'z-ai/glm-4.7' → 'glm-4.7')\n  const bare = model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : model;\n  if (bare !== model && CONTEXT_WINDOW_SIZES[bare]) return CONTEXT_WINDOW_SIZES[bare];\n  // Longest key first so e.g. deepseek-v3.2 / deepseek-v3.1-128k beat deepseek-v3.\n  const bareLower = bare.toLowerCase();\n  if (CONTEXT_WINDOW_SIZES[bareLower]) return CONTEXT_WINDOW_SIZES[bareLower];\n  const prefixEntries = Object.entries(CONTEXT_WINDOW_SIZES).sort((a, b) => b[0].length - a[0].length);\n  for (const [key, value] of prefixEntries) {\n    if (bareLower.startsWith(key)) return value;\n  }\n  return undefined;\n}\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "context-window-sizes_spec.test.ts",
+        "content": "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { CONTEXT_WINDOW_SIZES, getContextWindowFallback } from './context-window-sizes.ts';\n\n\ntest('returns fallback for existing GLM and Gemini models', () => {\n  assert.equal(getContextWindowFallback('glm-5'), 196_608);\n  assert.equal(getContextWindowFallback('glm-4'), 128_000);\n  assert.equal(getContextWindowFallback('gemini-2.5-pro'), 1_000_000);\n  assert.equal(getContextWindowFallback('gemini-3-pro'), 1_000_000);\n});\n\n\ntest('returns fallback for third-party OpenAI-compatible models', () => {\n  assert.equal(getContextWindowFallback('qwen2.5-72b'), 131_072);\n  assert.equal(getContextWindowFallback('qwen2.5-coder-32b'), 131_072);\n  assert.equal(getContextWindowFallback('qwen-max'), 8_000);\n  assert.equal(getContextWindowFallback('qwen-plus'), 131_072);\n  assert.equal(getContextWindowFallback('deepseek-r1'), 128_000);\n  assert.equal(getContextWindowFallback('gpt-4o'), 128_000);\n  assert.equal(getContextWindowFallback('claude-sonnet'), 200_000);\n  assert.equal(getContextWindowFallback('claude-opus'), 200_000);\n});\n\n\ntest('strips provider prefix for third-party models', () => {\n  assert.equal(getContextWindowFallback('siliconflow/qwen2.5-72b'), 131_072);\n  assert.equal(getContextWindowFallback('openrouter/gpt-4o'), 128_000);\n  assert.equal(getContextWindowFallback('modelscope/qwen-max'), 8_000);\n  assert.equal(getContextWindowFallback('openrouter/claude-sonnet'), 200_000);\n});\n\n\ntest('returns undefined for completely unknown models', () => {\n  assert.equal(getContextWindowFallback('totally-unknown-model-xyz'), undefined);\n});\n"
+      }
+    ],
+    "protected_paths": [
+      "context-window-sizes.test.ts"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-c95389ee-b737-9107-9c1a-460369c3f330",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "context-window-sizes.ts#de72be8088f8",
+    "reverse_edits": 2,
+    "difficulty": "easy",
+    "fingerprint": "v3:e6c3e2d74b4a3d1c",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

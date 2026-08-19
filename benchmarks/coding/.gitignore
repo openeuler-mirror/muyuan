@@ -60,3 +60,11 @@ benchmarks/ai_coding/cases_archive/
 # that gets skipped; matching the directory that holds them is not.
 benchmarks/ai_coding/cases/*/
 !benchmarks/ai_coding/cases/.gitkeep
+
+# One set is committed on purpose: `_clean2026`, the 45 cases `docs/BASELINE.md` reports
+# numbers for. The numbers cannot be replayed without them. It is the same set named in the
+# incident above, and it is still reverse-constructed production source — it was
+# desensitised before being committed, and `docs/BASELINE.md` records what was replaced and
+# what remains. Adding a second exception here is a decision about publishing production
+# code, not a formatting change.
+!benchmarks/ai_coding/cases/_clean2026/

@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-7ef5353e673af1af",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "javascript",
+  "prompt": "项目中默认命令目录路径应该使用 .adtspec/command，但目前仍使用旧项目名称 .hyper-designer/command。需要将所有涉及旧项目名称（hyper designer、neo designer、hd 等）的路径替换为 adtspec。",
+  "context": {
+    "files": [
+      {
+        "path": "index.ts",
+        "content": "export const TASKS_DIR = 'tasks'\nexport const TASK_FILE_PREFIX = 'task-'\nexport const TASK_FILE_EXT = '.json'\nexport const TASK_ID_PAD_WIDTH = 4\nexport const DEFAULT_FILE_LOCK_TIMEOUT_MS = 5000\nexport const DEFAULT_FILE_LOCK_RETRY_INTERVAL_MS = 25\nexport const DEFAULT_LOG_MAX_SIZE_BYTES = 100 * 1024 * 1024\nexport const CACHE_SCHEMA_VERSION = 1\n\nexport const COMMAND_DIRS = {\n  opencode: '.opencode/command',\n  default: '.hyper-designer/command',\n} as const\n\nexport const ARCHIVE_DIR = 'archive'\nexport const ARCHIVE_TASKS_DIR = 'tasks'\nexport const ARCHIVE_TASK_FILE = 'task.json'\nexport const ARCHIVE_META_FILE = 'archive-meta.json'\nexport const ARCHIVE_INDEX_FILE = 'archive-index.json'\n",
+        "role": "impl"
+      },
+      {
+        "path": "index.test.ts",
+        "content": "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport {\n  COMMAND_DIRS,\n  TASKS_DIR,\n  TASK_FILE_PREFIX,\n  TASK_FILE_EXT,\n  TASK_ID_PAD_WIDTH,\n  DEFAULT_FILE_LOCK_TIMEOUT_MS,\n  ARCHIVE_DIR,\n  ARCHIVE_TASKS_DIR,\n  ARCHIVE_TASK_FILE,\n} from './index.ts';\n\n\ntest('COMMAND_DIRS.default should use .adtspec/command path', () => {\n  assert.strictEqual(COMMAND_DIRS.default, '.adtspec/command');\n});\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-a39e6c97-044-2a81440d8ee6b209; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "node --test",
+    "gold_files": [
+      {
+        "path": "index.ts",
+        "content": "export const TASKS_DIR = 'tasks'\nexport const TASK_FILE_PREFIX = 'task-'\nexport const TASK_FILE_EXT = '.json'\nexport const TASK_ID_PAD_WIDTH = 4\nexport const DEFAULT_FILE_LOCK_TIMEOUT_MS = 5000\nexport const DEFAULT_FILE_LOCK_RETRY_INTERVAL_MS = 25\nexport const DEFAULT_LOG_MAX_SIZE_BYTES = 100 * 1024 * 1024\nexport const CACHE_SCHEMA_VERSION = 1\n\nexport const COMMAND_DIRS = {\n  opencode: '.opencode/command',\n  default: '.adtspec/command',\n} as const\n\nexport const ARCHIVE_DIR = 'archive'\nexport const ARCHIVE_TASKS_DIR = 'tasks'\nexport const ARCHIVE_TASK_FILE = 'task.json'\nexport const ARCHIVE_META_FILE = 'archive-meta.json'\nexport const ARCHIVE_INDEX_FILE = 'archive-index.json'\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "index_spec.test.ts",
+        "content": "import { test } from 'node:test';\nimport assert from 'node:assert';\nimport {\n  COMMAND_DIRS,\n  TASKS_DIR,\n  TASK_FILE_PREFIX,\n  TASK_FILE_EXT,\n  TASK_ID_PAD_WIDTH,\n  DEFAULT_FILE_LOCK_TIMEOUT_MS,\n  ARCHIVE_DIR,\n  ARCHIVE_TASKS_DIR,\n  ARCHIVE_TASK_FILE,\n} from './index.ts';\n\n\ntest('COMMAND_DIRS.opencode should remain unchanged', () => {\n  assert.strictEqual(COMMAND_DIRS.opencode, '.opencode/command');\n});\n\n\ntest('COMMAND_DIRS.default should not contain any old project names', () => {\n  assert.ok(!COMMAND_DIRS.default.includes('hyper-designer'), 'should not contain hyper-designer');\n  assert.ok(!COMMAND_DIRS.default.includes('neo-designer'), 'should not contain neo-designer');\n  assert.ok(!COMMAND_DIRS.default.includes('hd'), 'should not contain hd');\n  assert.ok(!COMMAND_DIRS.default.includes('hyper'), 'should not contain hyper');\n  assert.ok(!COMMAND_DIRS.default.includes('neo'), 'should not contain neo');\n});\n\n\ntest('other constants remain unchanged after rename', () => {\n  assert.strictEqual(TASKS_DIR, 'tasks');\n  assert.strictEqual(TASK_FILE_PREFIX, 'task-');\n  assert.strictEqual(TASK_FILE_EXT, '.json');\n  assert.strictEqual(TASK_ID_PAD_WIDTH, 4);\n  assert.strictEqual(DEFAULT_FILE_LOCK_TIMEOUT_MS, 5000);\n  assert.strictEqual(ARCHIVE_DIR, 'archive');\n  assert.strictEqual(ARCHIVE_TASKS_DIR, 'tasks');\n  assert.strictEqual(ARCHIVE_TASK_FILE, 'task.json');\n});\n"
+      }
+    ],
+    "protected_paths": [
+      "index.test.ts"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-a39e6c97-044a-9c03-9e7f-5188e7ceb020",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "index.ts#fa6d38f785e1",
+    "reverse_edits": 1,
+    "difficulty": "easy",
+    "fingerprint": "v3:4879fadb8280713b",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

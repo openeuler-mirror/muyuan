@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-20f1e5a5d9460800",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "将激光扫描数据转换为障碍物点云时，超出最大有效距离的测量值和过近的测量值没有被过滤掉，仍然出现在结果中。此外，当机器人不在原点时，生成的障碍物点云坐标不正确。",
+  "context": {
+    "files": [
+      {
+        "path": "laser_processor.py",
+        "content": "import numpy as np\n\n\ndef laserscan_to_obstacles(laserscan, max_range=10.0):\n    \"\"\"\n    将laserscan转换为障碍物点云\n    \n    Args:\n        laserscan: dict with keys:\n            - ranges: list of float, 距离测量值\n            - angle_min: float, 最小角度\n            - angle_max: float, 最大角度\n            - angle_increment: float, 角度增量\n        max_range: float, 最大有效距离\n    \n    Returns:\n        list of (x, y): 障碍物点云坐标\n    \"\"\"\n\n    ranges = laserscan['ranges']\n    angles = np.linspace(laserscan['angle_min'],laserscan['angle_max'],len(ranges))\n    #ranges = [r for r in laserscan['ranges'] if r < max_range and r > 0.1]\n    #n = len(ranges)\n    \n    #if n == 0:\n    #    return []\n    \n    #angle_min = laserscan['angle_min']\n    #angle_increment = laserscan['angle_increment']\n    \n    obstacles = []\n    for i, r in enumerate(ranges):\n        angle = angles[i]\n        x = r * np.cos(angle)\n        y = r * np.sin(angle)\n        obstacles.append((x, y))\n    \n    return obstacles\n\n\ndef filter_obstacles(obstacles, robot_pos, max_distance=5.0):\n    \"\"\"\n    过滤距离机器人过远的障碍物\n    \n    Args:\n        obstacles: list of (x, y), 障碍物点云\n        robot_pos: (x, y), 机器人位置\n        max_distance: float, 最大考虑距离\n    \n    Returns:\n        list of (x, y): 过滤后的障碍物\n    \"\"\"\n    filtered = []\n    rx, ry = robot_pos\n    \n    for ox, oy in obstacles:\n        dist = np.sqrt((ox - rx)**2 + (oy - ry)**2)\n        if dist < max_distance:\n            filtered.append((ox, oy))\n    \n    return filtered\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_laser_processor.py",
+        "content": "import numpy as np\nimport laser_processor\n\n\ndef test_basic_conversion_origin():\n    \"\"\"Basic conversion with robot at origin and all valid ranges — should work in both versions.\"\"\"\n    laserscan = {\n        'ranges': [1.0, 2.0, 3.0],\n        'angle_min': -np.pi / 2,\n        'angle_max': np.pi / 2,\n        'angle_increment': np.pi / 2,\n    }\n    obstacles = laser_processor.laserscan_to_obstacles(laserscan)\n    assert len(obstacles) == 3\n    x0, y0 = obstacles[0]\n    assert abs(x0 - 0.0) < 1e-6\n    assert abs(y0 - (-1.0)) < 1e-6\n    x1, y1 = obstacles[1]\n    assert abs(x1 - 2.0) < 1e-6\n    assert abs(y1 - 0.0) < 1e-6\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-6f2ca463-0ad-00128f01d85188b4; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "laser_processor.py",
+        "content": "import numpy as np\n\n\ndef laserscan_to_obstacles(laserscan, max_range=10.0, robot_pos=(0, 0, 0)):\n    \"\"\"\n    将laserscan转换为障碍物点云\n    \n    Args:\n        laserscan: dict with keys:\n            - ranges: list of float, 距离测量值\n            - angle_min: float, 最小角度\n            - angle_max: float, 最大角度\n            - angle_increment: float, 角度增量\n        max_range: float, 最大有效距离\n        robot_pos: (x, y, theta), 机器人位置和朝向\n    \n    Returns:\n        list of (x, y): 障碍物点云坐标（全局坐标系）\n    \"\"\"\n\n    ranges = laserscan['ranges']\n    angles = np.linspace(laserscan['angle_min'], laserscan['angle_max'], len(ranges))\n    \n    rx, ry, rtheta = robot_pos\n    \n    obstacles = []\n    for i, r in enumerate(ranges):\n        if r < max_range and r > 0.1:\n            local_angle = angles[i]\n            global_angle = local_angle + rtheta\n            \n            local_x = r * np.cos(local_angle)\n            local_y = r * np.sin(local_angle)\n            \n            global_x = rx + local_x * np.cos(rtheta) - local_y * np.sin(rtheta)\n            global_y = ry + local_x * np.sin(rtheta) + local_y * np.cos(rtheta)\n            \n            obstacles.append((global_x, global_y))\n    \n    return obstacles\n\n\ndef filter_obstacles(obstacles, robot_pos, max_distance=5.0):\n    \"\"\"\n    过滤距离机器人过远的障碍物\n    \n    Args:\n        obstacles: list of (x, y), 障碍物点云\n        robot_pos: (x, y), 机器人位置\n        max_distance: float, 最大考虑距离\n    \n    Returns:\n        list of (x, y): 过滤后的障碍物\n    \"\"\"\n    filtered = []\n    rx, ry = robot_pos\n    \n    for ox, oy in obstacles:\n        dist = np.sqrt((ox - rx)**2 + (oy - ry)**2)\n        if dist < max_distance:\n            filtered.append((ox, oy))\n    \n    return filtered\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_laser_processor_spec.py",
+        "content": "import numpy as np\nimport laser_processor\n\n\ndef test_filters_far_ranges():\n    \"\"\"Ranges >= max_range should be filtered out.\"\"\"\n    laserscan = {\n        'ranges': [1.0, 15.0, 2.0],\n        'angle_min': 0.0,\n        'angle_max': 0.0,\n        'angle_increment': 0.0,\n    }\n    obstacles = laser_processor.laserscan_to_obstacles(laserscan, max_range=10.0)\n    assert len(obstacles) == 2\n\n\ndef test_filters_close_ranges():\n    \"\"\"Ranges <= 0.1 should be filtered out.\"\"\"\n    laserscan = {\n        'ranges': [0.05, 1.0, 0.1],\n        'angle_min': 0.0,\n        'angle_max': 0.0,\n        'angle_increment': 0.0,\n    }\n    obstacles = laser_processor.laserscan_to_obstacles(laserscan, max_range=10.0)\n    assert len(obstacles) == 1\n\n\ndef test_robot_pos_translation():\n    \"\"\"Obstacles should be translated to global frame using robot position.\"\"\"\n    laserscan = {\n        'ranges': [1.0],\n        'angle_min': 0.0,\n        'angle_max': 0.0,\n        'angle_increment': 0.0,\n    }\n    obstacles = laser_processor.laserscan_to_obstacles(laserscan, robot_pos=(1.0, 0.0, 0.0))\n    assert len(obstacles) == 1\n    x, y = obstacles[0]\n    assert abs(x - 2.0) < 1e-6\n    assert abs(y - 0.0) < 1e-6\n\n\ndef test_robot_pos_rotation():\n    \"\"\"Obstacles should be rotated by robot theta.\"\"\"\n    laserscan = {\n        'ranges': [1.0],\n        'angle_min': 0.0,\n        'angle_max': 0.0,\n        'angle_increment': 0.0,\n    }\n    obstacles = laser_processor.laserscan_to_obstacles(laserscan, robot_pos=(0.0, 0.0, np.pi / 2))\n    assert len(obstacles) == 1\n    x, y = obstacles[0]\n    assert abs(x - 0.0) < 1e-6\n    assert abs(y - 1.0) < 1e-6\n\n\ndef test_filter_obstacles():\n    \"\"\"filter_obstacles should filter by distance to robot — unchanged behavior.\"\"\"\n    obstacles = [(0, 0), (1, 0), (10, 0)]\n    filtered = laser_processor.filter_obstacles(obstacles, (0, 0), max_distance=5.0)\n    assert len(filtered) == 2\n"
+      }
+    ],
+    "protected_paths": [
+      "test_laser_processor.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-6f2ca463-0ad5-9d82-a1dc-709977dd1058",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "laser_processor.py#3553ba5a0f2f",
+    "reverse_edits": 2,
+    "difficulty": "medium",
+    "fingerprint": "v3:c4fd1ed8be6c34af",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

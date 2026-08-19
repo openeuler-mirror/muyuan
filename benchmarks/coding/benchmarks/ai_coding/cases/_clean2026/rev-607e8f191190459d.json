@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-607e8f191190459d",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "从markdown文件中提取错误码时，多行错误信息只能提取到第一行内容，剩余行丢失。另外，当错误信息标题后紧跟正文（无空行分隔）时，该错误码完全无法被提取。期望能完整提取所有错误信息内容。",
+  "context": {
+    "files": [
+      {
+        "path": "extract_error_codes.py",
+        "content": "import os\nimport re\nimport openpyxl\nfrom openpyxl import Workbook\n\ndef extract_error_codes_from_file(file_path):\n    \"\"\"从单个markdown文件中提取错误码和错误信息\"\"\"\n    results = []\n    \n    with open(file_path, 'r', encoding='utf-8') as f:\n        content = f.read()\n    \n    pattern = r'##\\s+(\\d+)\\s+[^\\n]+\\n+\\*\\*错误信息\\*\\*\\n+\\n([^\\n]+)'\n    matches = re.findall(pattern, content)\n    \n    for match in matches:\n        error_code = match[0]\n        error_msg = match[1].strip()\n        results.append((error_code, error_msg))\n    \n    return results\n\ndef find_markdown_files(root_dir):\n    \"\"\"查找所有cj-errorcode-XX.md文件\"\"\"\n    md_files = []\n    for root, dirs, files in os.walk(root_dir):\n        for file in files:\n            if re.match(r'cj-errorcode-.*\\.md$', file, re.IGNORECASE):\n                md_files.append(os.path.join(root, file))\n    return md_files\n\ndef main():\n    target_dir = r'/workspace/AUTO-Tool\\DATD_tool\\docs_cangjie-master-zh-cn-application-dev-reference\\zh-cn\\application-dev\\reference'\n    md_files = find_markdown_files(target_dir)\n    \n    if not md_files:\n        print(\"未找到cj-errorcode-XX.md文件\")\n        return\n    \n    wb = Workbook()\n    ws = wb.active\n    ws.title = \"错误码列表\"\n    ws['A1'] = '错误码'\n    ws['B1'] = '错误信息'\n    \n    all_results = []\n    \n    for md_file in md_files:\n        print(f\"处理文件: {md_file}\")\n        results = extract_error_codes_from_file(md_file)\n        all_results.extend(results)\n    \n    for idx, (error_code, error_msg) in enumerate(all_results, start=2):\n        ws[f'A{idx}'] = error_code\n        ws[f'B{idx}'] = error_msg\n    \n    output_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'error_codes.xlsx')\n    wb.save(output_file)\n    print(f\"\\n提取完成！共提取 {len(all_results)} 条错误码\")\n    print(f\"结果已保存到: {output_file}\")\n\nif __name__ == '__main__':\n    main()\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_extract_error_codes.py",
+        "content": "import os\nimport pytest\nimport extract_error_codes\n\n\ndef test_single_line_error_message(tmp_path):\n    \"\"\"Test that a simple single-line error message is extracted correctly.\"\"\"\n    md_content = \"\"\"## 401 参数校验失败\n\n**错误信息**\n\n参数校验失败\n\n**可能原因**\n\"\"\"\n    md_file = tmp_path / \"cj-errorcode-01.md\"\n    md_file.write_text(md_content, encoding='utf-8')\n\n    results = extract_error_codes.extract_error_codes_from_file(str(md_file))\n\n    assert len(results) == 1\n    assert results[0][0] == \"401\"\n    assert results[0][1] == \"参数校验失败\"\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-f871085f-990-3671772637f7c55d; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "extract_error_codes.py",
+        "content": "import os\nimport re\nimport openpyxl\nfrom openpyxl import Workbook\n\ndef extract_error_codes_from_file(file_path):\n    \"\"\"从单个markdown文件中提取错误码和错误信息\"\"\"\n    results = []\n    \n    with open(file_path, 'r', encoding='utf-8') as f:\n        content = f.read()\n    \n    pattern = r'##\\s+(\\d+)\\s+[^\\n]+\\n+\\*\\*错误信息\\*\\*\\n+(.+?)\\n+\\*\\*(?:可能原因|错误描述)\\*\\*'\n    matches = re.findall(pattern, content, re.DOTALL)\n    \n    for match in matches:\n        error_code = match[0]\n        error_msg = match[1].strip()\n        results.append((error_code, error_msg))\n    \n    return results\n\ndef find_markdown_files(root_dir):\n    \"\"\"查找所有cj-errorcode-XX.md文件\"\"\"\n    md_files = []\n    for root, dirs, files in os.walk(root_dir):\n        for file in files:\n            if re.match(r'cj-errorcode-.*\\.md$', file, re.IGNORECASE):\n                md_files.append(os.path.join(root, file))\n    return md_files\n\ndef main():\n    target_dir = r'/workspace/AUTO-Tool\\DATD_tool\\docs_cangjie-master-zh-cn-application-dev-reference\\zh-cn\\application-dev\\reference'\n    md_files = find_markdown_files(target_dir)\n    \n    if not md_files:\n        print(\"未找到cj-errorcode-XX.md文件\")\n        return\n    \n    wb = Workbook()\n    ws = wb.active\n    ws.title = \"错误码列表\"\n    ws['A1'] = '错误码'\n    ws['B1'] = '错误信息'\n    \n    all_results = []\n    \n    for md_file in md_files:\n        print(f\"处理文件: {md_file}\")\n        results = extract_error_codes_from_file(md_file)\n        all_results.extend(results)\n    \n    for idx, (error_code, error_msg) in enumerate(all_results, start=2):\n        ws[f'A{idx}'] = error_code\n        ws[f'B{idx}'] = error_msg\n    \n    output_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'error_codes.xlsx')\n    wb.save(output_file)\n    print(f\"\\n提取完成！共提取 {len(all_results)} 条错误码\")\n    print(f\"结果已保存到: {output_file}\")\n\nif __name__ == '__main__':\n    main()\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_extract_error_codes_spec.py",
+        "content": "import os\nimport pytest\nimport extract_error_codes\n\n\ndef test_multiline_error_message(tmp_path):\n    \"\"\"Test that multi-line error messages are fully captured.\"\"\"\n    md_content = \"\"\"## 402 权限不足\n\n**错误信息**\n\n第一行错误信息\n第二行错误信息\n\n**可能原因**\n\"\"\"\n    md_file = tmp_path / \"cj-errorcode-02.md\"\n    md_file.write_text(md_content, encoding='utf-8')\n\n    results = extract_error_codes.extract_error_codes_from_file(str(md_file))\n\n    assert len(results) == 1\n    assert results[0][0] == \"402\"\n    assert \"第一行错误信息\" in results[0][1]\n    assert \"第二行错误信息\" in results[0][1]\n\n\ndef test_no_blank_line_after_error_info(tmp_path):\n    \"\"\"Test extraction when there's no blank line between **错误信息** and the message.\"\"\"\n    md_content = \"\"\"## 403 资源不存在\n\n**错误信息**\n资源未找到\n\n**可能原因**\n\"\"\"\n    md_file = tmp_path / \"cj-errorcode-03.md\"\n    md_file.write_text(md_content, encoding='utf-8')\n\n    results = extract_error_codes.extract_error_codes_from_file(str(md_file))\n\n    assert len(results) == 1\n    assert results[0][0] == \"403\"\n    assert results[0][1] == \"资源未找到\"\n\n\ndef test_multiline_with_error_description(tmp_path):\n    \"\"\"Test multi-line error message followed by **错误描述** instead of **可能原因**.\"\"\"\n    md_content = \"\"\"## 404 操作失败\n\n**错误信息**\n\n操作执行失败\n原因: 超时\n\n**错误描述**\n\"\"\"\n    md_file = tmp_path / \"cj-errorcode-04.md\"\n    md_file.write_text(md_content, encoding='utf-8')\n\n    results = extract_error_codes.extract_error_codes_from_file(str(md_file))\n\n    assert len(results) == 1\n    assert results[0][0] == \"404\"\n    assert \"操作执行失败\" in results[0][1]\n    assert \"原因: 超时\" in results[0][1]\n\n\ndef test_multiple_error_codes_in_one_file(tmp_path):\n    \"\"\"Test extracting multiple error codes from a single file.\"\"\"\n    md_content = \"\"\"## 401 参数校验失败\n\n**错误信息**\n\n参数校验失败\n\n**可能原因**\n\n## 402 权限不足\n\n**错误信息**\n\n权限被拒绝\n\n**可能原因**\n\"\"\"\n    md_file = tmp_path / \"cj-errorcode-05.md\"\n    md_file.write_text(md_content, encoding='utf-8')\n\n    results = extract_error_codes.extract_error_codes_from_file(str(md_file))\n\n    assert len(results) == 2\n    assert results[0][0] == \"401\"\n    assert results[0][1] == \"参数校验失败\"\n    assert results[1][0] == \"402\"\n    assert results[1][1] == \"权限被拒绝\"\n\n\ndef test_find_markdown_files(tmp_path):\n    \"\"\"Test that find_markdown_files correctly identifies cj-errorcode files.\"\"\"\n    (tmp_path / \"cj-errorcode-01.md\").write_text(\"\", encoding='utf-8')\n    (tmp_path / \"cj-errorcode-02.md\").write_text(\"\", encoding='utf-8')\n    (tmp_path / \"other.md\").write_text(\"\", encoding='utf-8')\n    (tmp_path / \"cj-errorcode-03.txt\").write_text(\"\", encoding='utf-8')\n\n    results = extract_error_codes.find_markdown_files(str(tmp_path))\n\n    assert len(results) == 2\n    filenames = [os.path.basename(f) for f in results]\n    assert \"cj-errorcode-01.md\" in filenames\n    assert \"cj-errorcode-02.md\" in filenames\n"
+      }
+    ],
+    "protected_paths": [
+      "test_extract_error_codes.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-f871085f-990b-973d-b153-2d2240f47bc9",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "extract_error_codes.py#b3d06c574324",
+    "reverse_edits": 2,
+    "difficulty": "medium",
+    "fingerprint": "v3:c534f78592b80da5",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

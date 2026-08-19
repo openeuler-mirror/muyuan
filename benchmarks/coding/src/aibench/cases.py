@@ -118,16 +118,16 @@ def missing_case_set_message(case_set: str, directory: Path) -> str:
     """Say what to do about it, not only that it is absent.
 
     `aibench run --case-set auto-v0` in a fresh clone used to die on a bare `FileNotFoundError`
-    naming a path — which is true and useless, because no case set is in the repository at all
-    and the reader has no way to know that from the message. The sets are gitignored by an
-    incident-motivated policy, so "not found" is the *expected* state here rather than a
+    naming a path — which is true and useless, because the set is not in the repository and the
+    reader has no way to know that from the message. Every set but `_clean2026` is gitignored by
+    an incident-motivated policy, so "not found" is the *expected* state here rather than a
     misconfiguration.
     """
     return (
         f"Case set not found: {directory}\n"
-        f"No case set ships with this repository: `.gitignore` excludes "
-        f"`benchmarks/ai_coding/cases/*/` by shape, after a `git add -A` once committed 3,551 "
-        f"files of production source including a live key.\n"
+        f"Only `_clean2026` and the test fixtures ship with this repository: `.gitignore` "
+        f"excludes `benchmarks/ai_coding/cases/*/` by shape, after a `git add -A` once "
+        f"committed 3,551 files of production source including a live key.\n"
         f"  build one:   uv run python -m aibench generate-cases --reverse "
         f"--input-dir <drafts> --output-dir benchmarks/ai_coding/cases/{case_set}\n"
         f"  or the whole pipeline:  ./scripts/e2e_pipeline.sh\n"

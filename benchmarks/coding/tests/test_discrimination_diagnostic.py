@@ -95,7 +95,8 @@ def test_mechanism_is_read_off_the_grader_output(detail, expected):
 
 
 def test_a_workspace_the_solver_left_unparseable_is_not_a_hard_case():
-    """`_clean2026` passed `audit-cases` 45/45, so a syntax error at grading time was written
+    """`_clean2026` passed `audit-cases` 38/45 (45/45 before the 2026-08-17 gates), so a
+    syntax error at grading time was written
     by the model. Counting it as a capability failure inflates difficulty with instrument noise."""
     detail = "exit=2\nE  SyntaxError: unterminated string literal (detected at line 342)"
     assert diag.classify(_row(detail, collection_error=True)) == "solver_broke_file"

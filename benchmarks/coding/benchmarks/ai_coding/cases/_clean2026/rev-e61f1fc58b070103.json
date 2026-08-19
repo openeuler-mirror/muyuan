@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-e61f1fc58b070103",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "I need to compute the total memory usage of a tensor by multiplying its number of elements by the per-element byte size. Calling my_memviz.calculate_tensor_memory(tensor) should return tensor.nelement() * tensor.element_size(), but the function is missing and raises AttributeError: module 'my_memviz' has no attribute 'calculate_tensor_memory'.",
+  "context": {
+    "files": [
+      {
+        "path": "my_memviz.py",
+        "content": "def format_bytes(num_bytes):\n    if num_bytes == 0:\n        return \"0\"\n    return \"{:,}\".format(num_bytes)\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_my_memviz.py",
+        "content": "import my_memviz\n\n\nclass FakeTensor:\n    def __init__(self, num_elements, element_size):\n        self._num = num_elements\n        self._esize = element_size\n\n    def nelement(self):\n        return self._num\n\n    def element_size(self):\n        return self._esize\n\n\ndef test_format_bytes_zero():\n    assert my_memviz.format_bytes(0) == \"0\"\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-ec60a38e-a9e-4c98e86941a95f35; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "my_memviz.py",
+        "content": "def format_bytes(num_bytes):\n    if num_bytes == 0:\n        return \"0\"\n    return \"{:,}\".format(num_bytes)\n\n\ndef calculate_tensor_memory(tensor):\n    return tensor.nelement() * tensor.element_size()\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_my_memviz_spec.py",
+        "content": "import my_memviz\n\n\nclass FakeTensor:\n    def __init__(self, num_elements, element_size):\n        self._num = num_elements\n        self._esize = element_size\n\n    def nelement(self):\n        return self._num\n\n    def element_size(self):\n        return self._esize\n\n\ndef test_format_bytes_thousands_separator():\n    assert my_memviz.format_bytes(1000) == \"1,000\"\n\n\ndef test_format_bytes_large():\n    assert my_memviz.format_bytes(1234567) == \"1,234,567\"\n\n\ndef test_calculate_tensor_memory_basic():\n    t = FakeTensor(100, 4)\n    assert my_memviz.calculate_tensor_memory(t) == 400\n\n\ndef test_calculate_tensor_memory_zero_elements():\n    t = FakeTensor(0, 4)\n    assert my_memviz.calculate_tensor_memory(t) == 0\n\n\ndef test_calculate_tensor_memory_large():\n    t = FakeTensor(1000000, 8)\n    assert my_memviz.calculate_tensor_memory(t) == 8000000\n\n\ndef test_calculate_tensor_memory_uses_methods():\n    class SpyTensor:\n        def __init__(self):\n            self.nelement_called = False\n            self.element_size_called = False\n\n        def nelement(self):\n            self.nelement_called = True\n            return 10\n\n        def element_size(self):\n            self.element_size_called = True\n            return 2\n\n    t = SpyTensor()\n    result = my_memviz.calculate_tensor_memory(t)\n    assert result == 20\n    assert t.nelement_called\n    assert t.element_size_called\n"
+      }
+    ],
+    "protected_paths": [
+      "test_my_memviz.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-ec60a38e-a9e2-96f5-9278-d40aa892acda",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "my_memviz.py#45836e156201",
+    "reverse_edits": 1,
+    "difficulty": "easy",
+    "fingerprint": "v3:f3ecc697740c8272",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

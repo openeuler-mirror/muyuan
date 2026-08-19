@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-9fbb2b58ef14ed55",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "今天10点钟没有收到推送。配置里应该包含企业微信群机器人推送通道，并且每条问答内容长度和每天推送数量需要调整到合适的值，否则推送无法按预期发出。",
+  "context": {
+    "files": [
+      {
+        "path": "settings.py",
+        "content": "\"\"\"\n配置文件 - AI知识推送系统\n\"\"\"\n\n# SMTP邮件配置\nSMTP_CONFIG = {\n    'host': 'smtp.qq.com',  # QQ邮箱SMTP服务器\n    'port': 465,               # SSL端口\n    'username': 'benchmark-user@example.com',            # 发送邮箱\n    'password': '***',            # QQ邮箱授权码（不是邮箱密码）\n    'to_email': 'benchmark-user@example.com',            # 接收推送的邮箱\n    'use_tls': False\n}\n\n# LLM API配置\nLLM_CONFIG = {\n    'api_key': '***',             # 请填写你的API密钥\n    'model': 'GLM-4.7',    # 使用GLM-4.7模型\n    'base_url': 'htt/workspace/llm-gateway.example.invalid:8080/v1',\n    'temperature': 0.7,\n    'max_tokens': 500\n}\n\n# 学习配置\nLEARNING_CONFIG = {\n    'domains': [\n        '大模型训练推理',\n        '模型微调技术',\n        '提示词工程',\n        '推理优化',\n        '模型量化',\n        '分布式训练',\n        '模型评估',\n        'LoRA微调',\n        'RLHF训练',\n        '模型部署'\n    ],\n    'difficulty_levels': ['初级', '中级', '高级'],\n    'default_difficulty': '初级',\n    'schedule_time': '10:00',  # 每天推送时间\n    'content_length': 400,      # 每条问答内容长度（字数）\n    'daily_count': 5            # 每天推送的问答数量\n}\n\n# 数据库配置\nDATABASE_CONFIG = {\n    'path': 'data/learning.db'\n}\n\n# 日志配置\nLOGGING_CONFIG = {\n    'level': 'INFO',\n    'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',\n    'file': 'data/app.log'\n}\n\n# LaTeX 公式渲染配置\nLATEX_RENDER_CONFIG = {\n    'enabled': True,           # 是否启用公式渲染\n    'dpi': 300,                # 图片 DPI\n    'fontsize': 14,            # 字体大小\n    'color': '#000000',        # 字体颜色\n    'cache_dir': 'data/latex_cache',  # 缓存目录\n    'fallback_to_text': True   # 渲染失败时是否回退到文本\n}\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_settings.py",
+        "content": "import settings\n\n\ndef test_wechat_work_config_exists():\n    assert hasattr(settings, 'WECHAT_WORK_CONFIG'), '缺少企业微信机器人推送配置'\n    config = settings.WECHAT_WORK_CONFIG\n    assert isinstance(config, dict)\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-021775614630-660a8749c8188159; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "settings.py",
+        "content": "\"\"\"\n配置文件 - AI知识推送系统\n\"\"\"\n\n# SMTP邮件配置\nSMTP_CONFIG = {\n    'host': 'smtp.qq.com',  # QQ邮箱SMTP服务器\n    'port': 465,               # SSL端口\n    'username': 'benchmark-user@example.com',            # 发送邮箱\n    'password': '***',            # QQ邮箱授权码（不是邮箱密码）\n    'to_email': 'benchmark-user@example.com',            # 接收推送的邮箱\n    'use_tls': False\n}\n\n# LLM API配置\nLLM_CONFIG = {\n    'api_key': '***',             # 请填写你的API密钥\n    'model': 'GLM-4.7',    # 使用GLM-4.7模型\n    'base_url': 'htt/workspace/llm-gateway.example.invalid:8080/v1',\n    'temperature': 0.7,\n    'max_tokens': 500\n}\n\n# 学习配置\nLEARNING_CONFIG = {\n    'domains': [\n        '大模型训练推理',\n        '模型微调技术',\n        '提示词工程',\n        '推理优化',\n        '模型量化',\n        '分布式训练',\n        '模型评估',\n        'LoRA微调',\n        'RLHF训练',\n        '模型部署'\n    ],\n    'difficulty_levels': ['初级', '中级', '高级'],\n    'default_difficulty': '初级',\n    'schedule_time': '10:00',  # 每天推送时间\n    'content_length': 300,      # 每条问答内容长度（字数）\n    'daily_count': 2            # 每天推送的问答数量\n}\n\n# 数据库配置\nDATABASE_CONFIG = {\n    'path': 'data/learning.db'\n}\n\n# 日志配置\nLOGGING_CONFIG = {\n    'level': 'INFO',\n    'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',\n    'file': 'data/app.log'\n}\n\n# LaTeX 公式渲染配置\nLATEX_RENDER_CONFIG = {\n    'enabled': True,           # 是否启用公式渲染\n    'dpi': 300,                # 图片 DPI\n    'fontsize': 14,            # 字体大小\n    'color': '#000000',        # 字体颜色\n    'cache_dir': 'data/latex_cache',  # 缓存目录\n    'fallback_to_text': True   # 渲染失败时是否回退到文本\n}\n\n# 企业微信群机器人配置\nWECHAT_WORK_CONFIG = {\n    'enabled': True,           # 是否启用企业微信机器人推送\n    'webhook_url': 'http/workspace/qyapi.weixin.qq.com/cgi-bin/webhook/send?key=00000000-0000-0000-0000-000000000000',         # 企业微信群机器人的Webhook URL\n    'msg_type': 'markdown',    # 消息类型：'markdown' 或 'text'\n    'use_email': False         # 是否同时发送邮件（双推送）\n}\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_settings_spec.py",
+        "content": "import settings\n\n\ndef test_wechat_work_config_fields():\n    config = settings.WECHAT_WORK_CONFIG\n    assert config.get('enabled') is True\n    assert 'webhook_url' in config and config['webhook_url'].startswith('http/workspace/')\n    assert config.get('msg_type') in ('markdown', 'text')\n\n\ndef test_content_length_adjusted():\n    assert settings.LEARNING_CONFIG['content_length'] == 300\n\n\ndef test_daily_count_adjusted():\n    assert settings.LEARNING_CONFIG['daily_count'] == 2\n\n\ndef test_schedule_time_unchanged():\n    assert settings.LEARNING_CONFIG['schedule_time'] == '10:00'\n\n\ndef test_smtp_config_unchanged():\n    assert settings.SMTP_CONFIG['port'] == 465\n    assert settings.SMTP_CONFIG['host'] == 'smtp.qq.com'\n"
+      }
+    ],
+    "protected_paths": [
+      "test_settings.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "021775614630300afd8a45cd617ef9c890e825ed50ba4e5e4747e",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "settings.py#18de47e8eacc",
+    "reverse_edits": 8,
+    "difficulty": "easy",
+    "fingerprint": "v3:eb89ca3b8f25177f",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

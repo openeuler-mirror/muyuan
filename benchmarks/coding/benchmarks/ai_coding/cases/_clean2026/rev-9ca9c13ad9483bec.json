@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-9ca9c13ad9483bec",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "在将视频帧和音频波形混流为 MP4 时，如果音频波形中包含 NaN 或 +-Inf 值，混流过程会在后续阶段报错（如 \"Input contains (near) NaN/+-Inf\" 或 \"invalid value encountered in cast\"），错误信息不清晰且难以定位。期望在传入包含非法值的音频数据时，能尽早抛出明确的 ValueError 异常，提示需要先清理音频数据。",
+  "context": {
+    "files": [
+      {
+        "path": "media_utils.py",
+        "content": "# SPDX-License-Identifier: Apache-2.0\n# SPDX-FileCopyrightText: Copyright contributors to the vLLM project\n\"\"\"Video/audio muxing utilities using PyAV (no ffmpeg binary dependency).\"\"\"\n\nfrom __future__ import annotations\n\nimport io\nfrom fractions import Fraction\n\nimport av\nimport numpy as np\n\n\ndef mux_video_audio_bytes(\n    video_frames: np.ndarray,\n    audio_waveform: np.ndarray | None = None,\n    *,\n    fps: float = 25.0,\n    audio_sample_rate: int = 44100,\n    video_codec: str = \"h264\",\n    audio_codec: str = \"aac\",\n    crf: str = \"18\",\n) -> bytes:\n    \"\"\"Mux video frames and optional audio waveform into MP4 bytes.\n\n    Args:\n        video_frames: uint8 array of shape ``(T, H, W, 3)`` (RGB).\n        audio_waveform: float32 array – mono ``(N,)`` or ``(N, C)`` / ``(C, N)``.\n        fps: Video frame rate.\n        audio_sample_rate: Audio sample rate in Hz.\n        video_codec: Video codec name.\n        audio_codec: Audio codec name.\n        crf: Constant rate factor for the video encoder.\n\n    Returns:\n        Raw MP4 bytes ready to be written to disk or streamed.\n    \"\"\"\n    buf = io.BytesIO()\n    container = av.open(buf, mode=\"w\", format=\"mp4\")\n\n    v_stream = container.add_stream(video_codec, rate=Fraction(fps).limit_denominator(10000))\n    v_stream.width = video_frames.shape[2]\n    v_stream.height = video_frames.shape[1]\n    v_stream.pix_fmt = \"yuv420p\"\n    v_stream.options = {\"crf\": crf}\n\n    a_stream = None\n    if audio_waveform is not None:\n        samples = audio_waveform.astype(np.float32)\n        if samples.ndim == 1:\n            samples = samples.reshape(1, -1)\n        elif samples.ndim == 2 and samples.shape[0] > samples.shape[1]:\n            samples = np.ascontiguousarray(samples.T)\n        num_channels = samples.shape[0]\n        layout = \"stereo\" if num_channels >= 2 else \"mono\"\n        a_stream = container.add_stream(audio_codec, rate=audio_sample_rate)\n        a_stream.layout = layout\n\n    for frame_data in video_frames:\n        frame = av.VideoFrame.from_ndarray(frame_data, format=\"rgb24\")\n        for packet in v_stream.encode(frame):\n            container.mux(packet)\n    for packet in v_stream.encode():\n        container.mux(packet)\n\n    if a_stream is not None and audio_waveform is not None:\n        audio_frame = av.AudioFrame.from_ndarray(samples, format=\"fltp\", layout=layout)\n        audio_frame.sample_rate = audio_sample_rate\n        for packet in a_stream.encode(audio_frame):\n            container.mux(packet)\n        for packet in a_stream.encode():\n            container.mux(packet)\n\n    container.close()\n    return buf.getvalue()\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_media_utils.py",
+        "content": "import numpy as np\nimport pytest\nimport media_utils\n\n\ndef _make_video_frames(num_frames=4, height=8, width=8):\n    return np.random.randint(\n        0, 256, size=(num_frames, height, width, 3), dtype=np.uint8\n    )\n\n\ndef test_mux_valid_video_only():\n    \"\"\"Video-only muxing (no audio) should work and return non-empty bytes.\"\"\"\n    frames = _make_video_frames()\n    result = media_utils.mux_video_audio_bytes(frames, fps=25.0)\n    assert isinstance(result, bytes)\n    assert len(result) > 0\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-fdf1baec-bdc-74e7bc424feefed7; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "media_utils.py",
+        "content": "# SPDX-License-Identifier: Apache-2.0\n# SPDX-FileCopyrightText: Copyright contributors to the vLLM project\n\"\"\"Video/audio muxing utilities using PyAV (no ffmpeg binary dependency).\"\"\"\n\nfrom __future__ import annotations\n\nimport io\nfrom fractions import Fraction\n\nimport av\nimport numpy as np\n\n\ndef mux_video_audio_bytes(\n    video_frames: np.ndarray,\n    audio_waveform: np.ndarray | None = None,\n    *,\n    fps: float = 25.0,\n    audio_sample_rate: int = 44100,\n    video_codec: str = \"h264\",\n    audio_codec: str = \"aac\",\n    crf: str = \"18\",\n) -> bytes:\n    \"\"\"Mux video frames and optional audio waveform into MP4 bytes.\n\n    Args:\n        video_frames: uint8 array of shape ``(T, H, W, 3)`` (RGB).\n        audio_waveform: float32 array – mono ``(N,)`` or ``(N, C)`` / ``(C, N)``.\n        fps: Video frame rate.\n        audio_sample_rate: Audio sample rate in Hz.\n        video_codec: Video codec name.\n        audio_codec: Audio codec name.\n        crf: Constant rate factor for the video encoder.\n\n    Returns:\n        Raw MP4 bytes ready to be written to disk or streamed.\n    \"\"\"\n    buf = io.BytesIO()\n    container = av.open(buf, mode=\"w\", format=\"mp4\")\n\n    v_stream = container.add_stream(video_codec, rate=Fraction(fps).limit_denominator(10000))\n    v_stream.width = video_frames.shape[2]\n    v_stream.height = video_frames.shape[1]\n    v_stream.pix_fmt = \"yuv420p\"\n    v_stream.options = {\"crf\": crf}\n\n    a_stream = None\n    if audio_waveform is not None:\n        samples = audio_waveform.astype(np.float32)\n        if np.any(np.isnan(samples)) or np.any(np.isinf(samples)):\n            nan_count = np.sum(np.isnan(samples))\n            inf_count = np.sum(np.isinf(samples))\n            raise ValueError(\n                f\"Audio waveform contains invalid values: {nan_count} NaN, {inf_count} Inf. \"\n                \"Please sanitize the audio data before muxing.\"\n            )\n        if samples.ndim == 1:\n            samples = samples.reshape(1, -1)\n        elif samples.ndim == 2 and samples.shape[0] > samples.shape[1]:\n            samples = np.ascontiguousarray(samples.T)\n        num_channels = samples.shape[0]\n        layout = \"stereo\" if num_channels >= 2 else \"mono\"\n        a_stream = container.add_stream(audio_codec, rate=audio_sample_rate)\n        a_stream.layout = layout\n\n    for frame_data in video_frames:\n        frame = av.VideoFrame.from_ndarray(frame_data, format=\"rgb24\")\n        for packet in v_stream.encode(frame):\n            container.mux(packet)\n    for packet in v_stream.encode():\n        container.mux(packet)\n\n    if a_stream is not None and audio_waveform is not None:\n        audio_frame = av.AudioFrame.from_ndarray(samples, format=\"fltp\", layout=layout)\n        audio_frame.sample_rate = audio_sample_rate\n        for packet in a_stream.encode(audio_frame):\n            container.mux(packet)\n        for packet in a_stream.encode():\n            container.mux(packet)\n\n    container.close()\n    return buf.getvalue()\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_media_utils_spec.py",
+        "content": "import numpy as np\nimport pytest\nimport media_utils\n\n\ndef _make_video_frames(num_frames=4, height=8, width=8):\n    return np.random.randint(\n        0, 256, size=(num_frames, height, width, 3), dtype=np.uint8\n    )\n\n\ndef test_mux_valid_audio_mono():\n    \"\"\"Muxing with a clean mono audio waveform should succeed.\"\"\"\n    frames = _make_video_frames()\n    audio = np.zeros(44100, dtype=np.float32)\n    result = media_utils.mux_video_audio_bytes(\n        frames, audio_waveform=audio, fps=25.0, audio_sample_rate=44100\n    )\n    assert isinstance(result, bytes)\n    assert len(result) > 0\n\n\ndef test_mux_audio_with_nan_raises():\n    \"\"\"Audio containing NaN should raise ValueError early.\"\"\"\n    frames = _make_video_frames()\n    audio = np.zeros(44100, dtype=np.float32)\n    audio[100] = np.nan\n    with pytest.raises(ValueError, match=\"invalid values\"):\n        media_utils.mux_video_audio_bytes(\n            frames, audio_waveform=audio, fps=25.0, audio_sample_rate=44100\n        )\n\n\ndef test_mux_audio_with_pos_inf_raises():\n    \"\"\"Audio containing +Inf should raise ValueError early.\"\"\"\n    frames = _make_video_frames()\n    audio = np.zeros(44100, dtype=np.float32)\n    audio[50] = np.inf\n    with pytest.raises(ValueError, match=\"invalid values\"):\n        media_utils.mux_video_audio_bytes(\n            frames, audio_waveform=audio, fps=25.0, audio_sample_rate=44100\n        )\n\n\ndef test_mux_audio_with_neg_inf_raises():\n    \"\"\"Audio containing -Inf should raise ValueError early.\"\"\"\n    frames = _make_video_frames()\n    audio = np.zeros(44100, dtype=np.float32)\n    audio[0] = -np.inf\n    with pytest.raises(ValueError, match=\"invalid values\"):\n        media_utils.mux_video_audio_bytes(\n            frames, audio_waveform=audio, fps=25.0, audio_sample_rate=44100\n        )\n\n\ndef test_mux_audio_with_both_nan_and_inf_raises():\n    \"\"\"Audio containing both NaN and Inf should raise ValueError early.\"\"\"\n    frames = _make_video_frames()\n    audio = np.zeros(44100, dtype=np.float32)\n    audio[0] = np.nan\n    audio[1] = np.inf\n    with pytest.raises(ValueError, match=\"invalid values\"):\n        media_utils.mux_video_audio_bytes(\n            frames, audio_waveform=audio, fps=25.0, audio_sample_rate=44100\n        )\n\n\ndef test_mux_valid_stereo_audio():\n    \"\"\"Muxing with a clean stereo audio waveform should succeed.\"\"\"\n    frames = _make_video_frames()\n    audio = np.zeros((2, 44100), dtype=np.float32)\n    result = media_utils.mux_video_audio_bytes(\n        frames, audio_waveform=audio, fps=25.0, audio_sample_rate=44100\n    )\n    assert isinstance(result, bytes)\n    assert len(result) > 0\n"
+      }
+    ],
+    "protected_paths": [
+      "test_media_utils.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-fdf1baec-bdcb-9e39-8bae-e99bbe1f762d",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "media_utils.py#995d99cdbe02",
+    "reverse_edits": 3,
+    "difficulty": "medium",
+    "fingerprint": "v3:b3aeebf8b74a5bce",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}
