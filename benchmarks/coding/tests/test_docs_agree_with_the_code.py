@@ -169,7 +169,7 @@ class TestTheReadmeSendsPeopleSomewhereReal:
                 pytest.fail(f"routes a parameter question at the HTML site: {line.strip()}")
 
     def test_the_licence_is_discoverable(self):
-        assert "LICENSE" in self._readme()
+        assert "LicenseRef-Proprietary" in self._readme()
 
     def test_there_is_an_english_entry_point(self):
         body = self._readme()

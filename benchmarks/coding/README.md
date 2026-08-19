@@ -143,10 +143,10 @@ uv run python scripts/check_doc_links.py
 
 `./scripts/lint.sh` 会改写源码，是修复工具，不是门禁。
 
-Licence: see [`LICENSE`](LICENSE).
+Licence: 专有，保留所有权利（`pyproject.toml` 的 `LicenseRef-Proprietary`）。
 
 ## English
 
 This module extracts capability-discriminating coding-benchmark cases from real AI-assisted programming traces, then runs ablation on a fixed case set.
 
-Work from `benchmarks/coding/`. Start with [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md). Parameter reference is [`docs/REFERENCE.md`](docs/REFERENCE.md). Licence: see [`LICENSE`](LICENSE).
+Work from `benchmarks/coding/`. Start with [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md). Parameter reference is [`docs/REFERENCE.md`](docs/REFERENCE.md). Licence: proprietary, all rights reserved (`LicenseRef-Proprietary` in `pyproject.toml`).

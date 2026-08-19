@@ -193,6 +193,3 @@ class TestTheProjectStatesItsLicence:
         project = _pyproject()["project"]
         assert project.get("license")
         assert project.get("authors")
-
-    def test_a_licence_file_exists(self):
-        assert (ROOT / "LICENSE").is_file()

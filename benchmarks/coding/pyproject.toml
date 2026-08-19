@@ -4,8 +4,9 @@ version = "0.1.0"
 description = "AI-assisted programming benchmark harness for Agentic Scaling"
 readme = "README.md"
 requires-python = ">=3.11"
-# Not an open-source grant. `LICENSE` reserves all rights; this restates it in the metadata so a
-# packaging tool or a mirror cannot present the project as unlicensed-therefore-free.
+# Not an open-source grant. The repository carries no licence file, so this metadata is where the
+# reservation is stated — a packaging tool or a mirror cannot present the project as
+# unlicensed-therefore-free.
 license = { text = "LicenseRef-Proprietary" }
 authors = [{ name = "caohaotiantian", email = "caohaotiantian@gmail.com" }]
 dependencies = [
