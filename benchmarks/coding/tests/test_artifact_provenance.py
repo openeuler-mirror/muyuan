@@ -195,9 +195,10 @@ class TestARunThatNeverRanSaysSo:
             (run_dir / "summary.json").write_text(
                 json.dumps(
                     {
-                        # What `build_summary` actually writes when nothing was effective. This
-                        # fixture said 0.0, a value that branch can never see, so the exit code
-                        # stayed 1 while the diagnosis below was replaced by a `TypeError`.
+                        # What `build_summary` actually writes when nothing was effective:
+                        # `effective_n == 0` yields None, never 0.0. The fixture said 0.0, so
+                        # this test never reached the format string that production reached,
+                        # and the `TypeError` there went unseen while the test stayed green.
                         "success_rate": None,
                         "success_count": 0,
                         "effective_case_count": 0,
@@ -216,9 +217,13 @@ class TestARunThatNeverRanSaysSo:
         # Exit 1 alone did not distinguish the diagnosis from a crash on the way to it.
         out = capsys.readouterr().out
         assert "FAILED: no case executed. All 12 died on infrastructure" in out
+        assert "(12 infra errors)" in out
         assert "this is not a 0% pass rate" in out
+        # The rate line must be absent, not merely reordered: leaving it above the guard as
+        # well would satisfy every assertion above while restoring the crash.
+        assert "success_rate=" not in out
 
-    def test_a_real_run_still_exits_zero(self, tmp_path):
+    def test_a_real_run_still_exits_zero(self, tmp_path, capsys):
         from aibench import cli
 
         assert (
@@ -235,6 +240,12 @@ class TestARunThatNeverRanSaysSo:
             )
             == 0
         )
+        # A run that measured something still reports the rate. Only the exit code was checked
+        # here, so moving the line that prints it — or dropping it into an unreachable branch —
+        # would not have been caught.
+        out = capsys.readouterr().out
+        assert "success_rate=1.000 (4/4)" in out
+        assert "FAILED" not in out
 
 
 class TestTheGradingEnvironmentPromiseIsChecked:

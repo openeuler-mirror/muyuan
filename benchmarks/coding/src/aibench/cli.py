@@ -597,6 +597,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"Check credentials, the gateway and `aibench doctor`; see {run_dir}/report.md."
             )
             return 1
+        # Stays below the guard above: `success_rate` is None when nothing was effective.
         print(
             f"success_rate={summary['success_rate']:.3f} "
             f"({summary['success_count']}/{summary['effective_case_count']}) "

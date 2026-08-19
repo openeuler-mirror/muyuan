@@ -125,19 +125,28 @@ uv run python -m aibench run \
 > **这条命令跑的是 GLM-5.1**，因为 `configs/runs/baseline-bare.yaml` 里写的是
 > `model_config: configs/models/glm51.yaml`。[`BASELINE.md`](BASELINE.md) 的两个模型是
 > **GLM-5 与 GLM-5.2**，所以这一次的数字不能直接和基线并列。要对基线就用下面的消融，
-> 或者加 `--model configs/models/glm52.yaml` 覆盖。
+> 或者加 `--model configs/models/glm52.yaml` 覆盖 —— 但那只对齐了模型这一条轴，**仍然是单轮**，
+> 而基线的口径是三轮（理由见下一节第一条）。单轮的数不要和基线并列。
 
 **凭据没配好会怎样。** 全部 45 条会记成 `infra_error`，`effective_case_count` 归零，
 命令退出码 1 并打印：
 
 ```text
-FAILED: no case executed. All 45 died on infrastructure (45 infra errors)
-— this is not a 0% pass rate. Check credentials, the gateway and `aibench doctor`; see .../report.md.
+run_dir=<run_dir>
+FAILED: no case executed. All 45 died on infrastructure (45 infra errors) — this is not a 0% pass rate. Check credentials, the gateway and `aibench doctor`; see <run_dir>/report.md.
 ```
 
-**这一行是唯一会告诉你「这不是 0% 通过率」的地方。** 产物照样会写盘，而 `report.md` 与
-`tables.json` 里的「主指标值」会显示 **0.0%** —— 那是渲染缺省，不是测量结果。
-把这种 run 的 0.0% 当成模型表现，是这条错误路径最容易出的事故。
+**这一行是唯一会告诉你「这不是 0% 通过率」的地方。** 产物照样会写盘，而里面是这样的：
+
+| 位置 | 值 |
+|---|---|
+| `summary.json` 的 `success_rate` | `null` —— 诚实 |
+| `summary.json` 的 `effective_case_count` / `infra_error_count` | `0` / `45` —— 诚实 |
+| `report.md` 的「主指标值」与「成功率」 | **`0.0%`** |
+| `tables.json` 的 `overview_row["主指标值"]` | **`"0.0%"`**（而 `general_row["成功率"]` 是 `null`） |
+
+**那两个 0.0% 是渲染缺省，不是测量结果。** 判断一次 run 有没有测到东西，看
+`effective_case_count`，不要看成功率。
 
 ### 复现 `BASELINE.md` 的那次测量
 
