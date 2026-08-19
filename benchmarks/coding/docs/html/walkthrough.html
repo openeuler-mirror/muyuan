@@ -1002,7 +1002,7 @@ cases     = load_cases(case_set, validate=True)      # schema 校验在这里做
     CLI 额外打印一行 <code>FAILED: no case executed</code> 并返回 1。
     「全部 case 都死在基础设施上」和「一条都没做对」是两件事，产物必须能分开表达 ——
     报告里的主指标走 <code>format_pct</code>，渲染成 <code>-</code>；消融里这样的一行也拿不到相对基线收益。</p>
-    <p class="srcline"><span class="src">src/aibench/report.py</span><span class="src">src/aibench/cli.py</span></p>
+    <p class="srcline"><span class="src">src/aibench/report.py</span><span class="src">src/aibench/cli.py</span><span class="src">src/aibench/ablation.py</span><span class="src">src/aibench/export_results.py</span></p>
   </div>
 </section>
 

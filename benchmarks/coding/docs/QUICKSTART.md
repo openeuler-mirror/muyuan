@@ -129,7 +129,8 @@ uv run python -m aibench run \
 > 而基线的口径是三轮（理由见下一节第一条）。单轮的数不要和基线并列。
 
 **凭据没配好会怎样。** 全部 45 条会记成 `infra_error`，`effective_case_count` 归零，
-命令退出码 1 并打印：
+命令退出码 1。终端会先刷 45 行 `[retry] case <id> infra_error attempt 1/2: missing API key env: …`，
+然后是这两行：
 
 ```text
 run_dir=<run_dir>
@@ -142,8 +143,9 @@ FAILED: no case executed. All 45 died on infrastructure (45 infra errors) — th
 |---|---|
 | `summary.json` 的 `success_rate` | `null` |
 | `summary.json` 的 `effective_case_count` / `infra_error_count` | `0` / `45` |
-| `report.md` 的「主指标值」与「成功率」 | `-` |
-| `tables.json` 的 `overview_row["主指标值"]` | `"-"`；`general_row` 的两格都是 `null` |
+| `report.md` 的「主指标值」「成功率」「成功率 95% CI」 | `-` |
+| `tables.json` 的 `overview_row["主指标值"]` | `"-"`；`general_row` 的「主指标值」「成功率」「完成率」都是 `null` |
+| 消融里这一行的成功率、相对基线收益、McNemar 的 p 值与「显著」 | 全是 `-` 或空 |
 
 **「全部 case 都死在基础设施上」和「一条都没做对」是两件事**，所以这里不写 `0.0%`。
 判断一次 run 有没有测到东西，看 `effective_case_count`。

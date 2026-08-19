@@ -446,7 +446,16 @@ def compare_runs_pairwise(
         if r["experiment_name"] == baseline:
             continue
         both, only_b, only_a, neither = paired_outcomes(base_rows, r.get("case_rows") or [])
+        # `paired_outcomes` drops infra_error rows on both sides, so a run that measured
+        # nothing shares no case with the baseline and all four cells are 0. `mcnemar_test`
+        # then answers p = 1.0, "not significant" — which reads as "no difference found"
+        # when the truth is that no comparison happened. Say the second thing.
+        paired_n = both + only_b + only_a + neither
+        # `b`, `c` and `discordant` stay — they are honest counts of an empty pairing.
+        # Only the verdict is withheld, because there is nothing to be significant about.
         test = mcnemar_test(only_b, only_a)
+        if not paired_n:
+            test = {**test, "p_value": None, "significant": None}
         comparable = bool(r.get("selection_is_oracle")) == base_oracle
         # Two rows that moved no knob at all are the same configuration run twice. Their
         # disagreement is this harness's own run-to-run noise — 4.8% of cases on this corpus,
@@ -465,6 +474,7 @@ def compare_runs_pairwise(
                 # is an upper bound against a submission. The p-value is still computed — the
                 # arithmetic is not wrong — but it does not answer "is this model better".
                 "comparable": comparable,
+                "paired_case_count": paired_n,
                 "self_repeat": self_repeat,
                 "candidate_selection_is_oracle": bool(r.get("selection_is_oracle")),
                 **test,
@@ -666,10 +676,15 @@ def _render_ablation_report(
                 note = "否（oracle vs 提交）"
             else:
                 note = "是"
+            if p.get("p_value") is None:
+                pval, verdict = "-", "-"
+                note = "否（两侧没有共同测到的 case）"
+            else:
+                pval, verdict = f"{p['p_value']:.4f}", ("是" if p["significant"] else "否")
             lines.append(
                 f"| {p['candidate']} | {p['both_passed']} | {p['only_baseline']} "
-                f"| {p['only_candidate']} | {p['discordant']} | {p['p_value']:.4f} "
-                f"| {'是' if p['significant'] else '否'} | {note} |"
+                f"| {p['only_candidate']} | {p['discordant']} | {pval} "
+                f"| {verdict} | {note} |"
             )
     lines.extend(_render_cost_rungs_md(rows))
     lines.append("")

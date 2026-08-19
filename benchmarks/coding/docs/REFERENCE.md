@@ -1725,10 +1725,10 @@ uv run python -m aibench promote --from-set auto-v0 --to-set prod-v0 \
 | Benchmark | `benchmark_name` |
 | Case数 | `case_count` |
 | 主指标名称 | 固定 `task_success_rate` |
-| 主指标值 | 成功率百分比字符串 |
+| 主指标值 | 成功率百分比字符串；有效 case 数为 0 时是 `-`（没测到，不是 0%） |
 | 总体耗时(h) | 总墙钟小时 |
 | 总体Token消耗 | `total_tokens` |
-| 相对基线收益 | 消融相对 baseline 的百分点（如 `+3.2pp`）；单次 run 常为 null |
+| 相对基线收益 | 消融相对 baseline 的百分点（如 `+3.2pp`）；单次 run 常为 null；基线或候选任一没测到时也是 null |
 
 ### 16.4 `summary.json` / `general_row` 核心字段
 

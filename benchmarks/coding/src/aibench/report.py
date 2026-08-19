@@ -117,7 +117,9 @@ def build_summary(
         "success_count": success_n,
         "success_rate": success_rate,
         "completed_count": completed,
-        "completion_rate": (completed / effective_n) if effective_n else 0.0,
+        # Same rule as `success_rate` four lines up, and for the same reason: 0.0 here reads
+        # as "0% of the cases reached grading", which is a measurement. Nothing reached it.
+        "completion_rate": (completed / effective_n) if effective_n else None,
         "empty_patch_count": empty_patch,
         "infra_error_count": len(infra),
         "infra_error_rate": (len(infra) / case_count) if case_count else 0.0,
