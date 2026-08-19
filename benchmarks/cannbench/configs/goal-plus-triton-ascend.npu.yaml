@@ -1,9 +1,10 @@
 goal_plus:
   driver: pi-rpc
   verifier: cann
-  # auto_pipeline owns operator-level parallelism. Keep candidate-level fanout
-  # at one until each allocated device has an explicit sharing policy.
-  max_candidates: 1
+  # Goal Plus owns candidate-level parallelism inside one operator. Candidate
+  # coding sessions run concurrently; the CANN verifier serializes access to
+  # this operator's assigned NPU through its npu:<device_id> resource lock.
+  max_parallel: 4
   pi_binary: pi
   device_id: 0
   verify_timeout: 7200

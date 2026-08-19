@@ -12,7 +12,11 @@ import yaml
 
 from auto_pipeline.core import AGENT_FAILED, AGENT_SUCCESS, Artifact, GeneratorInput
 from auto_pipeline.generator.akg.converter.to_cann import load_operator_schema
-from goal_plus.pi_driver import run_pi_search_candidate
+from goal_plus.pi_pool import (
+    close_pi_search_pool,
+    open_pi_search_pool,
+    wait_any_pi_search_pool,
+)
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import SearchTools
 
@@ -23,7 +27,7 @@ from .paths import CANN_BENCH_ROOT, GOAL_PLUS_ROOT, RESOURCES_DIR, resolve_path
 class GoalPlusGeneratorConfig:
     driver: str = "pi-rpc"
     verifier: str = "cann"
-    max_candidates: int = 1
+    max_parallel: int = 1
     seed_submission: str | None = None
     pi_binary: str = "pi"
     model_pattern: str | None = None
@@ -34,6 +38,12 @@ class GoalPlusGeneratorConfig:
     root_hypotheses: tuple[str, ...] = ()
     worker_budget: dict[str, Any] | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def max_candidates(self) -> int:
+        """Backward-compatible name used by older benchmark configs."""
+
+        return self.max_parallel
 
 
 def _read_config(registry_config: Mapping[str, Any]) -> tuple[GoalPlusGeneratorConfig, Path | None]:
@@ -61,9 +71,25 @@ def _read_config(registry_config: Mapping[str, Any]) -> tuple[GoalPlusGeneratorC
             f"got {codegen_target}"
         )
 
-    max_candidates = int(payload.get("max_candidates", 1))
-    if max_candidates < 1:
-        raise ValueError("goal_plus.max_candidates must be positive")
+    configured_parallel = payload.get("max_parallel")
+    legacy_candidates = payload.get("max_candidates")
+    if (
+        configured_parallel is not None
+        and legacy_candidates is not None
+        and int(configured_parallel) != int(legacy_candidates)
+    ):
+        raise ValueError(
+            "goal_plus.max_parallel and legacy max_candidates must match when both are set"
+        )
+    max_parallel = int(
+        configured_parallel
+        if configured_parallel is not None
+        else legacy_candidates
+        if legacy_candidates is not None
+        else 1
+    )
+    if max_parallel < 1:
+        raise ValueError("goal_plus.max_parallel must be positive")
     driver = str(payload.get("driver") or "pi-rpc")
     verifier = str(payload.get("verifier") or "cann")
     if driver not in {"pi-rpc", "scripted"}:
@@ -74,13 +100,19 @@ def _read_config(registry_config: Mapping[str, Any]) -> tuple[GoalPlusGeneratorC
         raise ValueError("pi-rpc production search requires verifier=cann")
     if driver == "scripted" and verifier != "static":
         raise ValueError("scripted smoke search requires verifier=static")
+    pi_binary = str(payload.get("pi_binary") or "pi")
+    if driver == "pi-rpc" and pi_binary != "pi":
+        raise ValueError(
+            "Goal Plus Pi pool resolves the 'pi' executable from PATH; "
+            "custom goal_plus.pi_binary values are not supported"
+        )
 
     config = GoalPlusGeneratorConfig(
         driver=driver,
         verifier=verifier,
-        max_candidates=max_candidates,
+        max_parallel=max_parallel,
         seed_submission=payload.get("seed_submission"),
-        pi_binary=str(payload.get("pi_binary") or "pi"),
+        pi_binary=pi_binary,
         model_pattern=payload.get("model_pattern"),
         device_id=int(payload.get("device_id", 0)),
         verify_timeout=int(payload.get("verify_timeout", 7200)),
@@ -132,15 +164,16 @@ class GoalPlusGenerator:
         spec, verifier_artifacts = self._build_search_spec(generator_input, source_dir)
         frozen = tools.search_freeze_spec(spec, [str(path) for path in verifier_artifacts])
         run_id = tools.search_create(frozen["frozen_spec_id"])["run_id"]
-        plan = tools.search_plan_next(run_id, requested_k=self.config.max_candidates)
+        plan = tools.search_plan_next(run_id, requested_k=self.config.max_parallel)
         tasks = tools.search_start_batch(run_id, plan["plan_id"])
         if not tasks:
             raise RuntimeError("Goal Plus did not create any candidate")
 
+        pool_summary: dict[str, Any] | None = None
         if self.config.driver == "scripted":
             self._drive_scripted(tools, run_id, tasks, function_name=load_operator_schema(case).function_name)
         else:
-            self._drive_pi(run_id, tasks, state_root)
+            pool_summary = self._drive_pi(run_id, tasks, state_root)
 
         selection = tools.search_select(run_id)
         report = tools.search_report(run_id)
@@ -159,6 +192,8 @@ class GoalPlusGenerator:
             "selected_score": selection.get("selected_score"),
             "goal_plus_report": report,
             "candidate_count": len(tasks),
+            "max_parallel": self.config.max_parallel,
+            "pi_pool": pool_summary,
             "npu_executed": self.config.verifier == "cann",
             "attempt_root": str(attempt_root),
         }
@@ -287,6 +322,8 @@ class GoalPlusGenerator:
         }
         if self.config.worker_budget:
             strategy["worker_budget"] = self.config.worker_budget
+        if self.config.model_pattern:
+            strategy["worker_launch"] = {"model": self.config.model_pattern}
         spec = {
             "objective": f"optimize CANN Bench {case.operator} with Triton-Ascend",
             "metric_name": metric_name,
@@ -312,7 +349,7 @@ class GoalPlusGenerator:
                     "command": ["goal-plus-internal", "check-frozen-hashes"],
                 }
             ],
-            "budget": {"max_parallel": self.config.max_candidates},
+            "budget": {"max_parallel": self.config.max_parallel},
             "root_hypotheses": hypotheses,
             "strategy": strategy,
         }
@@ -353,21 +390,98 @@ class GoalPlusGenerator:
             )
             tools.search_run_verifier(run_id, candidate_id)
 
-    def _drive_pi(self, run_id: str, tasks: list[dict[str, Any]], state_root: Path) -> None:
-        for task in tasks:
-            result = run_pi_search_candidate(
-                root_dir=state_root,
-                run_id=run_id,
-                candidate_id=str(task["candidate_id"]),
-                worker_budget=self.config.worker_budget,
-                final_verify=True,
-                pi_binary=self.config.pi_binary,
-                model_pattern=self.config.model_pattern,
-            )
-            if result.get("status") in {"failed", "error"}:
-                raise RuntimeError(
-                    f"Pi candidate {task['candidate_id']} failed: {result.get('message') or result}"
+    def _drive_pi(
+        self,
+        run_id: str,
+        tasks: list[dict[str, Any]],
+        state_root: Path,
+    ) -> dict[str, Any]:
+        candidate_ids = [str(task["candidate_id"]) for task in tasks]
+        expected = set(candidate_ids)
+        worker_budgets = (
+            {
+                candidate_id: dict(self.config.worker_budget)
+                for candidate_id in candidate_ids
+            }
+            if self.config.worker_budget
+            else None
+        )
+        opened = open_pi_search_pool(
+            root_dir=state_root,
+            run_id=run_id,
+            candidate_ids=candidate_ids,
+            worker_budgets=worker_budgets,
+            final_verify=True,
+            max_parallel=self.config.max_parallel,
+        )
+        pool_id = str(opened["pool_id"])
+        events: dict[str, dict[str, Any]] = {}
+
+        try:
+            while len(events) < len(expected):
+                waited = wait_any_pi_search_pool(
+                    root_dir=state_root,
+                    pool_id=pool_id,
+                    timeout_seconds=30,
                 )
+                for raw_event in waited.get("events", []):
+                    event = dict(raw_event)
+                    candidate_id = str(event.get("candidate_id") or "")
+                    if candidate_id not in expected:
+                        raise RuntimeError(
+                            f"Pi pool {pool_id} returned unknown candidate: {candidate_id!r}"
+                        )
+                    if candidate_id in events:
+                        raise RuntimeError(
+                            f"Pi pool {pool_id} returned duplicate terminal event for {candidate_id}"
+                        )
+                    events[candidate_id] = event
+                if len(events) < len(expected) and int(waited.get("active_count", 0)) == 0:
+                    missing = sorted(expected - set(events))
+                    raise RuntimeError(
+                        f"Pi pool {pool_id} stopped before candidates completed: {missing}"
+                    )
+
+            closed = close_pi_search_pool(
+                root_dir=state_root,
+                pool_id=pool_id,
+                mode="drain",
+                timeout_seconds=30,
+            )
+        except Exception:
+            try:
+                close_pi_search_pool(
+                    root_dir=state_root,
+                    pool_id=pool_id,
+                    mode="interrupt",
+                    timeout_seconds=30,
+                )
+            except Exception:
+                pass
+            raise
+
+        if closed.get("state") != "closed" or int(closed.get("active_count", 0)) != 0:
+            raise RuntimeError(f"Pi pool {pool_id} did not close cleanly: {closed}")
+
+        failures = {
+            candidate_id: event
+            for candidate_id, event in events.items()
+            if event.get("kind") != "candidate_ready"
+        }
+        if failures:
+            details = "; ".join(
+                f"{candidate_id}={event.get('kind')}: "
+                f"{event.get('error') or event.get('message') or 'no error details'}"
+                for candidate_id, event in sorted(failures.items())
+            )
+            raise RuntimeError(f"Pi pool {pool_id} candidate failure: {details}")
+
+        return {
+            "pool_id": pool_id,
+            "state": str(closed["state"]),
+            "max_parallel": self.config.max_parallel,
+            "candidate_ready": sorted(events),
+        }
 
 
 def create_goal_plus_generator(registry_config: Mapping[str, Any]) -> GoalPlusGenerator:
