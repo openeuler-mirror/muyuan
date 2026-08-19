@@ -24,7 +24,8 @@
 
 主线是**反向构造**（`generate-cases --reverse`）：缺陷来自工程师真实改过的那次编辑，而不是让模型编题。正向生成仍可用，但不是推荐路径。
 
-随仓库分发的只有 `seed-v0`（四条 fixture，给测试用）。生产 case 集在本地生成，不入库。
+随仓库分发的用例集有三个：`_clean2026`（45 条，唯一的生产集，[`docs/BASELINE.md`](docs/BASELINE.md) 的基线就测在它上面），以及 `tests/fixtures/case_sets/` 下的
+`seed-v0`（四条 fixture）与 `_t4fixture`。其余生产 case 集在本地生成，不入库。
 
 ## 安装
 
@@ -110,10 +111,13 @@ uv run python -m aibench ablation \
 
 | 文档 | 用途 |
 |------|------|
+| [快速上手 `docs/QUICKSTART.md`](docs/QUICKSTART.md) | clone 之后怎么把随仓库分发的 `_clean2026` 跑出报告 |
+| [基线 `docs/BASELINE.md`](docs/BASELINE.md) | `_clean2026` 上的历史测量、口径与复算方法 |
 | [用户手册 `docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | 环境、逐步操作、读结果、故障排查 |
 | [参考手册 `docs/REFERENCE.md`](docs/REFERENCE.md) | CLI、配置、Schema、门禁、产物字段 |
 | [生产配置 `configs/README.md`](configs/README.md) | Agent / 模型 / Run 怎么选 |
 | [文档站](docs/html/index.html) | 背景、反向构造原理、数据格式 |
+| [代码串讲 `docs/html/walkthrough.html`](docs/html/walkthrough.html) | 二十节从头讲一遍 harness，给要改动或接手它的人 |
 | [校准数据](benchmarks/ai_coding/calibrations/README.md) | 已入库数字与复算方法 |
 
 查参数用 `docs/REFERENCE.md`，不要用 `docs/html/reference.html`（那是设计与格式说明，不是参数手册）。

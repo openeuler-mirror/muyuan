@@ -42,6 +42,8 @@ MySQL / JSON 会话
 
 生产默认无 mock：Agent = `openai_compat`，模型 = `GLM-5.2`。mock 只在 `tests/fixtures/configs/` 与 `--dry-run`。
 
+只想跑随仓库分发的 `_clean2026`（45 条）拿一份报告、不打算自己造题的，直接看 [`QUICKSTART.md`](QUICKSTART.md)。
+
 ---
 
 ## 2. 环境
@@ -282,6 +284,8 @@ uv run python -m aibench plan-sample-size --delta 10 \
 | 文档 | 说明 |
 |------|------|
 | [README](../README.md) | 模块入口 |
+| [QUICKSTART.md](QUICKSTART.md) | 跑随仓库分发的 `_clean2026` 并拿到报告 |
+| [BASELINE.md](BASELINE.md) | `_clean2026` 上的历史测量与复算方法 |
 | [REFERENCE.md](REFERENCE.md) | CLI、配置、Schema、产物 |
 | [configs/README.md](../configs/README.md) | 生产配置怎么选 |
 | [文档站](html/index.html) | 背景与数据格式 |
