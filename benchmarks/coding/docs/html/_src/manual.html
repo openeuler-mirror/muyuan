@@ -242,9 +242,11 @@ for p in Path('benchmarks/ai_coding/cases/my-set').glob('*.json'):
 <h2 id="artifacts">5. 用例在哪里：可复用的产物清单</h2>
 
 <div class="callout warn">
-<p><strong>用例本身不入库。</strong> 反向构造的用例逐字包含真实仓库源码（实测 0%–91.2%），
-因此 <code>benchmarks/ai_coding/cases/_rev*/</code> 全部在 <code>.gitignore</code> 中。
-克隆本仓库<strong>不会</strong>得到用例文件，只会得到生成它们的代码与校准数字。</p>
+<p><strong>用例默认不入库。</strong> 反向构造的用例逐字包含真实仓库源码（实测 0%–91.2%），
+因此 <code>benchmarks/ai_coding/cases/</code> 下的集合默认在 <code>.gitignore</code> 中。
+<strong>例外是 <code>_clean2026</code></strong>（45 条，已脱敏）—— 它随仓库分发，
+因为 <code>docs/BASELINE.md</code> 的基线是在它上面测的。克隆本仓库得到的生产用例只有这一份，
+另有 <code>tests/fixtures/case_sets/</code> 下的 <code>seed-v0</code> 与 <code>_t4fixture</code> 两个测试夹具。</p>
 </div>
 
 <div class="table-wrap"><table>
@@ -254,7 +256,7 @@ for p in Path('benchmarks/ai_coding/cases/my-set').glob('*.json'):
 <tr><td><code>_revfinal2</code></td><td>同上目录</td><td>否</td><td>同 31 条，测试全部可见（未做隐藏处理）</td></tr>
 <tr><td><code>_rev6</code></td><td>同上目录</td><td>否</td><td>120 条原始产物，此前 43 条通过门禁，新门禁后 <strong>29 条</strong></td></tr>
 <tr><td><code>_rev_raw4</code></td><td>同上目录</td><td>否</td><td>3,312 条草稿，重跑生成的输入</td></tr>
-<tr><td>校准数据</td><td><code>benchmarks/ai_coding/calibrations/</code></td><td><strong>是</strong></td><td>13 份 JSON + README（其中 10 份是校准），纯数字无代码，任何人可复算</td></tr>
+<tr><td>校准数据</td><td><code>benchmarks/ai_coding/calibrations/</code></td><td><strong>是</strong></td><td>14 份 JSON + README（其中 10 份是校准），纯数字无代码，任何人可复算</td></tr>
 <tr><td>运行记录</td><td><code>runs/</code></td><td>否</td><td>含 <code>grade.detail</code>，可能带测试源码</td></tr>
 </tbody>
 </table></div>

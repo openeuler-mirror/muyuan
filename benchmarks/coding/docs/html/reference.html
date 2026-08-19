@@ -261,7 +261,7 @@
 
 <h2 id="published">5. 已发布的校准数据</h2>
 
-<p><code>benchmarks/ai_coding/calibrations/</code> 下的 <strong>13 份</strong>文件，全部列在这里。
+<p><code>benchmarks/ai_coding/calibrations/</code> 下的 <strong>14 份</strong>文件，全部列在这里。
 此前本节只列了 7 份，缺的其中一份正是本站头条数字所依据的 <code>reverse-v2-mixed</code>。
 逐份的口径、复算方法与已知问题见该目录下的
 <a href="https://github.com/caohaotiantian/agent-scaling-benchmark/blob/main/benchmarks/ai_coding/calibrations/README.md">README</a>（仓库内路径 <code>benchmarks/ai_coding/calibrations/README.md</code>）。</p>
@@ -282,6 +282,7 @@
 <tr><td><code>ablation-models-toolloop_20260809.json</code></td><td>五模型消融（单次运行，已声明作废）</td><td>tool_loop</td><td>按 run 聚合，无逐例行</td></tr>
 <tr><td><code>ablation-two-models-3reps_20260810.json</code></td><td>两模型 × 3 轮重复</td><td>tool_loop</td><td>同上</td></tr>
 <tr><td><code>bare-model-two-models_20260810.json</code></td><td>裸模型 × 2 模型 × 3 轮</td><td>bare_model</td><td>逐例 <code>rows</code> 列表</td></tr>
+<tr><td><code>clean2026-bare-2models-3reps_20260814.json</code></td><td><strong>随仓库分发的 <code>_clean2026</code> 45 条上的基线</strong>：GLM-5 与 GLM-5.2 各 3 轮</td><td>bare_model</td><td>逐例 <code>per_case_passed</code> 布尔矩阵；见 <code>docs/BASELINE.md</code></td></tr>
 </tbody>
 </table></div>
 

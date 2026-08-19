@@ -1,7 +1,9 @@
 # 已发布的校准结果
 
-用例本身**不入库**（含生产代码派生内容，见 `docs/REFERENCE.md` §8.8.1 `export-bundle`）。
-但校准结果是**纯数字** —— case_id、p_hat、by_anchor、spread、r_pb、keep/reasons，无任何代码。
+用例默认**不入库**（含生产代码派生内容，见 `docs/REFERENCE.md` §8.9 `export-bundle`）。
+唯一的例外是 `_clean2026` —— 它随仓库分发，因为 [`docs/BASELINE.md`](../../../docs/BASELINE.md)
+的基线是在它上面测的，没有它那些数字复现不了。
+校准结果本身是**纯数字** —— case_id、p_hat、by_anchor、spread、r_pb、keep/reasons，无任何代码。
 把它们放在这里，是为了让别人能**自己核对我们报的每一个比例**，而不必选择相信我们。
 
 已核查：以下每个文件均不含 `def ` / `import ` / `assert ` / `Traceback` 等代码文本。
@@ -25,8 +27,10 @@
 | `reverse-v1-keep3_3anchor_20260809.json` | 反向构造 · 保留 3 条可见 | 同上 | 31 |
 | `reverse-v1-hidden1_3anchor_20260808.json` | 反向构造 · 保留 1 条可见 | 同上 | 31 |
 | **`reverse-v2-mixed_3anchor_20260809.json`** | **最终配置 · 仅易档隐藏** | 同上 | 31 |
+| `clean2026-bare-2models-3reps_20260814.json` | `_clean2026`（随仓库分发） | 裸模型 2 模型 × 3 轮 | 45 |
 
-后五份是同一批 31 条用例、同一面板的配对测量，仅「测试可见性」一个变量不同，可直接对照。
+五份 `reverse-v1*` 与 `reverse-v2-mixed` 是同一批 31 条用例、同一面板的配对测量，仅「测试可见性」一个变量不同，可直接对照。
+最后一行是另一回事：另一个集合、另一套协议，见 [`docs/BASELINE.md`](../../../docs/BASELINE.md)。
 
 `disc-v0` 那份是**进程被杀后重建的**：6 轮只完成 4 轮，`strong-full-loop` 从未运行。
 文件里的 `anchors_missing` 如实记录了这一点。它描述的是一个**两锚点面板**，

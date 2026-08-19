@@ -833,7 +833,7 @@ existing gates reject. The model cannot make the task easier, only fail to descr
       <tr><td><code>grading.py</code></td><td class="num">552</td><td>四种判分模式、保护路径、干扰检测、隐藏测试注入</td></tr>
       <tr><td><code>tiers.py</code></td><td class="num">587</td><td>T1–T5 层契约与 <code>check_tier_invariants</code>、题面泄露检测</td></tr>
       <tr><td><code>languages.py</code></td><td class="num">345</td><td>每种语言一份 <code>LanguageSpec</code>：测试命名、运行命令、通过率解析</td></tr>
-      <tr><td><code>secrets_scan.py</code></td><td class="num">356</td><td>遍历整份文档的每个字符串值扫密钥</td></tr>
+      <tr><td><code>secrets_scan.py</code></td><td class="num">355</td><td>遍历整份文档的每个字符串值扫密钥</td></tr>
       <tr><td><code>grading_env.py</code></td><td class="num">100</td><td>核对 <code>configs/grading-env.yaml</code> 承诺的包是否真装了</td></tr>
       <tr><td><code>promote.py</code></td><td class="num">129</td><td>人工发布门控，写 <code>review_status = published</code></td></tr>
       <tr><td><code>export_bundle.py</code></td><td class="num">303</td><td>五道门禁 + <code>MANIFEST.json</code>，导出到仓库之外</td></tr>
@@ -1724,7 +1724,7 @@ env.pop("PYTHONWARNINGS", None)      # 调用方的 error 设置会把弃用警�
   <p class="sec-no">12</p>
   <h2>统计口径：为什么用配对检验而不是各自的置信区间</h2>
   <p class="dek">
-    <code>stats.py</code> 325 行，全部是估计量。第 71 行的 <code>item_rest_correlation</code> 决定哪些用例被保留。
+    <code>stats.py</code> 全部是估计量。其中 <code>item_rest_correlation</code> 决定哪些用例被保留。
   </p>
 
   <h3>Wilson 区间用于单个成功率</h3>
@@ -1997,7 +1997,7 @@ uv run python -m aibench ablation \
 uv run ruff check src tests scripts           # All checks passed!
 uv run pytest tests/ -q                       # 985 passed in 29.41s
 uv run python -m aibench doctor               # python / node / grading-env / opencode / sandbox
-uv run python scripts/check_doc_links.py      # checked 14 document(s): 0 problem(s)</code></pre>
+uv run python scripts/check_doc_links.py      # checked 16 document(s): 0 problem(s)</code></pre>
   <p class="cap">2026-08-18 在本机实测，五道全绿。本模块不带 GitHub Actions，门禁是本地的。</p>
   <p>
     <code>./scripts/lint.sh</code> 是<strong>修复工具，不是门禁</strong>：
@@ -2088,7 +2088,7 @@ uv run python scripts/check_doc_links.py      # checked 14 document(s): 0 proble
       <li><strong>模型比较至少 3 次重复，并报轮间极差。</strong>
         同一模型的轮间波动可以与模型之间的差距同量级，单次运行得出的显著性不可信。</li>
       <li><strong>跑 <code>audit-cases --annotate</code> 之前先 <code>cp -a</code> 备份集合目录。</strong>
-        它原地改写 case 文件，而 case 集不入库。</li>
+        它原地改写 case 文件。<code>_clean2026</code> 已入库，<code>git diff</code> 看得出它改了什么；其它集合没有这个退路。</li>
       <li><strong>判分命令在宿主机执行，用例集要来源可信。</strong>见 <a href="#s08">08</a>。</li>
       <li><strong>node 固定 24（<code>.nvmrc</code>）。</strong>
         低于 22.18 时 <code>node --test</code> 发现不了 TypeScript 测试却退出 0，会被判为通过。</li>
@@ -2312,7 +2312,8 @@ uv run python scripts/check_doc_links.py      # checked 14 document(s): 0 proble
   </div>
 
   <p>
-    本模块自带的用例集不入库。要把用例交给别人复现，走
+    随仓库分发的用例集只有 <code>_clean2026</code>（另有 <code>tests/fixtures/case_sets/</code> 下的两个测试夹具）。
+    要把其它集合交给别人复现，走
     <code>aibench export-bundle</code> 导出到仓库之外，它会带一份
     <code>MANIFEST.json</code> 记下五道门禁各自的通过与拒绝计数、每条被拒用例的 id 与原因、
     所用阈值、tier 分布与 case_id 清单。收到包的人据此可以自行核对筛选过程。
@@ -2324,7 +2325,8 @@ uv run python scripts/check_doc_links.py      # checked 14 document(s): 0 proble
     <p>
       本页面是 <code>docs/html/walkthrough.html</code>（相对 <code>benchmarks/coding/</code>），与四页文档站并列，
       不参与 <code>scripts/build_docs_html.py</code> 的构建。
-      数字与行号以 2026-08-18 的仓库状态为准；与代码冲突时以代码为准。
+      本页只引用文件，不引用行号 —— 行号会在第一次编辑后失效。
+      数字以 2026-08-18 的仓库状态为准；与代码冲突时以代码为准。
     </p>
 </footer>
 

@@ -1,0 +1,897 @@
+{
+  "case_set": "_clean2026",
+  "case_count": 45,
+  "measured_on": "2026-08-14",
+  "source_run": "runs/ablation_20260814_111227",
+  "matrix": "configs/runs/ablation-widest-gap.yaml",
+  "baseline_experiment": "bare-glm52-r1",
+  "skip_weak_grader": true,
+  "parallel": 3,
+  "protocol": "bare model, one call, fenced code block, no agent scaffold; two models x three repeats on one fixed case set",
+  "case_set_fingerprint_measured": "c8e47df626a689a9",
+  "case_set_fingerprint_in_repo": "9149d02169845dc5",
+  "execution_identity": {
+    "code_version": "4372c41-dirty",
+    "harness_digest": "5eeb65621cce9e42",
+    "dependency_digest": "d071d90b22f83b0a",
+    "python_version": "3.13.12",
+    "node_version": "v24.16.0",
+    "agent_name": "bare_model",
+    "agent_version": "1.0.0",
+    "budget_axis": "calls",
+    "budget_value": "model_calls=1, max_wall_time_s=600",
+    "sampling_params": "temperature=0.0, max_tokens=8192",
+    "max_attempts": 1,
+    "max_steps": 1,
+    "selection_strategy": "first-submit",
+    "judgment_type": "半确定性",
+    "primary_metric_name": "task_success_rate"
+  },
+  "runs": [
+    {
+      "experiment_name": "bare-glm5-r1",
+      "run_id": "bare-glm5-r1",
+      "algorithm_name": "GLM-5",
+      "agent_name": "bare_model",
+      "main_model": "GLM-5",
+      "case_count": 45,
+      "effective_case_count": 45,
+      "infra_error_count": 0,
+      "success_count": 16,
+      "success_rate": 0.35555555555555557,
+      "pass_at_1": 0.35555555555555557,
+      "pass_at_k": 0.35555555555555557,
+      "attempts_per_case": 1.0,
+      "total_tokens": 219628,
+      "total_cost": 0.219628,
+      "total_wall_time_h": 0.9999968385886233,
+      "relative_success_lift": 0.06666666666666671,
+      "token_amplification": 0.7686476535786906,
+      "confidence_interval": "[23.2%, 50.2%]",
+      "completion_rate": 1.0,
+      "empty_patch_count": 0,
+      "total_steps": 90,
+      "total_model_calls": 45,
+      "avg_tokens_per_case": 4880.622222222222,
+      "avg_tokens_per_success": 13726.75,
+      "stratified_by_difficulty": {
+        "easy": {
+          "n": 14,
+          "successes": 2,
+          "success_rate": 0.14285714285714285,
+          "confidence_interval": "[4.0%, 39.9%]"
+        },
+        "hard": {
+          "n": 6,
+          "successes": 3,
+          "success_rate": 0.5,
+          "confidence_interval": "[18.8%, 81.2%]"
+        },
+        "medium": {
+          "n": 25,
+          "successes": 11,
+          "success_rate": 0.44,
+          "confidence_interval": "[26.7%, 62.9%]"
+        }
+      },
+      "stratified_by_task_type": {
+        "bugfix": {
+          "n": 45,
+          "successes": 16,
+          "success_rate": 0.35555555555555557,
+          "confidence_interval": "[23.2%, 50.2%]"
+        }
+      },
+      "failure_diagnostics": {
+        "failed_count": 29,
+        "by_category": {
+          "模型推理失败": 28,
+          "测试未执行": 1
+        },
+        "by_agent_status": {
+          "completed": 29
+        },
+        "top_reasons": [
+          {
+            "reason": "script_exit=1",
+            "count": 28
+          },
+          {
+            "reason": "script_exit=2",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "experiment_name": "bare-glm52-r1",
+      "run_id": "bare-glm52-r1",
+      "algorithm_name": "GLM-5.2",
+      "agent_name": "bare_model",
+      "main_model": "GLM-5.2",
+      "case_count": 45,
+      "effective_case_count": 45,
+      "infra_error_count": 0,
+      "success_count": 13,
+      "success_rate": 0.28888888888888886,
+      "pass_at_1": 0.28888888888888886,
+      "pass_at_k": 0.28888888888888886,
+      "attempts_per_case": 1.0,
+      "total_tokens": 285733,
+      "total_cost": 0.285733,
+      "total_wall_time_h": 0.8153739967942076,
+      "relative_success_lift": 0.0,
+      "token_amplification": 1.0,
+      "confidence_interval": "[17.7%, 43.4%]",
+      "completion_rate": 1.0,
+      "empty_patch_count": 0,
+      "total_steps": 90,
+      "total_model_calls": 45,
+      "avg_tokens_per_case": 6349.622222222222,
+      "avg_tokens_per_success": 21979.46153846154,
+      "stratified_by_difficulty": {
+        "easy": {
+          "n": 14,
+          "successes": 2,
+          "success_rate": 0.14285714285714285,
+          "confidence_interval": "[4.0%, 39.9%]"
+        },
+        "hard": {
+          "n": 6,
+          "successes": 2,
+          "success_rate": 0.3333333333333333,
+          "confidence_interval": "[9.7%, 70.0%]"
+        },
+        "medium": {
+          "n": 25,
+          "successes": 9,
+          "success_rate": 0.36,
+          "confidence_interval": "[20.2%, 55.5%]"
+        }
+      },
+      "stratified_by_task_type": {
+        "bugfix": {
+          "n": 45,
+          "successes": 13,
+          "success_rate": 0.28888888888888886,
+          "confidence_interval": "[17.7%, 43.4%]"
+        }
+      },
+      "failure_diagnostics": {
+        "failed_count": 32,
+        "by_category": {
+          "模型推理失败": 31,
+          "测试未执行": 1
+        },
+        "by_agent_status": {
+          "completed": 32
+        },
+        "top_reasons": [
+          {
+            "reason": "script_exit=1",
+            "count": 32
+          }
+        ]
+      }
+    },
+    {
+      "experiment_name": "bare-glm5-r2",
+      "run_id": "bare-glm5-r2",
+      "algorithm_name": "GLM-5",
+      "agent_name": "bare_model",
+      "main_model": "GLM-5",
+      "case_count": 45,
+      "effective_case_count": 45,
+      "infra_error_count": 0,
+      "success_count": 18,
+      "success_rate": 0.4,
+      "pass_at_1": 0.4,
+      "pass_at_k": 0.4,
+      "attempts_per_case": 1.0,
+      "total_tokens": 233036,
+      "total_cost": 0.233036,
+      "total_wall_time_h": 1.159411384954502,
+      "relative_success_lift": 0.11111111111111116,
+      "token_amplification": 0.8155725799960103,
+      "confidence_interval": "[27.0%, 54.5%]",
+      "completion_rate": 1.0,
+      "empty_patch_count": 0,
+      "total_steps": 90,
+      "total_model_calls": 45,
+      "avg_tokens_per_case": 5178.577777777778,
+      "avg_tokens_per_success": 12946.444444444445,
+      "stratified_by_difficulty": {
+        "easy": {
+          "n": 14,
+          "successes": 3,
+          "success_rate": 0.21428571428571427,
+          "confidence_interval": "[7.6%, 47.6%]"
+        },
+        "hard": {
+          "n": 6,
+          "successes": 3,
+          "success_rate": 0.5,
+          "confidence_interval": "[18.8%, 81.2%]"
+        },
+        "medium": {
+          "n": 25,
+          "successes": 12,
+          "success_rate": 0.48,
+          "confidence_interval": "[30.0%, 66.5%]"
+        }
+      },
+      "stratified_by_task_type": {
+        "bugfix": {
+          "n": 45,
+          "successes": 18,
+          "success_rate": 0.4,
+          "confidence_interval": "[27.0%, 54.5%]"
+        }
+      },
+      "failure_diagnostics": {
+        "failed_count": 27,
+        "by_category": {
+          "模型推理失败": 27
+        },
+        "by_agent_status": {
+          "completed": 27
+        },
+        "top_reasons": [
+          {
+            "reason": "script_exit=1",
+            "count": 27
+          }
+        ]
+      }
+    },
+    {
+      "experiment_name": "bare-glm52-r2",
+      "run_id": "bare-glm52-r2",
+      "algorithm_name": "GLM-5.2",
+      "agent_name": "bare_model",
+      "main_model": "GLM-5.2",
+      "case_count": 45,
+      "effective_case_count": 45,
+      "infra_error_count": 0,
+      "success_count": 15,
+      "success_rate": 0.3333333333333333,
+      "pass_at_1": 0.3333333333333333,
+      "pass_at_k": 0.3333333333333333,
+      "attempts_per_case": 1.0,
+      "total_tokens": 284724,
+      "total_cost": 0.284724,
+      "total_wall_time_h": 0.8194782470013726,
+      "relative_success_lift": 0.04444444444444445,
+      "token_amplification": 0.9964687312981,
+      "confidence_interval": "[21.4%, 47.9%]",
+      "completion_rate": 1.0,
+      "empty_patch_count": 0,
+      "total_steps": 90,
+      "total_model_calls": 45,
+      "avg_tokens_per_case": 6327.2,
+      "avg_tokens_per_success": 18981.6,
+      "stratified_by_difficulty": {
+        "easy": {
+          "n": 14,
+          "successes": 2,
+          "success_rate": 0.14285714285714285,
+          "confidence_interval": "[4.0%, 39.9%]"
+        },
+        "hard": {
+          "n": 6,
+          "successes": 3,
+          "success_rate": 0.5,
+          "confidence_interval": "[18.8%, 81.2%]"
+        },
+        "medium": {
+          "n": 25,
+          "successes": 10,
+          "success_rate": 0.4,
+          "confidence_interval": "[23.4%, 59.3%]"
+        }
+      },
+      "stratified_by_task_type": {
+        "bugfix": {
+          "n": 45,
+          "successes": 15,
+          "success_rate": 0.3333333333333333,
+          "confidence_interval": "[21.4%, 47.9%]"
+        }
+      },
+      "failure_diagnostics": {
+        "failed_count": 30,
+        "by_category": {
+          "模型推理失败": 30
+        },
+        "by_agent_status": {
+          "completed": 30
+        },
+        "top_reasons": [
+          {
+            "reason": "script_exit=1",
+            "count": 30
+          }
+        ]
+      }
+    },
+    {
+      "experiment_name": "bare-glm5-r3",
+      "run_id": "bare-glm5-r3",
+      "algorithm_name": "GLM-5",
+      "agent_name": "bare_model",
+      "main_model": "GLM-5",
+      "case_count": 45,
+      "effective_case_count": 45,
+      "infra_error_count": 0,
+      "success_count": 16,
+      "success_rate": 0.35555555555555557,
+      "pass_at_1": 0.35555555555555557,
+      "pass_at_k": 0.35555555555555557,
+      "attempts_per_case": 1.0,
+      "total_tokens": 216293,
+      "total_cost": 0.216293,
+      "total_wall_time_h": 0.974282556528342,
+      "relative_success_lift": 0.06666666666666671,
+      "token_amplification": 0.756975918077366,
+      "confidence_interval": "[23.2%, 50.2%]",
+      "completion_rate": 1.0,
+      "empty_patch_count": 0,
+      "total_steps": 90,
+      "total_model_calls": 45,
+      "avg_tokens_per_case": 4806.511111111111,
+      "avg_tokens_per_success": 13518.3125,
+      "stratified_by_difficulty": {
+        "easy": {
+          "n": 14,
+          "successes": 3,
+          "success_rate": 0.21428571428571427,
+          "confidence_interval": "[7.6%, 47.6%]"
+        },
+        "hard": {
+          "n": 6,
+          "successes": 3,
+          "success_rate": 0.5,
+          "confidence_interval": "[18.8%, 81.2%]"
+        },
+        "medium": {
+          "n": 25,
+          "successes": 10,
+          "success_rate": 0.4,
+          "confidence_interval": "[23.4%, 59.3%]"
+        }
+      },
+      "stratified_by_task_type": {
+        "bugfix": {
+          "n": 45,
+          "successes": 16,
+          "success_rate": 0.35555555555555557,
+          "confidence_interval": "[23.2%, 50.2%]"
+        }
+      },
+      "failure_diagnostics": {
+        "failed_count": 29,
+        "by_category": {
+          "模型推理失败": 28,
+          "测试未执行": 1
+        },
+        "by_agent_status": {
+          "completed": 29
+        },
+        "top_reasons": [
+          {
+            "reason": "script_exit=1",
+            "count": 28
+          },
+          {
+            "reason": "script_exit=2",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "experiment_name": "bare-glm52-r3",
+      "run_id": "bare-glm52-r3",
+      "algorithm_name": "GLM-5.2",
+      "agent_name": "bare_model",
+      "main_model": "GLM-5.2",
+      "case_count": 45,
+      "effective_case_count": 45,
+      "infra_error_count": 0,
+      "success_count": 17,
+      "success_rate": 0.37777777777777777,
+      "pass_at_1": 0.37777777777777777,
+      "pass_at_k": 0.37777777777777777,
+      "attempts_per_case": 1.0,
+      "total_tokens": 281636,
+      "total_cost": 0.281636,
+      "total_wall_time_h": 0.7511200883794097,
+      "relative_success_lift": 0.0888888888888889,
+      "token_amplification": 0.985661439175734,
+      "confidence_interval": "[25.1%, 52.4%]",
+      "completion_rate": 1.0,
+      "empty_patch_count": 0,
+      "total_steps": 90,
+      "total_model_calls": 45,
+      "avg_tokens_per_case": 6258.577777777778,
+      "avg_tokens_per_success": 16566.823529411766,
+      "stratified_by_difficulty": {
+        "easy": {
+          "n": 14,
+          "successes": 3,
+          "success_rate": 0.21428571428571427,
+          "confidence_interval": "[7.6%, 47.6%]"
+        },
+        "hard": {
+          "n": 6,
+          "successes": 4,
+          "success_rate": 0.6666666666666666,
+          "confidence_interval": "[30.0%, 90.3%]"
+        },
+        "medium": {
+          "n": 25,
+          "successes": 10,
+          "success_rate": 0.4,
+          "confidence_interval": "[23.4%, 59.3%]"
+        }
+      },
+      "stratified_by_task_type": {
+        "bugfix": {
+          "n": 45,
+          "successes": 17,
+          "success_rate": 0.37777777777777777,
+          "confidence_interval": "[25.1%, 52.4%]"
+        }
+      },
+      "failure_diagnostics": {
+        "failed_count": 28,
+        "by_category": {
+          "模型推理失败": 26,
+          "测试未执行": 2
+        },
+        "by_agent_status": {
+          "completed": 28
+        },
+        "top_reasons": [
+          {
+            "reason": "script_exit=1",
+            "count": 27
+          },
+          {
+            "reason": "script_exit=2",
+            "count": 1
+          }
+        ]
+      }
+    }
+  ],
+  "pairwise_comparisons": [
+    {
+      "baseline": "bare-glm52-r1",
+      "candidate": "bare-glm5-r1",
+      "both_passed": 13,
+      "only_baseline": 0,
+      "only_candidate": 3,
+      "neither": 29,
+      "b": 0,
+      "c": 3,
+      "discordant": 3,
+      "p_value": 0.25,
+      "significant": false
+    },
+    {
+      "baseline": "bare-glm52-r1",
+      "candidate": "bare-glm5-r2",
+      "both_passed": 13,
+      "only_baseline": 0,
+      "only_candidate": 5,
+      "neither": 27,
+      "b": 0,
+      "c": 5,
+      "discordant": 5,
+      "p_value": 0.0625,
+      "significant": false
+    },
+    {
+      "baseline": "bare-glm52-r1",
+      "candidate": "bare-glm52-r2",
+      "both_passed": 13,
+      "only_baseline": 0,
+      "only_candidate": 2,
+      "neither": 30,
+      "b": 0,
+      "c": 2,
+      "discordant": 2,
+      "p_value": 0.5,
+      "significant": false
+    },
+    {
+      "baseline": "bare-glm52-r1",
+      "candidate": "bare-glm5-r3",
+      "both_passed": 12,
+      "only_baseline": 1,
+      "only_candidate": 4,
+      "neither": 28,
+      "b": 1,
+      "c": 4,
+      "discordant": 5,
+      "p_value": 0.375,
+      "significant": false
+    },
+    {
+      "baseline": "bare-glm52-r1",
+      "candidate": "bare-glm52-r3",
+      "both_passed": 13,
+      "only_baseline": 0,
+      "only_candidate": 4,
+      "neither": 28,
+      "b": 0,
+      "c": 4,
+      "discordant": 4,
+      "p_value": 0.125,
+      "significant": false
+    }
+  ],
+  "per_case_passed": {
+    "rev-05e88429bf55fa4d": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-09f7740f614d3ea9": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-0a13d6e43c487375": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-0c386957a849ab91": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-0f878818dfebd4f3": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-10cc572e61227773": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-1b77e6e910b9452e": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": true
+    },
+    "rev-1ef6270942e0e740": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-20f1e5a5d9460800": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-298ab8b9d9d05d08": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": true
+    },
+    "rev-2a048ca51fb7465e": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-2b813e27ba5902d5": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-2c8c411c1642b559": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-326ff6ffac10f77e": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-39cf6aaba64b4c04": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-478df768a8d72026": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-607e8f191190459d": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-6b86e3bbf4e8f22b": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": false
+    },
+    "rev-6e01e26bfba9221a": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-6f10facedc91ac5a": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-738db5f8753b49f2": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-74ba9c286a152c50": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-7ef5353e673af1af": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-809ac0ba498403fa": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-85d5e687ce9f7d51": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-863adbcb81f3b56f": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-863e003d8ddf0a78": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": false
+    },
+    "rev-89ac3cb4662a4ad1": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-8a469aa591bca490": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-98478339eba2368e": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-9ca9c13ad9483bec": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-9cdd9aa25c711967": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-9f27702b16ac2ace": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-9fbb2b58ef14ed55": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-a60dac9e85e808bf": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-b8152a1f71487e75": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-b8d1d015a9c3a458": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-bb519c7bf511ac8b": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-bd78b451615c2a39": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-cbfe633860b77795": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-d89577c5071bc735": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": true
+    },
+    "rev-e61f1fc58b070103": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-f3e957f9a6ec89eb": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    },
+    "rev-f4c09bd8410f437b": {
+      "bare-glm5-r1": true,
+      "bare-glm52-r1": true,
+      "bare-glm5-r2": true,
+      "bare-glm52-r2": true,
+      "bare-glm5-r3": true,
+      "bare-glm52-r3": true
+    },
+    "rev-fef49ee571e4af8c": {
+      "bare-glm5-r1": false,
+      "bare-glm52-r1": false,
+      "bare-glm5-r2": false,
+      "bare-glm52-r2": false,
+      "bare-glm5-r3": false,
+      "bare-glm52-r3": false
+    }
+  }
+}

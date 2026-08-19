@@ -4,7 +4,7 @@
 > `git ls-files runs` 返回 0 —— 本文引用的每一个 `runs/<name>_<timestamp>/` 目录，
 > 在一个 clone 里都**不存在**。它们是原始机器上的证据指针，不是读者可以打开的路径。
 > 需要其中的数字，请看 `benchmarks/ai_coding/calibrations/`（已入库），
-> 或向 `CODEOWNERS` 里的所有者索取。
+> 或向模块所有者索取。
 
 
 > **注意**：[`docs/html/reference.html`](html/reference.html) 是**另一份文档**，不是本文的展示版。
@@ -579,7 +579,8 @@ runs:
 
 ### 8.9 `export-bundle` — 导出可共享用例包（仓库之外）
 
-用例**不入库**。要把用例交给别人复现，用这条路径导出到仓库之外的任意目录，再走你自己的共享渠道。
+用例默认不随仓库分发（例外是 `_clean2026`，见 [`BASELINE.md`](BASELINE.md)）。要把其它集合交给别人复现，
+用这条路径导出到仓库之外的任意目录，再走你自己的共享渠道。
 
 ```bash
 uv run python -m aibench export-bundle --from-set <set> \
@@ -590,7 +591,7 @@ uv run python -m aibench export-bundle --from-set <set> \
 | 参数 | 类型 | 默认 | 作用说明 |
 |------|------|------|----------|
 | `--from-set` | str | 必填 | 源 case set |
-| `--output-dir` | Path | 必填 | 任意路径，**刻意不是 case-set 名** —— 包要离开仓库，走 case-set 命名空间等于把生产代码放在离 git 历史一个 `git add` 的地方 |
+| `--output-dir` | Path | 必填 | 任意路径，**刻意不是 case-set 名**，这样导出动作不会顺带把生产代码写进一个 `git add` 就能提交的位置 |
 | `--drafts-dir` | Path | 无 | 该集合所源自的私有草稿目录，用于逐行重合检查。**不传会告警**（stderr），因为那等于没做这项检查 |
 | `--max-verbatim` | float | `0.05` | 逐行重合率上限 |
 | `--no-require-audit` | flag | 关 | 允许导出审计未通过的用例（默认必须通过） |
@@ -1616,8 +1617,9 @@ JS 侧的模板字面量内容**逐字节比较**，只有它周围的代码走�
 > 所以这条门禁要到重跑一次 `audit-cases --annotate` 之后才对既有集合起作用。
 >
 > ⚠️ **而 `scripts/e2e_pipeline.sh:165` 会自动跑 `audit-cases --case-set auto-v0 --annotate`。**
-> `annotate` 原地改 case 文件，而所有 case 集合都在 `.gitignore` 里、git 从未跟踪过 ——
-> 旧判定无法从版本库恢复。**跑它之前先 `cp -a` 一份集合目录。**
+> `annotate` 原地改 case 文件。除 `_clean2026` 外的集合都在 `.gitignore` 里、git 从未跟踪过 ——
+> 旧判定无法从版本库恢复。**对这些集合跑它之前先 `cp -a` 一份集合目录**；
+> `_clean2026` 已入库，`git diff` 就能看出 annotate 改了什么。
 > 下游 `compose.load_verified_cases` 会**静默**丢掉判负的用例（不打任何诊断），
 > `export-bundle` 则会把理由记进 manifest。
 
