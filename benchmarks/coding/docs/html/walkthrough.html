@@ -1,0 +1,2398 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>aibench 代码串讲</title>
+<meta name="description" content="benchmarks/coding 模块的代码走读：反向构造、效度门禁、锚点校准与消融的设计思路、使用方法与代码导航。" />
+<style>
+/* ============================================================
+   aibench 代码串讲 · 设计令牌
+   识别色取自仪器面板：冷灰纸面 + 氧化橙信号色，
+   通过/失败保留语义绿红，不与信号色争位。
+   ============================================================ */
+:root {
+  --ground:      #e9edf0;
+  --surface:     #ffffff;
+  --surface-2:   #f4f6f8;
+  --surface-3:   #eaeef1;
+  --ink:         #121a20;
+  --ink-2:       #4d5a65;
+  --ink-3:       #5f6b76;
+  --line:        #d2d9df;
+  --line-2:      #b9c3cb;
+  --signal:      #9d4f0d;
+  --signal-soft: #fdf0e4;
+  --signal-line: #e6c2a0;
+  --pass:        #1a6444;
+  --pass-soft:   #e6f2ec;
+  --fail:        #a02320;
+  --fail-soft:   #fbeae9;
+  --warn:        #7f5300;
+  --warn-soft:   #fdf3dd;
+  --code-bg:     #14202a;
+  --code-ink:    #d9e5ee;
+  --rail-w:      272px;
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "IBM Plex Sans", Roboto,
+          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", "IBM Plex Mono", Menlo, Consolas,
+          "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0b1014;
+    --surface:     #131b21;
+    --surface-2:   #18222a;
+    --surface-3:   #1e2932;
+    --ink:         #dee6ec;
+    --ink-2:       #9daab5;
+    --ink-3:       #93a1ac;
+    --line:        #26333c;
+    --line-2:      #3a4a56;
+    --signal:      #e3924c;
+    --signal-soft: #2a1d11;
+    --signal-line: #5c3d20;
+    --pass:        #56b98a;
+    --pass-soft:   #14261e;
+    --fail:        #e8817a;
+    --fail-soft:   #2a1614;
+    --warn:        #d9a53c;
+    --warn-soft:   #251d0d;
+    --code-bg:     #0a1218;
+    --code-ink:    #cddbe5;
+  }
+}
+:root[data-theme="dark"] {
+  --ground:      #0b1014;
+  --surface:     #131b21;
+  --surface-2:   #18222a;
+  --surface-3:   #1e2932;
+  --ink:         #dee6ec;
+  --ink-2:       #9daab5;
+  --ink-3:       #76838e;
+  --line:        #26333c;
+  --line-2:      #3a4a56;
+  --signal:      #e3924c;
+  --signal-soft: #2a1d11;
+  --signal-line: #5c3d20;
+  --pass:        #56b98a;
+  --pass-soft:   #14261e;
+  --fail:        #e8817a;
+  --fail-soft:   #2a1614;
+  --warn:        #d9a53c;
+  --warn-soft:   #251d0d;
+  --code-bg:     #0a1218;
+  --code-ink:    #cddbe5;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.78;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 骨架 ---------- */
+.shell { display: flex; align-items: flex-start; gap: 0; max-width: 1440px; margin: 0 auto; }
+
+.rail {
+  position: sticky; top: 0; flex: 0 0 var(--rail-w); width: var(--rail-w);
+  height: 100vh; overflow-y: auto; overscroll-behavior: contain;
+  padding: 28px 18px 40px 26px;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+}
+.rail-mark { font-family: var(--mono); font-size: 12px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--signal); margin: 0 0 4px; }
+.rail-title { font-size: 17px; font-weight: 600; margin: 0 0 2px; letter-spacing: -.01em; }
+.rail-sub { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin: 0 0 20px; }
+.rail nav { display: flex; flex-direction: column; gap: 1px; }
+.rail nav a {
+  display: grid; grid-template-columns: 2.1em 1fr; gap: 6px; align-items: baseline;
+  padding: 5px 8px; border-radius: 5px; text-decoration: none;
+  color: var(--ink-2); font-size: 13.5px; line-height: 1.45;
+}
+.rail nav a .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+  font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--surface-2); color: var(--ink); }
+.rail nav a:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
+.rail nav a.current { background: var(--signal-soft); color: var(--ink); font-weight: 500; }
+.rail nav a.current .n { color: var(--signal); }
+.rail nav .grp { font-family: var(--mono); font-size: 10.5px; letter-spacing: .11em;
+  text-transform: uppercase; color: var(--ink-3); margin: 16px 0 5px 8px; }
+
+.main { flex: 1 1 auto; min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 920px; margin: 0 auto; padding: 0 34px; }
+
+.mobile-nav { display: none; }
+
+.skip { position: absolute; left: -9999px; }
+.skip:focus { position: fixed; left: 10px; top: 10px; z-index: 99;
+  background: var(--surface); color: var(--ink); border: 2px solid var(--signal);
+  border-radius: 6px; padding: 8px 14px; text-decoration: none; }
+
+@media (max-width: 1080px) {
+  .rail { display: none; }
+  .mobile-nav { display: block; position: sticky; top: 0; z-index: 20;
+    background: var(--surface); border-bottom: 1px solid var(--line); }
+  .mobile-nav summary { padding: 12px 20px; font-family: var(--mono); font-size: 13px;
+    cursor: pointer; color: var(--signal); }
+  .mobile-nav nav { display: flex; flex-direction: column; gap: 1px; padding: 0 12px 14px; }
+  .mobile-nav nav a { padding: 6px 10px; text-decoration: none; color: var(--ink-2);
+    font-size: 14px; border-radius: 5px; }
+  .mobile-nav nav .grp { font-family: var(--mono); font-size: 10.5px; letter-spacing: .11em;
+    text-transform: uppercase; color: var(--ink-3); margin: 12px 0 4px 10px; }
+  .wrap { padding: 0 20px; }
+}
+
+/* ---------- 页眉 ---------- */
+.masthead { padding: 56px 0 40px; border-bottom: 1px solid var(--line); }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .13em;
+  text-transform: uppercase; color: var(--signal); margin: 0 0 14px; }
+.masthead h1 { font-size: clamp(30px, 4.4vw, 44px); line-height: 1.16; margin: 0 0 18px;
+  letter-spacing: -.022em; font-weight: 600; text-wrap: balance; }
+.masthead .lede { font-size: 17.5px; color: var(--ink-2); margin: 0; max-width: 62ch; }
+.factbar { display: flex; flex-wrap: wrap; gap: 0; margin-top: 30px;
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.factbar div { flex: 1 1 130px; padding: 12px 16px; border-right: 1px solid var(--line); }
+.factbar div:last-child { border-right: 0; }
+.factbar dt { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 3px; }
+.factbar dd { margin: 0; font-family: var(--mono); font-size: 15px; font-weight: 500;
+  font-variant-numeric: tabular-nums; }
+
+/* ---------- 章节 ---------- */
+section { padding: 46px 0 6px; scroll-margin-top: 1rem; }
+section + section { border-top: 1px solid var(--line); }
+.sec-no { font-family: var(--mono); font-size: 11.5px; letter-spacing: .12em;
+  color: var(--signal); margin: 0 0 8px; }
+h2 { font-size: clamp(22px, 2.6vw, 28px); line-height: 1.28; margin: 0 0 6px;
+  letter-spacing: -.018em; font-weight: 600; text-wrap: balance; }
+h2 + .dek { color: var(--ink-2); margin: 0 0 22px; font-size: 15.5px; max-width: 64ch; }
+h3 { font-size: 18px; margin: 34px 0 8px; font-weight: 600; letter-spacing: -.01em;
+  text-wrap: balance; }
+h4 { font-size: 15.5px; margin: 22px 0 6px; font-weight: 600; color: var(--ink); }
+p { margin: 0 0 15px; max-width: 68ch; }
+ul, ol { margin: 0 0 16px; padding-left: 1.35em; max-width: 68ch; }
+li { margin: 5px 0; }
+li > ul, li > ol { margin: 5px 0; }
+a { color: var(--signal); text-underline-offset: 2px; }
+a:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 2px; }
+strong { font-weight: 600; }
+
+code { font-family: var(--mono); font-size: .875em;
+  background: var(--surface-3); padding: 1.5px 5px; border-radius: 4px;
+  border: 1px solid var(--line); overflow-wrap: anywhere; }
+td code, th code { white-space: nowrap; }
+pre { background: var(--code-bg); color: var(--code-ink); border-radius: 8px;
+  padding: 15px 17px; overflow-x: auto; font-size: 13px; line-height: 1.62;
+  margin: 0 0 18px; border: 1px solid var(--line); }
+pre code { background: transparent; border: 0; padding: 0; font-size: inherit;
+  color: inherit; white-space: pre; }
+.cap { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+  margin: -12px 0 20px; }
+
+/* ---------- 表格 ---------- */
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px;
+  margin: 0 0 20px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 480px; }
+th, td { padding: 9px 12px; text-align: left; vertical-align: top;
+  border-bottom: 1px solid var(--line); }
+thead th { background: var(--surface-2); font-weight: 600; font-size: 12px;
+  font-family: var(--mono); letter-spacing: .03em; color: var(--ink-2);
+  white-space: nowrap; border-bottom: 1px solid var(--line-2); }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--surface-2); }
+td.num, th.num { text-align: right; font-family: var(--mono);
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ---------- 证据条 ---------- */
+.src { display: inline-flex; align-items: center; font-family: var(--mono);
+  font-size: 11.5px; color: var(--ink-3); background: var(--surface-2);
+  border: 1px solid var(--line); border-left: 3px solid var(--signal-line);
+  border-radius: 3px; padding: 1px 9px 1px 8px; overflow-wrap: anywhere; }
+.srcline { margin: -8px 0 20px; display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ---------- 提示块 ---------- */
+.note { border-left: 3px solid var(--line-2); background: var(--surface-2);
+  padding: 13px 16px; border-radius: 0 7px 7px 0; margin: 0 0 20px; font-size: 14.5px; }
+.note p:last-child { margin-bottom: 0; }
+.note.pin { border-left-color: var(--signal); background: var(--signal-soft); }
+.note.bad { border-left-color: var(--fail); background: var(--fail-soft); }
+.note.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+.note .lbl { font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+  text-transform: uppercase; display: block; margin-bottom: 5px; color: var(--ink-3); }
+.note.pin .lbl { color: var(--signal); }
+.note.bad .lbl { color: var(--fail); }
+.note.warn .lbl { color: var(--warn); }
+
+/* ---------- 图 ---------- */
+figure { margin: 0 0 24px; }
+figure svg { display: block; width: 100%; min-width: 560px; height: auto;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+figcaption { font-size: 13px; color: var(--ink-2); margin-top: 9px; max-width: 66ch; }
+.figscroll { overflow-x: auto; }
+figure svg .hot  { stroke: var(--signal); }
+figure svg .bad  { stroke: var(--fail); }
+figure svg text.hot  { fill: var(--signal); stroke: none; }
+figure svg text.bad  { fill: var(--fail); stroke: none; }
+figure svg text.ok   { fill: var(--pass); stroke: none; }
+figure svg rect.hot  { fill: none; }
+figure svg rect.pass { fill: var(--pass); stroke: none; }
+figure svg marker path.hot { fill: var(--signal); stroke: none; }
+figure svg marker path.bad { fill: var(--fail); stroke: none; }
+
+/* ---------- 决策卡 ---------- */
+.adr { border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  padding: 0; margin: 0 0 20px; overflow: hidden; }
+.adr > header { padding: 12px 16px; background: var(--surface-2);
+  border-bottom: 1px solid var(--line); }
+.adr > header h4 { margin: 0; font-size: 15px; }
+.adr dl { margin: 0; padding: 14px 16px; display: grid;
+  grid-template-columns: 5.2em 1fr; gap: 7px 14px; font-size: 14px; }
+.adr dt { font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em;
+  color: var(--ink-3); padding-top: 3px; }
+.adr dd { margin: 0; }
+@media (max-width: 620px) { .adr dl { grid-template-columns: 1fr; gap: 2px 0; }
+  .adr dd { margin-bottom: 8px; } }
+
+/* ---------- 路线卡 ---------- */
+.routes { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+  gap: 14px; margin: 0 0 24px; }
+.route { border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  padding: 15px 17px; }
+.route h4 { margin: 0 0 3px; font-size: 15px; }
+.route .t { font-family: var(--mono); font-size: 11.5px; color: var(--signal);
+  letter-spacing: .06em; margin: 0 0 9px; }
+.route p { font-size: 13.5px; color: var(--ink-2); margin: 0 0 9px; }
+.route ol { font-size: 13px; margin: 0; padding-left: 1.3em; color: var(--ink-2); }
+.route ol li { margin: 2px 0; }
+
+/* ---------- 状态标记 ---------- */
+.tag { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 4px;
+  white-space: nowrap; border: 1px solid transparent; }
+.tag.err  { background: var(--fail-soft); color: var(--fail); border-color: var(--fail); }
+.tag.wrn  { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.tag.ok   { background: var(--pass-soft); color: var(--pass); border-color: var(--pass); }
+
+/* ---------- 页脚 ---------- */
+.foot { border-top: 1px solid var(--line); margin-top: 40px; padding: 26px 0 0;
+  font-size: 13px; color: var(--ink-3); }
+.foot code { font-size: 12px; }
+
+@media print {
+  :root, :root[data-theme="dark"] {
+    --ground: #ffffff; --surface: #ffffff; --surface-2: #f4f6f8; --surface-3: #eaeef1;
+    --ink: #121a20; --ink-2: #3f4b55; --ink-3: #5f6b76;
+    --line: #c8d0d7; --line-2: #aab5be;
+    --signal: #8a4409; --signal-soft: #fdf0e4; --signal-line: #d9b28c;
+    --pass: #14563a; --pass-soft: #e6f2ec; --fail: #8c1d1a; --fail-soft: #fbeae9;
+    --warn: #6d4700; --warn-soft: #fdf3dd;
+    --code-bg: #f4f6f8; --code-ink: #121a20;
+  }
+  .rail, .mobile-nav, .skip { display: none; }
+  .wrap { max-width: none; padding: 0; }
+  pre { border-color: var(--line-2); }
+  section { break-inside: auto; page-break-inside: auto; }
+  a { text-decoration: underline; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">跳到正文</a>
+<div class="shell">
+
+<aside class="rail">
+  <p class="rail-mark">代码串讲</p>
+  <p class="rail-title">aibench</p>
+  <p class="rail-sub">benchmarks/coding · 15.9k 行</p>
+  <nav aria-label="章节导航">
+    <p class="grp">导入</p>
+    <a href="#s00"><span class="n">00</span><span>这份材料怎么用</span></a>
+    <a href="#s01"><span class="n">01</span><span>项目要解决的问题</span></a>
+    <a href="#s02"><span class="n">02</span><span>反向构造：核心方法</span></a>
+    <p class="grp">骨架</p>
+    <a href="#s03"><span class="n">03</span><span>全景数据流</span></a>
+    <a href="#s04"><span class="n">04</span><span>模块地图：四层</span></a>
+    <p class="grp">主线</p>
+    <a href="#s05"><span class="n">05</span><span>追一条 case</span></a>
+    <a href="#s06"><span class="n">06</span><span>workspace 物化</span></a>
+    <a href="#s07"><span class="n">07</span><span>六个适配器</span></a>
+    <a href="#s08"><span class="n">08</span><span>判分流程</span></a>
+    <p class="grp">保证</p>
+    <a href="#s09"><span class="n">09</span><span>效度门禁</span></a>
+    <a href="#s10"><span class="n">10</span><span>分层 T1–T5</span></a>
+    <a href="#s11"><span class="n">11</span><span>校准与选题</span></a>
+    <a href="#s12"><span class="n">12</span><span>统计口径</span></a>
+    <a href="#s13"><span class="n">13</span><span>执行身份</span></a>
+    <p class="grp">使用</p>
+    <a href="#s14"><span class="n">14</span><span>消融与产物怎么读</span></a>
+    <a href="#s15"><span class="n">15</span><span>三条命令路径</span></a>
+    <a href="#s16"><span class="n">16</span><span>现状与已知限制</span></a>
+    <p class="grp">深入</p>
+    <a href="#s17"><span class="n">17</span><span>代码导航：想改 X 就看 Y</span></a>
+    <a href="#s18"><span class="n">18</span><span>把测试当规格读</span></a>
+    <a href="#s19"><span class="n">19</span><span>延伸阅读</span></a>
+  </nav>
+</aside>
+
+<details class="mobile-nav">
+  <summary>章节导航</summary>
+  <nav aria-label="章节导航">
+    <span class="grp">导入</span>
+    <a href="#s00">00 这份材料怎么用</a>
+    <a href="#s01">01 项目要解决的问题</a>
+    <a href="#s02">02 反向构造：核心方法</a>
+    <span class="grp">骨架</span>
+    <a href="#s03">03 全景数据流</a>
+    <a href="#s04">04 模块地图：四层</a>
+    <span class="grp">主线</span>
+    <a href="#s05">05 追一条 case</a>
+    <a href="#s06">06 workspace 物化</a>
+    <a href="#s07">07 六个适配器</a>
+    <a href="#s08">08 判分流程</a>
+    <span class="grp">保证</span>
+    <a href="#s09">09 效度门禁</a>
+    <a href="#s10">10 分层 T1–T5</a>
+    <a href="#s11">11 校准与选题</a>
+    <a href="#s12">12 统计口径</a>
+    <a href="#s13">13 执行身份</a>
+    <span class="grp">使用</span>
+    <a href="#s14">14 消融与产物怎么读</a>
+    <a href="#s15">15 三条命令路径</a>
+    <a href="#s16">16 现状与已知限制</a>
+    <span class="grp">深入</span>
+    <a href="#s17">17 代码导航：想改 X 就看 Y</a>
+    <a href="#s18">18 把测试当规格读</a>
+    <a href="#s19">19 延伸阅读</a>
+  </nav>
+</details>
+
+<main class="main" id="main" tabindex="-1">
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">benchmarks/coding · 代码串讲</p>
+  <h1>aibench：从真实会话里挖出能区分能力的编程题</h1>
+  <p class="lede">
+    从真实开发会话里取出工程师改过的那次编辑，做成可自动评分的编程题；
+    再用一组能力档次已知的锚点实测，把没有区分度的题淘汰掉。
+    留下的用例用于横向比较不同 Agent 与模型。
+  </p>
+  <dl class="factbar">
+    <div><dt>包名</dt><dd>aibench</dd></div>
+    <div><dt>源码</dt><dd>15 879 行</dd></div>
+    <div><dt>测试</dt><dd>985 个</dd></div>
+    <div><dt>子命令</dt><dd>19 个</dd></div>
+    <div><dt>适配器</dt><dd>6 个</dd></div>
+    <div><dt>Python</dt><dd>3.13</dd></div>
+  </dl>
+</header>
+
+<section id="s00">
+  <p class="sec-no">00</p>
+  <h2>这份材料怎么用</h2>
+  <p class="dek">
+    串讲现场走中间那条，其余两条留给会后。
+  </p>
+
+  <h3>三条路线，按你要花的时间选</h3>
+  <div class="routes">
+    <div class="route">
+      <h4>只想知道它是什么</h4>
+      <p class="t">20 分钟</p>
+      <p>拿到一句话定位和一张数据流图，能在别人讨论时接上话。</p>
+      <ol>
+        <li>01 要解决的问题</li>
+        <li>02 反向构造</li>
+        <li>03 全景数据流</li>
+        <li>16 现状与限制</li>
+      </ol>
+    </div>
+    <div class="route">
+      <h4>要能读懂并改动它</h4>
+      <p class="t">60 分钟 · 串讲主线</p>
+      <p>沿一条 case 的执行顺序走完全程，再看住它的四组保证。</p>
+      <ol>
+        <li>01 至 02 问题与解法</li>
+        <li>04 模块地图</li>
+        <li>05 至 08 主线追踪</li>
+        <li>09 至 13 四组保证</li>
+        <li>17 代码导航</li>
+      </ol>
+    </div>
+    <div class="route">
+      <h4>要接手维护</h4>
+      <p class="t">会后自读</p>
+      <p>把限制与测试读完，再动第一行代码。</p>
+      <ol>
+        <li>16 现状与限制</li>
+        <li>18 把测试当规格读</li>
+        <li><a href="../REFERENCE.md">参考手册 REFERENCE.md</a></li>
+        <li><a href="../../benchmarks/ai_coding/calibrations/README.md">已发布的校准数据</a></li>
+      </ol>
+    </div>
+  </div>
+
+  <h3>先统一口径的十四个词</h3>
+  <p>本文对同一件事只用同一个词。前三个是最容易被换着说的，右列是本文<strong>不用</strong>的说法。</p>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>词</th><th>本文固定含义</th><th>不用的说法</th></tr></thead>
+    <tbody>
+      <tr><td><strong>用例（case）</strong></td>
+        <td>一条可独立评测的任务：题面 <code>prompt</code> + 工作区文件 + 判分器 <code>grader</code>，落成一个 JSON 文件</td>
+        <td>题目、样例、测试点</td></tr>
+      <tr><td><strong>锚点（anchor）</strong></td>
+        <td>校准时用作参照的一个「Agent + 模型 + run 配置」组合，能力档次已知</td>
+        <td>对照组、参照系</td></tr>
+      <tr><td><strong>门禁（gate）</strong></td>
+        <td>一条可机器判定的用例质量检查，不过则该用例不可用</td>
+        <td>校验、规则、检查项</td></tr>
+      <tr><td>用例集（case set）</td><td>一个装着若干用例 JSON 的目录，用目录名指代，例如 <code>auto-v0</code></td><td>—</td></tr>
+      <tr><td>草稿（draft）</td><td>从会话抽出的中间 JSON，未必 schema 合法，未必可机评</td><td>—</td></tr>
+      <tr><td>stub</td><td>交给求解者的待修复代码，反向构造里等于编辑<em>前</em>的真实文件</td><td>—</td></tr>
+      <tr><td>参考解</td><td><code>grader.gold_files</code>，反向构造里等于编辑<em>后</em>的真实文件</td><td>—</td></tr>
+      <tr><td>隐藏测试</td><td><code>grader.hidden_tests</code>，判分时才写进工作区，求解者全程看不到</td><td>—</td></tr>
+      <tr><td>反向构造</td><td>缺陷取自 trace 里真实的一次编辑，模型只写测试与题面。<code>generate-cases --reverse</code></td><td>—</td></tr>
+      <tr><td>层级（tier）</td><td><code>T1</code> 到 <code>T5</code>，声明用例结构上强迫求解者做什么，每层配可机检的不变量</td><td>难度</td></tr>
+      <tr><td><code>p_hat</code></td><td>一条用例在锚点面板全部尝试里的通过比例</td><td>—</td></tr>
+      <tr><td><code>spread</code></td><td>最强锚点通过率减最弱锚点通过率。越大越能分离配置</td><td>—</td></tr>
+      <tr><td>有效 case</td><td>排除 <code>infra_error</code> 之后参与计分的用例，是主指标的分母</td><td>—</td></tr>
+      <tr><td>消融（ablation）</td><td>固定用例集，每行只改一条轴，跑多组配置横向对比。<strong>不是</strong>删除模型组件的学术消融</td><td>—</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <span class="lbl">这份材料不做什么</span>
+    <p>不重复 <a href="../REFERENCE.md">参考手册 REFERENCE.md</a> 的参数表。
+    每个 flag 的类型与默认值在那份文档里，本文只讲为什么要有这个 flag。
+    查参数用 <a href="../REFERENCE.md">REFERENCE.md</a>；
+    <a href="reference.html">设计依据页</a>讲的是这些规则为什么这样定。</p>
+  </div>
+</section>
+
+<section id="s01">
+  <p class="sec-no">01</p>
+  <h2>项目要解决的问题：题要有区分度</h2>
+  <p class="dek">
+    评测的目的是比较两个配置的强弱。一道所有配置都能过、或所有配置都过不了的题，
+    跑多少次都产生不了这个信息。
+  </p>
+
+  <p>
+    这不是抽象顾虑。让模型自己编题，产出的难度分布是这样的
+    （<code>auto-v0</code> 126 条，三锚点面板实测）：
+  </p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>集合</th><th class="num">n</th><th class="num">易 <code>p&gt;0.8</code></th><th class="num">中</th><th class="num">难 <code>p&lt;0.2</code></th><th class="num">平均 p_hat</th></tr></thead>
+    <tbody>
+      <tr><td><code>auto-v0</code>（模型编题）</td><td class="num">126</td><td class="num">62.7%</td><td class="num">13.5%</td><td class="num">23.8%</td><td class="num">0.677</td></tr>
+      <tr><td>目标分布</td><td class="num">—</td><td class="num">15%</td><td class="num">70%</td><td class="num">15%</td><td class="num">—</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline">
+    <span class="src">benchmarks/ai_coding/calibrations/auto-v0_3anchor_20260805.json</span>
+    <span class="src">calibrations/README.md</span>
+  </p>
+
+  <p>
+    六成是送分题，两成多是无人能解的题，真正落在中档的只有 13.5%。
+    校准跑一遍的成本是「锚点数 × 重复次数」次全量跑测，
+    花掉这笔钱之后，126 条里只有 28 条被判为有区分度。
+    所以这个模块要解决的第一件事，是<strong>怎么把题造得有区分度</strong>。
+  </p>
+
+  <h3>它在 Agentic Scaling 里的位置</h3>
+  <p>
+    上层设计要求所有领域 benchmark 共用一套结果表口径：
+    一行 = 同一 benchmark + 同一 case 集 + 一个算法配置 + 一个预算档 + 一次 run。
+    本模块是领域 benchmark <code>AI-Coding-Assist</code> 的<strong>执行与填表实现</strong>，
+    不是设计，也不是算法本身。
+  </p>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>设计要求</th><th>本模块的实现</th></tr></thead>
+    <tbody>
+      <tr><td>一行 = benchmark + case 集 + 算法配置 + 预算 + run</td>
+        <td>一次 <code>aibench run</code>，或消融矩阵里的一行</td></tr>
+      <tr><td>项目效果综述表</td><td><code>tables.json</code> 的 <code>overview_row</code> · <code>ablation_report.md</code></td></tr>
+      <tr><td>通用结果总表</td><td><code>summary.json</code> 核心字段 + <code>general_row</code></td></tr>
+      <tr><td>置信区间</td><td>Wilson 95%</td></tr>
+      <tr><td>有效 case</td><td>排除 <code>infra_error</code></td></tr>
+      <tr><td>评判类型</td><td>固定为半确定性，主指标固定为 <code>task_success_rate</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    明确不做的事：Fusion 与投机执行算法本体（它们作为可替换的 Agent 接入）、
+    完整 IDE 界面仿真、无人审核发布正式集、不设上限的全库扫描，
+    以及为没有数据源的列编数：那些列保持 <code>null</code>。
+  </p>
+  <p class="srcline"><span class="src">docs/REFERENCE.md §1.2 · §18</span></p>
+</section>
+
+<section id="s02">
+  <p class="sec-no">02</p>
+  <h2>反向构造：缺陷交给真人，模型只写测试</h2>
+  <p class="dek">
+    模型无论拿到什么输入，编出来的都是同一种难度。
+    那就不让模型决定缺陷是什么。
+  </p>
+
+  <p>
+    一条真实会话里，工程师对某个文件做过若干次 <code>edit</code>。
+    按时间顺序重放这些编辑，可以还原出该文件修改前与修改后两个版本。
+    这两个版本分别成为用例的两端：
+  </p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>trace 里的东西</th><th>在用例里的角色</th><th>字段</th></tr></thead>
+    <tbody>
+      <tr><td>编辑前的文件内容</td><td>待修复代码（stub）</td><td><code>context.files[].content</code></td></tr>
+      <tr><td>编辑后的文件内容</td><td>参考解</td><td><code>grader.gold_files</code></td></tr>
+      <tr><td>模型写的测试</td><td>判分依据，部分转为隐藏测试</td><td><code>grader.hidden_tests</code></td></tr>
+      <tr><td>模型写的题面</td><td>只描述症状，不提机制</td><td><code>prompt</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>这个设计自带验证，不需要新机制</h3>
+  <p>
+    两道既有门禁就能验证模型交出来的东西：<code>check_stub_fails</code> 要求测试在 stub 上失败，
+    <code>check_reference_solution</code> 要求它们在参考解上通过。
+    写不出能区分两版的测试，用例就被现有门禁拒掉。
+    所以模型<strong>没有能力把题变简单</strong>，只可能描述失败。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/validity.py</span></p>
+
+  <pre><code class="language-python">"""Build a case whose defect is the one an engineer actually made.
+
+Ordinary generation asks a model to invent a benchmark case, and it answers with a two-file,
+thirty-line exercise no matter what it was given. Here the defect is not up for negotiation:
+the stub is the file as the trace found it, the reference solution is the file as the trace
+left it, and the model's only job is to write tests that tell the two apart.
+
+That job is verifiable without any new machinery. ``check_stub_fails`` already requires the
+tests to fail on the stub and ``check_reference_solution`` requires them to pass on the gold,
+so a model that writes tests which do not separate the two versions produces a case the
+existing gates reject. The model cannot make the task easier, only fail to describe it.
+"""</code></pre>
+  <p class="cap">src/aibench/extract/reverse_case.py 的模块注释，逐字引用</p>
+
+  <div class="note pin">
+    <span class="lbl">一个必须补的门禁</span>
+    <p>源码文本天生能区分两版，因为修复改动的就是文本。
+    一条形如 <code>assert.match(source, /async function prepareReview/)</code> 的测试，
+    在 stub 上必失败、在参考解上必通过，两道门禁按构造 100% 通过，
+    而它评的是抄写不是行为。所以另有一道 <code>test_reads_source_text</code>
+    专门拦这种测试，见 <a href="#s09">09 效度门禁</a>。</p>
+  </div>
+
+  <h3>重放采用严格顺序匹配</h3>
+  <p>
+    只在会话确实读取过的内容上应用编辑，并严格按消息顺序推进。
+    宽松匹配（在 trace 的任意快照里搜旧串）重建率高得多，
+    但一次匹配到错误版本就会重建出一个从未存在过的中间状态，
+    用例便成了带着真实代码的虚构。这里选严格匹配。
+  </p>
+  <p>
+    配套的是一条来源阶梯：<code>pre</code> 只接受 <code>read_complete</code> 这一种来源。
+    写回的内容（<code>tool_write</code>）不能证明是读到的，未标注来源的读取（<code>read_unlabelled</code>）
+    同样不可信，两者全部被拒。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/extract/file_versions.py</span></p>
+
+  <p>
+    代价是产率低。<code>extract-from-db --require-usable-pair</code> 用的正是
+    <code>generate-cases --reverse</code> 的那条判据，草稿池里合格的约占 1.5%，
+    绝大多数草稿根本没有 pre/post 对。抽库时要按这个比例给预算。
+  </p>
+  <p class="srcline"><span class="src">docs/REFERENCE.md §8.5</span></p>
+
+  <h3>去重键是（stub，参考解），不是用例指纹</h3>
+  <p>
+    同一个会话的不同 trace 行会重放同一次编辑。模型每次写不同的题面和不同的测试，
+    于是每个副本都拿到不同的 <code>case_fingerprint</code>，<code>duplicate_fingerprint</code> 什么也看不见。
+    而冗余副本同时抬高 n 又让配对结果相关，正是本项目头条统计量（配对 McNemar）假设不存在的那件事。
+  </p>
+  <p>
+    所以去重走 <code>solution_key</code>：只哈希 <code>role=impl</code> 的文件与
+    <code>gold_files</code> 的 (path, content)，刻意排除题面与测试。
+    没有 stub 或没有参考解时返回 <code>None</code>，调用方当「无法去重」处理，
+    <strong>绝不</strong>当「没有重复」。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/checkpoint.py</span></p>
+</section>
+
+<section id="s03">
+  <p class="sec-no">03</p>
+  <h2>全景数据流：七跳，每跳一个落盘产物</h2>
+  <p class="dek">
+    整条流水线是单向的。每一步产物落盘后可以单独重跑，不必回到上一步。
+  </p>
+  <p>
+    先给一句不带术语的定义：<strong>aibench 是一套给 AI 编程助手出题、跑题、判分的工具。</strong>
+    它从生产环境的会话记录里挖出工程师真实改过的代码缺陷，做成题；
+    让不同的模型和 agent 去做；再统计谁做对得多，以及这个差距是不是噪声。
+  </p>
+
+  <figure>
+  <div class="figscroll">
+  <svg viewBox="0 0 730 700" role="img"
+       aria-label="八级流水线：会话表经抽取、筛选、反向构造、审计、校准、选题，最终产出消融报告，每一跳标注命令与负责源文件">
+    <defs>
+      <marker id="wf-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+      <marker id="wf-arrow-hot" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path class="hot" d="M 0 0 L 10 5 L 0 10 z" />
+      </marker>
+    </defs>
+    <g font-family="ui-monospace, SFMono-Regular, Consolas, monospace" fill="currentColor">
+
+      <rect x="20" y="16" width="280" height="44" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="36" y="35" font-size="13" font-weight="600">会话记录库（MySQL）</text>
+      <text x="36" y="51" font-size="11" opacity=".74">现网 AI 编程助手会话表</text>
+
+      <line x1="160" y1="64" x2="160" y2="100" stroke="currentColor"
+            stroke-width="1.2" marker-end="url(#wf-arrow)"/>
+      <text x="176" y="79" font-size="12">extract-from-db</text>
+      <text x="176" y="93" font-size="10.5" opacity=".74">extract/llm_chat_records.py · history_parse.py · file_versions.py</text>
+
+      <rect x="20" y="104" width="280" height="44" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="36" y="123" font-size="13" font-weight="600">草稿 drafts-from-db/</text>
+      <text x="36" y="139" font-size="11" opacity=".74">带 metadata.file_versions 的 JSON</text>
+
+      <line x1="160" y1="152" x2="160" y2="188" stroke="currentColor"
+            stroke-width="1.2" marker-end="url(#wf-arrow)"/>
+      <text x="176" y="167" font-size="12">filter-drafts</text>
+      <text x="176" y="181" font-size="10.5" opacity=".74">extract/filter_rules.py · llm_soft_filter.py</text>
+
+      <rect x="20" y="192" width="280" height="44" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="36" y="211" font-size="13" font-weight="600">筛后草稿 drafts-kept/</text>
+      <text x="36" y="227" font-size="11" opacity=".74">去掉巡检、闲聊、纯解释类会话</text>
+
+      <line class="hot" x1="160" y1="240" x2="160" y2="276"
+            stroke-width="2" marker-end="url(#wf-arrow-hot)"/>
+      <text class="hot" x="176" y="255" font-size="12" font-weight="600">generate-cases --reverse</text>
+      <text x="176" y="269" font-size="10.5" opacity=".74">extract/reverse_case.py · tier_shaping.py</text>
+
+      <rect class="hot" x="20" y="280" width="280" height="44" rx="6" stroke-width="2"/>
+      <text x="36" y="299" font-size="13" font-weight="600">用例集 auto-v0/</text>
+      <text x="36" y="315" font-size="11" opacity=".74">review_status = needs_review</text>
+
+      <line x1="160" y1="328" x2="160" y2="364" stroke="currentColor"
+            stroke-width="1.2" marker-end="url(#wf-arrow)"/>
+      <text x="176" y="343" font-size="12">validate-cases · audit-cases --annotate</text>
+      <text x="176" y="357" font-size="10.5" opacity=".74">cases.py · validity.py · secrets_scan.py</text>
+
+      <rect x="20" y="368" width="280" height="44" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="36" y="387" font-size="13" font-weight="600">带 validity_ok 的用例集</text>
+      <text x="36" y="403" font-size="11" opacity=".74">annotate 原地改写 case 文件</text>
+
+      <line x1="160" y1="416" x2="160" y2="452" stroke="currentColor"
+            stroke-width="1.2" marker-end="url(#wf-arrow)"/>
+      <text x="176" y="431" font-size="12">calibrate-cases --repeats 3</text>
+      <text x="176" y="445" font-size="10.5" opacity=".74">calibrate.py · stats.py · runner.py（跑 anchors × repeats 遍）</text>
+
+      <rect x="20" y="456" width="280" height="44" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="36" y="475" font-size="13" font-weight="600">calibration.json</text>
+      <text x="36" y="491" font-size="11" opacity=".74">每条 p_hat / spread / r_pb / keep</text>
+
+      <line x1="160" y1="504" x2="160" y2="540" stroke="currentColor"
+            stroke-width="1.2" marker-end="url(#wf-arrow)"/>
+      <text x="176" y="519" font-size="12">select-cases</text>
+      <text x="176" y="533" font-size="10.5" opacity=".74">calibrate.py：按 spread、r_pb 降序，可带 tier / 难度带配额</text>
+
+      <rect x="20" y="544" width="280" height="44" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="36" y="563" font-size="13" font-weight="600">可用集合 disc-v0/</text>
+      <text x="36" y="579" font-size="11" opacity=".74">metadata.calibration 已写回</text>
+
+      <line x1="160" y1="592" x2="160" y2="628" stroke="currentColor"
+            stroke-width="1.2" marker-end="url(#wf-arrow)"/>
+      <text x="176" y="607" font-size="12">run · ablation</text>
+      <text x="176" y="621" font-size="10.5" opacity=".74">runner.py · workspace.py · agents/ · grading.py · report.py</text>
+
+      <rect x="20" y="632" width="280" height="44" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="36" y="651" font-size="13" font-weight="600">ablation_report.md</text>
+      <text x="36" y="667" font-size="11" opacity=".74">多行对比表 + 配对 McNemar</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption>
+    橙色那一跳是主线：缺陷在这里被固定成 trace 里真实的一次编辑。
+    其余每跳都可以单独重跑，因为上一跳的产物已经落盘。
+    <code>export-bundle</code> 与 <code>promote</code> 是从 <code>auto-v0</code> 分出的两条支路，未画在主链上。
+  </figcaption>
+  </figure>
+
+  <h3>两个预算参数决定这条链跑多大</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>参数</th><th>CLI 默认</th><th>e2e 脚本默认</th><th>管什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>--limit</code>（抽库）</td><td class="num">300</td><td class="num">100</td><td>SQL 最多扫描多少行会话，读库预算</td></tr>
+      <tr><td><code>--max-cases</code>（抽库）</td><td class="num">30</td><td>max-cases × 3</td><td>最多写出多少草稿，写出预算</td></tr>
+      <tr><td><code>--max-cases</code>（生成）</td><td class="num">50</td><td class="num">8</td><td>最多写出多少最终用例</td></tr>
+      <tr><td><code>--oversample</code></td><td class="num">1.5</td><td class="num">1.5</td><td>每想要 1 条用例试几条草稿。约 1/4 草稿在下游被跳过</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">docs/REFERENCE.md §4.3</span><span class="src">src/aibench/cli.py</span></p>
+
+  <div class="note warn">
+    <span class="lbl">生成这一跳要调模型，是花钱的一跳</span>
+    <p>实际生成条数是 <code>--max-cases × --oversample</code>，开跑前会打印「本次将从 N 条草稿生成」。
+    长跑必须带 <code>--resume</code>：断点续跑靠 <code>_progress.jsonl</code> 记账，
+    不带它，中断后重跑会为同一批草稿二次付费。</p>
+    <p class="srcline"><span class="src">docs/REFERENCE.md §8.7</span><span class="src">src/aibench/checkpoint.py</span></p>
+  </div>
+</section>
+
+<section id="s04">
+  <p class="sec-no">04</p>
+  <h2>模块地图：15 879 行分成四层</h2>
+  <p class="dek">
+    <code>src/aibench/</code> 下 50 个 Python 文件。按「什么时候被调用」分四层，比按目录看清楚。
+    下面四张表里的路径都相对 <code>src/aibench/</code>。
+  </p>
+
+  <h3>构建层：会话变用例</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>文件</th><th class="num">行</th><th>职责</th></tr></thead>
+    <tbody>
+      <tr><td><code>extract/llm_chat_records.py</code></td><td class="num">439</td><td>连 MySQL，按谓词扫会话表，边扫边落盘草稿</td></tr>
+      <tr><td><code>extract/history_parse.py</code></td><td class="num">426</td><td>把各种形状的 <code>full_history</code> 归一成消息序列</td></tr>
+      <tr><td><code>extract/file_versions.py</code></td><td class="num">584</td><td>重放 <code>read</code> / <code>edit</code>，还原 (pre, post) 对；判定编辑是否是语义缺陷</td></tr>
+      <tr><td><code>extract/sessions.py</code></td><td class="num">396</td><td>会话到草稿，路径与源码脱敏</td></tr>
+      <tr><td><code>extract/filter_rules.py</code></td><td class="num">119</td><td>规则筛选：先匹配 drop 模式，否则按编程关键词累计 score 过阈值</td></tr>
+      <tr><td><code>extract/llm_soft_filter.py</code></td><td class="num">127</td><td>可选的 LLM 软过滤，<code>--llm-soft</code> 才启用</td></tr>
+      <tr><td><code>extract/reverse_case.py</code></td><td class="num">508</td><td>主线：由 (pre, post) 造用例，向模型索要测试与题面</td></tr>
+      <tr><td><code>extract/generate_case.py</code></td><td class="num">552</td><td>正向生成与启发式兜底，保留作对照路径</td></tr>
+      <tr><td><code>extract/tier_shaping.py</code></td><td class="num">360</td><td>消毒与定级：拆隐藏测试、去缺陷标记、保护可见测试</td></tr>
+      <tr><td><code>extract/trace_signals.py</code></td><td class="num">209</td><td>从 trace 数 read / search / edit / repair_rounds，推荐层级</td></tr>
+      <tr><td><code>extract/snapshot_skeleton.py</code></td><td class="num">58</td><td>把 <code>context.files</code> 落成 snapshot 目录</td></tr>
+      <tr><td><code>checkpoint.py</code></td><td class="num">197</td><td><code>_progress.jsonl</code> 断点续跑：确定性拒绝记账，瞬时失败不记账</td></tr>
+      <tr><td><code>compose.py</code></td><td class="num">153</td><td>合成 T4 检索用例：把别的用例的实现文件植入当干扰</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>执行层：用例变结果行</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>文件</th><th class="num">行</th><th>职责</th></tr></thead>
+    <tbody>
+      <tr><td><code>runner.py</code></td><td class="num">619</td><td>单次 run 的编排：物化、跑 Agent、判分、聚合、写 manifest</td></tr>
+      <tr><td><code>workspace.py</code></td><td class="num">410</td><td>inline / snapshot / git / mixed 四种物化，含解压与路径安全</td></tr>
+      <tr><td><code>agents/base.py</code></td><td class="num">42</td><td><code>AgentAdapter</code> 抽象基类，只有一个 <code>run()</code></td></tr>
+      <tr><td><code>agents/registry.py</code></td><td class="num">31</td><td>adapter 名到类的映射表，<code>register_adapter</code> 是扩展点</td></tr>
+      <tr><td><code>agents/opencode.py</code></td><td class="num">776</td><td>把 opencode CLI 当子进程驱动，含沙箱与工作区镜像</td></tr>
+      <tr><td><code>agents/tool_loop.py</code></td><td class="num">309</td><td>自研多步工具循环：<code>list</code> / <code>read</code> / <code>write</code> / <code>bash</code> / <code>submit</code></td></tr>
+      <tr><td><code>agents/bare_model.py</code></td><td class="num">284</td><td>一次调用，模型回一段围栏代码，没有任何脚手架</td></tr>
+      <tr><td><code>agents/openai_compat.py</code></td><td class="num">240</td><td>单轮 Chat，要求回 <code>{"files":[...]}</code> JSON 信封</td></tr>
+      <tr><td><code>agents/shell_agent.py</code></td><td class="num">125</td><td>包外部 CLI，<code>command_template</code> 必填</td></tr>
+      <tr><td><code>agents/mock.py</code></td><td class="num">105</td><td>只给单测与 <code>--dry-run</code> 用</td></tr>
+      <tr><td><code>retry.py</code></td><td class="num">106</td><td>HTTP / DB 重试策略，指数退避加抖动</td></tr>
+      <tr><td><code>parallel_util.py</code></td><td class="num">36</td><td><code>parallel_map</code>，case 级与实验行级并行都走它</td></tr>
+      <tr><td><code>preflight.py</code></td><td class="num">210</td><td><code>doctor</code> 的实现：python / node / 评分依赖 / opencode / 沙箱</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>判分与效度层：结果可不可信</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>文件</th><th class="num">行</th><th>职责</th></tr></thead>
+    <tbody>
+      <tr><td><code>validity.py</code></td><td class="num">1084</td><td>全部效度门禁 + 指纹 + 污染检测 + 难度启发式</td></tr>
+      <tr><td><code>grading.py</code></td><td class="num">552</td><td>四种判分模式、保护路径、干扰检测、隐藏测试注入</td></tr>
+      <tr><td><code>tiers.py</code></td><td class="num">587</td><td>T1–T5 层契约与 <code>check_tier_invariants</code>、题面泄露检测</td></tr>
+      <tr><td><code>languages.py</code></td><td class="num">345</td><td>每种语言一份 <code>LanguageSpec</code>：测试命名、运行命令、通过率解析</td></tr>
+      <tr><td><code>secrets_scan.py</code></td><td class="num">356</td><td>遍历整份文档的每个字符串值扫密钥</td></tr>
+      <tr><td><code>grading_env.py</code></td><td class="num">100</td><td>核对 <code>configs/grading-env.yaml</code> 承诺的包是否真装了</td></tr>
+      <tr><td><code>promote.py</code></td><td class="num">129</td><td>人工发布门控，写 <code>review_status = published</code></td></tr>
+      <tr><td><code>export_bundle.py</code></td><td class="num">303</td><td>五道门禁 + <code>MANIFEST.json</code>，导出到仓库之外</td></tr>
+      <tr><td><code>provenance.py</code></td><td class="num">214</td><td>执行身份：git 版本、harness 摘要、依赖摘要</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>度量与报告层：结果行变结论</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>文件</th><th class="num">行</th><th>职责</th></tr></thead>
+    <tbody>
+      <tr><td><code>calibrate.py</code></td><td class="num">1139</td><td>锚点面板、逐条 item 统计、keep/drop 判定、选题与配额</td></tr>
+      <tr><td><code>ablation.py</code></td><td class="num">728</td><td>矩阵消融、剔除 weak_grader、基线收益、配对比较、报告渲染</td></tr>
+      <tr><td><code>report.py</code></td><td class="num">526</td><td><code>summary.json</code> / <code>tables.json</code> / <code>report.md</code></td></tr>
+      <tr><td><code>stats.py</code></td><td class="num">325</td><td>Wilson 区间、McNemar、留一相关、样本量、成本曲线</td></tr>
+      <tr><td><code>diagnostics.py</code></td><td class="num">82</td><td>失败归因分桶</td></tr>
+      <tr><td><code>export_results.py</code></td><td class="num">97</td><td>CSV / XLSX 导出</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>三个跨层文件：入口、数据类、路径解析</h3>
+  <p>
+    <code>cli.py</code>（1295 行）挂全部 19 个子命令，是唯一的入口；
+    <code>models.py</code>（246 行）定义所有跨层数据类；
+    <code>cases.py</code>、<code>io_util.py</code>、<code>env_config.py</code> 分别管用例集解析、
+    路径与读写、环境变量兜底。
+  </p>
+
+  <div class="note pin">
+    <span class="lbl">读代码从哪进</span>
+    <p>入口是 <code>src/aibench/__main__.py</code>，两行：导入 <code>main</code>，再 <code>raise SystemExit(main())</code>，转到 <code>cli.py</code>。
+    <code>main()</code> 先 <code>load_dotenv()</code>，再用 argparse 建 19 个 subparser，
+    然后是一长串 <code>if args.cmd == ...</code> 分支。不是 <code>set_defaults(func=...)</code>，
+    所以按命令名 grep 就能找到对应分支。</p>
+  </div>
+</section>
+
+<section id="s05">
+  <p class="sec-no">05</p>
+  <h2>追一条 case：从 JSON 文件到 results.jsonl 的一行</h2>
+  <p class="dek">
+    这一节按调用顺序走，不按目录顺序走。看懂这条线就看懂了 <code>run</code> 与 <code>ablation</code>
+    和 <code>calibrate-cases</code> 的公共部分，后两者都在内部调 <code>run_benchmark</code>。
+  </p>
+
+  <h3>第 1 步：<code>run_benchmark</code> 装配三份配置</h3>
+  <p>
+    三层配置在这里合流：run 配置给预算与默认值，agent 与 model 配置可被 CLI 覆盖。
+    相对路径一律相对<strong>仓库根</strong>解析。
+  </p>
+  <pre><code class="language-python">run_cfg  = RunConfig.from_dict(load_yaml(run_config_path or configs/runs/baseline.yaml))
+agent_cfg = AgentConfig.from_dict(load_yaml(--agent 或 run_cfg.agent_config_path))
+model_cfg = ModelConfig.from_dict(load_yaml(--model 或 run_cfg.model_config_path))
+cases     = load_cases(case_set, validate=True)      # schema 校验在这里做</code></pre>
+  <p class="srcline"><span class="src">src/aibench/runner.py</span></p>
+
+  <p>
+    模型名以模型 YAML 的 <code>model</code> 字段为准，<code>OPENAI_MODEL</code> 只在该字段为空时兜底。
+    这条优先级不是风格问题：反过来的话，多模型消融会静默跑成同一个模型。
+  </p>
+
+  <h3>第 2 步：开跑前的三道拦截</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>检查</th><th>不过会怎样</th><th>为什么放在开跑前</th></tr></thead>
+    <tbody>
+      <tr><td><code>selection_strategy</code> 是否已知</td><td>抛 <code>ValueError</code></td>
+        <td>写错的策略名必须显式失败，否则 manifest 记着一个并没有被执行的策略名</td></tr>
+      <tr><td>JS/TS 用例与 node 版本</td><td>打印告警，逐条记 <code>infra_error</code></td>
+        <td>拒整个 run 会让「100 条 Python 里混 1 条 TS」的集合在能跑 100 条的机器上不可用</td></tr>
+      <tr><td><code>expected_case_set_fingerprint</code></td><td>抛 <code>RuntimeError</code> 拒跑</td>
+        <td>集合内容会随重新生成而漂移，指纹保证这次的数字被归到它真正对应的集合上</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">src/aibench/runner.py</span></p>
+  <p>
+    以 <code>.</code> 开头的派生子集（<code>.ablation-filtered-*</code>、<code>.calibrating-*</code>）
+    跳过指纹比对：它们按定义就是子集，指纹不可能等于母集。
+  </p>
+
+  <h3>第 3 步：<code>parallel_map</code> 按 case 并行</h3>
+  <p>
+    并行度取 <code>--workers</code>，否则取 run 配置的 <code>case_workers</code>（生产 baseline 是 4）。
+    每条 case 拿到独立的工作区目录与独立的 Agent 实例。
+    并行不改变单 case 语义，这条由测试锁住。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/parallel_util.py</span><span class="src">tests/test_stats_parallel.py</span></p>
+
+  <h3>第 4 步：<code>_run_one_attempt</code> 是真正干活的那 154 行</h3>
+  <p>顺序固定，每一步的异常都被包住：</p>
+  <ol>
+    <li><code>materialize_workspace()</code> 建工作区，写 <code>workspace_manifest.json</code>；失败即
+      <code>infra_error</code>，不进 Agent。</li>
+    <li><code>workspace_inventory(workspace)</code> 取<strong>开跑前清单</strong>。这一步在 Agent 跑之前，
+      是后面判分干扰检测唯一的依据。没有它就分不清「用例自带的文件」和「提交里新加的文件」。</li>
+    <li><code>create_agent(agent_cfg, model_cfg).run(case, workspace, max_steps, max_wall_time_s)</code>。</li>
+    <li><code>grade_case(case, workspace, baseline=baseline)</code>。</li>
+    <li>组装结果行并返回。<code>cases/&lt;case_id&gt;/result.json</code> 由外层的 <code>_run_one_case</code>（<code>runner.py</code>）写出。</li>
+  </ol>
+  <p class="srcline"><span class="src">src/aibench/runner.py</span></p>
+  <p>
+    这五步全部包在 <code>try</code> 里，异常一律折成 <code>GradeResult(infra_error=True)</code>。
+    <code>parallel_map</code> 会把 worker 里逃出来的异常重新抛给执行器，
+    所以只要有一步没被包住，一条 case 就能在其余 case 都已付费跑完之后带走整个 run 的产物。
+  </p>
+
+  <h3>第 5 步：case 级重试只覆盖基础设施失败</h3>
+  <p>
+    <code>_run_one_attempt</code> 内部有一个 <code>for attempt in range(1, max_case_tries + 1)</code>。
+    只有 <code>infra_error</code> 才重跑，模型答错不重跑。
+    次数取 run YAML 的 <code>case_retry</code>（优先），否则环境变量 <code>AIBENCH_CASE_RETRY</code>（默认 2）。
+    优先级给配置而不是环境变量，是为了让「这次跑测吸收了几次故障」能从 manifest 上读出来。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/runner.py</span><span class="src">src/aibench/models.py</span></p>
+
+  <h3>第 6 步：k 次采样折成一行</h3>
+  <p>
+    <code>results.jsonl</code> 保持<strong>一 case 一行</strong>，因为
+    <code>ablation.paired_outcomes</code>、<code>calibrate.aggregate_calibration</code>、
+    <code>report.build_summary</code> 都依赖这一点。
+    <code>max_attempts &gt; 1</code> 时 <code>_aggregate_attempts</code> 折叠：
+  </p>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>字段</th><th>怎么算</th><th>回答什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>passed</code></td><td>选择策略实际提交的那次尝试的结果</td><td>主指标口径不变</td></tr>
+      <tr><td><code>pass_at_1</code></td><td>k 次里通过的比例</td><td>单次抽样的期望结果</td></tr>
+      <tr><td><code>pass_at_k</code></td><td>至少一次成功</td><td>重复采样暴露的上限</td></tr>
+      <tr><td><code>pass_pow_k</code></td><td>k 次全部成功</td><td>稳定性</td></tr>
+      <tr><td><code>total_tokens</code> 等 6 个字段</td><td>k 次求和</td><td>跑 k 次就是花了 k 次的预算</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">src/aibench/runner.py</span></p>
+
+  <p>
+    <code>best-of-k</code> 用了判分器的结论来选，这是真实系统在提交时看不到的信息。
+    所以它被登记在 <code>ORACLE_STRATEGIES</code> 里，产物打上
+    <code>selection_is_oracle</code> 标记，避免被当成一个「提交出来的通过率」去和别人比。
+  </p>
+
+  <h3>第 7 步：写产物</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>文件</th><th>产出者</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td><code>run_manifest.json</code></td><td><code>runner.py</code> + <code>provenance.environment()</code></td>
+        <td>配置快照、<code>case_set_fingerprint</code>、执行身份</td></tr>
+      <tr><td><code>results.jsonl</code></td><td><code>runner.py</code></td><td>一 case 一行</td></tr>
+      <tr><td><code>summary.json</code></td><td><code>report.build_summary</code></td><td>聚合指标、Wilson CI、分层、成本</td></tr>
+      <tr><td><code>tables.json</code></td><td><code>report.render_summary_tables_json</code></td><td><code>overview_row</code> + <code>general_row</code></td></tr>
+      <tr><td><code>report.md</code></td><td><code>report.render_report_md</code></td><td>人类可读，含失败诊断</td></tr>
+      <tr><td><code>cases/&lt;id&gt;/</code></td><td><code>runner.py</code></td><td>工作区快照与逐条明细</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note pin">
+    <span class="lbl">空跑测不写成 0.0</span>
+    <p><code>success_rate</code> 在有效 case 数为 0 时返回 <code>None</code>，不是 <code>0.0</code>，
+    CLI 额外打印一行 <code>FAILED: no case executed</code> 并返回 1。
+    「全部 case 都死在基础设施上」和「一条都没做对」是两件事，产物必须能分开表达。</p>
+    <p class="srcline"><span class="src">src/aibench/report.py</span><span class="src">src/aibench/cli.py</span></p>
+  </div>
+</section>
+
+<section id="s06">
+  <p class="sec-no">06</p>
+  <h2>workspace 物化：顺序即语义</h2>
+  <p class="dek">
+    四种模式，一个固定顺序。顺序是用例作者能钉死具体字节的原因。
+  </p>
+
+  <pre><code class="language-text">1. assert_disposable(workspace)  →  shutil.rmtree  →  mkdir     # 清空
+2. snapshot / git 打底                                          # mode 决定是否执行
+3. inline case.files 覆盖                                       # 路径冲突时永远赢
+4. setup_commands（cwd = workspace）</code></pre>
+  <p class="srcline"><span class="src">src/aibench/workspace.py</span></p>
+
+  <p>
+    第 3 步「永远赢」是设计意图：snapshot 给的是仓库现场，
+    <code>context.files</code> 给的是这道题要的那个确切版本。反过来的话，
+    反向构造钉住的 pre 版本会被快照里的当前版本盖掉。
+  </p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>mode</th><th>打底文件来自</th><th>典型用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>inline</code>（默认）</td><td>无，全部来自 <code>context.files</code></td><td>反向构造产出的用例</td></tr>
+      <tr><td><code>snapshot</code></td><td>case-set 下的目录或 tar/zip</td><td>需要多文件现场</td></tr>
+      <tr><td><code>git</code></td><td>固定 url + ref，可 subdir / sparse</td><td>钉死上游仓库某个提交</td></tr>
+      <tr><td><code>mixed</code></td><td>snapshot 与 git 都应用</td><td><code>snapshot-skeleton</code> 的产物</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>路径安全在两个地方</h3>
+  <p>
+    <code>safe_relpath()</code> 归一每一个写入路径，
+    <code>_safe_extract_tar</code> / <code>_safe_extract_zip</code> 拦住压缩包里的越界成员。
+    值得单独看的是 <code>inject_hidden_tests</code>：
+  </p>
+  <pre><code class="language-python">if path.is_symlink() or path.is_file():
+    path.unlink()
+elif path.is_dir():
+    shutil.rmtree(path)
+path.write_text(fb.content, encoding="utf-8")</code></pre>
+  <p class="srcline"><span class="src">src/aibench/grading.py</span></p>
+  <p>
+    隐藏测试的路径是可预测的（工作区根下的 <code>*_spec.py</code>），
+    所以被测 Agent 可以在那里放一个符号链接或一个目录。
+    符号链接会让 <code>write_text</code> 跟着写到工作区外面，
+    目录会让它抛 <code>IsADirectoryError</code>。先删再写就是为这个。
+  </p>
+</section>
+
+<section id="s07">
+  <p class="sec-no">07</p>
+  <h2>六个适配器量的不是同一件事</h2>
+  <p class="dek">
+    <code>AgentAdapter</code> 只有一个抽象方法。差别全在「模型与判分器之间隔了多少东西」。
+  </p>
+
+  <pre><code class="language-python">class AgentAdapter(ABC):
+    def __init__(self, agent_config: AgentConfig, model_config: ModelConfig) -&gt; None: ...
+
+    @abstractmethod
+    def run(self, case: Case, workspace: Path, *,
+            max_steps: int, max_wall_time_s: float) -&gt; AgentRunResult: ...</code></pre>
+  <p class="srcline"><span class="src">src/aibench/agents/base.py</span></p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>adapter</th><th>协议</th><th>能否检索</th><th>能否迭代</th><th>记 token</th><th>它回答的问题</th></tr></thead>
+    <tbody>
+      <tr><td><code>bare_model</code></td><td>一次调用，回一段围栏代码</td><td>否</td><td>否</td><td>是</td><td>模型本身有多强</td></tr>
+      <tr><td><code>openai_compat</code></td><td>单轮，回 <code>{"files":[...]}</code> JSON</td><td>否</td><td>否</td><td>是</td><td>模型在本项目自研脚手架里多强</td></tr>
+      <tr><td><code>tool_loop</code></td><td>多步 JSON 工具调用</td><td>是</td><td>是</td><td>是</td><td>同上，且带检索与迭代</td></tr>
+      <tr><td><code>opencode</code></td><td>子进程驱动真实 CLI</td><td>是</td><td>是</td><td>是</td><td>模型在人们真正用的 agent 里多强</td></tr>
+      <tr><td><code>shell</code></td><td>外部 CLI 模板</td><td>取决于它</td><td>取决于它</td><td><strong>否</strong></td><td>接第三方 agent</td></tr>
+      <tr><td><code>mock</code></td><td>无</td><td>—</td><td>—</td><td>—</td><td>单测与 <code>--dry-run</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">src/aibench/agents/registry.py</span><span class="src">docs/REFERENCE.md §12</span></p>
+
+  <div class="note pin">
+    <span class="lbl">三个口径不能混着比</span>
+    <p>无脚手架（<code>bare_model</code>）、自研脚手架（<code>openai_compat</code> / <code>tool_loop</code>）、
+    真实 CLI（<code>opencode</code>）回答的是三个不同的问题。
+    脚手架本身对通过率的影响可以大于模型之间的差异，
+    所以：<strong>比模型要固定脚手架，比脚手架要固定模型</strong>，一次只动一条轴。
+    要在贴近真实使用的条件下比模型，用 <code>configs/agents/opencode.yaml</code>。</p>
+  </div>
+
+  <h3><code>capability_axes</code>：一个声明式的适配性检查</h3>
+  <p>
+    agent 配置里声明自己能施展哪些能力轴。<code>openai_compat</code> 声明
+    <code>[A1, A4, A5, A6]</code>。它把整个工作区贴进 prompt，所以没有可检索的东西（缺 A2），
+    也没有第二轮可以反应（缺 A3）。<code>opencode</code> 声明全部六轴。
+  </p>
+  <p>
+    <code>calibrate-cases</code> 在开跑前核对集合里出现的所有 tier，不匹配直接拒绝。
+    这不是形式主义：单轮 agent 把每个文件都贴进 prompt，
+    T4 用例里的干扰文件对它不是障碍，是白送的可用代码，
+    用它去校准 T4 会得到偏高且没有意义的通过率。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/models.py</span><span class="src">src/aibench/calibrate.py</span></p>
+
+  <h3>opencode 适配器：边界靠沙箱，不靠权限配置</h3>
+  <p>
+    这个适配器 776 行，其中沙箱那几十行决定了它测的是什么。
+    配置项 <code>external_directory: deny</code> 只对一小撮命令名做路径检查，
+    <strong>不是文件系统边界</strong>。真正的边界是 macOS 的 <code>sandbox-exec</code> seatbelt 配置：
+  </p>
+  <ul>
+    <li><code>deny file-read-data file-write*</code> 覆盖仓库子树，答案目录在其中。</li>
+    <li><code>allow file-read-data</code> 放行 <code>.venv</code>。判分命令是
+      <code>python -m pytest -q</code>，不放行 agent 就跑不了被评分的测试。</li>
+    <li>只拒内容不拒元数据。连 <code>file-read-metadata</code> 一起拒，
+      opencode 会在 <code>lstat</code> 上以 EPERM 退出。</li>
+  </ul>
+  <p class="srcline"><span class="src">src/aibench/agents/opencode.py</span><span class="src">docs/REFERENCE.md §12.4</span></p>
+
+  <div class="note">
+    <span class="lbl">非 macOS 环境</span>
+    <p><code>sandbox-exec</code> 是 macOS 独有的。没有它就没有这层边界，
+    所以默认<strong>拒跑</strong>并把每条 case 记成 <code>infra_error</code>。
+    设 <code>AIBENCH_ALLOW_UNSANDBOXED=1</code> 表示知情照跑，产物里会记
+    <code>artifacts.sandboxed = false</code>，不继承一个没得到的保证。</p>
+  </div>
+</section>
+
+<section id="s08">
+  <p class="sec-no">08</p>
+  <h2>判分：三道前置检查在分派之前，两种「失败」必须分开</h2>
+  <p class="dek">
+    <code>grade_case</code> 的顺序不是随意的：先确认仪器可用，再确认没被绕过，最后才注入隐藏测试。
+  </p>
+
+  <figure>
+  <div class="figscroll">
+  <svg viewBox="0 0 700 400" role="img"
+       aria-label="grade_case 的判定顺序：先查语言可用性，再查保护路径，再查评分干扰，然后注入隐藏测试，最后按模式分派">
+    <defs>
+      <marker id="g-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+      <marker id="g-arrow-x" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path class="bad" d="M 0 0 L 10 5 L 0 10 z" />
+      </marker>
+    </defs>
+    <g font-family="ui-monospace, SFMono-Regular, Consolas, monospace" fill="currentColor">
+
+      <rect x="150" y="16" width="250" height="40" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="164" y="41" font-size="12.5">grade_case(case, ws, baseline)</text>
+      <line x1="275" y1="56" x2="275" y2="74" stroke="currentColor" stroke-width="1.2"
+            marker-end="url(#g-arrow)"/>
+
+      <rect x="150" y="78" width="250" height="40" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="164" y="96" font-size="12">语言可执行？</text>
+      <text x="164" y="111" font-size="10.5" opacity=".74">node &lt; 22.18 时 JS 用例判不了</text>
+      <line class="bad" x1="400" y1="98" x2="452" y2="98" stroke-width="1.4"
+            marker-end="url(#g-arrow-x)"/>
+      <text class="bad" x="460" y="95" font-size="11.5">infra_error</text>
+      <text x="460" y="109" font-size="10" opacity=".74">仪器坏了，不进分母</text>
+      <line x1="275" y1="118" x2="275" y2="136" stroke="currentColor" stroke-width="1.2"
+            marker-end="url(#g-arrow)"/>
+
+      <rect x="150" y="140" width="250" height="40" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="164" y="158" font-size="12">protected_paths 字节一致？</text>
+      <text x="164" y="173" font-size="10.5" opacity=".74">对照 context.files</text>
+      <line class="bad" x1="400" y1="160" x2="452" y2="160" stroke-width="1.4"
+            marker-end="url(#g-arrow-x)"/>
+      <text class="bad" x="460" y="157" font-size="11.5">reward_hack</text>
+      <text x="460" y="171" font-size="10" opacity=".74">改了可见测试</text>
+      <line x1="275" y1="180" x2="275" y2="198" stroke="currentColor" stroke-width="1.2"
+            marker-end="url(#g-arrow)"/>
+
+      <rect x="150" y="202" width="250" height="40" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="164" y="220" font-size="12">有没有新增收集控制文件？</text>
+      <text x="164" y="235" font-size="10.5" opacity=".74">conftest.py / pytest.ini / skip 标记</text>
+      <line class="bad" x1="400" y1="222" x2="452" y2="222" stroke-width="1.4"
+            marker-end="url(#g-arrow-x)"/>
+      <text class="bad" x="460" y="219" font-size="11.5">reward_hack</text>
+      <text x="460" y="233" font-size="10" opacity=".74">绕过保护路径</text>
+      <line x1="275" y1="242" x2="275" y2="260" stroke="currentColor" stroke-width="1.2"
+            marker-end="url(#g-arrow)"/>
+
+      <rect class="hot" x="150" y="264" width="250" height="40" rx="6" stroke-width="1.8"/>
+      <text x="164" y="282" font-size="12" font-weight="600">inject_hidden_tests</text>
+      <text x="164" y="297" font-size="10.5" opacity=".74">此刻才写入工作区，Agent 全程看不到</text>
+      <line x1="275" y1="304" x2="275" y2="322" stroke="currentColor" stroke-width="1.2"
+            marker-end="url(#g-arrow)"/>
+
+      <rect x="150" y="326" width="250" height="40" rx="6" fill="none"
+            stroke="currentColor" stroke-width="1.2" opacity=".72"/>
+      <text x="164" y="344" font-size="12">按 grader.mode 分派</text>
+      <text x="164" y="359" font-size="10.5" opacity=".74">script · gold · llm_judge · composite</text>
+      <line x1="400" y1="346" x2="452" y2="346" stroke="currentColor" stroke-width="1.2"
+            marker-end="url(#g-arrow)"/>
+      <text x="460" y="343" font-size="11.5">GradeResult</text>
+      <text x="460" y="357" font-size="10" opacity=".74">passed / collection_error / detail</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption>
+    橙色那一步是隐藏测试的注入时机。它在 Agent 停止之后、判分之前，
+    所以 <code>grader.command</code> 对 T3 以上用例必须是
+    <code>python -m pytest -q</code> 这种收集整个目录的写法，而不是指定单个测试文件。
+    源码在 <code>src/aibench/grading.py</code>。
+  </figcaption>
+  </figure>
+
+  <h3>四种判分模式，主线只用 script</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>mode</th><th>成功条件</th><th>注意</th></tr></thead>
+    <tbody>
+      <tr><td><code>script</code></td><td>执行 <code>command</code> 且退出码为 0</td><td>主线用它</td></tr>
+      <tr><td><code>gold</code></td><td>文件内容按 <code>match</code> 与参考解或 <code>key_lines</code> 匹配</td><td>区分度弱，消融默认剔除</td></tr>
+      <tr><td><code>llm_judge</code></td><td>模型评分 ≥ <code>judge_threshold</code></td><td>本领域用得少</td></tr>
+      <tr><td><code>composite</code></td><td>优先 script；未过且非 infra、非 collection 才回退 gold</td><td>回退条件是关键，见下</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    <code>composite</code> 的回退条件写成 <code>if r.passed or r.infra_error or r.collection_error: return r</code>。
+    少一个 <code>collection_error</code>，一个测试根本没跑起来的用例会掉到 gold 分支上被判通过，
+    而那条「收集失败」的结论被丢在地上。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/grading.py</span></p>
+
+  <h3>三种失败，只有一种该进主指标分母</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>字段</th><th>含义</th><th>进不进主指标分母</th><th>典型原因</th></tr></thead>
+    <tbody>
+      <tr><td><code>infra_error</code></td><td>harness 自己坏了</td><td><span class="tag err">不进</span></td>
+        <td>网关不通、工作区物化失败、node 不可用、用例配置错误</td></tr>
+      <tr><td><code>collection_error</code></td><td>用例立不起来</td><td><span class="tag wrn">进</span></td>
+        <td>导入失败、语法错、运行器一条测试都没收集到</td></tr>
+      <tr><td><code>reward_hack</code></td><td>改了不该改的东西</td><td><span class="tag wrn">进，且判 0 分</span></td>
+        <td>改可见测试、注入 <code>conftest.py</code> 猴补丁</td></tr>
+      <tr><td>普通 <code>passed = false</code></td><td>真跑了没过</td><td><span class="tag ok">进</span></td>
+        <td>模型改错了</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note pin">
+    <span class="lbl">把「跑不起来」记成「很难」会污染整个难度分布</span>
+    <p>「跑不起来」与「很难」对通过率是同一个信号。一条 C++ 用例若因缺头文件在三个锚点上全部失败，
+    会以 <code>p_hat = 0</code> 的形态被记录成完美难题。</p>
+    <p>判据取自运行器自己报告的用例计数（<code>LanguageSpec.tally_counts</code>）与退出码，
+    不去匹配错误特征。唯一会读的文本是崩溃横幅：node 的 <code>^(?:#\s*)?Node\.js v\d</code>，
+    它只在文件加载失败时出现。</p>
+    <p class="srcline"><span class="src">src/aibench/languages.py</span><span class="src">src/aibench/models.py</span></p>
+  </div>
+
+  <h3>判分环境被钉死了三个变量</h3>
+  <pre><code class="language-python">env["PYTHONHASHSEED"] = "0"          # 迭代 set/dict 并断言顺序的测试，靠运气过或不过
+env["PYTHONDONTWRITEBYTECODE"] = "1" # __pycache__ 会让判分前后的工作区清单对不上
+env.pop("PYTHONWARNINGS", None)      # 调用方的 error 设置会把弃用警告变成失败</code></pre>
+  <p class="srcline"><span class="src">src/aibench/grading.py</span></p>
+
+  <div class="note warn">
+    <span class="lbl">判分命令在宿主机执行</span>
+    <p><code>grader.command</code> 由 <code>grading.py</code> 用 <code>subprocess</code> 在宿主机上执行，
+    没有容器隔离。<strong>只对来源可信的用例集跑判分</strong>；
+    外来用例集应先人工过一遍 <code>grader.command</code>。
+    生成侧另有一层：<code>generate-cases</code> 对<strong>模型生成出来的</strong>命令有白名单
+    <code>_SAFE_GRADER_CMD</code>。</p>
+    <p class="srcline"><span class="src">src/aibench/grading.py</span><span class="src">docs/REFERENCE.md §13</span></p>
+  </div>
+</section>
+
+<section id="s09">
+  <p class="sec-no">09</p>
+  <h2>效度门禁：怎么用机器证明一道题是好题</h2>
+  <p class="dek">
+    目标只有一句话：让 <code>task_success_rate</code> 的差异来自 Agent 与模型的能力，
+    而不是坏题或答案泄漏。<code>CaseValidityReport.ok</code> 为真，当且仅当不存在 error 级 issue。
+  </p>
+
+  <h3>两道门构成难度的上下界</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>门禁</th><th>做法</th><th>不做会怎样</th></tr></thead>
+    <tbody>
+      <tr><td><code>stub_fail_gate</code></td>
+        <td>物化初始现场，直接判分，必须<strong>失败</strong></td>
+        <td>初始 stub 已能过测，任何 Agent 都「成功」，指标虚高</td></tr>
+      <tr><td><code>solvability_gate</code></td>
+        <td>物化后把 <code>gold_files</code> 覆盖进去，注入隐藏测试，必须<strong>通过</strong></td>
+        <td>一个写坏的隐藏测试会让所有配置都失败，在报告里长得像难题</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">src/aibench/validity.py</span></p>
+  <p>
+    没有参考解的用例无法验证可解性，一律判失败，不豁免。
+    代价是一部分实测可解、但缺参考解的用例会被一并拒掉；
+    收益是「所有锚点都做不出来」这一档里不再混进坏题。
+  </p>
+
+  <h3>12 条 error 级门禁</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>issue code</th><th>拦什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>stub_fail_gate</code> / <code>solvability_gate</code></td><td>难度的下界与上界</td></tr>
+      <tr><td><code>tier_&lt;violation&gt;</code></td><td>层级结构不变量，逐条来自 <code>check_tier_invariants</code></td></tr>
+      <tr><td><code>tier_distractor_in_solution</code></td><td>声明 <code>role=distractor</code> 却被参考解改动</td></tr>
+      <tr><td><code>tier_solution_file_unchanged</code></td><td>某个 gold 文件与初始文件完全相同，是凑数项</td></tr>
+      <tr><td><code>contamination_gold_in_context</code></td><td>参考解全文已在 <code>context.files</code> 里，复制即满分</td></tr>
+      <tr><td><code>contamination_keyline_in_context</code></td><td>gold 模式下关键行已在上下文</td></tr>
+      <tr><td><code>test_reads_source_text</code></td><td>测试 grep 实现的源码文本而不是运行它</td></tr>
+      <tr><td><code>hidden_test_requires_unknowable_symbol</code></td><td>隐藏测试索要一个哪里都没出现过的符号</td></tr>
+      <tr><td><code>hidden_test_requires_unknowable_kwarg</code></td><td>同上，但漏在关键字参数那一侧</td></tr>
+      <tr><td><code>gold_is_collection_control_file</code></td><td>参考解落在 <code>conftest.py</code> 之类文件上，改的是判分环境</td></tr>
+      <tr><td><code>case_contains_tool_output_footer</code></td><td>被判分的文件里带着 read 工具的自述行</td></tr>
+      <tr><td><code>prompt_too_short</code></td><td>题面去空白后短于 20 字符</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">src/aibench/validity.py</span><span class="src">docs/REFERENCE.md §14.2</span></p>
+
+  <p>
+    warn 级不阻断 <code>validity_ok</code>：<code>tier_solution_rewrites_file</code>、
+    <code>tier_prompt_names_changed_function</code>、<code>prompt_contains_large_code_fence</code>、
+    <code>weak_grader_flag</code>、<code>tier_missing</code>、<code>duplicate_fingerprint</code>，
+    以及两条 <code>*_unverified</code>。
+    「门禁没跑成」之所以是 warn 而不是 error，是因为
+    <code>audit-cases --annotate</code> 会把结论写死进 case 文件：
+    本机缺 node、缺评分依赖导致判不了，记成 <code>validity_ok: false</code>
+    等于替所有后来的读者污染语料。
+  </p>
+
+  <h3>三条值得单独读的门禁</h3>
+  <p>
+    <strong><code>test_reads_source_text</code></strong>　判的是「测试有没有在读实现的源码文本」。
+    它取三条规则的并集：反射取源码、含读调用<strong>那一行</strong>出现 impl 文件名、
+    存在读调用并且有字符串包含或正则断言。三条各自非冗余，
+    单用一条宽正则（「测试里出现 <code>readFileSync</code> 或 <code>open</code>」）会大量误伤。
+    已知局限是被测行为本身就是文件内容时（文档生成器、配置写入工具）会误判，
+    所以它只在生成期阻断，不追溯改写既有集合。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/validity.py</span><span class="src">scripts/t1_gate_report.py</span></p>
+  <p>
+    <strong><code>hidden_test_requires_unknowable_symbol</code></strong>　隐藏行为可以，隐藏接口不行。
+    隐藏测试索要一个在可见面上哪里都没出现过的符号，会让所有解题者以同一原因失败：
+    那是无解题，区分不了任何东西，却在通过率上长得和难题一模一样。
+    两处易错：参考解<strong>不计入</strong>可见面（缺失符号必然出现在参考解里，而解题者读不到它）；
+    文件名不是属性访问（<code>postcss.config.js</code> 里的 <code>js</code> 不是被索要的符号）。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/validity.py</span></p>
+  <p>
+    <strong><code>case_contains_tool_output_footer</code></strong>　反向构造用 trace 读到的内容重建文件，
+    而 read 工具会在内容末尾追加一行自述。这不是「多一行噪声」：
+    带页脚的文件可能根本不是合法源码，于是 <code>check_stub_fails</code>
+    是因为文件加载不了而通过的，用例看起来合格实则空转。
+    范围绑定判分标的（<code>role: impl</code>、<code>gold_files</code>、<code>hidden_tests</code>、
+    <code>protected_paths</code>），匹配行锚定 <code>^\(…\)$</code>，
+    以免误伤源码里正好含这段字符串的文件。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/validity.py</span></p>
+
+  <div class="note warn">
+    <span class="lbl">新门禁要重跑 annotate 才生效</span>
+    <p><code>calibrate.py</code> 不读 <code>validity_ok</code>，
+    <code>export_bundle</code> 与 <code>compose</code> 读的是<strong>落盘的旧值</strong>，
+    只有 <code>promote</code> 会重跑 <code>audit_case</code>。
+    所以新加的门禁要到重跑一次 <code>audit-cases --annotate</code> 之后才对既有集合起作用。</p>
+    <p><code>annotate</code> 原地改写 case 文件，而所有 case 集合都在 <code>.gitignore</code> 里，
+    旧判定无法从版本库恢复。<strong>跑它之前先 <code>cp -a</code> 一份集合目录。</strong></p>
+  </div>
+</section>
+
+<section id="s10">
+  <p class="sec-no">10</p>
+  <h2>分层：用结构不变量取代体积启发式</h2>
+  <p class="dek">
+    按文件数与行数估难度，度量的是文件体积，不是所需能力。
+    Tier 换了个提法：声明<strong>用例结构上强迫求解者做什么</strong>，不去猜它有多难，
+    每层配一组离线可检的不变量。
+  </p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>层</th><th>名称</th><th>结构不变量（<code>check_tier_invariants</code> 逐条校验）</th><th>分离的能力轴</th></tr></thead>
+    <tbody>
+      <tr><td><code>T1</code></td><td>直接修复</td>
+        <td>1–3 文件；允许题面或注释给出缺陷位置</td><td>地板锚，各配置基本都过</td></tr>
+      <tr><td><code>T2</code></td><td>定位修复</td>
+        <td>2–4 文件；题面无机制泄露；stub 无 <code>BUG</code> / <code>FIXME</code> 标记</td><td>A1 定位诊断</td></tr>
+      <tr><td><code>T3</code></td><td>隐藏规格</td>
+        <td>2–6 文件；≥2 个隐藏测试函数；≥1 个参考解文件；必须有 <code>protected_paths</code></td>
+        <td>A1、A5 规格遵从、A6 抗过拟合</td></tr>
+      <tr><td><code>T4</code></td><td>上下文检索</td>
+        <td>≥5 文件；≥1 个干扰文件；≥3 个隐藏测试函数；参考解仍只需 1 个文件</td>
+        <td>A1、A2 检索、A5、A6</td></tr>
+      <tr><td><code>T5</code></td><td>迭代自修复</td>
+        <td>≥5 文件；≥1 干扰；≥4 个隐藏测试函数；参考解≥2 个文件</td>
+        <td>A1–A6 全部</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">src/aibench/tiers.py</span></p>
+  <p>
+    T5 的 <code>min_solution_files=2</code> 是 A4 跨文件一致性的唯一来源：缺陷必须跨至少两个文件。
+    T4 的这一项故意留在 1——T4 问的是「能不能在一堆文件里找到坏的那个」，
+    跨文件一致性是另一种能力，它住在 T5。
+  </p>
+
+  <h3>层级从 trace 推导，不靠人工配额</h3>
+  <p>
+    <code>signals_from_messages</code> 从 <code>full_history</code> 解析过程信号，
+    <code>suggest_tier</code> 自上而下取第一条命中的规则：
+  </p>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>条件</th><th>建议层</th></tr></thead>
+    <tbody>
+      <tr><td><code>repair_rounds ≥ 2</code> 且 <code>files_touched ≥ 3</code></td><td><code>T5</code></td></tr>
+      <tr><td><code>files_touched ≥ 3</code></td><td><code>T4</code></td></tr>
+      <tr><td><code>search_ops ≥ 3</code> 且 <code>files_read ≥ 5</code></td><td><code>T4</code></td></tr>
+      <tr><td><code>test_runs ≥ 1</code> 且 <code>error_signals ≥ 1</code></td><td><code>T3</code></td></tr>
+      <tr><td><code>repair_rounds ≥ 1</code></td><td><code>T3</code></td></tr>
+      <tr><td>有报错，或 <code>files_read ≥ 2</code>，或有检索</td><td><code>T2</code></td></tr>
+      <tr><td>其余</td><td><code>T1</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">src/aibench/extract/trace_signals.py</span></p>
+  <p>
+    层级分布因此继承真实生产任务的难度分布。<code>repair_rounds</code> 是
+    「跑测试、改代码、再跑测试」这个循环的次数，这是「求解者是否需要迭代」在 trace 上唯一可数的痕迹。
+  </p>
+
+  <h3><code>settle_tier</code>：标签描述的是产物，不是请求</h3>
+  <p>
+    从 T5 逐层下探，每层用该层所需的变换塑形一份副本，取第一层不变量成立的作为标签。
+    请求 T5 但材料只够 T3 会落到 T3；请求 T2 而材料够 T3 会升到 T3。无任何层成立时返回空，由调用方丢弃。
+  </p>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>变换</th><th>做什么</th><th>易错点</th></tr></thead>
+    <tbody>
+      <tr><td><code>strip_defect_markers</code></td><td>去掉实现文件里的 <code>#&nbsp;BUG</code> / <code>#&nbsp;FIXME</code></td>
+        <td>bugfix 任务另含 <code>#&nbsp;TODO</code></td></tr>
+      <tr><td><code>split_tests_for_hiding</code></td><td>留 1 个冒烟测试可见，其余测试函数移入 <code>hidden_tests</code></td>
+        <td>装饰器与紧贴的注释随测试一起移动，避免留下悬空 <code>@parametrize</code></td></tr>
+      <tr><td><code>protect_visible_tests</code></td><td>把可见测试写进 <code>protected_paths</code></td><td>无</td></tr>
+      <tr><td><code>use_whole_suite_command</code></td><td>把 grader 命令换成收集整个目录的写法</td>
+        <td>指定单文件的话，隐藏测试永远跑不到</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">src/aibench/extract/tier_shaping.py</span></p>
+
+  <div class="note pin">
+    <span class="lbl">隐藏测试的文件名必须仍被运行器识别为测试</span>
+    <p><code>clamp.test.mjs</code> 拆出的隐藏半边叫 <code>clamp_spec.test.mjs</code>，
+    不叫 <code>clamp.test_spec.mjs</code>。后者不匹配 node 的发现规则，会被静默跳过，
+    用例就只靠冒烟测试通过了，正是隐藏测试要防的那件事。
+    命名规则由 <code>LanguageSpec.hidden_test_name</code> 生成。
+    注意 <code>*.spec.*</code> 不被 <code>node --test</code> 发现。</p>
+  </div>
+
+  <h3>题面泄露：判「描述现有实现」，不判「陈述规格」</h3>
+  <p>
+    <code>find_disclosures</code> 有 15 条中英双语模式。分界线写在代码注释里：
+    「当前实现用了 X 而不是 Y」这类<strong>描述现有实现</strong>的句式判为泄露；
+    「应该返回 X」这类<strong>规格陈述</strong>不判，每道题都需要它。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/tiers.py（<code>_DISCLOSURE_PATTERNS</code>）</span><span class="src">tiers.py（<code>find_disclosures</code>）</span></p>
+
+  <p>
+    另有一条 <code>prompt_names_changed_function</code>：它把参考解与 stub 逐行 diff，
+    取每个改动块所在的函数名，再看题面有没有提到，不做题面正则匹配。
+    实测点名与不点名两组的平均 <code>p_hat</code> 相差 20 个百分点
+    （0.905 对 0.704，<code>auto-v0</code> 有参考解的 105 条），
+    但它命中约半数用例，直接拒绝会把题量腰斩。
+    所以判 warn 不判 error：它在 <code>generate-cases</code> 里触发一次
+    「只保留现象」的题面改写，审计里只作为告警出现。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/tiers.py</span><span class="src">tests/test_prompt_names_function.py</span></p>
+</section>
+
+<section id="s11">
+  <p class="sec-no">11</p>
+  <h2>校准：结构说该有区分度，跑起来才知道有没有</h2>
+  <p class="dek">
+    结构不变量保证用例「看起来该有区分度」。
+    <code>calibrate-cases</code> 用一组能力档次已知的锚点实测，把没区分度的题淘汰掉。
+  </p>
+
+  <figure>
+  <div class="figscroll">
+  <svg viewBox="0 0 640 285" role="img"
+       aria-label="锚点面板校准示意：三个锚点各重复三次，对五条用例给出九次判定，再由这些判定算出通过率、跨度与留一相关，最后判定保留或淘汰">
+    <g font-family="ui-monospace, SFMono-Regular, Consolas, monospace" fill="currentColor">
+      <text x="12" y="22" font-size="11.5" opacity=".74">锚点 × repeats = 9 次全量跑测</text>
+      <text x="173" y="38" font-size="11" text-anchor="middle" opacity=".8">c1</text>
+      <text x="219" y="38" font-size="11" text-anchor="middle" opacity=".8">c2</text>
+      <text x="265" y="38" font-size="11" text-anchor="middle" opacity=".8">c3</text>
+      <text x="311" y="38" font-size="11" text-anchor="middle" opacity=".8">c4</text>
+      <text x="357" y="38" font-size="11" text-anchor="middle" opacity=".8">c5</text>
+      <text x="140" y="68" font-size="11" text-anchor="end">weak-single-turn</text>
+      <text x="140" y="81" font-size="9.5" text-anchor="end" opacity=".72">repeats = 3</text>
+      <text x="140" y="114" font-size="11" text-anchor="end">mid-single-turn</text>
+      <text x="140" y="127" font-size="9.5" text-anchor="end" opacity=".72">repeats = 3</text>
+      <text x="140" y="160" font-size="11" text-anchor="end">strong-tool-loop</text>
+      <text x="140" y="173" font-size="9.5" text-anchor="end" opacity=".72">repeats = 3</text>
+      <rect class="pass" x="164" y="46" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="164" y="60" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="164" y="74" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="164" y="92" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="164" y="106" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="164" y="120" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="164" y="138" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="164" y="152" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="164" y="166" width="18" height="11" rx="2" opacity=".85"/>
+      <rect x="210" y="46" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="210" y="60" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="210" y="74" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="210" y="92" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect class="pass" x="210" y="106" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="210" y="120" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="210" y="138" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="210" y="152" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="210" y="166" width="18" height="11" rx="2" opacity=".85"/>
+      <rect x="256" y="46" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="256" y="60" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="256" y="74" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="256" y="92" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="256" y="106" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="256" y="120" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="256" y="138" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="256" y="152" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="256" y="166" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect class="pass" x="302" y="46" width="18" height="11" rx="2" opacity=".85"/>
+      <rect x="302" y="60" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect class="pass" x="302" y="74" width="18" height="11" rx="2" opacity=".85"/>
+      <rect x="302" y="92" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect class="pass" x="302" y="106" width="18" height="11" rx="2" opacity=".85"/>
+      <rect x="302" y="120" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect class="pass" x="302" y="138" width="18" height="11" rx="2" opacity=".85"/>
+      <rect x="302" y="152" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect class="pass" x="302" y="166" width="18" height="11" rx="2" opacity=".85"/>
+      <rect x="348" y="46" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="348" y="60" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="348" y="74" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="348" y="92" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect x="348" y="106" width="18" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>
+      <rect class="pass" x="348" y="120" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="348" y="138" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="348" y="152" width="18" height="11" rx="2" opacity=".85"/>
+      <rect class="pass" x="348" y="166" width="18" height="11" rx="2" opacity=".85"/>
+      <line x1="150" y1="184" x2="380" y2="184" stroke="currentColor" stroke-width="1" opacity=".35"/>
+      <text x="140" y="203" font-size="11" text-anchor="end">p_hat <tspan opacity=".72">通过率</tspan></text>
+      <text x="140" y="219" font-size="11" text-anchor="end">spread <tspan opacity=".72">最强 − 最弱</tspan></text>
+      <text x="140" y="235" font-size="11" text-anchor="end">r_pb <tspan opacity=".72">留一相关</tspan></text>
+      <text x="140" y="253" font-size="11" text-anchor="end">判定</text>
+      <text x="173" y="203" font-size="11" text-anchor="middle">1.00</text>
+      <text x="173" y="219" font-size="11" text-anchor="middle">0.00</text>
+      <text x="173" y="235" font-size="11" text-anchor="middle">—</text>
+      <text class="bad" x="173" y="253" font-size="10.5" text-anchor="middle">送分题</text>
+      <text x="219" y="203" font-size="11" text-anchor="middle">0.56</text>
+      <text x="219" y="219" font-size="11" text-anchor="middle">1.00</text>
+      <text x="219" y="235" font-size="11" text-anchor="middle">高</text>
+      <text class="ok" x="219" y="253" font-size="10.5" text-anchor="middle">保留</text>
+      <text x="265" y="203" font-size="11" text-anchor="middle">0.00</text>
+      <text x="265" y="219" font-size="11" text-anchor="middle">0.00</text>
+      <text x="265" y="235" font-size="11" text-anchor="middle">—</text>
+      <text class="bad" x="265" y="253" font-size="10.5" text-anchor="middle">无人能解</text>
+      <text x="311" y="203" font-size="11" text-anchor="middle">0.56</text>
+      <text x="311" y="219" font-size="11" text-anchor="middle">0.33</text>
+      <text x="311" y="235" font-size="11" text-anchor="middle">≈0</text>
+      <text class="bad" x="311" y="253" font-size="10.5" text-anchor="middle">噪声题</text>
+      <text x="357" y="203" font-size="11" text-anchor="middle">0.44</text>
+      <text x="357" y="219" font-size="11" text-anchor="middle">1.00</text>
+      <text x="357" y="235" font-size="11" text-anchor="middle">高</text>
+      <text class="ok" x="357" y="253" font-size="10.5" text-anchor="middle">保留</text>
+      <text x="400" y="203" font-size="10.5" opacity=".74">&gt; 0.9 判送分，&lt; 0.05 判无人能解</text>
+      <text x="400" y="219" font-size="10.5" opacity=".74">越大越能分离配置</text>
+      <text x="400" y="235" font-size="10.5" opacity=".74">&lt; 0.15 判噪声题</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption>
+    实心格是通过。c1 与 c3 的 spread 都是 0，一个太容易一个没人能解，两者同样不产生区分度。
+    c4 的通过率与 c2 相同，但结果与锚点强弱无关，留一相关接近 0，也被淘汰。
+    阈值默认值在 <code>src/aibench/calibrate.py</code>。
+  </figcaption>
+  </figure>
+
+  <h3>锚点面板必须跨越要区分的能力带</h3>
+  <p>
+    生产面板 <code>configs/runs/anchor-panel.yaml</code> 三个成员，
+    同时变化模型与 Agent 两条轴：
+  </p>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>锚点</th><th>Agent</th><th>它是什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>weak-single-turn</code></td><td><code>openai_compat</code></td>
+        <td>能力下限。这里也能过的题是送分题</td></tr>
+      <tr><td><code>mid-single-turn</code></td><td><code>openai_compat</code></td>
+        <td>同脚手架、更强模型。隔离模型这一变量</td></tr>
+      <tr><td><code>strong-tool-loop</code></td><td><code>tool_loop</code></td>
+        <td>能力上限。隔离脚手架这一变量</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">configs/runs/anchor-panel.yaml</span></p>
+
+  <p>
+    只变一条轴的面板，<code>spread</code> 会恒为 0，把所有用例判成无区分度。
+    检索层（T4 以上）另有 <code>anchor-panel-retrieval.yaml</code>：三个成员全是多步 agent，
+    差异落在真正支配检索的维度上：步数预算、能否执行命令、读代码的模型强弱。
+    这个面板<strong>不能测 T5</strong>（frugal 成员无 bash，缺 A3），
+    <code>unfit_anchors</code> 会在开跑前如实报出来。
+  </p>
+
+  <h3>三个容易算错的口径</h3>
+  <p>
+    <strong>相关系数要扣掉本题。</strong>
+    <code>item_rest_correlation</code> 先从总分里减去本题再算相关（corrected item-total）。
+    直接用本题参与的总分，纯噪声题的零分布中心不在 0 而在约 <code>1/√k</code>，
+    题量越小偏得越多，一道纯噪声题会轻松越过 0.15 的阈值。
+  </p>
+  <p>
+    <strong>总分要按该 run 实测的题数归一。</strong>
+    不同 run 因偶发失败产出的行数不同，直接用通过「计数」当总分，
+    「能力轴」会变成「掉了多少行」轴。
+  </p>
+  <p>
+    <strong>缺失的 run 不按 0 计入。</strong>
+    只取实际产出了行的 run（<code>measured = [i for i in run_indices if per_run.get(i)]</code>）。
+    「该用例未被全部锚点测到」单独记成 <code>incomplete_panel</code>，与三条淘汰规则分列：
+    它<strong>阻断 keep</strong>，但说的是测量不完整，对策是重跑，不是判这题不好。
+    <code>scripts/instrument_check.py</code> 会把这个计数打印出来。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/stats.py</span><span class="src">src/aibench/calibrate.py</span></p>
+
+  <h3><code>--reuse-from</code> 与两个指纹</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>指纹</th><th>哈希什么</th><th>版本前缀</th><th>它保证什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>case_fingerprint</code></td>
+        <td>题面、每个文件内容的 sha256、grader 全部字段（含隐藏测试）、workspace 规格</td>
+        <td><code>v3:</code></td>
+        <td>改文件内容或改 <code>grader.command</code> 必须让指纹变化，
+          否则复用会交还一个与现在的用例不对应的旧测量</td></tr>
+      <tr><td><code>anchor_fingerprint</code></td>
+        <td>每个引用配置文件的内容 + harness 源码摘要</td>
+        <td><code>v2:</code></td>
+        <td>只哈希几个 YAML 不够：适配器代码的改动同样会改变「一次跑测意味着什么」</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">src/aibench/validity.py</span><span class="src">src/aibench/calibrate.py</span></p>
+
+  <p>
+    版本前缀的作用只有一个：<strong>让旧值与新值永远不可能相等</strong>。
+    复用门禁据此直接拒绝并打印丢弃条数。代价是升级后所有既有校准结果都不再可复用，
+    这是正确行为而非 bug——旧指纹本来就反映不了内容变化。
+  </p>
+
+  <div class="note warn">
+    <span class="lbl">指纹不覆盖的部分</span>
+    <p><code>context.workspace</code> 为 <code>snapshot</code> / <code>git</code> / <code>mixed</code> 时，
+    指纹只包含 workspace <strong>规格</strong>，不包含快照或克隆的<strong>内容</strong>。
+    <code>case_fingerprint</code> 不做 I/O，也拿不到 case-set 目录。
+    这类用例由 <code>validity.external_workspace()</code> 标出，
+    <code>plan_calibration</code> 对它们一律不复用。</p>
+  </div>
+
+  <h3>选题：区分度之外还要管分布</h3>
+  <p>
+    <code>select-cases</code> 按 <code>spread</code>、<code>point_biserial</code> 降序复制。
+    只按区分度排序的话，可能整批落在同一层，把单一能力带当成全貌。两个配额参数解决这件事：
+  </p>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>参数</th><th>例</th><th>语义</th></tr></thead>
+    <tbody>
+      <tr><td><code>--tier-quota</code></td><td><code>T2=0.3,T3=0.4,T4=0.3</code></td><td>按层级配额</td></tr>
+      <tr><td><code>--difficulty-quota</code></td><td><code>easy=0.15,mid=0.70,hard=0.15</code></td>
+        <td>按实测 p_hat 的难度带配额。带界：hard &lt; 0.2 / mid 0.2–0.8 / easy &gt; 0.8</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    两者同时给出时，难度带为外层、tier 在带内分配。
+    某带不够时如实报欠填并返回偏少的集合，绝不从相邻带补齐。
+    带名拼错直接报错，否则会被当成池子不足，把人引去多跑校准。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/calibrate.py</span></p>
+
+  <div class="note pin">
+    <span class="lbl">难度带的分辨率取决于尝试次数</span>
+    <p><code>p_hat</code> 只能取 <code>k / (anchors × repeats)</code>。
+    3 锚点 × 2 重复 = 6 次时，取值只有 <code>{0, 1/6, 2/6, 3/6, 4/6, 5/6, 1}</code>；
+    去掉 0 和 1 之后，hard 带只剩 1/6 一个值、easy 带只剩 5/6 一个值。
+    想让 15:70:15 这类分布真正有意义，必须先提高每条用例的尝试次数，
+    光靠多攒用例是凑不出来的。</p>
+  </div>
+</section>
+
+<section id="s12">
+  <p class="sec-no">12</p>
+  <h2>统计口径：为什么用配对检验而不是各自的置信区间</h2>
+  <p class="dek">
+    <code>stats.py</code> 325 行，全部是估计量。第 71 行的 <code>item_rest_correlation</code> 决定哪些用例被保留。
+  </p>
+
+  <h3>Wilson 区间用于单个成功率</h3>
+  <pre><code class="language-text">center = (phat + z2 / (2 * n)) / (1 + z2 / n)
+margin = (z / (1 + z2 / n)) * sqrt(phat * (1 - phat) / n + z2 / (4 * n * n))</code></pre>
+  <p class="cap">写成数学式。源码把 <code>1 + z2 / n</code> 提成了 <code>denom</code>，见 <code>src/aibench/stats.py</code></p>
+  <p>
+    小样本下比正态近似可靠，且在 <code>phat = 0</code> 或 <code>1</code> 时不退化成零宽区间。
+    <code>n = 0</code> 返回 <code>None</code>，不返回 <code>(0, 0)</code>。
+  </p>
+
+  <h3>比较两个配置用精确 McNemar</h3>
+  <pre><code class="language-python">n = b + c                                    # 只有结论不同的 case 携带信息
+k = min(b, c)
+tail = sum(math.comb(n, i) for i in range(k + 1)) * (0.5 ** n)
+p = min(1.0, 2.0 * tail)</code></pre>
+  <p class="srcline"><span class="src">src/aibench/stats.py</span></p>
+
+  <p>
+    <code>b</code> 是仅 A 解出的用例数，<code>c</code> 是仅 B 解出的。
+    两者都通过或都失败的用例不携带「谁更强」的信息，按构造被排除。
+  </p>
+
+  <div class="note pin">
+    <span class="lbl">这就是它比 Wilson 灵敏的原因</span>
+    <p>两组跑的是同一个 case 集，属于配对数据。各自算独立区间会丢掉配对信息：
+    56/64 与 62/64 的 Wilson 区间大幅重叠、看起来「无差异」，
+    而配对检验在 6 个不一致 case 上给出 <code>p ≈ 0.03</code>，判定显著。</p>
+  </div>
+
+  <h3>反推题量：题量由不一致率决定，不是拍脑袋</h3>
+  <pre><code class="language-text">n = (z_α·√ψ + z_β·√(ψ − δ²))² / δ²        # ψ = 不一致率，δ = 要检出的成功率差</code></pre>
+  <p class="cap">数学式。源码写作 <code>((z_a * math.sqrt(discordance) + z_b * math.sqrt(discordance - delta**2)) ** 2) / (delta**2)</code></p>
+  <p class="srcline"><span class="src">src/aibench/stats.py</span></p>
+  <p>
+    参数校验里有一条：<code>discordance</code> 必须大于 <code>delta</code>，
+    否则报错「两个 run 的差异不可能超过它们的不一致程度」。
+  </p>
+  <p>
+    <code>observed_discordance</code> 只统计<strong>跨配置</strong>的配对，排除同一配置的重复运行。
+    自重复的不一致率显著低于跨配置（实测 4.8% 对 14.9%），
+    而 <code>required_cases</code> 随 ψ 单调上升，混进自重复会让规划出的题量比真实需要的更少。
+    全是自重复时返回 <code>None</code>，不回退到全量列表。
+  </p>
+
+  <h3>成本轴：档位由数据分位数产生</h3>
+  <p>
+    <code>cost_curve</code> 是若干 token 预算档位上「在该预算内解出的 case 数 / 有效 case 数」。
+    档位由该 run 的 per-case token 分布分位数产生（<code>budget_quantiles</code>），不是人工拍板。
+    跨配置比较时必须用同一组档位，否则每条曲线各有各的 x 轴。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/stats.py</span></p>
+  <p>
+    消融报告另给 <code>token_amplification</code>：准确率提升若是用 5 倍 token 买来的，
+    和等成本下的同等提升不是同一个结论。
+  </p>
+</section>
+
+<section id="s13">
+  <p class="sec-no">13</p>
+  <h2>执行身份：回答「这两次跑测能不能比」</h2>
+  <p class="dek">
+    两次跑测可比，前提是产生它们的东西是同一套。
+    <code>run_manifest.json</code> 记十项执行身份，任何一项变了都意味着「一次跑测」的含义变了。
+  </p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>字段</th><th>内容</th><th>它回答什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>code_version</code></td><td><code>git rev-parse --short HEAD</code>，工作树脏时加 <code>-dirty</code></td>
+        <td>跑的是哪个提交</td></tr>
+      <tr><td><code>harness_digest</code></td><td>十个源码项的摘要，见下</td><td>「一次跑测意味着什么」变了没有</td></tr>
+      <tr><td><code>dependency_digest</code></td><td><code>uv.lock</code> 的哈希</td><td>依赖变了没有</td></tr>
+      <tr><td><code>venv_digest</code></td><td>虚拟环境内容哈希</td><td>是不是同一套依赖，且不写出本机路径</td></tr>
+      <tr><td><code>grading_env_digest</code></td><td><code>configs/grading-env.yaml</code> 与它承诺的每个包的<strong>已安装版本</strong></td>
+        <td>一边 numpy 2.1、一边 2.3 导致结论不同时，说得出来</td></tr>
+      <tr><td><code>grading_env_unsatisfied</code></td><td>清单里本机导入不了的名字</td>
+        <td>非空意味着导入这些包的用例会在判分时失败，读起来像难度</td></tr>
+      <tr><td><code>platform</code></td><td>操作系统与架构</td>
+        <td>macOS 有 <code>sandbox-exec</code>，其他平台没有，两边量的不是同一个边界</td></tr>
+      <tr><td><code>opencode_version</code></td><td>脚手架自身版本</td><td>不同版本是不同的仪器</td></tr>
+      <tr><td><code>gateway_base_url</code></td><td>解析到的网关地址</td><td>API key 从不进入产物，有测试锁住</td></tr>
+      <tr><td><code>case_retry</code></td><td>单条 case 因基础设施失败整体重跑的次数</td><td>一次故障是怎么被吸收的</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">src/aibench/provenance.py</span><span class="src">src/aibench/runner.py</span><span class="src">docs/REFERENCE.md §16.4</span></p>
+  <p class="cap">前八个字段由 <code>provenance.environment()</code> 产出；
+    <code>grading_env_digest</code>、<code>grading_env_unsatisfied</code>、<code>case_retry</code>
+    由 runner 直接写进 manifest。manifest 不写本机路径，用 <code>venv_digest</code> 与 <code>platform</code> 表达</p>
+
+  <h3><code>HARNESS_SOURCES</code> 里的十项，每一项都有理由</h3>
+  <pre><code class="language-python">HARNESS_SOURCES = (
+    "agents", "grading.py", "workspace.py", "runner.py",   # 怎么驱动、怎么建现场、怎么判定
+    "languages.py",   # 拥有 pass_ratio 与「跑不起来 / 很难」的划分
+    "retry.py",       # 决定一次网关抖动变成重试还是变成掉行
+    "models.py", "env_config.py",   # 解析配置与端点
+    "calibrate.py", "stats.py",     # 决定一次校准意味着什么
+)</code></pre>
+  <p class="cap">节选：按语义分组重排并换成中文注释。源文件里每项独占一行，注释为英文，见 provenance.py</p>
+  <p class="srcline"><span class="src">src/aibench/provenance.py</span></p>
+  <p>
+    最后两项决定一次校准的含义。漏掉它们，<code>--reuse-from</code>
+    就能把旧的点二列相关系数带过一次估计器变更。这条由
+    <code>tests/test_second_review_round.py</code> 的
+    <code>TestTheHarnessDigestCoversWhatDecidesACalibration</code> 锁住。
+  </p>
+
+  <h3>判分环境是<strong>声明</strong>的，不是探测的</h3>
+  <p>
+    <code>configs/grading-env.yaml</code> 声明判分环境能 import 什么，代码只读这个文件，
+    从不问运行它的机器。用 <code>importlib.util.find_spec</code> 探测被否掉，
+    因为它报告的是<strong>开发者</strong>的机器而不是判分时的机器，
+    而且它会解析隐式命名空间包，<code>sys.path</code> 上任何同名目录都能满足 import，
+    同一批草稿换个工作目录就会得到不同的存活数。
+  </p>
+  <p>
+    声明是一句承诺，所以有 <code>unsatisfied_promises</code> 来核对它。
+    清单里 6 个名字（<code>numpy</code>、<code>pandas</code>、<code>requests</code>、
+    <code>matplotlib</code>、<code>flask</code>、<code>av</code>）由
+    <code>pyproject.toml</code> 的 <code>grading</code> extra 安装，另外 8 个是 aibench 自己的运行时依赖。
+    这 6 个是按草稿池的实际收益选的，不是按品味选的；
+    <code>javascript</code> 一栏刻意留空，因为那几对要的是 <code>vite</code>、
+    <code>@playwright/test</code> 这类构建工具，代价是引入
+    <code>package.json</code> 与 <code>node_modules</code>，不值这个价。
+    <code>tests/test_grading_env.py</code> 断言清单与 extra 一致，
+    <code>generate-cases --reverse</code> 在第一次模型调用<strong>之前</strong>校验。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/grading_env.py</span><span class="src">configs/grading-env.yaml</span></p>
+</section>
+
+<section id="s14">
+  <p class="sec-no">14</p>
+  <h2>消融与产物：一份报告该怎么读</h2>
+  <p class="dek">
+    这里的「消融」是<strong>对照实验矩阵</strong>，不是删除模型组件的狭义学术消融。
+    固定 case 集，每行只改一条轴。
+  </p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th><code>experiment_name</code></th><th>相对基线动了什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>openai-compat-glm52</code></td><td>基线</td></tr>
+      <tr><td><code>openai-compat-glm51</code></td><td>模型轴：只换 <code>configs/models/*.yaml</code></td></tr>
+      <tr><td><code>tool-loop-glm52</code></td><td>适配器轴：<code>openai_compat</code> 换成 <code>tool_loop</code></td></tr>
+      <tr><td><code>passk-glm52</code></td><td>采样轴：attempts 由 1 改成 k</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">configs/runs/ablation-matrix.yaml</span></p>
+  <p>
+    四行产生三组成对比较（<code>compare_runs_pairwise</code> 跳过基线自身）。
+    一行同时改两条轴的话，McNemar 的配对差异无法归因。
+  </p>
+
+  <h3>三条开跑前的规则</h3>
+  <ul>
+    <li>剔除 <code>metadata.weak_grader = true</code> 的用例，除非 <code>--allow-weak-grader</code>。</li>
+    <li>各行的 case 集在<strong>开跑前一次性过滤好</strong>，不在 worker 里做。
+    否则两行共用同一集合时会互相 <code>rmtree</code>，输家跑在半拷贝的集合上。</li>
+    <li><code>_infra_dominated</code>：有效 case 占比低于 0.8 就告警。
+    判据是<strong>比例</strong>不是「是否为 0」——167 条里只跑成 1 条，
+    也会给出一个看起来正常、实则毫无代表性的成功率。</li>
+  </ul>
+  <p class="srcline"><span class="src">src/aibench/ablation.py</span><span class="src">tests/test_audit_gate_coverage.py</span></p>
+
+  <h3>要回答不同的问题，看的不是同一个文件</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>目的</th><th>看什么文件</th><th>看什么字段</th></tr></thead>
+    <tbody>
+      <tr><td>汇报、选型</td><td><code>ablation_report.md</code></td><td>多行对比表 + 配对显著性</td></tr>
+      <tr><td>入库、看板</td><td><code>tables.json</code></td><td><code>overview_row</code> / <code>general_row</code></td></tr>
+      <tr><td>归因</td><td><code>report.md</code> · <code>results.jsonl</code></td>
+        <td><code>failure_category</code> · <code>grade.detail</code></td></tr>
+      <tr><td>复现</td><td><code>run_manifest.json</code></td>
+        <td><code>case_set_fingerprint</code> + 执行身份字段</td></tr>
+      <tr><td>看单条用例</td><td><code>cases/&lt;id&gt;/result.json</code></td><td>工作区快照 + agent 全部步骤</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    主指标是 <code>task_success_rate</code> = 成功数 / <strong>有效 case 数</strong>，
+    有效 = 排除 <code>infra_error</code>。
+    <code>ablation_summary.json</code> 里对应配对检验的字段是 <code>pairwise_comparisons</code>，
+    分层结果在 <code>tier_matrix</code>。
+  </p>
+
+  <div class="note">
+    <span class="lbl">没有数据源的列保持 null</span>
+    <p>设计里的通用结果总表包含 Fusion 时间拆解、投机 Oracle 等本 harness 采集不到的列。
+    这些列填 <code>null</code>，不编造。</p>
+  </div>
+</section>
+
+<section id="s15">
+  <p class="sec-no">15</p>
+  <h2>三条命令路径</h2>
+  <p class="dek">
+    工作目录一律是 <code>benchmarks/coding/</code>。<code>repo_root()</code> 解析为这个目录。
+  </p>
+
+  <h3>路径一：离线冒烟，不需要数据库和网关</h3>
+  <pre><code class="language-bash">cd benchmarks/coding
+uv sync --extra dev --extra grading
+uv run python -m aibench doctor
+
+uv run python -m aibench validate-cases --case-set seed-v0
+uv run python -m aibench run --run-config tests/fixtures/configs/runs/baseline.mock.yaml \
+  --case-set seed-v0
+./scripts/e2e_pipeline.sh --dry-run</code></pre>
+  <p>
+    <code>audit-cases --case-set seed-v0</code> 报 0/4 通过是预期结果。
+    这四条是最小 fixture，不是合格用例的样板。而且它「确实过不了可解性门禁」这件事
+    本身由 <code>tests/test_validated_mediums.py</code> 断言着。
+  </p>
+
+  <h3>路径二：从 trace 建一批题</h3>
+  <pre><code class="language-bash">uv run python -m aibench extract-from-db \
+  --output-dir benchmarks/ai_coding/cases/drafts-from-db \
+  --limit 100 --max-cases 30 --require-gold --require-edits
+
+uv run python -m aibench filter-drafts \
+  --input-dir benchmarks/ai_coding/cases/drafts-from-db \
+  --output-dir benchmarks/ai_coding/cases/drafts-kept
+
+uv run python -m aibench generate-cases \
+  --input-dir benchmarks/ai_coding/cases/drafts-kept \
+  --output-dir benchmarks/ai_coding/cases/auto-v0 \
+  --reverse --resume --max-cases 8 --audit --secrets-scan
+
+uv run python -m aibench validate-cases --case-set auto-v0
+uv run python -m aibench audit-cases --case-set auto-v0 --annotate --fail-on-error</code></pre>
+
+  <div class="note warn">
+    <span class="lbl">两个必带的参数</span>
+    <p><code>--require-edits</code> 是 <code>--reverse</code> 的前提：
+    没有 <code>metadata.file_versions</code> 就没有 pre/post 对，下一步一条也建不出来。
+    <code>--resume</code> 长跑必带，不带则中断后重跑会为同一批草稿二次付费。</p>
+    <p>只想建题时不要跑完整的 <code>e2e_pipeline.sh</code>，它末尾会执行消融。</p>
+  </div>
+
+  <h3>路径三：校准、选题、消融</h3>
+  <pre><code class="language-bash">uv run python -m aibench calibrate-cases --case-set auto-v0 --repeats 3 --parallel 3 --workers 5
+
+uv run python -m aibench select-cases \
+  --calibration runs/calibration_&lt;ts&gt;/calibration.json \
+  --from-set auto-v0 --to-set disc-v0
+
+uv run python -m aibench ablation \
+  --matrix configs/runs/ablation-matrix.yaml \
+  --case-set disc-v0 \
+  --baseline-experiment openai-compat-glm52 \
+  --parallel 3 --export-csv</code></pre>
+  <p>
+    校准成本是「锚点数 × repeats」次全量跑测，按需预算。
+  </p>
+  <p>
+    两个 <code>--parallel</code> 语义不同：<code>ablation</code> 的矩阵 YAML 自带
+    <code>parallel:</code> 字段，命令行只在要<strong>覆盖</strong>它时才传；
+    <code>calibrate-cases</code> 不读矩阵 YAML，它的 argparse 默认值就是 <code>1</code>，不传就是串行。
+  </p>
+  <p class="srcline"><span class="src">src/aibench/ablation.py</span><span class="src">src/aibench/cli.py</span></p>
+
+  <h3>五道本地门禁</h3>
+  <pre><code class="language-bash">uv run ruff format --check src tests scripts   # 125 files already formatted
+uv run ruff check src tests scripts           # All checks passed!
+uv run pytest tests/ -q                       # 985 passed in 29.41s
+uv run python -m aibench doctor               # python / node / grading-env / opencode / sandbox
+uv run python scripts/check_doc_links.py      # checked 14 document(s): 0 problem(s)</code></pre>
+  <p class="cap">2026-08-18 在本机实测，五道全绿。本模块不带 GitHub Actions，门禁是本地的。</p>
+  <p>
+    <code>./scripts/lint.sh</code> 是<strong>修复工具，不是门禁</strong>：
+    它改写源码后再验证自己的输出，所以格式回归永远不会让它失败。
+  </p>
+</section>
+
+<section id="s16">
+  <p class="sec-no">16</p>
+  <h2>现状与已知限制</h2>
+  <p class="dek">
+    这一节是模块自己给出的结论。数字都能从
+    <a href="../../benchmarks/ai_coding/calibrations/README.md">已发布的校准数据</a> 复算。
+  </p>
+
+  <h3>反向构造把中档命中了目标</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>集合</th><th class="num">n</th><th class="num">易</th><th class="num">中</th><th class="num">难</th><th class="num">平均 p_hat</th><th class="num">判为有区分度</th></tr></thead>
+    <tbody>
+      <tr><td><code>auto-v0</code>（模型编题）</td><td class="num">126</td><td class="num">62.7%</td><td class="num">13.5%</td><td class="num">23.8%</td><td class="num">0.677</td><td class="num">28（22.2%）</td></tr>
+      <tr><td><code>reverse-v1</code>（反向构造）</td><td class="num">31</td><td class="num">22.6%</td><td class="num">74.2%</td><td class="num">3.2%</td><td class="num">0.527</td><td class="num">26（83.9%）</td></tr>
+      <tr><td>目标</td><td class="num">—</td><td class="num">15%</td><td class="num">70%</td><td class="num">15%</td><td class="num">—</td><td class="num">越高越好</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline"><span class="src">calibrations/reverse-v1_3anchor_20260808.json</span></p>
+  <p>
+    中档 74.2%，95% Wilson 区间 [56.8%, 86.3%]，稳稳包含 70%。有区分度的比例从 22.2% 升到 83.9%。
+    这一批 279 次尝试里 <code>collection_error</code> 只有 1 次、<code>infra_error</code> 0 次，数是干净的。
+  </p>
+
+  <h3>隐藏测试是目前唯一有效的难度杠杆</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>设置</th><th class="num">最强锚点通过率</th><th class="num">难档</th><th class="num">无人能解</th><th class="num">有区分度</th></tr></thead>
+    <tbody>
+      <tr><td>全部可见</td><td class="num">90.3%</td><td class="num">1</td><td class="num">0</td><td class="num">26</td></tr>
+      <tr><td>全量隐藏 2 条</td><td class="num">55.9%</td><td class="num">12</td><td class="num">11</td><td class="num">16</td></tr>
+      <tr><td>全量只留 1 条可见</td><td class="num">47.3%</td><td class="num">15</td><td class="num">14</td><td class="num">11</td></tr>
+      <tr><td><strong>仅对易档隐藏 2 条</strong></td><td class="num">—</td><td class="num">2（6.5%）</td><td class="num">2</td><td class="num">24</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="srcline">
+    <span class="src">calibrations/reverse-v1-hidden1_3anchor_20260808.json</span>
+    <span class="src">calibrations/reverse-v2-mixed_3anchor_20260809.json</span>
+  </p>
+  <p>
+    杠杆是真的，但全局开到底会调过头：无人能解的比例从 0% 抬到 45.2%，区分度从 26 掉到 11。
+    全员做不出的题不区分任何东西，和送分题一样无用。
+    最终配置是<strong>只对已判定为易档的用例隐藏 2 条测试</strong>，其余保持原样：
+    易档 16.1%、中档 77.4%，两档的 95% 区间都包含目标值，区分度只从 26 降到 24。
+  </p>
+  <p>
+    控制量要用「隐藏几条」而不是「保留几条」：模型通常写 4 到 10 条测试，
+    「保留 3 条」对应的隐藏条数中位数就是 2 条，两种说法在不同用例上不等价。
+  </p>
+
+  <h3>三件还没解决的事</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>限制</th><th>现状</th><th>方向</th></tr></thead>
+    <tbody>
+      <tr><td>样本量</td>
+        <td>可用集合规模在几十条量级。按实测不一致率反推，
+          消融要达到既定检验效能需 150 条以上，具体模型对需要 60 到 350 条不等</td>
+        <td>继续抽取与校准；用
+          <code>aibench plan-sample-size --delta 10 --from-ablation &lt;ablation_summary.json&gt;</code> 定题量</td></tr>
+      <tr><td>语言覆盖</td>
+        <td>只有 Python 与 JavaScript / TypeScript 能生成并评分，这是产率的首要上限。
+          可重建的文件版本里，因语言未注册而丢弃的量约为可用量的 20 倍</td>
+        <td>阻塞点不是一份语言规格，是<strong>工作区模型</strong>：
+          编译型语言需要头文件、构建描述与依赖闭包，且失败从导入期移到编译期。
+          优先级最高的是先做依赖闭包</td></tr>
+      <tr><td>难档</td>
+        <td>「无人能解」这一档目前造不出来。
+          最强锚点在多数用例上三次全过，<code>p_hat</code> 的下限被钉在 1/3，进不了难档</td>
+        <td>输入特征（编辑次数、改动行数、文件行数）均被验证无效；
+          起作用的是任务形态，目前只有隐藏测试一条路</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note warn">
+    <span class="lbl">使用须知</span>
+    <ul>
+      <li><strong>模型比较至少 3 次重复，并报轮间极差。</strong>
+        同一模型的轮间波动可以与模型之间的差距同量级，单次运行得出的显著性不可信。</li>
+      <li><strong>跑 <code>audit-cases --annotate</code> 之前先 <code>cp -a</code> 备份集合目录。</strong>
+        它原地改写 case 文件，而 case 集不入库。</li>
+      <li><strong>判分命令在宿主机执行，用例集要来源可信。</strong>见 <a href="#s08">08</a>。</li>
+      <li><strong>node 固定 24（<code>.nvmrc</code>）。</strong>
+        低于 22.18 时 <code>node --test</code> 发现不了 TypeScript 测试却退出 0，会被判为通过。</li>
+      <li><strong><code>uv sync</code> 要同时带 <code>--extra dev --extra grading</code>。</strong>
+        只带 <code>dev</code> 会卸掉 grading extra，测试会红。</li>
+      <li><strong>指纹版本前缀是有意的破坏性变更。</strong>
+        升级 <code>v3:</code> / <code>v2:</code> 后所有既有校准不再可复用，这是正确行为。</li>
+    </ul>
+  </div>
+</section>
+
+<section id="s17">
+  <p class="sec-no">17</p>
+  <h2>代码导航：想改 X 就看 Y</h2>
+  <p class="dek">
+    可复制的入口清单。参数级细节在 <a href="../REFERENCE.md">参考手册 REFERENCE.md</a>。
+  </p>
+
+  <h3>加一个 adapter、模型或语言，各要动几个文件</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>你要做的</th><th>改哪里</th><th>还要动的</th></tr></thead>
+    <tbody>
+      <tr><td>接一个新 Agent</td><td>实现 <code>AgentAdapter</code>（<code>src/aibench/agents/base.py</code>）</td>
+        <td>在 <code>src/aibench/agents/registry.py</code> 的 <code>_REGISTRY</code> 注册；
+          新增 <code>configs/agents/*.yaml</code> 并声明 <code>capability_axes</code></td></tr>
+      <tr><td>接一个新模型</td><td>新增 <code>configs/models/*.yaml</code></td>
+        <td>填 <code>model</code> 字段。留空会让 <code>OPENAI_MODEL</code> 兜底，多模型消融会静默跑成同一个模型</td></tr>
+      <tr><td>接一个外部 CLI</td><td><code>configs/agents/shell.yaml</code> 的 <code>command_template</code></td>
+        <td>占位符 <code>{workspace}</code> <code>{prompt_file}</code> <code>{case_id}</code> <code>{max_steps}</code>。
+          它不上报 token，成本轴对它无意义</td></tr>
+      <tr><td>支持一门新语言</td><td><code>src/aibench/languages.py</code> 加一个 <code>LanguageSpec</code></td>
+        <td>测试文件命名、测试声明正则、运行命令、通过率解析、不可收集退出码。
+          <strong>只登记本机真能执行的</strong>，且见 <a href="#s16">16 已知限制</a> 的工作区模型问题</td></tr>
+      <tr><td>加一条效度门禁</td><td><code>src/aibench/validity.py</code> 写 <code>check_*</code>，挂进 <code>audit_case</code></td>
+        <td><code>tests/test_docs_agree_with_the_code.py</code> 会核对门禁表与代码是否一致</td></tr>
+      <tr><td>加一个 CLI 子命令</td><td><code>src/aibench/cli.py</code>：<code>sub.add_parser(...)</code> + 一段 <code>if args.cmd == ...</code></td>
+        <td>参数表要同步进 <code>docs/REFERENCE.md §8</code>，有测试盯着</td></tr>
+      <tr><td>加一行消融</td><td><code>configs/runs/ablation-matrix.yaml</code> 的 <code>runs[]</code></td>
+        <td>一行只改一条轴，否则 McNemar 无法归因</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>改某个行为，入口在哪一行</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>你要改的</th><th>入口</th></tr></thead>
+    <tbody>
+      <tr><td>用例长什么样</td><td><code>benchmarks/ai_coding/schemas/case.schema.json</code>（<code>additionalProperties: false</code>，只有 <code>metadata</code> 开放）</td></tr>
+      <tr><td>工作区怎么建</td><td><code>src/aibench/workspace.py</code> <code>materialize_workspace</code>，四步顺序在 docstring 里</td></tr>
+      <tr><td>判分怎么判</td><td><code>src/aibench/grading.py</code> <code>grade_case</code>；四个 <code>_grade_*</code> 在其后</td></tr>
+      <tr><td>什么算作弊</td><td><code>src/aibench/grading.py</code> <code>check_protected_paths</code> · <code>detect_grading_interference</code></td></tr>
+      <tr><td>隐藏测试什么时候写入</td><td><code>src/aibench/grading.py</code> <code>inject_hidden_tests</code></td></tr>
+      <tr><td>层级怎么判</td><td><code>src/aibench/tiers.py</code> <code>TIER_SPECS</code> · <code>check_tier_invariants</code></td></tr>
+      <tr><td>层级怎么从 trace 推</td><td><code>src/aibench/extract/trace_signals.py</code> <code>suggest_tier</code></td></tr>
+      <tr><td>用例怎么被消毒成某一层</td><td><code>src/aibench/extract/tier_shaping.py</code> <code>settle_tier</code></td></tr>
+      <tr><td>题面泄露怎么判</td><td><code>src/aibench/tiers.py</code> <code>_DISCLOSURE_PATTERNS</code> · <code>find_disclosures</code></td></tr>
+      <tr><td>淘汰阈值</td><td><code>src/aibench/calibrate.py</code>：<code>DEFAULT_P_MAX=0.9</code>、<code>DEFAULT_P_MIN=0.05</code>、<code>DEFAULT_MIN_RPB=0.15</code></td></tr>
+      <tr><td>校准怎么算</td><td><code>src/aibench/calibrate.py</code> <code>aggregate_calibration</code> · <code>src/aibench/stats.py</code> <code>item_rest_correlation</code></td></tr>
+      <tr><td>选题与配额</td><td><code>src/aibench/calibrate.py</code> <code>apply_difficulty_quota</code> · <code>apply_tier_quota</code> · <code>select_cases</code></td></tr>
+      <tr><td>summary.json 有哪些字段</td><td><code>src/aibench/report.py</code> <code>SUMMARY_REQUIRED_KEYS</code> · <code>build_summary</code></td></tr>
+      <tr><td>结果表两行怎么拼</td><td><code>src/aibench/report.py</code> <code>render_summary_tables_json</code></td></tr>
+      <tr><td>消融报告长什么样</td><td><code>src/aibench/ablation.py</code> <code>_render_ablation_report</code></td></tr>
+      <tr><td>什么进 manifest</td><td><code>src/aibench/runner.py</code> 起的 <code>manifest</code> 字典 · <code>provenance.py</code> 的 <code>environment()</code></td></tr>
+      <tr><td>重试策略</td><td><code>src/aibench/retry.py</code>（HTTP/DB）· <code>src/aibench/runner.py</code> 内的 case 级循环</td></tr>
+      <tr><td>密钥规则</td><td><code>src/aibench/secrets_scan.py</code> 的 <code>_HARNESS_RECORDS</code>；
+        按<strong>完整路径</strong>排除的只有 <code>metadata.validity_issues</code> 一处。
+        <code>grader.key_lines</code> 刻意不排除，它是用例内容，<code>grading.py</code> 要用它判分；
+        消毒器留下的占位符靠 <code>_REDACTED</code> 过滤，不靠排除</td></tr>
+      <tr><td>导出门禁</td><td><code>src/aibench/export_bundle.py</code>：schema、<code>validity_ok</code>、secrets、来源、逐行重合，五道</td></tr>
+      <tr><td>发布门控顺序</td><td><code>src/aibench/promote.py</code>：依次是 schema、script 模式、非 weak_grader、secrets、可选 audit、写盘</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>查一个事实，去哪一份文档或哪条命令</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>问题</th><th>去哪查</th></tr></thead>
+    <tbody>
+      <tr><td>某个 flag 的默认值是多少</td><td><code>aibench &lt;cmd&gt; -h</code>，或 <a href="../REFERENCE.md">REFERENCE.md</a> §8</td></tr>
+      <tr><td>某个环境变量管什么</td><td><a href="../REFERENCE.md">REFERENCE.md</a> §6，共 19 个</td></tr>
+      <tr><td>某个校准数字怎么来的</td><td><a href="../../benchmarks/ai_coding/calibrations/README.md">calibrations/README.md</a>，含复算脚本</td></tr>
+      <tr><td>为什么正向生成被否掉</td><td><a href="overview.html">项目介绍页</a> §1 与 §6</td></tr>
+      <tr><td>本机能不能产出可比测量</td><td><code>uv run python -m aibench doctor --json</code></td></tr>
+      <tr><td>这次跑测花了多少钱</td><td><code>uv run python scripts/run_cost_report.py</code></td></tr>
+      <tr><td>为什么这批用例谁都做不出</td><td><code>uv run python scripts/discrimination_diagnostic.py</code></td></tr>
+      <tr><td>仪器自检</td><td><code>uv run python scripts/instrument_check.py</code>（跳过的检查会列出并以 2 退出）</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note pin">
+    <span class="lbl">注释里写的是为什么，不是做了什么</span>
+    <p>这个仓库的注释写的是<strong>为什么</strong>，而且大多挂着一次实测。
+    遇到不理解的写法，先读它上面那段注释。
+    <code>src/aibench/agents/bare_model.py</code> 与
+    <code>src/aibench/extract/reverse_case.py</code> 是两个模块级的范例。</p>
+  </div>
+</section>
+
+<section id="s18">
+  <p class="sec-no">18</p>
+  <h2>把测试当规格读：985 个里最该先看的几个</h2>
+  <p class="dek">
+    <code>tests/</code> 下 61 个测试文件，另加 <code>conftest.py</code>。
+    下面挑的是<strong>编码了非显然约定</strong>的那些——它们比文档更接近规格。
+  </p>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>测试</th><th>断言的是</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_untested_surfaces.py</code></td>
+        <td>沙箱配置里必须有一条 <code>(deny</code> 行点名答案目录，且 <code>(allow</code> 行里不能出现它</td></tr>
+      <tr><td><code>test_pipeline_identity.py</code></td>
+        <td>喂一个错的 <code>expected_case_set_fingerprint</code> 必须抛 <code>RuntimeError</code></td></tr>
+      <tr><td><code>test_pipeline_identity.py</code></td>
+        <td>题面措辞完全不同、可见测试函数名不同的两条用例，<code>solution_key</code> 必须相等</td></tr>
+      <tr><td><code>test_fingerprint_content.py</code></td>
+        <td>换掉 <code>grader.command</code> 必须让 <code>case_fingerprint</code> 变化</td></tr>
+      <tr><td><code>test_fingerprint_content.py</code></td>
+        <td>复用的是<strong>测量</strong>不是<strong>判定</strong>：换了阈值再复用，<code>keep</code> 必须按新阈值重算</td></tr>
+      <tr><td><code>test_audit_gate_coverage.py</code></td>
+        <td>逐行重合率必须覆盖 <code>gold_files</code> 与 <code>hidden_tests</code>，不只是 <code>context.files</code></td></tr>
+      <tr><td><code>test_audit_gate_coverage.py</code></td>
+        <td>隐藏测试索要不可知的<strong>关键字参数</strong>也要判 error，不只是符号</td></tr>
+      <tr><td><code>test_audit_gate_coverage.py</code></td>
+        <td><code>diag.hidden_call_keywords is validity.hidden_call_keywords</code>——
+          用 <code>is</code> 不用 <code>==</code>，检查器只能有一份实现</td></tr>
+      <tr><td><code>test_audit_gate_coverage.py</code></td>
+        <td><code>_infra_dominated({"case_count": 167, "effective_case_count": 1})</code> 为真</td></tr>
+      <tr><td><code>test_runtime_durability.py</code></td>
+        <td>写盘中途 SIGKILL 后原文件内容不变、不留临时文件，且退出码就是 <code>-SIGKILL</code></td></tr>
+      <tr><td><code>test_runtime_durability.py</code></td>
+        <td>矩阵 YAML 里的 <code>parallel</code> 必须被读到，不被 CLI 默认值短路</td></tr>
+      <tr><td><code>test_redaction_safety.py</code></td>
+        <td>脱敏器改写与扫描器报警必须<strong>同进同出</strong>，两者的判据不能分叉</td></tr>
+      <tr><td><code>test_metric_honesty.py</code></td>
+        <td>成本曲线不得在它没测过的档位上读数</td></tr>
+      <tr><td><code>test_repo_environment.py</code></td>
+        <td>9 处文档里的安装命令都必须含 <code>--extra dev</code> 与 <code>--extra grading</code>；
+          带 <code>_COUNTEREXAMPLE_MARKERS</code>，免得把「警告不要这么写」的文档误报</td></tr>
+      <tr><td><code>test_repo_environment.py</code></td>
+        <td>pre-commit 里 ruff 的 rev 必须等于 <code>uv.lock</code> 解析出的版本</td></tr>
+      <tr><td><code>test_anchor_fitness.py</code></td>
+        <td>单轮 agent 面板对 T4 集合必须被判为不适配</td></tr>
+      <tr><td><code>test_validated_mediums.py</code></td>
+        <td>样本量规划必须排除自重复配对</td></tr>
+      <tr><td><code>test_second_review_round.py</code></td>
+        <td><code>_grade_script</code> 确实把 <code>env=_grader_env()</code> 传了下去——
+          光测 <code>_grader_env()</code> 本身不够，还要测它被用上</td></tr>
+      <tr><td><code>test_second_review_round.py</code></td>
+        <td><code>HARNESS_SOURCES</code> 必须覆盖决定一次校准的东西（含 <code>calibrate.py</code>、<code>stats.py</code>）</td></tr>
+      <tr><td><code>test_docs_agree_with_the_code.py</code></td>
+        <td>手册里能被机器核对的论断逐条对着源头核对：门禁表 vs <code>validity.py</code> 发出的 code、
+          tier 表 vs <code>TIER_SPECS</code> 逐字段、flag 默认值 vs argparse、已发布比例 vs 校准 JSON。
+          另有一条 <code>assert len(self._emitted()) &gt;= 15</code> 守着「守卫本身没有空转」</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3><code>conftest.py</code> 的三个自动夹具</h3>
+  <div class="tbl">
+  <table>
+    <thead><tr><th>夹具</th><th>做什么</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>require_a_bare_python</code></td><td>PATH 上没有裸 <code>python</code> 就直接失败</td>
+        <td>判分器要 shell 出去跑 <code>python -m pytest -q</code>，缺它会得到一批读起来像回归的失败</td></tr>
+      <tr><td><code>do_not_inherit_a_developers_env</code></td>
+        <td>删掉 <code>.env.example</code> 里出现过的每一个变量名</td>
+        <td><code>cli.main</code> 会 <code>load_dotenv()</code> 写进 <code>os.environ</code>，
+          一个 CLI 测试就把开发者的网关、模型、计价交给了后面所有测试。
+          名单是<strong>从文件解析出来的</strong>，不是手写的</td></tr>
+      <tr><td><code>guard_the_checkout</code></td><td>每个测试前后比对 <code>git ls-files</code> 的根条目</td>
+        <td>测试不该改动工作树；改了要当场失败，而不是留到下一次 <code>git status</code> 才发现</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <span class="lbl">fixture 集合 seed-v0 的三个刻意属性</span>
+    <p>四条用例，每一条都为某个测试而存在：它确实过不了可解性门禁（有断言，不是假设）；
+    <strong>没有任何文件带 <code>role</code></strong>（真实语料没有的形状，用作
+    <code>compose.donor_files</code> 的回归样本）；
+    第 003 条是 <code>gold</code> 模式，是「主线只产出 <code>script</code>」这句文档说法的入库反例。</p>
+  </div>
+</section>
+
+<section id="s19">
+  <p class="sec-no">19</p>
+  <h2>延伸阅读</h2>
+
+  <div class="tbl">
+  <table>
+    <thead><tr><th>文档</th><th>回答什么</th><th>什么时候看</th></tr></thead>
+    <tbody>
+      <tr><td><a href="../REFERENCE.md">参考手册 REFERENCE.md</a></td>
+        <td>CLI 每个 flag、配置每个字段、Schema、门禁清单、产物字段</td>
+        <td>要查参数时。是本模块最权威的一份</td></tr>
+      <tr><td><a href="../USER_GUIDE.md">用户手册 USER_GUIDE.md</a></td>
+        <td>环境准备、逐步操作、读结果、故障排查</td><td>第一次上手时</td></tr>
+      <tr><td><a href="overview.html">项目介绍页</a></td>
+        <td>为什么正向编题不够、反向构造原理、实测分布、语言覆盖的待决讨论</td>
+        <td>要理解设计论证时</td></tr>
+      <tr><td><a href="reference.html">设计依据页</a></td>
+        <td>设计依据、数据格式、门禁规则、已发布校准清单</td>
+        <td>注意：这不是参数手册</td></tr>
+      <tr><td><a href="../../configs/README.md">生产配置说明</a></td>
+        <td>Agent / 模型 / Run 该怎么选</td><td>要新建一组实验时</td></tr>
+      <tr><td><a href="../../benchmarks/ai_coding/calibrations/README.md">已发布的校准数据</a></td>
+        <td>每一个报出的比例怎么自己复算</td>
+        <td>要引用任何一个数字之前</td></tr>
+      <tr><td><a href="manual.html">用户手册页</a></td>
+        <td><code>USER_GUIDE.md</code> 的 HTML 版；逐步命令以 Markdown 那份为准</td>
+        <td>只想在浏览器里翻时</td></tr>
+      <tr><td><a href="index.html">文档站首页</a></td><td>四页站的导航</td><td>—</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    本模块自带的用例集不入库。要把用例交给别人复现，走
+    <code>aibench export-bundle</code> 导出到仓库之外，它会带一份
+    <code>MANIFEST.json</code> 记下五道门禁各自的通过与拒绝计数、每条被拒用例的 id 与原因、
+    所用阈值、tier 分布与 case_id 清单。收到包的人据此可以自行核对筛选过程。
+  </p>
+
+</section>
+
+<footer class="foot">
+    <p>
+      本页面是 <code>docs/html/walkthrough.html</code>（相对 <code>benchmarks/coding/</code>），与四页文档站并列，
+      不参与 <code>scripts/build_docs_html.py</code> 的构建。
+      数字与行号以 2026-08-18 的仓库状态为准；与代码冲突时以代码为准。
+    </p>
+</footer>
+
+</div>
+</main>
+</div>
+
+<script>
+(function () {
+  var links = Array.prototype.slice.call(
+    document.querySelectorAll('.rail nav a, .mobile-nav nav a'));
+  if (!links.length) return;
+  var byId = {};
+  links.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    (byId[id] = byId[id] || []).push(a);
+  });
+  var sections = Array.prototype.slice.call(document.querySelectorAll('section[id]'));
+  if (!('IntersectionObserver' in window) || !sections.length) return;
+
+  var rail = document.querySelector('.rail');
+  var railTouched = 0;
+  if (rail) {
+    ['wheel', 'touchstart', 'pointerdown'].forEach(function (ev) {
+      rail.addEventListener(ev, function () { railTouched = Date.now(); }, { passive: true });
+    });
+  }
+
+  var current = null;
+  function mark(id) {
+    if (id === current) return;
+    current = id;
+    links.forEach(function (a) {
+      a.classList.remove('current');
+      a.removeAttribute('aria-current');
+    });
+    (byId[id] || []).forEach(function (a) {
+      a.classList.add('current');
+      a.setAttribute('aria-current', 'true');
+    });
+    var a = (byId[id] || [])[0];
+    if (!rail || !a || Date.now() - railTouched < 1500) return;
+    var above = a.offsetTop < rail.scrollTop;
+    var below = a.offsetTop + a.offsetHeight > rail.scrollTop + rail.clientHeight;
+    if (above || below) rail.scrollTop = a.offsetTop - rail.clientHeight / 2;
+  }
+
+  function pick() {
+    // The section whose top is closest to, but not far past, the reading line.
+    var line = window.innerHeight * 0.28;
+    var best = sections[0];
+    for (var i = 0; i < sections.length; i++) {
+      var top = sections[i].getBoundingClientRect().top;
+      if (top <= line) best = sections[i]; else break;
+    }
+    mark(best.id);
+  }
+
+  var ticking = false;
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    window.requestAnimationFrame(function () { pick(); ticking = false; });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onScroll, { passive: true });
+  pick();
+})();
+</script>
+</body>
+</html>
