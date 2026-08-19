@@ -40,6 +40,45 @@ def test_one_failing_experiment_does_not_void_the_others(tmp_path: Path, monkeyp
     assert "gateway exploded" in report
 
 
+def test_a_candidate_that_measured_nothing_gets_no_lift(tmp_path: Path, monkeypatch):
+    """`-100.0pp` against a baseline the row never met is a comparison, not a missing value.
+
+    The baseline side already answered None here. The candidate side read its None as a 0% rate,
+    so a run with 0 effective cases and every case an infra error was published as a capability
+    result. `ablation_report.md` warns about such rows; `ablation_overview.csv` and the XLSX
+    carry neither the warning nor an `effective_case_count` column.
+    """
+    import aibench.ablation as ablation
+    from aibench.io_util import write_json
+
+    original_run = ablation.run_benchmark
+
+    def nothing_measured_on_b(**kwargs):
+        run_dir = original_run(**kwargs)
+        if kwargs.get("run_id") == "abl-mock-b":
+            summary = load_json(run_dir / "summary.json")
+            summary["success_rate"] = None
+            summary["primary_metric_value"] = None
+            summary["success_count"] = 0
+            summary["effective_case_count"] = 0
+            summary["infra_error_count"] = summary["case_count"]
+            write_json(run_dir / "summary.json", summary)
+        return run_dir
+
+    monkeypatch.setattr(ablation, "run_benchmark", nothing_measured_on_b)
+    matrix = repo_root() / "tests/fixtures/configs/runs/ablation-matrix.mock.yaml"
+    abl_dir = ablation.run_ablation(matrix, output_root=tmp_path, allow_weak_grader=True)
+
+    rows = {r["experiment_name"]: r for r in load_json(abl_dir / "ablation_summary.json")["runs"]}
+    unmeasured = rows["baseline-mock-b"]
+    assert unmeasured["success_rate"] is None
+    assert unmeasured["relative_success_lift"] is None
+    assert unmeasured["overview_row"]["相对基线收益"] is None
+    assert unmeasured["overview_row"]["主指标值"] == "-"
+    # The row that did measure something is unaffected.
+    assert rows["baseline-mock-a"]["relative_success_lift"] == 0.0
+
+
 def test_every_experiment_failing_is_still_an_error(tmp_path: Path, monkeypatch):
     import aibench.ablation as ablation
 

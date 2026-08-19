@@ -12,7 +12,12 @@ from aibench.ablation import (
     compare_runs_pairwise,
     diff_axes_against_baseline,
 )
-from aibench.report import build_summary, render_report_md, resolved_usd_rate
+from aibench.report import (
+    build_summary,
+    render_report_md,
+    render_summary_tables_json,
+    resolved_usd_rate,
+)
 from aibench.runner import _aggregate_attempts, selection_is_oracle
 
 
@@ -239,3 +244,51 @@ class TestTheCostEstimateNamesItsRate:
         )
         assert summary["total_cost"] == 2.0
         assert summary["cost_rate"]["source"] == "AIBENCH_USD_PER_MTOK"
+
+
+class TestARunThatMeasuredNothingRendersAsUnmeasured:
+    """`success_rate` is None when every case died on infrastructure. Rendering it as 0.0% is
+    the claim the None was introduced to avoid, and the headline was the one number in the
+    report that did not go through `format_pct`."""
+
+    def _rendered(self, infra: bool):
+        rows = [
+            _attempt(
+                not infra,
+                case_id=f"c{i}",
+                infra_error=infra,
+                agent_status="error" if infra else "completed",
+                task_type="bugfix",
+            )
+            for i in range(3)
+        ]
+        summary = build_summary(
+            run_id="r",
+            run_manifest={
+                "run_id": "r",
+                "case_set": "s",
+                "case_count": 3,
+                "primary_metric_name": "task_success_rate",
+            },
+            case_results=rows,
+            elapsed_wall_s=1.0,
+        )
+        return summary, render_report_md(summary, rows), render_summary_tables_json(summary)
+
+    def test_the_headline_says_unmeasured(self):
+        summary, md, tables = self._rendered(infra=True)
+        assert summary["success_rate"] is None
+        assert "| 主指标值 | - |" in md
+        assert "| 成功率 | - |" in md
+        assert tables["overview_row"]["主指标值"] == "-"
+        # `general_row` already reported the raw rate under 成功率; 主指标值 now agrees with it.
+        assert tables["general_row"]["主指标值"] is None
+        assert tables["general_row"]["成功率"] is None
+
+    def test_a_run_that_measured_something_still_reports_it(self):
+        summary, md, tables = self._rendered(infra=False)
+        assert summary["success_rate"] == 1.0
+        assert "| 主指标值 | 100.0% |" in md
+        assert "| 成功率 | 100.0% |" in md
+        assert tables["overview_row"]["主指标值"] == "100.0%"
+        assert tables["general_row"]["主指标值"] == 1.0

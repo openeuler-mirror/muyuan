@@ -324,7 +324,11 @@ ORACLE_CAVEAT = (
 
 
 def render_report_md(summary: dict[str, Any], case_results: list[dict[str, Any]]) -> str:
-    sr = summary.get("success_rate") or 0.0
+    # `format_pct`, not `or 0.0`: a run that measured nothing has `success_rate: None`, and
+    # rendering that as 0.0% is the claim the None was introduced to avoid. The pass@k and
+    # per-stratum tables below already went through the helper; the headline did not, so the
+    # one number a reader quotes was the one number that could not say "unmeasured".
+    sr = summary.get("success_rate")
     lines = [
         f"# Benchmark Report: {summary.get('run_id')}",
         "",
@@ -347,7 +351,7 @@ def render_report_md(summary: dict[str, Any], case_results: list[dict[str, Any]]
             f"| {summary.get('benchmark_name')} "
             f"| {summary.get('case_count')} "
             f"| {summary.get('primary_metric_name')} "
-            f"| {sr * 100:.1f}% "
+            f"| {format_pct(sr)} "
             f"| {format_hours(summary.get('total_wall_time_h'))} "
             f"| {summary.get('total_tokens')} "
             f"|  |"
@@ -382,9 +386,9 @@ def render_report_md(summary: dict[str, Any], case_results: list[dict[str, Any]]
         f"| 采样参数 | {summary.get('sampling_params')} |",
         f"| 评判类型 | {summary.get('judgment_type')} |",
         f"| 主指标名称 | {summary.get('primary_metric_name')} |",
-        f"| 主指标值 | {sr * 100:.1f}% |",
+        f"| 主指标值 | {format_pct(sr)} |",
         f"| 成功数 | {summary.get('success_count')} |",
-        f"| 成功率 | {sr * 100:.1f}% |",
+        f"| 成功率 | {format_pct(sr)} |",
         f"| 完成数 | {summary.get('completed_count')} |",
         f"| 空 Patch 数 | {summary.get('empty_patch_count')} |",
         f"| 基础设施错误数 | {summary.get('infra_error_count')} |",
@@ -458,7 +462,7 @@ def render_report_md(summary: dict[str, Any], case_results: list[dict[str, Any]]
 
 def render_summary_tables_json(summary: dict[str, Any]) -> dict[str, Any]:
     """Machine-readable rows aligned with project table schemas."""
-    sr = float(summary.get("success_rate") or 0.0)
+    sr = summary.get("success_rate")
     overview_row = {
         "算法名称": summary.get("algorithm_name"),
         "Agent与模型": f"{summary.get('agent_name')}｜main={summary.get('main_model')}",
@@ -466,7 +470,7 @@ def render_summary_tables_json(summary: dict[str, Any]) -> dict[str, Any]:
         "Benchmark": summary.get("benchmark_name"),
         "Case数": summary.get("case_count"),
         "主指标名称": summary.get("primary_metric_name"),
-        "主指标值": f"{sr * 100:.1f}%",
+        "主指标值": format_pct(sr),
         "总体耗时(h)": summary.get("total_wall_time_h"),
         "总体Token消耗": summary.get("total_tokens"),
         "相对基线收益": summary.get("relative_success_lift"),

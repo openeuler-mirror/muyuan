@@ -291,11 +291,16 @@ def run_ablation(
         # lift, the token multiple and the overview table all put an oracle rate beside three
         # honest ones in `configs/runs/ablation-matrix.yaml` as it ships.
         r["comparable_with_baseline"] = bool(r.get("selection_is_oracle")) == base_oracle
-        if base_sr is None:
+        # Symmetric with the baseline: a candidate that measured nothing has no lift either.
+        # `or 0` read its `None` as a 0% rate, so a row with 0 effective cases and every case
+        # an infra error was published as `-100.0pp` — a capability comparison against a
+        # measurement that does not exist. `ablation_report.md` warns about such rows; the CSV
+        # and XLSX carry neither the warning nor an `effective_case_count` column.
+        if base_sr is None or r.get("success_rate") is None:
             r["relative_success_lift"] = None
             r["overview_row"]["相对基线收益"] = None
         else:
-            lift = float(r["success_rate"] or 0) - base_sr
+            lift = float(r["success_rate"]) - base_sr
             r["relative_success_lift"] = lift
             marker = "" if r["comparable_with_baseline"] else "（oracle，不可比）"
             r["overview_row"]["相对基线收益"] = f"{lift * 100:+.1f}pp{marker}"

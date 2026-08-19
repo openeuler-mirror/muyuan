@@ -136,17 +136,17 @@ run_dir=<run_dir>
 FAILED: no case executed. All 45 died on infrastructure (45 infra errors) — this is not a 0% pass rate. Check credentials, the gateway and `aibench doctor`; see <run_dir>/report.md.
 ```
 
-**这一行是唯一会告诉你「这不是 0% 通过率」的地方。** 产物照样会写盘，而里面是这样的：
+产物照样会写盘，而且每一处都说得出「没测到」：
 
 | 位置 | 值 |
 |---|---|
-| `summary.json` 的 `success_rate` | `null` —— 诚实 |
-| `summary.json` 的 `effective_case_count` / `infra_error_count` | `0` / `45` —— 诚实 |
-| `report.md` 的「主指标值」与「成功率」 | **`0.0%`** |
-| `tables.json` 的 `overview_row["主指标值"]` | **`"0.0%"`**（而 `general_row["成功率"]` 是 `null`） |
+| `summary.json` 的 `success_rate` | `null` |
+| `summary.json` 的 `effective_case_count` / `infra_error_count` | `0` / `45` |
+| `report.md` 的「主指标值」与「成功率」 | `-` |
+| `tables.json` 的 `overview_row["主指标值"]` | `"-"`；`general_row` 的两格都是 `null` |
 
-**那两个 0.0% 是渲染缺省，不是测量结果。** 判断一次 run 有没有测到东西，看
-`effective_case_count`，不要看成功率。
+**「全部 case 都死在基础设施上」和「一条都没做对」是两件事**，所以这里不写 `0.0%`。
+判断一次 run 有没有测到东西，看 `effective_case_count`。
 
 ### 复现 `BASELINE.md` 的那次测量
 
@@ -164,6 +164,8 @@ GLM-5 与 GLM-5.2 各 3 轮、`allow_invalid_cases: true`、`parallel: 3`。**�
 - 换掉 `bare_model` 就换掉了被测对象 —— 脚手架贡献的方差比模型之间的差距还大。
 
 结果看 `runs/ablation_<时间戳>/ablation_report.md`；配对显著性用同一集合上的 McNemar。
+某一行如果没测出任何东西（比如那一个模型的凭据坏了），它的成功率与相对基线收益都是空的，
+不是 `0.0%` 和一个负的 pp 值；`ablation_report.md` 另有一段警告点名这些行。
 拿到的数怎么和基线对齐、哪些能对齐哪些不能，见 [`BASELINE.md` §7](BASELINE.md)。
 
 ---
