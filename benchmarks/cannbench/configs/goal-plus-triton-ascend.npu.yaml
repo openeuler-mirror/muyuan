@@ -1,0 +1,17 @@
+goal_plus:
+  driver: pi-rpc
+  verifier: cann
+  # auto_pipeline owns operator-level parallelism. Keep candidate-level fanout
+  # at one until each allocated device has an explicit sharing policy.
+  max_candidates: 1
+  pi_binary: pi
+  device_id: 0
+  verify_timeout: 7200
+  worker_budget:
+    max_runtime_seconds: 3600
+    min_runtime_seconds: 300
+    min_verifier_runs: 1
+    on_exceed: interrupt
+  root_hypotheses:
+    - build a correct Triton-Ascend baseline before tuning
+    - optimize memory access and launch geometry without changing the public operator API

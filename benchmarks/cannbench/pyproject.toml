@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "muyuan-cannbench-integration"
+version = "0.1.0"
+description = "Muyuan Goal Plus adapter for the third-party CANN Bench auto_pipeline"
+requires-python = ">=3.10"
+dependencies = [
+  "goal-plus",
+  "jinja2>=3.1",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.uv.sources]
+goal-plus = { path = "../../plugins/goal-plus", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/muyuan_cannbench"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
