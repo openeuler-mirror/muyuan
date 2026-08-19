@@ -7,6 +7,22 @@
 
 上游源码保持独立，Muyuan 只记录 `.gitmodules` 和固定 gitlink；版本与初始化说明见 `THIRD_PARTY.md`。注册通过 `src/sitecustomize.py` 的显式环境开关继承到 auto_pipeline 的后台、监控与重试子进程。
 
+## 代码生成后端切换
+
+对 auto_pipeline 使用者，Triton-Ascend 与 AscendC 的预期用法都是只切换配置；Generator、converter 注册、算子级批量调度、monitor/retry 和最终 CANN `kernel_eval` 边界保持不变。例如，完成 AscendC 适配后的配置入口应为：
+
+```yaml
+agent:
+  type: goal-plus
+  backend: ascend
+  arch: ascend910b4
+  framework: torch
+  codegen_target: ascendc
+  config_path: benchmarks/cannbench/configs/goal-plus-ascendc.npu.yaml
+```
+
+当前 master 只实现并验证了 `codegen_target: triton_ascend`。AscendC 配置分支尚未接入；现在直接把配置改成 `ascendc` 会被 `GoalPlusGenerator` 拒绝，因此上面的 AscendC 配置是目标接口，不代表当前已经可运行。后续适配应封装在 Muyuan 的 generator/converter 内部，不要求使用者改变 auto_pipeline 的运行命令，也不修改作为第三方 submodule 引入的 CANN Bench。
+
 ## 当前无 NPU 验收
 
 当前机器可跑完整控制链，但不会导入或执行 `torch_npu`、Triton kernel、CANN `kernel_eval`：
