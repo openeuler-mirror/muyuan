@@ -122,6 +122,23 @@ uv run python -m aibench run \
 
 产物结构与 §3 相同，只是 `success_rate` 这次有意义了。
 
+> **这条命令跑的是 GLM-5.1**，因为 `configs/runs/baseline-bare.yaml` 里写的是
+> `model_config: configs/models/glm51.yaml`。[`BASELINE.md`](BASELINE.md) 的两个模型是
+> **GLM-5 与 GLM-5.2**，所以这一次的数字不能直接和基线并列。要对基线就用下面的消融，
+> 或者加 `--model configs/models/glm52.yaml` 覆盖。
+
+**凭据没配好会怎样。** 全部 45 条会记成 `infra_error`，`effective_case_count` 归零，
+命令退出码 1 并打印：
+
+```text
+FAILED: no case executed. All 45 died on infrastructure (45 infra errors)
+— this is not a 0% pass rate. Check credentials, the gateway and `aibench doctor`; see .../report.md.
+```
+
+**这一行是唯一会告诉你「这不是 0% 通过率」的地方。** 产物照样会写盘，而 `report.md` 与
+`tables.json` 里的「主指标值」会显示 **0.0%** —— 那是渲染缺省，不是测量结果。
+把这种 run 的 0.0% 当成模型表现，是这条错误路径最容易出的事故。
+
 ### 复现 `BASELINE.md` 的那次测量
 
 ```bash
