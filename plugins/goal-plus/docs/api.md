@@ -203,6 +203,13 @@ The snapshot root also exposes `schema_version` for the monitor contract and
 `goal_plus_version` for the runtime that generated it. Generated report data
 stores the same product version separately from its report schema version.
 
+`goal_plus_monitor_snapshot.feature_plugins` contains optional, read-only
+derived views. The built-in `orchestration` plugin normalizes ordinary
+Main/subagent task packets and assignment/result/decision events while keeping
+Codex and Pi native operation names distinct. Pass
+`feature_plugins=["orchestration"]` to select it or `feature_plugins=[]` to
+disable feature projections. See [Monitor Feature Plugins](feature-plugins.md).
+
 Worker handoffs remain one bounded protocol. `key_results` supplies feature
 ledger entries (artifact, code surface/change, portability/dependencies,
 measured effect, verifier result, and incumbent relation), while
