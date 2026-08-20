@@ -191,6 +191,10 @@ def test_pi_worker_prompt_requires_runtime_context_and_verifier() -> None:
     )
 
     assert "search_get_agent_context" in text
+    assert "context.recent_iterations" in text
+    assert "context.best_iteration" in text
+    assert "可能很大的全量历史" in text
+    assert "search_list_iterations" in text
     assert "candidate_task.share_out_dir" not in text
     assert "search_stage_shared_tool" not in text
     assert "search_copy_shared_tool" not in text
@@ -328,6 +332,7 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "goal-plus-stop-continuation" in text
     assert "GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS" in text
     assert "goal-plus-worker-continuation" in text
+    assert "沿用已加载的运行时上下文和 Evidence；探索新方向" in text
     assert '{ triggerTurn: true, deliverAs: "followUp" }' in text
     assert "goal-plus-stats" in text
     assert "registerEntryRenderer<GoalPlusStatsEntry>" in text

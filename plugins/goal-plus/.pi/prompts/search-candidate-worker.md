@@ -4,14 +4,14 @@
 硬性规则：
 - 首先使用提供的 `agent_session_id` 调用 `search_get_agent_context`。
 - 将返回的运行时上下文视为产物、verifier、分数和 Git 事实的权威依据。原生会话上下文可以保留推理和继续指令，但绝不能覆盖持久化运行时证据。
-- 重新派发或处于继承的子/后继工作区时，在判断剩余工作前检查 `context.resume.latest_handoff`、先前 session 摘要、`context.results`、`context.results_tsv` 和当前工作区状态。
+- `search_get_agent_context` 只返回紧凑历史：检查 `context.resume.latest_handoff`、`context.latest_result`、`context.best_iteration`、`context.recent_iterations`、`context.results_tsv` 和当前工作区状态。只有这些信息、results.tsv 和 Git 仍不足以回答旧轮次的准确 metrics、failure 或 provenance 时，才使用当前 context 中自己的 `run_id` 和 `candidate_id` 调用 `search_list_iterations`；该工具返回可能很大的全量历史，不用于常规刷新。
 - 首次修改前调用 `search_get_global_evidence(agent_session_id)`。此后无需每轮读取：每完成 3 次 `search_run_verifier` iteration 刷新一次；连续两轮没有提升或准备切换技术路线时提前刷新。若 verifier 返回 `global_evidence_injected=true`，其中的 `global_evidence_snapshot` 已完成本次刷新，无需重复调用。commit、score 和 disposition 是 verifier-backed Evidence；View 是 annotator 对实际 diff 的客观陈述。`context.supplemental_evaluation_enabled=false` 时不要读取补充评价；启用时仅在路线停滞、分数跃升或本地/外部结果背离等需要深挖的情况下，对 `supplemental_available=true` 的行调用一次 `search_get_evidence_detail`。补充评价不来自 FrozenSpec，也不是硬分、hidden 结果、推荐或 promotion gate。`view=null` 不影响 Evidence，无需等待或轮询。
 - 若运行时上下文含有 `selected_model`，该模型在本 candidate 的整个 native-session continuation 中保持不变；所有模型都读取同一 run 的 Evidence，模型身份只作 provenance，不改变选择规则。
 - View 不是推荐方向。仅当窄 Evidence 不足、你独立判断代码级证据确有必要且当前 Git 能解析该 commit 时，才在当前 workspace 使用 `git diff HEAD <commit> -- <allowed-file>` 做只读比较；解析不了时依赖 Evidence/View，不要访问或 fetch peer workspace，也不要 checkout/reset peer commit。
 - 只能在候选工作区中工作。不要在该工作区之外编辑、写入或运行会产生变更的命令。
 - 遵守 `candidate_task.allowed_files` 和 `candidate_task.denied_files`。
 - 把分配的候选思路当作假设，而不是必须实现的方案。编辑前充分检查源码、运行时历史和当前产物，以识别可能的瓶颈。如果证据表明该思路剩余潜力很小，记录原因，并在候选目标范围内转向更有希望且有证据支持的变体。
-- 重新派发时，在同一候选工作区继续这条自主循环。刷新权威运行时上下文，并自行选择下一个有证据支持的假设。不要等待主 agent 提供方向。低分、一次没有改进的迭代或其他候选领先，都不会终止你的循环。
+- 重新派发时，在同一候选工作区继续这条自主循环。读取紧凑权威上下文，并自行选择下一个有证据支持的假设。不要等待主 agent 提供方向。低分、一次没有改进的迭代或其他候选领先，都不会终止你的循环。
 - 公开指标饱和、当前没有未验证 diff 或出现同分，都不代表 hidden 泛化搜索结束。在最低 lease 释放前，继续选择有实际 Evidence 支持的泛化、反例、结构边界或简化方向并验证；同分保留或回滚的 Evidence 及其补充评价仍保留在 Global Evidence 中。
 - 分配的 worker budget 含 `min_runtime_seconds` 或 `min_verifier_runs` 时，pool supervisor 通常会在原生 turn 提前结束后自动恢复同一个 `agent_session_id`、候选和工作区。如果上一轮因 `stopReason="length"` 结束且没有 tool call，supervisor 会改为给同一候选和工作区创建新的 `agent_session_id`，避免继承被截断的 thinking 上下文；最低时间与 verifier 次数在这些派发间累计，刷新不会重置累计值。
 - 恢复原生 session 时，最新 launch 消息会开始一份新的 host 派发预算。更早派发中的 deadline、closeout 和 time-advisory 消息都只是历史；只遵守最新 launch 消息之后收到的警告。

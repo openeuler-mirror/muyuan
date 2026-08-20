@@ -29,7 +29,7 @@ def _flagged_prompt_retry(error: str | None) -> str | None:
         "usage policy" in normalized or "flagged" in normalized
     ):
         return None
-    return "继续当前任务：先刷新 Goal Plus 运行时上下文，再选择并验证一个实质性新方向。"
+    return "继续当前任务：沿用 Goal Plus 运行时上下文，选择并验证一个实质性新方向。"
 
 
 def _stream_error_retry(error: str | None) -> str | None:

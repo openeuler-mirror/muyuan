@@ -213,7 +213,9 @@ CODEX_CLOSEOUT_MESSAGE = (
 
 CODEX_WORKER_BOUNDARY = (
     "你是 Search 候选 worker，不是搜索编排器。首先使用提供的 agent_session_id 调用 "
-    "search_get_agent_context。首次修改前调用 search_get_global_evidence；此后每完成 3 次 "
+    "search_get_agent_context；它返回紧凑历史，只有 results.tsv、Git 和紧凑字段不足以回答"
+    "旧轮次的准确 verifier 事实时，才为自己的 candidate 调用返回全量历史的 "
+    "search_list_iterations。首次修改前调用 search_get_global_evidence；此后每完成 3 次 "
     "search_run_verifier iteration 刷新一次，连续两轮没有提升或切换技术路线时提前刷新；"
     "verifier 已注入的 global_evidence_snapshot 算作刷新。独立思考后编辑，"
     "并为该 agent session 调用 search_run_verifier，同时用一句话 hypothesis 概括实际尝试。"
@@ -479,17 +481,15 @@ class CodexAdapter:
             raise UnsupportedHostCapability(
                 "codex continuation requires a bound task name or agent id"
             )
-        worker_contract = _codex_worker_contract(worker_prompt)
         payload: dict[str, Any] = {
             "tool": "followup_task",
             "target": target,
             "message": (
-                f"{worker_contract}\n\n"
                 "continue_existing_agent_session=true; "
                 f"agent_session_id={agent_session_id}; "
                 f"candidate_id={candidate_id}; "
-                "刷新 search_get_agent_context，并继续遵循 Global Evidence 的定期刷新节奏；"
-                f"继续同一个 candidate 和 workspace；指令：{one_paragraph_idea}"
+                "继续同一个 candidate 和 workspace；"
+                f"指令：{one_paragraph_idea}"
             ),
         }
         budget_control = _codex_budget_control(target, worker_budget)
@@ -631,7 +631,6 @@ class PiRpcAdapter:
         worker_budget: dict[str, Any] | None = None,
         resume: bool = False,
     ) -> str:
-        header = (worker_prompt or "首先调用 search_get_agent_context。").strip()
         labels = (
             f"agent_session_id={agent_session_id}; "
             f"candidate_id={candidate_id}; "
@@ -640,15 +639,19 @@ class PiRpcAdapter:
         )
         if resume:
             labels = "continue_existing_agent_session=true; " + labels
-            header += (
-                "\n\n这条 launch 消息开始一次新的 host 派发。原生会话中更早的 deadline、"
+            return (
+                "继续当前 Candidate 原生会话。调用 search_get_agent_context 获取当前紧凑权威"
+                "状态；沿用会话中已加载的 Evidence。"
+                "这条 launch 消息开始一次新的 host 派发。原生会话中更早的 deadline、"
                 "closeout 或 time-advisory 消息属于上一次派发，已不再生效。"
                 "只遵守本次 launch 之后收到的警告。"
                 "在收到本次 closeout 或 deadline 警告前，不要仅因公开指标达到上限、"
-                "当前没有未验证改动或出现同分而结束本次派发。刷新运行时证据后，"
+                "当前没有未验证改动或出现同分而结束本次派发。"
                 "至少完成一个实质性的泛化、反例、结构边界或简化 probe 并用 verifier "
                 "验证；同分保留或回滚的 Evidence 仍有信息价值。"
+                f"\n\nLaunch 标签：{labels}"
             )
+        header = (worker_prompt or "首先调用 search_get_agent_context。").strip()
         return f"{header}\n\nLaunch 标签：{labels}"
 
     def build_launch_payload(

@@ -326,7 +326,7 @@ def test_run_pi_rpc_worker_retries_flagged_prompt_once(
 
     assert prompts == [
         "do work",
-        "继续当前任务：先刷新 Goal Plus 运行时上下文，再选择并验证一个实质性新方向。",
+        "继续当前任务：沿用 Goal Plus 运行时上下文，选择并验证一个实质性新方向。",
     ]
     assert handle["metadata"]["assistant_text"] == "continued after policy retry"
 

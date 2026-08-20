@@ -237,9 +237,9 @@ def create_mcp(
     def search_get_agent_context(agent_session_id: str) -> dict[str, Any]:
         """Subagent 的首次调用，返回权威 id 和工作区。
 
-        返回 run_id、candidate_id、workspace、candidate_task 和 subagent 自己的
-        iterations/results。由 subagent 调用，不由主 agent 调用。subagent 必须把
-        prompt 提供的 id 只当作标签，并将此响应作为事实来源。
+        返回 run_id、candidate_id、workspace、candidate_task、最佳/最近 iteration 摘要和
+        results.tsv 路径。由 subagent 调用，不由主 agent 调用。subagent 必须把 prompt
+        提供的 id 只当作标签，并将此响应作为事实来源。
         """
         return tools.search_get_agent_context(agent_session_id)
 
@@ -339,7 +339,11 @@ def create_mcp(
         run_id: str,
         candidate_id: str,
     ) -> list[dict[str, Any]]:
-        """返回一个候选的只读 iteration 记录列表。"""
+        """返回一个候选可能很大的完整 iteration 历史。
+
+        candidate worker 只应查询 agent context 中自己的 run/candidate，并且仅在紧凑
+        context、results.tsv 和 Git 无法回答旧轮次的准确 verifier 事实时调用。
+        """
         return tools.search_list_iterations(run_id, candidate_id)
 
     @mcp.tool()

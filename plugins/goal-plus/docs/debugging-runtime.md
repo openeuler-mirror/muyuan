@@ -517,8 +517,8 @@ These tools are safe to call anytime — they're read-only:
 |---|---|
 | `search_status(run_id)` | Run state, candidate counts, best score |
 | `search_list_history(run_id, top_n, sort_by)` | Top candidates by score |
-| `search_list_iterations(run_id, candidate_id)` | Full iteration history for a candidate |
-| `search_get_agent_context(agent_session_id)` | What a specific subagent sees (including its own iterations) |
+| `search_list_iterations(run_id, candidate_id)` | Potentially large full iteration history for a candidate |
+| `search_get_agent_context(agent_session_id)` | Bounded authoritative worker context with best/recent iterations and `results.tsv` |
 | `search_get_global_evidence(agent_session_id)` | Settled worker Evidence and possibly delayed objective Views across the session's current run |
 | `search_get_evidence_detail(agent_session_id, candidate_id, iteration)` | One on-demand supplemental evaluation authorized by the caller's current run and Evidence mode |
 

@@ -210,7 +210,7 @@ def test_codex_launch_preserves_explicit_nondefault_agent_type() -> None:
 
 
 @pytest.mark.codex
-def test_codex_launch_and_continue_embed_full_worker_prompt() -> None:
+def test_codex_launch_embeds_contract_and_continue_is_compact() -> None:
     adapter = get_agent_host_adapter("codex")
     worker_prompt = "FULL WORKER CONTRACT: write .tmp/handoff.json before returning."
 
@@ -234,9 +234,9 @@ def test_codex_launch_and_continue_embed_full_worker_prompt() -> None:
     )
 
     assert worker_prompt in launch["message"]
-    assert worker_prompt in continued["message"]
+    assert worker_prompt not in continued["message"]
     assert "候选 worker，不是搜索编排器" in launch["message"]
-    assert "候选 worker，不是搜索编排器" in continued["message"]
+    assert "指令：continue" in continued["message"]
 
 
 @pytest.mark.codex
@@ -474,6 +474,9 @@ def test_pi_rpc_adapter_builds_cross_process_native_session_continuation() -> No
         "started_at": "2026-07-19T00:00:00Z",
     }
     assert "continue_existing_agent_session=true" in payload["prompt"]
+    assert "first call search_get_agent_context" not in payload["prompt"]
+    assert "调用 search_get_agent_context 获取当前紧凑权威" in payload["prompt"]
+    assert "沿用会话中已加载的 Evidence" in payload["prompt"]
     assert "这条 launch 消息开始一次新的 host 派发" in payload["prompt"]
     assert "属于上一次派发，已不再生效" in payload["prompt"]
     assert "公开指标达到上限" in payload["prompt"]
@@ -499,7 +502,7 @@ def test_codex_continue_uses_followup_task_with_watchdog() -> None:
     assert payload["tool"] == "followup_task"
     assert payload["target"] == "search_agent_0001"
     assert "continue_existing_agent_session=true" in payload["message"]
-    assert "Global Evidence 的定期刷新节奏" in payload["message"]
+    assert "指令：continue" in payload["message"]
     assert payload["budget_control"]["max_runtime_seconds"] == 900
     assert payload["budget_control"]["interrupt_target"] == "search_agent_0001"
 

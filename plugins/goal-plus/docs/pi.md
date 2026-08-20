@@ -176,12 +176,23 @@ lanes.
 ## Worker Boundary
 
 Worker-role extension tools are limited to `search_get_agent_context`,
-`search_get_global_evidence`,
-`search_run_verifier`, and `search_list_iterations`. Each iteration reads the
-Global Evidence view, independently chooses a direction, edits only inside the
-returned workspace, runs the verifier with a one-line hypothesis describing the
-realized attempt, and updates a bounded `.tmp/handoff.json`. A `null` View means
-the annotator has not published yet and never requires waiting.
+`search_get_global_evidence`, `search_get_evidence_detail`,
+`search_stage_shared_tool`, `search_copy_shared_tool`, `search_run_verifier`,
+and `search_list_iterations`. Agent context contains a
+bounded best/recent summary and the durable `results.tsv` path;
+`search_list_iterations` is the explicit full-history fallback when exact older
+verifier details are required. Workers read Global Evidence before the first
+change and then at the configured periodic/stagnation checkpoints, independently
+choose a direction, edit only inside the returned workspace, run the verifier
+with a one-line hypothesis, and update a bounded `.tmp/handoff.json`. A `null`
+View means the annotator has not published yet and never requires waiting.
+
+Same-process worker continuation preserves the loaded context and Evidence.
+After Pi compacts a worker session, the extension silently appends one complete
+Global Evidence snapshot to the next context. A cross-process continuation of
+the same native session reloads only compact authoritative candidate context;
+the full worker contract and already loaded Evidence remain in the persisted
+session.
 
 The persisted native session is the normal continuation surface. The handoff,
 candidate Git state, and `.gp` verifier history remain the durable recovery

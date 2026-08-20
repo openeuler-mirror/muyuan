@@ -837,7 +837,9 @@ def test_search_candidate_autoresearch_lease_blocks_until_runtime_then_releases(
     assert "AutoResearch lease" in blocked["reason"]
     assert "不要返回父级" in blocked["reason"]
     assert "不要休眠或忙等" in blocked["reason"]
-    assert "search_get_global_evidence" in blocked["reason"]
+    assert "沿用已加载的 candidate-local 证据和 Global Evidence" in blocked["reason"]
+    assert "search_get_agent_context" not in blocked["reason"]
+    assert "search_get_global_evidence" not in blocked["reason"]
     assert "一句话 hypothesis" in blocked["reason"]
     assert "省略 scope 以使用 process verifier" in blocked["reason"]
     assert "继续深度搜索" in blocked["reason"]
@@ -849,9 +851,9 @@ def test_search_candidate_autoresearch_lease_blocks_until_runtime_then_releases(
     ]
     assert "立即再次尝试结束" not in blocked["reason"]
     protocol = [
-        "search_get_agent_context",
-        "search_get_global_evidence",
-        "实现",
+        "沿用已加载",
+        "选择不同",
+        "实现修改",
         "search_run_verifier",
         "hypothesis",
     ]
