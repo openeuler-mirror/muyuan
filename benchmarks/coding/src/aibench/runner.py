@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ def _run_one_attempt(
     max_steps: int,
     max_wall_time_s: float,
     case_retries: int | None = None,
+    env_passthrough: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Run one independent sample of a case. Retries only cover infrastructure failures."""
     import os
@@ -111,7 +113,9 @@ def _run_one_attempt(
         grade = None
         if not infra:
             try:
-                grade = grade_case(case, workspace, baseline=baseline)
+                grade = grade_case(
+                    case, workspace, baseline=baseline, env_passthrough=env_passthrough
+                )
             except Exception as e:
                 # The only stage of this loop that was not guarded, and the most expensive one
                 # to lose: `parallel_map` re-raises a worker's exception out of the executor
@@ -296,6 +300,7 @@ def _run_one_case(
     attempts: int = 1,
     selection_strategy: str = "first-submit",
     case_retries: int | None = None,
+    env_passthrough: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Sample a case ``attempts`` times and fold the results into a single row."""
     case_dir = run_dir / "cases" / safe_case_id(case.case_id)
@@ -313,6 +318,7 @@ def _run_one_case(
                     max_steps=max_steps,
                     max_wall_time_s=max_wall_time_s,
                     case_retries=case_retries,
+                    env_passthrough=env_passthrough,
                 )
             ],
             strategy=selection_strategy,
@@ -328,6 +334,7 @@ def _run_one_case(
             max_steps=max_steps,
             max_wall_time_s=max_wall_time_s,
             case_retries=case_retries,
+            env_passthrough=env_passthrough,
         )
         for n in range(1, attempts + 1)
     ]
@@ -550,6 +557,7 @@ def run_benchmark(
             attempts=attempts,
             selection_strategy=run_cfg.selection_strategy,
             case_retries=run_cfg.case_retry,
+            env_passthrough=run_cfg.grader_env_passthrough,
         )
 
     case_results = parallel_map(_job, cases, workers=workers)

@@ -30,6 +30,10 @@ class GraderSpec:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> GraderSpec:
+        from aibench.io_util import safe_command
+
+        if d.get("command"):
+            safe_command(str(d["command"]), field="grader.command")
         gold = [FileBlob.from_dict(x) for x in d.get("gold_files") or []]
         hidden = [FileBlob.from_dict(x) for x in d.get("hidden_tests") or []]
         return cls(
@@ -165,6 +169,10 @@ class RunConfig:
     #: `_revmixed` is the live case — its 31 prompts were later translated to Chinese, so it
     #: reproduces 0 of 31 recorded fingerprints while looking like the same set.
     expected_case_set_fingerprint: str | None = None
+    #: Environment variables the grader may read beyond `_GRADER_ENV_ALLOWLIST`. Empty by
+    #: default: the code being graded is written by the model or shipped by the case set,
+    #: and the caller's environment holds the gateway key and the database URL.
+    grader_env_passthrough: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, d: dict[str, Any], base_dir: Path | None = None) -> RunConfig:
@@ -187,6 +195,7 @@ class RunConfig:
             case_workers=int(d.get("case_workers", 1)),
             case_retry=d.get("case_retry"),
             expected_case_set_fingerprint=d.get("expected_case_set_fingerprint"),
+            grader_env_passthrough=tuple(str(v) for v in (d.get("grader_env_passthrough") or ())),
         )
 
 

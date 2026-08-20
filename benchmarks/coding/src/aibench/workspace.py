@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from aibench.io_util import repo_root
+from aibench.io_util import repo_root, safe_command
 from aibench.models import Case, FileBlob
 
 
@@ -68,7 +68,11 @@ class WorkspaceSpec:
             git_ref=git.get("ref") or d.get("git_ref"),
             git_subdir=git.get("subdir") or d.get("git_subdir"),
             git_sparse_paths=list(git.get("sparse_paths") or d.get("git_sparse_paths") or []),
-            setup_commands=list(d.get("setup_commands") or []),
+            setup_commands=[
+                cmd
+                for cmd in (d.get("setup_commands") or [])
+                if safe_command(str(cmd), field="workspace.setup_commands")
+            ],
             env={str(k): str(v) for k, v in (d.get("env") or {}).items()},
             strict=bool(d.get("strict", True)),
         )
@@ -398,14 +402,17 @@ def _apply_git(
 
 
 def _run_setup(cmd: str, workspace: Path, *, env: dict[str, str]) -> str:
-    import os
+    from aibench.grading import _grader_env
 
-    full_env = os.environ.copy()
+    # Same boundary as the grader, and for the same reason: `setup_commands` is a case-supplied
+    # list that used to reach a shell with the caller's whole environment. It runs *earlier*
+    # than the grader — during materialization — so `audit-cases` executed it too.
+    argv = safe_command(cmd, field="workspace.setup_commands")
+    full_env = _grader_env()
     full_env.update(env)
     try:
         proc = subprocess.run(
-            cmd,
-            shell=True,
+            argv,
             cwd=workspace,
             capture_output=True,
             text=True,

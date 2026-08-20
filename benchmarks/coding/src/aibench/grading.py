@@ -5,8 +5,10 @@ import json
 import re
 import shutil
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
+from aibench.io_util import safe_command
 from aibench.languages import (
     case_language_is_javascript,
     pass_ratio,
@@ -223,6 +225,7 @@ def grade_case(
     workspace: Path,
     *,
     baseline: dict[str, str] | None = None,
+    env_passthrough: Sequence[str] = (),
 ) -> GradeResult:
     """Grade one submission.
 
@@ -275,7 +278,7 @@ def grade_case(
         inject_hidden_tests(case, workspace)
 
     if mode == "script":
-        return _grade_script(case, workspace)
+        return _grade_script(case, workspace, env_passthrough=env_passthrough)
     if mode == "gold":
         return _grade_gold(case, workspace)
     if mode == "llm_judge":
@@ -283,7 +286,7 @@ def grade_case(
     if mode == "composite":
         # Prefer script if present, else gold.
         if case.grader.command:
-            r = _grade_script(case, workspace)
+            r = _grade_script(case, workspace, env_passthrough=env_passthrough)
             # Falling through on an uncollectable workspace lets the gold check pass a case
             # whose tests never ran, and drops the collection verdict on the floor.
             if r.passed or r.infra_error or r.collection_error:
@@ -294,10 +297,21 @@ def grade_case(
     return GradeResult(passed=False, mode=mode, detail=f"unknown grader mode: {mode}")
 
 
-def _grader_env() -> dict[str, str]:
-    """The environment a grader runs under, with the sources of run-to-run drift pinned.
+#: What a grader legitimately needs. Verified against the suites this harness runs: `python -m
+#: pytest -q` and `node --test` both exit 0 with only these set.
+_GRADER_ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ", "SYSTEMROOT")
 
-    The grader inherited the caller's environment whole. Three of those variables decide
+
+def _grader_env(passthrough: Sequence[str] = ()) -> dict[str, str]:
+    """The environment a grader runs under: an allowlist, plus the drift sources pinned.
+
+    An allowlist because the code being graded is written by the model or shipped by the case
+    set, and the caller's environment holds `OPENAI_API_KEY` and `AIBENCH_DB_URL`. A denylist
+    of credential-shaped names misses `GH_PAT`, `NPM_CONFIG_*` and anything else not spelled
+    with the words it looks for. `grader_env_passthrough` in the run config names the
+    exceptions, and they are recorded in the manifest with the rest of the run.
+
+    `PYTHONWARNINGS` is no longer popped: it is simply not on the list. Three variables decide
     whether the same code produces the same verdict:
 
     * ``PYTHONHASHSEED`` — set randomly per interpreter, so any test that iterates a set or a
@@ -310,17 +324,23 @@ def _grader_env() -> dict[str, str]:
     """
     import os
 
-    env = dict(os.environ)
+    keep = set(_GRADER_ENV_ALLOWLIST) | {str(name) for name in passthrough}
+    env = {k: v for k, v in os.environ.items() if k in keep}
     env["PYTHONHASHSEED"] = "0"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env.pop("PYTHONWARNINGS", None)
     return env
 
 
-def _grade_script(case: Case, workspace: Path) -> GradeResult:
+def _grade_script(
+    case: Case, workspace: Path, *, env_passthrough: Sequence[str] = ()
+) -> GradeResult:
     cmd = case.grader.command
     if not cmd:
         return GradeResult(passed=False, mode="script", detail="missing grader.command")
+    # `shell=False` below is the boundary: the command is case-supplied, and a shell turns any
+    # string in that field into arbitrary code on the host. `safe_command` already refused shell
+    # syntax when the case was loaded, so this only splits.
+    argv = safe_command(cmd, field="grader.command")
     if case_language_is_javascript(case.language) and (reason := unsupported_node_reason()):
         # An unusable runner is a harness failure, not a verdict about the submission. Left
         # unchecked it is worse than a crash: `node --test` below 22.18 exits 0 having
@@ -333,14 +353,13 @@ def _grade_script(case: Case, workspace: Path) -> GradeResult:
         )
     try:
         proc = subprocess.run(
-            cmd,
-            shell=True,
+            argv,
             cwd=workspace,
             capture_output=True,
             text=True,
             timeout=_GRADER_TIMEOUT_S,
             check=False,
-            env=_grader_env(),
+            env=_grader_env(env_passthrough),
         )
     except subprocess.TimeoutExpired:
         # Kept as `infra_error` — the harness cannot tell an agent-authored hang from a slow

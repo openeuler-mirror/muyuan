@@ -240,9 +240,11 @@ class TestArchiveMembersAreComparedAsPaths:
             info.size = 1
             tf.addfile(info, io.BytesIO(b"X"))
         buf.seek(0)
-        with tarfile.open(fileobj=buf) as tf:
-            with pytest.raises(RuntimeError, match="escapes workspace"):
-                _safe_extract_tar(tf, dest)
+        with (
+            tarfile.open(fileobj=buf) as tf,
+            pytest.raises(RuntimeError, match="escapes workspace"),
+        ):
+            _safe_extract_tar(tf, dest)
         assert not (tmp_path / "ws-evil").exists()
 
 
