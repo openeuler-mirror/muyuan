@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install or refresh the local Goal Plus Codex plugin."""
+"""Install, refresh, or uninstall the checkout-local Goal Plus Codex plugin."""
 
 from __future__ import annotations
 
@@ -60,6 +60,37 @@ def _is_managed_marketplace(marketplace_root: Path) -> bool:
             and item.get("source")
             == {"source": "local", "path": f"./plugins/{PLUGIN_NAME}"}
             for item in plugins
+        )
+    )
+
+
+def _validate_marketplace_root(codex_home: Path, marketplace_root: Path) -> None:
+    forbidden_roots = {Path("/").resolve(), Path.home().resolve(), codex_home.resolve()}
+    if marketplace_root.resolve() in forbidden_roots:
+        raise RuntimeError(
+            "--marketplace-root must be a dedicated subdirectory, not /, HOME, or CODEX_HOME"
+        )
+
+
+def _plugin_is_installed(codex: str, *, codex_home: Path) -> bool:
+    result = subprocess.run(
+        [codex, "plugin", "list", "--json"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "CODEX_HOME": str(codex_home)},
+    )
+    try:
+        payload = json.loads(result.stdout)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Codex returned invalid plugin inventory JSON") from exc
+    installed = payload.get("installed") if isinstance(payload, dict) else None
+    return bool(
+        isinstance(installed, list)
+        and any(
+            isinstance(item, dict)
+            and item.get("pluginId") == f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
+            for item in installed
         )
     )
 
@@ -129,11 +160,7 @@ def install(*, codex_home: Path, marketplace_root: Path, install_runtime: bool) 
     codex = shutil.which("codex")
     if codex is None:
         raise RuntimeError("the `codex` executable is not on PATH")
-    forbidden_roots = {Path("/").resolve(), Path.home().resolve(), codex_home.resolve()}
-    if marketplace_root.resolve() in forbidden_roots:
-        raise RuntimeError(
-            "--marketplace-root must be a dedicated subdirectory, not /, HOME, or CODEX_HOME"
-        )
+    _validate_marketplace_root(codex_home, marketplace_root)
     if install_runtime:
         _run(
             [sys.executable, "-m", "pip", "install", "-e", str(ROOT)],
@@ -168,9 +195,57 @@ def install(*, codex_home: Path, marketplace_root: Path, install_runtime: bool) 
     print("Start a new Codex thread, review/trust Goal Plus in /hooks, then start a fresh thread.")
 
 
+def uninstall(
+    *,
+    codex_home: Path,
+    marketplace_root: Path,
+    uninstall_runtime: bool,
+) -> None:
+    codex = shutil.which("codex")
+    if codex is None:
+        raise RuntimeError("the `codex` executable is not on PATH")
+    _validate_marketplace_root(codex_home, marketplace_root)
+    if marketplace_root.exists() and not _is_managed_marketplace(marketplace_root):
+        raise RuntimeError(
+            f"refusing to remove an unmanaged marketplace path: {marketplace_root}"
+        )
+
+    list_result = subprocess.run(
+        [codex, "plugin", "marketplace", "list"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "CODEX_HOME": str(codex_home)},
+    )
+    configured_root = _configured_marketplace_root(list_result.stdout)
+    if configured_root is not None and configured_root != marketplace_root.resolve():
+        raise RuntimeError(
+            f"marketplace {MARKETPLACE_NAME!r} points to {configured_root}; "
+            "refusing to remove a different installation"
+        )
+    if _plugin_is_installed(codex, codex_home=codex_home):
+        _run(
+            [codex, "plugin", "remove", f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"],
+            codex_home=codex_home,
+        )
+    if configured_root is not None:
+        _run(
+            [codex, "plugin", "marketplace", "remove", MARKETPLACE_NAME],
+            codex_home=codex_home,
+        )
+    if marketplace_root.exists():
+        shutil.rmtree(marketplace_root)
+        print(f"Removed managed marketplace: {marketplace_root}")
+    if uninstall_runtime:
+        _run(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "goal-plus"],
+            codex_home=codex_home,
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Install Goal Plus from this checkout into a local Codex marketplace."
+        description="Manage Goal Plus from this checkout in a local Codex marketplace."
     )
     parser.add_argument(
         "--codex-home",
@@ -188,16 +263,37 @@ def main() -> int:
         action="store_true",
         help="Do not run pip install -e for the goal-plus command.",
     )
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Remove the managed plugin, marketplace, staging directory, and Python runtime.",
+    )
+    parser.add_argument(
+        "--keep-runtime",
+        action="store_true",
+        help="With --uninstall, keep the shared goal-plus Python runtime installed.",
+    )
     args = parser.parse_args()
+    if args.uninstall and args.skip_runtime_install:
+        parser.error("--skip-runtime-install is only valid when installing")
+    if args.keep_runtime and not args.uninstall:
+        parser.error("--keep-runtime requires --uninstall")
     codex_home = args.codex_home.expanduser().resolve()
     marketplace_root = (
         args.marketplace_root or codex_home / "local-marketplaces" / "goal-plus"
     ).expanduser().resolve()
-    install(
-        codex_home=codex_home,
-        marketplace_root=marketplace_root,
-        install_runtime=not args.skip_runtime_install,
-    )
+    if args.uninstall:
+        uninstall(
+            codex_home=codex_home,
+            marketplace_root=marketplace_root,
+            uninstall_runtime=not args.keep_runtime,
+        )
+    else:
+        install(
+            codex_home=codex_home,
+            marketplace_root=marketplace_root,
+            install_runtime=not args.skip_runtime_install,
+        )
     return 0
 
 

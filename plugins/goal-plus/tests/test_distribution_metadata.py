@@ -29,7 +29,9 @@ def test_operational_docs_do_not_reference_retired_checkouts() -> None:
     paths = (
         ROOT / "README.md",
         ROOT / "README_zh.md",
-        ROOT / ".pi" / "skills" / "goal-plus-install" / "SKILL.md",
+        ROOT / "docs" / "pi.md",
+        ROOT / "docs" / "codex.md",
+        ROOT / ".codex-plugin" / "plugin.json",
     )
     retired = (
         "/Users/qiaolina/Code/goal-plus",
@@ -44,10 +46,7 @@ def test_operational_docs_do_not_reference_retired_checkouts() -> None:
 
 
 def test_codex_docs_use_the_shipped_mcp_server_name() -> None:
-    paths = (
-        ROOT / "docs" / "codex.md",
-        ROOT / ".pi" / "skills" / "goal-plus-install" / "SKILL.md",
-    )
+    paths = (ROOT / "docs" / "codex.md",)
 
     for path in paths:
         text = path.read_text(encoding="utf-8")

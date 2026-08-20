@@ -4,6 +4,7 @@ import json
 import runpy
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from goal_plus import codex_doctor
@@ -191,6 +192,16 @@ def test_collect_report_accepts_complete_project_local_setup(
     monkeypatch.setattr(codex_doctor, "_run", fake_run)
     monkeypatch.setattr(
         codex_doctor,
+        "_distribution_provenance",
+        lambda: {
+            "distribution_version": "0.1.0",
+            "editable": True,
+            "distribution_source": str(codex_doctor._package_root()),
+            "module_source": str(Path(codex_doctor.__file__).resolve()),
+        },
+    )
+    monkeypatch.setattr(
+        codex_doctor,
         "_list_codex_models",
         lambda: [{"model": "gpt-5.6-luna"}],
     )
@@ -200,6 +211,12 @@ def test_collect_report_accepts_complete_project_local_setup(
         codex_home=codex_home,
     )
 
+    failures = [
+        (check.name, check.summary, check.details)
+        for check in report.checks
+        if check.status == "fail"
+    ]
+    assert not failures
     assert report.ok
     assert {check.name: check.status for check in report.checks} == {
         "codex.version": "pass",
@@ -229,6 +246,27 @@ def test_plugin_assets_keep_project_hook_contract() -> None:
     assert manifest["mcpServers"] == "./.mcp.json"
     assert mcp["mcpServers"]["goal-plus"]["command"] == "goal-plus"
     assert mcp["mcpServers"]["goal-plus"]["args"] == ["--root", ".gp"]
+
+
+def test_distribution_marketplace_points_at_plugin_root() -> None:
+    marketplace = json.loads(
+        (codex_doctor._package_root() / ".agents" / "plugins" / "marketplace.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert marketplace["name"] == "goal-plus"
+    assert marketplace["plugins"] == [
+        {
+            "name": "goal-plus",
+            "source": {"source": "local", "path": "."},
+            "policy": {
+                "installation": "AVAILABLE",
+                "authentication": "ON_INSTALL",
+            },
+            "category": "Developer Tools",
+        }
+    ]
 
 
 def test_local_installer_stages_valid_plugin_and_marketplace(tmp_path: Path) -> None:
@@ -265,3 +303,59 @@ def test_local_installer_refuses_to_replace_unmanaged_plugin(tmp_path: Path) -> 
     else:  # pragma: no cover
         raise AssertionError("expected unmanaged marketplace protection")
     assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_local_uninstaller_removes_managed_installation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = codex_doctor._package_root()
+    installer = runpy.run_path(str(root / "scripts" / "install_codex_plugin.py"))
+    codex_home = tmp_path / "codex-home"
+    marketplace_root = codex_home / "local-marketplaces" / "goal-plus"
+    installer["_write_marketplace"](marketplace_root)
+    installer["_stage_plugin"](marketplace_root)
+    calls: list[list[str]] = []
+
+    def fake_which(name: str) -> str:
+        assert name == "codex"
+        return "/mock/bin/codex"
+
+    def fake_run(argv, **kwargs):
+        del kwargs
+        calls.append(list(argv))
+        if argv[-3:] == ["plugin", "marketplace", "list"]:
+            stdout = f"goal-plus-local {marketplace_root}\n"
+        elif argv[-3:] == ["plugin", "list", "--json"]:
+            stdout = json.dumps(
+                {"installed": [{"pluginId": "goal-plus@goal-plus-local"}]}
+            )
+        else:
+            stdout = ""
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    installer["uninstall"](
+        codex_home=codex_home,
+        marketplace_root=marketplace_root,
+        uninstall_runtime=True,
+    )
+
+    assert not marketplace_root.exists()
+    assert ["/mock/bin/codex", "plugin", "remove", "goal-plus@goal-plus-local"] in calls
+    assert [
+        "/mock/bin/codex",
+        "plugin",
+        "marketplace",
+        "remove",
+        "goal-plus-local",
+    ] in calls
+    assert [
+        sys.executable,
+        "-m",
+        "pip",
+        "uninstall",
+        "-y",
+        "goal-plus",
+    ] in calls

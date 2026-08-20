@@ -8,77 +8,79 @@ Goal Plus 是面向长时间 agent 任务的宿主中立运行时。`/goal-plus`
 
 Pi 和 Codex 是当前支持的宿主路径。
 
-## 快速开始
+## 安装
 
-克隆 Muyuan，并进入隔离的 Goal Plus 源码目录：
+### 用户安装（正式）
+
+从当前 GitCode 仓库取得 Muyuan，并进入 Goal Plus 源码目录：
 
 ```bash
 git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git
 cd muyuan/plugins/goal-plus
+uv tool install .
 ```
 
-### Codex plugin（推荐）
-
-将 Goal Plus 安装成已启用的本地 Codex plugin：
+使用 Pi 自己的命令安装或卸载 Pi package：
 
 ```bash
-python scripts/install_codex_plugin.py
+pi install .
+pi remove .
 ```
 
-这是真正的 Codex plugin 安装，不只是设置 shell 环境变量。安装脚本会完成整套本地
-流程：
+使用 Codex 自己的命令安装或卸载 Codex plugin：
 
-1. 从当前 checkout editable 安装 `goal-plus` Python runtime；
-2. 将 `.codex-plugin/plugin.json`、`skills/`、`hooks/hooks.json` 和
-   `.mcp.json` 发布到持久目录
-   `${CODEX_HOME:-~/.codex}/local-marketplaces/goal-plus`；
-3. 必要时注册 `goal-plus-local` marketplace；
-4. 使用新的 Codex cachebuster 安装或刷新
-   `goal-plus@goal-plus-local`。
+```bash
+codex plugin marketplace add .
+codex plugin add goal-plus@goal-plus
 
-安装过程不会向 Muyuan 仓库添加 marketplace 元数据，也不需要项目本地
-`.codex/config.toml`。Plugin 资产会复制到稳定 marketplace，但 Python runtime
-仍是指向当前 checkout 的 editable 安装，因此不要移动或删除这个 checkout。
+codex plugin remove goal-plus@goal-plus
+codex plugin marketplace remove goal-plus
+```
 
-首次使用时：
+所有宿主都卸载后，再删除共用 runtime：
 
-1. 新建 Codex 线程，让 Codex 发现刚安装的 plugin；
-2. 打开 `/hooks`，检查 Goal Plus，并信任全部六个生命周期 hook；
-3. 再新建一个线程，让所有 hook 从 `SessionStart` 开始生效。
+```bash
+uv tool uninstall goal-plus
+```
 
-在准备使用 Goal Plus 的 workspace 中验证安装：
+任一宿主仍在使用 Goal Plus 时都要保留这个源码目录：Pi 从这里加载本地 package，
+Codex 也把它作为已配置的 marketplace 来源。
+
+Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus，然后再新建一个
+线程。验证命令：
 
 ```bash
 codex plugin list
-python -m goal_plus.codex_doctor --project-root .
+goal-plus-codex-doctor --project-root .
 ```
 
-完成 hook review 前，doctor 预期只有 plugin hook trust 一项显示未就绪。以后
-`git pull` 更新 Goal Plus 后，重复运行同一条安装命令即可替换受管理的 staging
-副本、生成一个新 cachebuster 并重新安装：
+### 开发态 checkout
+
+需要 editable 开发时，进入同一个 plugin 目录，并用 checkout 替换非 editable
+runtime：
 
 ```bash
-python scripts/install_codex_plugin.py
-```
-
-### Pi 与项目本地开发
-
-Pi 使用 checkout 中的 `.pi/` 资产。开发 Pi，或继续使用旧的项目本地 Codex
-方式时，显式安装开发依赖：
-
-```bash
+cd muyuan/plugins/goal-plus
 python -m pip install -e ".[dev]"
 ```
 
-项目本地 Codex 还需要把 `.codex/config.example.toml` 复制为被忽略的
-`.codex/config.toml`，从这个 `goal-plus/` 目录启动 Codex，信任项目本地 hooks，
-再新建线程。这种方式仍适合编辑 Codex 资产，但它不属于 `codex plugin` 安装。
+Pi 直接安装当前 checkout：
 
-所有宿主都启动同一个 stdio MCP 服务：
-
-```text
-goal-plus --root .gp
+```bash
+pi install .
+pi remove .
 ```
+
+编辑 Codex plugin 资产时使用本地刷新脚本：
+
+```bash
+python scripts/install_codex_plugin.py --skip-runtime-install
+python scripts/install_codex_plugin.py --uninstall --keep-runtime
+```
+
+两个开发态宿主都不再使用 editable runtime 后，再运行
+`python -m pip uninstall -y goal-plus`。详细开发和更新机制见
+[Pi](docs/pi.md) 与 [Codex](docs/codex.md)。
 
 然后在宿主中启动目标：
 
@@ -104,16 +106,30 @@ Codex 和 Pi 还提供：
 
 ## 宿主
 
-| 宿主 | 项目资产 | 入口 | Search worker 路径 |
+| 宿主 | 集成资产 | 入口 | Search worker 路径 |
 |---|---|---|---|
-| Pi | `.pi/` | `/goal-plus` 或 `pi -p "/goal-plus ..."` | 持久化 Pi RPC pool；参阅 [Pi](docs/pi.md) |
-| Codex | `.codex/` | `goal-plus` skill 或 `/goal-plus` 提示 | 固定 parallel loops 与原生同 worker continuation；参阅 [Codex](docs/codex.md) |
+| Pi | 已安装 Pi package | `/goal-plus` 或 `pi -p "/goal-plus ..."` | 持久化 Pi RPC pool；参阅 [Pi](docs/pi.md) |
+| Codex | 已安装 plugin | `goal-plus` skill 或 `/goal-plus` 提示 | 固定 parallel loops 与原生同 worker continuation；参阅 [Codex](docs/codex.md) |
 
-项目本地 Codex 需要 `.codex/config.toml`；安装版 plugin 则直接加载顶层
-`skills/`、`hooks/hooks.json` 和 `.mcp.json`。Codex plugin 不发布项目本地
-`.codex/agents/` role：Search worker 使用内置 `default` role，独立最终检查在自定义
-role 不可见时使用同样自包含的 `default` fallback。宿主差异和策略覆盖见
-[Agent Host Adapters](docs/agent-host-adapters.md)。
+安装 Codex plugin 后，从要修改的 workspace 启动：
+
+```bash
+cd <目标-workspace>
+codex -m <main-model> -c model_reasoning_effort=max
+```
+
+从要修改的 workspace 启动 Pi：
+
+```bash
+cd <目标-workspace>
+pi --model <provider/main-model> --thinking max
+```
+
+然后在新会话中提交 `/goal-plus <目标>`。若 prompt 指定了 `main=...`，它必须和
+启动命令选择的模型一致。[Torch CPU 示例](examples/model-optimize/torch-cpu-target/README.md)
+提供了完整的 Codex/Pi 启动命令和可直接粘贴的 prompt。
+
+宿主差异和策略覆盖见 [Agent Host Adapters](docs/agent-host-adapters.md)。
 
 ## 心智模型
 
@@ -169,7 +185,7 @@ Benchmark 专用任务、evaluator、campaign 和对比证据不属于这个隔�
 python -m pytest -q
 goal-plus --version
 python scripts/sync_codex_plugin_assets.py --check
-python -m goal_plus.codex_doctor --project-root .
+goal-plus-codex-doctor --project-root .
 ```
 
 Pi 和 Codex 当前维护的策略集合是 `agent_guided`

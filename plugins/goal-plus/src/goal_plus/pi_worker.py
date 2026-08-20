@@ -14,7 +14,7 @@ from typing import Any
 
 from goal_plus.time_advisory import build_search_time_advisory
 
-from goal_plus.paths import DEFAULT_RUNTIME_ROOT
+from goal_plus.paths import DEFAULT_RUNTIME_ROOT, host_assets_root
 
 
 class PiRpcError(RuntimeError):
@@ -498,8 +498,7 @@ class _RpcClient:
 
 
 def default_extension_path() -> Path:
-    source_root = Path(__file__).resolve().parents[2]
-    return source_root / ".pi" / "extensions" / "goal-plus.ts"
+    return host_assets_root() / ".pi" / "extensions" / "goal-plus.ts"
 
 
 def _kill_process_group(proc: subprocess.Popen[str]) -> None:

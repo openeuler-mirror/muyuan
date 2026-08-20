@@ -9,80 +9,80 @@ promote the best verifier-backed result.
 
 Pi and Codex are the supported host paths.
 
-## Quick Start
+## Installation
 
-Clone Muyuan and enter the isolated Goal Plus source directory:
+### User installation
+
+Obtain Muyuan from its current GitCode repository and enter the Goal Plus
+source directory:
 
 ```bash
 git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git
 cd muyuan/plugins/goal-plus
+uv tool install .
 ```
 
-### Codex plugin (recommended)
-
-Install Goal Plus as an enabled local Codex plugin:
+Install or remove the Pi package with Pi itself:
 
 ```bash
-python scripts/install_codex_plugin.py
+pi install .
+pi remove .
 ```
 
-This is a real Codex plugin installation, not only a shell-environment setup.
-The installer performs the complete local flow:
+Install or remove the Codex plugin with Codex itself:
 
-1. installs the `goal-plus` Python runtime editable from this checkout;
-2. stages `.codex-plugin/plugin.json`, `skills/`, `hooks/hooks.json`, and
-   `.mcp.json` under the persistent
-   `${CODEX_HOME:-~/.codex}/local-marketplaces/goal-plus` marketplace;
-3. registers the `goal-plus-local` marketplace when needed; and
-4. installs or refreshes `goal-plus@goal-plus-local` with a new Codex
-   cachebuster.
+```bash
+codex plugin marketplace add .
+codex plugin add goal-plus@goal-plus
 
-It does not add marketplace metadata to Muyuan or require a project-local
-`.codex/config.toml`. The published plugin assets are copied into the stable
-marketplace, while the Python runtime remains an editable installation backed
-by this checkout; keep the checkout at its installed path.
+codex plugin remove goal-plus@goal-plus
+codex plugin marketplace remove goal-plus
+```
 
-For first use:
+After removing Goal Plus from every host, remove the shared runtime with:
 
-1. start a new Codex thread so the plugin is discovered;
-2. open `/hooks`, review Goal Plus, and trust all six lifecycle hooks; and
-3. start another fresh thread so every hook is active from `SessionStart`.
+```bash
+uv tool uninstall goal-plus
+```
 
-Verify the installed plugin from the workspace where it will run:
+Keep this source directory while either host is installed. Pi loads the local
+package from it, and Codex retains it as the configured marketplace source.
+
+On first Codex use, start a new thread, review and trust Goal Plus in `/hooks`,
+then start one more fresh thread. Verify it with:
 
 ```bash
 codex plugin list
-python -m goal_plus.codex_doctor --project-root .
+goal-plus-codex-doctor --project-root .
 ```
 
-Before hook review, the doctor is expected to report only the plugin hook trust
-check as not ready. After pulling a new Goal Plus revision, rerun the same
-installer command; it replaces only its managed staging copy, applies one fresh
-cachebuster, and reinstalls the plugin:
+### Development checkout
+
+For editable development, enter the same plugin directory and replace the
+non-editable runtime with the checkout:
 
 ```bash
-python scripts/install_codex_plugin.py
-```
-
-### Pi and project-local development
-
-Pi uses the checkout's `.pi/` assets. For Pi development or the older
-project-local Codex flow, install the development dependencies explicitly:
-
-```bash
+cd muyuan/plugins/goal-plus
 python -m pip install -e ".[dev]"
 ```
 
-For project-local Codex, also copy `.codex/config.example.toml` to the ignored
-`.codex/config.toml`, start Codex from this `goal-plus/` directory, trust the
-project-local hooks, and use a new thread. This remains useful while editing
-Codex assets, but it is not a `codex plugin` installation.
+Pi can load the checkout directly:
 
-Every host launches the same stdio MCP server:
-
-```text
-goal-plus --root .gp
+```bash
+pi install .
+pi remove .
 ```
+
+Codex uses the local refresh script while plugin assets are being edited:
+
+```bash
+python scripts/install_codex_plugin.py --skip-runtime-install
+python scripts/install_codex_plugin.py --uninstall --keep-runtime
+```
+
+Run `python -m pip uninstall -y goal-plus` after neither development host needs
+the editable runtime. Detailed development and update behavior belongs in
+[Pi](docs/pi.md) and [Codex](docs/codex.md).
 
 Then start a goal in the host:
 
@@ -110,20 +110,32 @@ stored as guidance in the final line of `raw_goal`, not as a scheduler state.
 
 ## Hosts
 
-| Host | Project assets | Entry | Search worker path |
+| Host | Integration assets | Entry | Search worker path |
 |---|---|---|---|
-| Pi | `.pi/` | `/goal-plus` or `pi -p "/goal-plus ..."` | durable Pi RPC pool; see [Pi](docs/pi.md) |
-| Codex | `.codex/` | `goal-plus` skill or `/goal-plus` prompt | fixed parallel loops with native same-worker continuation; Codex 0.144.1+ hooks cover `UserPromptSubmit`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
+| Pi | installed Pi package | `/goal-plus` or `pi -p "/goal-plus ..."` | durable Pi RPC pool; see [Pi](docs/pi.md) |
+| Codex | installed plugin | `goal-plus` skill or `/goal-plus` prompt | fixed parallel loops with native same-worker continuation; Codex 0.144.1+ hooks cover `UserPromptSubmit`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
 
-For project-local Codex, copy `.codex/config.example.toml` to the ignored local
-`.codex/config.toml`. An installed plugin instead loads top-level `skills/`,
-`hooks/hooks.json`, and `.mcp.json`; these are kept aligned with the
-project-local surface by asset tests. Codex plugins do not publish the
-project-local `.codex/agents/` roles: Search worker messages therefore use the
-built-in `default` role, while required final checks prefer the custom role
-when the current `spawn_agent` schema exposes it and otherwise use the
-self-contained `default` fallback. Host differences and strategy coverage are
-summarized in [Agent Host Adapters](docs/agent-host-adapters.md).
+Start an installed Codex plugin from the workspace you want to change:
+
+```bash
+cd <target-workspace>
+codex -m <main-model> -c model_reasoning_effort=max
+```
+
+Start Pi from the workspace you want to change:
+
+```bash
+cd <target-workspace>
+pi --model <provider/main-model> --thinking max
+```
+
+Then submit `/goal-plus <goal>` in the new host session. If the prompt includes
+`main=...`, it must match the model selected by the launch command. See the
+[Torch CPU example](examples/model-optimize/torch-cpu-target/README.md) for
+complete Codex and Pi commands with ready-to-paste prompts.
+
+Host differences and strategy coverage are summarized in
+[Agent Host Adapters](docs/agent-host-adapters.md).
 
 ## Mental Model
 
@@ -186,7 +198,7 @@ not part of this isolated runtime directory.
 python -m pytest -q
 goal-plus --version
 python scripts/sync_codex_plugin_assets.py --check
-python -m goal_plus.codex_doctor --project-root .
+goal-plus-codex-doctor --project-root .
 ```
 
 The maintained strategy set for Pi and Codex is `agent_guided`

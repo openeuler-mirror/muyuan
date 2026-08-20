@@ -6,11 +6,46 @@ collaboration tools.
 
 ## Setup
 
-### Installable plugin (recommended)
+### User installation
+
+From the Goal Plus source directory in the current Muyuan GitCode checkout,
+install the runtime and plugin with their user-facing package managers:
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
-python scripts/install_codex_plugin.py
+uv tool install .
+codex plugin marketplace add .
+codex plugin add goal-plus@goal-plus
+```
+
+To remove the Codex integration:
+
+```bash
+codex plugin remove goal-plus@goal-plus
+codex plugin marketplace remove goal-plus
+```
+
+Run `uv tool uninstall goal-plus` only after no Pi or Codex installation still
+uses the shared runtime.
+
+Keep the source directory while the plugin is installed because it remains the
+configured local marketplace source.
+
+After installation, start a new Codex thread, open `/hooks`, review and trust
+the Goal Plus handlers, then start a fresh thread so every handler is active
+from `SessionStart`. Verify the result from the target workspace:
+
+```bash
+codex plugin list
+goal-plus-codex-doctor --project-root .
+```
+
+### Checkout development
+
+```bash
+cd <Muyuan checkout>/plugins/goal-plus
+python -m pip install -e ".[dev]"
+python scripts/install_codex_plugin.py --skip-runtime-install
 ```
 
 This installs the Python runtime editable with the current interpreter, stages
@@ -23,11 +58,11 @@ installation without changing the checked-in package version. Pass
 `--skip-runtime-install` only when the `goal-plus` command is already installed
 from the intended source.
 
-The default marketplace path is stable, not a deleted temporary directory. To
-update after `git pull`, rerun the same command:
+The default development marketplace path is stable, not a deleted temporary
+directory. To update after `git pull`, rerun the same command:
 
 ```bash
-python scripts/install_codex_plugin.py
+python scripts/install_codex_plugin.py --skip-runtime-install
 ```
 
 The installer only replaces a staging plugin when the surrounding marketplace
@@ -52,16 +87,13 @@ with the same independent prompt, `fork_turns="none"`, task identity, and one
 required `goal_plus_submit_final_check` call.
 
 Codex intentionally does not accept a `hooks` field in this plugin manifest;
-it discovers the conventional `hooks/hooks.json` path. After installation,
-start a new Codex thread to load the plugin, open `/hooks`, and review and trust
-the Goal Plus handlers. Then start a fresh thread so every handler is active
-from `SessionStart` onward. Hook trust is bound to each normalized current
-hash, so an updated hook must be reviewed again.
+it discovers the conventional `hooks/hooks.json` path. Hook trust is bound to
+each normalized current hash, so an updated hook must be reviewed again.
 
 Run the read-only preflight from the workspace you intend to use:
 
 ```bash
-python -m goal_plus.codex_doctor --project-root .
+goal-plus-codex-doctor --project-root .
 ```
 
 It checks Codex 0.144.1 or newer, the `goal-plus` executable and Python source
@@ -72,7 +104,16 @@ required failure, supports `--json`, and always reminds you to use a new thread
 after install/update/trust changes. `--skip-model-check` is available only for
 offline diagnosis; a real multi-model preflight should not skip it.
 
-### Project-local development
+Remove the managed development install with:
+
+```bash
+python scripts/install_codex_plugin.py --uninstall --keep-runtime
+```
+
+Omit `--keep-runtime` when Codex is the only development host using this
+checkout and the editable runtime should also be uninstalled.
+
+### Project-local asset loading
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus

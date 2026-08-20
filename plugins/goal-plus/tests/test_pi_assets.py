@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -21,16 +22,25 @@ def test_pi_assets_exist() -> None:
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / ".pi" / "skills").glob("*/SKILL.md")
     )
-    assert skill_files == [
-        ".pi/skills/goal-plus-install/SKILL.md",
-        ".pi/skills/goal-plus/SKILL.md",
-    ]
+    assert skill_files == [".pi/skills/goal-plus/SKILL.md"]
+
+
+def test_pi_package_manifest_exports_only_the_user_integration() -> None:
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+
+    assert package["name"] == "goal-plus"
+    assert "pi-package" in package["keywords"]
+    assert package["pi"] == {
+        "extensions": [".pi/extensions/goal-plus.ts"],
+        "skills": [".pi/skills/goal-plus/SKILL.md"],
+    }
 
 
 def test_pyproject_exposes_pi_console_scripts() -> None:
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert 'requires-python = ">=3.10"' in text
+    assert 'goal-plus-codex-doctor = "goal_plus.codex_doctor:main"' in text
     assert 'goal-plus-pi-tool = "goal_plus.pi_tool:main"' in text
     assert 'goal-plus-pi-worker = "goal_plus.pi_worker:main"' in text
     assert 'goal-plus-pi-pool = "goal_plus.pi_pool:main"' in text
@@ -599,7 +609,6 @@ def test_pi_docs_record_runner_logs_and_native_stop_gate() -> None:
     assert "read-only" in combined
     assert "one user-facing `goal-plus` skill" in combined
     assert "does not expose a separate user-facing `search` skill" in combined
-    assert ".pi/skills/goal-plus/" in combined
     assert "pi_search_pool_open" in combined
     assert "pi_search_pool_continue" in combined
     assert "How Pi Differs From Codex" in combined

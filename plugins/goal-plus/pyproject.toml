@@ -25,6 +25,7 @@ bench = [
 ]
 [project.scripts]
 goal-plus = "goal_plus.server:main"
+goal-plus-codex-doctor = "goal_plus.codex_doctor:main"
 goal-plus-pi-tool = "goal_plus.pi_tool:main"
 goal-plus-pi-worker = "goal_plus.pi_worker:main"
 goal-plus-pi-pool = "goal_plus.pi_pool:main"
@@ -33,3 +34,11 @@ goal-plus-bench = "goal_plus.benchmarking.cli:main"
 
 [tool.hatch.version]
 path = "src/goal_plus/_version.py"
+
+[tool.hatch.build.targets.wheel.force-include]
+".codex-plugin" = "goal_plus/_plugin_root/.codex-plugin"
+".mcp.json" = "goal_plus/_plugin_root/.mcp.json"
+"hooks" = "goal_plus/_plugin_root/hooks"
+".codex/agents" = "goal_plus/_plugin_root/.codex/agents"
+".codex/skills" = "goal_plus/_plugin_root/skills"
+".pi" = "goal_plus/_plugin_root/.pi"

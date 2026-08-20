@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
+from goal_plus.paths import host_assets_root
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
@@ -95,7 +97,7 @@ class DoctorReport:
 
 
 def _package_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return host_assets_root()
 
 
 def _run(

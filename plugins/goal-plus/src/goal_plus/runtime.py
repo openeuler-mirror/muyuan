@@ -76,7 +76,7 @@ from goal_plus.models import (
     WorkerBudget,
     WorkerLaunchOptions,
 )
-from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT
+from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT, host_assets_root
 from goal_plus.shared_dir import (
     SHARE_OUT_RELATIVE_PATH,
     TOOL_DRAFTS_RELATIVE_PATH,
@@ -3714,7 +3714,7 @@ class FileSearchRuntime:
         )
 
     def _worker_prompt_for_host(self, host: str) -> str | None:
-        repository_root = Path(__file__).resolve().parents[2]
+        repository_root = host_assets_root()
         if host == "codex":
             agent_path = repository_root / ".codex" / "agents" / "search_candidate_agent.toml"
             try:

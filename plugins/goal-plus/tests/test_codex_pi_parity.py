@@ -95,7 +95,6 @@ def test_codex_and_pi_share_role_model_command_interface() -> None:
         "tests/test_runtime_unit.py",
         "tests/test_models.py",
         "tests/test_goal_plus.py",
-        "tests/test_model_optimize_torch_cpu_target.py",
         "tests/test_st_host_harness.py",
     ],
 )

@@ -3,11 +3,8 @@
   "version": "0.1.0",
   "description": "Durable Goal Plus orchestration and verifier-guided Search Mode for Codex.",
   "author": {
-    "name": "Goal Plus contributors",
-    "url": "https://github.com/ck0123/goal-plus"
+    "name": "Goal Plus contributors"
   },
-  "homepage": "https://github.com/ck0123/goal-plus",
-  "repository": "https://github.com/ck0123/goal-plus",
   "keywords": [
     "codex",
     "agentic search",
@@ -27,7 +24,6 @@
       "Interactive",
       "Write"
     ],
-    "websiteURL": "https://github.com/ck0123/goal-plus",
     "defaultPrompt": [
       "/goal-plus Fix this bug and verify the test suite.",
       "/goal-plus Optimize this implementation against a frozen verifier.",

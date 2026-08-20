@@ -1,16 +1,46 @@
 # Pi
 
-Pi support is project-local: one user-facing `goal-plus` skill under
-`.pi/skills/goal-plus/`, one extension, and Python worker/facade commands. It
-does not patch Pi core and does not expose a separate user-facing `search` skill.
+Pi ships as an installable package with one user-facing `goal-plus` skill and
+one extension, backed by the shared Goal Plus runtime.
+It does not expose a separate user-facing `search` skill or patch Pi core. The
+same assets remain directly installable from a development checkout.
 
 ## Setup
 
+### User installation
+
+From the Goal Plus source directory in the current Muyuan GitCode checkout,
+install the runtime and Pi package with their user-facing package managers:
+
 ```bash
-cd <Muyuan checkout>/goal-plus
+cd <Muyuan checkout>/plugins/goal-plus
+uv tool install .
+pi install .
+```
+
+Remove the Pi integration with:
+
+```bash
+pi remove .
+```
+
+Run `uv tool uninstall goal-plus` only after no Pi or Codex installation still
+uses the shared runtime.
+
+Keep the source directory while Pi is installed because Pi loads this local
+package directly.
+
+### Checkout development
+
+```bash
+cd <Muyuan checkout>/plugins/goal-plus
 python -m pip install -e ".[dev]"
+pi install .
 pi -p "/goal-plus inspect this repository"
 ```
+
+Use `pi remove .` to remove the checkout package. User and development installs
+expose the same extension and the same single user-facing `goal-plus` skill.
 
 The extension provides pre-model `/goal-plus` creation in interactive,
 RPC, print, and JSON modes. It persists the active id when the Pi session is

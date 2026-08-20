@@ -1,46 +1,65 @@
 # Torch CPU Optimization Target
 
-This directory is a minimal model workspace for a real `/goal-plus` run.
+This is a runnable `/goal-plus` example. The objective is to improve
+`tokens_per_second` while preserving the deterministic output and using one CPU
+core.
 
-The user prompt is intentionally simple: point Goal Plus at this workspace and
-ask it to improve `tokens_per_second` without breaking `verify.py`. Goal Plus
-should inspect the code, discover the benchmark/verifier/edit surface, and only
-then decide whether to open Search Mode.
+## Prerequisites
 
-Hard constraint: every script forces PyTorch to one CPU core. Optimizations that
-increase thread count are invalid.
+- Install the Goal Plus runtime and the Pi package or Codex plugin as described
+  in the repository README.
+- Use a Python environment with PyTorch available.
 
-Useful commands:
+Check the untouched target first:
 
 ```bash
+cd examples/model-optimize/torch-cpu-target
 python verify.py
 python benchmark.py
 python profile.py
 ```
 
-## Multi-model validation
+## Run with Codex
 
-`multi-model-search-spec.json` is a two-slot Goal Plus Search spec for
-validating static model binding: one `gpt-5.6-terra` lane and one
-`gpt-5.6-sol` lane, sharing the run Annotated Evidence. The reproducible
-`scaling`-environment launch command and acceptance evidence are in
-[`multi-model-run.md`](multi-model-run.md).
-`multi-model-pi-search-spec.json` is its Pi RPC counterpart: it preserves the
-same objective, verifier, edit surface, 600-second worker budget, concurrency,
-and underlying Terra/Sol models while changing only the host-qualified model
-references and `worker_host`.
+Start Codex with the same main model named by the prompt:
 
-The target includes two intentionally obvious opportunities:
+```bash
+cd examples/model-optimize/torch-cpu-target
+codex -m gpt-5.6-terra -c model_reasoning_effort=max
+```
 
-- `fuse_vector_tail`: the last vector path in `model.py` is a sequence of
-  elementwise operations that can be fused into a custom C++ CPU operator.
-The example prompt and this workspace README explain the domain rules. The
-reference C++ CPU operator pattern is in
-`cpp_reference/fused_vector_tail.cpp`.
+In the new Codex thread, paste the complete contents of
+[`codex-goal-prompt.md`](codex-goal-prompt.md). The installed plugin supplies
+the `/goal-plus` skill, lifecycle hooks, and MCP server even though this target
+has no project-local `.codex/` configuration.
 
-## Shared-dir validation
+## Run with Pi
 
-[`shared-dir-experiment.md`](shared-dir-experiment.md) validates the
-verifier-settled shared-dir path with producer and adopter candidates. It
-checks staging, publication, discovery, candidate-local revalidation, duplicate
-consumption, and final independence from the run shared directory.
+Start the installed Pi package from this target:
+
+```bash
+cd examples/model-optimize/torch-cpu-target
+pi --model openai-codex/gpt-5.6-terra --thinking max
+```
+
+Then paste the complete contents of
+[`pi-goal-prompt.md`](pi-goal-prompt.md).
+
+Both prompts use the same role interface and optimization request. Only model
+qualification differs because Pi selects models as `provider/model`, while
+Codex uses its native model id. Goal Plus discovers the verifier, metric, edit
+surface, Search strategy, and host-specific worker launch from the current
+directory.
+
+## Target contract
+
+- `verify.py` is the correctness gate.
+- `benchmark.py` reports `tokens_per_second`.
+- `model.py` and `serving.py` are editable.
+- `single_thread.py`, `workload.json`, the verifier, benchmark, and
+  `cpp_reference/` are read-only task inputs.
+- Increasing PyTorch, OpenMP, MKL, or build thread counts is invalid.
+
+The optional C++ reference in `cpp_reference/fused_vector_tail.cpp` shows a
+single-threaded fused operator pattern; it is evidence for agents, not a
+required implementation.
