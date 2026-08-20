@@ -42,6 +42,7 @@ from goal_plus.models import (
     CandidateTask,
     CandidateWorkOrder,
     EvidenceAnnotationTask,
+    EvidenceDetailReadRecord,
     FeedbackPolicy,
     EvidenceViewRecord,
     FrozenSpec,
@@ -695,7 +696,16 @@ class FileSearchRuntime:
             verifier_hashes[rel_path] = sha256_file(artifact_path)
 
         spec_payload = spec.model_dump(mode="json")
-        spec_hash = sha256_text(canonical_json({"spec": spec_payload, "verifiers": verifier_hashes}))
+        spec_hash = sha256_text(
+            canonical_json(
+                {
+                    "spec": spec_payload,
+                    "verifiers": verifier_hashes,
+                    "supplemental_evaluation_enabled": supplemental_enabled,
+                    "supplemental_evaluation_required": supplemental_required,
+                }
+            )
+        )
         frozen_spec_id = f"spec_{spec_hash[:12]}"
         spec_dir = self._spec_dir(frozen_spec_id)
         frozen_verifier_paths: dict[str, str] = {}
@@ -710,6 +720,8 @@ class FileSearchRuntime:
             frozen_spec_id=frozen_spec_id,
             spec_hash=spec_hash,
             spec=spec,
+            supplemental_evaluation_enabled=supplemental_enabled,
+            supplemental_evaluation_required=supplemental_required,
             verifier_hashes=verifier_hashes,
             frozen_verifier_paths=frozen_verifier_paths,
             created_at=utc_timestamp(),
@@ -1758,7 +1770,7 @@ class FileSearchRuntime:
         is_native_session_resume = (
             continuation_mode == "native_session" and dispatch_count > 0
         )
-        supplemental_enabled = supplemental_evaluation_enabled()
+        supplemental_enabled = frozen.supplemental_evaluation_enabled
         best_iteration = self._best_iteration_record(
             candidate_record,
             frozen.spec.metric_direction,
@@ -1825,7 +1837,12 @@ class FileSearchRuntime:
             },
         }
 
-    def get_global_evidence(self, agent_session_id: str) -> list[dict[str, Any]]:
+    def get_global_evidence(
+        self,
+        agent_session_id: str,
+        *,
+        source: Literal["explicit", "verifier_injected"] = "explicit",
+    ) -> list[dict[str, Any]]:
         """Return settled worker evidence and any completed objective views."""
         session = self._load_agent_session_by_id(agent_session_id)
         with self._run_transaction(session.run_id):
@@ -1860,8 +1877,25 @@ class FileSearchRuntime:
                 and entry["commit"] is not None
                 and entry["view_created_at"] is not None
             ]
+            candidate_records = self._load_candidate_records(session.run_id)
+            caller_record = next(
+                (
+                    record
+                    for record in candidate_records
+                    if record.candidate_id == session.candidate_id
+                ),
+                None,
+            )
+            caller_iterations = caller_record.iterations if caller_record else []
             read_record = GlobalEvidenceReadRecord(
                 read_at=utc_timestamp(),
+                source=source,
+                candidate_verifier_iteration=(
+                    caller_iterations[-1].iteration if caller_iterations else None
+                ),
+                run_verifier_iteration_count=sum(
+                    len(record.iterations) for record in candidate_records
+                ),
                 evidence_count=len(view),
                 completed_view_count=len(completed_views),
                 completed_supplemental_evaluation_count=sum(
@@ -1892,54 +1926,78 @@ class FileSearchRuntime:
     ) -> dict[str, Any]:
         """Return one immutable supplemental evaluation visible to a worker."""
         session = self._load_agent_session_by_id(agent_session_id)
-        if not supplemental_evaluation_enabled():
-            raise RuntimeError("supplemental evaluation is disabled for this run")
-        run = self._load_run(session.run_id)
-        frozen = self._load_frozen_spec(run.frozen_spec_id)
-        if (
-            self._global_evidence_mode(frozen.spec.strategy.config) == "independent"
-            and candidate_id != session.candidate_id
-        ):
-            raise PermissionError(
-                "independent Global Evidence only exposes the caller's candidate"
+        with self._run_transaction(session.run_id):
+            session = self._load_agent_session_by_id(
+                agent_session_id,
+                run_id=session.run_id,
             )
+            run = self._load_run(session.run_id)
+            frozen = self._load_frozen_spec(run.frozen_spec_id)
+            if not frozen.supplemental_evaluation_enabled:
+                raise RuntimeError("supplemental evaluation is disabled for this run")
+            if (
+                self._global_evidence_mode(frozen.spec.strategy.config) == "independent"
+                and candidate_id != session.candidate_id
+            ):
+                raise PermissionError(
+                    "independent Global Evidence only exposes the caller's candidate"
+                )
 
-        entry = next(
-            (
-                item
-                for item in self._global_evidence_view(session.run_id)
-                if item["candidate_id"] == candidate_id
-                and item["iteration"] == iteration
-            ),
-            None,
-        )
-        if entry is None:
-            raise ValueError("settled worker Evidence iteration not found")
+            entry = next(
+                (
+                    item
+                    for item in self._global_evidence_view(session.run_id)
+                    if item["candidate_id"] == candidate_id
+                    and item["iteration"] == iteration
+                ),
+                None,
+            )
+            if entry is None:
+                raise ValueError("settled worker Evidence iteration not found")
 
-        task = self._load_evidence_annotation_task(
-            session.run_id, candidate_id, iteration
-        )
-        view = task.view if task is not None and task.state == "completed" else None
-        if (
-            task is None
-            or view is None
-            or task.run_id != session.run_id
-            or task.candidate_id != candidate_id
-            or task.iteration != iteration
-            or task.attempt_commit != entry["commit"]
-        ):
-            raise RuntimeError("supplemental Evidence identity does not match iteration")
-        if view.supplemental_evaluation is None:
-            raise RuntimeError("supplemental evaluation is not available")
+            task = self._load_evidence_annotation_task(
+                session.run_id, candidate_id, iteration
+            )
+            view = task.view if task is not None and task.state == "completed" else None
+            if (
+                task is None
+                or view is None
+                or task.run_id != session.run_id
+                or task.candidate_id != candidate_id
+                or task.iteration != iteration
+                or task.attempt_commit != entry["commit"]
+            ):
+                raise RuntimeError(
+                    "supplemental Evidence identity does not match iteration"
+                )
+            if view.supplemental_evaluation is None:
+                raise RuntimeError("supplemental evaluation is not available")
 
-        return {
-            "candidate_id": candidate_id,
-            "iteration": iteration,
-            "commit": entry["commit"],
-            "supplemental_evaluation": view.supplemental_evaluation.model_dump(
-                mode="json"
-            ),
-        }
+            read_record = EvidenceDetailReadRecord(
+                read_at=utc_timestamp(),
+                candidate_id=candidate_id,
+                iteration=iteration,
+                commit=str(entry["commit"]),
+            )
+            self._write_agent_session(
+                session.model_copy(
+                    update={
+                        "updated_at": read_record.read_at,
+                        "evidence_detail_reads": [
+                            *session.evidence_detail_reads,
+                            read_record,
+                        ],
+                    }
+                )
+            )
+            return {
+                "candidate_id": candidate_id,
+                "iteration": iteration,
+                "commit": entry["commit"],
+                "supplemental_evaluation": view.supplemental_evaluation.model_dump(
+                    mode="json"
+                ),
+            }
 
     @staticmethod
     def _global_evidence_mode(config: dict[str, Any]) -> str:
@@ -6433,8 +6491,8 @@ class FileSearchRuntime:
                 error = "annotation outer deadline already expired"
                 profile = None
         now = utc_timestamp()
-        supplemental_enabled = supplemental_evaluation_enabled()
-        if supplemental_evaluation_required() and not supplemental_enabled:
+        supplemental_enabled = frozen.supplemental_evaluation_enabled
+        if frozen.supplemental_evaluation_required and not supplemental_enabled:
             error = (
                 f"{SUPPLEMENTAL_EVALUATION_REQUIRED_ENV}=1 requires "
                 f"{SUPPLEMENTAL_EVALUATION_ENABLED_ENV}=1"
@@ -6927,7 +6985,7 @@ class FileSearchRuntime:
     ) -> list[dict[str, Any]]:
         run = self._load_run(run_id)
         frozen = self._load_frozen_spec(run.frozen_spec_id)
-        reverse = frozen.spec.metric_direction == "maximize"
+        maximize = frozen.spec.metric_direction == "maximize"
         settled = []
         for record in self._load_candidate_records(run_id):
             if record.candidate_id == target_candidate_id:
@@ -6937,15 +6995,20 @@ class FileSearchRuntime:
                 for iteration in record.iterations
                 if iteration.agent_session_id is not None
                 and self._git_iteration_eligible(iteration)
-                and iteration.disposition in {None, "keep"}
+                and iteration.disposition in {None, "keep", "retain"}
             ]
             if not eligible:
                 continue
-            best = sorted(
+            best = max(
                 eligible,
-                key=lambda iteration: iteration.score,
-                reverse=reverse,
-            )[0]
+                key=lambda iteration: (
+                    float(iteration.score)
+                    if maximize
+                    else -float(iteration.score),
+                    iteration.created_at,
+                    iteration.iteration,
+                ),
+            )
             settled.append((best.created_at, record, best))
         settled.sort(
             key=lambda item: (

@@ -8,6 +8,7 @@ import pytest
 from goal_plus import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import (
+    EvidenceDetailReadRecord,
     EvidenceViewRecord,
     GoalPlusRecord,
     IterationRecord,
@@ -36,6 +37,7 @@ from goal_plus.runtime import (
     FileSearchRuntime,
     write_json,
 )
+from goal_plus.tools import SearchTools
 
 from tests._runtime_helpers import make_project, spec_for
 
@@ -337,7 +339,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     second_plan = search.plan_next(second_run, requested_k=1)
     [candidate] = search.start_batch(second_run, second_plan.plan_id)
     session = search.start_agent_session(second_run, candidate.candidate_id)
-    search.run_verifier(
+    SearchTools(search).search_run_verifier(
         second_run,
         candidate.candidate_id,
         agent_session_id=session.agent_session_id,
@@ -370,6 +372,26 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
         created_at="2026-01-01T00:00:01Z",
     )
     search._write_evidence_annotation_task(annotation)
+    search.get_global_evidence(
+        session.agent_session_id,
+        source="verifier_injected",
+    )
+    search.get_global_evidence(session.agent_session_id)
+    persisted_session = search._load_agent_session_by_id(session.agent_session_id)
+    search._write_agent_session(
+        persisted_session.model_copy(
+            update={
+                "evidence_detail_reads": [
+                    EvidenceDetailReadRecord(
+                        read_at="2026-01-01T00:00:02Z",
+                        candidate_id=candidate.candidate_id,
+                        iteration=1,
+                        commit=annotation.attempt_commit,
+                    )
+                ]
+            }
+        )
+    )
     external_evidence = tmp_path / "evaluations" / "auto-1.json"
     external_evidence.parent.mkdir()
     write_json(
@@ -530,6 +552,9 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     assert "Final GP Aggregate" not in html
     assert "Unavailable Metrics Audit" not in html
     assert "Verifier activity" in html
+    assert "Evidence reads" in html
+    assert "Injected evidence" in html
+    assert "Detail reads" in html
     assert "Shared Evidence View" in html
     assert "Settled iterations" in html
     assert "Views published" in html
@@ -579,6 +604,14 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     assert reported_iteration["view_state"] == "completed"
     assert reported_iteration["annotation_monitor"]["state"] == "completed"
     assert reported_iteration["annotation_monitor"]["json_lines"] == 4
+    [reported_session] = report_data["search_tasks"][1]["sessions"]
+    assert reported_session["global_evidence_reads_total"] == 2
+    assert reported_session["global_evidence_reads_explicit"] == 1
+    assert reported_session["global_evidence_reads_verifier_injected"] == 1
+    assert reported_session["evidence_detail_reads_total"] == 1
+    assert reported_session["evidence_detail_reads"][0]["commit"] == (
+        annotation.attempt_commit
+    )
     assert len(reported_iteration["external_evaluations"]) == 2
     assert reported_iteration["external_evaluations"][0]["authority"] == (
         "edgebench_official_hidden_judge"

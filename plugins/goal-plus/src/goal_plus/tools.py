@@ -233,7 +233,10 @@ class SearchTools:
         try:
             if not self.runtime.should_inject_global_evidence_after_verifier(run_id):
                 return result
-            snapshot = self.runtime.get_global_evidence(agent_session_id)
+            snapshot = self.runtime.get_global_evidence(
+                agent_session_id,
+                source="verifier_injected",
+            )
         except Exception as exc:
             result["global_evidence_injected"] = False
             result["global_evidence_warning"] = (

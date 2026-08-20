@@ -151,6 +151,44 @@ def _evidence_annotation_payload(run_dir: Path) -> dict[str, Any]:
     }
 
 
+def _evidence_read_payload(
+    sessions: list[AgentSessionRecord],
+) -> dict[str, Any]:
+    global_reads = [
+        read for session in sessions for read in session.global_evidence_reads
+    ]
+    detail_reads = [
+        read
+        for session in sessions
+        for read in getattr(session, "evidence_detail_reads", [])
+    ]
+    return {
+        "global_total": len(global_reads),
+        "global_explicit": sum(
+            getattr(read, "source", "explicit") == "explicit"
+            for read in global_reads
+        ),
+        "global_verifier_injected": sum(
+            getattr(read, "source", "explicit") == "verifier_injected"
+            for read in global_reads
+        ),
+        "detail_total": len(detail_reads),
+        "sessions_with_global_reads": sum(
+            bool(session.global_evidence_reads) for session in sessions
+        ),
+        "sessions_with_detail_reads": sum(
+            bool(getattr(session, "evidence_detail_reads", []))
+            for session in sessions
+        ),
+        "latest_global_read_at": max(
+            (read.read_at for read in global_reads), default=None
+        ),
+        "latest_detail_read_at": max(
+            (read.read_at for read in detail_reads), default=None
+        ),
+    }
+
+
 def _goal_metric_contexts(
     root_dir: Path,
     record: GoalPlusRecord | None,
@@ -518,6 +556,7 @@ def _search_task_payload(
             "worker_sessions_total": 0,
             "verifier_runs_total": 0,
             "evidence_annotations": None,
+            "evidence_reads": None,
             "estimated_cost_total": 0.0,
             "statistics": None,
         }
@@ -584,6 +623,7 @@ def _search_task_payload(
             "worker_sessions_total": len(sessions),
             "verifier_runs_total": sum(len(candidate.iterations) for candidate in candidates),
             "evidence_annotations": _evidence_annotation_payload(run_dir),
+            "evidence_reads": _evidence_read_payload(sessions),
             "estimated_cost_total": estimated_cost_total,
             "statistics": statistics,
         }
@@ -592,6 +632,11 @@ def _search_task_payload(
 
 
 def _search_task_aggregate(search_tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    read_payloads = [
+        task["evidence_reads"]
+        for task in search_tasks
+        if isinstance(task.get("evidence_reads"), dict)
+    ]
     return {
         "search_tasks_total": len(search_tasks),
         "planning_rounds_total": sum(task["planning_rounds_total"] for task in search_tasks),
@@ -600,6 +645,36 @@ def _search_task_aggregate(search_tasks: list[dict[str, Any]]) -> dict[str, Any]
         "candidates_evaluated": sum(task["candidates_evaluated"] for task in search_tasks),
         "worker_sessions_total": sum(task["worker_sessions_total"] for task in search_tasks),
         "verifier_runs_total": sum(task["verifier_runs_total"] for task in search_tasks),
+        "evidence_reads": {
+            "global_total": sum(item["global_total"] for item in read_payloads),
+            "global_explicit": sum(item["global_explicit"] for item in read_payloads),
+            "global_verifier_injected": sum(
+                item["global_verifier_injected"] for item in read_payloads
+            ),
+            "detail_total": sum(item["detail_total"] for item in read_payloads),
+            "sessions_with_global_reads": sum(
+                item["sessions_with_global_reads"] for item in read_payloads
+            ),
+            "sessions_with_detail_reads": sum(
+                item["sessions_with_detail_reads"] for item in read_payloads
+            ),
+            "latest_global_read_at": max(
+                (
+                    item["latest_global_read_at"]
+                    for item in read_payloads
+                    if item["latest_global_read_at"] is not None
+                ),
+                default=None,
+            ),
+            "latest_detail_read_at": max(
+                (
+                    item["latest_detail_read_at"]
+                    for item in read_payloads
+                    if item["latest_detail_read_at"] is not None
+                ),
+                default=None,
+            ),
+        },
         "estimated_cost_total": sum(task["estimated_cost_total"] for task in search_tasks),
         "statistics": aggregate_run_statistics(
             [task.get("statistics") for task in search_tasks]
@@ -828,6 +903,7 @@ def goal_plus_monitor_snapshot(
             "selected_git_head": run.selected_git_head,
             "budget_used": run.budget_used,
             "evidence_annotations": _evidence_annotation_payload(run_path),
+            "evidence_reads": _evidence_read_payload(sessions),
         }
         if frozen.spec.shared_dir.enabled:
             families = SharedDirManager(run_path).load_families()
@@ -1091,6 +1167,7 @@ def goal_plus_monitor_snapshot(
                     "time_advisory_sent": time_advisory is not None,
                     "time_advisory": time_advisory,
                     "raw_logging": bool(metadata.get("raw_logging")),
+                    "evidence_reads": _evidence_read_payload([session]),
                     "liveness": liveness,
                     "observability": observability,
                 }

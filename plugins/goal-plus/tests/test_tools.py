@@ -360,6 +360,10 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         summary="Collect a bounded trace.",
         entrypoint="trace.py:main",
         candidate_relative_source_paths=[".tmp/tool-drafts/trace.py"],
+        publication_intent="new",
+        supersedes_tool_id=None,
+        capability_ids=None,
+        coverage_keys=None,
     )
 
 
@@ -391,6 +395,10 @@ def test_worker_verifier_injects_global_evidence_when_enabled() -> None:
     assert result["global_evidence_snapshot"] == snapshot
     assert result["global_evidence_injected"] is True
     assert result["global_evidence_entry_count"] == 1
+    runtime.get_global_evidence.assert_called_once_with(
+        "agent_001",
+        source="verifier_injected",
+    )
 
 
 def test_worker_verifier_keeps_success_when_evidence_injection_fails() -> None:

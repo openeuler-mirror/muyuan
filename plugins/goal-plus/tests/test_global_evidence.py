@@ -9,6 +9,7 @@ import pytest
 
 from goal_plus.models import (
     EvidenceViewRecord,
+    FrozenSpec,
     SearchSpec,
     SupplementalEvaluation,
 )
@@ -16,6 +17,7 @@ from goal_plus.runtime import (
     EXTERNAL_EVIDENCE_DIR_ENV,
     FileSearchRuntime,
     SUPPLEMENTAL_EVALUATION_ENABLED_ENV,
+    SUPPLEMENTAL_EVALUATION_REQUIRED_ENV,
 )
 from goal_plus.tools import SearchTools
 from tests._runtime_helpers import git_commit_all, make_project, spec_for
@@ -26,7 +28,9 @@ def _search_with_candidates(
     count: int,
     *,
     strategy_updates: dict | None = None,
+    metric_direction: str = "maximize",
 ) -> tuple[FileSearchRuntime, str, list[tuple[str, str, Path]]]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     project = make_project(tmp_path)
     (project / "evaluator.py").write_text(
         "import json\n"
@@ -37,6 +41,7 @@ def _search_with_candidates(
     )
     spec_data = spec_for(project, max_parallel=count).model_dump(mode="json")
     spec_data["workspace"] = {"backend": "git_worktree"}
+    spec_data["metric_direction"] = metric_direction
     spec_data["strategy"].update(strategy_updates or {})
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
@@ -138,6 +143,9 @@ def test_global_evidence_is_immediate_and_view_is_late_bound(tmp_path: Path) -> 
     assert completed[-1]["view_created_at"] == "2026-01-01T00:00:00Z"
     read = runtime._load_agent_session_by_id(first[1]).global_evidence_reads[-1]
     assert read.evidence_count == 3
+    assert read.source == "explicit"
+    assert read.candidate_verifier_iteration == 1
+    assert read.run_verifier_iteration_count == 3
     assert read.completed_view_count == 1
     assert read.completed_supplemental_evaluation_count == 0
     assert read.completed_views[0].candidate_id == second[0]
@@ -288,8 +296,16 @@ def test_post_verifier_injection_respects_global_evidence_mode(
         else [[candidates[0][0]], [candidates[1][0]]]
     )
     assert explicit_candidates == expected_explicit
+    persisted_reads = [
+        runtime._load_agent_session_by_id(session_id).global_evidence_reads
+        for _, session_id, _ in candidates
+    ]
     if mode == "independent":
         assert all("global_evidence_injected" not in report for report in reports)
+        assert [[read.source for read in reads] for reads in persisted_reads] == [
+            ["explicit"],
+            ["explicit"],
+        ]
         return
 
     visible_candidates = [
@@ -302,6 +318,18 @@ def test_post_verifier_injection_respects_global_evidence_mode(
     ]
     assert visible_candidates == expected_injected
     assert [report["global_evidence_entry_count"] for report in reports] == [1, 2]
+    assert [[read.source for read in reads] for reads in persisted_reads] == [
+        ["verifier_injected", "explicit"],
+        ["verifier_injected", "explicit"],
+    ]
+    assert [reads[0].candidate_verifier_iteration for reads in persisted_reads] == [
+        1,
+        1,
+    ]
+    assert [reads[0].run_verifier_iteration_count for reads in persisted_reads] == [
+        1,
+        2,
+    ]
 
 
 def test_global_evidence_presents_open_evaluation_with_dynamic_peer_basis(
@@ -427,6 +455,10 @@ def test_global_evidence_presents_open_evaluation_with_dynamic_peer_basis(
     assert detail["supplemental_evaluation"]["comparisons"][0][
         "candidate_id"
     ] == first[0]
+    detail_read = runtime._load_agent_session_by_id(first[1]).evidence_detail_reads[-1]
+    assert detail_read.candidate_id == second[0]
+    assert detail_read.iteration == 1
+    assert detail_read.commit == task.attempt_commit
 
     completed_task = runtime._load_evidence_annotation_task(run_id, second[0], 1)
     assert completed_task is not None and completed_task.view is not None
@@ -448,8 +480,8 @@ def test_supplemental_capability_and_detail_respect_disabled_and_independent_mod
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime, run_id, candidates = _search_with_candidates(
-        tmp_path,
+    runtime, _, candidates = _search_with_candidates(
+        tmp_path / "disabled",
         2,
         strategy_updates={"config": {"global_evidence_mode": "independent"}},
     )
@@ -460,10 +492,90 @@ def test_supplemental_capability_and_detail_respect_disabled_and_independent_mod
         runtime.get_evidence_detail(first[1], first[0], 1)
 
     monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_ENABLED_ENV, "1")
-    enabled = runtime.get_agent_context(first[1])
+    enabled_runtime, _, enabled_candidates = _search_with_candidates(
+        tmp_path / "enabled",
+        2,
+        strategy_updates={"config": {"global_evidence_mode": "independent"}},
+    )
+    enabled_first, enabled_second = enabled_candidates
+    monkeypatch.delenv(SUPPLEMENTAL_EVALUATION_ENABLED_ENV)
+    enabled = enabled_runtime.get_agent_context(enabled_first[1])
     assert enabled["supplemental_evaluation_enabled"] is True
     with pytest.raises(PermissionError, match="caller's candidate"):
-        runtime.get_evidence_detail(first[1], second[0], 1)
+        enabled_runtime.get_evidence_detail(
+            enabled_first[1], enabled_second[0], 1
+        )
+
+
+def test_supplemental_policy_is_frozen_and_legacy_specs_default_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_ENABLED_ENV, "1")
+    monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_REQUIRED_ENV, "1")
+    runtime, run_id, candidates = _search_with_candidates(tmp_path, 1)
+    frozen = runtime._load_frozen_spec(runtime._load_run(run_id).frozen_spec_id)
+    assert frozen.supplemental_evaluation_enabled is True
+    assert frozen.supplemental_evaluation_required is True
+
+    monkeypatch.delenv(SUPPLEMENTAL_EVALUATION_ENABLED_ENV)
+    monkeypatch.delenv(SUPPLEMENTAL_EVALUATION_REQUIRED_ENV)
+    assert runtime.get_agent_context(candidates[0][1])[
+        "supplemental_evaluation_enabled"
+    ] is True
+    disabled_frozen = runtime.freeze_spec(
+        frozen.spec,
+        [Path(frozen.spec.source_path) / "evaluator.py"],
+    )
+    assert disabled_frozen.frozen_spec_id != frozen.frozen_spec_id
+    assert disabled_frozen.supplemental_evaluation_enabled is False
+    assert disabled_frozen.supplemental_evaluation_required is False
+
+    legacy_payload = frozen.model_dump(
+        mode="json",
+        exclude={
+            "supplemental_evaluation_enabled",
+            "supplemental_evaluation_required",
+        },
+    )
+    legacy = FrozenSpec.model_validate(legacy_payload)
+    assert legacy.supplemental_evaluation_enabled is False
+    assert legacy.supplemental_evaluation_required is False
+
+
+@pytest.mark.parametrize(
+    ("metric_direction", "scores"),
+    [("maximize", ("1", "2", "2.0")), ("minimize", ("-1", "-2", "-2.0"))],
+)
+def test_evidence_comparison_basis_prefers_latest_equal_score_iteration(
+    tmp_path: Path,
+    metric_direction: str,
+    scores: tuple[str, str, str],
+) -> None:
+    runtime, run_id, candidates = _search_with_candidates(
+        tmp_path,
+        2,
+        metric_direction=metric_direction,
+    )
+    target, peer = candidates
+    for score in scores:
+        (peer[2] / "initial_program.py").write_text(
+            f"VALUE = {score}\n", encoding="utf-8"
+        )
+        runtime.run_verifier(
+            run_id,
+            peer[0],
+            agent_session_id=peer[1],
+            hypothesis=f"Try score {score}",
+        )
+
+    basis = runtime._evidence_comparison_basis(
+        run_id,
+        target_candidate_id=target[0],
+    )
+    assert len(basis) == 1
+    assert basis[0]["candidate_id"] == peer[0]
+    assert basis[0]["iteration"] == 3
 
 
 def test_worker_hypothesis_is_required_and_parent_evidence_is_private(

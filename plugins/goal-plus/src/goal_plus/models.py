@@ -439,6 +439,9 @@ class GlobalEvidenceViewReference(SearchModel):
 
 class GlobalEvidenceReadRecord(SearchModel):
     read_at: str
+    source: Literal["explicit", "verifier_injected"] = "explicit"
+    candidate_verifier_iteration: int | None = Field(default=None, ge=1)
+    run_verifier_iteration_count: int = Field(default=0, ge=0)
     evidence_count: int = Field(ge=0)
     completed_view_count: int = Field(ge=0)
     completed_supplemental_evaluation_count: int = Field(ge=0)
@@ -458,6 +461,13 @@ class GlobalEvidenceReadRecord(SearchModel):
         if self.completed_view_count > self.evidence_count:
             raise ValueError("completed_view_count cannot exceed evidence_count")
         return self
+
+
+class EvidenceDetailReadRecord(SearchModel):
+    read_at: str
+    candidate_id: str = Field(min_length=1)
+    iteration: int = Field(ge=1)
+    commit: str = Field(min_length=1)
 
 
 class EvidenceAnnotationTask(SearchModel):
@@ -894,6 +904,8 @@ class FrozenSpec(SearchModel):
     frozen_spec_id: str
     spec_hash: str
     spec: SearchSpec
+    supplemental_evaluation_enabled: bool = False
+    supplemental_evaluation_required: bool = False
     verifier_hashes: dict[str, str]
     frozen_verifier_paths: dict[str, str]
     created_at: str
@@ -1339,5 +1351,8 @@ class AgentSessionRecord(SearchModel):
     launch: dict[str, Any] = Field(default_factory=dict)
     counters: dict[str, int] = Field(default_factory=dict)
     global_evidence_reads: list[GlobalEvidenceReadRecord] = Field(
+        default_factory=list
+    )
+    evidence_detail_reads: list[EvidenceDetailReadRecord] = Field(
         default_factory=list
     )

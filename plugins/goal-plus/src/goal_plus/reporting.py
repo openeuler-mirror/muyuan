@@ -1526,6 +1526,13 @@ def _task_details(
             for iteration in candidate.iterations
             if iteration.agent_session_id == session.agent_session_id
         ]
+        global_evidence_reads = [
+            read.model_dump(mode="json") for read in session.global_evidence_reads
+        ]
+        evidence_detail_reads = [
+            read.model_dump(mode="json")
+            for read in getattr(session, "evidence_detail_reads", [])
+        ]
         base_payload = {
             "agent_session_id": session.agent_session_id,
             "candidate_id": session.candidate_id,
@@ -1550,6 +1557,28 @@ def _task_details(
             "context_tokens": context.get("tokens"),
             "context_percent": context.get("percent"),
             "verifier_runs": len(session_iterations),
+            "global_evidence_reads": global_evidence_reads,
+            "global_evidence_reads_total": len(global_evidence_reads),
+            "global_evidence_reads_explicit": sum(
+                read.get("source", "explicit") == "explicit"
+                for read in global_evidence_reads
+            ),
+            "global_evidence_reads_verifier_injected": sum(
+                read.get("source") == "verifier_injected"
+                for read in global_evidence_reads
+            ),
+            "latest_global_evidence_read_at": (
+                max(read["read_at"] for read in global_evidence_reads)
+                if global_evidence_reads
+                else None
+            ),
+            "evidence_detail_reads": evidence_detail_reads,
+            "evidence_detail_reads_total": len(evidence_detail_reads),
+            "latest_evidence_detail_read_at": (
+                max(read["read_at"] for read in evidence_detail_reads)
+                if evidence_detail_reads
+                else None
+            ),
             "observability_source": observation.get("source"),
             "activity": activity,
             "errors": observation.get("errors") or [],
@@ -3794,12 +3823,18 @@ def _render_sessions(task: dict[str, Any]) -> str:
             f'<td class="mono">{_html(_number(session.get("processed_tokens")))}</td>'
             f'<td class="mono">{_html(_cost(session.get("cost_usd")))}</td>'
             f'<td class="mono">{_html(session.get("verifier_runs"))}</td>'
+            f'<td class="mono">{_html(session.get("global_evidence_reads_explicit"))}</td>'
+            f'<td class="mono">{_html(session.get("global_evidence_reads_verifier_injected"))}</td>'
+            f'<td class="mono">{_html(session.get("evidence_detail_reads_total"))}</td>'
+            f'<td class="mono">{_html(session.get("latest_global_evidence_read_at"))}</td>'
+            f'<td class="mono">{_html(session.get("latest_evidence_detail_read_at"))}</td>'
             "</tr>"
         )
     return (
         '<div class="table-scroll"><table><thead><tr>'
         "<th>Session</th><th>Dispatch</th><th>Candidate</th><th>Host</th><th>Provider</th><th>Model</th>"
         "<th>Terminal state</th><th>Duration</th><th>Processed tokens</th><th>Estimated cost</th><th>Verifier runs</th>"
+        "<th>Evidence reads</th><th>Injected evidence</th><th>Detail reads</th><th>Last evidence read</th><th>Last detail read</th>"
         f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
     )
 

@@ -9,6 +9,7 @@ from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.pi_tool import call_pi_tool
 from goal_plus.runtime import FileSearchRuntime, write_json
 from goal_plus.server import create_mcp
+from goal_plus.tools import SearchTools
 
 from tests._runtime_helpers import make_project, spec_with_strategy
 
@@ -101,12 +102,17 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
             },
         },
     )
-    runtime.run_verifier(
+    SearchTools(runtime).search_run_verifier(
         run_id,
         first.candidate_id,
         agent_session_id=session.agent_session_id,
         hypothesis="Monitor worker evidence",
     )
+    runtime.get_global_evidence(
+        session.agent_session_id,
+        source="verifier_injected",
+    )
+    runtime.get_global_evidence(session.agent_session_id)
     write_json(
         runtime_root
         / "runs"
@@ -150,6 +156,15 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     assert annotation["monitor_files"] == 1
     assert annotation["active_attempts"][0]["state"] == "running"
     assert annotation["active_attempts"][0]["json_lines"] == 3
+    evidence_reads = snapshot["run"]["evidence_reads"]
+    assert evidence_reads["global_total"] == 2
+    assert evidence_reads["global_explicit"] == 1
+    assert evidence_reads["global_verifier_injected"] == 1
+    assert evidence_reads["detail_total"] == 0
+    assert evidence_reads["sessions_with_global_reads"] == 1
+    assert evidence_reads["sessions_with_detail_reads"] == 0
+    assert isinstance(evidence_reads["latest_global_read_at"], str)
+    assert evidence_reads["latest_detail_read_at"] is None
     assert snapshot["strategy"] == {
         "name": "random",
         "orchestration_mode": "parallel_loops",
@@ -186,6 +201,9 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     assert subagent["time_advisory_sent"] is True
     assert subagent["time_advisory"]["remaining_seconds"] == 30
     assert subagent["raw_logging"] is False
+    assert subagent["evidence_reads"]["global_explicit"] == 1
+    assert subagent["evidence_reads"]["global_verifier_injected"] == 1
+    assert subagent["evidence_reads"]["detail_total"] == 0
     assert subagent["runner_failed"] is False
     assert subagent["progress_handoff"] is None
     assert subagent["liveness"] == "evaluated"
