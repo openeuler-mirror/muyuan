@@ -197,14 +197,32 @@ Selected Git Head 和 Artifact Hash，之后才生成可被 Git 应用的 Patch�
 Benchmark 专用任务、evaluator、campaign 和对比证据不属于这个隔离的 runtime
 目录。
 
-## 开发
+## 多开发者隔离
+
+不同操作系统账号的 home 目录天然隔离，但每位开发者仍应使用独立的 Goal Plus checkout
+和 Python 环境。如果多位开发者或多个开发版本共用同一个系统账号，不要共用默认的 Codex
+home、Pi 配置目录或 Python 环境。在同一个共享 profile 中，Codex 开发安装器使用固定的
+`goal-plus@goal-plus-local` 标识和 staging 路径，Pi 可能同时加载所有已注册的 package
+路径，而 `goal-plus` 命令由宿主继承的 `PATH` 解析；因此后安装的版本可能覆盖前一个版本，
+也可能与前一个版本同时被加载，并不隔离。
+
+应为每位开发者使用一套完整 profile，并在安装以及以后每次启动 Pi 或 Codex 时都保留这些
+环境变量：
 
 ```bash
-python -m pytest -q
-goal-plus --version
-python scripts/sync_codex_plugin_assets.py --check
-goal-plus-codex-doctor --project-root .
+python -m venv /absolute/path/to/developer-a/venv
+source /absolute/path/to/developer-a/venv/bin/activate
+python -m pip install -e "/absolute/path/to/developer-a/muyuan/plugins/goal-plus[dev]"
+
+export CODEX_HOME=/absolute/path/to/developer-a/codex-home
+export PI_CODING_AGENT_DIR=/absolute/path/to/developer-a/pi-agent
+
+pi install /absolute/path/to/developer-a/muyuan/plugins/goal-plus
+python /absolute/path/to/developer-a/muyuan/plugins/goal-plus/scripts/install_codex_plugin.py \
+  --skip-runtime-install
 ```
 
-Pi 和 Codex 当前维护的策略集合是 `agent_guided`
-（`agent`/`default`）和 `random`（`random_mode`）。
+显式源码路径只会在已经隔离的宿主 profile 内选择该 checkout；它不能隔离共享的 Python
+`PATH`，也不能屏蔽同一 profile 中已经启用的另一份 Goal Plus。每位开发者还应使用独立的
+目标 workspace 或 Git worktree，因为 Goal Plus 运行状态保存在该 workspace 的 `.gp/`
+目录中，agent 的修改也会直接作用于该 workspace。
