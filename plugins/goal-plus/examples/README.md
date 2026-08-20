@@ -1,8 +1,10 @@
 # Examples
 
-The checked-in examples use the maintained parallel-loop contract. A Search
-run creates one initial plan, materializes a fixed set of candidate workspaces,
-and resumes those same candidates until the global stop condition is true.
+The checked-in examples are either bounded `/goal-plus` scenarios, direct
+SearchSpec/runtime fixtures, or deterministic protocol demos. Maintained Search
+runs create one initial plan, materialize a fixed set of candidate workspaces,
+and resume those same candidates only until the enclosing task's global stop
+condition or closeout boundary is true.
 
 ## SearchSpec Files
 
@@ -11,6 +13,7 @@ and resumes those same candidates until the global stop condition is true.
 | `circle_packing_search_spec.json` | `tests/fixtures/circle_packing` | numeric optimization with two lanes |
 | `k_module_search_spec.json` | `tests/fixtures/k_module_problem` | small multi-file correctness and score fixture |
 | `signal_processing_search_spec.json` | `tests/fixtures/signal_processing` | wider parallel score fixture |
+| `multi-model-signal-spec.json` | `tests/fixtures/signal_processing` | bounded multi-model Codex fixture |
 | `edgebench_ad_placement_search_spec.json` | `examples/edgebench-ad-placement/workspace` | public-score C++ workflow |
 | `swe_bench_20212_search_spec.json` | `tests/fixtures/swe_bench_20212` | repository patching fixture |
 | `workspace-backends/git_worktree_search_spec.json` | `examples/workspace-backends/source` | Git worktree materialization demo |
@@ -27,7 +30,13 @@ Maintained hosts are Codex and Pi RPC. Use one of these strategy shapes:
   "strategy": {
     "name": "random",
     "orchestration_mode": "parallel_loops",
-    "worker_host": "codex"
+    "worker_host": "codex",
+    "worker_agent_type": "search_candidate_agent",
+    "worker_budget": {
+      "max_runtime_seconds": 300,
+      "max_turns": 8,
+      "on_exceed": "interrupt"
+    }
   }
 }
 ```
@@ -51,6 +60,13 @@ Maintained hosts are Codex and Pi RPC. Use one of these strategy shapes:
 the main agent to provide the initial lane intents to `search_start_batch`.
 Neither strategy permits a second `search_plan_next` call.
 
+Outside the established EdgeBench Ad regression spec, maintained host-backed
+SearchSpecs declare `orchestration_mode`, `worker_host`, and a finite
+`worker_budget`. `worker_budget` limits one worker dispatch or renewable lease;
+it is not the maximum duration of a whole Goal Plus task. Paste-ready goal
+scenarios state their whole-goal limit separately in natural language and
+reserve explicit closeout time.
+
 Set `budget.max_parallel` for normal runs. It is the initial number of
 long-lived candidate lanes.
 Each candidate workspace is a long-lived lane, not a disposable attempt.
@@ -70,6 +86,25 @@ The main agent first calls `goal_plus_list_models` for the selected host.
 Counts must sum to `max_parallel`; omit all counts to round-robin the listed
 models. The runtime generates `selected_models`, so there is no separate
 creation-time allocation argument.
+
+## Goal-driven scenario contract
+
+Except for the established EdgeBench Ad Placement and VLIW regression cases,
+paste-ready Goal Plus scenarios use the same task-level contract:
+
+1. Start with the native `/goal-plus` or `$goal-plus` entry.
+2. State a finite whole-goal limit measured from Goal Plus creation, plus a
+   candidate closeout boundary and worker lease that fit inside it.
+3. State the metric, correctness gate, edit surface, and frozen inputs before
+   candidate work begins.
+4. Create the fixed candidate lanes once and continue the same native workers;
+   never replace a lane because of score or rank.
+5. Drain workers, preserve the best valid result, finish the required
+   validation/promotion and Goal Plus audit, set terminal status, then render
+   the Search report exactly once.
+
+Direct SearchSpec fixtures and deterministic scripts do not create a Goal Plus
+record, so a whole-goal time limit is not applicable to them.
 
 ## Host Flow
 
@@ -111,16 +146,17 @@ python examples/workspace-backends/run_demo.py --runtime-root .tmp/worktree-demo
 
 ## Scenario Guides
 
-- [Codex/Pi orchestration monitor comparison](orchestration-monitor/README.md)
-- [AscendC Direct Search](ascendc-direct-search/README.md)
-- [CANNBench TileLang Ascend](cannbench-tilelang-ascend/README.md)
-- [EdgeBench Ad Placement](edgebench-ad-placement/README.md)
-- [Goal and Goal Plus](goal-and-goal-plus/README.md)
-- [Kernel Optimize](kernel-optimize/README.md)
-- [Model Optimize](model-optimize/README.md)
-- [Model Optimize GPU (WIP)](model-opt-gpu/README.md)
-- [VLIW Kernel Optimization](vliw-kernel-optimization/README.md)
-- [Git Worktree Backend](workspace-backends/README.md)
+| Scenario | Entry type | Whole-goal limit | Status |
+|---|---|---:|---|
+| [Codex/Pi orchestration monitor comparison](orchestration-monitor/README.md) | deterministic script | not applicable | maintained protocol demo |
+| [AscendC Direct Search](ascendc-direct-search/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
+| [CANNBench TileLang Ascend](cannbench-tilelang-ascend/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
+| [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | dedicated frozen spec | scenario-specific | established regression case; unchanged |
+| [Kernel Optimize](kernel-optimize/README.md) | Codex `$goal-plus` template | 30 minutes | environment-specific template |
+| [Model Optimize](model-optimize/README.md) | Pi/Codex Goal Plus | 10 minutes | runnable CPU example |
+| [Model Optimize GPU](model-opt-gpu/README.md) | Pi `/goal-plus` | 2 hours | WIP; not validated |
+| [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | Pi `/goal-plus` | scenario-specific | established regression case; unchanged |
+| [Git Worktree Backend](workspace-backends/README.md) | deterministic script | not applicable | host-free runtime E2E |
 
 The GPU model-optimization example is explicitly WIP and is not part of the
 maintained validation gate.

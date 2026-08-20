@@ -218,7 +218,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--spec-out")
     parser.add_argument("--device-id")
-    parser.add_argument("--timeout-seconds", type=int, default=7200)
+    parser.add_argument("--timeout-seconds", type=int, default=2400)
     parser.add_argument("--max-parallel", type=int, default=2)
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()

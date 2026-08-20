@@ -94,6 +94,7 @@ python examples/cannbench-tilelang-ascend/prepare_workspace.py \
   --task-dir bench_lab/tilelang_ascend_bench/gemm \
   --operator Gemm \
   --function-name gemm \
+  --timeout-seconds 2400 \
   --output-dir .tmp/cannbench-tilelang-gemm/workspace \
   --force
 ```
@@ -107,6 +108,7 @@ python examples/cannbench-tilelang-ascend/prepare_workspace.py \
   --task-dir bench_lab/tilelang_ascend_bench/gemm \
   --operator Gemm \
   --function-name gemm \
+  --timeout-seconds 2400 \
   --output-dir .tmp/cannbench-tilelang-gemm/workspace \
   --force
 ```
@@ -185,62 +187,15 @@ This distinction is important. TileLang-Ascend is a Python DSL implementation
 inside `cann_bench/*.py`. AscendC would require `csrc/ops/...` C++/CMake files,
 which are intentionally not part of this example.
 
-## Pi `/goal-plus` Prompt
+## Run with Pi
 
-Paste a prompt like this into Pi:
+Start Pi from the Goal Plus repository root on the target NPU host and paste
+the complete contents of [`pi-goal-prompt.md`](pi-goal-prompt.md). The prompt
+sets a 60-minute whole-goal limit, stops candidate work at 50 minutes, and uses
+the generated 2,400-second worker/verifier bound while reserving closeout time.
 
-```text
-Use /goal-plus. Run the CANNBench TileLang-Ascend search example.
-
-Read examples/cannbench-tilelang-ascend/README.md first.
-
-First ensure dependencies:
-  - If a local CANNBench checkout exists, use it. Otherwise clone:
-      git clone https://gitcode.com/cann/cann-bench.git cann-bench
-  - If a local AKG checkout exists, use it. Otherwise clone:
-      git clone https://gitcode.com/mindspore/akg.git akg_agents
-  - The AKG TileLang-Ascend skills must be under:
-      <akg_agents>/python/akg_agents/op/resources/skills/tilelang-ascend
-
-Prepare the workspace by running:
-  python examples/cannbench-tilelang-ascend/prepare_workspace.py \
-    --cann-bench-root <local cann-bench root> \
-    --akg-agents-root <local akg_agents root> \
-    --task-dir bench_lab/tilelang_ascend_bench/gemm \
-    --operator Gemm \
-    --function-name gemm \
-    --output-dir .tmp/cannbench-tilelang-gemm/workspace \
-    --force
-
-Then use the generated SearchSpec:
-  .tmp/cannbench-tilelang-gemm/workspace.gp_spec.json
-
-And the generated verifier artifact list:
-  .tmp/cannbench-tilelang-gemm/workspace.gp_spec.verifier_artifacts.json
-
-Goal:
-  Generate and tune a TileLang-Ascend implementation for CANNBench Gemm.
-  The worker must edit only cann_bench/ in the candidate workspace.
-  The worker must read _task/TASK.md, _task/proto.yaml, _task/cases.yaml,
-  _task/desc.md, and the copied _skills/tilelang-ascend files.
-  The worker must call search_run_verifier after the first complete
-  implementation and after meaningful optimizations.
-
-Search requirements:
-  - strategy.worker_host must be pi-rpc
-  - use search_freeze_spec, search_create, goal_plus_link_search_run
-  - use the Pi Goal Plus Search Mode flow: search_plan_next,
-    search_start_batch, pi_search_pool_open, pi_search_pool_wait_any,
-    and pi_search_pool_continue
-  - use pi_search_pool_snapshot for recovery and pi_search_pool_close for drain
-  - pool candidate-ready events already include the parent final verifier
-  - call search_select and search_report
-  - do not promote automatically
-
-Report:
-  run_id, all candidate overall_score values, selected_candidate_id,
-  report.md path, and the latest CANNBench JSON report path.
-```
+`--timeout-seconds` bounds each generated worker lease and verifier invocation;
+it is not the whole-goal limit. The natural-language goal owns the latter.
 
 ## Worker Guidance
 

@@ -5,6 +5,9 @@ reference, with `avg_latency_ms` as the primary metric. The runtime, candidate
 worker loop, and `search` skill are unchanged; this example only contributes a
 verifier reference and a usage guide.
 
+The paste-ready C++ prompt sets a 30-minute whole-goal limit, a 25-minute
+candidate closeout boundary, and 20-minute worker leases.
+
 ## Inputs
 
 The host agent (or the user) supplies two files:
@@ -79,7 +82,12 @@ a single `{op_name}_impl.py` that imports the binding and defines `ModelNew`.
     "name": "agent_guided",
     "orchestration_mode": "parallel_loops",
     "worker_host": "codex",
-    "worker_agent_type": "search_candidate_agent"
+    "worker_agent_type": "search_candidate_agent",
+    "worker_budget": {
+      "max_runtime_seconds": 1200,
+      "max_turns": 20,
+      "on_exceed": "interrupt"
+    }
   }
 }
 ```
@@ -105,17 +113,23 @@ does not redefine them. The shape:
 1. `search_freeze_spec(spec=<above>, verifier_artifact_paths=[`
    `"_verifier/verify.py", "_verifier/benchmark.py", "_verifier/_common_utils.py",`
    `"_verifier/<op>_torch.py", "_verifier/<op>_impl.py"])`
-2. `search_create(frozen_spec_id=<id>)` — record `run_id`.
-3. `search_plan_next(run_id, requested_k=4)`.
-4. `search_start_batch(run_id, plan_id, proposals=[...])` — author the four
+2. `search_create(frozen_spec_id=<id>)`, then link the run to the active Goal
+   Plus work item.
+3. Call `search_plan_next(run_id, requested_k=2)` exactly once.
+4. `search_start_batch(run_id, plan_id, proposals=[...])` — author the two
    initial independent lane intents.
 5. For each candidate: `search_start_agent_session` → launch the returned Codex
    payload → wait for completion → `search_run_verifier(run_id, candidate_id,
    "process")` without `agent_session_id` for parent confirmation. Resume the
    same worker with `search_continue_agent_session` plus `followup_task` while
-   the global task remains active.
-6. `search_list_history`, `search_select`, `search_report`.
-7. Optional: `search_promote(run_id, selected_candidate_id)`.
+   global task remains active and the closeout boundary has not arrived.
+6. Drain workers, then use `search_list_history`, `search_select`, and
+   `search_promote` for the best verifier-backed candidate.
+7. Complete the Goal Plus final audit and terminal status, then call
+   `search_report` exactly once.
+
+The worker lease is only a dispatch bound. It does not replace the 30-minute
+whole-goal limit carried by the raw goal.
 
 ## Step 5 — subagent contract (unchanged)
 
@@ -173,6 +187,5 @@ The runtime's existing mechanism does all of it:
 
 ## Worked prompt
 
-See [`example-prompt-cpp.md`](example-prompt-cpp.md) for a complete prompt the
-host agent can paste into the search skill for a C++ kernel optimization
-task.
+See [`example-prompt-cpp.md`](example-prompt-cpp.md) for a complete bounded
+Codex `$goal-plus` prompt for a C++ kernel optimization task.

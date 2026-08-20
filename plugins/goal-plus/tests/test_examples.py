@@ -20,13 +20,27 @@ EXAMPLE_SPECS = [
         "circle_packing_search_spec.json",
         ["tests/fixtures/circle_packing/evaluator.py"],
         "combined_score",
-        {"max_parallel": 2, "worker_agent_type": "search_candidate_agent"},
+        {
+            "max_parallel": 2,
+            "strategy_name": "random",
+            "worker_host": "codex",
+            "worker_agent_type": "search_candidate_agent",
+            "max_runtime_seconds": 300,
+            "max_turns": 8,
+        },
     ),
     (
         "signal_processing_search_spec.json",
         ["tests/fixtures/signal_processing/evaluator.py"],
         "overall_score",
-        {"max_parallel": 4, "worker_agent_type": "search_candidate_agent"},
+        {
+            "max_parallel": 4,
+            "strategy_name": "random",
+            "worker_host": "codex",
+            "worker_agent_type": "search_candidate_agent",
+            "max_runtime_seconds": 300,
+            "max_turns": 8,
+        },
     ),
     (
         "edgebench_ad_placement_search_spec.json",
@@ -64,6 +78,89 @@ def load_expected(spec_name: str) -> dict:
 
 def load_example_spec(name: str) -> dict:
     return json.loads((ROOT / "examples" / name).read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    "spec_name",
+    (
+        "circle_packing_search_spec.json",
+        "k_module_search_spec.json",
+        "signal_processing_search_spec.json",
+        "swe_bench_20212_search_spec.json",
+        "multi-model-signal-spec.json",
+        "workspace-backends/git_worktree_search_spec.json",
+    ),
+)
+def test_standard_host_backed_specs_declare_the_bounded_parallel_contract(
+    spec_name: str,
+) -> None:
+    spec = SearchSpec.model_validate(load_example_spec(spec_name))
+
+    assert spec.strategy.orchestration_mode == "parallel_loops"
+    assert spec.strategy.worker_host == "codex"
+    assert spec.strategy.worker_agent_type == "search_candidate_agent"
+    assert spec.strategy.worker_budget is not None
+    assert spec.strategy.worker_budget.max_runtime_seconds == 300
+    assert spec.strategy.worker_budget.max_turns == 8
+    assert spec.strategy.worker_budget.on_exceed == "interrupt"
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "limit", "closeout"),
+    (
+        (
+            "ascendc-direct-search/pi-goal-prompt.md",
+            "within 60 minutes",
+            "after 50 minutes",
+        ),
+        (
+            "cannbench-tilelang-ascend/pi-goal-prompt.md",
+            "within 60 minutes",
+            "after 50 minutes",
+        ),
+        (
+            "kernel-optimize/example-prompt-cpp.md",
+            "within 30 minutes",
+            "after 25 minutes",
+        ),
+        (
+            "model-optimize/pi-goal-prompt.md",
+            "within 10 minutes",
+            "after 8 minutes",
+        ),
+        (
+            "model-optimize/codex-goal-prompt.md",
+            "within 10 minutes",
+            "after 8 minutes",
+        ),
+        (
+            "model-opt-gpu/bert_pytorch_v100_goal_plus.md",
+            "within 2 hours",
+            "after 100 minutes",
+        ),
+    ),
+)
+def test_standard_goal_prompts_bound_the_whole_task_and_closeout(
+    relative_path: str,
+    limit: str,
+    closeout: str,
+) -> None:
+    prompt = (ROOT / "examples" / relative_path).read_text(encoding="utf-8")
+    normalized = " ".join(prompt.split())
+
+    assert "entire Goal Plus task" in normalized
+    assert limit in normalized
+    assert closeout in normalized
+    assert "worker lease" in normalized
+    assert "terminal status" in normalized
+
+
+def test_removed_goal_comparison_is_not_listed_or_present() -> None:
+    examples_index = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
+
+    assert "goal-and-goal-plus" not in examples_index
+    assert "Goal and Goal Plus" not in examples_index
+    assert not (ROOT / "examples" / "goal-and-goal-plus").exists()
 
 
 @pytest.mark.parametrize(("spec_name", "verifier_paths", "metric_name", "expected"), EXAMPLE_SPECS)
@@ -238,6 +335,8 @@ def test_model_opt_gpu_wip_docs_define_future_v100_goal_plus_contract() -> None:
         "non-finite",
         "triton_ops/",
         "AI-Infra-Auto-Driven-SKILLS",
+        "within 2 hours",
+        "max_runtime_seconds no greater than 5400",
     )
     for term in required_prompt_terms:
         assert term in prompt

@@ -1,7 +1,7 @@
-# Example prompt: C++ kernel optimization
+# Codex Goal Plus prompt: C++ kernel optimization
 
-A prompt the host agent can paste into the search skill. It assumes the
-following layout under `<source>/`:
+Paste this complete prompt into Codex from a workspace with the following
+layout:
 
 ```text
 <source>/
@@ -10,118 +10,45 @@ following layout under `<source>/`:
   matmul_wrapper.py      # ModelNew wrapper, loads the .cpp via load_inline
 ```
 
-The reference and wrapper are denied to the candidate. Only `matmul_kernel.cpp`
-is in `edit_surface.allow`.
-
----
-
-## Prompt
+Replace `<source>` with the workspace-relative source directory before use.
 
 ```text
-Use the kernel-optimize example template to optimize the matmul operator at <source>/.
+$goal-plus Optimize the matmul kernel under <source> using the kernel-optimize example contract.
 
-Step 1 — bootstrap verifier:
-- Copy examples/kernel-optimize/verifier/{verify.py, benchmark.py, _common_utils.py}
-  to <source>/_verifier/.
+The entire Goal Plus task must reach a terminal status within 30 minutes of
+creation. Do not start or continue candidate work after 25 minutes; reserve the
+remaining time to preserve the best valid result and complete final validation,
+selection, promotion, reporting, and status finalization. Use two fixed
+candidate lanes and a maximum worker lease of 20 minutes.
 
-Step 2 — build verify inputs under <source>/_verifier/:
-- Copy <source>/matmul_ref.py to <source>/_verifier/matmul_torch.py.
-- Copy <source>/matmul_wrapper.py to <source>/_verifier/matmul_impl.py.
-  (matmul_wrapper.py already defines ModelNew; renaming is sufficient.)
+Read `examples/kernel-optimize/README.md` first. Copy
+`examples/kernel-optimize/verifier/{verify.py,benchmark.py,_common_utils.py}`
+into `<source>/_verifier/`. Copy `<source>/matmul_ref.py` to
+`<source>/_verifier/matmul_torch.py` and `<source>/matmul_wrapper.py` to
+`<source>/_verifier/matmul_impl.py`.
 
-Step 3 — fill and freeze this SearchSpec:
+Use `avg_latency_ms`, minimized, as the ranking metric. Freeze correctness
+before latency. Only `matmul_kernel.cpp` is editable; deny `_verifier/`,
+`matmul_ref.py`, and `matmul_wrapper.py`. Freeze all verifier files and copied
+reference/wrapper artifacts. Use the Git worktree backend and the maintained
+Codex `parallel_loops` worker contract with `max_parallel=2`,
+`max_runtime_seconds=1200`, `max_turns=20`, and `on_exceed=interrupt`.
 
-{
-  "objective": "minimize latency of matmul implementation",
-  "metric_name": "avg_latency_ms",
-  "metric_direction": "minimize",
-  "source_path": "<source>",
-  "edit_surface": {
-    "allow": ["matmul_kernel.cpp"],
-    "deny": ["_verifier/", "matmul_ref.py", "matmul_wrapper.py"]
-  },
-  "process_verifiers": [
-    {
-      "name": "correctness",
-      "role": "process_gate",
-      "command": ["python", "_verifier/verify.py",
-                  "--op_name", "matmul", "--verify_dir", "_verifier",
-                  "--impl_name", "impl"],
-      "timeout_seconds": 600
-    },
-    {
-      "name": "latency",
-      "role": "ranking_signal",
-      "command": ["python", "_verifier/benchmark.py",
-                  "--op_name", "matmul", "--verify_dir", "_verifier",
-                  "--impl_name", "impl",
-                  "--warmup", "5", "--repeats", "50",
-                  "--output", "_verifier/perf_result.json"],
-      "timeout_seconds": 900
-    }
-  ],
-  "promotion_verifiers": [
-    {"name": "frozen_hash_gate", "role": "anti_cheat_gate",
-     "command": ["goal-plus-internal", "check-frozen-hashes"]}
-  ],
-  "budget": {"max_parallel": 2},
-  "strategy": {
-    "name": "agent_guided",
-    "orchestration_mode": "parallel_loops",
-    "worker_host": "codex",
-    "worker_agent_type": "search_candidate_agent"
-  }
-}
+Before Search, verify that the untouched source passes correctness and produces
+a finite baseline latency. Create the fixed lanes exactly once. Let each worker
+choose its own evidence-supported optimization, confirm every returned result
+with the frozen verifier, and continue the same native worker only while the
+closeout boundary permits. Do not replace a lane because of score or rank.
 
-verifier_artifact_paths = [
-  "_verifier/verify.py",
-  "_verifier/benchmark.py",
-  "_verifier/_common_utils.py",
-  "_verifier/matmul_torch.py",
-  "_verifier/matmul_impl.py"
-]
-
-search_freeze_spec(spec=<above>, verifier_artifact_paths=verifier_artifact_paths)
-search_create(frozen_spec_id=<id>)  # record run_id
-
-Step 4 — drive the search:
-- search_plan_next(run_id, requested_k=4)
-- author 4 initial independent lane proposals
-- search_start_batch(run_id, plan_id, proposals=[...])
-- for each candidate:
-    session = search_start_agent_session(run_id, candidate_id, directive)
-    spawn_agent(task_name=session.launch.task_name,
-                message=session.launch.message,
-                fork_turns=session.launch.fork_turns)
-    search_run_verifier(run_id, candidate_id, "process")
-- search_list_history(run_id, top_n=5)
-- search_select(run_id)
-- search_report(run_id)
-
-Step 5 — report back at the end:
-- run_id
-- all 4 candidate scores + iteration counts
-- selected_candidate_id
-- report.md path
-- whether latency improved over the source-baseline
-  (read the latency of c001's first iteration vs its last)
-
-Do not promote. The user will review the report first.
+At closeout, drain workers, select and promote the best verifier-backed Git
+revision, complete the Goal Plus audit, set terminal status, and call
+`search_report` exactly once. Report the baseline and final latency, every
+candidate's score and iteration count, selected candidate and commit, promotion
+result, and report path.
 ```
 
-## Notes for the host agent
-
-- The C++ kernel file is the only entry in `edit_surface.allow`. The wrapper
-  that loads it via `torch.utils.cpp_extension.load_inline` is denied —
-  changing the binding contract is out of scope for this example.
-- If the user's wrapper does not already define `ModelNew`, assemble
-  `_verifier/matmul_impl.py` so that it imports the binding and defines
-  `ModelNew` to call it. Read the wrapper to confirm.
-- If `import torch_npu` fails in the candidate environment, the verifier
-  falls back to CPU timing. For NPU-side DSLs the host agent should ensure
-  `torch_npu` is available before freeze; otherwise the latency numbers will
-  not reflect the intended target hardware.
-- Repeating-shape reference inputs: the verifier picks up
-  `get_input_groups()` automatically if defined; otherwise it uses
-  `get_inputs()` as a single-shape run. Pick the form that matches the
-  operator's expected deployment shapes.
+The wrapper that loads `matmul_kernel.cpp` is denied because changing the
+binding contract is outside this example. If it does not already define
+`ModelNew`, prepare a frozen adapter before Search. For NPU-side DSLs, require a
+working target runtime before freezing; do not silently fall back to CPU timing
+for an accelerator result.

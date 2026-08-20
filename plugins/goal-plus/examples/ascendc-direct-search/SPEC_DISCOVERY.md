@@ -395,6 +395,13 @@ serialized so candidates cannot corrupt reports or distort each other's
 latency. A different lock name between Search and Promotion is a readiness
 failure.
 
+Record any whole-goal time limit and closeout reserve from the raw goal in
+`_task/search_policy.json`. Worker leases must fit inside the remaining search
+window and must never be interpreted as a replacement for the whole-goal
+limit. For the checked-in Pi prompt, the task reaches terminal status within 60
+minutes, candidate work stops by 50 minutes, and each worker lease is at most
+40 minutes.
+
 Save a high-confidence `goal_plus_save_spec_draft` only after the generated
 ranking command succeeds on the source workspace with a finite metric and all
 open questions are resolved. Immediately before `search_freeze_spec`, validate

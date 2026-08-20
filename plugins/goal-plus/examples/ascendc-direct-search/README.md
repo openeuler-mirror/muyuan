@@ -11,16 +11,13 @@ Curated AKG AscendC skills and explicit CANNBot gap supplements are generated
 per task as read-only implementation knowledge. They do not provide an Agent,
 Plugin, hook, approval flow, branch workflow, or verifier.
 
-## Example Goal
+## Run with Pi
 
-```text
-/goal-plus Implement and optimize the CANNBench Level1 GELU task as an AscendC
-Direct Invoke operator. Resolve https://gitcode.com/cann/cann-bench.git at an
-exact commit and use tasks/level1/gelu plus the repository's official evaluation
-contract as the semantics, cases, tolerances, Golden, and scoring reference.
-Run on the available Ascend NPU. Use max_parallel=2, then complete selection,
-promotion verification, and reporting.
-```
+From the Goal Plus repository root, start Pi on the target NPU host and paste
+the complete contents of [`pi-goal-prompt.md`](pi-goal-prompt.md). The prompt
+sets two fixed candidate lanes and a 60-minute whole-goal limit, with the final
+10 minutes reserved for validation, selection, promotion, reporting, and
+terminal status.
 
 The request may instead name an AKG implementation, another local repository,
 a Python callable, or a set of files. A reference is evidence for one or more
@@ -46,6 +43,11 @@ After Goal Plus triage selects `spec_discovery` with scenario
    non-editable artifact before starting candidates;
 7. use the ordinary Goal Plus Search flow for candidates, selection, reporting,
    and promotion.
+
+The frozen strategy must keep every worker lease within the remaining
+whole-goal budget. For the checked-in prompt, no worker lease may exceed 40
+minutes and no candidate may be started or continued after the 50-minute
+closeout boundary.
 
 The user is not required to supply a CANNBench task directory, a verifier, a
 Meta input index, CANN version strings, or a SearchSpec. The main agent discovers
@@ -106,6 +108,7 @@ ordinary unit or ST runs.
 
 ```text
 ascendc-direct-search/
+  pi-goal-prompt.md      # paste-ready bounded Pi goal
   SPEC_DISCOVERY.md       # normative main-agent workflow
   request.schema.json     # normalized request written by the main agent
   template/               # pinned Direct Invoke source template

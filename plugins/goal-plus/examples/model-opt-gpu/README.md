@@ -13,6 +13,10 @@ The only executable input in this WIP is the paste-ready goal prompt:
 
 - [`bert_pytorch_v100_goal_plus.md`](bert_pytorch_v100_goal_plus.md)
 
+That prompt sets a two-hour whole-goal limit, stops candidate work at 100
+minutes, and caps each worker lease at 90 minutes so final validation,
+promotion, reporting, and terminal status have reserved time.
+
 Do not treat this as a working GPU example until the preparation and validation
 gates below have been completed on the target machine.
 

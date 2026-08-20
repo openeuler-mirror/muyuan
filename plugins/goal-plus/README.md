@@ -152,7 +152,7 @@ Then submit `$goal-plus <goal>` in Codex or `/goal-plus <goal>` in Pi. In both
 hosts, the main agent is the already-running session selected at launch or with
 `/model`; Goal Plus cannot switch it. Omit `main=` in normal usage. Both entries
 retain `main=` only as an optional assertion that blocks a mismatch. See the
-[Torch CPU example](examples/model-optimize/torch-cpu-target/README.md) for
+[Torch CPU example](examples/model-optimize/README.md) for
 complete Codex and Pi commands with ready-to-paste prompts.
 
 Host differences and strategy coverage are summarized in

@@ -198,6 +198,7 @@ def test_prepare_workspace_generates_pi_rpc_search_spec(tmp_path: Path) -> None:
     assert spec.metric_name == "overall_score"
     assert spec.strategy.worker_host == "pi-rpc"
     assert spec.strategy.worker_budget is not None
+    assert spec.strategy.worker_budget.max_runtime_seconds == 2400
     assert spec.constraints["backend"] == "tilelang_ascend"
     assert spec.edit_surface.allow == ["cann_bench/"]
     assert "_skills/" in spec.edit_surface.deny

@@ -7,6 +7,12 @@
 ```text
 /goal-plus
 
+The entire Goal Plus task must reach a terminal status within 2 hours of
+creation. Do not start or continue candidate work after 100 minutes; reserve
+the remaining time to preserve the best valid result and complete final
+validation, selection, promotion, reporting, and status finalization. No worker
+lease may exceed 90 minutes.
+
 Prepare and then continuously optimize the current TorchBench BERT_pytorch CUDA
 eval workload on the V100 environment available to you. The success target is
 at least 10% lower median latency while preserving the frozen eager-CUDA
@@ -99,6 +105,8 @@ with these properties; do not wait for user confirmation:
 - max_parallel: derived from detected_gpu_count and the explicit resource map;
   it is the single initial candidate/live-worker count; continue the same
   candidate/session instead of creating later replacement candidates;
+- worker budget: max_runtime_seconds no greater than 5400, with enough
+  remaining whole-goal time for the 100-minute closeout boundary;
 - allow: bert_pytorch/**, runner integration needed for optimized kernels, and
   triton_ops/**;
 - deny: verifier.py, benchmark policy, frozen inputs/references,

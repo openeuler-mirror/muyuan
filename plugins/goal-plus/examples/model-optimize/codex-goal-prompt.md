@@ -1,9 +1,10 @@
 $goal-plus annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-luna max_parallel=2 Optimize the Torch CPU model in the current directory.
 
 The entire Goal Plus task must reach a terminal status within 10 minutes of
-creation. Reserve sufficient time within that limit to stop candidate work,
-preserve the best valid result, and complete final validation, promotion,
-reporting, and status finalization.
+creation. Do not start or continue candidate work after 8 minutes; reserve the
+remaining time to preserve the best valid result and complete final validation,
+promotion, reporting, and status finalization. No worker lease may exceed 6
+minutes.
 
 Improve `tokens_per_second` reported by `benchmark.py` while keeping
 `verify.py` valid. Keep the model on a single CPU core; do not increase

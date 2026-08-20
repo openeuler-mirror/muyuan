@@ -144,7 +144,7 @@ pi --model <provider/main-model> --thinking max
 两个宿主的 main agent 都是已经运行的会话，应在启动时或通过 `/model` 预先选择；
 Goal Plus 不能切换它。正常 prompt 省略 `main=`；两个入口都只把 `main=` 保留为可选的
 一致性断言，不匹配时拒绝命令。[Torch CPU
-示例](examples/model-optimize/torch-cpu-target/README.md)提供了完整的 Codex/Pi 启动命令和
+示例](examples/model-optimize/README.md)提供了完整的 Codex/Pi 启动命令和
 可直接粘贴的 prompt。
 
 宿主差异和策略覆盖见 [Agent Host Adapters](docs/agent-host-adapters.md)。
