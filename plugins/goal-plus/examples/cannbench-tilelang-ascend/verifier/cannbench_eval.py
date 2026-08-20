@@ -15,6 +15,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from goal_plus.verifier_support import (
+    isolated_verifier_workspace,
+    sanitized_evaluator_environment,
+)
+
 
 def _resolve_path(path: str, *, base: Path) -> Path:
     candidate = Path(path).expanduser()
@@ -160,8 +165,6 @@ def main(argv: list[str] | None = None) -> int:
     cwd = Path.cwd()
     cann_bench_root = _resolve_path(args.cann_bench_root, base=cwd)
     source_dir = _resolve_path(args.source_dir, base=cwd)
-    reports_dir = _resolve_path(args.reports_dir, base=cwd)
-    reports_dir.mkdir(parents=True, exist_ok=True)
 
     if not cann_bench_root.is_dir():
         print(json.dumps({"overall_score": 0.0, "error": f"missing CANNBench root: {cann_bench_root}"}, sort_keys=True))
@@ -170,66 +173,91 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"overall_score": 0.0, "error": f"missing source dir: {source_dir}"}, sort_keys=True))
         return 2
 
-    command = build_command(args, source_dir=source_dir, reports_dir=reports_dir)
-    started = time.perf_counter()
-    completed = subprocess.run(
-        command,
-        cwd=str(cann_bench_root),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    elapsed = time.perf_counter() - started
+    with isolated_verifier_workspace(
+        source_dir,
+        required_paths=("build.sh", "setup.py", "cann_bench"),
+    ) as isolated:
+        reports_dir = _resolve_path(args.reports_dir, base=isolated.temp_root)
+        if reports_dir == source_dir or source_dir in reports_dir.parents:
+            print(
+                json.dumps(
+                    {
+                        "overall_score": 0.0,
+                        "error": "reports directory must be outside the live candidate workspace",
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 2
+        reports_dir.mkdir(parents=True, exist_ok=True)
 
-    log_path = reports_dir / "cannbench_eval_command.log"
-    log_path.write_text(
-        "\n".join(
-            [
-                f"$ {' '.join(command)}",
-                f"cwd: {cann_bench_root}",
-                f"returncode: {completed.returncode}",
-                "",
-                "## stdout",
-                completed.stdout,
-                "## stderr",
-                completed.stderr,
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    report_path = _select_report_json(reports_dir)
-    if report_path is None:
-        metrics = {
-            "overall_score": 0.0,
-            "error": "CANNBench did not produce a JSON report",
-            "cannbench_returncode": completed.returncode,
-            "elapsed_seconds": elapsed,
-            "log_path": str(log_path),
-        }
-        print(json.dumps(metrics, sort_keys=True))
-        return completed.returncode or 1
-
-    try:
-        metrics = summarize_report(
-            report_path,
-            elapsed_seconds=elapsed,
-            cannbench_returncode=completed.returncode,
+        command = build_command(
+            args,
+            source_dir=isolated.workspace,
+            reports_dir=reports_dir,
         )
-        metrics["log_path"] = str(log_path)
-    except Exception as exc:
-        metrics = {
-            "overall_score": 0.0,
-            "error": f"failed to parse CANNBench report: {exc}",
-            "cannbench_returncode": completed.returncode,
-            "elapsed_seconds": elapsed,
-            "report_json": str(report_path),
-            "log_path": str(log_path),
-        }
-        print(json.dumps(metrics, sort_keys=True))
-        return completed.returncode or 1
+        started = time.perf_counter()
+        completed = subprocess.run(
+            command,
+            cwd=str(cann_bench_root),
+            env=sanitized_evaluator_environment(
+                python_paths=(cann_bench_root / "src",),
+            ),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        elapsed = time.perf_counter() - started
 
-    print(json.dumps(metrics, ensure_ascii=False, sort_keys=True))
+        log_path = reports_dir / "cannbench_eval_command.log"
+        log_path.write_text(
+            "\n".join(
+                [
+                    f"$ {' '.join(command)}",
+                    f"cwd: {cann_bench_root}",
+                    f"returncode: {completed.returncode}",
+                    "",
+                    "## stdout",
+                    completed.stdout,
+                    "## stderr",
+                    completed.stderr,
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        report_path = _select_report_json(reports_dir)
+        if report_path is None:
+            metrics = {
+                "overall_score": 0.0,
+                "error": "CANNBench did not produce a JSON report",
+                "cannbench_returncode": completed.returncode,
+                "elapsed_seconds": elapsed,
+                "log_path": str(log_path),
+            }
+            print(json.dumps(metrics, sort_keys=True))
+            return completed.returncode or 1
+
+        try:
+            metrics = summarize_report(
+                report_path,
+                elapsed_seconds=elapsed,
+                cannbench_returncode=completed.returncode,
+            )
+            metrics["log_path"] = str(log_path)
+        except Exception as exc:
+            metrics = {
+                "overall_score": 0.0,
+                "error": f"failed to parse CANNBench report: {exc}",
+                "cannbench_returncode": completed.returncode,
+                "elapsed_seconds": elapsed,
+                "report_json": str(report_path),
+                "log_path": str(log_path),
+            }
+            print(json.dumps(metrics, sort_keys=True))
+            return completed.returncode or 1
+
+        print(json.dumps(metrics, ensure_ascii=False, sort_keys=True))
     return 0
 
 

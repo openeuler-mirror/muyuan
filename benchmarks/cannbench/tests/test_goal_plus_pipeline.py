@@ -62,6 +62,35 @@ def test_npu_config_keeps_real_verifier_and_device_override() -> None:
     assert generator.config.verify_timeout == 900
 
 
+def test_agent_guided_plan_materializes_one_proposal_per_planned_candidate() -> None:
+    generator = GoalPlusGenerator(
+        {
+            "config_path": str(
+                MUYUAN_ROOT
+                / "benchmarks"
+                / "cannbench"
+                / "configs"
+                / "goal-plus-triton-ascend.npu.yaml"
+            ),
+            "codegen_target": "triton_ascend",
+        }
+    )
+
+    proposals = generator._candidate_proposals(
+        {"requires_agent_proposals": True, "planned_k": 4}
+    )
+
+    assert proposals is not None
+    assert len(proposals) == 4
+    assert proposals[0]["hypothesis"] == generator.config.root_hypotheses[0]
+    assert proposals[1]["hypothesis"] == generator.config.root_hypotheses[1]
+    assert proposals[2]["hypothesis"] == "independent Triton-Ascend candidate 3"
+    assert [proposal["metadata"]["slot"] for proposal in proposals] == [1, 2, 3, 4]
+    assert generator._candidate_proposals(
+        {"requires_agent_proposals": False, "planned_k": 4}
+    ) is None
+
+
 def test_pi_driver_uses_one_goal_plus_pool_for_k4(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

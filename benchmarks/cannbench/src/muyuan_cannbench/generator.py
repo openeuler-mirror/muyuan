@@ -165,7 +165,11 @@ class GoalPlusGenerator:
         frozen = tools.search_freeze_spec(spec, [str(path) for path in verifier_artifacts])
         run_id = tools.search_create(frozen["frozen_spec_id"])["run_id"]
         plan = tools.search_plan_next(run_id, requested_k=self.config.max_parallel)
-        tasks = tools.search_start_batch(run_id, plan["plan_id"])
+        tasks = tools.search_start_batch(
+            run_id,
+            plan["plan_id"],
+            self._candidate_proposals(plan),
+        )
         if not tasks:
             raise RuntimeError("Goal Plus did not create any candidate")
 
@@ -213,6 +217,36 @@ class GoalPlusGenerator:
             },
             metadata=metadata,
         )
+
+    def _candidate_proposals(
+        self,
+        plan: Mapping[str, Any],
+    ) -> list[dict[str, Any]] | None:
+        if not bool(plan.get("requires_agent_proposals")):
+            return None
+        planned_k = int(plan.get("planned_k", 0))
+        proposals: list[dict[str, Any]] = []
+        for index in range(planned_k):
+            slot = index + 1
+            hypothesis = (
+                self.config.root_hypotheses[index]
+                if index < len(self.config.root_hypotheses)
+                else f"independent Triton-Ascend candidate {slot}"
+            )
+            proposals.append(
+                {
+                    "intent": hypothesis,
+                    "hypothesis": hypothesis,
+                    "instructions": [
+                        "Implement and verify this initial direction independently."
+                    ],
+                    "metadata": {
+                        "source": "cannbench-goal-plus-adapter",
+                        "slot": slot,
+                    },
+                }
+            )
+        return proposals
 
     def _prepare_source(self, generator_input: GeneratorInput, source_dir: Path) -> None:
         case = generator_input.case
