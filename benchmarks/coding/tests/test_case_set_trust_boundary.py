@@ -8,15 +8,24 @@ graded does not get the caller's credentials.
 
 from __future__ import annotations
 
+import inspect
 import json
+import os
 import re
 
 import pytest
 
-from aibench.grading import _GRADER_ENV_ALLOWLIST, _grader_env
-from aibench.io_util import repo_root, safe_command
+from aibench.grading import (
+    _GRADER_ENV_ALLOWLIST,
+    _grade_gold,
+    _grader_env,
+    detect_grading_interference,
+    is_collection_control,
+)
+from aibench.io_util import repo_root, safe_case_id, safe_command
 from aibench.models import Case, RunConfig
-from aibench.workspace import WorkspaceSpec
+from aibench.validity import check_gold_is_not_collection_control
+from aibench.workspace import WorkspaceSpec, _apply_snapshot, confined_path
 
 _MINIMAL_RUN = {
     "experiment_name": "e",
@@ -182,3 +191,181 @@ class TestTheShellAdapterQuotesWhatTheCaseControls:
         ws.mkdir()
         agent.run(case, ws, max_steps=1, max_wall_time_s=30)
         assert not marker.exists()
+
+
+class TestSymlinksInTheWorkspaceAreNotAPathLayer:
+    """`safe_relpath` is text and cannot see the filesystem. A workspace holding
+    `vendor -> /elsewhere` keeps every component name relative while the join lands outside,
+    which made the gold comparison a read oracle and hid files from the interference scan."""
+
+    def _linked_workspace(self, tmp_path):
+        ws, outside = tmp_path / "ws", tmp_path / "outside"
+        ws.mkdir()
+        outside.mkdir()
+        (outside / "secret.txt").write_text("SUPER-SECRET-CANARY\n", encoding="utf-8")
+        os.symlink(outside, ws / "vendor")
+        return ws
+
+    def test_confined_path_refuses_a_link_out(self, tmp_path):
+        ws = self._linked_workspace(tmp_path)
+        assert confined_path(ws, "ok.py") == (ws / "ok.py").resolve()
+        with pytest.raises(ValueError, match="escapes workspace"):
+            confined_path(ws, "vendor/secret.txt")
+
+    def test_a_gold_comparison_cannot_read_through_one(self, tmp_path):
+        ws = self._linked_workspace(tmp_path)
+        raw = _seed()
+        raw["grader"] = {
+            "mode": "gold",
+            "match": "exact",
+            "gold_files": [{"path": "vendor/secret.txt", "content": "SUPER-SECRET-CANARY\n"}],
+        }
+        with pytest.raises(ValueError, match="escapes workspace"):
+            _grade_gold(Case.from_dict(raw), ws)
+
+    def test_a_symlinked_directory_is_interference(self, tmp_path):
+        """`rglob` will not descend into it and pytest's `is_dir()` will, so everything behind
+        it is imported by the grader and invisible to the scan."""
+        ws = self._linked_workspace(tmp_path)
+        raw = _seed()
+        raw["grader"]["hidden_tests"] = [{"path": "impl_spec.py", "content": "#"}]
+        verdict = detect_grading_interference(Case.from_dict(raw), ws)
+        assert verdict is not None and "symlinked_dir" in verdict
+
+
+class TestASnapshotsSymlinksAreDroppedAtEveryDepth:
+    """Following one copies the target's contents in; recreating it leaves a live link that a
+    later inline-file write walks out of. Neither: they are dropped, and reported."""
+
+    def test_a_nested_symlink_is_neither_followed_nor_rebuilt(self, tmp_path):
+        cs, outside = tmp_path / "cs", tmp_path / "outside"
+        (cs / "snapshots" / "proj" / "sub").mkdir(parents=True)
+        outside.mkdir()
+        (outside / "secret.txt").write_text("CANARY\n", encoding="utf-8")
+        os.symlink(outside, cs / "snapshots" / "proj" / "sub" / "esc")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        dropped = _apply_snapshot("proj", ws, case_set_dir=cs)
+        assert dropped == ["sub/esc"]
+        assert not (ws / "sub" / "esc").exists()
+        assert not any(p.is_symlink() for p in ws.rglob("*"))
+
+
+class TestEveryNamePytestReadsIsGuarded:
+    """`.pytest.ini` has the same effect as `pytest.ini` and was not on the list."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "PYTEST.INI", "Conftest.py"],
+    )
+    def test_it_is_recognised(self, name):
+        assert is_collection_control(name)
+
+    def test_the_list_is_the_one_pytest_uses(self):
+        from _pytest.config.findpaths import locate_config
+
+        source = inspect.getsource(locate_config)
+        names = re.findall(r'"([^"]+\.(?:ini|toml|cfg))"', source)
+        assert names, "could not read pytest's config_names"
+        missing = [n for n in names if not is_collection_control(n)]
+        assert not missing, f"pytest reads these and the gate does not know them: {missing}"
+
+    def test_the_audit_gate_folds_case_too(self):
+        """`check_gold_is_not_collection_control` exists because the interference scan cannot
+        arm for a case that ships one as its gold file."""
+        raw = _seed()
+        raw["grader"]["gold_files"] = [{"path": "PYTEST.INI", "content": "[pytest]\n"}]
+        issues = check_gold_is_not_collection_control(Case.from_dict(raw))
+        assert [i.code for i in issues] == ["gold_is_collection_control_file"]
+
+
+class TestTheCaseIdGuardsAgreeWithEachOther:
+    """Two layers only help if the inner one is not looser than the outer."""
+
+    def test_a_trailing_newline_is_refused(self):
+        # `$` matches before a trailing newline; `\\Z` does not.
+        for cid in ("abc\n", "..\n", "ok\n"):
+            with pytest.raises(ValueError, match="unsafe case_id"):
+                safe_case_id(cid)
+
+    def test_ids_differing_only_in_case_are_a_duplicate(self, tmp_path, monkeypatch):
+        """They are one directory on APFS and NTFS, and materialization deletes it first."""
+        from aibench.cases import validate_case_set
+
+        root = tmp_path / "cases" / "probe"
+        root.mkdir(parents=True)
+        for name, cid in (("a.json", "Dup-Case"), ("b.json", "dup-case")):
+            raw = _seed()
+            raw["case_id"] = cid
+            (root / name).write_text(json.dumps(raw), encoding="utf-8")
+        monkeypatch.setenv("AIBENCH_CASE_ROOT", str(tmp_path / "cases"))
+        assert any("duplicate case_id" in e for e in validate_case_set("probe"))
+
+
+class TestTheGitSubdirIsConfinedToTheClone:
+    """`repo_root / subdir` is a case-supplied join like the others, and was the one the first
+    pass missed: it lands host files in the workspace, which the read tool and the llm_judge
+    grader then send to the gateway."""
+
+    def _local_repo(self, tmp_path):
+        import subprocess
+
+        repo = tmp_path / "src-repo"
+        repo.mkdir()
+        (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+        for cmd in (
+            ["git", "init", "-q", "-b", "main"],
+            ["git", "-c", "user.email=t@e", "-c", "user.name=t", "add", "."],
+            ["git", "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init"],
+        ):
+            subprocess.run(cmd, cwd=repo, check=True, capture_output=True)
+        return repo
+
+    def test_a_traversing_subdir_is_refused(self, tmp_path):
+        from aibench.workspace import materialize_workspace
+
+        repo = self._local_repo(tmp_path)
+        secret = tmp_path / "HOSTDIR"
+        secret.mkdir()
+        (secret / "id_rsa").write_text("PRIVATE-KEY-CANARY\n", encoding="utf-8")
+        raw = _seed()
+        raw["context"]["files"] = []
+        raw["context"]["workspace"] = {
+            "mode": "git",
+            "git": {"url": f"file://{repo}", "ref": "main", "subdir": "../../HOSTDIR"},
+        }
+        ws = tmp_path / "ws"
+        # `strict` defaults to true for git mode, so the refusal is loud rather than a warning.
+        with pytest.raises(RuntimeError, match="escapes workspace"):
+            materialize_workspace(Case.from_dict(raw), ws, allow_network=True)
+        assert not (ws / "id_rsa").exists()
+
+    def test_a_real_subdir_still_works(self, tmp_path):
+        from aibench.workspace import materialize_workspace
+
+        repo = self._local_repo(tmp_path)
+        (repo / "pkg").mkdir()
+        (repo / "pkg" / "mod.py").write_text("y = 2\n", encoding="utf-8")
+        import subprocess
+
+        subprocess.run(
+            ["git", "-c", "user.email=t@e", "-c", "user.name=t", "add", "."],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "pkg"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+        raw = _seed()
+        raw["context"]["files"] = []
+        raw["context"]["workspace"] = {
+            "mode": "git",
+            "git": {"url": f"file://{repo}", "ref": "main", "subdir": "pkg"},
+        }
+        ws = tmp_path / "ws2"
+        materialize_workspace(Case.from_dict(raw), ws, allow_network=True)
+        assert (ws / "mod.py").is_file()

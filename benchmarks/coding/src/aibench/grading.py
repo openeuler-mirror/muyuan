@@ -16,7 +16,7 @@ from aibench.languages import (
     unsupported_node_reason,
 )
 from aibench.models import Case, GradeResult
-from aibench.workspace import safe_relpath as _safe_relpath
+from aibench.workspace import confined_path as _confined_path, safe_relpath as _safe_relpath
 
 
 def _normalize(text: str) -> str:
@@ -53,10 +53,16 @@ def check_protected_paths(case: Case, workspace: Path) -> str | None:
 # Files that change how pytest collects or runs, rather than what the code does. A solver
 # has no legitimate reason to introduce one in these self-contained cases, and each is a
 # well-known way to make a suite pass without fixing anything.
+#: Every name in `_pytest.config.findpaths.locate_config`'s `config_names`, plus the two
+#: import hooks. Checking only `pytest.ini` left `.pytest.ini` — same effect, same directory —
+#: silencing the hidden tests with the gate reporting nothing.
 _COLLECTION_CONTROL_FILES = frozenset(
     {
         "conftest.py",
         "pytest.ini",
+        ".pytest.ini",
+        "pytest.toml",
+        ".pytest.toml",
         "setup.cfg",
         "tox.ini",
         "pyproject.toml",
@@ -74,6 +80,15 @@ _SKIP_MARKERS = re.compile(
     r"\bpytest\.skip\s*\(|"
     r"\bpytest\.exit\s*\(|\braise\s+unittest\.SkipTest\b"
 )
+
+
+def is_collection_control(name: str) -> bool:
+    """Whether a filename is one pytest reads to decide what it collects.
+
+    Case-folded: macOS and Windows hand pytest `PYTEST.INI` when it asks for `pytest.ini`, so an
+    exact comparison saw nothing while the file did its work.
+    """
+    return name.lower() in _COLLECTION_CONTROL_FILES
 
 
 def workspace_inventory(workspace: Path) -> dict[str, str]:
@@ -155,14 +170,20 @@ def detect_grading_interference(
             return False
 
     for path in sorted(workspace.rglob("*")):
-        # Symlinks are resolved, not skipped: `is_file()` follows one, and a link is the
+        rel_any = path.relative_to(workspace).as_posix()
+        if path.is_symlink() and path.is_dir():
+            # `rglob` will not descend into it, and pytest's `is_dir()` will. Everything behind
+            # it — a `conftest.py` that patches the runner, a replacement for a hidden test —
+            # is imported by the grader and invisible to this loop. Nothing legitimate ships one.
+            return f"grading_interference_symlinked_dir: {rel_any}"
+        # File symlinks are resolved, not skipped: `is_file()` follows one, and a link is the
         # cheapest way to put content pytest will import somewhere this loop does not read.
         if not path.is_file():
             continue
         rel = path.relative_to(workspace).as_posix()
         # macOS and Windows resolve `PYTEST.INI` to the same file pytest reads, so an exact
         # comparison let an agent ship one and silence the hidden tests.
-        if path.name.lower() in _COLLECTION_CONTROL_FILES:
+        if is_collection_control(path.name):
             if path.is_symlink():
                 # Nothing legitimate needs one, and its target is outside what the case ships.
                 return f"grading_interference_symlink: {rel}"
@@ -204,13 +225,14 @@ def inject_hidden_tests(case: Case, workspace: Path) -> list[str]:
     for fb in case.grader.hidden_tests:
         rel = _safe_relpath(fb.path)
         path = workspace / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # The leaf is replaced below — that is the anti-cheat behaviour and it stays. A
-        # symlinked *parent* is a different thing: it sends the write outside the workspace
-        # while every component name stays relative, and there is nothing there to replace,
-        # so it is refused rather than overwritten.
+        # The *parent*, resolved, and before anything is created. A symlinked parent sends the
+        # write outside the workspace while every component name stays relative; creating the
+        # intermediate directories first would leave them out there even on the refusal path.
+        # The leaf is deliberately not resolved: a symlink planted there is replaced below,
+        # which is the anti-cheat behaviour and the thing this function exists to do.
         if not path.parent.resolve().is_relative_to(workspace.resolve()):
             raise ValueError(f"hidden test escapes workspace: {fb.path}")
+        path.parent.mkdir(parents=True, exist_ok=True)
         if path.is_symlink() or path.is_file():
             path.unlink()
         elif path.is_dir():
@@ -412,7 +434,7 @@ def _grade_gold(case: Case, workspace: Path) -> GradeResult:
         blobs: list[str] = []
         targets = [gf.path for gf in g.gold_files] if g.gold_files else []
         for rel in targets:
-            p = workspace / _safe_relpath(rel)
+            p = _confined_path(workspace, rel)
             if p.is_file():
                 # `errors="replace"`, like every other read in this module: a non-UTF-8 byte the
                 # agent wrote to a gold path used to raise out of `grade_case` and take the
@@ -445,7 +467,7 @@ def _grade_gold(case: Case, workspace: Path) -> GradeResult:
 
     mismatches: list[str] = []
     for gold in g.gold_files:
-        p = workspace / _safe_relpath(gold.path)
+        p = _confined_path(workspace, gold.path)
         if not p.is_file():
             mismatches.append(f"missing file {gold.path}")
             continue

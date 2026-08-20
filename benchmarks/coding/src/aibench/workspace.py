@@ -142,7 +142,10 @@ def materialize_workspace(
 
     if mode in {"snapshot", "mixed"} and spec.snapshot_path:
         try:
-            _apply_snapshot(spec.snapshot_path, workspace, case_set_dir=case_set_dir)
+            dropped = _apply_snapshot(spec.snapshot_path, workspace, case_set_dir=case_set_dir)
+            if dropped:
+                # Silently missing files look like a broken snapshot, not a refusal.
+                warnings.append(f"snapshot symlinks not copied: {', '.join(sorted(dropped))}")
             sources.append(f"snapshot:{spec.snapshot_path}")
         except Exception as e:
             msg = f"snapshot failed: {e}"
@@ -230,35 +233,45 @@ def _apply_snapshot(
     workspace: Path,
     *,
     case_set_dir: Path | None,
-) -> None:
+) -> list[str]:
+    """Lay a snapshot into the workspace. Returns the names of symlinks it dropped."""
     src = _resolve_snapshot(snapshot_path, case_set_dir)
+    skipped: list[str] = []
+
+    def drop_symlinks(directory: str, names: list[str]) -> set[str]:
+        """A snapshot's symlinks are dropped, not chased and not rebuilt."""
+        links = {n for n in names if Path(directory, n).is_symlink()}
+        skipped.extend(str(Path(directory, n).relative_to(src)) for n in sorted(links))
+        return links
+
     if src.is_dir():
         # copy tree contents into workspace
         for item in src.iterdir():
             dest = workspace / item.name
             if item.is_symlink():
-                # `copytree`/`copy2` follow links by default, which reaches back out of the
-                # case set the resolution above just confined the snapshot to.
+                skipped.append(item.name)
                 continue
             if item.is_dir():
-                shutil.copytree(item, dest, dirs_exist_ok=True, symlinks=True)
+                # Neither followed nor recreated. Following copies the target's contents in;
+                # recreating leaves a live link that a later inline-file write walks out of.
+                shutil.copytree(item, dest, dirs_exist_ok=True, ignore=drop_symlinks)
             else:
                 shutil.copy2(item, dest, follow_symlinks=False)
-        return
+        return skipped
 
     name = src.name.lower()
     if name.endswith((".tar.gz", ".tgz")):
         with tarfile.open(src, "r:gz") as tf:
             _safe_extract_tar(tf, workspace)
-        return
+        return skipped
     if name.endswith(".tar"):
         with tarfile.open(src, "r:") as tf:
             _safe_extract_tar(tf, workspace)
-        return
+        return skipped
     if name.endswith(".zip"):
         with zipfile.ZipFile(src, "r") as zf:
             _safe_extract_zip(zf, workspace)
-        return
+        return skipped
     raise ValueError(f"unsupported snapshot format: {src}")
 
 
@@ -277,6 +290,23 @@ def safe_relpath(path: str) -> str:
 
 
 _safe_relpath = safe_relpath
+
+
+def confined_path(base: Path, path: str) -> Path:
+    """`safe_relpath`, then resolve, so a symlink cannot carry the join out of `base`.
+
+    `safe_relpath` works on text and cannot see the filesystem. A workspace holding
+    `vendor -> /somewhere` turns `vendor/x` into a path outside the workspace while every
+    component name stays relative, which made a gold-file comparison a read oracle for the host
+    and let a directory symlink hide files from the interference scan.
+
+    `resolve()` is not strict, so this works for a path about to be created: the components that
+    exist are resolved and the rest is appended.
+    """
+    target = (base / safe_relpath(path)).resolve()
+    if not target.is_relative_to(base.resolve()):
+        raise ValueError(f"path escapes workspace: {path}")
+    return target
 
 
 def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
@@ -369,7 +399,7 @@ def _apply_git(
                 check=False,
             )
 
-        src = repo_root / subdir if subdir else repo_root
+        src = confined_path(repo_root, subdir) if subdir else repo_root
         if not src.exists():
             raise FileNotFoundError(f"git subdir not found: {subdir}")
 

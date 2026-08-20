@@ -714,13 +714,13 @@ def check_gold_is_not_collection_control(case: Case) -> list[ValidityIssue]:
     The gate belongs here rather than in the grader because the answer is "do not build this
     case", not "fail this submission".
     """
-    from aibench.grading import _COLLECTION_CONTROL_FILES
+    from aibench.grading import is_collection_control
 
     hits = sorted(
         {
             gf.path
             for gf in case.grader.gold_files
-            if gf.path.replace("\\", "/").rsplit("/", 1)[-1] in _COLLECTION_CONTROL_FILES
+            if is_collection_control(gf.path.replace("\\", "/").rsplit("/", 1)[-1])
         }
     )
     if not hits:

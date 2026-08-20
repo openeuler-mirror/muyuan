@@ -191,7 +191,11 @@ def validate_case_set(case_set: str) -> list[str]:
             errors.append(f"{path.name}: {e}")
         cid = raw.get("case_id")
         if isinstance(cid, str):
-            if cid in seen_ids:
-                errors.append(f"{path.name}: duplicate case_id {cid}")
-            seen_ids.add(cid)
+            # Case-folded: the id is a directory name, and on APFS or NTFS `Foo` and `foo` are
+            # the same directory — two cases would share one `case_dir`, and materialization
+            # starts by deleting it.
+            folded = cid.casefold()
+            if folded in seen_ids:
+                errors.append(f"{path.name}: duplicate case_id {cid} (ignoring case)")
+            seen_ids.add(folded)
     return errors

@@ -81,7 +81,10 @@ def write_text(path: Path, text: str) -> None:
         f.write(text)
 
 
-CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+#: `\Z`, not `$`: `$` also matches before a trailing newline, which let `"..\n"` through the
+#: inner guard while the schema's lookahead refused it — the two layers failing in opposite
+#: directions is the one thing having two of them was supposed to prevent.
+CASE_ID_PATTERN = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 
 
 def safe_case_id(case_id: str) -> str:
