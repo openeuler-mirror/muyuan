@@ -67,6 +67,6 @@
   },
   "constraints": {
     "suggested_batch_size": 2,
-    "task_summary": "Each fixed worker optimizes model.py or serving.py only. Keep all PyTorch and CPU backend thread counts at one. Read the shared Annotated Evidence before each iteration; it is coordination context, not a reservation mechanism."
+    "task_summary": "Each fixed worker optimizes model.py or serving.py only. Keep all PyTorch and CPU backend thread counts at one. Read the shared Annotated Evidence before the first modification, then refresh after every 3 verifier iterations and earlier after two non-improving iterations or before switching technical routes. A verifier-injected Global Evidence snapshot counts as a refresh. This evidence is coordination context, not a reservation mechanism."
   }
 }

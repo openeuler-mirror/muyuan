@@ -29,11 +29,15 @@ shell that launches Codex so candidate workers inherit that interpreter. Do
 not wrap the global Codex shim in `conda run` on Windows; some installations
 deny execution of that shim from `conda run`.
 
+Review and trust the project hooks with `/hooks` before using the non-interactive
+command. The benchmark command bypasses the approval sandbox only for this
+controlled local fixture; do not reuse that flag for unreviewed repositories.
+
 ```powershell
 conda activate scaling
 Remove-Item Env:SSL_CERT_FILE -ErrorAction Ignore
 Remove-Item Env:CODEX_CA_CERTIFICATE -ErrorAction Ignore
-cmd /c codex exec --full-auto "Use Goal Plus Search Mode to run examples/model-optimize/torch-cpu-target/multi-model-search-spec.json. Freeze this exact spec, create the run, make exactly one initial plan for two candidates, and launch the returned Codex sessions. Each worker may edit only model.py or serving.py, must use search_get_global_evidence before an iteration, and must call search_run_verifier with its own agent_session_id after a material change. Continue the same two workers only while the run policy allows. Select and promote only after the candidate work completes, then record the Goal Plus result and produce the terminal report."
+cmd /c codex exec --dangerously-bypass-approvals-and-sandbox "Use Goal Plus Search Mode to run examples/model-optimize/torch-cpu-target/multi-model-search-spec.json. Freeze this exact spec, create the run, make exactly one initial plan for two candidates, and launch the returned Codex sessions. Each worker may edit only model.py or serving.py, must use search_get_global_evidence before its first modification, refresh after every 3 verifier iterations and earlier after two non-improving iterations or before changing technical routes, and must call search_run_verifier with its own agent_session_id after a material change. A verifier-injected Global Evidence snapshot counts as a refresh. Continue the same two workers only while the run policy allows. Select and promote only after the candidate work completes, then record the Goal Plus result and produce the terminal report."
 ```
 
 The explicit clearing of `SSL_CERT_FILE` and `CODEX_CA_CERTIFICATE` is

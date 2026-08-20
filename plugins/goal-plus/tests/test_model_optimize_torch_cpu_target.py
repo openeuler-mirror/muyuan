@@ -118,6 +118,24 @@ def test_cpp_reference_fused_op_is_present_and_documented() -> None:
     assert "TORCH_LIBRARY" in text
 
 
+@pytest.mark.codex
+def test_torch_cpu_multi_model_run_tracks_current_codex_contract() -> None:
+    spec = json.loads(
+        (TARGET / "multi-model-search-spec.json").read_text(encoding="utf-8")
+    )
+    runbook = (TARGET / "multi-model-run.md").read_text(encoding="utf-8")
+    task_summary = spec["constraints"]["task_summary"]
+
+    assert "before the first modification" in task_summary
+    assert "every 3 verifier iterations" in task_summary
+    assert "two non-improving iterations" in task_summary
+    assert "verifier-injected Global Evidence snapshot" in task_summary
+    assert "--full-auto" not in runbook
+    assert "--dangerously-bypass-approvals-and-sandbox" in runbook
+    assert "search_get_global_evidence before its first modification" in runbook
+    assert "every 3 verifier iterations" in runbook
+
+
 @pytest.mark.pi
 def test_pi_goal_skill_and_user_prompt_are_minimal_goal_inputs() -> None:
     skill_files = sorted(
