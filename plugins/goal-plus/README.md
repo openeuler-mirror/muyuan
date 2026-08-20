@@ -11,43 +11,72 @@ Pi and Codex are the supported host paths.
 
 ## Quick Start
 
-Clone Muyuan, enter the isolated Goal Plus source directory, and install the
-Python runtime editable:
+Clone Muyuan and enter the isolated Goal Plus source directory:
 
 ```bash
 git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git
 cd muyuan/plugins/goal-plus
-python -m pip install -e ".[dev]"
 ```
 
-Pi uses the project-local `.pi/` assets. Codex can also use project-local
-`.codex/` assets, or install the repository's Codex plugin into a persistent
-local marketplace:
+### Codex plugin (recommended)
+
+Install Goal Plus as an enabled local Codex plugin:
 
 ```bash
 python scripts/install_codex_plugin.py
 ```
 
-The installer refreshes the editable Python runtime, stages only the published
-plugin assets under `${CODEX_HOME:-~/.codex}/local-marketplaces/goal-plus`,
-registers that explicit local marketplace, and installs
-`goal-plus@goal-plus-local`. It does not add a marketplace file to Muyuan.
-That staging directory is persistent rather than temporary. After pulling a
-new Goal Plus revision, run the same `python scripts/install_codex_plugin.py`
-command to replace the managed staging copy, apply a fresh cachebuster, and
-reinstall the plugin.
-Start a new Codex thread so the installed plugin is discovered, review and
-trust the six Goal Plus hooks with `/hooks`, then start a fresh thread so every
-hook is active from `SessionStart` onward. Verify the resulting host setup from
-the workspace you intend to use:
+This is a real Codex plugin installation, not only a shell-environment setup.
+The installer performs the complete local flow:
+
+1. installs the `goal-plus` Python runtime editable from this checkout;
+2. stages `.codex-plugin/plugin.json`, `skills/`, `hooks/hooks.json`, and
+   `.mcp.json` under the persistent
+   `${CODEX_HOME:-~/.codex}/local-marketplaces/goal-plus` marketplace;
+3. registers the `goal-plus-local` marketplace when needed; and
+4. installs or refreshes `goal-plus@goal-plus-local` with a new Codex
+   cachebuster.
+
+It does not add marketplace metadata to Muyuan or require a project-local
+`.codex/config.toml`. The published plugin assets are copied into the stable
+marketplace, while the Python runtime remains an editable installation backed
+by this checkout; keep the checkout at its installed path.
+
+For first use:
+
+1. start a new Codex thread so the plugin is discovered;
+2. open `/hooks`, review Goal Plus, and trust all six lifecycle hooks; and
+3. start another fresh thread so every hook is active from `SessionStart`.
+
+Verify the installed plugin from the workspace where it will run:
 
 ```bash
+codex plugin list
 python -m goal_plus.codex_doctor --project-root .
 ```
 
-The project-local Codex path remains supported: start Codex from this
-`goal-plus/` directory so it discovers `.codex/`, copy the example config as
-described below, trust the hooks, and use a new thread.
+Before hook review, the doctor is expected to report only the plugin hook trust
+check as not ready. After pulling a new Goal Plus revision, rerun the same
+installer command; it replaces only its managed staging copy, applies one fresh
+cachebuster, and reinstalls the plugin:
+
+```bash
+python scripts/install_codex_plugin.py
+```
+
+### Pi and project-local development
+
+Pi uses the checkout's `.pi/` assets. For Pi development or the older
+project-local Codex flow, install the development dependencies explicitly:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+For project-local Codex, also copy `.codex/config.example.toml` to the ignored
+`.codex/config.toml`, start Codex from this `goal-plus/` directory, trust the
+project-local hooks, and use a new thread. This remains useful while editing
+Codex assets, but it is not a `codex plugin` installation.
 
 Every host launches the same stdio MCP server:
 

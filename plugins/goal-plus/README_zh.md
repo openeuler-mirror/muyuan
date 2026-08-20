@@ -10,17 +10,69 @@ Pi 和 Codex 是当前支持的宿主路径。
 
 ## 快速开始
 
-克隆 Muyuan，进入隔离的 Goal Plus 源码目录，再做 editable 安装，以保留项目本地
-Codex/Pi 资产：
+克隆 Muyuan，并进入隔离的 Goal Plus 源码目录：
 
 ```bash
 git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git
 cd muyuan/plugins/goal-plus
+```
+
+### Codex plugin（推荐）
+
+将 Goal Plus 安装成已启用的本地 Codex plugin：
+
+```bash
+python scripts/install_codex_plugin.py
+```
+
+这是真正的 Codex plugin 安装，不只是设置 shell 环境变量。安装脚本会完成整套本地
+流程：
+
+1. 从当前 checkout editable 安装 `goal-plus` Python runtime；
+2. 将 `.codex-plugin/plugin.json`、`skills/`、`hooks/hooks.json` 和
+   `.mcp.json` 发布到持久目录
+   `${CODEX_HOME:-~/.codex}/local-marketplaces/goal-plus`；
+3. 必要时注册 `goal-plus-local` marketplace；
+4. 使用新的 Codex cachebuster 安装或刷新
+   `goal-plus@goal-plus-local`。
+
+安装过程不会向 Muyuan 仓库添加 marketplace 元数据，也不需要项目本地
+`.codex/config.toml`。Plugin 资产会复制到稳定 marketplace，但 Python runtime
+仍是指向当前 checkout 的 editable 安装，因此不要移动或删除这个 checkout。
+
+首次使用时：
+
+1. 新建 Codex 线程，让 Codex 发现刚安装的 plugin；
+2. 打开 `/hooks`，检查 Goal Plus，并信任全部六个生命周期 hook；
+3. 再新建一个线程，让所有 hook 从 `SessionStart` 开始生效。
+
+在准备使用 Goal Plus 的 workspace 中验证安装：
+
+```bash
+codex plugin list
+python -m goal_plus.codex_doctor --project-root .
+```
+
+完成 hook review 前，doctor 预期只有 plugin hook trust 一项显示未就绪。以后
+`git pull` 更新 Goal Plus 后，重复运行同一条安装命令即可替换受管理的 staging
+副本、生成一个新 cachebuster 并重新安装：
+
+```bash
+python scripts/install_codex_plugin.py
+```
+
+### Pi 与项目本地开发
+
+Pi 使用 checkout 中的 `.pi/` 资产。开发 Pi，或继续使用旧的项目本地 Codex
+方式时，显式安装开发依赖：
+
+```bash
 python -m pip install -e ".[dev]"
 ```
 
-项目本地 Codex 或 Pi 应从这个 `goal-plus/` 目录启动，让宿主直接发现 `.codex/`
-和 `.pi/`；不需要在 Muyuan 根目录建立桥接。
+项目本地 Codex 还需要把 `.codex/config.example.toml` 复制为被忽略的
+`.codex/config.toml`，从这个 `goal-plus/` 目录启动 Codex，信任项目本地 hooks，
+再新建线程。这种方式仍适合编辑 Codex 资产，但它不属于 `codex plugin` 安装。
 
 所有宿主都启动同一个 stdio MCP 服务：
 
@@ -57,8 +109,10 @@ Codex 和 Pi 还提供：
 | Pi | `.pi/` | `/goal-plus` 或 `pi -p "/goal-plus ..."` | 持久化 Pi RPC pool；参阅 [Pi](docs/pi.md) |
 | Codex | `.codex/` | `goal-plus` skill 或 `/goal-plus` 提示 | 固定 parallel loops 与原生同 worker continuation；参阅 [Codex](docs/codex.md) |
 
-Codex 需要将 `.codex/config.example.toml` 复制为被忽略的本地文件
-`.codex/config.toml`。宿主差异和策略覆盖见
+项目本地 Codex 需要 `.codex/config.toml`；安装版 plugin 则直接加载顶层
+`skills/`、`hooks/hooks.json` 和 `.mcp.json`。Codex plugin 不发布项目本地
+`.codex/agents/` role：Search worker 使用内置 `default` role，独立最终检查在自定义
+role 不可见时使用同样自包含的 `default` fallback。宿主差异和策略覆盖见
 [Agent Host Adapters](docs/agent-host-adapters.md)。
 
 ## 心智模型
@@ -114,6 +168,8 @@ Benchmark 专用任务、evaluator、campaign 和对比证据不属于这个隔�
 ```bash
 python -m pytest -q
 goal-plus --version
+python scripts/sync_codex_plugin_assets.py --check
+python -m goal_plus.codex_doctor --project-root .
 ```
 
 Pi 和 Codex 当前维护的策略集合是 `agent_guided`
