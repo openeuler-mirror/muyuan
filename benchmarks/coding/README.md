@@ -51,6 +51,10 @@ uv run python -m aibench run --run-config tests/fixtures/configs/runs/baseline.m
 
 `audit-cases --case-set seed-v0` 报 0/4 通过是预期：这四条是最小 fixture，不是合格用例样板。
 
+> **别人给你的 case 集，先 `validate-cases`。** 它只读不执行。`audit-cases` / `run` / `ablation`
+> 会执行 case 里的 `grader.command` 与 `setup_commands`，判分也在宿主机上跑、没有容器。
+> 详见 [`docs/REFERENCE.md` §13](docs/REFERENCE.md)。
+
 ## 从 trace 建一批可用题
 
 需要数据库与模型网关。`--require-edits` 是 `--reverse` 的前提：没有 `metadata.file_versions` 就没有 pre/post 对。

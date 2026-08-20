@@ -42,7 +42,13 @@ uv run python -m aibench validate-cases --case-set _clean2026
 # OK case_set=_clean2026
 ```
 
-只做 schema 校验与 `case_id` 唯一性，秒级返回。
+秒级返回，**只读，不执行 case 里的任何东西** —— schema、`case_id` 唯一性，以及
+`grader.command` / `setup_commands` 里有没有 shell 语法。
+
+> **这一条和下一条的区别很重要。** 一个 case 集是别人写的数据：`grader.command` 与
+> `context.workspace.setup_commands` 是命令，判分在你的机器上跑、没有容器。`validate-cases`
+> 不执行它们，**`audit-cases` 会**（它要真跑一遍 stub 与参考解）。所以拿到来路不明的集合，
+> 顺序是先 validate、看清楚了再 audit。随仓库分发的 `_clean2026` 已经过这一关。
 
 ```bash
 uv run python -m aibench audit-cases --case-set _clean2026

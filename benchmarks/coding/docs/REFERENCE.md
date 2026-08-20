@@ -1057,7 +1057,16 @@ uv run python -m aibench plan-sample-size --delta 10 --from-ablation runs/ablati
 | `llm_judge` | 模型评分 ≥ `judge_threshold` |
 | `composite` | 优先 script，再回退 gold 等组合逻辑 |
 
-**没有** grader 命令白名单：`grading.py` 用 `subprocess.run(shell=True)` 在宿主机执行 `grader.command`，无沙箱、无网络限制。（`generate-cases` 侧对**生成出来的**命令有白名单 `_SAFE_GRADER_CMD`，那是另一回事。）Docker/gVisor 隔离未做，是目前最大的安全缺口。  
+**case JSON 是不可信输入。** `grader.command` 与 `context.workspace.setup_commands` 由 case 集提供，
+而 case 集是跨信任边界的东西 —— `export-bundle` 存在的意义就是把它交给别人。两者都经 `safe_command`：
+拒绝 shell 语法、`shlex.split` 后以 `shell=False` 执行，所以 `;` `&&` `|` `>` `$()` 不再有语法含义。
+判分子进程的环境是白名单（`_GRADER_ENV_ALLOWLIST`），被判分的代码读不到 `OPENAI_API_KEY` 与
+`AIBENCH_DB_URL`；需要额外变量用 run config 的 `grader_env_passthrough` 显式声明。
+
+**但判分仍在宿主机上跑，没有容器、没有资源限制、没有网络限制。** 被判分的代码是模型写的或 case 自带的，
+它能做本机用户能做的任何事。Docker/gVisor 隔离未做，是目前最大的安全缺口。
+**拿到来路不明的 case 集，先跑 `validate-cases`** —— 它只读不执行，且会拒绝上面那些形态；
+`audit-cases`、`run`、`ablation`、`calibrate-cases` 都会执行 case 提供的内容。  
 主指标仅统计 **非 infra_error** 的 case。
 
 ### 13.1 隐藏测试与保护路径
