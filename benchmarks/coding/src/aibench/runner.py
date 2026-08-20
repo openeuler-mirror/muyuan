@@ -13,6 +13,7 @@ from aibench.io_util import (
     load_yaml,
     relative_to_repo,
     repo_root,
+    safe_case_id,
     write_json,
     write_jsonl,
     write_text,
@@ -297,7 +298,9 @@ def _run_one_case(
     case_retries: int | None = None,
 ) -> dict[str, Any]:
     """Sample a case ``attempts`` times and fold the results into a single row."""
-    case_dir = run_dir / "cases" / case.case_id
+    case_dir = run_dir / "cases" / safe_case_id(case.case_id)
+    if not case_dir.resolve().is_relative_to(run_dir.resolve()):
+        raise ValueError(f"case dir escapes run dir: {case.case_id}")
     if attempts <= 1:
         return _aggregate_attempts(
             [

@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -77,6 +78,25 @@ def write_text(path: Path, text: str) -> None:
     """
     with atomic_write(path) as f:
         f.write(text)
+
+
+CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def safe_case_id(case_id: str) -> str:
+    """Confine a case-supplied id that is also a directory name and a file name.
+
+    `run_dir / "cases" / case_id` absorbs an absolute id whole and follows `..` out of the
+    run directory, and the first thing `materialize_workspace` does with the result is
+    `shutil.rmtree` it. `assert_disposable` refuses only paths that are or contain the
+    checkout, so everything else was reachable. Enforced here rather than at each of the
+    five places that spell `f"{case_id}.json"`.
+    """
+    if not CASE_ID_PATTERN.match(case_id or "") or set(case_id) == {"."}:
+        raise ValueError(
+            f"unsafe case_id {case_id!r}: expected 1-128 chars of [A-Za-z0-9._-], not all dots"
+        )
+    return case_id
 
 
 def repo_root() -> Path:

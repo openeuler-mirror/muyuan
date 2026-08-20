@@ -61,13 +61,14 @@ class Case:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Case:
+        from aibench.io_util import safe_case_id
         from aibench.workspace import WorkspaceSpec
 
         ctx = d["context"]
         files = [FileBlob.from_dict(x) for x in ctx.get("files") or []]
         ws = WorkspaceSpec.from_dict(ctx.get("workspace"))
         return cls(
-            case_id=d["case_id"],
+            case_id=safe_case_id(d["case_id"]),
             schema_version=d.get("schema_version", "0.1"),
             task_type=d["task_type"],
             language=d["language"],

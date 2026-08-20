@@ -158,7 +158,9 @@ def detect_grading_interference(
         if not path.is_file():
             continue
         rel = path.relative_to(workspace).as_posix()
-        if path.name in _COLLECTION_CONTROL_FILES:
+        # macOS and Windows resolve `PYTEST.INI` to the same file pytest reads, so an exact
+        # comparison let an agent ship one and silence the hidden tests.
+        if path.name.lower() in _COLLECTION_CONTROL_FILES:
             if path.is_symlink():
                 # Nothing legitimate needs one, and its target is outside what the case ships.
                 return f"grading_interference_symlink: {rel}"
@@ -201,6 +203,12 @@ def inject_hidden_tests(case: Case, workspace: Path) -> list[str]:
         rel = _safe_relpath(fb.path)
         path = workspace / rel
         path.parent.mkdir(parents=True, exist_ok=True)
+        # The leaf is replaced below — that is the anti-cheat behaviour and it stays. A
+        # symlinked *parent* is a different thing: it sends the write outside the workspace
+        # while every component name stays relative, and there is nothing there to replace,
+        # so it is refused rather than overwritten.
+        if not path.parent.resolve().is_relative_to(workspace.resolve()):
+            raise ValueError(f"hidden test escapes workspace: {fb.path}")
         if path.is_symlink() or path.is_file():
             path.unlink()
         elif path.is_dir():
@@ -385,7 +393,7 @@ def _grade_gold(case: Case, workspace: Path) -> GradeResult:
         blobs: list[str] = []
         targets = [gf.path for gf in g.gold_files] if g.gold_files else []
         for rel in targets:
-            p = workspace / rel
+            p = workspace / _safe_relpath(rel)
             if p.is_file():
                 # `errors="replace"`, like every other read in this module: a non-UTF-8 byte the
                 # agent wrote to a gold path used to raise out of `grade_case` and take the
@@ -418,7 +426,7 @@ def _grade_gold(case: Case, workspace: Path) -> GradeResult:
 
     mismatches: list[str] = []
     for gold in g.gold_files:
-        p = workspace / gold.path
+        p = workspace / _safe_relpath(gold.path)
         if not p.is_file():
             mismatches.append(f"missing file {gold.path}")
             continue

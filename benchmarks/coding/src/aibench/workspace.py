@@ -199,16 +199,22 @@ def _apply_inline_files(files: list[FileBlob], workspace: Path) -> None:
 
 
 def _resolve_snapshot(snapshot_path: str, case_set_dir: Path | None) -> Path:
-    p = Path(snapshot_path)
-    if p.is_absolute() and p.exists():
-        return p
-    candidates: list[Path] = []
-    if case_set_dir is not None:
-        candidates.append(case_set_dir / snapshot_path)
-        candidates.append(case_set_dir / "snapshots" / snapshot_path)
-    candidates.append(Path.cwd() / snapshot_path)
+    """Resolve a case-supplied snapshot path inside its own case set, and nowhere else.
+
+    This used to return any absolute path that existed, and fell back to `cwd`. Both let a case
+    JSON name a directory on the host — `~/.ssh`, a sibling checkout — which `_apply_snapshot`
+    copies into the workspace, from where the tool loop's read tool and the llm_judge grader
+    send it to the gateway. The snapshot belongs to the case set that shipped it.
+    """
+    if case_set_dir is None:
+        raise FileNotFoundError(f"snapshot {snapshot_path!r} has no case set to resolve against")
+    root = case_set_dir.resolve()
+    rel = safe_relpath(snapshot_path)
+    candidates = [root / rel, root / "snapshots" / rel]
     for c in candidates:
         if c.exists():
+            if not c.resolve().is_relative_to(root):
+                raise ValueError(f"snapshot escapes its case set: {snapshot_path}")
             return c
     raise FileNotFoundError(
         f"snapshot not found: {snapshot_path} (searched {[str(x) for x in candidates]})"
@@ -226,10 +232,14 @@ def _apply_snapshot(
         # copy tree contents into workspace
         for item in src.iterdir():
             dest = workspace / item.name
+            if item.is_symlink():
+                # `copytree`/`copy2` follow links by default, which reaches back out of the
+                # case set the resolution above just confined the snapshot to.
+                continue
             if item.is_dir():
-                shutil.copytree(item, dest, dirs_exist_ok=True)
+                shutil.copytree(item, dest, dirs_exist_ok=True, symlinks=True)
             else:
-                shutil.copy2(item, dest)
+                shutil.copy2(item, dest, follow_symlinks=False)
         return
 
     name = src.name.lower()
@@ -276,22 +286,22 @@ def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
     dest = dest.resolve()
     for member in tf.getmembers():
         member_path = (dest / member.name).resolve()
-        if not str(member_path).startswith(str(dest)):
+        if not member_path.is_relative_to(dest):
             raise RuntimeError(f"tar member escapes workspace: {member.name}")
         if member.issym() or member.islnk():
             target = (member_path.parent / member.linkname).resolve()
-            if not str(target).startswith(str(dest)):
+            if not target.is_relative_to(dest):
                 raise RuntimeError(
                     f"tar member links outside workspace: {member.name} -> {member.linkname}"
                 )
-    tf.extractall(dest)
+    tf.extractall(dest, filter="data")
 
 
 def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
     dest = dest.resolve()
     for info in zf.infolist():
         member_path = (dest / info.filename).resolve()
-        if not str(member_path).startswith(str(dest)):
+        if not member_path.is_relative_to(dest):
             raise RuntimeError(f"zip member escapes workspace: {info.filename}")
     zf.extractall(dest)
 
