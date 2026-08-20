@@ -1,7 +1,7 @@
 # Goal Plus Ultra Codex smoke fixture
 
 This fixture preserves the source and a sanitized evidence projection from a
-real Codex `/goal-plus` run. Raw `.gp` state and the native transcript remain
+real Codex `$goal-plus` run. Raw `.gp` state and the native transcript remain
 local-only according to the repository commit-hygiene contract.
 
 ## Task

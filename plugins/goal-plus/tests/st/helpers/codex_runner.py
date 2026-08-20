@@ -51,7 +51,7 @@ class CodexRunner:
         if final_path is not None:
             cmd += ["-o", str(final_path)]
         cmd.append(
-            "This is a non-interactive Codex /goal-plus system test. "
+            "This is a non-interactive Codex $goal-plus system test. "
             "Use the project-local Codex goal-plus and search skills. Decide "
             "autonomously whether Search adds value, discover any missing "
             "verifier/spec details, and enter Search when the draft is ready. "

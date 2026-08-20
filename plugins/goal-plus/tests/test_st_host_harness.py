@@ -45,7 +45,7 @@ def test_codex_runner_uses_exec_with_terra_model(tmp_path: Path) -> None:
     assert "--dangerously-bypass-hook-trust" in cmd
     assert "--dangerously-bypass-approvals-and-sandbox" in cmd
     assert "do not run pytest" in cmd[-1]
-    assert "Codex /goal-plus system test" in cmd[-1]
+    assert "Codex $goal-plus system test" in cmd[-1]
     assert "Decide autonomously whether Search adds value" in cmd[-1]
     assert "Do not ask for or wait for user confirmation" in cmd[-1]
     assert "run the prompt" in cmd[-1]

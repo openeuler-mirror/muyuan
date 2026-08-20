@@ -2,9 +2,10 @@
 
 [English](README.md) | 简体中文
 
-Goal Plus 是面向长时间 agent 任务的宿主中立运行时。`/goal-plus` 可以直接处理
-普通目标；遇到可度量的优化任务时，它会升级到 Search Mode：冻结评价合同、在隔离
-候选中探索，并提升经过 verifier 验证的最佳结果。
+Goal Plus 是面向长时间 agent 任务的宿主中立运行时。在 Pi 中使用
+`/goal-plus`，在 Codex 中使用 `$goal-plus`。它可以直接处理普通目标；遇到可度量的
+优化任务时，会升级到 Search Mode：冻结评价合同、在隔离候选中探索，并提升经过
+verifier 验证的最佳结果。
 
 Pi 和 Codex 是当前支持的宿主路径。
 
@@ -84,7 +85,7 @@ python scripts/install_codex_plugin.py --uninstall --keep-runtime
 `python -m pip uninstall -y goal-plus`。详细开发和更新机制见
 [Pi](docs/pi.md) 与 [Codex](docs/codex.md)。
 
-然后在宿主中启动目标：
+在 Pi 中启动目标：
 
 ```text
 /goal-plus 修复这个 bug 并验证测试套件。
@@ -93,12 +94,24 @@ python scripts/install_codex_plugin.py --uninstall --keep-runtime
 /goal-plus mode=autonomous 深度优化这个 kernel。
 ```
 
-Codex 和 Pi 还提供：
+Codex 使用已安装的 skill 入口：
 
 ```text
-/goal-plus edit <完整的新目标>
-/goal-plus resume
-/goal-plus-with-final-check <目标>
+$goal-plus 修复这个 bug 并验证测试套件。
+$goal-plus 在不改变正确性的前提下，用两小时优化 p95 延迟。
+$goal-plus mode=probe 先确认向量化是否可行。
+$goal-plus mode=autonomous 深度优化这个 kernel。
+```
+
+编辑、恢复和独立最终检查使用各自宿主的相同前缀：
+
+```text
+Pi:    /goal-plus edit <完整的新目标>
+Codex: $goal-plus edit <完整的新目标>
+Pi:    /goal-plus resume
+Codex: $goal-plus resume
+Pi:    /goal-plus-with-final-check <目标>
+Codex: $goal-plus-with-final-check <目标>
 ```
 
 一次请求会启动自主运行。agent 自己判断 Goal Mode 是否足够，或冻结 verifier 后
@@ -111,7 +124,7 @@ Codex 和 Pi 还提供：
 | 宿主 | 集成资产 | 入口 | Search worker 路径 |
 |---|---|---|---|
 | Pi | 已安装 Pi package | `/goal-plus` 或 `pi -p "/goal-plus ..."` | 持久化 Pi RPC pool；参阅 [Pi](docs/pi.md) |
-| Codex | 已安装 plugin | `goal-plus` skill 或 `/goal-plus` 提示 | 固定 parallel loops 与原生同 worker continuation；参阅 [Codex](docs/codex.md) |
+| Codex | 已安装 plugin | `$goal-plus` skill 提示 | 固定 parallel loops 与原生同 worker continuation；参阅 [Codex](docs/codex.md) |
 
 安装 Codex plugin 后，从要修改的 workspace 启动：
 
@@ -127,9 +140,11 @@ cd <目标-workspace>
 pi --model <provider/main-model> --thinking max
 ```
 
-然后在新会话中提交 `/goal-plus <目标>`。若 prompt 指定了 `main=...`，它必须和
-启动命令选择的模型一致。[Torch CPU 示例](examples/model-optimize/torch-cpu-target/README.md)
-提供了完整的 Codex/Pi 启动命令和可直接粘贴的 prompt。
+然后在 Codex 中提交 `$goal-plus <目标>`，或在 Pi 中提交 `/goal-plus <目标>`。
+Codex 的 main agent 就是已经运行的会话，应通过 `codex -m` 或 `/model` 选择；正常
+Codex Goal Plus prompt 不要写 `main=`。Pi 既可在启动命令中选择 main，也可使用
+`main=`。[Torch CPU 示例](examples/model-optimize/torch-cpu-target/README.md)提供了完整的
+Codex/Pi 启动命令和可直接粘贴的 prompt。
 
 宿主差异和策略覆盖见 [Agent Host Adapters](docs/agent-host-adapters.md)。
 

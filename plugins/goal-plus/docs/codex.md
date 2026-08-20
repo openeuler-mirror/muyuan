@@ -118,16 +118,22 @@ checkout and the editable runtime should also be uninstalled.
 
 ### Project-local asset loading
 
+This is an opt-in fallback for developing without the installed plugin. Do not
+enable it while `goal-plus@...` is enabled, because Codex would load the same
+Goal Plus hooks from both sources.
+
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
 python -m pip install -e ".[dev]"
 cp .codex/config.example.toml .codex/config.toml
+cp .codex/hooks.example.json .codex/hooks.json
 ```
 
-Start Codex in this directory, review `.codex/hooks.json` through `/hooks`, and
-use a new thread. Project-local `.codex/skills/` is the development source of
-truth; top-level `skills/` is the installable plugin publication surface. After
-editing a Codex skill, synchronize and verify both copies:
+Start Codex in this directory, review the copied `.codex/hooks.json` through
+`/hooks`, and use a new thread. Remove the two copied files before re-enabling
+the installed plugin. Project-local `.codex/skills/` is the development source
+of truth; top-level `skills/` is the installable plugin publication surface.
+After editing a Codex skill, synchronize and verify both copies:
 
 ```bash
 python scripts/sync_codex_plugin_assets.py
@@ -157,18 +163,19 @@ The same ephemeral annotator turn also produces shared-dir Tool Views; verifier
 settlement never waits for it. The host-neutral lifecycle is documented in
 [`shared-plane.md`](shared-plane.md#工具复制与采用结算).
 
-Codex 0.144.1+ ships project-local Goal Plus host hooks in
-`.codex/hooks.json`; each calls `goal-plus --goal-plus-host-hook` for
+The installed plugin ships Goal Plus host hooks in `hooks/hooks.json`; the
+project-local fallback copies the same declaration from
+`.codex/hooks.example.json`. Each calls `goal-plus --goal-plus-host-hook` for
 `UserPromptSubmit`, `SessionStart`, `PreToolUse`,
 `PostToolUse`, `Stop`, and `SubagentStop`. Review and trust them through
-`/hooks`. They pre-create `/goal-plus`, restore active state, gate writes/Search
+`/hooks`. They pre-create `$goal-plus`, restore active state, gate writes/Search
 calls, bind ownership, and keep a candidate alive only until its own verifier
 submission is durable. Selection and final audit remain parent-owned.
 `PostToolUse(goal_plus_create)` is the fallback ownership-binding path. A
 candidate is blocked until its own verifier submission is durable. Ordinary subagents do not inherit the parent's next action.
 
-Use `/goal-plus mode=autonomous <goal>` for substantial renewable candidate
-exploration (the default), or `/goal-plus mode=probe <goal>` for short
+Use `$goal-plus mode=autonomous <goal>` for substantial renewable candidate
+exploration (the default), or `$goal-plus mode=probe <goal>` for short
 feasibility/potential/blocker probes. The runtime stores the choice only as the
 canonical final line of `raw_goal`.
 
@@ -183,7 +190,7 @@ durable evidence.
 
 Use the `goal-plus` skill as the user entry. The `search` skill is internal.
 
-For ordinary Goal Mode work, `/goal-plus` uses the host-neutral
+For ordinary Goal Mode work, `$goal-plus` uses the host-neutral
 [`goal-plus-ultra-v1`](ultra.md) work DAG and Codex collaboration tools. Run the
 main thread with Codex reasoning effort `max`: hooks record
 `native_reasoning_effort=max`
@@ -215,17 +222,19 @@ by the current tool schema; never synthesize it from the schema alone.
 
 ### Explicit role models
 
-Codex accepts the same role-named `/goal-plus` parameters as Pi:
+Codex accepts explicit annotator and worker models:
 
 ```text
-/goal-plus main=gpt-5.6-sol annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-sol max_parallel=4 optimize ...
+$goal-plus annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-sol max_parallel=4 optimize ...
 ```
 
-`main=` is an assertion about the current Codex session model. The
-`UserPromptSubmit` hook validates it against the model reported by Codex before
-creating or editing a Goal Plus record. Codex hooks cannot switch the main
-session model, so a mismatch blocks the command with instructions to select the
-requested Codex model first or omit `main=`.
+The already-running Codex session is the main agent. `$goal-plus` cannot switch
+the main session model. Select it when starting Codex (`codex -m MODEL` or
+`codex exec -m MODEL ...`) or with `/model` before submitting the Goal Plus
+prompt. Omit `main=` in normal Codex usage. For compatibility, `main=` remains
+an optional assertion about the current Codex session model:
+`UserPromptSubmit` validates it and blocks a mismatch, but never treats it as a
+selector.
 
 `annotator=` resolves one model on the same Codex host and freezes it into
 `strategy.evidence_annotator.model`. `workers=` resolves one or more models into

@@ -2,10 +2,11 @@
 
 English | [简体中文](README_zh.md)
 
-Goal Plus is a host-neutral runtime for long-running agent work. `/goal-plus`
-handles ordinary goals directly and upgrades measurable optimization tasks to
-Search Mode: freeze the evaluation contract, explore isolated candidates, and
-promote the best verifier-backed result.
+Goal Plus is a host-neutral runtime for long-running agent work. Use
+`/goal-plus` in Pi or `$goal-plus` in Codex to handle ordinary goals directly
+and upgrade measurable optimization tasks to Search Mode: freeze the evaluation
+contract, explore isolated candidates, and promote the best verifier-backed
+result.
 
 Pi and Codex are the supported host paths.
 
@@ -89,7 +90,7 @@ Run `python -m pip uninstall -y goal-plus` after neither development host needs
 the editable runtime. Detailed development and update behavior belongs in
 [Pi](docs/pi.md) and [Codex](docs/codex.md).
 
-Then start a goal in the host:
+Start a goal in Pi:
 
 ```text
 /goal-plus Fix this bug and verify the test suite.
@@ -98,12 +99,25 @@ Then start a goal in the host:
 /goal-plus mode=autonomous Deeply optimize the kernel.
 ```
 
-Codex and Pi also expose:
+The equivalent Codex entry uses the installed skill:
 
 ```text
-/goal-plus edit <full revised goal>
-/goal-plus resume
-/goal-plus-with-final-check <goal>
+$goal-plus Fix this bug and verify the test suite.
+$goal-plus Optimize p95 latency for two hours without changing correctness.
+$goal-plus mode=probe Check whether vectorization is viable.
+$goal-plus mode=autonomous Deeply optimize the kernel.
+```
+
+Edit, resume, and independent-final-check commands use the same host-specific
+prefix:
+
+```text
+Pi:    /goal-plus edit <full revised goal>
+Codex: $goal-plus edit <full revised goal>
+Pi:    /goal-plus resume
+Codex: $goal-plus resume
+Pi:    /goal-plus-with-final-check <goal>
+Codex: $goal-plus-with-final-check <goal>
 ```
 
 One request starts an autonomous run. The agent decides whether Goal Mode is
@@ -118,7 +132,7 @@ stored as guidance in the final line of `raw_goal`, not as a scheduler state.
 | Host | Integration assets | Entry | Search worker path |
 |---|---|---|---|
 | Pi | installed Pi package | `/goal-plus` or `pi -p "/goal-plus ..."` | durable Pi RPC pool; see [Pi](docs/pi.md) |
-| Codex | installed plugin | `goal-plus` skill or `/goal-plus` prompt | fixed parallel loops with native same-worker continuation; Codex 0.144.1+ hooks cover `UserPromptSubmit`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
+| Codex | installed plugin | `$goal-plus` skill prompt | fixed parallel loops with native same-worker continuation; Codex 0.144.1+ hooks cover `UserPromptSubmit`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
 
 Start an installed Codex plugin from the workspace you want to change:
 
@@ -134,10 +148,12 @@ cd <target-workspace>
 pi --model <provider/main-model> --thinking max
 ```
 
-Then submit `/goal-plus <goal>` in the new host session. If the prompt includes
-`main=...`, it must match the model selected by the launch command. See the
-[Torch CPU example](examples/model-optimize/torch-cpu-target/README.md) for
-complete Codex and Pi commands with ready-to-paste prompts.
+Then submit `$goal-plus <goal>` in Codex or `/goal-plus <goal>` in Pi. Codex's
+main agent is the already-running session selected by `codex -m` or `/model`;
+do not put `main=` in a normal Codex Goal Plus prompt. Pi may select its main
+model with either the launch command or `main=`. See the [Torch CPU
+example](examples/model-optimize/torch-cpu-target/README.md) for complete Codex
+and Pi commands with ready-to-paste prompts.
 
 Host differences and strategy coverage are summarized in
 [Agent Host Adapters](docs/agent-host-adapters.md).

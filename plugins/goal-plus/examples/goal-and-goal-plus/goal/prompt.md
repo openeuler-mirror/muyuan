@@ -1,4 +1,4 @@
-Use `/goal` for this ordinary coding task.
+Use `$goal` for this ordinary coding task.
 
 You are in `examples/goal-and-goal-plus/goal`.
 

@@ -161,7 +161,7 @@ def _command_directive(raw_goal: str, name: str) -> str | None:
     marker = re.compile(rf"(?:^|\s){re.escape(name)}=", re.IGNORECASE)
     markers = list(marker.finditer(raw_goal))
     if len(markers) > 1:
-        raise ValueError(f"/goal-plus accepts at most one {name}= directive")
+        raise ValueError(f"$goal-plus accepts at most one {name}= directive")
     if not markers:
         return None
     value_match = re.search(
@@ -187,7 +187,8 @@ def _role_model_directive(raw_goal: str, name: str) -> str | None:
 def _parse_goal_plus_role_models(raw_goal: str) -> dict[str, str] | None:
     if re.search(r"(?:^|\s)model=", raw_goal, re.IGNORECASE):
         raise ValueError(
-            "model= is not supported; use main=, annotator=, and workers="
+            "model= is not supported; use annotator= and workers=. Codex main= "
+            "is only an assertion about the already-running session model"
         )
     main = _role_model_directive(raw_goal, "main")
     annotator = _role_model_directive(raw_goal, "annotator")
@@ -231,14 +232,15 @@ def _validate_codex_main_model(
     current = hook_input.get("model")
     if not isinstance(current, str) or not current.strip():
         raise ValueError(
-            "main= requires Codex to report the current session model, but this "
+            "Codex main= is only a session-model assertion and requires Codex to "
+            "report the current model, but this "
             "UserPromptSubmit event did not include model"
         )
     if not _model_references_match(requested, current):
         raise ValueError(
             f"main={requested} does not match the current Codex session model "
-            f"{current}. Codex hooks cannot switch the main model; select or start "
-            "Codex with the requested model first, or omit main=."
+            f"{current}. Codex main= is an assertion, not a model selector. Start "
+            "Codex with `codex -m MODEL`, use `/model` before $goal-plus, or omit main=."
         )
 
 
@@ -251,7 +253,7 @@ def _role_model_context(
     lines = ["已解析 Codex Goal Plus 角色模型："]
     if "main" in role_models:
         lines.append(
-            f"- main={hook_input.get('model')}（已校验当前 Codex session）"
+            f"- main={hook_input.get('model')}（仅校验当前 Codex session，未切换模型）"
         )
     if "annotator" in role_models:
         lines.append(

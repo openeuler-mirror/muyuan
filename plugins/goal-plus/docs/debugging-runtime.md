@@ -1,8 +1,8 @@
 # Debugging Runtime State
 
-How to inspect a running or finished `/goal-plus` run after it enters Search
-Mode — what the agents are doing, what scores they have produced, and where to
-look when something goes wrong.
+How to inspect a running or finished Goal Plus run (`$goal-plus` in Codex,
+`/goal-plus` in Pi) after it enters Search Mode — what the agents are doing,
+what scores they have produced, and where to look when something goes wrong.
 
 This doc covers the project-specific runtime surface plus Codex and Pi RPC
 logs.

@@ -17,6 +17,7 @@ docs/superpowers/
 .codex/agents/search_candidate_agent_flash.toml
 .codex/agents/search_candidate_agent_deep.toml
 .codex/config.toml
+.codex/hooks.json
 dist/
 build/
 *.egg-info/

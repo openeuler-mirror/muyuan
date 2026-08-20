@@ -1,4 +1,4 @@
-/goal-plus main=gpt-5.6-terra annotator=gpt-5.6-sol workers=gpt-5.6-terra,gpt-5.6-sol max_parallel=2 Optimize the Torch CPU model in the current directory.
+$goal-plus annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-luna max_parallel=2 Optimize the Torch CPU model in the current directory.
 
 Improve `tokens_per_second` reported by `benchmark.py` while keeping
 `verify.py` valid. Keep the model on a single CPU core; do not increase

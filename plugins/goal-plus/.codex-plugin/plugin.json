@@ -25,9 +25,9 @@
       "Write"
     ],
     "defaultPrompt": [
-      "/goal-plus Fix this bug and verify the test suite.",
-      "/goal-plus Optimize this implementation against a frozen verifier.",
-      "/goal-plus-with-final-check Complete this task with an independent audit."
+      "$goal-plus Fix this bug and verify the test suite.",
+      "$goal-plus Optimize this implementation against a frozen verifier.",
+      "$goal-plus-with-final-check Complete this task with an independent audit."
     ],
     "brandColor": "#2563EB"
   }

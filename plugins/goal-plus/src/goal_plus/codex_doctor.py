@@ -503,6 +503,37 @@ def _hook_source(
     return None, None, "project"
 
 
+def _ancestor_goal_plus_hooks(project_root: Path, codex_home: Path) -> list[Path]:
+    user_hook = (codex_home / "hooks.json").resolve()
+    matches: list[Path] = []
+    for ancestor in (project_root, *project_root.parents):
+        candidate = ancestor / ".codex" / "hooks.json"
+        if not candidate.is_file() or candidate.resolve() == user_hook:
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        events = payload.get("hooks", {})
+        if not isinstance(events, dict):
+            continue
+        handlers = (
+            handler
+            for groups in events.values()
+            if isinstance(groups, list)
+            for group in groups
+            if isinstance(group, dict)
+            for handler in group.get("hooks", [])
+            if isinstance(handler, dict)
+        )
+        if any(
+            handler.get("command") == "goal-plus --goal-plus-host-hook"
+            for handler in handlers
+        ):
+            matches.append(candidate.resolve())
+    return matches
+
+
 def _check_hooks(
     *,
     codex_home: Path,
@@ -521,6 +552,22 @@ def _check_hooks(
             "No loadable Goal Plus hooks file was found.",
             {"project_root": str(project_root)},
         )
+    if source_kind == "plugin":
+        duplicate_sources = _ancestor_goal_plus_hooks(project_root, codex_home)
+        if duplicate_sources:
+            return CheckResult(
+                "codex.hooks",
+                "fail",
+                "The enabled plugin and project-local files both declare Goal Plus hooks.",
+                {
+                    "plugin_hooks": str(hooks_path),
+                    "project_hooks": [str(path) for path in duplicate_sources],
+                    "fix": (
+                        "Remove the project-local .codex/hooks.json or disable the "
+                        "installed plugin; use only one Goal Plus hook source."
+                    ),
+                },
+            )
     if not config_path.is_file():
         return CheckResult(
             "codex.hooks",

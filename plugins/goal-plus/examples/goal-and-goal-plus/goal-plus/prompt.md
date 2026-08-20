@@ -1,4 +1,4 @@
-Use `/goal-plus` for this ordinary coding task. Load the project-local
+Use `$goal-plus` for this ordinary coding task. Load the installed
 `goal-plus` skill and use the `goal-plus` MCP `goal_plus_*` tools.
 
 You are in `examples/goal-and-goal-plus/goal-plus`.

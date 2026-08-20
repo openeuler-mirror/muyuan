@@ -1,12 +1,12 @@
 ---
 name: search
-description: Codex 使用 goal-plus MCP server 的 /goal-plus 内部 Search Mode 引擎。
+description: Codex 使用 goal-plus MCP server 的 $goal-plus 内部 Search Mode 引擎。
 ---
 
 # Codex 的 Search Mode 运行时
 
-在 `/goal-plus` 已把目标升级到 Search Mode 后使用此 skill，或用它对已经可度量的
-SearchSpec 进行显式底层调试。普通用户入口是 `/goal-plus`。
+在 `$goal-plus` 已把目标升级到 Search Mode 后使用此 skill，或用它对已经可度量的
+SearchSpec 进行显式底层调试。普通用户入口是 `$goal-plus`。
 
 使用 `goal-plus` MCP server 暴露的逻辑 `search_*` 工具。Codex 可能显示带客户端特定
 前缀的 MCP 工具；按最后的逻辑工具名匹配。
@@ -80,7 +80,7 @@ strategy:
    `strategy.orchestration_mode="parallel_loops"`、`worker_host="codex"` 和唯一的
    `budget.max_parallel`；同时必须显式设置 `workspace.backend="git_worktree"`。
    只有用户明确要求兼容隔离时才能设置 `copy`。
-   原始 `/goal-plus` 命令包含 `annotator=B` 时，先调用
+   原始 `$goal-plus` 命令包含 `annotator=B` 时，先调用
    `goal_plus_list_models(host="codex")` 并将唯一匹配冻结到
    `strategy.evidence_annotator.model`。包含 `workers=A,B` 或兼容别名
    `models=A,B` 时，用同一目录解析并冻结到 `strategy.models`；两个 Worker 别名不能
@@ -90,8 +90,9 @@ strategy:
    `selected_models`，每个候选的 selected model 在原生 session 继续期间不可变；
    所有模型仍读取同一个 run 的 `search_get_global_evidence`，模型身份只作为
    candidate/session provenance，不改变候选准入或选择逻辑。`search_create` 不接收
-   第二套模型分配参数。`main=` 已由 Codex `UserPromptSubmit` hook 校验为当前 session
-   model，不写入 SearchSpec，也不能由 Search 切换。省略的角色保持 host 默认或继承语义。
+   第二套模型分配参数。Codex 当前 session 就是 main；`main=` 只是由
+   `UserPromptSubmit` hook 校验的可选兼容断言，不写入 SearchSpec，也不能由 Search
+   切换。省略的角色保持 host 默认或继承语义。
 2. 调用且只调用一次 `search_plan_next(requested_k=budget.max_parallel)`，然后调用且只调用
    一次 `search_start_batch`，创建初始候选。
 3. 对每个候选调用且只调用一次 `search_start_agent_session`，直接解析同一次响应中的

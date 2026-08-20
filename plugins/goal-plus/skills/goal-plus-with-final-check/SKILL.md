@@ -5,12 +5,13 @@ description: 运行 Goal Plus，并要求在完成前由独立 Codex 最终检�
 
 # 带最终检查的 Goal Plus
 
-对 `/goal-plus-with-final-check` 或 `$goal-plus-with-final-check` 使用此 skill。
+对 `$goal-plus-with-final-check` 使用此 skill。
 Codex 的 `UserPromptSubmit` hook 会在模型轮次开始前创建 Goal Plus 记录，并设置
 `policy.final_check.mode="required"`。
 
-它与 `/goal-plus` 使用同一角色模型语法：`main=A annotator=B workers=C,D`；
-`main=` 必须匹配当前 Codex session model，`models=` 是 `workers=` 的兼容别名。
+它与 `$goal-plus` 使用同一角色模型语法：真正可选择的角色是
+`annotator=B workers=C,D`。Codex 当前 session 本身就是 main；`main=` 只保留为
+必须匹配当前 session model 的兼容断言。`models=` 是 `workers=` 的兼容别名。
 具体解析和冻结规则由完整的 `goal-plus` skill 定义。
 
 遵循完整的 `goal-plus` skill 工作流，并额外遵守以下强制终态契约：
@@ -27,5 +28,5 @@ Codex 的 `UserPromptSubmit` hook 会在模型轮次开始前创建 Goal Plus �
    然后申请新的检查。检查被中断时目标保持 active，也必须申请新的检查。
 5. 读取 `goal_plus_status`，然后在停止前调用 `goal_plus_gate(event="stop")`。
 
-`/goal-plus edit <完整的修订目标>` 会保留同一个 Goal Plus id，创建新的目标修订版，
-并使所有旧检查失效。host 中断后，`/goal-plus resume` 会继续当前持久化修订版。
+`$goal-plus edit <完整的修订目标>` 会保留同一个 Goal Plus id，创建新的目标修订版，
+并使所有旧检查失效。host 中断后，`$goal-plus resume` 会继续当前持久化修订版。

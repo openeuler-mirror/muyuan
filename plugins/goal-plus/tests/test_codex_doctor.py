@@ -235,7 +235,9 @@ def test_collect_report_accepts_complete_project_local_setup(
 def test_plugin_assets_keep_project_hook_contract() -> None:
     root = codex_doctor._package_root()
     packaged = json.loads((root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-    project = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    project = json.loads(
+        (root / ".codex" / "hooks.example.json").read_text(encoding="utf-8")
+    )
     manifest = json.loads(
         (root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
@@ -246,6 +248,41 @@ def test_plugin_assets_keep_project_hook_contract() -> None:
     assert manifest["mcpServers"] == "./.mcp.json"
     assert mcp["mcpServers"]["goal-plus"]["command"] == "goal-plus"
     assert mcp["mcpServers"]["goal-plus"]["args"] == ["--root", ".gp"]
+
+
+def test_enabled_plugin_rejects_duplicate_ancestor_goal_plus_hooks(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "checkout" / "examples" / "target"
+    project_root.mkdir(parents=True)
+    codex_home = tmp_path / "codex-home"
+    plugin_root = tmp_path / "installed-plugin"
+    plugin_hooks = plugin_root / "hooks" / "hooks.json"
+    plugin_hooks.parent.mkdir(parents=True)
+    payload = json.loads(
+        (codex_doctor._package_root() / "hooks" / "hooks.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    plugin_hooks.write_text(json.dumps(payload), encoding="utf-8")
+    duplicate = project_root.parents[1] / ".codex" / "hooks.json"
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_text(json.dumps(payload), encoding="utf-8")
+    installation = codex_doctor.PluginInstallation(
+        plugin_id="goal-plus@goal-plus-local",
+        status="installed, enabled",
+        path=plugin_root,
+    )
+
+    result = codex_doctor._check_hooks(
+        codex_home=codex_home,
+        project_root=project_root,
+        installation=installation,
+    )
+
+    assert result.status == "fail"
+    assert "both declare Goal Plus hooks" in result.summary
+    assert result.details["project_hooks"] == [str(duplicate.resolve())]
 
 
 def test_distribution_marketplace_points_at_plugin_root() -> None:

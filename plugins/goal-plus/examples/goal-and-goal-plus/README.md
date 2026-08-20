@@ -1,7 +1,7 @@
-# `/goal` vs `/goal-plus` Ordinary Goal Experiment
+# `$goal` vs `$goal-plus` Ordinary Goal Experiment
 
-This directory compares Codex `/goal` and `/goal-plus` on the same ordinary
-single-path bug fix. The point is to test whether `/goal-plus` stays in Goal
+This directory compares Codex `$goal` and `$goal-plus` on the same ordinary
+single-path bug fix. The point is to test whether `$goal-plus` stays in Goal
 Mode instead of spending Search Mode budget when the task is not search-shaped.
 
 ## Task
@@ -24,7 +24,7 @@ Both runs used the same model:
 gpt-5.3-codex-spark
 ```
 
-The `/goal` run:
+The `$goal` run:
 
 ```bash
 cd examples/goal-and-goal-plus/goal
@@ -37,7 +37,7 @@ codex exec -C . --skip-git-repo-check \
   - < prompt.md
 ```
 
-The `/goal-plus` run:
+The `$goal-plus` run:
 
 ```bash
 cd examples/goal-and-goal-plus/goal-plus
@@ -58,8 +58,8 @@ runtime details. The final agent messages are saved as `goal/final.md` and
 
 | Entry | Mode Used | Search Mode | Goal Plus MCP State | Final Score | Changed File |
 |---|---:|---:|---:|---:|---|
-| `/goal` | Goal | No | No | 1.0 | `initial_program.py` |
-| `/goal-plus` | Goal | No | Yes | 1.0 | `initial_program.py` |
+| `$goal` | Goal | No | No | 1.0 | `initial_program.py` |
+| `$goal-plus` | Goal | No | Yes | 1.0 | `initial_program.py` |
 
 Both runs fixed the task and verified:
 
@@ -78,7 +78,7 @@ valid = true
 
 ## Patch Difference
 
-The `/goal` run added the special case inside the `base is ZERO` branch:
+The `$goal` run added the special case inside the `base is ZERO` branch:
 
 ```python
 if base is ZERO:
@@ -87,7 +87,7 @@ if base is ZERO:
     return ZERO
 ```
 
-The `/goal-plus` run added the equivalent special case before the generic
+The `$goal-plus` run added the equivalent special case before the generic
 `base is ONE` / `base is ZERO` handling:
 
 ```python
@@ -99,7 +99,7 @@ Both are minimal and pass the same evaluator.
 
 ## Goal Plus State
 
-The `/goal-plus` run explicitly exercised the Goal Plus lifecycle tools:
+The `$goal-plus` run explicitly exercised the Goal Plus lifecycle tools:
 
 1. `goal_plus_create`
 2. `goal_plus_record_triage`
@@ -123,18 +123,18 @@ The recorded state stayed in ordinary Goal Mode:
 }
 ```
 
-This is the expected behavior for a normal bug fix: `/goal-plus` should act like
-`/goal` plus explicit triage and final audit, not like a multi-candidate search.
+This is the expected behavior for a normal bug fix: `$goal-plus` should act like
+`$goal` plus explicit triage and final audit, not like a multi-candidate search.
 
 ## Interpretation
 
-For this ordinary task, `/goal-plus` did not improve the final score over
-`/goal`; both reached 1.0. The useful difference is procedural:
+For this ordinary task, `$goal-plus` did not improve the final score over
+`$goal`; both reached 1.0. The useful difference is procedural:
 
-- `/goal` solved the task directly with fewer lifecycle steps.
-- `/goal-plus` added explicit triage and stop-gate evidence, while correctly
+- `$goal` solved the task directly with fewer lifecycle steps.
+- `$goal-plus` added explicit triage and stop-gate evidence, while correctly
   avoiding Search Mode.
 
-This supports the intended design: `/goal-plus` should be a drop-in replacement
+This supports the intended design: `$goal-plus` should be a drop-in replacement
 for normal goal work, with extra guardrails, and only upgrade to Search Mode
 when the task has a real measurable multi-approach search opportunity.

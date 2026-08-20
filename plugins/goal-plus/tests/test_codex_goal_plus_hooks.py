@@ -167,7 +167,7 @@ def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None
         "main=openai/gpt-5.6-sol annotator=gpt-5.6-terra "
         "workers=gpt-5.6-terra,gpt-5.6-sol optimize throughput"
     )
-    assert "main=gpt-5.6-sol（已校验当前 Codex session）" in context
+    assert "main=gpt-5.6-sol（仅校验当前 Codex session，未切换模型）" in context
     assert "annotator=gpt-5.6-terra" in context
     assert "strategy.evidence_annotator.model" in context
     assert "workers=gpt-5.6-terra,gpt-5.6-sol" in context
@@ -180,7 +180,7 @@ def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None
     [
         (
             "/goal-plus main=gpt-5.6-terra optimize throughput",
-            "does not match the current Codex session model gpt-5.6-sol",
+            "Codex main= is an assertion, not a model selector",
         ),
         (
             "/goal-plus model=gpt-5.6-sol optimize throughput",

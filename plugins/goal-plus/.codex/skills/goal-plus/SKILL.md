@@ -1,11 +1,11 @@
 ---
 name: goal-plus
-description: 运行、恢复或编辑 Codex Goal Plus 任务，包括需要独立最终审查员的 /goal-plus-with-final-check 任务，并可通过 goal-plus MCP server 升级为 Agentic Search。
+description: 运行、恢复或编辑 Codex Goal Plus 任务，包括需要独立最终审查员的 $goal-plus-with-final-check 任务，并可通过 goal-plus MCP server 升级为 Agentic Search。
 ---
 
 # Codex 的 Goal Plus
 
-对 `/goal-plus` 使用此 skill，这是 Ultra 编排工作流。主 Agent 请求 max 推理强度，
+对 `$goal-plus` 使用此 skill，这是 Ultra 编排工作流。主 Agent 请求 max 推理强度，
 主动委派独立工作；当成功标准可度量且已冻结时，再升级为多候选 Agentic Search。
 
 使用 `goal-plus` MCP server 暴露的逻辑 `goal_plus_*` 和 `search_*` 工具。
@@ -19,12 +19,12 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
    `goal_plus_create(raw_goal=..., policy={"execution":{"host":{"host_id":"codex",
    "native_reasoning_effort":"max","enforcement":"requested","operations":
    ["spawn","send","wait","interrupt","observe"]}}})` 作为兼容后备。
-   `/goal-plus-with-final-check` 会预先创建，并设置
-   `policy.final_check.mode="required"`。`/goal-plus edit <完整的修订目标>`
+   `$goal-plus-with-final-check` 会预先创建，并设置
+   `policy.final_check.mode="required"`。`$goal-plus edit <完整的修订目标>`
    会在模型轮次前更新同一记录；使用新的 `goal_revision`，不要继续旧修订版。
-   host 中断后，`/goal-plus resume` 会恢复同一个 active 修订版。
-   `/goal-plus mode=autonomous <目标>`（默认）要求为初始候选分配充足 lease，
-   并在没有全局停止条件时继续同一候选；`/goal-plus mode=probe <目标>`
+   host 中断后，`$goal-plus resume` 会恢复同一个 active 修订版。
+   `$goal-plus mode=autonomous <目标>`（默认）要求为初始候选分配充足 lease，
+   并在没有全局停止条件时继续同一候选；`$goal-plus mode=probe <目标>`
    要求进行短期可行性、潜力和阻塞因素探查。未指定 mode 的编辑保留当前选择。
    运行时只把它存为 `raw_goal` 的规范末行，不把它作为 phase、Search strategy
    或运行时字段。
@@ -58,10 +58,11 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
    相关的观察维度并动态比较。它不读取 hidden 数据，不产生总分或最终推荐，也不改变硬
    PASS/FAIL、数值排名、candidate-local 结算、selection 或 promotion。MainAgent
    不负责定义这些维度，也不要根据 benchmark 类型向 annotator 预埋固定清单。
-   原生 Codex 命令使用与 Pi 一致的显式角色名：`main=A`、`annotator=B`、
-   `workers=C,D`。`UserPromptSubmit` hook 会把 `main=` 与当前 Codex session 的
-   model 比对；Codex hook 不能切换主模型，不匹配时会在创建或编辑 Goal Plus 记录前
-   拒绝命令。`annotator=` 和 `workers=` 仍必须调用
+   Codex 的 main agent 就是已经运行的当前 session；必须在启动 Codex 时或提交
+   `$goal-plus` 前通过 `/model` 选择，不能由 Goal Plus prompt 切换。通常省略
+   `main=`；它只作为兼容的一致性断言，由 `UserPromptSubmit` hook 与当前 session model
+   比对，不匹配时会在创建或编辑 Goal Plus 记录前拒绝命令。真正的角色模型配置使用
+   `annotator=B` 和 `workers=C,D`，并必须调用
    `goal_plus_list_models(host="codex")`，将用户填写的名称解析为唯一可用模型；
    annotator 冻结到 `strategy.evidence_annotator.model`，workers 冻结到
    `strategy.models`。不存在或不唯一时，在创建 run 前直接返回错误。旧的
@@ -212,11 +213,13 @@ Search Mode 用于已冻结、可度量的优化。它把候选工作区创建�
 
 ## Hook 兼容性
 
-此仓库在 `.codex/hooks.json` 提供 Codex 0.144.1 Goal Plus host hook。
+安装版 plugin 在 `hooks/hooks.json` 提供 Codex 0.144.1+ Goal Plus host hook；
+未启用 plugin 的项目本地开发可把 `.codex/hooks.example.json` 复制为
+`.codex/hooks.json`，两种来源不能同时启用。
 它们会为 `UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、
 `Stop` 和 `SubagentStop` 运行 `goal-plus --goal-plus-host-hook`。
-`UserPromptSubmit` 会在模型轮次前预先创建并绑定 `/goal-plus` 或 `$goal-plus`，
-也识别 `/goal-plus-with-final-check` 和显式 `/goal-plus edit` 更新。
+`UserPromptSubmit` 会在模型轮次前预先创建并绑定 `$goal-plus`，
+也识别 `$goal-plus-with-final-check` 和显式 `$goal-plus edit` 更新。
 `SessionStart` 恢复与 session 绑定的 active id。`PreToolUse` 强制执行 Search 和变更
 gate。`PostToolUse(goal_plus_create)` 仍作为兼容绑定后备。Search 候选 subagent 的
 PostTool 事件还会执行一次只读 verifier 时间提示检查；它们绝不会绑定 Goal Plus 所有权，

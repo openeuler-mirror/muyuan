@@ -1,6 +1,7 @@
 # Ultra Orchestration
 
-`/goal-plus` uses one host-neutral execution contract:
+Goal Plus (`$goal-plus` in Codex, `/goal-plus` in Pi) uses one host-neutral
+execution contract:
 
 ```text
 main reasoning=max + proactive delegation + automatic Search routing + until terminal

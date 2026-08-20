@@ -44,10 +44,10 @@ def test_codex_goal_plus_skill_records_modes_and_mcp_tools() -> None:
         ".goal-plus-verifiers/",
         "`expected_outputs`",
         '`workspace.backend="git_worktree"`',
-        "/goal-plus-with-final-check",
-        "/goal-plus edit",
-        "/goal-plus mode=autonomous",
-        "/goal-plus mode=probe",
+        "$goal-plus-with-final-check",
+        "$goal-plus edit",
+        "$goal-plus mode=autonomous",
+        "$goal-plus mode=probe",
         "`raw_goal` 的规范末行",
         "候选 lease 结束绝不会完成",
         "不单独存储任务 deadline",
@@ -104,7 +104,9 @@ def test_codex_mcp_config_registers_search_runtime() -> None:
 
 
 def test_codex_assets_wire_goal_plus_host_hooks() -> None:
-    hooks = json.loads((ROOT / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    hooks = json.loads(
+        (ROOT / ".codex" / "hooks.example.json").read_text(encoding="utf-8")
+    )
     expected_events = {
         "UserPromptSubmit",
         "SessionStart",
@@ -123,7 +125,7 @@ def test_codex_assets_wire_goal_plus_host_hooks() -> None:
         assert handler["timeout"] == 30
 
     text = (ROOT / "docs" / "codex.md").read_text(encoding="utf-8")
-    assert "ships project-local Goal Plus host hooks" in text
+    assert "installed plugin ships Goal Plus host hooks" in text
     assert "PostToolUse(goal_plus_create)" in text
     assert "UserPromptSubmit" in text
     assert "PreToolUse" in text
@@ -131,6 +133,26 @@ def test_codex_assets_wire_goal_plus_host_hooks() -> None:
     assert "blocked until its own verifier submission" in text
     assert "Ordinary subagents do not inherit the parent's next action" in text
     assert "goal-plus --goal-plus-host-hook" in text
+
+
+def test_installed_plugin_is_the_only_default_goal_plus_hook_source() -> None:
+    project_hooks = ROOT / ".codex" / "hooks.json"
+    example_hooks = ROOT / ".codex" / "hooks.example.json"
+    plugin_hooks = ROOT / "hooks" / "hooks.json"
+
+    assert not project_hooks.exists()
+    assert example_hooks.read_bytes() == plugin_hooks.read_bytes()
+    assert ".codex/hooks.json" in (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+
+def test_codex_plugin_default_prompts_use_skill_syntax() -> None:
+    manifest = json.loads(
+        (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+
+    prompts = manifest["interface"]["defaultPrompt"]
+    assert prompts
+    assert all(prompt.startswith("$goal-plus") for prompt in prompts)
 
 
 def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
@@ -183,17 +205,17 @@ def test_codex_assets_document_explicit_role_model_syntax() -> None:
     combined = "\n".join((goal_skill, search_skill, checked_skill, docs))
     normalized_docs = " ".join(docs.split())
 
-    assert "main=A annotator=B workers=C,D" in combined
+    assert "annotator=B workers=C,D" in combined
     assert "main=" in goal_skill
     assert "annotator=" in goal_skill
     assert "workers=" in goal_skill
     assert "`models=` 是 `workers=` 的兼容别名" in combined
     assert "strategy.evidence_annotator.model" in goal_skill
     assert "strategy.models" in goal_skill
-    assert "不能切换主模型" in goal_skill
+    assert "不能由 Goal Plus prompt 切换" in goal_skill
     assert "UserPromptSubmit" in docs
-    assert "cannot switch the main" in docs
-    assert "select the requested Codex model first" in normalized_docs
+    assert "cannot switch" in docs
+    assert "Omit `main=` in normal Codex usage" in normalized_docs
 
 
 def test_codex_search_skill_documents_parallel_loop_policy() -> None:
@@ -535,7 +557,7 @@ def test_codex_final_checker_and_with_check_alias_are_read_only_and_independent(
     assert "launch.fallback_agent_type" in alias
     assert 'fallback_agent_type="default"' in alias
     assert 'fork_turns="none"' in alias
-    assert "/goal-plus resume" in alias
+    assert "$goal-plus resume" in alias
 
 
 def test_codex_docs_record_log_inspection_paths() -> None:
