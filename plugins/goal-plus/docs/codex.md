@@ -13,10 +13,13 @@ install the runtime and plugin with their user-facing package managers:
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
-uv tool install .
+python -m pip install .
 codex plugin marketplace add .
 codex plugin add goal-plus@goal-plus
 ```
+
+Any local Python environment is valid as long as its `goal-plus` executable is
+on the PATH inherited by Codex. Skip the pip command when that is already true.
 
 To remove the Codex integration:
 
@@ -25,8 +28,8 @@ codex plugin remove goal-plus@goal-plus
 codex plugin marketplace remove goal-plus
 ```
 
-Run `uv tool uninstall goal-plus` only after no Pi or Codex installation still
-uses the shared runtime.
+Run `python -m pip uninstall -y goal-plus` only after no Pi or Codex
+installation still uses that Python environment's Goal Plus commands.
 
 Keep the source directory while the plugin is installed because it remains the
 configured local marketplace source.

@@ -14,9 +14,12 @@ install the runtime and Pi package with their user-facing package managers:
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
-uv tool install .
+python -m pip install .
 pi install .
 ```
+
+Any local Python environment is valid as long as its Goal Plus executables are
+on the PATH inherited by Pi. Skip the pip command when that is already true.
 
 Remove the Pi integration with:
 
@@ -24,8 +27,8 @@ Remove the Pi integration with:
 pi remove .
 ```
 
-Run `uv tool uninstall goal-plus` only after no Pi or Codex installation still
-uses the shared runtime.
+Run `python -m pip uninstall -y goal-plus` only after no Pi or Codex
+installation still uses that Python environment's Goal Plus commands.
 
 Keep the source directory while Pi is installed because Pi loads this local
 package directly.

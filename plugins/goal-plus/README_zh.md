@@ -10,15 +10,18 @@ Pi 和 Codex 是当前支持的宿主路径。
 
 ## 安装
 
-### 用户安装（正式）
+### 用户安装
 
 从当前 GitCode 仓库取得 Muyuan，并进入 Goal Plus 源码目录：
 
 ```bash
 git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git
 cd muyuan/plugins/goal-plus
-uv tool install .
+python -m pip install .
 ```
+
+这会把 Goal Plus 命令安装到当前本地 Python 环境。如果这个环境已经能找到
+`goal-plus`，就不需要重复安装 runtime。
 
 使用 Pi 自己的命令安装或卸载 Pi package：
 
@@ -37,10 +40,10 @@ codex plugin remove goal-plus@goal-plus
 codex plugin marketplace remove goal-plus
 ```
 
-所有宿主都卸载后，再删除共用 runtime：
+所有宿主都卸载后，如有需要再从该 Python 环境删除 Goal Plus：
 
 ```bash
-uv tool uninstall goal-plus
+python -m pip uninstall -y goal-plus
 ```
 
 任一宿主仍在使用 Goal Plus 时都要保留这个源码目录：Pi 从这里加载本地 package，
@@ -56,8 +59,7 @@ goal-plus-codex-doctor --project-root .
 
 ### 开发态 checkout
 
-需要 editable 开发时，进入同一个 plugin 目录，并用 checkout 替换非 editable
-runtime：
+需要 editable 开发时，进入同一个 plugin 目录，并安装 checkout 和开发依赖：
 
 ```bash
 cd muyuan/plugins/goal-plus

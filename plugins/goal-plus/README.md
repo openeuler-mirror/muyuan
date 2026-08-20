@@ -19,8 +19,12 @@ source directory:
 ```bash
 git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git
 cd muyuan/plugins/goal-plus
-uv tool install .
+python -m pip install .
 ```
+
+This installs the Goal Plus commands into the active local Python environment.
+If that environment already provides `goal-plus`, no separate runtime install
+is needed.
 
 Install or remove the Pi package with Pi itself:
 
@@ -39,10 +43,11 @@ codex plugin remove goal-plus@goal-plus
 codex plugin marketplace remove goal-plus
 ```
 
-After removing Goal Plus from every host, remove the shared runtime with:
+After removing Goal Plus from every host, optionally remove it from that Python
+environment with:
 
 ```bash
-uv tool uninstall goal-plus
+python -m pip uninstall -y goal-plus
 ```
 
 Keep this source directory while either host is installed. Pi loads the local
@@ -58,8 +63,8 @@ goal-plus-codex-doctor --project-root .
 
 ### Development checkout
 
-For editable development, enter the same plugin directory and replace the
-non-editable runtime with the checkout:
+For editable development, enter the same plugin directory and install the
+checkout with development dependencies:
 
 ```bash
 cd muyuan/plugins/goal-plus
