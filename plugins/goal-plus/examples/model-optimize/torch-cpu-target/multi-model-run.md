@@ -3,6 +3,9 @@
 This is a small live validation of Goal Plus static model selection on the
 deterministic Torch CPU target. It assigns two long-lived candidate lanes to
 different Codex models while both use the same run-wide Annotated Evidence.
+The companion Pi spec runs the same two underlying models through Pi RPC so
+the durable shared-plane evidence can be compared without pretending the two
+hosts have identical native process lifecycle data.
 
 | Candidate slot | Fixed selected model |
 | --- | --- |
@@ -49,6 +52,28 @@ system trust roots. If the network requires a corporate CA, set
 The outer Codex controller model is deliberately unspecified. Worker model
 identity is governed by frozen `strategy.models` and the generated
 `selected_models` lane bindings.
+
+For a Codex/Pi parity run on macOS or Linux, use a fresh checkout/runtime root
+for each host, activate the same Python environment with CPU PyTorch, and keep
+supplemental evidence policy identical:
+
+```bash
+export GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED=1
+export GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED=0
+
+codex exec -m gpt-5.6-terra \
+  --dangerously-bypass-approvals-and-sandbox \
+  --dangerously-bypass-hook-trust \
+  "Use Goal Plus Search Mode to run examples/model-optimize/torch-cpu-target/multi-model-search-spec.json. Freeze this exact spec, create one initial plan for two candidates, run both fixed workers for the 600-second budget with max_parallel=2, continue the same native workers while policy allows, then select, promote, record the result, complete the Goal Plus record, and generate the terminal report."
+
+pi --approve --model openai-codex/gpt-5.6-terra --thinking high -p \
+  "/goal-plus main=openai-codex/gpt-5.6-terra annotator=openai-codex/gpt-5.6-sol workers=openai-codex/gpt-5.6-terra,openai-codex/gpt-5.6-sol max_parallel=2 Use Goal Plus Search Mode to run examples/model-optimize/torch-cpu-target/multi-model-pi-search-spec.json. Freeze this exact spec, create one initial plan for two candidates, run both fixed workers for the 600-second budget, continue the same native sessions while policy allows, then select, promote, record the result, complete the Goal Plus record, and generate the terminal report."
+```
+
+After each run, use [`analyze_run.py`](analyze_run.py) as described in
+[`run-analysis.md`](run-analysis.md). Compare control-plane checks and score
+ranges; exact scores, token use, process IDs, and dispatch counts are
+host/model execution evidence rather than parity requirements.
 
 ## Acceptance evidence
 

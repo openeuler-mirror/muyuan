@@ -25,6 +25,10 @@ validating static model binding: one `gpt-5.6-terra` lane and one
 `gpt-5.6-sol` lane, sharing the run Annotated Evidence. The reproducible
 `scaling`-environment launch command and acceptance evidence are in
 [`multi-model-run.md`](multi-model-run.md).
+`multi-model-pi-search-spec.json` is its Pi RPC counterpart: it preserves the
+same objective, verifier, edit surface, 600-second worker budget, concurrency,
+and underlying Terra/Sol models while changing only the host-qualified model
+references and `worker_host`.
 
 The target includes two intentionally obvious opportunities:
 

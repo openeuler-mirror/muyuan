@@ -511,6 +511,7 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 			run_id: Type.String(),
 			candidate_id: Type.String(),
 			directive: Type.Optional(Type.Union([Type.String(), LooseObject])),
+			worker_budget: Type.Optional(WorkerBudget),
 		},
 		{ additionalProperties: false },
 	),
