@@ -1450,21 +1450,20 @@ def test_redispatch_context_includes_previous_progress_handoff(tmp_path: Path) -
 
     assert context["resume"]["is_redispatch"] is True
     assert context["resume"]["latest_handoff"]["summary"] == "implemented parser skeleton"
-    assert context["resume"]["previous_sessions"] == [
-        {
-            "agent_session_id": first.agent_session_id,
-            "timed_out": True,
-            "runner_failed": False,
-            "assistant_summary": None,
-            "progress_handoff": {
-                "status": "timed_out",
-                "summary": "implemented parser skeleton",
-                "workspace": {"dirty": True, "changed_files": ["initial_program.py"]},
-                "verifier": {"count": 0},
-            },
-            "error": None,
-        }
-    ]
+    assert context["resume"]["previous_session_count"] == 1
+    assert context["resume"]["latest_previous_session"] == {
+        "agent_session_id": first.agent_session_id,
+        "timed_out": True,
+        "runner_failed": False,
+        "assistant_summary": None,
+        "progress_handoff": {
+            "status": "timed_out",
+            "summary": "implemented parser skeleton",
+            "workspace": {"dirty": True, "changed_files": ["initial_program.py"]},
+            "verifier": {"count": 0},
+        },
+        "error": None,
+    }
     assert context["resume"]["workspace"]["dirty"] is False
     assert resumed.launch["budget_control"]["max_runtime_seconds"] == 120
 
@@ -2033,8 +2032,10 @@ def test_codex_continue_agent_session_uses_bound_worker_and_budget(tmp_path: Pat
     assert continued.launch["target"] == "search_agent_0001"
     assert continued.launch["budget_control"]["max_runtime_seconds"] == 900
     assert continued.counters["resume_dispatches"] == 1
-    assert "理论或结构限制" in continued.launch["message"]
-    assert "返回前，在候选工作区创建 `.tmp/handoff.json`" in continued.launch["message"]
+    assert "沿用已加载的运行时上下文和 Evidence" in continued.launch["message"]
+    assert "返回前，在候选工作区创建 `.tmp/handoff.json`" not in continued.launch[
+        "message"
+    ]
 
 
 @pytest.mark.pi
@@ -2228,7 +2229,10 @@ def test_get_agent_context_has_only_authoritative_worker_fields(tmp_path: Path) 
         assert forbidden not in context, f"get_agent_context must not return {forbidden}"
     assert context["candidate_task"]["candidate_id"] == tasks[0].candidate_id
     assert "history" not in context
-    assert "iterations" in context
+    assert "iterations" not in context
+    assert "results" not in context
+    assert context["iteration_count"] == 0
+    assert context["recent_iterations"] == []
 
 
 def test_agent_session_ids_are_unique_across_runs(tmp_path: Path) -> None:
@@ -3427,7 +3431,10 @@ def test_results_tsv_is_committed_and_runtime_enforces_one_row_per_report(
     redispatched = runtime.redispatch_candidate(run_id, candidate_id)
     context = runtime.get_agent_context(redispatched.agent_session_id)
     assert context["results_tsv"] == str(results_path)
-    assert len(context["results"]) == 2
+    assert context["result_count"] == 2
+    assert context["latest_result"]["hypothesis"] == (
+        "probe denied configuration change"
+    )
 
     report = runtime.report(run_id).read_text(encoding="utf-8")
     relative_results = f"workspace/{candidate_id}/results.tsv"
@@ -3523,7 +3530,8 @@ def test_legacy_tmp_results_tsv_migrates_and_backfills_missing_iterations(
     assert len(migrated_lines) == 3
     assert migrated_lines[1] == current_lines[1]
     assert migrated_lines[2].endswith("\tpass\trecovered iteration 2")
-    assert len(context["results"]) == 2
+    assert context["result_count"] == 2
+    assert context["latest_result"]["hypothesis"] == "recovered iteration 2"
     migrated_record = runtime._load_candidate_record(run_id, candidate_id)
     assert migrated_record.results_ledger_git_head is not None
     assert len(migrated_record.results_ledger) == 2
@@ -3787,7 +3795,7 @@ def test_list_iterations_returns_all_records(
     assert all(it["agent_session_id"] == session.agent_session_id for it in iterations)
 
 
-def test_get_agent_context_returns_iterations(
+def test_get_agent_context_returns_bounded_iteration_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = make_project(tmp_path)
@@ -3822,12 +3830,21 @@ def test_get_agent_context_returns_iterations(
         hypothesis="Context iteration",
     )
 
+    for iteration_number in range(2, 6):
+        runtime.run_verifier(
+            run_id,
+            candidate_id,
+            agent_session_id=session.agent_session_id,
+            hypothesis=f"Context iteration {iteration_number}",
+        )
+
     context = runtime.get_agent_context(session.agent_session_id)
-    assert "iterations" in context
-    assert len(context["iterations"]) == 1
-    assert context["iterations"][0]["iteration"] == 1
-    assert context["iterations"][0]["score"] == 0.42
-    assert context["iterations"][0]["agent_session_id"] == session.agent_session_id
+    assert "iterations" not in context
+    assert context["iteration_count"] == 5
+    assert [item["iteration"] for item in context["recent_iterations"]] == [3, 4, 5]
+    assert context["best_iteration"]["iteration"] == 5
+    assert context["best_iteration"]["score"] == 0.42
+    assert "metrics" not in context["recent_iterations"][-1]
 
 
 def test_history_and_report_include_agent_sessions(tmp_path: Path) -> None:

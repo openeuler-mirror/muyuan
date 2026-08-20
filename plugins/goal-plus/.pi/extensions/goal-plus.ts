@@ -592,7 +592,7 @@ const RuntimeToolDescriptions: Record<string, string> = {
 	search_create:
 		"从 frozen_spec_id 创建 Search run。初始 run 必须省略 source_run_id，或在 strict schema 下传 null；仅在已有真实前驱时传入准确的 run_* ID，绝不能传 initial 或 in_progress。",
 	search_get_agent_context:
-		"读取当前 worker 的权威 candidate 上下文。candidate_task.share_out_dir 非空表示已启用 shared_dir：同一 run 内可供 peer 使用的 repeated_sequence、domain_probe、parser_or_trace 或 peer_setup_reduction 默认应工具化；短小、任务专属、来自临时代码片段或只输出退出码都不是排除理由。只有 single_common_command、logic_free_wrapper、restricted_artifact、candidate_private_state 或 duplicate_snapshot 支持 not_applicable。",
+		"读取当前 worker 的紧凑权威 candidate 上下文，包括最近三轮、最佳轮次和 results.tsv 路径。candidate_task.share_out_dir 非空表示已启用 shared_dir：同一 run 内可供 peer 使用的 repeated_sequence、domain_probe、parser_or_trace 或 peer_setup_reduction 默认应工具化；短小、任务专属、来自临时代码片段或只输出退出码都不是排除理由。只有 single_common_command、logic_free_wrapper、restricted_artifact、candidate_private_state 或 duplicate_snapshot 支持 not_applicable。",
 	search_get_global_evidence:
 		"读取当前 run 的窄 Global Evidence 视图。每项包含 verifier attempt commit、硬 score、keep/retain/discard/failure disposition、可能延迟的客观 View、可选 supplemental evaluation 的可用标记，以及启用 shared_dir 后已由 annotator 描述并由 runtime 绑定的 shared_tools/tool_view。任一 View 为 null 时都无需等待，可先依据 Evidence 独立探索。",
 	search_copy_shared_tool:
@@ -603,6 +603,8 @@ const RuntimeToolDescriptions: Record<string, string> = {
 		"按需展开一条已结算 Evidence 的 supplemental evaluation。仅当 agent context 声明该能力开启且目标行 supplemental_available=true 时调用；independent 模式只允许读取自己的 candidate。",
 	search_run_verifier:
 		"为一个候选评分。worker process verifier 必须提供一句话 hypothesis，并在 shared_dir 启用时提交 toolization_decision：staged 至少包含一个正向 signal 和实际 tool_names；not_applicable 必须给出具体 exclusion，不能只写不复用。runtime 以 staging inventory 和 publication settlement 为权威，只把 toolization_review_missing、toolization_stage_missing 或 toolization_decision_mismatch 记录为 monitor/report advisory；它们不改变结算、硬 score、选择或 promotion。工具化目标仅是降低同一 run 内 peer 重建诊断流程的成本，不要求跨项目通用。每份报告都会在运行时拥有、继承而来的 workspace/results.tsv 中追加且只追加一条已验证记录，并提交该文件。process verifier 返回 keep/retain/discard/failure disposition；严格改善为 keep，同分为 retain 并成为 candidate-local 最新基线，只有退化或验证失败时恢复此前硬分最佳。开放式补充评价和动态 peer 比较不改变结算、硬 score 或最终 PASS/FAIL。带 candidate_action=stop_and_report 的 VerifierWorkspaceSideEffect 属于基础设施失败：worker 必须停止，不能清理或重试，使父级能够修复并重新冻结。",
+	search_list_iterations:
+		"返回指定 candidate 可能很大的全量 iteration 历史。worker 仅可使用当前 agent context 中自己的 run_id/candidate_id，并且只在紧凑 context、results.tsv 和 Git 无法回答旧轮次的准确 metrics、failure 或 provenance 时调用；不用于常规刷新。",
 	search_invalidate_run:
 		"主 agent 确认 verifier 契约、覆盖范围、确定性、目标对齐或基础设施失败后，原子地隔离该 run。随后中断每个 host worker，等待 active worker 数归零，修复并重新冻结，再使用 source_run_id 创建后继项。",
 	search_report:
@@ -1578,7 +1580,7 @@ export default function (pi: ExtensionAPI) {
 			pi.sendMessage(
 				{
 					customType: "goal-plus-worker-continuation",
-					content: "继续当前 Candidate 会话。lease 尚未进入 closeout；刷新运行时上下文和可见证据，推进一个实质方向。只有产物发生实质变化后才运行 verifier，不要重复验证未修改的产物。",
+					content: "继续当前 Candidate 会话。沿用已加载的运行时上下文和 Evidence；探索新方向。只有产物发生实质变化后才运行 verifier，不要重复验证未修改的产物。",
 					display: false,
 					details: { workerContinuationCount, workerContinueUntilMs },
 				},

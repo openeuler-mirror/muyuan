@@ -261,12 +261,15 @@ def test_codex_search_skill_documents_state_level_resume() -> None:
     assert "candidate-local history 由运行时拥有，不是 `plan.md` 文件" in text
     assert "状态级恢复" in text
     assert "context.history" not in text
-    assert "context.iterations" in text
+    assert "context.recent_iterations" in text
+    assert "context.latest_result" in text
+    assert "search_list_iterations" in text
     assert "worker_budget.max_runtime_seconds" in text
     assert "search_redispatch_candidate" in text
     assert "一次派发" in text
     assert "handoff metadata" in text
-    assert "不要依赖聊天记录" in agent
+    assert "context.recent_iterations" in agent
+    assert "可能很大的全量历史" in agent
 
 
 def test_codex_worker_agent_calls_context_and_verifier() -> None:
@@ -284,31 +287,27 @@ def test_codex_worker_agent_calls_context_and_verifier() -> None:
     assert "不得直接运行任务自带的 `runner`、`evaluator` 或 `grader`" in text
     assert "所有正确性与指标反馈必须通过 `search_run_verifier`" in text
     assert "不要传 `scope`" in text
-    assert "run_id=..., candidate_id=..., agent_session_id=..., hypothesis=..., toolization_decision=..." in text
+    assert "run_id=..., candidate_id=..., agent_session_id=..., hypothesis=..." in text
     assert "工作区根目录" in text
     assert "且只追加一条已验证记录" in text
     assert "view=null" in text
     assert "hypothesis" in text
-    assert "search_copy_shared_tool" in text
-    assert "search_stage_shared_tool" in text
-    assert ".tmp/tool-drafts" in text
-    assert "repeated_sequence" in text
-    assert "domain_probe" in text
-    assert "parser_or_trace" in text
-    assert "peer_setup_reduction" in text
-    assert "not_applicable" in text
-    assert "staging inventory 始终是权威事实" in text
+    assert "candidate_task.share_out_dir" not in text
+    assert "search_copy_shared_tool" not in text
+    assert "search_stage_shared_tool" not in text
+    assert "toolization_decision" not in text
     assert "required-column-probe" not in text
     assert "mutation-check-trace" not in text
     assert "Astropy" not in text
-    assert "receipt" in text
-    assert "shared_tools[*].tool_view" in text
     assert "git diff HEAD <commit> -- <allowed-file>" in text
     assert "一条自主 Search 循环" in text
     assert "不要等待父 agent 选择方向" in text
     assert "search_select" in text
     assert "search_report" in text
     assert "search_promote" in text
+    assert "VerifierDeadlineInsufficient" in text
+    assert "不要重复验证未修改的产物" in text
+    assert "验证未修改的\n初始状态" in text
 
 
 def test_codex_search_reuses_exact_worker_evidence_before_parent_verification() -> None:

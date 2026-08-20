@@ -36,7 +36,7 @@ goal can retain multiple search tasks.
 | `search_status` | read budget use, candidates, and current best |
 | `search_invalidate_run` | atomically fence a run after main-confirmed verifier inadequacy |
 | `search_list_history` | rank candidates and return current-run feature/verifier research rollups |
-| `search_list_iterations` | inspect every verifier iteration for one candidate |
+| `search_list_iterations` | explicitly inspect the potentially large full verifier history for one candidate |
 | `goal_plus_monitor_snapshot` | read combined goal/run/session/host evidence without controlling workers |
 
 ### Initial candidate allocation
@@ -98,7 +98,7 @@ feature ledger, and scoped pitfalls. It marks predecessor scores non-reusable.
 | `search_redispatch_candidate` | main | create a fresh session in the same candidate workspace |
 | `search_bind_agent_handle` | main/host driver | attach a Codex or Pi native handle |
 | `search_continue_agent_session` | main | return native same-worker continuation fields when supported |
-| `search_get_agent_context` | candidate worker | load authoritative ids, workspace, candidate-local iterations/results, and resume data |
+| `search_get_agent_context` | candidate worker | load authoritative ids, workspace, bounded recent/best candidate history, results ledger path, and resume data |
 | `search_get_global_evidence` | candidate worker | project settled worker attempts in the current run as score, disposition, exact attempt commit, and a possibly delayed objective View |
 | `search_stage_shared_tool` | candidate worker | copy explicit sources from the caller's `.tmp/tool-drafts/` into bounded `.tmp/share-out` staging; this does not publish them |
 | `search_copy_shared_tool` | candidate worker | copy a Tool View-bound shared-dir snapshot into the caller's local inbox for reversible verification |
@@ -116,6 +116,11 @@ false, workers do not wait for or request supplemental evaluation. When enabled,
 `search_get_global_evidence` adds only `supplemental_available=true`; full summary,
 dimensions, peer comparisons, and limitations are
 fetched for a selected immutable row through `search_get_evidence_detail`.
+The default context is bounded: `latest_result`, `best_iteration`, and
+`recent_iterations` replace the former complete `results` and `iterations`
+arrays, while `result_count`, `iteration_count`, and `results_tsv` retain exact
+history provenance. `search_list_iterations` remains the explicit, potentially
+large full-history path for rare inspection of older verifier details.
 
 Worker process verifier calls require a one-line `hypothesis` describing the
 realized attempt. With `shared_dir` enabled they may also include a

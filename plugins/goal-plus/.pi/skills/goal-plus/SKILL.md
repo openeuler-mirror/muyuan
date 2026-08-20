@@ -195,9 +195,8 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
    固定中性 continuation prompt：
 
    ```text
-   根据最新提交的证据继续同一条自主搜索循环。
-   刷新运行时上下文，自行选择下一个有证据支持的假设，
-   验证每项实质变更，并在仍有分配预算时继续工作。
+   沿用已加载的运行时上下文和 Evidence 继续同一条自主搜索循环，
+   探索下一个有证据支持的方向，并验证每项实质变更。
    ```
 
    Pi continuation 是跨进程原生 session continuation：supervisor 在同一工作区启动新的
@@ -328,9 +327,11 @@ closeout 或时间提示都只是历史；只遵守最新 launch 之后收到的
 而 `latest_score` 和 `latest_process_passed` 保留后续 timeout 或 regression 供诊断。
 
 candidate-local history 由运行时拥有，不是本地 plan 文件。worker 必须先调用
-`search_get_agent_context`，并使用 `context.resume`、`context.iterations`、
-`context.results` 和继承的 `context.results_tsv` 作为恢复来源。每轮修改前读取
-`search_get_global_evidence`。其他 candidate 的尝试只通过这个窄视图披露；`view=null`
+`search_get_agent_context`，并使用 `context.resume`、`context.latest_result`、
+`context.best_iteration`、`context.recent_iterations` 和继承的 `context.results_tsv` 作为恢复
+来源。只有紧凑上下文、results.tsv 和 Git 无法回答旧轮次的准确 verifier 事实时，worker
+才为自己的 candidate 调用可能很大的 `search_list_iterations`。首次修改前读取
+`search_get_global_evidence`，此后遵循定期和停滞刷新节奏。其他 candidate 的尝试只通过这个窄视图披露；`view=null`
 只表示 annotator 尚未更新，worker 不等待或轮询，先依据 commit、score、disposition 和
 自己的推理独立探索。`context.supplemental_evaluation_enabled=false` 时不要
 等待或尝试读取补充评价；启用时仅以 `supplemental_available` 标记可展开的行。仅在线路
@@ -352,8 +353,8 @@ process verifier 同时返回 candidate-local `disposition`：严格改善为 `k
 应使用其中任务特定的结果和问题，避免重复失败变体。
 
 需要候选工具共享时，冻结 spec 必须显式设置 `shared_dir.enabled=true`；
-默认关闭。候选侧的发布、Tool View、复制与采用规则由
-`.pi/prompts/search-candidate-worker.md` 执行。worker 将显式 source drafts 放在
+默认关闭。runtime 仅在启用时把候选侧的发布、Tool View、复制与采用规则写入
+`candidate_task.instructions`；静态 worker prompt 不预载这些规则。worker 将显式 source drafts 放在
 `.tmp/tool-drafts/`，可用 `search_stage_shared_tool` 安全生成 staging，并在每次归属明确的
 process verifier 中提交 `toolization_decision`。决策与 advisory 只进入 iteration、monitor 和
 report；实际 staging inventory 与 passing verifier settlement 始终是发布权威，决策本身不进入

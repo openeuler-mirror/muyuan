@@ -118,10 +118,12 @@ worker，再冻结修正后的 spec，创建 successor run。旧分数不能跨�
 
 ## Candidate 循环
 
-每个 candidate iteration 只需要以下协议：
+每条 candidate lane 使用以下协议：
 
-1. 调用 `search_get_agent_context` 读取自己的权威状态和历史。
-2. 调用 `search_get_global_evidence` 读取当前 run 的共享视图。
+1. 首次启动或跨进程恢复时调用 `search_get_agent_context`，读取自己的权威状态、最佳轮次和
+   最近三轮；同进程 continuation 沿用已加载上下文。完整自身历史保留在 `results.tsv`、Git
+   和按需使用的 `search_list_iterations` 中，不随恢复默认回灌。
+2. 首次修改前调用 `search_get_global_evidence`，此后按周期或停滞节点刷新当前 run 的共享视图。
 3. 独立选择方向，只修改自己的工作区。
 4. 启用 `shared_dir` 时回顾本轮及此前 iteration 的命令序列、临时代码片段和 scratch
    scripts。命中正向工具化信号时，从 `.tmp/tool-drafts/` 显式选择源文件并调用

@@ -391,7 +391,8 @@ def test_run_pi_search_candidate_refreshes_with_new_native_session(
     assert len(runtime._load_agent_sessions(run_id)) == 2
     context = runtime.get_agent_context(refreshed["agent_session_id"])
     assert context["resume"]["is_redispatch"] is True
-    assert context["resume"]["previous_sessions"][0]["agent_session_id"] == (
+    assert context["resume"]["previous_session_count"] == 1
+    assert context["resume"]["latest_previous_session"]["agent_session_id"] == (
         first["agent_session_id"]
     )
 

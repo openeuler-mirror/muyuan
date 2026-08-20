@@ -102,6 +102,7 @@ VERIFIER_TERM_GRACE_SECONDS = 0.5
 MAX_EVIDENCE_ANNOTATION_DIFF_BYTES = 1024 * 1024
 MAX_EVIDENCE_COMPARISON_PEERS = 8
 MAX_EVIDENCE_PEER_DIFF_BYTES = 64 * 1024
+AGENT_CONTEXT_RECENT_ITERATIONS = 3
 EVIDENCE_ANNOTATOR_MODEL_ENV = "GOAL_PLUS_EVIDENCE_ANNOTATOR_MODEL"
 EVIDENCE_ANNOTATOR_REASONING_ENV = "GOAL_PLUS_EVIDENCE_ANNOTATOR_REASONING_EFFORT"
 EVIDENCE_ANNOTATOR_BASE_URL_ENV = "GOAL_PLUS_EVIDENCE_ANNOTATOR_BASE_URL"
@@ -1371,8 +1372,9 @@ class FileSearchRuntime:
             "previous_agent_session_ids": previous_session_ids,
             "resume_instruction": (
                 "这是现有候选的新 worker session。首先调用 search_get_agent_context，"
-                "将其中本 candidate 的 iterations/results 作为权威恢复上下文，"
-                "再读取 search_get_global_evidence。"
+                "使用其中本 candidate 的紧凑历史和 results.tsv 恢复权威上下文；仅在必须"
+                "核对旧轮次详情时调用 search_list_iterations，再读取 "
+                "search_get_global_evidence。"
             ),
         }
         return self._create_agent_session(
@@ -1664,6 +1666,26 @@ class FileSearchRuntime:
         adapter = get_agent_host_adapter(session.host)
         return adapter.collect_observability(session)
 
+    @staticmethod
+    def _agent_iteration_context(iteration: IterationRecord) -> dict[str, Any]:
+        return {
+            "iteration": iteration.iteration,
+            "score": iteration.score,
+            "process_passed": iteration.process_passed,
+            "git_head": iteration.git_head,
+            "attempt_base_git_head": iteration.attempt_base_git_head,
+            "attempt_changed_files": list(iteration.attempt_changed_files),
+            "failure_class": iteration.failure_class,
+            "hypothesis": iteration.hypothesis,
+            "disposition": iteration.disposition,
+            "restored_to_iteration": iteration.restored_to_iteration,
+            "restored_to_git_head": iteration.restored_to_git_head,
+            "workspace_git_head_after_settlement": (
+                iteration.workspace_git_head_after_settlement
+            ),
+            "created_at": iteration.created_at,
+        }
+
     def get_agent_context(self, agent_session_id: str) -> dict[str, Any]:
         """Subagent first call. Returns the authoritative ids, workspace, and
         candidate context. The subagent must treat prompt-supplied ids as
@@ -1722,6 +1744,13 @@ class FileSearchRuntime:
             continuation_mode == "native_session" and dispatch_count > 0
         )
         supplemental_enabled = supplemental_evaluation_enabled()
+        best_iteration = self._best_iteration_record(
+            candidate_record,
+            frozen.spec.metric_direction,
+        )
+        recent_iterations = candidate_record.iterations[
+            -AGENT_CONTEXT_RECENT_ITERATIONS:
+        ]
         return {
             "agent_session_id": session.agent_session_id,
             "run_id": session.run_id,
@@ -1732,7 +1761,9 @@ class FileSearchRuntime:
             ),
             "model_provenance": session.model_provenance,
             "host": session.host,
-            "host_handle": session.host_handle.model_dump(mode="json"),
+            "host_handle": session.host_handle.model_dump(
+                mode="json", exclude={"metadata"}
+            ),
             "directive": session.directive,
             "workspace": str(session.workspace),
             "objective": frozen.spec.objective,
@@ -1741,16 +1772,31 @@ class FileSearchRuntime:
             "run_budget": frozen.spec.budget.model_dump(mode="json"),
             "candidate_task": candidate_record.task.model_dump(mode="json"),
             "results_tsv": str(results_tsv),
-            "results": [
-                entry.model_dump(mode="json")
-                for entry in candidate_record.results_ledger
+            "result_count": len(candidate_record.results_ledger),
+            "latest_result": (
+                candidate_record.results_ledger[-1].model_dump(mode="json")
+                if candidate_record.results_ledger
+                else None
+            ),
+            "iteration_count": len(candidate_record.iterations),
+            "recent_iterations": [
+                self._agent_iteration_context(iteration)
+                for iteration in recent_iterations
             ],
+            "best_iteration": (
+                self._agent_iteration_context(best_iteration)
+                if best_iteration is not None
+                else None
+            ),
             "resume": {
                 "is_redispatch": bool(session.directive.get("state_level_resume")),
                 "is_native_session_resume": is_native_session_resume,
                 "mode": continuation_mode if is_native_session_resume else None,
                 "dispatch_count": dispatch_count,
-                "previous_sessions": previous_sessions,
+                "previous_session_count": len(previous_sessions),
+                "latest_previous_session": (
+                    previous_sessions[-1] if previous_sessions else None
+                ),
                 "latest_handoff": latest_handoff,
                 "workspace": {
                     "git_head": self._git_head(candidate_record.task.workspace),
@@ -1761,7 +1807,6 @@ class FileSearchRuntime:
                     ),
                 },
             },
-            "iterations": self.list_iterations(session.run_id, session.candidate_id),
         }
 
     def get_global_evidence(self, agent_session_id: str) -> list[dict[str, Any]]:
@@ -3449,8 +3494,8 @@ class FileSearchRuntime:
         worker_agent_type = self._candidate_worker_agent_type(frozen, candidate_record)
         short_intent = "继续同一条自主候选循环"
         directive_text = (
-            "根据最新提交的证据继续同一条自主搜索循环。刷新运行时上下文，"
-            "自行选择下一个有证据支持的假设，并验证每项实质变更。"
+            "沿用已加载的运行时上下文和 Evidence 继续同一条自主搜索循环，"
+            "探索下一个有证据支持的方向，并验证每项实质变更。"
         )
 
         adapter = get_agent_host_adapter(session.host)
@@ -3490,7 +3535,9 @@ class FileSearchRuntime:
         if prompt_path.exists():
             return prompt_path.read_text(encoding="utf-8")
         return (
-            "首先调用 search_get_agent_context。只能在候选工作区中工作。"
+            "首先调用 search_get_agent_context；它只返回紧凑历史。只有紧凑字段、results.tsv "
+            "和 Git 无法回答旧轮次的准确 verifier 事实时，才为自己的 candidate 调用 "
+            "search_list_iterations。只能在候选工作区中工作。"
             "首次编辑前读取 search_get_global_evidence；此后每完成 3 次 verifier iteration "
             "刷新一次，连续两轮没有提升或切换技术路线时提前刷新；verifier 已注入的 "
             "global_evidence_snapshot 算作刷新。修改后带一句话 hypothesis 调用 "
@@ -3630,7 +3677,7 @@ class FileSearchRuntime:
             "只能修改 allowed_files 中列出的文件；绝不能触碰 denied_files 或冻结的 verifier 产物。",
             "不要删除、移动或清理文件；禁止 rm、mv、rmdir、unlink、trash 和 find -delete 等破坏性命令。",
             "使用 git status、git diff 和 git log 分析工作区；runtime 拥有 verifier-backed iteration 的提交和回滚，不要自行 reset、restore 或 checkout 已验证状态。",
-            "所有评分都必须通过 goal-plus_search_run_verifier；不要通过 bash 直接运行 process_verifiers 命令，也不要自行编写评分器。",
+            "所有评分都必须通过 search_run_verifier；不要通过 bash 直接运行 process_verifiers 命令，也不要自行编写评分器。",
             "首次修改前调用 search_get_global_evidence；此后无需每轮读取，每完成 3 次 search_run_verifier iteration 刷新一次，连续两轮没有提升或准备切换技术路线时提前刷新。若 verifier 返回 global_evidence_injected=true，其中的 global_evidence_snapshot 已完成本次刷新，无需重复调用。结合 Evidence 和本地代码独立思考，不需要等待尚未生成的 View。",
             "把 context.agent_session_id 传给 search_run_verifier，并省略 scope 以使用 process verifier；同时用一句话 hypothesis 客观概括本轮实际尝试。",
             "每次 run_verifier 调用都会记录一个 iteration。在配置的 host 预算内工作。尽早完成并验证候选，在达到限制前停止启动新的优化 iteration，并留出足够时间返回简洁摘要。",

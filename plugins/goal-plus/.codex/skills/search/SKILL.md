@@ -126,9 +126,8 @@ strategy:
    映射到现有 task 的 `followup_task`。严格使用以下中性消息：
 
    ```text
-   根据最新提交的证据继续同一条自主搜索循环。
-   刷新运行时上下文，自行选择下一个有证据支持的假设，
-   验证每项实质变更，并在仍有分配预算时继续工作。
+   沿用已加载的运行时上下文和 Evidence 继续同一条自主搜索循环，
+   探索下一个有证据支持的方向，并验证每项实质变更。
    ```
 
    不要提及父级偏好的方向、特性迁移、宏观重启或基于排名的判断。恢复后的 worker
@@ -196,11 +195,14 @@ continuation 预算根据外层剩余时间和最终收尾预留推导，而不�
 ## 运行时历史与状态级恢复
 
 candidate-local history 由运行时拥有，不是 `plan.md` 文件。worker 通过
-`search_get_agent_context` 恢复自己的 `context.iterations`、`context.results`、
-`context.results_tsv`、工作区 Git 状态和有界 handoff metadata。其他 candidate 的尝试
-只通过窄 `search_get_global_evidence` 视图披露。每轮修改前读取一次；`view=null` 只表示
-annotator 尚未更新，worker 可先依据 commit、score、disposition 和自己的推理独立探索，
-不等待或轮询。`context.supplemental_evaluation_enabled=false` 时不要等待或
+`search_get_agent_context` 恢复自己的 `context.latest_result`、`context.best_iteration`、
+`context.recent_iterations`、`context.results_tsv`、工作区 Git 状态和有界 handoff metadata。
+只有紧凑上下文、results.tsv 和 Git 无法回答旧轮次的准确 verifier 事实时，worker 才为
+自己的 candidate 调用可能很大的 `search_list_iterations`。其他 candidate 的尝试
+只通过窄 `search_get_global_evidence` 视图披露。首次修改前读取，之后每完成 3 次 verifier
+iteration、连续两轮没有提升或准备切换路线时刷新；`view=null` 只表示 annotator 尚未更新，
+worker 可先依据 commit、score、disposition 和自己的推理独立探索，不等待或轮询。
+`context.supplemental_evaluation_enabled=false` 时不要等待或
 尝试读取补充评价；启用时仅以 `supplemental_available` 标记可展开的行。worker 仅在
 路线停滞、结构性分数跃升、hidden 泛化风险或
 官方/本地结果背离时，通过 `search_get_evidence_detail` 按需读取完整评价，且不重复读取同一
@@ -231,7 +233,7 @@ inbox 并重新验证。下一次 worker verifier 原子消费 receipt。Tool Vi
 host transcript 是有用上下文，但不是权威 Search 状态。
 
 Codex 的同 worker continuation 使用 `search_continue_agent_session`，随后对现有 task
-调用 `followup_task`。worker 必须在每个恢复轮次开始时刷新上下文。
+调用 `followup_task`。worker 沿用已加载的运行时上下文和 Evidence，继续自主探索。
 
 只有原始 native worker 无法继续时才使用 `search_redispatch_candidate`。
 重新派发必须保留相同 candidate/workspace。它是恢复手段，不是引入另一搜索方向的常规方式。

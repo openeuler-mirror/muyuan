@@ -191,8 +191,9 @@ Prefer native continuation while the Codex worker remains available:
 search_continue_agent_session -> followup_task
 ```
 
-The follow-up directive is neutral: refresh durable context and continue the
-same autonomous loop. Main does not supply a preferred technical direction.
+The follow-up directive is neutral: preserve the loaded runtime context and
+Evidence while continuing the same autonomous loop. Main does not supply a
+preferred technical direction.
 
 If the worker is gone or a fresh context is intentional, use
 `search_redispatch_candidate`. The new session uses the same workspace, Git
