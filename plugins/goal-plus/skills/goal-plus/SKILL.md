@@ -19,6 +19,10 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
    `goal_plus_create(raw_goal=..., policy={"execution":{"host":{"host_id":"codex",
    "native_reasoning_effort":"max","enforcement":"requested","operations":
    ["spawn","send","wait","interrupt","observe"]}}})` 作为兼容后备。
+   仅在新记录的首轮，由 Main 语义检查原始目标或当前对话上下文是否明确给出了整个 Goal
+   Plus 任务的最大运行时间；如果没有，先简短告知用户：“当前未设置最大运行时间，Goal
+   Plus 将持续运行直至目标完成或用户手动停止。”这只是告知，不询问、不等待确认，随后
+   立即继续执行。
    `$goal-plus-with-final-check` 会预先创建，并设置
    `policy.final_check.mode="required"`。`$goal-plus edit <完整的修订目标>`
    会在模型轮次前更新同一记录；使用新的 `goal_revision`，不要继续旧修订版。

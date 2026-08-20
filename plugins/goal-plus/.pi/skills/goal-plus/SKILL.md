@@ -8,6 +8,10 @@ description: 当 Pi 收到可能需要 Goal Mode、Spec Discovery Mode、有界 
 ## 入口契约
 
 原生 Pi `/goal-plus` 命令会在模型轮次开始前创建 Goal Plus 记录。
+仅在新记录的首轮，由 Main 语义检查原始目标或当前对话上下文是否明确给出了整个 Goal
+Plus 任务的最大运行时间；如果没有，先简短告知用户：“当前未设置最大运行时间，Goal
+Plus 将持续运行直至目标完成或用户手动停止。”这只是告知，不询问、不等待确认，随后
+立即继续执行。
 入口在 Main 模型选择后把逻辑 `thinking=max` 映射为 Pi `xhigh` 请求，并记录 Pi 按模型能力
 钳制后的实际档位；如果 reasoning 被钳制为 `off`，则拒绝启动，不静默降级。
 `/goal-plus-with-final-check` 创建记录时会设置 `policy.final_check.mode="required"`。

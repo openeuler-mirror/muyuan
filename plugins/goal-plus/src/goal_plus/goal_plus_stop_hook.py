@@ -1167,7 +1167,12 @@ def _select_hook_goal_id(search_root: Path, hook_input: dict[str, Any]) -> str |
     )
 
 
-def _goal_context(record: Any, *, role_model_context: str = "") -> str:
+def _goal_context(
+    record: Any,
+    *,
+    role_model_context: str = "",
+    initial_start: bool = False,
+) -> str:
     next_action = record.next_action
     next_action_text = (
         f"{next_action.kind}: {next_action.description}"
@@ -1185,6 +1190,14 @@ def _goal_context(record: Any, *, role_model_context: str = "") -> str:
         if current_work
         else "尚未规划"
     )
+    start_notice = (
+        "这是新创建记录的首轮。由你语义检查原始目标或当前对话上下文是否明确给出了整个 "
+        "Goal Plus 任务的最大运行时间；如果没有，先用一句简短 commentary 告知用户："
+        "‘当前未设置最大运行时间，Goal Plus 将持续运行直至目标完成或用户手动停止。’"
+        "这只是告知，不要询问或等待确认；告知后立即继续执行。\n"
+        if initial_start
+        else ""
+    )
     context = (
         f"此 Codex session 的 Goal Plus 处于 active：goal_plus_id={record.goal_plus_id}。\n"
         "运行时记录已经存在；不要再次调用 goal_plus_create。\n"
@@ -1194,6 +1207,7 @@ def _goal_context(record: Any, *, role_model_context: str = "") -> str:
         f"当前工作项：{work_text}。\n"
         f"最终检查 policy：{record.policy.get('final_check', {'mode': 'disabled'})}。\n"
         f"当前 phase：{record.phase}；next action：{next_action_text}\n"
+        f"{start_notice}"
         "本轮加载并遵循 goal-plus skill。主 Agent 使用 max 推理强度并主动编排普通 subagent；"
         "用 goal_plus_upsert_work_items 建立计划，用 goal_plus_record_work_event 记录简短交互摘要，"
         "适合可度量并行探索的工作项自动路由到 Search。\n"
@@ -1345,6 +1359,7 @@ def _handle_user_prompt_submit(
     goal_id = _select_session_goal_id(search_root, session_id)
     request = _goal_plus_request(hook_input)
     role_models: dict[str, str] | None = None
+    initial_start = False
     raw_goal = request.get("raw_goal") if request is not None else None
     if (
         request is not None
@@ -1398,6 +1413,7 @@ def _handle_user_prompt_submit(
             policy=policy,
         )
         goal_id = record.goal_plus_id
+        initial_start = True
     if goal_id is None or session_id is None:
         return
     record = runtime.activate_session(
@@ -1414,6 +1430,7 @@ def _handle_user_prompt_submit(
         _goal_context(
             record,
             role_model_context=_role_model_context(role_models, hook_input),
+            initial_start=initial_start,
         ),
     )
 

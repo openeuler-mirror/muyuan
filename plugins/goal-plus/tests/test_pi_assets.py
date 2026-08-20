@@ -61,6 +61,10 @@ def test_pi_goal_plus_prompt_starts_with_create_call() -> None:
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in text
     assert "固定的 `/tmp`" in text
     assert "`goal_plus_record_triage` 之前不要读取或审计目标文件" in text
+    assert "当前未设置最大运行时间" in text
+    assert "当前对话上下文" in text
+    assert "不要询问或等待确认" in text
+    assert "告知后立即继续执行" in text
     assert "feature_plugins=[\"orchestration\"]" in text
     assert "`main=` 只表示入口已校验当前" in text
     assert "入口没有切换模型" in text
@@ -131,6 +135,9 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "绝不能生成中间 Goal Plus" in text
     assert "只有 Goal Plus 记录达到终态" in text
     assert "原生 Pi `/goal-plus` 命令会" in text
+    assert "整个 Goal Plus 任务的最大运行" in normalized
+    assert "当前对话上下文" in normalized
+    assert "不询问、不等待确认" in normalized
     assert "/goal-plus mode=autonomous" in text
     assert "/goal-plus mode=probe" in text
     assert "`raw_goal` 的规范末行" in normalized
@@ -403,6 +410,10 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "updateGoalPlusStart" in text
     assert "resumeGoalPlusStart" in text
     assert "/goal-plus resume" in text
+    assert "当前未设置最大运行时间" in text
+    assert "当前对话上下文" in text
+    assert "不要询问或等待确认" in text
+    assert "告知后立即继续执行" in text
     assert 'action: "resume"' in text
     assert "不要将其降级为普通 Goal Mode" in text
     assert "以最新用户消息作为" in text

@@ -1,5 +1,8 @@
 首先调用 `goal_plus_create(raw_goal="$ARGUMENTS")`，必须在 triage、规划、编辑或 Search 之前调用。
 除了加载 goal-plus skill 之外，在调用 `goal_plus_record_triage` 之前不要读取或审计目标文件。
+创建成功后，由你语义检查原始目标或当前对话上下文是否明确给出了整个 Goal Plus 任务的最大运行时间；
+如果没有，先用一句简短 commentary 告知用户：“当前未设置最大运行时间，Goal Plus 将持续运行
+直至目标完成或用户手动停止。”这只是告知，不要询问或等待确认；告知后立即继续执行。
 
 入口已把逻辑 Main `thinking=max` 映射到 Pi 原生最高档。triage 后调用
 `goal_plus_upsert_work_items` 建立当前修订版的

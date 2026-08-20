@@ -1227,6 +1227,7 @@ function buildGoalStartPrompt(
 		"",
 		"重要事项：",
 		"- goal_plus_create 工具已经创建此记录。不要为该目标再次调用 goal_plus_create。",
+		"- 这是新创建记录的首轮。由你语义检查原始目标或当前对话上下文是否明确给出了整个 Goal Plus 任务的最大运行时间；如果没有，先用一句简短 commentary 告知用户：‘当前未设置最大运行时间，Goal Plus 将持续运行直至目标完成或用户手动停止。’这只是告知，不要询问或等待确认；告知后立即继续执行。",
 		"- 加载并遵循 goal-plus skill。",
 		"- 以最新用户消息作为判断继续、修订或讨论无关内容的权威依据；不要仅因 Goal Plus 处于 active 就恢复工作。",
 		"- 如果消息改变了实际范围、交付物或成功标准，使用完整修订后的原始目标和当前 expected_revision 调用 goal_plus_update_goal，然后重新 triage。否则保持修订版不变，并在恢复前澄清有歧义的意图。",

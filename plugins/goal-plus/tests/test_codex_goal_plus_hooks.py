@@ -140,6 +140,9 @@ def test_user_prompt_submit_precreates_and_binds_goal(tmp_path: Path) -> None:
     assert "范围、交付物或成功标准" in context
     assert "goal_plus_update_goal" in context
     assert "恢复前澄清有歧义的意图" in context
+    assert "当前未设置最大运行时间" in context
+    assert "不要询问或等待确认" in context
+    assert "告知后立即继续执行" in context
 
 
 def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None:
@@ -290,7 +293,13 @@ def test_user_prompt_submit_is_idempotent_for_bound_session(tmp_path: Path) -> N
     second_context = _additional_context(second, "UserPromptSubmit")
     records = list((search_root / "goal-plus").glob("gp_*/goal.json"))
     assert len(records) == 1
-    assert first_context == second_context
+    assert "当前未设置最大运行时间" in first_context
+    assert "当前未设置最大运行时间" not in second_context
+    assert "\n".join(
+        line
+        for line in first_context.splitlines()
+        if not line.startswith("这是新创建记录的首轮。")
+    ) == second_context
 
 
 def test_with_final_check_precreates_required_policy(tmp_path: Path) -> None:
@@ -542,6 +551,7 @@ def test_session_start_restores_bound_goal_context(tmp_path: Path) -> None:
     context = _additional_context(result, "SessionStart")
     assert record.goal_plus_id in context
     assert "record_triage" in context
+    assert "当前未设置最大运行时间" not in context
 
 
 def test_post_tool_time_advisory_only_targets_search_candidate_subagent_once(

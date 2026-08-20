@@ -51,6 +51,9 @@ prompt includes `main=`. Model qualification differs because Pi uses
 `provider/model`, while Codex uses its native model id. Goal Plus discovers the
 verifier, metric, edit surface, Search strategy, and host-specific worker launch
 from the current target directory; no checked-in SearchSpec is required.
+Both ready-to-paste prompts require the entire Goal Plus task, including final
+validation and promotion/reporting, to reach a terminal status within 10 minutes
+of Goal Plus creation.
 
 ## Target contract
 

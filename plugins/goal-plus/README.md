@@ -207,43 +207,9 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 | Ultra work orchestration | [Ultra Orchestration](docs/ultra.md) |
 | Optional monitor projections | [Monitor Feature Plugins](docs/feature-plugins.md) |
 | Runtime and host logs | [Debugging](docs/debugging-runtime.md) |
+| Checkout development, plugin refresh, and multi-developer isolation | [Development](docs/development.md) |
 | Specs and runnable examples | [Examples](examples/README.md) |
 | Tests and real-host evidence | [Tests](tests/README.md) |
 
 Benchmark-specific tasks, evaluators, campaigns, and comparison evidence are
 not part of this isolated runtime directory.
-
-## Isolation for multiple developers
-
-Separate operating-system accounts are isolated by their home directories as
-long as each developer also uses a separate Goal Plus checkout and Python
-environment. If multiple developers or development versions share one account,
-do not share the default Codex home, Pi configuration directory, or Python
-environment. Within one shared profile, the Codex development installer uses
-the fixed `goal-plus@goal-plus-local` identity and staging path, Pi can load all
-registered package paths, and the `goal-plus` commands are resolved from the
-inherited `PATH`; a later installation can therefore replace or coexist with an
-earlier one instead of remaining isolated.
-
-Use one complete profile per developer, and keep these variables active both
-while installing and whenever starting Pi or Codex:
-
-```bash
-python -m venv /absolute/path/to/developer-a/venv
-source /absolute/path/to/developer-a/venv/bin/activate
-python -m pip install -e "/absolute/path/to/developer-a/muyuan/plugins/goal-plus[dev]"
-
-export CODEX_HOME=/absolute/path/to/developer-a/codex-home
-export PI_CODING_AGENT_DIR=/absolute/path/to/developer-a/pi-agent
-
-pi install /absolute/path/to/developer-a/muyuan/plugins/goal-plus
-python /absolute/path/to/developer-a/muyuan/plugins/goal-plus/scripts/install_codex_plugin.py \
-  --skip-runtime-install
-```
-
-An explicit source path selects that checkout only inside the isolated host
-profile; it does not isolate a shared Python `PATH` or a second Goal Plus
-registration already enabled in the same profile. Also use a separate target
-workspace or Git worktree per developer, because Goal Plus runtime state lives
-under that workspace's `.gp/` directory and agent edits affect the workspace
-itself.
