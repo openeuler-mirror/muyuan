@@ -1158,27 +1158,39 @@ function resolvePiModelReference(ctx: ExtensionContext, requested: string) {
 	return matches[0]!;
 }
 
-async function applyGoalPlusRoleModels(
-	pi: ExtensionAPI,
+function assertPiMainModel(ctx: ExtensionContext, requested: string): string {
+	const expected = resolvePiModelReference(ctx, requested);
+	const current = ctx.model;
+	if (!current) {
+		throw new Error(
+			"Pi main= is a session-model assertion, but the current session did not report a model. " +
+				"Select the model before /goal-plus or omit main=.",
+		);
+	}
+	const expectedId = `${expected.provider}/${expected.id}`;
+	const currentId = `${current.provider}/${current.id}`;
+	if (expectedId.toLowerCase() !== currentId.toLowerCase()) {
+		throw new Error(
+			`main=${requested} does not match the current Pi session model ${currentId}. ` +
+				"Pi main= is a session-model assertion, not a model selector. " +
+				"Start Pi with --model MODEL, use /model before /goal-plus, or omit main=.",
+		);
+	}
+	return expectedId;
+}
+
+function resolveGoalPlusRoleModels(
 	ctx: ExtensionContext,
 	rawGoal: string,
-): Promise<GoalPlusRoleModels | undefined> {
+): GoalPlusRoleModels | undefined {
 	const requested = parseGoalPlusRoleModels(rawGoal);
 	if (!requested) return undefined;
-	const main = requested.main
-		? resolvePiModelReference(ctx, requested.main)
-		: undefined;
+	const main = requested.main ? assertPiMainModel(ctx, requested.main) : undefined;
 	const annotator = requested.annotator
 		? resolvePiModelReference(ctx, requested.annotator)
 		: undefined;
-	if (main) {
-		const selected = await pi.setModel(main);
-		if (!selected) {
-			throw new Error(`Pi cannot authenticate the requested main model: ${requested.main}`);
-		}
-	}
 	return {
-		main: main ? `${main.provider}/${main.id}` : undefined,
+		main,
 		annotator: annotator ? `${annotator.provider}/${annotator.id}` : undefined,
 		workerDirective: requested.workerDirective,
 	};
@@ -1202,7 +1214,7 @@ function buildGoalStartPrompt(
 			"",
 			"已解析的模型路由：",
 		);
-		if (roleModels.main) lines.push(`- main: ${roleModels.main}（已切换）`);
+		if (roleModels.main) lines.push(`- main: ${roleModels.main}（已校验当前 Pi session，未切换模型）`);
 		if (roleModels.annotator) lines.push(`- annotator: ${roleModels.annotator}`);
 		if (roleModels.workerDirective) {
 			lines.push(`- workers: 使用原始目标中的 ${roleModels.workerDirective}= 分配。`);
@@ -1279,7 +1291,7 @@ async function createGoalPlusStart(
 ): Promise<string | undefined> {
 	let roleModels: GoalPlusRoleModels | undefined;
 	try {
-		roleModels = await applyGoalPlusRoleModels(pi, ctx, rawGoal);
+		roleModels = resolveGoalPlusRoleModels(ctx, rawGoal);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		ctx.ui.notify(message, "error");

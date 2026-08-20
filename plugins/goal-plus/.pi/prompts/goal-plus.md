@@ -9,9 +9,10 @@
 普通工作项的 Pi wrapper 会把原生下发与返回操作写入 `orchestration_monitor` metadata；
 `goal_plus_monitor_snapshot(feature_plugins=["orchestration"])` 提供与 Codex 可比较的语义链。
 
-原生入口若注入了已解析的显式角色模型，严格使用该路由：`main=` 已由入口切换；
-`annotator=` 写入 `strategy.evidence_annotator.model`；`workers=` 或兼容别名
-`models=` 按现有分配规则写入 `strategy.models`。未显式指定的角色保持现有默认或继承语义。
+原生入口若注入了已解析的显式角色模型，严格使用该路由：`main=` 只表示入口已校验当前
+Pi session model，入口没有切换模型；`annotator=` 写入
+`strategy.evidence_annotator.model`；`workers=` 或兼容别名 `models=` 按现有分配规则写入
+`strategy.models`。未显式指定的角色保持现有默认或继承语义。
 
 # Goal Plus
 

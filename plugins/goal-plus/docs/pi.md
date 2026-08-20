@@ -139,14 +139,19 @@ sends one closeout steer. `max_turns` is only a prompt hint.
 
 ### Explicit role models
 
-The native Pi command can select the main, Evidence Annotation, and Search
-worker models with role-named parameters:
+The native Pi command accepts role-named model parameters:
 
 ```text
-/goal-plus main=A annotator=B workers=C,D max_parallel=4 optimize ...
+/goal-plus annotator=B workers=C,D max_parallel=4 optimize ...
 ```
 
-`main=` switches the current Pi model before the first model turn.
+The already-running Pi session is the main agent. `/goal-plus` cannot switch
+the main session model. Select it when starting Pi (`pi --model MODEL`) or with
+`/model` before submitting the Goal Plus prompt. Omit `main=` in normal Pi
+usage. For compatibility, `main=` remains an optional assertion about the
+current Pi session model: the extension validates it and blocks a mismatch,
+but never treats it as a selector.
+
 `annotator=` freezes `strategy.evidence_annotator.model`. `workers=` resolves
 one or more models into `strategy.models`; uncounted entries round-robin and
 counted entries retain the allocation rules below. Omitted roles keep their

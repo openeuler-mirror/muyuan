@@ -67,11 +67,14 @@ ranking verifier 必须输出一个最终 JSON 对象，其中包含有限数值
 直接填写，不要根据校验错误猜字段。`search_freeze_spec` 会重复 verifier 预检，
 契约无效时会在候选 worker 启动前拒绝 spec。
 
-原生 Pi 命令使用显式角色名：`main=A` 切换 Main，`annotator=B` 冻结 Evidence
-Annotation 模型，`workers=C,D` 分配 Candidate Worker。只解析用户实际填写的角色；省略的
-角色保持现有 host 默认或继承语义，不从另一个显式角色猜默认值。扩展在模型轮次开始前解析
-并切换 Main，并把规范化后的完整 `provider/model` Main/Annotator 路由注入启动上下文。
-冻结 SearchSpec 时把显式 Annotator 写入 `strategy.evidence_annotator.model`。
+Pi 的 Main 就是已经运行的当前 session；必须在启动 Pi 时用 `--model` 或提交
+`/goal-plus` 前通过 `/model` 选择，Goal Plus 命令不能切换它。通常省略 `main=`；它只作为
+兼容的一致性断言，由扩展与当前 session model 比对，不匹配时在创建 Goal Plus 记录前拒绝
+命令。真正的角色模型配置使用 `annotator=B` 冻结 Evidence Annotation 模型，使用
+`workers=C,D` 分配 Candidate Worker。只解析用户实际填写的角色；省略的角色保持现有 host
+默认或继承语义，不从另一个显式角色猜默认值。扩展把已校验的规范化
+`provider/model` Main 断言和显式 Annotator 路由注入启动上下文。冻结 SearchSpec 时把显式
+Annotator 写入 `strategy.evidence_annotator.model`。
 
 不要在 SearchSpec 中生成软 rubric 或预设评价维度。Spec Discovery 只能冻结硬 metric、
 verifier、编辑范围、预算和 promotion 合同。开放式补充评价发生在每次 Evidence 结算之后：

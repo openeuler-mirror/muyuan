@@ -62,6 +62,8 @@ def test_pi_goal_plus_prompt_starts_with_create_call() -> None:
     assert "固定的 `/tmp`" in text
     assert "`goal_plus_record_triage` 之前不要读取或审计目标文件" in text
     assert "feature_plugins=[\"orchestration\"]" in text
+    assert "`main=` 只表示入口已校验当前" in text
+    assert "入口没有切换模型" in text
     assert ".goal-plus-verifiers/" in text
     assert "`expected_outputs` 只列出" in text
     assert "{{input}}" not in text
@@ -121,6 +123,8 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "范围、交付物或成功标准" in normalized
     assert "在修订或恢复前先澄清" in normalized
     assert "不要仅因 Goal Plus 记录处于 active" in normalized
+    assert "Goal Plus 命令不能切换它" in normalized
+    assert "`main=`；它只作为 兼容的一致性断言" in normalized
     assert "goal_plus_prepare_final_check" in text
     assert "pi_goal_plus_run_final_check" in text
     assert "goal_plus_submit_final_check" in text
@@ -345,8 +349,13 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert 'pi.registerCommand("goal-plus-with-final-check"' in text
     assert "mode=autonomous|probe" in text
     assert "parseGoalPlusRoleModels" in text
-    assert "applyGoalPlusRoleModels" in text
-    assert "await pi.setModel(main)" in text
+    assert "resolveGoalPlusRoleModels" in text
+    assert "assertPiMainModel" in text
+    assert "const current = ctx.model" in text
+    assert "Pi main= is a session-model assertion, not a model selector" in text
+    assert "use /model before /goal-plus" in text
+    assert "pi.setModel(main)" not in text
+    assert "已校验当前 Pi session，未切换模型" in text
     assert '"workers" | "models"' in text
     assert "workers= and models= are aliases" in text
     assert "strategy.evidence_annotator.model" in text

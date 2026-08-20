@@ -141,10 +141,11 @@ pi --model <provider/main-model> --thinking max
 ```
 
 然后在 Codex 中提交 `$goal-plus <目标>`，或在 Pi 中提交 `/goal-plus <目标>`。
-Codex 的 main agent 就是已经运行的会话，应通过 `codex -m` 或 `/model` 选择；正常
-Codex Goal Plus prompt 不要写 `main=`。Pi 既可在启动命令中选择 main，也可使用
-`main=`。[Torch CPU 示例](examples/model-optimize/torch-cpu-target/README.md)提供了完整的
-Codex/Pi 启动命令和可直接粘贴的 prompt。
+两个宿主的 main agent 都是已经运行的会话，应在启动时或通过 `/model` 预先选择；
+Goal Plus 不能切换它。正常 prompt 省略 `main=`；两个入口都只把 `main=` 保留为可选的
+一致性断言，不匹配时拒绝命令。[Torch CPU
+示例](examples/model-optimize/torch-cpu-target/README.md)提供了完整的 Codex/Pi 启动命令和
+可直接粘贴的 prompt。
 
 宿主差异和策略覆盖见 [Agent Host Adapters](docs/agent-host-adapters.md)。
 

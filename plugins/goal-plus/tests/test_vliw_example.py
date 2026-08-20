@@ -34,7 +34,8 @@ def test_vliw_prompt_is_a_role_routed_goal_not_a_static_spec() -> None:
     prompt = (EXAMPLE / "pi-goal-prompt.md").read_text(encoding="utf-8")
     first_line = prompt.splitlines()[0]
 
-    assert first_line.startswith("/goal-plus main=")
+    assert first_line.startswith("/goal-plus annotator=")
+    assert " main=" not in first_line
     assert " annotator=" in first_line
     assert " workers=" in first_line
     assert "max_parallel=2" in first_line

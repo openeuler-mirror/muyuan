@@ -9,19 +9,21 @@ standard library and does not require Docker or accelerator hardware.
 From the Goal Plus repository root:
 
 ```bash
-pi -p "$(cat examples/vliw-kernel-optimization/pi-goal-prompt.md)"
+pi --model openai/gpt-5.6-terra --thinking max \
+  -p "$(cat examples/vliw-kernel-optimization/pi-goal-prompt.md)"
 ```
 
 The checked-in prompt uses this role routing:
 
 ```text
-main=openai/gpt-5.6-terra annotator=openai/gpt-5.6-terra workers=zai/glm-5.2
+annotator=openai/gpt-5.6-terra workers=zai/glm-5.2
 ```
 
-`main` and `annotator` select those roles explicitly; `workers` uses the
+The launch command selects the already-running Pi main model; `/goal-plus`
+cannot switch it. `annotator` selects that role explicitly; `workers` uses the
 existing Candidate model allocation and can contain one or more models. These
-short ids must resolve uniquely in the local
-Pi registry; use qualified `provider/model` values if a model id is ambiguous.
+short ids must resolve uniquely in the local Pi registry; use qualified
+`provider/model` values if a model id is ambiguous.
 For example, `workers=worker-a,worker-b` round-robins two models over the fixed
 candidate lanes. Existing `models=` remains a compatibility alias for
 `workers=`.

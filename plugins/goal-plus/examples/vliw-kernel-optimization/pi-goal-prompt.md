@@ -1,4 +1,4 @@
-/goal-plus main=openai/gpt-5.6-terra annotator=openai/gpt-5.6-terra workers=zai/glm-5.2 max_parallel=2 Optimize the VLIW kernel in `examples/vliw-kernel-optimization/workspace`.
+/goal-plus annotator=openai/gpt-5.6-terra workers=zai/glm-5.2 max_parallel=2 Optimize the VLIW kernel in `examples/vliw-kernel-optimization/workspace`.
 
 Minimize the correct `cycles` value emitted by
 `.goal-plus-verifiers/vliw_score.py`. Preserve the simulator semantics and all

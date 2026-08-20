@@ -74,6 +74,7 @@ def test_codex_and_pi_share_role_model_command_interface() -> None:
     codex = (ROOT / "docs" / "codex.md").read_text(encoding="utf-8")
     pi = (ROOT / "docs" / "pi.md").read_text(encoding="utf-8")
     normalized_codex = " ".join(codex.split())
+    normalized_pi = " ".join(pi.split())
 
     for text in (codex, pi):
         assert "Explicit role models" in text
@@ -86,7 +87,10 @@ def test_codex_and_pi_share_role_model_command_interface() -> None:
 
     assert "assertion about the current Codex session model" in codex
     assert "cannot switch the main session model" in normalized_codex
-    assert "switches the current Pi model" in pi
+    assert "assertion about the current Pi session model" in normalized_pi
+    assert "cannot switch the main session model" in normalized_pi
+    assert "never treats it as a selector" in normalized_codex
+    assert "never treats it as a selector" in normalized_pi
 
 
 @pytest.mark.parametrize(

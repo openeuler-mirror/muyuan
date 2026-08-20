@@ -46,9 +46,8 @@ Then paste the complete contents of
 [`pi-goal-prompt.md`](pi-goal-prompt.md).
 
 Both prompts use the same annotator/worker interface and optimization request.
-Pi can also select its main model in `/goal-plus`; Codex's main model is the
-already-running session selected by `codex -m` or `/model`, so the Codex prompt
-does not include `main=`. Model qualification also differs because Pi uses
+In both hosts, the main model is selected before Goal Plus starts and neither
+prompt includes `main=`. Model qualification differs because Pi uses
 `provider/model`, while Codex uses its native model id. Goal Plus discovers the
 verifier, metric, edit surface, Search strategy, and host-specific worker launch
 from the current directory.

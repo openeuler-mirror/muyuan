@@ -148,12 +148,12 @@ cd <target-workspace>
 pi --model <provider/main-model> --thinking max
 ```
 
-Then submit `$goal-plus <goal>` in Codex or `/goal-plus <goal>` in Pi. Codex's
-main agent is the already-running session selected by `codex -m` or `/model`;
-do not put `main=` in a normal Codex Goal Plus prompt. Pi may select its main
-model with either the launch command or `main=`. See the [Torch CPU
-example](examples/model-optimize/torch-cpu-target/README.md) for complete Codex
-and Pi commands with ready-to-paste prompts.
+Then submit `$goal-plus <goal>` in Codex or `/goal-plus <goal>` in Pi. In both
+hosts, the main agent is the already-running session selected at launch or with
+`/model`; Goal Plus cannot switch it. Omit `main=` in normal usage. Both entries
+retain `main=` only as an optional assertion that blocks a mismatch. See the
+[Torch CPU example](examples/model-optimize/torch-cpu-target/README.md) for
+complete Codex and Pi commands with ready-to-paste prompts.
 
 Host differences and strategy coverage are summarized in
 [Agent Host Adapters](docs/agent-host-adapters.md).
