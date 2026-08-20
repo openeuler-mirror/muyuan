@@ -9,6 +9,7 @@ graded does not get the caller's credentials.
 from __future__ import annotations
 
 import inspect
+import io
 import json
 import os
 import re
@@ -25,7 +26,14 @@ from aibench.grading import (
 from aibench.io_util import repo_root, safe_case_id, safe_command
 from aibench.models import Case, RunConfig
 from aibench.validity import check_gold_is_not_collection_control
-from aibench.workspace import WorkspaceSpec, _apply_snapshot, confined_path
+from aibench.workspace import (
+    WorkspaceSpec,
+    _apply_snapshot,
+    _resolve_snapshot,
+    _safe_extract_tar,
+    _safe_extract_zip,
+    confined_path,
+)
 
 _MINIMAL_RUN = {
     "experiment_name": "e",
@@ -369,3 +377,115 @@ class TestTheGitSubdirIsConfinedToTheClone:
         ws = tmp_path / "ws2"
         materialize_workspace(Case.from_dict(raw), ws, allow_network=True)
         assert (ws / "mod.py").is_file()
+
+
+class TestTheGuardsThatHadNoTest:
+    """Mutation-tested: each of these was neutered in turn and the whole suite stayed green,
+    which means the next refactor could have removed them silently."""
+
+    def test_a_snapshot_reached_through_a_symlink_is_refused(self, tmp_path):
+        """The containment branch, as opposed to `safe_relpath` refusing the text first: only a
+        symlink *inside* the case set can produce a name that is relative and lands outside."""
+        cs, outside = tmp_path / "cs", tmp_path / "outside"
+        (cs / "snapshots").mkdir(parents=True)
+        (outside / "proj").mkdir(parents=True)
+        (outside / "proj" / "a.py").write_text("x = 1\n", encoding="utf-8")
+        os.symlink(outside / "proj", cs / "snapshots" / "proj")
+        with pytest.raises(ValueError, match="escapes its case set"):
+            _resolve_snapshot("proj", cs)
+
+    def test_a_tar_special_file_is_refused(self, tmp_path):
+        """`filter="data"` is what rejects device nodes and FIFOs; without it a member named
+        `test_x.py` could be a FIFO that hangs the grader."""
+        import tarfile
+
+        dest = tmp_path / "ws"
+        dest.mkdir()
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            info = tarfile.TarInfo("test_hang.py")
+            info.type = tarfile.FIFOTYPE
+            tf.addfile(info)
+        buf.seek(0)
+        with (
+            tarfile.open(fileobj=buf) as tf,
+            pytest.raises(tarfile.SpecialFileError, match="is a special file"),
+        ):
+            _safe_extract_tar(tf, dest)
+        assert not (dest / "test_hang.py").exists()
+
+    def test_a_zip_prefix_sibling_member_is_refused(self, tmp_path):
+        import zipfile
+
+        dest = tmp_path / "ws"
+        dest.mkdir()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("../ws-evil/pwned.txt", "X")
+        buf.seek(0)
+        with (
+            zipfile.ZipFile(buf) as zf,
+            pytest.raises(RuntimeError, match="escapes workspace"),
+        ):
+            _safe_extract_zip(zf, dest)
+        assert not (tmp_path / "ws-evil").exists()
+
+    def test_the_case_dir_containment_is_a_second_layer(self, tmp_path, monkeypatch):
+        """`safe_case_id` already refuses `..`, so this only fires if the first layer is gone —
+        which is the point of having two, and the reason it needs its own test."""
+        import aibench.runner as runner
+
+        monkeypatch.setattr(runner, "safe_case_id", lambda cid: cid)
+        raw = _seed()
+        raw["case_id"] = "ok"
+        case = Case.from_dict(raw)
+        object.__setattr__(case, "case_id", "../../escape")
+        with pytest.raises(ValueError, match="escapes run dir"):
+            runner._run_one_case(
+                case,
+                run_dir=tmp_path / "run",
+                cs="probe",
+                agent_cfg=None,
+                model_cfg=None,
+                max_steps=1,
+                max_wall_time_s=1,
+            )
+
+    @pytest.mark.parametrize("tool", ["read", "list"])
+    def test_the_tool_loop_read_side_is_confined_too(self, tmp_path, tool):
+        """Only the `write` handler had a test; `read` and `list` share the same check."""
+        from aibench.agents.tool_loop import ToolLoopAgent
+        from aibench.models import AgentConfig, ModelConfig
+
+        ws = (tmp_path / "ws").resolve()
+        ws.mkdir()
+        sibling = tmp_path / "ws_sibling"
+        sibling.mkdir()
+        (sibling / "secret.txt").write_text("CANARY\n", encoding="utf-8")
+        agent = ToolLoopAgent(
+            AgentConfig.from_dict({"name": "tl", "adapter": "tool_loop", "version": "1"}),
+            ModelConfig.from_dict({"name": "m", "model": "m", "provider": "openai_compat"}),
+        )
+        out = agent._run_tool(
+            tool, {"path": "../ws_sibling/secret.txt"}, ws, allow_bash=False, written=[]
+        )
+        assert "path escape" in out
+        assert "CANARY" not in out
+
+
+class TestOneBadCaseDoesNotEndTheAudit:
+    """`runner.py` learned this — "one case that made _grade_gold raise discarded results.jsonl,
+    summary.json and report.md for the whole run" — and the audit gates did not."""
+
+    def test_a_traversing_gold_path_is_a_verdict_not_a_crash(self, tmp_path):
+        from aibench.validity import check_stub_fails
+
+        raw = _seed()
+        raw["grader"] = {
+            "mode": "gold",
+            "match": "exact",
+            "gold_files": [{"path": "../outside.txt", "content": "x"}],
+        }
+        ok, detail = check_stub_fails(Case.from_dict(raw))
+        assert ok is False
+        assert "case_path_escapes_workspace" in detail

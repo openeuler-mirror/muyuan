@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from aibench.io_util import safe_case_id
+
 
 @dataclass
 class FileBlob:
@@ -65,7 +67,6 @@ class Case:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Case:
-        from aibench.io_util import safe_case_id
         from aibench.workspace import WorkspaceSpec
 
         ctx = d["context"]

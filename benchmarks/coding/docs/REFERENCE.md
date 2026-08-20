@@ -1066,7 +1066,8 @@ uv run python -m aibench plan-sample-size --delta 10 --from-ablation runs/ablati
 **但判分仍在宿主机上跑，没有容器、没有资源限制、没有网络限制。** 被判分的代码是模型写的或 case 自带的，
 它能做本机用户能做的任何事。Docker/gVisor 隔离未做，是目前最大的安全缺口。
 **拿到来路不明的 case 集，先跑 `validate-cases`** —— 它只读不执行，且会拒绝上面那些形态；
-`audit-cases`、`run`、`ablation`、`calibrate-cases` 都会执行 case 提供的内容。  
+`audit-cases`、`run`、`ablation`、`calibrate-cases` 都会执行 case 提供的内容。
+
 主指标仅统计 **非 infra_error** 的 case。
 
 ### 13.1 隐藏测试与保护路径

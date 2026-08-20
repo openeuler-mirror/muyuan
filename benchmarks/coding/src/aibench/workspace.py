@@ -45,7 +45,7 @@ class WorkspaceSpec:
     """How to build the case workspace before the agent runs."""
 
     mode: str = "inline"  # inline | snapshot | git | mixed
-    snapshot_path: str | None = None  # relative to case-set dir or absolute
+    snapshot_path: str | None = None  # relative to the case-set dir; absolute is refused
     git_url: str | None = None
     git_ref: str | None = None  # commit / tag / branch
     git_subdir: str | None = None  # only keep this subdir of the clone

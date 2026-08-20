@@ -787,7 +787,12 @@ def check_stub_fails(
         ws = tmp / "workspace"
         csd = case_set_dir(case_set) if case_set else None
         materialize_workspace(case, ws, case_set_dir=csd, allow_network=False)
-        grade = grade_case(case, ws, baseline=workspace_inventory(ws))
+        try:
+            grade = grade_case(case, ws, baseline=workspace_inventory(ws))
+        except ValueError as e:
+            # A path in the case that resolves outside the workspace. It is a verdict about
+            # this case, not a reason to abandon the audit of every other one.
+            return False, f"case_path_escapes_workspace: {e}"
         if grade.infra_error:
             return True, f"{INFRA_UNVERIFIED}: {grade.detail}"
         if grade.passed:
@@ -860,7 +865,10 @@ def check_reference_solution(case: Case, *, case_set: str | None = None) -> tupl
             target.write_text(gf.content, encoding="utf-8")
         # The inventory is taken *after* the reference solution is applied: that is the state
         # this gate is asking about, and the gold files are the case's own material.
-        grade = grade_case(case, ws, baseline=workspace_inventory(ws))
+        try:
+            grade = grade_case(case, ws, baseline=workspace_inventory(ws))
+        except ValueError as e:
+            return False, f"case_path_escapes_workspace: {e}"
         if grade.infra_error:
             return True, f"{INFRA_UNVERIFIED}: {grade.detail}"
         if grade.collection_error:
