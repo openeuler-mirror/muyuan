@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+import json
+import runpy
+import shutil
+import subprocess
+from pathlib import Path
+
+from goal_plus import codex_doctor
+
+
+def _make_project_assets(root: Path) -> dict[str, object]:
+    hooks_payload = json.loads(
+        (codex_doctor._package_root() / "hooks" / "hooks.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    hooks_path = root / ".codex" / "hooks.json"
+    hooks_path.parent.mkdir(parents=True)
+    hooks_path.write_text(json.dumps(hooks_payload), encoding="utf-8")
+    for name in codex_doctor.REQUIRED_SKILLS:
+        skill_path = root / ".codex" / "skills" / name / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    agent_root = root / ".codex" / "agents"
+    agent_root.mkdir(parents=True)
+    for name in ("search_candidate_agent.toml", "goal_plus_final_checker.toml"):
+        (agent_root / name).write_text(f'name = "{name[:-5]}"\n', encoding="utf-8")
+    return hooks_payload
+
+
+def _write_trusted_config(
+    codex_home: Path,
+    project_root: Path,
+    hooks_payload: dict[str, object],
+) -> None:
+    hooks_path = project_root / ".codex" / "hooks.json"
+    lines = [
+        f'[projects.{json.dumps(str(project_root))}]',
+        'trust_level = "trusted"',
+        "",
+        "[features]",
+        "hooks = true",
+    ]
+    events = hooks_payload["hooks"]
+    assert isinstance(events, dict)
+    for event_name, event_label in codex_doctor.HOOK_EVENT_LABELS.items():
+        groups = events[event_name]
+        assert isinstance(groups, list)
+        group = groups[0]
+        assert isinstance(group, dict)
+        handlers = group["hooks"]
+        assert isinstance(handlers, list)
+        handler = handlers[0]
+        assert isinstance(handler, dict)
+        current_hash = codex_doctor._canonical_hook_hash(event_name, group, handler)
+        key = f"{hooks_path.resolve()}:{event_label}:0:0"
+        lines.extend(
+            (
+                "",
+                f'[hooks.state.{json.dumps(key)}]',
+                f'trusted_hash = "{current_hash}"',
+            )
+        )
+    codex_home.mkdir(parents=True)
+    (codex_home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_canonical_hook_hash_matches_codex_0148_identity() -> None:
+    payload = json.loads(
+        (codex_doctor._package_root() / "hooks" / "hooks.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    group = payload["hooks"]["PreToolUse"][0]
+    handler = group["hooks"][0]
+
+    assert codex_doctor._canonical_hook_hash("PreToolUse", group, handler) == (
+        "sha256:3416fbd10cc86ae6d50d412bbe6e4b349c5bb4a9f6fd0a93b691e46fa67bae59"
+    )
+
+
+def test_parse_plugin_installation_with_enabled_local_plugin(tmp_path: Path) -> None:
+    output = (
+        "PLUGIN STATUS VERSION PATH\n"
+        f"goal-plus@muyuan installed, enabled 0.1.0 {tmp_path}\n"
+    )
+
+    installation = codex_doctor._parse_plugin_installation(output)
+
+    assert installation is not None
+    assert installation.plugin_id == "goal-plus@muyuan"
+    assert installation.status == "installed, enabled"
+    assert installation.path == tmp_path.resolve()
+
+
+def test_enabled_plugin_uses_installable_top_level_skills(tmp_path: Path) -> None:
+    for name in codex_doctor.REQUIRED_SKILLS:
+        skill_path = tmp_path / "skills" / name / "SKILL.md"
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
+        skill_path.write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    installation = codex_doctor.PluginInstallation(
+        plugin_id="goal-plus@muyuan",
+        status="installed, enabled",
+        path=tmp_path,
+    )
+
+    result = codex_doctor._check_skills(
+        installation=installation,
+        project_root=tmp_path / "unrelated-project",
+    )
+
+    assert result.status == "pass"
+    assert result.details["source"] == "plugin"
+    assert result.details["skill_root"] == str(tmp_path / "skills")
+
+    roles = codex_doctor._check_agent_roles(
+        installation=installation,
+        project_root=tmp_path / "unrelated-project",
+    )
+    assert roles.status == "pass"
+    assert roles.details["search_worker"] == "default"
+    assert roles.details["final_checker_fallback"] == "default"
+    assert roles.details["custom_agents_packaged"] is False
+
+
+def test_project_hooks_require_current_trusted_hashes(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    codex_home = tmp_path / "codex-home"
+    payload = _make_project_assets(project_root)
+    _write_trusted_config(codex_home, project_root, payload)
+
+    passing = codex_doctor._check_hooks(
+        codex_home=codex_home,
+        project_root=project_root,
+        installation=None,
+    )
+    assert passing.status == "pass"
+
+    hook_path = project_root / ".codex" / "hooks.json"
+    modified = json.loads(hook_path.read_text(encoding="utf-8"))
+    modified["hooks"]["Stop"][0]["hooks"][0]["statusMessage"] = "changed"
+    hook_path.write_text(json.dumps(modified), encoding="utf-8")
+
+    failing = codex_doctor._check_hooks(
+        codex_home=codex_home,
+        project_root=project_root,
+        installation=None,
+    )
+    assert failing.status == "fail"
+    assert any(
+        failure["reason"] == "modified or stale trust hash"
+        for failure in failing.details["failures"]
+    )
+
+
+def test_collect_report_accepts_complete_project_local_setup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    codex_home = tmp_path / "codex-home"
+    payload = _make_project_assets(project_root)
+    _write_trusted_config(codex_home, project_root, payload)
+
+    def fake_which(name: str) -> str:
+        return f"/mock/bin/{name}"
+
+    def fake_run(
+        argv: list[str],
+        *,
+        codex_home: Path,
+        timeout: float = 20.0,
+    ) -> subprocess.CompletedProcess[str]:
+        del codex_home, timeout
+        if argv[-1] == "--version" and argv[0].endswith("codex"):
+            stdout = "codex-cli 0.148.0\n"
+        elif argv[-1] == "--version" and argv[0].endswith("goal-plus"):
+            stdout = "goal-plus 0.1.0\n"
+        elif argv[-2:] == ["plugin", "list"]:
+            stdout = "PLUGIN STATUS VERSION PATH\n"
+        elif argv[-2:] == ["mcp", "list"]:
+            stdout = "goal-plus goal-plus --root .gp enabled Unsupported\n"
+        else:  # pragma: no cover - catches accidental new subprocess probes
+            raise AssertionError(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(codex_doctor, "_run", fake_run)
+    monkeypatch.setattr(
+        codex_doctor,
+        "_list_codex_models",
+        lambda: [{"model": "gpt-5.6-luna"}],
+    )
+
+    report = codex_doctor.collect_report(
+        project_root=project_root,
+        codex_home=codex_home,
+    )
+
+    assert report.ok
+    assert {check.name: check.status for check in report.checks} == {
+        "codex.version": "pass",
+        "goal_plus.executable": "pass",
+        "goal_plus.package_assets": "pass",
+        "codex.plugin": "warn",
+        "codex.skills": "pass",
+        "codex.agent_roles": "pass",
+        "codex.mcp": "pass",
+        "codex.hooks": "pass",
+        "codex.models": "pass",
+        "codex.session_reload": "info",
+    }
+
+
+def test_plugin_assets_keep_project_hook_contract() -> None:
+    root = codex_doctor._package_root()
+    packaged = json.loads((root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    project = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    mcp = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))
+
+    assert packaged == project
+    assert "hooks" not in manifest
+    assert manifest["mcpServers"] == "./.mcp.json"
+    assert mcp["mcpServers"]["goal-plus"]["command"] == "goal-plus"
+    assert mcp["mcpServers"]["goal-plus"]["args"] == ["--root", ".gp"]
+
+
+def test_local_installer_stages_valid_plugin_and_marketplace(tmp_path: Path) -> None:
+    root = codex_doctor._package_root()
+    installer = runpy.run_path(str(root / "scripts" / "install_codex_plugin.py"))
+
+    staged = installer["_stage_plugin"](tmp_path)
+    marketplace_path = installer["_write_marketplace"](tmp_path)
+
+    manifest = json.loads(
+        (staged / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
+    assert manifest["version"].startswith("0.1.0+codex.local-")
+    assert (staged / "skills" / "goal-plus" / "SKILL.md").is_file()
+    assert (staged / "hooks" / "hooks.json").is_file()
+    assert (staged / ".mcp.json").is_file()
+    assert marketplace["name"] == "goal-plus-local"
+    assert marketplace["plugins"][0]["source"]["path"] == "./plugins/goal-plus"
+
+
+def test_local_installer_refuses_to_replace_unmanaged_plugin(tmp_path: Path) -> None:
+    root = codex_doctor._package_root()
+    installer = runpy.run_path(str(root / "scripts" / "install_codex_plugin.py"))
+    unmanaged = tmp_path / "plugins" / "goal-plus"
+    unmanaged.mkdir(parents=True)
+    sentinel = unmanaged / "user-file.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    try:
+        installer["_stage_plugin"](tmp_path)
+    except RuntimeError as exc:
+        assert "unmanaged plugin path" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected unmanaged marketplace protection")
+    assert sentinel.read_text(encoding="utf-8") == "keep"

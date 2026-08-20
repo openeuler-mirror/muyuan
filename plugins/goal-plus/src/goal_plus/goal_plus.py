@@ -1858,6 +1858,7 @@ class FileGoalPlusRuntime:
                 "tool": "spawn_agent",
                 "task_name": f"goal_plus_final_check_r{record.goal_revision}",
                 "agent_type": "goal_plus_final_checker",
+                "fallback_agent_type": "default",
                 "message": prompt,
                 "fork_turns": "none",
             }

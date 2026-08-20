@@ -6,10 +6,88 @@ collaboration tools.
 
 ## Setup
 
+### Installable plugin (recommended)
+
 ```bash
-cd <Muyuan checkout>/goal-plus
+cd <Muyuan checkout>/plugins/goal-plus
+python scripts/install_codex_plugin.py
+```
+
+This installs the Python runtime editable with the current interpreter, stages
+the publishable Codex assets in the persistent
+`${CODEX_HOME:-~/.codex}/local-marketplaces/goal-plus` directory, registers the
+explicit `goal-plus-local` marketplace when needed, and installs or refreshes
+`goal-plus@goal-plus-local`. The staging manifest receives one Codex
+cachebuster suffix, so rerunning the command refreshes an existing local
+installation without changing the checked-in package version. Pass
+`--skip-runtime-install` only when the `goal-plus` command is already installed
+from the intended source.
+
+The default marketplace path is stable, not a deleted temporary directory. To
+update after `git pull`, rerun the same command:
+
+```bash
+python scripts/install_codex_plugin.py
+```
+
+The installer only replaces a staging plugin when the surrounding marketplace
+metadata proves that it owns `goal-plus-local`; it refuses an unmanaged target.
+
+The installable surface is:
+
+- `skills/` for the three Codex skills;
+- `hooks/hooks.json` for the six lifecycle hooks discovered by Codex 0.144.1+;
+- `.mcp.json` for the shared `goal-plus --root .gp` server;
+- `.codex-plugin/plugin.json` for plugin metadata.
+
+Codex's plugin manifest does not publish `.codex/agents/` custom roles. This
+does not remove Search support: `CodexAdapter` maps the normal
+`search_candidate_agent` contract to Codex's built-in `default` role and puts
+the complete worker contract in the launch message. For a required independent
+final check, the launch payload keeps `goal_plus_final_checker` as the
+project-local primary role and also declares `fallback_agent_type="default"`.
+The skill uses the primary only when the current `spawn_agent` schema exposes
+it; an installed-plugin session otherwise uses the self-contained fallback
+with the same independent prompt, `fork_turns="none"`, task identity, and one
+required `goal_plus_submit_final_check` call.
+
+Codex intentionally does not accept a `hooks` field in this plugin manifest;
+it discovers the conventional `hooks/hooks.json` path. After installation,
+start a new Codex thread to load the plugin, open `/hooks`, and review and trust
+the Goal Plus handlers. Then start a fresh thread so every handler is active
+from `SessionStart` onward. Hook trust is bound to each normalized current
+hash, so an updated hook must be reviewed again.
+
+Run the read-only preflight from the workspace you intend to use:
+
+```bash
+python -m goal_plus.codex_doctor --project-root .
+```
+
+It checks Codex 0.144.1 or newer, the `goal-plus` executable and Python source
+provenance, plugin/skill loading, MCP enablement, all required hook paths and
+trust hashes, built-in/custom agent-role coverage, and the read-only Codex
+model catalog. It exits nonzero for a
+required failure, supports `--json`, and always reminds you to use a new thread
+after install/update/trust changes. `--skip-model-check` is available only for
+offline diagnosis; a real multi-model preflight should not skip it.
+
+### Project-local development
+
+```bash
+cd <Muyuan checkout>/plugins/goal-plus
 python -m pip install -e ".[dev]"
 cp .codex/config.example.toml .codex/config.toml
+```
+
+Start Codex in this directory, review `.codex/hooks.json` through `/hooks`, and
+use a new thread. Project-local `.codex/skills/` is the development source of
+truth; top-level `skills/` is the installable plugin publication surface. After
+editing a Codex skill, synchronize and verify both copies:
+
+```bash
+python scripts/sync_codex_plugin_assets.py
+python scripts/sync_codex_plugin_assets.py --check
 ```
 
 The local config starts:

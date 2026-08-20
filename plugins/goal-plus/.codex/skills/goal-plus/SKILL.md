@@ -114,7 +114,9 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
     `policy.final_check.mode="required"` 时：
     - 调用 `goal_plus_prepare_final_check(checker_host="codex")`
     - 把 `launch.task_name`、`launch.message` 和 `launch.fork_turns` 映射到当前
-      `spawn_agent` schema，并在前台启动
+      `spawn_agent` schema，并在前台启动；只有 schema 明确列出
+      `goal_plus_final_checker` 时使用 `launch.agent_type`，否则使用
+      `launch.fallback_agent_type="default"`，不得自行选择其他角色
     - 使用 `fork_turns="none"`；审查员必须从工作区和运行时证据重建结果，
       不能继承父级 transcript
     - 等待审查员返回；它必须自行调用 `goal_plus_submit_final_check`

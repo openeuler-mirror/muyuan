@@ -18,8 +18,11 @@ Codex 的 `UserPromptSubmit` hook 会在模型轮次开始前创建 Goal Plus �
 1. 不要自行调用 `goal_plus_set_status(status="complete")`。
 2. 完成实现和原始目标审计后，调用
    `goal_plus_prepare_final_check(goal_plus_id, checker_host="codex")`.
-3. 将返回的 launch payload 映射到可用的前台 `spawn_agent` 工具。当工具暴露相应字段时，
-   使用返回的 `task_name`、`message`、`fork_turns` 和 `agent_type`。
+3. 将返回的 launch payload 映射到可用的前台 `spawn_agent` 工具。始终使用返回的
+   `task_name`、`message` 和 `fork_turns`。只有当前 `spawn_agent` schema 明确列出
+   `goal_plus_final_checker` 时才使用 `launch.agent_type`；安装版插件未发布该自定义角色时，
+   必须使用 `launch.fallback_agent_type="default"`，不得自行换成其他角色。两条路径都必须
+   保持 `fork_turns="none"` 和 launch message 中的独立只读审查契约。
 4. 等待检查员返回。通过的检查会原子地完成 Goal Plus 记录。检查失败时必须修复每一项发现，
    然后申请新的检查。检查被中断时目标保持 active，也必须申请新的检查。
 5. 读取 `goal_plus_status`，然后在停止前调用 `goal_plus_gate(event="stop")`。

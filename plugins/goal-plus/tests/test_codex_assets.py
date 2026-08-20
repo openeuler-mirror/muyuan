@@ -6,6 +6,13 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_installable_plugin_skills_match_project_local_codex_skills() -> None:
+    for name in ("goal-plus", "goal-plus-with-final-check", "search"):
+        project_skill = ROOT / ".codex" / "skills" / name / "SKILL.md"
+        plugin_skill = ROOT / "skills" / name / "SKILL.md"
+        assert plugin_skill.read_bytes() == project_skill.read_bytes()
 pytestmark = pytest.mark.codex
 
 
@@ -525,6 +532,9 @@ def test_codex_final_checker_and_with_check_alias_are_read_only_and_independent(
     assert "name: goal-plus-with-final-check" in alias
     assert 'checker_host="codex"' in alias
     assert "spawn_agent" in alias
+    assert "launch.fallback_agent_type" in alias
+    assert 'fallback_agent_type="default"' in alias
+    assert 'fork_turns="none"' in alias
     assert "/goal-plus resume" in alias
 
 

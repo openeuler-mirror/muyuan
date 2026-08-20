@@ -175,6 +175,7 @@ def test_required_final_check_blocks_stop_and_completes_only_after_pass(tmp_path
     assert first["launch"]["tool"] == "spawn_agent"
     assert first["launch"]["fork_turns"] == "none"
     assert first["launch"]["agent_type"] == "goal_plus_final_checker"
+    assert first["launch"]["fallback_agent_type"] == "default"
     assert "goal_plus_submit_final_check" in first["launch"]["message"]
 
     failed = runtime.submit_final_check(
