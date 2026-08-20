@@ -58,13 +58,19 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
    相关的观察维度并动态比较。它不读取 hidden 数据，不产生总分或最终推荐，也不改变硬
    PASS/FAIL、数值排名、candidate-local 结算、selection 或 promotion。MainAgent
    不负责定义这些维度，也不要根据 benchmark 类型向 annotator 预埋固定清单。
-   如果原始命令包含 `models=...`，先调用 `goal_plus_list_models(host="codex")`，
-   将用户填写的名称解析为唯一可用模型并冻结到 `strategy.models`；不存在或不唯一时，
-   在创建 run 前直接返回错误。`models=A,B max_parallel=4` 表示按 A、B、A、B 轮转；
-   `models=A,B A1B3 max_parallel=4`（等价写法 `models=A*1,B*3`）表示显式
-   A1B3，所有显式数量之和必须等于
-   `max_parallel`。`models=A,B 每个一个` 表示 `max_parallel=2`。用户没有填写
-   `models` 时不要探测目录，保持 host 默认模型。
+   原生 Codex 命令使用与 Pi 一致的显式角色名：`main=A`、`annotator=B`、
+   `workers=C,D`。`UserPromptSubmit` hook 会把 `main=` 与当前 Codex session 的
+   model 比对；Codex hook 不能切换主模型，不匹配时会在创建或编辑 Goal Plus 记录前
+   拒绝命令。`annotator=` 和 `workers=` 仍必须调用
+   `goal_plus_list_models(host="codex")`，将用户填写的名称解析为唯一可用模型；
+   annotator 冻结到 `strategy.evidence_annotator.model`，workers 冻结到
+   `strategy.models`。不存在或不唯一时，在创建 run 前直接返回错误。旧的
+   `models=` 是 `workers=` 的兼容别名，两者不能同时填写；单数 `model=` 无效。
+   `workers=A,B max_parallel=4` 表示按 A、B、A、B 轮转；
+   `workers=A,B A1B3 max_parallel=4`（等价写法 `workers=A*1,B*3`）表示显式
+   A1B3，所有显式数量之和必须等于 `max_parallel`。`workers=A,B 每个一个`
+   表示 `max_parallel=2`。省略的角色保持 Codex host 默认或继承语义，不从另一个
+   显式角色猜默认值；没有填写 `annotator=`、`workers=` 或 `models=` 时不要探测目录。
    对于用语义、大致 shape/dtype 和参考提示描述的 AscendC Direct Invoke 算子目标，
    记录 `scenario="ascendc_direct_invoke"`，并完整读取
    `examples/ascendc-direct-search/SPEC_DISCOVERY.md`。遵循其中的 request schema

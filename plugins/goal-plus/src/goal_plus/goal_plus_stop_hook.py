@@ -157,6 +157,118 @@ def _goal_plus_request(hook_input: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _command_directive(raw_goal: str, name: str) -> str | None:
+    marker = re.compile(rf"(?:^|\s){re.escape(name)}=", re.IGNORECASE)
+    markers = list(marker.finditer(raw_goal))
+    if len(markers) > 1:
+        raise ValueError(f"/goal-plus accepts at most one {name}= directive")
+    if not markers:
+        return None
+    value_match = re.search(
+        rf"(?:^|\s){re.escape(name)}=([^\s]+)",
+        raw_goal,
+        re.IGNORECASE,
+    )
+    value = value_match.group(1).strip() if value_match is not None else ""
+    if not value:
+        raise ValueError(f"{name}= requires a value")
+    return value
+
+
+def _role_model_directive(raw_goal: str, name: str) -> str | None:
+    value = _command_directive(raw_goal, name)
+    if value is not None and "," in value:
+        raise ValueError(
+            f"{name}= accepts exactly one model; use workers= for a list"
+        )
+    return value
+
+
+def _parse_goal_plus_role_models(raw_goal: str) -> dict[str, str] | None:
+    if re.search(r"(?:^|\s)model=", raw_goal, re.IGNORECASE):
+        raise ValueError(
+            "model= is not supported; use main=, annotator=, and workers="
+        )
+    main = _role_model_directive(raw_goal, "main")
+    annotator = _role_model_directive(raw_goal, "annotator")
+    workers = _command_directive(raw_goal, "workers")
+    models = _command_directive(raw_goal, "models")
+    if workers is not None and models is not None:
+        raise ValueError("workers= and models= are aliases; specify only one")
+    worker_models = workers if workers is not None else models
+    if worker_models is not None and any(
+        not value.strip() for value in worker_models.split(",")
+    ):
+        raise ValueError("workers=/models= contains an empty model reference")
+    if main is None and annotator is None and worker_models is None:
+        return None
+    result: dict[str, str] = {}
+    if main is not None:
+        result["main"] = main
+    if annotator is not None:
+        result["annotator"] = annotator
+    if worker_models is not None:
+        result["workers"] = worker_models
+        result["worker_directive"] = "workers" if workers is not None else "models"
+    return result
+
+
+def _model_references_match(requested: str, current: str) -> bool:
+    requested_parts = requested.strip().casefold().rsplit("/", 1)
+    current_parts = current.strip().casefold().rsplit("/", 1)
+    return (
+        requested_parts == current_parts or requested_parts[-1] == current_parts[-1]
+    )
+
+
+def _validate_codex_main_model(
+    role_models: dict[str, str] | None,
+    hook_input: dict[str, Any],
+) -> None:
+    requested = role_models.get("main") if role_models is not None else None
+    if requested is None:
+        return
+    current = hook_input.get("model")
+    if not isinstance(current, str) or not current.strip():
+        raise ValueError(
+            "main= requires Codex to report the current session model, but this "
+            "UserPromptSubmit event did not include model"
+        )
+    if not _model_references_match(requested, current):
+        raise ValueError(
+            f"main={requested} does not match the current Codex session model "
+            f"{current}. Codex hooks cannot switch the main model; select or start "
+            "Codex with the requested model first, or omit main=."
+        )
+
+
+def _role_model_context(
+    role_models: dict[str, str] | None,
+    hook_input: dict[str, Any],
+) -> str:
+    if role_models is None:
+        return ""
+    lines = ["已解析 Codex Goal Plus 角色模型："]
+    if "main" in role_models:
+        lines.append(
+            f"- main={hook_input.get('model')}（已校验当前 Codex session）"
+        )
+    if "annotator" in role_models:
+        lines.append(
+            f"- annotator={role_models['annotator']}，解析后冻结到 "
+            "strategy.evidence_annotator.model"
+        )
+    if "workers" in role_models:
+        directive = role_models.get("worker_directive", "workers")
+        lines.append(
+            f"- {directive}={role_models['workers']}，解析后冻结到 strategy.models"
+        )
+    lines.append(
+        "省略的角色保持 Codex host 默认或继承语义；不要从其他显式角色推导默认值。"
+    )
+    return "\n".join(lines)
+
+
 def _is_goal_plus_create_tool(tool_name: str) -> bool:
     normalized = tool_name.replace("-", "_")
     return normalized.endswith("goal_plus_create")
@@ -1053,7 +1165,7 @@ def _select_hook_goal_id(search_root: Path, hook_input: dict[str, Any]) -> str |
     )
 
 
-def _goal_context(record: Any) -> str:
+def _goal_context(record: Any, *, role_model_context: str = "") -> str:
     next_action = record.next_action
     next_action_text = (
         f"{next_action.kind}: {next_action.description}"
@@ -1071,7 +1183,7 @@ def _goal_context(record: Any) -> str:
         if current_work
         else "尚未规划"
     )
-    return (
+    context = (
         f"此 Codex session 的 Goal Plus 处于 active：goal_plus_id={record.goal_plus_id}。\n"
         "运行时记录已经存在；不要再次调用 goal_plus_create。\n"
         f"当前目标修订版：{record.goal_revision}。\n"
@@ -1090,6 +1202,7 @@ def _goal_context(record: Any) -> str:
         "并在恢复前澄清有歧义的意图。\n"
         "以 goal_plus_* 工具和已链接的 Search 运行时作为权威依据。"
     )
+    return f"{context}\n{role_model_context}" if role_model_context else context
 
 
 def _emit_additional_context(event_name: str, context: str) -> None:
@@ -1104,6 +1217,10 @@ def _emit_additional_context(event_name: str, context: str) -> None:
             ensure_ascii=False,
         )
     )
+
+
+def _emit_user_prompt_block(reason: str) -> None:
+    print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
 
 
 def _emit_pre_tool_block(reason: str) -> None:
@@ -1225,6 +1342,19 @@ def _handle_user_prompt_submit(
     session_id = _session_id(hook_input)
     goal_id = _select_session_goal_id(search_root, session_id)
     request = _goal_plus_request(hook_input)
+    role_models: dict[str, str] | None = None
+    raw_goal = request.get("raw_goal") if request is not None else None
+    if (
+        request is not None
+        and request.get("action") in {"start", "edit"}
+        and isinstance(raw_goal, str)
+    ):
+        try:
+            role_models = _parse_goal_plus_role_models(raw_goal)
+            _validate_codex_main_model(role_models, hook_input)
+        except ValueError as exc:
+            _emit_user_prompt_block(str(exc))
+            return
     if (
         goal_id is not None
         and request is not None
@@ -1277,7 +1407,13 @@ def _handle_user_prompt_submit(
         },
     )
     runtime.gate(goal_id, event="user_prompt_submit", context=hook_input)
-    _emit_additional_context("UserPromptSubmit", _goal_context(record))
+    _emit_additional_context(
+        "UserPromptSubmit",
+        _goal_context(
+            record,
+            role_model_context=_role_model_context(role_models, hook_input),
+        ),
+    )
 
 
 def _handle_session_start(

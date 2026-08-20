@@ -162,6 +162,33 @@ def test_codex_search_skill_projects_launch_metadata_to_current_tool_schema() ->
     assert "agent_type=launch.agent_type" not in text
 
 
+def test_codex_assets_document_explicit_role_model_syntax() -> None:
+    goal_skill = (
+        ROOT / ".codex" / "skills" / "goal-plus" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    search_skill = (ROOT / ".codex" / "skills" / "search" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    checked_skill = (
+        ROOT / ".codex" / "skills" / "goal-plus-with-final-check" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    docs = (ROOT / "docs" / "codex.md").read_text(encoding="utf-8")
+    combined = "\n".join((goal_skill, search_skill, checked_skill, docs))
+    normalized_docs = " ".join(docs.split())
+
+    assert "main=A annotator=B workers=C,D" in combined
+    assert "main=" in goal_skill
+    assert "annotator=" in goal_skill
+    assert "workers=" in goal_skill
+    assert "`models=` 是 `workers=` 的兼容别名" in combined
+    assert "strategy.evidence_annotator.model" in goal_skill
+    assert "strategy.models" in goal_skill
+    assert "不能切换主模型" in goal_skill
+    assert "UserPromptSubmit" in docs
+    assert "cannot switch the main" in docs
+    assert "select the requested Codex model first" in normalized_docs
+
+
 def test_codex_search_skill_documents_parallel_loop_policy() -> None:
     text = (ROOT / ".codex" / "skills" / "search" / "SKILL.md").read_text(
         encoding="utf-8"

@@ -70,6 +70,25 @@ def test_codex_and_pi_publish_native_parity_capabilities() -> None:
     assert pi.pool.recovery_mode == "supervisor_persisted"
 
 
+def test_codex_and_pi_share_role_model_command_interface() -> None:
+    codex = (ROOT / "docs" / "codex.md").read_text(encoding="utf-8")
+    pi = (ROOT / "docs" / "pi.md").read_text(encoding="utf-8")
+    normalized_codex = " ".join(codex.split())
+
+    for text in (codex, pi):
+        assert "Explicit role models" in text
+        assert "main=" in text
+        assert "annotator=" in text
+        assert "workers=" in text
+        assert "models=" in text
+        assert "strategy.evidence_annotator.model" in text
+        assert "strategy.models" in text
+
+    assert "assertion about the current Codex session model" in codex
+    assert "cannot switch the main session model" in normalized_codex
+    assert "switches the current Pi model" in pi
+
+
 @pytest.mark.parametrize(
     "relative_path",
     [

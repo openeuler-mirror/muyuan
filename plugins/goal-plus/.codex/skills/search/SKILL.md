@@ -80,14 +80,18 @@ strategy:
    `strategy.orchestration_mode="parallel_loops"`、`worker_host="codex"` 和唯一的
    `budget.max_parallel`；同时必须显式设置 `workspace.backend="git_worktree"`。
    只有用户明确要求兼容隔离时才能设置 `copy`。
-   用户指定多模型时，先调用 `goal_plus_list_models(host="codex")` 并将唯一匹配冻结到
-   `strategy.models`。`models=A,B` 按 `max_parallel` 轮转；用户写
-   `models=A,B A1B3`（或 `models=A*1,B*3`）时使用显式数量，数量之和必须等于
-   `max_parallel`；`models=A,B 每个一个` 表示 `max_parallel=2`。运行时据此生成有序
+   原始 `/goal-plus` 命令包含 `annotator=B` 时，先调用
+   `goal_plus_list_models(host="codex")` 并将唯一匹配冻结到
+   `strategy.evidence_annotator.model`。包含 `workers=A,B` 或兼容别名
+   `models=A,B` 时，用同一目录解析并冻结到 `strategy.models`；两个 Worker 别名不能
+   同时出现。`workers=A,B` 按 `max_parallel` 轮转；用户写
+   `workers=A,B A1B3`（或 `workers=A*1,B*3`）时使用显式数量，数量之和必须等于
+   `max_parallel`；`workers=A,B 每个一个` 表示 `max_parallel=2`。运行时据此生成有序
    `selected_models`，每个候选的 selected model 在原生 session 继续期间不可变；
    所有模型仍读取同一个 run 的 `search_get_global_evidence`，模型身份只作为
    candidate/session provenance，不改变候选准入或选择逻辑。`search_create` 不接收
-   第二套模型分配参数。用户没有指定 `models` 时保持 host 默认模型。
+   第二套模型分配参数。`main=` 已由 Codex `UserPromptSubmit` hook 校验为当前 session
+   model，不写入 SearchSpec，也不能由 Search 切换。省略的角色保持 host 默认或继承语义。
 2. 调用且只调用一次 `search_plan_next(requested_k=budget.max_parallel)`，然后调用且只调用
    一次 `search_start_batch`，创建初始候选。
 3. 对每个候选调用且只调用一次 `search_start_agent_session`，直接解析同一次响应中的

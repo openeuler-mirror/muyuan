@@ -55,6 +55,13 @@ def _additional_context(result: subprocess.CompletedProcess[str], event: str) ->
     return specific["additionalContext"]
 
 
+def _block_reason(result: subprocess.CompletedProcess[str]) -> str:
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["decision"] == "block"
+    return payload["reason"]
+
+
 def _stop_hook_events(search_root: Path) -> list[dict]:
     event_dir = search_root / "host-logs" / "codex-hook-events"
     return [
@@ -133,6 +140,118 @@ def test_user_prompt_submit_precreates_and_binds_goal(tmp_path: Path) -> None:
     assert "范围、交付物或成功标准" in context
     assert "goal_plus_update_goal" in context
     assert "恢复前澄清有歧义的意图" in context
+
+
+def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None:
+    search_root = tmp_path / ".gp"
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "model": "gpt-5.6-sol",
+            "prompt": (
+                "/goal-plus main=openai/gpt-5.6-sol "
+                "annotator=gpt-5.6-terra "
+                "workers=gpt-5.6-terra,gpt-5.6-sol optimize throughput"
+            ),
+        },
+    )
+
+    context = _additional_context(result, "UserPromptSubmit")
+    record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
+    record = FileGoalPlusRuntime(search_root).status(record_path.parent.name)
+    assert record.raw_goal.startswith(
+        "main=openai/gpt-5.6-sol annotator=gpt-5.6-terra "
+        "workers=gpt-5.6-terra,gpt-5.6-sol optimize throughput"
+    )
+    assert "main=gpt-5.6-sol（已校验当前 Codex session）" in context
+    assert "annotator=gpt-5.6-terra" in context
+    assert "strategy.evidence_annotator.model" in context
+    assert "workers=gpt-5.6-terra,gpt-5.6-sol" in context
+    assert "strategy.models" in context
+    assert "不要从其他显式角色推导默认值" in context
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        (
+            "/goal-plus main=gpt-5.6-terra optimize throughput",
+            "does not match the current Codex session model gpt-5.6-sol",
+        ),
+        (
+            "/goal-plus model=gpt-5.6-sol optimize throughput",
+            "model= is not supported",
+        ),
+        (
+            "/goal-plus workers=A,B models=A,B optimize throughput",
+            "workers= and models= are aliases",
+        ),
+        (
+            "/goal-plus annotator=A,B optimize throughput",
+            "annotator= accepts exactly one model",
+        ),
+        (
+            "/goal-plus workers=A,,B optimize throughput",
+            "contains an empty model reference",
+        ),
+    ],
+)
+def test_user_prompt_submit_blocks_invalid_role_models_before_goal_creation(
+    tmp_path: Path,
+    prompt: str,
+    expected: str,
+) -> None:
+    search_root = tmp_path / ".gp"
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "model": "gpt-5.6-sol",
+            "prompt": prompt,
+        },
+    )
+
+    assert expected in _block_reason(result)
+    assert not list((search_root / "goal-plus").glob("gp_*/goal.json"))
+
+
+def test_user_prompt_submit_blocks_main_mismatch_before_goal_edit(tmp_path: Path) -> None:
+    search_root = tmp_path / ".gp"
+    created = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "prompt": "/goal-plus optimize throughput",
+        },
+    )
+    _additional_context(created, "UserPromptSubmit")
+    record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
+    goal_id = record_path.parent.name
+
+    edited = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "model": "gpt-5.6-sol",
+            "prompt": "/goal-plus edit main=gpt-5.6-terra optimize latency",
+        },
+    )
+
+    assert "does not match the current Codex session model" in _block_reason(edited)
+    record = FileGoalPlusRuntime(search_root).status(goal_id)
+    assert record.goal_revision == 1
+    assert record.raw_goal.startswith("optimize throughput")
 
 
 def test_user_prompt_submit_materializes_probe_mode_in_raw_goal(tmp_path: Path) -> None:

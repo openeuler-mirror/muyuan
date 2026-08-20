@@ -9,6 +9,10 @@ description: 运行 Goal Plus，并要求在完成前由独立 Codex 最终检�
 Codex 的 `UserPromptSubmit` hook 会在模型轮次开始前创建 Goal Plus 记录，并设置
 `policy.final_check.mode="required"`。
 
+它与 `/goal-plus` 使用同一角色模型语法：`main=A annotator=B workers=C,D`；
+`main=` 必须匹配当前 Codex session model，`models=` 是 `workers=` 的兼容别名。
+具体解析和冻结规则由完整的 `goal-plus` skill 定义。
+
 遵循完整的 `goal-plus` skill 工作流，并额外遵守以下强制终态契约：
 
 1. 不要自行调用 `goal_plus_set_status(status="complete")`。

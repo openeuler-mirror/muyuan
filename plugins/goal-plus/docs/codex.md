@@ -91,25 +91,37 @@ reload. Pass other optional metadata, including `strategy.worker_launch`
 overrides, only when it is present in the returned launch payload and exposed
 by the current tool schema; never synthesize it from the schema alone.
 
-### Multi-model selection
+### Explicit role models
 
-Users specify models directly in the `/goal-plus` request; they do not create
-named profiles or a separate allocation object:
+Codex accepts the same role-named `/goal-plus` parameters as Pi:
 
 ```text
-/goal-plus models=gpt-5.6-terra,gpt-5.6-sol max_parallel=4 optimize ...
-/goal-plus models=gpt-5.6-terra,gpt-5.6-sol A1B3 max_parallel=4 optimize ...
+/goal-plus main=gpt-5.6-sol annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-sol max_parallel=4 optimize ...
 ```
 
-The first form round-robins to Terra, Sol, Terra, Sol. The second is explicit
-A1B3; `models=terra*1,sol*3` is equivalent shorthand. Goal Plus calls
-`goal_plus_list_models(host="codex")`, resolves each
-name before freezing, and records the generated ordered `selected_models` in
-the run. A selected model remains fixed for that candidate's continuations.
-When `models` is absent, Codex children inherit the normal parent/default model.
-The catalog is a discovery surface; dispatch still obeys the current
-`spawn_agent` schema and reports a launch error if that schema cannot accept a
-chosen model override.
+`main=` is an assertion about the current Codex session model. The
+`UserPromptSubmit` hook validates it against the model reported by Codex before
+creating or editing a Goal Plus record. Codex hooks cannot switch the main
+session model, so a mismatch blocks the command with instructions to select the
+requested Codex model first or omit `main=`.
+
+`annotator=` resolves one model on the same Codex host and freezes it into
+`strategy.evidence_annotator.model`. `workers=` resolves one or more models into
+`strategy.models`. Existing `models=` remains a compatibility alias for
+`workers=`; using both aliases in one request is an error. Omitted roles retain
+their normal host default or inheritance behavior and are never inferred from
+another explicit role.
+
+For worker allocation, `workers=A,B max_parallel=4` round-robins A, B, A, B.
+`workers=A,B A1B3 max_parallel=4` is explicit A1B3, and
+`workers=A*1,B*3` is equivalent shorthand. Goal Plus calls
+`goal_plus_list_models(host="codex")`, resolves each annotator or worker name
+before freezing, and records the generated ordered `selected_models` in the
+run. A selected worker model remains fixed for that candidate's continuations.
+When neither `workers=` nor `models=` is present, Codex children inherit the
+normal parent/default model. The catalog is a discovery surface; dispatch still
+obeys the current `spawn_agent` schema and reports a launch error if that schema
+cannot accept a chosen model override.
 
 The parent then:
 
