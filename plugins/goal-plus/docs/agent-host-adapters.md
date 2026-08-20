@@ -1,113 +1,113 @@
 # Agent Host Adapters
 
-适配器负责把 runtime 的启动和续轮请求转换为 host 原生的 worker 操作。Search runtime 本身保持不变；[共享平面](shared-plane.md)定义共享循环和所有权边界。
+Goal Plus 的 Search runtime 负责持久状态、candidate workspace、verifier 和最终选择，Codex 或 Pi host 负责实际启动、等待、续跑和停止 worker。Host Adapter 位于两者之间，把 runtime 的统一请求转换为 host 原生操作；它不改变 Search 的结算语义。
 
-## 通用契约
+系统整体边界见[共享平面](shared-plane.md)。本文只说明 Host Adapter 的统一契约、Codex/Pi 差异和恢复要求。
 
-`src/goal_plus/agent_pool.py` 定义了 `HostPoolContract` 和终态 `WorkerPoolEvent`。每种 host 都需要声明：
+普通 Goal Mode 不使用这套 Search Adapter，而是遵循 [`goal-plus-ultra-v1`](ultra.md) 的 work DAG 合同。Ultra 可以由 Pi、Codex 或外部 harness 实现，不受 `AgentHostKind` 限制；只有进入 verifier-guided Search Mode 后，才使用本文的 candidate pool 契约。
 
-| 字段 | 契约问题 |
+## 统一运行模型
+
+`src/goal_plus/agent_pool.py` 定义 `HostPoolContract` 和终态事件 `WorkerPoolEvent`。每种 host 都必须明确以下能力：
+
+| 字段 | 需要回答的问题 |
 |---|---|
-| `launch_mode` | 启动是否立即返回？ |
-| `wait_mode` | parent agent 能否在任意 worker 完成时被唤醒？ |
-| `continuation_mode` | 复用同一 worker，还是把状态重新派发到 fresh session？ |
-| `deadline_mode` | 哪个 host 组件负责执行运行时限？ |
+| `launch_mode` | 启动调用是否立即返回？ |
+| `wait_mode` | 任意 worker 完成时，parent agent 能否及时被唤醒？ |
+| `continuation_mode` | 续跑时复用原 worker，还是把状态派发到 fresh session？ |
+| `deadline_mode` | 哪个 host 组件执行时间上限？ |
 | `recovery_mode` | 如何重新发现仍在运行的 pool？ |
-| `completion_stage` | candidate 在什么阶段可以安全地交给 parent agent 评估？ |
+| `completion_stage` | candidate 到什么阶段才可以交给 parent 评估？ |
 
-适配器还会返回权威的启动字段。main agent 只投影当前 host 工具 schema 支持的字段；对 Codex 而言，应以当前 `spawn_agent` schema 为准，不能假设可选元数据一定存在。
+Adapter 返回的 launch payload 是权威启动说明。main agent 只传递当前 host tool schema 支持的字段；Codex 必须以当前 `spawn_agent` schema 为准，不能自行补造可选 metadata。
 
-## 维护中的能力矩阵
+Search runtime 不承担 worker supervisor 职责。`search_start_agent_session` 创建的是 context/provenance handle，不代表 worker 已经启动或仍然存活。
+
+## Codex 与 Pi 的能力对比
 
 | 能力 | Codex | Pi RPC |
 |---|---|---|
-| 启动 | 异步 `spawn_agent` | 分离的本地 supervisor + 前台 Pi 子进程 |
-| 等待模式 | `wait_agent` 任意事件唤醒 + `list_agents` | `pi_search_pool_wait_any` |
-| 续轮 | 通过 `followup_task` 复用同一 worker | 在新进程中恢复同一 native session |
-| Deadline | 每次派发由 parent watchdog 管理 | 累计 pool lease + Pi 进程 watchdog |
-| 恢复 | 原生 agent 注册表 + `.gp` | 持久化 `.gp/host-pools/pi/` + `.gp` |
-| Goal gate | `UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、`Stop`、`SubagentStop` | extension 的 input/tool/turn 事件 |
-| 策略覆盖 | 初始并行循环 | 初始并行循环 |
+| 启动 | 异步 `spawn_agent` | host-local supervisor 启动前台 Pi 子进程 |
+| 等待 | `wait_agent` 任意事件唤醒，再用 `list_agents` 收集终态 | `pi_search_pool_wait_any` |
+| 续跑 | `followup_task` 复用同一 worker | 新进程恢复同一 native session |
+| Deadline | parent watchdog 管理每次派发 | 累计 pool lease + Pi 进程 watchdog |
+| 恢复 | Codex agent registry + `.gp` | `.gp/host-pools/pi/` + `.gp` |
+| Goal gate | `UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、`Stop`、`SubagentStop` | extension 的 input/tool/turn event |
 | 模型发现 | Codex app-server `model/list` | Pi RPC `get_available_models` |
-| 归一化 observability | native session JSONL + 已绑定元数据 | `pi_metrics` + 已绑定元数据 |
+| Observability | native session JSONL + 已绑定 metadata | `pi_metrics` + 已绑定 metadata |
 
-所有适配器都实现只读的 `collect_observability` 契约，并通过 `search_get_agent_observability` 暴露。它只用于 provenance 和诊断，不会把 worker lifecycle 状态写入 Search record，也不会让 runtime 承担 supervisor 职责。
+两种 host 都只支持固定的初始并行循环。当前可移植 planner 为 `agent_guided`（含 `agent`、`default`）和 `random`（含 `random_mode`）。
 
-适配器还通过 `goal_plus_list_models` 提供只读模型发现。发现结果只表示 host 当前公布了哪些模型，不保证每个目录项都能通过所有版本的 host launch tool 转发。用户仍然通过 `strategy.models` 选择模型；派发时，权威 launch payload 会投影到实际 host tool schema。没有请求模型时，Goal Plus 跳过发现并保留 host 原生的默认模型继承行为。
+## Candidate 循环
 
-Codex rollout JSONL 会提供每次响应的 input、cached-input、cache-write、output 和 reasoning token 用量，但不提供实际计费美元金额。因此，Goal Plus 使用 `src/goal_plus/codex_pricing.py` 中带版本的、与 Pi 兼容的 OpenAI Codex 模型目录，根据每个 `last_token_usage` 事件计算 `usage.cost_usd`。长上下文分层以及 `flex`/`priority` 倍率遵循 Pi 语义。该结果是按 API 模型费率得到的估算，不是观测到的 ChatGPT 订阅费用；`usage.cost_estimate` 会保留目录版本、覆盖率和计费说明。未知模型的 `cost_usd` 保持不可用，不套用猜测费率。
+新的 Codex/Pi spec 使用 `orchestration_mode="parallel_loops"`。一次 Search run 只做一次初始规划，创建固定数量的 candidate lane：
 
-当前接受的初始 planner 为 `agent_guided`/`agent`/`default` 和 `random`/`random_mode`。
+1. 启动全部初始 candidate；
+2. 以 wait-any 方式处理最先完成的 worker；
+3. 复用该 worker 已经落盘的准确 Evidence，缺失时才由 parent 补做 verifier；
+4. 如果全局停止条件尚未满足，继续同一 candidate、workspace 和 native session；
+5. selection 前停止或 drain 所有活跃 worker。
 
-## 并行循环
+低分、同分或单次没有提升都不会触发 candidate 替换，Adapter 也不会自动 refill。较慢 lane 不会阻塞其他 lane 的 verifier 结算。
 
-Codex 和 Pi 都满足异步 wait-any 语义：
+Codex 通过 `search_continue_agent_session` 和 `followup_task` 原地续跑。Pi 的 `candidate_ready` 表示 minimum lease 已释放且 durable Evidence 已存在；main 随后调用 `pi_search_pool_continue`，由新进程恢复同一 native Pi session。`timed_out` 表示 lease 耗尽但未满足，不能当作 ready candidate 继续。
 
-- **Codex**：只启动一次初始 candidate 集合，等待任意 mailbox 更新，再通过 `list_agents` 找到所有新进入终态的 worker。它复用准确的 worker Evidence；只有缺少匹配 Evidence 时才运行 parent verifier。只要全局停止条件尚未满足，就通过 `search_continue_agent_session` 和 `followup_task` 继续同一 worker。
-- **Pi**：持久化 pool/job 状态；存在最小 lease 时，会在同一个 job 内自动恢复提前结束的 native turn，并且绝不自动补充新 candidate。只有最小 lease 已满足且 durable Evidence 已落盘时才返回 `candidate_ready`；lease 耗尽但未满足时返回 `timed_out`。每次收到 candidate-ready event 后，只要全局停止条件尚未满足，main agent 都会对同一 candidate 调用 `continue`。Pi 会在新进程中重新加载同一 native session。
+## 模型与 Observability
 
-新的 Pi/Codex spec 使用 `orchestration_mode="parallel_loops"`；唯一一次初始规划会创建持久 candidate loop。两种适配器都不会把这次规划变成 completion barrier。低分或没有提升都不会触发 candidate 替换。
+`goal_plus_list_models` 提供只读模型发现。用户把选择写入 `strategy.models`，Adapter 在派发时将已解析模型投影到实际 host schema；没有指定模型时，保留 host 原生继承行为。模型目录只说明当前可发现的模型，不保证旧版 host tool 能转发所有可选字段。
+
+所有 Adapter 都实现只读 `collect_observability`，并通过 `search_get_agent_observability` 暴露。该数据只用于 provenance、报告和诊断，不会把 host lifecycle 写入 Search record。
+
+Codex rollout JSONL 提供 input、cached-input、cache-write、output 和 reasoning token，但不提供实际账单。Goal Plus 使用 `src/goal_plus/codex_pricing.py` 中带版本、与 Pi 兼容的模型目录估算 `usage.cost_usd`；长上下文分层和 `flex`/`priority` 倍率遵循 Pi 语义。`usage.cost_estimate` 会注明目录版本和覆盖率，未知模型不套用猜测价格。
 
 ## Worker 预算
 
-| Host | 必需控制项 | 执行方式 |
+| Host | 必需字段 | 执行方式 |
 |---|---|---|
-| Codex | `worker_budget.max_runtime_seconds` | 首次等待、一次收尾消息、最后等待、interrupt |
-| Pi RPC | `worker_budget.max_runtime_seconds` | 收尾 steer + 进程硬 watchdog |
+| Codex | `worker_budget.max_runtime_seconds` | 首次等待、一次 closeout、最后等待、interrupt |
+| Pi RPC | `worker_budget.max_runtime_seconds` | closeout steer + 进程硬 watchdog |
 
-对 Codex 和 Pi 而言，`max_turns` 只是一项 prompt 提示。`max_parallel` 唯一决定初始 candidate 数和活跃 worker 数，因为后续工作会继续这些既有 candidate。
+`budget.max_parallel` 同时决定初始 candidate 数和活跃 worker 数。`max_turns` 对 Codex 和 Pi 都只是 prompt 提示。
 
-Codex 通过 `worker_budget.min_runtime_seconds` 和 `min_verifier_runs` 支持单 worker 的 AutoResearch 最小 lease。`SubagentStop` hook 会继续同一 child agent turn，直到达到下限；`max_runtime_seconds` 仍是独立的 parent watchdog 上限。适配器要求 lease 在 parent 软收尾前释放，避免两项控制发生竞态。Pi 暴露相同字段，其 worker role 的 `agent_end` handler 会在收尾前继续同一 Pi 进程和 native session。本地 host pool supervisor 仍是崩溃恢复边界，并跨进程恢复累计执行 lease。每次恢复只获得剩余的最大运行时间；基础设施故障以及 pool/外层收尾都会终止 lease。
+可选的 `min_runtime_seconds` 和 `min_verifier_runs` 构成单 worker 的 AutoResearch minimum lease。Codex 由 `SubagentStop` hook 在同一 child turn 内继续；Pi 由 worker `agent_end` handler 和 pool supervisor 累计执行。lease 必须在外层软收尾前释放，`max_runtime_seconds` 仍是独立硬上限。基础设施故障、pool close 或外层 closeout 会立即终止 lease。
 
-`strategy.worker_launch` 携带可选的 host 启动偏好。Codex 在 host 支持时映射 `model`、`reasoning_effort` 和 `service_tier`；Pi 通过可信进程配置映射模型和 thinking level。这些值不属于 Search 状态。
+`strategy.worker_launch` 只保存 host 启动偏好。Codex 可映射 `model`、`reasoning_effort` 和 `service_tier`；Pi 通过可信进程配置映射 model 和 thinking level。这些字段不属于 Search state。
 
 ## 恢复与 Handoff
 
-状态级重新派发是可移植的恢复路径：
+正常续跑优先复用 host 的 native session。worker 已丢失或确实需要 fresh context 时，使用可移植的 state redispatch：
 
-1. 为现有 candidate 调用 `search_redispatch_candidate`；
-2. 在同一 workspace 启动新的 `agent_session_id`；
-3. worker 重新读取 `search_get_agent_context`；
-4. 使用 candidate-local Git 状态、verifier iterations、`research_summary` 和窄 `search_get_global_evidence` 视图恢复，不再依赖旧 transcript。
+1. 对原 candidate 调用 `search_redispatch_candidate`；
+2. 在同一 workspace 创建新的 `agent_session_id`；
+3. worker 调用 `search_get_agent_context`；
+4. 根据 candidate-local Git、verifier iterations、`research_summary`、Global Evidence 和 `.tmp/handoff.json` 恢复。
 
-Codex 原生支持同 worker 续轮。Pi 支持跨进程的 native session 续轮：每次派发使用新 PID，但保留相同的 native session、runtime `agent_session_id`、candidate 和 workspace。对于不支持恢复 native session 的 host 或旧 record，状态级重新派发仍是可移植的后备方案。
+Pi 支持跨进程的 native session 续轮：PID 会变化，但 native session、runtime `agent_session_id`、candidate 和 workspace 保持不变。只有 native session 无法恢复时，才退回上述 state redispatch。
 
-每份 worker handoff 都应说明最重要的工作、verifier-backed feature entries、blockers、next steps，以及最多五条带适用范围和条件的 pitfalls。Candidate-local pitfalls 只在当前 candidate 内有效；feature-family pitfalls 只有在机制和条件匹配时才可迁移。main agent 确认前，verifier concerns 始终只是 advisory。
+每份 handoff 应包含关键工作、verifier-backed feature entries、blockers、next steps，以及最多五条带适用范围和条件的 pitfalls。`candidate_local` pitfall 只约束当前 candidate；`feature_family` pitfall 只有在机制和条件匹配时才可迁移。worker 提出的 verifier concern 在 main agent 确认前始终只是 advisory。
 
-## 已确认的 Verifier 失效
+## Verifier 失效与静默
 
-Runtime fence 与 host 无关；如何证明静默状态则由适配器决定：
+main agent 确认 verifier 不再可信后，先 fence run，再由 host 停止全部 worker：
 
 | 步骤 | Codex | Pi RPC |
 |---|---|---|
 | Fence | `search_invalidate_run` | `search_invalidate_run` |
-| 停止活跃 worker | 对每个活跃 candidate 调用 `interrupt_agent` | `pi_search_pool_close(mode="interrupt")` |
-| 证明已静默 | 通过 `list_agents`/`wait_agent` 等到全部终止 | 通过 snapshot/wait 等到 `active_count=0` |
-| 重建 | 仅在静默后修复并重新 freeze | 仅在静默后修复并重新 freeze |
+| 停止 | 对每个活跃 candidate 调用 `interrupt_agent` | `pi_search_pool_close(mode="interrupt")` |
+| 确认静默 | `list_agents` / `wait_agent` 直到全部终止 | snapshot / wait 直到 `active_count=0` |
+| 重建 | 静默后修复并重新 freeze | 静默后修复并重新 freeze |
 | 后继 run | `search_create(..., source_run_id=old)` | 相同 |
 
-适配器不得尝试向已经失效的 run 补充 candidate。Runtime 还会拒绝打开或提交 Pi pool，并拒绝记录 fence 之后才完成的 verifier 结果。旧 run 仍可用于诊断和继承研究信息，但其分数不能被 successor run promotion 或复用。
+失效 run 不再接受新 candidate、Pi pool 提交或 fence 后才完成的 verifier result。旧 run 仍可提供有界研究上下文，但旧分数不能被 successor run 复用。
 
-## 验证证据
+## Adapter 维护要求
 
-| 路径 | 仓库证据 |
+Adapter 可以构建 launch/continuation payload、发现模型、校验 host budget、声明 pool 能力，并保存原生 handle 和有界 host metadata。它不得创建 candidate workspace、执行或排序 verifier、规划技术方向、生成报告或导出 promotion patch。
+
+修改 Host Adapter 时，需要同步更新 host asset、本文和对应测试。快速测试只验证 schema 和映射；真实 host 行为由以下 smoke path 覆盖：
+
+| 路径 | 验证内容 |
 |---|---|
-| Codex 并行循环 | `codex_parallel_loop_cycle`：两个初始 candidate、一个 plan、同一原生 worker 续轮、best 更新、final selection 和 report |
-| Pi 托管 pool | `pi_rpc_managed_pool_wait_any`：两个分离的真实 Pi worker、pool 重新发现、candidate-ready 事件、drain |
-| Pi 并行循环 | `pi_rpc_parallel_loop_cycle`：一个初始 plan、使用新 session 重新派发同一 candidate、最佳项更新、最终选择和报告 |
-
-快速测试只证明 schema 和适配器映射。只有选择性运行的真实 host 测试才能证明原生启动、等待、续轮、hook 和 provider 行为。
-
-## 适配器职责
-
-适配器可以：
-
-- 构建启动和续轮 payload；
-- 在不启动 Search run 的情况下列出 host 当前公布的模型；
-- 校验 host 专属预算字段；
-- 声明 pool 能力；
-- 保存原生 handle 和有界 host 元数据。
-
-适配器不得创建 candidate workspace、执行或排序 verifier、规划下一个 hypothesis、生成报告或导出 promotion patch。
-
-Host integration 仅限 Codex 和 Pi。修改任一适配器时，都必须同步更新本地资产和文档，在单元测试中覆盖 launch/bind/budget/continuation，并保留一条真实的多轮 smoke 路径。
+| `codex_parallel_loop_cycle` | 初始 candidate、wait-any、同 worker 续跑、best 更新、selection 和 report |
+| `pi_rpc_managed_pool_wait_any` | 两个真实 Pi worker、pool 恢复、candidate-ready event 和 drain |
+| `pi_rpc_parallel_loop_cycle` | 单次初始 plan、同 candidate 续跑、best 更新、selection 和 report |
