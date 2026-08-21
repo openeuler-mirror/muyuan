@@ -266,7 +266,16 @@ class SearchTools:
         }
 
     def search_promote(self, run_id: str, candidate_id: str) -> dict[str, str]:
-        return {"artifact_path": str(self.runtime.promote(run_id, candidate_id))}
+        artifact_path = self.runtime.promote(run_id, candidate_id)
+        source_path, apply_cwd, apply_directory = (
+            self.runtime.promotion_apply_coordinates(run_id)
+        )
+        return {
+            "artifact_path": str(artifact_path),
+            "source_path": str(source_path),
+            "apply_cwd": str(apply_cwd),
+            "apply_directory": apply_directory,
+        }
 
     def goal_plus_monitor_snapshot(
         self,

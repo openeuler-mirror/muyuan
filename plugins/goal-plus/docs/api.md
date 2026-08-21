@@ -175,6 +175,11 @@ Pitfall 的 `scope` 为 `candidate_local`、`feature_family` 或 `evaluation_con
 
 `search_select` 基于 verifier-backed immutable revision。promotion 是独立验收，不复用 process pass；失败时 run 保持可重试，且不输出 patch。
 
+Promotion patch 始终相对于 `source_path`。`search_promote` 同时返回 `apply_cwd` 和
+`apply_directory`；写回源码时，从 `apply_cwd` 执行
+`git apply --directory=<apply_directory> <artifact_path>`。不要根据当前 Git cwd 猜测路径，
+尤其不要在嵌套 `source_path` 下直接运行不带目录映射的 `git apply`。
+
 关联 Goal Plus record 时，正常顺序是 select -> promote -> record Search result -> final audit -> terminal status -> report。`search_report` 会拒绝 active 或 needs-user record，确保静态报告不会捕获中间态。
 
 `report.html` 汇总全部关联 Search task、candidate/session/verifier Evidence、main agent usage、metric gap 和独立时间线。worker bar 使用观测到的 host 起止时间，配置 budget 不会伪装成实际运行时长。安装 `report` extra 后使用 Plotly 绘制每个 candidate 的 verifier trajectory 和 global best-so-far；没有 Plotly 时使用确定性的内联 SVG fallback。

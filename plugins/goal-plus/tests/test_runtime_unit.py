@@ -31,6 +31,7 @@ from goal_plus.runtime import (
     sha256_file,
     write_json,
 )
+from goal_plus.tools import SearchTools
 from tests._runtime_helpers import (
     create_candidate,
     git_commit_all,
@@ -965,6 +966,45 @@ def test_promote_patch_round_trips_file_without_trailing_newline(tmp_path: Path)
     subprocess.run(["git", "apply", str(patch_path)], cwd=apply_target, check=True)
 
     assert apply_target.joinpath("initial_program.py").read_bytes() == b"VALUE = 1"
+
+
+def test_promote_returns_apply_coordinates_for_nested_source_path(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    project = make_project(repository)
+    git_commit_all(repository, "source baseline")
+
+    runtime = FileSearchRuntime(repository / ".gp")
+    run_id, candidate_id, workspace = create_candidate(runtime, project)
+    workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    assert runtime.run_verifier(run_id, candidate_id).process_passed is True
+    runtime.select(run_id)
+
+    promoted = SearchTools(runtime).search_promote(run_id, candidate_id)
+
+    assert promoted["source_path"] == str(project.resolve())
+    assert promoted["apply_cwd"] == str(repository.resolve())
+    assert promoted["apply_directory"] == "project"
+    apply_args = [
+        f"--directory={promoted['apply_directory']}",
+        promoted["artifact_path"],
+    ]
+    subprocess.run(
+        ["git", "-C", promoted["apply_cwd"], "apply", "--check", *apply_args],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", promoted["apply_cwd"], "apply", *apply_args],
+        check=True,
+    )
+    assert project.joinpath("initial_program.py").read_text(encoding="utf-8") == (
+        "VALUE = 1\n"
+    )
 
 
 def test_promote_runs_promotion_verifiers_and_keeps_failed_run_ready(

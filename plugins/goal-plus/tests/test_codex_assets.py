@@ -452,6 +452,8 @@ def test_codex_search_reuses_exact_worker_evidence_before_parent_verification() 
 
     assert "准确 worker Evidence" in text
     assert "仅在没有匹配 Evidence 时" in text
+    assert "apply_cwd" in text
+    assert "apply_directory" in text
     assert 'search_run_verifier(hypothesis="主流程完成验证")' not in text
     assert "shared_tools[*].tool_view" in text
     assert "Tool View 前不向 candidate 暴露" in text

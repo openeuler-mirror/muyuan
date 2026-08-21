@@ -146,6 +146,8 @@ strategy:
     其他 worker。
 12. 全局停止 policy 为 true 时，drain 或中断每个 live worker，然后按要求调用
     `search_select` 和 `search_promote`。选择使用 verifier 支持的 Git iteration；
+    promotion patch 相对于返回的 `source_path`；写回源码时从返回的 `apply_cwd` 执行
+    `git apply --directory=<apply_directory> <artifact_path>`，不要根据当前 Git cwd 猜路径。
     不要只为记录临时最佳而提升。该 Search 属于 Goal Plus 时，不调用 `search_report`
     就交还控制；Goal Plus skill 会在父记录达到终态后生成且只生成一次报告。
     对独立 Search，只在提升后调用 `search_report`。

@@ -3366,6 +3366,24 @@ class FileSearchRuntime:
             self.report(run_id)
         return patch_path
 
+    def promotion_apply_coordinates(self, run_id: str) -> tuple[Path, Path, str]:
+        run = self._load_run(run_id)
+        source_path = Path(run.source_path).resolve()
+        source_root = source_path if source_path.is_dir() else source_path.parent
+        try:
+            output = self._git_output(
+                source_root,
+                ["git", "rev-parse", "--show-toplevel"],
+            ).strip()
+            if not output:
+                raise ValueError("Git returned an empty repository root")
+            apply_cwd = Path(output).resolve()
+            apply_directory = source_root.relative_to(apply_cwd).as_posix()
+        except (FileNotFoundError, subprocess.CalledProcessError, ValueError):
+            apply_cwd = source_root
+            apply_directory = "."
+        return source_path, apply_cwd, apply_directory
+
     def _strategy_mode(self, strategy: StrategySpec) -> str:
         return strategy.name.strip().lower().replace("-", "_")
 

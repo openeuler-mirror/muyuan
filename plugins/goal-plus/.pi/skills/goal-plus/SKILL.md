@@ -235,6 +235,8 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
    `search_select` 对 verifier 记录的 iteration 排名并 checkout 最佳已提交候选的
    `git_head`。准确 worker Evidence 已经覆盖该产物时直接用于选择；没有这种证据的旧记录才
    使用父级 process verifier。配置的 promotion verifier 仍是选中 revision 的最终 gate。
+   promotion patch 相对于返回的 `source_path`；写回源码时从返回的 `apply_cwd` 执行
+   `git apply --directory=<apply_directory> <artifact_path>`，不要根据当前 Git cwd 猜路径。
 10. 调用 `goal_plus_record_search_result`。此时不要调用 `search_report`；结果记录只预留
     规范报告路径，不生成 Markdown 或 HTML。
 11. 执行原始目标审计。评估/编辑契约仍充分时保留同一个 run。新 incumbent 或低性能路线
