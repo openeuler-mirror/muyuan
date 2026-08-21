@@ -1,16 +1,12 @@
 # Pi
 
-Pi ships as an installable package with one user-facing `goal-plus` skill and
-one extension, backed by the shared Goal Plus runtime.
-It does not expose a separate user-facing `search` skill or patch Pi core. The
-same assets remain directly installable from a development checkout.
+Pi 以可安装 package 的形式提供一个面向用户的 `goal-plus` skill 和一个 extension，底层复用共享 Goal Plus runtime。它不修改 Pi core，也不暴露独立的用户级 `search` skill；开发 checkout 可以直接安装同一组 asset。
 
-## Setup
+## 安装与快速开始
 
-### User installation
+### 用户安装
 
-From the Goal Plus source directory in the current Muyuan GitCode checkout,
-install the runtime and Pi package with their user-facing package managers:
+在当前 Muyuan checkout 的 Goal Plus source directory 中安装 runtime 和 Pi package：
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
@@ -18,22 +14,17 @@ python -m pip install .
 pi install .
 ```
 
-Any local Python environment is valid as long as its Goal Plus executables are
-on the PATH inherited by Pi. Skip the pip command when that is already true.
+Python 环境可以自行选择，但其中的 Goal Plus executable 必须出现在 Pi 继承的 `PATH` 中；如果目标环境已经安装正确版本，可以省略 pip 命令。Pi 会直接加载这个 local package，因此安装期间需要保留 source directory。
 
-Remove the Pi integration with:
+移除 Pi 集成：
 
 ```bash
 pi remove .
 ```
 
-Run `python -m pip uninstall -y goal-plus` only after no Pi or Codex
-installation still uses that Python environment's Goal Plus commands.
+只有在其他 Pi 或 Codex 安装都不再使用该 Python 环境中的 Goal Plus 命令时，才运行 `python -m pip uninstall -y goal-plus`。
 
-Keep the source directory while Pi is installed because Pi loads this local
-package directly.
-
-### Checkout development
+### Checkout 开发安装
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
@@ -42,76 +33,57 @@ pi install .
 pi -p "/goal-plus inspect this repository"
 ```
 
-Use `pi remove .` to remove the checkout package. User and development installs
-expose the same extension and the same single user-facing `goal-plus` skill.
+通过 `pi remove .` 移除 checkout package。用户安装和开发安装暴露相同的 extension，以及同一个面向用户的 `goal-plus` skill。
 
-The extension provides pre-model `/goal-plus` creation in interactive,
-RPC, print, and JSON modes. It persists the active id when the Pi session is
-persistent, injects hidden context, gates selected writes/Search calls, and
-runs a native turn-level stop gate. This is no host process Stop hook.
+也可以在交互式 Pi 中直接使用：
 
-For Pi Search runs, asynchronous Evidence annotation also stays on Pi. The
-run-scoped drainer uses an ephemeral `pi --mode json --no-session --no-tools`
-process, inherits the Pi worker model/provider unless explicitly overridden,
-and reads provider configuration from `PI_CODING_AGENT_DIR`. A qualified
-annotator model (`provider/model`) or `evidence_annotator.pi_provider` can select
-a provider independent of the Search worker. Verifier settlement never waits
-for this process. The same turn also produces shared-dir Tool Views. The
-host-neutral lifecycle is documented in
-[`shared-plane.md`](shared-plane.md#工具复制与采用结算).
+```text
+/goal-plus Fix this bug and verify the test suite.
+/goal-plus mode=probe Check whether vectorization is viable.
+/goal-plus mode=autonomous Deeply optimize the kernel.
+```
 
-`/goal-plus edit`, `/goal-plus resume`, and `/goal-plus-with-final-check` share
-the same goal revision semantics as Codex. Required checks run through a
-separate read-only Pi RPC reviewer.
+`/goal-plus edit`、`/goal-plus resume` 和 `/goal-plus-with-final-check` 与 Codex 使用同一套 goal revision 语义。required final check 由独立、只读的 Pi RPC reviewer 执行。
 
-The command maps logical Main `thinking=max` to Pi's native `xhigh` request and
-records the level after Pi clamps it to the selected model. A resulting `off`
-level is rejected. Ordinary `route="subagent"` work runs through
-`pi_goal_plus_run_work_item`, which applies the same rule to an isolated Pi RPC
-child, binds its durable launch attempt after the RPC process starts, waits for
-it, and submits the result with the same attempt generation. It rejects an
-already-active item instead of creating a replacement session. Multiple
-independent tool calls can execute concurrently. Main still owns acceptance,
-rework, integration, and completion. See [Ultra Orchestration](ultra.md).
+## Pi 与 Codex 的差异
 
-Use `/goal-plus mode=autonomous <goal>` for substantial renewable candidate
-exploration (the default), or `/goal-plus mode=probe <goal>` for short
-feasibility/potential/blocker probes. The choice is normalized into the final
-line of `raw_goal`; it is not a Pi pool or Search runtime state.
+Pi 使用 extension event，而不是项目 hook 文件。extension 会在 interactive、RPC、print 和 JSON 模式下，在模型运行前创建 `/goal-plus`，保存 active ID，注入隐藏 context，并对 write/Search tool 执行 gate。它提供原生 turn-level stop gate，但不是 host process 级 Stop hook。
 
-At the end of a main turn, every still-active record is continued with its full
-raw goal and elapsed-time context. Pi stops only after the agent records a
-terminal status. Worker watchdog expiry remains a dispatch event, not goal
-completion.
+Pi Search 的异步 Evidence annotation 也运行在 Pi 上。run-scoped drainer 启动临时 `pi --mode json --no-session --no-tools` 进程，默认继承 Pi worker 的 model/provider；显式 qualified annotator model 或 `evidence_annotator.pi_provider` 可以单独选择 provider。verifier settlement 不等待该进程，同一次 annotator turn 也会生成 shared-dir Tool View。完整生命周期见[共享平面](shared-plane.md#工具复制与采用结算)。
 
-At terminal state, Pi writes a visible `Goal Plus stats` custom entry with
-elapsed time, messages, tool calls, token use, and estimated cost. It is not an
-LLM message and does not trigger another assistant turn.
+main turn 结束时，仍为 active 的 Goal Plus record 会携带完整 raw goal 和 elapsed-time context 继续执行。Pi 只有在 agent 写入终态后才停止；worker watchdog 到期只是一次 dispatch event，不代表 goal 完成。
 
-## How Pi Differs From Codex
+进入终态时，Pi 写入一条可见的 `Goal Plus stats` custom entry，包含 elapsed time、message、tool call、token usage 和估算 cost。它不是 LLM message，也不会触发另一个 assistant turn。
 
-The main agent uses extension events rather than project hook files. Candidate
-workers are Pi RPC processes supervised by a durable host-local pool. Each
-detached wrapper owns one foreground `pi --mode rpc` child launched by
-`goal-plus-pi-worker`; native session JSONL lives under
-`.gp/host-sessions/pi/`.
+Search worker 是由 host-local durable pool 监督的 Pi RPC 进程。每个 wrapper 通过 `goal-plus-pi-worker` 启动前台 `pi --mode rpc` 子进程；native session 位于 `.gp/host-sessions/pi/`，pool 状态位于 `.gp/host-pools/pi/`。进程可以重启，但 candidate workspace 和 native session 提供连续性。
 
-Pool state lives under `.gp/host-pools/pi/`; Search records remain host-neutral.
-`pi_search_pool_continue` starts a new process that reloads the same native Pi
-session in the same candidate workspace and preserves `agent_session_id`.
-Metrics use `get_entries(since=<last_entry_id>)`, so each dispatch transfers
-only new entries while cumulative usage remains available in the bound handle.
-This does not keep one OS process resident across completions.
-The resume launch explicitly resets dispatch-scoped deadline semantics: a
-closeout or time advisory persisted by an earlier process is historical, and
-only warnings delivered after the latest launch apply to the new budget.
-Each resume intentionally uses a new process; native session state and the
-candidate workspace provide continuity without requiring a persistent worker
-PID.
+## 普通 Goal Mode
 
-## Worker Spec
+普通任务使用 [`goal-plus-ultra-v1`](ultra.md) work DAG。逻辑上的 Main `thinking=max` 会映射为 Pi 原生 `xhigh` 请求，再记录模型 clamp 后的实际 level；如果结果为 `off`，该 Ultra binding 会拒绝继续。
 
-Use `worker_host="pi-rpc"` and a wall-clock budget:
+`route="subagent"` 的 work item 通过 `pi_goal_plus_run_work_item` 执行。该工具启动隔离的 Pi RPC child，在进程启动后绑定 durable attempt，等待 child 完成，并用同一个 `attempt_id` 和 `generation` 提交 result。已经 active 的 item 会被拒绝，不会悄悄创建 replacement session。多个相互独立的 tool call 可以并发执行。
+
+Pi wrapper 只拥有 native launch/wait。main 仍负责 acceptance、rework、integration、Search routing 和 completion。完整 work-item state machine 见 [Ultra Orchestration](ultra.md)。
+
+## Search Pool 流程
+
+Pi Search 使用 `strategy.orchestration_mode="parallel_loops"` 和固定的初始 lane：
+
+1. 只规划并物化一次初始 candidate；
+2. 调用 `pi_search_pool_open(..., max_parallel=<frozen limit>)`；
+3. 用 `pi_search_pool_wait_any` 等待任意终态 event；
+4. 收到 `candidate_ready` 后结算 verifier-backed best；若全局停止条件尚未满足，对同一 candidate 调用 `pi_search_pool_continue`；
+5. main turn 中断后，用 `pi_search_pool_snapshot(run_id=...)` 重新发现 pool；
+6. 结束时调用 `pi_search_pool_close`，再 select 和 promote；
+7. 记录 Search result，完成 raw-goal audit，设置 Goal Plus 终态，并为每个已记录 run 生成一次 final report。
+
+supervisor 只维护初始固定 candidate，不提供 submit/refill，也不会因为低分或没有提升替换 candidate。`candidate_ready` 必须同时满足 minimum lease 已释放、handle 已绑定且 durable Evidence 已落盘；`timed_out`、`interrupted` 和 `failed` 都不能作为 ready candidate 继续。
+
+driver 复用匹配的 worker Evidence，不创建重复的 parent process iteration。只有 workspace 已改变但缺少 worker Evidence 时，parent 才补做 final verifier；未改变的 workspace 不会增加 baseline iteration。
+
+## 模型与 Worker Spec
+
+Pi 使用 `worker_host="pi-rpc"` 和 wall-clock budget：
 
 ```json
 {
@@ -130,130 +102,44 @@ Use `worker_host="pi-rpc"` and a wall-clock budget:
 }
 ```
 
-`max_runtime_seconds` is required. Optional `min_runtime_seconds` and
-`min_verifier_runs` are enforced cumulatively by the pool wrapper: an early Pi
-turn restarts the same native session in the same slot/worktree with only the
-remaining upper budget. Infrastructure failure, pool close, or outer closeout
-stops this automatic continuation. Before each remaining hard limit, the runner
-sends one closeout steer. `max_turns` is only a prompt hint.
+`max_runtime_seconds` 必填。`max_turns` 只是 prompt 提示。可选 `min_runtime_seconds` 和 `min_verifier_runs` 由 pool wrapper 累计执行：Pi turn 提前结束时，会在同一 slot/worktree 恢复相同 native session，并只获得剩余上限预算。达到 hard deadline 前，runner 发送一次 closeout steer；基础设施故障、pool close 或外层 closeout 会停止自动续跑。
 
-### Explicit role models
-
-The native Pi command accepts role-named model parameters:
+命令可分别选择 Evidence annotator 和 Search worker 模型：
 
 ```text
 /goal-plus annotator=B workers=C,D max_parallel=4 optimize ...
 ```
 
-The already-running Pi session is the main agent. `/goal-plus` cannot switch
-the main session model. Select it when starting Pi (`pi --model MODEL`) or with
-`/model` before submitting the Goal Plus prompt. Omit `main=` in normal Pi
-usage. For compatibility, `main=` remains an optional assertion about the
-current Pi session model: the extension validates it and blocks a mismatch,
-but never treats it as a selector.
+已经运行的 Pi session 就是 main agent，`/goal-plus` 不能切换它的模型。应在启动时使用 `pi --model MODEL`，或在提交 Goal Plus prompt 前使用 `/model`。正常使用应省略 `main=`；为兼容旧命令，`main=` 只作为当前 session model 的可选 assertion：extension 会校验并在不匹配时阻止执行，但不会把它当成 selector。
 
-`annotator=` freezes `strategy.evidence_annotator.model`. `workers=` resolves
-one or more models into `strategy.models`; uncounted entries round-robin and
-counted entries retain the allocation rules below. Omitted roles keep their
-existing host default or inheritance behavior rather than inheriting from an
-unrelated explicit role.
+`annotator=` 冻结 `strategy.evidence_annotator.model`；`workers=` 将一个或多个模型解析到 `strategy.models`。省略某个 role 时保留 host default 或正常继承，不从其他显式 role 推导。
 
-Use qualified `provider/model` references when an id exists under more than one
-provider. Existing `models=` remains a compatibility alias for `workers=` so
-older commands retain exactly the same Candidate allocation semantics. Do not
-specify both aliases in one request.
-
-### Multi-model selection
-
-Use `workers` (or the compatibility alias `models`) directly in the
-natural-language command. Because Pi can expose
-the same model id from multiple providers, canonical `provider/model` values
-are the clearest form:
+多个 provider 暴露同一模型 ID 时，使用 `provider/model`：
 
 ```text
 /goal-plus workers=openai-codex/gpt-5.6-terra,openai-codex/gpt-5.6-sol max_parallel=4 optimize ...
 /goal-plus workers=openai-codex/gpt-5.6-terra,openai-codex/gpt-5.6-sol A1B3 max_parallel=4 optimize ...
 ```
 
-Goal Plus obtains the catalog from Pi RPC `get_available_models` through
-`goal_plus_list_models(host="pi-rpc")`. A short id is accepted only when it
-matches one entry uniquely. Uncounted entries round-robin; `A1B3` (or
-`A*1,B*3`) becomes explicit counts that must sum to `max_parallel`. The
-runtime-generated `selected_models` are immutable
-per candidate/native session. Omitting both `workers` and `models` keeps Pi's
-current default.
+Goal Plus 通过 `goal_plus_list_models(host="pi-rpc")` 调用 Pi RPC `get_available_models`。短 ID 只有在唯一匹配时才会接受。没有 count 的条目按 round-robin 分配；`A1B3` 或 `A*1,B*3` 会生成显式 count，且总数必须等于 `max_parallel`。`models=` 是 `workers=` 的兼容别名，两者不能同时出现。最终 `selected_models` 对每个 candidate/native session 不可变；同时省略 `workers=` 和 `models=` 时使用 Pi 当前 default。
 
-## Parallel Loops
+## Worker 上下文与恢复
 
-Normal Pi Search follows the [Shared Plane](shared-plane.md) flow:
+candidate worker 只能使用 `search_get_agent_context`、`search_get_global_evidence`、`search_get_evidence_detail`、`search_stage_shared_tool`、`search_copy_shared_tool`、`search_run_verifier` 和 `search_list_iterations`。
 
-1. set `orchestration_mode="parallel_loops"`, then plan and materialize the
-   initial candidates exactly once;
-2. `pi_search_pool_open(..., max_parallel=<frozen limit>)`;
-3. `pi_search_pool_wait_any` for the first terminal event;
-4. for `candidate_ready`, observe any verifier-backed best update and call
-   `pi_search_pool_continue` for that exact candidate unless a global stop
-   condition is true; treat `timed_out`, `interrupted`, and `failed` as
-   incomplete rather than continuing them as ready candidates;
-5. recover interrupted main turns with `pi_search_pool_snapshot(run_id=...)`;
-6. `pi_search_pool_close`, then select and promote;
-7. record the Search result, finish the raw-goal audit, set a terminal Goal Plus
-   status, then generate the final report exactly once per recorded run.
+`search_get_agent_context` 返回有界的 best/recent 摘要、权威 ID、workspace 和 durable `results.tsv` 路径。只有确实需要旧 verifier 的完整细节时，才调用可能很大的 `search_list_iterations`。
 
-The supervisor enforces `max_parallel` and never auto-refills. Main never calls
-submit after initial pool creation and never replaces a candidate because of
-low score or lack of improvement. A `candidate_ready` event is published only
-after the driver has bound the handle, released any minimum lease, and confirmed
-durable Evidence for the current artifact. An exhausted unsatisfied lease emits
-`timed_out` instead. While a minimum lease is active, Pi `agent_end` queues the
-next turn in the same process and native session until the configured closeout
-point. When the last assistant response ends with `stopReason="length"` and has
-no tool call, the worker-local extension does not continue that context. The
-driver returns a refresh signal and the pool supervisor creates a new native
-session with a new `agent_session_id` for the same candidate and workspace. The
-main agent is not involved, and workspace changes plus durable Evidence survive
-the refresh. The driver reuses matching worker Evidence instead of adding a
-duplicate parent process iteration. Parent verification is only a fallback for
-a changed, unverified artifact; an unchanged workspace does not create a baseline
-iteration.
+worker 在第一次修改前读取 Global Evidence，之后按配置周期或停滞节点刷新。它独立选择方向，只编辑自己的 workspace，用一句话 `hypothesis` 调用 verifier，并更新 `.tmp/handoff.json`。`null` View 只表示 annotator 尚未发布，不要求等待。
 
-There is no public synchronous candidate/batch runner. Pool open owns the
-initial fixed lane set; pool continue owns later dispatches for those same
-lanes.
+同进程 continuation 沿用已经加载的 context 和 Evidence。跨进程恢复同一 native session 时，只重新加载紧凑的权威 candidate context，完整 worker contract 和已加载 Evidence 仍由持久 session 保留。
 
-## Worker Boundary
+如果 assistant response 以 `stopReason="length"` 结束且没有 tool call，worker-local extension 不再续接该上下文。driver 会返回 refresh signal，由 pool supervisor 为同一 candidate 和 workspace 创建 fresh native session 与新的 `agent_session_id`；Git 修改和 durable Evidence 继续保留。
 
-Worker-role extension tools are limited to `search_get_agent_context`,
-`search_get_global_evidence`, `search_get_evidence_detail`,
-`search_stage_shared_tool`, `search_copy_shared_tool`, `search_run_verifier`,
-and `search_list_iterations`. Agent context contains a
-bounded best/recent summary and the durable `results.tsv` path;
-`search_list_iterations` is the explicit full-history fallback when exact older
-verifier details are required. Workers read Global Evidence before the first
-change and then at the configured periodic/stagnation checkpoints, independently
-choose a direction, edit only inside the returned workspace, run the verifier
-with a one-line hypothesis, and update a bounded `.tmp/handoff.json`. A `null`
-View means the annotator has not published yet and never requires waiting.
+无法恢复 native session 时，handoff、candidate Git state 和 `.gp` verifier history 是持久恢复依据。main 只发送中性 continuation directive，不替 worker 选择技术方向。
 
-Same-process worker continuation preserves the loaded context and Evidence.
-After Pi compacts a worker session, the extension silently appends one complete
-Global Evidence snapshot to the next context. A cross-process continuation of
-the same native session reloads only compact authoritative candidate context;
-the full worker contract and already loaded Evidence remain in the persisted
-session.
+## 工具、Observability 与日志
 
-The persisted native session is the normal continuation surface. The handoff,
-candidate Git state, and `.gp` verifier history remain the durable recovery
-surface when native session loading is unavailable.
-
-Every redispatched worker owns the next hypothesis, pivot, and rebase within
-the same candidate workspace. Main sends a neutral continuation directive and
-does not act as a technical conductor.
-
-## Tool Facade
-
-`goal-plus-pi-tool` exposes the same GoalPlusTools/SearchTools facade plus the
-Pi-local pool tools:
+`goal-plus-pi-tool` 是 Pi 本地 JSON CLI facade，与 MCP 暴露相同的 GoalPlusTools/SearchTools，并提供 host-local pool 操作。只读 monitor 示例：
 
 ```bash
 goal-plus-pi-tool goal_plus_monitor_snapshot \
@@ -262,55 +148,40 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
   --pretty
 ```
 
-`goal_plus_monitor_snapshot` is read-only and also exists on MCP. It never
-starts, waits for, or stops a worker. The complete concise tool index is in
-[API](api.md).
+`goal_plus_monitor_snapshot` 不启动、等待或停止 worker。`search_get_agent_observability(agent_session_id)` 返回与 Codex 相同的归一化 schema；Pi 将 `pi_metrics` 中的 model、thinking level、duration、usage/cost、context 和 log/session path 投影到该结构。
 
-For ordinary Ultra work, Pi's wrapper records
-`pi_goal_plus_run_work_item`/`goal-plus-pi-worker` under namespaced event
-metadata. The optional `orchestration` feature projects those events into the
-same task/result/Main-decision contract used by Codex without changing Pi RPC
-process ownership. See [Monitor Feature Plugins](feature-plugins.md).
+普通 Ultra work 可以启用 `orchestration` feature plugin。Pi wrapper 会把 `pi_goal_plus_run_work_item` 和 `goal-plus-pi-worker` 保存为 namespaced event metadata；plugin 将其投影成与 Codex 相同的 task/result/main-decision 结构，但不会改变 Pi RPC process ownership。详见 [Monitor Feature Plugins](feature-plugins.md)。
 
-Use `search_get_agent_observability(agent_session_id)` for the same normalized
-per-worker schema used by Codex. Pi maps the existing `pi_metrics` model,
-thinking level, duration, usage/cost, context, and log/session paths into that
-schema; the legacy bound fields remain readable.
-
-## State And Logs
-
-Search state, candidate commits, and workspaces under `.gp/` are authoritative.
-Worker logs default to a metadata-only event log:
+Search state、candidate commit 和 workspace 以 `.gp/` 为准。默认 worker log 是只含元数据的 event log：
 
 ```text
 .gp/host-logs/pi-rpc-<agent_session_id>.jsonl
 ```
 
-It stores event/tool status, bounded errors, timing, and usage without prompts
-or reasoning. Set `GOAL_PLUS_PI_RAW_LOG=1` only for focused debugging; raw
-streams can become very large.
+它记录 event/tool status、有界 error、timing 和 usage，不含 prompt 或 reasoning。只有短时聚焦调试确实需要完整 RPC payload 时才设置 `GOAL_PLUS_PI_RAW_LOG=1`；raw stream 可能很大。
 
-Bound handles include `metadata.pi_metrics` (including resolved model and
-thinking level), timeout/failure evidence, and a
-bounded `metadata.progress_handoff`. A timeout is successful deadline
-enforcement; runner failure is recorded separately with synthetic failure
-metadata so monitoring never mistakes it for a live session.
+已绑定 handle 中的 `metadata.pi_metrics` 保存 model、thinking level、timeout/failure Evidence 和有界 `metadata.progress_handoff`。timeout 表示 deadline enforcement 生效；runner failure 会绑定 synthetic failure metadata，避免 monitor 把 session 误判为仍然存活。
 
-## Supported Strategies
+完整 API 见 [API](api.md)，跨 host 诊断见[调试运行时状态](debugging-runtime.md)。
 
-Pi currently supports the portable builtin strategies only:
+## 支持范围与验证
 
-- `agent_guided`, `agent`, `default`
-- `random`, `random_mode`
+Pi 当前只支持以下可移植内置策略：
 
-## Verification
+- `agent_guided`、`agent`、`default`
+- `random`、`random_mode`
+
+快速测试：
 
 ```bash
 pytest -m pi -q
+```
+
+真实 host smoke test：
+
+```bash
 ST_PI_CYCLE_WORKER_SECONDS=120 \
   pytest -m "st and st_pi_rpc" -k managed_pool_wait_any -v -s -rs
 ```
 
-The real-host test launches two detached Pi RPC workers, rediscovers the pool
-by `run_id`, observes wait-any completion, and drains cleanly. See
-[Debugging](debugging-runtime.md) for cross-host diagnosis.
+该场景启动两个独立 Pi RPC worker，通过 `run_id` 重新发现 pool，观察 wait-any completion，并正常 drain。

@@ -220,6 +220,11 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     runtime.select.return_value = {"selected_candidate_id": "c001"}
     runtime.report.return_value = Path("/tmp/report.md")
     runtime.promote.return_value = Path("/tmp/c001.patch")
+    runtime.promotion_apply_coordinates.return_value = (
+        Path("/tmp/source/repository/task"),
+        Path("/tmp/source/repository"),
+        "task",
+    )
     tools = SearchTools(runtime)
 
     assert tools.search_create("spec_123") == {"run_id": "run_1"}
@@ -319,7 +324,12 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         "report_path": "/tmp/report.md",
         "html_report_path": "/tmp/report.html",
     }
-    assert tools.search_promote("run_1", "c001") == {"artifact_path": "/tmp/c001.patch"}
+    assert tools.search_promote("run_1", "c001") == {
+        "artifact_path": "/tmp/c001.patch",
+        "source_path": "/tmp/source/repository/task",
+        "apply_cwd": "/tmp/source/repository",
+        "apply_directory": "task",
+    }
 
     proposal_arg = runtime.start_batch.call_args.args[2][0]
     assert isinstance(proposal_arg, CandidateProposal)

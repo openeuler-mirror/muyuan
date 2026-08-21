@@ -112,6 +112,8 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "search_select" in text
     assert "search_report" in text
     assert "search_promote" in text
+    assert "apply_cwd" in text
+    assert "apply_directory" in text
     assert "跨进程原生 session continuation" in text
     assert "search_continue_agent_session" in text
     assert "session_jsonl_restart" not in text
@@ -626,28 +628,28 @@ def test_pi_docs_record_runner_logs_and_native_stop_gate() -> None:
     assert "pi_search_run_candidate" not in combined
     assert "goal_plus_monitor_snapshot" in combined
     assert "search_get_agent_observability" in combined
-    assert "read-only" in combined
-    assert "one user-facing `goal-plus` skill" in combined
-    assert "does not expose a separate user-facing `search` skill" in combined
+    assert "只读" in combined
+    assert "一个面向用户的 `goal-plus` skill" in combined
+    assert "不暴露独立的用户级 `search` skill" in combined
     assert "pi_search_pool_open" in combined
     assert "pi_search_pool_continue" in combined
-    assert "How Pi Differs From Codex" in combined
-    assert "Pi currently supports the portable builtin strategies only" in combined
-    assert "pre-model `/goal-plus` creation" in combined
+    assert "Pi 与 Codex 的差异" in combined
+    assert "Pi 当前只支持以下可移植内置策略" in combined
+    assert "在模型运行前创建 `/goal-plus`" in combined
     assert "pi -p" in combined
     assert "--session-dir" in combined
     assert ".gp/host-sessions/pi/" in combined
-    assert "metadata-only" in combined
-    assert "native session continuation across process boundaries" in normalized
+    assert "只含元数据" in combined
+    assert "跨进程恢复同一 native session" in normalized
     assert "session_jsonl_restart" not in combined
     assert ".gp/host-logs/pi-rpc-" in combined
-    assert "metadata-only event log" in combined
+    assert "只含元数据的 event log" in combined
     assert "GOAL_PLUS_PI_RAW_LOG=1" in combined
-    assert "native turn-level stop gate" in combined
+    assert "原生 turn-level stop gate" in combined
     assert "Goal Plus stats" in combined
     assert "custom entry" in combined
-    assert "does not trigger another assistant turn" in combined
-    assert "no host process Stop hook" in combined
+    assert "不会触发另一个 assistant turn" in combined
+    assert "不是 host process 级 Stop hook" in combined
 
 
 def test_pi_goal_plus_skill_documents_multiple_search_tasks_and_monitoring() -> None:

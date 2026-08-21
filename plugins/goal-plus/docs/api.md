@@ -1,316 +1,204 @@
 # API
 
-`goal-plus --root .gp` exposes the host-neutral MCP surface. Tool schemas and
-descriptions from the running server are authoritative; this page is the short
-index and ownership guide.
+`goal-plus --root .gp` 提供 host-neutral MCP 接口。运行中 server 返回的 tool schema 和说明始终是权威定义；本文说明各组工具在一次 Goal Plus / Search 流程中的位置、调用方和所有权。
 
-## Goal Plus Tools
+## 一次完整流程
 
-| Tool | Purpose |
+普通 Goal Plus 任务和 Search Mode 使用同一条上层生命周期：
+
+1. `goal_plus_create` 保存原始目标；
+2. `goal_plus_record_triage` 确定直接处理，还是先做 verifier/spec discovery；
+3. `goal_plus_upsert_work_items` 建立当前 revision 的 work DAG，main 按 route 自行处理、派发 subagent 或进入 Search；
+4. Search route 先 `search_freeze_spec`，再 `search_create` 并通过 `goal_plus_link_search_run` 关联；
+5. `search_plan_next` 和 `search_start_batch` 只创建一次初始 candidate，host 启动固定 worker pool；
+6. worker 循环读取 context/Evidence、修改 workspace、调用 `search_run_verifier`；
+7. 达到全局停止条件后，host 先停止所有 worker，再执行 `search_select` 和 `search_promote`；
+8. main 接受各 work item，完成 `goal_plus_record_search_result`、final check 和终态审计，最后为每个已记录 run 调用一次 `search_report`。
+
+Search runtime 不启动或监督 worker。Codex/Pi 的启动、wait-any、continuation 和 interrupt 由 host 负责，详见 [Agent Host Adapters](agent-host-adapters.md)。
+
+## Goal Plus 工具
+
+| 工具 | 用途 |
 |---|---|
-| `goal_plus_create` | create a durable goal before triage |
-| `goal_plus_status` | read goal phase, revision, linked tasks, and evidence |
-| `goal_plus_update_goal` | replace the complete effective objective and start a revision |
-| `goal_plus_record_triage` | choose ordinary goal work or verifier/spec discovery |
-| `goal_plus_upsert_work_items` | create or update the current revision's host-neutral work DAG |
-| `goal_plus_record_work_event` | claim/bind fenced subagent attempts and record results, decisions, or Search routing |
-| `goal_plus_save_spec_draft` | persist the typed candidate Search spec |
-| `goal_plus_list_models` | list the selected Codex or Pi host's currently available models |
-| `goal_plus_link_search_run` | append a frozen Search run to the goal |
-| `goal_plus_record_search_result` | attach selected/promotion evidence and reserve canonical final report paths |
-| `goal_plus_prepare_final_check` | create a required independent-review request |
-| `goal_plus_submit_final_check` | record reviewer verdict for an exact revision |
-| `goal_plus_set_status` | set evidence-backed terminal or paused state |
-| `goal_plus_gate` | return a hook-friendly allow/block decision |
+| `goal_plus_create` | 在 triage 前创建持久 goal |
+| `goal_plus_status` | 读取 goal phase、revision、关联 task 和 Evidence |
+| `goal_plus_update_goal` | 替换完整有效目标并开始新 revision |
+| `goal_plus_record_triage` | 选择普通 goal 工作或 verifier/spec discovery |
+| `goal_plus_upsert_work_items` | 创建或更新当前 revision 的 host-neutral work DAG |
+| `goal_plus_record_work_event` | 管理按 generation 隔离的 subagent attempt，并记录结果、决策或 Search routing |
+| `goal_plus_save_spec_draft` | 持久化带类型的 candidate Search spec |
+| `goal_plus_list_models` | 列出 Codex 或 Pi host 当前可用模型 |
+| `goal_plus_link_search_run` | 向 goal 追加 frozen Search run |
+| `goal_plus_record_search_result` | 绑定 selection/promotion Evidence，并预留 final report 路径 |
+| `goal_plus_prepare_final_check` | 创建必需的独立 review 请求 |
+| `goal_plus_submit_final_check` | 为准确 revision 记录 reviewer verdict |
+| `goal_plus_set_status` | 设置 Evidence-backed terminal 或 paused state |
+| `goal_plus_gate` | 返回适合 hook 使用的 allow/block decision |
 
-`goal_plus_update_goal` requires `expected_revision`, preventing a stale agent
-from overwriting a newer objective. Search results are keyed by `run_id`, so one
-goal can retain multiple search tasks.
+`goal_plus_update_goal` 必须提供 `expected_revision`，防止 stale agent 覆盖新目标。Search result 以 `run_id` 为键，因此一个 goal 可以保留多个 Search task；`search_tasks` 是仅追加历史，`linked_search` 只是当前 task 的兼容视图。
 
-For `route="subagent"`, `dispatch` returns the generated `attempt_id`,
-`generation`, and launch deadline. The host records `bind` after native launch,
-then includes that attempt identity on `message`, `result`, and `failed`.
+### Work DAG 与 Attempt
 
-Every record defaults to the Ultra execution policy documented in
-[Ultra Orchestration](ultra.md). Work events are durable coordination facts;
-the host still owns launch, wait, messaging, interruption, and native logs.
+每条 Goal Plus record 默认遵循 [`goal-plus-ultra-v1`](ultra.md)。`route="main"` 由 main 直接完成，`route="subagent"` 走 host 原生派发，`route="search"` 进入后文的 verifier-guided Search。work event 是持久协调事实，但启动、等待、通信、中断和原生日志仍由 host 所有。
 
-## Search Tools
+对 subagent work item，`dispatch` 只生成 `attempt_id`、`generation` 和 launch deadline。host 启动成功后记录 `bind`，并在 `message`、`result`、`failed` 中携带同一 attempt identity。过期 generation 的迟到结果保留为 `stale_result` Evidence，不能修改当前 item。main 检查 `result_ready` 后记录 `accepted` 或 `rework`；required item 未全部接受时，completion gate 不会放行。
 
-### Spec and run
+## 创建 Search Run
 
-| Tool | Purpose |
+### 冻结合同与创建 Run
+
+| 工具 | 用途 |
 |---|---|
-| `search_freeze_spec` | preflight and hash-pin a `SearchSpec` plus verifier artifacts |
-| `search_create` | create a `run_id`; optional `source_run_id` snapshots bounded predecessor research |
-| `search_status` | read budget use, candidates, and current best |
-| `search_invalidate_run` | atomically fence a run after main-confirmed verifier inadequacy |
-| `search_list_history` | rank candidates and return current-run feature/verifier research rollups |
-| `search_list_iterations` | explicitly inspect the potentially large full verifier history for one candidate |
-| `goal_plus_monitor_snapshot` | read combined goal/run/session/host evidence without controlling workers |
+| `search_freeze_spec` | preflight `SearchSpec` 和 verifier artifact，并用 hash 固定 |
+| `search_create` | 创建 `run_id`；可用 `source_run_id` 继承有界研究信息 |
+| `search_status` | 读取 budget、candidate 和当前 best |
+| `search_invalidate_run` | main 确认 verifier 不充分后，原子 fence 当前 run |
+| `search_list_history` | 按 candidate 排名，并汇总当前 run 的 feature/verifier 研究 |
+| `search_list_iterations` | 显式读取单个 candidate 可能很大的完整 verifier 历史 |
+| `goal_plus_monitor_snapshot` | 只读汇总 goal/run/session/host Evidence |
 
-### Initial candidate allocation
+`search_invalidate_run` 需要 typed verifier reason、非空 summary 和具体 Evidence。它把 run 置为 `aborted`，拒绝新的 planning、session、verifier record、selection 和 promotion。runtime 不拥有 host worker，因此调用方还必须停止完整 host pool，并确认活跃 worker 归零。
 
-| Tool | Purpose |
-|---|---|
-| `search_plan_next` | persist the one initial candidate allocation |
-| `search_start_batch` | materialize that plan's isolated candidate workspaces |
-
-New Pi/Codex specs use `strategy.orchestration_mode="parallel_loops"`.
-`search_plan_next(requested_k)` may be called exactly once; later work resumes
-the existing candidates. It plans:
-
-```text
-min(requested_k, remaining max_parallel)
-```
-
-The standard flow passes `requested_k=budget.max_parallel` for that one planning
-call. `budget.max_parallel` is the single initial candidate/live-worker count.
-
-`search_invalidate_run` requires a typed verifier reason, non-empty summary,
-and concrete evidence. It changes the run to `aborted` and blocks new planning,
-sessions, verifier records, selection, and promotion. It does not own host
-workers: the caller must next interrupt the complete host pool and wait for zero
-active workers before repairing verifier files.
-
-When a successor is unavoidable, use:
+只有原合同无法继续使用时才创建 successor：
 
 ```text
 search_create(new_frozen_spec_id, source_run_id=invalidated_or_exhausted_run)
 ```
 
-For a multi-model run, call `goal_plus_list_models(host=...)`, then define the
-user's choices once in frozen `strategy.models`. Entries without `count` are
-round-robin expanded to `budget.max_parallel`: `A,B` with four lanes becomes
-`A,B,A,B`. When every entry has an explicit count, the counts must sum to
-`max_parallel`: a user-level `A1B3` allocation (or `A*1,B*3` shorthand)
-becomes `A,B,B,B`. Mixed counted and uncounted
-entries are invalid. The runtime resolves every requested name against the
-host catalog before freezing and rejects missing or ambiguous names.
+新 run 的 `inherited_research` 可以包含 predecessor frontier、feature ledger 和 scoped pitfalls，但 predecessor score 会明确标记为不可复用。
 
-The resulting ordered `selected_models` are runtime state, not a second user
-input. Each candidate and its agent session retain its selected model through
-continuation. All models read the same run-scoped
-`search_get_global_evidence` surface.
-Each verifier-backed iteration is projected there with its commit, score,
-disposition, and an asynchronously generated objective View when available.
-Model identity is provenance only and does not alter plan admission or
-iteration selection.
+### 初始 Candidate 分配
 
-The new run exposes `inherited_research` containing a predecessor frontier,
-feature ledger, and scoped pitfalls. It marks predecessor scores non-reusable.
+| 工具 | 用途 |
+|---|---|
+| `search_plan_next` | 持久化唯一一次初始 candidate 分配 |
+| `search_start_batch` | 物化 plan 中隔离的 candidate workspace |
 
-### Worker context
+新的 Codex/Pi spec 使用 `strategy.orchestration_mode="parallel_loops"`。`search_plan_next(requested_k)` 只能调用一次，数量为：
 
-| Tool | Caller | Purpose |
+```text
+min(requested_k, remaining max_parallel)
+```
+
+标准流程传入 `requested_k=budget.max_parallel`。`budget.max_parallel` 同时决定初始 candidate 数和活跃 worker 数，后续工作只继续既有 candidate。
+
+多模型 run 先调用 `goal_plus_list_models(host=...)`，再把用户选择写入 frozen `strategy.models`。没有 `count` 的 entry 按 round-robin 扩展：四条 lane 中的 `A,B` 变为 `A,B,A,B`。全部 entry 都有 count 时，总和必须等于 `max_parallel`，例如 `A1B3` 或 `A*1,B*3` 变为 `A,B,B,B`；不能混用 counted 和 uncounted entry。
+
+runtime 在 freeze 前通过 host catalog 解析模型名。最终有序 `selected_models` 属于 runtime state，每个 candidate 和 agent session 在 continuation 中保持选定模型。模型 identity 只用于 provenance，不影响 planning、verifier 或 selection。
+
+<a id="worker-context"></a>
+
+## Worker 循环
+
+### Session 与 Context
+
+| 工具 | 调用方 | 用途 |
 |---|---|---|
-| `search_start_agent_session` | main | create a provenance handle and host-native launch payload |
-| `search_redispatch_candidate` | main | create a fresh session in the same candidate workspace |
-| `search_bind_agent_handle` | main/host driver | attach a Codex or Pi native handle |
-| `search_continue_agent_session` | main | return native same-worker continuation fields when supported |
-| `search_get_agent_context` | candidate worker | load authoritative ids, workspace, bounded recent/best candidate history, results ledger path, and resume data |
-| `search_get_global_evidence` | candidate worker | project settled worker attempts in the current run as score, disposition, exact attempt commit, and a possibly delayed objective View |
-| `search_stage_shared_tool` | candidate worker | stage an initial tool or a material revision of a `tool_family_catalog` head from explicit `.tmp/tool-drafts/` sources; this does not publish it |
-| `search_copy_shared_tool` | candidate worker | copy a Tool View-bound shared-dir snapshot into the caller's local inbox for source inspection or autonomous reuse |
-| `search_get_evidence_detail` | candidate worker | expand one available supplemental evaluation from the caller's current run; independent mode is candidate-local |
-| `search_get_agent_observability` | main/monitor | read normalized model, timing, terminal, usage, context, artifact, and handoff evidence for one session |
+| `search_start_agent_session` | main | 创建 provenance handle 和 host 原生 launch payload |
+| `search_redispatch_candidate` | main | 在同一 candidate workspace 创建 fresh session |
+| `search_bind_agent_handle` | main/host driver | 绑定 Codex 或 Pi 原生 handle |
+| `search_continue_agent_session` | main | host 支持时返回原生同 worker continuation 字段 |
+| `search_get_agent_context` | candidate worker | 加载权威 ID、workspace、有界 candidate history 和恢复数据 |
+| `search_get_agent_observability` | main/monitor | 读取单个 session 的归一化 model、timing、usage、artifact 和 handoff Evidence |
 
-`search_start_agent_session` does not launch or supervise a worker. The caller
-must use the returned `launch` object. A `worker_budget` can be passed to initial
-launch, continuation, or redispatch without mutating the frozen spec. Pi pool
-minimum fields are cumulative across the internal native-session resumes of one
-pool job; ordinary overrides remain dispatch-scoped.
+`search_start_agent_session` 只创建 runtime handle，不启动 worker。调用方必须使用返回的 `launch` 对象。初始启动、continuation 或 redispatch 都可以提供 dispatch-scoped `worker_budget`，不会修改 frozen spec；Pi pool 的 minimum lease 会在同一 job 的 native-session resume 之间累计。
 
-`search_get_agent_context` exposes `supplemental_evaluation_enabled`. When it is
-false, workers do not wait for or request supplemental evaluation. When enabled,
-`search_get_global_evidence` adds only `supplemental_available=true`; full summary,
-dimensions, peer comparisons, and limitations are
-fetched for a selected immutable row through `search_get_evidence_detail`.
-The default context is bounded: `latest_result`, `best_iteration`, and
-`recent_iterations` replace the former complete `results` and `iterations`
-arrays, while `result_count`, `iteration_count`, and `results_tsv` retain exact
-history provenance. `search_list_iterations` remains the explicit, potentially
-large full-history path for rare inspection of older verifier details.
+`search_get_agent_context` 默认返回有界结构：`latest_result`、`best_iteration` 和 `recent_iterations`，而不是完整 `results` / `iterations`。`result_count`、`iteration_count` 和 `results_tsv` 保留准确 provenance。只有确实需要旧 verifier 细节时才调用 `search_list_iterations`。
 
-Worker process verifier calls require a one-line `hypothesis` describing the
-realized attempt. With `shared_dir` enabled they may also include a
-`toolization_decision`. `staged` requires one or more positive signals and tool
-names; `not_applicable` requires a concrete exclusion. Missing or contradictory
-decisions produce iteration advisories only. The staging inventory remains
-authoritative, and decisions/advisories do not affect score, disposition,
-selection, or promotion. `view=null` in Global Evidence means annotation has not been
-published yet; workers continue independently and do not wait or poll.
+### Evidence 与按需详情
 
-New decisions use the capability-oriented signals `repeated_workflow`,
-`domain_construction_or_probe`, `behavior_or_invariant_checker`,
-`reproducer_fixture_or_case_generator`, `parser_trace_or_comparator`, and
-`peer_setup_or_feedback_reduction`. Search-local tests and candidate-authored formal regression tests,
-validation functions, reproducers, fixtures/case generators, comparators, and invariant checks are eligible
-tools even when they use a test framework, have a `test_` filename, or ship in the final candidate patch.
-Selected tests and dependencies are still copied explicitly under `.tmp/tool-drafts/` and must run in a peer
-workspace without candidate-private temporary state. `restricted_artifact` applies instead to candidate product
-implementation, frozen verifier/runner/grader artifacts, hidden answers or scoring logic, raw logs/data,
-credentials, and build output. A shared test or diagnostic tool must not copy or approximate hidden feedback.
-`strategy.config.global_evidence_mode` controls Evidence delivery without
-changing the candidate-visible prompt or tool surface. `manual` is the default:
-candidates explicitly read the shared run view. `auto` also injects that shared
-view as `global_evidence_snapshot` after each successful worker process verifier.
-`independent` does not inject and limits explicit reads to the calling
-candidate's own Evidence. Parent and promotion verification are unchanged.
-Snapshot failures add `global_evidence_warning` without changing the successful
-verifier result. `GOAL_PLUS_GLOBAL_EVIDENCE_MODE` can supply the mode before
-freeze; the effective value is persisted in the frozen spec, and a conflicting
-explicit `strategy.config.global_evidence_mode` is rejected.
+| 工具 | 调用方 | 用途 |
+|---|---|---|
+| `search_get_global_evidence` | candidate worker | 读取当前 run 已结算 attempt 的 score、disposition、commit 和客观 View |
+| `search_get_evidence_detail` | candidate worker | 按需展开一条 available supplemental evaluation |
 
-Every call persists a `global_evidence_reads` entry on the calling agent
-session. The entry records the read timestamp and exact completed
-candidate/iteration/commit View references visible at that moment, so reports
-can distinguish a View published after the last verifier from one available
-before a later attempt. These receipts are observational and never affect
-settlement, selection, promotion, or hard PASS/FAIL.
-When `shared_dir.enabled=true`, Global Evidence additionally projects only tools whose Tool View has
-been generated and runtime-bound. A worker may call `search_copy_shared_tool` with that exact
-`tool_id` and `snapshot_hash` to inspect the exact manifest and source before deciding whether to run,
-import, adapt, use as a diagnostic reference, compare, or decline the snapshot. Copying does not require
-invoking the original tool. Only direct execution, import, or runtime dependency requires validating the
-original tool in the candidate workspace first;
-adapted candidate code is covered by the normal process verifier. The next process verifier atomically
-consumes the local copy receipt. For the current schema, the resulting `adopted_tools` entry proves that
-the snapshot entered the iteration context, not that the original tool ran or remained in the candidate.
-This fact does not create a separate tool score, recommendation, or selection rule.
-`ToolizationDecision` is an iteration-local review fact and never enters Global
-Evidence. The publication path remains staging -> attributed passing process
-verifier -> immutable shared snapshot -> annotator-bound Tool View -> Global
-Evidence -> exact copy receipt -> adopted tool record.
-`search_get_agent_context` includes `tool_family_catalog` when shared-dir is enabled. The catalog
-contains family/head identities, the unique `revision_head`, version capacity, cumulative capability
-and coverage keys, and a contract fingerprint; it does not contain snapshot paths or source content.
-A first publication uses `publication_intent=new`. A revision is allowed only when
-`revision_allowed=true` and supplies `revision_head.tool_id` as `supersedes_tool_id`.
-`capability_extension` adds a stable capability/coverage key; `adoption_fix` requires a concrete defect
-observed after copying/adopting that family; `contract_change` adds a stable contract key for a material
-entrypoint, input, output, or dependency change. Renamed or synonymous keys do not create novelty.
-When `revision_allowed=false`, the worker records the exact `revision_blocker`, such as
-`max_published_versions_reached`, instead of claiming that the current family is sufficient.
-`no_toolizable_material` means the cumulative unpublished review found no tool at all.
-`no_material_tool_delta`, `existing_family_sufficient`, and `max_published_versions_reached` are revision-only
-exclusions and runtime rejects them while the run has no shared-tool family.
-The runtime permits one pending revision and at most two immutable published
-records per family by default; pending records count toward that limit. It keeps only the single
-`discoverable_head` visible in Global Evidence while its successor awaits Tool View settlement.
-Each worker settlement snapshots the exact attempt base/head, worker host, and
-resolved annotator model/provider into an internal task. Codex runs annotations
-through ephemeral `codex exec`; Pi runs them through ephemeral, tool-free
-`pi --mode json`. Explicit `strategy.evidence_annotator.provider` applies to
-Codex and stores only the API-key environment variable name, never the key
-value. Pi inherits `PI_MODEL` and `PI_PROVIDER` by default; an annotator model
-qualified as `provider/model` or an explicit
-`strategy.evidence_annotator.pi_provider` selects an independent Pi provider.
-Pi resolves that provider's model and credentials from `PI_CODING_AGENT_DIR`.
+每个 verifier-backed iteration 都会把 commit、score、disposition 和可用时异步生成的 View 投影到 Global Evidence。`view=null` 表示 annotation 尚未发布；worker 应继续独立工作，不等待或轮询。
 
-`search_get_agent_observability` has one versioned cross-host schema. Schema
-version 2 adds `execution.provider` and `usage.processed_tokens`; Pi processed
-tokens include input, cache read/write, and output tokens, while Codex uses its
-native total-token counter because cached input is already included. Codex
-reads its native subagent session JSONL (bound by `SubagentStop` or discovered
-from the unique task name); Pi normalizes `metadata.pi_metrics`. Legacy
-records may still contain bound metadata. The call never returns prompt,
-reasoning, tool arguments, or tool output content,
-and never waits for or controls a worker. `goal_plus_monitor_snapshot` embeds
-the same object under each `subagents[].observability` while retaining legacy
-Pi fields for backward compatibility.
+`strategy.config.global_evidence_mode` 决定 candidate 如何收到 Evidence：
 
-`goal_plus_monitor_snapshot.statistics` is the unified statistical view. Its
-selected-run payload reports baseline/target improvement, success rates,
-stable terminal duration, time to first verifier/success, worker outcome and
-model/provider distributions, candidate lineage, selection survival,
-worker-vs-parent verifier counts, promotion report evidence, normalized usage,
-efficiency, and data-completeness gaps.
-When a Codex Goal Plus transcript is bound, `statistics.orchestrator` reports a
-content-free usage delta since Goal Plus creation, and `statistics.total_usage`
-combines that delta with worker usage. Per-task statistics are also retained in
-`search_tasks[].statistics` and aggregated under
-`search_task_aggregate.statistics`.
-The snapshot root also exposes `schema_version` for the monitor contract and
-`goal_plus_version` for the runtime that generated it. Generated report data
-stores the same product version separately from its report schema version.
+- `manual`：默认模式，由 candidate 显式读取共享 run view；
+- `auto`：除显式读取外，每次成功的 worker process verifier 后注入 `global_evidence_snapshot`；
+- `independent`：不自动注入，显式读取也只返回当前 candidate 自己的 Evidence。
 
-`goal_plus_monitor_snapshot.feature_plugins` contains optional, read-only
-derived views. The built-in `orchestration` plugin normalizes ordinary
-Main/subagent task packets and assignment/result/decision events while keeping
-Codex and Pi native operation names distinct. Pass
-`feature_plugins=["orchestration"]` to select it or `feature_plugins=[]` to
-disable feature projections. See [Monitor Feature Plugins](feature-plugins.md).
+parent/promotion verification 不进入 peer Evidence。快照失败只增加 `global_evidence_warning`，不会改变 verifier result。`GOAL_PLUS_GLOBAL_EVIDENCE_MODE` 可以在 freeze 前提供默认值；如果与显式 spec 配置冲突，freeze 会拒绝。
 
-Worker handoffs remain one bounded protocol. `key_results` supplies feature
-ledger entries (artifact, code surface/change, portability/dependencies,
-measured effect, verifier result, and incumbent relation), while
-`verifier_assessment` reports evidence-backed contract quality. Candidate
-history preserves these fields, and top-level `feature_ledger` and
-`verifier_assessments` aggregate the current run across candidates outside the
-visible ranking frontier as well as those inside it.
+每次 Evidence 读取都会在 agent session 中保存 `global_evidence_reads` receipt，记录读取时间和当时可见的 completed candidate/iteration/commit View。receipt 只用于报告“某个 View 是否在后续尝试前可见”，不参与 settlement、selection、promotion 或 PASS/FAIL。
 
-Pitfalls are not a run-wide deny list. Their `scope` is `candidate_local`,
-`feature_family`, or `evaluation_contract`, with `condition`, evidence artifact,
-and `confidence`. Missing scope defaults to candidate-local. A worker's
-`verifier_assessment` is advisory until the main agent confirms it and calls
-`search_invalidate_run`.
+`search_get_agent_context` 的 `supplemental_evaluation_enabled` 告诉 worker 是否存在按需详情。关闭时不等待也不请求；开启时，窄 Global Evidence 只增加 `supplemental_available=true`，完整 summary、dimensions、peer comparisons 和 limitations 通过 `search_get_evidence_detail` 获取。`independent` 模式只能展开当前 candidate。完整 annotation 语义见 [Evidence Annotator](evidence-annotator.md)。
 
-### Verify and finish
+### 修改、验证与共享工具
 
-| Tool | Purpose |
+| 工具 | 调用方 | 用途 |
+|---|---|---|
+| `search_run_verifier` | candidate worker / parent fallback | 提交准确 attempt，运行 process verifier 并结算 candidate-local best |
+| `search_stage_shared_tool` | candidate worker | 从 `.tmp/tool-drafts/` stage 新工具或 `tool_family_catalog` head 的实质 revision |
+| `search_copy_shared_tool` | candidate worker | 将 Tool View 绑定的 immutable snapshot 复制到本地 inbox，供阅读或自主复用 |
+
+worker 调用 process verifier 时必须提供一行客观 `hypothesis`，说明实际实施的尝试。`search_run_verifier` 返回 candidate-local `keep`、`retain`、`discard` 或 `failure`，并向继承的 `workspace/results.tsv` 追加准确记录。parent fallback 省略 `agent_session_id`，也不要求 `hypothesis`。
+
+启用 `shared_dir` 后，worker 可以同时提交 `toolization_decision`。`staged` 需要工具名和至少一个正向 signal，`not_applicable` 需要具体排除原因；缺失或矛盾只产生 advisory。staging inventory 是权威事实，decision 不影响 score、disposition、selection 或 promotion。
+
+六类 capability signal 为 `repeated_workflow`、`domain_construction_or_probe`、`behavior_or_invariant_checker`、`reproducer_fixture_or_case_generator`、`parser_trace_or_comparator` 和 `peer_setup_or_feedback_reduction`。正式回归测试、fixture、reproducer、comparator 和 invariant checker 也可以共享；candidate 产品实现、冻结 verifier/grader、隐藏答案或评分逻辑、凭据、原始日志和构建产物属于 `restricted_artifact`。
+
+只有通过 process verifier、生成 Tool View 并绑定 snapshot 的工具才进入 Global Evidence。peer 使用准确 `tool_id` 和 `snapshot_hash` 调用 `search_copy_shared_tool`；下一次 verifier 原子消费 copy receipt，并把 adoption 记录到该 iteration。复制只证明 snapshot 进入本轮 context，不证明原工具被执行或保留；只有直接执行、导入或作为 runtime dependency 时，才需要先在当前 workspace 验证原工具。完整路径为：
+
+```text
+staging -> passing process verifier -> immutable snapshot -> Tool View -> Global Evidence -> copy receipt -> adopted tool
+```
+
+Tool View 和 adoption 只提供研究参考，不产生独立工具分数或 selection rule。完整共享平面语义见[共享平面](shared-plane.md#global-evidence)。
+
+`search_get_agent_context.tool_family_catalog` 只暴露 family/head identity、版本容量、累计 capability/coverage key 和 contract fingerprint，不包含路径或源码。首次发布使用 `publication_intent=new`；更新只在 `revision_allowed=true` 时引用唯一的 `revision_head.tool_id`：`capability_extension` 新增稳定能力或覆盖键，`adoption_fix` 必须基于同 family 的真实 copy/adoption 缺陷，`contract_change` 表示 entrypoint、输入、输出或依赖合同发生实质变化。改名和同义键不构成新版本。
+
+默认每个 family 最多有一个 pending revision 和两个 immutable published record，pending 也占用上限。等待 Tool View 时，Global Evidence 继续显示 `discoverable_head`；settlement 成功后原子切换，失败则保留旧 head。`revision_allowed=false` 时，worker 应使用 catalog 给出的准确 `revision_blocker`，而不是制造新版本。
+
+### Handoff 与 Observability
+
+worker handoff 是有界协议。`key_results` 描述 artifact、code surface/change、portability/dependencies、measured effect、verifier result 和 incumbent relation；`verifier_assessment` 描述 Evidence-backed contract quality。顶层 `feature_ledger` 和 `verifier_assessments` 聚合整个 run，而不只展示 ranking frontier。
+
+Pitfall 的 `scope` 为 `candidate_local`、`feature_family` 或 `evaluation_contract`，并带 `condition`、evidence artifact 和 `confidence`。缺省 scope 为 candidate-local。worker 的 verifier concern 在 main 调用 `search_invalidate_run` 前只是 advisory，不是 run-wide deny list。
+
+`search_get_agent_observability` 使用统一、版本化的跨 host schema。version 2 增加 `execution.provider` 和 `usage.processed_tokens`：Pi 包含 input、cache read/write 和 output token；Codex 使用原生 total-token count。该接口不返回 prompt、reasoning、tool argument 或 tool output，也不等待或控制 worker。
+
+`goal_plus_monitor_snapshot.statistics` 汇总 baseline/target improvement、success rate、terminal duration、time-to-first-verifier/success、worker outcome、model/provider、candidate lineage、selection survival、worker-vs-parent verifier、promotion Evidence、usage、efficiency 和数据缺口。绑定 Codex orchestrator transcript 后，`statistics.orchestrator` 记录 Goal Plus 创建以来不含内容的 usage delta，`statistics.total_usage` 与 worker usage 合并；每个 Search task 仍保留自己的 statistics。
+
+`goal_plus_monitor_snapshot.feature_plugins` 提供可选的只读派生视图。内置 `orchestration` plugin 统一展示普通 main/subagent 的 task packet、attempt generation、assignment/result/decision，同时保留 Codex/Pi 的原生 operation 名。传入 `feature_plugins=["orchestration"]` 可显式选择，传入空数组可关闭全部投影。详见 [Feature Plugin](feature-plugins.md)。
+
+## Selection、Promotion 与 Report
+
+| 工具 | 用途 |
 |---|---|
-| `search_run_verifier` | commit and verify the exact attempt, return candidate-local `keep`/`retain`/`discard`/`failure`, keep the latest equal-score attempt, restore best code after regressions or verifier failures, then append exactly one inherited `workspace/results.tsv` row; worker calls pass the exact `run_id`, `candidate_id`, `agent_session_id`, and an objective `hypothesis`, while parent fallback verification omits the session id and does not require a hypothesis |
-| `search_select` | restore ranked commits and select the first final-verifier passing state |
-| `search_report` | generate final `report.md` and self-contained `report.html`; linked Goal Plus records must already be terminal |
-| `search_promote` | export the selected commit as a patch; normal Goal Plus flow has no report to refresh yet |
+| `search_select` | 按 ranking 恢复 commit，并选择第一个通过 final verifier 的状态 |
+| `search_promote` | 对选中 commit 运行 promotion gate，并导出 patch |
+| `search_report` | 生成最终 `report.md` 和 self-contained `report.html` |
 
-`report.html` is the complete Goal Plus audit view for the run passed to
-`search_report`. When that run belongs to a Goal Plus record, the page keeps
-every linked Search task separate and then provides a cross-task aggregate.
-Planning-round counts remain in normalized data but do not have a separate
-report panel. The report includes unified statistics,
-candidate/session/verifier evidence, normalized main-agent usage, explicit
-metric gaps, and one independent execution timeline for each Search task. The
-Goal Plus state is summarized at the top rather than repeated in a separate
-lifecycle panel. Each Search timeline is assembled from run creation,
-worker-session observability, verifier iterations, and promotion evidence.
-Worker bars use observed host start/end timestamps. Configured maximum or
-minimum budgets are not rendered as actual duration. The file has inline
-CSS/JavaScript only and is readable without a web server. When the optional
-`report` extra is installed, the generator embeds Plotly.js in the file and
-replaces the compact best-score strip with a complete per-candidate trajectory
-over verifier-call order plus a global best-so-far trace. The generator computes
-the score scale and call density before rendering: large positive score ranges use
-a logarithmic axis, the complete run stays on one call axis with adaptive tick and
-marker density, and failed verifier attempts are marked separately without entering
-the score scale or best-so-far trace. Without Plotly, the existing inline SVG score
-strip remains the deterministic fallback. Search-space
-contour and surface plots are intentionally omitted until durable Search state
-contains explicit coordinates or embeddings for those axes. `report.md` remains
-the stable text artifact. A recorded Goal Plus Search result reserves both
-canonical paths before the files exist. Normal Goal Plus order is select,
-promote, record result, final audit, terminal status, then one report generation
-per recorded run. Intermediate Goal Plus reports are rejected.
+`search_select` 基于 verifier-backed immutable revision。promotion 是独立验收，不复用 process pass；失败时 run 保持可重试，且不输出 patch。
 
-## Pi Local Tools
+Promotion patch 始终相对于 `source_path`。`search_promote` 同时返回 `apply_cwd` 和
+`apply_directory`；写回源码时，从 `apply_cwd` 执行
+`git apply --directory=<apply_directory> <artifact_path>`。不要根据当前 Git cwd 猜测路径，
+尤其不要在嵌套 `source_path` 下直接运行不带目录映射的 `git apply`。
 
-Pi's extension uses `goal-plus-pi-tool`, a JSON CLI facade over the same Python
-runtime. These pool tools are host-local and are not added to the shared MCP
-server:
+关联 Goal Plus record 时，正常顺序是 select -> promote -> record Search result -> final audit -> terminal status -> report。`search_report` 会拒绝 active 或 needs-user record，确保静态报告不会捕获中间态。
 
-| Tool | Purpose |
+`report.html` 汇总全部关联 Search task、candidate/session/verifier Evidence、main agent usage、metric gap 和独立时间线。worker bar 使用观测到的 host 起止时间，配置 budget 不会伪装成实际运行时长。安装 `report` extra 后使用 Plotly 绘制每个 candidate 的 verifier trajectory 和 global best-so-far；没有 Plotly 时使用确定性的内联 SVG fallback。
+
+报告只绘制持久状态中真实存在的数据，不从 prose 猜测 search-space coordinate、embedding 或缺失 metric。HTML 内联 CSS/JavaScript，可直接打开；`report.md` 是稳定文本产物。详细生成和恢复方法见[调试运行时状态](debugging-runtime.md)。
+
+## Pi 本地 Pool 工具
+
+Pi extension 通过 `goal-plus-pi-tool` 调用同一 Python runtime。以下工具归 host-local pool 所有，不进入共享 MCP server：
+
+| 工具 | 用途 |
 |---|---|
-| `pi_search_pool_open` | create/recover a fixed pool and launch the initial candidates |
-| `pi_search_pool_wait_any` | return new terminal pool events; `candidate_ready` has satisfied its minimum lease and durable Evidence, while `timed_out` has not satisfied the lease |
-| `pi_search_pool_snapshot` | inspect one pool or rediscover pools by `run_id` |
-| `pi_search_pool_continue` | resume the same candidate and native Pi session in a new process |
-| `pi_search_pool_close` | drain or terminate live pool jobs |
+| `pi_search_pool_open` | 创建或恢复 fixed pool，并启动初始 candidate |
+| `pi_search_pool_wait_any` | 返回新终态 event；区分 `candidate_ready` 和 `timed_out` |
+| `pi_search_pool_snapshot` | 查看 pool，或按 `run_id` 重新发现 |
+| `pi_search_pool_continue` | 新进程恢复同一 candidate 和 native Pi session |
+| `pi_search_pool_close` | drain 或 interrupt 活跃 pool job |
 
-Normal Pi Search uses only these fixed-lane pool tools. The pool does not expose
-a submit/refill API and does not plan candidates.
-
-Example read-only call:
+pool 不负责 candidate planning，也不提供 submit/refill。只读调用示例：
 
 ```bash
 goal-plus-pi-tool goal_plus_monitor_snapshot \
@@ -319,37 +207,31 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
   --pretty
 ```
 
-## SearchSpec Fields That Control Execution
+## 控制执行的 SearchSpec 字段
 
-| Field | Meaning |
+| 字段 | 含义 |
 |---|---|
-| `objective` | measurable optimization target |
-| `metric_name`, `metric_direction` | ranking value and direction |
+| `objective` | 可度量的优化目标 |
+| `metric_name`, `metric_direction` | ranking value 和方向 |
 | `source_path` | baseline source snapshot |
 | `editable_globs`, `forbidden_globs` | candidate edit surface |
-| `process_verifiers` | correctness gates |
-| `ranking_signals` | metric-producing commands |
-| `promotion_verifiers` | checks required before promotion |
-| `budget.max_parallel` | single initial candidate/live-worker count |
-| `strategy.worker_host` | maintained execution host: `pi-rpc` or `codex` |
-| `strategy.worker_budget` | host-enforced upper bound and optional minimum lease |
-| `workspace.backend` | `git_worktree` (default) or `copy` |
+| `process_verifiers` | correctness gate |
+| `ranking_signals` | 产生 metric 的 command |
+| `promotion_verifiers` | promotion 前必须通过的检查 |
+| `budget.max_parallel` | 初始 candidate 和活跃 worker 数 |
+| `strategy.worker_host` | 执行 host：`pi-rpc` 或 `codex` |
+| `strategy.worker_budget` | host deadline 和可选 minimum lease |
+| `workspace.backend` | `git_worktree`（默认）或 `copy` |
 
-Every ranking command must exit successfully and print a final JSON object with
-a finite numeric value under `metric_name`. Temporary verifier outputs belong
-under `GOAL_PLUS_VERIFIER_TMPDIR`; verifier artifacts and evaluation inputs are
-hash-pinned.
+每条 ranking command 必须成功退出，并输出最后一个 JSON object，其中 `metric_name` 对应 finite number。临时 verifier 输出必须位于 `GOAL_PLUS_VERIFIER_TMPDIR`；verifier artifact 和 evaluation input 都会用 hash 固定。
 
-## Error Semantics
+## 错误语义
 
-- Validation errors mean the caller must fix the spec or tool arguments.
-- Candidate verifier failures are normal search evidence.
-- `VerifierWorkspaceSideEffect` with infrastructure-failure metrics means the
-  evaluator violated isolation; stop the candidate and repair/refreeze.
-- Frozen artifact hash mismatches invalidate scoring.
-- A main-confirmed verifier defect requires `search_invalidate_run`, then host
-  interruption/quiescence, then a repaired frozen spec and successor run.
-- Host timeouts and runner failures are different: a timeout proves deadline
-  enforcement, while a runner failure requires host recovery evidence.
+- Validation error：调用方必须修正 spec 或 tool argument。
+- Candidate verifier failure：正常 Search Evidence，不是 runtime 故障。
+- `VerifierWorkspaceSideEffect`：evaluator 破坏隔离；停止 candidate，修复后重新 freeze。
+- Frozen artifact hash mismatch：本次 scoring 无效。
+- 已确认 verifier defect：先 `search_invalidate_run`，再停止 host 并确认静默，最后创建 successor run。
+- Host timeout：证明 deadline enforcement 生效；runner failure：需要 host recovery Evidence。
 
-See [Shared Plane](shared-plane.md) for call ordering, state, and ownership.
+完整状态机和所有权边界见[共享平面](shared-plane.md)。

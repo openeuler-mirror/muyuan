@@ -1,424 +1,17 @@
-# Debugging Runtime State
+# 调试运行时状态
 
-How to inspect a running or finished Goal Plus run (`$goal-plus` in Codex,
-`/goal-plus` in Pi) after it enters Search Mode — what the agents are doing,
-what scores they have produced, and where to look when something goes wrong.
+本文用于检查正在运行或已经结束的 Goal Plus（Codex 使用 `$goal-plus`，Pi 使用 `/goal-plus`）：main 和 worker 处于什么状态、Search 产生了哪些 verifier Evidence，以及故障发生在 runtime 还是 host。
 
-This doc covers the project-specific runtime surface plus Codex and Pi RPC
-logs.
+## 推荐排查顺序
 
-## Two Layers of State
+1. 先读取 `goal_plus_monitor_snapshot`，确定 goal revision、work item、Search run、candidate 和 warning；
+2. monitor 缺少所需细节时，再检查 `.gp/` 中的持久状态和 verifier log；
+3. 只有需要还原 worker 行为或 host lifecycle 时，才读取 Codex/Pi 原生日志；
+4. 始终通过 `goal_plus_id`、`run_id`、`candidate_id` 和 `agent_session_id` 交叉关联，不能从 prose 猜测缺失事实。
 
-The runtime owns goal-plus records, specs, the initial candidate allocation,
-candidate workspaces, iteration history, verifier scoring, reports, and
-promotion patches. Codex or the Pi supervisor owns worker launch, lifecycle,
-deadlines, and interruption.
-The MCP runtime does not maintain worker lifecycle status, host-sync state, or
-worker process cancellation. Its internal Evidence annotator is the exception:
-annotation tasks and bounded retry state live under each candidate, while the
-single-flight drainer state lives under the run. Debug host lifecycle through
-native logs and goal/search state through `.gp/`.
+## Monitor Snapshot
 
-Goal-plus records live under `.gp/goal-plus/<goal_plus_id>/`. One Goal Plus
-record may append multiple search tasks; each task points to one Search run
-under `.gp/runs/<run_id>/`. New Pi/Codex `parallel_loops` runs contain one
-initial plan under `plans/` and may contain many same-candidate sessions and
-verifier iterations. Legacy runs may contain multiple plans.
-
-Host logs explain what the worker did, while `.gp/` records goal/search facts
-such as candidates, iterations, scores, and verifier output.
-
-## Host-Native Log Inspection
-
-Keep raw host logs under `.gp/host-logs/` or another ignored directory. They
-can include prompts, tool inputs, command output, file contents, and credentials
-that a tool printed. Do not commit raw logs.
-
-Cross-reference all host logs with the runtime IDs carried in the launch
-payload:
-
-- `agent_session_id`
-- `candidate_id`
-- `host_handle.external_id` or `host_handle.task_name`
-
-### Codex
-
-For scripted or reproducible runs, capture Codex's event stream directly:
-
-```bash
-mkdir -p .gp/host-logs
-codex exec --json --cd "$PWD" "<goal-plus or search prompt>" \
-  > ".gp/host-logs/codex-$(date +%Y%m%d-%H%M%S).jsonl"
-```
-
-`codex exec --json` emits JSONL events such as `thread.started`,
-`turn.started`, `turn.completed`, `turn.failed`, `item.*`, and `error`. Items
-include agent messages, reasoning, command executions, file changes, MCP tool
-calls, web searches, and plan updates. `codex exec -o <file>` is useful for the
-final answer only; it is not a full trace. `codex exec --ephemeral` intentionally
-does not persist session rollout files.
-
-Codex also persists local rollout transcripts by default:
-
-```bash
-find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -print
-```
-
-Related local state:
-
-- Session index: `${CODEX_HOME:-$HOME/.codex}/session_index.jsonl`
-- Session transcripts: `${CODEX_HOME:-$HOME/.codex}/sessions/YYYY/MM/DD/rollout-*.jsonl`
-- Archived transcripts: `${CODEX_HOME:-$HOME/.codex}/archived_sessions`
-- macOS app logs: `~/Library/Logs/com.openai.codex/YYYY/MM/DD`
-
-Goal Plus report generation reads content-free usage from the persisted
-`token_count` events. Token totals are native Codex evidence. USD values are
-model-rate estimates calculated per response with the versioned
-Pi-compatible catalog in `src/goal_plus/codex_pricing.py`; they are not
-observed ChatGPT subscription charges. Inspect
-`usage.cost_estimate.complete`, `priced_calls`, `unpriced_calls`, and
-`catalog` in normalized observability when an HTML report shows partial cost
-coverage.
-
-For interactive CLI diagnostics, opt into a plaintext TUI log:
-
-```bash
-RUST_LOG=debug codex -c log_dir=./.codex-log
-tail -F ./.codex-log/codex-tui.log
-```
-
-Useful search patterns for this adapter:
-
-```bash
-rg -n "agent_session_id|candidate_id|spawn_agent|wait_agent|send_input|interrupt|budget_control|turn.completed|turn.failed|error" \
-  .gp/host-logs/codex-*.jsonl
-```
-
-If you are debugging Codex itself from the local `../codex` source checkout,
-`codex-rs/rollout-trace/README.md` describes the opt-in
-`CODEX_ROLLOUT_TRACE_ROOT` bundle format and offline reducer. The installed CLI
-in this environment exposes only the stable `codex debug` subcommands shown by
-`codex debug --help`, so treat rollout tracing as source/dev-only unless your
-Codex binary exposes it.
-
-For Goal Plus hook debugging on Codex 0.144.1+, inspect events for
-`UserPromptSubmit`, `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, and
-`SubagentStop`. A missing precreated record usually means project hooks were
-not trusted; a Stop block should identify the session-bound `goal_plus_id` and
-the next required action. A Search candidate SubagentStop block should name its
-`agent_session_id` and ask for its own verifier call. Once that session's
-`counters.verifier_runs` is positive, parent-only selection/report/promotion
-must not block the candidate return.
-
-Each Goal Plus-associated automatic `Stop` or `SubagentStop` host-hook
-invocation writes one atomic, metadata-only record under
-`.gp/host-logs/codex-hook-events/<invocation_id>.json`. The record contains the
-event name, start/end time, duration, `block` / `allow` / `skipped` / `error`
-decision, bounded reason and error text, host `stop_reason`, and any resolved
-Goal/Search/session IDs. `SubagentStop` records also keep the opaque Codex
-`host_agent_id` when supplied, so an unbound child remains distinguishable
-without persisting its transcript path. It does not contain prompts,
-transcripts, tool input, or continuation text. Separate files avoid
-concurrent-worker append races.
-Direct `goal_plus_gate` calls do not create these records, so their counters do
-not masquerade as automatic Codex hook invocations. Disabled hooks, Stop events
-received before the runtime root exists, and invocations with no resolved
-Goal/Search/session context write nothing.
-
-Generated `report.html` files include a Stop Hook Activity snapshot. It keeps
-`Stop` and `SubagentStop` totals separate, breaks decisions down by type, and
-groups candidate hooks by `agent_session_id` with a `host_agent_id` fallback.
-The expandable invocation table preserves the underlying low-level evidence.
-Because the HTML is static, it contains events durable when that report was
-generated; regenerate the report to include later hook invocations.
-If the event directory itself was not persisted, the report labels calls,
-decisions, and hook time as `Not observed` rather than presenting an
-unverifiable zero.
-
-The same section includes Candidate Loop Activity. Its stable counters use
-durable runtime facts: candidate records for submissions, candidates with at
-least one settled iteration for completed Results, `discard` / `failure`
-iteration dispositions for rejected Results, accepted native continuations plus
-state redispatches for Agent resumes, and automatic Stop/SubagentStop `block`
-decisions for stop-hook continuation triggers. Candidate/Result/resume counters
-are host-neutral; the stop-hook trigger counter is Codex-specific because Pi
-does not expose the same automatic host-hook evidence.
-
-For Codex `parallel_loops`, Loop Agent Stop Outcomes correlates those
-`SubagentStop` records with content-free native-session activity and durable
-candidate iterations. The summary reports each lane's blocked/allowed stops,
-blocked stops followed by a new immutable revision plus verifier, later
-improvements, context/global-evidence reads, post-last-verifier reply classes,
-and context pressure near the first block versus the final/max sample. The
-per-stop continuation table uses the interval from one hook completion to the
-next hook start. Tail labels such as `polling-only`, `answer-only`, and
-`empty-output` are deterministic diagnostic heuristics, not model intent or
-causal proof of a leader effect. If native Codex JSONL or hook records were not
-persisted, those cells remain `Not observed`; the report never reconstructs
-missing counts from prose.
-
-### Pi RPC
-
-Pi workers are launched by `goal-plus-pi-worker`, not by the MCP
-server. Normal Pi Search Mode uses the durable `pi_search_pool_*` supervisor:
-open launches the fixed initial lanes, wait-any returns terminal pool events,
-continue resumes an existing candidate-ready lane, snapshot rediscovers pools
-by `run_id`, and close drains or terminates them. `candidate_ready` requires a
-satisfied minimum lease and durable Evidence; an exhausted unsatisfied lease is
-`timed_out`. Pool jobs internally start agent sessions, run foreground Pi RPC
-worker processes, bind returned handles, and reuse current durable Evidence or
-run a fallback final verifier; these mechanical steps are not public main-agent
-APIs. A configured minimum lease may span several such foreground processes
-while retaining one pool job and native session.
-
-The runner starts:
-
-```bash
-pi --mode rpc --approve \
-  --session-dir <root>/.gp/host-sessions/pi \
-  --session-id <agent_session_id> \
-  -e <repo>/.pi/extensions/goal-plus.ts
-```
-
-Important paths:
-
-- `.gp/host-logs/pi-rpc-<agent_session_id>.jsonl`: metadata-only event log
-
-The default JSONL keeps event types, tool names/status, usage/counts, and
-bounded error summaries. It omits streaming `message_update` events plus prompt,
-reasoning, tool payload, and transcript content. Set
-`GOAL_PLUS_PI_RAW_LOG=1` for a short debugging run when full RPC
-payloads are required; raw mode also creates the duplicate
-`.gp/host-logs/pi-rpc-<agent_session_id>.txt` stream.
-
-Useful search pattern:
-
-```bash
-rg -n "agent_session_id|candidate_id|search_get_agent_context|search_run_verifier|tool_call|stderr|abort" \
-  .gp/host-logs/pi-rpc-*.jsonl
-```
-
-For periodic monitoring, prefer the read-only MCP/Pi facade snapshot instead
-of repeatedly opening logs:
-
-```bash
-goal-plus-pi-tool goal_plus_monitor_snapshot \
-  --root .gp \
-  --args-json '{"run_id":"run_...","stale_after_seconds":600}' \
-  --pretty
-```
-
-For a detailed terminal dashboard that polls a project directory, use the
-repository script. It discovers `.gp`, `.search`, or `.goal-plus`, selects the
-latest linked task by default, and shows planning decisions, candidate
-intent/hypothesis/tradeoff, verifier evidence, normalized host observability,
-handoffs, artifacts, Pi persisted pool state, and monitor warnings:
-
-```bash
-./scripts/monitor_goal_plus.sh /path/to/project
-./scripts/monitor_goal_plus.sh --once --goal gp_... /path/to/project
-./scripts/monitor_goal_plus.sh --run run_... --no-clear /path/to/project
-INTERVAL=2 RUN_LIMIT=0 ./scripts/monitor_goal_plus.sh /path/to/project
-```
-
-The dashboard is read-only. In particular, its Pi pool section reads the
-persisted host snapshot and does not call pool reconciliation, wait, close, or
-interrupt operations. The default view is a one-screen summary; add `--verbose`
-for full per-worker usage, identity, directive, handoff, advisory, and artifact
-details. Use `--json` when the assembled monitor/API payload is more useful
-than either human view.
-
-When the `orchestration` feature plugin is enabled, the goal section also shows
-ordinary subagent task status, opaque worker handle, native host operations,
-attempt generation, launching/bound state, stale-result count, and the
-normalized assignment/result/decision flow. `--verbose` adds the sanitized
-objective and directional event summaries; it never prints the worker
-transcript path or content.
-
-The snapshot summarizes the complete Goal Plus search-task history and the
-selected run's detailed state. `search_tasks` contains per-run state, frozen
-spec, strategy, and round summaries;
-the top-level goal payload includes `goal_revision`, `goal_revisions_total`,
-`final_check_policy`, and `latest_final_check`, which are the first fields to
-inspect after an interrupted edit or reviewer run.
-`search_task_aggregate` totals task, planning-round, started-round, candidate,
-worker-session, verifier-run, and known cost counts. Its nested `statistics`
-also totals worker outcomes, worker-vs-parent process verifiers, promotion
-reports, target attainment, and normalized usage. The selected task retains
-the detailed run, strategy, candidate, session, duration/cost/context,
-file-mtime, and stale/timed-out views.
-
-Use top-level `statistics.selected_run` for the canonical per-run statistical
-view. It separates run age from stable terminal `observed_duration_seconds`,
-recovers revision-scoped baseline and target evidence from the Goal Plus event
-log, and reports success, timing, verifier provenance, model/provider mix,
-candidate lineage, selection survival, usage, efficiency, and missing data.
-Metrics requiring SearchEvent/footprint evidence, hardware telemetry, or
-historical promotion attempts remain explicit in `unavailable_metrics` rather
-than being guessed. `statistics.orchestrator` contains only normalized Codex
-counts and identity metadata, never transcript content;
-`statistics.total_usage` combines it with worker usage and preserves field
-coverage so a known subtotal is not mistaken for complete cost data.
-
-Each selected-run `subagents[]` entry also contains the versioned
-`observability` object. Query the same object directly with
-`search_get_agent_observability(agent_session_id)` when diagnosing one worker.
-Codex resolves native session JSONL metrics; Pi normalizes `pi_metrics`. Both
-paths omit prompt, reasoning, and tool payload bodies.
-`subagents[].verifier_count` and `session_verifier_count` are session-scoped;
-`candidate_verifier_count` is the candidate-wide total.
-
-Pi RPC workers persist native sessions under `.gp/host-sessions/pi/`. Normal Pi
-main-agent flow uses `pi_search_pool_continue`; the supervisor calls
-`search_continue_agent_session`, launches a new process for the same native
-session, and reads metrics with incremental `get_entries(since=...)`. Search MCP
-`.gp/runs/...`, verifier iterations, candidate Git commits, and workspace files
-remain authoritative. Runner failures are bound as synthetic failure handles,
-so monitor warnings include `subagent_runner_failed` and bounded failure
-metadata instead of leaving the session apparently running. Pi has a native
-turn-level Goal Plus stop gate through the extension `agent_end` event, but no
-host process Stop hook. Debug Goal Plus completion through extension pre-tool
-guard events, stop continuation messages, and `.gp/goal-plus/...`.
-
-## `.gp/` Layout
-
-```
-.gp/
-├── specs/<frozen_spec_id>/
-│   ├── frozen_spec.json                          # the frozen SearchSpec
-│   └── verifier_artifacts/<path>                 # frozen verifier files (hash-pinned)
-└── runs/<run_id>/
-    ├── run.json                                  # RunRecord: state, candidates_total/evaluated, best
-    ├── best.json                                 # exact current best candidate/iteration/commit pointer
-    ├── plans/<plan_id>.json                      # one initial SearchPlan allocation
-    ├── candidates/<candidate_id>/
-    │   ├── candidate.json                        # CandidateRecord: status, score_report, iterations[], results_ledger[]
-    │   ├── task.json                             # CandidateTask snapshot
-    │   ├── evidence-annotations/iteration-<n>.json # async View task, retry, usage, immutable iteration/Tool Views
-    │   └── logs/iteration-<n>-<verifier>-<id>.log # durable stdout/stderr per call
-    ├── workspace/<candidate_id>/                 # the agent's editable workspace
-    │   ├── .git/                                 # agent and runtime ledger Git history
-    │   ├── results.tsv                           # committed, runtime-owned inherited append-only ledger
-    │   └── <allowed_files>
-    ├── shared/index.json                         # optional runtime-internal tool publication index
-    ├── shared/tools/<candidate_id>/<iteration>/  # runtime-owned peer-readable snapshots
-    ├── agent_sessions/<agent_session_id>.json    # AgentSessionRecord: candidate/host binding, launch payload, counters
-    ├── report.md / report.html                   # text and self-contained audit reports
-    └── promotion/                                # selected patch outputs
-```
-
-Calling `search_report` writes both report files. For a linked Goal Plus run,
-the record must already be terminal; active and needs-user records are rejected
-so a static report cannot capture an in-progress status. The same terminal
-check is enforced by the low-level HTML writer used by offline tooling; calling
-that renderer directly cannot bypass the lifecycle boundary or publish an
-`Active` Goal as if it were a final report. Open `report.html`
-directly for the coverage-aware statistical view, multi-Search breakdown,
-candidate/session tables, and timelines. Planning-round counts remain available
-in normalized data but are not rendered as a separate panel. The Goal Plus
-state appears in the report summary; there is no separate lifecycle panel.
-Every Search task uses an independent execution scale: worker spans come from
-normalized host observability, while verifier and promotion markers come from
-candidate evidence. Configured worker budgets are limits rather than observed
-durations and do not determine bar width. An endpoint derived from a duration
-or last session update is labeled as inferred. The embedded complete normalized
-report data contains statistics and evidence metadata, not raw prompt,
-reasoning, or tool payload bodies.
-
-Failed process verifiers with `feedback_policy=visible_to_workers` return
-bounded `stdout_tail` and `stderr_tail` metrics to the caller. Complete output
-stays in the unique per-call log, and each `iterations[]` entry records its
-`log_paths`, so a later verifier run does not overwrite earlier failure evidence.
-
-There is no `agent_events/` or `observations/` directory. The session record
-carries `host_handle`, `launch`, `directive`, and `counters.verifier_runs`.
-
-## Quick Diagnostic Queries
-
-### Run summary
-
-```bash
-RUN=$(ls -td .gp/runs/* | head -1)
-python3 -c "
-import json
-d = json.load(open('$RUN/run.json'))
-print(f\"state={d['state']} candidates={d['candidates_total']}/{d.get('candidates_evaluated',0)} evaluated best={d.get('best_candidate_id')}/{d.get('best_score')}\")
-"
-```
-
-### Iteration history per candidate
-
-```bash
-for f in $RUN/candidates/*/candidate.json; do
-  python3 -c "
-import json
-d = json.load(open('$f'))
-iters = d.get('iterations', [])
-print(f\"{d['candidate_id']}: {len(iters)} iterations\")
-for it in iters:
-    print(f\"  iter {it['iteration']}: score={it['score']} \"
-          f\"failure={it.get('failure_class')} \"
-          f\"touched_denied={it['touched_denied_files']} \"
-          f\"changed_files={it['changed_files']}\")
-"
-done
-```
-
-### Workspace git history (the autoresearch loop)
-
-```bash
-find $RUN/workspace -name ".git" -execdir sh -c 'echo "=== $(pwd) ===" && git log --oneline' \;
-```
-
-### Runtime-owned results.tsv
-
-```bash
-find $RUN/workspace -name "results.tsv" -exec sh -c 'echo "=== $1 ===" && cat "$1"' _ {} \;
-```
-
-The runtime writes this file from durable `candidate.json.results_ledger` and
-commits the header plus every appended row. Every verifier call that returns a
-report contributes exactly one row. Calls that raise before a report exists
-contribute none. Before each verifier, the runtime checks that the old content
-is unchanged and Git-clean; deletion, rewriting, truncation, or a worker append
-raises `ResultsLedgerMutation`. The ledger survives same-candidate redispatch,
-is inherited by derived child workspaces, and is seeded from the selected/best
-source candidate for a successor run. It is runtime metadata, so it is excluded
-from edit-surface checks and promotion patches. Each worker verifier call stores
-the worker's one-line description of the realized attempt as `hypothesis`;
-workers must not edit this file directly.
-On first resume of an older candidate, a legacy `.tmp/results.tsv` is migrated
-to the workspace root; verifier-backed `iterations[]` missing from that legacy
-file are appended as recovered rows so old evidence is not silently dropped.
-
-Columns (tab-separated):
-
-| col | name | meaning |
-|---|---|---|
-| 1 | `commit` | runtime-recorded full Git head for the verified artifact |
-| 2 | `<metric_name>` | the frozen `spec.metric_name` literal (e.g. `combined_score`, `val_bpb`) — set by the main agent at freeze time |
-| 3 | `status` | `pass` when the returned report passed, otherwise `fail` |
-| 4 | `hypothesis` | short description of what this iteration tried |
-
-Example:
-
-```
-commit	combined_score	status	hypothesis
-a1b2c3d	0.682	pass	baseline (concentric rings)
-b2c3d4e	0.949	pass	hex lattice [5,4,5,4,5,3] s=0.1875
-c3d4e5f	0.651	fail	switch to rectangular grid (regressed)
-```
-
-The `commit` column names the code snapshot tested by the verifier. The
-subsequent ledger commit is stored as `ledger_git_head` in `candidate.json`.
-For `keep`, workspace `HEAD` normally points one ledger commit past the tested
-snapshot. For `discard`/`failure`, history is attempt -> optional restoration
--> ledger: the attempt remains readable by hash while workspace code is the
-candidate-local best artifact.
-
-## Live Monitoring
-
-Use the read-only monitor snapshot as the primary live view:
+`goal_plus_monitor_snapshot` 是首选的只读入口。它不会启动、等待、继续或停止 worker。MCP 不便直接调用时，可以使用 Pi facade：
 
 ```bash
 goal-plus-pi-tool goal_plus_monitor_snapshot \
@@ -427,118 +20,236 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
   --pretty
 ```
 
-Use `goal_plus_id` when you need the complete hierarchy:
+只知道 `run_id` 时也可以直接查询该 run。需要关闭可选投影时传入 `feature_plugins=[]`；默认的 `orchestration` plugin 会显示普通 subagent work 的 task packet、不透明 worker handle、host 原生操作、attempt generation、`launching`/`bound` 状态、stale-result 数量，以及 assignment/result/decision 流程。它不包含 transcript 路径或内容。
+
+### Goal 与 Work DAG
+
+首先检查：
+
+- `goal_revision`、`goal_revisions_total`、`phase` 和 `next_action`；
+- `work_items` 中 required item 是否已 `accepted`；
+- subagent attempt 的 `attempt_id`、`generation`、launch deadline 和 bound handle；
+- `feature_plugins.orchestration` 中是否存在迟到的 `stale_result`，以及 main 是否已经记录 acceptance/rework decision；
+- `final_check_policy` 和 `latest_final_check` 是否对应当前 revision。
+
+`dispatch` 后长期停留在 `launching` 通常表示 host 尚未成功 `bind`。新 generation 已经派发后，旧 generation 的 result 只会成为 `stale_result` Evidence，不会推进当前 work item。
+
+### Search Run
+
+一条 goal 可以追加多个 Search task。`search_tasks[]` 是完整历史，`linked_search` 和顶层详细 `run` 只是当前 task 的兼容视图。不要用 `linked_search != null` 推断 task 数量。
+
+重点字段包括：
+
+- run state、frozen spec、strategy 和唯一初始 plan；
+- candidate score、iteration、session、verifier count 和 current best；
+- worker duration、usage、context、artifact 和 stale/timed-out warning；
+- selection、promotion 和 report path；
+- `statistics.selected_run` 中的 baseline/target improvement、time-to-first-verifier/success、worker outcome、model/provider、selection survival、usage、efficiency 和 `unavailable_metrics`。
+
+`search_task_aggregate` 汇总全部 task 的 plan、candidate、session、verifier 和已知 cost。`statistics.orchestrator` 只包含归一化 Codex usage 与 identity metadata；`statistics.total_usage` 将其与 worker usage 合并，并保留覆盖率，避免把已知小计误当成完整 cost。
+
+每个 `subagents[]` 条目都包含版本化 `observability`。`subagents[].verifier_count` 和 `session_verifier_count` 属于当前 session，`candidate_verifier_count` 是 candidate 累计值。需要单独查询时使用 `search_get_agent_observability(agent_session_id)`。
+
+### Terminal Dashboard 与 Report
+
+需要持续查看项目目录时使用只读 dashboard：
+
+```bash
+./scripts/monitor_goal_plus.sh /path/to/project
+./scripts/monitor_goal_plus.sh --once --goal gp_... /path/to/project
+./scripts/monitor_goal_plus.sh --run run_... --no-clear /path/to/project
+INTERVAL=2 RUN_LIMIT=0 ./scripts/monitor_goal_plus.sh /path/to/project
+```
+
+默认输出是一屏摘要；`--verbose` 展开 worker usage、identity、directive、handoff、advisory、artifact 和 orchestration event summary，`--json` 输出完整组装 payload。Pi pool 部分只读取持久 snapshot，不执行 reconciliation、wait、close 或 interrupt。
+
+`search_report(run_id)` 从同一份持久 Evidence 生成 `report.md` 和 self-contained `report.html`。关联 Goal Plus 的 run 只有在 record 已进入 `complete`、`blocked` 或 `abandoned` 后才能生成报告；正常顺序是 select、promote、record Search result、final audit、terminal status，最后为每个已记录 run 生成一次 report。
+
+HTML 是生成时刻的静态视图。后续产生新的 hook event 或 observability 后，需要再次调用 `search_report` 才会更新。缺失数据保持 `Not observed` 或列入 `unavailable_metrics`，不会从 transcript prose 补造。
+
+## Runtime 与 Host 的边界
+
+Goal Plus 有两层状态：
+
+| Owner | 负责内容 |
+|---|---|
+| runtime | goal/work DAG、frozen spec、candidate workspace、iteration、verifier score、selection、report 和 promotion patch |
+| Codex/Pi/其他 host | worker launch、wait、message、continuation、deadline、interrupt 和原生日志 |
+
+MCP runtime 不维护 worker process lifecycle、host-sync state 或 cancellation。内部 Evidence annotator 是例外：candidate 下保存 annotation task 和有界 retry，run 下保存 single-flight drainer state。
+
+因此，`.gp/` 说明“runtime 接受了什么事实”，host log 说明“worker 和 supervisor 实际做了什么”。`AgentSessionRecord` 是 context/provenance handle，不是 liveness record。
+
+## `.gp/` 持久状态
 
 ```text
-goal-plus (complete user task)
-  search_tasks[] (one run_id + frozen_spec_id per search task)
-    planning_rounds_total (all persisted plan files)
-    started_rounds_total  (plans whose status is started)
+.gp/
+├── goal-plus/<goal_plus_id>/
+│   ├── goal.json                                # 当前 goal、revision、work item 和 Search link
+│   └── events.jsonl                             # append-only transition Evidence
+├── specs/<frozen_spec_id>/
+│   ├── frozen_spec.json                         # frozen SearchSpec
+│   └── verifier_artifacts/<path>                # hash-pinned verifier 文件
+└── runs/<run_id>/
+    ├── run.json                                 # RunRecord 和 current best
+    ├── best.json                                # best candidate/iteration/commit 指针
+    ├── plans/<plan_id>.json                     # 初始 candidate 分配
+    ├── candidates/<candidate_id>/
+    │   ├── candidate.json                       # iterations[]、results_ledger[] 和 score
+    │   ├── task.json                            # CandidateTask snapshot
+    │   ├── evidence-annotations/iteration-<n>.json
+    │   └── logs/iteration-<n>-<verifier>-<id>.log
+    ├── workspace/<candidate_id>/
+    │   ├── .git/
+    │   ├── results.tsv
+    │   └── <allowed_files>
+    ├── shared/index.json                        # shared-dir family/tool index
+    ├── shared/tools/<candidate_id>/<iteration>/ # immutable tool snapshot
+    ├── agent_sessions/<agent_session_id>.json
+    ├── report.md / report.html
+    └── promotion/
 ```
 
-`linked_search` and the top-level detailed `run` remain compatibility/current
-views. Do not use `linked_search != null` as the task count. The monitor also
-warns about missing linked runs, frozen-spec mismatches, non-terminal
-superseded tasks, explicit runs not linked to the requested goal, and a
-completed goal whose current run is not promoted.
+新的 `parallel_loops` run 在 `plans/` 下只有一个初始 plan，但同一 candidate 可以有多个 session 和 iteration。旧 run 可能包含多个 plan。
 
-The top-level `strategy` object identifies the initial planner independently of
-candidate and plan counts:
+### Candidate 与 Verifier Evidence
 
-```json
-{
-  "strategy": {
-    "name": "agent_guided",
-    "worker_host": "pi-rpc",
-    "latest_plan": {
-      "plan_id": "plan_001",
-      "selection_rule": "initial parallel lanes",
-      "state": {}
-    }
-  }
-}
+快速查看最新 run：
+
+```bash
+RUN=$(ls -td .gp/runs/* | head -1)
+python3 -c "
+import json
+d = json.load(open('$RUN/run.json'))
+print(f\"state={d['state']} candidates={d['candidates_total']}/{d.get('candidates_evaluated', 0)} best={d.get('best_candidate_id')}/{d.get('best_score')}\")
+"
 ```
 
-`plans_count` is a compatibility alias for the selected run's
-`planning_rounds_total`. Maintained runs have exactly one initial plan.
+查看每个 candidate 的 iteration：
 
-## Common Failure Modes
+```bash
+for f in "$RUN"/candidates/*/candidate.json; do
+  python3 -c "
+import json
+d = json.load(open('$f'))
+print(f\"{d['candidate_id']}: {len(d.get('iterations', []))} iterations\")
+for it in d.get('iterations', []):
+    print(f\"  iter {it['iteration']}: score={it['score']} failure={it.get('failure_class')} changed={it['changed_files']}\")
+"
+done
+```
 
-### Worker appears idle but has no iteration history
+`feedback_policy=visible_to_workers` 时，失败 process verifier 向调用方返回有界 `stdout_tail`/`stderr_tail`；完整输出保存在该 iteration 独立的 `log_paths` 中，不会被后续调用覆盖。
 
-- **Look at**: `.gp/runs/<run_id>/candidates/<id>/candidate.json` `iterations`
-  and the matching Codex/Pi native log selected by `agent_session_id`.
-- **Cause**: The worker never called `search_run_verifier`.
-- **Verification**: Confirm the native worker session exists and inspect its
-  tool calls. The runtime only records verifier calls that actually happened.
+### Git 与 `results.tsv`
 
-### Agent ran evaluator via bash (MCP bypass)
+```bash
+find "$RUN/workspace" -name .git -execdir git log --oneline \;
+find "$RUN/workspace" -name results.tsv -exec sh -c 'echo "=== $1 ==="; cat "$1"' _ {} \;
+```
 
-- **Look at**: the matching Codex rollout or Pi event log.
-- **Symptom**: evaluator commands appear, but `search_run_verifier` is absent.
-- **Cause**: Agent didn't trust MCP path, or prompt was unclear about MCP being the official scorer
-- **Verification**: Look at bash command contents — if `python evaluator.py` appears, agent bypassed MCP
+`results.tsv` 由 runtime 根据 `candidate.json.results_ledger` 生成、继承并只追加。每个成功返回 report 的 verifier 调用贡献一行：
 
-### Candidate has 0 iterations but launch payload exists
+```text
+commit	combined_score	status	hypothesis
+a1b2c3d	0.682	pass	baseline (concentric rings)
+b2c3d4e	0.949	pass	hex lattice [5,4,5,4,5,3] s=0.1875
+c3d4e5f	0.651	fail	switch to rectangular grid (regressed)
+```
 
-- **Look at**: `agent_sessions/<id>.json` `counters.verifier_runs` vs `candidates/<id>/candidate.json` `iterations` length
-- **Cause**: They should always match (every run_verifier call appends an iteration). If they don't, the subagent called `run_verifier` against a different candidate_id, or the main agent called it without `agent_session_id`.
-- **Verification**: Check the iteration's `agent_session_id` field — it tells you which session (if any) the verifier call was attributed to.
+`commit` 是 verifier 实际测试的 artifact head，之后追加 ledger 的 commit 保存在 `ledger_git_head`。`keep` 后 workspace `HEAD` 通常比测试 snapshot 多一个 ledger commit；`discard`/`failure` 后 attempt commit 仍可按 hash 读取，但 workspace code 已恢复为 candidate-local best。
 
-### Subagent is still running but I want to stop it
+worker 不得手动编辑、删除或截断该文件，否则下一次 verifier 会报 `ResultsLedgerMutation`。旧 candidate 恢复时，legacy `.tmp/results.tsv` 和缺失的 verifier-backed iteration 会迁移为规范 ledger row。
 
-- **Cause**: Worker interruption belongs to the host. There is no MCP abort tool.
-- **Action**: Use `interrupt_agent` for Codex or
-  `pi_search_pool_close(mode="interrupt")` for Pi. The Search runtime does not
-  need a separate lifecycle update.
+## Host 原生日志
 
-### Verifier fails with "EditSurfaceViolation"
+原始日志应放在 `.gp/host-logs/` 或其他 ignored 目录。它可能包含 prompt、tool input、command output、file content 或意外打印的 credential，绝不能提交。
 
-- **Look at**: `candidates/<id>/candidate.json` latest iteration's `touched_denied_files` and `changed_outside_allowed`
-- **Cause**: Agent edited files outside `edit_surface.allow` or modified `deny`-listed files
-- **List offending files**: `changed_files` field in the iteration record
+关联日志时优先使用 launch payload 中的 `agent_session_id`、`candidate_id`、`host_handle.external_id` 或 `host_handle.task_name`。
 
-### Verifier fails with "VerifierWorkspaceSideEffect"
+### Codex
 
-- **Look at**: the failing verifier result's
-  `metrics.verifier_workspace_side_effects`, `cleanup_failures`,
-  `infrastructure_failure`, and `candidate_action`
-- **Cause**: the frozen verifier wrote compiler products, temporary outputs, or
-  other files into the candidate workspace. Legacy runs may first expose this
-  as an extra non-frozen path under `.goal-plus-verifiers/`.
-- **Worker action**: stop and report immediately. Do not delete the generated
-  path, edit the frozen verifier, reset around the error, or retry.
-- **Parent action**: repair the source-owned verifier to use
-  `GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` or Python `tempfile`, freeze a new spec,
-  and create a new run. Never use one fixed `/tmp` path when candidates can
-  verify concurrently.
-- **Runtime behavior**: freeze preflight runs in a disposable copy and rejects
-  side effects before candidate creation. Runtime fallback detection reports
-  side effects in the same verifier call and attempts to restore the candidate
-  workspace; check `cleanup_failures` before reusing any candidate state.
+脚本化运行可直接捕获 JSONL event stream：
 
-## MCP APIs for Inspection
+```bash
+mkdir -p .gp/host-logs
+codex exec --json --cd "$PWD" "<goal-plus prompt>" \
+  > ".gp/host-logs/codex-$(date +%Y%m%d-%H%M%S).jsonl"
+```
 
-These tools are safe to call anytime — they're read-only:
+`codex exec --json` 包含 `thread.*`、`turn.*`、`item.*` 和 `error` event。`codex exec -o` 只保存最终答案，不能代替完整 trace；`--ephemeral` 会禁用本地 session rollout 持久化。
 
-| Tool | What it shows |
+Codex 默认 transcript 位于：
+
+```bash
+find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -print
+```
+
+其他常用路径包括 `${CODEX_HOME:-$HOME/.codex}/session_index.jsonl`、`${CODEX_HOME:-$HOME/.codex}/archived_sessions` 和 macOS 的 `~/Library/Logs/com.openai.codex/`。需要 TUI log 时显式启用：
+
+```bash
+RUST_LOG=debug codex -c log_dir=./.codex-log
+tail -F ./.codex-log/codex-tui.log
+```
+
+Codex 0.144.1 及更高版本的 Goal Plus hook 包括 `UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、`Stop` 和 `SubagentStop`。只有解析到 Goal Plus Goal、Search 或 session context 的自动 Stop/SubagentStop invocation，才会以不含内容的独立 JSON record 写入 `.gp/host-logs/codex-hook-events/`；其中保存 decision、耗时、有限 reason/error、stop reason 和解析到的 ID，不保存 prompt、transcript 或 tool payload。直接调用 `goal_plus_gate` 不会产生这些 record；disabled hook、runtime root 创建前收到的 Stop，以及没有解析到 Goal/Search/session context 的 invocation 也不会写入。
+
+缺少这些 record 通常表示 hook 尚未被信任、event 在 `.gp` 创建前发生，或该 invocation 与 Goal Plus context 无关。candidate 的 `SubagentStop` 应绑定自己的 `agent_session_id` 并要求至少一次 verifier；一旦 session 的 `counters.verifier_runs` 为正，parent-only selection/report/promotion 就不应阻止 candidate 返回。
+
+报告中的 Stop Hook Activity 和 Loop Agent Stop Outcomes 只依据持久 hook record、native session activity 和 candidate iteration。`polling-only`、`answer-only`、`empty-output` 等 tail label 是确定性诊断 heuristic，不代表模型意图，也不能证明因果关系。
+
+### Pi RPC
+
+Pi Search worker 由 `goal-plus-pi-worker` 启动。正常流程使用 host-local `pi_search_pool_*` supervisor：open 启动固定 lane，wait-any 返回 terminal event，continue 恢复同一 candidate/native session，snapshot 负责重新发现，close 负责 drain 或 interrupt。
+
+runner 命令形态为：
+
+```bash
+pi --mode rpc --approve \
+  --session-dir <root>/.gp/host-sessions/pi \
+  --session-id <agent_session_id> \
+  -e <repo>/.pi/extensions/goal-plus.ts
+```
+
+`.gp/host-logs/pi-rpc-<agent_session_id>.jsonl` 默认只保存 event/tool status、usage/count 和有界 error，不保存流式 message、prompt、reasoning 或 tool payload。只有短时聚焦排障确实需要完整 RPC payload 时才设置 `GOAL_PLUS_PI_RAW_LOG=1`；raw stream 体积大且可能包含敏感内容。
+
+Pi native session 保存在 `.gp/host-sessions/pi/`，pool state 保存在 `.gp/host-pools/pi/`。`pi_search_pool_continue` 可以用新进程恢复同一 native session；Search runtime 中的 candidate Git、workspace 和 verifier iteration 始终是权威依据。runner failure 会绑定 synthetic failure handle 并产生 `subagent_runner_failed` warning，避免 session 被误判为仍在运行。
+
+## 常见故障
+
+### Worker 已结束但 Candidate 没有分数
+
+先比较 `agent_sessions/<id>.json.counters.verifier_runs` 和 `candidate.json.iterations`，再检查对应 host log 是否调用过 `search_run_verifier`。worker 从未提交 verifier 时，main 可以对其留下的 workspace 调用 parent fallback verifier，但必须省略 `agent_session_id`。
+
+### Agent 用 Bash 绕过 MCP Verifier
+
+host log 中出现 `python evaluator.py` 等命令，但 runtime 没有对应 iteration，说明 agent 只运行了 evaluator，没有通过正式 scorer 结算。应修正 prompt/tool 使用，而不是从 shell output 手工补分。
+
+### Subagent 仍在运行但需要停止
+
+中断属于 host：Codex 使用 `interrupt_agent`，Pi 使用 `pi_search_pool_close(mode="interrupt")`。Search runtime 没有额外 abort API。若 verifier 已确认失效，应先 `search_invalidate_run` fence run，再停止全部 worker 并确认 active count 为零，最后修复 verifier、重新 freeze 并创建 successor run。
+
+### `EditSurfaceViolation`
+
+检查最新 iteration 的 `touched_denied_files`、`changed_outside_allowed` 和 `changed_files`。不要修改 frozen spec 或手工 reset 来绕过 edit surface。
+
+### `VerifierWorkspaceSideEffect`
+
+检查 verifier result 的 `metrics.verifier_workspace_side_effects`、`cleanup_failures`、`infrastructure_failure` 和 `candidate_action`。该错误表示 verifier 把 compiler output 或临时文件写进 candidate workspace。
+
+worker 应立即停止并报告。main 修复 source-owned verifier，使临时输出使用 `GOAL_PLUS_VERIFIER_TMPDIR`、`TMPDIR` 或 `tempfile`；并发 verifier 不能共享固定 `/tmp` 路径。随后重新 freeze 并创建新 run，复用任何 candidate state 前先确认 `cleanup_failures` 为空。
+
+## 只读诊断 API
+
+| 工具 | 内容 |
 |---|---|
-| `search_status(run_id)` | Run state, candidate counts, best score |
-| `search_list_history(run_id, top_n, sort_by)` | Top candidates by score |
-| `search_list_iterations(run_id, candidate_id)` | Potentially large full iteration history for a candidate |
-| `search_get_agent_context(agent_session_id)` | Bounded authoritative worker context with best/recent iterations and `results.tsv` |
-| `search_get_global_evidence(agent_session_id)` | Settled worker Evidence and possibly delayed objective Views across the session's current run |
-| `search_get_evidence_detail(agent_session_id, candidate_id, iteration)` | One on-demand supplemental evaluation authorized by the caller's current run and Evidence mode |
+| `goal_plus_monitor_snapshot(...)` | Goal/work DAG、Search、session、host 和 feature plugin 的组合视图 |
+| `search_status(run_id)` | run state、candidate count 和 best score |
+| `search_list_history(run_id, top_n, sort_by)` | candidate ranking 和研究汇总 |
+| `search_list_iterations(run_id, candidate_id)` | 单个 candidate 可能很大的完整 verifier history |
+| `search_get_agent_context(agent_session_id)` | 有界的 best/recent context、恢复字段和 `results.tsv` 路径 |
+| `search_get_global_evidence(agent_session_id)` | 当前 Evidence mode 允许的 settled worker Evidence 和 View |
+| `search_get_evidence_detail(agent_session_id, candidate_id, iteration)` | 按需 supplemental evaluation |
+| `search_get_agent_observability(agent_session_id)` | 单 session 的归一化 model、timing、usage 和 artifact Evidence |
 
-## Cross-Referencing Layers
-
-When something goes wrong, cross-reference both layers:
-
-1. **Host-native transcript/log** — what the agent *did* (tool calls, bash commands, messages) and what the host lifecycle did (start, step cap or turn cap, stop/interrupt)
-2. **`.gp/` runtime state** — what the runtime *recorded* (scores, iterations, verifier logs)
-
-Example: "Worker session finished but the candidate shows no score"
-- Host logs show: the matching worker never called `search_run_verifier`
-- Runtime shows: `candidate.json` with empty `iterations`
-
-→ Diagnosis: the subagent did not self-score. Have the main agent run `search_run_verifier(run_id, candidate_id, "process")` (without `agent_session_id`) to record the final score against the workspace state the subagent left behind.
+一个典型的跨层结论是：“host session 已结束，host log 中没有 `search_run_verifier`，同时 `candidate.json.iterations` 为空。”这能证明 worker 没有自行结算；仅看到 assistant 声称已经验证，不能替代这两层 Evidence。

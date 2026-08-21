@@ -1,42 +1,31 @@
-# Monitor Feature Plugins
+# Monitor Feature Plugin 使用说明
 
-Goal Plus monitor feature plugins are read-only projections over the durable
-goal record and append-only event log. They may add derived views to
-`goal_plus_monitor_snapshot.feature_plugins`; they do not launch, wait for,
-message, interrupt, or supervise workers.
+Goal Plus 的 monitor feature plugin 基于持久化 goal record 和只追加 event log 生成只读投影。它可以向 `goal_plus_monitor_snapshot.feature_plugins` 增加派生视图，但不会启动、等待、通信、中断或监督 worker。
 
-## Built-in Orchestration Plugin
-
-The `orchestration` plugin projects ordinary `route="subagent"` work into one
-host-neutral interaction contract:
-
-```text
-assignment -> worker_update(bound) -> result -> decision
-```
-
-Every work item exposes its task packet (`title`, `objective`, `scope`,
-`depends_on`, and `acceptance`), opaque worker identity, current status, and
-directional event summaries. Its attempt projection includes generation,
-`launching`/`bound` state, launch deadline, and stale-result count. A stale
-generation remains visible as `stale_result` but never replaces the current
-worker. Transcript content and paths are excluded; only a
-`transcript_available` boolean is returned.
-
-The plugin is enabled by default. Select it explicitly or disable all feature
-plugins with:
+plugin 默认启用。调用方也可以明确选择，或关闭全部 feature plugin：
 
 ```text
 goal_plus_monitor_snapshot(feature_plugins=["orchestration"])
 goal_plus_monitor_snapshot(feature_plugins=[])
 ```
 
-Unknown names fail instead of silently changing the requested monitoring
-surface.
+未知名称会直接报错，避免监控范围被静默改变。
 
-## Host Metadata
+## Orchestration View 内容
 
-Native transport remains host-owned. A host records its real operation name in
-the existing `goal_plus_record_work_event.metadata` field:
+内置 `orchestration` plugin 把普通 `route="subagent"` work 投影为一套 host-neutral 交互结构：
+
+```text
+assignment -> worker_update(bound) -> result -> decision
+```
+
+每个 work item 包含 task packet（`title`、`objective`、`scope`、`depends_on` 和 `acceptance`）、不透明的 worker 标识、当前状态和带方向的 event 摘要。attempt 部分还包含 generation、`launching`/`bound` 状态、launch deadline 和 stale-result 数量。旧 generation 仍以 `stale_result` 显示，但不会替换当前 worker。
+
+投影不包含 transcript 内容或路径，只返回 `transcript_available` 布尔值。它展示的是已持久化的协调事实，不推断模型意图，也不参与 work item 状态转换。
+
+## Host Metadata 约定
+
+原生通信仍由 host 所有。host 通过既有的 `goal_plus_record_work_event.metadata` 记录实际 operation 名称：
 
 ```json
 {
@@ -48,21 +37,15 @@ the existing `goal_plus_record_work_event.metadata` field:
 }
 ```
 
-Only identifier-shaped operation names are exposed. Prompt-like or malformed
-values are ignored. `direction` and `semantic_event` are optional constrained
-overrides; the plugin otherwise derives them from the durable work-event kind.
+只会暴露符合 identifier 形式的 operation 名；类似 prompt 或格式异常的值会被忽略。`direction` 和 `semantic_event` 是受限的可选 override，省略时由持久 work-event kind 推导。
 
-Codex normally records `spawn_agent`, `wait_agent`, and `followup_task`. Pi's
-wrapper records `pi_goal_plus_run_work_item` and `goal-plus-pi-worker`. Their
-native commands and wait behavior differ, while the task packet, result, and
-Main-owned acceptance semantics remain comparable.
+Codex 通常记录 `spawn_agent`、`wait_agent` 和 `followup_task`；Pi wrapper 记录 `pi_goal_plus_run_work_item` 和 `goal-plus-pi-worker`。两者的原生命令和等待方式不同，但 task packet、result 和 main-owned acceptance 语义可以直接比较。
 
-Run the deterministic comparison:
+仓库提供一条确定性的协议对比：
 
 ```bash
 python examples/orchestration-monitor/compare_hosts.py \
   .tmp/orchestration-monitor-comparison
 ```
 
-This example validates the persisted protocol. It is not a live-model quality
-benchmark.
+该示例验证持久化协议，不是 live-model quality benchmark。

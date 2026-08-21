@@ -1,64 +1,55 @@
-# Ultra Orchestration
+# Ultra 编排
 
-Goal Plus (`$goal-plus` in Codex, `/goal-plus` in Pi) uses one host-neutral
-execution contract:
+Goal Plus 在 Codex 中通过 `$goal-plus`、在 Pi 中通过 `/goal-plus` 使用同一套 host-neutral 执行合同：
 
 ```text
 main reasoning=max + proactive delegation + automatic Search routing + until terminal
 ```
 
-The runtime owns the work DAG, evidence-backed transitions, Search links, and
-completion gate. The host owns process/thread launch, wait, messaging,
-interruption, and native logs. Core code never calls Codex, Pi, or a model
-provider directly.
+runtime 负责 work DAG、有 Evidence 支持的状态转换、Search 关联和 completion gate；host 负责启动、等待、通信、中断和原生日志。core 不直接调用 Codex、Pi 或模型 provider。
 
-## Work Items
+## Work DAG
 
-After triage, call `goal_plus_upsert_work_items`. Routes mean:
+triage 完成后，main 调用 `goal_plus_upsert_work_items` 建立当前 revision 的 work DAG。每个 work item 选择一种 route：
 
-| Route | Owner |
+| Route | Owner 与用途 |
 |---|---|
-| `main` | shared state, architecture, integration, final verification |
-| `subagent` | bounded independent work dispatched by the current host |
-| `search` | verifier-guided exploration through existing Search Mode |
+| `main` | 共享状态、架构、集成和最终验证 |
+| `subagent` | 由当前 host 派发的有界独立工作 |
+| `search` | 通过现有 Search Mode 做 verifier-guided exploration |
 
-The subagent transition sequence is
-`planned -> launching(attempt, generation, TTL) -> active(bound handle) -> result_ready -> accepted`.
-`rework` resumes a bound `result_ready` attempt; unbound blocked or failed work
-returns to `planned` for a fresh attempt.
-Dependencies must be accepted before dispatch. Required work that is not
-accepted blocks final review and `complete`.
+依赖项必须先进入 `accepted`，下游 work item 才能派发。所有 required work item 都被接受后，才能进入 final review 和 `complete`。main 始终负责检查结果、决定 `accepted` 或 `rework`，以及完成最终集成。
 
-`dispatch` creates the attempt identity; it never binds a worker handle. The
-host records `bind` only after native launch succeeds and includes the current
-attempt and generation on worker messages, failures, and results. A host may
-re-dispatch an expired `launching` item to reconcile a launch crash. Late
-terminal output from an older generation is retained as `stale_result`
-evidence but cannot mutate the current item. Repeating an identical result for
-the current attempt is idempotent; a conflicting duplicate is rejected.
+只有同时具备数值 metric、确定性 verifier、隔离 edit surface、多个值得尝试的 hypothesis 和足够 budget 时，才把 work item route 到 Search。创建并关联 run 后记录 `search_routed`；Search 选出的结果仍需 main 接受。
 
-Use Search only when a work item has a numeric metric, deterministic verifier,
-isolated edit surface, multiple worthwhile hypotheses, and sufficient budget.
-After creating and linking the run, record `search_routed`; a selected Search
-result still requires main-agent acceptance.
+## Subagent Attempt
 
-## Host Contract
+`route="subagent"` 的状态流为：
 
-An Ultra host binding uses protocol `goal-plus-ultra-v1`. `spawn`, `wait`, and
-`observe` are required; `send` and `interrupt` are optional native
-capabilities. `main_reasoning_effort="max"` is logical. Each host records the
-native value and who enforces it.
+```text
+planned -> launching(attempt, generation, TTL) -> active(bound handle)
+        -> result_ready -> accepted
+```
 
-Codex binds `native_reasoning_effort="max"`. Project hooks cannot change an
-already-started first turn, so the host must select max before starting it.
-Codex uses native collaboration tools for ordinary subagents.
+`dispatch` 生成 `attempt_id`、`generation` 和 launch deadline，但不代表 worker 已启动。host 原生启动成功后再记录 `bind`，并在后续 `message`、`result` 或 `failed` event 中携带同一 attempt identity。
 
-Pi maps logical `max` to its native `xhigh` request for Main and ordinary
-children, records the model-clamped level, and rejects a resulting `off` level.
-Its `pi_goal_plus_run_work_item` tool runs an isolated Pi RPC child and returns
-its result to Main; concurrent tool calls provide independent parallel lanes.
+已绑定且处于 `result_ready` 的 attempt 可以通过 `rework` 继续；尚未绑定的 blocked/failed work 会回到 `planned`，由新 attempt 接手。若 `launching` 超时，host 可以重新派发并递增 generation，以恢复启动阶段崩溃。旧 generation 迟到的终态输出会保留为 `stale_result` Evidence，但不能修改当前 work item；当前 attempt 的相同结果可幂等重放，内容冲突的重复结果会被拒绝。
 
-A DeepSeek or other harness supplies the same profile at creation time:
+## Host 合同
+
+Ultra host binding 使用 `goal-plus-ultra-v1` protocol。`spawn`、`wait` 和 `observe` 是必需能力，`send` 和 `interrupt` 是可选的原生能力。`main_reasoning_effort="max"` 表示逻辑要求；每种 host 还要记录实际传给原生系统的值，以及由谁负责约束。
+
+### Codex
+
+Codex 绑定 `native_reasoning_effort="max"`。project hook 无法修改已经开始的第一个 turn，因此 host 必须在 main 启动前选好 `max`。普通 subagent 通过 Codex collaboration tool 启动和管理。
+
+### Pi
+
+Pi 把逻辑 `max` 映射为原生 `xhigh` 请求，并记录模型实际接受的 level；若结果为 `off`，binding 会拒绝继续。`pi_goal_plus_run_work_item` 启动隔离的 Pi RPC child 并把结果返回 main，多次独立 tool call 可以并发形成多条 lane。
+
+### 其他 Harness
+
+DeepSeek 或其他 harness 在创建 Goal Plus record 时提供同一份 profile，例如：
 
 ```json
 {
@@ -74,13 +65,10 @@ A DeepSeek or other harness supplies the same profile at creation time:
 }
 ```
 
-The harness must set its highest supported reasoning budget before the first
-main turn, dispatch work items through its worker API, and report lifecycle
-transitions through `goal_plus_record_work_event`. Provider names and command
-schemas remain outside the core state machine.
+harness 必须在第一个 main turn 前设置其最高 reasoning budget，通过自身 worker API 派发 work item，并用 `goal_plus_record_work_event` 记录状态转换。provider 名称和 command schema 不进入 core state machine。
 
-Main/worker interaction monitoring is an optional read-only projection, not an
-Ultra lifecycle stage. Hosts may annotate work events with namespaced native
-operation metadata; the `orchestration` feature plugin then exposes a common
-task/result/decision view without moving process ownership into the runtime.
-See [Monitor Feature Plugins](feature-plugins.md).
+## 监控
+
+main/worker 交互监控是可选的只读投影，不是 Ultra lifecycle stage。host 可以在 work event 的 `orchestration_monitor` namespace 中记录原生操作；`orchestration` feature plugin 会把不同 host 的 task、result 和 decision 投影为统一结构，但不会接管 worker process。
+
+监控字段和开关见 [Feature Plugin](feature-plugins.md)，host-specific 启动方式见 [Codex](codex.md) 和 [Pi](pi.md)，完整工具合同见 [API](api.md)。

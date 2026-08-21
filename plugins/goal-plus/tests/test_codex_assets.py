@@ -128,13 +128,13 @@ def test_codex_assets_wire_goal_plus_host_hooks() -> None:
         assert handler["timeout"] == 30
 
     text = (ROOT / "docs" / "codex.md").read_text(encoding="utf-8")
-    assert "installed plugin ships Goal Plus host hooks" in text
+    assert "installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook" in text
     assert "PostToolUse(goal_plus_create)" in text
     assert "UserPromptSubmit" in text
     assert "PreToolUse" in text
     assert "SubagentStop" in text
-    assert "blocked until its own verifier submission" in text
-    assert "Ordinary subagents do not inherit the parent's next action" in text
+    assert "自己的 verifier 提交持久化前会被阻止结束" in text
+    assert "普通 subagent 不继承 parent 的 next action" in text
     assert "goal-plus --goal-plus-host-hook" in text
 
 
@@ -217,8 +217,8 @@ def test_codex_assets_document_explicit_role_model_syntax() -> None:
     assert "strategy.models" in goal_skill
     assert "不能由 Goal Plus prompt 切换" in goal_skill
     assert "UserPromptSubmit" in docs
-    assert "cannot switch" in docs
-    assert "Omit `main=` in normal Codex usage" in normalized_docs
+    assert "不能切换它的模型" in docs
+    assert "正常使用应省略 `main=`" in normalized_docs
 
 
 def test_codex_search_skill_documents_parallel_loop_policy() -> None:
@@ -452,6 +452,8 @@ def test_codex_search_reuses_exact_worker_evidence_before_parent_verification() 
 
     assert "准确 worker Evidence" in text
     assert "仅在没有匹配 Evidence 时" in text
+    assert "apply_cwd" in text
+    assert "apply_directory" in text
     assert 'search_run_verifier(hypothesis="主流程完成验证")' not in text
     assert "shared_tools[*].tool_view" in text
     assert "Tool View 前不向 candidate 暴露" in text
@@ -590,7 +592,7 @@ def test_codex_docs_record_native_parity_contract() -> None:
     assert "codex_parallel_loop_cycle" in codex
     assert "autonomous" in codex
     assert "parallel" in adapters
-    assert "current `spawn_agent` schema" in adapters
+    assert "当前 `spawn_agent` schema" in adapters
     for text in (adapters, debugging, readme, agents):
         assert "UserPromptSubmit" in text
         assert "PreToolUse" in text

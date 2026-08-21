@@ -77,7 +77,6 @@ def test_codex_and_pi_share_role_model_command_interface() -> None:
     normalized_pi = " ".join(pi.split())
 
     for text in (codex, pi):
-        assert "Explicit role models" in text
         assert "main=" in text
         assert "annotator=" in text
         assert "workers=" in text
@@ -85,12 +84,14 @@ def test_codex_and_pi_share_role_model_command_interface() -> None:
         assert "strategy.evidence_annotator.model" in text
         assert "strategy.models" in text
 
-    assert "assertion about the current Codex session model" in codex
-    assert "cannot switch the main session model" in normalized_codex
-    assert "assertion about the current Pi session model" in normalized_pi
-    assert "cannot switch the main session model" in normalized_pi
-    assert "never treats it as a selector" in normalized_codex
-    assert "never treats it as a selector" in normalized_pi
+    assert "Codex session 就是 main agent" in normalized_codex
+    assert "Pi session 就是 main agent" in normalized_pi
+    assert "不能切换它的模型" in normalized_codex
+    assert "不能切换它的模型" in normalized_pi
+    assert "可选 assertion" in normalized_codex
+    assert "可选 assertion" in normalized_pi
+    assert "不会把它当成 selector" in normalized_codex
+    assert "不会把它当成 selector" in normalized_pi
 
 
 @pytest.mark.parametrize(
