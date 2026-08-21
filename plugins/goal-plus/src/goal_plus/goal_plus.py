@@ -314,7 +314,6 @@ class FileGoalPlusRuntime:
     def __init__(self, root_dir: Path | str = DEFAULT_RUNTIME_ROOT) -> None:
         self.root_dir = Path(root_dir).resolve()
         self.goals_dir = self.root_dir / "goal-plus"
-        self.goals_dir.mkdir(parents=True, exist_ok=True)
 
     def create_goal(
         self,

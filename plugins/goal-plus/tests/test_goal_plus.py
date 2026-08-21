@@ -43,6 +43,7 @@ def test_goal_plus_runtime_defaults_to_gp_root(tmp_path, monkeypatch) -> None:
 
     assert runtime.root_dir == tmp_path / ".gp"
     assert runtime.goals_dir == tmp_path / ".gp" / "goal-plus"
+    assert not runtime.root_dir.exists()
 
 
 def test_create_goal_plus_record_writes_state_and_event(tmp_path) -> None:

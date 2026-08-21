@@ -157,6 +157,7 @@ def test_file_search_runtime_defaults_to_gp_root(tmp_path: Path, monkeypatch: py
     assert runtime.root_dir == tmp_path / ".gp"
     assert runtime.specs_dir == tmp_path / ".gp" / "specs"
     assert runtime.runs_dir == tmp_path / ".gp" / "runs"
+    assert not runtime.root_dir.exists()
 
 
 def test_write_json_is_readable(tmp_path: Path) -> None:
@@ -200,7 +201,7 @@ def test_freeze_spec_rejects_verifier_workspace_side_effect_without_mutating_sou
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in str(exc_info.value)
     assert "concurrently" in str(exc_info.value)
     assert not (project / ".goal-plus-verifiers").exists()
-    assert list(runtime.specs_dir.iterdir()) == []
+    assert not runtime.specs_dir.exists()
 
 
 def test_freeze_spec_provides_per_invocation_verifier_temp_directory(
@@ -305,7 +306,7 @@ def test_freeze_spec_rejects_plain_text_ranking_score(tmp_path: Path) -> None:
 
     assert '{"combined_score":123.0}' in str(exc_info.value)
     assert "expected_outputs lists artifact paths only" in str(exc_info.value)
-    assert list(runtime.specs_dir.iterdir()) == []
+    assert not runtime.specs_dir.exists()
 
 
 @pytest.mark.parametrize(
@@ -364,7 +365,7 @@ def test_freeze_spec_rejects_non_null_verifier_error(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="reported an error.*broken evaluator"):
         runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
 
-    assert list(runtime.specs_dir.iterdir()) == []
+    assert not runtime.specs_dir.exists()
 
 
 def test_runtime_rejects_non_null_verifier_error_after_clean_preflight(

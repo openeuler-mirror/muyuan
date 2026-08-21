@@ -110,8 +110,8 @@ the next required action. A Search candidate SubagentStop block should name its
 `counters.verifier_runs` is positive, parent-only selection/report/promotion
 must not block the candidate return.
 
-Each automatic `Stop` or `SubagentStop` host-hook invocation against an existing
-runtime root writes one atomic, metadata-only record under
+Each Goal Plus-associated automatic `Stop` or `SubagentStop` host-hook
+invocation writes one atomic, metadata-only record under
 `.gp/host-logs/codex-hook-events/<invocation_id>.json`. The record contains the
 event name, start/end time, duration, `block` / `allow` / `skipped` / `error`
 decision, bounded reason and error text, host `stop_reason`, and any resolved
@@ -121,8 +121,9 @@ without persisting its transcript path. It does not contain prompts,
 transcripts, tool input, or continuation text. Separate files avoid
 concurrent-worker append races.
 Direct `goal_plus_gate` calls do not create these records, so their counters do
-not masquerade as automatic Codex hook invocations. Disabled hooks and Stop
-events received before the runtime root exists write nothing.
+not masquerade as automatic Codex hook invocations. Disabled hooks, Stop events
+received before the runtime root exists, and invocations with no resolved
+Goal/Search/session context write nothing.
 
 Generated `report.html` files include a Stop Hook Activity snapshot. It keeps
 `Stop` and `SubagentStop` totals separate, breaks decisions down by type, and

@@ -1615,6 +1615,11 @@ def _run_recorded_stop_event(
             error=exc,
         )
         raise
+    if not any(
+        result.get(field)
+        for field in ("goal_plus_id", "agent_session_id", "run_id", "candidate_id")
+    ):
+        return
     _record_stop_hook_event(
         search_root,
         hook_input,

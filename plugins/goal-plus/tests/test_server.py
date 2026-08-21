@@ -12,9 +12,13 @@ from goal_plus.server import create_mcp
 
 
 def test_create_mcp(tmp_path: Path) -> None:
-    mcp = create_mcp(tmp_path / ".search")
+    runtime_root = tmp_path / ".search"
+
+    mcp = create_mcp(runtime_root)
+
     assert isinstance(mcp, FastMCP)
     assert mcp.version == __version__
+    assert not runtime_root.exists()
 
 
 def test_cli_exposes_package_version(

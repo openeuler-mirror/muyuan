@@ -402,8 +402,6 @@ class FileSearchRuntime:
         self.root_dir = Path(root_dir).resolve()
         self.specs_dir = self.root_dir / "specs"
         self.runs_dir = self.root_dir / "runs"
-        self.specs_dir.mkdir(parents=True, exist_ok=True)
-        self.runs_dir.mkdir(parents=True, exist_ok=True)
 
     def list_available_models(
         self,

@@ -78,6 +78,18 @@ def test_stop_hook_allows_when_no_goal_state_and_does_not_create_state(tmp_path:
     assert not search_root.exists()
 
 
+def test_stop_hook_does_not_write_events_for_empty_runtime_root(tmp_path: Path) -> None:
+    search_root = tmp_path / ".search"
+    search_root.mkdir()
+
+    result = _run_hook(tmp_path, search_root)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert list(search_root.iterdir()) == []
+
+
 def test_stop_hook_allows_unbound_active_goal_without_session_match(
     tmp_path: Path,
 ) -> None:
