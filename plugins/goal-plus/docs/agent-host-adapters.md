@@ -23,11 +23,26 @@ Adapter 返回的 launch payload 是权威启动说明。main agent 只传递当
 
 Search runtime 不承担 worker supervisor 职责。`search_start_agent_session` 创建的是 context/provenance handle，不代表 worker 已经启动或仍然存活。
 
+## Worktree 与 Skill bootstrap
+
+每个 candidate 由 runtime 物化到独立 Git worktree。host launch payload 中的 workspace
+只是 provenance：Codex `spawn_agent` 没有 `cwd` 字段，Pi 虽能设置 process cwd，worker
+仍必须先调用 `search_get_agent_context`，并把返回的 `context.workspace` 作为每次文件和
+shell 操作的显式 cwd。parent cwd、其他 candidate workspace 和 `.gp` 内部路径都不是
+candidate 工作目录。
+
+任务局部 Skill 采用固定约定，不进入 SearchSpec：只识别 source Git index 中
+`.agents/skills/<name>/SKILL.md`。freeze 返回 `task_skill_notice`，明确列出发现的名称和相对
+路径；没有时明确显示 none。candidate materialization 通过 `candidate_task.task_skill_paths`
+返回该 candidate 自己的绝对路径，launch message 同时输出 `task_local_skills_visible`。
+worker 完整读取清单中的 `SKILL.md` 并显式遵循，只按需读取同目录资源；运行时不扫描
+parent/global/plugin 或 peer candidate Skill。
+
 ## Codex 与 Pi 的能力对比
 
 | 能力 | Codex | Pi RPC |
 |---|---|---|
-| 启动 | 异步 `spawn_agent` | host-local supervisor 启动前台 Pi 子进程 |
+| 启动 | 异步 `spawn_agent`；无 `cwd`，worker 从 context bootstrap worktree | host-local supervisor 启动前台 Pi 子进程；worker仍核对 context workspace |
 | 等待 | `wait_agent` 任意事件唤醒，再用 `list_agents` 收集终态 | `pi_search_pool_wait_any` |
 | 续跑 | `followup_task` 复用同一 worker | 新进程恢复同一 native session |
 | Deadline | parent watchdog 管理每次派发 | 累计 pool lease + Pi 进程 watchdog |

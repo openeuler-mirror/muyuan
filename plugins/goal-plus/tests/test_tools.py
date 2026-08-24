@@ -87,6 +87,10 @@ def test_search_freeze_spec_converts_input_and_serializes_output() -> None:
     assert paths_arg == [Path("evaluator.py")]
     assert result["frozen_spec_id"] == "spec_123"
     assert result["spec"]["process_verifiers"][0]["role"] == "ranking_signal"
+    assert result["task_skill_paths"] == []
+    assert result["task_skill_notice"] == (
+        "No Git-tracked task-local Skills found under .agents/skills."
+    )
 
 
 def test_search_tools_delegate_runtime_calls_with_models() -> None:

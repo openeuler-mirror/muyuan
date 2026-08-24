@@ -156,6 +156,13 @@ Ultra 的逻辑要求是 main reasoning effort `max`。Codex host 应在第一�
 
 main agent 将 payload 投影到当前 tool schema。`task_name`、`message` 和 fork 字段是稳定字段；`agent_type="default"` 使用 Codex 内置的无配置角色，使 child 正常继承 parent model。`strategy.worker_launch` 中的可选 override 只有在 launch payload 和当前 tool schema 都支持时才能传递。
 
+`spawn_agent` 没有 `cwd`，所以 launch 时不会把 child 切换到 candidate worktree。child
+必须先调用 `search_get_agent_context`，然后把 `context.workspace` 显式用于每次文件、编辑
+和 shell 操作。任务本地 Skill 无需配置：runtime 只发现 source Git 已跟踪的
+`.agents/skills/<name>/SKILL.md`，在 freeze 的 `task_skill_notice` 和 launch message 中明确
+列出，并通过 `context.candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。
+child 完整读取清单中的 Skill，不扫描 parent/global/plugin 或其他 candidate 路径。
+
 标准并行循环如下：
 
 1. freeze `strategy.orchestration_mode="parallel_loops"`，只规划一次并启动全部初始 candidate；

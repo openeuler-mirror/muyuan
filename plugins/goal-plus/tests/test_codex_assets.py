@@ -179,6 +179,10 @@ def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     assert "VerifierWorkspaceSideEffect" in text
     assert "固定 `/tmp`" in text
     assert '`workspace.backend="git_worktree"`' in text
+    assert ".agents/skills/<name>/SKILL.md" in text
+    assert "task_skill_notice" in text
+    assert "candidate_task.task_skill_paths" in text
+    assert "parent cwd 不是 candidate workspace" in text
 
 
 def test_codex_search_skill_projects_launch_metadata_to_current_tool_schema() -> None:
@@ -344,6 +348,11 @@ def test_codex_worker_agent_calls_context_and_verifier() -> None:
 
     assert 'name = "search_candidate_agent"' in text
     assert "search_get_agent_context" in text
+    assert "context.workspace" in text
+    assert "task_skill_paths" in text
+    assert "Git-tracked" in text
+    assert "task-local Skills" in text
+    assert "global/plugin" in text
     assert "search_get_global_evidence" in text
     assert "每完成 3 次 `search_run_verifier` iteration" in text
     assert "global_evidence_snapshot` 已完成本次刷新" in text

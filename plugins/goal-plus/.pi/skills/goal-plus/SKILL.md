@@ -135,6 +135,11 @@ A1B3，数量之和必须等于
 database，并能解析 Global Evidence 中的 peer commit。只有用户明确要求兼容隔离时才能设置
 `workspace.backend="copy"`。
 
+任务本地 Skill 无需 SearchSpec 配置。只识别 source Git 已跟踪的
+`.agents/skills/<name>/SKILL.md`。freeze 的 `task_skill_notice` 会列出发现结果，必须明确展示；
+每个 candidate 的 `candidate_task.task_skill_paths` 返回自己 worktree 中的绝对文件路径。Pi worker 逐一读取
+这份清单，不扫描 parent、global/plugin 或其他 candidate 路径。
+
 Pi 支持的 strategy name 仅限以下可移植内置子集：
 
 - `agent_guided`、`agent` 或 `default`

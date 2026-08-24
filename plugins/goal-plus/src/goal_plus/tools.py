@@ -37,7 +37,17 @@ class SearchTools:
             parsed_spec,
             [Path(path) for path in verifier_artifact_paths],
         )
-        return frozen.model_dump(mode="json")
+        payload = frozen.model_dump(mode="json")
+        visible = [
+            f"{Path(path).parent.name} ({path})" for path in frozen.task_skill_paths
+        ]
+        payload["task_skill_notice"] = (
+            "Git-tracked task-local Skills visible from source: "
+            + ", ".join(visible)
+            if visible
+            else "No Git-tracked task-local Skills found under .agents/skills."
+        )
+        return payload
 
     def search_create(
         self,

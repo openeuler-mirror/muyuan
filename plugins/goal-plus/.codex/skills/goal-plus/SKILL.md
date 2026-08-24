@@ -54,7 +54,10 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
    `tempfile`）存放编译器和临时输出；并行 Search 下固定 `/tmp` 路径不安全。
    冻结操作会在消耗候选预算前拒绝工作区副作用。新 SearchSpec 必须显式设置
    `workspace.backend="git_worktree"`，以便候选共享 Git object database 并解析彼此的
-   Evidence commit；只有用户明确要求兼容隔离时才能设置 `copy`。使用
+   Evidence commit；只有用户明确要求兼容隔离时才能设置 `copy`。任务本地 Skill 无需写入
+   SearchSpec；把它提交到 source Git 的 `.agents/skills/<name>/SKILL.md`。freeze 返回的
+   `task_skill_notice` 会列出自动发现结果，每个 candidate 的 `task_skill_paths` 会指向自己
+   worktree 中的对应文件。将这份清单明确展示出来，不扫描 parent 或 global/plugin Skill。使用
    `goal_plus_save_spec_draft` 保存完整契约。
    不要在 SearchSpec 中生成软 rubric 或预设评价维度。Spec Discovery 只能冻结硬 metric、
    verifier、编辑范围、预算和 promotion 合同。开放式补充评价发生在每次 Evidence 结算之后：

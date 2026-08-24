@@ -99,6 +99,9 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert 'worker_mode: "agent-session-pool"' not in text
     assert 'orchestration_mode: "parallel_loops"' in text
     assert '`workspace.backend="git_worktree"`' in text
+    assert ".agents/skills/<name>/SKILL.md" in text
+    assert "task_skill_notice" in text
+    assert "candidate_task.task_skill_paths" in text
     assert "Pi 支持的 strategy name" in text
     assert "`agent_guided`、`agent` 或 `default`" in text
     assert "`random` 或 `random_mode`" in text
@@ -215,6 +218,11 @@ def test_pi_worker_prompt_requires_runtime_context_and_verifier() -> None:
     )
 
     assert "search_get_agent_context" in text
+    assert "context.workspace" in text
+    assert "task_skill_paths" in text
+    assert "Git-tracked task-local Skills" in text
+    assert "其他" in text
+    assert "candidate 中的 Skill" in text
     assert "context.recent_iterations" in text
     assert "context.best_iteration" in text
     assert "可能很大的全量历史" in text
@@ -295,6 +303,17 @@ def test_pi_worker_prompt_requires_runtime_context_and_verifier() -> None:
     assert "candidate_action=stop_and_report" in text
     assert "立即返回" in text
     assert "candidate-local analysis scripts" not in text
+
+
+def test_pi_workspace_schema_needs_no_task_skill_configuration() -> None:
+    text = (ROOT / ".pi" / "extensions" / "goal-plus.ts").read_text(
+        encoding="utf-8"
+    )
+    workspace_schema = text.split("const WorkspaceSpec", 1)[1].split(
+        "const SharedDirSpec", 1
+    )[0]
+
+    assert "skill_roots" not in workspace_schema
 
 
 def test_pi_goal_plus_skill_uses_the_same_family_revision_contract() -> None:

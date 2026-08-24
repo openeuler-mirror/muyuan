@@ -727,6 +727,132 @@ def test_runtime_defaults_to_git_worktree_workspace(tmp_path: Path) -> None:
     ).resolve()
 
 
+@pytest.mark.codex
+def test_git_tracked_task_skills_are_discovered_in_each_candidate_worktree(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    skill_root = project / ".agents" / "skills" / "review"
+    (skill_root / "references").mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: review\ndescription: Review this candidate.\n---\n"
+        "# Review\n\nRead references/checks.md.\n",
+        encoding="utf-8",
+    )
+    (skill_root / "references" / "checks.md").write_text(
+        "# Checks\n\nInspect the candidate worktree only.\n",
+        encoding="utf-8",
+    )
+    untracked_skill = project / ".agents" / "skills" / "untracked" / "SKILL.md"
+    untracked_skill.parent.mkdir(parents=True)
+    untracked_skill.write_text("# Untracked\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(
+        [
+            "git",
+            "add",
+            "initial_program.py",
+            "evaluator.py",
+            "config.yaml",
+            ".agents/skills/review",
+        ],
+        cwd=project,
+        check=True,
+    )
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec_data = spec_with_host(
+        project,
+        "codex",
+        strategy_name="random",
+        max_parallel=2,
+    ).model_dump(mode="json")
+    spec_data["workspace"] = {"backend": "git_worktree"}
+    spec = SearchSpec.model_validate(spec_data)
+    frozen = runtime.freeze_spec(
+        spec,
+        [project / "evaluator.py"],
+    )
+
+    assert frozen.task_skill_paths == [".agents/skills/review/SKILL.md"]
+    notice = SearchTools(runtime).search_freeze_spec(
+        spec,
+        [str(project / "evaluator.py")],
+    )["task_skill_notice"]
+    assert notice == (
+        "Git-tracked task-local Skills visible from source: "
+        "review (.agents/skills/review/SKILL.md)"
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+    tasks = runtime.start_batch(run_id, plan.plan_id)
+
+    assert len(tasks) == 2
+    assert len({task.workspace for task in tasks}) == 2
+    assert len({task.workspace_branch for task in tasks}) == 2
+    for task in tasks:
+        expected_skill = task.workspace / ".agents" / "skills" / "review" / "SKILL.md"
+        assert task.task_skill_paths == [expected_skill]
+        assert expected_skill.is_file()
+        assert (expected_skill.parent / "references" / "checks.md").is_file()
+
+        session = runtime.start_agent_session(run_id, task.candidate_id)
+        context = runtime.get_agent_context(session.agent_session_id)
+        assert context["workspace"] == str(task.workspace)
+        assert context["candidate_task"]["task_skill_paths"] == [str(expected_skill)]
+        assert any(
+            "host launch 不保证切换 cwd" in instruction
+            for instruction in task.instructions
+        )
+        assert all("Codex" not in instruction for instruction in task.instructions)
+        assert "Codex spawn_agent 不会切换 cwd" in session.launch["message"]
+        assert "task_local_skills_visible: review=" in session.launch["message"]
+        assert str(expected_skill) in session.launch["message"]
+        assert "untracked" not in session.launch["message"]
+
+
+def test_no_git_tracked_task_skills_is_reported_explicitly(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        spec_for(project, max_parallel=1),
+        [project / "evaluator.py"],
+    )
+    assert frozen.task_skill_paths == []
+    notice = SearchTools(runtime).search_freeze_spec(
+        spec_for(project, max_parallel=1),
+        [str(project / "evaluator.py")],
+    )["task_skill_notice"]
+    assert notice == "No Git-tracked task-local Skills found under .agents/skills."
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+    assert task.task_skill_paths == []
+    assert any("未发现 Git-tracked" in item for item in task.instructions)
+    assert "task_local_skills_visible: none" in session.launch["message"]
+
+
+def test_freeze_rejects_git_tracked_symlink_skill_entrypoint(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    skill_root = project / ".agents" / "skills" / "review"
+    skill_root.mkdir(parents=True)
+    skill_path = skill_root / "SKILL.md"
+    skill_path.symlink_to(project / "initial_program.py")
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "add", ".agents/skills/review/SKILL.md"],
+        cwd=project,
+        check=True,
+    )
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    with pytest.raises(ValueError, match="cannot be a symlink"):
+        runtime.freeze_spec(
+            spec_for(project, max_parallel=1),
+            [project / "evaluator.py"],
+        )
+
+
 def test_freeze_spec_normalizes_verifier_cwd_equal_to_source_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
