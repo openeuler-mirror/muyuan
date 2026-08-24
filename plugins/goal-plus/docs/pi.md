@@ -131,7 +131,8 @@ candidate worker 只能使用 `search_get_agent_context`、`search_get_global_ev
 
 worker 始终把 `context.workspace` 作为文件与 shell 操作的显式 cwd，不依赖 wrapper 启动
 目录。任务局部 Skill 无需 spec 配置：runtime 只发现 source Git 已跟踪的
-`.agents/skills/<name>/SKILL.md`，在 freeze 的 `task_skill_notice` 和 launch prompt 中明确列出，
+`.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；在 freeze 的
+`task_skill_notice` 和 launch prompt 中明确列出，
 并通过 `candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。worker 完整读取这份
 清单，不扫描 parent/global/plugin 或其他 candidate 中的 Skill。
 

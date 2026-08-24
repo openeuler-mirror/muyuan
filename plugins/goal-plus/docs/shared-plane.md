@@ -337,7 +337,8 @@ attempt、恢复和 ledger commit 都保持可达。因此下一轮始终从 can
 证据确有必要时，candidate 才从自己的工作区渐进式查看 peer Evidence commit：
 
 任务局部 Skill 仍属于 source baseline，而不是共享平面。runtime 自动发现 source Git
-index 中的 `.agents/skills/<name>/SKILL.md`；freeze 返回 `task_skill_notice`，每个 candidate
+index 中的 `.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；
+freeze 返回 `task_skill_notice`，每个 candidate
 通过 `task_skill_paths` 获得自己 worktree 的绝对路径。无需额外 spec 配置或逐文件 Skill
 哈希；Git baseline 决定内容。worker 只加载明确列出的 task-local Skill，不扫描
 parent/global/plugin 或 peer worktree。

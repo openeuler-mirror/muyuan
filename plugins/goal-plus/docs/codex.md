@@ -159,7 +159,8 @@ main agent 将 payload 投影到当前 tool schema。`task_name`、`message` 和
 `spawn_agent` 没有 `cwd`，所以 launch 时不会把 child 切换到 candidate worktree。child
 必须先调用 `search_get_agent_context`，然后把 `context.workspace` 显式用于每次文件、编辑
 和 shell 操作。任务本地 Skill 无需配置：runtime 只发现 source Git 已跟踪的
-`.agents/skills/<name>/SKILL.md`，在 freeze 的 `task_skill_notice` 和 launch message 中明确
+`.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；在 freeze 的
+`task_skill_notice` 和 launch message 中明确
 列出，并通过 `context.candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。
 child 完整读取清单中的 Skill，不扫描 parent/global/plugin 或其他 candidate 路径。
 

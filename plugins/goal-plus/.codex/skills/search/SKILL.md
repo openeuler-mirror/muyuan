@@ -81,7 +81,8 @@ strategy:
    `budget.max_parallel`；同时必须显式设置 `workspace.backend="git_worktree"`。
    只有用户明确要求兼容隔离时才能设置 `copy`。
    任务本地 Skill 不需要 spec 配置。只识别 source Git 已跟踪的
-   `.agents/skills/<name>/SKILL.md`；`search_freeze_spec.task_skill_notice` 会列出发现结果，
+   `.agents/skills/<name>/SKILL.md`，且同一 Skill 目录内所有资源都必须由 Git 跟踪；
+   `search_freeze_spec.task_skill_notice` 会列出发现结果，
    必须把该提示明确展示出来。candidate materialization 会把对应 worktree 绝对路径放入
    `candidate_task.task_skill_paths`。不要扫描或复制 parent/global/plugin Skill。
    原始 `$goal-plus` 命令包含 `annotator=B` 时，先调用

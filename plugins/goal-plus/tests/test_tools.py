@@ -48,7 +48,7 @@ def spec_dict() -> dict:
     }
 
 
-def frozen_spec() -> FrozenSpec:
+def frozen_spec(*, task_skill_paths: list[str] | None = None) -> FrozenSpec:
     spec = SearchSpec.model_validate(spec_dict())
     return FrozenSpec(
         frozen_spec_id="spec_123",
@@ -56,6 +56,7 @@ def frozen_spec() -> FrozenSpec:
         spec=spec,
         verifier_hashes={"evaluator.py": "abc"},
         frozen_verifier_paths={"evaluator.py": "/tmp/evaluator.py"},
+        task_skill_paths=task_skill_paths or [],
         created_at="2026-06-24T00:00:00Z",
     )
 
@@ -90,6 +91,20 @@ def test_search_freeze_spec_converts_input_and_serializes_output() -> None:
     assert result["task_skill_paths"] == []
     assert result["task_skill_notice"] == (
         "No Git-tracked task-local Skills found under .agents/skills."
+    )
+
+
+def test_search_freeze_spec_lists_task_local_skills() -> None:
+    runtime = Mock()
+    runtime.freeze_spec.return_value = frozen_spec(
+        task_skill_paths=[".agents/skills/review/SKILL.md"]
+    )
+
+    result = SearchTools(runtime).search_freeze_spec(spec_dict(), ["evaluator.py"])
+
+    assert result["task_skill_notice"] == (
+        "Git-tracked task-local Skills visible from source: "
+        "review=.agents/skills/review/SKILL.md"
     )
 
 

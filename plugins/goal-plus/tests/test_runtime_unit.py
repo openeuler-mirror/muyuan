@@ -774,14 +774,6 @@ def test_git_tracked_task_skills_are_discovered_in_each_candidate_worktree(
     )
 
     assert frozen.task_skill_paths == [".agents/skills/review/SKILL.md"]
-    notice = SearchTools(runtime).search_freeze_spec(
-        spec,
-        [str(project / "evaluator.py")],
-    )["task_skill_notice"]
-    assert notice == (
-        "Git-tracked task-local Skills visible from source: "
-        "review (.agents/skills/review/SKILL.md)"
-    )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -818,11 +810,6 @@ def test_no_git_tracked_task_skills_is_reported_explicitly(tmp_path: Path) -> No
         [project / "evaluator.py"],
     )
     assert frozen.task_skill_paths == []
-    notice = SearchTools(runtime).search_freeze_spec(
-        spec_for(project, max_parallel=1),
-        [str(project / "evaluator.py")],
-    )["task_skill_notice"]
-    assert notice == "No Git-tracked task-local Skills found under .agents/skills."
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -847,6 +834,68 @@ def test_freeze_rejects_git_tracked_symlink_skill_entrypoint(tmp_path: Path) -> 
     runtime = FileSearchRuntime(tmp_path / ".search")
 
     with pytest.raises(ValueError, match="cannot be a symlink"):
+        runtime.freeze_spec(
+            spec_for(project, max_parallel=1),
+            [project / "evaluator.py"],
+        )
+
+
+def test_freeze_rejects_symlink_inside_git_tracked_skill(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    skill_root = project / ".agents" / "skills" / "review"
+    references = skill_root / "references"
+    references.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("# Review\n", encoding="utf-8")
+    (references / "checks.md").symlink_to(project / "initial_program.py")
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "add", ".agents/skills/review"],
+        cwd=project,
+        check=True,
+    )
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    with pytest.raises(ValueError, match="bundle cannot contain a symlink"):
+        runtime.freeze_spec(
+            spec_for(project, max_parallel=1),
+            [project / "evaluator.py"],
+        )
+
+
+def test_freeze_rejects_untracked_file_in_git_tracked_skill(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    skill_root = project / ".agents" / "skills" / "review"
+    (skill_root / "references").mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("# Review\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "add", ".agents/skills/review/SKILL.md"],
+        cwd=project,
+        check=True,
+    )
+    (skill_root / "references" / "checks.md").write_text(
+        "# Untracked checks\n",
+        encoding="utf-8",
+    )
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    with pytest.raises(ValueError, match="files not tracked by Git.*checks.md"):
+        runtime.freeze_spec(
+            spec_for(project, max_parallel=1),
+            [project / "evaluator.py"],
+        )
+
+
+def test_freeze_reports_git_discovery_failure_when_skill_directory_exists(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    skill_root = project / ".agents" / "skills" / "review"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("# Review\n", encoding="utf-8")
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    with pytest.raises(RuntimeError, match="Cannot inspect task-local Skills.*git ls-files"):
         runtime.freeze_spec(
             spec_for(project, max_parallel=1),
             [project / "evaluator.py"],

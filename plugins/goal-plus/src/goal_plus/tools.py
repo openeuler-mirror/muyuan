@@ -18,7 +18,7 @@ from goal_plus.models import (
     VerifierInvalidationReason,
 )
 from goal_plus.monitor import goal_plus_monitor_snapshot
-from goal_plus.runtime import FileSearchRuntime
+from goal_plus.runtime import FileSearchRuntime, format_task_skill_listing
 
 
 class SearchTools:
@@ -38,13 +38,11 @@ class SearchTools:
             [Path(path) for path in verifier_artifact_paths],
         )
         payload = frozen.model_dump(mode="json")
-        visible = [
-            f"{Path(path).parent.name} ({path})" for path in frozen.task_skill_paths
-        ]
+        visible = format_task_skill_listing(frozen.task_skill_paths)
         payload["task_skill_notice"] = (
             "Git-tracked task-local Skills visible from source: "
-            + ", ".join(visible)
-            if visible
+            + visible
+            if frozen.task_skill_paths
             else "No Git-tracked task-local Skills found under .agents/skills."
         )
         return payload

@@ -32,7 +32,8 @@ shell 操作的显式 cwd。parent cwd、其他 candidate workspace 和 `.gp` �
 candidate 工作目录。
 
 任务局部 Skill 采用固定约定，不进入 SearchSpec：只识别 source Git index 中
-`.agents/skills/<name>/SKILL.md`。freeze 返回 `task_skill_notice`，明确列出发现的名称和相对
+`.agents/skills/<name>/SKILL.md`，且要求该 Skill 目录内所有文件都由 Git 跟踪。freeze 返回
+`task_skill_notice`，明确列出发现的名称和相对
 路径；没有时明确显示 none。candidate materialization 通过 `candidate_task.task_skill_paths`
 返回该 candidate 自己的绝对路径，launch message 同时输出 `task_local_skills_visible`。
 worker 完整读取清单中的 `SKILL.md` 并显式遵循，只按需读取同目录资源；运行时不扫描
