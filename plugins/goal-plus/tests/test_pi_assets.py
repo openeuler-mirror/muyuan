@@ -460,6 +460,8 @@ def test_pi_extension_has_gated_progress_ui_preview() -> None:
     assert "goal_plus_monitor_snapshot" not in progress
     assert "SEARCH ACTIVE" in progress
     assert "SEARCH COMPLETE" in progress
+    assert 'metricName: "sum_radii"' in progress
+    assert "147_734" not in progress
     assert "verifierRunsTotal" in progress
     assert "selectedCandidateId" in progress
     assert "promotionPassed" in progress

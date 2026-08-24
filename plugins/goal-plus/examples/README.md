@@ -6,17 +6,29 @@ runs create one initial plan, materialize a fixed set of candidate workspaces,
 and resume those same candidates only until the enclosing task's global stop
 condition or closeout boundary is true.
 
+## Start Here: Five-Minute Live Run
+
+Use [Circle Packing](circle-packing/README.md) to observe a real Pi `/goal-plus`
+flow. It launches two native candidate lanes, runs a public
+correctness-and-score verifier, selects and promotes a valid result, and settles
+the Goal Plus record within a five-minute whole-task contract. The workspace
+uses only the Python standard library and its verifier is fast enough for
+several optimization iterations during the short run.
+
+The SearchSpec files below are runtime fixtures, not the recommended end-user
+entry. Deterministic scripts are protocol demonstrations and do not prove Pi or
+Codex worker execution.
+
 ## SearchSpec Files
 
 | Spec | Source | Purpose |
 |---|---|---|
-| `circle_packing_search_spec.json` | `tests/fixtures/circle_packing` | numeric optimization with two lanes |
+| `circle-packing/search-spec.json` | `examples/circle-packing/workspace` | five-minute Pi numeric optimization with two lanes |
 | `k_module_search_spec.json` | `tests/fixtures/k_module_problem` | small multi-file correctness and score fixture |
 | `signal_processing_search_spec.json` | `tests/fixtures/signal_processing` | wider parallel score fixture |
 | `multi-model-signal-spec.json` | `tests/fixtures/signal_processing` | bounded multi-model Codex fixture |
 | `edgebench_ad_placement_search_spec.json` | `examples/edgebench-ad-placement/workspace` | public-score C++ workflow |
 | `swe_bench_20212_search_spec.json` | `tests/fixtures/swe_bench_20212` | repository patching fixture |
-| `workspace-backends/git_worktree_search_spec.json` | `examples/workspace-backends/source` | Git worktree materialization demo |
 
 Paths in specs are repository-relative so tests and host agents can load them
 without machine-specific configuration.
@@ -132,22 +144,11 @@ For both hosts:
 6. Drain workers, call `search_select`, record/promote the result, finish the
    Goal Plus audit, then call `search_report` after terminal status.
 
-## Workspace Backends
-
-`workspace.backend="copy"` is useful for simple fixtures. The default
-`git_worktree` backend creates one branch/worktree per initial lane and keeps
-verifier-backed Git revisions available for final selection.
-
-Run the host-free worktree demo with:
-
-```bash
-python examples/workspace-backends/run_demo.py --runtime-root .tmp/worktree-demo
-```
-
 ## Scenario Guides
 
 | Scenario | Entry type | Whole-goal limit | Status |
 |---|---|---:|---|
+| [Circle Packing](circle-packing/README.md) | Pi `/goal-plus` | 5 minutes | recommended quick live run; standard library only |
 | [Codex/Pi orchestration monitor comparison](orchestration-monitor/README.md) | deterministic script | not applicable | maintained protocol demo |
 | [AscendC Direct Search](ascendc-direct-search/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
 | [CANNBench TileLang Ascend](cannbench-tilelang-ascend/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
@@ -155,8 +156,7 @@ python examples/workspace-backends/run_demo.py --runtime-root .tmp/worktree-demo
 | [Kernel Optimize](kernel-optimize/README.md) | Codex `$goal-plus` template | 30 minutes | environment-specific template |
 | [Model Optimize](model-optimize/README.md) | Pi/Codex Goal Plus | 10 minutes | runnable CPU example |
 | [Model Optimize GPU](model-opt-gpu/README.md) | Pi `/goal-plus` | 2 hours | WIP; not validated |
-| [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | Pi `/goal-plus` | scenario-specific | established regression case; unchanged |
-| [Git Worktree Backend](workspace-backends/README.md) | deterministic script | not applicable | host-free runtime E2E |
+| [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | Pi `/goal-plus` | scenario-specific | established EdgeBench-derived regression case; unchanged |
 
 The GPU model-optimization example is explicitly WIP and is not part of the
 maintained validation gate.

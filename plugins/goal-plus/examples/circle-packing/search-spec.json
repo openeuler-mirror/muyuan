@@ -1,0 +1,55 @@
+{
+  "objective": "maximize the valid radius sum for 26 circles in the unit square",
+  "metric_name": "sum_radii",
+  "metric_direction": "maximize",
+  "source_path": "examples/circle-packing/workspace",
+  "edit_surface": {
+    "allow": [
+      "initial_program.py"
+    ],
+    "deny": [
+      ".goal-plus-verifiers/circle_packing_score.py"
+    ]
+  },
+  "budget": {
+    "max_parallel": 2
+  },
+  "process_verifiers": [
+    {
+      "name": "circle_packing_score",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/circle_packing_score.py"
+      ],
+      "timeout_seconds": 30
+    }
+  ],
+  "promotion_verifiers": [
+    {
+      "name": "verifier_hash_check",
+      "role": "anti_cheat_gate",
+      "command": [
+        "goal-plus-internal",
+        "check-frozen-hashes"
+      ]
+    }
+  ],
+  "strategy": {
+    "name": "agent_guided",
+    "orchestration_mode": "parallel_loops",
+    "worker_host": "pi-rpc",
+    "worker_budget": {
+      "max_runtime_seconds": 180,
+      "max_turns": 8,
+      "on_exceed": "interrupt"
+    }
+  },
+  "workspace": {
+    "backend": "git_worktree"
+  },
+  "constraints": {
+    "suggested_batch_size": 2,
+    "task_summary": "Return exactly 26 non-overlapping circles inside the unit square and maximize the sum of their radii."
+  }
+}

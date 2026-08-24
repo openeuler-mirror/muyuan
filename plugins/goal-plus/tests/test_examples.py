@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
@@ -17,16 +15,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 EXAMPLE_SPECS = [
     (
-        "circle_packing_search_spec.json",
-        ["tests/fixtures/circle_packing/evaluator.py"],
-        "combined_score",
+        "circle-packing/search-spec.json",
+        [
+            "examples/circle-packing/workspace/.goal-plus-verifiers/"
+            "circle_packing_score.py"
+        ],
+        "sum_radii",
         {
             "max_parallel": 2,
-            "strategy_name": "random",
-            "worker_host": "codex",
-            "worker_agent_type": "search_candidate_agent",
-            "max_runtime_seconds": 300,
+            "strategy_name": "agent_guided",
+            "worker_host": "pi-rpc",
+            "worker_agent_type": None,
+            "max_runtime_seconds": 180,
             "max_turns": 8,
+            "suggested_batch_size": 2,
         },
     ),
     (
@@ -83,12 +85,10 @@ def load_example_spec(name: str) -> dict:
 @pytest.mark.parametrize(
     "spec_name",
     (
-        "circle_packing_search_spec.json",
         "k_module_search_spec.json",
         "signal_processing_search_spec.json",
         "swe_bench_20212_search_spec.json",
         "multi-model-signal-spec.json",
-        "workspace-backends/git_worktree_search_spec.json",
     ),
 )
 def test_standard_host_backed_specs_declare_the_bounded_parallel_contract(
@@ -134,6 +134,11 @@ def test_standard_host_backed_specs_declare_the_bounded_parallel_contract(
             "after 8 minutes",
         ),
         (
+            "circle-packing/pi-goal-prompt.md",
+            "within 5 minutes",
+            "after 4 minutes",
+        ),
+        (
             "model-opt-gpu/bert_pytorch_v100_goal_plus.md",
             "within 2 hours",
             "after 100 minutes",
@@ -155,12 +160,14 @@ def test_standard_goal_prompts_bound_the_whole_task_and_closeout(
     assert "terminal status" in normalized
 
 
-def test_removed_goal_comparison_is_not_listed_or_present() -> None:
+def test_removed_non_user_examples_are_not_listed_or_present() -> None:
     examples_index = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
 
     assert "goal-and-goal-plus" not in examples_index
     assert "Goal and Goal Plus" not in examples_index
     assert not (ROOT / "examples" / "goal-and-goal-plus").exists()
+    assert "workspace-backends" not in examples_index
+    assert not (ROOT / "examples" / "workspace-backends").exists()
 
 
 @pytest.mark.parametrize(("spec_name", "verifier_paths", "metric_name", "expected"), EXAMPLE_SPECS)
@@ -176,7 +183,9 @@ def test_parallel_loop_example_specs_are_valid(
     assert parsed.metric_name == metric_name
     assert parsed.budget.max_parallel == expected["max_parallel"]
     assert parsed.root_hypotheses == []
-    assert parsed.constraints["suggested_batch_size"] == 4
+    assert parsed.constraints["suggested_batch_size"] == expected.get(
+        "suggested_batch_size", 4
+    )
     assert parsed.strategy.orchestration_mode == "parallel_loops"
     assert parsed.strategy.worker_agent_type == expected["worker_agent_type"]
     if "strategy_name" in expected:
@@ -223,6 +232,7 @@ def test_parallel_loop_examples_create_one_batch_and_verify_baseline(
             run_id,
             candidate_id,
             agent_session_id=session["agent_session_id"],
+            hypothesis=f"baseline fixture for {candidate_id}",
         )
 
         assert report["process_passed"] is True
@@ -277,32 +287,6 @@ def test_parallel_loop_examples_create_one_batch_and_verify_baseline(
     status = tools.search_status(run_id)
     assert status["candidates_total"] == expected["max_parallel"]
     assert status["candidates_evaluated"] == 2
-
-
-@pytest.mark.integration
-def test_git_worktree_workspace_demo_runs_end_to_end(tmp_path: Path) -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "examples" / "workspace-backends" / "run_demo.py"),
-            "--runtime-root",
-            str(tmp_path / "runtime"),
-        ],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    summary = json.loads(completed.stdout.splitlines()[-1])
-    assert summary["workspace_backend"] == "git_worktree"
-    assert summary["candidate_ids"] == ["c001", "c002", "c003"]
-    assert summary["scores"] == {"c001": 1.0, "c002": 2.0, "c003": 3.0}
-    assert summary["shared_git_common_dir"] is True
-    assert len(set(summary["branches"].values())) == 3
-    assert summary["selected_candidate_id"] == "c003"
-    assert Path(summary["report_path"]).exists()
 
 
 def test_model_opt_gpu_wip_docs_define_future_v100_goal_plus_contract() -> None:

@@ -54,19 +54,20 @@ fields are:
 {
   "status": "active",
   "phase": "search",
-  "elapsed_seconds": 258,
+  "elapsed_seconds": 126,
   "search": {
     "started": true,
     "run_id": "run_...",
     "state": "active",
     "candidates_total": 2,
     "sessions_started": 2,
-    "verifier_runs_total": 8,
+    "metric_name": "sum_radii",
+    "verifier_runs_total": 4,
     "best_candidate_id": "c001",
-    "best_score": 121806,
+    "best_score": 1.93276,
     "candidates": [
-      {"candidate_id": "c001", "model": "terra", "verifier_count": 5, "best_score": 121806},
-      {"candidate_id": "c002", "model": "luna", "verifier_count": 3, "best_score": 126114}
+      {"candidate_id": "c001", "model": "terra", "verifier_count": 2, "best_score": 1.93276},
+      {"candidate_id": "c002", "model": "luna", "verifier_count": 2, "best_score": 1.90144}
     ]
   }
 }
