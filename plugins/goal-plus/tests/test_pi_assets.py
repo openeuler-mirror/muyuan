@@ -443,6 +443,29 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "timed out before submitting a verdict" in text
 
 
+def test_pi_extension_has_gated_progress_ui_preview() -> None:
+    extension = (ROOT / ".pi" / "extensions" / "goal-plus.ts").read_text(
+        encoding="utf-8"
+    )
+    progress = (
+        ROOT / ".pi" / "extensions" / "goal-plus-progress.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "GOAL_PLUS_UI_PREVIEW" in extension
+    assert 'pi.registerCommand("goal-plus-ui-preview"' in extension
+    assert "ctx.ui.setStatus" in extension
+    assert "ctx.ui.setWidget" in extension
+    assert "PI_PROGRESS_PREVIEWS[progressPreviewMode]" in extension
+    assert "goal_plus_create" not in progress
+    assert "goal_plus_monitor_snapshot" not in progress
+    assert "SEARCH ACTIVE" in progress
+    assert "SEARCH COMPLETE" in progress
+    assert "verifierRunsTotal" in progress
+    assert "selectedCandidateId" in progress
+    assert "promotionPassed" in progress
+    assert "continue candidate loops" in progress
+
+
 def test_pi_extension_has_precise_tool_schemas_and_error_classification() -> None:
     text = (ROOT / ".pi" / "extensions" / "goal-plus.ts").read_text(
         encoding="utf-8"

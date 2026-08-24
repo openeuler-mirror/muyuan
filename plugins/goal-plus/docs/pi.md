@@ -35,6 +35,18 @@ pi -p "/goal-plus inspect this repository"
 
 通过 `pi remove .` 移除 checkout package。用户安装和开发安装暴露相同的 extension，以及同一个面向用户的 `goal-plus` skill。
 
+#### Progress UI 开发预览
+
+extension 可以在不创建 Goal Plus record、Search run、candidate workspace 或模型请求的情况下显示 fixture-backed Search progress。这只是开发预览，不是 benchmark Evidence：
+
+```bash
+GOAL_PLUS_UI_PREVIEW=active \
+  pi --offline --no-session --no-extensions \
+  -e .pi/extensions/goal-plus.ts
+```
+
+在该 session 中使用 `/goal-plus-ui-preview active`、`/goal-plus-ui-preview complete` 或 `/goal-plus-ui-preview clear` 切换状态。普通 session 不注册该命令。体验目标和字段语义见 [Lightweight Search Progress UX](usability-progress.md)。
+
 也可以在交互式 Pi 中直接使用：
 
 ```text

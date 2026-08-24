@@ -3,11 +3,23 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type TSchema, Type } from "typebox";
+import {
+	buildPiProgressPresentation,
+	PI_PROGRESS_PREVIEWS,
+	type GoalPlusProgressView,
+} from "./goal-plus-progress.ts";
 
 const role = process.env.GOAL_PLUS_PI_ROLE || "main";
 const runtimeRoot = process.env.GOAL_PLUS_ROOT || ".gp";
 const sourcePath = process.env.GOAL_PLUS_SOURCE_PATH;
 const workerContinueUntilMs = Number(process.env.GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS || "0");
+const progressPreviewMode = (() => {
+	const value = process.env.GOAL_PLUS_UI_PREVIEW?.trim().toLowerCase();
+	if (!value) return undefined;
+	if (value === "1" || value === "running") return "active";
+	if (value === "active" || value === "complete") return value;
+	return undefined;
+})();
 const modeArgIndex = process.argv.indexOf("--mode");
 const isPrintLikeInvocation =
 	process.argv.includes("-p") ||
@@ -16,6 +28,8 @@ const isPrintLikeInvocation =
 	(modeArgIndex >= 0 && process.argv[modeArgIndex + 1] === "json");
 const STATE_ENTRY_TYPE = "goal-plus-native-state";
 const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
+const GOAL_PLUS_PROGRESS_STATUS_KEY = "goal-plus-progress";
+const GOAL_PLUS_PROGRESS_WIDGET_KEY = "goal-plus-progress";
 let workspaceRoot: string | undefined;
 let sawContext = false;
 let activeGoalPlusId = process.env.GOAL_PLUS_ID;
@@ -1059,6 +1073,23 @@ function appendGoalStats(pi: ExtensionAPI, status: GoalPlusStatusPayload, usage:
 	return message;
 }
 
+function showPiProgress(ctx: ExtensionContext, view: GoalPlusProgressView): void {
+	const presentation = buildPiProgressPresentation(view);
+	const lines = presentation.lines.map((line, index) => {
+		if (index === 0) return ctx.ui.theme.fg(view.state === "complete" ? "success" : "accent", line);
+		if (line.startsWith("Next  ")) return ctx.ui.theme.fg("muted", line);
+		return line;
+	});
+	const statusColor = view.state === "complete" ? "success" : view.state === "blocked" ? "error" : "accent";
+	ctx.ui.setStatus(GOAL_PLUS_PROGRESS_STATUS_KEY, ctx.ui.theme.fg(statusColor, presentation.status));
+	ctx.ui.setWidget(GOAL_PLUS_PROGRESS_WIDGET_KEY, lines);
+}
+
+function clearPiProgress(ctx: ExtensionContext): void {
+	ctx.ui.setStatus(GOAL_PLUS_PROGRESS_STATUS_KEY, undefined);
+	ctx.ui.setWidget(GOAL_PLUS_PROGRESS_WIDGET_KEY, undefined);
+}
+
 function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 	const action = status.next_action;
 	const lines = [
@@ -1799,6 +1830,24 @@ export default function (pi: ExtensionAPI) {
 				if (prompt) sendUserMessage(pi, prompt, !ctx.isIdle());
 			},
 		});
+		if (role === "main" && progressPreviewMode) {
+			pi.registerCommand("goal-plus-ui-preview", {
+				description: "预览 Goal Plus 进度 UI，不创建 Goal Plus/Search run",
+				handler: async (args, ctx) => {
+					const mode = args.trim().toLowerCase() || "active";
+					if (mode === "clear") {
+						clearPiProgress(ctx);
+						ctx.ui.notify("Goal Plus progress preview cleared.", "info");
+						return;
+					}
+					if (mode !== "active" && mode !== "complete") {
+						ctx.ui.notify("Usage: /goal-plus-ui-preview [active|complete|clear]", "error");
+						return;
+					}
+					showPiProgress(ctx, PI_PROGRESS_PREVIEWS[mode]);
+				},
+			});
+		}
 	}
 
 	const mainTools = [
@@ -1883,6 +1932,10 @@ export default function (pi: ExtensionAPI) {
 		return workspaceGuard(event) || (await mainGate(event, ctx));
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		if (role === "main" && progressPreviewMode) {
+			showPiProgress(ctx, PI_PROGRESS_PREVIEWS[progressPreviewMode]);
+			return;
+		}
 		restoreGoalState(ctx);
 		if (role !== "main" || !activeGoalPlusId) return;
 		const commandCtx = commandContextFrom(ctx);
