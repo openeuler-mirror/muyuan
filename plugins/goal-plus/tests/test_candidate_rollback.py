@@ -117,6 +117,11 @@ def test_process_verifier_settles_workspace_to_candidate_best(
     )
     assert best == {
         "artifact_hash": record.iterations[3].artifact_hash,
+        "artifact_ref": {
+            "id": record.iterations[3].git_head,
+            "kind": "git_commit",
+            "provider": "git_worktree",
+        },
         "candidate_id": candidate_id,
         "changed_files": ["initial_program.py"],
         "commit": record.iterations[3].git_head,
@@ -124,7 +129,7 @@ def test_process_verifier_settles_workspace_to_candidate_best(
         "metric_direction": direction,
         "metric_name": "combined_score",
         "run_id": run_id,
-        "schema_version": 1,
+        "schema_version": 2,
         "score": scores["equal"],
         "updated_at": record.iterations[3].created_at,
         "workspace": f"workspace/{candidate_id}",

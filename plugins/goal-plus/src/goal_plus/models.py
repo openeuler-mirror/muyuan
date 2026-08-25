@@ -57,7 +57,9 @@ class Budget(SearchModel):
     max_tokens: int | None = Field(default=None, gt=0)
 
 
-WorkspaceBackend = Literal["copy", "git_worktree"]
+WorkspaceBackend = Literal["copy", "git_worktree", "thinkthread"]
+ArtifactKind = Literal["git_commit", "fs_snapshot"]
+WorkspaceAccessKind = Literal["soft_path", "protected_execution"]
 IterationDisposition = Literal["keep", "retain", "discard", "failure"]
 SharedToolPublishStatus = Literal[
     "legacy_unknown", "not_staged",
@@ -101,6 +103,55 @@ VerifierInvalidationReason = Literal[
 
 class WorkspaceSpec(SearchModel):
     backend: WorkspaceBackend = "git_worktree"
+
+
+class ArtifactRef(SearchModel):
+    """Provider-neutral identity for one immutable candidate artifact."""
+
+    kind: ArtifactKind
+    id: str = Field(min_length=1)
+    provider: WorkspaceBackend
+
+    @model_validator(mode="after")
+    def kind_matches_backend(self) -> "ArtifactRef":
+        expected = "fs_snapshot" if self.provider == "thinkthread" else "git_commit"
+        if self.kind != expected:
+            raise ValueError(
+                f"artifact kind {self.kind} is incompatible with {self.provider}; "
+                f"expected {expected}"
+            )
+        return self
+
+
+class WorkspaceAccess(SearchModel):
+    logical_root: str = "workspace"
+    native_cwd: Path | None = None
+    bootstrap_required: bool = True
+    confinement: WorkspaceAccessKind = "soft_path"
+    writable_surfaces: list[str] = Field(default_factory=list)
+
+
+class ReferenceWorkspaceAccess(SearchModel):
+    kind: Literal["filesystem_path", "provider_tools"]
+    root: Path | None = None
+    readonly_contract: Literal["soft_detected", "enforced"]
+
+
+class ReferenceWorkspaceRecord(SearchModel):
+    reference_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    requester_agent_session_id: str = Field(min_length=1)
+    source_candidate_id: str = Field(min_length=1)
+    source_iteration: int = Field(ge=1)
+    artifact_ref: ArtifactRef
+    display_name: str = Field(min_length=1)
+    workspace_backend: WorkspaceBackend
+    access: ReferenceWorkspaceAccess
+    state: Literal["open", "closed"] = "open"
+    integrity_status: Literal["clean", "contaminated", "unavailable"] = "clean"
+    created_at: str
+    expires_at: str | None = None
+    closed_at: str | None = None
 
 
 class EditSurface(SearchModel):
@@ -410,6 +461,10 @@ class EvidenceViewRecord(SearchModel):
     candidate_id: str = Field(min_length=1)
     iteration: int = Field(ge=1)
     attempt_commit: str = Field(min_length=1)
+    attempt_artifact_ref: ArtifactRef | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     description: str = Field(min_length=1, max_length=1000)
     supplemental_evaluation: SupplementalEvaluation | None = None
     comparison_basis: list[EvidenceComparisonReference] = Field(
@@ -433,6 +488,10 @@ class GlobalEvidenceViewReference(SearchModel):
     candidate_id: str = Field(min_length=1)
     iteration: int = Field(ge=1)
     commit: str = Field(min_length=1)
+    artifact_ref: ArtifactRef | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     view_created_at: str
     supplemental_evaluation_present: bool = False
 
@@ -468,6 +527,10 @@ class EvidenceDetailReadRecord(SearchModel):
     candidate_id: str = Field(min_length=1)
     iteration: int = Field(ge=1)
     commit: str = Field(min_length=1)
+    artifact_ref: ArtifactRef | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class EvidenceAnnotationTask(SearchModel):
@@ -476,6 +539,14 @@ class EvidenceAnnotationTask(SearchModel):
     iteration: int = Field(ge=1)
     attempt_base_commit: str = Field(min_length=1)
     attempt_commit: str = Field(min_length=1)
+    attempt_base_artifact_ref: ArtifactRef | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    attempt_artifact_ref: ArtifactRef | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     attempt_changed_files: list[str] = Field(default_factory=list)
     task_context_source: Literal[
         "goal_plus_raw_goal",
@@ -1003,6 +1074,8 @@ class CandidateTask(SearchModel):
     workspace_branch: str | None = None
     workspace_base_revision: str | None = None
     task_skill_paths: list[Path] = Field(default_factory=list)
+    base_artifact_ref: ArtifactRef | None = None
+    workspace_access: WorkspaceAccess = Field(default_factory=WorkspaceAccess)
     share_out_dir: Path | None = None
     allowed_files: list[str]
     denied_files: list[str]
@@ -1148,6 +1221,8 @@ class ScoreReport(SearchModel):
     best_iteration: int | None = Field(default=None, ge=1)
     best_git_head: str | None = None
     workspace_git_head_after_settlement: str | None = None
+    best_artifact_ref: ArtifactRef | None = None
+    workspace_artifact_after_settlement: ArtifactRef | None = None
     shared_tool_staged_entries: list[str] | None = None
     shared_tool_staged_file_count: int | None = Field(default=None, ge=0)
     shared_tool_staged_bytes: int | None = Field(default=None, ge=0)
@@ -1169,6 +1244,8 @@ class PromotionEvidence(SearchModel):
     candidate_id: str
     selected_git_head: str | None = None
     git_head: str | None = None
+    selected_artifact_ref: ArtifactRef | None = None
+    artifact_ref: ArtifactRef | None = None
     artifact_hash: str
     passed: bool
     created_at: str
@@ -1188,8 +1265,13 @@ class IterationRecord(SearchModel):
     process_passed: bool | None = None
     git_head: str | None = None
     attempt_base_git_head: str | None = None
+    artifact_ref: ArtifactRef | None = None
+    attempt_base_artifact_ref: ArtifactRef | None = None
     attempt_changed_files: list[str] = Field(default_factory=list)
     ledger_git_head: str | None = None
+    ledger_artifact_ref: ArtifactRef | None = None
+    artifact_clean: bool | None = None
+    artifact_status: list[str] = Field(default_factory=list)
     git_artifact_clean: bool | None = None
     git_status: list[str] = Field(default_factory=list)
     failure_class: str | None = None
@@ -1205,6 +1287,8 @@ class IterationRecord(SearchModel):
     restored_to_iteration: int | None = Field(default=None, ge=1)
     restored_to_git_head: str | None = None
     workspace_git_head_after_settlement: str | None = None
+    restored_to_artifact_ref: ArtifactRef | None = None
+    workspace_artifact_after_settlement: ArtifactRef | None = None
     adopted_tools: list[ToolAdoptionRecord] = Field(default_factory=list, exclude_if=lambda value: not value)
     adoption_confounded: bool | None = Field(default=None, exclude_if=lambda value: value is None)
     shared_tools: list[SharedToolRecord] = Field(default_factory=list)
@@ -1249,6 +1333,8 @@ class ResultLedgerEntry(SearchModel):
     iteration: int | None = Field(default=None, ge=1)
     git_head: str | None = None
     ledger_git_head: str | None = None
+    artifact_ref: ArtifactRef | None = None
+    ledger_artifact_ref: ArtifactRef | None = None
     metric_name: str = Field(min_length=1)
     score: float | None = None
     status: str = Field(min_length=1)
@@ -1273,11 +1359,12 @@ class RunSummary(SearchModel):
 
 
 class BestArtifactRecord(SearchModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     run_id: str
     candidate_id: str
     iteration: int = Field(ge=1)
-    commit: str = Field(min_length=1)
+    commit: str | None = Field(default=None, min_length=1)
+    artifact_ref: ArtifactRef | None = None
     score: float
     metric_name: str = Field(min_length=1)
     metric_direction: Literal["minimize", "maximize"]
@@ -1285,6 +1372,12 @@ class BestArtifactRecord(SearchModel):
     workspace: str = Field(min_length=1)
     changed_files: list[str] = Field(default_factory=list)
     updated_at: str
+
+    @model_validator(mode="after")
+    def require_artifact_identity(self) -> "BestArtifactRecord":
+        if self.artifact_ref is None and self.commit is None:
+            raise ValueError("best artifact requires artifact_ref or legacy commit")
+        return self
 
 
 class RunRecord(SearchModel):
@@ -1304,6 +1397,7 @@ class RunRecord(SearchModel):
     selected_score: float | None = None
     selected_iteration: int | None = None
     selected_git_head: str | None = None
+    selected_artifact_ref: ArtifactRef | None = None
     selected_artifact_hash: str | None = None
     budget_used: dict[str, Any] = Field(default_factory=dict)
     source_run_id: str | None = None
@@ -1333,6 +1427,7 @@ class CandidateRecord(SearchModel):
     iterations: list[IterationRecord] = Field(default_factory=list)
     results_ledger: list[ResultLedgerEntry] = Field(default_factory=list)
     results_ledger_git_head: str | None = None
+    results_ledger_artifact_ref: ArtifactRef | None = None
 
 
 class AgentSessionRecord(SearchModel):

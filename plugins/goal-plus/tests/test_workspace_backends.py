@@ -3,7 +3,13 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from goal_plus.workspaces import materialize_candidate_workspace
+import pytest
+
+from goal_plus.workspaces import (
+    UnsupportedWorkspaceCapability,
+    get_workspace_provider,
+    materialize_candidate_workspace,
+)
 
 
 def make_source(tmp_path: Path) -> Path:
@@ -224,3 +230,24 @@ def test_git_worktree_child_starts_from_explicit_parent_revision(
     assert git_output(child_path, "rev-parse", "HEAD") == parent_revision
     assert (child_path / "program.py").read_text(encoding="utf-8") == "VALUE = 7\n"
     assert common_git_dir(parent_path) == common_git_dir(child_path)
+
+
+def test_thinkthread_backend_declares_future_capabilities_without_fallback(
+    tmp_path: Path,
+) -> None:
+    provider = get_workspace_provider("thinkthread")
+
+    assert provider.capabilities.protected_execution is False
+    assert provider.capabilities.reference_workspace is False
+    with pytest.raises(
+        UnsupportedWorkspaceCapability,
+        match="materialize_candidate",
+    ):
+        materialize_candidate_workspace(
+            backend="thinkthread",
+            run_dir=tmp_path / "run",
+            source=make_source(tmp_path),
+            workspace=tmp_path / "run" / "workspace" / "c001",
+            run_id="run_test",
+            candidate_id="c001",
+        )

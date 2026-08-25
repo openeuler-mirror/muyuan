@@ -5,8 +5,9 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Literal, Mapping, Protocol
 
-from goal_plus.models import WorkspaceBackend
+from goal_plus.models import ArtifactRef, WorkspaceBackend
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT
 
 
@@ -34,6 +35,95 @@ class WorkspaceMaterialization:
     workspace: Path
     branch: str | None
     base_revision: str | None
+
+
+@dataclass(frozen=True)
+class WorkspaceProviderCapabilities:
+    materialize_candidate: bool
+    checkpoint: bool
+    restore: bool
+    reference_workspace: bool
+    protected_execution: bool
+
+
+class UnsupportedWorkspaceCapability(RuntimeError):
+    def __init__(self, backend: WorkspaceBackend, capability: str) -> None:
+        self.backend = backend
+        self.capability = capability
+        super().__init__(
+            f"workspace backend {backend!r} does not implement capability "
+            f"{capability!r}"
+        )
+
+
+class WorkspaceProvider(Protocol):
+    backend: WorkspaceBackend
+    capabilities: WorkspaceProviderCapabilities
+
+    def materialize_candidate(
+        self,
+        *,
+        run_dir: Path,
+        source: Path,
+        workspace: Path,
+        run_id: str,
+        candidate_id: str,
+        base_workspace: Path | None = None,
+        base_revision: str | None = None,
+    ) -> WorkspaceMaterialization: ...
+
+    def checkpoint(
+        self,
+        workspace: Path,
+        message: str,
+        pathspecs: list[str],
+    ) -> ArtifactRef | None: ...
+
+    def restore(
+        self,
+        workspace: Path,
+        artifact_ref: ArtifactRef,
+        preserved_files: Mapping[str, str],
+        message: str,
+    ) -> ArtifactRef: ...
+
+    def current_artifact(self, workspace: Path) -> ArtifactRef | None: ...
+
+    def is_descendant(
+        self,
+        workspace: Path,
+        base_artifact_ref: ArtifactRef,
+        target_artifact_ref: ArtifactRef,
+    ) -> bool: ...
+
+    def changed_files(
+        self,
+        workspace: Path,
+        base_artifact_ref: ArtifactRef,
+        target_artifact_ref: ArtifactRef,
+        pathspecs: list[str],
+    ) -> list[str]: ...
+
+    def status(
+        self,
+        workspace: Path,
+        *,
+        ignore_runtime_noise: bool = False,
+    ) -> list[str]: ...
+
+    def materialize_reference(
+        self,
+        source_workspace: Path,
+        artifact_ref: ArtifactRef,
+        destination: Path,
+    ) -> Path: ...
+
+    def remove_reference(
+        self,
+        source_workspace: Path,
+        artifact_ref: ArtifactRef,
+        destination: Path,
+    ) -> bool: ...
 
 
 def should_ignore(path: Path) -> bool:
@@ -202,7 +292,7 @@ def initialize_workspace_git_baseline(workspace: Path) -> str | None:
     return _git_output(workspace, "rev-parse", "HEAD")
 
 
-def materialize_candidate_workspace(
+def _materialize_git_candidate_workspace(
     *,
     backend: WorkspaceBackend,
     run_dir: Path,
@@ -267,6 +357,360 @@ def materialize_candidate_workspace(
         branch=branch,
         base_revision=revision,
     )
+
+
+LiteralGitBackend = Literal["copy", "git_worktree"]
+
+
+class GitWorkspaceProvider:
+    capabilities = WorkspaceProviderCapabilities(
+        materialize_candidate=True,
+        checkpoint=True,
+        restore=True,
+        reference_workspace=True,
+        protected_execution=False,
+    )
+
+    def __init__(self, backend: LiteralGitBackend) -> None:
+        self.backend = backend
+
+    def materialize_candidate(
+        self,
+        *,
+        run_dir: Path,
+        source: Path,
+        workspace: Path,
+        run_id: str,
+        candidate_id: str,
+        base_workspace: Path | None = None,
+        base_revision: str | None = None,
+    ) -> WorkspaceMaterialization:
+        return _materialize_git_candidate_workspace(
+            backend=self.backend,
+            run_dir=run_dir,
+            source=source,
+            workspace=workspace,
+            run_id=run_id,
+            candidate_id=candidate_id,
+            base_workspace=base_workspace,
+            base_revision=base_revision,
+        )
+
+    def checkpoint(
+        self,
+        workspace: Path,
+        message: str,
+        pathspecs: list[str],
+    ) -> ArtifactRef | None:
+        try:
+            _git_run(workspace, "add", "-A", "-f", "--", *pathspecs)
+            staged = subprocess.run(
+                ["git", "diff", "--cached", "--quiet", "--", *pathspecs],
+                cwd=workspace,
+                check=False,
+                capture_output=True,
+                text=True,
+            ).returncode
+            if staged not in {0, 1}:
+                return None
+            if staged == 1:
+                _git_run(
+                    workspace,
+                    "-c",
+                    "user.name=goal-plus",
+                    "-c",
+                    "user.email=goal-plus@example.invalid",
+                    "commit",
+                    "-q",
+                    "--no-verify",
+                    "-m",
+                    message,
+                )
+            return self.current_artifact(workspace)
+        except RuntimeError:
+            return None
+
+    def restore(
+        self,
+        workspace: Path,
+        artifact_ref: ArtifactRef,
+        preserved_files: Mapping[str, str],
+        message: str,
+    ) -> ArtifactRef:
+        self._require_git_artifact(artifact_ref)
+        _git_run(
+            workspace,
+            "restore",
+            f"--source={artifact_ref.id}",
+            "--staged",
+            "--worktree",
+            "--",
+            ".",
+        )
+        for relative_path, content in preserved_files.items():
+            path = _contained_path(workspace, relative_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            _git_run(workspace, "add", "--", relative_path)
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            cwd=workspace,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode
+        if staged == 1:
+            _git_run(
+                workspace,
+                "-c",
+                "user.name=goal-plus",
+                "-c",
+                "user.email=goal-plus@example.invalid",
+                "commit",
+                "-q",
+                "--no-verify",
+                "-m",
+                message,
+            )
+        elif staged != 0:
+            raise RuntimeError("could not inspect staged restoration")
+        restored = self.current_artifact(workspace)
+        if restored is None:
+            raise RuntimeError("candidate restoration produced no artifact")
+        return restored
+
+    def current_artifact(self, workspace: Path) -> ArtifactRef | None:
+        try:
+            revision = _git_output(workspace, "rev-parse", "HEAD")
+        except RuntimeError:
+            return None
+        return ArtifactRef(kind="git_commit", id=revision, provider=self.backend)
+
+    def is_descendant(
+        self,
+        workspace: Path,
+        base_artifact_ref: ArtifactRef,
+        target_artifact_ref: ArtifactRef,
+    ) -> bool:
+        self._require_git_artifact(base_artifact_ref)
+        self._require_git_artifact(target_artifact_ref)
+        return _git_succeeds(
+            workspace,
+            "merge-base",
+            "--is-ancestor",
+            base_artifact_ref.id,
+            target_artifact_ref.id,
+        )
+
+    def changed_files(
+        self,
+        workspace: Path,
+        base_artifact_ref: ArtifactRef,
+        target_artifact_ref: ArtifactRef,
+        pathspecs: list[str],
+    ) -> list[str]:
+        self._require_git_artifact(base_artifact_ref)
+        self._require_git_artifact(target_artifact_ref)
+        result = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--name-only",
+                "-z",
+                base_artifact_ref.id,
+                target_artifact_ref.id,
+                "--",
+                *pathspecs,
+            ],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+        )
+        return sorted(
+            value.decode("utf-8", errors="surrogateescape")
+            for value in result.stdout.split(b"\0")
+            if value
+        )
+
+    def status(
+        self,
+        workspace: Path,
+        *,
+        ignore_runtime_noise: bool = False,
+    ) -> list[str]:
+        command = ["git", "status", "--porcelain=v1", "--untracked-files=all"]
+        if ignore_runtime_noise:
+            exclusions = [
+                pattern
+                for name in sorted(IGNORED_NAMES - {".git"})
+                for pattern in (
+                    f":(exclude){name}/**",
+                    f":(exclude)**/{name}/**",
+                )
+            ]
+            exclusions.extend(
+                f":(exclude)**/*{suffix}" for suffix in sorted(IGNORED_SUFFIXES)
+            )
+            command.extend(["--", ".", *exclusions])
+        try:
+            value = _git_output(workspace, *command[1:])
+        except RuntimeError:
+            return []
+        return [line for line in value.splitlines() if line.strip()]
+
+    def materialize_reference(
+        self,
+        source_workspace: Path,
+        artifact_ref: ArtifactRef,
+        destination: Path,
+    ) -> Path:
+        self._require_git_artifact(artifact_ref)
+        if destination.exists():
+            try:
+                existing = _git_output(destination, "rev-parse", "HEAD")
+                status = _git_output(destination, "status", "--porcelain")
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"reference workspace already exists but is invalid: {destination}"
+                ) from exc
+            if existing != artifact_ref.id or status:
+                raise RuntimeError(
+                    f"reference workspace does not match immutable artifact: {destination}"
+                )
+            return destination
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _git_run(
+            source_workspace,
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            str(destination),
+            artifact_ref.id,
+        )
+        return destination
+
+    def remove_reference(
+        self,
+        source_workspace: Path,
+        artifact_ref: ArtifactRef,
+        destination: Path,
+    ) -> bool:
+        self._require_git_artifact(artifact_ref)
+        clean = False
+        if destination.exists():
+            try:
+                clean = (
+                    _git_output(destination, "rev-parse", "HEAD") == artifact_ref.id
+                    and not _git_output(destination, "status", "--porcelain")
+                )
+            except RuntimeError:
+                clean = False
+            _git_run(
+                source_workspace,
+                "worktree",
+                "remove",
+                "--force",
+                str(destination),
+            )
+        _git_run(source_workspace, "worktree", "prune")
+        return clean
+
+    def _require_git_artifact(self, artifact_ref: ArtifactRef) -> None:
+        if artifact_ref.kind != "git_commit":
+            raise ValueError("Git workspace provider requires a git_commit artifact")
+
+
+class CopyWorkspaceProvider(GitWorkspaceProvider):
+    def __init__(self) -> None:
+        super().__init__("copy")
+
+
+class GitWorktreeProvider(GitWorkspaceProvider):
+    def __init__(self) -> None:
+        super().__init__("git_worktree")
+
+
+class ThinkThreadWorkspaceProvider:
+    backend: WorkspaceBackend = "thinkthread"
+    capabilities = WorkspaceProviderCapabilities(
+        materialize_candidate=False,
+        checkpoint=False,
+        restore=False,
+        reference_workspace=False,
+        protected_execution=False,
+    )
+
+    def _unsupported(self, capability: str) -> None:
+        raise UnsupportedWorkspaceCapability(self.backend, capability)
+
+    def materialize_candidate(self, **_: object) -> WorkspaceMaterialization:
+        self._unsupported("materialize_candidate")
+
+    def checkpoint(self, *_: object, **__: object) -> ArtifactRef | None:
+        self._unsupported("checkpoint")
+
+    def restore(self, *_: object, **__: object) -> ArtifactRef:
+        self._unsupported("restore")
+
+    def current_artifact(self, *_: object, **__: object) -> ArtifactRef | None:
+        self._unsupported("current_artifact")
+
+    def is_descendant(self, *_: object, **__: object) -> bool:
+        self._unsupported("is_descendant")
+
+    def changed_files(self, *_: object, **__: object) -> list[str]:
+        self._unsupported("changed_files")
+
+    def status(self, *_: object, **__: object) -> list[str]:
+        self._unsupported("status")
+
+    def materialize_reference(self, *_: object, **__: object) -> Path:
+        self._unsupported("materialize_reference")
+
+    def remove_reference(self, *_: object, **__: object) -> bool:
+        self._unsupported("remove_reference")
+
+
+def get_workspace_provider(backend: WorkspaceBackend) -> WorkspaceProvider:
+    if backend == "copy":
+        return CopyWorkspaceProvider()
+    if backend == "git_worktree":
+        return GitWorktreeProvider()
+    if backend == "thinkthread":
+        return ThinkThreadWorkspaceProvider()
+    raise ValueError(f"unsupported workspace backend: {backend}")
+
+
+def materialize_candidate_workspace(
+    *,
+    backend: WorkspaceBackend,
+    run_dir: Path,
+    source: Path,
+    workspace: Path,
+    run_id: str,
+    candidate_id: str,
+    base_workspace: Path | None = None,
+    base_revision: str | None = None,
+) -> WorkspaceMaterialization:
+    return get_workspace_provider(backend).materialize_candidate(
+        run_dir=run_dir,
+        source=source,
+        workspace=workspace,
+        run_id=run_id,
+        candidate_id=candidate_id,
+        base_workspace=base_workspace,
+        base_revision=base_revision,
+    )
+
+
+def _contained_path(root: Path, relative_path: str) -> Path:
+    candidate = (root / relative_path).resolve()
+    try:
+        candidate.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"path escapes workspace: {relative_path}") from exc
+    return candidate
 
 
 def _ensure_worktree_repository(run_dir: Path, source: Path, run_id: str) -> Path:

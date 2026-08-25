@@ -1542,6 +1542,7 @@ def _finish_annotation_task(
                     candidate_id=current.candidate_id,
                     iteration=current.iteration,
                     attempt_commit=current.attempt_commit,
+                    attempt_artifact_ref=current.attempt_artifact_ref,
                     description=result.description,
                     supplemental_evaluation=result.supplemental_evaluation,
                     comparison_basis=list(current.comparison_basis),

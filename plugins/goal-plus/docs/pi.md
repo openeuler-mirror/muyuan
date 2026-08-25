@@ -139,7 +139,7 @@ Goal Plus 通过 `goal_plus_list_models(host="pi-rpc")` 调用 Pi RPC `get_avail
 
 ## Worker 上下文与恢复
 
-candidate worker 只能使用 `search_get_agent_context`、`search_get_global_evidence`、`search_get_evidence_detail`、`search_stage_shared_tool`、`search_copy_shared_tool`、`search_run_verifier` 和 `search_list_iterations`。
+candidate worker 只能使用 `search_get_agent_context`、`search_get_global_evidence`、`search_get_evidence_detail`、`search_reference_open/list/read/exec/close`、`search_stage_shared_tool`、`search_copy_shared_tool`、`search_run_verifier` 和 `search_list_iterations`。
 
 `search_get_agent_context` 返回有界的 best/recent 摘要、权威 ID、workspace 和 durable `results.tsv` 路径。只有确实需要旧 verifier 的完整细节时，才调用可能很大的 `search_list_iterations`。
 

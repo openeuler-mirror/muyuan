@@ -203,7 +203,13 @@ redispatch 只用于恢复，并继续使用同一个 candidate 工作区、Git 
 {
   "candidate_id": "c001",
   "iteration": 3,
+  "artifact_ref": {
+    "kind": "git_commit",
+    "id": "<exact-attempt-commit>",
+    "provider": "git_worktree"
+  },
   "commit": "<exact-attempt-commit>",
+  "reference_available": true,
   "score": 13350,
   "disposition": "keep",
   "view": "将调度逻辑改为按依赖深度分组。",
@@ -340,8 +346,8 @@ attempt、恢复和 ledger commit 都保持可达。因此下一轮始终从 can
 规划，而 Global Evidence 仍保留好、差和失败的全部尝试。一个 candidate 的回滚不会
 改变 peer 工作区，也不会修改 peer 的判断。
 
-`git_worktree` 后端下，各 candidate 共享一个 Git common directory。只有在代码级
-证据确有必要时，candidate 才从自己的工作区渐进式查看 peer Evidence commit：
+`git_worktree` 后端下，各 candidate 共享一个 Git common directory。窄、单文件证据可以
+从自己的工作区渐进式查看 peer Evidence commit：
 
 任务局部 Skill 仍属于 source baseline，而不是共享平面。runtime 自动发现 source Git
 index 中的 `.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；
@@ -355,7 +361,21 @@ git show <commit>:<allowed-file>
 git diff HEAD <commit> -- <allowed-file>
 ```
 
-candidate 不应 checkout、reset 或修改 peer revision。最终 promotion artifact 虽然是
+改动较大或需要浏览完整实现时，candidate 调用 `search_reference_open`，runtime 从 root-owned
+Evidence identity 创建 detached、精确且一次性的 reference tree：
+
+```text
+current workspace/
+ref-c001-verifier-input-003-123e4abcde00/
+ref-c004-verifier-input-008-a23e4abcde00/
+```
+
+worker 通过 `search_reference_list/read/exec` 自主挑选核心内容，完成后
+`search_reference_close`。candidate 不应 checkout、reset 或修改 peer revision，也不访问 peer
+活动 workspace。Git reference 是 soft read-only：runtime 检测污染并丢弃；未来 ThinkThread
+provider 应把相同 API 映射到 snapshot-derived reference child。
+
+最终 promotion artifact 虽然是
 相对于 source 生成的 patch，但这不会改变 Evidence commit 代表完整代码树的语义。
 
 ## 选择、Promotion 与失效

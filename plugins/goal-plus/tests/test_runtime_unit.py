@@ -1029,6 +1029,9 @@ def test_worker_policy_documents_host_launch_contract(tmp_path: Path) -> None:
     assert plan.worker_policy["worker_agent_type"] == "search_candidate_agent"
     assert "worker_mode" not in tasks[0].strategy_metadata
     assert any("当前 agent_session_id" in instruction for instruction in tasks[0].instructions)
+    assert tasks[0].workspace_access.native_cwd == tasks[0].workspace
+    assert tasks[0].workspace_access.bootstrap_required is True
+    assert tasks[0].workspace_access.confinement == "soft_path"
     assert any(
         "search_run_verifier" in instruction for instruction in tasks[0].instructions
     )
@@ -1092,6 +1095,10 @@ def test_worker_instructions_match_enabled_capabilities(
     assert ("search_get_evidence_detail" in instructions) is supplemental
     assert ("success_threshold" in instructions) is threshold
     assert ("否则正常收尾" in instructions) is threshold
+    assert "search_reference_open" in combined_instructions
+    assert "search_reference_list/read/exec" in combined_instructions
+    assert "不要访问或 fetch peer 的真实工作区" in combined_instructions
+    assert "When steps run out the host will ask you" not in combined_instructions
 
 
 def test_promote_requires_search_runtime_selection(tmp_path: Path) -> None:
@@ -1784,6 +1791,9 @@ def test_start_agent_session_returns_pi_rpc_launch_payload(tmp_path: Path) -> No
     assert session.launch["run_id"] == run_id
     assert session.launch["root"] == str(runtime.root_dir)
     assert session.launch["cwd"] == str(task.workspace)
+    assert task.workspace_access.native_cwd == task.workspace
+    assert task.workspace_access.bootstrap_required is False
+    assert task.workspace_access.confinement == "soft_path"
     assert session.launch["session_id"] == session.agent_session_id
     assert session.launch["budget_control"]["mode"] == "pi_rpc_process_watchdog"
     assert session.launch["budget_control"]["max_runtime_seconds"] == 600
@@ -3776,8 +3786,11 @@ def test_legacy_tmp_results_tsv_migrates_and_backfills_missing_iterations(
     legacy_record = load_json(candidate_path)
     legacy_record.pop("results_ledger", None)
     legacy_record.pop("results_ledger_git_head", None)
+    legacy_record.pop("results_ledger_artifact_ref", None)
     for iteration in legacy_record["iterations"]:
         iteration.pop("ledger_git_head", None)
+        iteration.pop("ledger_artifact_ref", None)
+        iteration.pop("workspace_artifact_after_settlement", None)
         iteration.pop("hypothesis", None)
         iteration["summary"] = ""
     write_json(candidate_path, legacy_record)

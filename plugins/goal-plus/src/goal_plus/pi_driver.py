@@ -110,9 +110,9 @@ def _current_process_evidence(
     frozen = runtime._load_frozen_spec(run.frozen_spec_id)
     record = runtime._load_candidate_record(run_id, candidate_id)
     state = runtime._candidate_artifact_state(run, frozen, record)
-    if not state.git_artifact_clean:
+    if not state.artifact_clean:
         return None
-    iteration = runtime._best_git_iteration_record(
+    iteration = runtime._best_artifact_iteration_record(
         record,
         frozen.spec.metric_direction,
     )
@@ -127,6 +127,16 @@ def _current_process_evidence(
         "best_iteration": iteration.iteration,
         "best_git_head": iteration.git_head,
         "workspace_git_head_after_settlement": state.git_head,
+        "best_artifact_ref": (
+            iteration.artifact_ref.model_dump(mode="json")
+            if iteration.artifact_ref is not None
+            else None
+        ),
+        "workspace_artifact_after_settlement": (
+            state.artifact_ref.model_dump(mode="json")
+            if state.artifact_ref is not None
+            else None
+        ),
         "evidence_agent_session_id": iteration.agent_session_id,
     }
 

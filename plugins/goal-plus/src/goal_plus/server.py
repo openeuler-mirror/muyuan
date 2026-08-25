@@ -262,6 +262,85 @@ def create_mcp(
         return tools.search_get_global_evidence(agent_session_id)
 
     @mcp.tool()
+    def search_reference_open(
+        agent_session_id: str,
+        source_candidate_id: str,
+        source_iteration: Annotated[int, Field(ge=1)],
+    ) -> dict[str, Any]:
+        """把一条已结算 Evidence 的精确 artifact 打开为只读 ref-workspace。
+
+        返回稳定 reference_id 和可读 root。Git backend 使用 detached worktree；
+        该目录是一次性参考面，不是 peer 的活动 workspace，也不得编辑。
+        """
+        return tools.search_reference_open(
+            agent_session_id,
+            source_candidate_id,
+            source_iteration,
+        )
+
+    @mcp.tool()
+    def search_reference_list(
+        agent_session_id: str,
+        reference_id: str,
+        path: str = ".",
+        recursive: bool = False,
+        max_entries: Annotated[int, Field(ge=1, le=5000)] = 500,
+    ) -> dict[str, Any]:
+        """列出 ref-workspace 内的目录；路径不能逃逸 reference root。"""
+        return tools.search_reference_list(
+            agent_session_id,
+            reference_id,
+            path,
+            recursive,
+            max_entries,
+        )
+
+    @mcp.tool()
+    def search_reference_read(
+        agent_session_id: str,
+        reference_id: str,
+        path: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        max_bytes: Annotated[int, Field(ge=1, le=262144)] = 65536,
+    ) -> dict[str, Any]:
+        """有界读取 ref-workspace 内一个普通文件。"""
+        return tools.search_reference_read(
+            agent_session_id,
+            reference_id,
+            path,
+            offset,
+            max_bytes,
+        )
+
+    @mcp.tool()
+    def search_reference_exec(
+        agent_session_id: str,
+        reference_id: str,
+        argv: list[str],
+        cwd: str = ".",
+        timeout_seconds: Annotated[int, Field(ge=1, le=60)] = 15,
+    ) -> dict[str, Any]:
+        """在 ref-workspace 内运行有界只读检查命令，不经过 shell。
+
+        仅允许受限的 git、rg、ls/head/tail/wc/stat/file；写操作和路径逃逸会拒绝。
+        """
+        return tools.search_reference_exec(
+            agent_session_id,
+            reference_id,
+            argv,
+            cwd,
+            timeout_seconds,
+        )
+
+    @mcp.tool()
+    def search_reference_close(
+        agent_session_id: str,
+        reference_id: str,
+    ) -> dict[str, Any]:
+        """关闭并清理一个 ref-workspace，同时记录是否曾被污染。"""
+        return tools.search_reference_close(agent_session_id, reference_id)
+
+    @mcp.tool()
     def search_copy_shared_tool(
         agent_session_id: str,
         tool_id: str,

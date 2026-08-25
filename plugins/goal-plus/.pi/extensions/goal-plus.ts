@@ -562,6 +562,51 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 		{ agent_session_id: Type.String() },
 		{ additionalProperties: false },
 	),
+	search_reference_open: Type.Object(
+		{
+			agent_session_id: Type.String(),
+			source_candidate_id: Type.String(),
+			source_iteration: PositiveInteger,
+		},
+		{ additionalProperties: false },
+	),
+	search_reference_list: Type.Object(
+		{
+			agent_session_id: Type.String(),
+			reference_id: Type.String(),
+			path: Type.Optional(Type.String()),
+			recursive: Type.Optional(Type.Boolean()),
+			max_entries: Type.Optional(Type.Integer({ minimum: 1, maximum: 5000 })),
+		},
+		{ additionalProperties: false },
+	),
+	search_reference_read: Type.Object(
+		{
+			agent_session_id: Type.String(),
+			reference_id: Type.String(),
+			path: Type.String(),
+			offset: Type.Optional(Type.Integer({ minimum: 0 })),
+			max_bytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 262144 })),
+		},
+		{ additionalProperties: false },
+	),
+	search_reference_exec: Type.Object(
+		{
+			agent_session_id: Type.String(),
+			reference_id: Type.String(),
+			argv: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 64 }),
+			cwd: Type.Optional(Type.String()),
+			timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 60 })),
+		},
+		{ additionalProperties: false },
+	),
+	search_reference_close: Type.Object(
+		{
+			agent_session_id: Type.String(),
+			reference_id: Type.String(),
+		},
+		{ additionalProperties: false },
+	),
 	search_copy_shared_tool: Type.Object(
 		{
 			agent_session_id: Type.String(),
@@ -709,7 +754,17 @@ const RuntimeToolDescriptions: Record<string, string> = {
 	search_get_agent_context:
 		"读取当前 worker 的紧凑权威 candidate 上下文，包括最近三轮、最佳轮次和 results.tsv 路径。candidate_task.share_out_dir 非空表示已启用 shared_dir，并返回不含路径和源码的 tool_family_catalog；catalog 用 revision_head 指定唯一更新基线，并用 revision_allowed、published_version_count 和 max_published_versions_per_family 暴露容量。toolization_decision 使用 repeated_workflow、domain_construction_or_probe、behavior_or_invariant_checker、reproducer_fixture_or_case_generator、parser_trace_or_comparator、peer_setup_or_feedback_reduction。搜索期测试文件，以及 candidate 自己编写并纳入最终交付的正式回归测试、功能验证函数、复现、fixture/case、差分和不变量检查可以工具化；测试框架、test_ 文件名、属于正式测试或验证同一目标行为都不是 restricted_artifact 理由。发布时仍须把显式选择的测试及依赖复制到 .tmp/tool-drafts/，并确保它能在 peer workspace 运行且不依赖 candidate 私有临时状态。candidate 产品实现、冻结 verifier/runner/grader、隐藏答案/评分逻辑、日志、原始数据、凭据和构建输出仍受限；共享测试不得复制、代理或近似重建隐藏反馈。短小、任务专属、来自 inline code 或只输出退出码都不是排除理由。首次工具发布保持低门槛。no_toolizable_material 表示累计回顾后确实没有工具。family 更新仅在 revision_allowed=true 时引用 revision_head.tool_id：capability_extension 必须新增稳定 capability/coverage key；adoption_fix 必须有同 family 的真实 copy/adoption 事实和具体缺陷；contract_change 必须为有价值的入口、输入、输出或依赖变化新增稳定契约键。不得靠改名或同义键制造增量。revision_allowed=false 时使用 revision_blocker 的准确值；existing_family_sufficient、no_material_tool_delta 和 max_published_versions_reached 是 revision-only 排除项，runtime 会在 catalog 尚无 family 时拒绝；existing_family_sufficient 仅表示 revision_head 已覆盖需求；no_material_tool_delta 仅表示已有 family 没有上述实质增量；draft_not_ready 只用于具体的安全性、完整性、可移植性或 peer 可运行性阻塞。",
 	search_get_global_evidence:
-		"读取当前 run 的窄 Global Evidence 视图。每项包含 verifier attempt commit、硬 score、keep/retain/discard/failure disposition、可能延迟的客观 View、可选 supplemental evaluation 的可用标记，以及启用 shared_dir 后已由 annotator 描述并由 runtime 绑定的 shared_tools/tool_view。任一 View 为 null 时都无需等待，可先依据 Evidence 独立探索。",
+		"读取当前 run 的窄 Global Evidence 视图。每项包含 provider-neutral artifact_ref、兼容 commit、硬 score、keep/retain/discard/failure disposition、reference_available、可能延迟的客观 View、可选 supplemental evaluation 的可用标记，以及启用 shared_dir 后已由 annotator 描述并由 runtime 绑定的 shared_tools/tool_view。任一 View 为 null 时都无需等待，可先依据 Evidence 独立探索。",
+	search_reference_open:
+		"把一条已结算 Evidence 的精确 artifact 打开为一次性只读 ref-workspace。Git backend 返回 detached worktree 的可读 root；它不是 peer 活动 workspace。",
+	search_reference_list:
+		"在 ref-workspace root 内有界列目录。路径逃逸和已污染 reference 会拒绝。",
+	search_reference_read:
+		"在 ref-workspace root 内有界读取普通文件。路径逃逸、symlink 文件和已污染 reference 会拒绝。",
+	search_reference_exec:
+		"在 ref-workspace 内以 argv 方式运行有界只读检查，仅允许受限 git、rg、ls/head/tail/wc/stat/file，不使用 shell。",
+	search_reference_close:
+		"关闭并清理一次性 ref-workspace，同时持久化 clean/contaminated 完整性结果。",
 	search_copy_shared_tool:
 		"将已出现在 Global Evidence 的 Tool View 所对应的精确 shared-dir 快照复制到当前 candidate 的本地临时 inbox，供阅读源码或自主复用；复制不要求调用原工具。只有直接执行、导入或依赖原快照时，才先在当前 workspace 验证入口、依赖、路径假设和输出语义。下一次 worker verifier 会原子消费 receipt；当前 adopted_tools 只证明快照曾复制进本轮上下文，不证明原工具被执行或其代码被保留，也不改变选择、排名或硬分。",
 	search_stage_shared_tool:
@@ -2121,6 +2176,11 @@ export default function (pi: ExtensionAPI) {
 	const workerTools = [
 		"search_get_agent_context",
 		"search_get_global_evidence",
+		"search_reference_open",
+		"search_reference_list",
+		"search_reference_read",
+		"search_reference_exec",
+		"search_reference_close",
 		"search_stage_shared_tool",
 		"search_copy_shared_tool",
 		"search_get_evidence_detail",
