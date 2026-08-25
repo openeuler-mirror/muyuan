@@ -168,6 +168,8 @@ uv run python -m aibench promote --from-set auto-v0 --to-set prod-v0 \
 |------|------|
 | 默认单次生产跑测 | `configs/runs/baseline.yaml` |
 | 多步工具 Agent | `configs/runs/baseline-tool-loop.yaml` |
+| 真实编码 agent（opencode） | `configs/runs/baseline-opencode.yaml` |
+| 真实编码 agent（pi） | `configs/runs/baseline-pi.yaml`（需 `npm i -g @earendil-works/pi-coding-agent`） |
 | 比模型（尽量去掉脚手架） | `configs/agents/bare_model.yaml` + `runs/baseline-bare.yaml` |
 | 对照消融 | `configs/runs/ablation-matrix.yaml` |
 | 换模型 | `configs/models/glm51.yaml` / `qwen37.yaml` 等 |

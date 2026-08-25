@@ -18,14 +18,14 @@ uv sync --extra dev --extra grading
 uv run python -m aibench doctor
 ```
 
-`doctor` 五项全 `ok` 再继续。注意 `doctor` 自己的退出码只由前三项决定，而**这三项里只有 `node` 会在跑测时真的改变结果**：
+`doctor` 六项全 `ok` 再继续。注意 `doctor` 自己的退出码只由前三项决定，而**这三项里只有 `node` 会在跑测时真的改变结果**：
 
 | 检查 | 要求 | 不满足会怎样 |
 |---|---|---|
 | `python` | 必须等于 `.python-version`（**3.13**） | 只让 `doctor` 退 1；`run` 不检查这一项 |
 | `node` | **≥ 22.18**（`.nvmrc` 固定 24） | 低于下限时 `node --test` 发现不了 TypeScript 测试却退出 0。harness 现在会先拦下来把这些 case 记成 `infra_error`（`runner.py`），但**别绕过它** —— 那正是这道门存在的原因。集合里有 **5 条**隐藏测试是 `.ts`，受此影响；另外 2 条 `.mjs` 与 1 条 `.js` 不受影响 |
 | `grading-env` | `configs/grading-env.yaml` 里每个包都能 import | 默认只 `[warn]` 并记进 manifest；用 `--require-grading-env` 才阻断。但包不全时用例会真的判负 |
-| `opencode` / `opencode-sandbox` | 只在用 opencode adapter 时需要 | 仅告警 |
+| `opencode` / `pi` / `opencode-sandbox` | 只在用 opencode 或 pi adapter 时需要（沙箱那项两个都用） | 仅告警 |
 
 **`--extra grading` 不能省。** 只写 `uv sync --extra dev` 会把 grading 的包卸掉，判分随即失败。
 

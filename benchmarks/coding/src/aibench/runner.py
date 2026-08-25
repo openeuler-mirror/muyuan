@@ -584,12 +584,15 @@ def run_benchmark(
         elapsed_wall_s=elapsed_wall_s,
     )
     tables = render_summary_tables_json(summary)
+    # Before the report is rendered, not after: `render_report_md` prints this fingerprint as
+    # the run's case-set identity line, and setting it afterwards published `None` there while
+    # `summary.json` carried the real value.
+    summary["case_set_fingerprint"] = set_fp
     report_md = render_report_md(summary, case_results)
 
     summary["report_path"] = relative_to_repo(run_dir / "report.md")
     summary["raw_results_path"] = relative_to_repo(run_dir / "results.jsonl")
     summary["tables"] = tables
-    summary["case_set_fingerprint"] = set_fp
     summary["case_workers"] = workers
 
     write_json(run_dir / "summary.json", summary)

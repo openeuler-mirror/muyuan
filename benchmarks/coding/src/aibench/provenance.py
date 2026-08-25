@@ -196,7 +196,7 @@ def environment() -> dict[str, str | None]:
     directory in all 148 manifests, and neither is something a reader can act on.
     """
     from aibench.env_config import openai_settings
-    from aibench.preflight import opencode_version
+    from aibench.preflight import opencode_version, pi_version
 
     settings = openai_settings()
     return {
@@ -209,6 +209,7 @@ def environment() -> dict[str, str | None]:
         # The adapter the project recommends for every model comparison, whose version left no
         # trace in any artifact until now.
         "opencode_version": opencode_version(),
+        "pi_version": pi_version(),
         "platform": platform.platform(terse=True),
         "gateway_base_url": settings.get("base_url") or None,
     }
