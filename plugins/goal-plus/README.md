@@ -206,6 +206,7 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 | Host capability comparison | [Agent Host Adapters](docs/agent-host-adapters.md) |
 | Ultra work orchestration | [Ultra Orchestration](docs/ultra.md) |
 | Optional monitor projections | [Monitor Feature Plugins](docs/feature-plugins.md) |
+| Lightweight Search progress UX and rollout plan | [Progress UX](docs/usability-progress.md) |
 | Runtime and host logs | [Debugging](docs/debugging-runtime.md) |
 | Checkout development, plugin refresh, and multi-developer isolation | [Development](docs/development.md) |
 | Specs and runnable examples | [Examples](examples/README.md) |

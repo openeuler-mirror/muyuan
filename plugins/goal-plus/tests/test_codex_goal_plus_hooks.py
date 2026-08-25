@@ -145,6 +145,84 @@ def test_user_prompt_submit_precreates_and_binds_goal(tmp_path: Path) -> None:
     assert "告知后立即继续执行" in context
 
 
+def test_user_prompt_submit_uses_nested_thread_cwd_for_default_root(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    workspace = repository / "examples" / "circle-packing" / "workspace"
+    workspace.mkdir(parents=True)
+    (repository / ".git").mkdir()
+    env = dict(os.environ)
+    for name in (
+        "GOAL_PLUS_PROJECT_ROOT",
+        "GOAL_PLUS_SEARCH_ROOT",
+        "CLAUDE_PROJECT_DIR",
+    ):
+        env.pop(name, None)
+
+    result = subprocess.run(
+        HOOK_CLI,
+        cwd=workspace,
+        input=json.dumps(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-nested",
+                "prompt": "$goal-plus Optimize the current directory",
+            }
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    context = _additional_context(result, "UserPromptSubmit")
+    records = list((workspace / ".gp" / "goal-plus").glob("gp_*/goal.json"))
+    assert len(records) == 1
+    assert records[0].parent.name in context
+    assert not (repository / ".gp").exists()
+
+
+def test_user_prompt_submit_resume_finds_existing_parent_root(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    workspace = repository / "examples" / "circle-packing" / "workspace"
+    workspace.mkdir(parents=True)
+    (repository / ".git").mkdir()
+    runtime = FileGoalPlusRuntime(repository / ".gp")
+    record = runtime.create_goal("Optimize the repository")
+    runtime.activate_session(
+        record.goal_plus_id,
+        {"host": "codex", "session_id": "session-parent"},
+    )
+    env = dict(os.environ)
+    for name in (
+        "GOAL_PLUS_PROJECT_ROOT",
+        "GOAL_PLUS_SEARCH_ROOT",
+        "CLAUDE_PROJECT_DIR",
+    ):
+        env.pop(name, None)
+
+    result = subprocess.run(
+        HOOK_CLI,
+        cwd=workspace,
+        input=json.dumps(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-parent",
+                "prompt": "$goal-plus resume",
+            }
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    context = _additional_context(result, "UserPromptSubmit")
+    assert record.goal_plus_id in context
+    assert not (workspace / ".gp").exists()
+
+
 def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
 

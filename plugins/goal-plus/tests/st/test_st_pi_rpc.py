@@ -22,7 +22,7 @@ from goal_plus.runtime import FileSearchRuntime
 ROOT = Path(__file__).resolve().parents[2]
 K_MODULE = ROOT / "tests" / "st" / "fixtures" / "k_module_problem"
 CIRCLE_PACKING = ROOT / "tests" / "st" / "fixtures" / "circle_packing"
-EDGE_BENCH = ROOT / "examples" / "edgebench-ad-placement" / "workspace"
+EDGE_BENCH = ROOT / "examples" / "edgebench-ad-placement" / "workspace-template"
 
 
 def _event_log_tool_calls(handle: dict, *, min_agent_starts: int = 1) -> list[tuple[str, dict]]:
@@ -135,9 +135,9 @@ def _circle_packing_pi_spec(*, max_runtime_seconds: int = 300) -> SearchSpec:
 
 def _edgebench_pi_spec(*, max_runtime_seconds: int = 180) -> SearchSpec:
     data = json.loads(
-        (ROOT / "examples" / "edgebench_ad_placement_search_spec.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            ROOT / "examples" / "edgebench-ad-placement" / "search-spec.json"
+        ).read_text(encoding="utf-8")
     )
     data["source_path"] = str(EDGE_BENCH)
     data["budget"] = {"max_parallel": 1}

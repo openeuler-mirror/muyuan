@@ -35,6 +35,18 @@ pi -p "/goal-plus inspect this repository"
 
 通过 `pi remove .` 移除 checkout package。用户安装和开发安装暴露相同的 extension，以及同一个面向用户的 `goal-plus` skill。
 
+#### Progress UI 开发预览
+
+extension 可以在不创建 Goal Plus record、Search run、candidate workspace 或模型请求的情况下显示 fixture-backed Search progress。这只是开发预览，不是 benchmark Evidence：
+
+```bash
+GOAL_PLUS_UI_PREVIEW=active \
+  pi --offline --no-session --no-extensions \
+  -e .pi/extensions/goal-plus.ts
+```
+
+在该 session 中使用 `/goal-plus-ui-preview active`、`/goal-plus-ui-preview complete`、`/goal-plus-ui-preview result` 或 `/goal-plus-ui-preview clear` 切换状态。`result` 会用 Circle Packing 的真实样例数值追加一张终态完成卡，不需要运行模型、verifier 或完整 Goal Plus 流程；普通 session 不注册该命令。体验目标和字段语义见 [Lightweight Search Progress UX](usability-progress.md)。
+
 也可以在交互式 Pi 中直接使用：
 
 ```text
@@ -53,7 +65,9 @@ Pi Search 的异步 Evidence annotation 也运行在 Pi 上。run-scoped drainer
 
 main turn 结束时，仍为 active 的 Goal Plus record 会携带完整 raw goal 和 elapsed-time context 继续执行。Pi 只有在 agent 写入终态后才停止；worker watchdog 到期只是一次 dispatch event，不代表 goal 完成。
 
-进入终态时，Pi 写入一条可见的 `Goal Plus stats` custom entry，包含 elapsed time、message、tool call、token usage 和估算 cost。它不是 LLM message，也不会触发另一个 assistant turn。
+进入终态时，Pi extension 会在 `agent_end` 后静默通过只读 monitor 读取持久化结果，再写入唯一一条可展开的 Goal Plus 完成卡。模型不需要为了最终展示再次调用 monitor；最终回复只保留一句交接语，避免自然语言结果、可见 tool JSON 和完成卡三重重复。默认视图只保留四类高价值信息：终态与整个目标耗时、选中结果及相对基线变化、candidate/verifier/promotion 摘要，以及 main+worker 合计用量。整个目标明确给出时间窗口时，卡片会同时显示期限和超出量。
+
+完成卡行间不加入额外纵向 padding。展开完成卡可以查看 main/worker 用量拆分、每个 candidate 的模型/分数/verifier/disposition、Goal Plus ID 和报告路径。若模型因过程判断主动调用 `goal_plus_monitor_snapshot`，Pi 的自定义 tool renderer 默认只显示终态、选中结果、verifier 和 promotion 的单行摘要；展开也只增加 run/candidate/phase 摘要，完整 JSON 仍提供给模型但不铺满 TUI。monitor 不可用时，卡片降级到终态、当前会话耗时和 main 用量；不会从 transcript 猜测缺失数据。它是 custom entry，不是 LLM message，不会触发另一个 assistant turn，也不再额外发送一份重复的统计通知。
 
 Search worker 是由 host-local durable pool 监督的 Pi RPC 进程。每个 wrapper 通过 `goal-plus-pi-worker` 启动前台 `pi --mode rpc` 子进程；native session 位于 `.gp/host-sessions/pi/`，pool 状态位于 `.gp/host-pools/pi/`。进程可以重启，但 candidate workspace 和 native session 提供连续性。
 

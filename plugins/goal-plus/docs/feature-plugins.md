@@ -44,8 +44,8 @@ Codex 通常记录 `spawn_agent`、`wait_agent` 和 `followup_task`；Pi wrapper
 仓库提供一条确定性的协议对比：
 
 ```bash
-python examples/orchestration-monitor/compare_hosts.py \
+python scripts/compare_orchestration_hosts.py \
   .tmp/orchestration-monitor-comparison
 ```
 
-该示例验证持久化协议，不是 live-model quality benchmark。
+该诊断脚本验证持久化协议，不是 live-model quality benchmark。

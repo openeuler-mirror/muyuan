@@ -2,7 +2,7 @@
 
 Self-contained reproduction of SWE-bench instance **`sympy__sympy-20212`** (sympy
 issue [#19572](https://github.com/sympy/sympy/issues/19572)). Used by
-`examples/swe_bench_20212_search_spec.json`.
+`search-spec.json` in this fixture directory.
 
 This fixture is intentionally dependency-free: only the Python standard library
 is required. It does not import sympy and does not need docker.
@@ -76,6 +76,6 @@ evaluator — `combined_score` should jump to `1.0`, with
 
 ## Run via the MCP runtime
 
-Use `examples/swe_bench_20212_search_spec.json` as the SearchSpec. The
+Use this directory's `search-spec.json` as the SearchSpec. The
 `process_verifiers` block invokes the local evaluator command directly, so no
 container or external service is required.

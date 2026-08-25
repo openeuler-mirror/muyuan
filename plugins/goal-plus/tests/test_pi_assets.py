@@ -148,6 +148,10 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "加入队列" in text
     assert "continuation prompt" in text
     assert "`goal_plus_record_triage` 前不要读取或审计目标文件" in text
+    assert "不要为了最终展示再显式调用一次 `goal_plus_monitor_snapshot`" in text
+    assert "Goal Plus 已结算，结果见下方完成卡。" in text
+    assert "不要另写 “Goal Plus 统计”段落" in normalized
+    assert "Pi extension 会在 `agent_end` 后" in normalized
 
 
 def test_pi_prompt_and_extension_defer_report_until_terminal_state() -> None:
@@ -162,6 +166,8 @@ def test_pi_prompt_and_extension_defer_report_until_terminal_state() -> None:
     assert "绝不能调用 `search_report`" in prompt
     assert "Goal Plus 记录达到终态后" in prompt
     assert "调用且只调用一次 `search_report`" in prompt
+    assert "不在自然语言回复中重复报告路径" in prompt
+    assert "可展开完成卡展示" in prompt
     assert "active 的已链接 Goal Plus 记录会被拒绝" in extension
 
 
@@ -394,7 +400,17 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "appendEntry<GoalPlusStatsEntry>" in text
     assert 'customType: "goal-plus-stats"' not in text
     assert "assistantMessages" in text
-    assert "estimated_cost" in text
+    assert "buildPiCompletionPresentation" in text
+    assert "goal_plus_monitor_snapshot" in text
+    assert "collapsedLineCount" in text
+    assert "candidateCompletionsFromMonitor" in text
+    assert "monitorSnapshotPresentation" in text
+    assert 'renderCall: name === "goal_plus_monitor_snapshot"' in text
+    assert 'renderResult: name === "goal_plus_monitor_snapshot"' in text
+    assert "new Box(1, 0" in text
+    assert "new Text(rendered, 0, 0)" in text
+    assert "clearPiProgress(ctx);\n\t\t\tappendGoalStats" in text
+    assert "ctx.ui.notify(statsMessage" not in text
     assert "sendUserMessage" in text
     assert "GOAL_PLUS_SOURCE_PATH" in text
     assert "sys.path.insert" in text
@@ -441,6 +457,39 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "最终检查审查员只能进行只读操作" in text
     assert 'verdict: "interrupted"' in text
     assert "timed out before submitting a verdict" in text
+
+
+def test_pi_extension_has_gated_progress_ui_preview() -> None:
+    extension = (ROOT / ".pi" / "extensions" / "goal-plus.ts").read_text(
+        encoding="utf-8"
+    )
+    progress = (
+        ROOT / ".pi" / "extensions" / "goal-plus-progress.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "GOAL_PLUS_UI_PREVIEW" in extension
+    assert 'pi.registerCommand("goal-plus-ui-preview"' in extension
+    assert "PI_COMPLETION_PREVIEW" in extension
+    assert 'mode === "result"' in extension
+    assert "appendGoalCompletionPreview" in extension
+    assert "ctx.ui.setStatus" in extension
+    assert "ctx.ui.setWidget" in extension
+    assert "PI_PROGRESS_PREVIEWS[progressPreviewMode]" in extension
+    assert "goal_plus_create" not in progress
+    assert "goal_plus_monitor_snapshot" not in progress
+    assert "SEARCH ACTIVE" in progress
+    assert "SEARCH COMPLETE" in progress
+    assert 'metricName: "sum_radii"' in progress
+    assert "147_734" not in progress
+    assert "verifierRunsTotal" in progress
+    assert "selectedCandidateId" in progress
+    assert "promotionPassed" in progress
+    assert "continue candidate loops" in progress
+    assert "buildPiCompletionPresentation" in progress
+    assert "PI_COMPLETION_PREVIEW" in progress
+    assert "LATE +" in progress
+    assert 'formatUsage("Usage ", totalUsage)' in progress
+    assert 'lines.push("Lanes")' in progress
 
 
 def test_pi_extension_has_precise_tool_schemas_and_error_classification() -> None:
@@ -646,8 +695,10 @@ def test_pi_docs_record_runner_logs_and_native_stop_gate() -> None:
     assert "只含元数据的 event log" in combined
     assert "GOAL_PLUS_PI_RAW_LOG=1" in combined
     assert "原生 turn-level stop gate" in combined
-    assert "Goal Plus stats" in combined
+    assert "Goal Plus 完成卡" in combined
     assert "custom entry" in combined
+    assert "main+worker 合计用量" in combined
+    assert "不再额外发送一份重复的统计通知" in combined
     assert "不会触发另一个 assistant turn" in combined
     assert "不是 host process 级 Stop hook" in combined
 

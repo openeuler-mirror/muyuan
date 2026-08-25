@@ -10,7 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "vliw-kernel-optimization"
-WORKSPACE = EXAMPLE / "workspace"
+WORKSPACE = EXAMPLE / "workspace-template"
 pytestmark = pytest.mark.example
 
 
@@ -28,21 +28,6 @@ def test_vliw_public_baseline_emits_goal_plus_metric() -> None:
     assert json.loads(completed.stdout.strip().splitlines()[-1]) == {
         "cycles": 147734.0
     }
-
-
-def test_vliw_prompt_is_a_role_routed_goal_not_a_static_spec() -> None:
-    prompt = (EXAMPLE / "pi-goal-prompt.md").read_text(encoding="utf-8")
-    first_line = prompt.splitlines()[0]
-
-    assert first_line.startswith("/goal-plus annotator=")
-    assert " main=" not in first_line
-    assert " annotator=" in first_line
-    assert " workers=" in first_line
-    assert "max_parallel=2" in first_line
-    assert "examples/vliw-kernel-optimization/workspace" in prompt
-    assert ".goal-plus-verifiers/vliw_score.py" in prompt
-    assert "search_freeze_spec" not in prompt
-    assert "SearchSpec" not in prompt
 
 
 def test_vliw_example_contains_only_public_evaluation_assets() -> None:

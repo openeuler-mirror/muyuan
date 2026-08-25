@@ -3,11 +3,28 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type TSchema, Type } from "typebox";
+import {
+	buildPiCompletionPresentation,
+	buildPiProgressPresentation,
+	PI_COMPLETION_PREVIEW,
+	PI_PROGRESS_PREVIEWS,
+	type GoalPlusCandidateCompletion,
+	type GoalPlusCompletionView,
+	type GoalPlusProgressView,
+	type GoalPlusUsageSummary,
+} from "./goal-plus-progress.ts";
 
 const role = process.env.GOAL_PLUS_PI_ROLE || "main";
 const runtimeRoot = process.env.GOAL_PLUS_ROOT || ".gp";
 const sourcePath = process.env.GOAL_PLUS_SOURCE_PATH;
 const workerContinueUntilMs = Number(process.env.GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS || "0");
+const progressPreviewMode = (() => {
+	const value = process.env.GOAL_PLUS_UI_PREVIEW?.trim().toLowerCase();
+	if (!value) return undefined;
+	if (value === "1" || value === "running") return "active";
+	if (value === "active" || value === "complete") return value;
+	return undefined;
+})();
 const modeArgIndex = process.argv.indexOf("--mode");
 const isPrintLikeInvocation =
 	process.argv.includes("-p") ||
@@ -16,6 +33,8 @@ const isPrintLikeInvocation =
 	(modeArgIndex >= 0 && process.argv[modeArgIndex + 1] === "json");
 const STATE_ENTRY_TYPE = "goal-plus-native-state";
 const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
+const GOAL_PLUS_PROGRESS_STATUS_KEY = "goal-plus-progress";
+const GOAL_PLUS_PROGRESS_WIDGET_KEY = "goal-plus-progress";
 let workspaceRoot: string | undefined;
 let sawContext = false;
 let activeGoalPlusId = process.env.GOAL_PLUS_ID;
@@ -793,6 +812,7 @@ interface GoalPlusStatsEntry {
 	endedAt: string;
 	usage: GoalPlusUsageTotals;
 	message: string;
+	collapsedLineCount: number;
 }
 
 interface CommandInvocation {
@@ -811,6 +831,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function numberFrom(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function optionalNumberFrom(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function commandContextFrom(ctx: ExtensionContext): CommandRuntimeContext {
@@ -983,18 +1007,6 @@ function isTerminalStatus(status: string | undefined): boolean {
 	return status === "blocked" || status === "complete" || status === "abandoned";
 }
 
-function formatDuration(ms: number): string {
-	const seconds = Math.max(0, Math.floor(ms / 1000));
-	const hours = Math.floor(seconds / 3600);
-	const minutes = Math.floor((seconds % 3600) / 60);
-	const remainingSeconds = seconds % 60;
-	const parts: string[] = [];
-	if (hours > 0) parts.push(`${hours}h`);
-	if (minutes > 0 || hours > 0) parts.push(`${minutes}m`);
-	parts.push(`${remainingSeconds}s`);
-	return parts.join(" ");
-}
-
 function countToolCalls(content: unknown): number {
 	if (!Array.isArray(content)) return 0;
 	return content.filter((item) => isRecord(item) && item.type === "toolCall").length;
@@ -1028,26 +1040,155 @@ function collectGoalUsageFromEntries(entries: unknown[]): GoalPlusUsageTotals {
 	return totals;
 }
 
-function buildGoalStatsMessage(status: GoalPlusStatusPayload, usage: GoalPlusUsageTotals): string {
-	const startedAtMs = activeGoalStartedAt ? Date.parse(activeGoalStartedAt) : NaN;
-	const elapsedMs = Number.isFinite(startedAtMs) ? Date.now() - startedAtMs : 0;
-	const totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-	return [
-			"Goal Plus 统计",
-		`goal_plus_id: ${status.goal_plus_id ?? activeGoalPlusId ?? "unknown"}`,
-		`status: ${status.status ?? "unknown"}`,
-		`search_tasks: ${status.search_tasks_total ?? status.search_tasks?.length ?? 0}`,
-		`elapsed: ${formatDuration(elapsedMs)}`,
-		`assistant_messages: ${usage.assistantMessages}`,
-		`tool_calls: ${usage.toolCalls}`,
-		`tokens: input=${usage.input.toLocaleString()} output=${usage.output.toLocaleString()} cache_read=${usage.cacheRead.toLocaleString()} cache_write=${usage.cacheWrite.toLocaleString()} total=${totalTokens.toLocaleString()}`,
-		`estimated_cost: $${usage.cost.toFixed(4)}`,
-	].join("\n");
+function stringFrom(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function appendGoalStats(pi: ExtensionAPI, status: GoalPlusStatusPayload, usage: GoalPlusUsageTotals): string {
+function wholeGoalDeadlineSeconds(rawGoal: string | undefined): number | undefined {
+	if (!rawGoal) return undefined;
+	const english = rawGoal.match(/\bwithin\s+(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?)\b/i);
+	if (english) {
+		const value = Number(english[1]);
+		const unit = english[2].toLowerCase();
+		return value * (unit.startsWith("hour") ? 3600 : unit.startsWith("minute") ? 60 : 1);
+	}
+	const chinese = rawGoal.match(/(\d+(?:\.\d+)?)\s*(秒|分钟|小时)(?:内|以内)/);
+	if (!chinese) return undefined;
+	const value = Number(chinese[1]);
+	return value * (chinese[2] === "小时" ? 3600 : chinese[2] === "分钟" ? 60 : 1);
+}
+
+function monitorSearchTask(snapshot: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+	if (!snapshot || !Array.isArray(snapshot.search_tasks)) return undefined;
+	const tasks = snapshot.search_tasks.filter(isRecord);
+	const goal = isRecord(snapshot.goal_plus) ? snapshot.goal_plus : undefined;
+	const currentRunId = stringFrom(goal?.current_search_run_id);
+	return tasks.find((task) => stringFrom(task.run_id) === currentRunId)
+		?? tasks.find((task) => task.is_current === true)
+		?? tasks.at(-1);
+}
+
+function goalElapsedSeconds(snapshot: Record<string, unknown> | undefined): number {
+	const goal = snapshot && isRecord(snapshot.goal_plus) ? snapshot.goal_plus : undefined;
+	const createdAt = stringFrom(goal?.created_at);
+	const updatedAt = stringFrom(goal?.updated_at);
+	const createdAtMs = createdAt ? Date.parse(createdAt) : NaN;
+	const updatedAtMs = updatedAt ? Date.parse(updatedAt) : NaN;
+	if (Number.isFinite(createdAtMs) && Number.isFinite(updatedAtMs)) {
+		return Math.max(0, (updatedAtMs - createdAtMs) / 1000);
+	}
+	const startedAtMs = activeGoalStartedAt ? Date.parse(activeGoalStartedAt) : NaN;
+	return Number.isFinite(startedAtMs) ? Math.max(0, (Date.now() - startedAtMs) / 1000) : 0;
+}
+
+function usageSummaryFromMonitor(value: unknown): GoalPlusUsageSummary | undefined {
+	if (!isRecord(value)) return undefined;
+	const processedTokens = optionalNumberFrom(value.processed_tokens)
+		?? numberFrom(value.input_tokens)
+			+ numberFrom(value.cached_input_tokens)
+			+ numberFrom(value.cache_write_tokens)
+			+ numberFrom(value.output_tokens);
+	return {
+		assistantMessages: numberFrom(value.assistant_messages),
+		toolCalls: numberFrom(value.tool_calls),
+		processedTokens,
+		costUsd: numberFrom(value.cost_usd),
+	};
+}
+
+function candidateCompletionsFromMonitor(
+	snapshot: Record<string, unknown> | undefined,
+	selectedCandidateId: string | undefined,
+): GoalPlusCandidateCompletion[] {
+	if (!snapshot || !isRecord(snapshot.candidates)) return [];
+	const modelByCandidate = new Map<string, string>();
+	if (Array.isArray(snapshot.subagents)) {
+		for (const subagent of snapshot.subagents.filter(isRecord)) {
+			const candidateId = stringFrom(subagent.candidate_id);
+			const observability = isRecord(subagent.observability) ? subagent.observability : undefined;
+			const execution = observability && isRecord(observability.execution) ? observability.execution : undefined;
+			const model = stringFrom(execution?.model);
+			if (candidateId && model) modelByCandidate.set(candidateId, model);
+		}
+	}
+	return Object.values(snapshot.candidates)
+		.filter(isRecord)
+		.map((candidate) => {
+			const candidateId = stringFrom(candidate.candidate_id) ?? "unknown";
+			return {
+				candidateId,
+				model: modelByCandidate.get(candidateId),
+				score: optionalNumberFrom(candidate.best_iteration_score) ?? optionalNumberFrom(candidate.last_score),
+				verifierCount: numberFrom(candidate.verifier_count),
+				disposition: stringFrom(candidate.last_disposition),
+				selected: candidateId === selectedCandidateId,
+			};
+		})
+		.sort((left, right) => left.candidateId.localeCompare(right.candidateId));
+}
+
+function buildGoalCompletionView(
+	status: GoalPlusStatusPayload,
+	usage: GoalPlusUsageTotals,
+	snapshot: Record<string, unknown> | undefined,
+): GoalPlusCompletionView {
+	const goal = snapshot && isRecord(snapshot.goal_plus) ? snapshot.goal_plus : undefined;
+	const task = monitorSearchTask(snapshot);
+	const statistics = task && isRecord(task.statistics) ? task.statistics : undefined;
+	const scores = statistics && isRecord(statistics.scores) ? statistics.scores : undefined;
+	const selection = statistics && isRecord(statistics.selection) ? statistics.selection : undefined;
+	const workerUsage = usageSummaryFromMonitor(statistics?.usage);
+	const linked = goal && isRecord(goal.linked_search)
+		? goal.linked_search
+		: isRecord(status.linked_search)
+			? status.linked_search
+			: undefined;
+	const rawGoal = stringFrom(goal?.raw_goal) ?? status.raw_goal;
+	const promotionVerified = typeof selection?.promotion_verified === "boolean"
+		? selection.promotion_verified
+		: stringFrom(task?.state) === "promoted"
+			? true
+			: undefined;
+	const selectedCandidateId = stringFrom(task?.selected_candidate_id) ?? stringFrom(linked?.selected_candidate_id);
+	return {
+		status: stringFrom(goal?.status) ?? status.status ?? "unknown",
+		elapsedSeconds: goalElapsedSeconds(snapshot),
+		deadlineSeconds: wholeGoalDeadlineSeconds(rawGoal),
+		goalPlusId: stringFrom(goal?.goal_plus_id) ?? status.goal_plus_id ?? activeGoalPlusId,
+		searchTasksTotal: optionalNumberFrom(goal?.search_tasks_total)
+			?? status.search_tasks_total
+			?? status.search_tasks?.length
+			?? 0,
+		candidatesTotal: optionalNumberFrom(task?.candidates_total),
+		verifierRunsTotal: optionalNumberFrom(task?.verifier_runs_total),
+		selectedCandidateId,
+		metricName: stringFrom(scores?.metric_name),
+		metricDirection: scores?.direction === "minimize" ? "minimize" : scores?.direction === "maximize" ? "maximize" : undefined,
+		baselineScore: optionalNumberFrom(scores?.baseline),
+		selectedScore: optionalNumberFrom(scores?.selected) ?? optionalNumberFrom(scores?.best),
+		promotionPassed: promotionVerified,
+		reportPath: stringFrom(linked?.report_path) ?? stringFrom(task?.report_path),
+		htmlReportPath: stringFrom(linked?.html_report_path) ?? stringFrom(task?.html_report_path),
+		mainUsage: {
+			assistantMessages: usage.assistantMessages,
+			toolCalls: usage.toolCalls,
+			processedTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+			costUsd: usage.cost,
+		},
+		workerUsage,
+		candidates: candidateCompletionsFromMonitor(snapshot, selectedCandidateId),
+	};
+}
+
+function appendGoalStats(
+	pi: ExtensionAPI,
+	status: GoalPlusStatusPayload,
+	usage: GoalPlusUsageTotals,
+	snapshot?: Record<string, unknown>,
+): string {
 	const endedAt = new Date().toISOString();
-	const message = buildGoalStatsMessage(status, usage);
+	const presentation = buildPiCompletionPresentation(buildGoalCompletionView(status, usage, snapshot));
+	const message = presentation.lines.join("\n");
 	pi.appendEntry<GoalPlusStatsEntry>(GOAL_PLUS_STATS_ENTRY_TYPE, {
 		goal_plus_id: status.goal_plus_id ?? activeGoalPlusId,
 		status: status.status,
@@ -1055,8 +1196,82 @@ function appendGoalStats(pi: ExtensionAPI, status: GoalPlusStatusPayload, usage:
 		endedAt,
 		usage,
 		message,
+		collapsedLineCount: presentation.collapsedLineCount,
 	});
 	return message;
+}
+
+function appendGoalCompletionPreview(pi: ExtensionAPI): void {
+	const presentation = buildPiCompletionPresentation(PI_COMPLETION_PREVIEW);
+	pi.appendEntry<GoalPlusStatsEntry>(GOAL_PLUS_STATS_ENTRY_TYPE, {
+		goal_plus_id: PI_COMPLETION_PREVIEW.goalPlusId,
+		status: PI_COMPLETION_PREVIEW.status,
+		startedAt: undefined,
+		endedAt: new Date().toISOString(),
+		usage: {
+			assistantMessages: PI_COMPLETION_PREVIEW.mainUsage.assistantMessages,
+			toolCalls: PI_COMPLETION_PREVIEW.mainUsage.toolCalls,
+			input: 0,
+			output: PI_COMPLETION_PREVIEW.mainUsage.processedTokens,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: PI_COMPLETION_PREVIEW.mainUsage.costUsd,
+		},
+		message: presentation.lines.join("\n"),
+		collapsedLineCount: presentation.collapsedLineCount,
+	});
+}
+
+function monitorSnapshotPresentation(value: unknown): { status: string; lines: string[] } | undefined {
+	if (!isRecord(value) || value.ok === false) return undefined;
+	const goal = isRecord(value.goal_plus) ? value.goal_plus : undefined;
+	const task = monitorSearchTask(value);
+	const statistics = task && isRecord(task.statistics) ? task.statistics : undefined;
+	const scores = statistics && isRecord(statistics.scores) ? statistics.scores : undefined;
+	const selection = statistics && isRecord(statistics.selection) ? statistics.selection : undefined;
+	const status = stringFrom(goal?.status) ?? stringFrom(task?.state) ?? "snapshot";
+	const candidateId = stringFrom(task?.selected_candidate_id)
+		?? stringFrom(task?.best_candidate_id);
+	const score = optionalNumberFrom(task?.selected_score)
+		?? optionalNumberFrom(task?.best_score)
+		?? optionalNumberFrom(scores?.selected)
+		?? optionalNumberFrom(scores?.best);
+	const verifierRuns = optionalNumberFrom(task?.verifier_runs_total);
+	const promotionVerified = selection?.promotion_verified === true || stringFrom(task?.state) === "promoted";
+	const headline = [
+		status,
+		candidateId ? `${candidateId}${score === undefined ? "" : ` ${score.toLocaleString("en-US", { maximumFractionDigits: 4 })}`}` : undefined,
+		verifierRuns === undefined ? undefined : `${verifierRuns} verify`,
+		promotionVerified ? "promoted" : undefined,
+	].filter(Boolean).join(" · ");
+	const runId = stringFrom(task?.run_id);
+	const candidatesTotal = optionalNumberFrom(task?.candidates_total);
+	const candidatesEvaluated = optionalNumberFrom(task?.candidates_evaluated);
+	const detail = [
+		runId,
+		candidatesTotal === undefined
+			? undefined
+			: `${candidatesEvaluated ?? 0}/${candidatesTotal} candidates`,
+		stringFrom(goal?.phase),
+	].filter(Boolean).join(" · ");
+	return { status, lines: [headline, ...(detail ? [detail] : [])] };
+}
+
+function showPiProgress(ctx: ExtensionContext, view: GoalPlusProgressView): void {
+	const presentation = buildPiProgressPresentation(view);
+	const lines = presentation.lines.map((line, index) => {
+		if (index === 0) return ctx.ui.theme.fg(view.state === "complete" ? "success" : "accent", line);
+		if (line.startsWith("Next  ")) return ctx.ui.theme.fg("muted", line);
+		return line;
+	});
+	const statusColor = view.state === "complete" ? "success" : view.state === "blocked" ? "error" : "accent";
+	ctx.ui.setStatus(GOAL_PLUS_PROGRESS_STATUS_KEY, ctx.ui.theme.fg(statusColor, presentation.status));
+	ctx.ui.setWidget(GOAL_PLUS_PROGRESS_WIDGET_KEY, lines);
+}
+
+function clearPiProgress(ctx: ExtensionContext): void {
+	ctx.ui.setStatus(GOAL_PLUS_PROGRESS_STATUS_KEY, undefined);
+	ctx.ui.setWidget(GOAL_PLUS_PROGRESS_WIDGET_KEY, undefined);
 }
 
 function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
@@ -1441,6 +1656,35 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string) {
 			}
 			return result;
 		},
+		renderCall: name === "goal_plus_monitor_snapshot"
+			? (args, theme) => {
+				const input = isRecord(args) ? args : {};
+				const identity = stringFrom(input.goal_plus_id) ?? stringFrom(input.run_id);
+				const label = theme.fg("toolTitle", theme.bold("Goal Plus snapshot"));
+				return new Text(`${label}${identity ? theme.fg("dim", ` · ${identity}`) : ""}`, 0, 0);
+			}
+			: undefined,
+		renderResult: name === "goal_plus_monitor_snapshot"
+			? (result, { expanded, isPartial }, theme) => {
+				if (isPartial) return new Text(theme.fg("warning", "Reading snapshot..."), 0, 0);
+				const presentation = monitorSnapshotPresentation(result.details);
+				if (!presentation) {
+					const content = result.content[0];
+					const fallback = content?.type === "text" ? content.text.split("\n")[0] : "Snapshot unavailable";
+					return new Text(theme.fg("error", fallback), 0, 0);
+				}
+				const visible = expanded ? presentation.lines : presentation.lines.slice(0, 1);
+				const firstColor: "success" | "error" | "accent" = presentation.status === "complete"
+					? "success"
+					: presentation.status === "blocked" || presentation.status === "abandoned"
+						? "error"
+						: "accent";
+				const rendered = visible.map((line, index) =>
+					index === 0 ? theme.fg(firstColor, `✓ ${line}`) : theme.fg("dim", line)
+				);
+				return new Text(rendered.join("\n"), 0, 0);
+			}
+			: undefined,
 	});
 }
 
@@ -1760,11 +2004,26 @@ export default function (pi: ExtensionAPI) {
 		pi.registerEntryRenderer<GoalPlusStatsEntry>(GOAL_PLUS_STATS_ENTRY_TYPE, (entry, { expanded }, theme) => {
 			const data = entry.data;
 			const lines = (data?.message ?? "Goal Plus stats").split("\n");
-			const visibleLines = expanded ? lines : lines.slice(0, 2);
-			const box = new Box(1, visibleLines.length, (text) => theme.bg("customMessageBg", text));
+			const collapsedLineCount = Math.max(1, data?.collapsedLineCount ?? 2);
+			const visibleLines = expanded ? lines : lines.slice(0, collapsedLineCount);
+			const box = new Box(1, 0, (text) => theme.bg("customMessageBg", text));
 			visibleLines.forEach((line, index) => {
-				const rendered = index === 0 ? `${theme.fg("accent", "[goal-plus]")} ${line}` : theme.fg("dim", line);
-				box.addChild(new Text(rendered, 0, index));
+				const lateMarker = " · LATE ";
+				const lateIndex = line.indexOf(lateMarker);
+				const baseLine = lateIndex >= 0 ? line.slice(0, lateIndex) : line;
+				const lateLine = lateIndex >= 0 ? line.slice(lateIndex) : "";
+				const statusLine = data?.status === "complete"
+					? theme.fg("success", baseLine)
+					: data?.status === "blocked"
+						? theme.fg("error", baseLine)
+						: theme.fg("accent", baseLine);
+				const renderedStatusLine = `${statusLine}${lateLine ? theme.fg("error", lateLine) : ""}`;
+				const rendered = index === 0
+					? `${theme.fg("accent", "[goal-plus]")} ${renderedStatusLine}`
+					: index < collapsedLineCount
+						? line
+						: theme.fg("dim", line);
+				box.addChild(new Text(rendered, 0, 0));
 			});
 			return box;
 		});
@@ -1799,6 +2058,29 @@ export default function (pi: ExtensionAPI) {
 				if (prompt) sendUserMessage(pi, prompt, !ctx.isIdle());
 			},
 		});
+		if (role === "main" && progressPreviewMode) {
+			pi.registerCommand("goal-plus-ui-preview", {
+				description: "预览 Goal Plus 进度或完成 UI，不创建 Goal Plus/Search run",
+				handler: async (args, ctx) => {
+					const mode = args.trim().toLowerCase() || "active";
+					if (mode === "clear") {
+						clearPiProgress(ctx);
+						ctx.ui.notify("Goal Plus progress preview cleared.", "info");
+						return;
+					}
+					if (mode === "result") {
+						clearPiProgress(ctx);
+						appendGoalCompletionPreview(pi);
+						return;
+					}
+					if (mode !== "active" && mode !== "complete") {
+						ctx.ui.notify("Usage: /goal-plus-ui-preview [active|complete|result|clear]", "error");
+						return;
+					}
+					showPiProgress(ctx, PI_PROGRESS_PREVIEWS[mode]);
+				},
+			});
+		}
 	}
 
 	const mainTools = [
@@ -1883,6 +2165,10 @@ export default function (pi: ExtensionAPI) {
 		return workspaceGuard(event) || (await mainGate(event, ctx));
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		if (role === "main" && progressPreviewMode) {
+			showPiProgress(ctx, PI_PROGRESS_PREVIEWS[progressPreviewMode]);
+			return;
+		}
 		restoreGoalState(ctx);
 		if (role !== "main" || !activeGoalPlusId) return;
 		const commandCtx = commandContextFrom(ctx);
@@ -1976,8 +2262,18 @@ export default function (pi: ExtensionAPI) {
 		}
 		const status = await refreshActiveGoal(pi, commandCtx, persist);
 		if (isTerminalStatus(status?.status)) {
-			const statsMessage = appendGoalStats(pi, status, usage);
-			ctx.ui.notify(statsMessage, "info");
+			let snapshot: Record<string, unknown> | undefined;
+			try {
+				const monitor = await runJsonCli(pi, commandCtx, "goal_plus_monitor_snapshot", {
+					goal_plus_id: status.goal_plus_id ?? activeGoalPlusId,
+					run_id: status.current_search_run_id ?? undefined,
+				});
+				if (isRecord(monitor.details) && monitor.details.ok !== false) snapshot = monitor.details;
+			} catch {
+				// Terminal statistics remain available even when the read-only monitor is unavailable.
+			}
+			clearPiProgress(ctx);
+			appendGoalStats(pi, status, usage, snapshot);
 			activeGoalPlusId = undefined;
 			activeGoalStartedAt = undefined;
 			activeGoalStartEntryCount = 0;

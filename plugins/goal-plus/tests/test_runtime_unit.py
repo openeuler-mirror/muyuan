@@ -732,7 +732,7 @@ def test_freeze_spec_normalizes_verifier_cwd_equal_to_source_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "repo"
-    project = repo / "examples" / "model-optimize" / "torch-cpu-target"
+    project = repo / "examples" / "model-optimize" / "workspace-template"
     project.mkdir(parents=True)
     (project / "initial_program.py").write_text("VALUE = 0\n", encoding="utf-8")
     (project / "evaluator.py").write_text(
@@ -742,14 +742,16 @@ def test_freeze_spec_normalizes_verifier_cwd_equal_to_source_path(
     monkeypatch.chdir(repo)
 
     spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
-    spec_data["source_path"] = "examples/model-optimize/torch-cpu-target"
-    spec_data["process_verifiers"][0]["cwd"] = "examples/model-optimize/torch-cpu-target"
+    spec_data["source_path"] = "examples/model-optimize/workspace-template"
+    spec_data["process_verifiers"][0]["cwd"] = (
+        "examples/model-optimize/workspace-template"
+    )
     spec_data["promotion_verifiers"] = [
         {
             "name": "promotion",
             "role": "promotion_gate",
             "command": ["python", "evaluator.py"],
-            "cwd": "examples/model-optimize/torch-cpu-target",
+            "cwd": "examples/model-optimize/workspace-template",
         }
     ]
     runtime = FileSearchRuntime(tmp_path / ".search")
