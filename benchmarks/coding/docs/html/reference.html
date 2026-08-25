@@ -283,7 +283,7 @@
 <tr><td><code>ablation-two-models-3reps_20260810.json</code></td><td>两模型 × 3 轮重复</td><td>tool_loop</td><td>同上</td></tr>
 <tr><td><code>bare-model-two-models_20260810.json</code></td><td>裸模型 × 2 模型 × 3 轮</td><td>bare_model</td><td>逐例 <code>rows</code> 列表</td></tr>
 <tr><td><code>clean2026-bare-2models-3reps_20260814.json</code></td><td><strong>随仓库分发的 <code>_clean2026</code> 45 条上的基线</strong>：GLM-5 与 GLM-5.2 各 3 轮</td><td>bare_model</td><td>逐例 <code>per_case_passed</code> 布尔矩阵；见 <code>docs/BASELINE.md</code></td></tr>
-<tr><td><code>clean2026-pi-glm52-2runs_20260825.json</code></td><td>同一 45 条上 <strong>pi 适配器的基线</strong>：pi 0.84.3 + GLM-5.2，<strong>同配置两轮</strong>（35.6% / 31.1%）</td><td>pi</td><td>逐运行汇总 + 45 行 <code>per_case</code> 纯数字（每行两轮，含 test_pass_ratio / turns / sandboxed / 越界计数）；见 <code>reports/pi-glm52-clean2026-baseline-20260825.md</code>。<strong>不能与上一行并列</strong>，理由见该报告 §7.4</td></tr>
+<tr><td><code>clean2026-pi-glm52-3reps_20260825.json</code></td><td>同一 45 条上 <strong>pi 适配器的基线</strong>：pi 0.84.3 + GLM-5.2，<strong>同仪器三轮重复</strong>（35.6% / 31.1% / 28.9%，极差 6.7pp）</td><td>pi</td><td>逐运行汇总 + 45 行 <code>per_case</code> 纯数字（每行四轮，含 test_pass_ratio / turns / sandboxed / 越界计数）；见 <code>reports/pi-glm52-clean2026-baseline-20260825.md</code>。<strong>不能与上一行并列</strong>，理由见该报告 §7.4</td></tr>
 </tbody>
 </table></div>
 

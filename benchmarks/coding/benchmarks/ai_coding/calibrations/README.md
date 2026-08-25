@@ -28,12 +28,12 @@
 | `reverse-v1-hidden1_3anchor_20260808.json` | 反向构造 · 保留 1 条可见 | 同上 | 31 |
 | **`reverse-v2-mixed_3anchor_20260809.json`** | **最终配置 · 仅易档隐藏** | 同上 | 31 |
 | `clean2026-bare-2models-3reps_20260814.json` | `_clean2026`（随仓库分发） | 裸模型 2 模型 × 3 轮 | 45 |
-| `clean2026-pi-glm52-2runs_20260825.json` | `_clean2026`（随仓库分发） | **pi 0.84.3 + GLM-5.2，两轮** | 45 |
+| `clean2026-pi-glm52-3reps_20260825.json` | `_clean2026`（随仓库分发） | **pi 0.84.3 + GLM-5.2，三轮重复（+1 旁证）** | 45 |
 
 五份 `reverse-v1*` 与 `reverse-v2-mixed` 是同一批 31 条用例、同一面板的配对测量，仅「测试可见性」一个变量不同，可直接对照。
 `clean2026-bare-2models-3reps` 那一行是另一回事：另一套协议，见 [`docs/BASELINE.md`](../../../docs/BASELINE.md)。
 
-**最后一行也是另一回事**：`pi` 适配器在同一个 `_clean2026` 上的第一次测量，真实编码 agent、**同配置两轮**（35.6% 与 31.1%，极差 4.4pp），报告在 [`reports/pi-glm52-clean2026-baseline-20260825.md`](../../../reports/pi-glm52-clean2026-baseline-20260825.md)。它与上一行**不可直接并列** —— 换了适配器、轮数不同、相隔 11 天、`harness_digest` 已经不同；`docs/BASELINE.md` §7 自己就写了并列条件，那份报告的 §7.4 按该条件说明了为什么不并列。该文件除逐运行汇总外还带 45 行 `per_case` 纯数字（每行两轮，含 `test_pass_ratio`、`turns`、`sandboxed`、越界计数与 `final_message_empty`），所以报告里的每个数都能自己核对。
+**最后一行也是另一回事**：`pi` 适配器在同一个 `_clean2026` 上的第一次测量，真实编码 agent、**同仪器三轮重复**（35.6% / 31.1% / 28.9%，极差 6.7pp，多数票 33.3%），报告在 [`reports/pi-glm52-clean2026-baseline-20260825.md`](../../../reports/pi-glm52-clean2026-baseline-20260825.md)。它与上一行**不可直接并列** —— 换了适配器、相隔 11 天、`harness_digest` 已经不同；`docs/BASELINE.md` §7 自己就写了并列条件，那份报告的 §7.4 按该条件说明了为什么不并列。该文件除逐运行汇总外还带 45 行 `per_case` 纯数字（每行四轮，含 `test_pass_ratio`、`turns`、`sandboxed`、越界计数与 `final_message_empty`），所以报告里的每个数都能自己核对。
 
 `disc-v0` 那份是**进程被杀后重建的**：6 轮只完成 4 轮，`strong-full-loop` 从未运行。
 文件里的 `anchors_missing` 如实记录了这一点。它描述的是一个**两锚点面板**，
