@@ -47,9 +47,9 @@ EXAMPLE_SPECS = [
     (
         "edgebench_ad_placement_search_spec.json",
         [
-            "examples/edgebench-ad-placement/workspace/.goal-plus-verifiers/ad_local_score.py",
-            "examples/edgebench-ad-placement/workspace/tools/bin/gen",
-            "examples/edgebench-ad-placement/workspace/tools/bin/tester",
+            "examples/edgebench-ad-placement/workspace-template/.goal-plus-verifiers/ad_local_score.py",
+            "examples/edgebench-ad-placement/workspace-template/tools/bin/gen",
+            "examples/edgebench-ad-placement/workspace-template/tools/bin/tester",
         ],
         "local_score_sum",
         {
@@ -142,6 +142,16 @@ def test_standard_host_backed_specs_declare_the_bounded_parallel_contract(
             "circle-packing/codex-goal-prompt.md",
             "within 5 minutes",
             "after 4 minutes",
+        ),
+        (
+            "vliw-kernel-optimization/pi-goal-prompt.md",
+            "within 8 minutes",
+            "after 6 minutes",
+        ),
+        (
+            "edgebench-ad-placement/pi-goal-prompt.md",
+            "within 8 minutes",
+            "after 6 minutes",
         ),
         (
             "model-opt-gpu/bert_pytorch_v100_goal_plus.md",

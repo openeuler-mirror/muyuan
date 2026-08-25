@@ -16,8 +16,7 @@ codex -m gpt-5.6-terra -c model_reasoning_effort=max
 ```
 
 Then paste the complete contents of
-[`codex-goal-prompt.md`](codex-goal-prompt.md). The prompt uses Codex-native
-model ids for one Terra and one Luna candidate lane.
+[`codex-goal-prompt.md`](codex-goal-prompt.md).
 
 ## Run with Pi
 
@@ -25,19 +24,18 @@ Start the installed Pi package from the same example directory:
 
 ```bash
 cd examples/circle-packing
-pi --model openai-codex/gpt-5.6-terra --thinking max
+pi
 ```
 
 Then paste the complete contents of
 [`pi-goal-prompt.md`](pi-goal-prompt.md).
 
-In both hosts the main model is selected before Goal Plus starts; neither prompt
-includes `main=`. Goal Plus discovers the verifier, metric, edit surface, Search
-strategy, and host-specific worker launch from the current target directory.
-The checked-in prompts use Terra for the annotator role and assign one Terra and
-one Luna candidate lane. For Pi, if those provider-qualified model ids are not
-installed, inspect the local registry with `pi --list-models gpt-5.6` and
-replace only the role ids on the first prompt line.
+The Pi prompt does not pin `main`, `annotator`, or `workers`; it uses the model
+already selected in Pi and the installed Goal Plus defaults. This keeps the
+example runnable with any Pi model that supports the workflow. The Codex prompt
+retains explicit Codex-native role ids as a host-specific model-routing example.
+Goal Plus discovers the verifier, metric, edit surface, Search strategy, and
+host-specific worker launch from the current target directory.
 
 Run Goal Plus from `circle-packing/`, not from `workspace-template/`. The
 template is a tracked, read-only baseline. Search candidates edit isolated

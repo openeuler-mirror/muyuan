@@ -1,4 +1,4 @@
-/goal-plus annotator=openai-codex/gpt-5.6-terra workers=openai-codex/gpt-5.6-terra,openai-codex/gpt-5.6-luna max_parallel=2 Optimize the Torch CPU model in the current directory.
+/goal-plus max_parallel=2 Optimize the Torch CPU model in the current directory.
 
 The entire Goal Plus task must reach a terminal status within 10 minutes of
 creation. Do not start or continue candidate work after 8 minutes; reserve the

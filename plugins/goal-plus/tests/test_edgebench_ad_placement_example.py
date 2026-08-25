@@ -14,7 +14,8 @@ from goal_plus.models import SearchSpec
 
 ROOT = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.example
-WORKSPACE = ROOT / "examples" / "edgebench-ad-placement" / "workspace"
+EXAMPLE = ROOT / "examples" / "edgebench-ad-placement"
+WORKSPACE = EXAMPLE / "workspace-template"
 GENERATOR = WORKSPACE / "tools" / "bin" / "gen"
 TESTER = WORKSPACE / "tools" / "bin" / "tester"
 VERIFIER = WORKSPACE / ".goal-plus-verifiers" / "ad_local_score.py"
@@ -109,7 +110,7 @@ def test_search_spec_matches_edgebench_submission_surface_and_public_tools() -> 
     )
     spec = SearchSpec.model_validate(data)
 
-    assert spec.source_path == "examples/edgebench-ad-placement/workspace"
+    assert spec.source_path == "examples/edgebench-ad-placement/workspace-template"
     assert spec.edit_surface.allow == ["solution.cpp"]
     assert spec.metric_name == "local_score_sum"
     assert spec.metric_direction == "maximize"
@@ -118,5 +119,38 @@ def test_search_spec_matches_edgebench_submission_surface_and_public_tools() -> 
         ".goal-plus-verifiers/ad_local_score.py",
     ]
     assert spec.promotion_verifiers == []
+    assert spec.strategy.orchestration_mode == "parallel_loops"
+    assert spec.workspace.backend == "git_worktree"
     assert "CPU-only/no-internet" in spec.constraints["edgebench_alignment"]
     assert "1 GB" in spec.constraints["edgebench_alignment"]
+
+
+def test_ad_prompt_and_readme_keep_the_source_template_read_only() -> None:
+    prompt = (EXAMPLE / "pi-goal-prompt.md").read_text(encoding="utf-8")
+    readme = (EXAMPLE / "README.md").read_text(encoding="utf-8")
+    first_line = prompt.splitlines()[0]
+    normalized = " ".join(prompt.split())
+
+    assert first_line.startswith("/goal-plus max_parallel=2")
+    assert " main=" not in first_line
+    assert " annotator=" not in first_line
+    assert " workers=" not in first_line
+    assert "max_parallel=2" in first_line
+    assert "current directory" in first_line
+    assert "workspace-template/.goal-plus-verifiers/ad_local_score.py" in prompt
+    assert "Git worktree-backed Search" in prompt
+    assert "do not apply it back to `workspace-template/`" in normalized
+    assert "do not run `git apply`" in normalized
+    assert "report and promotion artifact are the only deliverables" in normalized
+    assert "remains unchanged" in prompt
+    assert "within 8 minutes" in prompt
+    assert "after 6 minutes" in prompt
+    assert "exceed 4 minutes" in prompt
+    assert "cd examples/edgebench-ad-placement" in readme
+    assert "\npi\n" in readme
+    assert "does not pin `main`, `annotator`, or `workers`" in readme
+    assert "Then paste the complete contents of" in readme
+    assert "Eight-minute contract" in readme
+    assert "historical-python-fixture-report.md" in readme
+    assert (EXAMPLE / "historical-python-fixture-report.md").is_file()
+    assert not (EXAMPLE / "report.md").exists()

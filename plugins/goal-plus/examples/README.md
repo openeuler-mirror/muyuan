@@ -27,7 +27,7 @@ Codex worker execution.
 | `k_module_search_spec.json` | `tests/fixtures/k_module_problem` | small multi-file correctness and score fixture |
 | `signal_processing_search_spec.json` | `tests/fixtures/signal_processing` | wider parallel score fixture |
 | `multi-model-signal-spec.json` | `tests/fixtures/signal_processing` | bounded multi-model Codex fixture |
-| `edgebench_ad_placement_search_spec.json` | `examples/edgebench-ad-placement/workspace` | public-score C++ workflow |
+| `edgebench_ad_placement_search_spec.json` | `examples/edgebench-ad-placement/workspace-template` | public-score C++ workflow |
 | `swe_bench_20212_search_spec.json` | `tests/fixtures/swe_bench_20212` | repository patching fixture |
 
 Paths in specs are repository-relative so tests and host agents can load them
@@ -101,8 +101,7 @@ creation-time allocation argument.
 
 ## Goal-driven scenario contract
 
-Except for the established EdgeBench Ad Placement and VLIW regression cases,
-paste-ready Goal Plus scenarios use the same task-level contract:
+Paste-ready Goal Plus scenarios use the same task-level contract:
 
 1. Start with the native `/goal-plus` or `$goal-plus` entry.
 2. State a finite whole-goal limit measured from Goal Plus creation, plus a
@@ -152,11 +151,11 @@ For both hosts:
 | [Codex/Pi orchestration monitor comparison](orchestration-monitor/README.md) | deterministic script | not applicable | maintained protocol demo |
 | [AscendC Direct Search](ascendc-direct-search/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
 | [CANNBench TileLang Ascend](cannbench-tilelang-ascend/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
-| [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | dedicated frozen spec | scenario-specific | established regression case; unchanged |
+| [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | Pi Goal Plus using a dedicated frozen spec | 8 minutes | public C++ regression case; source template stays unchanged |
 | [Kernel Optimize](kernel-optimize/README.md) | Codex `$goal-plus` template | 30 minutes | environment-specific template |
 | [Model Optimize](model-optimize/README.md) | Pi/Codex Goal Plus | 10 minutes | runnable CPU example |
 | [Model Optimize GPU](model-opt-gpu/README.md) | Pi `/goal-plus` | 2 hours | WIP; not validated |
-| [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | Pi `/goal-plus` | scenario-specific | established EdgeBench-derived regression case; unchanged |
+| [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | Pi `/goal-plus` | 8 minutes | public EdgeBench-derived regression case; source template stays unchanged |
 
 The GPU model-optimization example is explicitly WIP and is not part of the
 maintained validation gate.

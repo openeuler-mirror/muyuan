@@ -22,7 +22,7 @@ from goal_plus.runtime import FileSearchRuntime
 ROOT = Path(__file__).resolve().parents[2]
 K_MODULE = ROOT / "tests" / "st" / "fixtures" / "k_module_problem"
 CIRCLE_PACKING = ROOT / "tests" / "st" / "fixtures" / "circle_packing"
-EDGE_BENCH = ROOT / "examples" / "edgebench-ad-placement" / "workspace"
+EDGE_BENCH = ROOT / "examples" / "edgebench-ad-placement" / "workspace-template"
 
 
 def _event_log_tool_calls(handle: dict, *, min_agent_starts: int = 1) -> list[tuple[str, dict]]:

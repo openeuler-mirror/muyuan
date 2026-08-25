@@ -39,13 +39,10 @@ def test_circle_packing_prompt_is_a_five_minute_interactive_pi_goal() -> None:
     first_line = prompt.splitlines()[0]
     normalized = " ".join(prompt.split())
 
-    assert first_line.startswith("/goal-plus annotator=")
+    assert first_line.startswith("/goal-plus max_parallel=2")
     assert " main=" not in first_line
-    assert "annotator=openai-codex/gpt-5.6-terra" in first_line
-    assert (
-        "workers=openai-codex/gpt-5.6-terra,openai-codex/gpt-5.6-luna"
-        in first_line
-    )
+    assert " annotator=" not in first_line
+    assert " workers=" not in first_line
     assert "max_parallel=2" in first_line
     assert "current directory" in first_line
     assert "workspace-template/.goal-plus-verifiers/circle_packing_score.py" in prompt
@@ -64,7 +61,8 @@ def test_circle_packing_prompt_is_a_five_minute_interactive_pi_goal() -> None:
     assert "cd examples/circle-packing" in readme
     assert "prepare_workspace.py" not in readme
     assert "not apply the selected patch back" in readme
-    assert "pi --model openai-codex/gpt-5.6-terra" in readme
+    assert "\npi\n" in readme
+    assert "does not pin `main`, `annotator`, or `workers`" in readme
     assert "Then paste the complete contents of" in readme
     assert "$(cat examples/circle-packing/pi-goal-prompt.md)" not in readme
 

@@ -40,17 +40,18 @@ Start the installed Pi package from the target directory:
 
 ```bash
 cd examples/model-optimize/torch-cpu-target
-pi --model openai-codex/gpt-5.6-terra --thinking max
+pi
 ```
 
 Then paste the complete contents of
 [`pi-goal-prompt.md`](pi-goal-prompt.md).
 
-In both hosts, the main model is selected before Goal Plus starts and neither
-prompt includes `main=`. Model qualification differs because Pi uses
-`provider/model`, while Codex uses its native model id. Goal Plus discovers the
-verifier, metric, edit surface, Search strategy, and host-specific worker launch
-from the current target directory; no checked-in SearchSpec is required.
+The Pi prompt does not pin `main`, `annotator`, or `workers`; it uses the model
+already selected in Pi and the installed Goal Plus defaults. The Codex prompt
+retains explicit Codex-native role ids as a host-specific model-routing example.
+Goal Plus discovers the verifier, metric, edit surface, Search strategy, and
+host-specific worker launch from the current target directory; no checked-in
+SearchSpec is required.
 Both ready-to-paste prompts require the entire Goal Plus task, including final
 validation and promotion/reporting, to reach a terminal status within 10 minutes
 of Goal Plus creation. Candidate work stops at 8 minutes, leaving 2 minutes for

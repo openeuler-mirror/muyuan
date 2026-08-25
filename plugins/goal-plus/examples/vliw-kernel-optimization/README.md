@@ -4,43 +4,50 @@ This example is a local, public-case VLIW optimization task that can be opened
 directly through Pi's native `/goal-plus` command. It uses only the Python
 standard library and does not require Docker or accelerator hardware.
 
-## One-command start
+## Run with Pi
 
-From the Goal Plus repository root:
+Start Pi from the VLIW example directory with the main model selected:
 
 ```bash
-pi --model openai/gpt-5.6-terra --thinking max \
-  -p "$(cat examples/vliw-kernel-optimization/pi-goal-prompt.md)"
+cd examples/vliw-kernel-optimization
+pi
 ```
 
-The checked-in prompt uses this role routing:
+Then paste the complete contents of
+[`pi-goal-prompt.md`](pi-goal-prompt.md).
 
-```text
-annotator=openai/gpt-5.6-terra workers=zai/glm-5.2
-```
+The prompt does not pin `main`, `annotator`, or `workers`; it uses the model
+already selected in Pi and the installed Goal Plus defaults. This keeps the
+example independent of any provider-specific local model registry. Explicit
+role routing remains optional and can be added to the first line when that is
+the behavior being demonstrated.
 
-The launch command selects the already-running Pi main model; `/goal-plus`
-cannot switch it. `annotator` selects that role explicitly; `workers` uses the
-existing Candidate model allocation and can contain one or more models. These
-short ids must resolve uniquely in the local Pi registry; use qualified
-`provider/model` values if a model id is ambiguous.
-For example, `workers=worker-a,worker-b` round-robins two models over the fixed
-candidate lanes. Existing `models=` remains a compatibility alias for
-`workers=`.
+No SearchSpec or experiment launcher is required: Goal Plus discovers the
+verifier, metric, edit surface, and local workspace from the task.
 
-The equivalent interactive request is the first line of
-[`pi-goal-prompt.md`](pi-goal-prompt.md). No SearchSpec or experiment launcher
-is required: Goal Plus discovers the verifier, metric, edit surface, and local
-workspace from the task.
+Run Goal Plus from `vliw-kernel-optimization/`, not from
+`workspace-template/`. The template is the tracked, read-only public baseline.
+Search candidates edit isolated worktrees under the ignored `.gp/` directory.
+The selected promotion patch and canonical reports remain under `.gp/`; this
+example does not apply the result back to `workspace-template/`. A normal run
+therefore does not change tracked example files or appear in `git status`.
+
+## Eight-minute contract
+
+- The complete Goal Plus task must settle within eight minutes.
+- Candidate work stops after six minutes.
+- Each worker lease is capped at four minutes.
+- The final two minutes are reserved for selection, promotion, reporting, and
+  terminal settlement.
 
 ## Local baseline
 
 Run the public task without Goal Plus:
 
 ```bash
-cd examples/vliw-kernel-optimization/workspace
-python3 runner.py
-python3 .goal-plus-verifiers/vliw_score.py
+cd examples/vliw-kernel-optimization
+python3 workspace-template/runner.py
+(cd workspace-template && python3 .goal-plus-verifiers/vliw_score.py)
 ```
 
 The starter implementation is correct and reports `147734` cycles. Lower is
