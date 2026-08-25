@@ -7,10 +7,11 @@ depends only on the Python standard library.
 
 ## Run with Codex
 
-Start Codex from the target directory with the main model selected:
+Start Codex from the Circle Packing example directory with the main model
+selected:
 
 ```bash
-cd examples/circle-packing/workspace
+cd examples/circle-packing
 codex -m gpt-5.6-terra -c model_reasoning_effort=max
 ```
 
@@ -20,10 +21,10 @@ model ids for one Terra and one Luna candidate lane.
 
 ## Run with Pi
 
-Start the installed Pi package from the target directory:
+Start the installed Pi package from the same example directory:
 
 ```bash
-cd examples/circle-packing/workspace
+cd examples/circle-packing
 pi --model openai-codex/gpt-5.6-terra --thinking max
 ```
 
@@ -37,6 +38,13 @@ The checked-in prompts use Terra for the annotator role and assign one Terra and
 one Luna candidate lane. For Pi, if those provider-qualified model ids are not
 installed, inspect the local registry with `pi --list-models gpt-5.6` and
 replace only the role ids on the first prompt line.
+
+Run Goal Plus from `circle-packing/`, not from `workspace-template/`. The
+template is a tracked, read-only baseline. Search candidates edit isolated
+worktrees under the ignored `.gp/` directory. The final promotion patch and
+canonical reports remain under `.gp/`; this demonstration deliberately does
+not apply the selected patch back to `workspace-template/`. Therefore a normal
+Pi or Codex run does not change tracked example files or appear in `git status`.
 
 ## Five-minute contract
 
@@ -57,14 +65,14 @@ status even after preserving and promoting a valid result.
 ## Local baseline
 
 ```bash
-cd examples/circle-packing/workspace
-python3 .goal-plus-verifiers/circle_packing_score.py
+cd examples/circle-packing
+python3 workspace-template/.goal-plus-verifiers/circle_packing_score.py
 ```
 
 The starter is valid and currently reports a `sum_radii` of about `1.79835`.
 Higher is better.
 
-Only `initial_program.py` is editable. A valid result must contain exactly 26
-non-overlapping circles inside the unit square. The verifier is public and
-read-only so this example demonstrates optimization with feedback, not a
-hidden-answer benchmark.
+Only the candidate copy of `initial_program.py` is editable. A valid result
+must contain exactly 26 non-overlapping circles inside the unit square. The
+verifier is public and read-only so this example demonstrates optimization with
+feedback, not a hidden-answer benchmark.

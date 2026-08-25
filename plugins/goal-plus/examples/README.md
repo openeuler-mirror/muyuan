@@ -23,7 +23,7 @@ Codex worker execution.
 
 | Spec | Source | Purpose |
 |---|---|---|
-| `circle-packing/search-spec.json` | `examples/circle-packing/workspace` | five-minute Pi/Codex numeric optimization with two lanes |
+| `circle-packing/search-spec.json` | `examples/circle-packing/workspace-template` | five-minute Pi/Codex numeric optimization with two lanes |
 | `k_module_search_spec.json` | `tests/fixtures/k_module_problem` | small multi-file correctness and score fixture |
 | `signal_processing_search_spec.json` | `tests/fixtures/signal_processing` | wider parallel score fixture |
 | `multi-model-signal-spec.json` | `tests/fixtures/signal_processing` | bounded multi-model Codex fixture |

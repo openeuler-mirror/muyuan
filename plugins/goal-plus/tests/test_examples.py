@@ -17,7 +17,7 @@ EXAMPLE_SPECS = [
     (
         "circle-packing/search-spec.json",
         [
-            "examples/circle-packing/workspace/.goal-plus-verifiers/"
+            "examples/circle-packing/workspace-template/.goal-plus-verifiers/"
             "circle_packing_score.py"
         ],
         "sum_radii",

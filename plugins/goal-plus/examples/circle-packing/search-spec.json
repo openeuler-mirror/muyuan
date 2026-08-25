@@ -2,7 +2,7 @@
   "objective": "maximize the valid radius sum for 26 circles in the unit square",
   "metric_name": "sum_radii",
   "metric_direction": "maximize",
-  "source_path": "examples/circle-packing/workspace",
+  "source_path": "examples/circle-packing/workspace-template",
   "edit_surface": {
     "allow": [
       "initial_program.py"
