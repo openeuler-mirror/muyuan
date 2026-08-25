@@ -553,3 +553,84 @@ def test_the_registry_builds_it(tmp_path):
     ac = AgentConfig.from_dict({"name": "pi", "version": "1", "adapter": "pi", "options": {}})
     mc = ModelConfig.from_dict({"name": "m", "provider": "openai_compat", "model": "GLM-5.2"})
     assert isinstance(create_agent(ac, mc), PiAgent)
+
+
+# --- what the review found ---------------------------------------------------------------
+
+
+def test_the_boundary_covers_the_git_object_store_not_just_the_module_tree():
+    """`repo_root()` is `benchmarks/coding`; the `.git` that serves its contents is a level
+    above it. A profile denying only `repo_root()` refused `cat` on a case JSON and handed the
+    same bytes to `git -C <monorepo> show HEAD:<path>` -- the gold solution and hidden tests,
+    read straight out of the object store."""
+    from aibench.agents.cli_sandbox import checkout_above, protected_root, sandbox_profile
+    from aibench.io_util import repo_root
+
+    protected = protected_root()
+    checkout = checkout_above(repo_root().resolve())
+    if checkout is not None:
+        assert protected == checkout.resolve()
+        assert (protected / ".git").exists()
+    profile = sandbox_profile(protected, readable=(repo_root() / ".venv",))
+    assert f'(deny file-read-data file-write* (subpath "{protected}"))' in profile
+    # And the interpreter the grader needs is still reachable.
+    assert f'(allow file-read-data (subpath "{repo_root() / ".venv"}"))' in profile
+
+
+def test_an_undecodable_byte_does_not_outlive_the_deadline(tmp_path, monkeypatch):
+    """pi is Node; a lone surrogate reaches the pipe as invalid UTF-8. Strict decoding raised
+    out of the read loop past the `finally` that only cancels the timer, so the deadline was
+    gone and the child ran on -- measured at 61s against a 3s budget."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    body = """
+import sys, time
+sys.stdout.buffer.write(b'\\xff\\xfe not utf-8\\n')
+sys.stdout.buffer.flush()
+time.sleep(30)
+"""
+    ws = _workspace(tmp_path)
+    result = _agent(binary=_fake_cli(tmp_path, body)).run(CASE, ws, max_steps=5, max_wall_time_s=3)
+    assert result.status == "infra_error"
+    assert result.wall_time_s < 20
+
+
+def test_a_gateway_that_failed_every_turn_is_infrastructure_not_budget_exhaustion(
+    tmp_path, monkeypatch
+):
+    """Otherwise the run burns its whole turn budget on failing calls, gets killed by this
+    adapter, and files as `timeout` -- graded, left in the denominator, never retried."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    body = """
+import json, time
+for _ in range(1000):
+    print(json.dumps({"type": "message_end", "message": {"role": "assistant",
+        "stopReason": "error", "errorMessage": "502 from gateway", "content": [],
+        "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+                  "totalTokens": 0}}}), flush=True)
+    print(json.dumps({"type": "turn_end"}), flush=True)
+    time.sleep(0.02)
+"""
+    ws = _workspace(tmp_path)
+    result = _agent(binary=_fake_cli(tmp_path, body)).run(CASE, ws, max_steps=3, max_wall_time_s=60)
+    assert result.status == "infra_error"
+    assert "session error" in (result.error_message or "")
+
+
+def test_the_token_total_is_derived_rather_than_trusted():
+    """`prompt + completion == total` is asserted in the manual, so it has to hold by
+    construction. A gateway that omits `totalTokens` would otherwise zero the headline token
+    count and the cost estimate built on it, with nothing to show for it."""
+    no_total = json.dumps(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [],
+                "usage": {"input": 100, "output": 20, "cacheRead": 30, "cacheWrite": 0},
+            },
+        }
+    )
+    usage = parse_events(no_total, Path("/ws"))["usage"]
+    assert usage.total_tokens == 150
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens

@@ -53,6 +53,7 @@ from aibench.agents.cli_sandbox import (
     checkout_above as _checkout_above,
     escapes_workspace as _escapes_workspace,
     mirror_into as _mirror_into,
+    protected_root,
     resolve_endpoint,
     sandbox_profile,
     snapshot,
@@ -452,10 +453,12 @@ class OpenCodeAgent(AgentAdapter):
             return command, False
         if not _SANDBOX_EXEC.is_file():
             return command, False
-        repo = repo_root()
+        # The whole checkout, not just this module's subtree: the git object store above
+        # it serves the case's gold solution to anyone who asks `git show`.
+        protected = protected_root()
         profile = staging / "sandbox.sb"
         profile.write_text(
-            sandbox_profile(repo, readable=(repo / ".venv",)),
+            sandbox_profile(protected, readable=(repo_root() / ".venv",)),
             encoding="utf-8",
         )
         return [str(_SANDBOX_EXEC), "-f", str(profile), *command], True

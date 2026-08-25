@@ -25,6 +25,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from aibench.io_util import repo_root
 from aibench.models import ModelConfig
 from aibench.workspace import assert_disposable
 
@@ -84,6 +85,27 @@ def mirror_into(source: Path, target: Path) -> None:
             shutil.copytree(entry, destination, symlinks=True)
         else:
             shutil.copy2(entry, destination)
+
+
+def protected_root() -> Path:
+    """The subtree the agent must not read: the whole enclosing git checkout.
+
+    Not ``repo_root()``. This module sits at ``benchmarks/coding`` inside a monorepo whose
+    ``.git`` is one level *above* it, so a profile that denied only ``repo_root()`` left the
+    object store readable -- and the case's own gold solution and hidden tests are in it.
+    Measured under the profile that denied only ``repo_root()``::
+
+        $ sandbox-exec -f p.sb cat  .../cases/_clean2026/rev-<id>.json   -> Operation not permitted
+        $ sandbox-exec -f p.sb git -C <monorepo> show HEAD:<same path>   -> the whole case JSON
+
+    Denying ``.git`` alone would not be enough either: loose objects are readable with
+    nothing but ``zlib``, and a second checkout of the same tree would be a second route.
+    Denying the checkout closes all of them, and costs nothing -- an agent solving a case
+    has no business anywhere in it but its own workspace, which is mirrored out of the tree.
+    """
+    root = repo_root().resolve()
+    checkout = checkout_above(root)
+    return checkout.resolve() if checkout is not None else root
 
 
 def sandbox_profile(protected: Path, *, readable: tuple[Path, ...]) -> str:

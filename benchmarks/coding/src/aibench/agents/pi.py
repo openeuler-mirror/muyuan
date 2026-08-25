@@ -56,6 +56,7 @@ from aibench.agents.cli_sandbox import (
     checkout_above,
     escapes_workspace,
     mirror_into,
+    protected_root,
     resolve_endpoint,
     sandbox_profile,
     snapshot,
@@ -253,7 +254,10 @@ def parse_events(stdout: str, workspace: Path) -> dict[str, Any]:
                 + _int(counts.get("cacheWrite"))
             )
             usage.completion_tokens += _int(counts.get("output"))
-            usage.total_tokens += _int(counts.get("totalTokens"))
+            # Derived, not copied from `totalTokens`. The two agree on every row pi has
+            # produced here, but a gateway that omits the field would otherwise zero the
+            # headline token count and the cost estimate built on it, silently.
+            usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
             usage.model_calls += 1
             if (text := _assistant_text(message)).strip():
                 final_text = text
@@ -335,6 +339,11 @@ def _run_streaming(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # pi is Node; a JSON string carrying a lone surrogate reaches this pipe as invalid
+        # UTF-8. Strict decoding raised out of the read loop, past the `finally` that only
+        # cancels the timer -- measured: the deadline was gone and pi outlived a 3s budget
+        # by 61s, still writing into the staging directory the adapter then deletes.
+        errors="replace",
         bufsize=1,
         env=env,
         cwd=cwd,
@@ -376,6 +385,11 @@ def _run_streaming(
                     hit_step_limit = True
                     kill()
                     break
+        except BaseException:
+            # Including KeyboardInterrupt: `start_new_session=True` means a terminal Ctrl-C
+            # never reaches pi, so without this it and its pytest children are orphaned.
+            kill()
+            raise
         finally:
             timer.cancel()
         proc.wait()
@@ -402,8 +416,9 @@ class PiAgent(AgentAdapter):
         self.tools = tuple(configured) if configured else DEFAULT_TOOLS
         self.context_window = int(opts.get("context_window") or DEFAULT_CONTEXT_WINDOW)
         #: Caps the run independently of the run config, for a panel member that must stay
-        #: cheap regardless of which run yaml drives it. `is None` rather than `or`, so that a
-        #: configured `max_steps: 0` is not silently read as "no cap".
+        #: cheap regardless of which run yaml drives it. `is None` rather than `or`, so a
+        #: configured `max_steps: 0` reaches the budget rather than being read as "unset" --
+        #: where, like any non-positive budget, it means "do not enforce a turn cap".
         self.max_steps_cap = opts.get("max_steps")
 
     def _version_mismatch(self) -> str | None:
@@ -458,9 +473,13 @@ class PiAgent(AgentAdapter):
             return command, False
         if not SANDBOX_EXEC.is_file():
             return command, False
-        repo = repo_root()
+        # The whole checkout, not just this module's subtree: the git object store above
+        # it serves the case's gold solution to anyone who asks `git show`.
+        protected = protected_root()
         profile = staging / "sandbox.sb"
-        profile.write_text(sandbox_profile(repo, readable=(repo / ".venv",)), encoding="utf-8")
+        profile.write_text(
+            sandbox_profile(protected, readable=(repo_root() / ".venv",)), encoding="utf-8"
+        )
         return [str(SANDBOX_EXEC), "-f", str(profile), *command], True
 
     def run(
@@ -630,12 +649,21 @@ class PiAgent(AgentAdapter):
             status, error = "infra_error", "pi produced no model call before the deadline"
         elif timed_out:
             status, error = "timeout", "max_wall_time exceeded"
+        elif errors and usage.model_calls == len(errors):
+            # Every turn failed at the provider. Checked above the step limit -- a gateway that
+            # errors on each turn runs to the budget and is then killed here, which would
+            # otherwise file an outage as budget exhaustion, keep it in the denominator, and
+            # skip the retry. opencode orders these the same way.
+            status, error = (
+                "infra_error",
+                f"pi reported {len(errors)} session error(s): {errors[0]}",
+            )
         elif hit_step_limit:
             # Checked before the exit code: the non-zero code is this adapter's own SIGKILL.
             status, error = "timeout", "max_steps exceeded"
         elif errors:
-            # pi reports the gateway failure and then exits non-zero. It may also recover and
-            # finish the task, but an exit code of 0 is the only evidence of that.
+            # Some turns failed and some did not. pi may have recovered and finished the task;
+            # an exit code of 0 is the only evidence of that.
             status = "infra_error" if returncode != 0 else "completed"
             error = f"pi reported {len(errors)} session error(s): {errors[0]}"
         elif returncode != 0 and usage.model_calls == 0:

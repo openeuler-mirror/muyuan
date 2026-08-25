@@ -80,6 +80,7 @@ def opencode_version() -> str | None:
     return match.group(0) if match else (out.strip() or None)
 
 
+@functools.lru_cache(maxsize=1)
 def pi_version(binary: str = "pi") -> str | None:
     """``pi --version``, or ``None`` when the binary is absent or unreadable.
 
