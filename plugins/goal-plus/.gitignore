@@ -12,6 +12,8 @@ __pycache__/
 !/examples/vliw-kernel-optimization/workspace-template/.goal-plus-verifiers/vliw_score.py
 !/examples/edgebench-ad-placement/workspace-template/.goal-plus-verifiers/
 !/examples/edgebench-ad-placement/workspace-template/.goal-plus-verifiers/ad_local_score.py
+!/examples/model-optimize/workspace-template/.goal-plus-verifiers/
+!/examples/model-optimize/workspace-template/.goal-plus-verifiers/torch_cpu_tokens.py
 .search/
 benchmarks/data/
 benchmarks/reports/
@@ -20,6 +22,7 @@ benchmarks/runs/
 /examples/circle-packing/workspace/
 /examples/vliw-kernel-optimization/workspace/
 /examples/edgebench-ad-placement/workspace/
+/examples/model-optimize/torch-cpu-target/
 /output/
 docs/superpowers/
 .superpowers/

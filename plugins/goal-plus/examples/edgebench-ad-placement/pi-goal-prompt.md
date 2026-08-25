@@ -24,8 +24,8 @@ it back to `workspace-template/`; the report and promotion artifact are the
 only deliverables for this local example. After `search_promote`, do not run
 `git apply` or any other write operation against the returned `source_path`.
 
-Treat `../edgebench_ad_placement_search_spec.json` as the authoritative task
-contract. Normalize its repository-relative `source_path` to
+Treat `search-spec.json` as the authoritative task contract. Normalize its
+repository-relative `source_path` to
 `"workspace-template"` for this current-directory run. Start the two initial
 lanes immediately with complementary hypotheses: one target-area rectangle
 construction and one collision-aware expansion or placement strategy. Inspect

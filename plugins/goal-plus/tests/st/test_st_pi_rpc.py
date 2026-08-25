@@ -135,9 +135,9 @@ def _circle_packing_pi_spec(*, max_runtime_seconds: int = 300) -> SearchSpec:
 
 def _edgebench_pi_spec(*, max_runtime_seconds: int = 180) -> SearchSpec:
     data = json.loads(
-        (ROOT / "examples" / "edgebench_ad_placement_search_spec.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            ROOT / "examples" / "edgebench-ad-placement" / "search-spec.json"
+        ).read_text(encoding="utf-8")
     )
     data["source_path"] = str(EDGE_BENCH)
     data["budget"] = {"max_parallel": 1}

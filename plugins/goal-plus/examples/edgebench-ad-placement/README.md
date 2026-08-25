@@ -67,8 +67,8 @@ cd examples/edgebench-ad-placement
 ```
 
 Freeze all three verifier artifacts named above when using
-`examples/edgebench_ad_placement_search_spec.json`. Do not call an EdgeBench
-judge from this fixture.
+[`search-spec.json`](search-spec.json). Do not call an EdgeBench judge from
+this fixture.
 
 [`historical-python-fixture-report.md`](historical-python-fixture-report.md) is
 retained as historical evidence from the earlier Python-shaped EdgeBench-lite

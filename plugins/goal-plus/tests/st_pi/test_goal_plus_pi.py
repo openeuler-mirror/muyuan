@@ -45,7 +45,7 @@ AUTONOMOUS_OPTIMIZATION_PROMPT = (
 )
 MULTI_SEARCH_PROMPT = (
     "在同一个 Goal Plus 任务里顺序运行两个最小但完整的 Pi search task。两次都读取 "
-    "examples/edgebench_ad_placement_search_spec.json，并冻结其中的 "
+    "examples/edgebench-ad-placement/search-spec.json，并冻结其中的 "
     ".goal-plus-verifiers/ad_local_score.py、tools/bin/gen、tools/bin/tester。"
     "第一个 SearchSpec 使用 strategy.name=random，第二个使用 strategy.name=agent_guided；"
     "两次都设置 worker_host=pi-rpc、orchestration_mode=parallel_loops、"

@@ -104,9 +104,7 @@ def test_public_verifier_compiles_cpp_and_emits_goal_plus_json_metric() -> None:
 
 def test_search_spec_matches_edgebench_submission_surface_and_public_tools() -> None:
     data = json.loads(
-        (ROOT / "examples" / "edgebench_ad_placement_search_spec.json").read_text(
-            encoding="utf-8"
-        )
+        (EXAMPLE / "search-spec.json").read_text(encoding="utf-8")
     )
     spec = SearchSpec.model_validate(data)
 

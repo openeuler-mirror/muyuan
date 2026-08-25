@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 EXAMPLE_SPECS = [
     (
-        "circle-packing/search-spec.json",
+        "examples/circle-packing/search-spec.json",
         [
             "examples/circle-packing/workspace-template/.goal-plus-verifiers/"
             "circle_packing_score.py"
@@ -32,7 +32,7 @@ EXAMPLE_SPECS = [
         },
     ),
     (
-        "signal_processing_search_spec.json",
+        "tests/fixtures/signal_processing/search-spec.json",
         ["tests/fixtures/signal_processing/evaluator.py"],
         "overall_score",
         {
@@ -45,7 +45,7 @@ EXAMPLE_SPECS = [
         },
     ),
     (
-        "edgebench_ad_placement_search_spec.json",
+        "examples/edgebench-ad-placement/search-spec.json",
         [
             "examples/edgebench-ad-placement/workspace-template/.goal-plus-verifiers/ad_local_score.py",
             "examples/edgebench-ad-placement/workspace-template/tools/bin/gen",
@@ -68,7 +68,9 @@ EXAMPLE_SPECS = [
 # rounds compiles the same solution several more times without adding runtime
 # state-machine coverage beyond the Python fixtures below.
 RUNTIME_EXAMPLE_SPECS = [
-    case for case in EXAMPLE_SPECS if case[0] != "edgebench_ad_placement_search_spec.json"
+    case
+    for case in EXAMPLE_SPECS
+    if case[0] != "examples/edgebench-ad-placement/search-spec.json"
 ]
 
 def load_expected(spec_name: str) -> dict:
@@ -79,16 +81,16 @@ def load_expected(spec_name: str) -> dict:
 
 
 def load_example_spec(name: str) -> dict:
-    return json.loads((ROOT / "examples" / name).read_text(encoding="utf-8"))
+    return json.loads((ROOT / name).read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize(
     "spec_name",
     (
-        "k_module_search_spec.json",
-        "signal_processing_search_spec.json",
-        "swe_bench_20212_search_spec.json",
-        "multi-model-signal-spec.json",
+        "tests/fixtures/k_module_problem/search-spec.json",
+        "tests/fixtures/signal_processing/search-spec.json",
+        "tests/fixtures/swe_bench_20212/search-spec.json",
+        "tests/fixtures/signal_processing/multi-model-search-spec.json",
     ),
 )
 def test_standard_host_backed_specs_declare_the_bounded_parallel_contract(
@@ -112,16 +114,6 @@ def test_standard_host_backed_specs_declare_the_bounded_parallel_contract(
             "ascendc-direct-search/pi-goal-prompt.md",
             "within 60 minutes",
             "after 50 minutes",
-        ),
-        (
-            "cannbench-tilelang-ascend/pi-goal-prompt.md",
-            "within 60 minutes",
-            "after 50 minutes",
-        ),
-        (
-            "kernel-optimize/example-prompt-cpp.md",
-            "within 30 minutes",
-            "after 25 minutes",
         ),
         (
             "model-optimize/pi-goal-prompt.md",
@@ -153,11 +145,6 @@ def test_standard_host_backed_specs_declare_the_bounded_parallel_contract(
             "within 8 minutes",
             "after 6 minutes",
         ),
-        (
-            "model-opt-gpu/bert_pytorch_v100_goal_plus.md",
-            "within 2 hours",
-            "after 100 minutes",
-        ),
     ),
 )
 def test_standard_goal_prompts_bound_the_whole_task_and_closeout(
@@ -183,6 +170,24 @@ def test_removed_non_user_examples_are_not_listed_or_present() -> None:
     assert not (ROOT / "examples" / "goal-and-goal-plus").exists()
     assert "workspace-backends" not in examples_index
     assert not (ROOT / "examples" / "workspace-backends").exists()
+    assert "model-opt-gpu" not in examples_index
+    assert not (ROOT / "examples" / "model-opt-gpu").exists()
+    assert "cannbench-tilelang-ascend" not in examples_index
+    assert not (ROOT / "examples" / "cannbench-tilelang-ascend").exists()
+    assert "orchestration-monitor" not in examples_index
+    assert not (ROOT / "examples" / "orchestration-monitor").exists()
+    assert "kernel-optimize" not in examples_index
+    assert not (ROOT / "examples" / "kernel-optimize").exists()
+    assert (ROOT / "scripts" / "compare_orchestration_hosts.py").is_file()
+
+    obsolete_specs = (
+        "k_module_search_spec.json",
+        "signal_processing_search_spec.json",
+        "multi-model-signal-spec.json",
+        "swe_bench_20212_search_spec.json",
+        "edgebench_ad_placement_search_spec.json",
+    )
+    assert all(not (ROOT / "examples" / name).exists() for name in obsolete_specs)
 
 
 @pytest.mark.parametrize(("spec_name", "verifier_paths", "metric_name", "expected"), EXAMPLE_SPECS)
@@ -302,45 +307,3 @@ def test_parallel_loop_examples_create_one_batch_and_verify_baseline(
     status = tools.search_status(run_id)
     assert status["candidates_total"] == expected["max_parallel"]
     assert status["candidates_evaluated"] == 2
-
-
-def test_model_opt_gpu_wip_docs_define_future_v100_goal_plus_contract() -> None:
-    example_dir = ROOT / "examples" / "model-opt-gpu"
-    readme = (example_dir / "README.md").read_text(encoding="utf-8")
-    prompt = (
-        example_dir / "bert_pytorch_v100_goal_plus.md"
-    ).read_text(encoding="utf-8")
-    examples_index = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
-
-    assert "WIP" in readme
-    assert "not recommended" in readme.lower()
-    assert "not validated" in readme.lower()
-    assert "model-opt-gpu" in examples_index
-    assert "WIP" in examples_index
-
-    required_prompt_terms = (
-        "/goal-plus",
-        "pytorch/benchmark",
-        "BERT_pytorch",
-        "BenchmarkModel",
-        "standalone",
-        "CUDA_VISIBLE_DEVICES",
-        "detected_gpu_count",
-        "git_worktree",
-        "10%",
-        "torch.cuda.synchronize",
-        "median",
-        "correctness",
-        "non-finite",
-        "triton_ops/",
-        "AI-Infra-Auto-Driven-SKILLS",
-        "within 2 hours",
-        "max_runtime_seconds no greater than 5400",
-    )
-    for term in required_prompt_terms:
-        assert term in prompt
-
-    assert "max_parallel=1" not in prompt
-    assert '"max_parallel": 1' not in prompt
-    assert "Do not invent a baseline" in prompt
-    assert "Do not start Search Mode" in prompt

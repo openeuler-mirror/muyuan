@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
@@ -509,13 +510,13 @@ def test_maintained_hosts_route_ascendc_to_dynamic_spec_discovery() -> None:
         assert "examples/ascendc-direct-search/SPEC_DISCOVERY.md" in text
         assert "materialize_knowledge.py" in text
         assert "knowledge.sources.json" in text
-        assert "exact pinned Git commits" in normalized
+        assert "准确固定的 Git commit" in normalized
         assert "AKG" in text
-        assert "Never require the user to run a task preparer" in normalized
-        assert "Direct Invoke only" in normalized
+        assert "绝不能要求用户运行任务准备器" in normalized
+        assert "仅支持 Direct Invoke" in normalized
         assert "GOAL_PLUS_VERIFIER_TMPDIR" in text
-        assert "do not invoke an external ascendc" in normalized.casefold()
+        assert "不要调用外部 ascendc" in normalized.casefold()
         assert "_task/operator_request.json" in text
         assert "examples/ascendc-direct-search/request.schema.json" in text
         assert "JSON Schema validator" in normalized
-        assert "validation failure blocks freezing" in normalized
+        assert re.search(r"校验失败会\s*阻止\s*冻结", text)

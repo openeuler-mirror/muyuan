@@ -1,10 +1,13 @@
 # Examples
 
-The checked-in examples are either bounded `/goal-plus` scenarios, direct
-SearchSpec/runtime fixtures, or deterministic protocol demos. Maintained Search
-runs create one initial plan, materialize a fixed set of candidate workspaces,
-and resume those same candidates only until the enclosing task's global stop
-condition or closeout boundary is true.
+This directory contains only user-facing Goal Plus scenarios with a distinct
+reason to exist. Test-only SearchSpecs live beside their owning fixtures under
+`tests/fixtures/`; deterministic protocol diagnostics live under `scripts/`.
+
+An example belongs here only when it has a concrete user entry, a measurable
+acceptance contract, and a capability that is not already demonstrated more
+simply by another scenario. Unvalidated future ideas and duplicate environment
+preparers do not belong in the supported examples index.
 
 ## Start Here: Five-Minute Live Run
 
@@ -15,23 +18,19 @@ the Goal Plus record within a five-minute whole-task contract. The workspace
 uses only the Python standard library and its verifier is fast enough for
 several optimization iterations during the short run.
 
-The SearchSpec files below are runtime fixtures, not the recommended end-user
-entry. Deterministic scripts are protocol demonstrations and do not prove Pi or
-Codex worker execution.
+## Why Each Example Exists
 
-## SearchSpec Files
+| Scenario | Unique motivation | Entry | Requirements |
+|---|---|---|---|
+| [Circle Packing](circle-packing/README.md) | shortest end-to-end progress and completion-card demo | Pi or Codex Goal Plus, 5 minutes | Python standard library |
+| [Model Optimize](model-optimize/README.md) | realistic CPU/PyTorch optimization on both maintained hosts | Pi or Codex Goal Plus, 10 minutes | PyTorch |
+| [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | program/schedule optimization with a simulator correctness gate | Pi Goal Plus, 8 minutes | Python standard library |
+| [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | compiled C++ optimization with ten public cases | Pi Goal Plus, 8 minutes | C++17 compiler |
+| [AscendC Direct Search](ascendc-direct-search/README.md) | the single supported dynamic NPU task-generation path | Pi Goal Plus, 60 minutes | target Ascend NPU and references |
 
-| Spec | Source | Purpose |
-|---|---|---|
-| `circle-packing/search-spec.json` | `examples/circle-packing/workspace-template` | five-minute Pi/Codex numeric optimization with two lanes |
-| `k_module_search_spec.json` | `tests/fixtures/k_module_problem` | small multi-file correctness and score fixture |
-| `signal_processing_search_spec.json` | `tests/fixtures/signal_processing` | wider parallel score fixture |
-| `multi-model-signal-spec.json` | `tests/fixtures/signal_processing` | bounded multi-model Codex fixture |
-| `edgebench_ad_placement_search_spec.json` | `examples/edgebench-ad-placement/workspace-template` | public-score C++ workflow |
-| `swe_bench_20212_search_spec.json` | `tests/fixtures/swe_bench_20212` | repository patching fixture |
-
-Paths in specs are repository-relative so tests and host agents can load them
-without machine-specific configuration.
+Circle Packing and Ad Placement own checked-in SearchSpecs beside their
+read-only workspace templates. The other scenarios intentionally exercise
+Goal Plus Spec Discovery or user-supplied target material.
 
 ## Strategy Contract
 
@@ -72,12 +71,11 @@ Maintained hosts are Codex and Pi RPC. Use one of these strategy shapes:
 the main agent to provide the initial lane intents to `search_start_batch`.
 Neither strategy permits a second `search_plan_next` call.
 
-Outside the established EdgeBench Ad regression spec, maintained host-backed
-SearchSpecs declare `orchestration_mode`, `worker_host`, and a finite
-`worker_budget`. `worker_budget` limits one worker dispatch or renewable lease;
-it is not the maximum duration of a whole Goal Plus task. Paste-ready goal
-scenarios state their whole-goal limit separately in natural language and
-reserve explicit closeout time.
+Maintained host-backed SearchSpecs declare `orchestration_mode`, `worker_host`,
+and a finite `worker_budget`. `worker_budget` limits one worker dispatch or
+renewable lease; it is not the maximum duration of a whole Goal Plus task.
+Paste-ready goal scenarios state their whole-goal limit separately in natural
+language and reserve explicit closeout time.
 
 Set `budget.max_parallel` for normal runs. It is the initial number of
 long-lived candidate lanes.
@@ -114,8 +112,8 @@ Paste-ready Goal Plus scenarios use the same task-level contract:
    validation/promotion and Goal Plus audit, set terminal status, then render
    the Search report exactly once.
 
-Direct SearchSpec fixtures and deterministic scripts do not create a Goal Plus
-record, so a whole-goal time limit is not applicable to them.
+Test-only SearchSpec fixtures do not create a Goal Plus record, so a whole-goal
+time limit is not applicable to them.
 
 ## Host Flow
 
@@ -142,23 +140,6 @@ For both hosts:
    candidates based on score or rank.
 6. Drain workers, call `search_select`, record/promote the result, finish the
    Goal Plus audit, then call `search_report` after terminal status.
-
-## Scenario Guides
-
-| Scenario | Entry type | Whole-goal limit | Status |
-|---|---|---:|---|
-| [Circle Packing](circle-packing/README.md) | Pi/Codex Goal Plus | 5 minutes | recommended quick live run; standard library only |
-| [Codex/Pi orchestration monitor comparison](orchestration-monitor/README.md) | deterministic script | not applicable | maintained protocol demo |
-| [AscendC Direct Search](ascendc-direct-search/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
-| [CANNBench TileLang Ascend](cannbench-tilelang-ascend/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
-| [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | Pi Goal Plus using a dedicated frozen spec | 8 minutes | public C++ regression case; source template stays unchanged |
-| [Kernel Optimize](kernel-optimize/README.md) | Codex `$goal-plus` template | 30 minutes | environment-specific template |
-| [Model Optimize](model-optimize/README.md) | Pi/Codex Goal Plus | 10 minutes | runnable CPU example |
-| [Model Optimize GPU](model-opt-gpu/README.md) | Pi `/goal-plus` | 2 hours | WIP; not validated |
-| [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | Pi `/goal-plus` | 8 minutes | public EdgeBench-derived regression case; source template stays unchanged |
-
-The GPU model-optimization example is explicitly WIP and is not part of the
-maintained validation gate.
 
 ## Hidden-Answer QA
 

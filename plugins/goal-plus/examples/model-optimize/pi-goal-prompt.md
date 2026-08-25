@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 Optimize the Torch CPU model in the current directory.
+/goal-plus max_parallel=2 Optimize the read-only Torch CPU template in the current directory and deliver the result as a report without modifying the template.
 
 The entire Goal Plus task must reach a terminal status within 10 minutes of
 creation. Do not start or continue candidate work after 8 minutes; reserve the
@@ -6,17 +6,24 @@ remaining time to preserve the best valid result and complete final validation,
 promotion, reporting, and status finalization. No worker lease may exceed 6
 minutes.
 
-Improve `tokens_per_second` reported by `benchmark.py` while keeping
-`verify.py` valid. Keep the model on a single CPU core; do not increase
-PyTorch, OpenMP, MKL, or build job thread counts.
+Maximize the median `tokens_per_second` emitted by
+`workspace-template/.goal-plus-verifiers/torch_cpu_tokens.py --rank` while its
+`--validate` mode remains valid. Keep the model on a single CPU core; do not
+increase PyTorch, OpenMP, MKL, or build job thread counts.
 
-Agents may edit `model.py`, `serving.py`, and add implementation files under
-`ops/` or `cpp_ops/`. They must not edit `verify.py`, `benchmark.py`,
-`workload.json`, `single_thread.py`, or `cpp_reference/`. The vector tail may
-be fused into a C++ CPU operator when useful; treat
-`cpp_reference/fused_vector_tail.cpp` as a read-only reference and use
-`MAX_JOBS=1` for extension builds.
+Within isolated candidate workspaces, agents may edit `model.py`, `serving.py`,
+and add implementation files under `ops/` or `cpp_ops/`. Treat the checked-in
+`workspace-template/` as read-only. Candidates must not edit `verify.py`,
+`benchmark.py`, `workload.json`, `single_thread.py`, `cpp_reference/`, or
+`.goal-plus-verifiers/`. The vector tail may be fused into a C++ CPU operator
+when useful; treat `cpp_reference/fused_vector_tail.cpp` as a read-only
+reference and use `MAX_JOBS=1` for extension builds.
 
-Analyze the current workspace, discover and freeze the verifier-backed Search
-contract if the task is ready, run the fixed candidate lanes, promote the best
-valid result, and report the final `tokens_per_second`.
+Use `workspace-template` as the Search source path, the maintained
+`agent_guided` strategy, and a Git worktree-backed Search with two fixed lanes.
+Run the lanes, select and promote the best verifier-backed valid result, settle
+the Goal Plus record, and produce the compact result and canonical report. Keep
+the promotion patch under `.gp/`; do not apply it back to
+`workspace-template/`, and do not run `git apply` against the returned
+`source_path`. Before terminal settlement, confirm that `workspace-template/`
+remains unchanged.
