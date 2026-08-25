@@ -1112,8 +1112,16 @@ API key 以 `$AIBENCH_PI_API_KEY` 写进 `models.json` 并从子进程环境解�
 `stdin=DEVNULL`（pi 会把非 TTY 的 stdin 读到 EOF 并并入首条消息）。
 
 **已知的仪器差异**：pi 的工具控制只有整工具粒度（`--tools` / `--exclude-tools`），没有
-opencode 那样的 bash 命令名白名单。所以 pi 的行是在仓库之外拥有不受限 shell 的条件下测得的，
-报告须写明这一点。
+opencode 那样的 bash 命令名白名单。所以 pi 的行是在被保护的 checkout 之外拥有不受限 shell 的
+条件下测得的（含网络出口，而网关凭据在子进程环境里），报告须写明这一点。
+
+**已知未修：staging 目录不在保护范围内。** 被拒的是整个 checkout，而适配器生成的
+`models.json` / `settings.json` 与 seatbelt 配置本身都在 staging 里、与工作区同级，agent 走上
+一级就能读到——`_clean2026` 的基线轮里真有一条用例这么做了（`rev-9fbb2b58ef14ed55`，
+`cat sandbox.sb` 与 `cat pi-agent/models.json`，均成功）。这不泄漏用例答案（gold 解与隐藏测试
+在 checkout 里，被拒），也不泄漏 API key（`models.json` 里是 `$AIBENCH_PI_API_KEY` 这个变量名，
+不是值），但它泄漏网关地址与本次运行的工具配置。修法是把生成的配置移出工作区可达范围，
+或把 staging 的兄弟目录一并拒掉。
 
 ---
 
