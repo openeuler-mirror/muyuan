@@ -112,7 +112,8 @@ remain untracked.
 ```text
 tests/
   test_*.py                 # default unit/integration/asset tests
-  test_ascendc_goal_driven_example.py # AscendC generated-contract and knowledge tests
+  test_examples.py            # lightweight user-facing example guards
+  test_ascendc_assets.py       # AscendC materializer and generated-contract tests
   fixtures/                 # shared source workspaces
   st/
     conftest.py             # host preflight and prompt loading

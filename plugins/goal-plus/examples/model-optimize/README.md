@@ -23,11 +23,11 @@ python3 workspace-template/.goal-plus-verifiers/torch_cpu_tokens.py --rank
 
 ## Run with Codex
 
-Select the main model when starting Codex:
+Start Codex with the model already selected by your current configuration:
 
 ```bash
 cd examples/model-optimize
-codex -m gpt-5.6-terra -c model_reasoning_effort=max
+codex
 ```
 
 In the new Codex thread, paste the complete contents of
@@ -47,12 +47,11 @@ pi
 Then paste the complete contents of
 [`pi-goal-prompt.md`](pi-goal-prompt.md).
 
-The Pi prompt does not pin `main`, `annotator`, or `workers`; it uses the model
-already selected in Pi and the installed Goal Plus defaults. The Codex prompt
-retains explicit Codex-native role ids as a host-specific model-routing example.
-Goal Plus discovers the verifier, metric, edit surface, Search strategy, and
-host-specific worker launch from the example directory; no checked-in
-SearchSpec is required.
+Neither prompt pins `main`, `annotator`, or `workers`; each uses the active host
+model and the installed Goal Plus defaults. The dedicated explicit Terra/Luna
+model-routing demonstration is the Circle Packing Codex prompt. Goal Plus
+discovers the verifier, metric, edit surface, Search strategy, and host-specific
+worker launch from the example directory; no checked-in SearchSpec is required.
 Both ready-to-paste prompts require the entire Goal Plus task, including final
 validation and promotion/reporting, to reach a terminal status within 10 minutes
 of Goal Plus creation. Candidate work stops at 8 minutes, leaving 2 minutes for

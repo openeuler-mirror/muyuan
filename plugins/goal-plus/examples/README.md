@@ -87,7 +87,7 @@ Optional multi-model selection belongs in the same frozen strategy:
 {
   "models": [
     {"model": "gpt-5.6-terra", "count": 1},
-    {"model": "gpt-5.6-sol", "count": 3}
+    {"model": "gpt-5.6-luna", "count": 1}
   ]
 }
 ```
@@ -96,6 +96,12 @@ The main agent first calls `goal_plus_list_models` for the selected host.
 Counts must sum to `max_parallel`; omit all counts to round-robin the listed
 models. The runtime generates `selected_models`, so there is no separate
 creation-time allocation argument.
+
+Ordinary paste-ready prompts omit `main=`, `annotator=`, and `workers=` so they
+use the active host model and installed defaults. The
+[Circle Packing Codex prompt](circle-packing/codex-goal-prompt.md) is the one
+intentional exception: it demonstrates one Terra worker lane and one Luna
+worker lane, with Terra as the evidence annotator.
 
 ## Goal-driven scenario contract
 

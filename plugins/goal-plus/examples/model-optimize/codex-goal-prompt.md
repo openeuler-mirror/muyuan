@@ -1,4 +1,4 @@
-$goal-plus annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-luna max_parallel=2 Optimize the read-only Torch CPU template in the current directory and deliver the result as a report without modifying the template.
+$goal-plus max_parallel=2 Optimize the read-only Torch CPU template in the current directory and deliver the result as a report without modifying the template.
 
 The entire Goal Plus task must reach a terminal status within 10 minutes of
 creation. Do not start or continue candidate work after 8 minutes; reserve the

@@ -33,7 +33,9 @@ Then paste the complete contents of
 The Pi prompt does not pin `main`, `annotator`, or `workers`; it uses the model
 already selected in Pi and the installed Goal Plus defaults. This keeps the
 example runnable with any Pi model that supports the workflow. The Codex prompt
-retains explicit Codex-native role ids as a host-specific model-routing example.
+retains explicit Codex-native role ids as the sole host-specific model-routing
+example: one worker lane uses Terra, one uses Luna, and Terra performs evidence
+annotation.
 Goal Plus discovers the verifier, metric, edit surface, Search strategy, and
 host-specific worker launch from the current target directory.
 

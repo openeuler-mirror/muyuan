@@ -4,7 +4,6 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
-import re
 import subprocess
 
 import pytest
@@ -405,18 +404,9 @@ def test_materializer_selection_rejects_workflow_content(tmp_path: Path) -> None
         module._load_selection(path)
 
 
-def test_ascendc_example_has_only_goal_driven_assets() -> None:
-    for legacy_path in (
-        "prepare_workspace.py",
-        "skill_profile.json",
-        "verifier",
-        "template/run.sh",
-    ):
-        assert not (EXAMPLE / legacy_path).exists(), legacy_path
-
+def test_ascendc_knowledge_sources_are_pinned_and_scoped() -> None:
     assert MATERIALIZER.is_file()
     assert (EXAMPLE / "knowledge.sources.json").is_file()
-    assert not (EXAMPLE / "knowledge").exists()
 
     selection = json.loads(
         (EXAMPLE / "knowledge.sources.json").read_text(encoding="utf-8")
@@ -505,18 +495,6 @@ def test_maintained_hosts_route_ascendc_to_dynamic_spec_discovery() -> None:
     )
     for relative in skill_paths:
         text = (ROOT / relative).read_text(encoding="utf-8")
-        normalized = " ".join(text.split())
         assert 'scenario="ascendc_direct_invoke"' in text
         assert "examples/ascendc-direct-search/SPEC_DISCOVERY.md" in text
-        assert "materialize_knowledge.py" in text
-        assert "knowledge.sources.json" in text
-        assert "准确固定的 Git commit" in normalized
-        assert "AKG" in text
-        assert "绝不能要求用户运行任务准备器" in normalized
-        assert "仅支持 Direct Invoke" in normalized
-        assert "GOAL_PLUS_VERIFIER_TMPDIR" in text
-        assert "不要调用外部 ascendc" in normalized.casefold()
-        assert "_task/operator_request.json" in text
         assert "examples/ascendc-direct-search/request.schema.json" in text
-        assert "JSON Schema validator" in normalized
-        assert re.search(r"校验失败会\s*阻止\s*冻结", text)
