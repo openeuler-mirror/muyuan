@@ -49,10 +49,40 @@ def test_circle_packing_prompt_is_a_five_minute_interactive_pi_goal() -> None:
     assert "after 4 minutes" in prompt
     assert "No worker lease may\nexceed 3 minutes" in prompt
     assert "Git worktree-backed Search" in prompt
+    assert "maintained `agent_guided` strategy" in prompt
+    assert "`../search-spec.json` as the authoritative" in prompt
+    assert '`source_path` to `"."`' in prompt
+    assert "regular row/grid construction" in prompt
     assert "cd examples/circle-packing/workspace" in readme
     assert "pi --model openai-codex/gpt-5.6-terra" in readme
     assert "Then paste the complete contents of" in readme
     assert "$(cat examples/circle-packing/pi-goal-prompt.md)" not in readme
+
+
+def test_circle_packing_prompt_is_a_five_minute_interactive_codex_goal() -> None:
+    prompt = (EXAMPLE / "codex-goal-prompt.md").read_text(encoding="utf-8")
+    readme = (EXAMPLE / "README.md").read_text(encoding="utf-8")
+    first_line = prompt.splitlines()[0]
+
+    assert first_line.startswith("$goal-plus annotator=")
+    assert " main=" not in first_line
+    assert "annotator=gpt-5.6-terra" in first_line
+    assert "workers=gpt-5.6-terra,gpt-5.6-luna" in first_line
+    assert "max_parallel=2" in first_line
+    assert "current directory" in first_line
+    assert ".goal-plus-verifiers/circle_packing_score.py" in prompt
+    assert "within 5 minutes" in prompt
+    assert "after 4 minutes" in prompt
+    assert "No worker lease may\nexceed 3 minutes" in prompt
+    assert "Git worktree-backed Search" in prompt
+    assert "maintained `agent_guided` strategy" in prompt
+    assert "`../search-spec.json` as the authoritative" in prompt
+    assert '`source_path` to `"."`' in prompt
+    assert '`worker_host="codex"' in prompt
+    assert '`worker_agent_type="search_candidate_agent"' in prompt
+    assert "regular row/grid construction" in prompt
+    assert "codex -m gpt-5.6-terra -c model_reasoning_effort=max" in readme
+    assert "[`codex-goal-prompt.md`](codex-goal-prompt.md)" in readme
 
 
 def test_circle_packing_example_owns_its_user_facing_workspace() -> None:

@@ -53,4 +53,5 @@ verifier 必须保持候选工作区只读，并使用唯一的 `GOAL_PLUS_VERIF
 
 在 Search 执行、提升、结果记录或最终原始目标审计期间，绝不能调用 `search_report`。
 Goal Plus 记录达到终态后，对每个成功记录的 `run_id` 调用且只调用一次 `search_report`，
-并返回最终 Markdown 和 HTML 路径。
+交互式 Pi 不在自然语言回复中重复报告路径；由 extension 的可展开完成卡展示。非交互输出遵循
+goal-plus skill 的紧凑终态格式。

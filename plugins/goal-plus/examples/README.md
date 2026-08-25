@@ -9,7 +9,7 @@ condition or closeout boundary is true.
 ## Start Here: Five-Minute Live Run
 
 Use [Circle Packing](circle-packing/README.md) to observe a real Pi `/goal-plus`
-flow. It launches two native candidate lanes, runs a public
+or Codex `$goal-plus` flow. It launches two native candidate lanes, runs a public
 correctness-and-score verifier, selects and promotes a valid result, and settles
 the Goal Plus record within a five-minute whole-task contract. The workspace
 uses only the Python standard library and its verifier is fast enough for
@@ -23,7 +23,7 @@ Codex worker execution.
 
 | Spec | Source | Purpose |
 |---|---|---|
-| `circle-packing/search-spec.json` | `examples/circle-packing/workspace` | five-minute Pi numeric optimization with two lanes |
+| `circle-packing/search-spec.json` | `examples/circle-packing/workspace` | five-minute Pi/Codex numeric optimization with two lanes |
 | `k_module_search_spec.json` | `tests/fixtures/k_module_problem` | small multi-file correctness and score fixture |
 | `signal_processing_search_spec.json` | `tests/fixtures/signal_processing` | wider parallel score fixture |
 | `multi-model-signal-spec.json` | `tests/fixtures/signal_processing` | bounded multi-model Codex fixture |
@@ -148,7 +148,7 @@ For both hosts:
 
 | Scenario | Entry type | Whole-goal limit | Status |
 |---|---|---:|---|
-| [Circle Packing](circle-packing/README.md) | Pi `/goal-plus` | 5 minutes | recommended quick live run; standard library only |
+| [Circle Packing](circle-packing/README.md) | Pi/Codex Goal Plus | 5 minutes | recommended quick live run; standard library only |
 | [Codex/Pi orchestration monitor comparison](orchestration-monitor/README.md) | deterministic script | not applicable | maintained protocol demo |
 | [AscendC Direct Search](ascendc-direct-search/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
 | [CANNBench TileLang Ascend](cannbench-tilelang-ascend/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |

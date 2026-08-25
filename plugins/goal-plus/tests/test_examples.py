@@ -139,6 +139,11 @@ def test_standard_host_backed_specs_declare_the_bounded_parallel_contract(
             "after 4 minutes",
         ),
         (
+            "circle-packing/codex-goal-prompt.md",
+            "within 5 minutes",
+            "after 4 minutes",
+        ),
+        (
             "model-opt-gpu/bert_pytorch_v100_goal_plus.md",
             "within 2 hours",
             "after 100 minutes",
