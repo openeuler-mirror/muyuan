@@ -10,11 +10,8 @@ SearchSpec 进行显式底层调试。普通用户入口是 `$goal-plus`。
 
 使用 `goal-plus` MCP server 暴露的逻辑 `search_*` 工具。Codex 可能显示带客户端特定
 前缀的 MCP 工具；按最后的逻辑工具名匹配。
-Codex 0.146 的 MCP 工具位于 `functions.exec` 的 `tools` namespace，不是顶层函数。
-在该 JavaScript tool runtime 中从 `ALL_TOOLS` 按逻辑名后缀（例如
-`search_freeze_spec`）找到实际名称，再调用 `tools` 上对应的 MCP 方法；当前常见名称形如
-`tools.mcp__goal_plus__search_freeze_spec(args)`。这种调用会留下 `mcp_tool_call` 事件，
-属于 Codex 原生 MCP tool call。不要因为顶层不存在同名函数就判断工具缺失。
+Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registry 中与逻辑名匹配的
+工具，例如 `search_freeze_spec`。成功调用会留下 `mcp_tool_call` 事件。
 `list_mcp_resources` 和 `list_mcp_resource_templates` 不会列出 MCP tool，空结果也不是
 Search tool 缺失证据；不得用它们探测工具。不得通过 `exec_command`、shell、Python
 或手写 stdio client 调用 Goal Plus server，也不得以这种旁路代替上述原生 MCP tool call。

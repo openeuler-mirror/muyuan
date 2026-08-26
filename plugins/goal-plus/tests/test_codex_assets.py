@@ -203,12 +203,11 @@ def test_codex_skills_use_native_mcp_tools_without_resource_discovery() -> None:
         assert "list_mcp_resources" in text
         assert "list_mcp_resource_templates" in text
         assert "不枚举 tool" in normalized or "不会列出 MCP tool" in normalized
-        assert "`functions.exec` 的 `tools` namespace" in normalized
-        assert "`ALL_TOOLS`" in text
+        assert "原生 MCP tools" in normalized
+        assert "直接调用当前 tool registry" in normalized
         assert "`mcp_tool_call`" in text
-        assert "不要因为顶层不存在同名函数就判断工具缺失" in normalized
         assert "shell、Python" in normalized
-        assert "Codex 原生 MCP tool call" in normalized
+        assert "原生 MCP tool call" in normalized
 
 
 def test_codex_search_skill_projects_launch_metadata_to_current_tool_schema() -> None:
