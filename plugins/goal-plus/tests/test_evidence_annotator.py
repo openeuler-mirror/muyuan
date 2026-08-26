@@ -823,6 +823,18 @@ def test_permanent_failure_is_not_retried_and_selection_does_not_cancel_view(
     assert monitor["detail"] is None
 
 
+def test_process_failure_detail_reports_stdout_and_stderr() -> None:
+    detail = annotator_module._process_failure_detail(
+        "Missing environment variable: SUB2API_API_KEY\n",
+        "remote MCP request failed with HTTP 403\n",
+    )
+
+    assert detail == (
+        "[stdout]\nMissing environment variable: SUB2API_API_KEY\n"
+        "[stderr]\nremote MCP request failed with HTTP 403"
+    )
+
+
 def test_wait_for_retries_settles_transient_view_after_promotion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

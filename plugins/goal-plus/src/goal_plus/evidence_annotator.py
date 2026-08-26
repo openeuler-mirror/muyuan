@@ -466,6 +466,20 @@ def _timeout_output(exc: subprocess.TimeoutExpired, name: str) -> str:
     return _output_text(getattr(exc, name, None))
 
 
+def _process_failure_detail(stdout: str, stderr: str) -> str:
+    streams = [
+        (name, output.strip())
+        for name, output in (("stdout", stdout), ("stderr", stderr))
+        if output.strip()
+    ]
+    if not streams:
+        return "no process output"
+    tail_chars = ANNOTATION_MONITOR_TAIL_CHARS // len(streams)
+    return "\n".join(
+        f"[{name}]\n{output[-tail_chars:]}" for name, output in streams
+    )
+
+
 def _collect_after_termination(
     process: subprocess.Popen[str],
     stdout: str,
@@ -918,7 +932,7 @@ class CodexEvidenceAnnotator:
                 finally:
                     self._active_process = None
             if process.returncode != 0:
-                detail = (stderr or stdout).strip()[-2000:]
+                detail = _process_failure_detail(stdout, stderr)
                 error = f"codex exec exited {process.returncode}: {detail}"
                 usage = self._usage(stdout, str(model) if model else None)
                 monitor.observe(
@@ -1201,7 +1215,7 @@ class PiEvidenceAnnotator:
                 finally:
                     self._active_process = None
             if process.returncode != 0:
-                detail = (stderr or stdout).strip()[-2000:]
+                detail = _process_failure_detail(stdout, stderr)
                 error = f"pi exited {process.returncode}: {detail}"
                 monitor.observe(
                     "failed",
