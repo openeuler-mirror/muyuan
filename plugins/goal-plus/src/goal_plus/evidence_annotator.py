@@ -17,6 +17,7 @@ import uuid
 from pydantic import Field, field_validator
 
 from goal_plus.codex_pricing import estimate_codex_request_cost
+from goal_plus.host_observability import normalize_pi_cost
 from goal_plus.models import (
     EvidenceComparisonReference,
     EvidenceAnnotationTask,
@@ -1019,8 +1020,19 @@ class PiEvidenceAnnotator:
                 usage[target] = int(value)
         cost = raw.get("cost")
         if isinstance(cost, dict):
-            total = cost.get("total")
-            if isinstance(total, (int, float)) and not isinstance(total, bool):
+            processed_tokens = sum(
+                usage.get(field, 0)
+                for field in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cached_input_tokens",
+                    "cache_write_tokens",
+                )
+            )
+            total = normalize_pi_cost(
+                cost.get("total"), processed_tokens=processed_tokens
+            )
+            if total is not None:
                 usage["cost_usd"] = float(total)
         return usage
 

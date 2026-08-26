@@ -22,6 +22,7 @@ from goal_plus.evidence_annotator import (
     HostEvidenceAnnotator,
     AnnotationOutputError,
     PermanentAnnotationError,
+    PiEvidenceAnnotator,
     TransientAnnotationError,
     drain_evidence_annotations,
     kick_evidence_annotator,
@@ -32,6 +33,23 @@ from tests._runtime_helpers import make_project, spec_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_pi_annotator_omits_unknown_zero_cost() -> None:
+    usage = PiEvidenceAnnotator._usage(
+        {
+            "usage": {
+                "input": 100,
+                "output": 20,
+                "cacheRead": 50,
+                "cacheWrite": 0,
+                "cost": {"total": 0},
+            }
+        }
+    )
+
+    assert usage["input_tokens"] == 100
+    assert "cost_usd" not in usage
 
 
 def test_annotator_actor_terminology_is_consistent_across_repository() -> None:

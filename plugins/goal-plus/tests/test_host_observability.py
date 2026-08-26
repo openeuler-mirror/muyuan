@@ -10,6 +10,7 @@ from goal_plus.host_observability import (
     collect_codex_transcript_observability,
     collect_pi_observability,
     discover_codex_session_file,
+    normalize_pi_usage,
 )
 from goal_plus.models import AgentHostHandle, AgentSessionRecord
 
@@ -218,6 +219,22 @@ def test_pi_observability_normalizes_legacy_metrics(tmp_path: Path) -> None:
     assert result["usage"]["tool_results"] == 6
     assert result["usage"]["cost_usd"] == 0.1
     assert result["context"]["tokens"] == 12000
+
+
+def test_pi_usage_treats_zero_cost_with_tokens_as_unavailable() -> None:
+    usage = normalize_pi_usage(
+        {
+            "input": 100,
+            "output": 20,
+            "cacheRead": 50,
+            "cacheWrite": 0,
+            "costTotal": 0,
+        },
+        scope="test",
+    )
+
+    assert usage["processed_tokens"] == 170
+    assert usage["cost_usd"] is None
 
 
 def test_codex_transcript_observability_reports_window_delta_without_content(

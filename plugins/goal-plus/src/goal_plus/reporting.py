@@ -12,6 +12,7 @@ from typing import Any
 from goal_plus._version import __version__
 from goal_plus.agent_hosts import get_agent_host_adapter
 from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.host_observability import normalize_pi_cost
 from goal_plus.models import (
     AgentSessionRecord,
     CandidateRecord,
@@ -1122,7 +1123,9 @@ def _pi_dispatch_usage(usage: Any) -> tuple[float | None, float | None]:
         if any(value is not None for value in token_parts)
         else None
     )
-    return processed_tokens, _finite_float(usage.get("costTotal"))
+    return processed_tokens, normalize_pi_cost(
+        usage.get("costTotal"), processed_tokens=processed_tokens
+    )
 
 
 def _timeline_performance(

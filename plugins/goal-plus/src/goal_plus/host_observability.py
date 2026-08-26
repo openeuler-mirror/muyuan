@@ -65,6 +65,15 @@ def _string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def normalize_pi_cost(
+    value: Any, *, processed_tokens: int | float | None
+) -> int | float | None:
+    cost = _number(value)
+    if cost == 0 and processed_tokens not in {None, 0}:
+        return None
+    return cost
+
+
 def _timestamp_epoch(value: str | None) -> float | None:
     if not value:
         return None
@@ -171,9 +180,12 @@ def normalize_pi_usage(value: Any, *, scope: str) -> dict[str, Any]:
         if any(value is not None for value in processed_components)
         else None
     )
-    cost = _number(usage.get("costTotal"))
-    if cost is None:
-        cost = _number(usage.get("cost"))
+    raw_cost = usage.get("costTotal")
+    if raw_cost is None:
+        raw_cost = usage.get("cost")
+        if isinstance(raw_cost, dict):
+            raw_cost = raw_cost.get("total")
+    cost = normalize_pi_cost(raw_cost, processed_tokens=processed_tokens)
     return {
         "scope": scope,
         "input_tokens": input_tokens,
