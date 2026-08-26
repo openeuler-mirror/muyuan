@@ -10,10 +10,15 @@ description: 运行、恢复或编辑 Codex Goal Plus 任务，包括需要独�
 
 使用 `goal-plus` MCP server 暴露的逻辑 `goal_plus_*` 和 `search_*` 工具。
 Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工具名匹配。
-直接调用本 skill 指定的逻辑工具。`list_mcp_resources` 和
-`list_mcp_resource_templates` 只枚举 MCP resource，不枚举 tool，空结果也不表示
-Goal Plus tool 不可用；不得用它们做 tool discovery。不得通过 shell、Python 或手写
-stdio client 调用 Goal Plus server，也不得用这类旁路代替 Codex 原生 MCP tool call。
+Codex 0.146 的 MCP 工具位于 `functions.exec` 的 `tools` namespace，不是顶层函数。
+在该 JavaScript tool runtime 中从 `ALL_TOOLS` 按逻辑名后缀（例如
+`goal_plus_status`）找到实际名称，再调用 `tools` 上对应的 MCP 方法；当前常见名称形如
+`tools.mcp__goal_plus__goal_plus_status(args)`。这种调用会留下 `mcp_tool_call` 事件，
+属于 Codex 原生 MCP tool call。不要因为顶层不存在同名函数就判断工具缺失。
+`list_mcp_resources` 和 `list_mcp_resource_templates` 只枚举 MCP resource，不枚举 tool，
+空结果也不表示 Goal Plus tool 不可用；不得用它们做 tool discovery。不得通过
+`exec_command`、shell、Python 或手写 stdio client 调用 Goal Plus server，也不得用
+这类旁路代替上述原生 MCP tool call。
 
 ## 工作流
 
