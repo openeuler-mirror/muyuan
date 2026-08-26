@@ -1,25 +1,36 @@
 # Examples
 
-The checked-in examples are either bounded `/goal-plus` scenarios, direct
-SearchSpec/runtime fixtures, or deterministic protocol demos. Maintained Search
-runs create one initial plan, materialize a fixed set of candidate workspaces,
-and resume those same candidates only until the enclosing task's global stop
-condition or closeout boundary is true.
+This directory contains only user-facing Goal Plus scenarios with a distinct
+reason to exist. Test-only SearchSpecs live beside their owning fixtures under
+`tests/fixtures/`; deterministic protocol diagnostics live under `scripts/`.
 
-## SearchSpec Files
+An example belongs here only when it has a concrete user entry, a measurable
+acceptance contract, and a capability that is not already demonstrated more
+simply by another scenario. Unvalidated future ideas and duplicate environment
+preparers do not belong in the supported examples index.
 
-| Spec | Source | Purpose |
-|---|---|---|
-| `circle_packing_search_spec.json` | `tests/fixtures/circle_packing` | numeric optimization with two lanes |
-| `k_module_search_spec.json` | `tests/fixtures/k_module_problem` | small multi-file correctness and score fixture |
-| `signal_processing_search_spec.json` | `tests/fixtures/signal_processing` | wider parallel score fixture |
-| `multi-model-signal-spec.json` | `tests/fixtures/signal_processing` | bounded multi-model Codex fixture |
-| `edgebench_ad_placement_search_spec.json` | `examples/edgebench-ad-placement/workspace` | public-score C++ workflow |
-| `swe_bench_20212_search_spec.json` | `tests/fixtures/swe_bench_20212` | repository patching fixture |
-| `workspace-backends/git_worktree_search_spec.json` | `examples/workspace-backends/source` | Git worktree materialization demo |
+## Start Here: Five-Minute Live Run
 
-Paths in specs are repository-relative so tests and host agents can load them
-without machine-specific configuration.
+Use [Circle Packing](circle-packing/README.md) to observe a real Pi `/goal-plus`
+or Codex `$goal-plus` flow. It launches two native candidate lanes, runs a public
+correctness-and-score verifier, selects and promotes a valid result, and settles
+the Goal Plus record within a five-minute whole-task contract. The workspace
+uses only the Python standard library and its verifier is fast enough for
+several optimization iterations during the short run.
+
+## Why Each Example Exists
+
+| Scenario | Unique motivation | Entry | Requirements |
+|---|---|---|---|
+| [Circle Packing](circle-packing/README.md) | shortest end-to-end progress and completion-card demo | Pi or Codex Goal Plus, 5 minutes | Python standard library |
+| [Model Optimize](model-optimize/README.md) | realistic CPU/PyTorch optimization on both maintained hosts | Pi or Codex Goal Plus, 10 minutes | PyTorch |
+| [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | program/schedule optimization with a simulator correctness gate | Pi Goal Plus, 8 minutes | Python standard library |
+| [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | compiled C++ optimization with ten public cases | Pi Goal Plus, 8 minutes | C++17 compiler |
+| [AscendC Direct Search](ascendc-direct-search/README.md) | the single supported dynamic NPU task-generation path | Pi Goal Plus, 60 minutes | target Ascend NPU and references |
+
+Circle Packing and Ad Placement own checked-in SearchSpecs beside their
+read-only workspace templates. The other scenarios intentionally exercise
+Goal Plus Spec Discovery or user-supplied target material.
 
 ## Strategy Contract
 
@@ -60,12 +71,11 @@ Maintained hosts are Codex and Pi RPC. Use one of these strategy shapes:
 the main agent to provide the initial lane intents to `search_start_batch`.
 Neither strategy permits a second `search_plan_next` call.
 
-Outside the established EdgeBench Ad regression spec, maintained host-backed
-SearchSpecs declare `orchestration_mode`, `worker_host`, and a finite
-`worker_budget`. `worker_budget` limits one worker dispatch or renewable lease;
-it is not the maximum duration of a whole Goal Plus task. Paste-ready goal
-scenarios state their whole-goal limit separately in natural language and
-reserve explicit closeout time.
+Maintained host-backed SearchSpecs declare `orchestration_mode`, `worker_host`,
+and a finite `worker_budget`. `worker_budget` limits one worker dispatch or
+renewable lease; it is not the maximum duration of a whole Goal Plus task.
+Paste-ready goal scenarios state their whole-goal limit separately in natural
+language and reserve explicit closeout time.
 
 Set `budget.max_parallel` for normal runs. It is the initial number of
 long-lived candidate lanes.
@@ -77,7 +87,7 @@ Optional multi-model selection belongs in the same frozen strategy:
 {
   "models": [
     {"model": "gpt-5.6-terra", "count": 1},
-    {"model": "gpt-5.6-sol", "count": 3}
+    {"model": "gpt-5.6-luna", "count": 1}
   ]
 }
 ```
@@ -87,10 +97,15 @@ Counts must sum to `max_parallel`; omit all counts to round-robin the listed
 models. The runtime generates `selected_models`, so there is no separate
 creation-time allocation argument.
 
+Ordinary paste-ready prompts omit `main=`, `annotator=`, and `workers=` so they
+use the active host model and installed defaults. The
+[Circle Packing Codex prompt](circle-packing/codex-goal-prompt.md) is the one
+intentional exception: it demonstrates one Terra worker lane and one Luna
+worker lane, with Terra as the evidence annotator.
+
 ## Goal-driven scenario contract
 
-Except for the established EdgeBench Ad Placement and VLIW regression cases,
-paste-ready Goal Plus scenarios use the same task-level contract:
+Paste-ready Goal Plus scenarios use the same task-level contract:
 
 1. Start with the native `/goal-plus` or `$goal-plus` entry.
 2. State a finite whole-goal limit measured from Goal Plus creation, plus a
@@ -103,8 +118,8 @@ paste-ready Goal Plus scenarios use the same task-level contract:
    validation/promotion and Goal Plus audit, set terminal status, then render
    the Search report exactly once.
 
-Direct SearchSpec fixtures and deterministic scripts do not create a Goal Plus
-record, so a whole-goal time limit is not applicable to them.
+Test-only SearchSpec fixtures do not create a Goal Plus record, so a whole-goal
+time limit is not applicable to them.
 
 ## Host Flow
 
@@ -131,35 +146,6 @@ For both hosts:
    candidates based on score or rank.
 6. Drain workers, call `search_select`, record/promote the result, finish the
    Goal Plus audit, then call `search_report` after terminal status.
-
-## Workspace Backends
-
-`workspace.backend="copy"` is useful for simple fixtures. The default
-`git_worktree` backend creates one branch/worktree per initial lane and keeps
-verifier-backed Git revisions available for final selection.
-
-Run the host-free worktree demo with:
-
-```bash
-python examples/workspace-backends/run_demo.py --runtime-root .tmp/worktree-demo
-```
-
-## Scenario Guides
-
-| Scenario | Entry type | Whole-goal limit | Status |
-|---|---|---:|---|
-| [Codex/Pi orchestration monitor comparison](orchestration-monitor/README.md) | deterministic script | not applicable | maintained protocol demo |
-| [AscendC Direct Search](ascendc-direct-search/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
-| [CANNBench TileLang Ascend](cannbench-tilelang-ascend/README.md) | Pi `/goal-plus` | 60 minutes | target NPU required |
-| [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | dedicated frozen spec | scenario-specific | established regression case; unchanged |
-| [Kernel Optimize](kernel-optimize/README.md) | Codex `$goal-plus` template | 30 minutes | environment-specific template |
-| [Model Optimize](model-optimize/README.md) | Pi/Codex Goal Plus | 10 minutes | runnable CPU example |
-| [Model Optimize GPU](model-opt-gpu/README.md) | Pi `/goal-plus` | 2 hours | WIP; not validated |
-| [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | Pi `/goal-plus` | scenario-specific | established regression case; unchanged |
-| [Git Worktree Backend](workspace-backends/README.md) | deterministic script | not applicable | host-free runtime E2E |
-
-The GPU model-optimization example is explicitly WIP and is not part of the
-maintained validation gate.
 
 ## Hidden-Answer QA
 

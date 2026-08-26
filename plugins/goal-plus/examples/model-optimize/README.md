@@ -1,9 +1,9 @@
 # Model Optimize Example
 
-The runnable target is [`torch-cpu-target/`](torch-cpu-target/). That directory
-is intentionally limited to the deterministic single-core PyTorch workload,
-correctness verifier, throughput benchmark, profiling helper, and read-only C++
-reference used by the optimization task.
+The runnable target is the tracked, read-only
+[`workspace-template/`](workspace-template/). It contains the deterministic
+single-core PyTorch workload, correctness verifier, throughput benchmark,
+profiling helper, and read-only C++ reference used by the optimization task.
 
 ## Prerequisites
 
@@ -14,19 +14,20 @@ reference used by the optimization task.
 Check the untouched target first:
 
 ```bash
-cd examples/model-optimize/torch-cpu-target
-python verify.py
-python benchmark.py
-python profile.py
+cd examples/model-optimize
+python3 workspace-template/verify.py
+python3 workspace-template/benchmark.py
+python3 workspace-template/profile.py
+python3 workspace-template/.goal-plus-verifiers/torch_cpu_tokens.py --rank
 ```
 
 ## Run with Codex
 
-Select the main model when starting Codex:
+Start Codex with the model already selected by your current configuration:
 
 ```bash
-cd examples/model-optimize/torch-cpu-target
-codex -m gpt-5.6-terra -c model_reasoning_effort=max
+cd examples/model-optimize
+codex
 ```
 
 In the new Codex thread, paste the complete contents of
@@ -39,22 +40,28 @@ no project-local `.codex/` configuration.
 Start the installed Pi package from the target directory:
 
 ```bash
-cd examples/model-optimize/torch-cpu-target
-pi --model openai-codex/gpt-5.6-terra --thinking max
+cd examples/model-optimize
+pi
 ```
 
 Then paste the complete contents of
 [`pi-goal-prompt.md`](pi-goal-prompt.md).
 
-In both hosts, the main model is selected before Goal Plus starts and neither
-prompt includes `main=`. Model qualification differs because Pi uses
-`provider/model`, while Codex uses its native model id. Goal Plus discovers the
-verifier, metric, edit surface, Search strategy, and host-specific worker launch
-from the current target directory; no checked-in SearchSpec is required.
+Neither prompt pins `main`, `annotator`, or `workers`; each uses the active host
+model and the installed Goal Plus defaults. The dedicated explicit Terra/Luna
+model-routing demonstration is the Circle Packing Codex prompt. Goal Plus
+discovers the verifier, metric, edit surface, Search strategy, and host-specific
+worker launch from the example directory; no checked-in SearchSpec is required.
 Both ready-to-paste prompts require the entire Goal Plus task, including final
 validation and promotion/reporting, to reach a terminal status within 10 minutes
 of Goal Plus creation. Candidate work stops at 8 minutes, leaving 2 minutes for
 closeout, and each worker lease is capped at 6 minutes.
+
+Run Goal Plus from `model-optimize/`, not from `workspace-template/`. Search
+candidates edit isolated worktrees under the ignored `.gp/` directory. The
+selected promotion patch and canonical reports remain under `.gp/`; neither
+prompt applies the result back to the tracked template. The old
+`torch-cpu-target/` path is ignored only to preserve local historical runs.
 
 ## Target contract
 
@@ -66,6 +73,6 @@ closeout, and each worker lease is capped at 6 minutes.
 - Increasing PyTorch, OpenMP, MKL, or build thread counts is invalid.
 
 The optional C++ reference in
-`torch-cpu-target/cpp_reference/fused_vector_tail.cpp` shows a single-threaded
+`workspace-template/cpp_reference/fused_vector_tail.cpp` shows a single-threaded
 fused operator pattern; it is evidence for agents, not a required
 implementation.

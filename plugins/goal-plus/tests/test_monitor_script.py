@@ -12,7 +12,7 @@ from tests._runtime_helpers import make_project, spec_for
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "monitor_goal_plus.sh"
-COMPARISON = ROOT / "examples" / "orchestration-monitor" / "compare_hosts.py"
+COMPARISON = ROOT / "scripts" / "compare_orchestration_hosts.py"
 
 
 def _script_env() -> dict[str, str]:

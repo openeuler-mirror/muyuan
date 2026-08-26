@@ -34,17 +34,18 @@ STOP_GATE_INTERCEPTION_PROMPT = (
     "状态设为 complete，并输出精确标记 SECOND_TURN_AFTER_HOOK。"
 )
 AUTONOMOUS_OPTIMIZATION_PROMPT = (
-    "优化 examples/edgebench-ad-placement/workspace 中的广告矩形布局程序："
+    "优化 examples/edgebench-ad-placement/workspace-template 中的广告矩形布局程序："
     "在保持所有公开案例输出合法的前提下，尽量提高综合得分。"
     "先自行检查工作区，找出可重复的评估方法、优化指标和安全的修改边界，"
     "再由 Goal Plus 自主选择合适的执行方式，不要等待额外的用户确认。"
     "这是一个低成本冒烟验证：最多探索 1 个候选，并行度为 1，单个候选最多运行 "
     "60 秒和 4 轮。只允许修改 solution.cpp，不要修改工作区中的其他文件。"
-    "完成后应用最佳的可验证结果、报告最终得分，并把 Goal Plus 状态设为 complete。"
+    "完成后提升最佳的可验证结果并报告最终得分，但不要把 promotion patch 应用回只读的 "
+    "workspace-template；最后把 Goal Plus 状态设为 complete。"
 )
 MULTI_SEARCH_PROMPT = (
     "在同一个 Goal Plus 任务里顺序运行两个最小但完整的 Pi search task。两次都读取 "
-    "examples/edgebench_ad_placement_search_spec.json，并冻结其中的 "
+    "examples/edgebench-ad-placement/search-spec.json，并冻结其中的 "
     ".goal-plus-verifiers/ad_local_score.py、tools/bin/gen、tools/bin/tester。"
     "第一个 SearchSpec 使用 strategy.name=random，第二个使用 strategy.name=agent_guided；"
     "两次都设置 worker_host=pi-rpc、orchestration_mode=parallel_loops、"

@@ -467,7 +467,7 @@ def test_initial_search_ready_spec_autonomously_allows_freeze(tmp_path) -> None:
             confidence="high",
             recommended_phase="search",
             identified_at="initial",
-            scenario="kernel-optimize",
+            scenario="latency-optimization",
             reasons=["latency benchmark exists"],
         ),
     )
@@ -565,7 +565,7 @@ def test_high_confidence_spec_draft_links_search_and_final_audit(tmp_path) -> No
             confidence="high",
             recommended_phase="search",
             identified_at="in_progress",
-            scenario="kernel-optimize",
+            scenario="latency-optimization",
             reasons=["latency benchmark exists"],
         ),
     )

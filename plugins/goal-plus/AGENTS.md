@@ -26,19 +26,6 @@ Read only the page that owns the question:
 - [tests/README.md](tests/README.md): unit/integration/system test layout and
   commands.
 
-## Code Discovery
-
-Prefer the codebase knowledge graph tools when available:
-
-- `search_graph` for functions, classes, and symbols.
-- `get_code_snippet` for exact source after locating a symbol.
-- `trace_path` or `query_graph` when available for call relationships and
-  structural queries.
-
-If the graph server is unavailable or the target is a non-code file, use `rg`
-or `rg --files`. Use `rg` for docs, config values, string literals, prompts,
-fixtures, and test assets.
-
 ## Core Boundary
 
 This project is a `/goal-plus` runtime with an internal Search Mode engine. Its

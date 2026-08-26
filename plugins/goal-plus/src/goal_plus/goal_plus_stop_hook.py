@@ -50,7 +50,7 @@ def _hook_disabled() -> bool:
     )
 
 
-def _find_session_root() -> Path:
+def _find_session_root(hook_input: dict[str, Any] | None = None) -> Path:
     override = os.environ.get("GOAL_PLUS_PROJECT_ROOT")
     if override:
         return Path(override).expanduser().resolve()
@@ -60,6 +60,19 @@ def _find_session_root() -> Path:
         return Path(claude_project_dir).expanduser().resolve()
 
     cwd = Path.cwd().resolve()
+    request = _goal_plus_request(hook_input) if hook_input is not None else None
+    if (
+        hook_input is not None
+        and _hook_event_name(hook_input) == "UserPromptSubmit"
+        and request is not None
+        and request.get("action") == "start"
+    ):
+        # The MCP server resolves its default `.gp` root from the Codex thread
+        # cwd. A new Goal Plus request must use that same cwd even when it is
+        # nested inside a larger Git repository. Edit/resume requests still scan
+        # upward so an existing parent task remains discoverable. Later main and
+        # candidate hooks rediscover the newly created nearest `.gp` root.
+        return cwd
     for candidate in (cwd, *cwd.parents):
         if (
             (candidate / DEFAULT_RUNTIME_ROOT).exists()
@@ -1636,7 +1649,7 @@ def main() -> int:
         return 0
 
     hook_input = _read_hook_input()
-    session_root = _find_session_root()
+    session_root = _find_session_root(hook_input)
     search_root = _search_root(session_root)
 
     try:

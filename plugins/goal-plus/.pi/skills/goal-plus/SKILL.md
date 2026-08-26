@@ -257,7 +257,14 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
     通过的必需检查会原子地把记录标记为 complete。
 13. 只有 Goal Plus 记录达到终态（`complete`、`blocked` 或 `abandoned`）后，才对每个
     成功记录的 `run_id` 调用且只调用一次 `search_report`。绝不能生成中间 Goal Plus
-    报告。向用户返回最终 Markdown 和 HTML 路径。
+    报告。交互式 Pi 由可展开完成卡展示最终 Markdown 和 HTML 路径；非交互输出遵循下一步的
+    紧凑终态格式。
+14. 不要为了最终展示再显式调用一次 `goal_plus_monitor_snapshot`。交互式 Pi extension 会在
+    `agent_end` 后静默读取持久化终态，并追加唯一的可展开完成卡；重复的显式调用只会制造一块
+    可见工具输出。最终回复严格只写一句：`Goal Plus 已结算，结果见下方完成卡。` 不要重复结果、
+    验证、修改、报告、耗时、`goal_plus_id`、`search_tasks`、token 或成本，也不要另写
+    “Goal Plus 统计”段落。只有在非交互 print/JSON 模式没有完成卡时，才使用已有的持久化结果
+    输出一个结论行和至多 `结果`、`验证`、`修改`、`报告` 四个字段；不要仅为排版追加 monitor 调用。
 
 顶层 stop gate 会阻止每条仍处于 active 的 Goal Plus 记录，并返回完整当前原始目标以及
 创建/检查时间戳和已用时间。使用该 prompt 审计全部要求和目标中已有的任何时间条件。

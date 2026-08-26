@@ -14,7 +14,8 @@ from goal_plus.models import SearchSpec
 
 ROOT = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.example
-WORKSPACE = ROOT / "examples" / "edgebench-ad-placement" / "workspace"
+EXAMPLE = ROOT / "examples" / "edgebench-ad-placement"
+WORKSPACE = EXAMPLE / "workspace-template"
 GENERATOR = WORKSPACE / "tools" / "bin" / "gen"
 TESTER = WORKSPACE / "tools" / "bin" / "tester"
 VERIFIER = WORKSPACE / ".goal-plus-verifiers" / "ad_local_score.py"
@@ -103,13 +104,11 @@ def test_public_verifier_compiles_cpp_and_emits_goal_plus_json_metric() -> None:
 
 def test_search_spec_matches_edgebench_submission_surface_and_public_tools() -> None:
     data = json.loads(
-        (ROOT / "examples" / "edgebench_ad_placement_search_spec.json").read_text(
-            encoding="utf-8"
-        )
+        (EXAMPLE / "search-spec.json").read_text(encoding="utf-8")
     )
     spec = SearchSpec.model_validate(data)
 
-    assert spec.source_path == "examples/edgebench-ad-placement/workspace"
+    assert spec.source_path == "examples/edgebench-ad-placement/workspace-template"
     assert spec.edit_surface.allow == ["solution.cpp"]
     assert spec.metric_name == "local_score_sum"
     assert spec.metric_direction == "maximize"
@@ -118,5 +117,7 @@ def test_search_spec_matches_edgebench_submission_surface_and_public_tools() -> 
         ".goal-plus-verifiers/ad_local_score.py",
     ]
     assert spec.promotion_verifiers == []
+    assert spec.strategy.orchestration_mode == "parallel_loops"
+    assert spec.workspace.backend == "git_worktree"
     assert "CPU-only/no-internet" in spec.constraints["edgebench_alignment"]
     assert "1 GB" in spec.constraints["edgebench_alignment"]

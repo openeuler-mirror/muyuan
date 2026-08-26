@@ -2,346 +2,116 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
-import sys
+import re
 
 import pytest
 
 from goal_plus.models import SearchSpec
-from goal_plus.runtime import FileSearchRuntime
-from goal_plus.tools import SearchTools
 
 
 ROOT = Path(__file__).resolve().parents[1]
+EXAMPLES_ROOT = ROOT / "examples"
+pytestmark = pytest.mark.example
 
 
-EXAMPLE_SPECS = [
-    (
-        "circle_packing_search_spec.json",
-        ["tests/fixtures/circle_packing/evaluator.py"],
-        "combined_score",
-        {
-            "max_parallel": 2,
-            "strategy_name": "random",
-            "worker_host": "codex",
-            "worker_agent_type": "search_candidate_agent",
-            "max_runtime_seconds": 300,
-            "max_turns": 8,
-        },
-    ),
-    (
-        "signal_processing_search_spec.json",
-        ["tests/fixtures/signal_processing/evaluator.py"],
-        "overall_score",
-        {
-            "max_parallel": 4,
-            "strategy_name": "random",
-            "worker_host": "codex",
-            "worker_agent_type": "search_candidate_agent",
-            "max_runtime_seconds": 300,
-            "max_turns": 8,
-        },
-    ),
-    (
-        "edgebench_ad_placement_search_spec.json",
-        [
-            "examples/edgebench-ad-placement/workspace/.goal-plus-verifiers/ad_local_score.py",
-            "examples/edgebench-ad-placement/workspace/tools/bin/gen",
-            "examples/edgebench-ad-placement/workspace/tools/bin/tester",
-        ],
-        "local_score_sum",
-        {
-            "max_parallel": 2,
-            "strategy_name": "agent_guided",
-            "worker_host": "pi-rpc",
-            "worker_agent_type": None,
-            "max_runtime_seconds": 240,
-            "max_turns": 6,
-        },
-    ),
-]
-
-# EdgeBench's C++ compile/public-score contract has dedicated coverage in
-# test_edgebench_ad_placement_example.py. Re-running it across two generic
-# rounds compiles the same solution several more times without adding runtime
-# state-machine coverage beyond the Python fixtures below.
-RUNTIME_EXAMPLE_SPECS = [
-    case for case in EXAMPLE_SPECS if case[0] != "edgebench_ad_placement_search_spec.json"
-]
-
-def load_expected(spec_name: str) -> dict:
-    for name, _, _, expected in EXAMPLE_SPECS:
-        if name == spec_name:
-            return expected
-    raise KeyError(spec_name)
-
-
-def load_example_spec(name: str) -> dict:
-    return json.loads((ROOT / "examples" / name).read_text(encoding="utf-8"))
-
-
-@pytest.mark.parametrize(
-    "spec_name",
-    (
-        "circle_packing_search_spec.json",
-        "k_module_search_spec.json",
-        "signal_processing_search_spec.json",
-        "swe_bench_20212_search_spec.json",
-        "multi-model-signal-spec.json",
-        "workspace-backends/git_worktree_search_spec.json",
-    ),
-)
-def test_standard_host_backed_specs_declare_the_bounded_parallel_contract(
-    spec_name: str,
-) -> None:
-    spec = SearchSpec.model_validate(load_example_spec(spec_name))
-
-    assert spec.strategy.orchestration_mode == "parallel_loops"
-    assert spec.strategy.worker_host == "codex"
-    assert spec.strategy.worker_agent_type == "search_candidate_agent"
-    assert spec.strategy.worker_budget is not None
-    assert spec.strategy.worker_budget.max_runtime_seconds == 300
-    assert spec.strategy.worker_budget.max_turns == 8
-    assert spec.strategy.worker_budget.on_exceed == "interrupt"
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "limit", "closeout"),
-    (
-        (
-            "ascendc-direct-search/pi-goal-prompt.md",
-            "within 60 minutes",
-            "after 50 minutes",
+EXAMPLES = {
+    "ascendc-direct-search": {
+        "prompts": ("pi-goal-prompt.md",),
+        "required": (
+            "README.md",
+            "SPEC_DISCOVERY.md",
+            "knowledge.sources.json",
+            "materialize_knowledge.py",
+            "request.schema.json",
+            "template/SOURCE.json",
         ),
-        (
-            "cannbench-tilelang-ascend/pi-goal-prompt.md",
-            "within 60 minutes",
-            "after 50 minutes",
+    },
+    "circle-packing": {
+        "prompts": ("pi-goal-prompt.md", "codex-goal-prompt.md"),
+        "required": (
+            "README.md",
+            "search-spec.json",
+            "workspace-template/initial_program.py",
+            "workspace-template/.goal-plus-verifiers/circle_packing_score.py",
         ),
-        (
-            "kernel-optimize/example-prompt-cpp.md",
-            "within 30 minutes",
-            "after 25 minutes",
+    },
+    "edgebench-ad-placement": {
+        "prompts": ("pi-goal-prompt.md",),
+        "required": (
+            "README.md",
+            "search-spec.json",
+            "workspace-template/solution.cpp",
+            "workspace-template/.goal-plus-verifiers/ad_local_score.py",
         ),
-        (
-            "model-optimize/pi-goal-prompt.md",
-            "within 10 minutes",
-            "after 8 minutes",
+    },
+    "model-optimize": {
+        "prompts": ("pi-goal-prompt.md", "codex-goal-prompt.md"),
+        "required": (
+            "README.md",
+            "workspace-template/model.py",
+            "workspace-template/.goal-plus-verifiers/torch_cpu_tokens.py",
         ),
-        (
-            "model-optimize/codex-goal-prompt.md",
-            "within 10 minutes",
-            "after 8 minutes",
+    },
+    "vliw-kernel-optimization": {
+        "prompts": ("pi-goal-prompt.md",),
+        "required": (
+            "README.md",
+            "workspace-template/solution.py",
+            "workspace-template/.goal-plus-verifiers/vliw_score.py",
         ),
-        (
-            "model-opt-gpu/bert_pytorch_v100_goal_plus.md",
-            "within 2 hours",
-            "after 100 minutes",
-        ),
-    ),
-)
-def test_standard_goal_prompts_bound_the_whole_task_and_closeout(
-    relative_path: str,
-    limit: str,
-    closeout: str,
-) -> None:
-    prompt = (ROOT / "examples" / relative_path).read_text(encoding="utf-8")
-    normalized = " ".join(prompt.split())
-
-    assert "entire Goal Plus task" in normalized
-    assert limit in normalized
-    assert closeout in normalized
-    assert "worker lease" in normalized
-    assert "terminal status" in normalized
+    },
+}
 
 
-def test_removed_goal_comparison_is_not_listed_or_present() -> None:
-    examples_index = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
-
-    assert "goal-and-goal-plus" not in examples_index
-    assert "Goal and Goal Plus" not in examples_index
-    assert not (ROOT / "examples" / "goal-and-goal-plus").exists()
-
-
-@pytest.mark.parametrize(("spec_name", "verifier_paths", "metric_name", "expected"), EXAMPLE_SPECS)
-def test_parallel_loop_example_specs_are_valid(
-    spec_name: str,
-    verifier_paths: list[str],
-    metric_name: str,
-    expected: dict,
-) -> None:
-    spec = load_example_spec(spec_name)
-    parsed = SearchSpec.model_validate(spec)
-
-    assert parsed.metric_name == metric_name
-    assert parsed.budget.max_parallel == expected["max_parallel"]
-    assert parsed.root_hypotheses == []
-    assert parsed.constraints["suggested_batch_size"] == 4
-    assert parsed.strategy.orchestration_mode == "parallel_loops"
-    assert parsed.strategy.worker_agent_type == expected["worker_agent_type"]
-    if "strategy_name" in expected:
-        assert parsed.strategy.name == expected["strategy_name"]
-        assert parsed.strategy.worker_host == expected["worker_host"]
-        assert parsed.strategy.worker_budget is not None
-        assert (
-            parsed.strategy.worker_budget.max_runtime_seconds
-            == expected["max_runtime_seconds"]
-        )
-        assert parsed.strategy.worker_budget.max_turns == expected["max_turns"]
-    assert not Path(parsed.source_path).is_absolute()
-    assert all((ROOT / verifier_path).exists() for verifier_path in verifier_paths)
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize(
-    ("spec_name", "verifier_paths", "metric_name", "expected"),
-    RUNTIME_EXAMPLE_SPECS,
-)
-def test_parallel_loop_examples_create_one_batch_and_verify_baseline(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    spec_name: str,
-    verifier_paths: list[str],
-    metric_name: str,
-    expected: dict,
-) -> None:
-    monkeypatch.chdir(ROOT)
-    tools = SearchTools(FileSearchRuntime(tmp_path / ".search"))
-    spec = load_example_spec(spec_name)
-
-    frozen = tools.search_freeze_spec(spec, verifier_paths)
-    run_id = tools.search_create(frozen["frozen_spec_id"])["run_id"]
-
-    def verify_baseline(candidate_id: str) -> None:
-        session = tools.search_start_agent_session(
-            run_id,
-            candidate_id,
-            {"goal": f"verify baseline fixture path for {candidate_id}"},
-        )
-        tools.search_get_agent_context(session["agent_session_id"])
-        report = tools.search_run_verifier(
-            run_id,
-            candidate_id,
-            agent_session_id=session["agent_session_id"],
-        )
-
-        assert report["process_passed"] is True
-        assert report["aggregate_score"] is not None
-        assert report["aggregate_score"] > 0.0
-        assert report["verifier_results"][0]["metrics"][metric_name] == report[
-            "aggregate_score"
-        ]
-
-    first_plan = tools.search_plan_next(run_id, 4)
-    first_proposals = None
-    if first_plan["requires_agent_proposals"]:
-        first_proposals = [
-            {"intent": f"independent Pi proposal {index}"}
-            for index in range(1, first_plan["planned_k"] + 1)
-        ]
-    first_round = tools.search_start_batch(
-        run_id,
-        first_plan["plan_id"],
-        proposals=first_proposals,
-    )
-    verified_candidate_ids: set[str] = set()
-    if first_plan["requires_agent_proposals"]:
-        verify_baseline("c001")
-        verified_candidate_ids.add("c001")
-
-    first_expected = [
-        f"c{index:03d}" for index in range(1, expected["max_parallel"] + 1)
+def _prompt_paths() -> list[Path]:
+    return [
+        EXAMPLES_ROOT / name / prompt
+        for name, contract in EXAMPLES.items()
+        for prompt in contract["prompts"]
     ]
 
-    assert first_plan["planned_k"] == expected["max_parallel"]
-    assert [task["candidate_id"] for task in first_round] == first_expected
-    if first_plan["requires_agent_proposals"]:
-        assert first_round[0]["hypothesis"] == "independent Pi proposal 1"
-    else:
-        assert first_round[0]["hypothesis"] == "Independent candidate c001"
 
-    for candidate_id in ("c001", "c002"):
-        if candidate_id not in verified_candidate_ids:
-            verify_baseline(candidate_id)
+def test_supported_examples_have_their_entry_assets() -> None:
+    actual = {
+        path.name
+        for path in EXAMPLES_ROOT.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    }
+    assert actual == set(EXAMPLES)
 
-    history = tools.search_list_history(run_id)
-    assert history["total_candidates"] == expected["max_parallel"]
-    assert history["returned_candidates"] == min(5, expected["max_parallel"])
-    assert history["sort_by"] == "score"
-    assert history["candidates"][0]["score"] >= history["candidates"][1]["score"]
-    assert metric_name in history["candidates"][0]["key_metrics"]
-
-    created_history = tools.search_list_history(run_id, top_n=2, sort_by="created")
-    assert [item["candidate_id"] for item in created_history["candidates"]] == ["c001", "c002"]
-
-    status = tools.search_status(run_id)
-    assert status["candidates_total"] == expected["max_parallel"]
-    assert status["candidates_evaluated"] == 2
+    for name, contract in EXAMPLES.items():
+        example = EXAMPLES_ROOT / name
+        for relative in (*contract["required"], *contract["prompts"]):
+            assert (example / relative).exists(), f"{name}: missing {relative}"
 
 
-@pytest.mark.integration
-def test_git_worktree_workspace_demo_runs_end_to_end(tmp_path: Path) -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "examples" / "workspace-backends" / "run_demo.py"),
-            "--runtime-root",
-            str(tmp_path / "runtime"),
-        ],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+def test_prompt_entries_use_host_defaults_except_for_circle_model_routing() -> None:
+    routed_prompt = EXAMPLES_ROOT / "circle-packing" / "codex-goal-prompt.md"
 
-    assert completed.returncode == 0, completed.stderr
-    summary = json.loads(completed.stdout.splitlines()[-1])
-    assert summary["workspace_backend"] == "git_worktree"
-    assert summary["candidate_ids"] == ["c001", "c002", "c003"]
-    assert summary["scores"] == {"c001": 1.0, "c002": 2.0, "c003": 3.0}
-    assert summary["shared_git_common_dir"] is True
-    assert len(set(summary["branches"].values())) == 3
-    assert summary["selected_candidate_id"] == "c003"
-    assert Path(summary["report_path"]).exists()
+    for path in _prompt_paths():
+        first_line = path.read_text(encoding="utf-8").splitlines()[0]
+        expected_entry = "$goal-plus" if path.name.startswith("codex-") else "/goal-plus"
+        assert first_line.startswith(f"{expected_entry} ")
+        assert "max_parallel=2" in first_line
+        if path == routed_prompt:
+            assert "annotator=gpt-5.6-terra" in first_line
+            assert "workers=gpt-5.6-terra,gpt-5.6-luna" in first_line
+            assert "main=" not in first_line
+        else:
+            assert re.search(r"\b(main|annotator|workers)=", first_line) is None
 
 
-def test_model_opt_gpu_wip_docs_define_future_v100_goal_plus_contract() -> None:
-    example_dir = ROOT / "examples" / "model-opt-gpu"
-    readme = (example_dir / "README.md").read_text(encoding="utf-8")
-    prompt = (
-        example_dir / "bert_pytorch_v100_goal_plus.md"
-    ).read_text(encoding="utf-8")
-    examples_index = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "circle-packing/search-spec.json",
+        "edgebench-ad-placement/search-spec.json",
+    ),
+)
+def test_checked_in_example_search_specs_are_loadable(relative_path: str) -> None:
+    payload = json.loads((EXAMPLES_ROOT / relative_path).read_text(encoding="utf-8"))
+    spec = SearchSpec.model_validate(payload)
 
-    assert "WIP" in readme
-    assert "not recommended" in readme.lower()
-    assert "not validated" in readme.lower()
-    assert "model-opt-gpu" in examples_index
-    assert "WIP" in examples_index
-
-    required_prompt_terms = (
-        "/goal-plus",
-        "pytorch/benchmark",
-        "BERT_pytorch",
-        "BenchmarkModel",
-        "standalone",
-        "CUDA_VISIBLE_DEVICES",
-        "detected_gpu_count",
-        "git_worktree",
-        "10%",
-        "torch.cuda.synchronize",
-        "median",
-        "correctness",
-        "non-finite",
-        "triton_ops/",
-        "AI-Infra-Auto-Driven-SKILLS",
-        "within 2 hours",
-        "max_runtime_seconds no greater than 5400",
-    )
-    for term in required_prompt_terms:
-        assert term in prompt
-
-    assert "max_parallel=1" not in prompt
-    assert '"max_parallel": 1' not in prompt
-    assert "Do not invent a baseline" in prompt
-    assert "Do not start Search Mode" in prompt
+    assert not Path(spec.source_path).is_absolute()
+    assert (ROOT / spec.source_path).is_dir()
+    assert spec.process_verifiers

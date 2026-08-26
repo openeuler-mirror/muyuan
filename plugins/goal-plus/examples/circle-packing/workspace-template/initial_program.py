@@ -1,4 +1,3 @@
-# EVOLVE-BLOCK-START
 """Constructive circle packing baseline for 26 circles in a unit square."""
 
 import math
@@ -39,9 +38,6 @@ def compute_max_radii(centers):
                     radii[right] *= scale
 
     return radii
-
-
-# EVOLVE-BLOCK-END
 
 
 def run_packing():
