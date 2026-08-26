@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from goal_plus import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.monitor import goal_plus_monitor_snapshot
@@ -225,6 +227,106 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     assert snapshot["candidates"][second.candidate_id]["agent_session_count"] == 0
     assert snapshot["candidates"][second.candidate_id]["results_tsv"]["row_count"] == 0
     assert any(warning["kind"] == "candidate_without_agent_session" for warning in snapshot["warnings"])
+
+
+def test_pi_terminal_finalize_reports_combines_worker_annotator_and_main_usage(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    runtime_root = tmp_path / ".search"
+    search = FileSearchRuntime(runtime_root)
+    frozen = search.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    run_id = search.create_run(frozen.frozen_spec_id)
+    plan = search.plan_next(run_id, requested_k=1)
+    [candidate] = search.start_batch(run_id, plan.plan_id)
+    session = search.start_agent_session(run_id, candidate.candidate_id)
+    search.bind_agent_handle(
+        session.agent_session_id,
+        {
+            "host": "pi-rpc",
+            "external_id": session.agent_session_id,
+            "metadata": {
+                "pi_metrics": {
+                    "usage_total": {
+                        "assistantMessages": 2,
+                        "input": 100,
+                        "output": 25,
+                        "cacheRead": 50,
+                        "cacheWrite": 0,
+                        "costTotal": 0.18,
+                    }
+                }
+            },
+        },
+    )
+    SearchTools(search).search_run_verifier(
+        run_id,
+        candidate.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="Produce annotator usage",
+    )
+    annotation = search._load_evidence_annotation_task(
+        run_id, candidate.candidate_id, 1
+    )
+    assert annotation is not None
+    search._write_evidence_annotation_task(
+        annotation.model_copy(
+            update={
+                "attempts": 1,
+                "usage": {
+                    "input_tokens": 20,
+                    "cached_input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 25,
+                    "cost_usd": 0.05,
+                },
+            }
+        )
+    )
+
+    goals = FileGoalPlusRuntime(runtime_root)
+    goal = goals.create_goal("Report complete Goal Plus model usage")
+    goals.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
+    goals.set_status(goal.goal_plus_id, status="complete", reason="fixture complete")
+    search.report(run_id)
+    preliminary_html = (runtime_root / "runs" / run_id / "report.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Known processed tokens" in preliminary_html
+
+    finalized = call_pi_tool(
+        runtime_root,
+        "pi_goal_plus_finalize_reports",
+        {
+            "goal_plus_id": goal.goal_plus_id,
+            "usage": {
+                "assistantMessages": 3,
+                "toolCalls": 4,
+                "input": 40,
+                "output": 10,
+                "cacheRead": 50,
+                "cacheWrite": 0,
+                "cost": 0.2,
+            },
+            "started_at": "2026-01-01T00:00:00Z",
+        },
+    )
+
+    assert finalized["reports"] == [str(runtime_root / "runs" / run_id / "report.md")]
+    assert (runtime_root / "runs" / run_id / "report.html").is_file()
+    snapshot = goal_plus_monitor_snapshot(
+        root_dir=runtime_root,
+        goal_plus_id=goal.goal_plus_id,
+    )
+    assert snapshot["statistics"]["orchestrator"]["source"] == "pi_goal_stats"
+    assert snapshot["statistics"]["annotator_usage"]["processed_tokens"] == 35
+    assert snapshot["statistics"]["total_usage"]["processed_tokens"] == 310
+    assert snapshot["statistics"]["total_usage"]["cost_usd"] == pytest.approx(0.43)
+    html = (runtime_root / "runs" / run_id / "report.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Total processed tokens" in html
+    assert "Estimated total cost" in html
 
 
 def test_goal_plus_monitor_snapshot_does_not_attach_unlinked_latest_run(

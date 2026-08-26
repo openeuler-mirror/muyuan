@@ -142,6 +142,36 @@ def _pi_search_pool_close_tool(root_dir: Path | str) -> Callable[..., dict[str, 
     return call
 
 
+def _pi_goal_plus_finalize_reports_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(
+        goal_plus_id: str,
+        usage: dict[str, Any],
+        started_at: str | None = None,
+    ) -> dict[str, Any]:
+        goals = FileGoalPlusRuntime(root_dir)
+        record = goals.status(goal_plus_id)
+        if record.status not in {"blocked", "complete", "abandoned"}:
+            raise RuntimeError("cannot finalize reports before Goal Plus is terminal")
+        goals.record_orchestrator_usage(
+            goal_plus_id,
+            host="pi",
+            usage=usage,
+            started_at=started_at,
+        )
+        search = FileSearchRuntime(root_dir)
+        reports = [
+            str(search.report(task.run_id))
+            for task in record.search_tasks
+            if task.report_path
+            or (search.root_dir / "runs" / task.run_id / "report.md").exists()
+        ]
+        return {"goal_plus_id": goal_plus_id, "reports": reports}
+
+    return call
+
+
 def _registry(root_dir: Path | str) -> dict[str, Callable[..., Any]]:
     search_tools = SearchTools(FileSearchRuntime(root_dir))
     goal_tools = GoalPlusTools(FileGoalPlusRuntime(root_dir))
@@ -155,6 +185,9 @@ def _registry(root_dir: Path | str) -> dict[str, Callable[..., Any]]:
     tools["pi_search_pool_snapshot"] = _pi_search_pool_snapshot_tool(root_dir)
     tools["pi_search_pool_continue"] = _pi_search_pool_continue_tool(root_dir)
     tools["pi_search_pool_close"] = _pi_search_pool_close_tool(root_dir)
+    tools["pi_goal_plus_finalize_reports"] = _pi_goal_plus_finalize_reports_tool(
+        root_dir
+    )
     tools["goal_plus_monitor_snapshot"] = search_tools.goal_plus_monitor_snapshot
     return tools
 

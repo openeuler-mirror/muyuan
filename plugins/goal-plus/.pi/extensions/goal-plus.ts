@@ -2274,6 +2274,14 @@ export default function (pi: ExtensionAPI) {
 			}
 			clearPiProgress(ctx);
 			appendGoalStats(pi, status, usage, snapshot);
+			const finalized = await runJsonCli(pi, commandCtx, "pi_goal_plus_finalize_reports", {
+				goal_plus_id: status.goal_plus_id,
+				usage,
+				started_at: activeGoalStartedAt,
+			});
+			if (isRecord(finalized.details) && finalized.details.ok === false) {
+				ctx.ui.notify(`Goal Plus report finalization failed: ${String(finalized.details.error)}`, "warning");
+			}
 			activeGoalPlusId = undefined;
 			activeGoalStartedAt = undefined;
 			activeGoalStartEntryCount = 0;

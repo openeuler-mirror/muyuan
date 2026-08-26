@@ -4254,6 +4254,7 @@ def render_html_report(data: dict[str, Any]) -> str:
     total_usage = total_statistics.get("total_usage") or {}
     orchestrator = total_statistics.get("orchestrator") or {}
     orchestrator_usage = orchestrator.get("usage") or {}
+    annotator_usage = total_statistics.get("annotator_usage") or {}
     tasks = data.get("search_tasks") or []
     report_run_id = str(data.get("report_run_id") or "unknown")
     selected_task = next(
@@ -4307,6 +4308,7 @@ def render_html_report(data: dict[str, Any]) -> str:
         )
         score_target_text = _number(score_target, digits=4)
 
+    usage_complete = bool(total_usage.get("complete"))
     kpis = "".join(
         [
             _metric_card(
@@ -4338,14 +4340,14 @@ def render_html_report(data: dict[str, Any]) -> str:
                 f"{_number((aggregate_stats.get('verifiers') or {}).get('parent_process_runs'))} parent-owned",
             ),
             _metric_card(
-                "Processed tokens",
-                _number(aggregate_usage.get("processed_tokens")),
-                "worker sessions",
+                "Total processed tokens" if usage_complete else "Known processed tokens",
+                _number(total_usage.get("processed_tokens")),
+                "workers + orchestrator + annotator",
             ),
             _metric_card(
-                "Estimated worker cost",
-                _cost(aggregate_usage.get("cost_usd")),
-                "coverage-aware",
+                "Estimated total cost" if usage_complete else "Known estimated cost",
+                _cost(total_usage.get("cost_usd")),
+                "workers + orchestrator + annotator",
             ),
         ]
     )
@@ -4474,6 +4476,7 @@ def render_html_report(data: dict[str, Any]) -> str:
         <dl class="fact-grid coverage">
           <div class="fact"><dt>Worker processed tokens</dt><dd class="mono">{_html(_number(aggregate_usage.get("processed_tokens")))}</dd></div>
           <div class="fact"><dt>Orchestrator processed tokens</dt><dd class="mono">{_html(_number(orchestrator_usage.get("processed_tokens")))}</dd></div>
+          <div class="fact"><dt>Annotator processed tokens</dt><dd class="mono">{_html(_number(annotator_usage.get("processed_tokens")))}</dd></div>
           <div class="fact"><dt>Combined known tokens</dt><dd class="mono">{_html(_number(total_usage.get("processed_tokens")))}</dd></div>
           <div class="fact"><dt>Combined estimated cost</dt><dd class="mono">{_html(_cost(total_usage.get("cost_usd")))}</dd></div>
         </dl>
