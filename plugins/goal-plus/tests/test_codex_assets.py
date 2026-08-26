@@ -193,6 +193,20 @@ def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     assert '`strategy.config.global_evidence_mode` 必须使用 `"manual"`' in text
 
 
+def test_codex_skills_use_native_mcp_tools_without_resource_discovery() -> None:
+    for name in ("goal-plus", "search"):
+        text = (ROOT / ".codex" / "skills" / name / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        normalized = " ".join(text.split())
+
+        assert "list_mcp_resources" in text
+        assert "list_mcp_resource_templates" in text
+        assert "不枚举 tool" in normalized or "不会列出 MCP tool" in normalized
+        assert "shell、Python 或手写 stdio client" in normalized
+        assert "Codex 原生 MCP tool call" in normalized
+
+
 def test_codex_search_skill_projects_launch_metadata_to_current_tool_schema() -> None:
     text = (ROOT / ".codex" / "skills" / "search" / "SKILL.md").read_text(
         encoding="utf-8"
