@@ -890,6 +890,7 @@ def test_freeze_reports_git_discovery_failure_when_skill_directory_exists(
     tmp_path: Path,
 ) -> None:
     project = make_project(tmp_path)
+    (project / ".git").write_text("gitdir: missing\n", encoding="utf-8")
     skill_root = project / ".agents" / "skills" / "review"
     skill_root.mkdir(parents=True)
     (skill_root / "SKILL.md").write_text("# Review\n", encoding="utf-8")

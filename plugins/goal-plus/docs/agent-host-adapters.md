@@ -35,9 +35,10 @@ candidate 工作目录。
 `.agents/skills/<name>/SKILL.md`，且要求该 Skill 目录内所有文件都由 Git 跟踪。freeze 返回
 `task_skill_notice`，明确列出发现的名称和相对
 路径；没有时明确显示 none。candidate materialization 通过 `candidate_task.task_skill_paths`
-返回该 candidate 自己的绝对路径，launch message 同时输出 `task_local_skills_visible`。
-worker 完整读取清单中的 `SKILL.md` 并显式遵循，只按需读取同目录资源；运行时不扫描
-parent/global/plugin 或 peer candidate Skill。
+返回该 candidate 自己的绝对路径；`search_start_batch` 为每个 subagent 返回可直接展示的
+`task_skill_notice`，launch message 同时输出 `task_local_skills_visible`。worker 完整读取清单
+中的 `SKILL.md` 并显式遵循，只按需读取同目录资源。仓外 Skill 继续由 host 管理；运行时不扫描
+或复制 parent/global/plugin 或 peer candidate Skill。
 
 ## Codex 与 Pi 的能力对比
 

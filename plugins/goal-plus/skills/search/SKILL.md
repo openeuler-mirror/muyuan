@@ -99,7 +99,9 @@ strategy:
    `UserPromptSubmit` hook 校验的可选兼容断言，不写入 SearchSpec，也不能由 Search
    切换。省略的角色保持 host 默认或继承语义。
 2. 调用且只调用一次 `search_plan_next(requested_k=budget.max_parallel)`，然后调用且只调用
-   一次 `search_start_batch`，创建初始候选。
+   一次 `search_start_batch`，创建初始候选。启动 worker 前，把每个返回项的
+   `task_skill_notice` 逐条展示给用户；它列出该 subagent worktree 中已获得的全部仓内 Skill，
+   仓外 Skill 继续由 host 管理。
 3. 对每个候选调用且只调用一次 `search_start_agent_session`，直接解析同一次响应中的
    launch payload，不要为了重新读取响应而再次调用。可选的 `worker_budget` 是一次派发的
    host 限制；它不会改变候选的技术方向。真正重派使用 `search_redispatch_candidate`。

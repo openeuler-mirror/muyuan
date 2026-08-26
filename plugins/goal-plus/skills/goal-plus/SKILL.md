@@ -58,7 +58,8 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
    SearchSpec；把它提交到 source Git 的 `.agents/skills/<name>/SKILL.md`，同一 Skill 目录内
    的所有资源也必须由 Git 跟踪。freeze 返回的
    `task_skill_notice` 会列出自动发现结果，每个 candidate 的 `task_skill_paths` 会指向自己
-   worktree 中的对应文件。将这份清单明确展示出来，不扫描 parent 或 global/plugin Skill。使用
+   worktree 中的对应文件；`search_start_batch` 还会为每个 subagent 返回一条启动清单。
+   将这些清单明确展示出来，不扫描 parent 或 global/plugin Skill。使用
    `goal_plus_save_spec_draft` 保存完整契约。
    不要在 SearchSpec 中生成软 rubric 或预设评价维度。Spec Discovery 只能冻结硬 metric、
    verifier、编辑范围、预算和 promotion 合同。开放式补充评价发生在每次 Evidence 结算之后：

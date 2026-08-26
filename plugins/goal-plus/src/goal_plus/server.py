@@ -161,8 +161,8 @@ def create_mcp(
     ) -> list[dict[str, Any]]:
         """materialize 已规划的候选工作区（`source_path` 的副本）。
 
-        每个返回的 `CandidateTask` 拥有隔离工作区；候选编辑必须留在其中。
-        不要在 `search_plan_next` 前调用。
+        每个返回项拥有隔离工作区和待展示的 `task_skill_notice`；候选编辑必须
+        留在其中。不要在 `search_plan_next` 前调用。
         """
         return tools.search_start_batch(run_id, plan_id, proposals)
 

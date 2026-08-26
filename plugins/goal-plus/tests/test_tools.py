@@ -161,6 +161,9 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
             candidate_id="c001",
             hypothesis="try",
             workspace=Path("/tmp/c001"),
+            task_skill_paths=[
+                Path("/tmp/c001/.agents/skills/review/SKILL.md")
+            ],
             allowed_files=["initial_program.py"],
             denied_files=["evaluator.py"],
         )
@@ -260,11 +263,17 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         "candidates": [],
     }
     assert tools.search_plan_next("run_1", requested_k=1)["plan_id"] == "plan_001"
-    assert tools.search_start_batch(
+    batch = tools.search_start_batch(
         "run_1",
         "plan_001",
         [{"intent": "try an independent approach"}],
-    )[0]["candidate_id"] == "c001"
+    )
+    assert batch[0]["candidate_id"] == "c001"
+    assert batch[0]["task_skill_notice"] == (
+        "Subagent c001 repository Skills: "
+        "review=/tmp/c001/.agents/skills/review/SKILL.md. "
+        "External Skills remain host-managed."
+    )
     assert tools.search_start_agent_session(
         "run_1",
         "c001",

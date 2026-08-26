@@ -184,7 +184,9 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
 4. 调用且只调用一次 `search_plan_next(requested_k=budget.max_parallel)`，再调用且只调用
    一次 `search_start_batch`，创建全部初始候选。运行时会拒绝 `parallel_loops` 模式下的
    第二份 plan。需要传 proposals 时，每个 proposal 都必须包含 `intent`；`hypothesis`、
-   `expected_tradeoff`、`instructions` 和 `metadata` 是可选字段。
+   `expected_tradeoff`、`instructions` 和 `metadata` 是可选字段。启动 pool 前，把每个返回项的
+   `task_skill_notice` 逐条展示给用户；它列出该 subagent worktree 中已获得的全部仓内 Skill，
+   仓外 Skill 继续由 host 管理。
 5. 调用 `pi_search_pool_open(run_id, candidate_ids, directive?, worker_budgets?, final_verify=true, max_parallel=<budget.max_parallel>)`。
    `worker_budgets` 必须按 `candidate_id` 映射，例如
    `{"c001": {"min_runtime_seconds": 500, "min_verifier_runs": 1, "max_runtime_seconds": 600, "on_exceed": "interrupt"}}`，不能直接传一份

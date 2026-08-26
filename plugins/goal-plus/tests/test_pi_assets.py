@@ -102,6 +102,8 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert ".agents/skills/<name>/SKILL.md" in text
     assert "task_skill_notice" in text
     assert "candidate_task.task_skill_paths" in text
+    assert "每个返回项" in text
+    assert "仓外 Skill 继续由 host 管理" in text
     assert "Pi 支持的 strategy name" in text
     assert "`agent_guided`、`agent` 或 `default`" in text
     assert "`random` 或 `random_mode`" in text

@@ -105,10 +105,16 @@ class SearchTools:
             if proposals is not None
             else None
         )
-        return [
-            task.model_dump(mode="json")
-            for task in self.runtime.start_batch(run_id, plan_id, parsed_proposals)
-        ]
+        payloads = []
+        for task in self.runtime.start_batch(run_id, plan_id, parsed_proposals):
+            payload = task.model_dump(mode="json")
+            payload["task_skill_notice"] = (
+                f"Subagent {task.candidate_id} repository Skills: "
+                f"{format_task_skill_listing(task.task_skill_paths)}. "
+                "External Skills remain host-managed."
+            )
+            payloads.append(payload)
+        return payloads
 
     def search_start_agent_session(
         self,
