@@ -169,6 +169,10 @@ def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     assert "search_get_agent_observability" in text
     assert "spawn_agent" in text
     assert "search_bind_agent_handle" in text
+    assert "只分配持久 session" in text
+    assert "非空 receiver thread id" in text
+    assert "真实返回的 thread id" in text
+    assert "不得调用空 `wait`/`wait_agent`" in text
     assert "终态绑定会自动采集" in text
     assert "search_bind_opencode_session" not in text
     assert "background" not in text.lower()

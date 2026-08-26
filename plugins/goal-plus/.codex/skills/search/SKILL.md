@@ -124,9 +124,18 @@ strategy:
    - launch message 和 context 会列出 `task_local_skills_visible`/
      `candidate_task.task_skill_paths`；没有 Skill 时明确显示 `none`。worker 逐一完整读取并
      遵循列出的 `SKILL.md`，只按需读取同目录资源；不要扫描 parent/global/plugin 或 peer Skill。
-5. 使用 `host="codex"` 调用 `search_bind_agent_handle`，绑定返回的 task name/nickname。
+   `search_start_agent_session` 只分配持久 session 并返回 launch payload，绝不代表
+   worker 已经启动。必须对每个 payload 真实调用一次 `spawn_agent`，并确认调用成功返回
+   非空 receiver thread id；不得用 shell/Python 直接写 runtime state 来代替 host 操作。
+5. 只有对应 `spawn_agent` 成功后，才使用 `host="codex"` 调用
+   `search_bind_agent_handle`。把真实返回的 thread id 绑定为 `external_id`，并保留返回的
+   task name/nickname；绝不能把 launch payload 中预分配的 task name、candidate id 或
+   agent session id 冒充已启动的 handle。全部 `budget.max_parallel` 个真实 worker 启动并
+   绑定之前不得进入等待。
 6. 跟踪每个 live worker 及其自身 watchdog deadline。使用无 target 的 `wait_agent`，
-   然后使用 `list_agents`，处理每个已达终态的 worker。仅有进度的唤醒不是完成事件。
+   然后使用 `list_agents`，处理每个已达终态的 worker。调用 wait 时必须已有非空 live
+   receiver 集合；没有实际 worker 时不得调用空 `wait`/`wait_agent`，应回到 launch
+   失败处理。仅有进度的唤醒不是完成事件。
 7. 对每个终态 worker：
    - 从 `search_list_history` 或 `goal_plus_monitor_snapshot` 读取当前 run 的最佳结果；
    - 使用 `search_bind_agent_handle` 绑定终态 handle 和摘要；终态绑定会自动采集有界的

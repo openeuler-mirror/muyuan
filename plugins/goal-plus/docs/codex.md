@@ -167,11 +167,15 @@ child 完整读取清单中的 Skill，不扫描 parent/global/plugin 或其他 
 标准并行循环如下：
 
 1. freeze `strategy.orchestration_mode="parallel_loops"`，只规划一次并启动全部初始 candidate；
-2. 用 `search_bind_agent_handle` 绑定 Codex handle；
-3. 调用不带 target 的 `wait_agent`，每次唤醒后用 `list_agents` 收集新终态；
-4. 对每个完成的 candidate 结算准确 verifier Evidence；
-5. 如果全局停止条件尚未满足，通过 `search_continue_agent_session` 和 `followup_task` 继续同一 worker；
-6. selection 前 drain 或 interrupt 所有活跃 agent。
+2. 对每个 `search_start_agent_session` 返回的 payload 真实调用 `spawn_agent`；该 session
+   allocation 本身不是 worker launch；
+3. 只在 spawn 成功并返回非空 thread id 后，用 `search_bind_agent_handle` 绑定该真实
+   `external_id`；预分配 task name 不能作为启动证据；
+4. 只有 live receiver 集合非空时才调用不带 target 的 `wait_agent`，每次唤醒后用
+   `list_agents` 收集新终态；
+5. 对每个完成的 candidate 结算准确 verifier Evidence；
+6. 如果全局停止条件尚未满足，通过 `search_continue_agent_session` 和 `followup_task` 继续同一 worker；
+7. selection 前 drain 或 interrupt 所有活跃 agent。
 
 每个 child 只负责一条自主 candidate loop：读取自己的 context 和 Global Evidence View，选择 hypothesis/pivot/rebase，只编辑自己的 workspace，并在每次真实尝试后调用 verifier。`view=null` 只表示 annotator 尚未发布，不要求等待。candidate 不能创建其他 candidate，也不能 select、report、promote 或修改 Goal Plus 状态。main 不会因为低分或单次没有提升而替换它。
 
