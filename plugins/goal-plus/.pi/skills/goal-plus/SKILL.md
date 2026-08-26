@@ -267,7 +267,12 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
     并使用 `source_run_id`；继承分数在重新验证前仍只是历史。
 12. 执行最终原始目标审计。配置了 `success_threshold` 时，最终最佳分数必须达到它才能
     将记录标记为成功；预算结束但未达标时保留最佳产物，不得声称验收通过。普通记录使用
-    `goal_plus_set_status` 完成。如果
+    `goal_plus_set_status` 完成。
+    目标给出预设时长或时间预算，把它作为停止新增候选工作和衡量效率的独立观测条件。必需工作、
+    验证、提升和审计完成后，即使实际收尾晚于预设也使用 `complete`；在 evidence 与完成卡中
+    分别记录预设时间和实际完成收尾时间，不要输出 `late`，也不要仅因超出预设而使用
+    `blocked`。`blocked` 只表示仍缺少外部输入、权限、资源或状态变化而确实无法继续。
+    如果
     `policy.final_check.mode="required"`，则：
     - 调用 `goal_plus_prepare_final_check(checker_host="pi")`
     - 把准确返回的 `launch` 对象传给 `pi_goal_plus_run_final_check`
@@ -287,7 +292,9 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
 
 顶层 stop gate 会阻止每条仍处于 active 的 Goal Plus 记录，并返回完整当前原始目标以及
 创建/检查时间戳和已用时间。使用该 prompt 审计全部要求和目标中已有的任何时间条件。
-未完成时继续；否则在停止前记录真实终态。不要编造单独的 Goal Plus deadline。
+时间条件决定何时停止新增工作并转入收尾，但不覆盖已经完成的结果终态。完成后使用
+`complete`，由完成卡分别展示预设时间和实际完成收尾时间；只有确有外部条件导致无法继续时
+才使用 `blocked`。未完成时继续；否则在停止前记录真实终态。不要编造单独的 Goal Plus deadline。
 当前修订版存在工作项时，未 `accepted` 的必需工作项会阻止最终检查和 `complete`。
 
 ### 结果后的 Spec 重新评估

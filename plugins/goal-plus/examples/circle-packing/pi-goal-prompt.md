@@ -1,10 +1,14 @@
 /goal-plus max_parallel=2 Optimize the read-only Circle Packing template in the current directory and deliver the result as a report without modifying the template.
 
-The entire Goal Plus task must reach a terminal status within 5 minutes of
-creation. Do not start or continue candidate work after 4 minutes; reserve the
-remaining minute to preserve the best valid result and complete final
-validation, promotion, reporting, and status finalization. No worker lease may
-exceed 3 minutes.
+The preset task duration is 5 minutes. Do not start or continue candidate work
+after 4 minutes; reserve the remaining minute to preserve the best valid result
+and complete final validation, promotion, reporting, and status finalization.
+No worker lease may exceed 3 minutes. Treat the preset duration as an operating
+budget and efficiency observation, not as a success, failure, or blocked-state
+gate. Once the result and required closeout artifacts are valid, mark the Goal
+Plus record complete even if actual closeout finishes after the preset duration.
+Report the preset duration and actual closeout completion time as separate facts;
+do not label the difference late.
 
 Maximize the valid `sum_radii` emitted by
 `workspace-template/.goal-plus-verifiers/circle_packing_score.py`. A valid

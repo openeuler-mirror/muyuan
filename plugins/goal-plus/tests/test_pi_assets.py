@@ -441,7 +441,11 @@ def test_pi_extension_has_gated_progress_ui_preview() -> None:
     assert "continue candidate loops" in progress
     assert "buildPiCompletionPresentation" in progress
     assert "PI_COMPLETION_PREVIEW" in progress
-    assert "LATE +" in progress
+    assert "LATE +" not in progress
+    assert 'lateMarker = " · LATE "' not in extension
+    assert "presetDurationSeconds" in progress
+    assert "预设时间为" in progress
+    assert "实际完成收尾时间为" in progress
     assert 'formatUsage("Usage ", totalUsage)' in progress
     assert 'lines.push("Lanes")' in progress
 

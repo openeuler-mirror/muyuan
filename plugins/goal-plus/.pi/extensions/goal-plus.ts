@@ -1099,15 +1099,19 @@ function stringFrom(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function wholeGoalDeadlineSeconds(rawGoal: string | undefined): number | undefined {
+function wholeGoalPresetDurationSeconds(rawGoal: string | undefined): number | undefined {
 	if (!rawGoal) return undefined;
-	const english = rawGoal.match(/\bwithin\s+(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?)\b/i);
+	const english = rawGoal.match(
+		/(?:\bwithin\s+|\bpreset(?:\s+task)?\s+duration\s+is\s+)(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?)\b/i,
+	);
 	if (english) {
 		const value = Number(english[1]);
 		const unit = english[2].toLowerCase();
 		return value * (unit.startsWith("hour") ? 3600 : unit.startsWith("minute") ? 60 : 1);
 	}
-	const chinese = rawGoal.match(/(\d+(?:\.\d+)?)\s*(秒|分钟|小时)(?:内|以内)/);
+	const chinese = rawGoal.match(
+		/预设(?:任务)?时间(?:为|是)\s*(\d+(?:\.\d+)?)\s*(秒|分钟|小时)/,
+	) ?? rawGoal.match(/(\d+(?:\.\d+)?)\s*(秒|分钟|小时)(?:内|以内)/);
 	if (!chinese) return undefined;
 	const value = Number(chinese[1]);
 	return value * (chinese[2] === "小时" ? 3600 : chinese[2] === "分钟" ? 60 : 1);
@@ -1208,7 +1212,7 @@ function buildGoalCompletionView(
 	return {
 		status: stringFrom(goal?.status) ?? status.status ?? "unknown",
 		elapsedSeconds: goalElapsedSeconds(snapshot),
-		deadlineSeconds: wholeGoalDeadlineSeconds(rawGoal),
+		presetDurationSeconds: wholeGoalPresetDurationSeconds(rawGoal),
 		goalPlusId: stringFrom(goal?.goal_plus_id) ?? status.goal_plus_id ?? activeGoalPlusId,
 		searchTasksTotal: optionalNumberFrom(goal?.search_tasks_total)
 			?? status.search_tasks_total
@@ -2063,18 +2067,13 @@ export default function (pi: ExtensionAPI) {
 			const visibleLines = expanded ? lines : lines.slice(0, collapsedLineCount);
 			const box = new Box(1, 0, (text) => theme.bg("customMessageBg", text));
 			visibleLines.forEach((line, index) => {
-				const lateMarker = " · LATE ";
-				const lateIndex = line.indexOf(lateMarker);
-				const baseLine = lateIndex >= 0 ? line.slice(0, lateIndex) : line;
-				const lateLine = lateIndex >= 0 ? line.slice(lateIndex) : "";
 				const statusLine = data?.status === "complete"
-					? theme.fg("success", baseLine)
+					? theme.fg("success", line)
 					: data?.status === "blocked"
-						? theme.fg("error", baseLine)
-						: theme.fg("accent", baseLine);
-				const renderedStatusLine = `${statusLine}${lateLine ? theme.fg("error", lateLine) : ""}`;
+						? theme.fg("error", line)
+						: theme.fg("accent", line);
 				const rendered = index === 0
-					? `${theme.fg("accent", "[goal-plus]")} ${renderedStatusLine}`
+					? `${theme.fg("accent", "[goal-plus]")} ${statusLine}`
 					: index < collapsedLineCount
 						? line
 						: theme.fg("dim", line);

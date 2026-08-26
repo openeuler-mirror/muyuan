@@ -628,7 +628,7 @@ def create_mcp(
         evidence: list[dict[str, Any]] | None = None,
         next_action: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """根据证据完成、阻塞或暂停后，设置 goal-plus 状态。"""
+        """根据证据设置终态；耗时超出预设不等于 blocked。"""
         return goal_tools.goal_plus_set_status(
             goal_plus_id,
             status,

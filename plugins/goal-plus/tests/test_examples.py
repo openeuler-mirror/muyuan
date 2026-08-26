@@ -27,7 +27,12 @@ EXAMPLES = {
         ),
     },
     "circle-packing": {
-        "prompts": ("pi-goal-prompt.md", "codex-goal-prompt.md"),
+        "prompts": (
+            "pi-goal-prompt.md",
+            "codex-goal-prompt.md",
+            "pi-goal-prompt-untimed.md",
+            "codex-goal-prompt-untimed.md",
+        ),
         "required": (
             "README.md",
             "search-spec.json",
@@ -86,19 +91,41 @@ def test_supported_examples_have_their_entry_assets() -> None:
 
 
 def test_prompt_entries_use_host_defaults_except_for_circle_model_routing() -> None:
-    routed_prompt = EXAMPLES_ROOT / "circle-packing" / "codex-goal-prompt.md"
+    routed_prompts = {
+        EXAMPLES_ROOT / "circle-packing" / "codex-goal-prompt.md",
+        EXAMPLES_ROOT / "circle-packing" / "codex-goal-prompt-untimed.md",
+    }
 
     for path in _prompt_paths():
         first_line = path.read_text(encoding="utf-8").splitlines()[0]
         expected_entry = "$goal-plus" if path.name.startswith("codex-") else "/goal-plus"
         assert first_line.startswith(f"{expected_entry} ")
         assert "max_parallel=2" in first_line
-        if path == routed_prompt:
+        if path in routed_prompts:
             assert "annotator=gpt-5.6-terra" in first_line
             assert "workers=gpt-5.6-terra,gpt-5.6-luna" in first_line
             assert "main=" not in first_line
         else:
             assert re.search(r"\b(main|annotator|workers)=", first_line) is None
+
+
+def test_circle_untimed_prompts_define_no_time_condition() -> None:
+    forbidden = re.compile(
+        r"\b(?:time|timed|runtime|deadline|minute|minutes|second|seconds|"
+        r"hour|hours|lease|closeout)\b|(?:时间|分钟|小时|秒)",
+        re.IGNORECASE,
+    )
+    for name in ("pi-goal-prompt-untimed.md", "codex-goal-prompt-untimed.md"):
+        text = (EXAMPLES_ROOT / "circle-packing" / name).read_text(encoding="utf-8")
+        assert forbidden.search(text) is None
+
+
+def test_circle_timed_prompts_treat_the_preset_as_observational() -> None:
+    for name in ("pi-goal-prompt.md", "codex-goal-prompt.md"):
+        text = (EXAMPLES_ROOT / "circle-packing" / name).read_text(encoding="utf-8")
+        assert "preset task duration is 5 minutes" in text
+        assert "mark the Goal Plus record complete" in text
+        assert "do not label the difference late" in text
 
 
 @pytest.mark.parametrize(

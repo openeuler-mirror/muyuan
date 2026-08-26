@@ -1725,9 +1725,13 @@ class FileGoalPlusRuntime:
             f"最终检查 policy：{final_check_text}\n\n"
             "对照持久证据审计完整原始目标中的每项要求。如果原始目标包含时间限制，使用上述"
             "时间戳进行判断：只要仍有可用时间且目标未完成，就继续工作；达到或超过时间条件时，"
-            "保留最佳持久结果并完成必需审计。如果没有时间限制，继续到目标满足，或确有阻塞因素"
-            "导致无法完成。worker lease 或 probe 结束绝不会完成 Goal Plus 任务。停止前，"
-            "使用 complete、blocked 或 abandoned 调用 goal_plus_set_status，并提供真实原因和证据。"
+            "停止新增工作、保留最佳持久结果并完成必需审计。时间条件不覆盖已经完成的结果终态："
+            "若必需工作、验证、提升和审计已经完成，即使实际收尾晚于预设也使用 complete，并在"
+            "evidence 中分别记录预设时间和实际完成收尾时间；不要输出 late，也不要仅因超出预设"
+            "而使用 blocked。blocked 只表示仍缺少外部输入、权限、资源或状态变化，导致任务确实"
+            "无法继续。如果没有时间限制，继续到目标满足，或出现这种真实阻塞。worker lease 或"
+            "probe 结束绝不会完成 Goal Plus 任务。停止前，使用 complete、blocked 或 abandoned"
+            "调用 goal_plus_set_status，并提供真实原因和证据。"
         )
 
     def _continuation_prompt(self, record: GoalPlusRecord) -> str:

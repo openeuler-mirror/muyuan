@@ -424,6 +424,8 @@ def test_goal_like_triage_blocks_stop_until_terminal_status(tmp_path) -> None:
     assert "created_at_utc" in gate.continuation_prompt
     assert "checked_at_utc" in gate.continuation_prompt
     assert "elapsed:" in gate.continuation_prompt
+    assert "即使实际收尾晚于预设也使用 complete" in gate.continuation_prompt
+    assert "不要仅因超出预设而使用 blocked" in gate.continuation_prompt
     assert "goal_plus_set_status" in gate.continuation_prompt
 
 

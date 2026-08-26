@@ -126,6 +126,11 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
     或 `rework`。最后执行一次原始目标审计。对于普通 Goal Plus 记录，只有当前目标已满足时
     才调用
     `goal_plus_set_status(status="complete", evidence=[...])`。当
+    目标给出预设时长或时间预算时，把它作为停止新工作和衡量效率的独立观测条件：若必需工作、
+    验证、提升和审计已经完成，即使实际收尾晚于预设，也仍使用 `complete`。在 evidence 和最终
+    展示中分别记录预设时间与实际完成收尾时间，不要输出 `late`，也不要仅因超出预设而使用
+    `blocked`；`blocked` 只表示仍缺少外部输入、权限、资源或状态变化，导致任务确实无法继续。
+    当
     `policy.final_check.mode="required"` 时：
     - 调用 `goal_plus_prepare_final_check(checker_host="codex")`
     - 把 `launch.task_name`、`launch.message` 和 `launch.fork_turns` 映射到当前
@@ -173,7 +178,10 @@ namespace 记录 `followup_task`。
 
 顶层 Stop gate 会阻止每条仍处于 active 的记录，并返回完整的当前原始目标、创建/检查
 时间戳、已用时间、phase、next action 和最终检查 policy。根据该 prompt 审计全部目标要求
-以及任何时间条件。未完成时继续；否则先用真实的终态调用 `goal_plus_set_status`。
+以及任何时间条件。时间条件决定何时停止新增工作并转入收尾，但不覆盖已经完成的结果终态；
+完成后使用 `complete`，并把预设时间和实际完成收尾时间作为两个独立事实报告。未完成时继续；
+只有确有外部条件导致无法继续时才使用 `blocked`，否则先用真实的终态调用
+`goal_plus_set_status`。
 候选 lease 结束绝不会完成父级 Goal Plus 任务，Goal Plus 也不单独存储任务 deadline。
 
 一条 Goal Plus 记录就是完整任务。`search_tasks` 是其仅追加的 Search Mode 任务历史，
