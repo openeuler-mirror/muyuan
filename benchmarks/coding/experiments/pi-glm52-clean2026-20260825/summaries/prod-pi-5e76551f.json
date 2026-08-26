@@ -1,0 +1,320 @@
+{
+  "run_id": "prod-pi-5e76551f",
+  "experiment_name": "prod-pi",
+  "experiment_time": "2026-08-25",
+  "code_version": "e227d78",
+  "benchmark_name": "AI-Coding-Assist",
+  "case_set": "_clean2026",
+  "case_count": 45,
+  "effective_case_count": 45,
+  "grouping": "task_type",
+  "algorithm_name": "Baseline",
+  "algorithm_version": "v1.0",
+  "budget_axis": "steps",
+  "budget_value": "max_steps=40, max_wall_time_s=900",
+  "branches": 1,
+  "max_attempts": 1,
+  "max_steps": 40,
+  "selection_strategy": "first-submit",
+  "selection_is_oracle": false,
+  "agent_name": "pi",
+  "agent_version": "1.0.0",
+  "main_model": "GLM-5.2",
+  "draft_model": null,
+  "panel_models": null,
+  "aggregator_model": null,
+  "verifier_model": null,
+  "fallback_model": null,
+  "model_combo_summary": "main=GLM-5.2",
+  "sampling_params": "temperature=0.0, max_tokens=8192",
+  "judgment_type": "半确定性",
+  "primary_metric_name": "task_success_rate",
+  "primary_metric_value": 0.3111111111111111,
+  "success_count": 14,
+  "success_rate": 0.3111111111111111,
+  "completed_count": 45,
+  "completion_rate": 1.0,
+  "empty_patch_count": 9,
+  "infra_error_count": 0,
+  "infra_error_rate": 0.0,
+  "mean_rating": null,
+  "confidence_interval": "[19.5%, 45.7%]",
+  "stratified_by_task_type": {
+    "bugfix": {
+      "n": 45,
+      "successes": 14,
+      "success_rate": 0.3111111111111111,
+      "confidence_interval": "[19.5%, 45.7%]"
+    }
+  },
+  "stratified_by_difficulty": {
+    "easy": {
+      "n": 14,
+      "successes": 2,
+      "success_rate": 0.14285714285714285,
+      "confidence_interval": "[4.0%, 39.9%]"
+    },
+    "hard": {
+      "n": 6,
+      "successes": 4,
+      "success_rate": 0.6666666666666666,
+      "confidence_interval": "[30.0%, 90.3%]"
+    },
+    "medium": {
+      "n": 25,
+      "successes": 8,
+      "success_rate": 0.32,
+      "confidence_interval": "[17.2%, 51.6%]"
+    }
+  },
+  "stratified_by_tier": {
+    "unknown": {
+      "n": 45,
+      "successes": 14,
+      "success_rate": 0.3111111111111111,
+      "confidence_interval": "[19.5%, 45.7%]"
+    }
+  },
+  "reward_hack_count": 0,
+  "judgment_agreement": null,
+  "baseline_win_rate": null,
+  "relative_success_lift": null,
+  "attempts_per_case": 1.0,
+  "max_attempts_observed": 1,
+  "pass_at_1": 0.3111111111111111,
+  "pass_at_k": 0.3111111111111111,
+  "pass_pow_k": 0.3111111111111111,
+  "oracle_success_count": 14,
+  "oracle_success_rate": 0.3111111111111111,
+  "selection_hit_rate": 1.0,
+  "unique_new_successes": null,
+  "regression_failures": null,
+  "net_gain": null,
+  "total_tokens": 2091630,
+  "avg_tokens_per_case": 46480.666666666664,
+  "avg_tokens_per_success": 149402.14285714287,
+  "total_cost": 2.09163,
+  "cost_rate": {
+    "usd_per_mtok": 1.0,
+    "usd_per_mtok_input": 0.5,
+    "usd_per_mtok_output": 1.5,
+    "source": "built-in fallback, no rate configured — this is not a price"
+  },
+  "avg_cost_per_case": 0.04648066666666666,
+  "token_amplification": null,
+  "cost_curve": [
+    {
+      "budget_tokens": 21348,
+      "solved": 3,
+      "success_rate": 0.06666666666666667
+    },
+    {
+      "budget_tokens": 32351,
+      "solved": 8,
+      "success_rate": 0.17777777777777778
+    },
+    {
+      "budget_tokens": 77231,
+      "solved": 12,
+      "success_rate": 0.26666666666666666
+    },
+    {
+      "budget_tokens": 89967,
+      "solved": 13,
+      "success_rate": 0.28888888888888886
+    },
+    {
+      "budget_tokens": 129974,
+      "solved": 14,
+      "success_rate": 0.3111111111111111
+    }
+  ],
+  "total_wall_time_h": 0.4868090865508323,
+  "total_agent_wall_time_h": 1.426419356759733,
+  "started_at": "2026-08-25T21:18:56",
+  "finished_at": "2026-08-25T21:48:08",
+  "throughput_cases_per_h": 92.43870183039635,
+  "avg_wall_min_per_case": 1.9018924756796438,
+  "total_steps": 378,
+  "avg_steps_per_case": 8.4,
+  "total_model_calls": 371,
+  "avg_model_calls_per_case": 8.244444444444444,
+  "report_path": "runs/AI-Coding-Assist__20260825_211856_prod-pi-5e76551f/report.md",
+  "result_dir": "runs/AI-Coding-Assist__20260825_211856_prod-pi-5e76551f",
+  "raw_results_path": "runs/AI-Coding-Assist__20260825_211856_prod-pi-5e76551f/results.jsonl",
+  "failure_diagnostics": {
+    "failed_count": 31,
+    "by_category": {
+      "模型推理失败": 31
+    },
+    "by_agent_status": {
+      "completed": 31
+    },
+    "top_reasons": [
+      {
+        "reason": "script_exit=1",
+        "count": 31
+      }
+    ],
+    "samples": [
+      {
+        "case_id": "rev-05e88429bf55fa4d",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-0a13d6e43c487375",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-0c386957a849ab91",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-1ef6270942e0e740",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-20f1e5a5d9460800",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-298ab8b9d9d05d08",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-2b813e27ba5902d5",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-2c8c411c1642b559",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-326ff6ffac10f77e",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-39cf6aaba64b4c04",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-607e8f191190459d",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-6b86e3bbf4e8f22b",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-6e01e26bfba9221a",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-6f10facedc91ac5a",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      },
+      {
+        "case_id": "rev-74ba9c286a152c50",
+        "failure_category": "模型推理失败",
+        "agent_status": "completed",
+        "detail": "exit=1"
+      }
+    ]
+  },
+  "case_set_fingerprint": "9149d02169845dc5",
+  "tables": {
+    "overview_row": {
+      "算法名称": "Baseline",
+      "Agent与模型": "pi｜main=GLM-5.2",
+      "基础/主模型": "GLM-5.2",
+      "Benchmark": "AI-Coding-Assist",
+      "Case数": 45,
+      "主指标名称": "task_success_rate",
+      "主指标值": "31.1%",
+      "总体耗时(h)": 0.4868090865508323,
+      "总体Token消耗": 2091630,
+      "相对基线收益": null
+    },
+    "general_row": {
+      "运行ID": "prod-pi-5e76551f",
+      "实验名称": "prod-pi",
+      "实验时间": "2026-08-25",
+      "代码版本": "e227d78",
+      "Benchmark名称": "AI-Coding-Assist",
+      "Case集合": "_clean2026",
+      "Case数量": 45,
+      "有效Case数": 45,
+      "分组口径": "task_type",
+      "算法名称": "Baseline",
+      "算法版本": "v1.0",
+      "预算轴": "steps",
+      "预算值": "max_steps=40, max_wall_time_s=900",
+      "分支数": 1,
+      "最大Attempt数": 1,
+      "最大Step数": 40,
+      "选择策略": "first-submit",
+      "选择口径为oracle": false,
+      "Agent名称": "pi",
+      "Agent版本": "1.0.0",
+      "主模型": "GLM-5.2",
+      "草稿模型": null,
+      "Panel模型": null,
+      "聚合模型": null,
+      "验证模型": null,
+      "Fallback模型": null,
+      "模型组合摘要": "main=GLM-5.2",
+      "采样参数": "temperature=0.0, max_tokens=8192",
+      "评判类型": "半确定性",
+      "主指标名称": "task_success_rate",
+      "主指标值": 0.3111111111111111,
+      "成功数": 14,
+      "成功率": 0.3111111111111111,
+      "完成数": 45,
+      "完成率": 1.0,
+      "空Patch数": 9,
+      "基础设施错误数": 0,
+      "基础设施错误率": 0.0,
+      "总Token": 2091630,
+      "平均Token/Case": 46480.666666666664,
+      "平均Token/成功Case": 149402.14285714287,
+      "总墙钟": 0.4868090865508323,
+      "Agent累计耗时": 1.426419356759733,
+      "吞吐": 92.43870183039635,
+      "平均耗时/Case": 1.9018924756796438,
+      "总Step数": 378,
+      "平均Step/Case": 8.4,
+      "总模型调用次数": 371,
+      "平均模型调用/Case": 8.244444444444444,
+      "结果目录": "runs/AI-Coding-Assist__20260825_211856_prod-pi-5e76551f"
+    }
+  },
+  "case_workers": 3
+}

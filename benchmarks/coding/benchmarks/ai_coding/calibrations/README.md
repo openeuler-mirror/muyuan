@@ -7,8 +7,13 @@
 把它们放在这里，是为了让别人能**自己核对我们报的每一个比例**，而不必选择相信我们。
 
 已核查：以下每个文件均不含 `def ` / `import ` / `assert ` / `Traceback` 等代码文本。
-原始 `results.jsonl` **未发布** —— 它的 `grade.detail` 带 pytest 回溯，
+本目录的导出**不含**原始 `results.jsonl` —— 它的 `grade.detail` 带 pytest 回溯，
 实测 59 条失败行里有 27 条含测试源码。
+
+> 一个例外，理由是具体的：`clean2026-pi-glm52-3reps` 那一批的原始逐例结果**已经发布**在
+> [`experiments/pi-glm52-clean2026-20260825/`](../../../experiments/pi-glm52-clean2026-20260825/)。
+> 上面那条禁令的依据是「回溯里有测试源码」，而 `_clean2026` 的 45 条**全部**已经带着
+> `grader.hidden_tests` 入库 —— 对这个集合来说回溯不构成新泄漏。禁令对其他集合仍然成立。
 
 ## 文件
 
