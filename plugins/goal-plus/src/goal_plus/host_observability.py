@@ -16,7 +16,7 @@ from goal_plus.codex_pricing import (
 from goal_plus.models import AgentSessionRecord
 
 
-OBSERVABILITY_SCHEMA_VERSION = 2
+OBSERVABILITY_SCHEMA_VERSION = 3
 CODEX_ACTIVITY_SCHEMA_VERSION = 1
 
 _CODEX_ACTIVITY_TOOL_CATEGORIES = {
@@ -82,6 +82,62 @@ def _timestamp_epoch(value: str | None) -> float | None:
         return datetime.fromisoformat(normalized).timestamp()
     except ValueError:
         return None
+
+
+def _pi_runtime_start_payload(
+    value: Any,
+    *,
+    error: Any = None,
+    default_host: str | None = None,
+) -> dict[str, Any]:
+    snapshot = value if isinstance(value, dict) else {}
+    return {
+        "source": "pi_session_entry" if snapshot else "unavailable",
+        "agent": _string(snapshot.get("agent")),
+        "host": _string(snapshot.get("host")) or default_host,
+        "mode": _string(snapshot.get("mode")),
+        "project_trusted": (
+            snapshot.get("project_trusted")
+            if isinstance(snapshot.get("project_trusted"), bool)
+            else None
+        ),
+        "active_tools": (
+            [
+                str(item)
+                for item in snapshot.get("active_tools", [])
+                if isinstance(item, str)
+            ]
+            if isinstance(snapshot.get("active_tools"), list)
+            else []
+        ),
+        "active_builtin_tools": (
+            [
+                str(item)
+                for item in snapshot.get("active_builtin_tools", [])
+                if isinstance(item, str)
+            ]
+            if isinstance(snapshot.get("active_builtin_tools"), list)
+            else []
+        ),
+        "active_non_builtin_tools": (
+            [
+                str(item)
+                for item in snapshot.get("active_non_builtin_tools", [])
+                if isinstance(item, str)
+            ]
+            if isinstance(snapshot.get("active_non_builtin_tools"), list)
+            else []
+        ),
+        "pi_sandbox": _string(snapshot.get("pi_sandbox")),
+        "pi_builtin_tool_approval": _string(
+            snapshot.get("pi_builtin_tool_approval")
+        ),
+        "filesystem_access": _string(snapshot.get("filesystem_access")),
+        "network_access": _string(snapshot.get("network_access")),
+        "cwd": _string(snapshot.get("cwd")),
+        "captured_at": _string(snapshot.get("captured_at")),
+        "error": _string(error),
+    }
 
 
 def _base_observability(session: AgentSessionRecord) -> dict[str, Any]:
@@ -156,6 +212,11 @@ def _base_observability(session: AgentSessionRecord) -> dict[str, Any]:
             ),
             "error": _string(metadata.get("progress_handoff_error")),
         },
+        "runtime_start": _pi_runtime_start_payload(
+            metadata.get("runtime_start"),
+            error=metadata.get("runtime_start_error"),
+            default_host=session.host,
+        ),
         "errors": [],
     }
 
@@ -208,6 +269,14 @@ def collect_pi_observability(session: AgentSessionRecord) -> dict[str, Any]:
     metrics = metadata.get("pi_metrics")
     if not isinstance(metrics, dict):
         return payload
+
+    runtime_start = metrics.get("runtime_start")
+    if isinstance(runtime_start, dict):
+        payload["runtime_start"] = _pi_runtime_start_payload(
+            runtime_start,
+            error=metrics.get("runtime_start_error"),
+            default_host=session.host,
+        )
 
     execution = payload["execution"]
     execution.update(

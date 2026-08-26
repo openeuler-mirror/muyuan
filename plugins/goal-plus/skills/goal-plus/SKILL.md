@@ -248,6 +248,10 @@ Search Mode 用于已冻结、可度量的优化。它把候选工作区创建�
 `Stop` 和 `SubagentStop` 运行 `goal-plus --goal-plus-host-hook`。
 `UserPromptSubmit` 会在模型轮次前预先创建并绑定 `$goal-plus`，
 也识别 `$goal-plus-with-final-check` 和显式 `$goal-plus edit` 更新。
+新记录首轮会显示与当前 `turn_id` 精确匹配的 Codex 运行时权限；Search candidate
+第一次读取自己的 agent context 前也会显示其自身权限。该信息来自 Codex transcript 的
+`turn_context`，缺失时保持 unavailable，不能从 TOML、环境变量或 parent 权限猜测。
+Main 在首条用户可见进度中、Search candidate 在最终交接中完整照抄 hook 给出的权限摘要。
 `SessionStart` 恢复与 session 绑定的 active id。`PreToolUse` 强制执行 Search 和变更
 gate。`PostToolUse(goal_plus_create)` 仍作为兼容绑定后备。Search 候选 subagent 的
 PostTool 事件还会执行一次只读 verifier 时间提示检查；它们绝不会绑定 Goal Plus 所有权，

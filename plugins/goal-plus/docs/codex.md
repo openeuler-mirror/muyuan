@@ -128,6 +128,17 @@ goal-plus --goal-plus-host-hook
 
 `PostToolUse(goal_plus_create)` 是所有权绑定的 fallback。普通 subagent 不继承 parent 的 next action。
 
+首次 `$goal-plus` 的 `UserPromptSubmit` 会从 hook 提供的 `transcript_path` 中读取与
+`turn_id` 精确匹配的 Codex `turn_context`，并通过 `systemMessage` 显示 main agent
+实际生效的 approval、reviewer、permission profile、filesystem、network、sandbox 和
+workspace roots。Codex Search candidate 第一次调用 `search_get_agent_context` 前，现有
+`PreToolUse` hook 会用 candidate 自己的 transcript 显示同一组实际权限。解析只接受当前
+turn 的结构化运行时快照；缺失或不匹配时明确显示 unavailable，不从 TOML、环境变量或
+父 session 猜测 child 权限。由于 Codex transcript 不是稳定 hook API，这条显示链路保持
+fail-open，并由 host 契约测试和真实 Codex smoke 共同覆盖。hook 同时返回精简的
+model-visible additional context：main 在首条进度中、candidate 在最终交接中照抄同一行，
+避免仅依赖不会进入模型上下文的 UI warning。
+
 顶层 `Stop` 遇到 active Goal Plus record 时，会重新提供完整 raw goal、elapsed time、phase、next action 和 final-check policy，要求 main agent 继续或记录终态。candidate 的 `SubagentStop` 只检查 candidate 自己的 verifier 提交，不会要求它执行 parent-only selection/report/promotion。只有解析到 Goal Plus Goal、Search 或 session context 的自动 Stop/SubagentStop 调用才会把 hook event 写入 `.gp/host-logs/codex-hook-events/`，供最终报告和排障使用。
 
 Codex 与 runtime 的职责边界见 [Agent Host Adapters](agent-host-adapters.md)，Evidence 和 Tool View 生命周期见[共享平面](shared-plane.md#global-evidence)。

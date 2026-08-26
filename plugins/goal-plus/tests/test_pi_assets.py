@@ -350,6 +350,18 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "沿用已加载的运行时上下文和 Evidence；探索新方向" in text
     assert '{ triggerTurn: true, deliverAs: "followUp" }' in text
     assert "goal-plus-stats" in text
+    assert "goal-plus-runtime-start" in text
+    assert "buildPiRuntimeStartEntry" in text
+    assert "agent=${entry.agent} · host=${entry.host} · mode=${entry.mode}" in text
+    assert "ctx.isProjectTrusted()" in text
+    assert "pi.getActiveTools()" in text
+    assert 'pi_sandbox: "none"' in text
+    assert 'pi_builtin_tool_approval: "none"' in text
+    assert 'filesystem_access: "launcher-process-user"' in text
+    assert 'network_access: "host-policy-unreported"' in text
+    assert "appendPiRuntimeStartEntry(pi, ctx)" in text
+    assert "event.reason !== \"reload\"" in text
+    assert "registerEntryRenderer<PiRuntimeStartEntry>" in text
     assert "registerEntryRenderer<GoalPlusStatsEntry>" in text
     assert "appendEntry<GoalPlusStatsEntry>" in text
     assert 'customType: "goal-plus-stats"' not in text
@@ -653,6 +665,11 @@ def test_pi_docs_record_runner_logs_and_native_stop_gate() -> None:
     assert "custom entry" in combined
     assert "main+worker 合计用量" in combined
     assert "不再额外发送一份重复的统计通知" in combined
+    assert "goal-plus-runtime-start" in combined
+    assert "project_trusted=true" in combined
+    assert "launcher-process-user" in combined
+    assert "host-policy-unreported" in combined
+    assert "metadata.runtime_start" in combined
     assert "不会触发另一个 assistant turn" in combined
     assert "不是 host process 级 Stop hook" in combined
 

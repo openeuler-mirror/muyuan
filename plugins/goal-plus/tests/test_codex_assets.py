@@ -134,6 +134,8 @@ def test_codex_assets_wire_goal_plus_host_hooks() -> None:
     assert "UserPromptSubmit" in text
     assert "PreToolUse" in text
     assert "SubagentStop" in text
+    assert "turn_context" in text
+    assert "不从 TOML、环境变量或" in text
     assert "自己的 verifier 提交持久化前会被阻止结束" in text
     assert "普通 subagent 不继承 parent 的 next action" in text
     assert "goal-plus --goal-plus-host-hook" in text

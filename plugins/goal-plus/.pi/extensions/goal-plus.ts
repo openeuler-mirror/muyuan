@@ -33,6 +33,7 @@ const isPrintLikeInvocation =
 	(modeArgIndex >= 0 && process.argv[modeArgIndex + 1] === "json");
 const STATE_ENTRY_TYPE = "goal-plus-native-state";
 const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
+const GOAL_PLUS_RUNTIME_ENTRY_TYPE = "goal-plus-runtime-start";
 const GOAL_PLUS_PROGRESS_STATUS_KEY = "goal-plus-progress";
 const GOAL_PLUS_PROGRESS_WIDGET_KEY = "goal-plus-progress";
 let workspaceRoot: string | undefined;
@@ -825,6 +826,23 @@ interface GoalPlusStatsEntry {
 	collapsedLineCount: number;
 }
 
+interface PiRuntimeStartEntry {
+	schema_version: 1;
+	agent: string;
+	host: "pi" | "pi-rpc";
+	mode: string;
+	project_trusted: boolean;
+	active_tools: string[];
+	active_builtin_tools: string[];
+	active_non_builtin_tools: string[];
+	pi_sandbox: "none";
+	pi_builtin_tool_approval: "none";
+	filesystem_access: "launcher-process-user";
+	network_access: "host-policy-unreported";
+	cwd: string;
+	captured_at: string;
+}
+
 interface CommandInvocation {
 	command: string;
 	argsPrefix: string[];
@@ -849,6 +867,60 @@ function optionalNumberFrom(value: unknown): number | undefined {
 
 function commandContextFrom(ctx: ExtensionContext): CommandRuntimeContext {
 	return { cwd: ctx.cwd };
+}
+
+function piRuntimeAgent(): string {
+	return role === "worker" ? "candidate" : role;
+}
+
+function buildPiRuntimeStartEntry(pi: ExtensionAPI, ctx: ExtensionContext): PiRuntimeStartEntry {
+	const activeTools = [...new Set(pi.getActiveTools())].sort();
+	const builtinToolNames = new Set(
+		pi.getAllTools()
+			.filter((tool) => tool.sourceInfo.source === "builtin")
+			.map((tool) => tool.name),
+	);
+	const activeBuiltinTools = activeTools.filter((name) => builtinToolNames.has(name));
+	const activeNonBuiltinTools = activeTools.filter((name) => !builtinToolNames.has(name));
+	return {
+		schema_version: 1,
+		agent: piRuntimeAgent(),
+		host: role === "main" ? "pi" : "pi-rpc",
+		mode: ctx.mode,
+		project_trusted: ctx.isProjectTrusted(),
+		active_tools: activeTools,
+		active_builtin_tools: activeBuiltinTools,
+		active_non_builtin_tools: activeNonBuiltinTools,
+		pi_sandbox: "none",
+		pi_builtin_tool_approval: "none",
+		filesystem_access: "launcher-process-user",
+		network_access: "host-policy-unreported",
+		cwd: ctx.cwd,
+		captured_at: new Date().toISOString(),
+	};
+}
+
+function appendPiRuntimeStartEntry(pi: ExtensionAPI, ctx: ExtensionContext): PiRuntimeStartEntry {
+	const entry = buildPiRuntimeStartEntry(pi, ctx);
+	pi.appendEntry<PiRuntimeStartEntry>(GOAL_PLUS_RUNTIME_ENTRY_TYPE, entry);
+	return entry;
+}
+
+function renderPiRuntimeStartEntry(entry: PiRuntimeStartEntry, expanded: boolean): string[] {
+	const trust = entry.project_trusted ? "true" : "false";
+	const lines = [
+		`Pi start · agent=${entry.agent} · host=${entry.host} · mode=${entry.mode} · project_trusted=${trust} · sandbox=${entry.pi_sandbox} · builtin_approval=${entry.pi_builtin_tool_approval}`,
+		`tools=${entry.active_builtin_tools.length} builtin + ${entry.active_non_builtin_tools.length} non-builtin · filesystem=${entry.filesystem_access} · network=${entry.network_access}`,
+	];
+	if (expanded) {
+		lines.push(
+			`cwd=${entry.cwd}`,
+			`builtin_tools=${entry.active_builtin_tools.join(",") || "none"}`,
+			`non_builtin_tools=${entry.active_non_builtin_tools.join(",") || "none"}`,
+			`captured_at=${entry.captured_at}`,
+		);
+	}
+	return lines;
 }
 
 function sourceRoot(ctx: CommandRuntimeContext): string {
@@ -1535,6 +1607,7 @@ async function createGoalPlusStart(
 	}
 	const observedThinking = enforceGoalPlusThinking(pi, ctx);
 	if (!observedThinking) return undefined;
+	appendPiRuntimeStartEntry(pi, ctx);
 	const commandCtx = commandContextFrom(ctx);
 	const startEntryCount = ctx.sessionManager.getEntries().length;
 	const result = await runJsonCli(pi, commandCtx, "goal_plus_create", {
@@ -2015,6 +2088,21 @@ let piForGate: ExtensionAPI;
 export default function (pi: ExtensionAPI) {
 	piForGate = pi;
 	if (typeof pi.registerEntryRenderer === "function") {
+		pi.registerEntryRenderer<PiRuntimeStartEntry>(GOAL_PLUS_RUNTIME_ENTRY_TYPE, (entry, { expanded }, theme) => {
+			const lines = renderPiRuntimeStartEntry(entry.data, expanded);
+			const box = new Box(1, 0, (text) => theme.bg("customMessageBg", text));
+			lines.forEach((line, index) => {
+				const rendered = index === 0
+					? `${theme.fg("accent", "[goal-plus]")} ${theme.fg("accent", line)}`
+					: index === 1
+						? line
+						: theme.fg("dim", line);
+				box.addChild(new Text(rendered, 0, 0));
+			});
+			return box;
+		});
+	}
+	if (typeof pi.registerEntryRenderer === "function") {
 		pi.registerEntryRenderer<GoalPlusStatsEntry>(GOAL_PLUS_STATS_ENTRY_TYPE, (entry, { expanded }, theme) => {
 			const data = entry.data;
 			const lines = (data?.message ?? "Goal Plus stats").split("\n");
@@ -2174,7 +2262,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		return workspaceGuard(event) || (await mainGate(event, ctx));
 	});
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		if (role !== "main" && event.reason !== "reload") {
+			appendPiRuntimeStartEntry(pi, ctx);
+		}
 		if (role === "main" && progressPreviewMode) {
 			showPiProgress(ctx, PI_PROGRESS_PREVIEWS[progressPreviewMode]);
 			return;

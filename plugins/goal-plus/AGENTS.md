@@ -145,7 +145,12 @@ Current host expectations:
   may inject one advisory when available time is below the observed average
   verifier-submission time; this does not stop the worker. Codex 0.144.1+ ships
   `UserPromptSubmit`, `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, and
-  `SubagentStop` hooks with session ownership binding and terminal stats.
+  `SubagentStop` hooks with session ownership binding and terminal stats. The
+  initial main turn and each Search candidate's first context call display the
+  exact matching Codex `turn_context` permission snapshot; missing snapshots
+  stay unavailable rather than falling back to TOML inference. The same compact
+  line is model-visible so main can repeat it in initial progress and the
+  candidate can preserve it in its final handoff.
   New Codex specs use `orchestration_mode="parallel_loops"`: create initial
   candidates once, validate each completion, observe the verifier-backed best,
   and continue the same native worker through

@@ -162,7 +162,7 @@ worker handoff 是有界协议。`key_results` 描述 artifact、code surface/ch
 
 Pitfall 的 `scope` 为 `candidate_local`、`feature_family` 或 `evaluation_contract`，并带 `condition`、evidence artifact 和 `confidence`。缺省 scope 为 candidate-local。worker 的 verifier concern 在 main 调用 `search_invalidate_run` 前只是 advisory，不是 run-wide deny list。
 
-`search_get_agent_observability` 使用统一、版本化的跨 host schema。version 2 增加 `execution.provider` 和 `usage.processed_tokens`：Pi 包含 input、cache read/write 和 output token；Codex 使用原生 total-token count。该接口不返回 prompt、reasoning、tool argument 或 tool output，也不等待或控制 worker。
+`search_get_agent_observability` 使用统一、版本化的跨 host schema。version 2 增加 `execution.provider` 和 `usage.processed_tokens`：Pi 包含 input、cache read/write 和 output token；Codex 使用原生 total-token count。version 3 增加 `runtime_start`：Pi RPC 从子进程自身的 session entry 报告 project trust、active tools、Pi 内置 sandbox/approval 语义、cwd，以及由启动用户或外部 host policy 决定而 Pi 不会伪造的 filesystem/network 边界；其他 host 或旧记录保持 `source="unavailable"`。该接口不返回 prompt、reasoning、tool argument 或 tool output，也不等待或控制 worker。
 
 `goal_plus_monitor_snapshot.statistics` 汇总 baseline/target improvement、success rate、terminal duration、time-to-first-verifier/success、worker outcome、model/provider、candidate lineage、selection survival、worker-vs-parent verifier、promotion Evidence、usage、efficiency 和数据缺口。绑定 Codex orchestrator transcript 后，`statistics.orchestrator` 记录 Goal Plus 创建以来不含内容的 usage delta，`statistics.total_usage` 与 worker usage 合并；每个 Search task 仍保留自己的 statistics。
 

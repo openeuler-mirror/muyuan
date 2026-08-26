@@ -333,6 +333,167 @@ def _transcript_path(hook_input: dict[str, Any]) -> str | None:
     return None
 
 
+def _turn_id(hook_input: dict[str, Any]) -> str | None:
+    for key in ("turn_id", "turnId"):
+        value = hook_input.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _codex_turn_context(hook_input: dict[str, Any]) -> dict[str, Any] | None:
+    """Read the effective permission snapshot for this exact Codex turn."""
+    transcript = _transcript_path(hook_input)
+    turn_id = _turn_id(hook_input)
+    if transcript is None or turn_id is None:
+        return None
+    path = Path(transcript).expanduser()
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict) or event.get("type") != "turn_context":
+                    continue
+                payload = event.get("payload")
+                if isinstance(payload, dict) and payload.get("turn_id") == turn_id:
+                    return payload
+    except OSError:
+        return None
+    return None
+
+
+def _compact_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _permission_profile_display(
+    turn_context: dict[str, Any],
+) -> tuple[str, str, str, str]:
+    profile = turn_context.get("permission_profile")
+    if not isinstance(profile, dict):
+        return "unknown", "unknown", "unknown", "unknown"
+    profile_type = profile.get("type")
+    if profile_type == "disabled":
+        return "disabled", "disabled", "unrestricted", "enabled"
+    if profile_type == "external":
+        network = profile.get("network", "unknown")
+        return (
+            "external",
+            "external",
+            "external",
+            network if isinstance(network, str) else _compact_json(network),
+        )
+    if profile_type == "managed":
+        file_system = profile.get("file_system", "unknown")
+        network = profile.get("network", "unknown")
+        return (
+            "managed",
+            "managed",
+            file_system if isinstance(file_system, str) else _compact_json(file_system),
+            network if isinstance(network, str) else _compact_json(network),
+        )
+    return _compact_json(profile), "unknown", "unknown", "unknown"
+
+
+def _codex_permission_message(agent: str, hook_input: dict[str, Any]) -> str:
+    turn_context = _codex_turn_context(hook_input)
+    if turn_context is None:
+        permission_mode = hook_input.get("permission_mode") or "unknown"
+        return (
+            "Goal Plus Codex 运行时权限："
+            f"agent={agent}; source=unavailable; hook_permission_mode={permission_mode}; "
+            "未匹配当前 turn_context，未从 TOML 或环境变量推断。"
+        )
+
+    profile, enforcement, file_system, network = _permission_profile_display(
+        turn_context
+    )
+    active_profile = turn_context.get("active_permission_profile")
+    active_profile_id = (
+        active_profile.get("id")
+        if isinstance(active_profile, dict)
+        and isinstance(active_profile.get("id"), str)
+        else "unnamed"
+    )
+    sandbox = turn_context.get("sandbox_policy")
+    sandbox_display = (
+        sandbox.get("type")
+        if isinstance(sandbox, dict) and isinstance(sandbox.get("type"), str)
+        else _compact_json(sandbox)
+    )
+    roots = turn_context.get("workspace_roots")
+    roots_display = _compact_json(roots) if isinstance(roots, list) else "not_recorded"
+    return (
+        "Goal Plus Codex 运行时权限："
+        f"agent={agent}; source=rollout.turn_context; "
+        f"turn_id={turn_context.get('turn_id')}; "
+        f"approval_policy={turn_context.get('approval_policy', 'unknown')}; "
+        f"approvals_reviewer={turn_context.get('approvals_reviewer', 'unknown')}; "
+        f"active_profile={active_profile_id}; permission_profile={profile}; "
+        f"enforcement={enforcement}; filesystem={file_system}; network={network}; "
+        f"sandbox={sandbox_display}; workspace_roots={roots_display}."
+    )
+
+
+def _codex_subagent_task_name(hook_input: dict[str, Any]) -> str | None:
+    transcript = _transcript_path(hook_input)
+    if transcript is None:
+        return None
+    try:
+        with Path(transcript).expanduser().open(encoding="utf-8") as handle:
+            for _ in range(12):
+                line = handle.readline()
+                if not line:
+                    break
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict) or event.get("type") != "session_meta":
+                    continue
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                source = payload.get("source")
+                subagent = source.get("subagent") if isinstance(source, dict) else None
+                thread_spawn = (
+                    subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+                )
+                agent_path = (
+                    thread_spawn.get("agent_path")
+                    if isinstance(thread_spawn, dict)
+                    else None
+                )
+                if isinstance(agent_path, str) and agent_path:
+                    return agent_path
+    except OSError:
+        return None
+    return None
+
+
+def _search_candidate_permission_agent(hook_input: dict[str, Any]) -> str | None:
+    if _hook_event_name(hook_input) != "PreToolUse":
+        return None
+    tool_name = _tool_name(hook_input).replace("-", "_")
+    raw_tool_input = _raw_tool_input(hook_input)
+    raw_text = (
+        raw_tool_input
+        if isinstance(raw_tool_input, str)
+        else _compact_json(raw_tool_input)
+    )
+    if not tool_name.endswith("search_get_agent_context") and (
+        "search_get_agent_context" not in raw_text
+    ):
+        return None
+    task_name = _codex_subagent_task_name(hook_input)
+    if task_name is None or not Path(task_name).name.startswith("search_agent_"):
+        return None
+    return task_name
+
+
 def _tool_use_id(hook_input: dict[str, Any]) -> str | None:
     for key in ("tool_use_id", "toolUseId"):
         value = hook_input.get(key)
@@ -1234,17 +1395,22 @@ def _goal_context(
     return f"{context}\n{role_model_context}" if role_model_context else context
 
 
-def _emit_additional_context(event_name: str, context: str) -> None:
+def _emit_additional_context(
+    event_name: str,
+    context: str,
+    *,
+    system_message: str | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "additionalContext": context,
+        }
+    }
+    if system_message is not None:
+        payload["systemMessage"] = system_message
     print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": event_name,
-                    "additionalContext": context,
-                }
-            },
-            ensure_ascii=False,
-        )
+        json.dumps(payload, ensure_ascii=False)
     )
 
 
@@ -1438,13 +1604,23 @@ def _handle_user_prompt_submit(
         },
     )
     runtime.gate(goal_id, event="user_prompt_submit", context=hook_input)
+    permission_message = (
+        _codex_permission_message("main", hook_input) if initial_start else None
+    )
+    goal_context = _goal_context(
+        record,
+        role_model_context=_role_model_context(role_models, hook_input),
+        initial_start=initial_start,
+    )
+    if permission_message is not None:
+        goal_context = (
+            f"{goal_context}\n\n{permission_message}\n"
+            "在本轮第一条用户可见进度中完整照抄上一行权限摘要。"
+        )
     _emit_additional_context(
         "UserPromptSubmit",
-        _goal_context(
-            record,
-            role_model_context=_role_model_context(role_models, hook_input),
-            initial_start=initial_start,
-        ),
+        goal_context,
+        system_message=permission_message,
     )
 
 
@@ -1464,7 +1640,9 @@ def _handle_pre_tool_use(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> None:
-    if _is_subagent_context(hook_input) or not _should_gate_tool(_tool_name(hook_input)):
+    if _is_subagent_context(hook_input) or not _should_gate_tool(
+        _tool_name(hook_input)
+    ):
         return
     goal_id = _select_hook_goal_id(search_root, hook_input)
     if goal_id is None:
@@ -1654,6 +1832,28 @@ def main() -> int:
 
     try:
         event_name = _hook_event_name(hook_input)
+        if event_name == "PreToolUse":
+            # A Search candidate normally runs inside its Git worktree.  That
+            # worktree has its own `.git` marker but no `.gp`, so permission
+            # reporting must not depend on rediscovering the parent's runtime.
+            # Codex's real PreToolUse payload also does not need to repeat an
+            # `agent_id`: the transcript session_meta is the authoritative
+            # source for whether this is a subagent and its task path.
+            subagent_task = _codex_subagent_task_name(hook_input)
+            permission_agent = _search_candidate_permission_agent(hook_input)
+            if permission_agent is not None:
+                permission_message = _codex_permission_message(
+                    permission_agent, hook_input
+                )
+                _emit_additional_context(
+                    "PreToolUse",
+                    f"{permission_message}\n"
+                    "把上一行作为本 Search candidate session 的权限事实，并在最终交接中完整照抄。",
+                    system_message=permission_message,
+                )
+                return 0
+            if subagent_task is not None or _is_subagent_context(hook_input):
+                return 0
         if event_name in {"UserPromptSubmit", "SessionStart", "PreToolUse"}:
             from goal_plus.goal_plus import FileGoalPlusRuntime
 

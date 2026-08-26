@@ -464,7 +464,7 @@ def _agent_observability(
         payload = get_agent_host_adapter(session.host).collect_observability(session)
     except Exception as exc:
         payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "agent_session_id": session.agent_session_id,
             "run_id": session.run_id,
             "candidate_id": session.candidate_id,
@@ -495,6 +495,23 @@ def _agent_observability(
                 "session_file": session.host_handle.metadata.get("session_file"),
             },
             "handoff": {"present": False, "source_path": None, "error": None},
+            "runtime_start": {
+                "source": "unavailable",
+                "agent": None,
+                "host": session.host,
+                "mode": None,
+                "project_trusted": None,
+                "active_tools": [],
+                "active_builtin_tools": [],
+                "active_non_builtin_tools": [],
+                "pi_sandbox": None,
+                "pi_builtin_tool_approval": None,
+                "filesystem_access": None,
+                "network_access": None,
+                "cwd": None,
+                "captured_at": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
             "errors": [f"{type(exc).__name__}: {exc}"],
         }
     if cache is not None:

@@ -201,6 +201,26 @@ def test_pi_observability_normalizes_legacy_metrics(tmp_path: Path) -> None:
                             "percent": 5.0,
                         }
                     },
+                    "runtime_start": {
+                        "schema_version": 1,
+                        "agent": "candidate",
+                        "host": "pi-rpc",
+                        "mode": "rpc",
+                        "project_trusted": True,
+                        "active_tools": [
+                            "bash",
+                            "read",
+                            "search_get_agent_context",
+                        ],
+                        "active_builtin_tools": ["bash", "read"],
+                        "active_non_builtin_tools": ["search_get_agent_context"],
+                        "pi_sandbox": "none",
+                        "pi_builtin_tool_approval": "none",
+                        "filesystem_access": "launcher-process-user",
+                        "network_access": "host-policy-unreported",
+                        "cwd": str(tmp_path),
+                        "captured_at": "2026-08-26T08:00:00.000Z",
+                    },
                 }
             },
         ),
@@ -219,6 +239,23 @@ def test_pi_observability_normalizes_legacy_metrics(tmp_path: Path) -> None:
     assert result["usage"]["tool_results"] == 6
     assert result["usage"]["cost_usd"] == 0.1
     assert result["context"]["tokens"] == 12000
+    assert result["runtime_start"] == {
+        "source": "pi_session_entry",
+        "agent": "candidate",
+        "host": "pi-rpc",
+        "mode": "rpc",
+        "project_trusted": True,
+        "active_tools": ["bash", "read", "search_get_agent_context"],
+        "active_builtin_tools": ["bash", "read"],
+        "active_non_builtin_tools": ["search_get_agent_context"],
+        "pi_sandbox": "none",
+        "pi_builtin_tool_approval": "none",
+        "filesystem_access": "launcher-process-user",
+        "network_access": "host-policy-unreported",
+        "cwd": str(tmp_path),
+        "captured_at": "2026-08-26T08:00:00.000Z",
+        "error": None,
+    }
 
 
 def test_pi_usage_treats_zero_cost_with_tokens_as_unavailable() -> None:
