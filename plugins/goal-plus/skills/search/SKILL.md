@@ -259,9 +259,10 @@ worker 可先依据 commit、score、disposition 和自己的推理独立探索�
 观察，不是分数、推荐或 promotion gate；它不改变硬分结算规则。worker 可以据此
 形成自己的下一轮假设，但应独立核对。窄、单文件代码证据可在当前 workspace 使用
 `git diff HEAD <commit> -- <allowed-file>` 做只读比较；改动较大或需要浏览完整实现时，
-对目标 Evidence 调用 `search_reference_open`，在返回的一次性只读 ref-workspace 中使用
-`search_reference_list/read/exec` 自主查看核心内容，完成后调用 `search_reference_close`。
-不访问其他 candidate 的真实 workspace，也不 checkout/reset peer commit。修改完成后，worker 在 `search_run_verifier` 中用一句话
+对目标 Evidence 调用 `search_reference_open`，把它 checkout 到当前 worker 唯一的
+ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的
+reference commit；所有实现修改仍留在 candidate workspace。不访问其他 candidate 的真实
+workspace。修改完成后，worker 在 `search_run_verifier` 中用一句话
 `hypothesis` 客观概括实际尝试。
 
 当 FrozenSpec 显式启用 `shared_dir` 时，candidate 只能从 Global Evidence 的

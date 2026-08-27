@@ -1096,7 +1096,10 @@ def test_worker_instructions_match_enabled_capabilities(
     assert ("success_threshold" in instructions) is threshold
     assert ("否则正常收尾" in instructions) is threshold
     assert "search_reference_open" in combined_instructions
-    assert "search_reference_list/read/exec" in combined_instructions
+    assert "当前 agent 唯一的 ref-workspace" in combined_instructions
+    assert "同一目录切到新的 reference commit" in combined_instructions
+    assert "search_reference_list/read/exec" not in combined_instructions
+    assert "search_reference_close" not in combined_instructions
     assert "不要访问或 fetch peer 的真实工作区" in combined_instructions
     assert "When steps run out the host will ask you" not in combined_instructions
 

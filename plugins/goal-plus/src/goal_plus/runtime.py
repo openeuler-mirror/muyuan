@@ -2073,7 +2073,7 @@ class FileSearchRuntime:
         source_candidate_id: str,
         source_iteration: int,
     ) -> ReferenceWorkspaceRecord:
-        """Materialize one exact settled artifact as a disposable ref-workspace."""
+        """Check out one exact settled artifact in the worker's ref-workspace."""
         candidate_id = source_candidate_id
         iteration = source_iteration
         session = self._load_agent_session_by_id(agent_session_id)
@@ -2114,25 +2114,50 @@ class FileSearchRuntime:
             if artifact_ref is None:
                 raise RuntimeError("Evidence iteration has no immutable artifact")
 
-            identity = canonical_json(
-                {
-                    "requester": session.agent_session_id,
-                    "candidate": candidate_id,
-                    "iteration": iteration,
-                    "artifact": artifact_ref.model_dump(mode="json"),
-                }
-            )
+            identity = canonical_json({"requester": session.agent_session_id})
             reference_id = f"ref_{sha256_text(identity)[:16]}"
-            display_name = (
-                f"ref-{candidate_id}-verifier-input-{iteration:03d}-"
-                f"{artifact_ref.id[:12]}"
-            )
+            display_name = "ref-workspace"
             destination = (
                 self._run_dir(session.run_id)
                 / "reference-workspaces"
                 / session.agent_session_id
                 / display_name
             )
+            for previous in self._load_reference_workspaces(
+                session.run_id,
+                requester_agent_session_id=session.agent_session_id,
+                open_only=True,
+            ):
+                previous_source = self._load_candidate_record(
+                    session.run_id,
+                    previous.source_candidate_id,
+                )
+                available = previous.access.root is not None and previous.access.root.is_dir()
+                clean = False
+                if previous.access.root is not None:
+                    clean = get_workspace_provider(
+                        previous.workspace_backend
+                    ).remove_reference(
+                        previous_source.task.workspace,
+                        previous.artifact_ref,
+                        previous.access.root,
+                    )
+                if previous.reference_id != reference_id:
+                    self._write_reference_workspace(
+                        previous.model_copy(
+                            update={
+                                "state": "closed",
+                                "integrity_status": (
+                                    "unavailable"
+                                    if not available
+                                    else "clean"
+                                    if clean
+                                    else "contaminated"
+                                ),
+                                "closed_at": utc_timestamp(),
+                            }
+                        )
+                    )
             provider = get_workspace_provider(source.task.workspace_backend)
             provider.materialize_reference(
                 source.task.workspace,
@@ -2159,231 +2184,6 @@ class FileSearchRuntime:
             )
             self._write_reference_workspace(record)
             return record
-
-    def list_reference_workspace(
-        self,
-        agent_session_id: str,
-        reference_id: str,
-        path: str = ".",
-        *,
-        recursive: bool = False,
-        max_entries: int = 500,
-    ) -> dict[str, Any]:
-        if max_entries < 1 or max_entries > 5000:
-            raise ValueError("max_entries must be between 1 and 5000")
-        record, root = self._open_reference_for_session(
-            agent_session_id,
-            reference_id,
-        )
-        target = self._reference_path(root, path)
-        if not target.is_dir():
-            raise ValueError(f"reference path is not a directory: {path}")
-        candidates = target.rglob("*") if recursive else target.iterdir()
-        entries: list[dict[str, Any]] = []
-        truncated = False
-        for item in sorted(candidates):
-            if item.relative_to(root).parts[0] == ".git":
-                continue
-            if len(entries) >= max_entries:
-                truncated = True
-                break
-            relative = item.relative_to(root).as_posix()
-            entries.append(
-                {
-                    "path": relative,
-                    "kind": (
-                        "symlink"
-                        if item.is_symlink()
-                        else "directory"
-                        if item.is_dir()
-                        else "file"
-                    ),
-                    "size": (
-                        item.stat().st_size
-                        if not item.is_symlink() and item.is_file()
-                        else None
-                    ),
-                }
-            )
-        return {
-            "reference_id": record.reference_id,
-            "root": str(root),
-            "path": target.relative_to(root).as_posix() or ".",
-            "entries": entries,
-            "truncated": truncated,
-        }
-
-    def read_reference_workspace(
-        self,
-        agent_session_id: str,
-        reference_id: str,
-        path: str,
-        *,
-        offset: int = 0,
-        max_bytes: int = 64 * 1024,
-    ) -> dict[str, Any]:
-        if offset < 0:
-            raise ValueError("offset must be >= 0")
-        if max_bytes < 1 or max_bytes > 256 * 1024:
-            raise ValueError("max_bytes must be between 1 and 262144")
-        record, root = self._open_reference_for_session(
-            agent_session_id,
-            reference_id,
-        )
-        target = self._reference_path(root, path)
-        if not target.is_file() or target.is_symlink():
-            raise ValueError(f"reference path is not a regular file: {path}")
-        with target.open("rb") as handle:
-            handle.seek(offset)
-            content = handle.read(max_bytes + 1)
-        truncated = len(content) > max_bytes
-        content = content[:max_bytes]
-        return {
-            "reference_id": record.reference_id,
-            "path": target.relative_to(root).as_posix(),
-            "offset": offset,
-            "bytes": len(content),
-            "truncated": truncated,
-            "content": content.decode("utf-8", errors="replace"),
-        }
-
-    def exec_reference_workspace(
-        self,
-        agent_session_id: str,
-        reference_id: str,
-        argv: list[str],
-        *,
-        cwd: str = ".",
-        timeout_seconds: int = 15,
-    ) -> dict[str, Any]:
-        if not argv or len(argv) > 64 or any(not value for value in argv):
-            raise ValueError("argv must contain between 1 and 64 non-empty values")
-        if timeout_seconds < 1 or timeout_seconds > 60:
-            raise ValueError("timeout_seconds must be between 1 and 60")
-        record, root = self._open_reference_for_session(
-            agent_session_id,
-            reference_id,
-        )
-        working_directory = self._reference_path(root, cwd)
-        if not working_directory.is_dir():
-            raise ValueError(f"reference cwd is not a directory: {cwd}")
-        self._validate_reference_command(argv, root, working_directory)
-        executable = shutil.which(argv[0])
-        if executable is None:
-            raise FileNotFoundError(f"reference command is unavailable: {argv[0]}")
-        environment = {
-            key: value
-            for key, value in os.environ.items()
-            if not key.startswith("GIT_")
-        }
-        environment.update(
-            {
-                "GIT_OPTIONAL_LOCKS": "0",
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_CONFIG_GLOBAL": os.devnull,
-                "GIT_PAGER": "cat",
-                "PAGER": "cat",
-            }
-        )
-        command = [executable, *argv[1:]]
-        process = subprocess.Popen(
-            command,
-            cwd=working_directory,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        output_limit = 64 * 1024
-        stdout_capture = _BoundedOutput(output_limit)
-        stderr_capture = _BoundedOutput(output_limit)
-
-        def drain(stream: Any, capture: _BoundedOutput) -> None:
-            try:
-                while True:
-                    chunk = stream.read(8192)
-                    if not chunk:
-                        return
-                    capture.append(chunk)
-            except (OSError, ValueError):
-                return
-
-        readers = [
-            threading.Thread(
-                target=drain,
-                args=(process.stdout, stdout_capture),
-                daemon=True,
-            ),
-            threading.Thread(
-                target=drain,
-                args=(process.stderr, stderr_capture),
-                daemon=True,
-            ),
-        ]
-        for reader in readers:
-            reader.start()
-        try:
-            returncode = process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            self._terminate_verifier_process_group(process)
-            raise TimeoutError(
-                f"reference command exceeded {timeout_seconds} seconds"
-            ) from exc
-        finally:
-            for reader in readers:
-                reader.join(timeout=VERIFIER_TERM_GRACE_SECONDS)
-            for stream in (process.stdout, process.stderr):
-                if stream is not None and not stream.closed:
-                    stream.close()
-        return {
-            "reference_id": record.reference_id,
-            "argv": argv,
-            "cwd": working_directory.relative_to(root).as_posix() or ".",
-            "returncode": returncode,
-            "stdout": stdout_capture.text(),
-            "stderr": stderr_capture.text(),
-            "stdout_truncated": stdout_capture.truncated,
-            "stderr_truncated": stderr_capture.truncated,
-        }
-
-    def close_reference_workspace(
-        self,
-        agent_session_id: str,
-        reference_id: str,
-    ) -> ReferenceWorkspaceRecord:
-        record, root = self._open_reference_for_session(
-            agent_session_id,
-            reference_id,
-            verify_integrity=False,
-        )
-        with self._run_transaction(record.run_id):
-            source = self._load_candidate_record(
-                record.run_id,
-                record.source_candidate_id,
-            )
-            available = root.is_dir()
-            clean = get_workspace_provider(
-                record.workspace_backend
-            ).remove_reference(
-                source.task.workspace,
-                record.artifact_ref,
-                root,
-            )
-            closed = record.model_copy(
-                update={
-                    "state": "closed",
-                    "integrity_status": (
-                        "unavailable"
-                        if not available
-                        else "clean"
-                        if clean
-                        else "contaminated"
-                    ),
-                    "closed_at": utc_timestamp(),
-                }
-            )
-            self._write_reference_workspace(closed)
-            return closed
 
     def get_evidence_detail(
         self,
@@ -4466,7 +4266,7 @@ class FileSearchRuntime:
             "每项实质变更后，及时使用当前 agent_session_id 调用 search_run_verifier，并用一句话 hypothesis 描述实际尝试；只有其返回结果会结算为正式 Evidence 并贡献给共享搜索。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
             "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
             "在分配的 host budget 内工作；收到用户停止、run 失效或 host 截止提示时及时收尾。",
-            "按 context.supplemental_evaluation_enabled 和 Evidence 的 supplemental_available 标记按需读取一次 search_get_evidence_detail；补充评价不参与结算。窄代码证据可以直接比较 commit；改动较大或需要浏览完整实现时，调用 search_reference_open 创建与该 Evidence 精确绑定的只读 ref-workspace，再用 search_reference_list/read/exec 查看，最后 search_reference_close。不要访问或 fetch peer 的真实工作区，也不要 checkout/reset peer commit。",
+            "按 context.supplemental_evaluation_enabled 和 Evidence 的 supplemental_available 标记按需读取一次 search_get_evidence_detail；补充评价不参与结算。窄代码证据可以直接比较 commit；改动较大或需要浏览完整实现时，调用 search_reference_open 把该 Evidence checkout 到当前 agent 唯一的 ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的 reference commit；所有实现修改仍留在 candidate workspace。不要访问或 fetch peer 的真实工作区。",
         ]
         if "success_threshold" in frozen.spec.constraints:
             instructions.append(
@@ -6880,160 +6680,6 @@ class FileSearchRuntime:
         if open_only:
             records = [record for record in records if record.state == "open"]
         return records
-
-    def _open_reference_for_session(
-        self,
-        agent_session_id: str,
-        reference_id: str,
-        *,
-        verify_integrity: bool = True,
-    ) -> tuple[ReferenceWorkspaceRecord, Path]:
-        session = self._load_agent_session_by_id(agent_session_id)
-        path = self._reference_workspace_path(session.run_id, reference_id)
-        if not path.exists():
-            raise FileNotFoundError(f"reference workspace not found: {reference_id}")
-        record = ReferenceWorkspaceRecord.model_validate(load_json(path))
-        if record.requester_agent_session_id != agent_session_id:
-            raise PermissionError("reference workspace belongs to another agent session")
-        if record.state != "open":
-            raise RuntimeError(f"reference workspace is {record.state}")
-        if record.access.root is None:
-            raise RuntimeError("reference workspace has no filesystem access path")
-        root = record.access.root.resolve()
-        expected_parent = (
-            self._run_dir(record.run_id)
-            / "reference-workspaces"
-            / agent_session_id
-        ).resolve()
-        try:
-            root.relative_to(expected_parent)
-        except ValueError as exc:
-            raise RuntimeError("reference workspace path escaped its run boundary") from exc
-        if not root.is_dir():
-            if verify_integrity:
-                raise RuntimeError("reference workspace is unavailable")
-            return record, root
-        provider = get_workspace_provider(record.workspace_backend)
-        current = (
-            provider.current_artifact(root)
-            if verify_integrity
-            else record.artifact_ref
-        )
-        if verify_integrity and (
-            current != record.artifact_ref
-            or provider.status(root, ignore_runtime_noise=False)
-        ):
-            contaminated = record.model_copy(
-                update={"integrity_status": "contaminated"}
-            )
-            self._write_reference_workspace(contaminated)
-            raise RuntimeError(
-                "reference workspace changed after materialization; close and reopen it"
-            )
-        return record, root
-
-    @staticmethod
-    def _reference_path(root: Path, value: str) -> Path:
-        if not value or "\x00" in value:
-            raise ValueError("reference path must be non-empty")
-        lexical = Path(value)
-        if ".git" in lexical.parts:
-            raise PermissionError("reference Git metadata is not part of the file view")
-        candidate = (root / lexical).resolve()
-        try:
-            candidate.relative_to(root.resolve())
-        except ValueError as exc:
-            raise PermissionError(f"reference path escapes its root: {value}") from exc
-        return candidate
-
-    @staticmethod
-    def _validate_reference_command(
-        argv: list[str],
-        root: Path,
-        cwd: Path,
-    ) -> None:
-        allowed = {"git", "rg", "ls", "head", "tail", "wc", "stat", "file"}
-        if argv[0] not in allowed:
-            raise PermissionError(
-                "reference exec only permits read-only git/rg/file inspection commands"
-            )
-        for value in argv[1:]:
-            if "\x00" in value or Path(value).is_absolute() or "../" in value:
-                raise PermissionError("reference command arguments must stay relative")
-            if "=/" in value:
-                raise PermissionError("reference command option points outside the root")
-            if value.startswith("-"):
-                continue
-            candidate = cwd / value
-            if candidate.exists() or candidate.is_symlink():
-                resolved = candidate.resolve()
-                try:
-                    resolved.relative_to(root.resolve())
-                except ValueError as exc:
-                    raise PermissionError(
-                        "reference command path resolves outside the root"
-                    ) from exc
-        if argv[0] == "git":
-            safe_subcommands = {
-                "show",
-                "diff",
-                "log",
-                "status",
-                "ls-files",
-            }
-            if len(argv) < 2 or argv[1] not in safe_subcommands:
-                raise PermissionError("reference git subcommand is not read-only")
-            forbidden = {
-                "--ext-diff",
-                "--textconv",
-                "--filters",
-                "--open-files-in-pager",
-                "--exec",
-                "--output",
-                "--all",
-                "--branches",
-                "--remotes",
-                "--reflog",
-            }
-            if any(
-                value in forbidden
-                or any(value.startswith(f"{item}=") for item in forbidden)
-                for value in argv[2:]
-            ):
-                raise PermissionError("reference git option can execute or write")
-            if argv[1] in {"show", "diff", "log"}:
-                before_paths = True
-                for value in argv[2:]:
-                    if value == "--":
-                        before_paths = False
-                        continue
-                    if not before_paths or value.startswith("-"):
-                        continue
-                    if value != "HEAD" and not value.startswith("HEAD:"):
-                        raise PermissionError(
-                            "reference git history inspection is anchored to HEAD"
-                        )
-        if argv[0] == "rg" and any(
-            value in {"--pre", "-L", "--follow"}
-            or value.startswith("--pre=")
-            for value in argv[1:]
-        ):
-            raise PermissionError("reference rg option can escape or execute commands")
-        if argv[0] == "ls" and any(
-            value in {"-L", "--dereference"} for value in argv[1:]
-        ):
-            raise PermissionError("reference ls cannot dereference symlinks")
-        if argv[0] in {"head", "tail", "wc", "stat"} and any(
-            value in {"-L", "--dereference", "-F", "--follow"}
-            or value.startswith("--files0-from=")
-            for value in argv[1:]
-        ):
-            raise PermissionError("reference command option can escape its file set")
-        if argv[0] == "file" and any(
-            value in {"-f", "--files-from", "-z", "--uncompress"}
-            for value in argv[1:]
-        ):
-            raise PermissionError("reference file option is not bounded read-only inspection")
 
     def _evidence_annotation_task_path(
         self,

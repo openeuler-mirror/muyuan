@@ -25,7 +25,7 @@ Goal Plus 不应把 Git worktree 当成唯一执行模型，也不应为 ThinkTh
 
 Shared Plane 共享的是不可变产物引用、窄 Evidence 和 lineage，不共享其他
 worker 的可写 workspace。需要理解较大修改时，worker 打开一个完整、只读、
-可丢弃的 `ref-*` workspace 自己浏览，不再把巨型 diff 塞进上下文。
+每个 worker 唯一的 `ref-workspace` 中自己浏览，不再把巨型 diff 塞进上下文。
 
 本设计同时服务 Codex 和 Pi；Host 选择与 Workspace Provider 选择相互独立。
 
@@ -60,7 +60,7 @@ worker 的可写 workspace。需要理解较大修改时，worker 打开一个�
                          +------------------+------------------+
                          |                                     |
                    Shared Plane                       Reference Workspace
-             Evidence + lineage + score        ref-* 完整只读/可丢弃视图
+             Evidence + lineage + score        单 worker ref-workspace 完整参考视图
                          |                                     |
                          +---------------其他 worker-----------+
 ```
@@ -100,22 +100,22 @@ ArtifactRef 是 verifier、候选结果、Shared Plane 和最终选择之间传�
 
 ### 3.3 ReferenceWorkspace
 
-从某个 ArtifactRef 打开的完整参考目录。例如：
+每个 loop worker 拥有一个完整参考目录。例如：
 
 ```text
-current/                         # candidate 自己的可写 workspace
-ref-candidate-2-pre-ver-1/       # 某次被验证产物的只读参考视图
-ref-candidate-8-pre-ver-3/       # 另一份参考视图
+current/             # candidate 自己的可写 workspace
+ref-workspace/       # 当前选中的 ArtifactRef checkout
 ```
 
 它解决的是“大改动无法靠一个 diff 理解”的问题。diff 仍可作为导航和窄证据，
-但不再承担完整代码传递。
+但不再承担完整代码传递。worker 选择另一条 Evidence 时，provider 把同一个
+`ref-workspace` checkout 到新的 ArtifactRef，不创建第二个参考目录。
 
 ReferenceWorkspace 必须满足：
 
 - 精确：内容对应指定 ArtifactRef，而不是 peer 当前状态。
 - 隔离：修改 reference 不影响原产物、candidate 或其他 reference。
-- 可回收：使用结束后可以关闭和释放。
+- 有界：每个 worker 最多一个 reference，生命周期由 Runtime 管理，不要求 Agent close。
 - 有授权：worker 只能打开 Shared Plane 明确暴露的产物。
 
 ### 3.4 LocalVcs
@@ -196,8 +196,7 @@ prepare_source(source) -> SourceArtifact
 create_workspace(baseline, owner) -> WorkspaceAccess
 checkpoint(workspace, label) -> ArtifactRef
 restore(workspace, artifact) -> None
-open_reference(requester, artifact) -> ReferenceWorkspace
-close_reference(reference) -> None
+checkout_reference(requester, artifact) -> ReferenceWorkspace
 dispose_workspace(workspace) -> None
 capabilities() -> WorkspaceCapabilities
 ```
@@ -248,7 +247,7 @@ Git provider 可对 clean Git repo 使用原生快路径。ThinkThread provider 
 8. verifier 针对该精确 ArtifactRef 运行
 9. Runtime 记录 score、Evidence、lineage 和 verifier 结果
 10. 结果合格时发布到 Shared Plane；失败时保留诊断或恢复上一 checkpoint
-11. worker 可打开 peer ArtifactRef 的 ref-* workspace 阅读并继续自己的实现
+11. worker 可把 peer ArtifactRef checkout 到自己的唯一 ref-workspace 阅读并继续自己的实现
 12. 最终选择一个 ArtifactRef，再执行 promotion/export
 ```
 
@@ -264,7 +263,7 @@ private worktree
 
 worker 不应 checkout peer commit 到自己的 CurrentWorkspace。那会把对话上下文中
 的“我正在实现 A”与磁盘上的“已经切成 B”混在一起。正确方式是保留 current，
-另开 `ref-*`。
+把每个 worker 唯一的 `ref-workspace` 切到目标 ArtifactRef。
 
 ### 7.2 ThinkThread provider 对应行为
 
@@ -297,20 +296,17 @@ CandidateEvidence
 └── reference_available
 ```
 
-subagent 先通过 Goal Plus MCP 得到 Evidence；当窄 Evidence 不足时，再通过统一
-reference MCP 打开完整参考树：
+subagent 先通过 Goal Plus MCP 得到 Evidence；当窄 Evidence 不足时，用一个工具把完整
+参考树 checkout 到当前 worker 的稳定 reference 路径：
 
 ```text
-search_reference_list
 search_reference_open
-search_reference_read
-search_reference_exec
-search_reference_close
 ```
 
-Git provider 把这些调用映射到 detached worktree，ThinkThread provider 映射到
-FsSnapshot reference Child。worker 不需要猜 commit、不需要 fetch peer workspace，
-也不拥有 sibling 的可写 branch authority。
+Git provider 把调用映射到 detached worktree，ThinkThread provider 映射到每个 worker
+唯一的 FsSnapshot reference Child。worker 直接用普通文件和命令工具查看返回路径；再次
+调用时同一 reference 被切到新的 ArtifactRef。worker 不需要 fetch peer workspace，也不
+拥有 sibling 的可写 branch authority。
 
 “无 sibling branch authority”具体是：A 可以读取 Shared Plane 授权的 B 的不可变
 产物，但不能继续写 B 的 Child、移动 B 的 head、替 B checkpoint，或读取 B 尚未
@@ -368,13 +364,13 @@ TODO，而不是现有能力。
 | --- | --- | --- |
 | Provider-neutral `ArtifactRef` | 已实现 | 继续保持业务层不假设 Git SHA |
 | Git/Copy checkpoint、restore | 已实现 | 作为统一语义基线 |
-| Git/Copy `ref-*` workspace | 已实现 | 保持精确、隔离、可回收 |
-| 统一 reference MCP | 已实现 | Git/TT 同名同语义 |
+| Git/Copy 单 worker `ref-workspace` | 已实现 | 保持精确、隔离、数量有界 |
+| 统一 reference checkout MCP | 已实现 | Git/TT 同名同语义 |
 | ThinkThread backend 选择 | 已注册，显式 unsupported | 实现真实 provider，不静默 fallback |
 | ThinkThread baseline/Child/checkpoint | 未实现 | 完成 COW lineage 与 FsSnapshot |
 | ThinkThread verifier execution | 未实现 | verifier 绑定不可变 snapshot |
 | Codex/Pi × ThinkThread host 接入 | 未实现 | worker 真正在 private Child 中运行 |
-| TT reference workspace | 未实现 | 从已发布 snapshot 派生 ref-* |
+| TT reference workspace | 未实现 | 从已发布 snapshot 切换每个 worker 唯一的 reference Child |
 | 多仓 SourceImporter | 未实现 | 精确、可复现地导入完整 workspace |
 | 四组合规模化验证 | 未完成 | 用同一指标矩阵验收 |
 

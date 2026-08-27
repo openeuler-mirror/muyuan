@@ -112,14 +112,11 @@ runtime 在 freeze 前通过 host catalog 解析模型名。最终有序 `select
 |---|---|---|
 | `search_get_global_evidence` | candidate worker | 读取当前 run 已结算 attempt 的 score、disposition、`artifact_ref`、兼容 commit 和客观 View |
 | `search_get_evidence_detail` | candidate worker | 按需展开一条 available supplemental evaluation |
-| `search_reference_open` | candidate worker | 把一条 Evidence 的精确 artifact 打开为一次性只读 ref-workspace |
-| `search_reference_list` / `search_reference_read` | candidate worker | 在 reference root 内有界浏览目录和文件 |
-| `search_reference_exec` | candidate worker | 不经过 shell 运行受限只读检查命令 |
-| `search_reference_close` | candidate worker | 清理 reference 并记录 clean/contaminated 完整性 |
+| `search_reference_open` | candidate worker | 把一条 Evidence 的精确 artifact checkout 到当前 worker 唯一的 ref-workspace，并返回普通目录路径 |
 
 每个 verifier-backed iteration 都会把 commit、score、disposition 和可用时异步生成的 View 投影到 Global Evidence。`view=null` 表示 annotation 尚未发布；worker 应继续独立工作，不等待或轮询。
 
-`artifact_ref={kind,id,provider}` 是新的跨 backend 身份；Git 下 `kind=git_commit`，旧 `commit` 字段继续保留。窄 diff 足够时可以直接比较 commit；改动较大时用 `search_reference_open` 得到形如 `ref-c001-verifier-input-003-<short-id>` 的完整树，再通过 list/read/exec 查看。Git 实现是 detached worktree，属于 soft read-only contract：runtime 每次访问和关闭时检查 HEAD/dirty state，污染后拒绝继续读取并把目录作为一次性 reference 清理。MCP 文件视图不暴露 `.git`，Git exec 只允许锚定该 reference `HEAD` 的历史读取，不能用 `--all` 枚举 sibling refs。它不是 peer 的活动 workspace。
+`artifact_ref={kind,id,provider}` 是新的跨 backend 身份；Git 下 `kind=git_commit`，旧 `commit` 字段继续保留。窄 diff 足够时可以直接比较 commit；改动较大时用 `search_reference_open` 把完整树 checkout 到该 worker 的稳定 `ref-workspace` 目录，然后直接使用普通文件和命令工具查看。每个 `agent_session_id` 最多有一个 reference 目录；再次调用会丢弃该目录的本地变化并切到新的精确 artifact。reference 不是 peer 的活动 workspace，所有候选实现修改仍发生在自己的 candidate workspace。runtime 不要求 worker 关闭 reference；目录随 run state 保留，数量受实际 worker 数限制。
 
 `strategy.config.global_evidence_mode` 决定 candidate 如何收到 Evidence：
 

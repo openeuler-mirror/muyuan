@@ -185,64 +185,6 @@ class SearchTools:
             source_iteration,
         ).model_dump(mode="json")
 
-    def search_reference_list(
-        self,
-        agent_session_id: str,
-        reference_id: str,
-        path: str = ".",
-        recursive: bool = False,
-        max_entries: int = 500,
-    ) -> dict[str, Any]:
-        return self.runtime.list_reference_workspace(
-            agent_session_id,
-            reference_id,
-            path,
-            recursive=recursive,
-            max_entries=max_entries,
-        )
-
-    def search_reference_read(
-        self,
-        agent_session_id: str,
-        reference_id: str,
-        path: str,
-        offset: int = 0,
-        max_bytes: int = 64 * 1024,
-    ) -> dict[str, Any]:
-        return self.runtime.read_reference_workspace(
-            agent_session_id,
-            reference_id,
-            path,
-            offset=offset,
-            max_bytes=max_bytes,
-        )
-
-    def search_reference_exec(
-        self,
-        agent_session_id: str,
-        reference_id: str,
-        argv: list[str],
-        cwd: str = ".",
-        timeout_seconds: int = 15,
-    ) -> dict[str, Any]:
-        return self.runtime.exec_reference_workspace(
-            agent_session_id,
-            reference_id,
-            argv,
-            cwd=cwd,
-            timeout_seconds=timeout_seconds,
-        )
-
-    def search_reference_close(
-        self,
-        agent_session_id: str,
-        reference_id: str,
-    ) -> dict[str, Any]:
-        return self.runtime.close_reference_workspace(
-            agent_session_id,
-            reference_id,
-        ).model_dump(mode="json")
-
     def search_copy_shared_tool(
         self,
         agent_session_id: str,

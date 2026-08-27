@@ -361,19 +361,19 @@ git show <commit>:<allowed-file>
 git diff HEAD <commit> -- <allowed-file>
 ```
 
-改动较大或需要浏览完整实现时，candidate 调用 `search_reference_open`，runtime 从 root-owned
-Evidence identity 创建 detached、精确且一次性的 reference tree：
+改动较大或需要浏览完整实现时，candidate 调用 `search_reference_open`。runtime 把 root-owned
+Evidence identity checkout 到当前 worker 唯一、稳定的 detached reference worktree：
 
 ```text
-current workspace/
-ref-c001-verifier-input-003-123e4abcde00/
-ref-c004-verifier-input-008-a23e4abcde00/
+candidate workspace/       # 当前 worker 的实现工作区
+ref-workspace/             # 当前 worker 的参考 checkout
 ```
 
-worker 通过 `search_reference_list/read/exec` 自主挑选核心内容，完成后
-`search_reference_close`。candidate 不应 checkout、reset 或修改 peer revision，也不访问 peer
-活动 workspace。Git reference 是 soft read-only：runtime 检测污染并丢弃；未来 ThinkThread
-provider 应把相同 API 映射到 snapshot-derived reference child。
+worker 直接使用普通文件和命令工具查看返回路径。再次调用会丢弃 ref-workspace 的本地变化，
+并把同一目录切到新的 Evidence commit；不会创建第二个 reference 目录，也不要求 worker
+close。candidate 的实现修改始终留在自己的 workspace，不访问 peer 活动 workspace。未来
+ThinkThread provider 应把同一个 checkout API 映射到每个 worker 唯一的 snapshot-derived
+reference child。
 
 最终 promotion artifact 虽然是
 相对于 source 生成的 patch，但这不会改变 Evidence commit 代表完整代码树的语义。

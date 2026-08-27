@@ -570,43 +570,6 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 		},
 		{ additionalProperties: false },
 	),
-	search_reference_list: Type.Object(
-		{
-			agent_session_id: Type.String(),
-			reference_id: Type.String(),
-			path: Type.Optional(Type.String()),
-			recursive: Type.Optional(Type.Boolean()),
-			max_entries: Type.Optional(Type.Integer({ minimum: 1, maximum: 5000 })),
-		},
-		{ additionalProperties: false },
-	),
-	search_reference_read: Type.Object(
-		{
-			agent_session_id: Type.String(),
-			reference_id: Type.String(),
-			path: Type.String(),
-			offset: Type.Optional(Type.Integer({ minimum: 0 })),
-			max_bytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 262144 })),
-		},
-		{ additionalProperties: false },
-	),
-	search_reference_exec: Type.Object(
-		{
-			agent_session_id: Type.String(),
-			reference_id: Type.String(),
-			argv: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 64 }),
-			cwd: Type.Optional(Type.String()),
-			timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 60 })),
-		},
-		{ additionalProperties: false },
-	),
-	search_reference_close: Type.Object(
-		{
-			agent_session_id: Type.String(),
-			reference_id: Type.String(),
-		},
-		{ additionalProperties: false },
-	),
 	search_copy_shared_tool: Type.Object(
 		{
 			agent_session_id: Type.String(),
@@ -756,15 +719,7 @@ const RuntimeToolDescriptions: Record<string, string> = {
 	search_get_global_evidence:
 		"读取当前 run 的窄 Global Evidence 视图。每项包含 provider-neutral artifact_ref、兼容 commit、硬 score、keep/retain/discard/failure disposition、reference_available、可能延迟的客观 View、可选 supplemental evaluation 的可用标记，以及启用 shared_dir 后已由 annotator 描述并由 runtime 绑定的 shared_tools/tool_view。任一 View 为 null 时都无需等待，可先依据 Evidence 独立探索。",
 	search_reference_open:
-		"把一条已结算 Evidence 的精确 artifact 打开为一次性只读 ref-workspace。Git backend 返回 detached worktree 的可读 root；它不是 peer 活动 workspace。",
-	search_reference_list:
-		"在 ref-workspace root 内有界列目录。路径逃逸和已污染 reference 会拒绝。",
-	search_reference_read:
-		"在 ref-workspace root 内有界读取普通文件。路径逃逸、symlink 文件和已污染 reference 会拒绝。",
-	search_reference_exec:
-		"在 ref-workspace 内以 argv 方式运行有界只读检查，仅允许受限 git、rg、ls/head/tail/wc/stat/file，不使用 shell。",
-	search_reference_close:
-		"关闭并清理一次性 ref-workspace，同时持久化 clean/contaminated 完整性结果。",
+		"把一条已结算 Evidence checkout 到当前 worker 唯一的 ref-workspace。再次调用会把同一目录切到新的精确 commit；直接用普通文件和命令工具查看返回的 root，所有实现修改仍留在 candidate workspace。",
 	search_copy_shared_tool:
 		"将已出现在 Global Evidence 的 Tool View 所对应的精确 shared-dir 快照复制到当前 candidate 的本地临时 inbox，供阅读源码或自主复用；复制不要求调用原工具。只有直接执行、导入或依赖原快照时，才先在当前 workspace 验证入口、依赖、路径假设和输出语义。下一次 worker verifier 会原子消费 receipt；当前 adopted_tools 只证明快照曾复制进本轮上下文，不证明原工具被执行或其代码被保留，也不改变选择、排名或硬分。",
 	search_stage_shared_tool:
@@ -2176,10 +2131,6 @@ export default function (pi: ExtensionAPI) {
 		"search_get_agent_context",
 		"search_get_global_evidence",
 		"search_reference_open",
-		"search_reference_list",
-		"search_reference_read",
-		"search_reference_exec",
-		"search_reference_close",
 		"search_stage_shared_tool",
 		"search_copy_shared_tool",
 		"search_get_evidence_detail",

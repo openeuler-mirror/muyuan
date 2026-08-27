@@ -26,7 +26,7 @@ Git worktree / ThinkThread Workspace Provider
 - 四种 Host × Provider 组合使用相同 Runtime API；
 - worker 的私有修改不会泄漏到 root 或 sibling；
 - verifier 始终验证明确 ArtifactRef；
-- Shared Plane 可以发布 Evidence，并打开完整 `ref-*` 参考树；
+- Shared Plane 可以发布 Evidence，并 checkout 到每个 worker 唯一的完整 `ref-workspace`；
 - 中断恢复、promotion 和本地账本行为可解释；
 - ThinkThread 路径没有隐式 Git commit 依赖；
 - ThinkThread 不可用时明确失败，不静默回退；
@@ -44,7 +44,7 @@ Git worktree / ThinkThread Workspace Provider
 - 引入 provider-neutral `ArtifactRef`、`WorkspaceAccess` 和 capability；
 - Git/Copy provider 支持 checkpoint、restore 和完整 reference workspace；
 - Runtime、持久化记录和 MCP 传递 ArtifactRef；
-- Codex/Pi worker 都可使用 `search_reference_*` 工具；
+- Codex/Pi worker 都可使用 `search_reference_open` checkout 唯一 ref-workspace；
 - `thinkthread` backend 已注册为显式 unsupported，不会假装运行成功；
 - 已覆盖 reference 精确性、隔离性、回收、可见性和 Copy/Git parity 测试。
 
@@ -173,8 +173,8 @@ input tokens / cached tokens / output tokens / processed tokens / cost（可得�
 
 1. 为 provider contract 补充契约测试，而不是只测具体实现。
 2. 固定 checkpoint 后修改 current，确认旧 ArtifactRef 内容不变。
-3. 同时打开多个 reference，确认内容、授权和关闭互不干扰。
-4. 覆盖 worker 崩溃、verifier 失败、restore 后继续、重复 close。
+3. 同一 worker 连续选择多个 reference，确认始终复用一个路径并精确切换 ArtifactRef。
+4. 覆盖 worker 崩溃、verifier 失败和 restore 后继续；reference 数量不得随调用增长。
 5. 覆盖 dirty source、untracked 文件和受限 edit surface。
 6. 确认 Codex/Pi 生成相同的 Evidence 与 reference tool payload。
 
@@ -261,30 +261,30 @@ ThinkThread 管理的 private Child 内。
 
 ## 7. Phase 4：ThinkThread reference 与 Shared Plane
 
-目的：让 peer 产物像 Git `ref-*` 一样可直接阅读。
+目的：让 peer 产物像 Git 单 worker `ref-workspace` 一样可直接阅读。
 
 ### Phase 4 工作项
 
 1. Shared Plane 只发布 verifier 已绑定的 FsSnapshot ArtifactRef。
-2. `search_reference_list` 根据 requester 权限列出可访问产物。
-3. `search_reference_open` 从指定 snapshot 派生 reference Child。
-4. `read/exec` 限制在 reference 根目录，默认只读。
-5. `close` 回收 reference Child；重复 close 幂等。
-6. 对 reference 的任何写入不得影响 ArtifactRef、owner current 或其他 reference。
-7. Evidence 中保留窄 changed paths/summary，作为是否打开完整 reference 的导航。
+2. `search_reference_open` 校验 requester 权限，并把指定 snapshot checkout 到该 worker
+   唯一的 reference Child。
+3. worker 直接用普通文件和命令工具查看 reference 路径；实现修改仍留在 current Child。
+4. 再次 open 时复用同一个 reference Child 并切换 snapshot，不累积 reference。
+5. 对 reference 的任何写入不得影响 ArtifactRef、owner current 或其他 reference。
+6. Evidence 中保留窄 changed paths/summary，作为是否 checkout 完整 reference 的导航。
 
 ### 对抗测试
 
 - A 尝试使用 B 的可写 branch id；
 - A 尝试打开未发布的 B checkpoint；
-- reference 中写文件后重新打开同一 ArtifactRef；
+- reference 中写文件后 checkout 同一或另一 ArtifactRef；
 - owner current 在 reference 打开后继续修改；
 - snapshot 被 retention 标记后，已有引用仍可读取；
 - 恶意相对路径、绝对路径和符号链接逃逸。
 
 ### Phase 4 退出条件
 
-Git 与 TT 的五个 `search_reference_*` 工具对 worker 呈现相同结果结构和生命周期。
+Git 与 TT 的 `search_reference_open` 对 worker 呈现相同的单路径 checkout 语义。
 
 ---
 
@@ -339,7 +339,7 @@ Git 与 TT 的五个 `search_reference_*` 工具对 worker 呈现相同结果结
 
 效率：
 
-- source import、workspace create、checkpoint、restore、reference open/close 延迟；
+- source import、workspace create、checkpoint、restore、reference checkout 延迟；
 - Goal 到 Search、worker ready、首个 verifier、terminal 的时间；
 - 有效 verify 次数与单位时间 score 改善；
 - 磁盘增量、inode、峰值进程、CPU/内存和网络；

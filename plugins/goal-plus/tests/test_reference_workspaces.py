@@ -48,7 +48,7 @@ def _search_with_two_candidates(
     ]
 
 
-def test_reference_workspace_is_exact_browsable_and_disposable(
+def test_reference_workspace_is_exact_browsable_and_reused(
     tmp_path: Path,
 ) -> None:
     runtime, run_id, candidates = _search_with_two_candidates(tmp_path)
@@ -87,7 +87,7 @@ def test_reference_workspace_is_exact_browsable_and_disposable(
     root = Path(opened["access"]["root"])
     assert opened["access"]["kind"] == "filesystem_path"
     assert opened["access"]["readonly_contract"] == "soft_detected"
-    assert root.name.startswith(f"ref-{source_id}-verifier-input-001-")
+    assert root.name == "ref-workspace"
     assert root.is_dir()
     assert subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=root, text=True
@@ -95,26 +95,11 @@ def test_reference_workspace_is_exact_browsable_and_disposable(
     assert subprocess.check_output(
         ["git", "branch", "--show-current"], cwd=root, text=True
     ).strip() == ""
+    assert (root / "initial_program.py").read_text(encoding="utf-8") == "VALUE = 1\n"
 
-    listing = tools.search_reference_list(
-        requester_session,
-        reference_id,
-    )
-    assert "initial_program.py" in {item["path"] for item in listing["entries"]}
-    assert ".git" not in {item["path"] for item in listing["entries"]}
-    read = tools.search_reference_read(
-        requester_session,
-        reference_id,
-        "initial_program.py",
-    )
-    assert read["content"] == "VALUE = 1\n"
-    inspected = tools.search_reference_exec(
-        requester_session,
-        reference_id,
-        ["git", "show", "HEAD:initial_program.py"],
-    )
-    assert inspected["returncode"] == 0
-    assert inspected["stdout"] == "VALUE = 1\n"
+    # The reference workspace is ordinary checkout state. Local changes are
+    # discarded when the worker selects another Evidence commit.
+    (root / "initial_program.py").write_text("VALUE = 999\n", encoding="utf-8")
 
     (source_workspace / "initial_program.py").write_text(
         "VALUE = 2\n",
@@ -126,75 +111,22 @@ def test_reference_workspace_is_exact_browsable_and_disposable(
         agent_session_id=source_session,
         hypothesis="Set a later candidate value",
     )
-    assert tools.search_reference_read(
+    second_iteration = tools.search_list_iterations(run_id, source_id)[-1]["iteration"]
+    reopened = tools.search_reference_open(
         requester_session,
-        reference_id,
-        "initial_program.py",
-    )["content"] == "VALUE = 1\n"
-
-    with pytest.raises(PermissionError, match="escapes"):
-        tools.search_reference_read(
-            requester_session,
-            reference_id,
-            "../../outside.txt",
-        )
-    with pytest.raises(PermissionError, match="not read-only"):
-        tools.search_reference_exec(
-            requester_session,
-            reference_id,
-            ["git", "checkout", "HEAD~1"],
-        )
-    with pytest.raises(PermissionError, match="execute or write"):
-        tools.search_reference_exec(
-            requester_session,
-            reference_id,
-            ["git", "log", "--all"],
-        )
-    with pytest.raises(PermissionError, match="Git metadata"):
-        tools.search_reference_read(
-            requester_session,
-            reference_id,
-            ".git",
-        )
-
-    closed = tools.search_reference_close(requester_session, reference_id)
-    assert closed["state"] == "closed"
-    assert closed["integrity_status"] == "clean"
-    assert not root.exists()
-
-
-def test_reference_workspace_detects_direct_mutation_before_cleanup(
-    tmp_path: Path,
-) -> None:
-    runtime, run_id, candidates = _search_with_two_candidates(tmp_path)
-    source_id, source_session, source_workspace = candidates[0]
-    _, requester_session, _ = candidates[1]
-    (source_workspace / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
-    runtime.run_verifier(
-        run_id,
         source_id,
-        agent_session_id=source_session,
-        hypothesis="Create reference source",
+        second_iteration,
     )
-    opened = runtime.open_reference_workspace(requester_session, source_id, 1)
-    assert opened.access.root is not None
-    (opened.access.root / "initial_program.py").write_text(
-        "VALUE = 999\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(RuntimeError, match="changed after materialization"):
-        runtime.read_reference_workspace(
-            requester_session,
-            opened.reference_id,
-            "initial_program.py",
-        )
-    closed = runtime.close_reference_workspace(
-        requester_session,
-        opened.reference_id,
-    )
-    assert closed.integrity_status == "contaminated"
-    assert not opened.access.root.exists()
+    assert reopened["reference_id"] == reference_id
+    assert Path(reopened["access"]["root"]) == root
+    assert (root / "initial_program.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+    ).strip() == reopened["artifact_ref"]["id"]
+    assert len(list(root.parent.iterdir())) == 1
+    context = tools.search_get_agent_context(requester_session)
+    assert len(context["reference_workspaces"]) == 1
+    assert context["reference_workspaces"][0]["artifact_ref"] == reopened["artifact_ref"]
 
 
 def test_independent_evidence_cannot_open_peer_reference(tmp_path: Path) -> None:
@@ -222,7 +154,7 @@ def test_copy_backend_uses_the_same_reference_contract(tmp_path: Path) -> None:
         workspace_backend="copy",
     )
     source_id, source_session, source_workspace = candidates[0]
-    _, requester_session, _ = candidates[1]
+    requester_id, requester_session, requester_workspace = candidates[1]
     (source_workspace / "initial_program.py").write_text("VALUE = 4\n", encoding="utf-8")
     runtime.run_verifier(
         run_id,
@@ -234,9 +166,24 @@ def test_copy_backend_uses_the_same_reference_contract(tmp_path: Path) -> None:
     opened = runtime.open_reference_workspace(requester_session, source_id, 1)
     assert opened.artifact_ref.provider == "copy"
     assert opened.access.kind == "filesystem_path"
-    assert runtime.read_reference_workspace(
-        requester_session,
-        opened.reference_id,
-        "initial_program.py",
-    )["content"] == "VALUE = 4\n"
-    runtime.close_reference_workspace(requester_session, opened.reference_id)
+    assert opened.access.root is not None
+    assert (opened.access.root / "initial_program.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 4\n"
+
+    (requester_workspace / "initial_program.py").write_text(
+        "VALUE = 5\n", encoding="utf-8"
+    )
+    runtime.run_verifier(
+        run_id,
+        requester_id,
+        agent_session_id=requester_session,
+        hypothesis="Create Evidence in the other copy-backed repository",
+    )
+    switched = runtime.open_reference_workspace(requester_session, requester_id, 1)
+    assert switched.reference_id == opened.reference_id
+    assert switched.access.root == opened.access.root
+    assert switched.access.root is not None
+    assert (switched.access.root / "initial_program.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 5\n"
