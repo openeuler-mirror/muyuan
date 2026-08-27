@@ -110,13 +110,20 @@ runtime 在 freeze 前通过 host catalog 解析模型名。最终有序 `select
 
 | 工具 | 调用方 | 用途 |
 |---|---|---|
-| `search_get_global_evidence` | candidate worker | 读取当前 run 已结算 attempt 的 score、disposition、`artifact_ref`、兼容 commit 和客观 View |
+| `search_get_global_evidence` | candidate worker | 读取已结算的 Global Evidence |
 | `search_get_evidence_detail` | candidate worker | 按需展开一条 available supplemental evaluation |
-| `search_reference_open` | candidate worker | 把一条 Evidence 的精确 artifact checkout 到当前 worker 唯一的 ref-workspace，并返回普通目录路径 |
+| `search_reference_open` | candidate worker | 打开 Evidence 的精确 reference 目录 |
 
 每个 verifier-backed iteration 都会把 commit、score、disposition 和可用时异步生成的 View 投影到 Global Evidence。`view=null` 表示 annotation 尚未发布；worker 应继续独立工作，不等待或轮询。
 
-`artifact_ref={kind,id,provider}` 是新的跨 backend 身份；Git 下 `kind=git_commit`，旧 `commit` 字段继续保留。窄 diff 足够时可以直接比较 commit；改动较大时用 `search_reference_open` 把完整树 checkout 到该 worker 的稳定 `ref-workspace` 目录，然后直接使用普通文件和命令工具查看。每个 `agent_session_id` 最多有一个 reference 目录；再次调用会丢弃该目录的本地变化并切到新的精确 artifact。reference 不是 peer 的活动 workspace，所有候选实现修改仍发生在自己的 candidate workspace。runtime 不要求 worker 关闭 reference；目录随 run state 保留，数量受实际 worker 数限制。
+`artifact_ref={kind,id,provider}` 是新的跨 backend 身份；Git 下
+`kind=git_commit`，旧 `commit` 字段继续保留。窄 diff 足够时可以直接比较
+commit；改动较大时用 `search_reference_open` 把完整树 checkout 到该 worker
+的稳定 `ref-workspace` 目录，然后直接使用普通文件和命令工具查看。每个
+`agent_session_id` 最多有一个 reference 目录；再次调用会丢弃该目录的本地变化，
+并切到新的精确 artifact。reference 不是 peer 的活动 workspace，所有候选实现修改
+仍发生在自己的 candidate workspace。runtime 不要求 worker 关闭 reference；目录随
+run state 保留，数量受实际 worker 数限制。
 
 `strategy.config.global_evidence_mode` 决定 candidate 如何收到 Evidence：
 
@@ -162,7 +169,14 @@ worker handoff 是有界协议。`key_results` 描述 artifact、code surface/ch
 
 Pitfall 的 `scope` 为 `candidate_local`、`feature_family` 或 `evaluation_contract`，并带 `condition`、evidence artifact 和 `confidence`。缺省 scope 为 candidate-local。worker 的 verifier concern 在 main 调用 `search_invalidate_run` 前只是 advisory，不是 run-wide deny list。
 
-`search_get_agent_observability` 使用统一、版本化的跨 host schema。version 2 增加 `execution.provider` 和 `usage.processed_tokens`：Pi 包含 input、cache read/write 和 output token；Codex 使用原生 total-token count。version 3 增加 `runtime_start`：Pi RPC 从子进程自身的 session entry 报告 project trust、active tools、Pi 内置 sandbox/approval 语义、cwd，以及由启动用户或外部 host policy 决定而 Pi 不会伪造的 filesystem/network 边界；其他 host 或旧记录保持 `source="unavailable"`。该接口不返回 prompt、reasoning、tool argument 或 tool output，也不等待或控制 worker。
+`search_get_agent_observability` 使用统一、版本化的跨 host schema。
+version 2 增加 `execution.provider` 和 `usage.processed_tokens`：Pi 包含
+input、cache read/write 和 output token；Codex 使用原生 total-token count。
+version 3 增加 `runtime_start`：Pi RPC 从子进程自身的 session entry
+报告 project trust、active tools、Pi 内置 sandbox/approval 语义、cwd，以及由启动
+用户或外部 host policy 决定而 Pi 不会伪造的 filesystem/network 边界；其他
+host 或旧记录保持 `source="unavailable"`。该接口不返回 prompt、reasoning、
+tool argument 或 tool output，也不等待或控制 worker。
 
 `goal_plus_monitor_snapshot.statistics` 汇总 baseline/target improvement、success rate、terminal duration、time-to-first-verifier/success、worker outcome、model/provider、candidate lineage、selection survival、worker-vs-parent verifier、promotion Evidence、usage、efficiency 和数据缺口。绑定 Codex orchestrator transcript 后，`statistics.orchestrator` 记录 Goal Plus 创建以来不含内容的 usage delta，`statistics.total_usage` 与 worker usage 合并；每个 Search task 仍保留自己的 statistics。
 
@@ -226,7 +240,10 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 | `strategy.worker_budget` | host deadline 和可选 minimum lease |
 | `workspace.backend` | `git_worktree`（默认）、`copy`，或接口占位 `thinkthread` |
 
-`thinkthread` 当前只注册统一 provider/capability API，并明确报告 `UnsupportedWorkspaceCapability`；它不会静默退回 Git，也不会声称已提供 protected execution、FsSnapshot checkpoint 或 snapshot reference。TT Child 内执行 Codex 和 FsSnapshot 接入属于后续 TODO。
+`thinkthread` 当前只注册统一 provider/capability API，并明确报告
+`UnsupportedWorkspaceCapability`；它不会静默退回 Git，也不会声称已提供
+protected execution、FsSnapshot checkpoint 或 snapshot reference。TT Child 内执行
+Codex 和 FsSnapshot 接入属于后续 TODO。
 
 每条 ranking command 必须成功退出，并输出最后一个 JSON object，其中 `metric_name` 对应 finite number。临时 verifier 输出必须位于 `GOAL_PLUS_VERIFIER_TMPDIR`；verifier artifact 和 evaluation input 都会用 hash 固定。
 

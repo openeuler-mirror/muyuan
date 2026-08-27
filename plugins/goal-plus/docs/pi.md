@@ -61,9 +61,22 @@ GOAL_PLUS_UI_PREVIEW=active \
 
 Pi 使用 extension event，而不是项目 hook 文件。extension 会在 interactive、RPC、print 和 JSON 模式下，在模型运行前创建 `/goal-plus`，保存 active ID，注入隐藏 context，并对 write/Search tool 执行 gate。它提供原生 turn-level stop gate，但不是 host process 级 Stop hook。
 
-新建 Goal Plus 记录前，Pi extension 会追加一条不进入模型上下文的 `goal-plus-runtime-start` custom entry。折叠视图显示当前 main session 的 mode、project trust、active tool 数量，以及 Pi 没有内置 sandbox/审批的事实；展开后显示实际 cwd 和 active builtin/non-builtin tool 名单。这里的 `--approve` 或 `project_trusted=true` 只表示允许加载项目内 Pi 资源，不表示 full access。filesystem 只报告为 `launcher-process-user`，network 只报告为 `host-policy-unreported`，不会从 settings 或父进程猜测不存在的 Pi permission profile。
+新建 Goal Plus 记录前，Pi extension 会追加一条不进入模型上下文的
+`goal-plus-runtime-start` custom entry。折叠视图显示当前 main session 的 mode、
+project trust、active tool 数量，以及 Pi 没有内置 sandbox/审批的事实；展开后显示
+实际 cwd 和 active builtin/non-builtin tool 名单。这里的 `--approve` 或
+`project_trusted=true` 只表示允许加载项目内 Pi 资源，不表示 full access。
+filesystem 只报告为 `launcher-process-user`，network 只报告为
+`host-policy-unreported`，不会从 settings 或父进程猜测不存在的 Pi permission profile。
 
-Goal Plus 启动的 ordinary、final-checker 和 Search candidate `pi-rpc` 子进程会在各自 `session_start` 写入同一结构。wrapper 在发送第一条模型 prompt 前从该 native session 读回快照，写入 host event log 的 `goal_plus_runtime_start` 事件、handle `metadata.runtime_start` 和 `pi_metrics.runtime_start`。`search_get_agent_observability` 将其投影为 `runtime_start`；快照缺失时保留 `source="unavailable"` 和错误原因，不从 main session 继承或推断。headless worker 不弹出不可见的 TUI 通知，运行中排障可直接查看对应 `.gp/host-logs/pi-rpc-<agent_session_id>.jsonl`。
+Goal Plus 启动的 ordinary、final-checker 和 Search candidate `pi-rpc` 子进程会在
+各自 `session_start` 写入同一结构。wrapper 在发送第一条模型 prompt 前从该
+native session 读回快照，写入 host event log 的 `goal_plus_runtime_start` 事件、
+handle `metadata.runtime_start` 和 `pi_metrics.runtime_start`。
+`search_get_agent_observability` 将其投影为 `runtime_start`；快照缺失时保留
+`source="unavailable"` 和错误原因，不从 main session 继承或推断。headless worker 不弹出
+不可见的 TUI 通知，运行中排障可直接查看对应
+`.gp/host-logs/pi-rpc-<agent_session_id>.jsonl`。
 
 Pi Search 的异步 Evidence annotation 也运行在 Pi 上。run-scoped drainer 启动临时 `pi --mode json --no-session --no-tools` 进程，默认继承 Pi worker 的 model/provider；显式 qualified annotator model 或 `evidence_annotator.pi_provider` 可以单独选择 provider。verifier settlement 不等待该进程，同一次 annotator turn 也会生成 shared-dir Tool View。完整生命周期见[共享平面](shared-plane.md#工具复制与采用结算)。
 
@@ -143,7 +156,12 @@ Goal Plus 通过 `goal_plus_list_models(host="pi-rpc")` 调用 Pi RPC `get_avail
 
 ## Worker 上下文与恢复
 
-candidate worker 只能使用 `search_get_agent_context`、`search_get_global_evidence`、`search_get_evidence_detail`、`search_reference_open`、`search_stage_shared_tool`、`search_copy_shared_tool`、`search_run_verifier` 和 `search_list_iterations`。`search_reference_open` 返回当前 worker 唯一的 reference checkout 路径；worker 直接用普通文件和命令工具查看，再次调用时同一目录切到新的 Evidence commit。
+candidate worker 只能使用 `search_get_agent_context`、
+`search_get_global_evidence`、`search_get_evidence_detail`、`search_reference_open`、
+`search_stage_shared_tool`、`search_copy_shared_tool`、`search_run_verifier` 和
+`search_list_iterations`。`search_reference_open` 返回当前 worker 唯一的
+reference checkout 路径；worker 直接用普通文件和命令工具查看，再次调用时同一目录切到新的
+Evidence commit。
 
 `search_get_agent_context` 返回有界的 best/recent 摘要、权威 ID、workspace 和 durable `results.tsv` 路径。只有确实需要旧 verifier 的完整细节时，才调用可能很大的 `search_list_iterations`。
 
