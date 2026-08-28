@@ -48,7 +48,7 @@ def spec_dict() -> dict:
     }
 
 
-def frozen_spec() -> FrozenSpec:
+def frozen_spec(*, task_skill_paths: list[str] | None = None) -> FrozenSpec:
     spec = SearchSpec.model_validate(spec_dict())
     return FrozenSpec(
         frozen_spec_id="spec_123",
@@ -56,6 +56,7 @@ def frozen_spec() -> FrozenSpec:
         spec=spec,
         verifier_hashes={"evaluator.py": "abc"},
         frozen_verifier_paths={"evaluator.py": "/tmp/evaluator.py"},
+        task_skill_paths=task_skill_paths or [],
         created_at="2026-06-24T00:00:00Z",
     )
 
@@ -87,6 +88,24 @@ def test_search_freeze_spec_converts_input_and_serializes_output() -> None:
     assert paths_arg == [Path("evaluator.py")]
     assert result["frozen_spec_id"] == "spec_123"
     assert result["spec"]["process_verifiers"][0]["role"] == "ranking_signal"
+    assert result["task_skill_paths"] == []
+    assert result["task_skill_notice"] == (
+        "No Git-tracked task-local Skills found under .agents/skills."
+    )
+
+
+def test_search_freeze_spec_lists_task_local_skills() -> None:
+    runtime = Mock()
+    runtime.freeze_spec.return_value = frozen_spec(
+        task_skill_paths=[".agents/skills/review/SKILL.md"]
+    )
+
+    result = SearchTools(runtime).search_freeze_spec(spec_dict(), ["evaluator.py"])
+
+    assert result["task_skill_notice"] == (
+        "Git-tracked task-local Skills visible from source: "
+        "review=.agents/skills/review/SKILL.md"
+    )
 
 
 def test_search_tools_delegate_runtime_calls_with_models() -> None:
@@ -142,6 +161,9 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
             candidate_id="c001",
             hypothesis="try",
             workspace=Path("/tmp/c001"),
+            task_skill_paths=[
+                Path("/tmp/c001/.agents/skills/review/SKILL.md")
+            ],
             allowed_files=["initial_program.py"],
             denied_files=["evaluator.py"],
         )
@@ -241,11 +263,17 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         "candidates": [],
     }
     assert tools.search_plan_next("run_1", requested_k=1)["plan_id"] == "plan_001"
-    assert tools.search_start_batch(
+    batch = tools.search_start_batch(
         "run_1",
         "plan_001",
         [{"intent": "try an independent approach"}],
-    )[0]["candidate_id"] == "c001"
+    )
+    assert batch[0]["candidate_id"] == "c001"
+    assert batch[0]["task_skill_notice"] == (
+        "Subagent c001 repository Skills: "
+        "review=/tmp/c001/.agents/skills/review/SKILL.md. "
+        "External Skills remain host-managed."
+    )
     assert tools.search_start_agent_session(
         "run_1",
         "c001",

@@ -14,6 +14,13 @@ developer_instructions = """
 首次启动或状态级重新派发产生新的 worker session 时，从消息中解析 `agent_session_id`，并调用
 `search_get_agent_context(agent_session_id)`。
 
+Codex `spawn_agent` 不会切换 cwd。把返回的 `context.workspace` 作为每次文件读取、编辑和
+shell 调用的显式工作目录；不要使用 host 启动目录。读取并遵循
+`context.candidate_task.instructions`。runtime 会在
+`context.candidate_task.task_skill_paths` 中列出当前 worktree 自动发现的 Git-tracked
+task-local Skills；逐一完整读取列出的 `SKILL.md`，再按需读取同目录内的相对资源。只应用
+这份清单，不读取或依赖 parent cwd、global/plugin 或其他 candidate 中的 Skill。
+
 将返回的 MCP 上下文视为权威依据。如果这是重新启动的 worker，或继承而来的子项/后继项，
 请从 `context.resume`、`context.latest_result`、`context.best_iteration`、
 `context.recent_iterations` 和 `context.results_tsv` 恢复先前工作。只有这些紧凑信息、

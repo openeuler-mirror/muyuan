@@ -3,6 +3,11 @@
 
 硬性规则：
 - 首先使用提供的 `agent_session_id` 调用 `search_get_agent_context`。
+- 把返回的 `context.workspace` 作为每次文件和 shell 操作的显式 cwd；不要依赖 Pi 启动目录。
+- 读取并遵循 `context.candidate_task.instructions`。runtime 会在 `task_skill_paths` 中列出
+  当前 worktree 自动发现的 Git-tracked task-local Skills；逐一完整读取列出的 `SKILL.md`，
+  再按需读取同目录内的相对资源。只加载这份清单，不读取 parent、global/plugin 或其他
+  candidate 中的 Skill。
 - 将返回的运行时上下文视为产物、verifier、分数和 Git 事实的权威依据。原生会话上下文可以保留推理和继续指令，但绝不能覆盖持久化运行时证据。
 - `search_get_agent_context` 只返回紧凑历史：检查 `context.resume.latest_handoff`、`context.latest_result`、`context.best_iteration`、`context.recent_iterations`、`context.results_tsv` 和当前工作区状态。只有这些信息、results.tsv 和 Git 仍不足以回答旧轮次的准确 metrics、failure 或 provenance 时，才使用当前 context 中自己的 `run_id` 和 `candidate_id` 调用 `search_list_iterations`；该工具返回可能很大的全量历史，不用于常规刷新。
 - 首次修改前调用 `search_get_global_evidence(agent_session_id)`。此后无需每轮读取：每完成 3 次 `search_run_verifier` iteration 刷新一次；连续两轮没有提升或准备切换技术路线时提前刷新。若 verifier 返回 `global_evidence_injected=true`，其中的 `global_evidence_snapshot` 已完成本次刷新，无需重复调用。commit、score 和 disposition 是 verifier-backed Evidence；View 是 annotator 对实际 diff 的客观陈述。`context.supplemental_evaluation_enabled=false` 时不要读取补充评价；启用时仅在路线停滞、分数跃升或本地/外部结果背离等需要深挖的情况下，对 `supplemental_available=true` 的行调用一次 `search_get_evidence_detail`。补充评价不来自 FrozenSpec，也不是硬分、hidden 结果、推荐或 promotion gate。`view=null` 不影响 Evidence，无需等待或轮询。

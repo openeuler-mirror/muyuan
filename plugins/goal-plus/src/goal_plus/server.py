@@ -39,7 +39,8 @@ def create_mcp(
     ) -> dict[str, Any]:
         """将 SearchSpec 及其 verifier 文件冻结为不可变 bundle。
 
-        返回 `frozen_spec_id`，应在 `search_create` 前调用。verifier 文件按 hash 固定；
+        返回 `frozen_spec_id` 和 `task_skill_notice`，应在 `search_create` 前调用。后者列出
+        source Git index 中 `.agents/skills/*/SKILL.md` 的自动发现结果。verifier 文件按 hash 固定；
         候选执行期间修改它们会强制分数为 0.0。冻结会预检每个 `ranking_signal`：
         它必须以 0 退出，并输出一个最终 JSON 对象，其中包含有限数值类型的
         `spec.metric_name`，例如 `{"score": 123.0}`。verifier 命令在一次性源码副本中
@@ -160,8 +161,8 @@ def create_mcp(
     ) -> list[dict[str, Any]]:
         """materialize 已规划的候选工作区（`source_path` 的副本）。
 
-        每个返回的 `CandidateTask` 拥有隔离工作区；候选编辑必须留在其中。
-        不要在 `search_plan_next` 前调用。
+        每个返回项拥有隔离工作区和待展示的 `task_skill_notice`；候选编辑必须
+        留在其中。不要在 `search_plan_next` 前调用。
         """
         return tools.search_start_batch(run_id, plan_id, proposals)
 

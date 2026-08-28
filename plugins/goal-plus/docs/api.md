@@ -73,7 +73,7 @@ search_create(new_frozen_spec_id, source_run_id=invalidated_or_exhausted_run)
 | 工具 | 用途 |
 |---|---|
 | `search_plan_next` | 持久化唯一一次初始 candidate 分配 |
-| `search_start_batch` | 物化 plan 中隔离的 candidate workspace |
+| `search_start_batch` | 物化隔离的 candidate workspace，并返回每个 subagent 的 `task_skill_notice` |
 
 新的 Codex/Pi spec 使用 `strategy.orchestration_mode="parallel_loops"`。`search_plan_next(requested_k)` 只能调用一次，数量为：
 

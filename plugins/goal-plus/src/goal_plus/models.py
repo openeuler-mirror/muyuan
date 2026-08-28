@@ -908,6 +908,7 @@ class FrozenSpec(SearchModel):
     supplemental_evaluation_required: bool = False
     verifier_hashes: dict[str, str]
     frozen_verifier_paths: dict[str, str]
+    task_skill_paths: list[str] = Field(default_factory=list)
     created_at: str
 
 
@@ -1001,6 +1002,7 @@ class CandidateTask(SearchModel):
     workspace_backend: WorkspaceBackend = "copy"
     workspace_branch: str | None = None
     workspace_base_revision: str | None = None
+    task_skill_paths: list[Path] = Field(default_factory=list)
     share_out_dir: Path | None = None
     allowed_files: list[str]
     denied_files: list[str]

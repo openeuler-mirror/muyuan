@@ -18,7 +18,7 @@ from goal_plus.models import (
     VerifierInvalidationReason,
 )
 from goal_plus.monitor import goal_plus_monitor_snapshot
-from goal_plus.runtime import FileSearchRuntime
+from goal_plus.runtime import FileSearchRuntime, format_task_skill_listing
 
 
 class SearchTools:
@@ -37,7 +37,15 @@ class SearchTools:
             parsed_spec,
             [Path(path) for path in verifier_artifact_paths],
         )
-        return frozen.model_dump(mode="json")
+        payload = frozen.model_dump(mode="json")
+        visible = format_task_skill_listing(frozen.task_skill_paths)
+        payload["task_skill_notice"] = (
+            "Git-tracked task-local Skills visible from source: "
+            + visible
+            if frozen.task_skill_paths
+            else "No Git-tracked task-local Skills found under .agents/skills."
+        )
+        return payload
 
     def search_create(
         self,
@@ -97,10 +105,16 @@ class SearchTools:
             if proposals is not None
             else None
         )
-        return [
-            task.model_dump(mode="json")
-            for task in self.runtime.start_batch(run_id, plan_id, parsed_proposals)
-        ]
+        payloads = []
+        for task in self.runtime.start_batch(run_id, plan_id, parsed_proposals):
+            payload = task.model_dump(mode="json")
+            payload["task_skill_notice"] = (
+                f"Subagent {task.candidate_id} repository Skills: "
+                f"{format_task_skill_listing(task.task_skill_paths)}. "
+                "External Skills remain host-managed."
+            )
+            payloads.append(payload)
+        return payloads
 
     def search_start_agent_session(
         self,

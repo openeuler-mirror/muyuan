@@ -80,6 +80,11 @@ strategy:
    `strategy.orchestration_mode="parallel_loops"`、`worker_host="codex"` 和唯一的
    `budget.max_parallel`；同时必须显式设置 `workspace.backend="git_worktree"`。
    只有用户明确要求兼容隔离时才能设置 `copy`。
+   任务本地 Skill 不需要 spec 配置。只识别 source Git 已跟踪的
+   `.agents/skills/<name>/SKILL.md`，且同一 Skill 目录内所有资源都必须由 Git 跟踪；
+   `search_freeze_spec.task_skill_notice` 会列出发现结果，
+   必须把该提示明确展示出来。candidate materialization 会把对应 worktree 绝对路径放入
+   `candidate_task.task_skill_paths`。不要扫描或复制 parent/global/plugin Skill。
    原始 `$goal-plus` 命令包含 `annotator=B` 时，先调用
    `goal_plus_list_models(host="codex")` 并将唯一匹配冻结到
    `strategy.evidence_annotator.model`。包含 `workers=A,B` 或兼容别名
@@ -94,7 +99,9 @@ strategy:
    `UserPromptSubmit` hook 校验的可选兼容断言，不写入 SearchSpec，也不能由 Search
    切换。省略的角色保持 host 默认或继承语义。
 2. 调用且只调用一次 `search_plan_next(requested_k=budget.max_parallel)`，然后调用且只调用
-   一次 `search_start_batch`，创建初始候选。
+   一次 `search_start_batch`，创建初始候选。启动 worker 前，把每个返回项的
+   `task_skill_notice` 逐条展示给用户；它列出该 subagent worktree 中已获得的全部仓内 Skill，
+   仓外 Skill 继续由 host 管理。
 3. 对每个候选调用且只调用一次 `search_start_agent_session`，直接解析同一次响应中的
    launch payload，不要为了重新读取响应而再次调用。可选的 `worker_budget` 是一次派发的
    host 限制；它不会改变候选的技术方向。真正重派使用 `search_redispatch_candidate`。
@@ -105,6 +112,12 @@ strategy:
      `model`、`reasoning_effort` 或 `service_tier`；
    - 绝不能合成可选 launch metadata；
    - 无法传递 model override 时，worker 继承父 Codex model。
+   - 当前 `spawn_agent` schema 没有 `cwd`。worker 先调用
+     `search_get_agent_context`，再把 `context.workspace` 显式传给每次文件和 shell 操作；
+     parent cwd 不是 candidate workspace。
+   - launch message 和 context 会列出 `task_local_skills_visible`/
+     `candidate_task.task_skill_paths`；没有 Skill 时明确显示 `none`。worker 逐一完整读取并
+     遵循列出的 `SKILL.md`，只按需读取同目录资源；不要扫描 parent/global/plugin 或 peer Skill。
 5. 使用 `host="codex"` 调用 `search_bind_agent_handle`，绑定返回的 task name/nickname。
 6. 跟踪每个 live worker 及其自身 watchdog deadline。使用无 target 的 `wait_agent`，
    然后使用 `list_agents`，处理每个已达终态的 worker。仅有进度的唤醒不是完成事件。

@@ -372,6 +372,116 @@ def relative_artifact_path(source_root: Path, artifact_path: Path) -> str:
         return artifact.name
 
 
+TASK_SKILL_DIRECTORY = Path(".agents/skills")
+
+
+def format_task_skill_listing(paths: list[str | Path]) -> str:
+    return ", ".join(f"{Path(path).parent.name}={path}" for path in paths) or "none"
+
+
+def discover_git_tracked_task_skills(source_root: Path) -> list[str]:
+    """Return task-local Skill entrypoints whose complete bundles are Git-tracked."""
+    source_root = source_root.resolve()
+    if not source_root.is_dir():
+        return []
+    agents_directory = source_root / ".agents"
+    skill_directory = source_root / TASK_SKILL_DIRECTORY
+    for directory in (agents_directory, skill_directory):
+        if directory.is_symlink():
+            raise ValueError(
+                "Task-local Skill directory cannot be a symlink: "
+                f"{directory.relative_to(source_root).as_posix()}"
+            )
+    if not skill_directory.exists():
+        return []
+    if not skill_directory.is_dir():
+        raise ValueError(
+            f"Task-local Skill path is not a directory: {TASK_SKILL_DIRECTORY}"
+        )
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--cached", "-z", "--", str(TASK_SKILL_DIRECTORY)],
+            cwd=source_root,
+            check=False,
+            capture_output=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"Cannot inspect task-local Skills in {source_root}: git was not found"
+        ) from exc
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"Cannot inspect task-local Skills in {source_root}: "
+            f"git ls-files failed ({detail or f'exit {result.returncode}'})"
+        )
+
+    tracked_paths: set[str] = set()
+    for raw_path in result.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        relative_path = raw_path.decode("utf-8", errors="surrogateescape")
+        tracked_paths.add(Path(relative_path).as_posix())
+
+    discovered: list[str] = []
+    for relative_path in sorted(tracked_paths):
+        parts = Path(relative_path).parts
+        if (
+            len(parts) != 4
+            or parts[:2] != (".agents", "skills")
+            or parts[-1] != "SKILL.md"
+        ):
+            continue
+        skill_path = source_root / relative_path
+        skill_root = skill_path.parent
+        if skill_root.is_symlink() or skill_path.is_symlink():
+            raise ValueError(
+                f"Git-tracked task-local Skill cannot be a symlink: {relative_path}"
+            )
+        if not skill_path.is_file():
+            continue
+
+        untracked_files: list[str] = []
+        for bundle_path in skill_root.rglob("*"):
+            bundle_relative = bundle_path.relative_to(source_root).as_posix()
+            if bundle_path.is_symlink():
+                raise ValueError(
+                    "Task-local Skill bundle cannot contain a symlink: "
+                    f"{bundle_relative}"
+                )
+            if bundle_path.is_file() and bundle_relative not in tracked_paths:
+                untracked_files.append(bundle_relative)
+        if untracked_files:
+            raise ValueError(
+                "Task-local Skill contains files not tracked by Git: "
+                + ", ".join(sorted(untracked_files))
+            )
+        discovered.append(Path(relative_path).as_posix())
+    return discovered
+
+
+def materialized_task_skill_paths(
+    frozen: FrozenSpec,
+    workspace: Path,
+) -> list[Path]:
+    workspace_root = workspace.resolve()
+    paths: list[Path] = []
+    for relative_path in frozen.task_skill_paths:
+        path = workspace_root / relative_path
+        try:
+            path.resolve().relative_to(workspace_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"materialized workspace Skill file escaped the worktree: {relative_path}"
+            ) from exc
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError(
+                f"Git-tracked task-local Skill is missing from worktree: {relative_path}"
+            )
+        paths.append(path)
+    return paths
+
+
 def _normalize_verifier_cwds_for_candidate_workspace(spec: SearchSpec) -> SearchSpec:
     source_root = Path(spec.source_path).resolve()
 
@@ -649,6 +759,7 @@ class FileSearchRuntime:
         source_root = Path(spec.source_path).resolve()
         verifier_hashes: dict[str, str] = {}
         artifact_entries: list[tuple[Path, str]] = []
+        task_skill_paths = discover_git_tracked_task_skills(source_root)
 
         for artifact in verifier_artifacts:
             artifact_path = Path(artifact).resolve()
@@ -699,6 +810,7 @@ class FileSearchRuntime:
                 {
                     "spec": spec_payload,
                     "verifiers": verifier_hashes,
+                    "task_skills": task_skill_paths,
                     "supplemental_evaluation_enabled": supplemental_enabled,
                     "supplemental_evaluation_required": supplemental_required,
                 }
@@ -722,6 +834,7 @@ class FileSearchRuntime:
             supplemental_evaluation_required=supplemental_required,
             verifier_hashes=verifier_hashes,
             frozen_verifier_paths=frozen_verifier_paths,
+            task_skill_paths=task_skill_paths,
             created_at=utc_timestamp(),
         )
         write_json(spec_dir / "frozen_spec.json", frozen.model_dump(mode="json"))
@@ -3674,6 +3787,10 @@ class FileSearchRuntime:
             idea_lines.extend(
                 f"main_directive.{key}: {value}" for key, value in directive.items()
             )
+        idea_lines.append(
+            "task_local_skills_visible: "
+            + format_task_skill_listing(candidate_record.task.task_skill_paths)
+        )
         one_paragraph_idea = "; ".join(idea_lines)
 
         adapter = get_agent_host_adapter(frozen.spec.strategy.worker_host)
@@ -3879,9 +3996,14 @@ class FileSearchRuntime:
             run_id=run.run_id,
             candidate_id=candidate_id,
         )
+        task_skill_paths = materialized_task_skill_paths(
+            frozen,
+            materialization.workspace,
+        )
 
         instructions = [
             "只能在此候选工作区内工作。",
+            "不要把 host 启动目录当作候选 cwd。host launch 不保证切换 cwd；每次文件或 shell 操作都显式使用 context.workspace。",
             "使用此工作区的 .tmp/ 目录存放笔记和临时草稿。",
             "不要使用 /tmp、home 目录或候选工作区之外的路径处理候选工作。",
             "只能修改 allowed_files 中列出的文件；绝不能触碰 denied_files 或冻结的 verifier 产物。",
@@ -3896,6 +4018,18 @@ class FileSearchRuntime:
             "规划另一个变体前，检查 workspace/results.tsv 中继承的 iteration 日志。运行时拥有并提交这份仅追加账本，会验证已有记录未被修改，并为每份返回的 verifier 报告添加且只添加一条记录；绝不能重写、截断、删除或手动追加它。",
             "按 context.supplemental_evaluation_enabled 和 Evidence 的 supplemental_available 标记按需读取一次 search_get_evidence_detail；补充评价不参与结算。仅在当前 Git 能解析该 commit 且代码证据必要时用 git diff HEAD <commit> -- <allowed-file> 做只读比较；不要访问或 fetch peer workspace，也不要 checkout/reset peer commit。",
         ]
+        if task_skill_paths:
+            instructions.append(
+                "当前 worktree 可见的 Git-tracked task-local Skills: "
+                f"{format_task_skill_listing(task_skill_paths)}。逐一完整读取这些 "
+                "SKILL.md，再按需读取各自目录内的相对"
+                "资源并显式遵循；不要读取 parent、global/plugin 或其他 candidate 的 Skill。"
+            )
+        else:
+            instructions.append(
+                "当前 worktree 未发现 Git-tracked task-local Skills "
+                "(.agents/skills/*/SKILL.md)。"
+            )
         share_out_dir = None
         if frozen.spec.shared_dir.enabled:
             SharedDirManager(self._run_dir(run.run_id)).ensure_layout()
@@ -3931,6 +4065,7 @@ class FileSearchRuntime:
             workspace_backend=materialization.backend,
             workspace_branch=materialization.branch,
             workspace_base_revision=materialization.base_revision,
+            task_skill_paths=task_skill_paths,
             share_out_dir=share_out_dir,
             allowed_files=frozen.spec.edit_surface.allow,
             denied_files=frozen.spec.edit_surface.deny,

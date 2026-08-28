@@ -143,6 +143,13 @@ candidate worker 只能使用 `search_get_agent_context`、`search_get_global_ev
 
 `search_get_agent_context` 返回有界的 best/recent 摘要、权威 ID、workspace 和 durable `results.tsv` 路径。只有确实需要旧 verifier 的完整细节时，才调用可能很大的 `search_list_iterations`。
 
+worker 始终把 `context.workspace` 作为文件与 shell 操作的显式 cwd，不依赖 wrapper 启动
+目录。任务局部 Skill 无需 spec 配置：runtime 只发现 source Git 已跟踪的
+`.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；在 freeze 的
+`task_skill_notice` 和 launch prompt 中明确列出，
+并通过 `candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。worker 完整读取这份
+清单，不扫描 parent/global/plugin 或其他 candidate 中的 Skill。
+
 worker 在第一次修改前读取 Global Evidence，之后按配置周期或停滞节点刷新。它独立选择方向，只编辑自己的 workspace，用一句话 `hypothesis` 调用 verifier，并更新 `.tmp/handoff.json`。`null` View 只表示 annotator 尚未发布，不要求等待。
 
 同进程 continuation 沿用已经加载的 context 和 Evidence。跨进程恢复同一 native session 时，只重新加载紧凑的权威 candidate context，完整 worker contract 和已加载 Evidence 仍由持久 session 保留。
