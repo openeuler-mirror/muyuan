@@ -761,6 +761,7 @@ class FileSearchRuntime:
                 f"{SUPPLEMENTAL_EVALUATION_REQUIRED_ENV}=1 requires "
                 f"{SUPPLEMENTAL_EVALUATION_ENABLED_ENV}=1"
             )
+        self._validate_host_workspace_backend(spec)
         spec = _normalize_verifier_cwds_for_candidate_workspace(spec)
         spec = self._apply_global_evidence_mode_from_environment(spec)
         spec = self._normalize_strategy_models(spec)
@@ -1073,6 +1074,7 @@ class FileSearchRuntime:
         source_run_id: str | None = None,
     ) -> str:
         frozen = self._load_frozen_spec(frozen_spec_id)
+        self._validate_host_workspace_backend(frozen.spec)
         selected_models = self._expand_selected_models(
             frozen.spec.strategy.models,
             frozen.spec.budget.max_parallel,
@@ -3788,6 +3790,22 @@ class FileSearchRuntime:
                 f"{strategy.worker_host} worker_host does not support strategy "
                 f"{strategy.name}; use default/agent_guided or random"
             )
+
+    @staticmethod
+    def _validate_host_workspace_backend(spec: SearchSpec) -> None:
+        host = spec.strategy.worker_host
+        backend = spec.workspace.backend
+        supported = (
+            get_agent_host_adapter(host).capabilities.supported_workspace_backends
+        )
+        if backend in supported:
+            return
+        supported_names = ", ".join(sorted(supported))
+        raise UnsupportedHostCapability(
+            f"{host} worker_host does not support workspace backend {backend!r}; "
+            f"supported backends: {supported_names}. Candidate checkout was "
+            "rejected before Search run creation."
+        )
 
     @staticmethod
     def _apply_global_evidence_mode_from_environment(spec: SearchSpec) -> SearchSpec:

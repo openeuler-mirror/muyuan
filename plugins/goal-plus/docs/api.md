@@ -240,10 +240,12 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 | `strategy.worker_budget` | host deadline 和可选 minimum lease |
 | `workspace.backend` | `git_worktree`（默认）、`copy`，或接口占位 `thinkthread` |
 
-`thinkthread` 当前只注册统一 provider/capability API，并明确报告
-`UnsupportedWorkspaceCapability`；它不会静默退回 Git，也不会声称已提供
-protected execution、FsSnapshot checkpoint 或 snapshot reference。TT Child 内执行
-Codex 和 FsSnapshot 接入属于后续 TODO。
+`thinkthread` 当前只注册统一 provider/capability API。Codex 和 Pi RPC 的 host
+capability 都只声明 `copy` 与 `git_worktree`；`search_freeze_spec` 会在 verifier
+preflight 前以 `UnsupportedHostCapability` 拒绝 ThinkThread，`search_create` 还会复检
+已有 frozen spec。底层 provider 仍会以 `UnsupportedWorkspaceCapability` fail closed，
+因此不会静默退回 Git，也不会声称已提供 protected execution、FsSnapshot checkpoint
+或 snapshot reference。TT Child 内执行 Codex 和 FsSnapshot 接入属于后续 TODO。
 
 每条 ranking command 必须成功退出，并输出最后一个 JSON object，其中 `metric_name` 对应 finite number。临时 verifier 输出必须位于 `GOAL_PLUS_VERIFIER_TMPDIR`；verifier artifact 和 evaluation input 都会用 hash 固定。
 

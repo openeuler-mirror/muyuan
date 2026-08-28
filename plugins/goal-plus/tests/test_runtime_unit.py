@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from goal_plus.agent_hosts import UnsupportedHostCapability
 from goal_plus.models import (
     CandidateProposal,
     CandidateRecord,
@@ -178,6 +179,49 @@ def test_freeze_spec_is_stable_and_copies_verifier(tmp_path: Path) -> None:
     assert first.frozen_spec_id == second.frozen_spec_id
     assert first.verifier_hashes["evaluator.py"] == sha256_file(project / "evaluator.py")
     assert Path(first.frozen_verifier_paths["evaluator.py"]).exists()
+
+
+@pytest.mark.parametrize("worker_host", ["codex", "pi-rpc"])
+def test_freeze_spec_rejects_thinkthread_before_verifier_preflight(
+    tmp_path: Path,
+    worker_host: str,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec_data = spec_for(project).model_dump(mode="json")
+    spec_data["strategy"]["worker_host"] = worker_host
+    spec_data["workspace"] = {"backend": "thinkthread"}
+    with pytest.raises(
+        UnsupportedHostCapability,
+        match=rf"{worker_host} worker_host does not support workspace backend 'thinkthread'",
+    ) as exc_info:
+        runtime.freeze_spec(
+            SearchSpec.model_validate(spec_data),
+            [project / "evaluator.py"],
+        )
+
+    assert "supported backends: copy, git_worktree" in str(exc_info.value)
+    assert "before Search run creation" in str(exc_info.value)
+    assert not runtime.specs_dir.exists()
+    assert not runtime.runs_dir.exists()
+
+
+def test_create_run_rechecks_existing_thinkthread_frozen_spec(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen_path = runtime.specs_dir / frozen.frozen_spec_id / "frozen_spec.json"
+    payload = load_json(frozen_path)
+    payload["spec"]["workspace"] = {"backend": "thinkthread"}
+    write_json(frozen_path, payload)
+
+    with pytest.raises(
+        UnsupportedHostCapability,
+        match="codex worker_host does not support workspace backend 'thinkthread'",
+    ):
+        runtime.create_run(frozen.frozen_spec_id)
+
+    assert not runtime.runs_dir.exists()
 
 
 def test_freeze_spec_rejects_verifier_workspace_side_effect_without_mutating_source(

@@ -53,6 +53,9 @@ def test_codex_and_pi_publish_native_parity_capabilities() -> None:
     assert codex.supports_service_tier is True
     assert codex.supports_usage_metadata is True
     assert codex.supports_process_kill is False
+    assert codex.supported_workspace_backends == frozenset(
+        {"copy", "git_worktree"}
+    )
     assert codex.pool.launch_mode == "async"
     assert codex.pool.wait_mode == "wait_any"
     assert codex.pool.continuation_mode == "same_worker"
@@ -64,6 +67,7 @@ def test_codex_and_pi_publish_native_parity_capabilities() -> None:
     assert pi.supports_service_tier is False
     assert pi.supports_usage_metadata is True
     assert pi.supports_process_kill is True
+    assert pi.supported_workspace_backends == frozenset({"copy", "git_worktree"})
     assert pi.pool.launch_mode == "async"
     assert pi.pool.wait_mode == "wait_any"
     assert pi.pool.continuation_mode == "native_session"

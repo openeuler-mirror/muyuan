@@ -39,6 +39,8 @@ def create_mcp(
     ) -> dict[str, Any]:
         """将 SearchSpec 及其 verifier 文件冻结为不可变 bundle。
 
+        冻结前校验 worker host 与 workspace backend；当前 Codex/Pi RPC 请求
+        ThinkThread 时会在 verifier preflight 前失败。
         返回 `frozen_spec_id` 和 `task_skill_notice`，应在 `search_create` 前调用。后者列出
         source Git index 中 `.agents/skills/*/SKILL.md` 的自动发现结果。verifier 文件按 hash 固定；
         候选执行期间修改它们会强制分数为 0.0。冻结会预检每个 `ranking_signal`：
@@ -72,6 +74,8 @@ def create_mcp(
     ) -> dict[str, str]:
         """从冻结 spec 启动 Search run，并返回 `run_id`。
 
+        启动前校验 worker host 与 workspace backend；当前 Codex/Pi RPC 请求
+        ThinkThread 时会在创建 run 或 candidate checkout 前失败。
         只有无法避免新的不可变 run 时才传入 `source_run_id`。新 run 会收到来源 frontier、
         限定范围的问题和特性账本的有界 snapshot。来源分数只是历史，必须在新契约下重新验证。
         """

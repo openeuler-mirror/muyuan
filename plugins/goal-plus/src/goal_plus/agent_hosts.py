@@ -14,7 +14,7 @@ from goal_plus.host_observability import (
     collect_codex_observability,
     collect_pi_observability,
 )
-from goal_plus.models import AgentHostKind, AgentSessionRecord
+from goal_plus.models import AgentHostKind, AgentSessionRecord, WorkspaceBackend
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT
 
 
@@ -28,7 +28,7 @@ PORTABLE_STRATEGY_MODES = {
 
 
 class UnsupportedHostCapability(RuntimeError):
-    """Raised when a host cannot provide a requested worker lifecycle action."""
+    """Raised when a host cannot provide a requested worker capability."""
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,7 @@ class HostCapabilities:
     supports_service_tier: bool = False
     supports_usage_metadata: bool = False
     supports_process_kill: bool = False
+    supported_workspace_backends: frozenset[WorkspaceBackend] = frozenset()
     pool: HostPoolContract = field(default_factory=HostPoolContract)
 
 
@@ -291,6 +292,7 @@ class CodexAdapter:
         supports_reasoning_effort=True,
         supports_service_tier=True,
         supports_usage_metadata=True,
+        supported_workspace_backends=frozenset({"copy", "git_worktree"}),
         pool=HostPoolContract(
             launch_mode="async",
             wait_mode="wait_any",
@@ -492,6 +494,7 @@ class PiRpcAdapter:
         supports_reasoning_effort=True,
         supports_usage_metadata=True,
         supports_process_kill=True,
+        supported_workspace_backends=frozenset({"copy", "git_worktree"}),
         pool=HostPoolContract(
             launch_mode="async",
             wait_mode="wait_any",

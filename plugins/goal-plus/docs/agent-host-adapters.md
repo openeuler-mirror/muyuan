@@ -52,8 +52,11 @@ candidate 工作目录。
 | Goal gate | `UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、`Stop`、`SubagentStop` | extension 的 input/tool/turn event |
 | 模型发现 | Codex app-server `model/list` | Pi RPC `get_available_models` |
 | Observability | native session JSONL + 已绑定 metadata | `pi_metrics` + 已绑定 metadata |
+| Workspace | `copy`、`git_worktree` | `copy`、`git_worktree` |
 
 两种 host 都只支持固定的初始并行循环。当前可移植 planner 为 `agent_guided`（含 `agent`、`default`）和 `random`（含 `random_mode`）。
+两个 host 当前都不声明 `thinkthread` capability；runtime 会在 freeze/create
+边界拒绝该 backend。
 
 ## Candidate 循环
 
