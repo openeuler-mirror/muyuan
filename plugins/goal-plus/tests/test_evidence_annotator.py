@@ -22,6 +22,7 @@ from goal_plus.evidence_annotator import (
     HostEvidenceAnnotator,
     AnnotationOutputError,
     PermanentAnnotationError,
+    PiEvidenceAnnotator,
     TransientAnnotationError,
     drain_evidence_annotations,
     kick_evidence_annotator,
@@ -32,6 +33,23 @@ from tests._runtime_helpers import make_project, spec_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_pi_annotator_omits_unknown_zero_cost() -> None:
+    usage = PiEvidenceAnnotator._usage(
+        {
+            "usage": {
+                "input": 100,
+                "output": 20,
+                "cacheRead": 50,
+                "cacheWrite": 0,
+                "cost": {"total": 0},
+            }
+        }
+    )
+
+    assert usage["input_tokens"] == 100
+    assert "cost_usd" not in usage
 
 
 def test_annotator_actor_terminology_is_consistent_across_repository() -> None:
@@ -803,6 +821,18 @@ def test_permanent_failure_is_not_retried_and_selection_does_not_cancel_view(
     monitor = json.loads(monitor_path.read_text())
     assert monitor["state"] == "completed"
     assert monitor["detail"] is None
+
+
+def test_process_failure_detail_reports_stdout_and_stderr() -> None:
+    detail = annotator_module._process_failure_detail(
+        "Missing environment variable: SUB2API_API_KEY\n",
+        "remote MCP request failed with HTTP 403\n",
+    )
+
+    assert detail == (
+        "[stdout]\nMissing environment variable: SUB2API_API_KEY\n"
+        "[stderr]\nremote MCP request failed with HTTP 403"
+    )
 
 
 def test_wait_for_retries_settles_transient_view_after_promotion(

@@ -351,6 +351,13 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     assert annotation is not None
     annotation.state = "completed"
     annotation.attempts = 1
+    annotation.usage = {
+        "input_tokens": 12,
+        "cached_input_tokens": 3,
+        "output_tokens": 5,
+        "total_tokens": 17,
+        "cost_usd": 0.02,
+    }
     monitor_relative = (
         f"runs/{second_run}/evidence-annotator/attempts/"
         f"{candidate.candidate_id}-iteration-0001-attempt-01.json"
@@ -525,6 +532,20 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
         reason="synthetic reporting fixture is ready",
         evidence=[{"kind": "unit_test"}],
     )
+    goals.record_orchestrator_usage(
+        goal.goal_plus_id,
+        host="pi",
+        usage={
+            "assistantMessages": 2,
+            "toolCalls": 3,
+            "input": 40,
+            "output": 10,
+            "cacheRead": 50,
+            "cacheWrite": 0,
+            "cost": 0.1,
+        },
+        started_at="2026-01-01T00:00:00Z",
+    )
     markdown_path = search.report(second_run)
     html_path = markdown_path.with_suffix(".html")
     html = html_path.read_text(encoding="utf-8")
@@ -543,7 +564,9 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     assert "Goal Plus Summary" in html
     assert "Goal status" in html
     assert "Selected score" in html
-    assert "Estimated worker cost" in html
+    assert "Known processed tokens" in html
+    assert "Known estimated cost" in html
+    assert "$0.12" in html
     assert "Combined estimated cost" in html
     assert "No score threshold was configured" in html
     assert "Metric availability" in html

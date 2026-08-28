@@ -174,6 +174,10 @@ def test_pi_prompt_and_extension_defer_report_until_terminal_state() -> None:
     assert "不在自然语言回复中重复报告路径" in prompt
     assert "可展开完成卡展示" in prompt
     assert "active 的已链接 Goal Plus 记录会被拒绝" in extension
+    terminal = extension[extension.index("if (isTerminalStatus(status?.status))") :]
+    assert terminal.index("appendGoalStats") < terminal.index(
+        '"pi_goal_plus_finalize_reports"'
+    )
 
 
 def test_pi_goal_plus_skill_documents_parallel_loop_policy() -> None:

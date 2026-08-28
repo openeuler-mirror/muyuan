@@ -140,6 +140,23 @@ def _evidence_annotation_payload(run_dir: Path) -> dict[str, Any]:
     active = [item for item in attempts if item.get("state") in active_states]
     recent = attempts[-8:]
     visible = active + [item for item in recent if item not in active]
+    usage_records = []
+    for task in tasks:
+        if task.attempts == 0:
+            continue
+        usage = dict(task.usage)
+        components = [
+            _number(usage.get(field))
+            for field in (
+                "input_tokens",
+                "cached_input_tokens",
+                "cache_write_tokens",
+                "output_tokens",
+            )
+        ]
+        observed = [value for value in components if value is not None]
+        usage["processed_tokens"] = sum(observed) if observed else None
+        usage_records.append(usage)
     return {
         "tasks": len(tasks),
         "attempts": sum(task.attempts for task in tasks),
@@ -148,6 +165,7 @@ def _evidence_annotation_payload(run_dir: Path) -> dict[str, Any]:
         "active_attempts": active,
         "recent_attempts": visible,
         "monitor_files": len(attempts),
+        "usage": aggregate_usage(usage_records, scope="evidence_annotator_tasks"),
     }
 
 
@@ -637,6 +655,17 @@ def _search_task_aggregate(search_tasks: list[dict[str, Any]]) -> dict[str, Any]
         for task in search_tasks
         if isinstance(task.get("evidence_reads"), dict)
     ]
+    annotation_payloads = [
+        task["evidence_annotations"]
+        for task in search_tasks
+        if isinstance(task.get("evidence_annotations"), dict)
+    ]
+    annotation_usages = [
+        item["usage"]
+        for item in annotation_payloads
+        if isinstance(item.get("usage"), dict)
+        and int(item["usage"].get("sources_total") or 0) > 0
+    ]
     return {
         "search_tasks_total": len(search_tasks),
         "planning_rounds_total": sum(task["planning_rounds_total"] for task in search_tasks),
@@ -676,6 +705,10 @@ def _search_task_aggregate(search_tasks: list[dict[str, Any]]) -> dict[str, Any]
             ),
         },
         "estimated_cost_total": sum(task["estimated_cost_total"] for task in search_tasks),
+        "annotator_usage": aggregate_usage(
+            annotation_usages,
+            scope="evidence_annotator",
+        ),
         "statistics": aggregate_run_statistics(
             [task.get("statistics") for task in search_tasks]
         ),
@@ -1181,8 +1214,29 @@ def goal_plus_monitor_snapshot(
         main_agent["verifier_count"] = sum(len(candidate.iterations) for candidate in candidates)
 
     orchestrator_observability: dict[str, Any] | None = None
+    if goal_record is not None:
+        persisted_path = (
+            root
+            / "goal-plus"
+            / goal_record.goal_plus_id
+            / "orchestrator-observability.json"
+        )
+        try:
+            persisted = load_json(persisted_path)
+            if isinstance(persisted, dict):
+                orchestrator_observability = persisted
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, json.JSONDecodeError):
+            warnings.append(
+                {
+                    "kind": "orchestrator_observability_invalid",
+                    "path": str(persisted_path),
+                }
+            )
     if (
-        goal_record is not None
+        orchestrator_observability is None
+        and goal_record is not None
         and goal_record.active_session is not None
         and goal_record.active_session.host == "codex"
         and goal_record.active_session.transcript_path
@@ -1201,12 +1255,25 @@ def goal_plus_monitor_snapshot(
                 }
             )
 
+    aggregate_statistics = search_task_aggregate.get("statistics") or {}
+    worker_usage = aggregate_statistics.get("usage")
+    annotator_usage = search_task_aggregate.get("annotator_usage") or {}
     usage_sources: list[dict[str, Any] | None] = []
-    if selected_run_statistics is not None:
-        usage_sources.append(selected_run_statistics.get("usage"))
+    if isinstance(worker_usage, dict) and int(worker_usage.get("sources_total") or 0) > 0:
+        usage_sources.append(worker_usage)
+    if (
+        isinstance(annotator_usage, dict)
+        and int(annotator_usage.get("sources_total") or 0) > 0
+    ):
+        usage_sources.append(annotator_usage)
     if orchestrator_observability is not None:
         usage_sources.append(orchestrator_observability.get("usage"))
     total_usage = aggregate_usage(usage_sources, scope="goal_plus_total")
+    total_usage["complete"] = bool(
+        total_usage["complete"]
+        and all(source.get("complete") is not False for source in usage_sources if source)
+        and (goal_record is None or orchestrator_observability is not None)
+    )
     unavailable_metrics = [
         "orchestrator_cost_usd",
         "hardware_utilization",
@@ -1250,6 +1317,7 @@ def goal_plus_monitor_snapshot(
             "schema_version": 1,
             "selected_run": selected_run_statistics,
             "orchestrator": orchestrator_observability,
+            "annotator_usage": annotator_usage,
             "total_usage": total_usage,
             "unavailable_metrics": unavailable_metrics,
         },

@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from goal_plus.host_observability import (
+    OBSERVABILITY_SCHEMA_VERSION,
+    normalize_pi_usage,
+)
 from goal_plus.models import (
     GoalPlusActiveSession,
     GoalPlusFinalCheck,
@@ -360,6 +364,29 @@ class FileGoalPlusRuntime:
             },
         )
         return record
+
+    @serialized_goal_mutation
+    def record_orchestrator_usage(
+        self,
+        goal_plus_id: str,
+        *,
+        host: str,
+        usage: dict[str, Any],
+        started_at: str | None = None,
+    ) -> dict[str, Any]:
+        self._load_record(goal_plus_id)
+        if host != "pi":
+            raise ValueError("only Pi orchestrator usage is recorded by this path")
+        observation = {
+            "schema_version": OBSERVABILITY_SCHEMA_VERSION,
+            "source": "pi_goal_stats",
+            "host": host,
+            "started_at": started_at,
+            "ended_at": utc_timestamp(),
+            "usage": normalize_pi_usage(usage, scope="orchestrator_session"),
+        }
+        write_json(self._orchestrator_observability_path(goal_plus_id), observation)
+        return observation
 
     def status(self, goal_plus_id: str) -> GoalPlusRecord:
         return self._load_record(goal_plus_id)
@@ -1897,6 +1924,9 @@ class FileGoalPlusRuntime:
 
     def _events_path(self, goal_plus_id: str) -> Path:
         return self._goal_dir(goal_plus_id) / "events.jsonl"
+
+    def _orchestrator_observability_path(self, goal_plus_id: str) -> Path:
+        return self._goal_dir(goal_plus_id) / "orchestrator-observability.json"
 
     def _load_record(self, goal_plus_id: str) -> GoalPlusRecord:
         record = GoalPlusRecord.model_validate(read_json(self._goal_path(goal_plus_id)))

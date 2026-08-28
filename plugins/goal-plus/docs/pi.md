@@ -169,7 +169,7 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
   --pretty
 ```
 
-`goal_plus_monitor_snapshot` 不启动、等待或停止 worker。`search_get_agent_observability(agent_session_id)` 返回与 Codex 相同的归一化 schema；Pi 将 `pi_metrics` 中的 model、thinking level、duration、usage/cost、context 和 log/session path 投影到该结构。
+`goal_plus_monitor_snapshot` 不启动、等待或停止 worker。`search_get_agent_observability(agent_session_id)` 返回与 Codex 相同的归一化 schema；Pi 将 `pi_metrics` 中的 model、thinking level、duration、usage/cost、context 和 log/session path 投影到该结构。当已产生 token 但 Pi 因缺少单价而返回零费用时，归一化结果将 cost 保留为未知，不影响运行状态。
 
 普通 Ultra work 可以启用 `orchestration` feature plugin。Pi wrapper 会把 `pi_goal_plus_run_work_item` 和 `goal-plus-pi-worker` 保存为 namespaced event metadata；plugin 将其投影成与 Codex 相同的 task/result/main-decision 结构，但不会改变 Pi RPC process ownership。详见 [Monitor Feature Plugins](feature-plugins.md)。
 

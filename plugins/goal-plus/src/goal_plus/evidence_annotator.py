@@ -17,6 +17,7 @@ import uuid
 from pydantic import Field, field_validator
 
 from goal_plus.codex_pricing import estimate_codex_request_cost
+from goal_plus.host_observability import normalize_pi_cost
 from goal_plus.models import (
     EvidenceComparisonReference,
     EvidenceAnnotationTask,
@@ -463,6 +464,20 @@ class _AnnotationProcessMonitor:
 
 def _timeout_output(exc: subprocess.TimeoutExpired, name: str) -> str:
     return _output_text(getattr(exc, name, None))
+
+
+def _process_failure_detail(stdout: str, stderr: str) -> str:
+    streams = [
+        (name, output.strip())
+        for name, output in (("stdout", stdout), ("stderr", stderr))
+        if output.strip()
+    ]
+    if not streams:
+        return "no process output"
+    tail_chars = ANNOTATION_MONITOR_TAIL_CHARS // len(streams)
+    return "\n".join(
+        f"[{name}]\n{output[-tail_chars:]}" for name, output in streams
+    )
 
 
 def _collect_after_termination(
@@ -917,7 +932,7 @@ class CodexEvidenceAnnotator:
                 finally:
                     self._active_process = None
             if process.returncode != 0:
-                detail = (stderr or stdout).strip()[-2000:]
+                detail = _process_failure_detail(stdout, stderr)
                 error = f"codex exec exited {process.returncode}: {detail}"
                 usage = self._usage(stdout, str(model) if model else None)
                 monitor.observe(
@@ -1019,8 +1034,19 @@ class PiEvidenceAnnotator:
                 usage[target] = int(value)
         cost = raw.get("cost")
         if isinstance(cost, dict):
-            total = cost.get("total")
-            if isinstance(total, (int, float)) and not isinstance(total, bool):
+            processed_tokens = sum(
+                usage.get(field, 0)
+                for field in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cached_input_tokens",
+                    "cache_write_tokens",
+                )
+            )
+            total = normalize_pi_cost(
+                cost.get("total"), processed_tokens=processed_tokens
+            )
+            if total is not None:
                 usage["cost_usd"] = float(total)
         return usage
 
@@ -1189,7 +1215,7 @@ class PiEvidenceAnnotator:
                 finally:
                     self._active_process = None
             if process.returncode != 0:
-                detail = (stderr or stdout).strip()[-2000:]
+                detail = _process_failure_detail(stdout, stderr)
                 error = f"pi exited {process.returncode}: {detail}"
                 monitor.observe(
                     "failed",
