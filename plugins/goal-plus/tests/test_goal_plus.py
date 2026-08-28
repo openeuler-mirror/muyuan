@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 
@@ -7,7 +8,30 @@ import pytest
 from pydantic import ValidationError
 
 from goal_plus.goal_plus import EXPLORATION_MODE_LINES, FileGoalPlusRuntime
-from goal_plus.models import GoalPlusSpecDraft, GoalPlusTriage
+from goal_plus.models import (
+    GoalPlusHostCommandInvocation,
+    GoalPlusSpecDraft,
+    GoalPlusTriage,
+)
+
+
+def _codex_invocation(
+    invocation_id: str,
+    *,
+    action: str = "start",
+    raw_input: str = "$goal-plus Test",
+) -> GoalPlusHostCommandInvocation:
+    return GoalPlusHostCommandInvocation(
+        host="codex",
+        transport="codex_user_prompt_submit",
+        command="$goal-plus",
+        action=action,
+        session_id="session-test",
+        native_entry_id=f"turn-{invocation_id}",
+        invocation_id=invocation_id,
+        raw_input_sha256=hashlib.sha256(raw_input.encode()).hexdigest(),
+        invoked_at="2026-08-28T00:00:00Z",
+    )
 
 
 def _write_search_run(root, run_id: str, frozen_spec_id: str) -> None:
@@ -69,10 +93,75 @@ def test_create_goal_plus_record_writes_state_and_event(tmp_path) -> None:
     assert record.phase == "intake"
     assert not hasattr(record, "mode_hint")
     assert record.next_action.kind == "record_triage"  # type: ignore[union-attr]
+    assert record.entrypoint_status == "legacy_unverified"
 
     loaded = runtime.status(record.goal_plus_id)
     assert loaded.goal_plus_id == record.goal_plus_id
     assert runtime.list_events(record.goal_plus_id)[0]["event_type"] == "created"
+
+
+def test_host_command_start_is_verified_and_idempotent(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    invocation = _codex_invocation("codex:test:start")
+
+    first = runtime.start_from_host_command(
+        "Improve the README examples",
+        invocation=invocation,
+        source_path=".",
+    )
+    second = runtime.start_from_host_command(
+        "Improve the README examples",
+        invocation=invocation,
+        source_path=".",
+    )
+
+    assert first.goal_plus_id == second.goal_plus_id
+    assert first.entrypoint_status == "host_verified"
+    assert [item.invocation_id for item in first.host_command_invocations] == [
+        "codex:test:start"
+    ]
+    assert len(list((runtime.goals_dir).glob("gp_*/goal.json"))) == 1
+    assert runtime.require_host_verified_active_goal().goal_plus_id == first.goal_plus_id
+
+
+def test_host_command_start_rejects_second_nonterminal_goal(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    first = runtime.start_from_host_command(
+        "Improve the README examples",
+        invocation=_codex_invocation("codex:test:first"),
+    )
+
+    with pytest.raises(RuntimeError, match="nonterminal Goal Plus record"):
+        runtime.start_from_host_command(
+            "Start a different task",
+            invocation=_codex_invocation("codex:test:second"),
+        )
+
+    assert [path.parent.name for path in runtime.goals_dir.glob("gp_*/goal.json")] == [
+        first.goal_plus_id
+    ]
+
+
+def test_legacy_unverified_goal_cannot_authorize_search_bootstrap(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    runtime.create_goal("Legacy test fixture")
+
+    with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
+        runtime.require_host_verified_active_goal()
+
+
+def test_host_command_invocation_rejects_wrong_host_prefix() -> None:
+    with pytest.raises(ValidationError, match="requires the \\$ command prefix"):
+        GoalPlusHostCommandInvocation(
+            host="codex",
+            transport="codex_user_prompt_submit",
+            command="/goal-plus",
+            action="start",
+            session_id="session-test",
+            invocation_id="codex:test:wrong-prefix",
+            raw_input_sha256="0" * 64,
+            invoked_at="2026-08-28T00:00:00Z",
+        )
 
 
 def test_create_goal_normalizes_explicit_exploration_mode(tmp_path) -> None:

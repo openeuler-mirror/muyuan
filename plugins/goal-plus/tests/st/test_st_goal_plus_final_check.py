@@ -29,9 +29,9 @@ def test_codex_goal_plus_required_final_checker_smoke(
     )
     result = runner.run_streaming(
         (
-            "Create one Goal Plus record with goal_plus_create using this raw goal, "
-            "source_path='.', and policy.final_check.mode='required':\n"
+            "$goal-plus-with-final-check "
             f"{raw_goal}\n\n"
+            "The host entrypoint already created the required-final-check record. "
             "Record Goal Mode triage, inspect the file read-only, then call "
             "goal_plus_prepare_final_check(checker_host='codex'). Launch the exact returned "
             "foreground reviewer payload, wait for it, and do not submit the verdict on its "

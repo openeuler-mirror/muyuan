@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 from goal_plus.models import (
     AgentHostHandle,
     AgentSessionRecord,
@@ -547,22 +549,23 @@ def test_goal_plus_tools_delegate_runtime_calls_with_models() -> None:
     )
     tools = GoalPlusTools(runtime)
 
-    created = tools.goal_plus_create(
-        raw_goal="Optimize a benchmark if possible",
-        source_path=".",
-        policy={"max_discovery_turns": 1},
-    )
-    assert created["goal_plus_id"] == "gp_0001"
+    with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
+        tools.goal_plus_create(
+            raw_goal="Optimize a benchmark if possible",
+            source_path=".",
+            policy={"max_discovery_turns": 1},
+        )
     status = tools.goal_plus_status("gp_0001")
     assert status["evidence_log"][0]["event_type"] == "created"
     assert status["search_tasks_total"] == 0
     assert status["current_search_run_id"] is None
-    assert tools.goal_plus_update_goal(
-        "gp_0001",
-        "Revised objective",
-        expected_revision=1,
-        reason="user edit",
-    )["goal_revision"] == 2
+    with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
+        tools.goal_plus_update_goal(
+            "gp_0001",
+            "Revised objective",
+            expected_revision=1,
+            reason="user edit",
+        )
     assert tools.goal_plus_record_triage(
         "gp_0001",
         {
@@ -633,15 +636,6 @@ def test_goal_plus_tools_delegate_runtime_calls_with_models() -> None:
         context={"turn_id": "turn_1"},
     )["continuation_prompt"] == "continue triage"
 
-    runtime.create_goal.assert_called_once_with(
-        raw_goal="Optimize a benchmark if possible",
-        source_path=".",
-        policy={"max_discovery_turns": 1},
-    )
-    runtime.update_goal.assert_called_once_with(
-        "gp_0001",
-        raw_goal="Revised objective",
-        expected_revision=1,
-        reason="user edit",
-    )
+    runtime.create_goal.assert_not_called()
+    runtime.update_goal.assert_not_called()
     runtime.link_search_run.assert_called_once_with("gp_0001", "spec_1", "run_1")

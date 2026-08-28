@@ -22,6 +22,7 @@ from goal_plus.models import (
     GoalPlusGateEvent,
     GoalPlusGateResult,
     GoalPlusGoalRevision,
+    GoalPlusHostCommandInvocation,
     GoalPlusLinkedSearch,
     GoalPlusNextAction,
     GoalPlusRecord,
@@ -40,6 +41,16 @@ from goal_plus.runtime import discover_git_tracked_task_skills, exclusive_file_l
 
 
 TERMINAL_STATUSES: set[GoalPlusStatus] = {"blocked", "complete", "abandoned"}
+GOAL_PLUS_ENTRYPOINT_REQUIRED = (
+    "GoalPlusEntrypointRequired: Goal Plus can only be started by Codex "
+    "$goal-plus or Pi /goal-plus. Skill, MCP, CLI, and model-initiated creation "
+    "are not permitted."
+)
+GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED = (
+    "GoalPlusEntrypointRequired: Goal Plus objectives can only be edited by "
+    "Codex $goal-plus edit or Pi /goal-plus edit. MCP, CLI, skill, and "
+    "model-initiated edits are not permitted."
+)
 DEFAULT_EXECUTION_POLICY = GoalPlusExecutionPolicy().model_dump(mode="json")
 DEFAULT_WORK_LAUNCH_TTL_SECONDS = 120
 WORK_EVENT_STATUS = {
@@ -324,6 +335,8 @@ class FileGoalPlusRuntime:
         raw_goal: str,
         source_path: str | None = None,
         policy: dict[str, Any] | None = None,
+        *,
+        host_invocation: GoalPlusHostCommandInvocation | None = None,
     ) -> GoalPlusRecord:
         goal_plus_id = self._next_goal_id()
         now = utc_timestamp()
@@ -350,6 +363,14 @@ class FileGoalPlusRuntime:
                 description="判断原始目标应按 /goal 运行，还是升级到 Search Mode。",
                 required=True,
             ),
+            entrypoint_status=(
+                "host_verified" if host_invocation is not None else "legacy_unverified"
+            ),
+            host_command_invocations=(
+                [host_invocation.model_copy(deep=True)]
+                if host_invocation is not None
+                else []
+            ),
             created_at=now,
             updated_at=now,
         )
@@ -361,6 +382,11 @@ class FileGoalPlusRuntime:
                 "raw_goal": record.raw_goal,
                 "goal_revision": record.goal_revision,
                 "policy": record.policy,
+                "host_invocation": (
+                    host_invocation.model_dump(mode="json")
+                    if host_invocation is not None
+                    else None
+                ),
             },
         )
         return record
@@ -388,8 +414,112 @@ class FileGoalPlusRuntime:
         write_json(self._orchestrator_observability_path(goal_plus_id), observation)
         return observation
 
+    def start_from_host_command(
+        self,
+        raw_goal: str,
+        *,
+        invocation: GoalPlusHostCommandInvocation | dict[str, Any],
+        source_path: str | None = None,
+        policy: dict[str, Any] | None = None,
+    ) -> GoalPlusRecord:
+        parsed = (
+            invocation
+            if isinstance(invocation, GoalPlusHostCommandInvocation)
+            else GoalPlusHostCommandInvocation.model_validate(invocation)
+        )
+        if parsed.action != "start":
+            raise ValueError("Goal Plus start requires a host invocation with action=start")
+        with exclusive_file_lock(self.root_dir / "goal-plus-entrypoint.lock"):
+            existing = self._record_for_host_invocation(parsed.invocation_id)
+            if existing is not None and existing.status not in TERMINAL_STATUSES:
+                return existing
+            nonterminal = self._nonterminal_records()
+            if nonterminal:
+                active_ids = ", ".join(record.goal_plus_id for record in nonterminal)
+                raise RuntimeError(
+                    "A nonterminal Goal Plus record already exists: "
+                    f"{active_ids}. Use the exact host edit/resume command instead."
+                )
+            return self.create_goal(
+                raw_goal,
+                source_path=source_path,
+                policy=policy,
+                host_invocation=parsed,
+            )
+
     def status(self, goal_plus_id: str) -> GoalPlusRecord:
         return self._load_record(goal_plus_id)
+
+    def require_host_verified_active_goal(self) -> GoalPlusRecord:
+        nonterminal = self._nonterminal_records()
+        if (
+            len(nonterminal) != 1
+            or nonterminal[0].status != "active"
+            or nonterminal[0].entrypoint_status != "host_verified"
+            or not nonterminal[0].host_command_invocations
+        ):
+            detail = "none" if not nonterminal else "ambiguous or unverified"
+            raise RuntimeError(
+                f"{GOAL_PLUS_ENTRYPOINT_REQUIRED} Active host-verified records: {detail}."
+            )
+        return nonterminal[0]
+
+    def _nonterminal_records(self) -> list[GoalPlusRecord]:
+        if not self.goals_dir.is_dir():
+            return []
+        records = [
+            self._load_record(path.parent.name)
+            for path in sorted(self.goals_dir.glob("gp_*/goal.json"))
+        ]
+        return [record for record in records if record.status not in TERMINAL_STATUSES]
+
+    @staticmethod
+    def _has_host_invocation(
+        record: GoalPlusRecord,
+        invocation_id: str,
+    ) -> bool:
+        return any(
+            invocation.invocation_id == invocation_id
+            for invocation in record.host_command_invocations
+        )
+
+    def _with_host_invocation(
+        self,
+        record: GoalPlusRecord,
+        invocation: GoalPlusHostCommandInvocation,
+    ) -> GoalPlusRecord:
+        if self._has_host_invocation(record, invocation.invocation_id):
+            return record
+        return record.model_copy(
+            update={
+                "entrypoint_status": "host_verified",
+                "host_command_invocations": [
+                    *record.host_command_invocations,
+                    invocation.model_copy(deep=True),
+                ],
+                "updated_at": utc_timestamp(),
+            }
+        )
+
+    def _record_for_host_invocation(
+        self,
+        invocation_id: str,
+    ) -> GoalPlusRecord | None:
+        if not self.goals_dir.is_dir():
+            return None
+        matches: list[GoalPlusRecord] = []
+        for path in sorted(self.goals_dir.glob("gp_*/goal.json"), reverse=True):
+            record = self._load_record(path.parent.name)
+            if self._has_host_invocation(record, invocation_id):
+                matches.append(record)
+        return next(
+            (
+                record
+                for record in matches
+                if record.status not in TERMINAL_STATUSES
+            ),
+            matches[0] if matches else None,
+        )
 
     @serialized_goal_mutation
     def update_goal(
@@ -398,8 +528,17 @@ class FileGoalPlusRuntime:
         raw_goal: str,
         expected_revision: int,
         reason: str | None = None,
+        *,
+        host_invocation: GoalPlusHostCommandInvocation | None = None,
     ) -> GoalPlusRecord:
         record = self._load_record(goal_plus_id)
+        if host_invocation is not None:
+            if host_invocation.action != "edit":
+                raise ValueError(
+                    "Goal Plus edit requires a host invocation with action=edit"
+                )
+            if self._has_host_invocation(record, host_invocation.invocation_id):
+                return record
         if record.goal_revision != expected_revision:
             raise RuntimeError(
                 f"Goal Plus revision conflict: expected {expected_revision}, "
@@ -410,7 +549,16 @@ class FileGoalPlusRuntime:
             inherited_mode=exploration_mode_from_raw_goal(record.raw_goal),
         )
         if updated_raw_goal == record.raw_goal:
-            return record
+            if host_invocation is None:
+                return record
+            updated = self._with_host_invocation(record, host_invocation)
+            self._write_record(updated)
+            self._append_event(
+                goal_plus_id,
+                "host_command_authorized",
+                host_invocation.model_dump(mode="json"),
+            )
+            return updated
 
         now = utc_timestamp()
         next_revision = record.goal_revision + 1
@@ -455,6 +603,19 @@ class FileGoalPlusRuntime:
                     required=True,
                     metadata={"goal_revision": next_revision},
                 ),
+                "entrypoint_status": (
+                    "host_verified"
+                    if host_invocation is not None
+                    else record.entrypoint_status
+                ),
+                "host_command_invocations": (
+                    [
+                        *record.host_command_invocations,
+                        host_invocation.model_copy(deep=True),
+                    ]
+                    if host_invocation is not None
+                    else record.host_command_invocations
+                ),
                 "updated_at": now,
             }
         )
@@ -468,7 +629,66 @@ class FileGoalPlusRuntime:
                 "previous_raw_goal": record.raw_goal,
                 "raw_goal": updated_raw_goal,
                 "reason": revision.reason,
+                "host_invocation": (
+                    host_invocation.model_dump(mode="json")
+                    if host_invocation is not None
+                    else None
+                ),
             },
+        )
+        return updated
+
+    def edit_from_host_command(
+        self,
+        goal_plus_id: str,
+        raw_goal: str,
+        *,
+        expected_revision: int,
+        invocation: GoalPlusHostCommandInvocation | dict[str, Any],
+        reason: str | None = None,
+    ) -> GoalPlusRecord:
+        parsed = (
+            invocation
+            if isinstance(invocation, GoalPlusHostCommandInvocation)
+            else GoalPlusHostCommandInvocation.model_validate(invocation)
+        )
+        return self.update_goal(
+            goal_plus_id,
+            raw_goal,
+            expected_revision,
+            reason,
+            host_invocation=parsed,
+        )
+
+    @serialized_goal_mutation
+    def resume_from_host_command(
+        self,
+        goal_plus_id: str,
+        *,
+        invocation: GoalPlusHostCommandInvocation | dict[str, Any],
+    ) -> GoalPlusRecord:
+        parsed = (
+            invocation
+            if isinstance(invocation, GoalPlusHostCommandInvocation)
+            else GoalPlusHostCommandInvocation.model_validate(invocation)
+        )
+        if parsed.action != "resume":
+            raise ValueError(
+                "Goal Plus resume requires a host invocation with action=resume"
+            )
+        record = self._load_record(goal_plus_id)
+        if self._has_host_invocation(record, parsed.invocation_id):
+            return record
+        if record.status != "active":
+            raise RuntimeError(
+                f"Goal Plus {goal_plus_id} is {record.status}; only active records can resume"
+            )
+        updated = self._with_host_invocation(record, parsed)
+        self._write_record(updated)
+        self._append_event(
+            goal_plus_id,
+            "host_command_authorized",
+            parsed.model_dump(mode="json"),
         )
         return updated
 
@@ -520,6 +740,40 @@ class FileGoalPlusRuntime:
             goal_plus_id,
             "session_activated",
             parsed.model_dump(mode="json"),
+        )
+        return updated
+
+    @serialized_goal_mutation
+    def detach_session(
+        self,
+        goal_plus_id: str,
+        *,
+        session_id: str,
+        reason: str,
+    ) -> GoalPlusRecord:
+        record = self._load_record(goal_plus_id)
+        active = record.active_session
+        if active is None or active.session_id != session_id:
+            return record
+        now = utc_timestamp()
+        detached = active.model_copy(
+            update={
+                "state": "detached",
+                "last_seen_at": now,
+                "metadata": {**active.metadata, "detach_reason": reason},
+            }
+        )
+        updated = record.model_copy(
+            update={"active_session": detached, "updated_at": now}
+        )
+        self._write_record(updated)
+        self._append_event(
+            goal_plus_id,
+            "session_detached",
+            {
+                "session_id": session_id,
+                "reason": reason,
+            },
         )
         return updated
 

@@ -6,7 +6,7 @@ the only evidence that a real host can complete the user-visible workflow.
 ## Test Layers
 
 | Layer | Command | Proves |
-|---|---|---|
+| --- | --- | --- |
 | Default fast gate | `pytest -q` | models, runtimes, workspaces, verifiers, APIs, Codex/Pi assets |
 | Integration slice | `pytest -m integration -q` | one-plan parallel search, freeze+plan+batch+verify end-to-end |
 | Example slice | `pytest -m example -q` | `examples/*` fixtures drive real generated assets |
@@ -28,7 +28,7 @@ that slice.
 ## System-Test Markers
 
 | Marker | Runner | Default model |
-|---|---|---|
+| --- | --- | --- |
 | `st_codex` | `codex exec` | `gpt-5.6-terra` or `ST_CODEX_MODEL` |
 | `st_pi_rpc` | `goal-plus-pi-worker` + Pi RPC | host default or `ST_PI_MODEL` |
 | `st_pi` | native Pi `/goal-plus` print/TUI | host default or `ST_PI_MODEL` |
@@ -40,6 +40,11 @@ visible.
 ## Common Real-Host Checks
 
 ```bash
+# Codex ordinary-language entrypoint guard: the MCP mutation is blocked and
+# the isolated workspace remains free of `.gp` state
+ST_CODEX_MODEL=gpt-5.6-luna \
+  pytest -m "st and st_codex" -k goal_plus_entrypoint_guard -v -s -rs
+
 # Codex state redispatch and fixed parallel-loop continuation
 pytest -m "st and st_codex" -k codex_redispatch -v -s -rs
 ST_CODEX_MODEL=gpt-5.6-luna \

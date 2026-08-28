@@ -718,6 +718,9 @@ GoalPlusDiscoveryOrigin = Literal["initial", "in_progress"]
 GoalPlusGateEvent = Literal["stop", "subagent_stop", "pre_tool_use", "user_prompt_submit"]
 GoalPlusGateDecision = Literal["allow", "block"]
 GoalPlusSessionState = Literal["attached", "stale", "detached"]
+GoalPlusEntrypointStatus = Literal["host_verified", "legacy_unverified"]
+GoalPlusEntrypointHost = Literal["codex", "pi"]
+GoalPlusEntrypointAction = Literal["start", "edit", "resume"]
 GoalPlusWorkRoute = Literal["main", "subagent", "search"]
 GoalPlusWorkStatus = Literal[
     "planned",
@@ -916,6 +919,53 @@ class GoalPlusActiveSession(SearchModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GoalPlusHostCommandInvocation(SearchModel):
+    """Immutable evidence that a supported host command authorized one action."""
+
+    host: GoalPlusEntrypointHost
+    transport: Literal["codex_user_prompt_submit", "pi_extension_command"]
+    command: Literal[
+        "$goal-plus",
+        "$goal-plus-with-final-check",
+        "/goal-plus",
+        "/goal-plus-with-final-check",
+    ]
+    action: GoalPlusEntrypointAction
+    session_id: str = Field(min_length=1, max_length=512)
+    native_entry_id: str | None = Field(default=None, min_length=1, max_length=512)
+    invocation_id: str = Field(
+        min_length=1,
+        max_length=512,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    raw_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    invoked_at: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def match_host_transport_and_command(self) -> "GoalPlusHostCommandInvocation":
+        expected_transport = {
+            "codex": "codex_user_prompt_submit",
+            "pi": "pi_extension_command",
+        }[self.host]
+        if self.transport != expected_transport:
+            raise ValueError(
+                f"Goal Plus host {self.host} requires transport {expected_transport}"
+            )
+        expected_prefix = "$" if self.host == "codex" else "/"
+        if not self.command.startswith(expected_prefix):
+            raise ValueError(
+                f"Goal Plus host {self.host} requires the {expected_prefix} command prefix"
+            )
+        if self.action in {"edit", "resume"} and self.command not in {
+            "$goal-plus",
+            "/goal-plus",
+        }:
+            raise ValueError(
+                "Goal Plus edit/resume must use the host's base goal-plus command"
+            )
+        return self
+
+
 class GoalPlusRecord(SearchModel):
     goal_plus_id: str
     raw_goal: str = Field(min_length=1)
@@ -933,12 +983,18 @@ class GoalPlusRecord(SearchModel):
     linked_search: GoalPlusLinkedSearch | None = None
     next_action: GoalPlusNextAction | None = None
     active_session: GoalPlusActiveSession | None = None
+    entrypoint_status: GoalPlusEntrypointStatus = "legacy_unverified"
+    host_command_invocations: list[GoalPlusHostCommandInvocation] = Field(
+        default_factory=list
+    )
     hook_counters: dict[str, int] = Field(default_factory=dict)
     created_at: str
     updated_at: str
 
     @model_validator(mode="after")
     def synchronize_search_task_compatibility_view(self) -> "GoalPlusRecord":
+        if self.host_command_invocations:
+            self.entrypoint_status = "host_verified"
         if not self.goal_revisions:
             self.goal_revisions = [
                 GoalPlusGoalRevision(

@@ -57,15 +57,19 @@ MULTI_SEARCH_PROMPT = (
     "结束 Goal Plus，继续创建并链接第二个不同 run_id。只有两个 search task 都完成后，"
     "才把 Goal Plus 状态设为 complete。"
 )
-SPEC_REVISION_PROMPT = (
+SPEC_REVISION_FIRST_PROMPT = (
     "在同一个 Goal Plus 记录中验证一次真实的两版 frozen spec 流程。工作区是 {workspace}。"
     "第一轮只使用 .goal-plus-verifiers/simple_score.py，metric_name=score、maximize，"
     "只允许修改 candidate.txt；使用 random、worker_host=pi-rpc、"
     "orchestration_mode=parallel_loops、max_parallel=1 且不设置已弃用的 max_parallel，worker budget "
-    "为 max_runtime_seconds=60、max_turns=4、on_exceed=interrupt。完成完整的 freeze、"
-    "create、link、candidate verify、select、report、promote 和 record_search_result。"
+    "为 max_runtime_seconds=60、max_turns=4、on_exceed=interrupt。完成 freeze、create、"
+    "link、candidate verify、select、promote 和 record_search_result，但不要生成 report。"
     "拿到第一轮真实 verifier 结果后，不要结束 Goal Plus；在现有 raw-goal audit 中选择 "
-    "revise_goal，调用 goal_plus_update_goal，把完整目标改为使用 "
+    "revise_goal。不要调用 goal_plus_update_goal；把状态设为 needs_user，next action 要求用户"
+    "使用精确 /goal-plus edit，然后停止。"
+)
+SPEC_REVISION_SECOND_GOAL = (
+    "继续同一个 Goal Plus 记录，工作区仍是 {workspace}。使用 "
     ".goal-plus-verifiers/strict_score.py 在同一 candidate.txt 上最大化 score，"
     "并说明第一版只能证明相对改进，不能证明已经达到更深目标。随后重新 triage、保存"
     "新的高置信 spec draft、冻结新的 frozen spec，并以相同的 Pi 单候选预算完成第二个"
@@ -463,11 +467,30 @@ def test_goal_plus_print_revises_goal_and_frozen_spec_after_first_result(
     command = [
         *_pi_base_command(session_dir, "st-pi-goal-plus-spec-revision"),
         "-p",
-        f"/goal-plus {SPEC_REVISION_PROMPT.format(workspace=workspace)}",
+        f"/goal-plus {SPEC_REVISION_FIRST_PROMPT.format(workspace=workspace)}",
     ]
 
-    result = subprocess.run(
+    first = subprocess.run(
         command,
+        cwd=ROOT,
+        env=_run_env(search_root),
+        text=True,
+        capture_output=True,
+        timeout=int(os.environ.get("ST_PI_SPEC_REVISION_TIMEOUT", "900")),
+        check=False,
+    )
+
+    assert first.returncode == 0, first.stderr[-3000:] or first.stdout[-3000:]
+    first_record = _goal_record(search_root)
+    assert first_record["status"] == "needs_user"
+    assert first_record["goal_revision"] == 1
+
+    result = subprocess.run(
+        [
+            *_pi_base_command(session_dir, "st-pi-goal-plus-spec-revision"),
+            "-p",
+            f"/goal-plus edit {SPEC_REVISION_SECOND_GOAL.format(workspace=workspace)}",
+        ],
         cwd=ROOT,
         env=_run_env(search_root),
         text=True,

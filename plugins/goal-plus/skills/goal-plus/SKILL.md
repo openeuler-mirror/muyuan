@@ -19,19 +19,21 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
 
 ## 工作流
 
-1. 首先读取隐藏的 Codex hook 上下文。如果其中包含 active 的 `goal_plus_id`，
-   则 `UserPromptSubmit` hook 已在本模型轮次前创建并绑定记录；使用该 id，
-   不要再次调用 `goal_plus_create`。如果没有 hook 上下文，调用
-   `goal_plus_create(raw_goal=..., policy={"execution":{"host":{"host_id":"codex",
-   "native_reasoning_effort":"max","enforcement":"requested","operations":
-   ["spawn","send","wait","interrupt","observe"]}}})` 作为兼容后备。
+1. 首先读取隐藏的 Codex hook 上下文。只有其中明确包含本轮由精确
+   `$goal-plus`、`$goal-plus edit`、`$goal-plus resume` 或
+   `$goal-plus-with-final-check` host command 授权的 active `goal_plus_id` 时，
+   才能执行此工作流。skill 本身不能创建、编辑、恢复或授权 Goal Plus；不得调用
+   `goal_plus_create` 或 `goal_plus_update_goal`，也不得通过 MCP、CLI、shell、Python
+   或手写 stdio client 绕过 host 入口。如果缺少该上下文，立即停止所有 Goal Plus / Search
+   变更，并要求用户使用精确的 `$goal-plus <完整目标>`、`$goal-plus edit <完整目标>`
+   或 `$goal-plus resume`。
    仅在新记录的首轮，由 Main 语义检查原始目标或当前对话上下文是否明确给出了整个 Goal
    Plus 任务的最大运行时间；如果没有，先简短告知用户：“当前未设置最大运行时间，Goal
    Plus 将持续运行直至目标完成或用户手动停止。”这只是告知，不询问、不等待确认，随后
    立即继续执行。
    `$goal-plus-with-final-check` 会预先创建，并设置
-   `policy.final_check.mode="required"`。`$goal-plus edit <完整的修订目标>`
-   会在模型轮次前更新同一记录；使用新的 `goal_revision`，不要继续旧修订版。
+   `policy.final_check.mode="required"`。`$goal-plus edit <完整的修订目标>` 会由 host
+   在模型轮次前更新同一记录；使用新的 `goal_revision`，不要继续旧修订版。
    host 中断后，`$goal-plus resume` 会恢复同一个 active 修订版。
    `$goal-plus mode=autonomous <目标>`（默认）要求为初始候选分配充足 lease，
    并在没有全局停止条件时继续同一候选；`$goal-plus mode=probe <目标>`
@@ -40,8 +42,8 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    或运行时字段。
    恢复 active 记录前，把最新用户消息视为本轮的权威依据：
    - 如果它继续或引导现有目标，但没有改变范围、交付物或成功标准，保留当前修订版。
-   - 如果它改变了实际范围、交付物或成功标准，使用完整修订目标和当前
-     `expected_revision` 调用 `goal_plus_update_goal`，然后在继续工作前重新 triage。
+   - 如果它改变了实际范围、交付物或成功标准，停止变更并要求用户使用精确的
+     `$goal-plus edit <完整修订目标>`；不得由模型调用 `goal_plus_update_goal`。
    - 如果消息与目标无关，直接回复而不改变目标。如果它与目标的关系不明确，
      在修订或恢复前先澄清。不要仅因 Goal Plus 记录处于 active 就恢复工作。
 2. 检查足够的上下文以分类任务。
@@ -252,8 +254,9 @@ Search Mode 用于已冻结、可度量的优化。它把候选工作区创建�
 第一次读取自己的 agent context 前也会显示其自身权限。该信息来自 Codex transcript 的
 `turn_context`，缺失时保持 unavailable，不能从 TOML、环境变量或 parent 权限猜测。
 Main 在首条用户可见进度中、Search candidate 在最终交接中完整照抄 hook 给出的权限摘要。
-`SessionStart` 恢复与 session 绑定的 active id。`PreToolUse` 强制执行 Search 和变更
-gate。`PostToolUse(goal_plus_create)` 仍作为兼容绑定后备。Search 候选 subagent 的
+`SessionStart` 只发现可恢复状态，不授权或注入 active id；用户必须显式提交
+`$goal-plus resume`。`PreToolUse` 对未由本轮精确 host command 授权的 Goal Plus / Search
+变更 fail closed。不存在 `PostToolUse(goal_plus_create)` 兼容后备。Search 候选 subagent 的
 PostTool 事件还会执行一次只读 verifier 时间提示检查；它们绝不会绑定 Goal Plus 所有权，
 主 agent、最终检查员和普通 subagent 的事件会被忽略。顶层 `Stop` 会强制执行完整原始目标
 和耗时审计，直到主 agent 记录终态。

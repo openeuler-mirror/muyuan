@@ -8,6 +8,10 @@ description: 当 Pi 收到可能需要 Goal Mode、Spec Discovery Mode、有界 
 ## 入口契约
 
 原生 Pi `/goal-plus` 命令会在模型轮次开始前创建 Goal Plus 记录。
+只有 extension 注入了本轮精确 `/goal-plus`、`/goal-plus edit`、`/goal-plus resume` 或
+`/goal-plus-with-final-check` host command 授权的 active `goal_plus_id` 时，才能执行本
+skill。skill、prompt、MCP 和模型工具都不能创建、编辑、恢复或授权 Goal Plus；缺少授权
+上下文时立即停止，并要求用户使用精确的 Pi slash command。
 仅在新记录的首轮，由 Main 语义检查原始目标或当前对话上下文是否明确给出了整个 Goal
 Plus 任务的最大运行时间；如果没有，先简短告知用户：“当前未设置最大运行时间，Goal
 Plus 将持续运行直至目标完成或用户手动停止。”这只是告知，不询问、不等待确认，随后
@@ -15,10 +19,10 @@ Plus 将持续运行直至目标完成或用户手动停止。”这只是告知
 入口在 Main 模型选择后把逻辑 `thinking=max` 映射为 Pi `xhigh` 请求，并记录 Pi 按模型能力
 钳制后的实际档位；如果 reasoning 被钳制为 `off`，则拒绝启动，不静默降级。
 `/goal-plus-with-final-check` 创建记录时会设置 `policy.final_check.mode="required"`。
-`/goal-plus edit <完整的修订目标>` 对 active 记录调用 `goal_plus_update_goal` 并递增
-`goal_revision`；最新原始目标取代旧修订版。Pi 轮次中断后，`/goal-plus resume`
-会继续同一个持久化 active 修订版。如果使用兼容 prompt 路径且尚无 active 的
-`goal_plus_id`，第一次工具调用必须是 `goal_plus_create(raw_goal=...)`。
+`/goal-plus edit <完整的修订目标>` 由 extension 的 host-only 入口更新 active 记录并递增
+`goal_revision`；最新原始目标取代旧修订版。Pi 轮次中断后，只有显式
+`/goal-plus resume` 会重新授权同一个持久化 active 修订版。不存在兼容 prompt fallback；
+不得调用 `goal_plus_create` 或 `goal_plus_update_goal`。
 目标记录存在之前，不要 triage、Search 或编辑。除了加载 goal-plus skill 之外，
 在 `goal_plus_record_triage` 前不要读取或审计目标文件。
 
@@ -30,16 +34,17 @@ lease、外层剩余时间和收尾预留来确定探索时间，并使用可续
 的规范末行，不把它作为 phase、Search strategy 或运行时字段。
 
 恢复 active 记录前，把最新用户消息视为本轮权威依据。消息只继续或引导现有目标时，
-保留当前修订版。如果它改变了实际范围、交付物或成功标准，使用完整修订目标和当前
-`expected_revision` 调用 `goal_plus_update_goal`，然后在继续工作前重新 triage。
+保留当前修订版。如果它改变了实际范围、交付物或成功标准，停止变更并要求用户使用精确的
+`/goal-plus edit <完整修订目标>`；不得由模型调用 `goal_plus_update_goal`。
 如果消息无关，直接回复而不改变目标。如果它与目标的关系不明确，在修订或恢复前先澄清；
 不要仅因 Goal Plus 记录处于 active 就恢复工作。
 
 ## Goal Mode
 
 当请求尚不是可验证的优化/Search 任务时使用 Goal Mode。使用
-`goal_plus_record_triage({ goal_plus_id, triage: { is_optimization, confidence, recommended_phase, identified_at, scenario, reasons, missing } })`
-记录 triage，并将面向用户的目标与实现猜测分开。随后用 `goal_plus_upsert_work_items`
+`goal_plus_record_triage` 记录 triage；字段包括 `goal_plus_id`、`is_optimization`、
+`confidence`、`recommended_phase`、`identified_at`、`scenario`、`reasons` 和 `missing`。
+将面向用户的目标与实现猜测分开。随后用 `goal_plus_upsert_work_items`
 建立当前修订版工作项 DAG。主 Agent 保留关键路径与最终集成；独立工作项使用
 `route="subagent"`。Goal Mode 下不要创建 SearchSpec。
 
@@ -202,8 +207,20 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
    仓外 Skill 继续由 host 管理。
 5. 调用 `pi_search_pool_open(run_id, candidate_ids, directive?, worker_budgets?, final_verify=true, max_parallel=<budget.max_parallel>)`。
    `worker_budgets` 必须按 `candidate_id` 映射，例如
-   `{"c001": {"min_runtime_seconds": 500, "min_verifier_runs": 1, "max_runtime_seconds": 600, "on_exceed": "interrupt"}}`，不能直接传一份
-   WorkerBudget。它启动 detached 受管 worker，并立即返回持久化 `pool_id`。
+   不能直接传一份 WorkerBudget。例如：
+
+   ```json
+   {
+     "c001": {
+       "min_runtime_seconds": 500,
+       "min_verifier_runs": 1,
+       "max_runtime_seconds": 600,
+       "on_exceed": "interrupt"
+     }
+   }
+   ```
+
+   它启动 detached 受管 worker，并立即返回持久化 `pool_id`。
 6. 调用 `pi_search_pool_wait_any(pool_id, timeout_seconds=...)`。处理每个返回事件。
    如果顶层结果是 `timed_out=true`、`events=[]` 且 `active_count>0`，这只是本次轮询超时；
    继续调用 `pi_search_pool_wait_any`，不能调用 `pi_search_pool_close`、选择或提升。
@@ -312,8 +329,8 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
   产物。诊断稀疏、分数低、进展缓慢或更好的搜索思路都不是充分证据。
 - `keep_spec_with_justification`：当前 spec 仍是原始目标的可信 proxy。说明保留它的证据，
   并继续 Search。每条候选循环都仍可探索更深或结构不同的方法；由各 subagent 自行决定。
-- `revise_goal`：实际范围、交付物或成功标准需要改变。使用完整修订后的原始目标和当前
-  `expected_revision` 调用 `goal_plus_update_goal`，重新 triage，然后为该修订版发现并冻结 spec。
+- `revise_goal`：实际范围、交付物或成功标准需要改变。停止本轮变更并要求用户使用精确的
+  `/goal-plus edit <完整修订目标>`；host 更新后再重新 triage，并为新修订版发现和冻结 spec。
 
 这些标签描述现有原始目标审计中的主 agent 决策；它们不是新的运行时状态、额外工作流 phase
 或用户审批 checkpoint。

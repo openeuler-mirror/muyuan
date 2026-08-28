@@ -120,6 +120,15 @@ Pi:    /goal-plus-with-final-check <goal>
 Codex: $goal-plus-with-final-check <goal>
 ```
 
+These exact host commands are the only Goal Plus authority boundary. Natural
+language requests, automatic skill loading, direct MCP calls, and the generic
+Pi CLI facade cannot create, edit, or resume a Goal Plus record. The legacy
+`goal_plus_create` and `goal_plus_update_goal` MCP names remain as deny-only
+tombstones so cached clients receive an explicit `GoalPlusEntrypointRequired`
+error without mutating `.gp` state. A persisted active record is not
+automatically authorized in a later turn; use the exact host-specific
+`resume` command.
+
 One request starts an autonomous run. The agent decides whether Goal Mode is
 enough or a frozen verifier makes parallel Search useful; entering Search does
 not require an extra approval step. `mode=autonomous` (the default) gives
@@ -130,7 +139,7 @@ stored as guidance in the final line of `raw_goal`, not as a scheduler state.
 ## Hosts
 
 | Host | Integration assets | Entry | Search worker path |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Pi | installed Pi package | `/goal-plus` or `pi -p "/goal-plus ..."` | durable Pi RPC pool; see [Pi](docs/pi.md) |
 | Codex | installed plugin | `$goal-plus` skill prompt | fixed parallel loops with native same-worker continuation; Codex 0.144.1+ hooks cover `UserPromptSubmit`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
 
@@ -200,7 +209,7 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 ## Documentation
 
 | Need | Read |
-|---|---|
+| --- | --- |
 | Architecture, shared Evidence, rollback, and end-to-end flow | [Shared Plane](docs/shared-plane.md) |
 | Current MCP and Pi-local tools | [API](docs/api.md) |
 | Host capability comparison | [Agent Host Adapters](docs/agent-host-adapters.md) |

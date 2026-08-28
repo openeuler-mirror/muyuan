@@ -44,6 +44,15 @@ The runtime owns:
 - durable `.gp/` run state
 - report generation and promotion patches
 
+Goal Plus startup authority belongs only to the host command adapters: exact
+Codex `$goal-plus...` input through `UserPromptSubmit`, or exact Pi
+`/goal-plus...` input through the native extension command handler. Skills,
+prompts, model-facing MCP tools, generic CLI facades, SessionStart, and ordinary
+natural-language requests must never create, edit, resume, or authorize a Goal
+Plus record. Keep `goal_plus_create` and `goal_plus_update_goal` deny-only if
+their legacy names remain exposed, and fail closed on host-command or mutating
+tool authorization errors.
+
 The host code-agent or host-local supervisor owns:
 
 - worker launch, lifecycle, stop/interrupt, and return values
@@ -236,6 +245,12 @@ Default verification:
 python -m pytest -q          # parallel fast gate (default: -n 4 --dist=load)
 git diff --check
 ```
+
+Whenever tracked Markdown changes, list the affected files with
+`git diff --name-only HEAD -- '*.md'` and run `markdownlint-cli2` on every
+listed Markdown file before handoff. For documentation and templates, also
+verify affected relative links. If a required checker is unavailable, state
+which check was skipped and why.
 
 Parallelism policy: use at most 50% of available CPUs for the default gate,
 capped at `--numprocesses 16`. `pytest.ini` sets `-n 4` as a conservative

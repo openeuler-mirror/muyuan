@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { type TSchema, Type } from "typebox";
 import {
 	buildPiCompletionPresentation,
@@ -44,6 +45,7 @@ let continuationCount = 0;
 let workerContinuationCount = 0;
 let activeGoalStartedAt: string | undefined;
 let activeGoalStartEntryCount = 0;
+let goalPlusTurnAuthorized = false;
 
 const INSTALL_HINT =
 	'Install this project into the Python environment that launches Pi: python -m pip install -e ".[dev]".';
@@ -316,7 +318,7 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 	goal_plus_create: Type.Object(
 		{
 			raw_goal: Type.String(),
-			source_path: Type.Optional(Type.String()),
+			source_path: Type.Optional(NullableString),
 			policy: Type.Optional(LooseObject),
 		},
 		{ additionalProperties: false },
@@ -326,8 +328,8 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 		{
 			goal_plus_id: Type.String(),
 			raw_goal: Type.String(),
-			expected_revision: Type.Number(),
-			reason: Type.Optional(Type.String()),
+			expected_revision: Type.Integer(),
+			reason: Type.Optional(NullableString),
 		},
 		{ additionalProperties: false },
 	),
@@ -760,6 +762,26 @@ const MAIN_GATED_TOOLS = new Set([
 	"pi_goal_plus_run_final_check",
 	"pi_goal_plus_run_work_item",
 ]);
+const MAIN_READ_ONLY_RUNTIME_TOOLS = new Set([
+	"goal_plus_status",
+	"goal_plus_monitor_snapshot",
+	"goal_plus_list_models",
+	"search_status",
+	"search_list_history",
+	"search_list_iterations",
+	"search_get_agent_observability",
+]);
+
+function requiresGoalPlusAuthorization(toolName: string): boolean {
+	if (MAIN_READ_ONLY_RUNTIME_TOOLS.has(toolName)) return false;
+	return (
+		toolName.startsWith("goal_plus_") ||
+		toolName.startsWith("search_") ||
+		toolName.startsWith("pi_search_pool_") ||
+		toolName === "pi_goal_plus_run_final_check" ||
+		toolName === "pi_goal_plus_run_work_item"
+	);
+}
 
 interface GoalPlusNativeState {
 	activeGoalPlusId?: string;
@@ -1027,6 +1049,74 @@ async function runJsonCli(pi: ExtensionAPI, ctx: CommandRuntimeContext, tool: st
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
 		details: parsed,
+	};
+}
+
+async function runHostCommandCli(
+	pi: ExtensionAPI,
+	ctx: CommandRuntimeContext,
+	tool: "goal_plus_host_start" | "goal_plus_host_edit" | "goal_plus_host_resume",
+	args: Record<string, unknown>,
+) {
+	const invocation = projectModuleInvocation(ctx, "goal-plus-pi-tool", "goal_plus.pi_tool");
+	const capabilityToken = randomUUID();
+	const capabilityRoot = isAbsolute(runtimeRoot) ? runtimeRoot : join(ctx.cwd, runtimeRoot);
+	const capabilityDir = join(capabilityRoot, "host-entrypoint", "pi");
+	const capabilityPath = join(capabilityDir, `${capabilityToken}.json`);
+	mkdirSync(capabilityDir, { recursive: true });
+	writeFileSync(
+		capabilityPath,
+		JSON.stringify({ token: capabilityToken, issued_at_ms: Date.now() }),
+		{ encoding: "utf8", flag: "wx", mode: 0o600 },
+	);
+	const result = await (async () => {
+		try {
+			return await pi.exec(invocation.command, [
+				...invocation.argsPrefix,
+				"--root",
+				runtimeRoot,
+				"--host-entrypoint",
+				"--host-capability",
+				capabilityToken,
+				"--args-json",
+				JSON.stringify(args),
+				tool,
+			]);
+		} finally {
+			rmSync(capabilityPath, { force: true });
+		}
+	})();
+	if (result.code !== 0) {
+		const failure = commandFailure(tool, invocation, result);
+		return {
+			content: [{ type: "text" as const, text: failure.text }],
+			details: failure.details,
+		};
+	}
+	const parsed = JSON.parse(result.stdout || "null");
+	return {
+		content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
+		details: parsed,
+	};
+}
+
+function piHostInvocation(
+	ctx: ExtensionContext,
+	command: "/goal-plus" | "/goal-plus-with-final-check",
+	action: "start" | "edit" | "resume",
+	rawInput: string,
+	nativeEntryId: string,
+) {
+	return {
+		host: "pi",
+		transport: "pi_extension_command",
+		command,
+		action,
+		session_id: `pi:${ctx.cwd}`,
+		native_entry_id: nativeEntryId,
+		invocation_id: `pi:${randomUUID()}`,
+		raw_input_sha256: createHash("sha256").update(rawInput).digest("hex"),
+		invoked_at: new Date().toISOString(),
 	};
 }
 
@@ -1527,11 +1617,11 @@ function buildGoalStartPrompt(
 	lines.push(
 		"",
 		"重要事项：",
-		"- goal_plus_create 工具已经创建此记录。不要为该目标再次调用 goal_plus_create。",
+		"- 原生 Pi `/goal-plus` host command 已创建并授权此记录；skill、MCP 和模型工具不能创建或恢复 Goal Plus。",
 		"- 这是新创建记录的首轮。由你语义检查原始目标或当前对话上下文是否明确给出了整个 Goal Plus 任务的最大运行时间；如果没有，先用一句简短 commentary 告知用户：‘当前未设置最大运行时间，Goal Plus 将持续运行直至目标完成或用户手动停止。’这只是告知，不要询问或等待确认；告知后立即继续执行。",
 		"- 加载并遵循 goal-plus skill。",
 		"- 以最新用户消息作为判断继续、修订或讨论无关内容的权威依据；不要仅因 Goal Plus 处于 active 就恢复工作。",
-		"- 如果消息改变了实际范围、交付物或成功标准，使用完整修订后的原始目标和当前 expected_revision 调用 goal_plus_update_goal，然后重新 triage。否则保持修订版不变，并在恢复前澄清有歧义的意图。",
+		"- 如果用户要改变实际范围、交付物或成功标准，停止本轮变更并要求使用精确的 `/goal-plus edit <完整修订目标>`；不要调用 goal_plus_update_goal。否则保持修订版不变。",
 		"- 除了加载 goal-plus skill 之外，在 goal_plus_record_triage 前不要读取或审计目标文件。",
 		"- 首先使用 goal_plus_record_triage 记录 triage。",
 		"- 如果原始目标明确要求 verifier 引导的 Search Mode，并提供可度量的 verifier 或 metric，不要将其降级为普通 Goal Mode。",
@@ -1544,9 +1634,10 @@ function buildGoalStartPrompt(
 }
 
 interface GoalPlusSlashRequest {
-	action: "start" | "edit" | "resume";
+	action: "start" | "edit" | "resume" | "invalid";
 	rawGoal: string;
 	withFinalCheck: boolean;
+	invalidReason?: string;
 }
 
 function goalPlusRequestFromSlashInput(text: string): GoalPlusSlashRequest | undefined {
@@ -1554,11 +1645,24 @@ function goalPlusRequestFromSlashInput(text: string): GoalPlusSlashRequest | und
 	if (!match) return undefined;
 	const command = match[1];
 	const body = (match[2] ?? "").trim();
-	if (command === "goal-plus" && body.toLowerCase() === "resume") {
+	if (command === "goal-plus" && body === "resume") {
 		return { action: "resume", rawGoal: "", withFinalCheck: false };
 	}
-	if (command === "goal-plus" && body.toLowerCase().startsWith("edit ")) {
+	if (command === "goal-plus" && (body === "edit" || body.startsWith("edit "))) {
 		return { action: "edit", rawGoal: body.slice(5).trim(), withFinalCheck: false };
+	}
+	const normalizedBody = body.toLowerCase();
+	if (command === "goal-plus" && (
+		normalizedBody === "resume"
+		|| normalizedBody === "edit"
+		|| normalizedBody.startsWith("edit ")
+	)) {
+		return {
+			action: "invalid",
+			rawGoal: "",
+			withFinalCheck: false,
+			invalidReason: "Pi Goal Plus subcommands must be exact lowercase edit or resume.",
+		};
 	}
 	return {
 		action: "start",
@@ -1591,6 +1695,20 @@ async function createGoalPlusStart(
 	rawGoal: string,
 	withFinalCheck = false,
 ): Promise<string | undefined> {
+	if (activeGoalPlusId) {
+		const current = await refreshActiveGoal(
+			pi,
+			commandContextFrom(ctx),
+			canPersistGoalState(ctx.mode),
+		);
+		if (current && !isTerminalStatus(current.status)) {
+			ctx.ui.notify(
+				`Goal Plus ${activeGoalPlusId} is still active; use /goal-plus resume or /goal-plus edit <full goal>.`,
+				"error",
+			);
+			return undefined;
+		}
+	}
 	let roleModels: GoalPlusRoleModels | undefined;
 	try {
 		roleModels = resolveGoalPlusRoleModels(ctx, rawGoal);
@@ -1610,9 +1728,17 @@ async function createGoalPlusStart(
 	appendPiRuntimeStartEntry(pi, ctx);
 	const commandCtx = commandContextFrom(ctx);
 	const startEntryCount = ctx.sessionManager.getEntries().length;
-	const result = await runJsonCli(pi, commandCtx, "goal_plus_create", {
+	const command = withFinalCheck ? "/goal-plus-with-final-check" : "/goal-plus";
+	const result = await runHostCommandCli(pi, commandCtx, "goal_plus_host_start", {
 		raw_goal: rawGoal,
 		source_path: ctx.cwd,
+		invocation: piHostInvocation(
+			ctx,
+			command,
+			"start",
+			`${command} ${rawGoal}`,
+			`pi-entry-${startEntryCount}`,
+		),
 		policy: {
 			execution: {
 				mode: "orchestrated",
@@ -1636,15 +1762,16 @@ async function createGoalPlusStart(
 		const details =
 			isRecord(result.details) && typeof result.details.error === "string"
 				? result.details.error
-				: "goal_plus_create did not return a goal_plus_id";
+				: "Pi /goal-plus host entrypoint did not return a goal_plus_id";
 		pi.sendMessage({
 			customType: "goal-plus-error",
 			content: details,
 			display: true,
-			details: { tool: "goal_plus_create" },
+			details: { tool: "goal_plus_host_start" },
 		});
 		return undefined;
 	}
+	goalPlusTurnAuthorized = true;
 	activateGoal(pi, status, startEntryCount, canPersistGoalState(ctx.mode));
 	pi.sendMessage({
 		customType: "goal-plus-created",
@@ -1668,14 +1795,23 @@ async function updateGoalPlusStart(
 	const commandCtx = commandContextFrom(ctx);
 	const current = await refreshActiveGoal(pi, commandCtx, canPersistGoalState(ctx.mode));
 	if (!current?.goal_plus_id || typeof current.goal_revision !== "number") return undefined;
-	const result = await runJsonCli(pi, commandCtx, "goal_plus_update_goal", {
+	const nativeEntryId = `pi-entry-${ctx.sessionManager.getEntries().length}`;
+	const result = await runHostCommandCli(pi, commandCtx, "goal_plus_host_edit", {
 		goal_plus_id: current.goal_plus_id,
 		raw_goal: rawGoal,
 		expected_revision: current.goal_revision,
 		reason: "user edited the Goal Plus objective through Pi",
+		invocation: piHostInvocation(
+			ctx,
+			"/goal-plus",
+			"edit",
+			`/goal-plus edit ${rawGoal}`,
+			nativeEntryId,
+		),
 	});
 	const status = statusFrom(result.details);
 	if (!status?.goal_plus_id) return undefined;
+	goalPlusTurnAuthorized = true;
 	activateGoal(pi, status, undefined, canPersistGoalState(ctx.mode));
 	return [
 			"用户已编辑 Goal Plus 目标。",
@@ -1695,15 +1831,34 @@ async function resumeGoalPlusStart(
 		ctx.ui.notify("No interrupted Goal Plus record to resume", "error");
 		return undefined;
 	}
-	const status = await refreshActiveGoal(
+	const current = await refreshActiveGoal(
 		pi,
 		commandContextFrom(ctx),
 		canPersistGoalState(ctx.mode),
 	);
-	if (!status || isTerminalStatus(status.status)) {
+	if (!current || isTerminalStatus(current.status)) {
 		ctx.ui.notify("The previous Goal Plus record is already terminal", "error");
 		return undefined;
 	}
+	const result = await runHostCommandCli(
+		pi,
+		commandContextFrom(ctx),
+		"goal_plus_host_resume",
+		{
+			goal_plus_id: activeGoalPlusId,
+			invocation: piHostInvocation(
+				ctx,
+				"/goal-plus",
+				"resume",
+				"/goal-plus resume",
+				`pi-entry-${ctx.sessionManager.getEntries().length}`,
+			),
+		},
+	);
+	const status = statusFrom(result.details);
+	if (!status?.goal_plus_id) return undefined;
+	goalPlusTurnAuthorized = true;
+	activateGoal(pi, status, undefined, canPersistGoalState(ctx.mode));
 	return [
 			"从持久化运行时状态恢复被中断的 Goal Plus 任务。",
 		`goal_plus_id: ${status.goal_plus_id ?? activeGoalPlusId}`,
@@ -1733,7 +1888,7 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string) {
 			const startEntryCount = ctx.sessionManager.getEntries().length;
 			const canPersistPiState = canPersistGoalState(ctx.mode);
 			const result = await runJsonCli(pi, commandCtx, name, params as Record<string, unknown>);
-			if (["goal_plus_create", "goal_plus_update_goal", "goal_plus_submit_final_check"].includes(name)) {
+			if (name === "goal_plus_submit_final_check") {
 				activateGoal(pi, result.details, startEntryCount, canPersistPiState);
 			}
 			if (name === "search_get_agent_context") {
@@ -2051,7 +2206,7 @@ function workspaceGuard(event: ToolCallEvent) {
 	if (!sawContext) {
 		const readOnly = new Set(["read", "grep", "find", "ls"]);
 		if (readOnly.has(event.toolName)) return undefined;
-			return { block: true, reason: "使用变更类工具前调用 search_get_agent_context。" };
+		return { block: true, reason: "使用变更类工具前调用 search_get_agent_context。" };
 	}
 	if (!workspaceRoot) return undefined;
 	if (!["edit", "write", "bash"].includes(event.toolName)) return undefined;
@@ -2067,9 +2222,22 @@ function workspaceGuard(event: ToolCallEvent) {
 
 async function mainGate(event: ToolCallEvent, ctx: ExtensionContext) {
 	if (role !== "main") return undefined;
-	if (!event.toolName.startsWith("search_") && !MAIN_GATED_TOOLS.has(event.toolName)) return undefined;
+	const requiresAuthorization = requiresGoalPlusAuthorization(event.toolName);
+	if (requiresAuthorization && !goalPlusTurnAuthorized) {
+		return {
+			block: true,
+			reason: "GoalPlusEntrypointRequired: this Pi turn was not authorized by exact /goal-plus, /goal-plus edit, or /goal-plus resume input.",
+		};
+	}
+	if (!requiresAuthorization && !MAIN_GATED_TOOLS.has(event.toolName)) return undefined;
+	if (!goalPlusTurnAuthorized) return undefined;
 	const goalPlusId = activeGoalPlusId;
-	if (!goalPlusId) return undefined;
+	if (!goalPlusId) {
+		return {
+			block: true,
+			reason: "GoalPlusEntrypointRequired: no host-authorized Goal Plus record is active for this Pi turn.",
+		};
+	}
 	const commandCtx = commandContextFrom(ctx);
 	const gate = await runJsonCli(piForGate, commandCtx, "goal_plus_gate", {
 		goal_plus_id: goalPlusId,
@@ -2130,6 +2298,10 @@ export default function (pi: ExtensionAPI) {
 			description: "运行、编辑或恢复原生 Pi Goal Plus（支持显式角色模型）",
 			handler: async (args, ctx) => {
 				const request = goalPlusRequestFromSlashInput(`/goal-plus ${args}`);
+				if (request?.action === "invalid") {
+					ctx.ui.notify(request.invalidReason ?? "Invalid Goal Plus command", "error");
+					return;
+				}
 				if (!request || (request.action !== "resume" && !request.rawGoal)) {
 					ctx.ui.notify("Usage: /goal-plus [mode=autonomous|probe] [main=model] [annotator=model] [workers=model,...] <goal>, /goal-plus edit [mode=...] <full revised goal>, or /goal-plus resume", "error");
 					return;
@@ -2181,9 +2353,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	const mainTools = [
-		"goal_plus_create",
 		"goal_plus_status",
-		"goal_plus_update_goal",
 		"goal_plus_monitor_snapshot",
 		"goal_plus_list_models",
 		"goal_plus_record_triage",
@@ -2209,7 +2379,7 @@ export default function (pi: ExtensionAPI) {
 		"search_select",
 		"search_report",
 		"search_promote",
-			"pi_search_pool_open",
+		"pi_search_pool_open",
 		"pi_search_pool_wait_any",
 		"pi_search_pool_snapshot",
 		"pi_search_pool_continue",
@@ -2241,11 +2411,19 @@ export default function (pi: ExtensionAPI) {
 		registerPiWorkItemTool(pi);
 	}
 	pi.on("input", async (event, ctx) => {
-		if (role !== "main" || (ctx.mode !== "print" && ctx.mode !== "json")) {
+		if (role !== "main") {
 			return { action: "continue" };
 		}
 		const request = goalPlusRequestFromSlashInput(event.text);
-		if (request === undefined) return { action: "continue" };
+		if (request === undefined) {
+			goalPlusTurnAuthorized = false;
+			return { action: "continue" };
+		}
+		if (ctx.mode !== "print" && ctx.mode !== "json") return { action: "continue" };
+		if (request.action === "invalid") {
+			ctx.ui.notify(request.invalidReason ?? "Invalid Goal Plus command", "error");
+			return { action: "handled" };
+		}
 		if (request.action !== "resume" && !request.rawGoal) {
 			ctx.ui.notify("Goal Plus command requires a goal", "error");
 			return { action: "handled" };
@@ -2263,6 +2441,7 @@ export default function (pi: ExtensionAPI) {
 		return workspaceGuard(event) || (await mainGate(event, ctx));
 	});
 	pi.on("session_start", async (event, ctx) => {
+		goalPlusTurnAuthorized = false;
 		if (role !== "main" && event.reason !== "reload") {
 			appendPiRuntimeStartEntry(pi, ctx);
 		}
@@ -2288,7 +2467,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 	pi.on("before_agent_start", async (_event, ctx) => {
-		if (role !== "main" || !activeGoalPlusId) return;
+		if (role !== "main" || !activeGoalPlusId || !goalPlusTurnAuthorized) return;
 		const commandCtx = commandContextFrom(ctx);
 		const status = await refreshActiveGoal(pi, commandCtx, canPersistGoalState(ctx.mode));
 		if (!status || isTerminalStatus(status.status)) return;
@@ -2311,6 +2490,7 @@ export default function (pi: ExtensionAPI) {
 			lastMessage?.role === "assistant" &&
 			(lastMessage.stopReason === "error" || lastMessage.stopReason === "aborted")
 		) {
+			goalPlusTurnAuthorized = false;
 			return;
 		}
 		if (ctx.hasPendingMessages()) return;
@@ -2335,7 +2515,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			return;
 		}
-		if (role !== "main" || !activeGoalPlusId) return;
+		if (role !== "main" || !activeGoalPlusId || !goalPlusTurnAuthorized) return;
 		const commandCtx = commandContextFrom(ctx);
 		const mode = ctx.mode;
 		const persist = canPersistGoalState(mode);
@@ -2388,6 +2568,7 @@ export default function (pi: ExtensionAPI) {
 			activeGoalStartEntryCount = 0;
 			continuationCount = 0;
 			cachedGoalStatus = undefined;
+			goalPlusTurnAuthorized = false;
 			if (persist) persistGoalState(pi);
 		}
 	});

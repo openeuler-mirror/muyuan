@@ -1,6 +1,12 @@
-首先调用 `goal_plus_create(raw_goal="$ARGUMENTS")`，必须在 triage、规划、编辑或 Search 之前调用。
-除了加载 goal-plus skill 之外，在调用 `goal_plus_record_triage` 之前不要读取或审计目标文件。
-创建成功后，由你语义检查原始目标或当前对话上下文是否明确给出了整个 Goal Plus 任务的最大运行时间；
+# Goal Plus Prompt Compatibility
+
+此文件只是兼容说明，不能启动 Goal Plus。不得调用 `goal_plus_create` 或
+`goal_plus_update_goal`，也不得通过 MCP、CLI、shell 或 skill 创建、编辑或恢复记录。
+只有原生 Pi extension 已为本轮精确 `/goal-plus` host command 注入 active
+`goal_plus_id` 时才继续；缺少该授权上下文时立即停止，并报告 Pi Goal Plus host entrypoint
+未生效，不要把 `$ARGUMENTS` 当作已授权目标。记录存在后，除了加载 goal-plus skill 之外，
+在调用 `goal_plus_record_triage` 之前不要读取或审计目标文件。
+由你语义检查原始目标或当前对话上下文是否明确给出了整个 Goal Plus 任务的最大运行时间；
 如果没有，先用一句简短 commentary 告知用户：“当前未设置最大运行时间，Goal Plus 将持续运行
 直至目标完成或用户手动停止。”这只是告知，不要询问或等待确认；告知后立即继续执行。
 
@@ -17,7 +23,7 @@ Pi session model，入口没有切换模型；`annotator=` 写入
 `strategy.evidence_annotator.model`；`workers=` 或兼容别名 `models=` 按现有分配规则写入
 `strategy.models`。未显式指定的角色保持现有默认或继承语义。
 
-# Goal Plus
+## Goal Plus
 
 对以下原始用户目标使用 `/skill:goal-plus`：
 

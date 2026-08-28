@@ -52,6 +52,7 @@ def create_mcp(
         的路径，绝不能放在 `.gp` 或 `.search`。`expected_outputs` 只包含产物路径/glob，
         不是 stdout parser 配置。`spec.budget.max_parallel` 唯一决定初始候选 Agent 数。
         """
+        goal_runtime.require_host_verified_active_goal()
         return tools.search_freeze_spec(spec, verifier_artifact_paths)
 
     @mcp.tool()
@@ -79,6 +80,7 @@ def create_mcp(
         只有无法避免新的不可变 run 时才传入 `source_run_id`。新 run 会收到来源 frontier、
         限定范围的问题和特性账本的有界 snapshot。来源分数只是历史，必须在新契约下重新验证。
         """
+        goal_runtime.require_host_verified_active_goal()
         return tools.search_create(frozen_spec_id, source_run_id)
 
     @mcp.tool()
@@ -418,7 +420,10 @@ def create_mcp(
         source_path: str | None = None,
         policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """triage 前根据原始用户目标创建 goal-plus 记录。"""
+        """已禁用的兼容入口；始终报错且绝不创建记录。
+
+        只能用 Codex `$goal-plus` 或 Pi `/goal-plus` 由宿主入口创建 Goal Plus。
+        """
         return goal_tools.goal_plus_create(raw_goal, source_path, policy)
 
     @mcp.tool()
@@ -433,7 +438,10 @@ def create_mcp(
         expected_revision: int,
         reason: str | None = None,
     ) -> dict[str, Any]:
-        """原地替换实际目标，并开始新的可审计修订版。"""
+        """已禁用的兼容入口；始终报错且绝不修改目标。
+
+        只能用 Codex `$goal-plus edit` 或 Pi `/goal-plus edit` 由宿主入口修订。
+        """
         return goal_tools.goal_plus_update_goal(
             goal_plus_id,
             raw_goal,

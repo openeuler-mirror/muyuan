@@ -105,6 +105,17 @@ def test_invalidate_run_and_successor_expose_contract_fields(tmp_path: Path) -> 
     assert "中断 host pool" in description
 
 
+def test_legacy_goal_entrypoint_tools_are_deny_only_tombstones(tmp_path: Path) -> None:
+    tools = asyncio.run(create_mcp(tmp_path / ".search").get_tools())
+
+    create_description = " ".join(tools["goal_plus_create"].description.split())
+    update_description = " ".join(tools["goal_plus_update_goal"].description.split())
+    assert "始终报错" in create_description
+    assert "`$goal-plus`" in create_description
+    assert "始终报错" in update_description
+    assert "`/goal-plus edit`" in update_description
+
+
 def test_start_agent_session_returns_launch_payload(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 

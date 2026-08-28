@@ -51,6 +51,20 @@ def test_codex_runner_uses_exec_with_terra_model(tmp_path: Path) -> None:
     assert "run the prompt" in cmd[-1]
 
 
+@pytest.mark.codex
+def test_codex_runner_preserves_plain_prompt_without_goal_plus_prefix(
+    tmp_path: Path,
+) -> None:
+    runner = CodexRunner(project_root=tmp_path / "project", log_dir=tmp_path)
+    prompt = "帮我用 goal-plus 完成入口看护测试"
+
+    cmd = runner._build_plain_cmd(prompt)
+
+    assert cmd[:2] == ["codex", "exec"]
+    assert cmd[-1] == prompt
+    assert not cmd[-1].startswith("$goal-plus")
+
+
 def test_st_active_env_guard_name_is_stable() -> None:
     assert ST_ACTIVE_ENV == "GOAL_PLUS_ST_ACTIVE"
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
+import time
 from typing import Any
 
 import pytest
 
-from goal_plus.pi_tool import call_pi_tool
+from goal_plus.pi_tool import call_pi_host_command, call_pi_tool
 from goal_plus.models import SearchSpec
 from goal_plus.runtime import FileSearchRuntime
 
@@ -13,6 +16,68 @@ from tests._runtime_helpers import make_project, spec_for
 
 
 pytestmark = pytest.mark.pi
+
+
+def test_pi_model_facing_create_and_update_are_deny_only(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
+        call_pi_tool(tmp_path / ".gp", "goal_plus_create", {"raw_goal": "bad"})
+    with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
+        call_pi_tool(
+            tmp_path / ".gp",
+            "goal_plus_update_goal",
+            {
+                "goal_plus_id": "gp_0001",
+                "raw_goal": "bad",
+                "expected_revision": 1,
+            },
+        )
+    assert not (tmp_path / ".gp").exists()
+
+
+def test_pi_host_command_control_path_creates_verified_record(tmp_path: Path) -> None:
+    raw_input = "/goal-plus Test the exact Pi entrypoint"
+    token = "00000000-0000-4000-8000-000000000001"
+    capability = tmp_path / ".gp" / "host-entrypoint" / "pi" / f"{token}.json"
+    capability.parent.mkdir(parents=True)
+    capability.write_text(
+        json.dumps({"token": token, "issued_at_ms": int(time.time() * 1000)}),
+        encoding="utf-8",
+    )
+    result = call_pi_host_command(
+        tmp_path / ".gp",
+        "goal_plus_host_start",
+        {
+            "raw_goal": "Test the exact Pi entrypoint",
+            "source_path": ".",
+            "invocation": {
+                "host": "pi",
+                "transport": "pi_extension_command",
+                "command": "/goal-plus",
+                "action": "start",
+                "session_id": "pi:test",
+                "native_entry_id": "entry-1",
+                "invocation_id": "pi:test:entry-1",
+                "raw_input_sha256": hashlib.sha256(raw_input.encode()).hexdigest(),
+                "invoked_at": "2026-08-28T00:00:00Z",
+            },
+        },
+        capability_token=token,
+    )
+
+    assert result["entrypoint_status"] == "host_verified"
+    assert result["host_command_invocations"][0]["command"] == "/goal-plus"
+    assert not capability.exists()
+
+
+def test_pi_host_command_rejects_missing_one_time_capability(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="missing one-time Pi extension capability"):
+        call_pi_host_command(
+            tmp_path / ".gp",
+            "goal_plus_host_start",
+            {"raw_goal": "bad", "invocation": {}},
+            capability_token="00000000-0000-4000-8000-000000000002",
+        )
+    assert not list((tmp_path / ".gp" / "goal-plus").glob("gp_*/goal.json"))
 
 
 def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path) -> None:

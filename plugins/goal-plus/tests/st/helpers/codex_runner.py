@@ -35,6 +35,41 @@ class CodexRunner:
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_cmd(self, prompt: str, *, final_path: Path | None = None) -> list[str]:
+        """Build an explicitly authorized Goal Plus host-command invocation."""
+        cmd = self._build_base_cmd(final_path=final_path)
+        harness_contract = (
+            "This is a non-interactive Codex $goal-plus system test. "
+            "Use the project-local Codex goal-plus and search skills. Decide "
+            "autonomously whether Search adds value, discover any missing "
+            "verifier/spec details, and enter Search when the draft is ready. "
+            "Do not ask for or wait for user confirmation. "
+            "You are already inside the ST harness: do not run pytest, any "
+            "host CLI, or any tests/st command. Drive the goal-plus "
+            "MCP tools directly, and only launch workers through the project "
+            "host-pool contract from runtime launch payloads. The host command "
+            "has already created the Goal Plus record; never call "
+            "goal_plus_create or goal_plus_update_goal.\n\n"
+        )
+        stripped = prompt.lstrip()
+        if stripped.startswith(("$goal-plus ", "$goal-plus-with-final-check ")):
+            command_prompt = stripped
+        else:
+            command_prompt = f"$goal-plus {harness_contract}{prompt}"
+        cmd.append(command_prompt)
+        return cmd
+
+    def _build_plain_cmd(
+        self,
+        prompt: str,
+        *,
+        final_path: Path | None = None,
+    ) -> list[str]:
+        """Build an ordinary Codex invocation without adding a host command."""
+        cmd = self._build_base_cmd(final_path=final_path)
+        cmd.append(prompt)
+        return cmd
+
+    def _build_base_cmd(self, *, final_path: Path | None = None) -> list[str]:
         cmd = [
             "codex",
             "exec",
@@ -50,18 +85,6 @@ class CodexRunner:
             cmd += ["-m", self.model]
         if final_path is not None:
             cmd += ["-o", str(final_path)]
-        cmd.append(
-            "This is a non-interactive Codex $goal-plus system test. "
-            "Use the project-local Codex goal-plus and search skills. Decide "
-            "autonomously whether Search adds value, discover any missing "
-            "verifier/spec details, and enter Search when the draft is ready. "
-            "Do not ask for or wait for user confirmation. "
-            "You are already inside the ST harness: do not run pytest, any "
-            "host CLI, or any tests/st command. Drive the goal-plus "
-            "MCP tools directly, and only launch workers through the project "
-            "host-pool contract from runtime launch payloads.\n\n"
-            + prompt
-        )
         return cmd
 
     def run_streaming(
@@ -74,9 +97,49 @@ class CodexRunner:
         timeout = timeout or self.default_timeout
         log_path = self.log_dir / f"{scenario}.log"
         final_path = self.log_dir / f"{scenario}.final.md"
+        cmd = self._build_cmd(prompt, final_path=final_path)
+        return self._run(
+            cmd,
+            prompt=prompt,
+            scenario=scenario,
+            timeout=timeout,
+            log_path=log_path,
+            final_path=final_path,
+        )
+
+    def run_plain_streaming(
+        self,
+        prompt: str,
+        *,
+        scenario: str,
+        timeout: int | None = None,
+    ) -> RunResult:
+        """Run a prompt verbatim to test that no host command is inferred."""
+        timeout = timeout or self.default_timeout
+        log_path = self.log_dir / f"{scenario}.log"
+        final_path = self.log_dir / f"{scenario}.final.md"
+        cmd = self._build_plain_cmd(prompt, final_path=final_path)
+        return self._run(
+            cmd,
+            prompt=prompt,
+            scenario=scenario,
+            timeout=timeout,
+            log_path=log_path,
+            final_path=final_path,
+        )
+
+    def _run(
+        self,
+        cmd: list[str],
+        *,
+        prompt: str,
+        scenario: str,
+        timeout: int,
+        log_path: Path,
+        final_path: Path,
+    ) -> RunResult:
         log_path.unlink(missing_ok=True)
         final_path.unlink(missing_ok=True)
-        cmd = self._build_cmd(prompt, final_path=final_path)
 
         env = dict(os.environ)
         env.setdefault("RUST_LOG", "info")

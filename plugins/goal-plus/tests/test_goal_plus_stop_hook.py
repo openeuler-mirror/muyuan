@@ -218,7 +218,7 @@ def test_stop_hook_records_allowed_terminal_goal(tmp_path: Path) -> None:
     assert hook_event["goal_plus_id"] == record.goal_plus_id
 
 
-def test_stop_hook_records_failure_and_still_fails_open(tmp_path: Path) -> None:
+def test_stop_hook_records_failure_and_fails_closed(tmp_path: Path) -> None:
     search_root = tmp_path / ".search"
     goal_dir = search_root / "goal-plus" / "gp_999"
     goal_dir.mkdir(parents=True)
@@ -235,8 +235,10 @@ def test_stop_hook_records_failure_and_still_fails_open(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout == ""
-    assert "allowing host action because hook failed" in result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["decision"] == "block"
+    assert "failed closed" in payload["reason"]
+    assert result.stderr == ""
     hook_event = _stop_hook_events(search_root)[0]
     assert hook_event["decision"] == "error"
     assert hook_event["outcome"] == "failed"
@@ -286,7 +288,7 @@ def test_stop_hook_can_target_explicit_goal_id(tmp_path: Path) -> None:
     assert runtime.list_events(first.goal_plus_id)[-1]["event_type"] == "gate_blocked"
 
 
-def test_post_tool_use_goal_plus_create_binds_main_session(tmp_path: Path) -> None:
+def test_post_tool_use_goal_plus_create_never_binds_main_session(tmp_path: Path) -> None:
     search_root = tmp_path / ".search"
     runtime = FileGoalPlusRuntime(search_root)
     record = runtime.create_goal("Optimize model throughput")
@@ -306,11 +308,7 @@ def test_post_tool_use_goal_plus_create_binds_main_session(tmp_path: Path) -> No
     assert result.returncode == 0
     assert result.stdout == ""
     updated = runtime.status(record.goal_plus_id)
-    assert updated.active_session is not None
-    assert updated.active_session.host == "codex"
-    assert updated.active_session.session_id == "session-main"
-    assert updated.active_session.transcript_path == "/tmp/main.jsonl"
-    assert updated.active_session.state == "attached"
+    assert updated.active_session is None
 
 
 def test_post_tool_use_goal_plus_create_ignores_subagent_context(tmp_path: Path) -> None:

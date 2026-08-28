@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.goal_plus import (
+    GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED,
+    GOAL_PLUS_ENTRYPOINT_REQUIRED,
+    FileGoalPlusRuntime,
+)
 from goal_plus.models import (
     AgentHostKind,
     CandidateProposal,
@@ -331,11 +335,8 @@ class GoalPlusTools:
         source_path: str | None = None,
         policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self.runtime.create_goal(
-            raw_goal=raw_goal,
-            source_path=source_path,
-            policy=policy,
-        ).model_dump(mode="json")
+        del raw_goal, source_path, policy
+        raise RuntimeError(GOAL_PLUS_ENTRYPOINT_REQUIRED)
 
     def goal_plus_status(self, goal_plus_id: str) -> dict[str, Any]:
         record = self.runtime.status(goal_plus_id)
@@ -354,12 +355,8 @@ class GoalPlusTools:
         expected_revision: int,
         reason: str | None = None,
     ) -> dict[str, Any]:
-        return self.runtime.update_goal(
-            goal_plus_id,
-            raw_goal=raw_goal,
-            expected_revision=expected_revision,
-            reason=reason,
-        ).model_dump(mode="json")
+        del goal_plus_id, raw_goal, expected_revision, reason
+        raise RuntimeError(GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED)
 
     def goal_plus_record_triage(
         self,

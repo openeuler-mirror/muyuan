@@ -130,7 +130,9 @@ def test_codex_assets_wire_goal_plus_host_hooks() -> None:
 
     text = (ROOT / "docs" / "codex.md").read_text(encoding="utf-8")
     assert "installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook" in text
-    assert "PostToolUse(goal_plus_create)" in text
+    assert "不再存在 `PostToolUse(goal_plus_create)`" in text
+    assert "SessionStart` 只保留可恢复" in text
+    assert "fail closed" in text
     assert "UserPromptSubmit" in text
     assert "PreToolUse" in text
     assert "SubagentStop" in text
@@ -159,6 +161,16 @@ def test_codex_plugin_default_prompts_use_skill_syntax() -> None:
     prompts = manifest["interface"]["defaultPrompt"]
     assert prompts
     assert all(prompt.startswith("$goal-plus") for prompt in prompts)
+
+
+def test_codex_goal_plus_skills_are_explicit_only() -> None:
+    for root in (ROOT / ".codex" / "skills", ROOT / "skills"):
+        for name in ("goal-plus", "goal-plus-with-final-check", "search"):
+            metadata = root / name / "agents" / "openai.yaml"
+            assert metadata.is_file()
+            assert "allow_implicit_invocation: false" in metadata.read_text(
+                encoding="utf-8"
+            )
 
 
 def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
@@ -454,8 +466,8 @@ def test_codex_goal_plus_defers_report_until_terminal_state() -> None:
     assert "`search_report`" in goal_skill
     assert "绝不能生成中间 Goal Plus 报告" in normalized_goal_skill
     assert "只有 Goal Plus 记录达到终态" in goal_skill
-    assert "对独立 Search" in search_skill
-    assert "只在提升后调用 `search_report`" in search_skill
+    assert "不能创建 Goal Plus" in search_skill
+    assert "创建 standalone run" in search_skill
 
 
 def test_codex_final_checker_and_with_check_alias_are_read_only_and_independent() -> None:

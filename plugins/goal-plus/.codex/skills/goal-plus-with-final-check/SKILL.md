@@ -8,6 +8,8 @@ description: 运行 Goal Plus，并要求在完成前由独立 Codex 最终检�
 对 `$goal-plus-with-final-check` 使用此 skill。
 Codex 的 `UserPromptSubmit` hook 会在模型轮次开始前创建 Goal Plus 记录，并设置
 `policy.final_check.mode="required"`。
+如果隐藏 hook 上下文没有本轮 host 授权的 active `goal_plus_id`，立即停止；此 skill
+不能创建或恢复记录，也不能把自然语言请求升级为 Goal Plus。
 
 它与 `$goal-plus` 使用同一角色模型语法：真正可选择的角色是
 `annotator=B workers=C,D`。Codex 当前 session 本身就是 main；`main=` 只保留为

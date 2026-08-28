@@ -162,7 +162,7 @@ def test_user_prompt_submit_precreates_and_binds_goal(tmp_path: Path) -> None:
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
             "transcript_path": "/tmp/codex.jsonl",
-            "prompt": "/goal-plus Optimize model throughput",
+            "prompt": "$goal-plus Optimize model throughput",
         },
     )
 
@@ -180,15 +180,66 @@ def test_user_prompt_submit_precreates_and_binds_goal(tmp_path: Path) -> None:
     assert record.active_session.session_id == "session-codex"
     assert record.policy["execution"]["main_reasoning_effort"] == "max"
     assert record.policy["execution"]["host"]["native_reasoning_effort"] == "max"
+    assert record.entrypoint_status == "host_verified"
+    assert len(record.host_command_invocations) == 1
+    assert record.host_command_invocations[0].command == "$goal-plus"
+    assert record.host_command_invocations[0].transport == "codex_user_prompt_submit"
     assert record.goal_plus_id in context
-    assert "不要再次调用 goal_plus_create" in context
+    assert "skill 和 MCP 不能创建或恢复记录" in context
     assert "不要仅因 Goal Plus 处于 active 就恢复工作" in context
     assert "范围、交付物或成功标准" in context
     assert "goal_plus_update_goal" in context
-    assert "恢复前澄清有歧义的意图" in context
+    assert "$goal-plus edit <完整修订目标>" in context
     assert "当前未设置最大运行时间" in context
     assert "不要询问或等待确认" in context
     assert "告知后立即继续执行" in context
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "/goal-plus Wrong host prefix",
+        "$Goal-Plus Wrong command case",
+        "$goal-plus RESUME",
+        "$goal-plus EDIT revised goal",
+        "$goal-plus edit",
+    ],
+)
+def test_user_prompt_submit_rejects_non_exact_codex_entrypoints(
+    tmp_path: Path,
+    prompt: str,
+) -> None:
+    search_root = tmp_path / ".gp"
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "prompt": prompt,
+        },
+    )
+
+    assert "$goal-plus" in _block_reason(result)
+    assert not list((search_root / "goal-plus").glob("gp_*/goal.json"))
+
+
+def test_natural_language_goal_plus_request_does_not_create_state(tmp_path: Path) -> None:
+    search_root = tmp_path / ".gp"
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "prompt": "请帮我启动 goal-plus，并使用 goal-plus MCP。",
+        },
+    )
+
+    assert result.stdout == ""
+    assert not search_root.exists()
 
 
 def test_user_prompt_submit_displays_effective_codex_permissions(tmp_path: Path) -> None:
@@ -455,6 +506,9 @@ def test_user_prompt_submit_resume_finds_existing_parent_root(tmp_path: Path) ->
 
     context = _additional_context(result, "UserPromptSubmit")
     assert record.goal_plus_id in context
+    resumed = runtime.status(record.goal_plus_id)
+    assert resumed.entrypoint_status == "host_verified"
+    assert resumed.host_command_invocations[-1].action == "resume"
     assert not (workspace / ".gp").exists()
 
 
@@ -469,7 +523,7 @@ def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None
             "session_id": "session-codex",
             "model": "gpt-5.6-sol",
             "prompt": (
-                "/goal-plus main=openai/gpt-5.6-sol "
+                "$goal-plus main=openai/gpt-5.6-sol "
                 "annotator=gpt-5.6-terra "
                 "workers=gpt-5.6-terra,gpt-5.6-sol optimize throughput"
             ),
@@ -495,23 +549,23 @@ def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None
     ("prompt", "expected"),
     [
         (
-            "/goal-plus main=gpt-5.6-terra optimize throughput",
+            "$goal-plus main=gpt-5.6-terra optimize throughput",
             "Codex main= is an assertion, not a model selector",
         ),
         (
-            "/goal-plus model=gpt-5.6-sol optimize throughput",
+            "$goal-plus model=gpt-5.6-sol optimize throughput",
             "model= is not supported",
         ),
         (
-            "/goal-plus workers=A,B models=A,B optimize throughput",
+            "$goal-plus workers=A,B models=A,B optimize throughput",
             "workers= and models= are aliases",
         ),
         (
-            "/goal-plus annotator=A,B optimize throughput",
+            "$goal-plus annotator=A,B optimize throughput",
             "annotator= accepts exactly one model",
         ),
         (
-            "/goal-plus workers=A,,B optimize throughput",
+            "$goal-plus workers=A,,B optimize throughput",
             "contains an empty model reference",
         ),
     ],
@@ -546,7 +600,7 @@ def test_user_prompt_submit_blocks_main_mismatch_before_goal_edit(tmp_path: Path
         {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
-            "prompt": "/goal-plus optimize throughput",
+            "prompt": "$goal-plus optimize throughput",
         },
     )
     _additional_context(created, "UserPromptSubmit")
@@ -560,7 +614,7 @@ def test_user_prompt_submit_blocks_main_mismatch_before_goal_edit(tmp_path: Path
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
             "model": "gpt-5.6-sol",
-            "prompt": "/goal-plus edit main=gpt-5.6-terra optimize latency",
+            "prompt": "$goal-plus edit main=gpt-5.6-terra optimize latency",
         },
     )
 
@@ -579,7 +633,7 @@ def test_user_prompt_submit_materializes_probe_mode_in_raw_goal(tmp_path: Path) 
         {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
-            "prompt": "/goal-plus mode=probe Check whether vectorization is viable",
+            "prompt": "$goal-plus mode=probe Check whether vectorization is viable",
         },
     )
 
@@ -628,7 +682,7 @@ def test_with_final_check_precreates_required_policy(tmp_path: Path) -> None:
         {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
-            "prompt": "/goal-plus-with-final-check Ship the complete feature",
+            "prompt": "$goal-plus-with-final-check Ship the complete feature",
         },
     )
 
@@ -649,7 +703,7 @@ def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> No
         {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
-            "prompt": "/goal-plus Implement requirement A",
+            "prompt": "$goal-plus Implement requirement A",
         },
     )
     initial_context = _additional_context(initial, "UserPromptSubmit")
@@ -661,7 +715,10 @@ def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> No
         search_root,
         {"hook_event_name": "SessionStart", "session_id": "session-codex"},
     )
-    assert goal_id in _additional_context(restored, "SessionStart")
+    assert restored.stdout == ""
+    detached = FileGoalPlusRuntime(search_root).status(goal_id)
+    assert detached.active_session is not None
+    assert detached.active_session.state == "detached"
 
     edited = _run_hook(
         tmp_path,
@@ -669,7 +726,7 @@ def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> No
         {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
-            "prompt": "/goal-plus edit Implement requirements A and B",
+            "prompt": "$goal-plus edit Implement requirements A and B",
         },
     )
     edited_context = _additional_context(edited, "UserPromptSubmit")
@@ -685,6 +742,10 @@ def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> No
         "Implement requirement A\n\n" + EXPLORATION_MODE_LINES["autonomous"],
         "Implement requirements A and B\n\n"
         + EXPLORATION_MODE_LINES["autonomous"],
+    ]
+    assert [item.action for item in record.host_command_invocations] == [
+        "start",
+        "edit",
     ]
     assert "目标修订版：2" in edited_context
     assert initial_context != edited_context
@@ -850,7 +911,7 @@ def test_interrupted_codex_final_checker_must_submit_before_subagent_stop(
     assert released.stdout == ""
 
 
-def test_session_start_restores_bound_goal_context(tmp_path: Path) -> None:
+def test_session_start_detaches_bound_goal_until_explicit_resume(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     runtime = FileGoalPlusRuntime(search_root)
     record = runtime.create_goal("Optimize model throughput")
@@ -865,10 +926,10 @@ def test_session_start_restores_bound_goal_context(tmp_path: Path) -> None:
         {"hook_event_name": "SessionStart", "session_id": "session-codex"},
     )
 
-    context = _additional_context(result, "SessionStart")
-    assert record.goal_plus_id in context
-    assert "record_triage" in context
-    assert "当前未设置最大运行时间" not in context
+    assert result.stdout == ""
+    updated = runtime.status(record.goal_plus_id)
+    assert updated.active_session is not None
+    assert updated.active_session.state == "detached"
 
 
 def test_post_tool_time_advisory_only_targets_search_candidate_subagent_once(
@@ -1015,6 +1076,83 @@ def test_pre_tool_use_blocks_search_before_spec_is_ready(tmp_path: Path) -> None
         "permissionDecisionReason": "Search 工具要求先提供高置信度的冻结 spec draft。",
     }
     assert runtime.status(record.goal_plus_id).hook_counters["pre_tool_use"] == 1
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "mcp__goal-plus__goal_plus_create",
+        "mcp__goal-plus__goal_plus_record_triage",
+        "mcp__goal-plus__search_create",
+    ],
+)
+def test_pre_tool_use_denies_goal_mutation_without_exact_host_command(
+    tmp_path: Path,
+    tool_name: str,
+) -> None:
+    search_root = tmp_path / ".gp"
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "ordinary-session",
+            "tool_name": tool_name,
+            "tool_input": {},
+        },
+    )
+
+    payload = json.loads(result.stdout)
+    specific = payload["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    assert "GoalPlusEntrypointRequired" in specific["permissionDecisionReason"]
+    assert not search_root.exists()
+
+
+def test_ordinary_prompt_detaches_goal_and_requires_explicit_resume(
+    tmp_path: Path,
+) -> None:
+    search_root = tmp_path / ".gp"
+    _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "prompt": "$goal-plus Implement requirement A",
+        },
+    )
+    record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
+    goal_id = record_path.parent.name
+
+    ordinary = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "prompt": "What is the current branch?",
+        },
+    )
+    assert ordinary.stdout == ""
+    record = FileGoalPlusRuntime(search_root).status(goal_id)
+    assert record.active_session is not None
+    assert record.active_session.state == "detached"
+
+    denied = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-codex",
+            "tool_name": "mcp__goal-plus__goal_plus_record_triage",
+            "tool_input": {"goal_plus_id": goal_id},
+        },
+    )
+    assert "GoalPlusEntrypointRequired" in json.loads(denied.stdout)[
+        "hookSpecificOutput"
+    ]["permissionDecisionReason"]
 
 
 def test_pre_tool_use_ignores_unrelated_tool(tmp_path: Path) -> None:
