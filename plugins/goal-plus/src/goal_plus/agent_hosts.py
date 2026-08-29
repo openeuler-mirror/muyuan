@@ -208,42 +208,21 @@ def _pi_soft_closeout_seconds(
 
 CODEX_CLOSEOUT_MESSAGE = (
     "Worker 的截止时间临近。停止启动新工作；如有需要，最后运行一次 "
-    "search_run_verifier，写入 .tmp/handoff.json，并返回简洁摘要。"
+    "search_run_verifier，更新 .tmp/handoff.json，并返回简洁摘要。"
 )
 
-CODEX_WORKER_BOUNDARY = (
-    "你是 Search 候选 worker，不是搜索编排器。首先使用提供的 agent_session_id 调用 "
-    "search_get_agent_context；它返回紧凑历史，只有 results.tsv、Git 和紧凑字段不足以回答"
-    "旧轮次的准确 verifier 事实时，才为自己的 candidate 调用返回全量历史的 "
-    "search_list_iterations。Codex spawn_agent 不会切换 cwd；把 context.workspace 作为每次"
-    "文件和 shell 操作的显式工作目录，不要使用 host 启动目录。读取并遵循 "
-    "context.candidate_task.instructions。runtime 会在 task_skill_paths 中列出当前 worktree "
-    "自动发现的 Git-tracked task-local Skills；逐一完整读取列出的 SKILL.md，再按需读取同目录"
-    "资源。只加载这份清单，不读取 parent、global/plugin 或其他 candidate 的 Skill。"
-    "首次修改前调用 search_get_global_evidence；此后每完成 3 次 "
-    "search_run_verifier iteration 刷新一次，连续两轮没有提升或切换技术路线时提前刷新；"
-    "verifier 已注入的 global_evidence_snapshot 算作刷新。独立思考后编辑，"
-    "并为该 agent session 调用 search_run_verifier，同时用一句话 hypothesis 概括实际尝试。"
-    "不得直接运行任务自带的 `runner`、`evaluator` 或 `grader`，也不得直接执行或导入冻结 "
-    "verifier 命令来获取 score、pass/fail 或 correctness。所有正确性与指标反馈必须通过 "
-    "`search_run_verifier`，使运行时记录并结算 Evidence。可以进行不返回任务分数或通关判定的"
-    "编译、lint、静态分析和局部调试，但这些结果不能替代 verifier Evidence。"
-    "只在该候选工作区中工作。不要调用 search_plan_next、search_start_batch、"
-    "search_select、search_report 或 search_promote。不要调用任何 `goal_plus_*` 工具。"
-    "父级运行的规划、选择、报告、提升和最终审计不属于你的职责。如果 verifier 返回 "
-    "failure_class=VerifierWorkspaceSideEffect 或 candidate_action=stop_and_report，"
-    "不要清理 verifier 输出或重试；记录基础设施阻塞原因并立即返回。"
-    "process verifier 返回 keep/retain/discard/failure disposition；严格改善为 keep，同分为 retain 并成为最新基线，只有退化或失败才恢复 candidate-local best；"
-    "不要自行 reset、restore 或 checkout verifier-backed 状态。"
+WORKER_BOUNDARY = (
+    "你是 Search 候选 worker，不是搜索编排器。首先使用提供的 agent_session_id "
+    "调用 search_get_agent_context，以返回的 candidate_task 为当前工作契约：只在其中指定的 "
+    "workspace 工作，遵守可修改范围和 instructions。独立选择候选内的技术方向；规划、创建"
+    "其他 candidate、最终选择、报告和 promotion 属于父 agent。"
 )
 
 
-def _codex_worker_contract(worker_prompt: str | None) -> str:
+def _worker_contract(worker_prompt: str | None) -> str:
     """Keep the portable worker boundary even when agent metadata is hidden."""
     prompt = (worker_prompt or "").strip()
-    if not prompt or prompt == CODEX_WORKER_BOUNDARY:
-        return CODEX_WORKER_BOUNDARY
-    return f"{CODEX_WORKER_BOUNDARY}\n\n{prompt}"
+    return prompt or WORKER_BOUNDARY
 
 
 def _codex_budget_control(
@@ -427,7 +406,7 @@ class CodexAdapter:
         worker_prompt: str | None = None,
     ) -> dict[str, Any]:
         task_name = _codex_task_name(agent_session_id)
-        worker_contract = _codex_worker_contract(worker_prompt)
+        worker_contract = _worker_contract(worker_prompt)
         payload = {
             "tool": "spawn_agent",
             "task_name": task_name,
@@ -645,18 +624,11 @@ class PiRpcAdapter:
         if resume:
             labels = "continue_existing_agent_session=true; " + labels
             return (
-                "继续当前 Candidate 原生会话。调用 search_get_agent_context 获取当前紧凑权威"
-                "状态；沿用会话中已加载的 Evidence。"
-                "这条 launch 消息开始一次新的 host 派发。原生会话中更早的 deadline、"
-                "closeout 或 time-advisory 消息属于上一次派发，已不再生效。"
-                "只遵守本次 launch 之后收到的警告。"
-                "在收到本次 closeout 或 deadline 警告前，不要仅因公开指标达到上限、"
-                "当前没有未验证改动或出现同分而结束本次派发。"
-                "至少完成一个实质性的泛化、反例、结构边界或简化 probe 并用 verifier "
-                "验证；同分保留或回滚的 Evidence 仍有信息价值。"
+                "继续当前 Candidate 会话。沿用已加载的运行时上下文和 Evidence；"
+                "继续自主选择有证据支持的方向，并验证每项实质变更。"
                 f"\n\nLaunch 标签：{labels}"
             )
-        header = (worker_prompt or "首先调用 search_get_agent_context。").strip()
+        header = _worker_contract(worker_prompt)
         return f"{header}\n\nLaunch 标签：{labels}"
 
     def build_launch_payload(

@@ -120,17 +120,24 @@ worker，再冻结修正后的 spec，创建 successor run。旧分数不能跨�
 
 每条 candidate lane 使用以下协议：
 
-1. 首次启动或跨进程恢复时调用 `search_get_agent_context`，读取自己的权威状态、最佳轮次和
-   最近三轮；同进程 continuation 沿用已加载上下文。完整自身历史保留在 `results.tsv`、Git
-   和按需使用的 `search_list_iterations` 中，不随恢复默认回灌。
-2. 首次修改前调用 `search_get_global_evidence`，此后按周期或停滞节点刷新当前 run 的共享视图。
-3. 独立选择方向，只修改自己的工作区。
+1. 首次启动或 fresh session 恢复时调用 `search_get_agent_context`，读取自己的权威状态和
+   `candidate_task` contract；同一 session continuation 沿用已加载上下文。
+2. 按冻结模式使用 Evidence：`manual` 在首次修改前读取并周期刷新 Global Evidence；`auto`
+   使用 verifier 返回时自动注入的共享快照；`independent` 不向 worker 注入 peer Evidence。
+3. 独立选择方向，交付修改限于自己的 `allowed_files`；`.tmp/` 可用于 candidate-local 临时状态。
 4. 启用 `shared_dir` 时回顾本轮及此前 iteration 的命令序列、临时代码片段和 scratch
    scripts。命中正向工具化信号时，从 `.tmp/tool-drafts/` 显式选择源文件并调用
    `search_stage_shared_tool`；否则记录具体排除项。
 5. 调用 `search_run_verifier`，用一句 `hypothesis` 描述实际完成的尝试，并在启用
    `shared_dir` 时传入 `toolization_decision`。
 6. 从 verifier settlement 返回后的工作区继续。
+
+工作区内的文件都对 worker 可读，可用于导入、profile 和本地诊断；交付修改限于
+`candidate_task.allowed_files`，`denied_files` 与冻结 verifier 资产保持只读。Runtime 提供的
+`.tmp/` 是 edit surface 之外的 candidate-local 可写临时区，用于 scratch、恢复 handoff，以及
+启用 `shared_dir` 时的工具草稿。本地命令输出只是分析材料，只有 `search_run_verifier` 返回的
+结果进入正式 Evidence。Runtime 根据该 run 的实际 Evidence、supplemental evaluation 与
+`shared_dir` 开关生成 `candidate_task.instructions`；静态 Codex/Pi worker prompt 不描述未启用的能力。
 
 candidate 不需要在修改前提交 iteration plan。`hypothesis` 是完成尝试后的事实性
 自述，与 verifier 结果一起保存；它不是 pending plan，也不形成协调锁。多个

@@ -3861,19 +3861,7 @@ class FileSearchRuntime:
         prompt_path = repository_root / ".pi" / "prompts" / "search-candidate-worker.md"
         if prompt_path.exists():
             return prompt_path.read_text(encoding="utf-8")
-        return (
-            "首先调用 search_get_agent_context；它只返回紧凑历史。只有紧凑字段、results.tsv "
-            "和 Git 无法回答旧轮次的准确 verifier 事实时，才为自己的 candidate 调用 "
-            "search_list_iterations。只能在候选工作区中工作。"
-            "首次编辑前读取 search_get_global_evidence；此后每完成 3 次 verifier iteration "
-            "刷新一次，连续两轮没有提升或切换技术路线时提前刷新；verifier 已注入的 "
-            "global_evidence_snapshot 算作刷新。修改后带一句话 hypothesis 调用 "
-            "search_run_verifier。不得直接运行任务自带的 `runner`、`evaluator` 或 `grader`；"
-            "所有正确性与指标反馈必须通过 `search_run_verifier`。使用运行时证据，不要依赖 "
-            "transcript。"
-            "如果 verifier 报告 VerifierWorkspaceSideEffect 或 "
-            "candidate_action=stop_and_report，报告基础设施阻塞原因并直接返回，不要重试。"
-        )
+        return None
 
     def _next_plan_id(self, run: RunRecord) -> str:
         plan_id = f"plan_{run.next_plan_index:03d}"
@@ -4002,28 +3990,37 @@ class FileSearchRuntime:
         )
 
         instructions = [
-            "只能在此候选工作区内工作。",
-            "不要把 host 启动目录当作候选 cwd。host launch 不保证切换 cwd；每次文件或 shell 操作都显式使用 context.workspace。",
-            "使用此工作区的 .tmp/ 目录存放笔记和临时草稿。",
-            "不要使用 /tmp、home 目录或候选工作区之外的路径处理候选工作。",
-            "只能修改 allowed_files 中列出的文件；绝不能触碰 denied_files 或冻结的 verifier 产物。",
-            "不要删除、移动或清理文件；禁止 rm、mv、rmdir、unlink、trash 和 find -delete 等破坏性命令。",
-            "使用 git status、git diff 和 git log 分析工作区；runtime 拥有 verifier-backed iteration 的提交和回滚，不要自行 reset、restore 或 checkout 已验证状态。",
-            "所有评分都必须通过 search_run_verifier；不要通过 bash 直接运行 process_verifiers 命令，也不要自行编写评分器。",
-            "首次修改前调用 search_get_global_evidence；此后无需每轮读取，每完成 3 次 search_run_verifier iteration 刷新一次，连续两轮没有提升或准备切换技术路线时提前刷新。若 verifier 返回 global_evidence_injected=true，其中的 global_evidence_snapshot 已完成本次刷新，无需重复调用。结合 Evidence 和本地代码独立思考，不需要等待尚未生成的 View。",
-            "把 context.agent_session_id 传给 search_run_verifier，并省略 scope 以使用 process verifier；同时用一句话 hypothesis 客观概括本轮实际尝试。",
-            "每次 run_verifier 调用都会记录一个 iteration。在配置的 host 预算内工作。尽早完成并验证候选，在达到限制前停止启动新的优化 iteration，并留出足够时间返回简洁摘要。",
-            "search_run_verifier 会在运行 verifier 前自动提交已修改的候选产物文件；使用 git status、git diff 和 git log 检查 iteration provenance。",
-            "process verifier 返回 keep/retain/discard/failure disposition；严格硬分改善为 keep，同分为 retain 并成为 candidate-local 最新基线，只有退化或验证失败时 runtime 才恢复此前硬分最佳。开放式补充评价和 peer 比较不改变结算、硬分或最终验收。下一轮直接从返回后的已结算工作区继续。",
-            "规划另一个变体前，检查 workspace/results.tsv 中继承的 iteration 日志。运行时拥有并提交这份仅追加账本，会验证已有记录未被修改，并为每份返回的 verifier 报告添加且只添加一条记录；绝不能重写、截断、删除或手动追加它。",
-            "按 context.supplemental_evaluation_enabled 和 Evidence 的 supplemental_available 标记按需读取一次 search_get_evidence_detail；补充评价不参与结算。仅在当前 Git 能解析该 commit 且代码证据必要时用 git diff HEAD <commit> -- <allowed-file> 做只读比较；不要访问或 fetch peer workspace，也不要 checkout/reset peer commit。",
+            "candidate_task.workspace 是当前候选工作区；工作区内的所有文件都可读取和分析。",
+            "交付修改仅限 candidate_task.allowed_files。candidate_task.denied_files 和冻结的 verifier 资产保持只读，但可读取、导入和 profile。",
+            "workspace/.tmp/ 是 runtime 提供的 candidate-local 可写临时区，不属于交付 edit surface；可用于 scratch，并在计划变化或收尾前用简短 JSON 更新 .tmp/handoff.json，供后续恢复。",
+            "可在不修改只读文件的前提下，运行候选工作区内的测试、runner、evaluator 及其他本地诊断；这些输出仅用于分析，只有 search_run_verifier 返回的结果会被记录和结算为正式 Evidence。",
+            "每项实质变更后，使用当前 agent_session_id 调用 search_run_verifier，并用一句话 hypothesis 描述实际尝试。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
+            "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
+            "在分配的 host budget 内工作；收到用户停止、run 失效或 host 截止提示时及时收尾。",
         ]
+        if "success_threshold" in frozen.spec.constraints:
+            instructions.append(
+                "达到 success_threshold 表示用户目标已经满足，不会强制中断当前 iteration；若剩余预算足以完成一轮有价值的修改和验证，可继续优化，否则正常收尾。"
+            )
+        evidence_mode = self._global_evidence_mode(frozen.spec.strategy.config)
+        if evidence_mode == "manual":
+            instructions.append(
+                "Global Evidence 使用 manual 模式：首次修改前调用 search_get_global_evidence；此后每完成 3 次 search_run_verifier 刷新一次，连续两轮没有提升或准备切换技术路线时提前刷新。"
+            )
+        elif evidence_mode == "auto":
+            instructions.append(
+                "Global Evidence 使用 auto 模式：每次 search_run_verifier 返回的 global_evidence_snapshot 已自动注入最新共享 View，直接使用该快照继续。"
+            )
+        if frozen.supplemental_evaluation_enabled:
+            instructions.append(
+                "开放式补充评价已启用；仅对 Evidence 中 supplemental_available=true 且确需深挖的条目调用 search_get_evidence_detail。补充评价不是硬分或 promotion gate。"
+            )
         if task_skill_paths:
             instructions.append(
                 "当前 worktree 可见的 Git-tracked task-local Skills: "
                 f"{format_task_skill_listing(task_skill_paths)}。逐一完整读取这些 "
-                "SKILL.md，再按需读取各自目录内的相对"
-                "资源并显式遵循；不要读取 parent、global/plugin 或其他 candidate 的 Skill。"
+                "SKILL.md，再按需读取各自目录内的相对资源并显式遵循；不要读取 "
+                "parent、global/plugin 或其他 candidate 的 Skill。"
             )
         else:
             instructions.append(
@@ -4037,20 +4034,10 @@ class FileSearchRuntime:
             share_out_dir.mkdir(parents=True, exist_ok=True)
             instructions.extend(
                 [
-                    "shared_dir 发布方规则：工具化的目标是降低同一 run 内其他 candidate 重建诊断、验证或检查流程的成本，不要求跨项目通用。每次 verifier 前回顾本轮及此前 iteration 的命令序列、临时代码片段、测试代码和 scratch scripts。能在 peer workspace 运行、不依赖当前 candidate 临时私有状态，并命中至少一个正向信号时，默认提炼为最小工具：repeated_workflow（等价多步命令/操作流程至少两次）、domain_construction_or_probe（非显然领域对象/状态构造、边界、配置或兼容性探测）、behavior_or_invariant_checker（功能验证函数、断言集合或正确性、性能、资源及状态不变量检查）、reproducer_fixture_or_case_generator（最小复现、fixture、输入、corpus 或 case 生成）、parser_trace_or_comparator（解析/转换、trace/日志归一化、差分/状态比较、mutation 或失败分析）、peer_setup_or_feedback_reduction（setup/cleanup、环境 harness 或明显缩短 peer 本地反馈循环）。",
-                    "测试代码按用途而不是文件名分类。搜索期间临时创建的测试文件，以及 candidate 自己编写并纳入最终交付或主补丁的正式回归测试、配套 fixture/case generator、功能验证函数、差分或不变量检查，都可以作为共享工具；不得仅因使用测试框架、文件名以 test_ 开头、属于正式测试或验证同一目标行为而把它们视为 restricted_artifact。发布时仍须将显式选择的测试及依赖复制到 tool drafts，并确保它能在 peer workspace 运行且不依赖 candidate 私有临时状态。restricted_artifact 只包括 candidate 产品实现、冻结 verifier/runner/grader、隐藏答案或评分逻辑，以及日志、原始数据、凭据和构建输出；共享测试不得复制、代理或近似重建隐藏反馈。",
-                    f"将显式源文件放在 {TOOL_DRAFTS_RELATIVE_PATH}/，再调用 search_stage_shared_tool 生成 {SHARE_OUT_RELATIVE_PATH}/ staging。首次发布使用 publication_intent=new 并保持低门槛，不要因为工具短、任务专属、来自 inline code 或只产生退出码而拒绝。更新已有 family 前读取 tool_family_catalog；仅当 revision_allowed=true 时，引用 revision_head.tool_id 作为 supersedes_tool_id。capability_extension 必须新增至少一个稳定的 capability_ids/coverage_keys；adoption_fix 必须有同 family 的真实 copy/adoption 事实及其暴露的具体缺陷；contract_change 必须为有价值的入口、输入、输出或依赖变化新增至少一个稳定的 capability/coverage 契约键。键是可机器比较的语义标识，不能靠改名或改写同义键制造增量。纯改名、重排或同义断言不得发布。",
-                    "排除项必须具体：no_toolizable_material 表示回顾本轮及此前尚未发布的材料后确实没有工具；它与已有 family 没有实质 revision 增量不同。revision_allowed=false 时使用 revision_blocker 的准确值（例如 max_published_versions_reached）；existing_family_sufficient 仅表示 revision_head 已覆盖该 peer 需求；no_material_tool_delta 仅用于已有 shared-tool family，表示没有新增稳定键、adoption 证据支持的缺陷修复或结构化契约增量。runtime 会拒绝首次发布阶段使用这些 revision-only 排除项。draft_not_ready 仅表示存在具体的安全性、完整性、可移植性或 peer 可运行性阻塞，工具短、任务专属、来自 inline code 或尚未润色都不构成该排除项。",
-                    "每次归属于当前 worker 的 process verifier 都提交 toolization_decision。staged 至少列出一个正向 signal 和实际 tool_names；not_applicable 必须给出具体 exclusion，不能只写不可复用。runtime 以 staging inventory 和 publication settlement 为权威；决策缺失或与 staging 不匹配只生成 monitor/report advisory，不改变 score、disposition、selection 或 promotion。",
-                    "shared_dir 采用方规则：工具只有在 annotator 生成并由 runtime 绑定 Tool View 后才会出现在 Global Evidence。Tool View 只用于发现和初筛，不规定复用方式，也不是采用建议；不要仅凭 Tool View 推断源码行为。",
-                    "若工具可能相关，通过 search_copy_shared_tool 和准确的 tool_id、snapshot_hash 复制精确快照。复制本身不要求调用原工具；先阅读 manifest、入口和源码，再自行决定直接执行或导入、提取并改写局部逻辑、复用诊断方法、作为实现对照，或不采用；这些示例不限制其他合理方式。",
-                    "只有直接执行、导入或把原快照作为运行时依赖时，才在使用前验证其入口、依赖、路径假设和输出语义；只读分析或改写源码不要求先运行原工具，最终 candidate 修改仍由正常 process verifier 验证。下一次 verifier 会原子消费复制 receipt；当前 adopted_tools 只证明该快照曾复制进本轮上下文，不证明原工具被执行或其代码被保留，也不改变 score、disposition、selection 或 promotion。",
+                    f"shared_dir 已启用。可复用的诊断、测试或分析流程先放入 {TOOL_DRAFTS_RELATIVE_PATH}/，再用 search_stage_shared_tool 发布；不要发布 candidate 产品实现、冻结评分逻辑、凭据或构建输出。",
+                    "每次 search_run_verifier 都提交与实际 staging 一致的 toolization_decision；没有可共享内容时给出具体原因。",
+                    "通过 Global Evidence 发现共享工具；需要源码时用 search_copy_shared_tool 复制准确快照到本地，检查后自主决定是否复用。共享工具及其 View 不改变正式 Evidence、排名或 promotion。",
                 ]
-            )
-        if plan.worker_policy.get("worker_agent_type"):
-            instructions.append(
-                "对受管 agent session 使用 "
-                f"worker_agent_type={plan.worker_policy['worker_agent_type']!r}。"
             )
         instructions.extend(proposal.instructions)
 

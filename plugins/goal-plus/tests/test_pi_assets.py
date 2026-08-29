@@ -224,97 +224,23 @@ def test_pi_goal_plus_skill_documents_parallel_loop_policy() -> None:
     assert "macro_restart" not in text
 
 
-def test_pi_worker_prompt_requires_runtime_context_and_verifier() -> None:
+def test_pi_worker_prompt_defers_to_runtime_candidate_contract() -> None:
     text = (ROOT / ".pi" / "prompts" / "search-candidate-worker.md").read_text(
         encoding="utf-8"
     )
 
-    assert "search_get_agent_context" in text
-    assert "context.workspace" in text
-    assert "task_skill_paths" in text
-    assert "Git-tracked task-local Skills" in text
-    assert "其他" in text
-    assert "candidate 中的 Skill" in text
-    assert "context.recent_iterations" in text
-    assert "context.best_iteration" in text
-    assert "可能很大的全量历史" in text
-    assert "search_list_iterations" in text
-    assert "candidate_task.share_out_dir" not in text
-    assert "search_stage_shared_tool" not in text
-    assert "search_copy_shared_tool" not in text
-    assert "toolization_decision" not in text
-    assert "required-column-probe" not in text
-    assert "mutation-check-trace" not in text
-    assert "Astropy" not in text
-    assert "search_get_global_evidence" in text
-    assert "每完成 3 次 `search_run_verifier` iteration 刷新一次" in text
-    assert "global_evidence_snapshot` 已完成本次刷新" in text
-    assert "search_submit_iteration_plan" not in text
-    assert "search_run_verifier" in text
-    assert "不得直接运行任务自带的 `runner`、`evaluator` 或 `grader`" in text
-    assert "所有正确性与指标反馈必须通过 `search_run_verifier`" in text
-    assert "workspace/results.tsv" in text
-    assert "且只追加一条已验证" in text
-    assert "view=null" in text
-    assert "hypothesis" in text
-    assert "git diff HEAD <commit> -- <allowed-file>" in text
-    assert "当前 Git 能解析该 commit" in text
-    assert "不要访问或 fetch peer workspace" in text
-    assert "尽早创建完整候选产物" in text
-    assert "任何长优化循环前" in text
-    assert "一条自主 Pi Search 循环" in text
-    assert "不要等待主 agent" in text
-    assert "最低时间与 verifier 次数在这些派发间累计" in text
-    assert ".tmp/handoff.json" in text
-    assert "key_results" in text
-    assert "pitfalls" in text
-    assert "condition" in text
-    assert "failed_approach" in text
-    assert "把分配的候选思路当作假设" in text
-    assert "把任何有希望的方向" in text
-    assert "不要自行 reset" in text
-    assert "disposition" in text
-    assert "固定产物数量" in text
-    assert "理论或结构限制" in text
-    assert "公开指标饱和" in text
-    assert "同分保留或回滚的 Evidence" in text
-    assert "补充评价仍保留在 Global Evidence" in text
-    assert "10-15 distinct verifier-recorded artifacts" not in text
-    assert "verifier 是评估器，不是分析服务" in text
-    assert (
-        "更早派发中的 deadline、closeout 和 time-advisory 消息都只是历史"
-    ) in text
-    assert "next_steps" in text
-    assert "verifier_assessment" in text
-    assert "code_surface" in text
-    assert "measured_effect" in text
-    assert "portability" in text
-    assert "relation_to_incumbent" in text
-    assert "candidate_local" in text
-    assert "feature_family" in text
-    assert "evaluation_contract" in text
-    assert "single_observation" in text
-    assert "先编辑允许的候选产物" in text
-    assert "验证未修改的初始状态" in text
-    assert "先记录一个有效 baseline iteration" not in text
-    assert '`run_id`、`candidate_id`、你的 `agent_session_id`' in text
-    assert '`scope="process"`' not in text
-    assert "停止启动新的优化 iteration" in text
-    assert "最终 verifier" in text
-    assert "工具结果后的时间提示仅供参考" in text
-    assert "以直接读取和运行时上下文为准" in text
-    assert "只能在候选工作区中工作" in text
-    assert "运行时历史" in text
-    assert "原生会话上下文可以保留推理" in text
-    assert "绝不能覆盖持久化运行时证据" in text
-    assert '因 `stopReason="length"` 结束且没有 tool call' in text
-    assert "避免继承被截断的 thinking 上下文" in text
-    assert "刷新不会重置累计值" in text
-    assert "VerifierWorkspaceSideEffect" in text
-    assert "VerifierDeadlineInsufficient" in text
-    assert "candidate_action=stop_and_report" in text
-    assert "立即返回" in text
-    assert "candidate-local analysis scripts" not in text
+    for expected in (
+        "search_get_agent_context",
+        "candidate_task",
+        "未列出的可选能力",
+    ):
+        assert expected in text
+    for runtime_detail in (
+        "search_get_global_evidence",
+        "supplemental",
+        "shared_dir",
+    ):
+        assert runtime_detail not in text
 
 
 def test_pi_workspace_schema_needs_no_task_skill_configuration() -> None:
@@ -674,16 +600,12 @@ def test_pi_assets_use_open_posthoc_evaluation_as_non_gating_feedback() -> None:
     skill = (ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    worker = (ROOT / ".pi" / "prompts" / "search-candidate-worker.md").read_text(
-        encoding="utf-8"
-    )
-    combined = "\n".join((skill, worker))
 
     assert "软 rubric 或预设评价维度" in skill
     assert "开放式补充评价发生在每次 Evidence 结算之后" in skill
-    assert "不来自 FrozenSpec" in combined
-    assert "动态比较" in combined
-    assert "不改变结算、硬 score 或最终 PASS/FAIL" in combined
+    assert "不来自\nFrozenSpec" in skill
+    assert "动态比较" in skill
+    assert "不改变结算、硬 score 或最终 PASS/FAIL" in skill
 
 
 def test_pi_docs_record_runner_logs_and_native_stop_gate() -> None:

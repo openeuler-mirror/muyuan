@@ -163,9 +163,10 @@ candidate/subagent 数。
 3. 为每条初始循环提供足够的不间断时间，以创建真实产物和 verifier 证据。
 4. 冻结 spec 时根据外层预算和最终收尾预留设置 worker 预算，绝不能根据主 agent
    是否喜欢该候选来决定。
-5. 没有全局停止事实时继续恢复。Pi pool 的有效最低 lease 和 closeout 边界只由
-   supervisor 判定；主 agent 不得使用 spec 中配置的 `min_runtime_seconds` 再次推算
-   提前关闭时间。
+5. 达到 `success_threshold` 表示用户目标已经满足，不强制立即中断当前工作。若仍有可验证的
+   下一步，且外层剩余时间足以容纳另一个完整 worker 轮次和最终收尾，则继续优化；否则正常
+   收尾。Pi pool 的有效最低 lease 和 closeout 边界只由 supervisor 判定；主 agent 不得使用
+   spec 中配置的 `min_runtime_seconds` 再次推算提前关闭时间。
 
 subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁移、结构重启和 rebase 决策。
 主 agent 绝不发送偏好的技术方向。低分、一次没有改进的迭代或其他候选领先，
@@ -250,7 +251,9 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
 11. 执行原始目标审计。评估/编辑契约仍充分时保留同一个 run。新 incumbent 或低性能路线
     绝不会开启替代 run。只有具体 spec/契约修订或不同的可度量子问题才能创建后继项，
     并使用 `source_run_id`；继承分数在重新验证前仍只是历史。
-12. 执行最终原始目标审计。普通记录使用 `goal_plus_set_status` 完成。如果
+12. 执行最终原始目标审计。配置了 `success_threshold` 时，最终最佳分数必须达到它才能
+    将记录标记为成功；预算结束但未达标时保留最佳产物，不得声称验收通过。普通记录使用
+    `goal_plus_set_status` 完成。如果
     `policy.final_check.mode="required"`，则：
     - 调用 `goal_plus_prepare_final_check(checker_host="pi")`
     - 把准确返回的 `launch` 对象传给 `pi_goal_plus_run_final_check`
