@@ -31,6 +31,9 @@ REPORT_SCHEMA_VERSION = 1
 REPORT_DOCUMENT_SCHEMA_VERSION = 1
 STOP_HOOK_EVENT_NAMES = ("Stop", "SubagentStop")
 STOP_HOOK_DECISIONS = ("block", "allow", "skipped", "error", "unknown")
+PLATFORM_STOP_CLOSEOUT_MARKER = (
+    "fenced by user platform-stop closeout after search promotion"
+)
 
 
 _REPORT_CSS = """
@@ -1017,6 +1020,7 @@ def _status_class(value: Any) -> str:
         "success",
         "budget_reached",
         "completed_in_finalization_grace",
+        "closeout_exempt",
         "terminal-allow",
     }:
         return "success"
@@ -1062,6 +1066,14 @@ def _status_class(value: Any) -> str:
 
 def _status(value: Any) -> str:
     return f'<span class="status {_status_class(value)}">{_html(value)}</span>'
+
+
+def _reported_view_state(item: dict[str, Any]) -> str:
+    state = str(item.get("view_state") or "not_requested")
+    error = str(item.get("view_error") or "").casefold()
+    if state == "terminal_error" and PLATFORM_STOP_CLOSEOUT_MARKER in error:
+        return "closeout_exempt"
+    return state
 
 
 def _finite_float(value: Any) -> float | None:
@@ -3446,6 +3458,7 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
             **iteration,
             "candidate_id": candidate.get("candidate_id"),
             "candidate_selected": bool(candidate.get("selected")),
+            "view_state": _reported_view_state(iteration),
         }
         for candidate in task.get("candidates") or []
         for iteration in candidate.get("iterations") or []
@@ -3538,6 +3551,8 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
     def published_tool_views(item: dict[str, Any]) -> str:
         if item.get("evidence_source"):
             return '<div class="evidence-view-empty">Not applicable</div>'
+        if item.get("view_state") == "closeout_exempt":
+            return '<div class="evidence-view-empty">Closeout-exempt</div>'
         views = item.get("published_tool_views")
         if not isinstance(views, list) or not views:
             return '<div class="evidence-view-empty">None published</div>'
@@ -3609,6 +3624,13 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
     def toolization_review(item: dict[str, Any]) -> str:
         if item.get("evidence_source"):
             return '<div class="evidence-view-empty">Not applicable</div>'
+        if item.get("view_state") == "closeout_exempt":
+            return (
+                '<div class="evidence-tool">'
+                '<div class="evidence-view-empty">Closeout-exempt</div>'
+                '<div class="evidence-tool-detail">Decision evidence preserved; '
+                "supplemental review not required</div></div>"
+            )
         decision = item.get("toolization_decision")
         advisories = item.get("toolization_advisories") or []
         staged_entries = item.get("shared_tool_staged_entries") or []
@@ -3662,13 +3684,21 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
         tool_view_copy = published_tool_views(item)
         toolization_copy = toolization_review(item)
         adoption_copy = tool_adoption_summary(item)
+        closeout_exempt = view_state == "closeout_exempt"
         view_copy = (
             f'<div class="evidence-view-copy">{_html(view)}</div>'
             if view
-            else '<div class="evidence-view-empty">Not published</div>'
+            else (
+                '<div class="evidence-view-empty">Decision evidence covered</div>'
+                if closeout_exempt
+                else '<div class="evidence-view-empty">Not published</div>'
+            )
         )
         view_error = (
-            f'<div class="evidence-view-error">{_html(item.get("view_error"))}</div>'
+            '<div class="evidence-view-monitor">Supplemental View omitted by '
+            "normal platform-stop closeout.</div>"
+            if closeout_exempt
+            else f'<div class="evidence-view-error">{_html(item.get("view_error"))}</div>'
             if item.get("view_error")
             else ""
         )
@@ -3737,11 +3767,12 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
         "<div data-evidence-view>"
         '<div class="evidence-view-toolbar no-print">'
         '<div class="evidence-view-summary">'
-        f"<span><strong>{_html(len(local_rows))}</strong>Settled iterations</span>"
+        f"<span><strong>{_html(len(local_rows))}/{_html(len(local_rows))}</strong>Decision evidence covered</span>"
         f"<span><strong>{_html(published)}</strong>Views published</span>"
         f"<span><strong>{_html(len(official_rows))}</strong>Official evaluations</span>"
         f'<span><strong>{_html(state_counts.get("pending", 0))}</strong>Pending</span>'
-        f'<span><strong>{_html(state_counts.get("terminal_error", 0))}</strong>Terminal errors</span>'
+        f'<span><strong>{_html(state_counts.get("closeout_exempt", 0))}</strong>Closeout-exempt</span>'
+        f'<span><strong>{_html(state_counts.get("terminal_error", 0))}</strong>Annotation errors</span>'
         "</div>"
         '<div class="evidence-view-filters">'
         '<label class="evidence-view-filter"><span>Candidate</span>'
@@ -3761,8 +3792,9 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
         "<th>Toolization Review</th><th>Published Tool View</th>"
         "<th>Tool Adoption Summary</th><th>Revision</th>"
         f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
-        '<p class="footnote">Worker attempt is the candidate-authored settled hypothesis. '
-        "Objective View is the immutable best-effort annotation bound to the exact candidate, "
+        '<p class="footnote">Decision evidence coverage counts durable verifier-backed iteration settlement. '
+        "Worker attempt is the candidate-authored settled hypothesis. Objective View is the immutable "
+        "best-effort supplemental annotation bound to the exact candidate, "
         "iteration, and revision; missing Views are not inferred from worker text. Published "
         "Toolization Review compares the worker decision with the authoritative staging and "
         "publication facts; its advisories do not affect scoring or settlement. Published "

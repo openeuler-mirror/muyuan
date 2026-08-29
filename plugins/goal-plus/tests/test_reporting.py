@@ -579,7 +579,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     assert "Injected evidence" in html
     assert "Detail reads" in html
     assert "Shared Evidence View" in html
-    assert "Settled iterations" in html
+    assert "Decision evidence covered" in html
     assert "Views published" in html
     assert "Official evaluations" in html
     assert "<strong>2</strong>Official evaluations" in html
@@ -747,6 +747,58 @@ def test_shared_evidence_view_does_not_substitute_worker_text_for_missing_view()
     assert html.count("data-evidence-row") == 2
     assert 'data-view-state="terminal_error"' in html
     assert 'data-view-state="completed"' in html
+
+
+def test_shared_evidence_view_treats_platform_stop_closeout_as_covered() -> None:
+    html = _render_shared_evidence_view(
+        {
+            "candidates": [
+                {
+                    "candidate_id": "c001",
+                    "selected": True,
+                    "iterations": [
+                        {
+                            "iteration": 1,
+                            "agent_session_id": "agent_001",
+                            "score": 12,
+                            "disposition": "keep",
+                            "hypothesis": "Settled before closeout.",
+                            "git_head": "a" * 40,
+                            "created_at": "2026-01-01T00:00:00Z",
+                            "view": None,
+                            "view_state": "terminal_error",
+                            "view_error": (
+                                "PermanentAnnotationError: fenced by user "
+                                "platform-stop closeout after Search promotion"
+                            ),
+                        },
+                        {
+                            "iteration": 2,
+                            "agent_session_id": "agent_001",
+                            "score": 10,
+                            "disposition": "keep",
+                            "hypothesis": "Settled with a real annotation failure.",
+                            "git_head": "b" * 40,
+                            "created_at": "2026-01-01T00:01:00Z",
+                            "view": None,
+                            "view_state": "terminal_error",
+                            "view_error": "TransientAnnotationError: request timed out",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert "<strong>2/2</strong>Decision evidence covered" in html
+    assert "<strong>1</strong>Closeout-exempt" in html
+    assert "<strong>1</strong>Annotation errors" in html
+    assert 'data-view-state="closeout_exempt"' in html
+    assert 'data-view-state="terminal_error"' in html
+    assert "Supplemental View omitted by normal platform-stop closeout." in html
+    assert "Decision evidence preserved; supplemental review not required" in html
+    assert "PermanentAnnotationError: fenced by user" not in html
+    assert "TransientAnnotationError: request timed out" in html
 
 
 def test_loop_agent_statistics_distinguish_productive_and_stalled_tails() -> None:
