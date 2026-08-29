@@ -796,7 +796,7 @@ def test_git_tracked_task_skills_are_discovered_in_each_candidate_worktree(
             for instruction in task.instructions
         )
         assert all("Codex" not in instruction for instruction in task.instructions)
-        assert "Codex spawn_agent 不会切换 cwd" in session.launch["message"]
+        assert "candidate_task" in session.launch["message"]
         assert "task_local_skills_visible: review=" in session.launch["message"]
         assert str(expected_skill) in session.launch["message"]
         assert "untracked" not in session.launch["message"]
@@ -1036,6 +1036,8 @@ def test_worker_policy_documents_host_launch_contract(tmp_path: Path) -> None:
     assert tasks[0].allowed_files == ["initial_program.py"]
     assert tasks[0].denied_files == ["evaluator.py", "config.yaml"]
     assert "以 verifier 返回后的工作区状态为准" in combined_instructions
+    assert "不会进入 Global Evidence、被其他 worker 看到或参与最终选择" in combined_instructions
+    assert "贡献给共享搜索" in combined_instructions
     assert ".tmp/handoff.json" in combined_instructions
     assert "不属于交付 edit surface" in combined_instructions
     assert "success_threshold" not in combined_instructions

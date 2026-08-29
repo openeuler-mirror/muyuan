@@ -3991,10 +3991,11 @@ class FileSearchRuntime:
 
         instructions = [
             "candidate_task.workspace 是当前候选工作区；工作区内的所有文件都可读取和分析。",
+            "host launch 不保证切换 cwd；每次文件和 shell 操作都显式使用 candidate_task.workspace。",
             "交付修改仅限 candidate_task.allowed_files。candidate_task.denied_files 和冻结的 verifier 资产保持只读，但可读取、导入和 profile。",
             "workspace/.tmp/ 是 runtime 提供的 candidate-local 可写临时区，不属于交付 edit surface；可用于 scratch，并在计划变化或收尾前用简短 JSON 更新 .tmp/handoff.json，供后续恢复。",
-            "可在不修改只读文件的前提下，运行候选工作区内的测试、runner、evaluator 及其他本地诊断；这些输出仅用于分析，只有 search_run_verifier 返回的结果会被记录和结算为正式 Evidence。",
-            "每项实质变更后，使用当前 agent_session_id 调用 search_run_verifier，并用一句话 hypothesis 描述实际尝试。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
+            "可在不修改只读文件的前提下，运行候选工作区内的测试、runner、evaluator 及其他本地诊断；这些结果只属于当前 candidate，不会进入 Global Evidence、被其他 worker 看到或参与最终选择。",
+            "每项实质变更后，及时使用当前 agent_session_id 调用 search_run_verifier，并用一句话 hypothesis 描述实际尝试；只有其返回结果会结算为正式 Evidence 并贡献给共享搜索。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
             "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
             "在分配的 host budget 内工作；收到用户停止、run 失效或 host 截止提示时及时收尾。",
         ]
