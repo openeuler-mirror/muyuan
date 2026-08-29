@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -42,3 +43,51 @@ def test_codex_natural_language_request_cannot_start_goal_plus(
     assert result.returncode == 0, result.log_path
     assert "GoalPlusEntrypointRequired" in result.stdout, result.log_path
     assert not runtime_root.exists(), result.log_path
+
+
+def test_codex_exact_host_command_can_start_and_complete_goal_plus(
+    st_project_root: Path,
+    st_log_dir: Path,
+) -> None:
+    runtime_root = st_project_root / ".gp"
+    shutil.rmtree(runtime_root, ignore_errors=True)
+    probe = st_project_root / "entrypoint-probe.txt"
+    probe.write_text("exact-host-command\n", encoding="utf-8")
+    runner = CodexRunner(
+        project_root=st_project_root,
+        log_dir=st_log_dir,
+        default_timeout=300,
+    )
+    prompt = (
+        "$goal-plus Read entrypoint-probe.txt and prove that its complete trimmed "
+        "content is exactly exact-host-command. Do not edit any file. Use Goal Mode "
+        "without Search or subagents. The host entrypoint has already created the "
+        "Goal Plus record; never call goal_plus_create or goal_plus_update_goal. "
+        "First record a high-confidence Goal Mode triage. Create one required "
+        "route=main work item, then record dispatch, result, and accepted events in "
+        "order. Read and verify the file, perform the final raw-goal audit, and call "
+        "goal_plus_set_status with status=complete and concrete file evidence."
+    )
+
+    result = runner.run_streaming(
+        prompt,
+        scenario="codex_goal_plus_exact_entrypoint",
+        timeout=300,
+    )
+
+    print(f"\n[codex_goal_plus_exact_entrypoint] log: {result.log_path}")
+    assert not result.timed_out, result.log_path
+    assert result.returncode == 0, result.log_path
+    goal_files = sorted((runtime_root / "goal-plus").glob("gp_*/goal.json"))
+    assert len(goal_files) == 1, result.log_path
+    record = json.loads(goal_files[0].read_text(encoding="utf-8"))
+    assert record["status"] == "complete", result.log_path
+    assert record["entrypoint_status"] == "host_verified", result.log_path
+    assert len(record["host_command_invocations"]) == 1, result.log_path
+    invocation = record["host_command_invocations"][0]
+    assert invocation["host"] == "codex", result.log_path
+    assert invocation["action"] == "start", result.log_path
+    assert record["triage"]["recommended_phase"] == "goal", result.log_path
+    assert len(record["work_items"]) == 1, result.log_path
+    assert record["work_items"][0]["route"] == "main", result.log_path
+    assert record["work_items"][0]["status"] == "accepted", result.log_path

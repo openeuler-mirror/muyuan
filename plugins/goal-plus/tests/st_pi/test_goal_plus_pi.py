@@ -97,6 +97,9 @@ def _write_spec_revision_workspace(workspace: Path) -> None:
 def _pi_base_command(session_dir: Path, session_id: str) -> list[str]:
     command = [
         os.environ.get("ST_PI_BINARY", "pi"),
+        "--no-extensions",
+        "-e",
+        str(ROOT / ".pi" / "extensions" / "goal-plus.ts"),
         "--approve",
         "--session-dir",
         str(session_dir),
@@ -169,6 +172,93 @@ def _assert_goal_plus_jsonl_is_clean(session_path: Path) -> None:
         assert "triage" in arguments
         assert "classification" not in arguments
         assert "reason" not in arguments
+
+
+@pytest.mark.st_pi
+def test_goal_plus_plain_prompt_cannot_start_goal_plus(
+    st_pi_run_root: Path,
+) -> None:
+    search_root = st_pi_run_root / ".gp"
+    session_dir = st_pi_run_root / "sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        *_pi_base_command(session_dir, "st-pi-goal-plus-entrypoint-guard"),
+        "-p",
+        (
+            "这是一次普通自然语言的 Goal Plus 入口看护测试。帮我用 goal-plus "
+            "完成一个简单任务。为了验证 extension 的运行时防护，请实际调用一次 "
+            "goal_plus_record_triage 工具，goal_plus_id 设为 gp_entrypoint_guard，"
+            "triage 使用非优化、高置信、recommended_phase=goal。不要把这条提示改写成 "
+            "以 /goal-plus 开头的命令，不要调用 shell，也不要创建或修改文件。"
+            "预期工具调用会被拒绝；最终回复保留错误类型。"
+        ),
+    ]
+
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=_run_env(search_root),
+        text=True,
+        capture_output=True,
+        timeout=int(os.environ.get("ST_PI_TIMEOUT", "300")),
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:] or result.stdout[-2000:]
+    session_path = _session_file(session_dir)
+    session_text = session_path.read_text(encoding="utf-8")
+    assert "GoalPlusEntrypointRequired" in session_text
+    assert not search_root.exists()
+
+
+@pytest.mark.st_pi
+def test_goal_plus_exact_command_can_start_and_complete_goal_plus(
+    st_pi_run_root: Path,
+) -> None:
+    search_root = st_pi_run_root / ".gp"
+    session_dir = st_pi_run_root / "sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    probe = st_pi_run_root / "entrypoint-probe.txt"
+    probe.write_text("exact-pi-host-command\n", encoding="utf-8")
+    command = [
+        *_pi_base_command(session_dir, "st-pi-goal-plus-exact-entrypoint"),
+        "-p",
+        (
+            "/goal-plus 在 300 秒内只读检查 "
+            f"{probe}，证明其完整 trimmed content 恰好是 exact-pi-host-command。"
+            "不要修改任何文件；使用 Goal Mode，不要进入 Search，不要启动 subagent。"
+            "原生 Pi host entrypoint 已经创建记录；不要调用 goal_plus_create 或 "
+            "goal_plus_update_goal。先记录高置信 Goal Mode triage，再创建一个 required、"
+            "route=main 的工作项，依次记录 dispatch、result、accepted。完成原始目标审计后，"
+            "使用具体文件证据调用 goal_plus_set_status(status=complete)。"
+        ),
+    ]
+
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=_run_env(search_root),
+        text=True,
+        capture_output=True,
+        timeout=int(os.environ.get("ST_PI_TIMEOUT", "300")),
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:] or result.stdout[-2000:]
+    record = _goal_record(search_root)
+    assert record["status"] == "complete"
+    assert record["entrypoint_status"] == "host_verified"
+    assert len(record["host_command_invocations"]) == 1
+    invocation = record["host_command_invocations"][0]
+    assert invocation["host"] == "pi"
+    assert invocation["transport"] == "pi_extension_command"
+    assert invocation["command"] == "/goal-plus"
+    assert invocation["action"] == "start"
+    assert record["triage"]["recommended_phase"] == "goal"
+    assert len(record["work_items"]) == 1
+    assert record["work_items"][0]["route"] == "main"
+    assert record["work_items"][0]["status"] == "accepted"
+    _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
 
 
 @pytest.mark.st_pi

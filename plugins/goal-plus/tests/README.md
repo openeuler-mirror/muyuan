@@ -45,6 +45,11 @@ visible.
 ST_CODEX_MODEL=gpt-5.6-luna \
   pytest -m "st and st_codex" -k goal_plus_entrypoint_guard -v -s -rs
 
+# Pi ordinary-language guard plus exact native-command positive control
+ST_PI_MODEL=openai-codex/gpt-5.6-luna ST_PI_THINKING=xhigh \
+  pytest -m st_pi \
+  -k "plain_prompt_cannot_start or exact_command_can_start" -v -s -rs
+
 # Codex state redispatch and fixed parallel-loop continuation
 pytest -m "st and st_codex" -k codex_redispatch -v -s -rs
 ST_CODEX_MODEL=gpt-5.6-luna \
