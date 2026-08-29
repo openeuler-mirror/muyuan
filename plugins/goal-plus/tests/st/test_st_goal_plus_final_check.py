@@ -47,6 +47,13 @@ def test_codex_goal_plus_required_final_checker_smoke(
     assert len(goal_files) == 1, result.log_path
     record = json.loads(goal_files[0].read_text(encoding="utf-8"))
     assert record["status"] == "complete", result.log_path
+    assert record["entrypoint_status"] == "host_verified", result.log_path
+    assert len(record["host_command_invocations"]) == 1, result.log_path
+    invocation = record["host_command_invocations"][0]
+    assert invocation["host"] == "codex", result.log_path
+    assert invocation["transport"] == "codex_user_prompt_submit", result.log_path
+    assert invocation["command"] == "$goal-plus-with-final-check", result.log_path
+    assert invocation["action"] == "start", result.log_path
     assert record["policy"]["final_check"]["mode"] == "required"
     assert record["goal_revision"] == 1
     assert record["final_checks"][-1]["checker_host"] == "codex"

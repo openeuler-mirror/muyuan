@@ -43,12 +43,15 @@ visible.
 # Codex ordinary-language entrypoint guard: the MCP mutation is blocked and
 # the isolated workspace remains free of `.gp` state
 ST_CODEX_MODEL=gpt-5.6-luna \
-  pytest -m "st and st_codex" -k goal_plus_entrypoint_guard -v -s -rs
+  pytest -m "st and st_codex" \
+  -k "goal_plus_entrypoint_guard or exact_host_command_can_start or goal_plus_required_final_checker" \
+  -v -s -rs
 
 # Pi ordinary-language guard plus exact native-command positive control
 ST_PI_MODEL=openai-codex/gpt-5.6-luna ST_PI_THINKING=xhigh \
   pytest -m st_pi \
-  -k "plain_prompt_cannot_start or exact_command_can_start" -v -s -rs
+  -k "plain_prompt_cannot_start or exact_command_can_start or with_final_check_runs_pi_reviewer" \
+  -v -s -rs
 
 # Codex state redispatch and fixed parallel-loop continuation
 pytest -m "st and st_codex" -k codex_redispatch -v -s -rs

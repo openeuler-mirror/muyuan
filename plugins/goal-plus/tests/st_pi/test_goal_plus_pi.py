@@ -175,17 +175,26 @@ def _assert_goal_plus_jsonl_is_clean(session_path: Path) -> None:
 
 
 @pytest.mark.st_pi
+@pytest.mark.parametrize(
+    "requested_entrypoint",
+    ["goal-plus", "goal-plus-with-final-check"],
+)
 def test_goal_plus_plain_prompt_cannot_start_goal_plus(
     st_pi_run_root: Path,
+    requested_entrypoint: str,
 ) -> None:
     search_root = st_pi_run_root / ".gp"
     session_dir = st_pi_run_root / "sessions"
     session_dir.mkdir(parents=True, exist_ok=True)
     command = [
-        *_pi_base_command(session_dir, "st-pi-goal-plus-entrypoint-guard"),
+        *_pi_base_command(
+            session_dir,
+            f"st-pi-{requested_entrypoint}-entrypoint-guard",
+        ),
         "-p",
         (
-            "这是一次普通自然语言的 Goal Plus 入口看护测试。帮我用 goal-plus "
+            "这是一次普通自然语言的 Goal Plus 入口看护测试。"
+            f"帮我用 {requested_entrypoint} "
             "完成一个简单任务。为了验证 extension 的运行时防护，请实际调用一次 "
             "goal_plus_record_triage 工具，goal_plus_id 设为 gp_entrypoint_guard，"
             "triage 使用非优化、高置信、recommended_phase=goal。不要把这条提示改写成 "
@@ -390,6 +399,13 @@ def test_goal_plus_with_final_check_runs_pi_reviewer(
     assert result.returncode == 0, result.stderr[-3000:] or result.stdout[-3000:]
     record = _goal_record(search_root)
     assert record["status"] == "complete"
+    assert record["entrypoint_status"] == "host_verified"
+    assert len(record["host_command_invocations"]) == 1
+    invocation = record["host_command_invocations"][0]
+    assert invocation["host"] == "pi"
+    assert invocation["transport"] == "pi_extension_command"
+    assert invocation["command"] == "/goal-plus-with-final-check"
+    assert invocation["action"] == "start"
     assert record["policy"]["final_check"]["mode"] == "required"
     assert record["goal_revision"] == 1
     assert record["final_checks"][-1]["checker_host"] == "pi"
