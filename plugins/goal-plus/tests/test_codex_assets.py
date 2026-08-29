@@ -186,6 +186,7 @@ def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     assert "每个返回项" in text
     assert "仓外 Skill 继续由 host 管理" in text
     assert "parent cwd 不是 candidate workspace" in text
+    assert '`strategy.config.global_evidence_mode` 必须使用 `"manual"`' in text
 
 
 def test_codex_search_skill_projects_launch_metadata_to_current_tool_schema() -> None:
@@ -278,6 +279,8 @@ def test_codex_search_skill_documents_worker_budget_watchdog() -> None:
     assert "budget_control.autoresearch_lease" in text
     assert "同一个 Codex worker" in text
     assert "该 lease active 时，绝不能发送父级 closeout" in text
+    assert "不得仅因剩余时间装不下原始完整 lease 而停止" in normalized
+    assert "外层剩余时间减最终收尾预留" in normalized
 
 
 def test_codex_worker_prompt_defers_to_runtime_candidate_contract() -> None:

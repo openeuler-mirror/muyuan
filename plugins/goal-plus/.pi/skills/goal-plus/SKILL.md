@@ -131,6 +131,10 @@ A1B3，数量之和必须等于
 必须通过 Pi RPC driver 运行一组固定的初始自主候选循环。不能省略这些字段；旧运行时默认值
 不能表达该 policy。
 
+除非用户明确要求自动注入，或已有运行 Evidence 证明当前 worker 无法可靠遵守 manual
+刷新契约，否则 `strategy.config.global_evidence_mode` 必须使用 `"manual"`；不得仅为便利或
+保险选择 `"auto"`。
+
 新 SearchSpec 还必须显式设置 `workspace.backend="git_worktree"`，使候选共享 Git object
 database，并能解析 Global Evidence 中的 peer commit。只有用户明确要求兼容隔离时才能设置
 `workspace.backend="copy"`。
@@ -163,10 +167,12 @@ candidate/subagent 数。
 3. 为每条初始循环提供足够的不间断时间，以创建真实产物和 verifier 证据。
 4. 冻结 spec 时根据外层预算和最终收尾预留设置 worker 预算，绝不能根据主 agent
    是否喜欢该候选来决定。
-5. 达到 `success_threshold` 表示用户目标已经满足，不强制立即中断当前工作。若仍有可验证的
-   下一步，且外层剩余时间足以容纳另一个完整 worker 轮次和最终收尾，则继续优化；否则正常
-   收尾。Pi pool 的有效最低 lease 和 closeout 边界只由 supervisor 判定；主 agent 不得使用
-   spec 中配置的 `min_runtime_seconds` 再次推算提前关闭时间。
+5. `success_threshold` 只判定最终结果是否满足目标，不单独触发 drain。若原始目标明确要求在
+   给定时间内持续或尽可能优化，则 `可用 continuation 时间 = 外层剩余时间 - 最终收尾预留`；
+   只要它足以完成至少一次“假设、修改、process verifier”闭环，就用缩短的 lease 继续，而不要求
+   原始完整 worker lease 能放入剩余时间。仅要求达到目标、没有持续优化时间要求的任务，达到阈值后
+   可以正常收尾。Pi pool 的有效最低 lease 和 closeout 边界只由 supervisor 判定；主 agent 不得
+   使用 spec 中配置的 `min_runtime_seconds` 再次推算提前关闭时间。
 
 subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁移、结构重启和 rebase 决策。
 主 agent 绝不发送偏好的技术方向。低分、一次没有改进的迭代或其他候选领先，
@@ -220,8 +226,10 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
       链接到同一个 `goal_plus_id`。
    绝不能选择或提升已失效的 run。其产物、限定范围的问题和特性仍可作为研究输入，
    但每个旧分数都只是历史，每个导入特性都必须在后继契约下重新验证。
-8. 每个 `candidate_ready` 验证后，只执行全局停止 policy。如果 policy 为 false，使用能适应
-   剩余时间的预算，对该准确 `candidate_id` 调用 `pi_search_pool_continue`。不要把
+8. 每个 `candidate_ready` 验证后，只执行全局停止 policy。明确限时持续优化时，达到成功标准、
+   分数、排名或近期没有改善都不改变调度；只有“外层剩余时间减最终收尾预留”不足以完成至少一次
+   process verifier 闭环时才停止。否则使用能适应剩余时间的预算，对该准确 `candidate_id` 调用
+   `pi_search_pool_continue`。不要把
    `timed_out`、`interrupted` 或 `failed` 当作 candidate-ready continuation。运行时提供以下
    固定中性 continuation prompt：
 
@@ -361,8 +369,8 @@ closeout 或时间提示都只是历史；只遵守最新 launch 之后收到的
 或 top-N history。
 
 候选在首次派发后继续时，向 `pi_search_pool_continue` 传入显式 `worker_budget`。
-这会为同一个原生 session 和候选工作区创建新 Pi 进程，其派发预算从外层剩余时间中选择；
-它不会改变冻结 spec。
+这会为同一个原生 session 和候选工作区创建新 Pi 进程；其 `max_runtime_seconds` 取冻结上限与
+“外层剩余时间减最终收尾预留”的较小值，不改变冻结 spec，也不要求原始完整 lease 能放入剩余时间。
 
 不要仅因 worker handle 含有 `timed_out=true` 就重新派发。如果候选已经有
 `process_passed=true` 且有 Git 支持的 iteration，该最佳 iteration 仍是有效 Search 证据，

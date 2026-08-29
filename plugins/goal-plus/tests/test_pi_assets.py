@@ -104,6 +104,7 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "candidate_task.task_skill_paths" in text
     assert "每个返回项" in text
     assert "仓外 Skill 继续由 host 管理" in text
+    assert '`strategy.config.global_evidence_mode` 必须使用 `"manual"`' in text
     assert "Pi 支持的 strategy name" in text
     assert "`agent_guided`、`agent` 或 `default`" in text
     assert "`random` 或 `random_mode`" in text
@@ -216,6 +217,8 @@ def test_pi_goal_plus_skill_documents_parallel_loop_policy() -> None:
     assert "不要根据排名或改进情况" in normalized
     assert "分数低" in normalized
     assert "停止或替换" in normalized
+    assert "原始完整 worker lease 能放入剩余时间" in normalized
+    assert "外层剩余时间减最终收尾预留" in normalized
     assert "source_run_id" in text
     assert "search_invalidate_run" in text
     assert "active_count=0" in text
