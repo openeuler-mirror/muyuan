@@ -7,6 +7,7 @@ import re
 import pytest
 
 from goal_plus.server import create_mcp
+from tests._fastmcp_helpers import tools_by_name
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -157,7 +158,7 @@ def _pi_tool_contract() -> dict[str, tuple[set[str], set[str]]]:
 
 
 def _fastmcp_tool_contract(tmp_path: Path) -> dict[str, tuple[set[str], set[str]]]:
-    tools = asyncio.run(create_mcp(tmp_path / ".gp").get_tools())
+    tools = asyncio.run(tools_by_name(create_mcp(tmp_path / ".gp")))
     return {
         name: (
             set(tool.parameters.get("properties", {})),

@@ -62,6 +62,7 @@ ArtifactKind = Literal["git_commit", "fs_snapshot"]
 WorkspaceAccessKind = Literal["soft_path", "protected_execution"]
 PromotionState = Literal["prepared", "applied", "apply_failed"]
 PromotionStrategy = Literal["legacy_patch", "squash_commit", "fs_apply"]
+WorkspaceOperationOutcome = Literal["succeeded", "failed"]
 IterationDisposition = Literal["keep", "retain", "discard", "failure"]
 SharedToolPublishStatus = Literal[
     "legacy_unknown", "not_staged",
@@ -134,6 +135,15 @@ class WorkspaceAccess(SearchModel):
     managed_root: Path | None = None
     source_subdir: str = "."
     provider_handle: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkspaceOperationTiming(SearchModel):
+    """Durable provider-neutral timing for one workspace operation."""
+
+    started_at: str
+    completed_at: str
+    duration_seconds: float = Field(ge=0)
+    outcome: WorkspaceOperationOutcome
 
 
 class ReferenceWorkspaceAccess(SearchModel):
@@ -1137,6 +1147,7 @@ class CandidateTask(SearchModel):
     workspace_managed_root: Path | None = None
     workspace_source_subdir: str = "."
     workspace_provider_handle: dict[str, Any] = Field(default_factory=dict)
+    workspace_creation_timing: WorkspaceOperationTiming | None = None
     task_skill_paths: list[Path] = Field(default_factory=list)
     base_artifact_ref: ArtifactRef | None = None
     workspace_access: WorkspaceAccess = Field(default_factory=WorkspaceAccess)
@@ -1335,6 +1346,7 @@ class PromotionRecord(SearchModel):
     apply_request_id: str | None = None
     applied_source_revision: str | None = None
     apply_result: dict[str, Any] = Field(default_factory=dict)
+    apply_timing: WorkspaceOperationTiming | None = None
     error: str | None = None
     created_at: str
     applied_at: str | None = None

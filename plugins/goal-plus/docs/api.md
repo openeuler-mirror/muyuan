@@ -258,7 +258,10 @@ output，也不等待或控制 worker。
 `goal_plus_monitor_snapshot.statistics` 汇总 baseline/target improvement、success rate、terminal
 duration、time-to-first-verifier/success、worker outcome、model/provider、candidate
 lineage、selection survival、worker-vs-parent verifier、promotion
-Evidence、usage、efficiency 和数据缺口。绑定 Codex orchestrator
+Evidence、usage、efficiency 和数据缺口。`selected_run.workspace_operations` 以同一套
+provider-neutral 口径展示 Git/ThinkThread 的 candidate workspace 创建次数、总耗时、均值、
+最大值，以及 promotion apply 的结果和耗时；对应的扁平时间字段也保留在
+`selected_run.timing`，供静态报告统一渲染。绑定 Codex orchestrator
 transcript 后，`statistics.orchestrator` 记录 Goal Plus 创建以来不含内容的 usage
 delta，`statistics.total_usage` 与 worker usage 合并；每个 Search task 仍保留自己的 statistics。
 
@@ -283,6 +286,11 @@ pass；失败时 run 保持可重试，且不输出 patch。
 `search_apply_promotion` 将它 cherry-pick 回原仓。旧 run 的 `legacy_patch` 仍返回
 `apply_cwd` 和 `apply_directory`，并从 `apply_cwd` 执行
 `git apply --directory=<apply_directory> <artifact_path>`。
+
+runtime 在 provider 调用的公共边界记录时间：每个 candidate 的
+`task.workspace_creation_timing` 覆盖 workspace materialization，每条 provider-native
+promotion 的 `apply_timing` 覆盖实际写回调用。两者都持久化开始、完成、单调时钟耗时和
+成功/失败结果；重复读取已 applied promotion 不会重复计时。
 
 关联 Goal Plus record 时，正常顺序是 select -> promote -> 可选 apply -> record Search
 result -> final audit -> terminal status -> report。artifact-only 或受保护 source 任务停在

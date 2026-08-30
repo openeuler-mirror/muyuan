@@ -44,7 +44,11 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 - candidate score、iteration、session、verifier count 和 current best；
 - worker duration、usage、context、artifact 和 stale/timed-out warning；
 - selection、promotion 和 report path；
-- `statistics.selected_run` 中的 baseline/target improvement、time-to-first-verifier/success、worker outcome、model/provider、selection survival、usage、efficiency 和 `unavailable_metrics`。
+- `statistics.selected_run` 中的 baseline/target improvement、
+  time-to-first-verifier/success、worker outcome、model/provider、selection survival、usage、
+  efficiency、workspace 创建/apply 耗时和 `unavailable_metrics`；
+  `workspace_operations` 保留 provider、观测次数、成功/失败与耗时聚合，`timing`
+  保留报告使用的扁平秒数字段。
 
 `search_task_aggregate` 汇总全部 task 的 plan、candidate、session、verifier 和已知 cost。`statistics.orchestrator` 只包含归一化 Codex usage 与 identity metadata；`statistics.total_usage` 将其与 worker usage 合并，并保留覆盖率，避免把已知小计误当成完整 cost。
 

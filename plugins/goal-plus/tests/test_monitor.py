@@ -13,6 +13,7 @@ from goal_plus.runtime import FileSearchRuntime, write_json
 from goal_plus.server import create_mcp
 from goal_plus.tools import SearchTools
 
+from tests._fastmcp_helpers import tools_by_name
 from tests._runtime_helpers import make_project, spec_with_strategy
 
 
@@ -222,6 +223,14 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     assert statistics["verifiers"]["process_runs"] == 1
     assert statistics["verifiers"]["worker_process_runs"] == 1
     assert statistics["usage"]["processed_tokens"] == 260
+    assert statistics["workspace_operations"]["provider"] == "copy"
+    assert (
+        statistics["workspace_operations"]["workspace_creation"][
+            "attempts_observed"
+        ]
+        == 2
+    )
+    assert statistics["timing"]["workspace_creation_candidates_observed"] == 2
 
     assert snapshot["candidates"][second.candidate_id]["status"] == "created"
     assert snapshot["candidates"][second.candidate_id]["agent_session_count"] == 0
@@ -454,6 +463,12 @@ def test_goal_plus_monitor_snapshot_aggregates_multiple_search_tasks(
     }
     assert aggregate["statistics"]["runs_total"] == 2
     assert aggregate["statistics"]["workers"]["sessions_total"] == 0
+    assert (
+        aggregate["statistics"]["workspace_operations"]["workspace_creation"][
+            "attempts_observed"
+        ]
+        == 2
+    )
     assert snapshot["run"]["run_id"] == second_run_id
     assert snapshot["run"]["planning_rounds_total"] == 1
     assert snapshot["run"]["started_rounds_total"] == 1
@@ -476,7 +491,7 @@ def test_goal_plus_monitor_snapshot_is_exposed_to_mcp_and_pi_facade(tmp_path: Pa
     frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
     run_id = runtime.create_run(frozen.frozen_spec_id)
     mcp = create_mcp(tmp_path / ".search")
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
 
     assert "goal_plus_monitor_snapshot" in tools
     assert "run_id" in tools["goal_plus_monitor_snapshot"].parameters["properties"]

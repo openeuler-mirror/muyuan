@@ -81,6 +81,7 @@ from goal_plus.models import (
     WorkerLaunchOptions,
     WorkspaceAccess,
     WorkspaceBackend,
+    WorkspaceOperationTiming,
 )
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT, host_assets_root
 from goal_plus.shared_dir import (
@@ -3849,26 +3850,42 @@ class FileSearchRuntime:
                 changed_files=tuple(promotion.changed_files),
                 provider_handle=promotion.provider_handle,
             )
+            apply_started_at = utc_timestamp()
+            apply_started = time.perf_counter()
             try:
                 result = get_workspace_provider(
                     promotion.provider
                 ).apply_promotion(prepared)
             except Exception as exc:
+                apply_timing = WorkspaceOperationTiming(
+                    started_at=apply_started_at,
+                    completed_at=utc_timestamp(),
+                    duration_seconds=max(0.0, time.perf_counter() - apply_started),
+                    outcome="failed",
+                )
                 run.promotion = promotion.model_copy(
                     update={
                         "state": "apply_failed",
+                        "apply_timing": apply_timing,
                         "error": f"{type(exc).__name__}: {exc}"[:2000],
                     }
                 )
                 self._write_run(run)
                 raise
+            apply_timing = WorkspaceOperationTiming(
+                started_at=apply_started_at,
+                completed_at=utc_timestamp(),
+                duration_seconds=max(0.0, time.perf_counter() - apply_started),
+                outcome="succeeded",
+            )
             run.promotion = promotion.model_copy(
                 update={
                     "state": "applied",
                     "applied_source_revision": result.source_revision,
                     "apply_result": dict(result.details),
+                    "apply_timing": apply_timing,
                     "error": None,
-                    "applied_at": utc_timestamp(),
+                    "applied_at": apply_timing.completed_at,
                 }
             )
             self._write_run(run)
@@ -4393,6 +4410,8 @@ class FileSearchRuntime:
     ) -> CandidateTask:
         workspace = self._run_dir(run.run_id) / "workspace" / candidate_id
 
+        workspace_creation_started_at = utc_timestamp()
+        workspace_creation_started = time.perf_counter()
         materialization = materialize_candidate_workspace(
             backend=frozen.spec.workspace.backend,
             run_dir=self._run_dir(run.run_id),
@@ -4400,6 +4419,15 @@ class FileSearchRuntime:
             workspace=workspace,
             run_id=run.run_id,
             candidate_id=candidate_id,
+        )
+        workspace_creation_timing = WorkspaceOperationTiming(
+            started_at=workspace_creation_started_at,
+            completed_at=utc_timestamp(),
+            duration_seconds=max(
+                0.0,
+                time.perf_counter() - workspace_creation_started,
+            ),
+            outcome="succeeded",
         )
         if run.source_artifact_ref is None and materialization.base_revision is not None:
             artifact_kind = (
@@ -4494,6 +4522,7 @@ class FileSearchRuntime:
             workspace_provider_handle=dict(
                 materialization.provider_handle or {}
             ),
+            workspace_creation_timing=workspace_creation_timing,
             task_skill_paths=task_skill_paths,
             base_artifact_ref=(
                 ArtifactRef(

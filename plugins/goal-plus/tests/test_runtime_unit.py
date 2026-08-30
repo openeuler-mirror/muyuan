@@ -469,6 +469,10 @@ def test_visible_verifier_failure_returns_diagnostics_and_preserves_logs(
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
 
+    assert task.workspace_creation_timing is not None
+    assert task.workspace_creation_timing.outcome == "succeeded"
+    assert task.workspace_creation_timing.duration_seconds >= 0
+
     task.workspace.joinpath("initial_program.py").write_text(
         "VALUE = 1\n",
         encoding="utf-8",
@@ -1611,6 +1615,10 @@ def test_git_promotion_preserves_running_history_and_applies_one_squash_commit(
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
 
+    assert task.workspace_creation_timing is not None
+    assert task.workspace_creation_timing.outcome == "succeeded"
+    assert task.workspace_creation_timing.duration_seconds >= 0
+
     task.workspace.joinpath("initial_program.py").write_text(
         "VALUE = 1\n", encoding="utf-8"
     )
@@ -1640,6 +1648,9 @@ def test_git_promotion_preserves_running_history_and_applies_one_squash_commit(
     applied = runtime.apply_promotion(run_id)
 
     assert applied.state == "applied"
+    assert applied.apply_timing is not None
+    assert applied.apply_timing.outcome == "succeeded"
+    assert applied.apply_timing.duration_seconds >= 0
     assert applied.applied_source_revision == subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=project, text=True
     ).strip()
@@ -1859,8 +1870,11 @@ def test_git_promotion_conflict_aborts_without_cherry_pick_state(
         capture_output=True,
         text=True,
     ).returncode != 0
-    assert runtime.promotion_record(run_id).state == "apply_failed"
-
+    failed_promotion = runtime.promotion_record(run_id)
+    assert failed_promotion.state == "apply_failed"
+    assert failed_promotion.apply_timing is not None
+    assert failed_promotion.apply_timing.outcome == "failed"
+    assert failed_promotion.apply_timing.duration_seconds >= 0
 
 
 @pytest.mark.codex

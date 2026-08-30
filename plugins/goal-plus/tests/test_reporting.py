@@ -1457,12 +1457,16 @@ def test_statistics_renders_observed_session_count_as_count() -> None:
                 "timing": {
                     "worker_duration_seconds_total": 12.5,
                     "worker_duration_sessions_observed": 4,
+                    "workspace_creation_seconds_total": 2.25,
+                    "promotion_apply_seconds": 0.75,
                 }
             }
         }
     )
 
     assert "12.5s" in html
+    assert "2.2s" in html
+    assert "0.8s" in html
     assert ">4</strong>" in html
     assert "4.0s" not in html
 
