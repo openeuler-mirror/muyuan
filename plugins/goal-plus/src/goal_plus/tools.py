@@ -295,8 +295,9 @@ class SearchTools:
             "html_report_path": str(report_path.with_suffix(".html")),
         }
 
-    def search_promote(self, run_id: str, candidate_id: str) -> dict[str, str]:
+    def search_promote(self, run_id: str, candidate_id: str) -> dict[str, Any]:
         artifact_path = self.runtime.promote(run_id, candidate_id)
+        promotion = self.runtime.promotion_record(run_id)
         source_path, apply_cwd, apply_directory = (
             self.runtime.promotion_apply_coordinates(run_id)
         )
@@ -305,7 +306,20 @@ class SearchTools:
             "source_path": str(source_path),
             "apply_cwd": str(apply_cwd),
             "apply_directory": apply_directory,
+            "promotion_id": promotion.promotion_id,
+            "provider": promotion.provider,
+            "strategy": promotion.strategy,
+            "state": promotion.state,
+            "publication_artifact_ref": (
+                promotion.publication_artifact_ref.model_dump(mode="json")
+                if promotion.publication_artifact_ref is not None
+                else None
+            ),
         }
+
+    def search_apply_promotion(self, run_id: str) -> dict[str, Any]:
+        promotion = self.runtime.apply_promotion(run_id)
+        return promotion.model_dump(mode="json")
 
     def goal_plus_monitor_snapshot(
         self,

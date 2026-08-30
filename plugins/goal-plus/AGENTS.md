@@ -335,9 +335,10 @@ same monitor/statistics layer, then writes both canonical artifacts:
 - `.gp/runs/<run_id>/report.html`
 
 The normal Goal Plus completion flow must not generate an intermediate report.
-The required order is `search_select`, `search_promote`,
-`goal_plus_record_search_result`, final raw-goal audit, terminal Goal Plus
-status, then one `search_report` call for every successfully recorded run. The
+The required order is `search_select`, `search_promote`, optional
+`search_apply_promotion` when the task authorizes writing back to the source,
+`goal_plus_record_search_result`, final raw-goal audit, terminal Goal Plus status,
+then one `search_report` call for every successfully recorded run. The
 result-recording call reserves the canonical Markdown and HTML paths even
 though neither file exists yet. A linked Goal Plus run rejects `search_report`
 while its record is still `active` or `needs_user`.

@@ -33,7 +33,7 @@ main agent
 各组件的职责边界如下：
 
 | 所有者 | 职责 |
-|---|---|
+| ------ | ---- |
 | Search runtime | 冻结合同、物化工作区、提交 Git 和 verifier Evidence、回滚、选择、报告与 promotion |
 | candidate worker | 选择自己的技术方向、修改自己的工作区、调用 verifier、提交 handoff |
 | main agent | triage、spec discovery、初始 candidate 分配、全局停止、最终收尾、确认 verifier 失效 |
@@ -230,7 +230,8 @@ worker verifier 原子消费 copy receipt。当前 schema 中的 `adopted_tools`
 也不改变硬分、retain/discard、选择或 promotion。
 工具化决策本身不进入 Global Evidence。完整状态流保持为：
 `ToolizationDecision -> IterationRecord`，以及独立的
-`staging -> passing verifier -> SharedToolRecord -> Tool View -> Global Evidence -> copy receipt -> adopted_tools`。
+`staging -> passing verifier -> SharedToolRecord -> Tool View -> Global Evidence`
+`-> copy receipt -> adopted_tools`。
 
 完整评价不在窄视图中重复返回。worker 仅在 `search_get_agent_context` 的
 `supplemental_evaluation_enabled=true` 且目标行
@@ -319,6 +320,11 @@ invalidated、aborted 或 failed run 的发布 fence 继续拒绝修改。需要
 
 ## Git 与 Candidate-Local Best
 
+新 `git_worktree` run 不再删除 source 的 `.git` 后重新初始化。Runtime 对真实 Git source
+创建 run-local bare mirror，保留完整 refs、commit history 和对象，再从启动 HEAD 建立
+baseline ref 与各 candidate worktree。`source_path` 位于 repository 子目录时，worktree 仍是
+完整 repository，worker cwd 和 edit surface 则保持相对于该 source 子目录。
+
 Evidence 中的 commit 表示 verifier 实际读取的完整 Git tree，不是相对于初始源码的
 patch。Runtime 分别记录：
 
@@ -345,6 +351,11 @@ discard:  settled -> attempt -> restore-best -> ledger
 attempt、恢复和 ledger commit 都保持可达。因此下一轮始终从 candidate-local best
 规划，而 Global Evidence 仍保留好、差和失败的全部尝试。一个 candidate 的回滚不会
 改变 peer 工作区，也不会修改 peer 的判断。
+
+最终 promotion 不改写或压缩 candidate branch。Runtime 以 run baseline 为 parent、以 selected
+artifact 的允许产品文件为 tree，另行创建一个 squash publication commit；`results.tsv`、`.gp`、
+`.tmp` 和 Git metadata 不进入该提交。`search_apply_promotion` 把这一个提交 cherry-pick
+回原 repository，因此产品历史保持单提交，而完整 autoresearch running history 仍留在 run-local refs。
 
 `git_worktree` 后端下，各 candidate 共享一个 Git common directory。窄、单文件证据可以
 从自己的工作区渐进式查看 peer Evidence commit：

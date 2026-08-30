@@ -1594,6 +1594,274 @@ def test_promote_patch_uses_selected_commit_after_evidence_check(
     ) == "VALUE = 1\n"
 
 
+def test_git_promotion_preserves_running_history_and_applies_one_squash_commit(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    source_head = git_commit_all(project, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+
+    task.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    git_commit_all(task.workspace, "autoresearch running commit")
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    patch_path = runtime.promote(run_id, task.candidate_id)
+    prepared = runtime.promotion_record(run_id)
+
+    assert patch_path.is_file()
+    assert prepared.strategy == "squash_commit"
+    assert prepared.publication_artifact_ref is not None
+    publication = prepared.publication_artifact_ref.id
+    assert subprocess.check_output(
+        ["git", "rev-list", "--count", f"{source_head}..{publication}"],
+        cwd=task.workspace,
+        text=True,
+    ).strip() == "1"
+    assert int(
+        subprocess.check_output(
+            ["git", "rev-list", "--count", f"{source_head}..HEAD"],
+            cwd=task.workspace,
+            text=True,
+        ).strip()
+    ) >= 2
+
+    applied = runtime.apply_promotion(run_id)
+
+    assert applied.state == "applied"
+    assert applied.applied_source_revision == subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True
+    ).strip()
+    assert subprocess.check_output(
+        ["git", "rev-list", "--count", f"{source_head}..HEAD"],
+        cwd=project,
+        text=True,
+    ).strip() == "1"
+    assert project.joinpath("initial_program.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 1\n"
+    assert not project.joinpath("results.tsv").exists()
+
+    persisted = runtime._load_run(run_id)
+    assert persisted.promotion is not None
+    persisted.promotion = persisted.promotion.model_copy(
+        update={
+            "state": "prepared",
+            "applied_source_revision": None,
+            "apply_result": {},
+            "applied_at": None,
+        }
+    )
+    runtime._write_run(persisted)
+    recovered = runtime.apply_promotion(run_id)
+
+    assert recovered.apply_result["method"] == "git_existing_cherry_pick"
+    assert subprocess.check_output(
+        ["git", "rev-list", "--count", f"{source_head}..HEAD"],
+        cwd=project,
+        text=True,
+    ).strip() == "1"
+
+
+def test_git_run_local_worktree_and_apply_work_inside_source_gp(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    project.joinpath(".gitignore").write_text(".gp/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    source_head = git_commit_all(project, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(project / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+
+    assert task.workspace_managed_root is not None
+    assert task.workspace_managed_root.is_relative_to(project / ".gp")
+    task.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    runtime.promote(run_id, task.candidate_id)
+    runtime.apply_promotion(run_id)
+
+    assert project.joinpath("initial_program.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 1\n"
+    assert subprocess.check_output(
+        ["git", "rev-list", "--count", f"{source_head}..HEAD"],
+        cwd=project,
+        text=True,
+    ).strip() == "1"
+    assert subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=project, text=True
+    ).strip() == ""
+
+
+def test_git_promotion_apply_is_noop_when_product_tree_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    source_head = git_commit_all(project, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    runtime.promote(run_id, task.candidate_id)
+    applied = runtime.apply_promotion(run_id)
+
+    assert applied.apply_result["method"] == "git_noop"
+    assert subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True
+    ).strip() == source_head
+
+
+def test_git_promotion_applies_nested_source_subdir_only(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    project = make_project(repository)
+    repository.joinpath("README.md").write_text("root\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    source_head = git_commit_all(repository, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+
+    assert task.workspace_source_subdir == "project"
+    assert task.workspace_managed_root is not None
+    assert task.workspace == task.workspace_managed_root / "project"
+    task.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    runtime.promote(run_id, task.candidate_id)
+    runtime.apply_promotion(run_id)
+
+    assert project.joinpath("initial_program.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 1\n"
+    assert repository.joinpath("README.md").read_text(encoding="utf-8") == "root\n"
+    assert subprocess.check_output(
+        ["git", "diff", "--name-only", f"{source_head}..HEAD"],
+        cwd=repository,
+        text=True,
+    ).splitlines() == ["project/initial_program.py"]
+
+
+def test_nested_git_workspace_rejects_committed_changes_outside_source_subdir(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    project = make_project(repository)
+    repository.joinpath("README.md").write_text("root\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    git_commit_all(repository, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    assert task.workspace_managed_root is not None
+
+    task.workspace_managed_root.joinpath("README.md").write_text(
+        "candidate escaped\n", encoding="utf-8"
+    )
+    git_commit_all(task.workspace_managed_root, "outside logical source")
+    report = runtime.run_verifier(run_id, task.candidate_id)
+    record = runtime._load_candidate_record(run_id, task.candidate_id)
+
+    assert report.process_passed is False
+    assert "../README.md" in record.detected_changed_files
+    assert record.changed_outside_allowed is True
+
+
+def test_git_promotion_conflict_aborts_without_cherry_pick_state(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    git_commit_all(project, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data), [project / "evaluator.py"]
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    task.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    runtime.promote(run_id, task.candidate_id)
+
+    project.joinpath("initial_program.py").write_text(
+        "VALUE = 99\n", encoding="utf-8"
+    )
+    source_revision = git_commit_all(project, "conflicting source change")
+
+    with pytest.raises(RuntimeError, match="cherry-pick"):
+        runtime.apply_promotion(run_id)
+
+    assert subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True
+    ).strip() == source_revision
+    assert subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=project, text=True
+    ).strip() == ""
+    assert subprocess.run(
+        ["git", "rev-parse", "--verify", "CHERRY_PICK_HEAD"],
+        cwd=project,
+        check=False,
+        capture_output=True,
+        text=True,
+    ).returncode != 0
+    assert runtime.promotion_record(run_id).state == "apply_failed"
+
+
 
 @pytest.mark.codex
 def test_worker_policy_includes_host_capabilities_for_codex(tmp_path: Path) -> None:

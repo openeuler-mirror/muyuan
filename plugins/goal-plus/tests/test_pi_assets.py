@@ -121,6 +121,7 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "search_select" in text
     assert "search_report" in text
     assert "search_promote" in text
+    assert "search_apply_promotion" in text
     assert "apply_cwd" in text
     assert "apply_directory" in text
     assert "跨进程原生 session continuation" in text

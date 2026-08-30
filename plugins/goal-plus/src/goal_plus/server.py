@@ -410,9 +410,14 @@ def create_mcp(
         return tools.search_report(run_id)
 
     @mcp.tool()
-    def search_promote(run_id: str, candidate_id: str) -> dict[str, str]:
-        """将所选候选导出为 patch，不改变主源码工作区。"""
+    def search_promote(run_id: str, candidate_id: str) -> dict[str, Any]:
+        """准备 provider-native publication，不改变主源码工作区。"""
         return tools.search_promote(run_id, candidate_id)
+
+    @mcp.tool()
+    def search_apply_promotion(run_id: str) -> dict[str, Any]:
+        """将已准备的 publication 显式写回原 Git repo 或 ThinkThread Root。"""
+        return tools.search_apply_promotion(run_id)
 
     @mcp.tool()
     def goal_plus_create(

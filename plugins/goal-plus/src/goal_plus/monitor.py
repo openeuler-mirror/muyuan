@@ -951,6 +951,11 @@ def goal_plus_monitor_snapshot(
             "selected_score": run.selected_score,
             "selected_iteration": run.selected_iteration,
             "selected_git_head": run.selected_git_head,
+            "promotion": (
+                run.promotion.model_dump(mode="json")
+                if run.promotion is not None
+                else None
+            ),
             "budget_used": run.budget_used,
             "evidence_annotations": _evidence_annotation_payload(run_path),
             "evidence_reads": _evidence_read_payload(sessions),

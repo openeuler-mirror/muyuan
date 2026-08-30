@@ -652,6 +652,10 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 		},
 		{ additionalProperties: false },
 	),
+	search_apply_promotion: Type.Object(
+		{ run_id: Type.String() },
+		{ additionalProperties: false },
+	),
 		pi_search_pool_open: Type.Object(
 			{
 				run_id: Type.String(),
@@ -2379,6 +2383,7 @@ export default function (pi: ExtensionAPI) {
 		"search_select",
 		"search_report",
 		"search_promote",
+		"search_apply_promotion",
 		"pi_search_pool_open",
 		"pi_search_pool_wait_any",
 		"pi_search_pool_snapshot",

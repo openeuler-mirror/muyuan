@@ -58,7 +58,7 @@ strategy:
 - worker 终态事件触发验证并继续同一 worker，而不是开始另一轮规划；
 - 正常执行绝不创建替代候选或补充 slot；
 - 运行时拒绝对该 run 的第二次 `search_plan_next` 调用；
-- `search_select` 和 `search_promote` 仍是父级拥有的最终 Search action；
+- `search_select`、`search_promote` 和 `search_apply_promotion` 仍是父级拥有的最终 Search action；
   对 Goal Plus，`search_report` 要延迟到父级 Goal Plus 记录达到终态。
 
 父 agent 是完成验证器和继续触发器，不是搜索指挥者。低分、一次没有改进的迭代或其他候选
@@ -182,9 +182,13 @@ strategy:
     `interrupt_agent`，观察终态，并像其他完成事件一样验证。一个 worker 超时不会停止
     其他 worker。
 12. 全局停止 policy 为 true 时，drain 或中断每个 live worker，然后按要求调用
-    `search_select` 和 `search_promote`。选择使用 verifier 支持的 Git iteration；
-    promotion patch 相对于返回的 `source_path`；写回源码时从返回的 `apply_cwd` 执行
-    `git apply --directory=<apply_directory> <artifact_path>`，不要根据当前 Git cwd 猜路径。
+    `search_select` 和 `search_promote`。选择使用 verifier 支持的 immutable artifact。
+    当任务明确授权写回 source 且 promotion 返回 `strategy=squash_commit` 或
+    `strategy=fs_apply` 时，调用 `search_apply_promotion`；Git 会把保留的 running history
+    作为一个 publication commit cherry-pick 回原仓，ThinkThread 会应用 publish snapshot。
+    artifact-only 或受保护 source 任务保留 prepared publication，不调用 apply。仅旧的
+    `strategy=legacy_patch` 在任务授权写回时从返回的 `apply_cwd` 执行
+    `git apply --directory=<apply_directory> <artifact_path>`。
     不要只为记录临时最佳而提升。该 Search 属于 Goal Plus 时，不调用 `search_report`
     就交还控制；Goal Plus skill 会在父记录达到终态后生成且只生成一次报告。
     对独立 Search，只在提升后调用 `search_report`。

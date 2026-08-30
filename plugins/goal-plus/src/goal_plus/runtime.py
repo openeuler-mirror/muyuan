@@ -51,6 +51,7 @@ from goal_plus.models import (
     GlobalEvidenceViewReference,
     IterationDisposition,
     PromotionEvidence,
+    PromotionRecord,
     ReferenceWorkspaceAccess,
     ReferenceWorkspaceRecord,
     RunRecord,
@@ -98,6 +99,7 @@ from goal_plus.workspaces import (
     list_source_files,
     materialize_candidate_workspace,
     get_workspace_provider,
+    PreparedPromotion,
 )
 
 
@@ -1976,8 +1978,8 @@ class FileSearchRuntime:
                     "git_head": self._git_head(candidate_record.task.workspace),
                     "git_status": workspace_status,
                     "dirty": bool(workspace_status),
-                    "changed_files": self._detect_changed_files(
-                        Path(run.source_path), candidate_record.task.workspace
+                    "changed_files": self._candidate_changed_files(
+                        run, candidate_record
                     ),
                 },
             },
@@ -2161,7 +2163,7 @@ class FileSearchRuntime:
                         )
                     )
             provider = get_workspace_provider(source.task.workspace_backend)
-            provider.materialize_reference(
+            reference_root = provider.materialize_reference(
                 source.task.workspace,
                 artifact_ref,
                 destination,
@@ -2177,7 +2179,7 @@ class FileSearchRuntime:
                 workspace_backend=source.task.workspace_backend,
                 access=ReferenceWorkspaceAccess(
                     kind="filesystem_path",
-                    root=destination,
+                    root=reference_root,
                     readonly_contract="soft_detected",
                 ),
                 state="open",
@@ -3274,8 +3276,8 @@ class FileSearchRuntime:
             )
             raise RuntimeError("no selected candidate has passing verification")
 
-        selected_changed_files = self._detect_changed_files(
-            Path(run.source_path), selected_record.task.workspace
+        selected_changed_files = self._candidate_changed_files(
+            run, selected_record, selected_artifact_ref
         )
         selected_artifact_hash = self._artifact_hash(
             selected_record.task.workspace,
@@ -3702,8 +3704,8 @@ class FileSearchRuntime:
             )
             run = self._load_run(run_id)
             record = self._load_candidate_record(run_id, candidate_id)
-            detected_changed = self._detect_changed_files(
-                Path(run.source_path), record.task.workspace
+            detected_changed = self._candidate_changed_files(
+                run, record, selected_artifact_ref
             )
             artifact_hash = self._artifact_hash(
                 record.task.workspace, detected_changed
@@ -3730,17 +3732,88 @@ class FileSearchRuntime:
             promotion_dir = self._run_dir(run_id) / "promotion"
             promotion_dir.mkdir(parents=True, exist_ok=True)
             patch_path = promotion_dir / f"{candidate_id}.patch"
-            if selected_artifact_ref.kind != "git_commit":
-                raise RuntimeError(
-                    "promotion patch publication currently requires a Git artifact"
+            provider = get_workspace_provider(record.task.workspace_backend)
+            provider_native_promotion = bool(
+                run.source_artifact_ref is not None
+                and provider.capabilities.prepare_promotion
+                and (
+                    record.task.workspace_backend == "thinkthread"
+                    or run.source_repository is not None
                 )
-            self._write_patch(
-                Path(run.source_path),
-                record.task.workspace,
-                selected_artifact_ref.id,
-                detected_changed,
-                patch_path,
             )
+            if provider_native_promotion:
+                assert run.source_artifact_ref is not None
+                prepared = provider.prepare_promotion(
+                    run_dir=self._run_dir(run_id),
+                    run_id=run_id,
+                    candidate_id=candidate_id,
+                    source=Path(run.source_path),
+                    workspace=record.task.workspace,
+                    source_subdir=run.source_subdir,
+                    base_artifact_ref=run.source_artifact_ref,
+                    selected_artifact_ref=selected_artifact_ref,
+                    changed_files=detected_changed,
+                )
+                if prepared.artifact_path is None:
+                    raise RuntimeError(
+                        "provider-native promotion did not produce an artifact"
+                    )
+                patch_path = prepared.artifact_path
+                run.promotion = PromotionRecord(
+                    promotion_id=f"promotion_{candidate_id}",
+                    run_id=run_id,
+                    candidate_id=candidate_id,
+                    provider=prepared.provider,
+                    strategy=prepared.strategy,
+                    base_artifact_ref=prepared.base_artifact_ref,
+                    selected_artifact_ref=prepared.selected_artifact_ref,
+                    publication_artifact_ref=(
+                        prepared.publication_artifact_ref
+                    ),
+                    artifact_path=prepared.artifact_path,
+                    source_repository=prepared.source_repository,
+                    source_subdir=prepared.source_subdir,
+                    changed_files=list(prepared.changed_files),
+                    provider_handle=dict(prepared.provider_handle),
+                    apply_request_id=prepared.provider_handle.get(
+                        "apply_request_id"
+                    ),
+                    created_at=utc_timestamp(),
+                )
+            else:
+                if selected_artifact_ref.kind != "git_commit":
+                    raise RuntimeError(
+                        "promotion publication currently requires a supported "
+                        "provider artifact"
+                    )
+                self._write_patch(
+                    Path(run.source_path),
+                    record.task.workspace,
+                    selected_artifact_ref.id,
+                    detected_changed,
+                    patch_path,
+                )
+                base_ref = record.task.base_artifact_ref
+                if base_ref is None:
+                    base_ref = ArtifactRef(
+                        kind="git_commit",
+                        id=record.task.workspace_base_revision
+                        or selected_artifact_ref.id,
+                        provider=record.task.workspace_backend,
+                    )
+                run.promotion = PromotionRecord(
+                    promotion_id=f"promotion_{candidate_id}",
+                    run_id=run_id,
+                    candidate_id=candidate_id,
+                    provider=record.task.workspace_backend,
+                    strategy="legacy_patch",
+                    base_artifact_ref=base_ref,
+                    selected_artifact_ref=selected_artifact_ref,
+                    artifact_path=patch_path,
+                    source_subdir=record.task.workspace_source_subdir,
+                    changed_files=detected_changed,
+                    created_at=utc_timestamp(),
+                )
             run.state = RunState.PROMOTED
             run.selected_candidate_id = candidate_id
             self._write_run(run)
@@ -3748,6 +3821,64 @@ class FileSearchRuntime:
         if report_path.exists() and not self._blocking_goal_report_records(run_id):
             self.report(run_id)
         return patch_path
+
+    def apply_promotion(self, run_id: str) -> PromotionRecord:
+        """Apply one prepared provider-native publication to its source root."""
+
+        with self._run_transaction(run_id):
+            run = self._load_run(run_id)
+            if run.state != RunState.PROMOTED or run.promotion is None:
+                raise RuntimeError("search_promote must prepare a promotion before apply")
+            promotion = run.promotion
+            if promotion.state == "applied":
+                return promotion
+            if promotion.strategy == "legacy_patch":
+                raise RuntimeError(
+                    "legacy patch promotions remain export-only; apply the saved patch "
+                    "with its returned coordinates"
+                )
+            prepared = PreparedPromotion(
+                provider=promotion.provider,
+                strategy=promotion.strategy,
+                base_artifact_ref=promotion.base_artifact_ref,
+                selected_artifact_ref=promotion.selected_artifact_ref,
+                publication_artifact_ref=promotion.publication_artifact_ref,
+                artifact_path=promotion.artifact_path,
+                source_repository=promotion.source_repository,
+                source_subdir=promotion.source_subdir,
+                changed_files=tuple(promotion.changed_files),
+                provider_handle=promotion.provider_handle,
+            )
+            try:
+                result = get_workspace_provider(
+                    promotion.provider
+                ).apply_promotion(prepared)
+            except Exception as exc:
+                run.promotion = promotion.model_copy(
+                    update={
+                        "state": "apply_failed",
+                        "error": f"{type(exc).__name__}: {exc}"[:2000],
+                    }
+                )
+                self._write_run(run)
+                raise
+            run.promotion = promotion.model_copy(
+                update={
+                    "state": "applied",
+                    "applied_source_revision": result.source_revision,
+                    "apply_result": dict(result.details),
+                    "error": None,
+                    "applied_at": utc_timestamp(),
+                }
+            )
+            self._write_run(run)
+            return run.promotion
+
+    def promotion_record(self, run_id: str) -> PromotionRecord:
+        run = self._load_run(run_id)
+        if run.promotion is None:
+            raise RuntimeError("run has no prepared promotion")
+        return run.promotion
 
     def promotion_apply_coordinates(self, run_id: str) -> tuple[Path, Path, str]:
         run = self._load_run(run_id)
@@ -4270,9 +4401,27 @@ class FileSearchRuntime:
             run_id=run.run_id,
             candidate_id=candidate_id,
         )
+        if run.source_artifact_ref is None and materialization.base_revision is not None:
+            artifact_kind = (
+                "fs_snapshot"
+                if materialization.backend == "thinkthread"
+                else "git_commit"
+            )
+            run.source_artifact_ref = ArtifactRef(
+                kind=artifact_kind,
+                id=materialization.base_revision,
+                provider=materialization.backend,
+            )
+            run.source_subdir = materialization.source_subdir
+            repository_value = (materialization.provider_handle or {}).get(
+                "source_repository"
+            )
+            if repository_value:
+                run.source_repository = Path(repository_value)
+        workspace = materialization.workspace
         task_skill_paths = materialized_task_skill_paths(
             frozen,
-            materialization.workspace,
+            workspace,
         )
 
         instructions = [
@@ -4340,10 +4489,19 @@ class FileSearchRuntime:
             workspace_backend=materialization.backend,
             workspace_branch=materialization.branch,
             workspace_base_revision=materialization.base_revision,
+            workspace_managed_root=materialization.managed_root,
+            workspace_source_subdir=materialization.source_subdir,
+            workspace_provider_handle=dict(
+                materialization.provider_handle or {}
+            ),
             task_skill_paths=task_skill_paths,
             base_artifact_ref=(
                 ArtifactRef(
-                    kind="git_commit",
+                    kind=(
+                        "fs_snapshot"
+                        if materialization.backend == "thinkthread"
+                        else "git_commit"
+                    ),
                     id=materialization.base_revision,
                     provider=materialization.backend,
                 )
@@ -4356,6 +4514,11 @@ class FileSearchRuntime:
                 bootstrap_required=frozen.spec.strategy.worker_host == "codex",
                 confinement="soft_path",
                 writable_surfaces=list(frozen.spec.edit_surface.allow),
+                managed_root=materialization.managed_root,
+                source_subdir=materialization.source_subdir,
+                provider_handle=dict(
+                    materialization.provider_handle or {}
+                ),
             ),
             share_out_dir=share_out_dir,
             allowed_files=frozen.spec.edit_surface.allow,
@@ -5558,9 +5721,7 @@ class FileSearchRuntime:
         record: CandidateRecord,
         metric_direction: Literal["maximize", "minimize"],
     ) -> IterationRecord | None:
-        current_changed = self._detect_changed_files(
-            Path(run.source_path), record.task.workspace
-        )
+        current_changed = self._candidate_changed_files(run, record)
         current_artifact_hash = self._artifact_hash(
             record.task.workspace, current_changed
         )
@@ -5636,9 +5797,7 @@ class FileSearchRuntime:
             tuple[float, CandidateRecord, int | None, ArtifactRef | None]
         ] = []
         for record in records:
-            current_changed = self._detect_changed_files(
-                Path(run.source_path), record.task.workspace
-            )
+            current_changed = self._candidate_changed_files(run, record)
             current_artifact_hash = self._artifact_hash(
                 record.task.workspace, current_changed
             )
@@ -6160,6 +6319,83 @@ class FileSearchRuntime:
                 changed.append(rel_path)
         return changed
 
+    def _candidate_changed_files(
+        self,
+        run: RunRecord,
+        record: CandidateRecord,
+        artifact_ref: ArtifactRef | None = None,
+    ) -> list[str]:
+        provider = get_workspace_provider(record.task.workspace_backend)
+        target = artifact_ref or provider.current_artifact(record.task.workspace)
+        base = run.source_artifact_ref
+        if (
+            record.task.workspace_backend == "git_worktree"
+            and base is not None
+            and target is not None
+            and base.provider == target.provider
+        ):
+            changed = provider.changed_files(
+                record.task.workspace,
+                base,
+                target,
+                self._candidate_git_pathspecs(),
+            )
+            logical_changes = [
+                path
+                for path in changed
+                if path != RESULTS_TSV_RELATIVE_PATH
+            ]
+            return sorted(
+                set(logical_changes)
+                | set(
+                    self._git_changes_outside_logical_workspace(
+                        record.task,
+                        base,
+                        target,
+                    )
+                )
+            )
+        return self._detect_changed_files(
+            Path(run.source_path), record.task.workspace
+        )
+
+    def _git_changes_outside_logical_workspace(
+        self,
+        task: CandidateTask,
+        base: ArtifactRef,
+        target: ArtifactRef,
+    ) -> list[str]:
+        managed_root = task.workspace_managed_root
+        source_subdir = task.workspace_source_subdir
+        if managed_root is None or source_subdir == ".":
+            return []
+        value = self._git_output(
+            managed_root,
+            [
+                "git",
+                "diff",
+                "--name-only",
+                "-z",
+                base.id,
+                target.id,
+                "--",
+                ".",
+            ],
+        )
+        source_prefix = f"{source_subdir.rstrip('/')}/"
+        parent_prefix = "../" * len(Path(source_subdir).parts)
+        outside: list[str] = []
+        for path in value.split("\0"):
+            if not path or path.startswith(source_prefix):
+                continue
+            candidate = Path(path)
+            if any(part in IGNORED_NAMES for part in candidate.parts):
+                continue
+            if any(candidate.name.endswith(suffix) for suffix in IGNORED_SUFFIXES):
+                continue
+            outside.append(f"{parent_prefix}{path}")
+        return outside
+
     def _candidate_artifact_state(
         self,
         run: RunRecord,
@@ -6167,7 +6403,7 @@ class FileSearchRuntime:
         record: CandidateRecord,
     ) -> _CandidateArtifactState:
         workspace = record.task.workspace
-        changed_files = self._detect_changed_files(Path(run.source_path), workspace)
+        changed_files = self._candidate_changed_files(run, record)
         touched_denied = any(
             path_matches(path, frozen.spec.edit_surface.deny)
             for path in changed_files

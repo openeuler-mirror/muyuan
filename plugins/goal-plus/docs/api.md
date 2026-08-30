@@ -17,7 +17,8 @@ Search 流程中的位置、调用方和所有权。
    关联；
 5. `search_plan_next` 和 `search_start_batch` 只创建一次初始 candidate，host 启动固定 worker pool；
 6. worker 循环读取 context/Evidence、修改 workspace、调用 `search_run_verifier`；
-7. 达到全局停止条件后，host 先停止所有 worker，再执行 `search_select` 和 `search_promote`；
+7. 达到全局停止条件后，host 先停止所有 worker，再执行 `search_select` 和
+   `search_promote`；任务授权写回 source 时再执行 `search_apply_promotion`；
 8. main 接受各 work item，完成
    `goal_plus_record_search_result`、final check 和终态审计，最后为每个已记录 run 调用一次 `search_report`。
 
@@ -269,23 +270,24 @@ generation、assignment/result/decision，同时保留 Codex/Pi 的原生 operat
 
 ## Selection、Promotion 与 Report
 
-| 工具             | 用途                                                           |
-| ---------------- | -------------------------------------------------------------- |
-| `search_select`  | 按 ranking 恢复 commit，并选择第一个通过 final verifier 的状态 |
-| `search_promote` | 对选中 commit 运行 promotion gate，并导出 patch                |
-| `search_report`  | 生成最终 `report.md` 和 self-contained `report.html`           |
+- `search_select`：按 ranking 恢复 immutable artifact，并选择通过 final verifier 的状态。
+- `search_promote`：运行 promotion gate，并准备 provider-native publication。
+- `search_apply_promotion`：将 publication 显式写回原 Git repo 或 ThinkThread Root。
+- `search_report`：生成最终 `report.md` 和 self-contained `report.html`。
 
 `search_select` 基于 verifier-backed immutable revision。promotion 是独立验收，不复用 process
 pass；失败时 run 保持可重试，且不输出 patch。
 
-Promotion patch 始终相对于 `source_path`。`search_promote` 同时返回 `apply_cwd` 和
-`apply_directory`；写回源码时，从 `apply_cwd` 执行
-`git apply --directory=<apply_directory> <artifact_path>`。不要根据当前 Git
-cwd 猜测路径，尤其不要在嵌套 `source_path` 下直接运行不带目录映射的 `git apply`。
+新 Git run 会完整 mirror 原 repository 和历史，并保留 candidate 的全部 running commits。
+`search_promote` 另行合成一个以 source baseline 为 parent 的 squash publication commit；
+`search_apply_promotion` 将它 cherry-pick 回原仓。旧 run 的 `legacy_patch` 仍返回
+`apply_cwd` 和 `apply_directory`，并从 `apply_cwd` 执行
+`git apply --directory=<apply_directory> <artifact_path>`。
 
-关联 Goal Plus record 时，正常顺序是 select -> promote -> record Search result -> final audit ->
-terminal status -> report。`search_report` 会拒绝 active 或 needs-user
-record，确保静态报告不会捕获中间态。
+关联 Goal Plus record 时，正常顺序是 select -> promote -> 可选 apply -> record Search
+result -> final audit -> terminal status -> report。artifact-only 或受保护 source 任务停在
+prepared publication；`search_report` 会拒绝 active 或 needs-user record，确保静态报告不会
+捕获中间态。
 
 `report.html` 汇总全部关联 Search task、candidate/session/verifier Evidence、main agent
 usage、metric gap 和独立时间线。worker

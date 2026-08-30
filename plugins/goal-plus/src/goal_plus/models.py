@@ -60,6 +60,8 @@ class Budget(SearchModel):
 WorkspaceBackend = Literal["copy", "git_worktree", "thinkthread"]
 ArtifactKind = Literal["git_commit", "fs_snapshot"]
 WorkspaceAccessKind = Literal["soft_path", "protected_execution"]
+PromotionState = Literal["prepared", "applied", "apply_failed"]
+PromotionStrategy = Literal["legacy_patch", "squash_commit", "fs_apply"]
 IterationDisposition = Literal["keep", "retain", "discard", "failure"]
 SharedToolPublishStatus = Literal[
     "legacy_unknown", "not_staged",
@@ -129,6 +131,9 @@ class WorkspaceAccess(SearchModel):
     bootstrap_required: bool = True
     confinement: WorkspaceAccessKind = "soft_path"
     writable_surfaces: list[str] = Field(default_factory=list)
+    managed_root: Path | None = None
+    source_subdir: str = "."
+    provider_handle: dict[str, Any] = Field(default_factory=dict)
 
 
 class ReferenceWorkspaceAccess(SearchModel):
@@ -1129,6 +1134,9 @@ class CandidateTask(SearchModel):
     workspace_backend: WorkspaceBackend = "copy"
     workspace_branch: str | None = None
     workspace_base_revision: str | None = None
+    workspace_managed_root: Path | None = None
+    workspace_source_subdir: str = "."
+    workspace_provider_handle: dict[str, Any] = Field(default_factory=dict)
     task_skill_paths: list[Path] = Field(default_factory=list)
     base_artifact_ref: ArtifactRef | None = None
     workspace_access: WorkspaceAccess = Field(default_factory=WorkspaceAccess)
@@ -1307,6 +1315,51 @@ class PromotionEvidence(SearchModel):
     created_at: str
 
 
+class PromotionRecord(SearchModel):
+    """Prepared provider-native publication and its explicit apply result."""
+
+    promotion_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    candidate_id: str = Field(min_length=1)
+    provider: WorkspaceBackend
+    strategy: PromotionStrategy
+    state: PromotionState = "prepared"
+    base_artifact_ref: ArtifactRef
+    selected_artifact_ref: ArtifactRef
+    publication_artifact_ref: ArtifactRef | None = None
+    artifact_path: Path | None = None
+    source_repository: Path | None = None
+    source_subdir: str = "."
+    changed_files: list[str] = Field(default_factory=list)
+    provider_handle: dict[str, str] = Field(default_factory=dict)
+    apply_request_id: str | None = None
+    applied_source_revision: str | None = None
+    apply_result: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    created_at: str
+    applied_at: str | None = None
+
+    @model_validator(mode="after")
+    def strategy_matches_provider(self) -> "PromotionRecord":
+        if self.strategy == "squash_commit" and self.provider != "git_worktree":
+            raise ValueError("squash_commit promotion requires git_worktree")
+        if self.strategy == "fs_apply" and self.provider != "thinkthread":
+            raise ValueError("fs_apply promotion requires thinkthread")
+        if self.base_artifact_ref.provider != self.provider:
+            raise ValueError("promotion base artifact provider must match promotion")
+        if self.selected_artifact_ref.provider != self.provider:
+            raise ValueError(
+                "promotion selected artifact provider must match promotion"
+            )
+        if self.strategy != "legacy_patch":
+            publication = self.publication_artifact_ref
+            if publication is None or publication.provider != self.provider:
+                raise ValueError(
+                    "provider-native promotion requires a matching publication artifact"
+                )
+        return self
+
+
 class IterationRecord(SearchModel):
     iteration: int
     agent_session_id: str | None = None
@@ -1441,6 +1494,9 @@ class RunRecord(SearchModel):
     state: RunState
     frozen_spec_id: str
     source_path: str
+    source_repository: Path | None = None
+    source_subdir: str = "."
+    source_artifact_ref: ArtifactRef | None = None
     created_at: str
     next_candidate_index: int = 1
     next_plan_index: int = 1
@@ -1455,6 +1511,7 @@ class RunRecord(SearchModel):
     selected_git_head: str | None = None
     selected_artifact_ref: ArtifactRef | None = None
     selected_artifact_hash: str | None = None
+    promotion: PromotionRecord | None = None
     budget_used: dict[str, Any] = Field(default_factory=dict)
     source_run_id: str | None = None
     inherited_research: dict[str, Any] = Field(default_factory=dict)

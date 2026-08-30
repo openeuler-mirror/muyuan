@@ -48,6 +48,12 @@ Git worktree / ThinkThread Workspace Provider
 - `thinkthread` backend 已注册为显式 unsupported，不会假装运行成功；
 - 已覆盖 reference 精确性、隔离性、回收、可见性和 Copy/Git parity 测试。
 
+当前分支进一步完成了 Git source/promotion 重构：真实 Git source 使用保留完整历史的
+run-local bare mirror 和 worktree，candidate running commits 原样保留；最终另外合成一个
+squash publication commit 并通过显式 apply 写回。ThinkThread 已有独立的 filtered publish
+snapshot/`fs.apply` adapter，但 baseline、private Child 和 host launch 尚未接通，因此仍不能
+把普通 Codex/Pi cwd 当作 ThinkThread candidate。
+
 `d5cd419 fix(goal-plus): separate completion timing from status` 已把“是否完成”与
 “预设时间”分开：超过预设时间但实际完成的任务仍是 `complete`，报告描述预设时间
 和实际完成收尾时间，不再误判为未完成或失败。

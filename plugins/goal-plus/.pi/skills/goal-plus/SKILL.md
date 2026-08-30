@@ -271,14 +271,16 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
 9. 正常选择前等待准确 snapshot 的 `active_count=0`，再调用
    `pi_search_pool_close(mode="drain")`。只有 run 已按第 7 步失效时，主 agent 才对仍有
    active job 的 pool 使用 `mode="interrupt"`。运行时会拒绝在真实 closeout reserve 之外
-   提前关闭 active pool。pool 关闭后再按提升要求调用 `search_select` 和 `search_promote`。
+   提前关闭 active pool。pool 关闭后再按提升要求调用 `search_select` 和 `search_promote`；
+   只有任务明确授权写回 source 时才调用 `search_apply_promotion`。
    `search_select` 对 verifier 记录的 iteration 排名并 checkout 最佳已提交候选的
    `git_head`。准确 worker Evidence 已经覆盖该产物时直接用于选择；没有这种证据的旧记录才
    使用父级 process verifier。配置的 promotion verifier 仍是选中 revision 的最终 gate。
-   promotion patch 相对于返回的 `source_path`；写回源码时从返回的 `apply_cwd` 执行
-   `git apply --directory=<apply_directory> <artifact_path>`，不要根据当前 Git cwd 猜路径。
-10. 调用 `goal_plus_record_search_result`。此时不要调用 `search_report`；结果记录只预留
-    规范报告路径，不生成 Markdown 或 HTML。
+   新 Git run 使用一个 squash publication commit 写回原仓；旧的 `legacy_patch` 才从返回的
+   `apply_cwd` 执行 `git apply --directory=<apply_directory> <artifact_path>`。
+10. 任务授权写回时完成 promotion apply；artifact-only 或受保护 source 任务保留 prepared
+    publication。随后调用 `goal_plus_record_search_result`。此时不要调用 `search_report`；
+    结果记录只预留规范报告路径，不生成 Markdown 或 HTML。
 11. 执行原始目标审计。评估/编辑契约仍充分时保留同一个 run。新 incumbent 或低性能路线
     绝不会开启替代 run。只有具体 spec/契约修订或不同的可度量子问题才能创建后继项，
     并使用 `source_run_id`；继承分数在重新验证前仍只是历史。

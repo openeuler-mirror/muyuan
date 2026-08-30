@@ -120,6 +120,7 @@ SEARCH_TOOL_SUFFIXES = (
     "search_select",
     "search_report",
     "search_promote",
+    "search_apply_promotion",
     "pi_search_pool_open",
     "pi_search_pool_wait_any",
     "pi_search_pool_snapshot",

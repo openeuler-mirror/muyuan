@@ -47,6 +47,7 @@ SEARCH_TOOL_NAMES = {
     "search_select",
     "search_report",
     "search_promote",
+    "search_apply_promotion",
 }
 
 GOAL_PLUS_TOOL_NAMES = {

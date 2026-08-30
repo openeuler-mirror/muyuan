@@ -8,12 +8,14 @@ import pytest
 from goal_plus.models import (
     AgentHostHandle,
     AgentSessionRecord,
+    ArtifactRef,
     CandidateProposal,
     CandidateTask,
     FrozenSpec,
     GoalPlusGateResult,
     GoalPlusNextAction,
     GoalPlusRecord,
+    PromotionRecord,
     RunState,
     RunRecord,
     RunSummary,
@@ -244,6 +246,33 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     runtime.select.return_value = {"selected_candidate_id": "c001"}
     runtime.report.return_value = Path("/tmp/report.md")
     runtime.promote.return_value = Path("/tmp/c001.patch")
+    runtime.promotion_record.return_value = PromotionRecord(
+        promotion_id="promotion_c001",
+        run_id="run_1",
+        candidate_id="c001",
+        provider="git_worktree",
+        strategy="squash_commit",
+        base_artifact_ref=ArtifactRef(
+            kind="git_commit", id="base123", provider="git_worktree"
+        ),
+        selected_artifact_ref=ArtifactRef(
+            kind="git_commit", id="selected123", provider="git_worktree"
+        ),
+        publication_artifact_ref=ArtifactRef(
+            kind="git_commit", id="publish123", provider="git_worktree"
+        ),
+        artifact_path=Path("/tmp/c001.patch"),
+        created_at="2026-06-24T00:00:00Z",
+    )
+    runtime.apply_promotion.return_value = (
+        runtime.promotion_record.return_value.model_copy(
+            update={
+                "state": "applied",
+                "applied_source_revision": "source456",
+                "applied_at": "2026-06-24T00:01:00Z",
+            }
+        )
+    )
     runtime.promotion_apply_coordinates.return_value = (
         Path("/tmp/source/repository/task"),
         Path("/tmp/source/repository"),
@@ -359,7 +388,17 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         "source_path": "/tmp/source/repository/task",
         "apply_cwd": "/tmp/source/repository",
         "apply_directory": "task",
+        "promotion_id": "promotion_c001",
+        "provider": "git_worktree",
+        "strategy": "squash_commit",
+        "state": "prepared",
+        "publication_artifact_ref": {
+            "kind": "git_commit",
+            "id": "publish123",
+            "provider": "git_worktree",
+        },
     }
+    assert tools.search_apply_promotion("run_1")["state"] == "applied"
 
     proposal_arg = runtime.start_batch.call_args.args[2][0]
     assert isinstance(proposal_arg, CandidateProposal)

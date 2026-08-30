@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from goal_plus.models import ArtifactRef
 from goal_plus.workspaces import (
     UnsupportedWorkspaceCapability,
     get_workspace_provider,
@@ -123,6 +124,42 @@ def test_git_worktree_backend_shares_objects_but_keeps_branches_independent(
     assert (second_path / "program.py").read_text(encoding="utf-8") == "VALUE = 2\n"
 
 
+def test_git_worktree_clones_full_history_and_returns_nested_logical_workspace(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    source = repository / "packages" / "task"
+    source.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    (repository / "README.md").write_text("root\n", encoding="utf-8")
+    (source / "program.py").write_text("VALUE = 0\n", encoding="utf-8")
+    first = git_commit(repository, "first source commit")
+    (repository / "README.md").write_text("root v2\n", encoding="utf-8")
+    second = git_commit(repository, "second source commit")
+
+    materialized = materialize_candidate_workspace(
+        backend="git_worktree",
+        run_dir=tmp_path / "run",
+        source=source,
+        workspace=tmp_path / "run" / "workspace" / "c001",
+        run_id="run_test",
+        candidate_id="c001",
+    )
+
+    assert materialized.source_subdir == "packages/task"
+    assert materialized.managed_root == tmp_path / "run" / "workspace" / "c001"
+    assert materialized.workspace == materialized.managed_root / "packages" / "task"
+    assert materialized.provider_handle is not None
+    mirror = Path(materialized.provider_handle["repository"])
+    assert mirror.name == "workspace-repository.git"
+    assert git_output(mirror, "rev-parse", "--is-bare-repository") == "true"
+    assert git_output(materialized.workspace, "rev-parse", "HEAD") == second
+    assert git_output(materialized.workspace, "cat-file", "-t", first) == "commit"
+    assert (materialized.managed_root / "README.md").read_text(
+        encoding="utf-8"
+    ) == "root v2\n"
+
+
 def test_git_worktree_baseline_tracks_files_ignored_by_source_gitignore(
     tmp_path: Path,
 ) -> None:
@@ -239,6 +276,8 @@ def test_thinkthread_backend_declares_future_capabilities_without_fallback(
 
     assert provider.capabilities.protected_execution is False
     assert provider.capabilities.reference_workspace is False
+    assert provider.capabilities.prepare_promotion is True
+    assert provider.capabilities.apply_promotion is True
     with pytest.raises(
         UnsupportedWorkspaceCapability,
         match="materialize_candidate",
@@ -251,3 +290,84 @@ def test_thinkthread_backend_declares_future_capabilities_without_fallback(
             run_id="run_test",
             candidate_id="c001",
         )
+
+
+def test_thinkthread_promotion_filters_local_vcs_and_uses_fs_apply(
+    tmp_path: Path,
+) -> None:
+    provider = get_workspace_provider("thinkthread")
+    calls: list[tuple[str, ...]] = []
+
+    provider._snapshot_diff = lambda _base, _target: {  # type: ignore[attr-defined,method-assign]
+        "src/new": "added",
+        "src/new/app.py": "added",
+        "src/.git/index": "modified",
+        "src/results.tsv": "modified",
+    }
+    provider._snapshot_stat = lambda _snapshot, path: {  # type: ignore[attr-defined,method-assign]
+        "path": path,
+        "kind": "directory" if path == "src/new" else "file",
+        "mode": 0o755 if path == "src/new" else 0o644,
+        "len": 4,
+    }
+    provider._snapshot_read = lambda _snapshot, _path: b"new\n"  # type: ignore[attr-defined,method-assign]
+
+    def command(*args: str) -> dict[str, object]:
+        calls.append(args)
+        if args[:3] == ("fs", "snapshot", "patch"):
+            return {
+                "snapshot": {"snapshotId": "fsnap-publish"},
+                "changedPaths": 1,
+                "changedBytes": 4,
+            }
+        if args[:2] == ("fs", "apply"):
+            return {
+                "status": "applied",
+                "baseSnapshotId": "fsnap-base",
+                "targetSnapshotId": "fsnap-publish",
+                "changedPaths": 1,
+                "changedBytes": 4,
+            }
+        raise AssertionError(args)
+
+    provider._command = command  # type: ignore[attr-defined,method-assign]
+    prepared = provider.prepare_promotion(
+        run_dir=tmp_path / "run",
+        run_id="run_test",
+        candidate_id="c001",
+        source=tmp_path / "source",
+        workspace=Path("src"),
+        source_subdir="src",
+        base_artifact_ref=ArtifactRef(
+            kind="fs_snapshot", id="fsnap-base", provider="thinkthread"
+        ),
+        selected_artifact_ref=ArtifactRef(
+            kind="fs_snapshot", id="fsnap-selected", provider="thinkthread"
+        ),
+        changed_files=["new/app.py", ".git/index", "results.tsv"],
+    )
+
+    assert prepared.strategy == "fs_apply"
+    assert prepared.changed_files == ("new/app.py",)
+    assert prepared.publication_artifact_ref == ArtifactRef(
+        kind="fs_snapshot", id="fsnap-publish", provider="thinkthread"
+    )
+    patch_args = calls[0]
+    assert "src/new:755" in patch_args
+    assert "src/new/app.py" in " ".join(patch_args)
+    assert ".git" not in " ".join(patch_args)
+    assert "results.tsv" not in " ".join(patch_args)
+    request_id = prepared.provider_handle["apply_request_id"]
+    assert len(request_id) == 40
+    assert request_id.startswith("req-")
+
+    applied = provider.apply_promotion(prepared)
+
+    assert applied.source_revision is None
+    assert applied.details["status"] == "applied"
+    assert calls[-1][:4] == (
+        "fs",
+        "apply",
+        "--base",
+        "fsnap-base",
+    )

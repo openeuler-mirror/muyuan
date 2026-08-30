@@ -121,9 +121,12 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
     只创建一次初始候选集合，然后验证并恢复这些相同的候选 worker；依次使用
     `search_freeze_spec`、`search_create`、`search_plan_next`、
     `search_start_batch`、`search_start_agent_session`、最终
-    `search_run_verifier`、`search_select` 和 `search_promote`。
+    `search_run_verifier`、`search_select` 和 `search_promote`。任务授权写回 source 时，
+    对新的 provider-native promotion 调用 `search_apply_promotion`；artifact-only 或受保护
+    source 任务保留 prepared publication，不执行 apply。旧 `legacy_patch` 仅在任务授权时
+    按 `search_promote` 返回的坐标写回。
 11. `search_create` 后调用 `goal_plus_link_search_run`。
-12. 选择并提升后调用 `goal_plus_record_search_result`。此时不要调用
+12. 选择并提升后，在任务授权时完成 apply，再调用 `goal_plus_record_search_result`。此时不要调用
     `search_report`。结果记录只预留规范 Markdown 和 HTML 路径，不创建报告。
 13. 执行原始目标审计。如果还需要其他有 verifier 支持的 Search，使用相同
     `goal_plus_id` 冻结/创建新 run，并重复步骤 9-12。每个不同的 `run_id`

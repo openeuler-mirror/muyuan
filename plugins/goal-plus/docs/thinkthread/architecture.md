@@ -1,6 +1,7 @@
 # Goal Plus × ThinkThread 统一 Workspace 架构
 
-> 状态：设计目标；Git/Copy 基础设施已落地，ThinkThread provider 尚未实现。
+> 状态：设计目标；Git/Copy 基础设施和 ThinkThread promotion adapter 已落地，
+> ThinkThread candidate/Child provider 尚未实现。
 >
 > 代码基线：`master@d5cd419`（2026-08-26）。
 >
@@ -197,6 +198,8 @@ create_workspace(baseline, owner) -> WorkspaceAccess
 checkpoint(workspace, label) -> ArtifactRef
 restore(workspace, artifact) -> None
 checkout_reference(requester, artifact) -> ReferenceWorkspace
+prepare_promotion(baseline, selected, edit_surface) -> PublicationArtifact
+apply_promotion(publication) -> ApplyResult
 dispose_workspace(workspace) -> None
 capabilities() -> WorkspaceCapabilities
 ```
@@ -274,6 +277,11 @@ private COW Child
     -> reference: 从指定 FsSnapshot 派生只读/可丢弃 reference Child
     -> restore: 将 candidate Child 恢复到指定 FsSnapshot
 ```
+
+candidate 内的 LocalVcs `.git` 和 `results.tsv` 可以进入普通 checkpoint，但不能进入最终
+Root apply。promotion 必须从 baseline snapshot 派生 publish snapshot，只复制 edit surface
+内的产品变化，并把 `.git/**`、`.gp/**`、`.tmp/**` 和 `results.tsv` 保持为 baseline 内容；
+随后执行 `fs.apply(BASE, PUBLISH)`，不能直接 apply 未过滤的 candidate snapshot。
 
 `fs.snapshot.create`/`fs.branch.snapshot` 在架构上是 provider 使用的 ThinkThread
 能力，不是“main agent 派生 subagent 就自动触发”的 Goal Plus 隐式规则。
@@ -371,6 +379,7 @@ TODO，而不是现有能力。
 | ThinkThread verifier execution | 未实现 | verifier 绑定不可变 snapshot |
 | Codex/Pi × ThinkThread host 接入 | 未实现 | worker 真正在 private Child 中运行 |
 | TT reference workspace | 未实现 | 从已发布 snapshot 切换每个 worker 唯一的 reference Child |
+| TT publish snapshot / `fs.apply` | 已实现独立 adapter | 在真实 Child host E2E 中接通 selected snapshot |
 | 多仓 SourceImporter | 未实现 | 精确、可复现地导入完整 workspace |
 | 四组合规模化验证 | 未完成 | 用同一指标矩阵验收 |
 

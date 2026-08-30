@@ -63,6 +63,7 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
         "search_select",
         "search_report",
         "search_promote",
+        "search_apply_promotion",
         "goal_plus_create",
         "goal_plus_status",
         "goal_plus_update_goal",
@@ -438,6 +439,9 @@ def test_create_mcp_constructs_runtime_with_configured_root(
             return {}
 
         def search_promote(self, *args, **kwargs):
+            return {}
+
+        def search_apply_promotion(self, *args, **kwargs):
             return {}
 
     class FakeGoalTools:
