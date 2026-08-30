@@ -808,6 +808,7 @@ interface GoalPlusNextActionPayload {
 interface GoalPlusStatusPayload {
 	goal_plus_id?: string;
 	raw_goal?: string;
+	command_config?: Record<string, unknown>;
 	goal_revision?: number;
 	goal_revisions?: unknown[];
 	policy?: Record<string, unknown>;
@@ -1463,12 +1464,14 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 		`status: ${status.status ?? "unknown"}`,
 		`phase: ${status.phase ?? "unknown"}`,
 		`goal_revision: ${status.goal_revision ?? 1}`,
+		`command_config: ${JSON.stringify(status.command_config ?? {})}`,
 		`final_check_policy: ${JSON.stringify(status.policy?.final_check ?? { mode: "disabled" })}`,
 		"",
 			"原始目标：",
 		status.raw_goal ?? "",
 		"",
 			"规则：",
+			"- command_config 中的字段是 runtime 强约束；只有未配置字段才由你判断。",
 			"- 将原始目标与实现猜测分开。",
 			"- 每次 phase 变化后更新 goal-plus 状态。",
 			"- Search 是自主升级：spec draft 达到高置信度且无 open question 后，直接通过 Search Mode gate，不要请求用户批准。",
@@ -1493,34 +1496,36 @@ interface GoalPlusRoleModels {
 	workerDirective?: "workers" | "models";
 }
 
-function commandDirective(rawGoal: string, name: string): string | undefined {
-	const marker = new RegExp(`(?:^|\\s)${name}=`, "gi");
-	const markers = [...rawGoal.matchAll(marker)];
-	if (markers.length > 1) {
-		throw new Error(`/goal-plus accepts at most one ${name}= directive`);
+function leadingCommandDirectives(rawGoal: string): Map<string, string> {
+	let remaining = rawGoal.trim();
+	const directives = new Map<string, string>();
+	while (remaining.length > 0) {
+		const match = remaining.match(/^([A-Za-z][A-Za-z0-9_-]*)=([^\s]+)(?:\s+|$)/);
+		if (!match) break;
+		const name = match[1]!.toLowerCase().replace(/-/g, "_");
+		if (directives.has(name)) {
+			throw new Error(`/goal-plus accepts at most one ${name}= directive`);
+		}
+		directives.set(name, match[2]!.trim());
+		remaining = remaining.slice(match[0].length).trimStart();
 	}
-	if (markers.length === 0) return undefined;
-	const value = rawGoal.match(new RegExp(`(?:^|\\s)${name}=([^\\s]+)`, "i"))?.[1]?.trim();
-	if (!value) throw new Error(`${name}= requires a value`);
-	return value;
-}
-
-function roleModelDirective(rawGoal: string, name: string): string | undefined {
-	const value = commandDirective(rawGoal, name);
-	if (value?.includes(",")) {
-		throw new Error(`${name}= accepts exactly one model; use workers= for a list`);
-	}
-	return value;
+	return directives;
 }
 
 function parseGoalPlusRoleModels(rawGoal: string): GoalPlusRoleModels | undefined {
-	if (/(?:^|\s)model=/i.test(rawGoal)) {
+	const directives = leadingCommandDirectives(rawGoal);
+	if (directives.has("model")) {
 		throw new Error("model= is not supported; use main=, annotator=, and workers=");
 	}
-	const main = roleModelDirective(rawGoal, "main");
-	const annotator = roleModelDirective(rawGoal, "annotator");
-	const workers = commandDirective(rawGoal, "workers");
-	const models = commandDirective(rawGoal, "models");
+	const main = directives.get("main");
+	const annotator = directives.get("annotator");
+	const workers = directives.get("workers");
+	const models = directives.get("models");
+	for (const [name, value] of [["main", main], ["annotator", annotator]] as const) {
+		if (value?.includes(",")) {
+			throw new Error(`${name}= accepts exactly one model; use workers= for a list`);
+		}
+	}
 	if (workers && models) {
 		throw new Error("workers= and models= are aliases; specify only one");
 	}
@@ -1604,6 +1609,9 @@ function buildGoalStartPrompt(
 		"",
 		"原始目标：",
 		status.raw_goal ?? "",
+		"",
+		"显式命令配置（runtime 将在 SearchSpec draft 保存时校验）：",
+		JSON.stringify(status.command_config ?? {}),
 	];
 	if (roleModels) {
 		lines.push(
@@ -1613,7 +1621,7 @@ function buildGoalStartPrompt(
 		if (roleModels.main) lines.push(`- main: ${roleModels.main}（已校验当前 Pi session，未切换模型）`);
 		if (roleModels.annotator) lines.push(`- annotator: ${roleModels.annotator}`);
 		if (roleModels.workerDirective) {
-			lines.push(`- workers: 使用原始目标中的 ${roleModels.workerDirective}= 分配。`);
+			lines.push(`- workers: 使用 command_config.workers（入口别名 ${roleModels.workerDirective}=）。`);
 		}
 		lines.push(
 			"- 冻结 SearchSpec 时，只写入显式角色：annotator 写入 strategy.evidence_annotator.model；workers=/models= 按原有分配规则写入 strategy.models。未指定的角色保持现有 host 默认或继承语义。",
@@ -1622,6 +1630,7 @@ function buildGoalStartPrompt(
 	lines.push(
 		"",
 		"重要事项：",
+		"- command_config 中的字段必须原样落实；只有未配置字段才允许自主判断。",
 		"- 原生 Pi `/goal-plus` host command 已创建并授权此记录；skill、MCP 和模型工具不能创建或恢复 Goal Plus。",
 		"- 这是新创建记录的首轮。由你语义检查原始目标或当前对话上下文是否明确给出了整个 Goal Plus 任务的最大运行时间；如果没有，先用一句简短 commentary 告知用户：‘当前未设置最大运行时间，Goal Plus 将持续运行直至目标完成或用户手动停止。’这只是告知，不要询问或等待确认；告知后立即继续执行。",
 		"- 加载并遵循 goal-plus skill。",
@@ -2300,7 +2309,7 @@ export default function (pi: ExtensionAPI) {
 	}
 	if (!isPrintLikeInvocation) {
 		pi.registerCommand("goal-plus", {
-			description: "运行、编辑或恢复原生 Pi Goal Plus（支持显式角色模型）",
+			description: "运行、编辑或恢复原生 Pi Goal Plus（支持 typed command config）",
 			handler: async (args, ctx) => {
 				const request = goalPlusRequestFromSlashInput(`/goal-plus ${args}`);
 				if (request?.action === "invalid") {
@@ -2308,7 +2317,7 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				if (!request || (request.action !== "resume" && !request.rawGoal)) {
-					ctx.ui.notify("Usage: /goal-plus [mode=autonomous|probe] [main=model] [annotator=model] [workers=model,...] <goal>, /goal-plus edit [mode=...] <full revised goal>, or /goal-plus resume", "error");
+					ctx.ui.notify("Usage: /goal-plus [mode=...] [max_parallel=N] [workspace_backend=...] [promotion_mode=...] [strategy=...] [main=...] [annotator=...] [workers=...] <goal>, /goal-plus edit [config] <full revised goal>, or /goal-plus resume", "error");
 					return;
 				}
 				const deliverAsFollowUp = !ctx.isIdle();
@@ -2325,7 +2334,7 @@ export default function (pi: ExtensionAPI) {
 			handler: async (args, ctx) => {
 				const rawGoal = args.trim();
 				if (!rawGoal) {
-					ctx.ui.notify("Usage: /goal-plus-with-final-check [mode=autonomous|probe] [main=model] [annotator=model] [workers=model,...] <goal>", "error");
+					ctx.ui.notify("Usage: /goal-plus-with-final-check [typed-config] <goal>", "error");
 					return;
 				}
 				const prompt = await createGoalPlusStart(pi, ctx, rawGoal, true);

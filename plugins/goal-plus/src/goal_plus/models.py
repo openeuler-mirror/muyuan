@@ -860,9 +860,52 @@ GoalPlusFinalCheckStatus = Literal[
 GoalPlusFinalCheckerHost = Literal["codex", "pi"]
 
 
+class GoalPlusCommandConfig(SearchModel):
+    """Explicit host-command settings, separate from the natural-language goal."""
+
+    mode: Literal["autonomous", "probe"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    max_parallel: int | None = Field(
+        default=None, gt=0, exclude_if=lambda value: value is None
+    )
+    workspace_backend: WorkspaceBackend | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    promotion_mode: Literal["apply", "artifact_only"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    strategy: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
+    main: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
+    annotator: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
+    workers: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
+    worker_directive: Literal["workers", "models"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def worker_directive_matches_workers(self) -> "GoalPlusCommandConfig":
+        if (self.workers is None) != (self.worker_directive is None):
+            raise ValueError(
+                "workers and worker_directive must either both be set or both be absent"
+            )
+        return self
+
+
 class GoalPlusGoalRevision(SearchModel):
     revision: int = Field(ge=1)
     raw_goal: str = Field(min_length=1)
+    command_config: GoalPlusCommandConfig = Field(
+        default_factory=GoalPlusCommandConfig
+    )
     reason: str | None = None
     created_at: str
 
@@ -1032,6 +1075,9 @@ class GoalPlusHostCommandInvocation(SearchModel):
 class GoalPlusRecord(SearchModel):
     goal_plus_id: str
     raw_goal: str = Field(min_length=1)
+    command_config: GoalPlusCommandConfig = Field(
+        default_factory=GoalPlusCommandConfig
+    )
     source_path: str | None = None
     status: GoalPlusStatus = "active"
     phase: GoalPlusPhase = "intake"
@@ -1068,8 +1114,15 @@ class GoalPlusRecord(SearchModel):
                 )
             ]
         latest_revision = self.goal_revisions[-1]
-        if latest_revision.revision != self.goal_revision or latest_revision.raw_goal != self.raw_goal:
-            raise ValueError("raw_goal and goal_revision must match the latest goal revision")
+        if (
+            latest_revision.revision != self.goal_revision
+            or latest_revision.raw_goal != self.raw_goal
+            or latest_revision.command_config != self.command_config
+        ):
+            raise ValueError(
+                "raw_goal, command_config, and goal_revision must match the latest "
+                "goal revision"
+            )
         if not self.search_tasks and self.linked_search is not None:
             self.search_tasks = [self.linked_search.model_copy(deep=True)]
         elif self.search_tasks:

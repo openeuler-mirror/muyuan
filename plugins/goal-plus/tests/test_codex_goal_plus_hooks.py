@@ -533,10 +533,12 @@ def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None
     context = _additional_context(result, "UserPromptSubmit")
     record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
     record = FileGoalPlusRuntime(search_root).status(record_path.parent.name)
-    assert record.raw_goal.startswith(
-        "main=openai/gpt-5.6-sol annotator=gpt-5.6-terra "
-        "workers=gpt-5.6-terra,gpt-5.6-sol optimize throughput"
-    )
+    assert record.raw_goal.startswith("optimize throughput")
+    assert record.command_config.main == "openai/gpt-5.6-sol"
+    assert record.command_config.annotator == "gpt-5.6-terra"
+    assert record.command_config.workers == "gpt-5.6-terra,gpt-5.6-sol"
+    assert record.command_config.worker_directive == "workers"
+    assert "显式命令配置" in context
     assert "main=gpt-5.6-sol（仅校验当前 Codex session，未切换模型）" in context
     assert "annotator=gpt-5.6-terra" in context
     assert "strategy.evidence_annotator.model" in context

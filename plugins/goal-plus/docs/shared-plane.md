@@ -44,6 +44,12 @@ Search runtime 不是 worker supervisor。`AgentSessionRecord` 只记录上下�
 宿主 launch payload，不表示进程是否存活。Pi 的 pool 状态因此单独保存在
 `.gp/host-pools/pi/`；Codex 生命周期由原生 agent registry 管理。
 
+Goal Plus intake 将 host command 开头连续的 typed `key=value` 与自然语言目标分离。
+`GoalPlusRecord.command_config` 保存显式配置，`raw_goal` 只保存目标和探索模式指导；
+host-command invocation 继续保存原始输入 hash。ready SearchSpec draft 必须匹配显式
+配置，只有缺省字段才由 main agent 在 Spec Discovery 中决定。因此 config precedence
+由 runtime 校验，不依赖 prompt 是否正确复述。
+
 ## SearchSpec 与评价合同
 
 一个 `run_id` 绑定一份不可变的 `SearchSpec`。它至少包含：

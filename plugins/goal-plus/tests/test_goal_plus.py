@@ -179,6 +179,96 @@ def test_create_goal_normalizes_explicit_exploration_mode(tmp_path) -> None:
         runtime.create_goal("mode=fast Try approach A")
 
 
+def test_host_command_config_is_typed_persisted_and_removed_from_goal(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+
+    record = runtime.start_from_host_command(
+        "max_parallel=2 workspace_backend=git_worktree "
+        "promotion_mode=artifact_only strategy=agent_guided Optimize latency",
+        invocation=_codex_invocation("codex:test:config"),
+    )
+
+    assert record.raw_goal.startswith("Optimize latency")
+    assert "max_parallel=" not in record.raw_goal
+    assert record.command_config.model_dump(exclude_none=True) == {
+        "max_parallel": 2,
+        "workspace_backend": "git_worktree",
+        "promotion_mode": "artifact_only",
+        "strategy": "agent_guided",
+    }
+    assert record.goal_revisions[-1].command_config == record.command_config
+    created = runtime.list_events(record.goal_plus_id)[0]
+    assert created["payload"]["command_config"]["promotion_mode"] == "artifact_only"
+
+
+@pytest.mark.parametrize(
+    "raw_goal",
+    [
+        "unknown=value Optimize latency",
+        "max_parallel=zero Optimize latency",
+        "workers=A*1,B Optimize latency",
+    ],
+)
+def test_host_command_config_rejects_invalid_directives(tmp_path, raw_goal: str) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+
+    with pytest.raises((ValueError, ValidationError)):
+        runtime.create_goal(raw_goal)
+
+
+def test_explicit_command_config_enforces_ready_search_spec(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    record = runtime.create_goal(
+        "max_parallel=2 promotion_mode=artifact_only Optimize latency"
+    )
+    search_spec = _complete_search_spec()
+
+    with pytest.raises(ValueError, match="max_parallel=2"):
+        runtime.save_spec_draft(
+            record.goal_plus_id,
+            GoalPlusSpecDraft(
+                baseline={},
+                metric={"name": "avg_latency_ms"},
+                correctness_gate={},
+                edit_surface={"allow": ["kernel.py"]},
+                search_spec=search_spec,
+                promotion_rule="lowest valid latency",
+                confidence="high",
+            ),
+        )
+
+    search_spec["budget"]["max_parallel"] = 2
+    with pytest.raises(ValueError, match="promotion_mode=artifact_only"):
+        runtime.save_spec_draft(
+            record.goal_plus_id,
+            GoalPlusSpecDraft(
+                baseline={},
+                metric={"name": "avg_latency_ms"},
+                correctness_gate={},
+                edit_surface={"allow": ["kernel.py"]},
+                search_spec=search_spec,
+                promotion_rule="lowest valid latency",
+                confidence="high",
+            ),
+        )
+
+    search_spec["workspace"] = {"promotion_mode": "artifact_only"}
+    saved = runtime.save_spec_draft(
+        record.goal_plus_id,
+        GoalPlusSpecDraft(
+            baseline={},
+            metric={"name": "avg_latency_ms"},
+            correctness_gate={},
+            edit_surface={"allow": ["kernel.py"]},
+            search_spec=search_spec,
+            promotion_rule="lowest valid latency",
+            confidence="high",
+        ),
+    )
+
+    assert saved.spec_draft is not None
+
+
 def test_update_goal_preserves_or_explicitly_changes_exploration_mode(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("mode=probe Try approach A")
@@ -189,6 +279,7 @@ def test_update_goal_preserves_or_explicitly_changes_exploration_mode(tmp_path) 
         expected_revision=1,
     )
     assert preserved.raw_goal.endswith(EXPLORATION_MODE_LINES["probe"])
+    assert preserved.command_config.mode == "probe"
 
     changed = runtime.update_goal(
         record.goal_plus_id,
@@ -196,6 +287,7 @@ def test_update_goal_preserves_or_explicitly_changes_exploration_mode(tmp_path) 
         expected_revision=2,
     )
     assert changed.raw_goal.endswith(EXPLORATION_MODE_LINES["autonomous"])
+    assert changed.command_config.mode == "autonomous"
 
 
 def test_update_goal_creates_revision_and_supersedes_pending_check(tmp_path) -> None:

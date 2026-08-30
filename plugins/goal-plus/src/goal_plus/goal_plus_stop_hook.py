@@ -225,60 +225,20 @@ def _codex_host_invocation(
     }
 
 
-def _command_directive(raw_goal: str, name: str) -> str | None:
-    marker = re.compile(rf"(?:^|\s){re.escape(name)}=", re.IGNORECASE)
-    markers = list(marker.finditer(raw_goal))
-    if len(markers) > 1:
-        raise ValueError(f"$goal-plus accepts at most one {name}= directive")
-    if not markers:
-        return None
-    value_match = re.search(
-        rf"(?:^|\s){re.escape(name)}=([^\s]+)",
-        raw_goal,
-        re.IGNORECASE,
-    )
-    value = value_match.group(1).strip() if value_match is not None else ""
-    if not value:
-        raise ValueError(f"{name}= requires a value")
-    return value
-
-
-def _role_model_directive(raw_goal: str, name: str) -> str | None:
-    value = _command_directive(raw_goal, name)
-    if value is not None and "," in value:
-        raise ValueError(
-            f"{name}= accepts exactly one model; use workers= for a list"
-        )
-    return value
-
-
 def _parse_goal_plus_role_models(raw_goal: str) -> dict[str, str] | None:
-    if re.search(r"(?:^|\s)model=", raw_goal, re.IGNORECASE):
-        raise ValueError(
-            "model= is not supported; use annotator= and workers=. Codex main= "
-            "is only an assertion about the already-running session model"
-        )
-    main = _role_model_directive(raw_goal, "main")
-    annotator = _role_model_directive(raw_goal, "annotator")
-    workers = _command_directive(raw_goal, "workers")
-    models = _command_directive(raw_goal, "models")
-    if workers is not None and models is not None:
-        raise ValueError("workers= and models= are aliases; specify only one")
-    worker_models = workers if workers is not None else models
-    if worker_models is not None and any(
-        not value.strip() for value in worker_models.split(",")
-    ):
-        raise ValueError("workers=/models= contains an empty model reference")
-    if main is None and annotator is None and worker_models is None:
+    from goal_plus.goal_plus import parse_goal_plus_command_config
+
+    _objective, config = parse_goal_plus_command_config(raw_goal)
+    if config.main is None and config.annotator is None and config.workers is None:
         return None
     result: dict[str, str] = {}
-    if main is not None:
-        result["main"] = main
-    if annotator is not None:
-        result["annotator"] = annotator
-    if worker_models is not None:
-        result["workers"] = worker_models
-        result["worker_directive"] = "workers" if workers is not None else "models"
+    if config.main is not None:
+        result["main"] = config.main
+    if config.annotator is not None:
+        result["annotator"] = config.annotator
+    if config.workers is not None:
+        result["workers"] = config.workers
+        result["worker_directive"] = config.worker_directive or "workers"
     return result
 
 
@@ -1452,6 +1412,9 @@ def _goal_context(
         "skill 和 MCP 不能创建或恢复记录。\n"
         f"当前目标修订版：{record.goal_revision}。\n"
         f"当前原始目标：{record.raw_goal}\n"
+        "显式命令配置："
+        f"{record.command_config.model_dump(mode='json', exclude_none=True)}。"
+        "这些字段是 runtime 强约束；只有未配置字段才由 Agent 判断。\n"
         f"编排 policy：{execution_policy}。\n"
         f"当前工作项：{work_text}。\n"
         f"最终检查 policy：{record.policy.get('final_check', {'mode': 'disabled'})}。\n"

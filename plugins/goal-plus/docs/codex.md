@@ -249,10 +249,14 @@ promote 或修改 Goal Plus 状态。main 不会因为低分或单次没有提�
 
 ## 模型选择
 
+开头连续的 `key=value` 会被 Codex host hook 持久化为 typed `command_config`；第一个非配置
+token 开始就是目标。显式配置会在 ready SearchSpec draft 保存时机械校验，缺省字段才由
+Codex main 判断。完整 key 列表见 [API](api.md#host-command-config)。
+
 Codex 可以分别指定 annotator 和 worker 模型：
 
 ```text
-$goal-plus annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-sol max_parallel=4 optimize ...
+$goal-plus max_parallel=4 annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-sol optimize ...
 ```
 
 已经运行的 Codex session 就是 main agent，`$goal-plus` 不能切换它的模型。应在启动时使用
@@ -264,8 +268,9 @@ $goal-plus annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-sol max_paralle
 `workers=` 将一个或多个模型解析到 `strategy.models`。`models=` 是 `workers=` 的兼容别名，
 两者同时出现会报错。省略某个 role 时保留其正常 host default 或继承行为，不从另一个显式 role 推导。
 
-`workers=A,B max_parallel=4` 按 A、B、A、B round-robin；`workers=A,B A1B3 max_parallel=4` 是显式
-A1B3，`workers=A*1,B*3` 与之等价。Goal Plus 通过 `goal_plus_list_models(host="codex")` 解析
+`max_parallel=4 workers=A,B` 按 A、B、A、B round-robin；
+`max_parallel=4 workers=A*1,B*3` 是显式 A1B3。Goal Plus 通过
+`goal_plus_list_models(host="codex")` 解析
 annotator 和 worker 名称，并在 freeze 时保存有序 `selected_models`。candidate 的 worker 模型在后续
 continuation 中保持不变。省略 `workers=` 和 `models=` 时，child 继承正常 parent/default model。
 

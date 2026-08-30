@@ -99,19 +99,20 @@ strategy:
    除非用户明确要求自动注入，或已有运行 Evidence 证明当前 worker 无法可靠遵守
    manual 刷新契约，否则 `strategy.config.global_evidence_mode` 必须使用 `"manual"`；
    不得仅为便利或保险选择 `"auto"`。
-   原始 `$goal-plus` 命令包含 `annotator=B` 时，先调用
+   `GoalPlusRecord.command_config` 是显式强约束：先应用其中的 `max_parallel`、
+   `workspace_backend`、`promotion_mode` 和 `strategy`，只有缺省字段才由 Main 判断。
+   `command_config.annotator=B` 时，先调用
    `goal_plus_list_models(host="codex")` 并将唯一匹配冻结到
-   `strategy.evidence_annotator.model`。包含 `workers=A,B` 或兼容别名
-   `models=A,B` 时，用同一目录解析并冻结到 `strategy.models`；两个 Worker 别名不能
-   同时出现。`workers=A,B` 按 `max_parallel` 轮转；用户写
-   `workers=A,B A1B3`（或 `workers=A*1,B*3`）时使用显式数量，数量之和必须等于
-   `max_parallel`；`workers=A,B 每个一个` 表示 `max_parallel=2`。运行时据此生成有序
+   `strategy.evidence_annotator.model`。`command_config.workers=A,B` 时，用同一目录解析并
+   冻结到 `strategy.models`。无 count 时按 `max_parallel` 轮转；
+   `workers=A*1,B*3` 使用显式数量，数量之和必须等于 `max_parallel`。运行时据此生成有序
    `selected_models`，每个候选的 selected model 在原生 session 继续期间不可变；
    所有模型仍读取同一个 run 的 `search_get_global_evidence`，模型身份只作为
    candidate/session provenance，不改变候选准入或选择逻辑。`search_create` 不接收
    第二套模型分配参数。Codex 当前 session 就是 main；`main=` 只是由
    `UserPromptSubmit` hook 校验的可选兼容断言，不写入 SearchSpec，也不能由 Search
-   切换。省略的角色保持 host 默认或继承语义。
+   切换。省略的角色保持 host 默认或继承语义。ready spec draft 与 command config
+   不一致时，runtime 会拒绝保存。
 2. 调用且只调用一次 `search_plan_next(requested_k=budget.max_parallel)`，然后调用且只调用
    一次 `search_start_batch`，创建初始候选。启动 worker 前，把每个返回项的
    `task_skill_notice` 逐条展示给用户；它列出该 subagent worktree 中已获得的全部仓内 Skill，

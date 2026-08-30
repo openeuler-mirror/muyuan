@@ -38,8 +38,11 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    `$goal-plus mode=autonomous <目标>`（默认）要求为初始候选分配充足 lease，
    并在没有全局停止条件时继续同一候选；`$goal-plus mode=probe <目标>`
    要求进行短期可行性、潜力和阻塞因素探查。未指定 mode 的编辑保留当前选择。
-   运行时只把它存为 `raw_goal` 的规范末行，不把它作为 phase、Search strategy
-   或运行时字段。
+   显式 mode 保存在 `GoalPlusRecord.command_config`，对应执行指导仍写入 `raw_goal`
+   的规范末行；它不是 phase 或 Search strategy。
+   host adapter 会把开头连续的 typed `key=value` 配置与自然语言目标分开；第一个非配置
+   token 开始就是目标。`command_config` 中的显式字段必须原样落实。只有缺省字段才由 Main
+   判断。不要从 `raw_goal` 重新解析配置，也不要用自然语言覆盖显式配置。
    恢复 active 记录前，把最新用户消息视为本轮的权威依据：
    - 如果它继续或引导现有目标，但没有改变范围、交付物或成功标准，保留当前修订版。
    - 如果它改变了实际范围、交付物或成功标准，停止变更并要求用户使用精确的
@@ -60,7 +63,11 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    `expected_outputs` 只列出产物路径或 glob，不解析 stdout。要求 verifier 保持候选
    工作区只读，并使用唯一的 `GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR`（或 Python
    `tempfile`）存放编译器和临时输出；并行 Search 下固定 `/tmp` 路径不安全。
-   冻结操作会在消耗候选预算前拒绝工作区副作用。新 SearchSpec 必须显式设置
+   冻结操作会在消耗候选预算前拒绝工作区副作用。先把
+   `GoalPlusRecord.command_config` 中的 `max_parallel`、`workspace_backend`、
+   `promotion_mode`、`strategy`、`annotator` 和 `workers` 映射到 SearchSpec；ready draft
+   不匹配时 runtime 会拒绝保存。未配置字段才根据目标、host 能力和资源信号决定。
+   新 SearchSpec 必须显式设置
    `workspace.backend="git_worktree"`，以便候选共享 Git object database 并解析彼此的
    Evidence commit；`workspace.promotion_mode` 默认是 `apply`。只有受保护 source、只读
    template 或测试 fixture 才显式设置 `promotion_mode="artifact_only"`；`copy` backend
@@ -95,9 +102,8 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    `strategy.models`。不存在或不唯一时，在创建 run 前直接返回错误。旧的
    `models=` 是 `workers=` 的兼容别名，两者不能同时填写；单数 `model=` 无效。
    `workers=A,B max_parallel=4` 表示按 A、B、A、B 轮转；
-   `workers=A,B A1B3 max_parallel=4`（等价写法 `workers=A*1,B*3`）表示显式
-   A1B3，所有显式数量之和必须等于 `max_parallel`。`workers=A,B 每个一个`
-   表示 `max_parallel=2`。省略的角色保持 Codex host 默认或继承语义，不从另一个
+   `workers=A*1,B*3 max_parallel=4` 表示显式 A1B3，所有显式数量之和必须等于
+   `max_parallel`。省略的角色保持 Codex host 默认或继承语义，不从另一个
    显式角色猜默认值；没有填写 `annotator=`、`workers=` 或 `models=` 时不要探测目录。
    对于用语义、大致 shape/dtype 和参考提示描述的 AscendC Direct Invoke 算子目标，
    记录 `scenario="ascendc_direct_invoke"`，并完整读取

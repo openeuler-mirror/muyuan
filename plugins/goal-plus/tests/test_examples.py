@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+from goal_plus.goal_plus import parse_goal_plus_command_config
 from goal_plus.models import SearchSpec
 
 
@@ -38,15 +39,6 @@ EXAMPLES = {
             "search-spec.json",
             "workspace-template/initial_program.py",
             "workspace-template/.goal-plus-verifiers/circle_packing_score.py",
-        ),
-    },
-    "circle-packing-workspace-apply": {
-        "prompts": ("pi-goal-prompt.md",),
-        "required": (
-            "README.md",
-            "prepare_workspace.py",
-            "search-spec.json",
-            "workspace-README.md",
         ),
     },
     "edgebench-ad-placement": {
@@ -99,7 +91,7 @@ def test_supported_examples_have_their_entry_assets() -> None:
             assert (example / relative).exists(), f"{name}: missing {relative}"
 
 
-def test_prompt_entries_use_host_defaults_except_for_circle_model_routing() -> None:
+def test_prompt_entries_use_explicit_config_and_only_circle_routes_models() -> None:
     routed_prompts = {
         EXAMPLES_ROOT / "circle-packing" / "codex-goal-prompt.md",
         EXAMPLES_ROOT / "circle-packing" / "codex-goal-prompt-untimed.md",
@@ -110,6 +102,21 @@ def test_prompt_entries_use_host_defaults_except_for_circle_model_routing() -> N
         expected_entry = "$goal-plus" if path.name.startswith("codex-") else "/goal-plus"
         assert first_line.startswith(f"{expected_entry} ")
         assert "max_parallel=2" in first_line
+        assert "workspace_backend=git_worktree" in first_line
+        assert "strategy=agent_guided" in first_line
+        assert " -- " not in first_line
+        expected_promotion = (
+            "artifact_only" if "read-only" in first_line else "apply"
+        )
+        assert f"promotion_mode={expected_promotion}" in first_line
+        objective, config = parse_goal_plus_command_config(
+            first_line.split(" ", 1)[1]
+        )
+        assert objective
+        assert config.max_parallel == 2
+        assert config.workspace_backend == "git_worktree"
+        assert config.promotion_mode == expected_promotion
+        assert config.strategy == "agent_guided"
         if path in routed_prompts:
             assert "annotator=gpt-5.6-terra" in first_line
             assert "workers=gpt-5.6-terra,gpt-5.6-luna" in first_line
@@ -132,9 +139,10 @@ def test_circle_untimed_prompts_define_no_time_condition() -> None:
 def test_circle_timed_prompts_treat_the_preset_as_observational() -> None:
     for name in ("pi-goal-prompt.md", "codex-goal-prompt.md"):
         text = (EXAMPLES_ROOT / "circle-packing" / name).read_text(encoding="utf-8")
-        assert "preset task duration is 5 minutes" in text
-        assert "mark the Goal Plus record complete" in text
-        assert "do not label the difference late" in text
+        normalized_text = " ".join(text.split())
+        assert "preset task duration is 5 minutes" in normalized_text
+        assert "mark the Goal Plus record complete" in normalized_text
+        assert "do not label the difference late" in normalized_text
 
 
 @pytest.mark.parametrize(

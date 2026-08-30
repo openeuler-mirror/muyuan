@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 Optimize the read-only Circle Packing template in the current directory and deliver the result as a report without modifying the template.
+/goal-plus max_parallel=2 workspace_backend=git_worktree promotion_mode=artifact_only strategy=agent_guided Optimize the read-only Circle Packing template in the current directory and deliver the result as a report without modifying the template.
 
 Maximize the valid `sum_radii` emitted by
 `workspace-template/.goal-plus-verifiers/circle_packing_score.py`. A valid

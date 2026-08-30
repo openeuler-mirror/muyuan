@@ -22,6 +22,9 @@
 Pi session model，入口没有切换模型；`annotator=` 写入
 `strategy.evidence_annotator.model`；`workers=` 或兼容别名 `models=` 按现有分配规则写入
 `strategy.models`。未显式指定的角色保持现有默认或继承语义。
+完整的 typed `command_config` 是 runtime 持久化的强约束；将其中的
+`max_parallel`、`workspace_backend`、`promotion_mode`、`strategy`、`annotator` 和
+`workers` 映射到 SearchSpec。只有缺省字段才由 Main 判断，不能用 `raw_goal` 文本覆盖配置。
 
 ## Goal Plus
 

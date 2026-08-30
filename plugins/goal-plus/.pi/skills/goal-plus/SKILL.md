@@ -30,8 +30,11 @@ Plus 将持续运行直至目标完成或用户手动停止。”这只是告知
 lease、外层剩余时间和收尾预留来确定探索时间，并使用可续期的同候选 continuation；
 不另行规定固定的分钟或小时上限。
 `/goal-plus mode=probe <目标>` 选择短期可行性、潜力和阻塞因素探查。省略 mode 时默认
-使用 `autonomous`；未指定 mode 的编辑保留当前选择。运行时只把它存为 `raw_goal`
-的规范末行，不把它作为 phase、Search strategy 或运行时字段。
+使用 `autonomous`；未指定 mode 的编辑保留当前选择。显式 mode 保存在
+`GoalPlusRecord.command_config`，对应指导仍写入 `raw_goal` 的规范末行；它不是 phase
+或 Search strategy。host adapter 会把开头连续的 typed `key=value` 配置与自然语言目标
+分开；第一个非配置 token 开始就是目标。`command_config` 中的显式字段必须原样落实。
+只有缺省字段才由 Main 判断。不要从 `raw_goal` 重新解析配置，也不要用自然语言覆盖显式配置。
 
 恢复 active 记录前，把最新用户消息视为本轮权威依据。消息只继续或引导现有目标时，
 保留当前修订版。如果它改变了实际范围、交付物或成功标准，停止变更并要求用户使用精确的
@@ -98,14 +101,12 @@ verifier、编辑范围、预算和 promotion 合同。开放式补充评价发�
 PASS/FAIL、数值排名、candidate-local 结算、selection 或 promotion。MainAgent
 不负责定义这些维度，也不要根据 benchmark 类型向 annotator 预埋固定清单。
 
-如果原始命令包含 `workers=...` 或兼容别名 `models=...`，先调用
+如果 `GoalPlusRecord.command_config` 包含 `workers=...`，先调用
 `goal_plus_list_models(host="pi-rpc")`，将用户
 填写的名称解析为唯一可用模型并冻结到 `strategy.models`；不存在或不唯一时，在创建
 run 前直接返回错误。`workers=A,B max_parallel=4` 表示 A、B、A、B；
-`workers=A,B A1B3 max_parallel=4`（等价写法 `workers=A*1,B*3`）表示显式
-A1B3，数量之和必须等于
-`max_parallel`。`workers=A,B 每个一个` 表示 `max_parallel=2`。`workers=` 与
-`models=` 不能同时出现。没有填写任一 Worker 参数时不要探测目录，保持 Pi 当前默认模型。
+`workers=A*1,B*3 max_parallel=4` 表示显式 A1B3，数量之和必须等于
+`max_parallel`。没有填写 Worker 参数时不要探测目录，保持 Pi 当前默认模型。
 
 冻结预检在一次性源码副本中运行，并要求 verifier 保持该工作区只读。编译器产物和临时
 输出应放入唯一的 `GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` 或 Python
@@ -137,7 +138,10 @@ A1B3，数量之和必须等于
 
 `origin="initial"` 和 `origin="in_progress"` 仅表示 provenance，遵循相同的自主准入规则。
 
-调用 `search_freeze_spec` 前，确保 SearchSpec strategy 设置
+调用 `search_freeze_spec` 前，先把 `GoalPlusRecord.command_config` 中的
+`max_parallel`、`workspace_backend`、`promotion_mode`、`strategy`、`annotator` 和
+`workers` 映射到 SearchSpec；ready draft 不匹配时 runtime 会拒绝保存，未配置字段才根据
+目标、host 能力和资源信号决定。随后确保 SearchSpec strategy 设置
 `worker_host: "pi-rpc"` 和 `orchestration_mode: "parallel_loops"`。Pi Search Mode
 必须通过 Pi RPC driver 运行一组固定的初始自主候选循环。不能省略这些字段；旧运行时默认值
 不能表达该 policy。

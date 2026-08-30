@@ -1,11 +1,11 @@
 # AscendC Direct Invoke Through `/goal-plus`
 
-This scenario has one user-facing entry: a natural-language `/goal-plus` goal.
-There is no task preparer for users to run and no bundled task-specific
-verifier. During Spec Discovery, the Goal Plus main agent resolves the
-references named by the user, creates the operator workspace, generates and
-self-tests the verifier, freezes the resulting contract, and only then starts
-Search candidates.
+This scenario has one user-facing entry: a typed `/goal-plus` command-config
+prefix followed by the natural-language goal. There is no task preparer for
+users to run and no bundled task-specific verifier. During Spec Discovery, the
+Goal Plus main agent resolves the references named by the user, creates the
+operator workspace, generates and self-tests the verifier, freezes the
+resulting contract, and only then starts Search candidates.
 
 Curated AKG AscendC skills and explicit CANNBot gap supplements are generated
 per task as read-only implementation knowledge. They do not provide an Agent,

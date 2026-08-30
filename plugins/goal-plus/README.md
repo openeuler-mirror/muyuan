@@ -97,6 +97,7 @@ Start a goal in Pi:
 /goal-plus Optimize p95 latency for two hours without changing correctness.
 /goal-plus mode=probe Check whether vectorization is viable.
 /goal-plus mode=autonomous Deeply optimize the kernel.
+/goal-plus max_parallel=2 promotion_mode=artifact_only Optimize this read-only template.
 ```
 
 The equivalent Codex entry uses the installed skill:
@@ -106,6 +107,7 @@ $goal-plus Fix this bug and verify the test suite.
 $goal-plus Optimize p95 latency for two hours without changing correctness.
 $goal-plus mode=probe Check whether vectorization is viable.
 $goal-plus mode=autonomous Deeply optimize the kernel.
+$goal-plus max_parallel=2 promotion_mode=artifact_only Optimize this read-only template.
 ```
 
 Edit, resume, and independent-final-check commands use the same host-specific
@@ -129,12 +131,19 @@ error without mutating `.gp` state. A persisted active record is not
 automatically authorized in a later turn; use the exact host-specific
 `resume` command.
 
+Leading `key=value` command configuration is parsed and persisted separately
+from the natural-language goal. The first non-config token starts the goal.
+Explicit values are enforced against a ready SearchSpec draft, while omitted
+fields remain Agent decisions. See [API](docs/api.md#host-command-config) for
+the supported keys.
+
 One request starts an autonomous run. The agent decides whether Goal Mode is
 enough or a frozen verifier makes parallel Search useful; entering Search does
 not require an extra approval step. `mode=autonomous` (the default) gives
 every initial candidate substantial, renewable same-workspace exploration leases;
-`mode=probe` asks for short feasibility probes first. This exploration mode is
-stored as guidance in the final line of `raw_goal`, not as a scheduler state.
+`mode=probe` asks for short feasibility probes first. The explicit mode is
+recorded in `command_config`; its operational guidance remains in the final line
+of `raw_goal`, not as scheduler state.
 
 ## Hosts
 

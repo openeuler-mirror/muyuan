@@ -1,4 +1,4 @@
-$goal-plus annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-luna max_parallel=2 Optimize the read-only Circle Packing template in the current directory and deliver the result as a report without modifying the template.
+$goal-plus max_parallel=2 workspace_backend=git_worktree promotion_mode=artifact_only strategy=agent_guided annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-luna Optimize the read-only Circle Packing template in the current directory and deliver the result as a report without modifying the template.
 
 The preset task duration is 5 minutes. Do not start or continue candidate work
 after 4 minutes; reserve the remaining minute to preserve the best valid result

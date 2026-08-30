@@ -16,6 +16,7 @@ from goal_plus.host_observability import (
 )
 from goal_plus.models import (
     GoalPlusActiveSession,
+    GoalPlusCommandConfig,
     GoalPlusFinalCheck,
     GoalPlusFinalCheckerHost,
     GoalPlusExecutionPolicy,
@@ -101,9 +102,19 @@ EXPLORATION_MODE_LINES = {
         "完成或停止 Goal Plus 任务。"
     ),
 }
-_EXPLORATION_MODE_ARGUMENT_RE = re.compile(
-    r"^mode=(?P<mode>[^\s]+)(?:\s+|$)",
-    re.IGNORECASE,
+GOAL_PLUS_COMMAND_CONFIG_KEYS = {
+    "mode",
+    "max_parallel",
+    "workspace_backend",
+    "promotion_mode",
+    "strategy",
+    "main",
+    "annotator",
+    "workers",
+    "models",
+}
+_COMMAND_CONFIG_DIRECTIVE_RE = re.compile(
+    r"^(?P<name>[A-Za-z][A-Za-z0-9_-]*)=(?P<value>[^\s]+)(?:\s+|$)"
 )
 SEARCH_TOOL_SUFFIXES = (
     "search_freeze_spec",
@@ -191,23 +202,107 @@ def exploration_mode_from_raw_goal(raw_goal: str) -> str | None:
     return None
 
 
+def parse_goal_plus_command_config(
+    raw_goal: str,
+) -> tuple[str, GoalPlusCommandConfig]:
+    """Split leading typed key=value directives from the natural-language goal."""
+
+    remaining = raw_goal.strip()
+    directives: dict[str, str] = {}
+    while remaining:
+        match = _COMMAND_CONFIG_DIRECTIVE_RE.match(remaining)
+        if match is None:
+            break
+        name = match.group("name").lower().replace("-", "_")
+        value = match.group("value").strip()
+        if name == "model":
+            raise ValueError(
+                "model= is not supported; use main=, annotator=, and workers="
+            )
+        if name not in GOAL_PLUS_COMMAND_CONFIG_KEYS:
+            supported = ", ".join(sorted(GOAL_PLUS_COMMAND_CONFIG_KEYS))
+            raise ValueError(
+                f"unsupported Goal Plus command config {name}=; supported: {supported}"
+            )
+        if name in directives:
+            raise ValueError(f"/goal-plus accepts at most one {name}= directive")
+        directives[name] = value
+        remaining = remaining[match.end() :].lstrip()
+
+    workers = directives.get("workers")
+    models = directives.get("models")
+    if workers is not None and models is not None:
+        raise ValueError("workers= and models= are aliases; specify only one")
+    worker_models = workers if workers is not None else models
+    if worker_models is not None and any(
+        not value.strip() for value in worker_models.split(",")
+    ):
+        raise ValueError("workers=/models= contains an empty model reference")
+    if worker_models is not None:
+        _configured_worker_models(worker_models)
+    for name in ("main", "annotator"):
+        value = directives.get(name)
+        if value is not None and "," in value:
+            raise ValueError(
+                f"{name}= accepts exactly one model; use workers= for a list"
+            )
+
+    max_parallel: int | None = None
+    if "max_parallel" in directives:
+        try:
+            max_parallel = int(directives["max_parallel"])
+        except ValueError as exc:
+            raise ValueError("max_parallel= requires a positive integer") from exc
+
+    mode = directives.get("mode")
+    if mode is not None:
+        mode = mode.lower()
+        if mode not in EXPLORATION_MODES:
+            allowed = ", ".join(sorted(EXPLORATION_MODES))
+            raise ValueError(
+                f"unsupported Goal Plus exploration mode {mode!r}; "
+                f"expected one of: {allowed}"
+            )
+
+    config = GoalPlusCommandConfig.model_validate(
+        {
+            "mode": mode,
+            "max_parallel": max_parallel,
+            "workspace_backend": (
+                directives["workspace_backend"].lower()
+                if "workspace_backend" in directives
+                else None
+            ),
+            "promotion_mode": (
+                directives["promotion_mode"].lower()
+                if "promotion_mode" in directives
+                else None
+            ),
+            "strategy": directives.get("strategy"),
+            "main": directives.get("main"),
+            "annotator": directives.get("annotator"),
+            "workers": worker_models,
+            "worker_directive": (
+                "workers"
+                if workers is not None
+                else "models"
+                if models is not None
+                else None
+            ),
+        }
+    )
+    if not remaining:
+        raise ValueError("raw_goal must include an objective after command config")
+    return remaining, config
+
+
 def normalize_goal_plus_raw_goal(
     raw_goal: str,
     *,
     inherited_mode: str | None = None,
 ) -> str:
-    normalized = raw_goal.strip()
-    argument_match = _EXPLORATION_MODE_ARGUMENT_RE.match(normalized)
-    explicit_mode: str | None = None
-    if argument_match is not None:
-        explicit_mode = argument_match.group("mode").lower()
-        if explicit_mode not in EXPLORATION_MODES:
-            allowed = ", ".join(sorted(EXPLORATION_MODES))
-            raise ValueError(
-                f"unsupported Goal Plus exploration mode {explicit_mode!r}; "
-                f"expected one of: {allowed}"
-            )
-        normalized = normalized[argument_match.end() :].strip()
+    normalized, command_config = parse_goal_plus_command_config(raw_goal)
+    explicit_mode = command_config.mode
 
     embedded_mode = exploration_mode_from_raw_goal(normalized)
     if embedded_mode is not None:
@@ -220,6 +315,90 @@ def normalize_goal_plus_raw_goal(
     if mode not in EXPLORATION_MODES:
         mode = "autonomous"
     return f"{normalized}\n\n{EXPLORATION_MODE_LINES[mode]}"
+
+
+def _model_reference_matches(requested: str, configured: str) -> bool:
+    requested_parts = requested.strip().casefold().rsplit("/", 1)
+    configured_parts = configured.strip().casefold().rsplit("/", 1)
+    return (
+        requested_parts == configured_parts
+        or requested_parts[-1] == configured_parts[-1]
+    )
+
+
+def _configured_worker_models(value: str) -> list[tuple[str, int | None]]:
+    parsed: list[tuple[str, int | None]] = []
+    count_modes: set[bool] = set()
+    for item in value.split(","):
+        model = item.strip()
+        count: int | None = None
+        count_match = re.fullmatch(r"(.+)\*(\d+)", model)
+        if count_match is not None:
+            model = count_match.group(1).strip()
+            count = int(count_match.group(2))
+            if count <= 0:
+                raise ValueError("workers= model counts must be positive")
+        if not model:
+            raise ValueError("workers= contains an empty model reference")
+        count_modes.add(count is not None)
+        parsed.append((model, count))
+    if len(count_modes) > 1:
+        raise ValueError(
+            "workers= must specify counts for every model or for no models"
+        )
+    return parsed
+
+
+def _validate_command_config_for_search_spec(
+    config: GoalPlusCommandConfig,
+    spec: SearchSpec,
+) -> None:
+    checks = {
+        "max_parallel": (config.max_parallel, spec.budget.max_parallel),
+        "workspace_backend": (config.workspace_backend, spec.workspace.backend),
+        "promotion_mode": (config.promotion_mode, spec.workspace.promotion_mode),
+        "strategy": (config.strategy, spec.strategy.name),
+    }
+    for name, (requested, configured) in checks.items():
+        if requested is not None and requested != configured:
+            raise ValueError(
+                f"explicit command config {name}={requested} requires SearchSpec "
+                f"{name}={requested}; received {configured}"
+            )
+
+    if config.annotator is not None:
+        configured_annotator = spec.strategy.evidence_annotator.model
+        if configured_annotator is None or not _model_reference_matches(
+            config.annotator,
+            configured_annotator,
+        ):
+            raise ValueError(
+                "explicit command config annotator= must match "
+                "SearchSpec strategy.evidence_annotator.model"
+            )
+
+    if config.workers is not None:
+        requested_models = _configured_worker_models(config.workers)
+        configured_models = spec.strategy.models
+        if len(requested_models) != len(configured_models):
+            raise ValueError(
+                "explicit command config workers= must match SearchSpec strategy.models"
+            )
+        for (requested_model, requested_count), configured_model in zip(
+            requested_models,
+            configured_models,
+            strict=True,
+        ):
+            if not _model_reference_matches(requested_model, configured_model.model):
+                raise ValueError(
+                    "explicit command config workers= must match SearchSpec "
+                    "strategy.models in order"
+                )
+            if requested_count != configured_model.count:
+                raise ValueError(
+                    "explicit command config workers= counts must match SearchSpec "
+                    "strategy.models counts"
+                )
 
 
 def _elapsed_seconds(created_at: str) -> int | None:
@@ -342,10 +521,12 @@ class FileGoalPlusRuntime:
         goal_plus_id = self._next_goal_id()
         now = utc_timestamp()
         normalized_policy = self._normalize_policy(policy)
+        _objective, command_config = parse_goal_plus_command_config(raw_goal)
         normalized_raw_goal = normalize_goal_plus_raw_goal(raw_goal)
         record = GoalPlusRecord(
             goal_plus_id=goal_plus_id,
             raw_goal=normalized_raw_goal,
+            command_config=command_config,
             source_path=source_path,
             status="active",
             phase="intake",
@@ -355,6 +536,7 @@ class FileGoalPlusRuntime:
                 GoalPlusGoalRevision(
                     revision=1,
                     raw_goal=normalized_raw_goal,
+                    command_config=command_config,
                     reason="目标已创建",
                     created_at=now,
                 )
@@ -381,6 +563,9 @@ class FileGoalPlusRuntime:
             "created",
             {
                 "raw_goal": record.raw_goal,
+                "command_config": command_config.model_dump(
+                    mode="json", exclude_none=True
+                ),
                 "goal_revision": record.goal_revision,
                 "policy": record.policy,
                 "host_invocation": (
@@ -545,11 +730,22 @@ class FileGoalPlusRuntime:
                 f"Goal Plus revision conflict: expected {expected_revision}, "
                 f"current revision is {record.goal_revision}."
             )
+        _objective, updated_command_config = parse_goal_plus_command_config(raw_goal)
+        if (
+            updated_command_config.mode is None
+            and record.command_config.mode is not None
+        ):
+            updated_command_config = updated_command_config.model_copy(
+                update={"mode": record.command_config.mode}
+            )
         updated_raw_goal = normalize_goal_plus_raw_goal(
             raw_goal,
             inherited_mode=exploration_mode_from_raw_goal(record.raw_goal),
         )
-        if updated_raw_goal == record.raw_goal:
+        if (
+            updated_raw_goal == record.raw_goal
+            and updated_command_config == record.command_config
+        ):
             if host_invocation is None:
                 return record
             updated = self._with_host_invocation(record, host_invocation)
@@ -581,12 +777,14 @@ class FileGoalPlusRuntime:
         revision = GoalPlusGoalRevision(
             revision=next_revision,
             raw_goal=updated_raw_goal,
+            command_config=updated_command_config,
             reason=reason or "用户编辑了 Goal Plus 目标",
             created_at=now,
         )
         updated = record.model_copy(
             update={
                 "raw_goal": updated_raw_goal,
+                "command_config": updated_command_config,
                 "goal_revision": next_revision,
                 "goal_revisions": [*record.goal_revisions, revision],
                 "final_checks": checks,
@@ -629,6 +827,12 @@ class FileGoalPlusRuntime:
                 "goal_revision": next_revision,
                 "previous_raw_goal": record.raw_goal,
                 "raw_goal": updated_raw_goal,
+                "previous_command_config": record.command_config.model_dump(
+                    mode="json", exclude_none=True
+                ),
+                "command_config": updated_command_config.model_dump(
+                    mode="json", exclude_none=True
+                ),
                 "reason": revision.reason,
                 "host_invocation": (
                     host_invocation.model_dump(mode="json")
@@ -1186,8 +1390,15 @@ class FileGoalPlusRuntime:
                 if isinstance(search_spec, SearchSpecDraft)
                 else search_spec
             )
-            SearchSpec.model_validate(search_spec_data)
+            resolved_search_spec = SearchSpec.model_validate(search_spec_data)
+        else:
+            resolved_search_spec = None
         record = self._load_record(goal_plus_id)
+        if resolved_search_spec is not None:
+            _validate_command_config_for_search_spec(
+                record.command_config,
+                resolved_search_spec,
+            )
         origin = parsed.origin or (
             record.triage.identified_at if record.triage is not None else "in_progress"
         )

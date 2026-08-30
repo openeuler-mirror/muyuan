@@ -35,7 +35,8 @@ def test_pi_model_facing_create_and_update_are_deny_only(tmp_path: Path) -> None
 
 
 def test_pi_host_command_control_path_creates_verified_record(tmp_path: Path) -> None:
-    raw_input = "/goal-plus Test the exact Pi entrypoint"
+    raw_goal = "max_parallel=2 promotion_mode=artifact_only Test Pi config"
+    raw_input = f"/goal-plus {raw_goal}"
     token = "00000000-0000-4000-8000-000000000001"
     capability = tmp_path / ".gp" / "host-entrypoint" / "pi" / f"{token}.json"
     capability.parent.mkdir(parents=True)
@@ -47,7 +48,7 @@ def test_pi_host_command_control_path_creates_verified_record(tmp_path: Path) ->
         tmp_path / ".gp",
         "goal_plus_host_start",
         {
-            "raw_goal": "Test the exact Pi entrypoint",
+            "raw_goal": raw_goal,
             "source_path": ".",
             "invocation": {
                 "host": "pi",
@@ -66,6 +67,9 @@ def test_pi_host_command_control_path_creates_verified_record(tmp_path: Path) ->
 
     assert result["entrypoint_status"] == "host_verified"
     assert result["host_command_invocations"][0]["command"] == "/goal-plus"
+    assert result["raw_goal"].startswith("Test Pi config")
+    assert result["command_config"]["max_parallel"] == 2
+    assert result["command_config"]["promotion_mode"] == "artifact_only"
     assert not capability.exists()
 
 

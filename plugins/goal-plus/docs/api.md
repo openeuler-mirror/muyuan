@@ -8,8 +8,8 @@ Search 流程中的位置、调用方和所有权。
 
 普通 Goal Plus 任务和 Search Mode 使用同一条上层生命周期：
 
-1. Codex `$goal-plus` 或 Pi `/goal-plus` 的 host adapter 在模型轮次前保存原始目标并记录
-   host-command invocation Evidence；
+1. Codex `$goal-plus` 或 Pi `/goal-plus` 的 host adapter 在模型轮次前把 typed command
+   config 与自然语言目标分离，保存两者并记录 host-command invocation Evidence；
 2. `goal_plus_record_triage` 确定直接处理，还是先做 verifier/spec discovery；
 3. `goal_plus_upsert_work_items` 建立当前 revision 的
    work DAG，main 按 route 自行处理、派发 subagent 或进入 Search；
@@ -50,6 +50,34 @@ host 负责，详见
 host-command control path。每次授权都会持久化 host、transport、command、action、session、
 native entry、输入 hash、时间和 invocation id；重复 invocation id 幂等返回同一记录。
 普通消息、skill 自动加载、MCP/CLI 直调、错误 host 前缀和 SessionStart 都不授权后续变更。
+
+### Host Command Config
+
+`/goal-plus` 和 `$goal-plus` 只把开头连续的 `key=value` token 解释为配置；第一个非配置
+token 开始就是自然语言目标：
+
+```text
+/goal-plus max_parallel=2 workspace_backend=git_worktree promotion_mode=artifact_only strategy=agent_guided Optimize the read-only template.
+```
+
+支持的 typed key 是：
+
+| Key | 约束目标 |
+| --- | --- |
+| `mode` | `autonomous` 或 `probe` 探索模式 |
+| `max_parallel` | `SearchSpec.budget.max_parallel` |
+| `workspace_backend` | `SearchSpec.workspace.backend` |
+| `promotion_mode` | `SearchSpec.workspace.promotion_mode` |
+| `strategy` | `SearchSpec.strategy.name` |
+| `main` | 当前 main session model 的兼容 assertion |
+| `annotator` | `SearchSpec.strategy.evidence_annotator.model` |
+| `workers` / `models` | `SearchSpec.strategy.models`；两者是互斥别名 |
+
+解析后的 `GoalPlusRecord.command_config` 是显式用户约束，配置 token 不再保留在
+`raw_goal` 中。高置信度且无 open question 的 spec draft 必须匹配所有显式 Search
+配置，否则 `goal_plus_save_spec_draft` 拒绝保存；只有 `command_config` 中缺省的字段才由
+Agent 根据目标、host 能力和资源信号决定。未知 key、重复 key、非法 enum、非正整数和不一致
+的 worker count 都在创建 Goal Plus 记录前失败。
 
 Host-only edit 仍要求 `expected_revision`，防止 stale adapter 覆盖新目标。Search result 以
 `run_id` 为键，因此一个 goal 可以保留多个 Search task；`search_tasks` 是仅追加历史，`linked_search`
@@ -119,7 +147,7 @@ min(requested_k, remaining max_parallel)
 
 多模型 run 先调用 `goal_plus_list_models(host=...)`，再把用户选择写入 frozen `strategy.models`。没有
 `count` 的 entry 按 round-robin 扩展：四条 lane 中的 `A,B` 变为
-`A,B,A,B`。全部 entry 都有 count 时，总和必须等于 `max_parallel`，例如 `A1B3` 或 `A*1,B*3` 变为
+`A,B,A,B`。全部 entry 都有 count 时，总和必须等于 `max_parallel`，例如 `A*1,B*3` 变为
 `A,B,B,B`；不能混用 counted 和 uncounted entry。
 
 runtime 在 freeze 前通过 host catalog 解析模型名。最终有序 `selected_models` 属于 runtime

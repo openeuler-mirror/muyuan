@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 Implement and optimize the CANNBench Level1 GELU task as an AscendC Direct Invoke operator.
+/goal-plus max_parallel=2 workspace_backend=git_worktree promotion_mode=apply strategy=agent_guided Implement and optimize the CANNBench Level1 GELU task as an AscendC Direct Invoke operator.
 
 The entire Goal Plus task must reach a terminal status within 60 minutes of
 creation. Do not start or continue candidate work after 50 minutes; reserve the
@@ -6,7 +6,7 @@ remaining time to preserve the best valid result and complete final validation,
 selection, promotion, reporting, and status finalization. No worker lease may
 exceed 40 minutes.
 
-Resolve https://gitcode.com/cann/cann-bench.git at an exact commit and use
+Resolve <https://gitcode.com/cann/cann-bench.git> at an exact commit and use
 tasks/level1/gelu plus the repository's official evaluation contract as the
 semantics, cases, tolerances, Golden, and scoring reference. Run on the
 available Ascend NPU.
