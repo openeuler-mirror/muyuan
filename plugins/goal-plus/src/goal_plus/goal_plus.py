@@ -1303,6 +1303,15 @@ class FileGoalPlusRuntime:
                 "Call search_promote for the selected candidate before recording "
                 "the Goal Plus search result."
             )
+        promotion = run_state.get("promotion")
+        if isinstance(promotion, dict) and (
+            promotion.get("promotion_mode") == "apply"
+            and promotion.get("state") != "applied"
+        ):
+            raise RuntimeError(
+                "Call search_apply_promotion before recording a Search result whose "
+                "workspace.promotion_mode is 'apply'."
+            )
         runtime_selected_candidate_id = run_state.get("selected_candidate_id")
         if not runtime_selected_candidate_id:
             raise RuntimeError("Promoted search run has no selected candidate.")

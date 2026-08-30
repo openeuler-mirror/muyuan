@@ -33,7 +33,13 @@ $ARGUMENTS
 `worker_host: "pi-rpc"` 和 `orchestration_mode: "parallel_loops"`，SearchSpec 必须显式
 设置 `workspace.backend="git_worktree"`，使 worker
 通过持久化 Pi pool 以一组固定的初始自主候选循环运行。
-只有用户明确要求兼容隔离时才能设置 `workspace.backend="copy"`。
+`workspace.promotion_mode` 默认是 `apply`；只有受保护 source、只读 template 或测试 fixture
+才显式设置 `artifact_only`。只有用户明确要求兼容隔离时才能设置
+`workspace.backend="copy"`。
+
+`search_freeze_spec` 返回的 `workspace_capacity_notice` 必须在创建 run 前展示；它按
+`budget.max_parallel` 计算完整 checkout、共享 object store、保守上界和可用空间。
+`fits_available_space=false` 时不得调用 `search_create`。
 
 创建 draft 和冻结 verifier 前，Main 必须把当前 Search 工作项从原始目标与公开任务契约
 继承的正确性、性能、适用范围和测量方法落实为统一验收契约。candidate iteration、

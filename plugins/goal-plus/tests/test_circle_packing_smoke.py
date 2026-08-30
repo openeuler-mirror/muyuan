@@ -75,6 +75,8 @@ def test_circle_packing_promotion_exports_report_without_changing_template(
 
     selected = tools.search_select(run_id)
     promoted = tools.search_promote(run_id, selected["selected_candidate_id"])
+    with pytest.raises(RuntimeError, match="artifact-only"):
+        tools.search_apply_promotion(run_id)
     report = tools.search_report(run_id)
 
     assert initial_program.read_bytes() == baseline

@@ -166,6 +166,12 @@ def test_run_statistics_split_worker_parent_usage_and_stable_terminal_time(
     assert first_snapshot["timing"]["promotion_apply_seconds"] == 2.5
     workspace_operations = first_snapshot["workspace_operations"]
     assert workspace_operations["provider"] == "copy"
+    assert workspace_operations["promotion_mode"] == "artifact_only"
+    capacity = workspace_operations["capacity_estimate"]
+    assert capacity["worktree_nodes"] == 1
+    assert capacity["basis"] == "source_tree_copy"
+    assert capacity["checkout_bytes_per_node"] > 0
+    assert capacity["fits_available_space"] is True
     assert workspace_operations["workspace_creation"]["attempts_observed"] == 1
     assert workspace_operations["workspace_creation"]["succeeded"] == 1
     assert workspace_operations["promotion_apply"] == {

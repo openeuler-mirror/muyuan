@@ -87,11 +87,14 @@ strategy:
    则调用 `search_create`。新 spec 必须设置
    `strategy.orchestration_mode="parallel_loops"`、`worker_host="codex"` 和唯一的
    `budget.max_parallel`；同时必须显式设置 `workspace.backend="git_worktree"`。
-   只有用户明确要求兼容隔离时才能设置 `copy`。
+   `workspace.promotion_mode` 默认是 `apply`；只有受保护 source、只读 template 或测试 fixture
+   才显式设置 `artifact_only`。只有用户明确要求兼容隔离时才能设置 `copy`。
    任务本地 Skill 不需要 spec 配置。只识别 source Git 已跟踪的
    `.agents/skills/<name>/SKILL.md`，且同一 Skill 目录内所有资源都必须由 Git 跟踪；
-   `search_freeze_spec.task_skill_notice` 会列出发现结果，
-   必须把该提示明确展示出来。candidate materialization 会把对应 worktree 绝对路径放入
+   `search_freeze_spec.task_skill_notice` 会列出发现结果，必须把该提示明确展示出来。
+   同时展示 `workspace_capacity_notice`；它按 `budget.max_parallel` 计算完整 repository
+   checkout 和共享 object store，若 `fits_available_space=false` 则不得调用 `search_create`。
+   candidate materialization 会把对应 worktree 绝对路径放入
    `candidate_task.task_skill_paths`。不要扫描或复制 parent/global/plugin Skill。
    除非用户明确要求自动注入，或已有运行 Evidence 证明当前 worker 无法可靠遵守
    manual 刷新契约，否则 `strategy.config.global_evidence_mode` 必须使用 `"manual"`；
@@ -183,10 +186,12 @@ strategy:
     其他 worker。
 12. 全局停止 policy 为 true 时，drain 或中断每个 live worker，然后按要求调用
     `search_select` 和 `search_promote`。选择使用 verifier 支持的 immutable artifact。
-    当任务明确授权写回 source 且 promotion 返回 `strategy=squash_commit` 或
-    `strategy=fs_apply` 时，调用 `search_apply_promotion`；Git 会把保留的 running history
+    当 frozen `workspace.promotion_mode="apply"` 且 promotion 返回
+    `strategy=squash_commit` 或 `strategy=fs_apply` 时，必须调用
+    `search_apply_promotion`；Git 会把保留的 running history
     作为一个 publication commit cherry-pick 回原仓，ThinkThread 会应用 publish snapshot。
-    artifact-only 或受保护 source 任务保留 prepared publication，不调用 apply。仅旧的
+    只有显式 `promotion_mode="artifact_only"` 的任务保留 prepared publication，不调用
+    apply。仅旧的
     `strategy=legacy_patch` 在任务授权写回时从返回的 `apply_cwd` 执行
     `git apply --directory=<apply_directory> <artifact_path>`。
     不要只为记录临时最佳而提升。该 Search 属于 Goal Plus 时，不调用 `search_report`

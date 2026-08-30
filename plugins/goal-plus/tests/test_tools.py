@@ -25,6 +25,7 @@ from goal_plus.models import (
     StrategySpec,
     VerifierResult,
     VerifierRole,
+    WorkspaceCapacityEstimate,
 )
 from goal_plus.tools import GoalPlusTools, SearchTools
 
@@ -61,6 +62,25 @@ def frozen_spec(*, task_skill_paths: list[str] | None = None) -> FrozenSpec:
         verifier_hashes={"evaluator.py": "abc"},
         frozen_verifier_paths={"evaluator.py": "/tmp/evaluator.py"},
         task_skill_paths=task_skill_paths or [],
+        workspace_capacity_estimate=WorkspaceCapacityEstimate(
+            source_path="/tmp/source",
+            backend="git_worktree",
+            basis="git_tracked_checkout",
+            worktree_nodes=2,
+            source_scope_files=3,
+            source_scope_bytes=100,
+            materialized_source_files=2,
+            materialized_source_bytes=80,
+            checkout_scope_path="/tmp/source",
+            checkout_files_per_node=2,
+            checkout_bytes_per_node=40,
+            candidate_checkouts_bytes=80,
+            shared_object_store_bytes=20,
+            estimated_incremental_bytes=80,
+            conservative_upper_bound_bytes=100,
+            available_bytes=1000,
+            fits_available_space=True,
+        ),
         created_at="2026-06-24T00:00:00Z",
     )
 
@@ -95,6 +115,11 @@ def test_search_freeze_spec_converts_input_and_serializes_output() -> None:
     assert result["task_skill_paths"] == []
     assert result["task_skill_notice"] == (
         "No Git-tracked task-local Skills found under .agents/skills."
+    )
+    assert result["workspace_capacity_notice"] == (
+        "Workspace preflight: source=100.0 B, materialized=80.0 B, nodes=2, "
+        "per_node=40.0 B, candidate_checkouts=80.0 B, shared_objects=20.0 B, "
+        "upper_bound=100.0 B, free=1000.0 B, fits=yes."
     )
 
 
@@ -391,6 +416,8 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         "promotion_id": "promotion_c001",
         "provider": "git_worktree",
         "strategy": "squash_commit",
+        "promotion_mode": "apply",
+        "apply_required": True,
         "state": "prepared",
         "publication_artifact_ref": {
             "kind": "git_commit",

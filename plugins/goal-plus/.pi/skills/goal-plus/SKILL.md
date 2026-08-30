@@ -147,12 +147,16 @@ A1B3，数量之和必须等于
 保险选择 `"auto"`。
 
 新 SearchSpec 还必须显式设置 `workspace.backend="git_worktree"`，使候选共享 Git object
-database，并能解析 Global Evidence 中的 peer commit。只有用户明确要求兼容隔离时才能设置
-`workspace.backend="copy"`。
+database，并能解析 Global Evidence 中的 peer commit。`workspace.promotion_mode` 默认是
+`apply`；只有受保护 source、只读 template 或测试 fixture 才显式设置
+`promotion_mode="artifact_only"`。只有用户明确要求兼容隔离时才能设置
+`workspace.backend="copy"`，它自动使用 artifact-only。
 
 任务本地 Skill 无需 SearchSpec 配置。只识别 source Git 已跟踪的
 `.agents/skills/<name>/SKILL.md`，且同一 Skill 目录内所有资源都必须由 Git 跟踪。freeze 的
-`task_skill_notice` 会列出发现结果，必须明确展示；
+`task_skill_notice` 会列出发现结果，必须明确展示；`workspace_capacity_notice` 会同时展示
+当前 source 大小、按 `budget.max_parallel` 计算的 node checkout、共享 Git object store、
+保守上界和可用空间，必须在创建 run 前展示，且 `fits_available_space=false` 时不得创建；
 每个 candidate 的 `candidate_task.task_skill_paths` 返回自己 worktree 中的绝对文件路径。Pi worker 逐一读取
 这份清单，不扫描 parent、global/plugin 或其他 candidate 路径。
 
@@ -272,14 +276,15 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
    `pi_search_pool_close(mode="drain")`。只有 run 已按第 7 步失效时，主 agent 才对仍有
    active job 的 pool 使用 `mode="interrupt"`。运行时会拒绝在真实 closeout reserve 之外
    提前关闭 active pool。pool 关闭后再按提升要求调用 `search_select` 和 `search_promote`；
-   只有任务明确授权写回 source 时才调用 `search_apply_promotion`。
+   frozen `workspace.promotion_mode="apply"` 时必须调用 `search_apply_promotion`。
    `search_select` 对 verifier 记录的 iteration 排名并 checkout 最佳已提交候选的
    `git_head`。准确 worker Evidence 已经覆盖该产物时直接用于选择；没有这种证据的旧记录才
    使用父级 process verifier。配置的 promotion verifier 仍是选中 revision 的最终 gate。
    新 Git run 使用一个 squash publication commit 写回原仓；旧的 `legacy_patch` 才从返回的
    `apply_cwd` 执行 `git apply --directory=<apply_directory> <artifact_path>`。
-10. 任务授权写回时完成 promotion apply；artifact-only 或受保护 source 任务保留 prepared
-    publication。随后调用 `goal_plus_record_search_result`。此时不要调用 `search_report`；
+10. 默认完成 promotion apply；只有显式 `promotion_mode="artifact_only"` 的任务保留 prepared
+    publication。随后调用 `goal_plus_record_search_result`；apply 模式尚未 applied 时 runtime
+    会拒绝记录结果。此时不要调用 `search_report`；
     结果记录只预留规范报告路径，不生成 Markdown 或 HTML。
 11. 执行原始目标审计。评估/编辑契约仍充分时保留同一个 run。新 incumbent 或低性能路线
     绝不会开启替代 run。只有具体 spec/契约修订或不同的可度量子问题才能创建后继项，

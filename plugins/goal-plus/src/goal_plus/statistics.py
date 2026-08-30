@@ -291,6 +291,11 @@ def build_run_statistics(
     promotion_apply_timing = (
         run.promotion.apply_timing if run.promotion is not None else None
     )
+    workspace_capacity_estimate = (
+        frozen.workspace_capacity_estimate.model_dump(mode="json")
+        if frozen.workspace_capacity_estimate is not None
+        else None
+    )
     failure_classes = [iteration.failure_class for iteration in iterations]
     for report in promotion_reports:
         failure_classes.extend(result.failure_class for result in report.verifier_results)
@@ -533,6 +538,8 @@ def build_run_statistics(
         },
         "workspace_operations": {
             "provider": frozen.spec.workspace.backend,
+            "promotion_mode": frozen.spec.workspace.promotion_mode,
+            "capacity_estimate": workspace_capacity_estimate,
             "workspace_creation": {
                 "attempts_observed": len(workspace_creation_timings),
                 "succeeded": sum(

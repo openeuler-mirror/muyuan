@@ -8,9 +8,46 @@ import pytest
 from goal_plus.models import ArtifactRef
 from goal_plus.workspaces import (
     UnsupportedWorkspaceCapability,
+    estimate_workspace_capacity,
     get_workspace_provider,
     materialize_candidate_workspace,
 )
+
+
+def test_git_capacity_estimate_counts_four_full_repository_checkouts(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    source = repository / "packages" / "task"
+    source.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    root_content = "root file\n"
+    task_content = "VALUE = 0\n"
+    (repository / "README.md").write_text(root_content, encoding="utf-8")
+    (source / "program.py").write_text(task_content, encoding="utf-8")
+    git_commit(repository, "capacity baseline")
+
+    estimate = estimate_workspace_capacity(
+        source=source,
+        backend="git_worktree",
+        worktree_nodes=4,
+        destination_root=tmp_path / "run" / ".gp",
+    )
+
+    checkout_bytes = len(root_content.encode()) + len(task_content.encode())
+    assert estimate.basis == "git_tracked_checkout"
+    assert estimate.worktree_nodes == 4
+    assert estimate.checkout_scope_path == str(repository)
+    assert estimate.checkout_files_per_node == 2
+    assert estimate.checkout_bytes_per_node == checkout_bytes
+    assert estimate.candidate_checkouts_bytes == checkout_bytes * 4
+    assert estimate.shared_object_store_bytes is not None
+    assert estimate.shared_object_store_bytes > 0
+    assert estimate.conservative_upper_bound_bytes == (
+        estimate.candidate_checkouts_bytes + estimate.shared_object_store_bytes
+    )
+    assert estimate.available_bytes is not None
+    assert estimate.fits_available_space is True
 
 
 def make_source(tmp_path: Path) -> Path:

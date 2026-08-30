@@ -105,7 +105,8 @@ Pi Search 使用 `strategy.orchestration_mode="parallel_loops"` 和固定的初�
 3. 用 `pi_search_pool_wait_any` 等待任意终态 event；
 4. 收到 `candidate_ready` 后结算 verifier-backed best；若全局停止条件尚未满足，对同一 candidate 调用 `pi_search_pool_continue`；
 5. main turn 中断后，用 `pi_search_pool_snapshot(run_id=...)` 重新发现 pool；
-6. 结束时调用 `pi_search_pool_close`，再 select 和 promote；任务授权写回 source 时才 apply；
+6. 结束时调用 `pi_search_pool_close`，再 select 和 promote；默认 promotion mode 必须 apply，
+   只有显式 `artifact_only` 才保留 publication；
 7. 记录 Search result，完成 raw-goal audit，设置 Goal Plus 终态，并为每个已记录 run 生成一次 final
    report。
 

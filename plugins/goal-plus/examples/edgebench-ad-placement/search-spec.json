@@ -39,7 +39,8 @@
     }
   },
   "workspace": {
-    "backend": "git_worktree"
+    "backend": "git_worktree",
+    "promotion_mode": "artifact_only"
   },
   "constraints": {
     "suggested_batch_size": 4,

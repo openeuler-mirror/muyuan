@@ -62,10 +62,15 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    `tempfile`）存放编译器和临时输出；并行 Search 下固定 `/tmp` 路径不安全。
    冻结操作会在消耗候选预算前拒绝工作区副作用。新 SearchSpec 必须显式设置
    `workspace.backend="git_worktree"`，以便候选共享 Git object database 并解析彼此的
-   Evidence commit；只有用户明确要求兼容隔离时才能设置 `copy`。任务本地 Skill 无需写入
+   Evidence commit；`workspace.promotion_mode` 默认是 `apply`。只有受保护 source、只读
+   template 或测试 fixture 才显式设置 `promotion_mode="artifact_only"`；`copy` backend
+   自动使用 artifact-only。只有用户明确要求兼容隔离时才能设置 `copy`。任务本地 Skill 无需写入
    SearchSpec；把它提交到 source Git 的 `.agents/skills/<name>/SKILL.md`，同一 Skill 目录内
    的所有资源也必须由 Git 跟踪。freeze 返回的
-   `task_skill_notice` 会列出自动发现结果，每个 candidate 的 `task_skill_paths` 会指向自己
+   `task_skill_notice` 会列出自动发现结果；`workspace_capacity_notice` 会同时展示当前 source
+   大小、按 `budget.max_parallel` 计算的 node checkout、共享 Git object store、保守上界和
+   可用空间。必须在 `search_create` 前展示该预检；`fits_available_space=false` 时不得创建
+   run。每个 candidate 的 `task_skill_paths` 会指向自己
    worktree 中的对应文件；`search_start_batch` 还会为每个 subagent 返回一条启动清单。
    将这些清单明确展示出来，不扫描 parent 或 global/plugin Skill。使用
    `goal_plus_save_spec_draft` 保存完整契约。

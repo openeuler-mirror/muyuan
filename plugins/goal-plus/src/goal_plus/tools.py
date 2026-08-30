@@ -23,6 +23,7 @@ from goal_plus.models import (
 )
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.runtime import FileSearchRuntime, format_task_skill_listing
+from goal_plus.workspaces import format_workspace_capacity_notice
 
 
 class SearchTools:
@@ -49,6 +50,10 @@ class SearchTools:
             if frozen.task_skill_paths
             else "No Git-tracked task-local Skills found under .agents/skills."
         )
+        if frozen.workspace_capacity_estimate is not None:
+            payload["workspace_capacity_notice"] = format_workspace_capacity_notice(
+                frozen.workspace_capacity_estimate
+            )
         return payload
 
     def search_create(
@@ -309,6 +314,8 @@ class SearchTools:
             "promotion_id": promotion.promotion_id,
             "provider": promotion.provider,
             "strategy": promotion.strategy,
+            "promotion_mode": promotion.promotion_mode,
+            "apply_required": promotion.promotion_mode == "apply",
             "state": promotion.state,
             "publication_artifact_ref": (
                 promotion.publication_artifact_ref.model_dump(mode="json")

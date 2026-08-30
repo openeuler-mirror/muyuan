@@ -12,7 +12,11 @@ import tempfile
 from pathlib import Path
 from typing import Literal, Mapping, Protocol
 
-from goal_plus.models import ArtifactRef, WorkspaceBackend
+from goal_plus.models import (
+    ArtifactRef,
+    WorkspaceBackend,
+    WorkspaceCapacityEstimate,
+)
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT
 
 
@@ -185,9 +189,17 @@ def list_files(root: Path) -> list[Path]:
     if root.is_file():
         return [root]
     files: list[Path] = []
-    for path in root.rglob("*"):
-        if path.is_file() and not should_ignore(path.relative_to(root)):
-            files.append(path)
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if name not in IGNORED_NAMES
+            and not (Path(directory) / name).is_symlink()
+        ]
+        for name in file_names:
+            path = Path(directory) / name
+            if path.is_file() and not should_ignore(path.relative_to(root)):
+                files.append(path)
     return sorted(files)
 
 
@@ -218,6 +230,259 @@ def list_source_files(root: Path) -> list[Path]:
         ):
             paths.append(path)
     return sorted(paths)
+
+
+def estimate_workspace_capacity(
+    *,
+    source: Path,
+    backend: WorkspaceBackend,
+    worktree_nodes: int,
+    destination_root: Path,
+) -> WorkspaceCapacityEstimate:
+    """Estimate storage before materializing any candidate workspace.
+
+    Git worktrees share one run-local object store, but every node still checks
+    out a complete tracked tree. The estimate therefore reports the source
+    scope, effective materialized input, per-node checkout, shared objects, and
+    a conservative upper bound separately.
+    """
+
+    if worktree_nodes <= 0:
+        raise ValueError("worktree_nodes must be > 0")
+    source = source.resolve()
+    source_scope_files, source_scope_bytes = _tree_usage(source)
+    materialized_paths = list_source_files(source)
+    materialized_source_files = len(materialized_paths)
+    materialized_source_bytes = sum(_path_size(path) for path in materialized_paths)
+    available_bytes = _available_bytes(destination_root)
+    notes = [
+        "Estimates exclude candidate edits, build outputs, runtime logs, and later Git objects.",
+        "source_scope includes ignored/runtime files; materialized_source "
+        "applies workspace exclusions.",
+    ]
+
+    if backend == "thinkthread":
+        return WorkspaceCapacityEstimate(
+            source_path=str(source),
+            backend=backend,
+            basis="thinkthread_remote",
+            worktree_nodes=worktree_nodes,
+            source_scope_files=source_scope_files,
+            source_scope_bytes=source_scope_bytes,
+            materialized_source_files=materialized_source_files,
+            materialized_source_bytes=materialized_source_bytes,
+            available_bytes=available_bytes,
+            fits_available_space=None,
+            notes=[
+                *notes,
+                "ThinkThread snapshot and remote node storage are provider-owned "
+                "and unavailable locally.",
+            ],
+        )
+
+    layout = _git_source_layout(source) if backend == "git_worktree" else None
+    if layout is not None:
+        repository_root, _source_subdir, source_head = layout
+        checkout_files, checkout_bytes = _git_checkout_usage(
+            repository_root,
+            source_head,
+        )
+        shared_object_store_bytes = _git_object_store_usage(repository_root)
+        candidate_checkouts_bytes = checkout_bytes * worktree_nodes
+        estimated_incremental_bytes = candidate_checkouts_bytes
+        conservative_upper_bound_bytes = (
+            candidate_checkouts_bytes + shared_object_store_bytes
+        )
+        fits = (
+            conservative_upper_bound_bytes <= available_bytes
+            if available_bytes is not None
+            else None
+        )
+        return WorkspaceCapacityEstimate(
+            source_path=str(source),
+            backend=backend,
+            basis="git_tracked_checkout",
+            worktree_nodes=worktree_nodes,
+            source_scope_files=source_scope_files,
+            source_scope_bytes=source_scope_bytes,
+            materialized_source_files=materialized_source_files,
+            materialized_source_bytes=materialized_source_bytes,
+            checkout_scope_path=str(repository_root),
+            checkout_files_per_node=checkout_files,
+            checkout_bytes_per_node=checkout_bytes,
+            candidate_checkouts_bytes=candidate_checkouts_bytes,
+            shared_object_store_bytes=shared_object_store_bytes,
+            estimated_incremental_bytes=estimated_incremental_bytes,
+            conservative_upper_bound_bytes=conservative_upper_bound_bytes,
+            available_bytes=available_bytes,
+            fits_available_space=fits,
+            notes=[
+                *notes,
+                "The run-local --local mirror normally hard-links existing Git "
+                "objects; the upper bound counts them once more.",
+                "Each worktree node checks out the whole repository, even when "
+                "source_path is a subdirectory.",
+                "Git clean/smudge filters such as LFS can expand checkout files "
+                "beyond tracked blob sizes.",
+            ],
+        )
+
+    if backend == "git_worktree":
+        checkout_bytes = materialized_source_bytes
+        checkout_files = materialized_source_files
+        candidate_checkouts_bytes = checkout_bytes * worktree_nodes
+        estimated_incremental_bytes = checkout_bytes + candidate_checkouts_bytes
+        conservative_upper_bound_bytes = estimated_incremental_bytes * 2
+        basis = "synthetic_git_checkout"
+        shared_object_store_bytes = None
+        notes.append(
+            "A non-Git source needs one synthetic baseline repository in addition "
+            "to candidate worktrees."
+        )
+    else:
+        checkout_bytes = materialized_source_bytes
+        checkout_files = materialized_source_files
+        candidate_checkouts_bytes = checkout_bytes * worktree_nodes
+        estimated_incremental_bytes = candidate_checkouts_bytes
+        conservative_upper_bound_bytes = candidate_checkouts_bytes * 2
+        basis = "source_tree_copy"
+        shared_object_store_bytes = None
+        notes.append(
+            "The copy backend initializes an independent Git baseline in every "
+            "candidate; the upper bound allows one extra source-sized object copy "
+            "per node."
+        )
+    fits = (
+        conservative_upper_bound_bytes <= available_bytes
+        if available_bytes is not None
+        else None
+    )
+    return WorkspaceCapacityEstimate(
+        source_path=str(source),
+        backend=backend,
+        basis=basis,
+        worktree_nodes=worktree_nodes,
+        source_scope_files=source_scope_files,
+        source_scope_bytes=source_scope_bytes,
+        materialized_source_files=materialized_source_files,
+        materialized_source_bytes=materialized_source_bytes,
+        checkout_scope_path=str(source),
+        checkout_files_per_node=checkout_files,
+        checkout_bytes_per_node=checkout_bytes,
+        candidate_checkouts_bytes=candidate_checkouts_bytes,
+        shared_object_store_bytes=shared_object_store_bytes,
+        estimated_incremental_bytes=estimated_incremental_bytes,
+        conservative_upper_bound_bytes=conservative_upper_bound_bytes,
+        available_bytes=available_bytes,
+        fits_available_space=fits,
+        notes=notes,
+    )
+
+
+def format_workspace_capacity_notice(estimate: WorkspaceCapacityEstimate) -> str:
+    per_node = _format_bytes(estimate.checkout_bytes_per_node)
+    checkouts = _format_bytes(estimate.candidate_checkouts_bytes)
+    objects = _format_bytes(estimate.shared_object_store_bytes)
+    upper = _format_bytes(estimate.conservative_upper_bound_bytes)
+    free = _format_bytes(estimate.available_bytes)
+    fit = (
+        "yes"
+        if estimate.fits_available_space is True
+        else "no" if estimate.fits_available_space is False else "unknown"
+    )
+    return (
+        f"Workspace preflight: source={_format_bytes(estimate.source_scope_bytes)}, "
+        f"materialized={_format_bytes(estimate.materialized_source_bytes)}, "
+        f"nodes={estimate.worktree_nodes}, per_node={per_node}, "
+        f"candidate_checkouts={checkouts}, shared_objects={objects}, "
+        f"upper_bound={upper}, "
+        f"free={free}, fits={fit}."
+    )
+
+
+def _tree_usage(root: Path) -> tuple[int, int]:
+    if root.is_file() or root.is_symlink():
+        return 1, _path_size(root)
+    files = 0
+    total = 0
+    for directory, directory_names, file_names in os.walk(root, followlinks=False):
+        symlink_directories = [
+            Path(directory) / name
+            for name in directory_names
+            if (Path(directory) / name).is_symlink()
+        ]
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if not (Path(directory) / name).is_symlink()
+        ]
+        for name in file_names:
+            path = Path(directory) / name
+            files += 1
+            total += _path_size(path)
+        for path in symlink_directories:
+            files += 1
+            total += _path_size(path)
+    return files, total
+
+
+def _path_size(path: Path) -> int:
+    try:
+        return max(0, path.lstat().st_size)
+    except OSError:
+        return 0
+
+
+def _git_checkout_usage(repository_root: Path, revision: str) -> tuple[int, int]:
+    output = _git_output_bytes(
+        repository_root,
+        "ls-tree",
+        "-r",
+        "-l",
+        "-z",
+        revision,
+    )
+    files = 0
+    total = 0
+    for record in output.split(b"\0"):
+        if not record:
+            continue
+        metadata, _separator, _path = record.partition(b"\t")
+        size = metadata.rsplit(b" ", 1)[-1]
+        if not size.isdigit():
+            continue
+        files += 1
+        total += int(size)
+    return files, total
+
+
+def _git_object_store_usage(repository_root: Path) -> int:
+    common_dir = Path(_git_output(repository_root, "rev-parse", "--git-common-dir"))
+    if not common_dir.is_absolute():
+        common_dir = (repository_root / common_dir).resolve()
+    _files, total = _tree_usage(common_dir / "objects")
+    return total
+
+
+def _available_bytes(destination_root: Path) -> int | None:
+    probe = destination_root.resolve()
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return shutil.disk_usage(probe).free
+    except OSError:
+        return None
+
+
+def _format_bytes(value: int | None) -> str:
+    if value is None:
+        return "unavailable"
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024 or unit == "TiB":
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{amount:.1f} TiB"
 
 
 def _looks_like_generated_source_artifact(path: Path) -> bool:

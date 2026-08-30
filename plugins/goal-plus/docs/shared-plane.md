@@ -356,6 +356,13 @@ attempt、恢复和 ledger commit 都保持可达。因此下一轮始终从 can
 artifact 的允许产品文件为 tree，另行创建一个 squash publication commit；`results.tsv`、`.gp`、
 `.tmp` 和 Git metadata 不进入该提交。`search_apply_promotion` 把这一个提交 cherry-pick
 回原 repository，因此产品历史保持单提交，而完整 autoresearch running history 仍留在 run-local refs。
+`workspace.promotion_mode` 默认是 `apply`，Goal Plus 在 apply 完成前拒绝记录 Search result；
+只有受保护 source、只读 template 或测试 fixture 显式使用 `artifact_only`。
+
+freeze 还会持久化 `workspace_capacity_estimate`。它同时区分当前 source scope、有效
+materialized source、整个 repository 的每-node checkout、`max_parallel` 个 node 合计和共享
+object store；因此 Git 子目录任务不会错误地只按子目录估算，也不会简单使用 `du cwd × K`。
+保守上界和目标文件系统可用空间共同产生 `fits_available_space`，并进入 monitor/report。
 
 `git_worktree` 后端下，各 candidate 共享一个 Git common directory。窄、单文件证据可以
 从自己的工作区渐进式查看 peer Evidence commit：

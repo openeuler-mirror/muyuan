@@ -21,6 +21,8 @@ reference and use `MAX_JOBS=1` for extension builds.
 
 Use `workspace-template` as the Search source path, the maintained
 `agent_guided` strategy, and a Git worktree-backed Search with two fixed lanes.
+Freeze `workspace.promotion_mode="artifact_only"` because this tracked template
+is a read-only demonstration exception to the normal apply default.
 Run the lanes, select and promote the best verifier-backed valid result, settle
 the Goal Plus record, and produce the compact result and canonical report. Keep
 the promotion patch under `.gp/`; do not apply it back to

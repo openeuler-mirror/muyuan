@@ -984,6 +984,17 @@ def _milliseconds(value: Any) -> str:
     return f"{formatted} ms"
 
 
+def _bytes(value: Any) -> str:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return "Not observed"
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(amount) < 1024 or unit == "TiB":
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{amount:.1f} TiB"
+
+
 def _number(value: Any, *, digits: int = 2) -> str:
     if not isinstance(value, int | float) or isinstance(value, bool):
         return "Not observed"
@@ -3884,8 +3895,30 @@ def _render_statistics(task: dict[str, Any]) -> str:
     usage = statistics.get("usage") or {}
     efficiency = statistics.get("efficiency") or {}
     lineage = statistics.get("lineage") or {}
+    workspace_operations = statistics.get("workspace_operations") or {}
+    workspace_capacity = workspace_operations.get("capacity_estimate") or {}
     tables = [
         ("Timing", timing, {key: _duration for key in timing if "_seconds" in key}),
+        (
+            "Workspace Capacity Preflight",
+            {
+                key: workspace_capacity.get(key)
+                for key in (
+                    "basis",
+                    "worktree_nodes",
+                    "source_scope_bytes",
+                    "materialized_source_bytes",
+                    "checkout_bytes_per_node",
+                    "candidate_checkouts_bytes",
+                    "shared_object_store_bytes",
+                    "estimated_incremental_bytes",
+                    "conservative_upper_bound_bytes",
+                    "available_bytes",
+                    "fits_available_space",
+                )
+            },
+            {key: _bytes for key in workspace_capacity if key.endswith("_bytes")},
+        ),
         (
             "Workers",
             workers,

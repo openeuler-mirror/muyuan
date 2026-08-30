@@ -259,8 +259,8 @@ output，也不等待或控制 worker。
 duration、time-to-first-verifier/success、worker outcome、model/provider、candidate
 lineage、selection survival、worker-vs-parent verifier、promotion
 Evidence、usage、efficiency 和数据缺口。`selected_run.workspace_operations` 以同一套
-provider-neutral 口径展示 Git/ThinkThread 的 candidate workspace 创建次数、总耗时、均值、
-最大值，以及 promotion apply 的结果和耗时；对应的扁平时间字段也保留在
+provider-neutral 口径展示 Git/ThinkThread 的冻结时容量预估、candidate workspace 创建次数、
+总耗时、均值、最大值，以及 promotion apply 的结果和耗时；对应的扁平时间字段也保留在
 `selected_run.timing`，供静态报告统一渲染。绑定 Codex orchestrator
 transcript 后，`statistics.orchestrator` 记录 Goal Plus 创建以来不含内容的 usage
 delta，`statistics.total_usage` 与 worker usage 合并；每个 Search task 仍保留自己的 statistics。
@@ -292,10 +292,19 @@ runtime 在 provider 调用的公共边界记录时间：每个 candidate 的
 promotion 的 `apply_timing` 覆盖实际写回调用。两者都持久化开始、完成、单调时钟耗时和
 成功/失败结果；重复读取已 applied promotion 不会重复计时。
 
-关联 Goal Plus record 时，正常顺序是 select -> promote -> 可选 apply -> record Search
-result -> final audit -> terminal status -> report。artifact-only 或受保护 source 任务停在
-prepared publication；`search_report` 会拒绝 active 或 needs-user record，确保静态报告不会
-捕获中间态。
+`search_freeze_spec.workspace_capacity_estimate` 在 candidate 创建前记录 source scope 的当前
+大小、有效 materialized source、完整 Git checkout 的文件数/每 node 字节数、
+`budget.max_parallel` 个 node 的合计、共享 object store、预计增量、保守上界、可用空间和
+`fits_available_space`。Git source 的 node 估算按整个 repository checkout，而不是只按
+`source_path` 子目录；本地 `--local` mirror 通常 hard-link object，但保守上界仍将 object
+store 再计一次。该结构也进入 monitor statistics 和最终 HTML report。
+`fits_available_space=false` 时 `search_create` 会在创建 run 或 candidate 前拒绝执行。
+
+关联 Goal Plus record 时，正常顺序是 select -> promote -> apply -> record Search result ->
+final audit -> terminal status -> report。`promotion_mode="apply"` 尚未 applied 时 runtime 会
+拒绝记录 Search result。只有显式 `artifact_only` 的受保护 source、只读 template 或测试
+fixture 停在 prepared publication；`search_report` 会拒绝 active 或 needs-user record，
+确保静态报告不会捕获中间态。
 
 `report.html` 汇总全部关联 Search task、candidate/session/verifier Evidence、main agent
 usage、metric gap 和独立时间线。worker
@@ -344,6 +353,7 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 | `strategy.worker_host`              | 执行 host：`pi-rpc` 或 `codex`                           |
 | `strategy.worker_budget`            | host deadline 和可选 minimum lease                       |
 | `workspace.backend`                 | `git_worktree`（默认）、`copy`，或接口占位 `thinkthread` |
+| `workspace.promotion_mode`          | `apply`（默认）或显式 `artifact_only`                    |
 
 `thinkthread` 当前只注册统一 provider/capability API。Codex 和 Pi RPC 的 host capability 都只声明
 `copy` 与 `git_worktree`；`search_freeze_spec` 会在 verifier preflight 前以

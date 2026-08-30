@@ -15,7 +15,9 @@ simulator, test cases, or score adapter. Do not hard-code case seeds or use
 network access.
 
 Use the maintained `agent_guided` strategy and a Git worktree-backed Search
-with the fixed two candidate lanes. Continue the same native candidate sessions
+with the fixed two candidate lanes. Freeze
+`workspace.promotion_mode="artifact_only"` because this tracked template is a
+read-only demonstration exception to the normal apply default. Continue the same native candidate sessions
 while useful; do not replace a lane because of score or rank. At closeout,
 drain the lanes, select and promote the best verifier-backed correct result,
 settle the Goal Plus record, and produce the final compact result and canonical

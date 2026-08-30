@@ -40,6 +40,15 @@ EXAMPLES = {
             "workspace-template/.goal-plus-verifiers/circle_packing_score.py",
         ),
     },
+    "circle-packing-workspace-apply": {
+        "prompts": ("pi-goal-prompt.md",),
+        "required": (
+            "README.md",
+            "prepare_workspace.py",
+            "search-spec.json",
+            "workspace-README.md",
+        ),
+    },
     "edgebench-ad-placement": {
         "prompts": ("pi-goal-prompt.md",),
         "required": (
@@ -142,3 +151,4 @@ def test_checked_in_example_search_specs_are_loadable(relative_path: str) -> Non
     assert not Path(spec.source_path).is_absolute()
     assert (ROOT / spec.source_path).is_dir()
     assert spec.process_verifiers
+    assert spec.workspace.promotion_mode == "artifact_only"

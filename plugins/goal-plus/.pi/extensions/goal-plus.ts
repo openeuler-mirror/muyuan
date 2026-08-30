@@ -231,6 +231,7 @@ const StrategySpec = Type.Object(
 const WorkspaceSpec = Type.Object(
 	{
 		backend: Type.Optional(Type.Union([Type.Literal("copy"), Type.Literal("git_worktree")])),
+		promotion_mode: Type.Optional(Type.Union([Type.Literal("apply"), Type.Literal("artifact_only")])),
 	},
 	{ additionalProperties: false },
 );

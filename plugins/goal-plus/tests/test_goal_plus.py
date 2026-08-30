@@ -1021,6 +1021,7 @@ def test_record_search_result_allows_artifact_only_provider_native_promotion(
                 "selected_candidate_id": "c001",
                 "promotion": {
                     "strategy": "squash_commit",
+                    "promotion_mode": "artifact_only",
                     "state": "prepared",
                 },
             }
@@ -1036,6 +1037,41 @@ def test_record_search_result_allows_artifact_only_provider_native_promotion(
 
     assert final.linked_search is not None
     assert final.linked_search.selected_candidate_id == "c001"
+
+
+def test_record_search_result_requires_default_provider_native_apply(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".search"
+    runtime = FileGoalPlusRuntime(root)
+    record = runtime.create_goal("Optimize model")
+    _write_search_run(root, "run_001", "spec_abc")
+    runtime.link_search_run(record.goal_plus_id, "spec_abc", "run_001")
+    run_dir = root / "runs" / "run_001"
+    promotion_path = run_dir / "promotion" / "c001.patch"
+    promotion_path.parent.mkdir(parents=True)
+    promotion_path.write_text("patch\n", encoding="utf-8")
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "state": "promoted",
+                "selected_candidate_id": "c001",
+                "promotion": {
+                    "strategy": "squash_commit",
+                    "promotion_mode": "apply",
+                    "state": "prepared",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="search_apply_promotion"):
+        runtime.record_search_result(
+            record.goal_plus_id,
+            run_id="run_001",
+            selected_candidate_id="c001",
+        )
 
 
 def test_pre_tool_use_blocks_search_before_high_confidence_spec(tmp_path) -> None:

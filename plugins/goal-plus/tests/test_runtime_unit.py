@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 import os
 import shutil
 import subprocess
@@ -1683,6 +1684,32 @@ def test_git_promotion_preserves_running_history_and_applies_one_squash_commit(
         cwd=project,
         text=True,
     ).strip() == "1"
+
+
+def test_create_rejects_failed_workspace_capacity_preflight(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        spec_for(project, max_parallel=4),
+        [project / "evaluator.py"],
+    )
+    assert frozen.workspace_capacity_estimate is not None
+    failed_estimate = frozen.workspace_capacity_estimate.model_copy(
+        update={
+            "available_bytes": 0,
+            "fits_available_space": False,
+        }
+    )
+    failed_frozen = frozen.model_copy(
+        update={"workspace_capacity_estimate": failed_estimate}
+    )
+    (runtime._spec_dir(frozen.frozen_spec_id) / "frozen_spec.json").write_text(
+        json.dumps(failed_frozen.model_dump(mode="json")),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="capacity preflight failed"):
+        runtime.create_run(frozen.frozen_spec_id)
 
 
 def test_git_run_local_worktree_and_apply_work_inside_source_gp(

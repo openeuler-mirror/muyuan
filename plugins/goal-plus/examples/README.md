@@ -21,16 +21,24 @@ several optimization iterations during the short run.
 ## Why Each Example Exists
 
 | Scenario | Unique motivation | Entry | Requirements |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | [Circle Packing](circle-packing/README.md) | shortest end-to-end progress and completion-card demo | Pi or Codex Goal Plus, 5 minutes | Python standard library |
+| [Circle Packing Workspace Apply](circle-packing-workspace-apply/README.md) | safe apply-back into an ignored disposable Git source | Pi Goal Plus, 5 minutes | Python standard library and Git |
 | [Model Optimize](model-optimize/README.md) | realistic CPU/PyTorch optimization on both maintained hosts | Pi or Codex Goal Plus, 10 minutes | PyTorch |
 | [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | program/schedule optimization with a simulator correctness gate | Pi Goal Plus, 8 minutes | Python standard library |
 | [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | compiled C++ optimization with ten public cases | Pi Goal Plus, 8 minutes | C++17 compiler |
 | [AscendC Direct Search](ascendc-direct-search/README.md) | the single supported dynamic NPU task-generation path | Pi Goal Plus, 60 minutes | target Ascend NPU and references |
 
 Circle Packing and Ad Placement own checked-in SearchSpecs beside their
-read-only workspace templates. The other scenarios intentionally exercise
-Goal Plus Spec Discovery or user-supplied target material.
+read-only workspace templates. Circle Packing Workspace Apply copies its
+checked-in SearchSpec into a generated independent Git source. The other
+scenarios intentionally exercise Goal Plus Spec Discovery or user-supplied
+target material.
+
+Normal Git/ThinkThread SearchSpecs default to
+`workspace.promotion_mode="apply"`. Read-only templates and test fixtures must
+declare `artifact_only` explicitly; the Workspace Apply example intentionally
+omits the field to exercise the default.
 
 ## Strategy Contract
 

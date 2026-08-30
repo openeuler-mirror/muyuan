@@ -95,6 +95,7 @@ from goal_plus.workspaces import (
     IGNORED_NAMES,
     IGNORED_SUFFIXES,
     copy_source_tree,
+    estimate_workspace_capacity,
     initialize_workspace_git_baseline,
     list_files,
     list_source_files,
@@ -770,6 +771,12 @@ class FileSearchRuntime:
         spec = self._normalize_strategy_models(spec)
         self._validate_strategy_config(spec.strategy)
         source_root = Path(spec.source_path).resolve()
+        workspace_capacity_estimate = estimate_workspace_capacity(
+            source=source_root,
+            backend=spec.workspace.backend,
+            worktree_nodes=spec.budget.max_parallel,
+            destination_root=self.root_dir,
+        )
         verifier_hashes: dict[str, str] = {}
         artifact_entries: list[tuple[Path, str]] = []
         task_skill_paths = discover_git_tracked_task_skills(source_root)
@@ -848,6 +855,7 @@ class FileSearchRuntime:
             verifier_hashes=verifier_hashes,
             frozen_verifier_paths=frozen_verifier_paths,
             task_skill_paths=task_skill_paths,
+            workspace_capacity_estimate=workspace_capacity_estimate,
             created_at=utc_timestamp(),
         )
         write_json(spec_dir / "frozen_spec.json", frozen.model_dump(mode="json"))
@@ -1078,6 +1086,14 @@ class FileSearchRuntime:
     ) -> str:
         frozen = self._load_frozen_spec(frozen_spec_id)
         self._validate_host_workspace_backend(frozen.spec)
+        capacity = frozen.workspace_capacity_estimate
+        if capacity is not None and capacity.fits_available_space is False:
+            raise RuntimeError(
+                "workspace capacity preflight failed: conservative upper bound "
+                f"{capacity.conservative_upper_bound_bytes} bytes exceeds "
+                f"available space {capacity.available_bytes} bytes for "
+                f"{capacity.worktree_nodes} nodes"
+            )
         selected_models = self._expand_selected_models(
             frozen.spec.strategy.models,
             frozen.spec.budget.max_parallel,
@@ -3766,6 +3782,7 @@ class FileSearchRuntime:
                     candidate_id=candidate_id,
                     provider=prepared.provider,
                     strategy=prepared.strategy,
+                    promotion_mode=frozen.spec.workspace.promotion_mode,
                     base_artifact_ref=prepared.base_artifact_ref,
                     selected_artifact_ref=prepared.selected_artifact_ref,
                     publication_artifact_ref=(
@@ -3808,6 +3825,7 @@ class FileSearchRuntime:
                     candidate_id=candidate_id,
                     provider=record.task.workspace_backend,
                     strategy="legacy_patch",
+                    promotion_mode=frozen.spec.workspace.promotion_mode,
                     base_artifact_ref=base_ref,
                     selected_artifact_ref=selected_artifact_ref,
                     artifact_path=patch_path,
@@ -3833,6 +3851,11 @@ class FileSearchRuntime:
             promotion = run.promotion
             if promotion.state == "applied":
                 return promotion
+            if promotion.promotion_mode == "artifact_only":
+                raise RuntimeError(
+                    "promotion is artifact-only; freeze the SearchSpec with "
+                    "workspace.promotion_mode='apply' to authorize source write-back"
+                )
             if promotion.strategy == "legacy_patch":
                 raise RuntimeError(
                     "legacy patch promotions remain export-only; apply the saved patch "

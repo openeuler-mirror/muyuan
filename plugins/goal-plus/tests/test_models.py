@@ -412,18 +412,29 @@ def test_search_spec_supports_registered_workspace_backends() -> None:
     default_spec = SearchSpec.model_validate(valid_spec_dict())
     assert default_spec.workspace.backend == "git_worktree"
     assert default_spec.model_dump(mode="json")["workspace"] == {
-        "backend": "git_worktree"
+        "backend": "git_worktree",
+        "promotion_mode": "apply",
     }
 
     copy_data = valid_spec_dict()
     copy_data["workspace"] = {"backend": "copy"}
     copy_spec = SearchSpec.model_validate(copy_data)
     assert copy_spec.workspace.backend == "copy"
+    assert copy_spec.workspace.promotion_mode == "artifact_only"
 
     thinkthread_data = valid_spec_dict()
     thinkthread_data["workspace"] = {"backend": "thinkthread"}
     thinkthread_spec = SearchSpec.model_validate(thinkthread_data)
     assert thinkthread_spec.workspace.backend == "thinkthread"
+    assert thinkthread_spec.workspace.promotion_mode == "apply"
+
+    invalid_copy_data = valid_spec_dict()
+    invalid_copy_data["workspace"] = {
+        "backend": "copy",
+        "promotion_mode": "apply",
+    }
+    with pytest.raises(ValidationError, match="artifact_only"):
+        SearchSpec.model_validate(invalid_copy_data)
 
     invalid_data = valid_spec_dict()
     invalid_data["workspace"] = {"backend": "overlay"}

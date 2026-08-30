@@ -57,6 +57,9 @@ def test_pi_goal_plus_prompt_cannot_bootstrap_goal_plus() -> None:
     assert 'worker_mode: "agent-session-pool"' not in text
     assert 'orchestration_mode: "parallel_loops"' in text
     assert '`workspace.backend="git_worktree"`' in text
+    assert '`workspace.promotion_mode` 默认是 `apply`' in text
+    assert "workspace_capacity_notice" in text
+    assert "fits_available_space=false" in text
     assert '有限数值类型的' in text
     assert '`spec.metric_name`' in text
     assert ".goal-plus-verifiers/" in text
@@ -102,6 +105,9 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert 'worker_mode: "agent-session-pool"' not in text
     assert 'orchestration_mode: "parallel_loops"' in text
     assert '`workspace.backend="git_worktree"`' in text
+    assert '`workspace.promotion_mode` 默认是' in text
+    assert "workspace_capacity_notice" in text
+    assert "fits_available_space=false" in text
     assert ".agents/skills/<name>/SKILL.md" in text
     assert "task_skill_notice" in text
     assert "candidate_task.task_skill_paths" in text
@@ -259,6 +265,9 @@ def test_pi_workspace_schema_needs_no_task_skill_configuration() -> None:
     )[0]
 
     assert "skill_roots" not in workspace_schema
+    assert "promotion_mode" in workspace_schema
+    assert 'Type.Literal("apply")' in workspace_schema
+    assert 'Type.Literal("artifact_only")' in workspace_schema
 
 
 def test_pi_goal_plus_skill_uses_the_same_family_revision_contract() -> None:

@@ -106,6 +106,54 @@ VerifierInvalidationReason = Literal[
 
 class WorkspaceSpec(SearchModel):
     backend: WorkspaceBackend = "git_worktree"
+    promotion_mode: Literal["apply", "artifact_only"] = "apply"
+
+    @model_validator(mode="before")
+    @classmethod
+    def copy_backend_defaults_to_artifact_only(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if value.get("backend") != "copy" or "promotion_mode" in value:
+            return value
+        payload = dict(value)
+        payload["promotion_mode"] = "artifact_only"
+        return payload
+
+    @model_validator(mode="after")
+    def copy_backend_cannot_apply_provider_native_promotion(self) -> "WorkspaceSpec":
+        if self.backend == "copy" and self.promotion_mode == "apply":
+            raise ValueError(
+                "workspace backend 'copy' requires promotion_mode='artifact_only'"
+            )
+        return self
+
+
+class WorkspaceCapacityEstimate(SearchModel):
+    """Pre-materialization storage estimate for one frozen SearchSpec."""
+
+    source_path: str
+    backend: WorkspaceBackend
+    basis: Literal[
+        "git_tracked_checkout",
+        "synthetic_git_checkout",
+        "source_tree_copy",
+        "thinkthread_remote",
+    ]
+    worktree_nodes: int = Field(ge=1)
+    source_scope_files: int = Field(ge=0)
+    source_scope_bytes: int = Field(ge=0)
+    materialized_source_files: int = Field(ge=0)
+    materialized_source_bytes: int = Field(ge=0)
+    checkout_scope_path: str | None = None
+    checkout_files_per_node: int | None = Field(default=None, ge=0)
+    checkout_bytes_per_node: int | None = Field(default=None, ge=0)
+    candidate_checkouts_bytes: int | None = Field(default=None, ge=0)
+    shared_object_store_bytes: int | None = Field(default=None, ge=0)
+    estimated_incremental_bytes: int | None = Field(default=None, ge=0)
+    conservative_upper_bound_bytes: int | None = Field(default=None, ge=0)
+    available_bytes: int | None = Field(default=None, ge=0)
+    fits_available_space: bool | None = None
+    notes: list[str] = Field(default_factory=list)
 
 
 class ArtifactRef(SearchModel):
@@ -1051,6 +1099,7 @@ class FrozenSpec(SearchModel):
     verifier_hashes: dict[str, str]
     frozen_verifier_paths: dict[str, str]
     task_skill_paths: list[str] = Field(default_factory=list)
+    workspace_capacity_estimate: WorkspaceCapacityEstimate | None = None
     created_at: str
 
 
@@ -1334,6 +1383,7 @@ class PromotionRecord(SearchModel):
     candidate_id: str = Field(min_length=1)
     provider: WorkspaceBackend
     strategy: PromotionStrategy
+    promotion_mode: Literal["apply", "artifact_only"] = "apply"
     state: PromotionState = "prepared"
     base_artifact_ref: ArtifactRef
     selected_artifact_ref: ArtifactRef

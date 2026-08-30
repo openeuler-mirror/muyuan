@@ -41,8 +41,10 @@ def create_mcp(
 
         冻结前校验 worker host 与 workspace backend；当前 Codex/Pi RPC 请求
         ThinkThread 时会在 verifier preflight 前失败。
-        返回 `frozen_spec_id` 和 `task_skill_notice`，应在 `search_create` 前调用。后者列出
-        source Git index 中 `.agents/skills/*/SKILL.md` 的自动发现结果。verifier 文件按 hash 固定；
+        返回 `frozen_spec_id`、`task_skill_notice` 和 `workspace_capacity_notice`，应在
+        `search_create` 前调用。后两者分别列出 source Git index 中
+        `.agents/skills/*/SKILL.md` 的自动发现结果，以及按 `budget.max_parallel` 计算的
+        source/worktree/object-store 容量预检。verifier 文件按 hash 固定；
         候选执行期间修改它们会强制分数为 0.0。冻结会预检每个 `ranking_signal`：
         它必须以 0 退出，并输出一个最终 JSON 对象，其中包含有限数值类型的
         `spec.metric_name`，例如 `{"score": 123.0}`。verifier 命令在一次性源码副本中
@@ -416,7 +418,7 @@ def create_mcp(
 
     @mcp.tool()
     def search_apply_promotion(run_id: str) -> dict[str, Any]:
-        """将已准备的 publication 显式写回原 Git repo 或 ThinkThread Root。"""
+        """按 frozen promotion mode 将 publication 写回 Git repo 或 ThinkThread Root。"""
         return tools.search_apply_promotion(run_id)
 
     @mcp.tool()
