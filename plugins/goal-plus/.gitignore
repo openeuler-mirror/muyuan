@@ -20,6 +20,7 @@ benchmarks/reports/
 benchmarks/runs/
 .tmp/
 /examples/circle-packing/workspace/
+/examples/circle-packing-git-apply/workspace/
 /examples/vliw-kernel-optimization/workspace/
 /examples/edgebench-ad-placement/workspace/
 /examples/model-optimize/torch-cpu-target/

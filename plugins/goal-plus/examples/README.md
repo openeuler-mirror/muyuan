@@ -18,19 +18,28 @@ the Goal Plus record within a five-minute whole-task contract. The workspace
 uses only the Python standard library and its verifier is fast enough for
 several optimization iterations during the short run.
 
+Use [Circle Packing Git Apply](circle-packing-git-apply/README.md) when the
+source write-back itself is the behavior under test. It materializes the same
+Circle Packing task as a disposable standalone Git repository, creates real
+candidate worktrees, then applies the selected result back to that repository
+through the provider-native publication commit.
+
 ## Why Each Example Exists
 
 | Scenario | Unique motivation | Entry | Requirements |
 | --- | --- | --- | --- |
 | [Circle Packing](circle-packing/README.md) | shortest end-to-end progress and completion-card demo | Pi or Codex Goal Plus, 5 minutes | Python standard library |
+| [Circle Packing Git Apply](circle-packing-git-apply/README.md) | real Git candidate checkout and selected-result write-back | Pi or Codex Goal Plus, 5 minutes | Python standard library and Git |
 | [Model Optimize](model-optimize/README.md) | realistic CPU/PyTorch optimization on both maintained hosts | Pi or Codex Goal Plus, 10 minutes | PyTorch |
 | [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | program/schedule optimization with a simulator correctness gate | Pi Goal Plus, 8 minutes | Python standard library |
 | [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | compiled C++ optimization with ten public cases | Pi Goal Plus, 8 minutes | C++17 compiler |
 | [AscendC Direct Search](ascendc-direct-search/README.md) | the single supported dynamic NPU task-generation path | Pi Goal Plus, 60 minutes | target Ascend NPU and references |
 
 Circle Packing and Ad Placement own checked-in SearchSpecs beside their
-read-only workspace templates. The other scenarios intentionally exercise Goal
-Plus Spec Discovery or user-supplied target material.
+read-only workspace templates. Circle Packing Git Apply reuses the Circle task
+but materializes a disposable writable Git source before Goal Plus starts. The
+other scenarios intentionally exercise Goal Plus Spec Discovery or user-supplied
+target material.
 
 Normal Git/ThinkThread SearchSpecs default to
 `workspace.promotion_mode="apply"`. Read-only templates and test fixtures must

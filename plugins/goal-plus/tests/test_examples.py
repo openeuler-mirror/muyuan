@@ -41,6 +41,19 @@ EXAMPLES = {
             "workspace-template/.goal-plus-verifiers/circle_packing_score.py",
         ),
     },
+    "circle-packing-git-apply": {
+        "prompts": (
+            "pi-goal-prompt.md",
+            "codex-goal-prompt.md",
+            "pi-goal-prompt-untimed.md",
+            "codex-goal-prompt-untimed.md",
+        ),
+        "required": (
+            "README.md",
+            "prepare_workspace.py",
+            "search-spec.json",
+        ),
+    },
     "edgebench-ad-placement": {
         "prompts": ("pi-goal-prompt.md",),
         "required": (
@@ -131,18 +144,27 @@ def test_circle_untimed_prompts_define_no_time_condition() -> None:
         r"hour|hours|lease|closeout)\b|(?:时间|分钟|小时|秒)",
         re.IGNORECASE,
     )
-    for name in ("pi-goal-prompt-untimed.md", "codex-goal-prompt-untimed.md"):
-        text = (EXAMPLES_ROOT / "circle-packing" / name).read_text(encoding="utf-8")
-        assert forbidden.search(text) is None
+    for example_name in ("circle-packing", "circle-packing-git-apply"):
+        for name in (
+            "pi-goal-prompt-untimed.md",
+            "codex-goal-prompt-untimed.md",
+        ):
+            text = (EXAMPLES_ROOT / example_name / name).read_text(
+                encoding="utf-8"
+            )
+            assert forbidden.search(text) is None
 
 
 def test_circle_timed_prompts_treat_the_preset_as_observational() -> None:
-    for name in ("pi-goal-prompt.md", "codex-goal-prompt.md"):
-        text = (EXAMPLES_ROOT / "circle-packing" / name).read_text(encoding="utf-8")
-        normalized_text = " ".join(text.split())
-        assert "preset task duration is 5 minutes" in normalized_text
-        assert "mark the Goal Plus record complete" in normalized_text
-        assert "do not label the difference late" in normalized_text
+    for example_name in ("circle-packing", "circle-packing-git-apply"):
+        for name in ("pi-goal-prompt.md", "codex-goal-prompt.md"):
+            text = (EXAMPLES_ROOT / example_name / name).read_text(
+                encoding="utf-8"
+            )
+            normalized_text = " ".join(text.split())
+            assert "preset task duration is 5 minutes" in normalized_text
+            assert "mark the Goal Plus record complete" in normalized_text
+            assert "do not label the difference late" in normalized_text
 
 
 @pytest.mark.parametrize(
