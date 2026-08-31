@@ -29,6 +29,12 @@ $ARGUMENTS
 通过持久化 Pi pool 以一组固定的初始自主候选循环运行。
 只有用户明确要求兼容隔离时才能设置 `workspace.backend="copy"`。
 
+创建 draft 和冻结 verifier 前，Main 必须把当前 Search 工作项从原始目标与公开任务契约
+继承的正确性、性能、适用范围和测量方法落实为统一验收契约。candidate iteration、
+selection、promotion 和最终验收必须遵循同一标准；允许使用预先声明的不同成本或覆盖规模，
+但不得临时改变标准。worker 只优化冻结契约。若契约有缺陷，调用
+`search_invalidate_run` 后修复并重新冻结，不能直接比较新旧契约结果。
+
 冻结前，要求每个 `ranking_signal` 输出一个最终 JSON 对象，其中包含有限数值类型的
 `spec.metric_name`。命令可以内联，也可以调用现有工具。只在必要时创建自定义 verifier 文件，
 并在冻结前的 Spec Discovery 阶段将其写入源码拥有的路径，例如 `.goal-plus-verifiers/`，

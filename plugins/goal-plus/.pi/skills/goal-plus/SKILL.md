@@ -61,6 +61,12 @@ generation 接管。该工具对 child 请求 Pi `xhigh`、等待返回并记录
 自动升级到 Search Mode。不要要求用户批准 verifier、metric、编辑范围、提升规则或 mode
 变化。用户提示有用但可选；从工作区发现缺失细节，并依据证据决策。
 
+创建 draft 和冻结 verifier 前，Main 必须把当前 Search 工作项从原始目标与公开任务契约
+继承的正确性、性能、适用范围和测量方法落实为统一验收契约。candidate iteration、
+selection、promotion 和最终验收必须遵循同一标准；允许使用预先声明的不同成本或覆盖规模，
+但不得临时改变标准。worker 只优化冻结契约。若契约有缺陷，调用
+`search_invalidate_run` 后修复并重新冻结，不能直接比较新旧契约结果。
+
 ranking verifier 必须输出一个最终 JSON 对象，其中包含有限数值类型的
 `spec.metric_name`，例如 `{"combined_score": 123.0}`。命令可以内联，也可以调用
 仓库现有工具。只在必要时创建自定义 verifier 文件；在 Spec Discovery 期间且调用
