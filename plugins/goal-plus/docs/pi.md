@@ -150,7 +150,7 @@ worker 始终把 `context.workspace` 作为文件与 shell 操作的显式 cwd�
 并通过 `candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。worker 完整读取这份
 清单，不扫描 parent/global/plugin 或其他 candidate 中的 Skill。
 
-worker 在第一次修改前读取 Global Evidence，之后按配置周期或停滞节点刷新。它独立选择方向，只编辑自己的 workspace，用一句话 `hypothesis` 调用 verifier，并更新 `.tmp/handoff.json`。`null` View 只表示 annotator 尚未发布，不要求等待。
+manual 模式下，worker 在第一次修改前读取 Global Evidence，之后按配置周期或停滞节点刷新；auto 模式使用 verifier 自动注入的共享快照，independent 模式不提供 peer Evidence。worker 独立选择方向，交付修改限于 `allowed_files`，并可在 `.tmp/` 保存 scratch 和更新 `handoff.json`。每项实质变更用一句话 `hypothesis` 调用 verifier；`null` View 只表示 annotator 尚未发布，不要求等待。
 
 同进程 continuation 沿用已经加载的 context 和 Evidence。跨进程恢复同一 native session 时，只重新加载紧凑的权威 candidate context，完整 worker contract 和已加载 Evidence 仍由持久 session 保留。
 

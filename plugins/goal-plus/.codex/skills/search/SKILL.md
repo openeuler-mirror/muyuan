@@ -66,8 +66,11 @@ strategy:
 1. 为最终 drain、选择、父级验证、报告和提升预留时间。
 2. 使用 `max_parallel` 选择初始自主循环数量。如果没有更好的资源信号，建议使用 4。
 3. 为每个初始 worker 提供足够的不间断运行时间，以创建真实产物和 verifier 证据。
-5. 只能依据全局停止事实决定是否恢复：达到显式目标、用户停止、run 失效，或外层剩余时间
-   不足以容纳另一个 worker 轮次和最终收尾。
+4. `success_threshold` 只判定最终结果是否满足目标，不单独触发 drain。若原始目标明确要求在
+   给定时间内持续或尽可能优化，则计算 `可用 continuation 时间 = 外层剩余时间 - 最终收尾预留`；
+   只要它足以完成至少一次“假设、修改、process verifier”闭环，就用缩短的 lease 继续，而不要求
+   原始完整 worker lease 能放入剩余时间。仅要求达到目标、没有持续优化时间要求的任务，达到阈值后
+   可以正常收尾。
 
 不同 candidate id 本身不能提供搜索多样性。适用时使用不同初始 proposal 或 seed，
 然后让每个 subagent 自行选择下一个有证据支持的假设。大量相近尝试仍无进展后，
@@ -85,6 +88,9 @@ strategy:
    `search_freeze_spec.task_skill_notice` 会列出发现结果，
    必须把该提示明确展示出来。candidate materialization 会把对应 worktree 绝对路径放入
    `candidate_task.task_skill_paths`。不要扫描或复制 parent/global/plugin Skill。
+   除非用户明确要求自动注入，或已有运行 Evidence 证明当前 worker 无法可靠遵守
+   manual 刷新契约，否则 `strategy.config.global_evidence_mode` 必须使用 `"manual"`；
+   不得仅为便利或保险选择 `"auto"`。
    原始 `$goal-plus` 命令包含 `annotator=B` 时，先调用
    `goal_plus_list_models(host="codex")` 并将唯一匹配冻结到
    `strategy.evidence_annotator.model`。包含 `workers=A,B` 或兼容别名
@@ -135,13 +141,17 @@ strategy:
    - 只有出现具体评估契约或基础设施失败时才检查 `verifier_assessment`。诊断稀疏、
      分数低或没有改进不代表 verifier 不充分，也不会阻止继续。
 8. 验证后执行全局停止 policy：
-   - 满足显式成功标准时停止恢复；
    - run 失效或用户停止时停止；
-   - 外层剩余时间不足以容纳另一个 worker 轮次和最终收尾时停止；
+   - 仅要求达到目标、没有持续优化时间要求时，达到成功标准可以成功收尾；
+   - 明确限时持续优化时，达到成功标准、分数、排名或近期没有改善都不改变调度；只有
+     `外层剩余时间 - 最终收尾预留` 不足以完成至少一次 process verifier 闭环时才停止；
    - 否则在同一候选上恢复同一个原生 Codex subagent。
 9. 要恢复时，先调用不含新技术指令的
-   `search_continue_agent_session(agent_session_id)`，再把返回的 continuation payload
-   映射到现有 task 的 `followup_task`。严格使用以下中性消息：
+   `search_continue_agent_session(agent_session_id, worker_budget=...)`，再把返回的 continuation
+   payload 映射到现有 task 的 `followup_task`。明确限时持续优化时，override 的
+   `max_runtime_seconds` 取冻结上限与“外层剩余时间减最终收尾预留”的较小值；若冻结的
+   `min_runtime_seconds` 或 `min_verifier_runs` 不再适合这次短 lease，则不要在 override 中继承。
+   严格使用以下中性消息：
 
    ```text
    沿用已加载的运行时上下文和 Evidence 继续同一条自主搜索循环，
@@ -164,6 +174,8 @@ strategy:
     不要只为记录临时最佳而提升。该 Search 属于 Goal Plus 时，不调用 `search_report`
     就交还控制；Goal Plus skill 会在父记录达到终态后生成且只生成一次报告。
     对独立 Search，只在提升后调用 `search_report`。
+    最终最佳分数满足 `success_threshold` 时才能将其报告为成功；未满足时保留最佳产物，
+    但不得把预算耗尽描述为验收通过。
 
 ## 当前最佳契约
 
@@ -188,8 +200,9 @@ strategy:
 `spawn_agent` 没有 timeout 参数，因此应结合 `wait_agent`、closeout 和
 `interrupt_agent`。
 
-`worker_budget.max_runtime_seconds` 是一次派发可强制执行的上限。continuation 可能收到
-根据外层剩余时间推导的另一份单次派发 host 限制。
+`worker_budget.max_runtime_seconds` 是一次派发可强制执行的上限。明确限时持续优化时，
+continuation 必须收到根据外层剩余时间推导的单次派发限制：冻结上限与
+“外层剩余时间减最终收尾预留”的较小值。不得仅因剩余时间装不下原始完整 lease 而停止。
 
 只把 `budget_control.max_turns_hint` 当作 prompt 指引。hard limit 是
 `initial_wait_timeout_ms` 与 `final_wait_timeout_ms` 之和，随后执行中断。

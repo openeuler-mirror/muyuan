@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -185,6 +186,7 @@ def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     assert "每个返回项" in text
     assert "仓外 Skill 继续由 host 管理" in text
     assert "parent cwd 不是 candidate workspace" in text
+    assert '`strategy.config.global_evidence_mode` 必须使用 `"manual"`' in text
 
 
 def test_codex_search_skill_projects_launch_metadata_to_current_tool_schema() -> None:
@@ -277,44 +279,28 @@ def test_codex_search_skill_documents_worker_budget_watchdog() -> None:
     assert "budget_control.autoresearch_lease" in text
     assert "同一个 Codex worker" in text
     assert "该 lease active 时，绝不能发送父级 closeout" in text
+    assert "不得仅因剩余时间装不下原始完整 lease 而停止" in normalized
+    assert "外层剩余时间减最终收尾预留" in normalized
 
 
-def test_codex_worker_records_progress_handoff_before_returning() -> None:
+def test_codex_worker_prompt_defers_to_runtime_candidate_contract() -> None:
     text = (ROOT / ".codex" / "agents" / "search_candidate_agent.toml").read_text(
         encoding="utf-8"
     )
 
-    assert ".tmp/handoff.json" in text
-    assert "summary" in text
-    assert "key_results" in text
-    assert "pitfalls" in text
-    assert "condition" in text
-    assert "failed_approach" in text
-    assert "把分配的候选思路当作假设" in text
-    assert "把任何有希望的方向当作" in text
-    assert "固定产物" in text
-    assert "理论或结构限制" in text
-    assert "10-15 distinct verifier-recorded artifacts" not in text
-    assert "verifier 是评估器，不是分析服务" in text
-    assert "PostTool 时间提示仅供参考" in text
-    assert "AutoResearch 最短运行时间" in text
-    assert "不要休眠或忙等" in text
-    assert "candidate_action=stop_and_report" in text
-    assert "立即返回" in text
-    assert "不要自行 reset" in text
-    assert "disposition" in text
-    assert "同分为 `retain`" in text
-    assert "candidate-local\n最新基线" in text
-    assert "verifier_assessment" in text
-    assert "code_surface" in text
-    assert "measured_effect" in text
-    assert "portability" in text
-    assert "relation_to_incumbent" in text
-    assert "candidate_local" in text
-    assert "feature_family" in text
-    assert "evaluation_contract" in text
-    assert "single_observation" in text
-    assert "candidate-local analysis scripts" not in text
+    for expected in (
+        'name = "search_candidate_agent"',
+        "search_get_agent_context",
+        "candidate_task",
+        "未列出的可选能力",
+    ):
+        assert expected in text
+    for runtime_detail in (
+        "search_get_global_evidence",
+        "supplemental",
+        "shared_dir",
+    ):
+        assert runtime_detail not in text
 
 
 def test_codex_search_skill_documents_state_level_resume() -> None:
@@ -335,121 +321,21 @@ def test_codex_search_skill_documents_state_level_resume() -> None:
     assert "search_redispatch_candidate" in text
     assert "一次派发" in text
     assert "handoff metadata" in text
-    assert "context.recent_iterations" in agent
-    assert "可能很大的全量历史" in agent
+    assert "fresh session" in agent
+    assert "沿用已加载的运行时上下文和 Evidence" in agent
 
 
-def test_codex_worker_agent_calls_context_and_verifier() -> None:
-    text = (ROOT / ".codex" / "agents" / "search_candidate_agent.toml").read_text(
+def test_codex_and_pi_worker_launch_contracts_are_equivalent() -> None:
+    codex_prompt = tomllib.loads(
+        (ROOT / ".codex" / "agents" / "search_candidate_agent.toml").read_text(
+            encoding="utf-8"
+        )
+    )["developer_instructions"].strip()
+    pi_prompt = (ROOT / ".pi" / "prompts" / "search-candidate-worker.md").read_text(
         encoding="utf-8"
-    )
-    exclusion_clause = text.split("只有 `single_common_command`", 1)[1].split(
-        "这些具体排除项才支持不发布", 1
-    )[0]
-    exclusions = ["single_common_command", *exclusion_clause.split("`")[1::2]]
+    ).strip()
 
-    assert 'name = "search_candidate_agent"' in text
-    assert "search_get_agent_context" in text
-    assert "context.workspace" in text
-    assert "task_skill_paths" in text
-    assert "Git-tracked" in text
-    assert "task-local Skills" in text
-    assert "global/plugin" in text
-    assert "search_get_global_evidence" in text
-    assert "每完成 3 次 `search_run_verifier` iteration" in text
-    assert "global_evidence_snapshot` 已完成本次刷新" in text
-    assert "search_submit_iteration_plan" not in text
-    assert "search_run_verifier" in text
-    assert "不得直接运行任务自带的 `runner`、`evaluator` 或 `grader`" in text
-    assert "所有正确性与指标反馈必须通过 `search_run_verifier`" in text
-    assert "不要传 `scope`" in text
-    assert "run_id=..., candidate_id=..., agent_session_id=..., hypothesis=..." in text
-    assert "工作区根目录" in text
-    assert "且只追加一条已验证记录" in text
-    assert "view=null" in text
-    assert "hypothesis" in text
-    assert "search_copy_shared_tool" in text
-    assert "search_stage_shared_tool" in text
-    assert ".tmp/tool-drafts" in text
-    assert "repeated_workflow" in text
-    assert "domain_construction_or_probe" in text
-    assert "behavior_or_invariant_checker" in text
-    assert "reproducer_fixture_or_case_generator" in text
-    assert "parser_trace_or_comparator" in text
-    assert "peer_setup_or_feedback_reduction" in text
-    assert "repeated_sequence" not in text
-    assert "domain_probe" not in text
-    assert "parser_or_trace" not in text
-    assert "peer_setup_reduction" not in text
-    assert "旧 signal" in text
-    assert "测试代码按用途而不是文件名分类" in text
-    assert "临时创建的" in text
-    assert "测试文件，以及 candidate" in text
-    assert "文件名以 `test_` 开头、" in text
-    assert "candidate 自己编写并纳入最终交付或主补丁的正式回归测试" in text
-    assert "属于正式测试或验证同一目标行为" in text
-    assert "显式选择的测试及依赖" in text
-    assert "candidate 产品实现" in text
-    assert "冻结 verifier/runner/grader" in text
-    assert "隐藏答案或评分逻辑" in text
-    assert "不得复制、代理或近似重建隐藏" in text
-    assert "not_applicable" in text
-    assert "revision_allowed=true" in text
-    assert "revision_head.tool_id" in text
-    assert "revision_allowed=false` 时使用 `revision_blocker` 的准确值" in text
-    assert "max_published_versions_reached" in text
-    assert exclusions == [
-        "single_common_command",
-        "logic_free_wrapper",
-        "restricted_artifact",
-        "candidate_private_state",
-        "duplicate_snapshot",
-        "no_toolizable_material",
-        "existing_family_sufficient",
-        "no_material_tool_delta",
-        "draft_not_ready",
-        "max_published_versions_reached",
-    ]
-    assert "capability_extension` 必须新增至少一个稳定" in text
-    assert "adoption_fix` 必须有同 family 的真实 copy/adoption 事实" in text
-    assert "contract_change` 必须" in text
-    assert "新增至少一个稳定的 capability/coverage 契约键" in text
-    assert "键是可机器" in text
-    assert "draft_not_ready` 仅表示存在具体的安全性" in text
-    assert "runtime 会在 catalog 尚无 family 时拒绝" in text
-    assert "pending_head` 或 `discoverable_head" not in text
-    assert "staging inventory 始终是权威事实" in text
-    assert "required-column-probe" not in text
-    assert "mutation-check-trace" not in text
-    assert "Astropy" not in text
-    assert "receipt" in text
-    assert "shared_tools[*].tool_view" in text
-    assert "Tool View 推断源码行为" in text
-    assert "Tool View 只用于发现和初筛" in text
-    assert "不规定复用方式，也不是采用建议" in text
-    assert "复制本身不要求调用原工具" in text
-    assert "先阅读 manifest、入口和源码" in text
-    assert "直接执行或" in text
-    assert "提取并改写局部逻辑" in text
-    assert "复用诊断方法" in text
-    assert "作为实现对照" in text
-    assert "或不采用" in text
-    assert "这些示例不限制其他合理方式" in text
-    assert "只有直接执行、导入或把原快照作为运行时依赖时" in text
-    assert "只读分析或改写源码不要求先运行原工具" in text
-    assert "最终 candidate 修改仍由正常 process verifier" in text
-    assert "当前 `adopted_tools` 只证明该快照曾复制进本轮" in text
-    assert "不证明原工具被执行或其代码被保留" in text
-    assert "隔离试用默认一次只复制一个工具" not in text
-    assert "git diff HEAD <commit> -- <allowed-file>" in text
-    assert "一条自主 Search 循环" in text
-    assert "不要等待父 agent 选择方向" in text
-    assert "search_select" in text
-    assert "search_report" in text
-    assert "search_promote" in text
-    assert "VerifierDeadlineInsufficient" in text
-    assert "不要重复验证未修改的产物" in text
-    assert "验证未修改的\n初始状态" in text
+    assert codex_prompt == pi_prompt
 
 
 def test_codex_search_reuses_exact_worker_evidence_before_parent_verification() -> None:
@@ -525,16 +411,11 @@ def test_codex_search_uses_open_posthoc_evaluation_as_non_gating_feedback() -> N
     skill = (ROOT / ".codex" / "skills" / "search" / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    agent = (ROOT / ".codex" / "agents" / "search_candidate_agent.toml").read_text(
-        encoding="utf-8"
-    )
-    combined = "\n".join((skill, agent))
 
-    assert "不来自 FrozenSpec" in combined
-    assert "动态比较" in combined
-    assert "不改变硬分结算规则" in combined
-    assert "不改变结算、硬 score" in combined
-    assert "或最终 PASS/FAIL" in combined
+    assert "不来自 FrozenSpec" in skill
+    assert "动态比较" in skill
+    assert "不是分数、推荐或 promotion gate" in skill
+    assert "不改变硬分结算规则" in skill
 
 
 def test_codex_goal_plus_defers_report_until_terminal_state() -> None:

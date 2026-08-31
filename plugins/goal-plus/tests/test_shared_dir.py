@@ -200,55 +200,14 @@ def test_process_verifier_publishes_share_out_into_global_evidence(
     assert "shared_dir" not in producer_context["candidate_task"]
     assert (shared_dir / "index.json").is_file()
     instructions = " ".join(producer_context["candidate_task"]["instructions"])
-    assert "shared_dir 发布方规则" in instructions
-    assert "同一 run 内其他 candidate" in instructions
-    assert "repeated_workflow" in instructions
-    assert "domain_construction_or_probe" in instructions
-    assert "behavior_or_invariant_checker" in instructions
-    assert "reproducer_fixture_or_case_generator" in instructions
-    assert "parser_trace_or_comparator" in instructions
-    assert "peer_setup_or_feedback_reduction" in instructions
-    assert "测试代码按用途而不是文件名分类" in instructions
-    assert "candidate 自己编写并纳入最终交付或主补丁的正式回归测试" in instructions
-    assert "属于正式测试或验证同一目标行为" in instructions
-    assert "显式选择的测试及依赖复制到 tool drafts" in instructions
+    assert "shared_dir 已启用" in instructions
     assert "candidate 产品实现" in instructions
-    assert "冻结 verifier/runner/grader、隐藏答案或评分逻辑" in instructions
-    assert "共享测试不得复制、代理或近似重建隐藏反馈" in instructions
+    assert "冻结评分逻辑" in instructions
     assert ".tmp/tool-drafts" in instructions
     assert "search_stage_shared_tool" in instructions
-    assert "revision_allowed=true" in instructions
-    assert "revision_head.tool_id" in instructions
-    assert "revision_allowed=false 时使用 revision_blocker 的准确值" in instructions
-    assert "max_published_versions_reached" in instructions
-    assert "no_toolizable_material 表示回顾本轮及此前尚未发布的材料后确实没有工具" in instructions
-    assert "runtime 会拒绝首次发布阶段使用这些 revision-only 排除项" in instructions
-    assert "capability_extension 必须新增至少一个稳定" in instructions
-    assert "adoption_fix 必须有同 family 的真实 copy/adoption 事实" in instructions
-    assert "contract_change 必须" in instructions
-    assert "新增至少一个稳定的 capability/coverage 契约键" in instructions
-    assert "键是可机器比较的语义标识" in instructions
-    assert "draft_not_ready 仅表示存在具体的安全性" in instructions
     assert "toolization_decision" in instructions
-    assert "不改变 score、disposition、selection 或 promotion" in instructions
-    assert "Tool View 后才会出现在 Global Evidence" in instructions
-    assert "shared_dir 采用方规则" in instructions
-    assert "Tool View 只用于发现和初筛" in instructions
-    assert "不规定复用方式，也不是采用建议" in instructions
-    assert "不要仅凭 Tool View 推断源码行为" in instructions
-    assert "复制本身不要求调用原工具" in instructions
-    assert "先阅读 manifest、入口和源码" in instructions
-    assert "提取并改写局部逻辑" in instructions
-    assert "复用诊断方法" in instructions
-    assert "作为实现对照" in instructions
-    assert "或不采用" in instructions
-    assert "这些示例不限制其他合理方式" in instructions
-    assert "只有直接执行、导入或把原快照作为运行时依赖时" in instructions
-    assert "只读分析或改写源码不要求先运行原工具" in instructions
-    assert "最终 candidate 修改仍由正常 process verifier 验证" in instructions
-    assert "当前 adopted_tools 只证明该快照曾复制进本轮上下文" in instructions
-    assert "不证明原工具被执行或其代码被保留" in instructions
-    assert "复制并在本候选中重新验证" not in instructions
+    assert "search_copy_shared_tool" in instructions
+    assert "共享工具及其 View 不改变正式 Evidence、排名或 promotion" in instructions
     assert str(shared_dir) not in instructions
     assert "shared/index.json" not in instructions
 

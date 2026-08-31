@@ -796,7 +796,7 @@ def test_git_tracked_task_skills_are_discovered_in_each_candidate_worktree(
             for instruction in task.instructions
         )
         assert all("Codex" not in instruction for instruction in task.instructions)
-        assert "Codex spawn_agent 不会切换 cwd" in session.launch["message"]
+        assert "candidate_task" in session.launch["message"]
         assert "task_local_skills_visible: review=" in session.launch["message"]
         assert str(expected_skill) in session.launch["message"]
         assert "untracked" not in session.launch["message"]
@@ -957,7 +957,6 @@ def test_plan_next_and_start_batch_record_plan_metadata(tmp_path: Path) -> None:
     assert tasks[0].plan_id == "plan_001"
     assert tasks[0].proposal.intent == "独立候选 c001"  # type: ignore[union-attr]
     assert (tasks[0].workspace / ".tmp").is_dir()
-    assert any(".tmp" in instruction for instruction in tasks[0].instructions)
 
     saved_plan = runtime._load_plan(run_id, "plan_001")
     assert saved_plan.status == "started"
@@ -1029,27 +1028,70 @@ def test_worker_policy_documents_host_launch_contract(tmp_path: Path) -> None:
     assert plan.worker_policy["host"] == "codex"
     assert plan.worker_policy["worker_agent_type"] == "search_candidate_agent"
     assert "worker_mode" not in tasks[0].strategy_metadata
-    assert any(
-        "把 context.agent_session_id 传给 search_run_verifier" in instruction
-        for instruction in tasks[0].instructions
-    )
+    assert any("当前 agent_session_id" in instruction for instruction in tasks[0].instructions)
     assert any(
         "search_run_verifier" in instruction for instruction in tasks[0].instructions
     )
-    assert any(
-        "runtime 拥有 verifier-backed iteration 的提交和回滚" in instruction
-        and "不要自行 reset" in instruction
-        for instruction in tasks[0].instructions
-    )
-    assert any(
-        "iteration 日志" in instruction for instruction in tasks[0].instructions
-    )
     combined_instructions = "\n".join(tasks[0].instructions)
-    assert "尽早完成并验证候选" in combined_instructions
-    assert "留出足够时间返回简洁摘要" in combined_instructions
-    assert "当前 Git 能解析该 commit" in combined_instructions
-    assert "不要访问或 fetch peer workspace" in combined_instructions
-    assert "When steps run out the host will ask you" not in combined_instructions
+    assert tasks[0].allowed_files == ["initial_program.py"]
+    assert tasks[0].denied_files == ["evaluator.py", "config.yaml"]
+    assert "以 verifier 返回后的工作区状态为准" in combined_instructions
+    assert "不会进入 Global Evidence、被其他 worker 看到或参与最终选择" in combined_instructions
+    assert "贡献给共享搜索" in combined_instructions
+    assert ".tmp/handoff.json" in combined_instructions
+    assert "不属于交付 edit surface" in combined_instructions
+    assert "success_threshold" not in combined_instructions
+    for runtime_detail in ("results.tsv", "worker_agent_type"):
+        assert runtime_detail not in combined_instructions
+
+    (tasks[0].workspace / ".tmp" / "handoff.json").write_text(
+        '{"summary": "resume here"}\n',
+        encoding="utf-8",
+    )
+    assert runtime._detect_changed_files(project, tasks[0].workspace) == []
+
+
+@pytest.mark.parametrize(
+    ("mode", "supplemental", "threshold"),
+    [
+        ("manual", True, True),
+        ("auto", False, False),
+        ("independent", False, False),
+    ],
+)
+def test_worker_instructions_match_enabled_capabilities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    supplemental: bool,
+    threshold: bool,
+) -> None:
+    monkeypatch.setenv(
+        "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED",
+        "1" if supplemental else "0",
+    )
+    project = make_project(tmp_path)
+    data = spec_with_strategy(
+        project,
+        {"name": "random", "config": {"global_evidence_mode": mode}},
+        max_parallel=1,
+    ).model_dump(mode="json")
+    data["constraints"] = {"success_threshold": 1.0} if threshold else {}
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    instructions = "\n".join(task.instructions)
+
+    assert ("search_get_global_evidence" in instructions) is (mode == "manual")
+    assert ("global_evidence_snapshot" in instructions) is (mode == "auto")
+    assert ("search_get_evidence_detail" in instructions) is supplemental
+    assert ("success_threshold" in instructions) is threshold
+    assert ("否则正常收尾" in instructions) is threshold
 
 
 def test_promote_requires_search_runtime_selection(tmp_path: Path) -> None:
@@ -1699,8 +1741,8 @@ def test_start_agent_session_returns_codex_launch_payload(tmp_path: Path) -> Non
 
     session = runtime.start_agent_session(run_id, task.candidate_id)
 
-    assert "理论或结构限制" in session.launch["message"]
-    assert "返回前，在候选工作区创建 `.tmp/handoff.json`" in session.launch["message"]
+    assert "candidate_task" in session.launch["message"]
+    assert "search_get_global_evidence" not in session.launch["message"]
 
     assert session.host == "codex"
     assert session.host_handle.host == "codex"
@@ -1862,7 +1904,7 @@ def test_redispatch_candidate_overrides_codex_worker_budget(tmp_path: Path) -> N
         "closeout_target": redispatched.launch["task_name"],
         "closeout_message": (
             "Worker 的截止时间临近。停止启动新工作；如有需要，最后运行一次 "
-            "search_run_verifier，写入 .tmp/handoff.json，并返回简洁摘要。"
+            "search_run_verifier，更新 .tmp/handoff.json，并返回简洁摘要。"
         ),
         "final_wait_timeout_ms": 6000,
         "on_exceed": "interrupt",
@@ -1912,7 +1954,7 @@ def test_codex_worker_budget_flows_to_watchdog_launch_payload(tmp_path: Path) ->
         "closeout_target": session.launch["task_name"],
         "closeout_message": (
             "Worker 的截止时间临近。停止启动新工作；如有需要，最后运行一次 "
-            "search_run_verifier，写入 .tmp/handoff.json，并返回简洁摘要。"
+            "search_run_verifier，更新 .tmp/handoff.json，并返回简洁摘要。"
         ),
         "final_wait_timeout_ms": 45000,
         "on_exceed": "interrupt",

@@ -183,20 +183,9 @@ def test_codex_launch_maps_candidate_contract_to_builtin_default_role() -> None:
     assert payload["agent_type"] == "default"
     assert "候选 worker，不是搜索编排器" in message
     assert "search_get_agent_context" in message
-    assert "search_run_verifier" in message
-    assert "search_plan_next" in message
-    assert "search_start_batch" in message
-    assert "search_select" in message
-    assert "search_report" in message
-    assert "search_promote" in message
-    assert "不要调用任何 `goal_plus_*` 工具" in message
-    assert "Codex spawn_agent 不会切换 cwd" in message
-    assert "context.workspace" in message
-    assert "task_skill_paths" in message
-    assert "Git-tracked task-local Skills" in message
-    assert "其他 candidate 的 Skill" in message
-    assert "不得直接运行任务自带的 `runner`、`evaluator` 或 `grader`" in message
-    assert "所有正确性与指标反馈必须通过 `search_run_verifier`" in message
+    assert "candidate_task" in message
+    assert "search_run_verifier" not in message
+    assert "search_get_global_evidence" not in message
 
 
 @pytest.mark.codex
@@ -240,7 +229,7 @@ def test_codex_launch_embeds_contract_and_continue_is_compact() -> None:
 
     assert worker_prompt in launch["message"]
     assert worker_prompt not in continued["message"]
-    assert "候选 worker，不是搜索编排器" in launch["message"]
+    assert "候选 worker，不是搜索编排器" not in launch["message"]
     assert "指令：continue" in continued["message"]
 
 
@@ -292,7 +281,7 @@ def test_codex_adapter_builds_watchdog_budget_payload() -> None:
         "closeout_target": "search_agent_0001",
         "closeout_message": (
             "Worker 的截止时间临近。停止启动新工作；如有需要，最后运行一次 "
-            "search_run_verifier，写入 .tmp/handoff.json，并返回简洁摘要。"
+            "search_run_verifier，更新 .tmp/handoff.json，并返回简洁摘要。"
         ),
         "final_wait_timeout_ms": 45000,
         "on_exceed": "interrupt",
@@ -480,13 +469,9 @@ def test_pi_rpc_adapter_builds_cross_process_native_session_continuation() -> No
     }
     assert "continue_existing_agent_session=true" in payload["prompt"]
     assert "first call search_get_agent_context" not in payload["prompt"]
-    assert "调用 search_get_agent_context 获取当前紧凑权威" in payload["prompt"]
-    assert "沿用会话中已加载的 Evidence" in payload["prompt"]
-    assert "这条 launch 消息开始一次新的 host 派发" in payload["prompt"]
-    assert "属于上一次派发，已不再生效" in payload["prompt"]
-    assert "公开指标达到上限" in payload["prompt"]
-    assert "至少完成一个实质性" in payload["prompt"]
-    assert "同分保留或回滚的 Evidence 仍有信息价值" in payload["prompt"]
+    assert "沿用已加载的运行时上下文和 Evidence" in payload["prompt"]
+    assert "继续自主选择有证据支持的方向" in payload["prompt"]
+    assert "deadline" not in payload["prompt"]
 
 
 @pytest.mark.codex

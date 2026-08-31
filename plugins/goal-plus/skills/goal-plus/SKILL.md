@@ -61,6 +61,11 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
    worktree 中的对应文件；`search_start_batch` 还会为每个 subagent 返回一条启动清单。
    将这些清单明确展示出来，不扫描 parent 或 global/plugin Skill。使用
    `goal_plus_save_spec_draft` 保存完整契约。
+   创建 draft 和冻结 verifier 前，Main 必须把当前 Search 工作项从原始目标与公开任务契约
+   继承的正确性、性能、适用范围和测量方法落实为统一验收契约。candidate iteration、
+   selection、promotion 和最终验收必须遵循同一标准；允许使用预先声明的不同成本或覆盖规模，
+   但不得临时改变标准。worker 只优化冻结契约。若契约有缺陷，调用
+   `search_invalidate_run` 后修复并重新冻结，不能直接比较新旧契约结果。
    不要在 SearchSpec 中生成软 rubric 或预设评价维度。Spec Discovery 只能冻结硬 metric、
    verifier、编辑范围、预算和 promotion 合同。开放式补充评价发生在每次 Evidence 结算之后：
    独立 annotator 根据当前候选累计 diff 和当时其他已结算候选的快照，自行提出与任务实际

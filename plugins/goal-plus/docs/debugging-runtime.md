@@ -223,7 +223,9 @@ Pi native session 保存在 `.gp/host-sessions/pi/`，pool state 保存在 `.gp/
 
 ### Agent 用 Bash 绕过 MCP Verifier
 
-host log 中出现 `python evaluator.py` 等命令，但 runtime 没有对应 iteration，说明 agent 只运行了 evaluator，没有通过正式 scorer 结算。应修正 prompt/tool 使用，而不是从 shell output 手工补分。
+host log 中出现 `python evaluator.py` 等命令，但 runtime 没有对应 iteration，说明它只是本地诊断，
+尚未通过正式 verifier 结算。不要从 shell output 手工补分；需要正式 Evidence 时让 candidate
+调用 `search_run_verifier`。
 
 ### Subagent 仍在运行但需要停止
 

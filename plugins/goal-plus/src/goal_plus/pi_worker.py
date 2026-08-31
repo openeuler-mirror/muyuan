@@ -969,8 +969,8 @@ def run_pi_rpc_worker(
                                 else (
                                     "Worker 截止时间临近。停止启动新的分析、编辑或优化 iteration。"
                                     "如果自最近一次记录的 verifier 后工作区发生了变化，立即最后运行一次 "
-                                    "search_run_verifier；否则立即返回简洁摘要。不要再启动新的优化 "
-                                    "iteration。"
+                                    "search_run_verifier；更新 .tmp/handoff.json 后立即返回简洁摘要。"
+                                    "不要再启动新的优化 iteration。"
                                 )
                             ),
                         },
