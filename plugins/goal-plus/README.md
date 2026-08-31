@@ -232,3 +232,21 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 
 Benchmark-specific tasks, evaluators, campaigns, and comparison evidence are
 not part of this isolated runtime directory.
+
+## ThinkThread Workspace Direction
+
+Goal Plus now keeps workspace mechanics behind a provider-neutral contract.
+The maintained Codex and Pi paths support `git_worktree` and `copy`: Git uses
+immutable commits, isolated candidate worktrees, verifier-backed settlement,
+and an explicit squash-publication apply step; Copy is an artifact-only
+filesystem-capture path.
+
+ThinkThread is the planned protected-execution provider. The current runtime
+defines `fs_snapshot` artifacts and includes a filtered promotion adapter, but
+candidate COW Children, snapshot-bound verification, reference Children, and
+Codex/Pi host execution are not implemented. Selecting `thinkthread` therefore
+fails closed instead of falling back to Git or Copy.
+
+See [Git and ThinkThread Workspace Architecture](docs/thinkthread/architecture.md)
+for the current runtime flow, ASCII diagrams, provider contracts, security
+boundary, and remaining integration work.

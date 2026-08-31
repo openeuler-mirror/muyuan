@@ -4,12 +4,10 @@
 > 以及 ThinkThread filtered promotion adapter 已实现；`[TARGET]` ThinkThread
 > candidate/Child、checkpoint、reference 和 host protected execution 尚未实现。
 >
-> 实现基线：当前 `codex/goal-plus-with-tt-git-refactor` working tree，
-> `HEAD=6677007`（2026-08-31）。
+> 实现基线：`codex/goal-plus-with-tt-git-refactor` 当前实现（2026-08-31）。
 >
 > 相关文档：[Shared Plane](../shared-plane.md) ·
-> [Host Adapters](../agent-host-adapters.md) ·
-> [实施与服务器验证计划](plan.md)
+> [Host Adapters](../agent-host-adapters.md)
 
 ---
 
@@ -505,8 +503,6 @@ execution；在真实 Child host E2E 通过前，三者不能被描述为相同�
 | TT verifier/reference | `[TARGET]` | snapshot-bound execution 与 ref Child 未实现 |
 | Codex/Pi protected TT launch | `[TARGET]` | host capability 当前 fail closed |
 | 四组合 contract/security campaign | `[TARGET]` | 需要真实 TT 环境验收 |
-
-具体实施顺序和服务器验证矩阵见 [plan.md](plan.md)。
 
 ---
 

@@ -122,7 +122,7 @@ Codex: $goal-plus-with-final-check <目标>
 ## 宿主
 
 | 宿主 | 集成资产 | 入口 | Search worker 路径 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Pi | 已安装 Pi package | `/goal-plus` 或 `pi -p "/goal-plus ..."` | 持久化 Pi RPC pool；参阅 [Pi](docs/pi.md) |
 | Codex | 已安装 plugin | `$goal-plus` skill 提示 | 固定 parallel loops 与原生同 worker continuation；参阅 [Codex](docs/codex.md) |
 
@@ -184,7 +184,7 @@ Selected Git Head 和 Artifact Hash，之后才生成可被 Git 应用的 Patch�
 ## 文档
 
 | 需求 | 文档 |
-|---|---|
+| --- | --- |
 | 架构、共享 Evidence、回滚和端到端流程 | [Shared Plane](docs/shared-plane.md) |
 | 当前 MCP 与 Pi 本地工具 | [API](docs/api.md) |
 | 宿主能力对比 | [Agent Host Adapters](docs/agent-host-adapters.md) |
@@ -197,3 +197,18 @@ Selected Git Head 和 Artifact Hash，之后才生成可被 Git 应用的 Patch�
 
 Benchmark 专用任务、evaluator、campaign 和对比证据不属于这个隔离的 runtime
 目录。
+
+## ThinkThread Workspace 方向
+
+Goal Plus 已将 workspace 机制收敛到 provider-neutral contract。当前 Codex/Pi 路径
+支持 `git_worktree` 和 `copy`：Git 使用不可变 commit、隔离的 candidate worktree、
+verifier-backed 结算和显式 squash-publication apply；Copy 是 artifact-only 的
+filesystem-capture 路径。
+
+ThinkThread 是目标 protected-execution provider。当前 Runtime 已定义 `fs_snapshot`
+产物并实现 filtered promotion adapter，但 candidate COW Child、snapshot-bound verifier、
+reference Child 和 Codex/Pi host execution 尚未实现。因此选择 `thinkthread` 会 fail
+closed，不会静默 fallback 到 Git 或 Copy。
+
+当前 Runtime 流程、ASCII 架构图、provider contract、安全边界与剩余接入工作见
+[Git 与 ThinkThread Workspace 架构](docs/thinkthread/architecture.md)。
