@@ -10,36 +10,45 @@ checkpoint、恢复、只读引用和发布。当前模型包含两种组合：*
 **ThinkThread + Git**。外层负责 workspace 或 sandbox，内层 Git 负责 candidate 的尝试历史。
 
 ```text
-Clean source / committed baseline
-                  |
-                  | new
-                  v
-+---------------- Goal Plus Workspace Framework ----------------+
-| WorkspaceProvider                                             |
-|   +-- Git + Git: Git worktree (outer) + Git history (inner)   |
-|   `-- TT  + Git: private Child (outer) + Git history (inner)  |
-|                  |                                            |
-|                  v                                            |
-|       writable current candidate                              |
-|                  | edit                                       |
-|                  v                                            |
-|         inner Git attempt commit                              |
-|                  | checkpoint                                 |
-|                  v                                            |
-|       ArtifactRef {git_commit | fs_snapshot}                  |
-|                  | verify                                     |
-|                  v                                            |
-|       settle: keep | retain | discard | failure               |
-|                  |                                            |
-|          restore / continue -----> settled Evidence           |
-|                                          |                    |
-|                                          `--> ref-workspace   |
-|                                                               |
-| selected ArtifactRef -> promotion verify -> filtered publish  |
-+-----------------------------------------------|---------------+
-                                                | apply
-                                                v
-                                         source repository
+MainAgent
+  |  SearchSpec(source_path, edit surface, verifier, backend)
+  v
+freeze ---------------------------------------------------------+
+  |                                                             |
+  | Git + Git                                                   | TT + Git
+  | origin verifier x1                                          | origin verifier x1
+  | pin clean Git HEAD                                          | pin FsSnapshot
+  |                                                             |
+  +---------------- source ArtifactRef --------------------------+
+                                |
+                                | create
+                                v
++------------------- Goal Plus Workspace Framework -------------------+
+| new                                                                 |
+|   Git: c001 worktree -> relocation verifier x1 -> remaining lanes   |
+|   TT:  private Child lanes; provider-equivalent layout, no relocate |
+|                                |                                    |
+| search                         v                                    |
+|                     writable current candidate                     |
+|                                | edit                               |
+|                                v                                    |
+|                       inner Git attempt commit                      |
+|                                | checkpoint                         |
+|                                v                                    |
+|                     ArtifactRef {git_commit | fs_snapshot}          |
+|                                | verify                             |
+|                                v                                    |
+|                     keep | retain | discard | failure               |
+|                                |                                    |
+|                 restore / continue -----> settled Evidence          |
+|                                                   |                 |
+|                                                   `-> ref-workspace |
+|                                                                    |
+| apply                                                              |
+|   selected ArtifactRef -> promotion verify -> filtered publication |
++---------------------------------------------------|----------------+
+                                                    v
+                                             source repository
 ```
 
 框架允许 candidate 持续修改 current workspace，但所有参与决策的状态都先固化为
@@ -94,6 +103,27 @@ allowed product files 的 filtered publication artifact。应用该 artifact 是
 一次 Search run 包含三个 workspace 阶段：`new` 建立 baseline，`search` 通过 immutable
 checkpoint 演化 candidate，`apply` 发布一个 selected artifact。
 
+### Freeze：验证 source 并固定身份
+
+`source_path`、verifier 命令和编辑范围由 MainAgent 写入 SearchSpec。Runtime 不从目录结构
+反推另一个 candidate root，也不拼接 `workspace/` 等路径。`search_freeze_spec` 负责执行已给定
+合同，并在创建 Search run 之前证明该合同至少能在 source 上运行。
+
+对于 Git + Git，freeze 先检查 source repository 是 clean `HEAD`，hash-pin verifier
+artifact，然后直接在 origin `source_path` 执行一次完整 process-verifier suite。成功后再次
+检查 clean 状态和 HEAD，把该 commit 保存为 `FrozenSpec.source_artifact_ref`。verifier 可以按
+自身构建逻辑生成被 Git 忽略的 cache；Runtime 不清理或猜测这些产物，但任何 staged、unstaged
+或 non-ignored untracked 变化仍会阻止冻结。
+
+`search_create` 会再次确认 origin 仍处于该 commit。HEAD 即使以 clean commit 的方式变化，
+也会以 `FrozenSourceChanged` 拒绝使用旧 FrozenSpec。这样 run-local mirror 和 candidate branch
+都从 verifier 实际验证过的 source artifact 建立，而不是从稍后的目录状态建立。
+
+ThinkThread + Git 的 provider contract 只需要在 origin 执行一次 verifier，然后固定
+`FsSnapshot`。它不需要 Git 的 relocation gate，因为 Child 由同一 provider-native snapshot
+派生。当前 Codex/Pi host 还不支持 TT candidate materialization，因此该路径在 freeze 前
+fail closed；这里定义的是启用该 backend 时必须满足的合同，不代表它已经可运行。
+
 ### New：建立精确 baseline
 
 所有 candidate 从同一个 committed baseline 开始。执行开始时，inner Git 必须干净：
@@ -104,9 +134,20 @@ checkpoint 演化 candidate，`apply` 发布一个 selected artifact。
 非 Git source 可以建立 synthetic committed baseline；如果确实要捕获 dirty filesystem，
 应使用兼容的 `copy + artifact_only` 路径，而不是本文的两种主模式。
 
-`new` 随后要求 Provider 为每个 candidate 物化一个 private current workspace。Provider 返回
-`WorkspaceAccess`，其中包含 logical root、native cwd、writable surfaces 和 confinement。
-Host 在这个 access context 中启动 worker；Provider 不负责启动或监督 agent。
+`new` 随后要求 Provider 为 candidate 物化 private current workspace。Git + Git 先只建立
+首个真实 candidate `c001`，确认其 HEAD 等于 frozen source artifact，并在该 worktree 中执行
+同一套 process verifier。这个 relocation gate 用于发现 verifier 的 `cwd`、相对路径或 source
+root 在移动到 run-local worktree 后失效的问题。验证后 `c001` 必须仍处于同一 HEAD，且不能
+留下 non-ignored Git change；Git-ignored cache 可以保留。
+
+relocation 通过后才创建其余 candidate，并允许 Host 启动 worker。失败时 Runtime 自动把 run
+置为 `aborted`，原因记录为 `verifier_target_mismatch`，保留 `c001` 供诊断，不创建 `c002`，
+也不创建 worker session。Goal Plus record 保持 active，由 MainAgent 修复 SearchSpec 或 verifier
+后重新 freeze。origin 与 relocation 结果是 control-plane bootstrap Evidence；它们不是 candidate
+iteration，不写 `results.tsv`，不计入 worker budget，也不参与排名。
+
+Provider 最终返回 `WorkspaceAccess`，其中包含 logical root、native cwd、writable surfaces 和
+confinement。Host 在这个 access context 中启动 worker；Provider 不负责启动或监督 agent。
 
 ### Search：checkpoint、验证与结算
 
@@ -144,7 +185,10 @@ original baseline 准备 publication artifact。
 | --- | --- | --- |
 | 外层 workspace | run-local Git mirror 和 private candidate worktree | baseline FsSnapshot 和 private COW Child |
 | 内层历史 | worktree 中的 candidate Git branch | Child 内的 candidate Git branch |
-| `new` baseline | baseline commit 和 candidate branch | 包含同一 clean inner Git commit 的 baseline snapshot |
+| origin bootstrap | process verifier x1，固定 clean source commit | process verifier x1，固定 source snapshot |
+| `new` baseline | 从 frozen commit 建立 baseline ref 和 candidate branch | 包含同一 clean inner Git commit 的 baseline snapshot |
+| relocation gate | `c001` 中 process verifier x1，通过后才创建其余 lane | 不需要；Child 直接派生自 provider-native snapshot |
+| relocation 失败 | abort run，保留 `c001`，不创建 worker 或后续 lane | 不适用 |
 | checkpoint identity | `ArtifactRef(kind=git_commit)` | inner Git attempt 后生成 `ArtifactRef(kind=fs_snapshot)` |
 | verifier 输入 | 干净且确认与 attempt commit 一致的 current worktree | 精确 snapshot 或其受保护派生环境 |
 | restore | 从 settled commit 恢复，再保留 Runtime ledger state | 恢复 settled snapshot，再保留 Runtime ledger state |
@@ -193,6 +237,10 @@ Provider 强制 read-only access。
 
 每个 verifier result、Evidence record 和 selection 都引用 immutable provider-native artifact。
 被评价的状态不受 worker 后续修改影响。
+
+freeze 保存 origin bootstrap Evidence；Git worktree 另外保存 `c001` relocation Evidence。
+两次验证使用同一 frozen verifier hash 与 process-verifier suite，使“origin 能运行”和
+“真实 candidate 路径能运行”在 worker 消耗预算前分别得到证明。
 
 ### Candidate 独立演化
 

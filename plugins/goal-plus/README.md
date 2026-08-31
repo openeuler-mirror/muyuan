@@ -201,6 +201,12 @@ not choose later technical directions or replace low-scoring candidates.
 Slower workers do not block completed work from being evaluated. See
 [Shared Plane](docs/shared-plane.md).
 
+For Git worktrees, freezing first runs the process-verifier suite once in the
+clean origin and pins that exact commit. Batch startup then verifies the same
+suite in `c001` before materializing the remaining lanes or starting workers.
+This catches source-root and relative-path mistakes before candidate work uses
+the Search budget; the bootstrap checks are not candidate iterations.
+
 Keep one run for one valid evaluation/edit contract. If a successor is
 unavoidable, `source_run_id` preserves bounded frontier/features/scoped
 pitfalls as research context, never as reusable scores.

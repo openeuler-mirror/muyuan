@@ -56,6 +56,7 @@ class WorkspaceProviderCapabilities:
     restore: bool
     reference_workspace: bool
     protected_execution: bool
+    requires_relocation_verification: bool = False
     prepare_promotion: bool = False
     apply_promotion: bool = False
 
@@ -1204,6 +1205,7 @@ class GitWorktreeProvider(GitWorkspaceProvider):
         restore=True,
         reference_workspace=True,
         protected_execution=False,
+        requires_relocation_verification=True,
         prepare_promotion=True,
         apply_promotion=True,
     )

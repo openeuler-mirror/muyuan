@@ -168,6 +168,11 @@ main 只校验结果、刷新 verifier-backed best，并在全局停止条件未
 candidate。main 不选择后续技术方向，也不会按分数替换 candidate。完整流程见
 [Shared Plane](docs/shared-plane.md)。
 
+Git worktree 模式在 freeze 时先直接在 clean origin 中运行一次 process-verifier suite，
+并固定该 commit。batch 启动时先在 `c001` 中重复同一验证，通过后才创建其余 lane 或启动
+worker。这样 source root 与相对路径错误会在消耗候选 Search 预算前暴露；bootstrap 验证
+不是 candidate iteration。
+
 同一份有效评价/编辑合同应保持一个 run。必须新建 successor 时，
 `source_run_id` 只继承有界 frontier、feature 和带作用域 pitfalls 作为研究上下文；
 旧分数不能复用，必须重新验证。

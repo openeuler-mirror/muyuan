@@ -940,6 +940,21 @@ def goal_plus_monitor_snapshot(
             "frozen_spec_id": run.frozen_spec_id,
             "created_at": run.created_at,
             "source_path": run.source_path,
+            "source_artifact_ref": (
+                run.source_artifact_ref.model_dump(mode="json")
+                if run.source_artifact_ref is not None
+                else None
+            ),
+            "origin_verification": (
+                frozen.origin_verification.model_dump(mode="json")
+                if frozen.origin_verification is not None
+                else None
+            ),
+            "workspace_bootstrap_verification": (
+                run.workspace_bootstrap_verification.model_dump(mode="json")
+                if run.workspace_bootstrap_verification is not None
+                else None
+            ),
             "plans_count": plans_count,
             "planning_rounds_total": plans_count,
             "started_rounds_total": started_rounds_total,

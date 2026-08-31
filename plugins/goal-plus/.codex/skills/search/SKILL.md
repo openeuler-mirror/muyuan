@@ -5,8 +5,10 @@ description: Codex 使用 goal-plus MCP server 的 $goal-plus 内部 Search Mode
 
 # Codex 的 Search Mode 运行时
 
-在 `$goal-plus` 已把目标升级到 Search Mode 后使用此 skill，或用它对已经可度量的
-SearchSpec 进行显式底层调试。普通用户入口是 `$goal-plus`。
+只在本轮精确 `$goal-plus` host command 已授权 active `goal_plus_id`，且该 Goal Plus
+记录已把工作项升级到 Search Mode 后使用此 skill。没有 host 授权 id 时立即停止；此 skill
+不能创建 Goal Plus、冻结 standalone spec、创建 standalone run，或把自然语言请求升级为
+Goal Plus。普通用户入口只有 `$goal-plus`。
 
 使用 `goal-plus` MCP server 暴露的逻辑 `search_*` 工具。Codex 可能显示带客户端特定
 前缀的 MCP 工具；按最后的逻辑工具名匹配。
@@ -18,19 +20,29 @@ Search tool 缺失证据；不得用它们探测工具。不得通过 `exec_comm
 
 ## Verifier 冻结契约
 
-不要在 `source_path` 手工运行拟定的 `ranking_signal`。将命令和 verifier 产物直接传给
-`search_freeze_spec`；它会在一次性源码副本中运行预检，并确认最后一个非空 stdout 行是
-JSON，其中包含有限数值类型的 `spec.metric_name`，例如
+不要在 `source_path` 手工预跑拟定的 verifier。将命令和 verifier 产物直接传给
+`search_freeze_spec`；Git backend 会在 origin 运行一次 process-verifier suite，固定验证过的
+clean HEAD，并确认 ranking signal 的最后一个非空 stdout 行是 JSON，其中包含有限
+数值类型的 `spec.metric_name`，例如
 `{"combined_score": 123.0}`。只在必要时创建自定义 verifier 文件，并在冻结前的 Spec
 Discovery 阶段将其写入源码拥有的路径，例如 `.goal-plus-verifiers/`，绝不能放在 `.gp/`
 或 `.search/` 中。freeze 工具会暴露完整的嵌套 `SearchSpec` schema。
 `expected_outputs` 只接受产物路径或 glob，不解析 stdout。
 
-冻结预检在一次性源码副本中运行，并将候选工作区视为只读。verifier 必须把编译器产物和
-临时输出放入 `GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` 或
-`tempfile.TemporaryDirectory()`。绝不能使用固定 `/tmp` 路径：并行候选验证会发生冲突。
-任何工作区变更都会触发 `VerifierWorkspaceSideEffect`；启动候选前应修复 verifier
-并冻结新 spec。
+origin verifier 可以按自身构建逻辑生成 Git-ignored cache；Runtime 不清理或猜测这些产物。
+它会在验证后复检 clean 状态、HEAD 和 verifier hash。任何 staged、unstaged 或 non-ignored
+untracked 变化都会阻止冻结。verifier 仍应优先把编译器产物和临时输出放入唯一的
+`GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` 或 `tempfile.TemporaryDirectory()`。绝不能使用
+固定 `/tmp` 路径：并行 candidate verification 会发生冲突。
+
+`search_create` 后，Git 的第一次 `search_start_batch` 会先创建 `c001` 并在真实 worktree
+重复同一 suite；只有通过后才创建其余 lane。`WorkspaceRelocationVerifierFailed` 表示
+origin 能运行但 candidate 路径合同不成立。该 run 已以 `verifier_target_mismatch` abort，
+`c001` 被保留供诊断，且不能为它启动 worker。修复 MainAgent 提供的 `source_path`、verifier
+`cwd` 或 artifact 合同后重新 freeze/create；不要手工复制文件或绕过 gate。
+
+`copy` 保留 disposable-copy ranking preflight。未来 ThinkThread backend 在 origin 验证并固定
+snapshot 后不需要 relocation；当前 Codex host 仍会在 freeze 前拒绝 TT，不得 fallback。
 
 如果运行时验证返回 `VerifierWorkspaceSideEffect`、
 `metrics.infrastructure_failure=true` 或 `metrics.candidate_action=stop_and_report`，
@@ -309,7 +321,8 @@ workspace 运行且不依赖 candidate 私有临时状态的能力，只要命�
 这些具体排除项才支持 `not_applicable`。`no_toolizable_material` 表示回顾本轮及此前尚未发布的材料后
 确实没有工具；它与已有 family 没有实质 revision 增量不同。首次发布阶段不得使用 revision-only
 排除项；runtime 会在 catalog 尚无 family 时拒绝 `existing_family_sufficient`、
-`no_material_tool_delta` 和 `max_published_versions_reached`。`revision_allowed=false` 时使用 `revision_blocker` 的准确值；
+`no_material_tool_delta` 和 `max_published_versions_reached`。
+`revision_allowed=false` 时使用 `revision_blocker` 的准确值；
 `existing_family_sufficient` 仅表示 `revision_head` 已经覆盖需求；`no_material_tool_delta` 仅用于已有
 shared-tool family，表示没有上述实质增量；`draft_not_ready` 仅表示具体的安全性、
 完整性、可移植性或 peer 可运行性阻塞，不能用短小、任务专属、inline 来源或未润色作为理由。

@@ -66,8 +66,13 @@ host-command invocation 继续保存原始输入 hash。ready SearchSpec draft �
 
 - 使用 Pydantic 校验 SearchSpec 结构；
 - hash-pin verifier artifact；
-- 在一次性源码副本中预执行 ranking verifier；
-- 检查退出码、数值 metric、超时和工作区副作用。
+- 对 Git source 在 origin 执行一次 process-verifier suite，并固定 clean source commit；
+- 在 run 的首个 Git worktree 中重复一次相同 suite，证明 relocation 后的路径合同有效；
+- 检查退出码、数值 metric、超时、verifier hash 和 source identity。
+
+`copy` 仍保留旧的 disposable-copy ranking preflight。未来的 ThinkThread backend 在 origin
+验证后固定 provider-native snapshot，不重复 relocation；当前 Codex/Pi 对 TT candidate 路径
+仍会 fail closed。
 
 Runtime 不理解具体 benchmark 的语义，也不会自动证明本地 verifier 与官方 Judge
 等价。公开评分公式、有效性条件、每例资源限制和聚合方式是否完整进入 verifier，仍由
@@ -108,12 +113,18 @@ worker，再冻结修正后的 spec，创建 successor run。旧分数不能跨�
 
 一次正常的 Search run 按以下顺序执行：
 
-1. main agent 冻结 SearchSpec 和 verifier artifact。
-2. 一次初始 `SearchPlan` 分配固定 candidate lane。
-3. 每个 candidate 获得独立工作区并开始自主循环。
-4. 宿主以 wait-any 方式返回完成事件；较慢 lane 不阻塞其他 lane 发布 Evidence。
-5. 只要全局停止条件未满足，宿主续跑同一个 candidate、原生 session 和工作区。
-6. 收尾时先让所有 live worker 静止，再选择精确 commit，执行 promotion gate 并生成报告。
+1. main agent 提交 SearchSpec；runtime 在 origin 验证 verifier 并冻结 source artifact。
+2. `search_create` 确认 source identity 未变化，一次初始 `SearchPlan` 分配固定 lane。
+3. Git backend 先物化 `c001` 并执行 relocation gate；通过后才物化其余 candidate。
+4. 每个 candidate 获得独立工作区并开始自主循环。
+5. 宿主以 wait-any 方式返回完成事件；较慢 lane 不阻塞其他 lane 发布 Evidence。
+6. 只要全局停止条件未满足，宿主续跑同一个 candidate、原生 session 和工作区。
+7. 收尾时先让所有 live worker 静止，再选择精确 commit，执行 promotion gate 并生成报告。
+
+origin/relocation bootstrap result 单独保存在 FrozenSpec 和 RunRecord 中，并由 monitor/report
+展示。它不是 candidate iteration，不进入 Global Evidence、`results.tsv`、worker verifier
+计数或候选排名。relocation 失败会以 `verifier_target_mismatch` 自动 abort run，保留 `c001`
+供诊断，且不会启动 worker。
 
 `budget.max_parallel` 是 spec 的初始 candidate 和 live-worker 数量。普通
 `parallel_loops` run 只做一次初始分配，不按分数创建替代 candidate，也没有后续
@@ -331,11 +342,16 @@ invalidated、aborted 或 failed run 的发布 fence 继续拒绝修改。需要
 baseline ref 与各 candidate worktree。`source_path` 位于 repository 子目录时，worktree 仍是
 完整 repository，worker cwd 和 edit surface 则保持相对于该 source 子目录。
 
-Git-backed source 的规范输入是 clean `HEAD`。`search_freeze_spec` 在 verifier preflight
-前检查整个 repository，`search_create` 在写入 run 前复检；staged、unstaged 或 non-ignored
-untracked 任一存在都会以 `DirtySourceWorkspace` 失败。Runtime 不自动 stash、clean 或提交
-source。`.gp`、`.search`、`.tmp` 等既有 runtime-noise 排除项不参与判脏。确实要把当前目录
-状态作为输入时，显式使用 `copy + artifact_only`。
+Git-backed source 的规范输入是 clean `HEAD`。`search_freeze_spec` 在 origin verifier 前检查
+整个 repository，验证后再次检查并把 HEAD 固定为 `source_artifact_ref`；`search_create` 在写入
+run 前复检 clean 状态和准确 commit。staged、unstaged 或 non-ignored untracked 任一存在都会
+以 `DirtySourceWorkspace` 失败，clean 但 HEAD 已变化则以 `FrozenSourceChanged` 失败。Runtime
+不自动 stash、clean 或提交 source。`.gp`、`.search`、`.tmp` 等既有 runtime-noise 排除项不参与
+判脏。确实要把当前目录状态作为输入时，显式使用 `copy + artifact_only`。
+
+run-local mirror 以 frozen commit 建立 baseline。`search_start_batch` 先物化 `c001`，确认其 HEAD
+与 frozen artifact 一致，并在该 logical workspace 重跑 process verifier；只有通过后才创建
+剩余 candidate。该 relocation gate 专门阻止 origin 路径能运行、worktree 路径却失效的合同。
 
 Evidence 中的 commit 表示 verifier 实际读取的完整 Git tree，不是相对于初始源码的
 patch。Runtime 分别记录：

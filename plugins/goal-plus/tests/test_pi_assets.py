@@ -67,6 +67,10 @@ def test_pi_goal_plus_prompt_cannot_bootstrap_goal_plus() -> None:
     assert "`expected_outputs` 只列出产物路径或 glob" in text
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in text
     assert "固定的 `/tmp`" in text
+    assert "origin `source_path` 运行一次" in text
+    assert "WorkspaceRelocationVerifierFailed" in text
+    assert "verifier_target_mismatch" in text
+    assert "bootstrap 结果不是 candidate iteration" in text
     assert "`goal_plus_record_triage` 之前不要读取或审计目标文件" in text
     assert "当前未设置最大运行时间" in text
     assert "当前对话上下文" in text
@@ -108,6 +112,10 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert '`workspace.backend="git_worktree"`' in text
     assert '`workspace.promotion_mode` 默认是' in text
     assert "DirtySourceWorkspace" in text
+    assert "origin `source_path` 运行一次 process-verifier suite" in text
+    assert "WorkspaceRelocationVerifierFailed" in text
+    assert "verifier_target_mismatch" in text
+    assert "bootstrap 结果不是 candidate iteration" in text
     assert "workspace_capacity_notice" in text
     assert "fits_available_space=false" in text
     assert ".agents/skills/<name>/SKILL.md" in text
@@ -333,6 +341,10 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "且只追加一条已验证记录" in text
     assert "VerifierWorkspaceSideEffect" in text
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in text
+    assert "clean origin 运行 process verifier" in text
+    assert "c001 worktree 验证 relocation" in text
+    assert "bootstrap 结果不是 candidate iteration" in text
+    assert "一次性源码副本" not in text
     assert "pi_rpc_run_worker" not in text
     assert "pi_search_run_batch" not in text
     assert "pi_search_run_candidate" not in text
@@ -775,4 +787,5 @@ def test_pi_goal_plus_reassesses_spec_after_real_result() -> None:
     assert "goal_plus_update_goal" in skill
     assert "不是新的运行时状态" in skill
     assert "不是新的运行时阶段" in prompt
-    assert "bootstrap" not in combined.lower()
+    assert "不得调用 `goal_plus_create`" in prompt
+    assert "不得调用 `goal_plus_update_goal`" in prompt

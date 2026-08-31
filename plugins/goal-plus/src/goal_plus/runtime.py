@@ -38,6 +38,8 @@ from goal_plus.models import (
     AgentSessionRecord,
     ArtifactRef,
     BestArtifactRecord,
+    BootstrapVerification,
+    BootstrapVerifierResult,
     CandidateRecord,
     CandidateProposal,
     CandidateTask,
@@ -820,10 +822,61 @@ class FileSearchRuntime:
                 )
             artifact_entries.append((artifact_path, rel_path))
 
-        self._preflight_ranking_verifiers(spec)
-
         for artifact_path, rel_path in artifact_entries:
             verifier_hashes[rel_path] = sha256_file(artifact_path)
+
+        provider = get_workspace_provider(spec.workspace.backend)
+        source_artifact_ref = (
+            provider.current_artifact(source_root)
+            if spec.workspace.backend in {"git_worktree", "thinkthread"}
+            else None
+        )
+        origin_verification: BootstrapVerification | None = None
+        if spec.workspace.backend in {"git_worktree", "thinkthread"}:
+            origin_verification = self._run_bootstrap_verifiers(
+                spec=spec,
+                workspace=source_root,
+                backend=spec.workspace.backend,
+                phase="origin",
+                verifier_hashes=verifier_hashes,
+                log_dir=(
+                    self.root_dir
+                    / "bootstrap"
+                    / f"origin-{uuid.uuid4().hex[:12]}"
+                ),
+                source_artifact_ref=source_artifact_ref,
+            )
+            if not origin_verification.passed:
+                failed = next(
+                    (
+                        result
+                        for result in origin_verification.verifier_results
+                        if not result.passed
+                    ),
+                    None,
+                )
+                detail = (
+                    f" {failed.name}: {failed.failure_class}."
+                    if failed is not None
+                    else ""
+                )
+                raise ValueError(
+                    "OriginVerifierFailed: process verifier suite did not pass "
+                    f"in source_path '{source_root}'.{detail}"
+                )
+            self._validate_clean_source_repository(spec)
+            source_artifact_after = provider.current_artifact(source_root)
+            if source_artifact_after != source_artifact_ref:
+                raise ValueError(
+                    "OriginArtifactChanged: source artifact changed while origin "
+                    "verification was running"
+                )
+            origin_verification = origin_verification.model_copy(
+                update={"source_artifact_ref": source_artifact_after}
+            )
+            source_artifact_ref = source_artifact_after
+        else:
+            self._preflight_ranking_verifiers(spec)
 
         spec_payload = spec.model_dump(mode="json")
         spec_hash = sha256_text(
@@ -831,6 +884,11 @@ class FileSearchRuntime:
                 {
                     "spec": spec_payload,
                     "verifiers": verifier_hashes,
+                    "source_artifact_ref": (
+                        source_artifact_ref.model_dump(mode="json")
+                        if source_artifact_ref is not None
+                        else None
+                    ),
                     "task_skills": task_skill_paths,
                     "supplemental_evaluation_enabled": supplemental_enabled,
                     "supplemental_evaluation_required": supplemental_required,
@@ -857,10 +915,291 @@ class FileSearchRuntime:
             frozen_verifier_paths=frozen_verifier_paths,
             task_skill_paths=task_skill_paths,
             workspace_capacity_estimate=workspace_capacity_estimate,
+            source_artifact_ref=source_artifact_ref,
+            origin_verification=origin_verification,
             created_at=utc_timestamp(),
         )
         write_json(spec_dir / "frozen_spec.json", frozen.model_dump(mode="json"))
         return frozen
+
+    def _run_bootstrap_verifiers(
+        self,
+        *,
+        spec: SearchSpec,
+        workspace: Path,
+        backend: WorkspaceBackend,
+        phase: Literal["origin", "workspace_relocation"],
+        verifier_hashes: dict[str, str],
+        log_dir: Path,
+        source_artifact_ref: ArtifactRef | None,
+        candidate_id: str | None = None,
+    ) -> BootstrapVerification:
+        started_at = utc_timestamp()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        results: list[BootstrapVerifierResult] = []
+
+        initial_hash_failures = self._bootstrap_hash_failures(
+            workspace,
+            verifier_hashes,
+        )
+        if initial_hash_failures:
+            results.append(
+                BootstrapVerifierResult(
+                    name="frozen_hash_check",
+                    role=VerifierRole.ANTI_CHEAT_GATE,
+                    passed=False,
+                    score=0.0,
+                    metrics={"hash_failures": initial_hash_failures},
+                    failure_class="FrozenVerifierModified",
+                )
+            )
+        else:
+            for index, command in enumerate(spec.process_verifiers, start=1):
+                result = self._run_bootstrap_command(
+                    spec=spec,
+                    workspace=workspace,
+                    command=command,
+                    phase=phase,
+                    log_path=(
+                        log_dir
+                        / f"{index:02d}-{safe_verifier_name(command.name)}.log"
+                    ),
+                    verifier_hashes=verifier_hashes,
+                )
+                results.append(result)
+
+            final_hash_failures = self._bootstrap_hash_failures(
+                workspace,
+                verifier_hashes,
+            )
+            if final_hash_failures:
+                results.append(
+                    BootstrapVerifierResult(
+                        name="frozen_hash_check_after_verifier",
+                        role=VerifierRole.ANTI_CHEAT_GATE,
+                        passed=False,
+                        score=0.0,
+                        metrics={"hash_failures": final_hash_failures},
+                        failure_class="FrozenVerifierModified",
+                    )
+                )
+
+        hard_failed = any(
+            not result.passed
+            and result.role
+            in {
+                VerifierRole.VALIDITY_GATE,
+                VerifierRole.PROCESS_GATE,
+                VerifierRole.RANKING_SIGNAL,
+                VerifierRole.ANTI_CHEAT_GATE,
+            }
+            for result in results
+        )
+        passed = not hard_failed and all(
+            result.passed or result.role == VerifierRole.DIAGNOSTIC_SIGNAL
+            for result in results
+        )
+        aggregate_score = next(
+            (
+                result.score
+                for result in results
+                if result.score is not None
+                and result.role != VerifierRole.ANTI_CHEAT_GATE
+            ),
+            None,
+        )
+        if not passed:
+            aggregate_score = 0.0
+        return BootstrapVerification(
+            phase=phase,
+            backend=backend,
+            passed=passed,
+            aggregate_score=aggregate_score,
+            verifier_results=results,
+            source_artifact_ref=source_artifact_ref,
+            candidate_id=candidate_id,
+            started_at=started_at,
+            completed_at=utc_timestamp(),
+        )
+
+    def _run_bootstrap_command(
+        self,
+        *,
+        spec: SearchSpec,
+        workspace: Path,
+        command: VerifierCommand,
+        phase: Literal["origin", "workspace_relocation"],
+        log_path: Path,
+        verifier_hashes: dict[str, str],
+    ) -> BootstrapVerifierResult:
+        cwd = (workspace / command.cwd).resolve()
+        try:
+            cwd.relative_to(workspace.resolve())
+        except ValueError:
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=False,
+                score=0.0,
+                metrics={"cwd": str(cwd)},
+                failure_class="VerifierCwdEscapedWorkspace",
+            )
+        if not cwd.is_dir():
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=False,
+                score=0.0,
+                metrics={"cwd": str(cwd)},
+                failure_class="VerifierCwdMissing",
+            )
+        if command.command[0] == "goal-plus-internal":
+            known = command.command[1:] == ["check-frozen-hashes"]
+            failures = (
+                self._bootstrap_hash_failures(workspace, verifier_hashes)
+                if known
+                else {"command": {"expected": "check-frozen-hashes", "actual": None}}
+            )
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=known and not failures,
+                score=1.0 if known and not failures else 0.0,
+                metrics={"hash_failures": failures},
+                failure_class=(
+                    None
+                    if known and not failures
+                    else "FrozenVerifierModified" if known else "UnknownInternalCommand"
+                ),
+            )
+
+        diagnostics_dir = log_path.parent / "diagnostics" / log_path.stem
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        start = time.perf_counter()
+        try:
+            with verifier_resource_lock(command.resource_lock):
+                with tempfile.TemporaryDirectory(
+                    prefix="goal-plus-verifier-command-"
+                ) as verifier_tmp:
+                    completed = self._execute_verifier_process(
+                        command.command,
+                        cwd=cwd,
+                        env=self._verifier_environment(
+                            cwd,
+                            Path(verifier_tmp),
+                            phase=phase,
+                            diagnostics_dir=diagnostics_dir,
+                            resource=command.resource_lock,
+                        ),
+                        text=True,
+                        capture_output=True,
+                        timeout=command.timeout_seconds,
+                        check=False,
+                    )
+            metrics = self._parse_metrics(completed.stdout)
+            metrics.setdefault("returncode", completed.returncode)
+            metrics.setdefault("elapsed_seconds", time.perf_counter() - start)
+            metrics.update(self._verifier_diagnostics(diagnostics_dir))
+            score = self._score_from_metrics(spec.metric_name, metrics)
+            missing_numeric_metric = (
+                completed.returncode == 0
+                and not self._has_verifier_error(metrics)
+                and command.role == VerifierRole.RANKING_SIGNAL
+                and score is None
+            )
+            passed = (
+                completed.returncode == 0
+                and not self._has_verifier_error(metrics)
+                and not missing_numeric_metric
+            )
+            log_path.write_text(
+                _bounded_log(
+                    "\n".join(
+                        [
+                            f"$ {' '.join(command.command)}",
+                            f"cwd: {cwd}",
+                            f"returncode: {completed.returncode}",
+                            "",
+                            "## stdout",
+                            completed.stdout,
+                            "## stderr",
+                            completed.stderr,
+                        ]
+                    )
+                ),
+                encoding="utf-8",
+            )
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=passed,
+                score=score,
+                metrics=metrics,
+                log_path=log_path,
+                failure_class=(
+                    None
+                    if passed
+                    else "MissingNumericMetric"
+                    if missing_numeric_metric
+                    else "VerifierCommandFailed"
+                ),
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = self._coerce_verifier_output(exc.stdout)
+            stderr = self._coerce_verifier_output(exc.stderr)
+            log_path.write_text(
+                _bounded_log(
+                    "\n".join(
+                        [
+                            f"$ {' '.join(command.command)}",
+                            f"cwd: {cwd}",
+                            f"timeout_seconds: {command.timeout_seconds}",
+                            "",
+                            "## stdout",
+                            stdout,
+                            "## stderr",
+                            stderr,
+                        ]
+                    )
+                ),
+                encoding="utf-8",
+            )
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=False,
+                score=0.0,
+                metrics={"timeout_seconds": command.timeout_seconds},
+                log_path=log_path,
+                failure_class="Timeout",
+            )
+        except OSError as exc:
+            log_path.write_text(_bounded_log(str(exc)), encoding="utf-8")
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=False,
+                score=0.0,
+                metrics={"error": str(exc)},
+                log_path=log_path,
+                failure_class="VerifierStartFailed",
+            )
+
+    @staticmethod
+    def _bootstrap_hash_failures(
+        workspace: Path,
+        verifier_hashes: dict[str, str],
+    ) -> dict[str, dict[str, str | None]]:
+        failures: dict[str, dict[str, str | None]] = {}
+        for relative_path, expected_hash in verifier_hashes.items():
+            path = workspace / relative_path
+            actual_hash = sha256_file(path) if path.is_file() else None
+            if actual_hash != expected_hash:
+                failures[relative_path] = {
+                    "expected": expected_hash,
+                    "actual": actual_hash,
+                }
+        return failures
 
     def _preflight_ranking_verifiers(self, spec: SearchSpec) -> None:
         source_root = Path(spec.source_path).resolve()
@@ -979,7 +1318,13 @@ class FileSearchRuntime:
         cwd: Path,
         temp_dir: Path,
         *,
-        phase: Literal["freeze_preflight", "candidate", "promotion"],
+        phase: Literal[
+            "freeze_preflight",
+            "origin",
+            "workspace_relocation",
+            "candidate",
+            "promotion",
+        ],
         diagnostics_dir: Path | None = None,
         resource: str | None = None,
     ) -> dict[str, str]:
@@ -1088,6 +1433,15 @@ class FileSearchRuntime:
         frozen = self._load_frozen_spec(frozen_spec_id)
         self._validate_host_workspace_backend(frozen.spec)
         self._validate_clean_source_repository(frozen.spec)
+        if frozen.source_artifact_ref is not None:
+            current_source_artifact = get_workspace_provider(
+                frozen.spec.workspace.backend
+            ).current_artifact(Path(frozen.spec.source_path))
+            if current_source_artifact != frozen.source_artifact_ref:
+                raise RuntimeError(
+                    "FrozenSourceChanged: current origin artifact does not match "
+                    f"frozen source artifact {frozen.source_artifact_ref.id}"
+                )
         capacity = frozen.workspace_capacity_estimate
         if capacity is not None and capacity.fits_available_space is False:
             raise RuntimeError(
@@ -1117,6 +1471,7 @@ class FileSearchRuntime:
             state=RunState.RUNNING,
             frozen_spec_id=frozen.frozen_spec_id,
             source_path=str(Path(frozen.spec.source_path).resolve()),
+            source_artifact_ref=frozen.source_artifact_ref,
             created_at=utc_timestamp(),
             source_run_id=source_run_id,
             inherited_research=inherited_research,
@@ -1380,9 +1735,6 @@ class FileSearchRuntime:
             (record for record in all_records if record.task.plan_id == plan_id),
             key=lambda record: record.candidate_id,
         )
-        for record in plan_records:
-            self._ensure_results_tsv(record, frozen.spec.metric_name)
-            self._write_candidate_record(run_id, record)
         if all_records:
             highest_index = max(
                 int(record.candidate_id.removeprefix("c")) for record in all_records
@@ -1402,6 +1754,14 @@ class FileSearchRuntime:
                     f"started plan {plan_id} is missing candidate state for {exc.args[0]}"
                 ) from exc
             if tasks:
+                self._ensure_workspace_bootstrap_verification(
+                    run=run,
+                    frozen=frozen,
+                    task=tasks[0],
+                )
+                for record in plan_records:
+                    self._ensure_results_tsv(record, frozen.spec.metric_name)
+                    self._write_candidate_record(run_id, record)
                 run.state = RunState.WAITING_FOR_WORKERS
                 self._write_run(run)
             return tasks
@@ -1440,6 +1800,15 @@ class FileSearchRuntime:
                 )
 
         tasks = [record.task for record in plan_records]
+        if tasks:
+            self._ensure_workspace_bootstrap_verification(
+                run=run,
+                frozen=frozen,
+                task=tasks[0],
+            )
+            for record in plan_records:
+                self._ensure_results_tsv(record, frozen.spec.metric_name)
+                self._write_candidate_record(run_id, record)
         for index, proposal in enumerate(
             candidate_proposals[len(plan_records):], start=len(plan_records) + 1
         ):
@@ -1458,13 +1827,19 @@ class FileSearchRuntime:
                 task=task,
                 results_ledger=self._inherited_results_ledger(run, task),
             )
-            self._ensure_results_tsv(record, frozen.spec.metric_name)
             self._write_candidate_record(run_id, record)
             tasks.append(task)
             run.next_candidate_index += 1
             run.candidates_total += 1
-            run.state = RunState.WAITING_FOR_WORKERS
             self._write_run(run)
+            if len(tasks) == 1:
+                self._ensure_workspace_bootstrap_verification(
+                    run=run,
+                    frozen=frozen,
+                    task=task,
+                )
+            self._ensure_results_tsv(record, frozen.spec.metric_name)
+            self._write_candidate_record(run_id, record)
 
         if tasks:
             run.state = RunState.WAITING_FOR_WORKERS
@@ -1474,6 +1849,164 @@ class FileSearchRuntime:
             self._write_run(run)
 
         return tasks
+
+    def _ensure_workspace_bootstrap_verification(
+        self,
+        *,
+        run: RunRecord,
+        frozen: FrozenSpec,
+        task: CandidateTask,
+    ) -> None:
+        provider = get_workspace_provider(frozen.spec.workspace.backend)
+        if (
+            not provider.capabilities.requires_relocation_verification
+            or frozen.origin_verification is None
+        ):
+            return
+        if run.workspace_bootstrap_verification is not None:
+            if not run.workspace_bootstrap_verification.passed:
+                raise RuntimeError(
+                    "WorkspaceRelocationVerifierFailed: the persisted candidate "
+                    "workspace bootstrap verification did not pass"
+                )
+            return
+
+        if run.source_artifact_ref is None and task.base_artifact_ref is not None:
+            # A plain-directory Git source gets a provider-created baseline during
+            # c001 materialization. Recover that persisted task anchor when an
+            # interrupted candidate-record write precedes the run-record write.
+            run.source_artifact_ref = task.base_artifact_ref
+            self._write_run(run)
+
+        candidate_artifact = provider.current_artifact(task.workspace)
+        if (
+            run.source_artifact_ref is not None
+            and candidate_artifact != run.source_artifact_ref
+        ):
+            verification = BootstrapVerification(
+                phase="workspace_relocation",
+                backend=frozen.spec.workspace.backend,
+                passed=False,
+                aggregate_score=0.0,
+                verifier_results=[
+                    BootstrapVerifierResult(
+                        name="source_artifact_check",
+                        role=VerifierRole.ANTI_CHEAT_GATE,
+                        passed=False,
+                        score=0.0,
+                        metrics={
+                            "expected": (
+                                run.source_artifact_ref.model_dump(mode="json")
+                                if run.source_artifact_ref is not None
+                                else None
+                            ),
+                            "actual": (
+                                candidate_artifact.model_dump(mode="json")
+                                if candidate_artifact is not None
+                                else None
+                            ),
+                        },
+                        failure_class="FrozenSourceChanged",
+                    )
+                ],
+                source_artifact_ref=candidate_artifact,
+                candidate_id=task.candidate_id,
+                started_at=utc_timestamp(),
+                completed_at=utc_timestamp(),
+            )
+        else:
+            verification = self._run_bootstrap_verifiers(
+                spec=frozen.spec,
+                workspace=task.workspace,
+                backend=frozen.spec.workspace.backend,
+                phase="workspace_relocation",
+                verifier_hashes=frozen.verifier_hashes,
+                log_dir=(
+                    self._run_dir(run.run_id)
+                    / "bootstrap"
+                    / "workspace-relocation"
+                ),
+                source_artifact_ref=candidate_artifact,
+                candidate_id=task.candidate_id,
+            )
+            candidate_artifact_after = provider.current_artifact(task.workspace)
+            candidate_status = provider.status(
+                task.workspace,
+                ignore_runtime_noise=True,
+            )
+            postcheck_results = list(verification.verifier_results)
+            if candidate_artifact_after != run.source_artifact_ref:
+                postcheck_results.append(
+                    BootstrapVerifierResult(
+                        name="source_artifact_check_after_verifier",
+                        role=VerifierRole.ANTI_CHEAT_GATE,
+                        passed=False,
+                        score=0.0,
+                        metrics={
+                            "expected": (
+                                run.source_artifact_ref.model_dump(mode="json")
+                                if run.source_artifact_ref is not None
+                                else None
+                            ),
+                            "actual": (
+                                candidate_artifact_after.model_dump(mode="json")
+                                if candidate_artifact_after is not None
+                                else None
+                            ),
+                        },
+                        failure_class="FrozenSourceChanged",
+                    )
+                )
+            if candidate_status:
+                postcheck_results.append(
+                    BootstrapVerifierResult(
+                        name="workspace_clean_check_after_verifier",
+                        role=VerifierRole.ANTI_CHEAT_GATE,
+                        passed=False,
+                        score=0.0,
+                        metrics={"git_status": candidate_status},
+                        failure_class="VerifierWorkspaceSideEffect",
+                    )
+                )
+            if len(postcheck_results) != len(verification.verifier_results):
+                verification = verification.model_copy(
+                    update={
+                        "passed": False,
+                        "aggregate_score": 0.0,
+                        "verifier_results": postcheck_results,
+                        "source_artifact_ref": candidate_artifact_after,
+                    }
+                )
+
+        run.workspace_bootstrap_verification = verification
+        if verification.passed:
+            self._write_run(run)
+            return
+
+        run.state = RunState.ABORTED
+        run.invalidated_at = utc_timestamp()
+        run.invalidation_reason = "verifier_target_mismatch"
+        run.invalidation_summary = (
+            "The verifier passed in origin but failed in the first materialized "
+            "candidate workspace."
+        )
+        run.invalidation_evidence = [verification.model_dump(mode="json")]
+        self._write_run(run)
+        failed = next(
+            (
+                result
+                for result in verification.verifier_results
+                if not result.passed
+            ),
+            None,
+        )
+        detail = (
+            f" {failed.name}: {failed.failure_class}." if failed is not None else ""
+        )
+        raise RuntimeError(
+            "WorkspaceRelocationVerifierFailed: verifier behavior in candidate "
+            f"{task.candidate_id} did not match origin.{detail}"
+        )
 
     def start_agent_session(
         self,
@@ -3441,11 +3974,41 @@ class FileSearchRuntime:
                 f"{self._markdown_cell(canonical_json(run.invalidation_evidence))}"
             ),
             "",
-            "## Strategy Plans",
+            "## Bootstrap Verification",
             "",
-            "| Plan | Status | Strategy | Orchestration | Requested | Planned | Started Candidates | Trace |",
-            "|---|---|---|---|---:|---:|---|---|",
+            "Bootstrap checks are control-plane gates. They are not candidate "
+            "iterations and do not participate in ranking.",
+            "",
+            "| Phase | Backend | Candidate | Passed | Score | Source Artifact | Verifiers |",
+            "|---|---|---|---|---:|---|---|",
         ]
+        for verification in [
+            frozen.origin_verification,
+            run.workspace_bootstrap_verification,
+        ]:
+            if verification is None:
+                continue
+            artifact = verification.source_artifact_ref
+            verifier_summary = ", ".join(
+                f"{result.name}={'pass' if result.passed else 'fail'}"
+                for result in verification.verifier_results
+            )
+            lines.append(
+                f"| `{verification.phase}` | `{verification.backend}` | "
+                f"`{verification.candidate_id or ''}` | {verification.passed} | "
+                f"{'' if verification.aggregate_score is None else verification.aggregate_score} | "
+                f"{self._markdown_cell(artifact.id if artifact is not None else '')} | "
+                f"{self._markdown_cell(verifier_summary)} |"
+            )
+        lines.extend(
+            [
+                "",
+                "## Strategy Plans",
+                "",
+                "| Plan | Status | Strategy | Orchestration | Requested | Planned | Started Candidates | Trace |",
+                "|---|---|---|---|---:|---:|---|---|",
+            ]
+        )
         for plan in plans:
             trace = plan.strategy_trace.get("reason") or plan.strategy_trace.get("selection_rule") or ""
             lines.append(
@@ -4444,6 +5007,11 @@ class FileSearchRuntime:
             workspace=workspace,
             run_id=run.run_id,
             candidate_id=candidate_id,
+            base_revision=(
+                frozen.source_artifact_ref.id
+                if frozen.source_artifact_ref is not None
+                else None
+            ),
         )
         workspace_creation_timing = WorkspaceOperationTiming(
             started_at=workspace_creation_started_at,
@@ -4454,6 +5022,15 @@ class FileSearchRuntime:
             ),
             outcome="succeeded",
         )
+        if (
+            frozen.source_artifact_ref is not None
+            and materialization.base_revision != frozen.source_artifact_ref.id
+        ):
+            raise RuntimeError(
+                "FrozenSourceChanged: materialized candidate base revision "
+                f"{materialization.base_revision!r} does not match frozen source "
+                f"artifact {frozen.source_artifact_ref.id!r}"
+            )
         if run.source_artifact_ref is None and materialization.base_revision is not None:
             artifact_kind = (
                 "fs_snapshot"
@@ -4465,12 +5042,12 @@ class FileSearchRuntime:
                 id=materialization.base_revision,
                 provider=materialization.backend,
             )
-            run.source_subdir = materialization.source_subdir
-            repository_value = (materialization.provider_handle or {}).get(
-                "source_repository"
-            )
-            if repository_value:
-                run.source_repository = Path(repository_value)
+        run.source_subdir = materialization.source_subdir
+        repository_value = (materialization.provider_handle or {}).get(
+            "source_repository"
+        )
+        if repository_value:
+            run.source_repository = Path(repository_value)
         workspace = materialization.workspace
         task_skill_paths = materialized_task_skill_paths(
             frozen,
@@ -4486,7 +5063,7 @@ class FileSearchRuntime:
             "每项实质变更后，及时使用当前 agent_session_id 调用 search_run_verifier，并用一句话 hypothesis 描述实际尝试；只有其返回结果会结算为正式 Evidence 并贡献给共享搜索。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
             "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
             "在分配的 host budget 内工作；收到用户停止、run 失效或 host 截止提示时及时收尾。",
-            "按 context.supplemental_evaluation_enabled 和 Evidence 的 supplemental_available 标记按需读取一次 search_get_evidence_detail；补充评价不参与结算。窄代码证据可以直接比较 commit；改动较大或需要浏览完整实现时，调用 search_reference_open 把该 Evidence checkout 到当前 agent 唯一的 ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的 reference commit；所有实现修改仍留在 candidate workspace。不要访问或 fetch peer 的真实工作区。",
+            "窄代码证据可以直接比较 commit；改动较大或需要浏览完整实现时，调用 search_reference_open 把该 Evidence checkout 到当前 agent 唯一的 ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的 reference commit；所有实现修改仍留在 candidate workspace。不要访问或 fetch peer 的真实工作区。",
         ]
         if "success_threshold" in frozen.spec.constraints:
             instructions.append(

@@ -205,6 +205,11 @@ def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in text
     assert "VerifierWorkspaceSideEffect" in text
     assert "固定 `/tmp`" in text
+    assert "origin 运行一次 process-verifier suite" in text
+    assert "WorkspaceRelocationVerifierFailed" in text
+    assert "verifier_target_mismatch" in text
+    assert "只有通过后才创建其余 lane" in text
+    assert "一次性源码副本" not in text
     assert '`workspace.backend="git_worktree"`' in text
     assert '`workspace.promotion_mode="apply"`' in text
     assert "DirtySourceWorkspace" in text

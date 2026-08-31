@@ -100,8 +100,8 @@ identity。过期 generation 的迟到结果保留为 `stale_result` Evidence，
 
 | 工具                         | 用途                                                        |
 | ---------------------------- | ----------------------------------------------------------- |
-| `search_freeze_spec`         | preflight `SearchSpec` 和 verifier artifact，并用 hash 固定 |
-| `search_create`              | 创建 `run_id`；可用 `source_run_id` 继承有界研究信息        |
+| `search_freeze_spec`         | 验证 origin 合同，hash-pin verifier，并固定 source artifact |
+| `search_create`              | 校验 frozen source identity 后创建 `run_id`                 |
 | `search_status`              | 读取 budget、candidate 和当前 best                          |
 | `search_invalidate_run`      | main 确认 verifier 不充分后，原子 fence 当前 run            |
 | `search_list_history`        | 按 candidate 排名，并汇总当前 run 的 feature/verifier 研究  |
@@ -118,6 +118,16 @@ MCP 的 `search_freeze_spec` 和 `search_create` 是 Goal Plus 内部 bootstrap 
 `GoalPlusEntrypointRequired` 失败。candidate worker 的既有 run 工具不依赖这个 bootstrap
 检查；它们继续由绑定的 candidate/session identity 限制。
 
+Git backend 的 freeze 会直接在 `SearchSpec.source_path` 执行一次完整 process-verifier suite，
+并在成功后记录 `FrozenSpec.source_artifact_ref` 与 `origin_verification`。MainAgent 负责给出正确
+的 `source_path`、verifier `cwd` 和 artifact 路径；runtime 不扫描目录来猜另一个 task root。
+`search_create` 要求 origin 仍是同一个 clean commit。
+
+`search_start_batch` 对 Git run 先只物化 `c001`，在真实 worktree 中重跑同一 suite，并把结果
+记录为 `RunRecord.workspace_bootstrap_verification`。通过后才物化其余 candidate。失败会自动以
+`verifier_target_mismatch` abort run，保留 `c001`，不创建后续 candidate 或 agent session。
+这两类 bootstrap Evidence 不属于 candidate iteration，不参与 score、ledger 或选择。
+
 只有原合同无法继续使用时才创建 successor：
 
 ```text
@@ -132,7 +142,7 @@ pitfalls，但 predecessor score 会明确标记为不可复用。
 | 工具                 | 用途                                                                       |
 | -------------------- | -------------------------------------------------------------------------- |
 | `search_plan_next`   | 持久化唯一一次初始 candidate 分配                                          |
-| `search_start_batch` | 物化隔离的 candidate workspace，并返回每个 subagent 的 `task_skill_notice` |
+| `search_start_batch` | 执行 backend bootstrap gate，物化 candidate，并返回 `task_skill_notice`    |
 
 新的 Codex/Pi spec 使用
 `strategy.orchestration_mode="parallel_loops"`。`search_plan_next(requested_k)`

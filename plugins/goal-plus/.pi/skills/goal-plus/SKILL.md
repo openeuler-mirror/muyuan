@@ -110,11 +110,21 @@ run 前直接返回错误。`workers=A,B max_parallel=4` 表示 A、B、A、B；
 `workers=A*1,B*3 max_parallel=4` 表示显式 A1B3，数量之和必须等于
 `max_parallel`。没有填写 Worker 参数时不要探测目录，保持 Pi 当前默认模型。
 
-冻结预检在一次性源码副本中运行，并要求 verifier 保持该工作区只读。编译器产物和临时
-输出应放入唯一的 `GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` 或 Python
-`tempfile.TemporaryDirectory()`。绝不能使用固定 `/tmp` 路径，因为受管 Pi pool
-可能并发验证多个候选。任何 `VerifierWorkspaceSideEffect` 都必须修复并重新冻结，
-然后 Search run 才能使用候选预算。
+Git freeze 会在 MainAgent 给出的 origin `source_path` 运行一次 process-verifier suite，
+验证后复检 clean HEAD 和 verifier hash，并固定该 commit；`search_create` 会拒绝 source
+切换到另一个 clean HEAD。第一次 `search_start_batch` 会先创建 `c001`，在真实 worktree
+重复同一 suite，通过后才创建其余 lane。`WorkspaceRelocationVerifierFailed` 表示 run 已以
+`verifier_target_mismatch` abort 并保留 `c001`；不得启动 Pi pool，应修复 `source_path`、
+verifier `cwd` 或 artifact 合同后重新 freeze/create。bootstrap 结果不是 candidate iteration。
+
+origin verifier 可以留下 Git-ignored cache；Runtime 不清理或猜测这些产物，但 staged、
+unstaged 或 non-ignored untracked 变化会阻止 freeze。编译器产物和临时输出仍应优先放入唯一的
+`GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` 或 Python `tempfile.TemporaryDirectory()`。绝不能使用
+固定 `/tmp` 路径，因为受管 Pi pool 可能并发验证多个候选。candidate verifier 返回
+`VerifierWorkspaceSideEffect` 时仍必须按失效流程修复并重新冻结。
+
+`copy` 保留 disposable-copy ranking preflight。未来 ThinkThread backend 在 origin 验证并固定
+snapshot 后不需要 relocation；当前 Pi host 仍会在 freeze 前拒绝 TT，不得 fallback。
 
 对于用语义、大致 shape/dtype 和参考提示描述的 AscendC Direct Invoke 算子目标，
 记录 `scenario="ascendc_direct_invoke"`，并完整读取

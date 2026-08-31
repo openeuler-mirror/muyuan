@@ -1,7 +1,7 @@
 # Goal Plus Prompt Compatibility
 
-此文件只是兼容说明，不能启动 Goal Plus。不得调用 `goal_plus_create` 或
-`goal_plus_update_goal`，也不得通过 MCP、CLI、shell 或 skill 创建、编辑或恢复记录。
+此文件只是兼容说明，不能启动 Goal Plus。不得调用 `goal_plus_create`。
+不得调用 `goal_plus_update_goal`；不得通过 MCP、CLI、shell 或 skill 创建、编辑或恢复记录。
 只有原生 Pi extension 已通过精确 `/goal-plus` host command 把当前原生 session 绑定到
 active `goal_plus_id` 时才继续；同一 session 的后续 turn 沿用该绑定。缺少 session 授权
 上下文时立即停止，并报告 Pi Goal Plus host entrypoint 未生效。
@@ -62,7 +62,14 @@ selection、promotion 和最终验收必须遵循同一标准；允许使用预�
 `expected_outputs` 只列出产物路径或 glob。
 verifier 必须保持候选工作区只读，并使用唯一的 `GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR`
 或 Python `tempfile` 存放编译器和临时输出。绝不能使用固定的 `/tmp` 路径，因为 Pi pool
-可能并发验证多个候选。冻结操作会在消耗候选预算前拒绝任何工作区副作用。
+可能并发验证多个候选。Git freeze 会先在 MainAgent 给出的 origin `source_path` 运行一次
+process-verifier suite，固定验证过的 clean HEAD；第一次 `search_start_batch` 再先在 `c001`
+worktree 重复该 suite，通过后才创建其余 lane。`WorkspaceRelocationVerifierFailed` 表示 run
+已以 `verifier_target_mismatch` 自动 abort 并保留 `c001`，不要启动 Pi pool；修复
+`source_path`、verifier `cwd` 或 artifact 合同后重新 freeze/create。
+bootstrap 结果不是 candidate iteration。Runtime 不清理 origin verifier
+产生的 Git-ignored cache，但任何 staged、unstaged 或 non-ignored untracked 变化都会阻止
+freeze。当前 Pi host 对 ThinkThread 仍 fail closed，不能 fallback。
 
 首次获得有意义的优化结果后，执行 skill 中已有的原始目标审计，但不要把该结果视为运行完成。
 相对 baseline 的巨大改进并不能证明结果已接近有意义的成功，尤其是在没有绝对目标或验收条件时。

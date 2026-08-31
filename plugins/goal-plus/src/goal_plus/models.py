@@ -1143,6 +1143,28 @@ class GoalPlusGateResult(SearchModel):
     continuation_prompt: str | None = None
 
 
+class BootstrapVerifierResult(SearchModel):
+    name: str
+    role: VerifierRole
+    passed: bool
+    score: float | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    log_path: Path | None = None
+    failure_class: str | None = None
+
+
+class BootstrapVerification(SearchModel):
+    phase: Literal["origin", "workspace_relocation"]
+    backend: WorkspaceBackend
+    passed: bool
+    aggregate_score: float | None = None
+    verifier_results: list[BootstrapVerifierResult] = Field(default_factory=list)
+    source_artifact_ref: ArtifactRef | None = None
+    candidate_id: str | None = None
+    started_at: str
+    completed_at: str
+
+
 class FrozenSpec(SearchModel):
     frozen_spec_id: str
     spec_hash: str
@@ -1153,6 +1175,8 @@ class FrozenSpec(SearchModel):
     frozen_verifier_paths: dict[str, str]
     task_skill_paths: list[str] = Field(default_factory=list)
     workspace_capacity_estimate: WorkspaceCapacityEstimate | None = None
+    source_artifact_ref: ArtifactRef | None = None
+    origin_verification: BootstrapVerification | None = None
     created_at: str
 
 
@@ -1612,6 +1636,7 @@ class RunRecord(SearchModel):
     source_repository: Path | None = None
     source_subdir: str = "."
     source_artifact_ref: ArtifactRef | None = None
+    workspace_bootstrap_verification: BootstrapVerification | None = None
     created_at: str
     next_candidate_index: int = 1
     next_plan_index: int = 1

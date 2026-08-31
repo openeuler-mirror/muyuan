@@ -161,6 +161,18 @@ def test_git_worktree_backend_shares_objects_but_keeps_branches_independent(
     assert (second_path / "program.py").read_text(encoding="utf-8") == "VALUE = 2\n"
 
 
+def test_workspace_provider_declares_relocation_verification_contract() -> None:
+    git_worktree = get_workspace_provider("git_worktree")
+    copy = get_workspace_provider("copy")
+    thinkthread = get_workspace_provider("thinkthread")
+
+    assert (
+        git_worktree.capabilities.requires_relocation_verification is True
+    )
+    assert copy.capabilities.requires_relocation_verification is False
+    assert thinkthread.capabilities.requires_relocation_verification is False
+
+
 def test_git_worktree_clones_full_history_and_returns_nested_logical_workspace(
     tmp_path: Path,
 ) -> None:

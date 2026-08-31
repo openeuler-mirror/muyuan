@@ -301,11 +301,15 @@ def test_frozen_verifier_hash_catches_source_mutation_after_freeze(
 
     run_id = tools.search_create(frozen["frozen_spec_id"])["run_id"]
     plan = tools.search_plan_next(run_id, 1)
-    task = tools.search_start_batch(run_id, plan["plan_id"])[0]
-    submit(tools, run_id, task["candidate_id"])
-    report = tools.search_run_verifier(run_id, task["candidate_id"])
+    with pytest.raises(RuntimeError, match="WorkspaceRelocationVerifierFailed"):
+        tools.search_start_batch(run_id, plan["plan_id"])
 
-    assert report["process_passed"] is False
-    assert report["hardcoding_suspected"] is True
-    failure_classes = {result["failure_class"] for result in report["verifier_results"]}
+    status = tools.search_status(run_id)
+    assert status["state"] == RunState.ABORTED
+    assert status["invalidation_reason"] == "verifier_target_mismatch"
+    verification = tools.runtime._load_run(run_id).workspace_bootstrap_verification
+    assert verification is not None
+    failure_classes = {
+        result.failure_class for result in verification.verifier_results
+    }
     assert "FrozenVerifierModified" in failure_classes

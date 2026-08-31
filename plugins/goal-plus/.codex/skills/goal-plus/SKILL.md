@@ -63,7 +63,13 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    `expected_outputs` 只列出产物路径或 glob，不解析 stdout。要求 verifier 保持候选
    工作区只读，并使用唯一的 `GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR`（或 Python
    `tempfile`）存放编译器和临时输出；并行 Search 下固定 `/tmp` 路径不安全。
-   冻结操作会在消耗候选预算前拒绝工作区副作用。先把
+   Git freeze 会先在 MainAgent 给出的 origin `source_path` 运行一次 process-verifier
+   suite，验证后复检 clean HEAD 与 verifier hash，并把该 commit 固定到 FrozenSpec；
+   `search_create` 会拒绝已切换到另一个 clean HEAD 的 source。第一次
+   `search_start_batch` 随后先在 `c001` worktree 重复该 suite，通过后才创建其余 lane。
+   relocation 失败时 run 会自动 abort 并保留 `c001`，不得启动 worker；修复
+   `source_path`、verifier `cwd` 或 artifact 合同后重新 freeze/create。两次 bootstrap
+   验证都不属于 candidate iteration。先把
    `GoalPlusRecord.command_config` 中的 `max_parallel`、`workspace_backend`、
    `promotion_mode`、`strategy`、`annotator` 和 `workers` 映射到 SearchSpec；ready draft
    不匹配时 runtime 会拒绝保存。未配置字段才根据目标、host 能力和资源信号决定。
