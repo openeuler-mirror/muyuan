@@ -198,17 +198,16 @@ Selected Git Head 和 Artifact Hash，之后才生成可被 Git 应用的 Patch�
 Benchmark 专用任务、evaluator、campaign 和对比证据不属于这个隔离的 runtime
 目录。
 
-## ThinkThread Workspace 方向
+## Workspace 与 Sandbox 架构
 
-Goal Plus 已将 workspace 机制收敛到 provider-neutral contract。当前 Codex/Pi 路径
-支持 `git_worktree` 和 `copy`：Git 使用不可变 commit、隔离的 candidate worktree、
-verifier-backed 结算和显式 squash-publication apply；Copy 是 artifact-only 的
-filesystem-capture 路径。
+Goal Plus 使用两层 workspace 模型。**Git + Git** 由外层 Git-worktree workspace 和
+内层 Git candidate 历史组成；**ThinkThread + Git** 在 private ThinkThread COW Child
+内保留同一套 inner Git 历史，并增加 snapshot artifact 与 protected execution。两种模式
+都要求 inner Git 从干净 baseline 启动，受管源码树中没有 untracked 产品文件。
 
-ThinkThread 是目标 protected-execution provider。当前 Runtime 已定义 `fs_snapshot`
-产物并实现 filtered promotion adapter，但 candidate COW Child、snapshot-bound verifier、
-reference Child 和 Codex/Pi host execution 尚未实现。因此选择 `thinkthread` 会 fail
-closed，不会静默 fallback 到 Git 或 Copy。
+Git + Git 已可用于 Codex/Pi。ThinkThread + Git 当前已有 filtered promotion adapter，
+Child 创建、Search checkpoint、snapshot-bound verifier、reference 与 host execution 仍会
+fail closed。Copy 保留为显式 artifact-only 兼容路径。
 
-当前 Runtime 流程、ASCII 架构图、provider contract、安全边界与剩余接入工作见
-[Git 与 ThinkThread Workspace 架构](docs/thinkthread/architecture.md)。
+`new -> search -> apply` ASCII 主流程、设计不变量和 Git/TT 行为对照见
+[Workspace 与 Sandbox 架构](docs/workspace-sandbox-arch.md)。

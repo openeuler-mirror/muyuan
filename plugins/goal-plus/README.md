@@ -233,20 +233,19 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 Benchmark-specific tasks, evaluators, campaigns, and comparison evidence are
 not part of this isolated runtime directory.
 
-## ThinkThread Workspace Direction
+## Workspace and Sandbox Architecture
 
-Goal Plus now keeps workspace mechanics behind a provider-neutral contract.
-The maintained Codex and Pi paths support `git_worktree` and `copy`: Git uses
-immutable commits, isolated candidate worktrees, verifier-backed settlement,
-and an explicit squash-publication apply step; Copy is an artifact-only
-filesystem-capture path.
+Goal Plus uses a two-layer workspace model. **Git + Git** combines an outer
+Git-worktree workspace with inner Git candidate history. **ThinkThread + Git**
+keeps the same inner Git history inside a private ThinkThread COW Child, adding
+snapshot-based artifacts and protected execution. Both modes start from a
+clean inner Git baseline with no managed untracked product files.
 
-ThinkThread is the planned protected-execution provider. The current runtime
-defines `fs_snapshot` artifacts and includes a filtered promotion adapter, but
-candidate COW Children, snapshot-bound verification, reference Children, and
-Codex/Pi host execution are not implemented. Selecting `thinkthread` therefore
-fails closed instead of falling back to Git or Copy.
+Git + Git is available in Codex and Pi. ThinkThread + Git currently has the
+filtered promotion adapter, while Child creation, Search checkpointing,
+snapshot-bound verification, references, and host execution remain fail-closed.
+Copy remains an explicit artifact-only compatibility path.
 
-See [Git and ThinkThread Workspace Architecture](docs/thinkthread/architecture.md)
-for the current runtime flow, ASCII diagrams, provider contracts, security
-boundary, and remaining integration work.
+See [Workspace and Sandbox Architecture](docs/workspace-sandbox-arch.md) for
+the `new -> search -> apply` ASCII flow, design invariants, and the Git/TT
+behavior comparison.
