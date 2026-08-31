@@ -7,11 +7,12 @@ description: 当 Pi 收到可能需要 Goal Mode、Spec Discovery Mode、有界 
 
 ## 入口契约
 
-原生 Pi `/goal-plus` 命令会在模型轮次开始前创建 Goal Plus 记录。
-只有 extension 注入了本轮精确 `/goal-plus`、`/goal-plus edit`、`/goal-plus resume` 或
-`/goal-plus-with-final-check` host command 授权的 active `goal_plus_id` 时，才能执行本
-skill。skill、prompt、MCP 和模型工具都不能创建、编辑、恢复或授权 Goal Plus；缺少授权
-上下文时立即停止，并要求用户使用精确的 Pi slash command。
+原生 Pi `/goal-plus` 命令会在模型轮次开始前创建 Goal Plus 记录，并把当前原生 Pi
+session 绑定到该 active `goal_plus_id`。只有 extension 曾通过精确 `/goal-plus`、
+`/goal-plus edit`、`/goal-plus resume` 或 `/goal-plus-with-final-check` host command 授权
+当前 session 时，才能执行本 skill。skill、prompt、MCP 和模型工具都不能创建、编辑、
+恢复或授权 Goal Plus；当前 session 缺少授权上下文时立即停止，并要求用户使用精确的
+Pi slash command。
 仅在新记录的首轮，由 Main 语义检查原始目标或当前对话上下文是否明确给出了整个 Goal
 Plus 任务的最大运行时间；如果没有，先简短告知用户：“当前未设置最大运行时间，Goal
 Plus 将持续运行直至目标完成或用户手动停止。”这只是告知，不询问、不等待确认，随后
@@ -20,9 +21,10 @@ Plus 将持续运行直至目标完成或用户手动停止。”这只是告知
 钳制后的实际档位；如果 reasoning 被钳制为 `off`，则拒绝启动，不静默降级。
 `/goal-plus-with-final-check` 创建记录时会设置 `policy.final_check.mode="required"`。
 `/goal-plus edit <完整的修订目标>` 由 extension 的 host-only 入口更新 active 记录并递增
-`goal_revision`；最新原始目标取代旧修订版。Pi 轮次中断后，只有显式
-`/goal-plus resume` 会重新授权同一个持久化 active 修订版。不存在兼容 prompt fallback；
-不得调用 `goal_plus_create` 或 `goal_plus_update_goal`。
+`goal_revision`；最新原始目标取代旧修订版。同一原生 Pi session 内的 provider error、
+自动重试、普通 follow-up 或用户中止不会撤销已有授权。Pi 进程/session 重启或切换后，
+只有显式 `/goal-plus resume` 会把新 session 重新绑定到同一个持久化 active 修订版。
+不存在兼容 prompt fallback；不得调用 `goal_plus_create` 或 `goal_plus_update_goal`。
 目标记录存在之前，不要 triage、Search 或编辑。除了加载 goal-plus skill 之外，
 在 `goal_plus_record_triage` 前不要读取或审计目标文件。
 

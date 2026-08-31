@@ -22,6 +22,9 @@ Goal Plus may edit `initial_program.py` in candidate worktrees and apply the
 selected publication commit back to this repository. The public verifier under
 `.goal-plus-verifiers/` is frozen task infrastructure and must not be changed.
 """
+GENERATED_GITIGNORE = """__pycache__/
+*.py[cod]
+"""
 
 
 def _git(workspace: Path, *arguments: str) -> str:
@@ -53,9 +56,17 @@ def materialize_workspace(destination: Path, *, reset: bool = False) -> str:
         shutil.rmtree(destination)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(TEMPLATE_ROOT, destination)
+    shutil.copytree(
+        TEMPLATE_ROOT,
+        destination,
+        ignore=shutil.ignore_patterns("__pycache__", "*.py[cod]"),
+    )
     try:
         (destination / "README.md").write_text(GENERATED_README, encoding="utf-8")
+        (destination / ".gitignore").write_text(
+            GENERATED_GITIGNORE,
+            encoding="utf-8",
+        )
         subprocess.run(
             ["git", "init", "-q", str(destination)],
             check=True,

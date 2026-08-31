@@ -46,7 +46,7 @@ let continuationCount = 0;
 let workerContinuationCount = 0;
 let activeGoalStartedAt: string | undefined;
 let activeGoalStartEntryCount = 0;
-let goalPlusTurnAuthorized = false;
+let goalPlusSessionAuthorized = false;
 
 const INSTALL_HINT =
 	'Install this project into the Python environment that launches Pi: python -m pip install -e ".[dev]".';
@@ -1786,7 +1786,7 @@ async function createGoalPlusStart(
 		});
 		return undefined;
 	}
-	goalPlusTurnAuthorized = true;
+	goalPlusSessionAuthorized = true;
 	activateGoal(pi, status, startEntryCount, canPersistGoalState(ctx.mode));
 	pi.sendMessage({
 		customType: "goal-plus-created",
@@ -1826,7 +1826,7 @@ async function updateGoalPlusStart(
 	});
 	const status = statusFrom(result.details);
 	if (!status?.goal_plus_id) return undefined;
-	goalPlusTurnAuthorized = true;
+	goalPlusSessionAuthorized = true;
 	activateGoal(pi, status, undefined, canPersistGoalState(ctx.mode));
 	return [
 			"用户已编辑 Goal Plus 目标。",
@@ -1872,7 +1872,7 @@ async function resumeGoalPlusStart(
 	);
 	const status = statusFrom(result.details);
 	if (!status?.goal_plus_id) return undefined;
-	goalPlusTurnAuthorized = true;
+	goalPlusSessionAuthorized = true;
 	activateGoal(pi, status, undefined, canPersistGoalState(ctx.mode));
 	return [
 			"从持久化运行时状态恢复被中断的 Goal Plus 任务。",
@@ -2251,19 +2251,19 @@ function workspaceGuard(event: ToolCallEvent) {
 async function mainGate(event: ToolCallEvent, ctx: ExtensionContext) {
 	if (role !== "main") return undefined;
 	const requiresAuthorization = requiresGoalPlusAuthorization(event.toolName);
-	if (requiresAuthorization && !goalPlusTurnAuthorized) {
+	if (requiresAuthorization && !goalPlusSessionAuthorized) {
 		return {
 			block: true,
-			reason: "GoalPlusEntrypointRequired: this Pi turn was not authorized by exact /goal-plus, /goal-plus edit, or /goal-plus resume input.",
+			reason: "GoalPlusEntrypointRequired: this Pi session was not authorized by exact /goal-plus, /goal-plus edit, or /goal-plus resume input.",
 		};
 	}
 	if (!requiresAuthorization && !MAIN_GATED_TOOLS.has(event.toolName)) return undefined;
-	if (!goalPlusTurnAuthorized) return undefined;
+	if (!goalPlusSessionAuthorized) return undefined;
 	const goalPlusId = activeGoalPlusId;
 	if (!goalPlusId) {
 		return {
 			block: true,
-			reason: "GoalPlusEntrypointRequired: no host-authorized Goal Plus record is active for this Pi turn.",
+			reason: "GoalPlusEntrypointRequired: no host-authorized Goal Plus record is active for this Pi session.",
 		};
 	}
 	const commandCtx = commandContextFrom(ctx);
@@ -2445,7 +2445,6 @@ export default function (pi: ExtensionAPI) {
 		}
 		const request = goalPlusRequestFromSlashInput(event.text);
 		if (request === undefined) {
-			goalPlusTurnAuthorized = false;
 			return { action: "continue" };
 		}
 		if (ctx.mode !== "print" && ctx.mode !== "json") return { action: "continue" };
@@ -2470,7 +2469,7 @@ export default function (pi: ExtensionAPI) {
 		return workspaceGuard(event) || (await mainGate(event, ctx));
 	});
 	pi.on("session_start", async (event, ctx) => {
-		goalPlusTurnAuthorized = false;
+		goalPlusSessionAuthorized = false;
 		if (role !== "main" && event.reason !== "reload") {
 			appendPiRuntimeStartEntry(pi, ctx);
 		}
@@ -2496,7 +2495,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 	pi.on("before_agent_start", async (_event, ctx) => {
-		if (role !== "main" || !activeGoalPlusId || !goalPlusTurnAuthorized) return;
+		if (role !== "main" || !activeGoalPlusId || !goalPlusSessionAuthorized) return;
 		const commandCtx = commandContextFrom(ctx);
 		const status = await refreshActiveGoal(pi, commandCtx, canPersistGoalState(ctx.mode));
 		if (!status || isTerminalStatus(status.status)) return;
@@ -2515,11 +2514,12 @@ export default function (pi: ExtensionAPI) {
 			lastMessage?.role === "assistant" &&
 			lastMessage.stopReason === "length" &&
 			countToolCalls(lastMessage.content) === 0;
-		if (
-			lastMessage?.role === "assistant" &&
-			(lastMessage.stopReason === "error" || lastMessage.stopReason === "aborted")
-		) {
-			goalPlusTurnAuthorized = false;
+		if (lastMessage?.role === "assistant" && lastMessage.stopReason === "error") {
+			// Pi may retry after a transient provider error without a new user message.
+			// The exact host command authorizes this native session, not one model turn.
+			return;
+		}
+		if (lastMessage?.role === "assistant" && lastMessage.stopReason === "aborted") {
 			return;
 		}
 		if (ctx.hasPendingMessages()) return;
@@ -2544,7 +2544,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			return;
 		}
-		if (role !== "main" || !activeGoalPlusId || !goalPlusTurnAuthorized) return;
+		if (role !== "main" || !activeGoalPlusId || !goalPlusSessionAuthorized) return;
 		const commandCtx = commandContextFrom(ctx);
 		const mode = ctx.mode;
 		const persist = canPersistGoalState(mode);
@@ -2597,7 +2597,7 @@ export default function (pi: ExtensionAPI) {
 			activeGoalStartEntryCount = 0;
 			continuationCount = 0;
 			cachedGoalStatus = undefined;
-			goalPlusTurnAuthorized = false;
+			goalPlusSessionAuthorized = false;
 			if (persist) persistGoalState(pi);
 		}
 	});

@@ -156,15 +156,48 @@ def test_circle_untimed_prompts_define_no_time_condition() -> None:
 
 
 def test_circle_timed_prompts_treat_the_preset_as_observational() -> None:
-    for example_name in ("circle-packing", "circle-packing-git-apply"):
+    expected_phrases = {
+        "circle-packing": (
+            "preset task duration is 5 minutes",
+            "mark the Goal Plus record complete",
+            "do not label the difference late",
+        ),
+        "circle-packing-git-apply": (
+            "任务预算为 5 分钟",
+            "第 4 分钟开始收尾",
+            "不改变有效结果的验收标准",
+        ),
+    }
+    for example_name, phrases in expected_phrases.items():
         for name in ("pi-goal-prompt.md", "codex-goal-prompt.md"):
             text = (EXAMPLES_ROOT / example_name / name).read_text(
                 encoding="utf-8"
             )
             normalized_text = " ".join(text.split())
-            assert "preset task duration is 5 minutes" in normalized_text
-            assert "mark the Goal Plus record complete" in normalized_text
-            assert "do not label the difference late" in normalized_text
+            for phrase in phrases:
+                assert phrase in normalized_text
+
+
+def test_circle_packing_git_apply_prompts_leave_workflow_to_config() -> None:
+    forbidden_workflow = (
+        "search_apply_promotion",
+        "search_promote",
+        "search_select",
+        "goal-plus-pi-tool",
+        "git apply",
+        "canonical report",
+    )
+    example = EXAMPLES_ROOT / "circle-packing-git-apply"
+    for name in EXAMPLES["circle-packing-git-apply"]["prompts"]:
+        text = (example / name).read_text(encoding="utf-8")
+        first_line, body = text.split("\n", 1)
+        assert "workspace_backend=git_worktree" in first_line
+        assert "promotion_mode=apply" in first_line
+        assert "问题：" in body
+        assert "修改：" in body
+        assert "验收：" in body
+        for phrase in forbidden_workflow:
+            assert phrase not in body
 
 
 @pytest.mark.parametrize(

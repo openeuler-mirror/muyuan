@@ -55,9 +55,14 @@ def test_circle_packing_git_workspace_applies_selected_commit(
     )
     assert f"workspace={source}" in prepared.stdout
     assert _git(source, "status", "--porcelain=v1", "--untracked-files=all") == ""
+    assert "__pycache__" not in _git(source, "ls-files")
+    assert (source / ".gitignore").read_text(encoding="utf-8") == (
+        "__pycache__/\n*.py[cod]\n"
+    )
     source_head = _git(source, "rev-parse", "HEAD")
     baseline_score = _score(source)
     assert baseline_score["sum_radii"] == pytest.approx(1.7983485547704765)
+    assert _git(source, "status", "--porcelain=v1", "--untracked-files=all") == ""
 
     spec = json.loads((EXAMPLE / "search-spec.json").read_text(encoding="utf-8"))
     spec["source_path"] = str(source)
@@ -116,7 +121,7 @@ def test_circle_packing_git_workspace_applies_selected_commit(
     assert applied["state"] == "applied"
     assert applied["apply_result"]["method"] == "git_cherry_pick"
     assert _git(source, "rev-list", "--count", f"{source_head}..HEAD") == "1"
-    assert _git(source, "status", "--porcelain=v1", "--untracked-files=all") == ""
     assert not (source / "results.tsv").exists()
     assert _score(source)["sum_radii"] == pytest.approx(1.8712160818793184)
+    assert _git(source, "status", "--porcelain=v1", "--untracked-files=all") == ""
     assert (ORIGINAL_TEMPLATE / "initial_program.py").read_bytes() == original_program

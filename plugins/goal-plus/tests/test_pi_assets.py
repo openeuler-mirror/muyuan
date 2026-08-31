@@ -325,7 +325,8 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert '"--host-capability"' in text
     assert "capabilityToken = randomUUID()" in text
     assert 'flag: "wx"' in text
-    assert "goalPlusTurnAuthorized" in text
+    assert "goalPlusSessionAuthorized" in text
+    assert "goalPlusTurnAuthorized" not in text
     assert "search_get_agent_context" in text
     assert "search_run_verifier" in text
     assert "workspace/results.tsv" in text
@@ -362,6 +363,27 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert 'lastMessage.stopReason === "error"' in text
     assert 'lastMessage.stopReason === "aborted"' in text
     assert 'lastMessage.stopReason === "length"' in text
+    agent_end = text.split('pi.on("agent_end"', 1)[1]
+    provider_error_branch = agent_end.split(
+        'lastMessage.stopReason === "error"', 1
+    )[1].split('lastMessage.stopReason === "aborted"', 1)[0]
+    aborted_branch = agent_end.split(
+        'lastMessage.stopReason === "aborted"', 1
+    )[1].split("if (ctx.hasPendingMessages())", 1)[0]
+    assert "goalPlusSessionAuthorized = false" not in provider_error_branch
+    assert "goalPlusSessionAuthorized = false" not in aborted_branch
+    assert "authorizes this native session" in provider_error_branch
+    input_handler = text.split('pi.on("input"', 1)[1].split(
+        'pi.on("tool_call"', 1
+    )[0]
+    ordinary_input_branch = input_handler.split(
+        "if (request === undefined)", 1
+    )[1].split("if (ctx.mode", 1)[0]
+    assert "goalPlusSessionAuthorized = false" not in ordinary_input_branch
+    session_start = text.split('pi.on("session_start"', 1)[1].split(
+        'pi.on("before_agent_start"', 1
+    )[0]
+    assert "goalPlusSessionAuthorized = false" in session_start
     assert "countToolCalls(lastMessage.content) === 0" in text
     assert "if (lengthWithoutToolCall) return;" in text
     assert 'recoveryReason: "length_without_tool_call"' not in text
