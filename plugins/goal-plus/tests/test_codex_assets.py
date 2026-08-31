@@ -567,6 +567,11 @@ def test_codex_final_checker_and_with_check_alias_are_read_only_and_independent(
     assert "goal_plus_status" in checker
     assert "goal_plus_submit_final_check" in checker
     assert "绝不能编辑文件" in checker
+    assert "task_local_skill_paths" in checker
+    assert ".agents/skills" not in checker
+    assert ".codex/skills" in checker
+    assert "plugins/goal-plus/skills" in checker
+    assert "用户全局 Skill" in checker
     assert "name: goal-plus-with-final-check" in alias
     assert 'checker_host="codex"' in alias
     assert "spawn_agent" in alias

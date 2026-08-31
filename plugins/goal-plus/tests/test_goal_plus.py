@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 from pydantic import ValidationError
@@ -209,6 +210,55 @@ def test_required_final_check_blocks_stop_and_completes_only_after_pass(tmp_path
     assert completed.status == "complete"
     assert completed.final_checks[-1].status == "passed"
     assert runtime.gate(record.goal_plus_id, event="stop", context={}).decision == "allow"
+
+
+def test_final_checker_receives_only_git_tracked_task_local_skills(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    task_skill = workspace / ".agents" / "skills" / "precision-guard" / "SKILL.md"
+    bundled_skill = workspace / "plugins" / "goal-plus" / "skills" / "goal-plus" / "SKILL.md"
+    codex_skill = workspace / ".codex" / "skills" / "goal-plus" / "SKILL.md"
+    untracked_skill = workspace / ".agents" / "skills" / "untracked" / "SKILL.md"
+    for path in (task_skill, bundled_skill, codex_skill, untracked_skill):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {path.parent.name}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(
+        [
+            "git",
+            "add",
+            ".agents/skills/precision-guard",
+            ".codex/skills/goal-plus",
+            "plugins/goal-plus/skills/goal-plus",
+        ],
+        cwd=workspace,
+        check=True,
+    )
+
+    runtime = FileGoalPlusRuntime(tmp_path / ".gp")
+    record = runtime.create_goal(
+        "Optimize without changing precision",
+        source_path=str(workspace),
+        policy={"final_check": {"mode": "required"}},
+    )
+    runtime.record_triage(
+        record.goal_plus_id,
+        {
+            "is_optimization": False,
+            "confidence": "high",
+            "recommended_phase": "goal",
+        },
+    )
+
+    message = runtime.prepare_final_check(record.goal_plus_id, "codex")["launch"][
+        "message"
+    ]
+    listing = message.split("task_local_skill_paths:\n", 1)[1].split("\n\n", 1)[0]
+
+    assert listing == "- .agents/skills/precision-guard/SKILL.md"
+    assert ".codex/skills" not in listing
+    assert "plugins/goal-plus/skills" not in listing
+    assert "untracked" not in listing
+    assert "唯一可用作验收约束" in message
 
 
 def test_interrupted_final_check_requires_fresh_host_review(tmp_path) -> None:
