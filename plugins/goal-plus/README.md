@@ -12,83 +12,45 @@ Pi and Codex are the supported host paths.
 
 ## Installation
 
-### User installation
-
-Obtain Muyuan from its current GitCode repository and enter the Goal Plus
-source directory:
+Run the installer from the Goal Plus source directory with the intended Python
+environment already active:
 
 ```bash
-git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git
-cd muyuan/plugins/goal-plus
-python -m pip install .
+git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-plus
 ```
 
-This installs the Goal Plus commands into the active local Python environment.
-If that environment already provides `goal-plus`, no separate runtime install
-is needed.
+| Installation | Command |
+| --- | --- |
+| Codex only | `./install.sh --codex` |
+| Pi only | `./install.sh --pi` |
+| Codex and Pi | `./install.sh --codex --pi` |
+| Pi development | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
+| Codex plus Pi development | `./install.sh --codex --pi-dev && source .goal-plus-dev/set_env.sh` |
+| Check only | `./install.sh --codex --pi --dry-run` |
 
-Install or remove the Pi package with Pi itself:
-
-```bash
-pi install .
-pi remove .
-```
-
-Install or remove the Codex plugin with Codex itself:
-
-```bash
-codex plugin marketplace add .
-codex plugin add goal-plus@goal-plus
-
-codex plugin remove goal-plus@goal-plus
-codex plugin marketplace remove goal-plus
-```
-
-After removing Goal Plus from every host, optionally remove it from that Python
-environment with:
-
-```bash
-python -m pip uninstall -y goal-plus
-```
-
-Keep this source directory while either host is installed. Pi loads the local
-package from it, and Codex retains it as the configured marketplace source.
+Normal installation uses the active `python3`; its scripts directory must be
+on `PATH`. `--pi` and `--pi-dev` are mutually exclusive. Keep the checkout at
+the same path while a host is installed.
 
 On first Codex use, start a new thread, review and trust Goal Plus in `/hooks`,
-then start one more fresh thread. Verify it with:
+then start one more fresh thread. Pi development starts with `pi-goal-plus` and
+does not modify Pi authentication or global configuration.
 
-```bash
-codex plugin list
-goal-plus-codex-doctor --project-root .
-```
+## Uninstallation
 
-### Development checkout
+| Removal | Command |
+| --- | --- |
+| Pi registration | `pi remove .` |
+| Codex registration | `codex plugin remove goal-plus@goal-plus && codex plugin marketplace remove goal-plus` |
+| Python runtime | `python -m pip uninstall -y goal-plus` |
+| Pi development | `rm -rf -- .goal-plus-dev` |
+| Retired Codex local install | `codex plugin remove goal-plus@goal-plus-local && codex plugin marketplace remove goal-plus-local` |
 
-For editable development, enter the same plugin directory and install the
-checkout with development dependencies:
-
-```bash
-cd muyuan/plugins/goal-plus
-python -m pip install -e ".[dev]"
-```
-
-Pi can load the checkout directly:
-
-```bash
-pi install .
-pi remove .
-```
-
-Codex uses the local refresh script while plugin assets are being edited:
-
-```bash
-python scripts/install_codex_plugin.py --skip-runtime-install
-python scripts/install_codex_plugin.py --uninstall --keep-runtime
-```
-
-Run `python -m pip uninstall -y goal-plus` after neither development host needs
-the editable runtime. Detailed development and update behavior belongs in
-[Pi](docs/pi.md) and [Codex](docs/codex.md).
+Remove host registrations before the Python runtime, using the same checkout
+and Python environment as installation. Uninstallation does not delete target
+workspace `.gp/` records or promoted changes. Detailed behavior is documented
+in [Development](docs/development.md), [Pi](docs/pi.md), and
+[Codex](docs/codex.md).
 
 Start a goal in Pi:
 
@@ -163,10 +125,12 @@ Start Pi from the workspace you want to change:
 
 ```bash
 cd <target-workspace>
-pi --model <provider/main-model> --thinking max
+pi --model <provider/main-model> --thinking xhigh
 ```
 
-Then submit `$goal-plus <goal>` in Codex or `/goal-plus <goal>` in Pi. In both
+Then submit `$goal-plus <goal>` in Codex or `/goal-plus <goal>` in Pi. Pi keeps
+the selected thinking level; `xhigh` is recommended for complex tasks but is not
+required or forced. In both
 hosts, the main agent is the already-running session selected at launch or with
 `/model`; Goal Plus cannot switch it. Omit `main=` in normal usage. Both entries
 retain `main=` only as an optional assertion that blocks a mismatch. See the

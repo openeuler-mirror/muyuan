@@ -140,6 +140,39 @@ Generated or local-only state:
 - Raw host logs and transcripts should stay in ignored locations such as
   `.gp/host-logs/`.
 
+## Installation Modes
+
+`install.sh` is the supported source-checkout installation entry point. Keep
+its behavior, `scripts/install.py`, the host documentation, and
+`tests/test_install.py` aligned.
+
+- `./install.sh --codex` performs the normal Codex runtime and plugin install.
+- `./install.sh --pi` performs the normal Pi runtime and package install.
+- `./install.sh --pi-dev` creates an ignored `.goal-plus-dev/` editable venv,
+  `set_env.sh`, and `pi-goal-plus` launcher for the current checkout.
+- `--pi` and `--pi-dev` are mutually exclusive. Either may be combined with
+  `--codex` where otherwise valid.
+
+Pi development mode must not modify `CODEX_HOME`, `PI_CODING_AGENT_DIR`, Pi
+settings, models, or authentication. `set_env.sh` adds only the generated
+launcher directory to `PATH`; the launcher scopes the editable venv to its own
+process and explicitly passes the checkout's extension and single Pi skill to
+Pi. Both setup and launch must fail closed when user- or project-scoped Goal
+Plus resources would create a duplicate load.
+
+Normal installation must bind the selected Python interpreter and inherited
+`PATH` to one environment. Reject setup when the interpreter's scripts
+directory is absent from `PATH` or an existing Goal Plus command resolves from
+another environment; the host assets invoke these console scripts by name.
+
+Codex has no separate checkout-local development profile. Do not restore the
+retired `goal-plus@goal-plus-local` staging marketplace or
+`scripts/install_codex_plugin.py`; Codex development uses the normal
+`goal-plus@goal-plus` installation. All installers must inspect existing host
+registrations before writes, accept an idempotent registration from this exact
+checkout, and report actionable cleanup commands for conflicts instead of
+silently replacing another checkout or deleting user-managed data.
+
 ## Host Adapter Rules
 
 Keep runtime behavior host-neutral. Host-specific behavior belongs in

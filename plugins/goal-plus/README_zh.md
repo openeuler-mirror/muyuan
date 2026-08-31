@@ -11,78 +11,39 @@ Pi 和 Codex 是当前支持的宿主路径。
 
 ## 安装
 
-### 用户安装
-
-从当前 GitCode 仓库取得 Muyuan，并进入 Goal Plus 源码目录：
+先激活目标 Python 环境，再从 Goal Plus 源码目录运行安装器：
 
 ```bash
-git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git
-cd muyuan/plugins/goal-plus
-python -m pip install .
+git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-plus
 ```
 
-这会把 Goal Plus 命令安装到当前本地 Python 环境。如果这个环境已经能找到
-`goal-plus`，就不需要重复安装 runtime。
+| 安装方式 | 命令 |
+| --- | --- |
+| 仅 Codex | `./install.sh --codex` |
+| 仅 Pi | `./install.sh --pi` |
+| Codex 和 Pi | `./install.sh --codex --pi` |
+| Pi 开发态 | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
+| Codex 加 Pi 开发态 | `./install.sh --codex --pi-dev && source .goal-plus-dev/set_env.sh` |
+| 只检查 | `./install.sh --codex --pi --dry-run` |
 
-使用 Pi 自己的命令安装或卸载 Pi package：
-
-```bash
-pi install .
-pi remove .
-```
-
-使用 Codex 自己的命令安装或卸载 Codex plugin：
-
-```bash
-codex plugin marketplace add .
-codex plugin add goal-plus@goal-plus
-
-codex plugin remove goal-plus@goal-plus
-codex plugin marketplace remove goal-plus
-```
-
-所有宿主都卸载后，如有需要再从该 Python 环境删除 Goal Plus：
-
-```bash
-python -m pip uninstall -y goal-plus
-```
-
-任一宿主仍在使用 Goal Plus 时都要保留这个源码目录：Pi 从这里加载本地 package，
-Codex 也把它作为已配置的 marketplace 来源。
+正常安装使用当前 `python3`，它的 scripts 目录必须位于 `PATH`。`--pi` 与 `--pi-dev`
+互斥；任一宿主仍在使用 Goal Plus 时，都要保留 checkout 的原路径。
 
 Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus，然后再新建一个
-线程。验证命令：
+线程。Pi 开发态通过 `pi-goal-plus` 启动，不修改 Pi 认证或全局配置。
 
-```bash
-codex plugin list
-goal-plus-codex-doctor --project-root .
-```
+## 卸载
 
-### 开发态 checkout
+| 卸载内容 | 命令 |
+| --- | --- |
+| Pi 注册 | `pi remove .` |
+| Codex 注册 | `codex plugin remove goal-plus@goal-plus && codex plugin marketplace remove goal-plus` |
+| Python runtime | `python -m pip uninstall -y goal-plus` |
+| Pi 开发态 | `rm -rf -- .goal-plus-dev` |
+| 旧 Codex local 安装 | `codex plugin remove goal-plus@goal-plus-local && codex plugin marketplace remove goal-plus-local` |
 
-需要 editable 开发时，进入同一个 plugin 目录，并安装 checkout 和开发依赖：
-
-```bash
-cd muyuan/plugins/goal-plus
-python -m pip install -e ".[dev]"
-```
-
-Pi 直接安装当前 checkout：
-
-```bash
-pi install .
-pi remove .
-```
-
-编辑 Codex plugin 资产时使用本地刷新脚本：
-
-```bash
-python scripts/install_codex_plugin.py --skip-runtime-install
-python scripts/install_codex_plugin.py --uninstall --keep-runtime
-```
-
-两个开发态宿主都不再使用 editable runtime 后，再运行
-`python -m pip uninstall -y goal-plus`。详细开发和更新机制见
+先删除宿主注册，再从安装时使用的同一个 Python 环境卸载 runtime。卸载不会删除目标 workspace
+中的 `.gp/` 记录，也不会回退已经提升的修改。细节见 [Development](docs/development.md)、
 [Pi](docs/pi.md) 与 [Codex](docs/codex.md)。
 
 在 Pi 中启动目标：

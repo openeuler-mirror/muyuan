@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import runpy
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from goal_plus import codex_doctor
@@ -269,7 +267,7 @@ def test_enabled_plugin_rejects_duplicate_ancestor_goal_plus_hooks(
     duplicate.parent.mkdir(parents=True)
     duplicate.write_text(json.dumps(payload), encoding="utf-8")
     installation = codex_doctor.PluginInstallation(
-        plugin_id="goal-plus@goal-plus-local",
+        plugin_id="goal-plus@goal-plus",
         status="installed, enabled",
         path=plugin_root,
     )
@@ -304,95 +302,3 @@ def test_distribution_marketplace_points_at_plugin_root() -> None:
             "category": "Developer Tools",
         }
     ]
-
-
-def test_local_installer_stages_valid_plugin_and_marketplace(tmp_path: Path) -> None:
-    root = codex_doctor._package_root()
-    installer = runpy.run_path(str(root / "scripts" / "install_codex_plugin.py"))
-
-    staged = installer["_stage_plugin"](tmp_path)
-    marketplace_path = installer["_write_marketplace"](tmp_path)
-
-    manifest = json.loads(
-        (staged / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
-    )
-    marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
-    assert manifest["version"].startswith("0.1.0+codex.local-")
-    assert (staged / "skills" / "goal-plus" / "SKILL.md").is_file()
-    assert (staged / "hooks" / "hooks.json").is_file()
-    assert (staged / ".mcp.json").is_file()
-    assert marketplace["name"] == "goal-plus-local"
-    assert marketplace["plugins"][0]["source"]["path"] == "./plugins/goal-plus"
-
-
-def test_local_installer_refuses_to_replace_unmanaged_plugin(tmp_path: Path) -> None:
-    root = codex_doctor._package_root()
-    installer = runpy.run_path(str(root / "scripts" / "install_codex_plugin.py"))
-    unmanaged = tmp_path / "plugins" / "goal-plus"
-    unmanaged.mkdir(parents=True)
-    sentinel = unmanaged / "user-file.txt"
-    sentinel.write_text("keep", encoding="utf-8")
-
-    try:
-        installer["_stage_plugin"](tmp_path)
-    except RuntimeError as exc:
-        assert "unmanaged plugin path" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("expected unmanaged marketplace protection")
-    assert sentinel.read_text(encoding="utf-8") == "keep"
-
-
-def test_local_uninstaller_removes_managed_installation(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    root = codex_doctor._package_root()
-    installer = runpy.run_path(str(root / "scripts" / "install_codex_plugin.py"))
-    codex_home = tmp_path / "codex-home"
-    marketplace_root = codex_home / "local-marketplaces" / "goal-plus"
-    installer["_write_marketplace"](marketplace_root)
-    installer["_stage_plugin"](marketplace_root)
-    calls: list[list[str]] = []
-
-    def fake_which(name: str) -> str:
-        assert name == "codex"
-        return "/mock/bin/codex"
-
-    def fake_run(argv, **kwargs):
-        del kwargs
-        calls.append(list(argv))
-        if argv[-3:] == ["plugin", "marketplace", "list"]:
-            stdout = f"goal-plus-local {marketplace_root}\n"
-        elif argv[-3:] == ["plugin", "list", "--json"]:
-            stdout = json.dumps(
-                {"installed": [{"pluginId": "goal-plus@goal-plus-local"}]}
-            )
-        else:
-            stdout = ""
-        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(shutil, "which", fake_which)
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    installer["uninstall"](
-        codex_home=codex_home,
-        marketplace_root=marketplace_root,
-        uninstall_runtime=True,
-    )
-
-    assert not marketplace_root.exists()
-    assert ["/mock/bin/codex", "plugin", "remove", "goal-plus@goal-plus-local"] in calls
-    assert [
-        "/mock/bin/codex",
-        "plugin",
-        "marketplace",
-        "remove",
-        "goal-plus-local",
-    ] in calls
-    assert [
-        sys.executable,
-        "-m",
-        "pip",
-        "uninstall",
-        "-y",
-        "goal-plus",
-    ] in calls

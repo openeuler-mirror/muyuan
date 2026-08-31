@@ -266,10 +266,9 @@ Search Mode 用于已冻结、可度量的优化。它把候选工作区创建�
 
 ## Hook 兼容性
 
-安装版 plugin 在 `hooks/hooks.json` 提供 Codex 0.144.1+ Goal Plus host hook；
-未启用 plugin 的项目本地开发可把 `.codex/hooks.example.json` 复制为
-`.codex/hooks.json`，两种来源不能同时启用。
-它们会为 `UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、
+installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook；
+`.codex/hooks.example.json` 只是必须与它同步的开发源码模板，不是另一条安装路径。
+该 hook 会为 `UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、
 `Stop` 和 `SubagentStop` 运行 `goal-plus --goal-plus-host-hook`。
 `UserPromptSubmit` 会在模型轮次前预先创建并绑定 `$goal-plus`，
 也识别 `$goal-plus-with-final-check` 和显式 `$goal-plus edit` 更新。

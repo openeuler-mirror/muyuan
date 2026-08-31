@@ -5,21 +5,23 @@ Codex collaboration tool 启动固定数量的并行 candidate loop。
 
 ## 安装与快速开始
 
-### 用户安装
+### 正常安装
 
-在当前 Muyuan checkout 的 Goal Plus 目录中，通过各自的 package manager 安装 runtime 和 Codex
-plugin：
+在当前 Muyuan checkout 的 Goal Plus 目录中运行统一安装器：
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
-python -m pip install .
-codex plugin marketplace add .
-codex plugin add goal-plus@goal-plus
+./install.sh --codex
 ```
 
-Python 环境可以自行选择，但其中的 `goal-plus` executable 必须出现在 Codex 继承的 `PATH` 中；
-如果目标环境已经安装正确版本，可以省略 pip 命令。安装期间需要保留 source directory，
-因为它仍是已配置的 local marketplace source。
+安装器使用当前 shell 的 `python3`。先激活 Codex 启动时要继承的 Python 环境；也可以通过
+`PYTHON=/absolute/path/to/python` 指定其中的解释器，但该环境的 scripts 目录必须已经位于
+`PATH`。如果 `goal-plus` 或 Pi runtime 命令解析到另一 Python 环境，安装器会在写入前停止。
+检查通过后，它安装 runtime、注册当前 checkout 作为 `goal-plus` marketplace，并安装
+`goal-plus@goal-plus`。安装期间需要保留 source directory。
+
+安装前会读取 Codex plugin 和 marketplace inventory。来自其他 checkout 的同名安装，或已退休的
+`goal-plus@goal-plus-local` staging 安装都会被视为冲突并停止；安装器不会静默覆盖。
 
 安装完成后启动一个新的 Codex thread，通过 `/hooks` 检查并信任 Goal Plus handler，再开启 fresh
 thread，使全部 handler 从 `SessionStart` 起生效。进入目标 workspace 后检查：
@@ -39,22 +41,19 @@ codex plugin marketplace remove goal-plus
 只有在其他 Pi 或 Codex 安装都不再使用该 Python 环境中的 Goal Plus 命令时，才运行
 `python -m pip uninstall -y goal-plus`。
 
-### Checkout 开发安装
+### Checkout 更新
+
+Codex 不再提供单独的 `goal-plus-local` staging 开发安装。开发或更新当前 checkout 后，重新运行
+正常安装命令更新 Python runtime，并在新的 Codex thread 中加载当前 source assets：
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
-python -m pip install -e ".[dev]"
-python scripts/install_codex_plugin.py --skip-runtime-install
+./install.sh --codex
 ```
 
-这会把 Python runtime editable 安装到当前 interpreter，并把可发布的 Codex asset 放到持久目录
-`${CODEX_HOME:-~/.codex}/local-marketplaces/goal-plus`；installer 会按需注册 `goal-plus-local`
-marketplace，安装或刷新 `goal-plus@goal-plus-local`。staging manifest 会获得一个 Codex cachebuster
-后缀，因此 pull 新代码后重跑同一命令即可刷新，无需修改仓库中的 package version。
-
-只有 `goal-plus` 命令已经来自目标 source 时才使用 `--skip-runtime-install`。installer 仅在
-marketplace metadata 能证明它拥有 `goal-plus-local` 时替换 staging plugin，
-不会覆盖不受它管理的目标。
+统一安装器不会修改 `CODEX_HOME`，也不会为多个 checkout 创建隐式 profile。同一个 Codex 配置中
+只保留一个 `goal-plus@goal-plus` 来源；多 checkout 并行开发需要由开发者显式使用独立账号或
+独立、完整的 Codex 配置边界，不能由本安装器切换。
 
 可安装的 Codex surface 包含：
 
@@ -72,6 +71,14 @@ Codex 内置 `default` role，完整 worker contract 随 launch message 传递�
 Codex 会从约定路径 `hooks/hooks.json` 发现 hook，因此 manifest 不声明 `hooks` 字段。hook trust
 绑定规范化后的当前 hash，hook 更新后必须重新检查并信任。
 
+正常 plugin 的 `.mcp.json` 使用固定 server 名 `goal-plus`，等价的 Codex 配置键是：
+
+```toml
+[mcp_servers.goal-plus]
+command = "goal-plus"
+args = ["--root", ".gp"]
+```
+
 从准备运行任务的 workspace 执行只读 preflight：
 
 ```bash
@@ -83,57 +90,17 @@ doctor 会检查 Codex 0.144.1+、`goal-plus` executable 及 Python source prove
 catalog。required check 失败时命令返回非零，支持 `--json`；安装、更新或修改 trust 后都应使用新
 thread。`--skip-model-check` 只适合离线排障，正式 multi-model preflight 不应跳过该项。
 
-移除受 installer 管理的开发安装：
+如果升级前仍装有旧 staging 版本，先显式删除旧注册：
 
 ```bash
-python scripts/install_codex_plugin.py --uninstall --keep-runtime
+codex plugin remove goal-plus@goal-plus-local
+codex plugin marketplace remove goal-plus-local
 ```
 
-如果 Codex 是唯一使用该 checkout editable runtime 的开发 host，可以省略 `--keep-runtime`，一并卸载
-runtime。
+确认旧目录确实属于已退休的 Goal Plus installer 后，可以再手动删除
+`${CODEX_HOME:-~/.codex}/local-marketplaces/goal-plus`；统一安装器不会替用户删除该目录。
 
-### Project-local asset 加载
-
-这是未安装 plugin 时的 opt-in 开发 fallback。启用 `goal-plus@...` 的同时不要使用它，否则 Codex
-会从两处加载同一组 Goal Plus hook。
-
-```bash
-cd <Muyuan checkout>/plugins/goal-plus
-python -m pip install -e ".[dev]"
-cp .codex/config.example.toml .codex/config.toml
-cp .codex/hooks.example.json .codex/hooks.json
-```
-
-在该目录启动 Codex，通过 `/hooks` 检查复制出的 `.codex/hooks.json`，然后使用新 thread。重新启用
-installed plugin 前删除这两个复制文件。project-local `.codex/skills/` 是开发 source of truth，顶层
-`skills/` 是 plugin 发布面；修改 Codex skill 后同步并检查两份 asset：
-
-```bash
-python scripts/sync_codex_plugin_assets.py
-python scripts/sync_codex_plugin_assets.py --check
-```
-
-本地配置中的 MCP server 如下：
-
-```toml
-[mcp_servers.goal-plus]
-command = "goal-plus"
-args = ["--root", ".gp"]
-startup_timeout_sec = 10
-tool_timeout_sec = 300
-enabled = true
-default_tools_approval_mode = "approve"
-```
-
-`.codex/config.toml` 是本地文件，不应提交。配置中不要设置 MCP `cwd`，由 `codex -C`
-同时决定项目根目录、MCP 状态目录和 hook 作用范围。示例配置已经转发 annotator 所需的命名环境变量；
-如果 `GOAL_PLUS_EVIDENCE_ANNOTATOR_API_KEY_ENV` 指向自定义变量，也要把该变量加入 `env_vars`。
-
-`default_tools_approval_mode="approve"` 让非交互 Ultra run 可以连续推进 Goal Plus state
-transition，而不用为每次 MCP 调用暂停。它不放宽 filesystem 或 shell 权限；这些操作仍由 Codex
-sandbox 和 approval policy 管理。
-
-完成上述任一安装后，可直接发起任务：
+完成正常安装后，可直接发起任务：
 
 ```text
 $goal-plus Fix this bug and verify the test suite.
@@ -146,9 +113,9 @@ $goal-plus mode=autonomous Deeply optimize the kernel.
 
 ## Host 集成与所有权
 
-installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook；project-local fallback 从
-`.codex/hooks.example.json` 复制出同一份声明。`UserPromptSubmit`、`SessionStart`、`PreToolUse`、
-`PostToolUse`、`Stop` 和 `SubagentStop` 都调用：
+installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook。开发源码中的
+`.codex/hooks.example.json` 保持同一份声明，供资产一致性测试使用，不是另一条安装路径。
+`UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、`Stop` 和 `SubagentStop` 都调用：
 
 ```text
 goal-plus --goal-plus-host-hook

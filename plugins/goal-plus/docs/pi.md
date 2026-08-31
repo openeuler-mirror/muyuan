@@ -2,23 +2,30 @@
 
 Pi 以可安装 package 的形式提供一个面向用户的 `goal-plus` skill 和一个 extension，底层复用共享 Goal
 Plus runtime。它不修改 Pi core，也不暴露独立的用户级 `search` skill；开发 checkout
-可以直接安装同一组 asset。
+可以通过隔离的开发启动器直接加载同一组 asset。
 
 ## 安装与快速开始
 
-### 用户安装
+### 正常安装
 
-在当前 Muyuan checkout 的 Goal Plus source directory 中安装 runtime 和 Pi package：
+在当前 Muyuan checkout 的 Goal Plus source directory 中运行统一安装器：
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
-python -m pip install .
-pi install .
+./install.sh --pi
 ```
 
-Python 环境可以自行选择，但其中的 Goal Plus executable 必须出现在 Pi 继承的 `PATH` 中；
-如果目标环境已经安装正确版本，可以省略 pip 命令。Pi 会直接加载这个 local package，
-因此安装期间需要保留 source directory。
+安装器使用当前 `python3` 安装 runtime，并通过 Pi 注册这个 checkout。先激活目标 Python
+环境；`PYTHON=/absolute/path/to/python` 可以指定其解释器，但该环境的 scripts 目录必须已在
+`PATH`。Goal Plus 命令若来自另一个 Python 环境，安装会在写入前停止。安装器也会检查 Pi
+用户配置；若已经存在其他 Goal Plus package 或散落的同名 extension/skill，会报出来源并停止，
+不会覆盖。Pi 直接加载 local package，因此安装期间需要保留 source directory。
+
+正常安装后可以从目标 workspace 启动交互会话，或直接提交一次 prompt：
+
+```bash
+pi -p "/goal-plus inspect this repository"
+```
 
 移除 Pi 集成：
 
@@ -32,12 +39,22 @@ pi remove .
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
-python -m pip install -e ".[dev]"
-pi install .
-pi -p "/goal-plus inspect this repository"
+./install.sh --pi-dev
+source .goal-plus-dev/set_env.sh
+cd <target-workspace>
+pi-goal-plus
 ```
 
-通过 `pi remove .` 移除 checkout package。用户安装和开发安装暴露相同的 extension，以及同一个面向用户的 `goal-plus` skill。
+开发安装在 `.goal-plus-dev/venv` 中 editable 安装当前 checkout，并生成
+`.goal-plus-dev/bin/pi-goal-plus`。`set_env.sh` 只把这个 launcher 目录加入 `PATH`，不会修改
+`PI_CODING_AGENT_DIR`、`CODEX_HOME` 或认证信息；launcher 自己临时加入 venv 的 `bin`，再用
+`--extension` 和 `--skill` 显式加载当前 checkout。
+
+开发态不注册全局 Pi package。若当前用户或目标项目已经注册 Goal Plus，安装和每次启动都会
+停止并列出冲突，避免同一进程重复加载。先显式 `pi remove <reported-source>`，再运行
+`pi-goal-plus`。`--pi` 和 `--pi-dev` 不能同时使用。
+
+正常安装和开发安装都只暴露一个面向用户的 `goal-plus` Pi skill。
 
 #### Progress UI 开发预览
 
@@ -134,10 +151,12 @@ Search worker 是由 host-local durable pool 监督的 Pi RPC 进程。每个 wr
 
 ## 普通 Goal Mode
 
-普通任务使用 [`goal-plus-ultra-v1`](ultra.md) work DAG。逻辑上的 Main `thinking=max` 会映射为 Pi
-原生 `xhigh` 请求，再记录模型 clamp 后的实际 level；如果结果为 `off`，该 Ultra binding 会拒绝继续。
+普通任务使用 [`goal-plus-ultra-v1`](ultra.md) work DAG。Pi binding 保留 Main 在提交
+`/goal-plus` 时已经选择的 thinking 档位并记录实际 level，不会强制改档。复杂任务推荐 `xhigh`，
+但当前模型不支持 `xhigh` 或用户选择其他档位时仍正常运行。
 
-`route="subagent"` 的 work item 通过 `pi_goal_plus_run_work_item` 执行。该工具启动隔离的 Pi RPC
+`route="subagent"` 的 work item 通过 `pi_goal_plus_run_work_item` 执行。该工具继承 Main 当前
+thinking，并启动隔离的 Pi RPC
 child，在进程启动后绑定 durable attempt，等待 child 完成，并用同一个 `attempt_id` 和 `generation`
 提交 result。已经 active 的 item 会被拒绝，不会悄悄创建 replacement session。多个相互独立的
 tool call 可以并发执行。
