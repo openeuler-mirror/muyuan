@@ -39,8 +39,9 @@ def create_mcp(
     ) -> dict[str, Any]:
         """将 SearchSpec 及其 verifier 文件冻结为不可变 bundle。
 
-        冻结前校验 worker host 与 workspace backend；当前 Codex/Pi RPC 请求
-        ThinkThread 时会在 verifier preflight 前失败。
+        冻结前校验 worker host、workspace backend 和 source Git 状态；`git_worktree`
+        及未来的 ThinkThread backend 要求整个 source repository 对应 clean HEAD，dirty
+        source 会在 verifier preflight 前失败。当前 Codex/Pi RPC 请求 ThinkThread 也会失败。
         返回 `frozen_spec_id`、`task_skill_notice` 和 `workspace_capacity_notice`，应在
         `search_create` 前调用。后两者分别列出 source Git index 中
         `.agents/skills/*/SKILL.md` 的自动发现结果，以及按 `budget.max_parallel` 计算的
@@ -77,8 +78,9 @@ def create_mcp(
     ) -> dict[str, str]:
         """从冻结 spec 启动 Search run，并返回 `run_id`。
 
-        启动前校验 worker host 与 workspace backend；当前 Codex/Pi RPC 请求
-        ThinkThread 时会在创建 run 或 candidate checkout 前失败。
+        启动前复检 worker host、workspace backend 和 source Git 状态；当前 Codex/Pi RPC
+        请求 ThinkThread，或 Git-backed source 在 freeze 后变 dirty，都会在创建 run 或
+        candidate checkout 前失败。
         只有无法避免新的不可变 run 时才传入 `source_run_id`。新 run 会收到来源 frontier、
         限定范围的问题和特性账本的有界 snapshot。来源分数只是历史，必须在新契约下重新验证。
         """

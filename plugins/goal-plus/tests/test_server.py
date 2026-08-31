@@ -256,6 +256,7 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     assert "一次性源码副本" in freeze_description
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in freeze_description
     assert "固定 `/tmp` 路径不安全" in freeze_description
+    assert "clean HEAD" in freeze_description
 
     verifier_description = " ".join(
         tools["search_run_verifier"].description.split()

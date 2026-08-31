@@ -315,6 +315,13 @@ pass；失败时 run 保持可重试，且不输出 patch。
 `apply_cwd` 和 `apply_directory`，并从 `apply_cwd` 执行
 `git apply --directory=<apply_directory> <artifact_path>`。
 
+`git_worktree` 和未来的 `thinkthread` backend 对 Git source 只接受 clean `HEAD`。
+`search_freeze_spec` 在 verifier preflight 前检查整个 repository，`search_create` 在写入 run
+前复检；staged、unstaged 或 non-ignored untracked 会返回 `DirtySourceWorkspace`。Runtime
+不会自动 stash、clean 或 commit source；有意使用当前 filesystem 状态时改用
+`workspace.backend="copy"`，其 promotion 固定为 `artifact_only`。普通非 Git 目录仍沿用现有
+synthetic Git baseline。`.gp`、`.search`、`.tmp` 等既有 runtime-noise 排除项不参与判脏。
+
 runtime 在 provider 调用的公共边界记录时间：每个 candidate 的
 `task.workspace_creation_timing` 覆盖 workspace materialization，每条 provider-native
 promotion 的 `apply_timing` 覆盖实际写回调用。两者都持久化开始、完成、单调时钟耗时和
@@ -382,6 +389,10 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 | `strategy.worker_budget`            | host deadline 和可选 minimum lease                       |
 | `workspace.backend`                 | `git_worktree`（默认）、`copy`，或接口占位 `thinkthread` |
 | `workspace.promotion_mode`          | `apply`（默认）或显式 `artifact_only`                    |
+
+Git source 的 clean 检查独立于 provider：`git_worktree` 现在执行，`thinkthread` 在 host
+capability 接通后复用同一契约。TT baseline 必须从 clean、自包含的 inner-Git checkout 创建
+FsSnapshot，不能直接 snapshot 用户原 cwd 和其中的 ignored 缓存。
 
 `thinkthread` 当前只注册统一 provider/capability API。Codex 和 Pi RPC 的 host capability 都只声明
 `copy` 与 `git_worktree`；`search_freeze_spec` 会在 verifier preflight 前以

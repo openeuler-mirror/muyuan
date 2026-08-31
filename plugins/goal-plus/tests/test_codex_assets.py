@@ -46,6 +46,7 @@ def test_codex_goal_plus_skill_records_modes_and_mcp_tools() -> None:
         "`expected_outputs`",
         '`workspace.backend="git_worktree"`',
         '`workspace.promotion_mode` 默认是 `apply`',
+        "DirtySourceWorkspace",
         "workspace_capacity_notice",
         "fits_available_space=false",
         "$goal-plus-with-final-check",
@@ -206,6 +207,7 @@ def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     assert "固定 `/tmp`" in text
     assert '`workspace.backend="git_worktree"`' in text
     assert '`workspace.promotion_mode="apply"`' in text
+    assert "DirtySourceWorkspace" in text
     assert "workspace_capacity_notice" in text
     assert "fits_available_space=false" in text
     assert ".agents/skills/<name>/SKILL.md" in text

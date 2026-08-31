@@ -331,6 +331,12 @@ invalidated、aborted 或 failed run 的发布 fence 继续拒绝修改。需要
 baseline ref 与各 candidate worktree。`source_path` 位于 repository 子目录时，worktree 仍是
 完整 repository，worker cwd 和 edit surface 则保持相对于该 source 子目录。
 
+Git-backed source 的规范输入是 clean `HEAD`。`search_freeze_spec` 在 verifier preflight
+前检查整个 repository，`search_create` 在写入 run 前复检；staged、unstaged 或 non-ignored
+untracked 任一存在都会以 `DirtySourceWorkspace` 失败。Runtime 不自动 stash、clean 或提交
+source。`.gp`、`.search`、`.tmp` 等既有 runtime-noise 排除项不参与判脏。确实要把当前目录
+状态作为输入时，显式使用 `copy + artifact_only`。
+
 Evidence 中的 commit 表示 verifier 实际读取的完整 Git tree，不是相对于初始源码的
 patch。Runtime 分别记录：
 

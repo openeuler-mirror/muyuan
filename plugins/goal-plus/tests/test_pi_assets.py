@@ -58,6 +58,7 @@ def test_pi_goal_plus_prompt_cannot_bootstrap_goal_plus() -> None:
     assert 'orchestration_mode: "parallel_loops"' in text
     assert '`workspace.backend="git_worktree"`' in text
     assert '`workspace.promotion_mode` 默认是 `apply`' in text
+    assert "DirtySourceWorkspace" in text
     assert "workspace_capacity_notice" in text
     assert "fits_available_space=false" in text
     assert '有限数值类型的' in text
@@ -106,6 +107,7 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert 'orchestration_mode: "parallel_loops"' in text
     assert '`workspace.backend="git_worktree"`' in text
     assert '`workspace.promotion_mode` 默认是' in text
+    assert "DirtySourceWorkspace" in text
     assert "workspace_capacity_notice" in text
     assert "fits_available_space=false" in text
     assert ".agents/skills/<name>/SKILL.md" in text

@@ -39,6 +39,9 @@ $ARGUMENTS
 `workspace.promotion_mode` 默认是 `apply`；只有受保护 source、只读 template 或测试 fixture
 才显式设置 `artifact_only`。只有用户明确要求兼容隔离时才能设置
 `workspace.backend="copy"`。
+`git_worktree` 以及未来的 ThinkThread backend 只接受 clean Git `HEAD`；遇到
+`DirtySourceWorkspace` 时展示路径和修复提示并停止启动，不得自动修改 source。确实需要
+当前 filesystem 状态时显式使用 `copy + artifact_only`。
 
 `search_freeze_spec` 返回的 `workspace_capacity_notice` 必须在创建 run 前展示；它按
 `budget.max_parallel` 计算完整 checkout、共享 object store、保守上界和可用空间。

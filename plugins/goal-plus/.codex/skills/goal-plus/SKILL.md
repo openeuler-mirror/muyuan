@@ -80,6 +80,9 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    run。每个 candidate 的 `task_skill_paths` 会指向自己
    worktree 中的对应文件；`search_start_batch` 还会为每个 subagent 返回一条启动清单。
    将这些清单明确展示出来，不扫描 parent 或 global/plugin Skill。使用
+   `git_worktree` 以及未来的 ThinkThread backend 时，source Git 必须对应 clean `HEAD`。
+   `DirtySourceWorkspace` 发生后原样展示路径和修复提示并停止启动；不得自动 stash、clean
+   或 commit source。确实需要当前 filesystem 状态时显式改用 `copy + artifact_only`。
    `goal_plus_save_spec_draft` 保存完整契约。
    创建 draft 和冻结 verifier 前，Main 必须把当前 Search 工作项从原始目标与公开任务契约
    继承的正确性、性能、适用范围和测量方法落实为统一验收契约。candidate iteration、

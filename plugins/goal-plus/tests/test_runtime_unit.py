@@ -182,6 +182,138 @@ def test_freeze_spec_is_stable_and_copies_verifier(tmp_path: Path) -> None:
     assert Path(first.frozen_verifier_paths["evaluator.py"]).exists()
 
 
+def _spec_with_workspace_backend(project: Path, backend: str) -> SearchSpec:
+    payload = spec_for(project).model_dump(mode="json")
+    payload["workspace"] = {"backend": backend}
+    return SearchSpec.model_validate(payload)
+
+
+def _initialize_source_repository(project: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    git_commit_all(project, "source baseline")
+
+
+@pytest.mark.parametrize("dirty_kind", ["staged", "unstaged", "untracked"])
+def test_freeze_spec_rejects_dirty_git_source_before_preflight(
+    tmp_path: Path,
+    dirty_kind: str,
+) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    if dirty_kind == "untracked":
+        (project / "scratch.txt").write_text("temporary\n", encoding="utf-8")
+    else:
+        (project / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
+        if dirty_kind == "staged":
+            subprocess.run(
+                ["git", "add", "initial_program.py"],
+                cwd=project,
+                check=True,
+            )
+
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    with pytest.raises(ValueError, match="DirtySourceWorkspace") as exc_info:
+        runtime.freeze_spec(
+            _spec_with_workspace_backend(project, "git_worktree"),
+            [project / "evaluator.py"],
+        )
+
+    expected_path = "scratch.txt" if dirty_kind == "untracked" else "initial_program.py"
+    assert expected_path in str(exc_info.value)
+    assert "workspace.backend='copy'" in str(exc_info.value)
+    assert not runtime.specs_dir.exists()
+
+
+def test_freeze_spec_allows_ignored_untracked_git_source(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    (project / ".gitignore").write_text("scratch.txt\n", encoding="utf-8")
+    _initialize_source_repository(project)
+    (project / "scratch.txt").write_text("temporary\n", encoding="utf-8")
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+
+    assert frozen.spec.workspace.backend == "git_worktree"
+
+
+def test_freeze_spec_copy_backend_allows_dirty_git_source(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    (project / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (project / "scratch.txt").write_text("temporary\n", encoding="utf-8")
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+
+    assert frozen.spec.workspace.backend == "copy"
+    assert frozen.spec.workspace.promotion_mode == "artifact_only"
+
+
+def test_freeze_spec_git_worktree_keeps_plain_directory_support(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+
+    assert frozen.spec.workspace.backend == "git_worktree"
+
+
+def test_freeze_spec_checks_the_whole_repository_for_nested_source(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    project = make_project(repository)
+    (repository / "README.md").write_text("baseline\n", encoding="utf-8")
+    _initialize_source_repository(repository)
+    (repository / "README.md").write_text("dirty\n", encoding="utf-8")
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    with pytest.raises(ValueError, match="README.md"):
+        runtime.freeze_spec(
+            _spec_with_workspace_backend(project, "git_worktree"),
+            [project / "evaluator.py"],
+        )
+
+
+def test_create_run_rechecks_clean_git_source(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+    (project / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="DirtySourceWorkspace"):
+        runtime.create_run(frozen.frozen_spec_id)
+
+    assert not runtime.runs_dir.exists()
+
+
+def test_create_run_ignores_runtime_state_inside_source_repository(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(project / ".gp")
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+
+    assert runtime.status(run_id).run_id == run_id
+
+
 @pytest.mark.parametrize("worker_host", ["codex", "pi-rpc"])
 def test_freeze_spec_rejects_thinkthread_before_verifier_preflight(
     tmp_path: Path,
@@ -792,22 +924,16 @@ def test_git_tracked_task_skills_are_discovered_in_each_candidate_worktree(
         "# Checks\n\nInspect the candidate worktree only.\n",
         encoding="utf-8",
     )
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    git_commit_all(project, "source baseline")
+    git_exclude = project / ".git" / "info" / "exclude"
+    git_exclude.write_text(
+        f"{git_exclude.read_text(encoding='utf-8')}\n.agents/skills/untracked/\n",
+        encoding="utf-8",
+    )
     untracked_skill = project / ".agents" / "skills" / "untracked" / "SKILL.md"
     untracked_skill.parent.mkdir(parents=True)
     untracked_skill.write_text("# Untracked\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    subprocess.run(
-        [
-            "git",
-            "add",
-            "initial_program.py",
-            "evaluator.py",
-            "config.yaml",
-            ".agents/skills/review",
-        ],
-        cwd=project,
-        check=True,
-    )
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec_data = spec_with_host(
         project,

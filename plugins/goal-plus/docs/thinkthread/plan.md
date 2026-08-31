@@ -46,6 +46,7 @@ Git worktree / ThinkThread Workspace Provider
 - Runtime、持久化记录和 MCP 传递 ArtifactRef；
 - Codex/Pi worker 都可使用 `search_reference_open` checkout 唯一 ref-workspace；
 - `thinkthread` backend 已注册为显式 unsupported，不会假装运行成功；
+- Git-backed source 在 freeze/create 边界要求整个 repository clean，不隐式捕获 dirty 状态；
 - 已覆盖 reference 精确性、隔离性、回收、可见性和 Copy/Git parity 测试。
 
 当前分支进一步完成了 Git source/promotion 重构：真实 Git source 使用保留完整历史的
@@ -181,7 +182,8 @@ input tokens / cached tokens / output tokens / processed tokens / cost（可得�
 2. 固定 checkpoint 后修改 current，确认旧 ArtifactRef 内容不变。
 3. 同一 worker 连续选择多个 reference，确认始终复用一个路径并精确切换 ArtifactRef。
 4. 覆盖 worker 崩溃、verifier 失败和 restore 后继续；reference 数量不得随调用增长。
-5. 覆盖 dirty source、untracked 文件和受限 edit surface。
+5. 覆盖 staged、unstaged、untracked source 的 fail-fast，以及 ignored/runtime-noise 文件和
+   受限 edit surface。
 6. 确认 Codex/Pi 生成相同的 Evidence 与 reference tool payload。
 
 ### Phase 1 退出条件
@@ -193,19 +195,18 @@ input tokens / cached tokens / output tokens / processed tokens / cost（可得�
 
 ---
 
-## 5. Phase 2：SourceImporter 与多仓 baseline
+## 5. Phase 2：SourceImporter 与多仓 clean baseline
 
 目的：解决“启动时手工复制 workspace”以及多 repo 输入问题。
 
 ### Phase 2 工作项
 
 1. 定义 `SourceSpec -> SourceArtifact` 协议和 manifest。
-2. 实现 clean Git 快路径。
-3. 实现 dirty Git 的 tracked/untracked 精确捕获。
-4. 实现 plain directory 导入。
-5. 用一个包含两个嵌套 Git repo 的 fixture 验证 multi-repo。
-6. 明确 ignore、symlink、submodule、超大文件和敏感文件策略。
-7. 记录输入 fingerprint，支持重试时确认 baseline 未漂移。
+2. 复用 clean Git fail-fast，并实现 Git provider 的 HEAD 快路径。
+3. 实现显式 plain directory 导入；不得把 dirty Git 自动当作 filesystem source。
+4. 用一个包含两个 clean 嵌套 Git repo 的 fixture 验证 multi-repo。
+5. 明确 ignore、symlink、submodule、超大文件和敏感文件策略。
+6. 记录输入 fingerprint，支持重试时确认 baseline 未漂移。
 
 ### Phase 2 退出条件
 

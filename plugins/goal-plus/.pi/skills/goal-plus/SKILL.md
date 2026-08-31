@@ -156,6 +156,10 @@ database，并能解析 Global Evidence 中的 peer commit。`workspace.promotio
 `promotion_mode="artifact_only"`。只有用户明确要求兼容隔离时才能设置
 `workspace.backend="copy"`，它自动使用 artifact-only。
 
+`git_worktree` 以及未来的 ThinkThread backend 只接受 clean Git `HEAD`。遇到
+`DirtySourceWorkspace` 时原样展示路径和修复提示并停止启动，不得自动 stash、clean 或
+commit source；确实需要当前 filesystem 状态时显式使用 `copy + artifact_only`。
+
 任务本地 Skill 无需 SearchSpec 配置。只识别 source Git 已跟踪的
 `.agents/skills/<name>/SKILL.md`，且同一 Skill 目录内所有资源都必须由 Git 跟踪。freeze 的
 `task_skill_notice` 会列出发现结果，必须明确展示；`workspace_capacity_notice` 会同时展示

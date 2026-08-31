@@ -771,6 +771,7 @@ class FileSearchRuntime:
         spec = self._normalize_strategy_models(spec)
         self._validate_strategy_config(spec.strategy)
         source_root = Path(spec.source_path).resolve()
+        self._validate_clean_source_repository(spec)
         workspace_capacity_estimate = estimate_workspace_capacity(
             source=source_root,
             backend=spec.workspace.backend,
@@ -1086,6 +1087,7 @@ class FileSearchRuntime:
     ) -> str:
         frozen = self._load_frozen_spec(frozen_spec_id)
         self._validate_host_workspace_backend(frozen.spec)
+        self._validate_clean_source_repository(frozen.spec)
         capacity = frozen.workspace_capacity_estimate
         if capacity is not None and capacity.fits_available_space is False:
             raise RuntimeError(
@@ -6522,6 +6524,7 @@ class FileSearchRuntime:
         workspace: Path,
         *,
         ignore_runtime_noise: bool = False,
+        strict: bool = False,
     ) -> list[str]:
         command = ["git", "status", "--porcelain=v1", "--untracked-files=all"]
         if ignore_runtime_noise:
@@ -6539,9 +6542,58 @@ class FileSearchRuntime:
             command.extend(["--", ".", *exclusions])
         try:
             value = self._git_output(workspace, command)
-        except (FileNotFoundError, subprocess.CalledProcessError):
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            if strict:
+                detail = getattr(exc, "stderr", "") or str(exc)
+                raise RuntimeError(
+                    "SourceGitPreflightFailed: could not inspect the source Git "
+                    f"repository at {workspace}: {detail.strip()}"
+                ) from exc
             return []
         return [line for line in value.splitlines() if line.strip()]
+
+    def _validate_clean_source_repository(self, spec: SearchSpec) -> None:
+        if spec.workspace.backend not in {"git_worktree", "thinkthread"}:
+            return
+
+        source = Path(spec.source_path).resolve()
+        probe = source if source.is_dir() else source.parent
+        try:
+            repository_text = self._git_output(
+                probe,
+                ["git", "rev-parse", "--show-toplevel"],
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "SourceGitPreflightFailed: Git is required for workspace backend "
+                f"{spec.workspace.backend!r}"
+            ) from exc
+        except subprocess.CalledProcessError:
+            # Plain directories keep the existing synthetic Git baseline path.
+            return
+
+        repository = Path(repository_text.strip()).resolve()
+        status = self._git_status(
+            repository,
+            ignore_runtime_noise=True,
+            strict=True,
+        )
+        if not status:
+            return
+
+        preview_limit = 10
+        preview = "; ".join(status[:preview_limit])
+        remaining = len(status) - preview_limit
+        suffix = f"; ... and {remaining} more" if remaining > 0 else ""
+        raise ValueError(
+            "DirtySourceWorkspace: workspace backend "
+            f"{spec.workspace.backend!r} requires a clean Git HEAD, but "
+            f"{repository} has {len(status)} staged, unstaged, or non-ignored "
+            f"untracked path(s): {preview}{suffix}. Commit, stash, remove, or "
+            "ignore those paths before freezing the SearchSpec. To intentionally "
+            "snapshot the current filesystem, use workspace.backend='copy' with "
+            "promotion_mode='artifact_only'."
+        )
 
     def _git_artifact_clean(
         self,

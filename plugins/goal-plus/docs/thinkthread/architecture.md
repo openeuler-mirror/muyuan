@@ -1,9 +1,11 @@
-# Goal Plus × ThinkThread 统一 Workspace 架构
+# Goal Plus Workspace 架构：Git 与 ThinkThread
 
-> 状态：设计目标；Git/Copy 基础设施和 ThinkThread promotion adapter 已落地，
-> ThinkThread candidate/Child provider 尚未实现。
+> 状态：`[CURRENT]` Git/Copy candidate runtime、Git provider-native promotion，
+> 以及 ThinkThread filtered promotion adapter 已实现；`[TARGET]` ThinkThread
+> candidate/Child、checkpoint、reference 和 host protected execution 尚未实现。
 >
-> 代码基线：`master@d5cd419`（2026-08-26）。
+> 实现基线：当前 `codex/goal-plus-with-tt-git-refactor` working tree，
+> `HEAD=6677007`（2026-08-31）。
 >
 > 相关文档：[Shared Plane](../shared-plane.md) ·
 > [Host Adapters](../agent-host-adapters.md) ·
@@ -13,395 +15,507 @@
 
 ## 1. 结论
 
-Goal Plus 不应把 Git worktree 当成唯一执行模型，也不应为 ThinkThread
-另写一套 Search。统一后的核心是一个 **Workspace Provider 协议**：Goal Plus
-只依赖“创建私有 workspace、生成不可变 checkpoint、恢复、打开只读参考副本”
-这些能力，Git 和 ThinkThread 分别实现它。
+这次重构已经把 workspace 从 Search 状态机里拆成独立 provider 边界。Runtime
+负责何时创建 candidate、checkpoint、验证、结算、选择和 promotion；provider
+负责如何把这些动作映射到 Git tree 或未来的 ThinkThread FsSnapshot。
 
-两条后端的规范产物不同：
+当前可运行的主路径是 `git_worktree`：
 
-- Git：规范产物是 commit；私有 workspace 是 git worktree。
-- ThinkThread：规范产物是 FsSnapshot；私有 workspace 是从共同 baseline
-  派生的 COW Child。
+- `workspace.backend` 默认是 `git_worktree`，`promotion_mode` 默认是 `apply`；
+- clean Git source 被完整 mirror 到 run-local bare repository；
+- candidate 使用彼此独立、共享 object store 的 worktree 和 branch；
+- 每次 verifier 绑定 runtime 创建的 immutable `git_commit`；
+- 最终另建一个 squash publication commit，再显式 cherry-pick 回 source；
+- candidate 的完整实验提交历史不会被 squash 或改写。
 
-Shared Plane 共享的是不可变产物引用、窄 Evidence 和 lineage，不共享其他
-worker 的可写 workspace。需要理解较大修改时，worker 打开一个完整、只读、
-每个 worker 唯一的 `ref-workspace` 中自己浏览，不再把巨型 diff 塞进上下文。
+`copy` 是显式 filesystem-capture 路径。它为每个 candidate 复制 source 并建立独立
+Git baseline，但固定为 `artifact_only`，不会由 runtime 写回 source。
 
-本设计同时服务 Codex 和 Pi；Host 选择与 Workspace Provider 选择相互独立。
+ThinkThread 当前只完成了 provider 类型、`fs_snapshot` 产物类型和 filtered
+`fs.apply` promotion adapter。Codex/Pi 的 host capability 仍会在 freeze 前拒绝
+`thinkthread`，因此不能把 adapter 单测通过描述成 ThinkThread candidate 已可运行。
 
 ---
 
-## 2. 统一架构图
+## 2. 当前运行架构
+
+### 2.1 Runtime 主链路
+
+下面的实线都是当前代码路径；ThinkThread target 不混入这张图。
 
 ```text
-                         Goal Plus Control Plane
-                 Goal / FrozenSpec / Search / Selection
-                                   |
-                  +----------------+----------------+
-                  |                                 |
-             Host Adapter                    Workspace Provider
-         (谁启动和看护 worker)             (worker 在哪里修改文件)
-                  |                                 |
-          +-------+-------+                 +-------+--------+
-          |               |                 |                |
-       Codex Host       Pi Host          Git Provider    TT Provider
-          |               |                 |                |
-          +-------+-------+                 |       baseline FsSnapshot
-                  |                         |                |
-            Candidate Worker          private worktree   private COW Child
-                  |                         |                |
-                  +-------------------------+----------------+
-                                            |
-                                  verifier 只验证私有状态
-                                            |
-                                  immutable ArtifactRef
-                                  commit / FsSnapshot
-                                            |
-                         +------------------+------------------+
-                         |                                     |
-                   Shared Plane                       Reference Workspace
-             Evidence + lineage + score        单 worker ref-workspace 完整参考视图
-                         |                                     |
-                         +---------------其他 worker-----------+
+Codex $goal-plus / Pi /goal-plus
+                |
+                v
+       Goal Plus state machine
+                |
+                v
+      SearchSpec -> freeze_spec
+                   |-- host/backend capability guard
+                   |-- clean-source preflight
+                   |-- workspace capacity estimate
+                   |-- freeze verifier artifacts
+                   `-- discover Git-tracked task Skills
+                |
+                v
+      FrozenSpec -> create_run
+                   |-- recheck host/backend + source cleanliness
+                   `-- reject capacity fits=false before run materialization
+                |
+                v
+         SearchPlan / fixed candidate lanes
+                |
+                v
+           start_batch
+                |
+                v
+       +----------------------+       CandidateTask
+       | WorkspaceProvider    |------ workspace + WorkspaceAccess
+       | materialize_candidate|       + base ArtifactRef
+       +----------------------+                 |
+                                                v
+                                    Codex/Pi host launches worker
+                                                |
+                                      edits private workspace
+                                                |
+                                                v
+                                      search_run_verifier
+                                                |
+                   +-- provider.checkpoint -> immutable ArtifactRef
+                   +-- edit-surface + frozen verifier checks
+                   +-- keep / retain / discard / failure settlement
+                   +-- runtime-owned results.tsv ledger commit
+                   `-- Evidence + lineage -> Shared Plane
+                                                |
+                                   repeated same-candidate loop
+                                                |
+                                                v
+                                      select exact ArtifactRef
+                                                |
+                                                v
+                                      prepare promotion artifact
+                                                |
+                     artifact_only <------------+------------> apply
+                                                             |
+                                                             v
+                                                   provider.apply_promotion
+                                                             |
+                                                             v
+                                                         source root
 ```
 
-四种组合必须遵守同一上层语义：
+Host 与 provider 是两个正交维度：Host 拥有 worker 启动、继续、停止和预算；Runtime
+调用 provider 并持久化 workspace/Evidence/promotion 状态。Host 不创建 checkpoint，
+provider 也不启动 agent。
 
-| Host | Provider | 私有执行空间 | 规范 checkpoint |
-| --- | --- | --- | --- |
-| Codex | Git | git worktree | commit |
-| Pi | Git | git worktree | commit |
-| Codex | ThinkThread | private COW Child | FsSnapshot |
-| Pi | ThinkThread | private COW Child | FsSnapshot |
+### 2.2 当前 Git 存储形态
 
-当前只有 Git/Copy 路径可用。`thinkthread` 已作为显式 backend 注册，但会返回
-unsupported，而不是悄悄降级到 copy 或 Git。
+clean Git source 会保留整个 repository，而不是只复制 `source_path` 子目录：
+
+```text
+source repository (clean HEAD = S)
+        |
+        | git clone --mirror --local
+        v
+.gp/runs/<run>/workspace-repository.git        # run-local bare mirror
+        |
+        +-- refs/heads/gp/<run>/baseline -> S
+        |
+        +-- gp/<run>/c001 -> workspace/c001/<source_subdir>
+        |                      `-- attempt/restore/ledger commits
+        |
+        +-- gp/<run>/c002 -> workspace/c002/<source_subdir>
+        |                      `-- attempt/restore/ledger commits
+        |
+        `-- refs/goal-plus/promotions/<run>/<candidate>
+                               `-- squash publication commit
+
+Evidence commit E
+        |
+        `-- detached worktree
+            reference-workspaces/<agent_session>/ref-workspace
+```
+
+若 `source_path` 是 Git repository 的子目录，candidate 的 managed worktree 仍 checkout
+整个 repository，worker 得到的 logical workspace 才指向该子目录。这样 root-level
+历史、相对路径和 Git 对象都保持一致，同时 edit-surface 仍按 logical workspace 检查。
+
+普通非 Git directory 仍可使用 `git_worktree`。provider 会先建立 synthetic baseline
+repository，再创建 candidate worktree；它没有可写回的原 Git repository，因此最终仍是
+legacy patch/export 路径，不具备 real-Git 的 provider-native cherry-pick 语义。
+
+### 2.3 当前 candidate iteration
+
+```text
+settled ArtifactRef
+        |
+        +-- worker edits current workspace
+        |
+        +-- checkpoint(attempt-N) -> verifier reads exact commit
+        |
+        +-- keep    : attempt becomes strict-score best
+        +-- retain  : equal-score attempt becomes latest local baseline
+        +-- discard : restore previous hard-score best
+        `-- failure : restore previous hard-score best
+                         |
+                         `-- append + commit results.tsv ledger
+```
+
+attempt commit、restore commit 和 ledger commit 都保持可达。`ArtifactRef` 表示 verifier
+真正读取的完整 tree，不是临时 diff。Shared Plane 发布该 immutable identity 与窄
+Evidence；worker 只有在窄 Evidence 不足时才打开完整 `ref-workspace`。
 
 ---
 
-## 3. 必须分开的四个对象
+## 3. Provider-neutral 数据合同
 
-### 3.1 CurrentWorkspace
-
-worker 当前可以读写的私有工作目录。它是“正在进行的修改”，不是可分享产物。
-
-### 3.2 ArtifactRef
-
-某次 checkpoint 的稳定标识，统一表示为 `kind + id + provider`：
+### 3.1 WorkspaceSpec
 
 ```text
-Git:         { kind: "git_commit", id: "<sha>", provider: "git_worktree" }
+WorkspaceSpec
+├── backend: git_worktree | copy | thinkthread
+└── promotion_mode: apply | artifact_only
+```
+
+默认组合是 `git_worktree + apply`。`copy` 未显式填写 promotion mode 时自动规范化为
+`artifact_only`，显式请求 `copy + apply` 会被模型校验拒绝。
+
+### 3.2 WorkspaceMaterialization 与 WorkspaceAccess
+
+provider 内部先返回 `WorkspaceMaterialization`：
+
+```text
+backend
+workspace                 # worker 使用的 logical cwd
+managed_root              # provider 管理的完整 worktree/root
+source_subdir
+branch / base_revision
+provider_handle           # repository、source_repository 等 provider 坐标
+```
+
+Runtime 再把它持久化到 `CandidateTask`，并生成 host-facing `WorkspaceAccess`：
+
+```text
+logical_root = "workspace"
+native_cwd
+managed_root
+source_subdir
+confinement = soft_path               # 当前 Git/Copy
+writable_surfaces = edit_surface.allow
+provider_handle
+```
+
+当前 Codex/Pi 路径的 `confinement` 都是 `soft_path`。路径合同要求 worker 在 candidate
+cwd 工作，但它不是 filesystem sandbox。未来 ThinkThread 真正接通后才应返回
+`protected_execution`。
+
+### 3.3 ArtifactRef
+
+```text
+Git / Copy:
+{ kind: "git_commit", id: "<sha>", provider: "git_worktree|copy" }
+
 ThinkThread:
-{ kind: "fs_snapshot", id: "<snapshot_id>", provider: "thinkthread" }
+{ kind: "fs_snapshot", id: "<snapshot-id>", provider: "thinkthread" }
 ```
 
-ArtifactRef 是 verifier、候选结果、Shared Plane 和最终选择之间传递的规范引用。
-业务层不能假设 `id` 一定是 Git SHA。
+`kind` 必须与 provider 匹配。Runtime 的 verifier、iteration、Evidence、reference、
+selection 和 promotion 都传递 `ArtifactRef`；业务逻辑不能假设 `id` 一定是 Git SHA。
 
-### 3.3 ReferenceWorkspace
+### 3.4 PromotionRecord
 
-每个 loop worker 拥有一个完整参考目录。例如：
+promotion 被拆成 prepare 与 apply 两个持久步骤：
 
 ```text
-current/             # candidate 自己的可写 workspace
-ref-workspace/       # 当前选中的 ArtifactRef checkout
+selected ArtifactRef
+        |
+        v
+PreparedPromotion
+├── strategy: legacy_patch | squash_commit | fs_apply
+├── base / selected / publication ArtifactRef
+├── artifact_path
+├── changed_files
+└── provider_handle
+        |
+        v
+PromotionRecord.state
+prepared -> applied
+         `-> apply_failed -> retry apply
 ```
 
-它解决的是“大改动无法靠一个 diff 理解”的问题。diff 仍可作为导航和窄证据，
-但不再承担完整代码传递。worker 选择另一条 Evidence 时，provider 把同一个
-`ref-workspace` checkout 到新的 ArtifactRef，不创建第二个参考目录。
+`promotion_mode=artifact_only` 在 prepared publication 停止。默认 `apply` 必须完成
+provider apply，Goal Plus 才允许记录 Search result。
 
-ReferenceWorkspace 必须满足：
+### 3.5 Operation timing 与 capacity
 
-- 精确：内容对应指定 ArtifactRef，而不是 peer 当前状态。
-- 隔离：修改 reference 不影响原产物、candidate 或其他 reference。
-- 有界：每个 worker 最多一个 reference，生命周期由 Runtime 管理，不要求 Agent close。
-- 有授权：worker 只能打开 Shared Plane 明确暴露的产物。
+freeze 持久化 `WorkspaceCapacityEstimate`，区分：
 
-### 3.4 LocalVcs
+- source scope 与实际 materialized source；
+- 每个 node 的完整 checkout；
+- `budget.max_parallel` 个 candidate checkout 合计；
+- run-local shared object store、保守上界和目标文件系统可用空间。
 
-workspace 内部可选的本地版本控制。它用于 worker 自己回滚、查看历史或记录
-多次尝试，不等同于 sandbox，也不必成为跨 worker 交换协议。
+Git 子目录任务按整个 repository checkout 估算。`fits_available_space=false` 时，
+`create_run` 在创建 candidate 前失败。
 
-因此 ThinkThread workspace 内可以保留现有 `.git` 和 `results.tsv`：
-
-- FsSnapshot 管整个 workspace 的隔离、checkpoint 和恢复。
-- 内嵌 Git 继续做项目自己的版本历史。
-- `results.tsv` 继续做 Goal Plus 的本地实验账本。
-
-三者职责不同，可以同时存在。
+每个成功创建的 candidate 在 `task.workspace_creation_timing` 保存 materialization
+开始、完成和耗时。provider-native apply 另在 `PromotionRecord.apply_timing` 保存成功或
+失败的调用耗时；重复读取已 applied promotion 不会再次写回。
 
 ---
 
-## 4. COW、lower 与真正的树
+## 4. 当前 WorkspaceProvider 协议
 
-COW 是 Copy-on-Write。多个 Child 初始读取同一个只读 baseline；只有发生修改的
-文件或数据块才写入各自的私有层。
+当前协议的真实方法是：
 
 ```text
-                         root baseline snapshot
-                         (shared, immutable lower)
-                          /          |          \
-                         /           |           \
-                  child-A         child-B       child-C
-                private upper    private upper private upper
-                    |                 |             |
-                 snapshot A       snapshot B    snapshot C
-                    |
-                 child-A1
+materialize_candidate(...) -> WorkspaceMaterialization
+checkpoint(workspace, message, pathspecs) -> ArtifactRef
+restore(workspace, artifact_ref, preserved_files, message) -> ArtifactRef
+current_artifact(workspace) -> ArtifactRef
+is_descendant(workspace, base, target) -> bool
+changed_files(workspace, base, target, pathspecs) -> list[path]
+status(workspace, ignore_runtime_noise=...) -> list[status]
+materialize_reference(source_workspace, artifact, destination) -> Path
+remove_reference(source_workspace, artifact, destination) -> bool
+prepare_promotion(...) -> PreparedPromotion
+apply_promotion(prepared) -> PromotionApplyResult
 ```
 
-这里的 `lower` 不是 Goal Plus 的一个业务目录，也不是可以让 worker 修改的
-branch。它是 COW 文件系统共同读取的只读底层内容；每个 Child 的私有变化写在
-自己的 upper/private layer 中。运行时看到的是 lower 与自己 private layer
-合成后的完整目录。
+旧设计中的 `prepare_source`、`create_workspace`、`checkout_reference` 和
+`dispose_workspace` 不是当前 Python protocol。source preparation 目前内聚在 Git
+materialization 中；reference 的创建/回收由一对显式方法完成；更通用的
+SourceImporter 和 provider dispose/retention 仍是目标能力。
 
-ThinkThread 已有 fork/derive 能力时，应从 root baseline 派生真正的 Child，
-后续 checkpoint 也保持这条 lineage。不能只创建一个 branch id，却让 agent
-继续在外部 cwd 修改真实仓库；那只是“记录了分支”，没有得到执行隔离。
+### 4.1 Capability 现状
+
+| Provider | Candidate/Checkpoint | Reference | Protected exec | Prepare/Apply | 当前用途 |
+| --- | --- | --- | --- | --- | --- |
+| `git_worktree` | 已实现 | 已实现 | 否 | 已实现 | 默认可运行路径 |
+| `copy` | 已实现 | 已实现 | 否 | 否 | filesystem capture + artifact-only |
+| `thinkthread` | 未实现 | 未实现 | 否 | 已实现 adapter | 尚不可启动 candidate |
+
+Codex 与 Pi host adapter 当前只声明 `copy`、`git_worktree`。`thinkthread` 会在
+`freeze_spec` 的 host/backend guard 中失败，早于 verifier preflight 和 run 创建；Runtime
+不会静默 fallback 到 Git 或 Copy。
 
 ---
 
-## 5. 控制平面职责
+## 5. Source preflight 与 baseline 语义
 
-### 5.1 Goal Plus Runtime
+### 5.1 Git-backed source
 
-Runtime 继续拥有：
+当前 working tree 对 `git_worktree` 执行两次 clean-source 检查：
 
-- Goal、FrozenSpec 和 Search 生命周期；
-- candidate/iteration 状态机；
-- verifier 调度、结果判定和选择；
-- `.gp` 状态、`results.tsv`、报告和 promotion；
-- Shared Plane 中 Evidence、ArtifactRef 和 lineage 的发布规则。
+1. `freeze_spec` 在 verifier preflight 和 spec 落盘前检查；
+2. `create_run` 在 run 落盘前复检，防止 freeze 后 source 漂移。
 
-Runtime 不直接写死 Git 命令或 ThinkThread MCP 调用；这些进入 provider。
+检查范围是包含 `source_path` 的整个 repository。staged、unstaged 和 non-ignored
+untracked 任一种状态都会返回 `DirtySourceWorkspace`。Runtime 不会自动 commit、stash、
+clean 或偷偷捕获 dirty tree；ignored untracked 以及 `.gp`、`.search`、`.tmp` 等既有
+runtime-noise 排除项不阻塞。
 
-### 5.2 Host Adapter
+`_validate_clean_source_repository` 的 policy 也包含未来 `thinkthread`，但正常 Codex/Pi
+入口当前会先因 host 不支持 ThinkThread 而拒绝。
 
-Host Adapter 继续拥有：
+### 5.2 Copy 与 plain directory
 
-- Codex/Pi worker 的启动、停止和并发控制；
-- 把 Goal Plus 生成的 worker contract 注入对应 host；
-- 收集 host 日志、退出状态和运行时指标；
-- 确保 worker 的真实 cwd 指向 provider 分配的 CurrentWorkspace。
+需要有意把当前 filesystem 状态当输入时，使用：
 
-Host 不决定 checkpoint 的格式，也不直接拼接 peer diff。
-
-### 5.3 Workspace Provider
-
-Provider 至少提供这些能力：
-
-```text
-prepare_source(source) -> SourceArtifact
-create_workspace(baseline, owner) -> WorkspaceAccess
-checkpoint(workspace, label) -> ArtifactRef
-restore(workspace, artifact) -> None
-checkout_reference(requester, artifact) -> ReferenceWorkspace
-prepare_promotion(baseline, selected, edit_surface) -> PublicationArtifact
-apply_promotion(publication) -> ApplyResult
-dispose_workspace(workspace) -> None
-capabilities() -> WorkspaceCapabilities
+```json
+{
+  "workspace": {
+    "backend": "copy",
+    "promotion_mode": "artifact_only"
+  }
+}
 ```
 
-当前代码中的 `WorkspaceProvider`、`WorkspaceAccess`、`ArtifactRef` 和 capability
-检查是这层抽象的起点。不同 provider 可以有不同内部字段，但 Runtime 只能依赖
-统一语义。
+`copy` 不要求 source Git clean；它复制有效 source tree，并为每个 candidate 建立独立
+Git baseline，以复用同一套 checkpoint/restore/Evidence 语义。
+
+plain directory 配合 `git_worktree` 时使用 synthetic Git baseline。这保留既有 Search
+兼容性，但不等于拥有原 repository write-back contract。
 
 ---
 
-## 6. SourceImporter：启动 workspace
+## 6. Reference Workspace 与共享边界
 
-“源代码在哪里”与“candidate 使用哪种隔离后端”也要解耦。
+每个 agent session 最多拥有一个稳定 reference 路径：
 
 ```text
-source input
+candidate workspace/                    # owner 可写实现
+reference-workspaces/<session>/
+└── ref-workspace/                      # 某条 settled Evidence 的完整 tree
+```
+
+`search_reference_open` 先验证 requested iteration 是已结算、带 worker identity 的
+Evidence，再把它的 `ArtifactRef` 交给 source candidate 的 provider。再次 open 会先移除
+旧 detached worktree，并在同一路径物化新 artifact；Runtime 记录旧 reference 是 clean、
+contaminated 还是 unavailable。
+
+Git reference 是隔离副本，但“只读”目前是 soft-detected contract：worker 写入 reference
+不会改变原 commit，却可能把自己的 reference 标记为 contaminated。它不能获得 peer
+活动 branch 的写 authority，也不能读取 peer 尚未发布的 current workspace。
+
+---
+
+## 7. 当前 Promotion 路径
+
+### 7.1 Real Git source
+
+```text
+source baseline S
+        |
+selected verifier-backed commit C
+        |
+        | copy only allowed product paths into a temporary index
+        v
+publication tree P
+        |
+commit-tree -p S -> squash publication commit Q
+        |
+        +-- format-patch -> .gp/runs/<run>/promotion/<candidate>.patch
+        `-- durable promotion ref + idempotency marker
+                                |
+                         search_apply_promotion
+                                |
+              require clean source -> fetch Q -> cherry-pick Q
+```
+
+Q 只包含 selected artifact 相对 run baseline 的产品变化。candidate 的
+`results.tsv`、`.gp`、`.tmp` 和实验提交历史不会进入 publication commit。
+
+apply 是显式、可重试动作：dirty source 会失败；cherry-pick 冲突会 abort；成功记录
+source revision。相同 promotion marker 已存在时返回既有 apply 结果，不重复提交。
+
+### 7.2 Copy 与 legacy export
+
+`copy` 没有 provider-native prepare/apply capability。Runtime 生成 legacy patch，
+`promotion_mode` 必须保持 `artifact_only`。synthetic `git_worktree` source 也没有原
+`source_repository` 坐标，因此落到 legacy patch/export，而不是 cherry-pick。
+
+### 7.3 ThinkThread adapter
+
+ThinkThread adapter 已实现 promotion 的最后一段：
+
+```text
+BASE FsSnapshot + SELECTED FsSnapshot
+                |
+       fs.snapshot.diff
+                |
+  filter edit-surface product paths
+  reject .git/.gp/.search/.tmp/results.tsv
+  reject symlink and unsupported entry types
+                |
+       fs.snapshot.patch(BASE)
+                |
+       PUBLISH FsSnapshot
+                |
+     fs.apply(BASE, PUBLISH,
+              policy=safe_content_v1,
+              durable request-id)
+```
+
+这段 adapter 已有确定性 request id、分页 diff、snapshot read 和 apply result 处理；
+但正常 Runtime 尚不能产生真实 ThinkThread `BASE`/`SELECTED` candidate snapshots，
+所以它仍是独立能力，不是可用 E2E。
+
+---
+
+## 8. ThinkThread 目标架构
+
+ThinkThread 接入不应新增一套 Search，也不应把 Git 命令散落进 host adapter。目标是把
+同一 Runtime 生命周期映射到 private COW Child：
+
+```text
+[TARGET]
+
+SourceImporter
     |
-    +-- clean Git repo ------> 复用提交对象或高效导入
+    v
+root baseline FsSnapshot (immutable lower)
     |
-    +-- dirty Git repo ------> 捕获 tracked + untracked 的精确输入状态
+    +-------------------+-------------------+
+    |                   |                   |
+    v                   v                   v
+private Child A     private Child B     private Child C
+private upper       private upper       private upper
+    |                   |                   |
+    | Host launches worker inside protected execution
+    | Runtime checkpoint -> FsSnapshot
+    | verifier runs against exact snapshot/derived environment
+    | restore -> selected/retained FsSnapshot
+    v
+settled ArtifactRef(kind=fs_snapshot)
     |
-    +-- plain directory -----> 文件系统导入
+    +--> Shared Plane Evidence
+    |        `--> requester-unique snapshot-derived ref Child
     |
-    +-- multi-repo tree -----> 作为一个受管 workspace 整体捕获
-                                   |
-                              baseline ArtifactRef
+    `--> selection -> filtered publish snapshot -> fs.apply to Root
 ```
 
-Git provider 可对 clean Git repo 使用原生快路径。ThinkThread provider 则为整个
-受管 workspace 创建 baseline FsSnapshot；嵌套仓库的 `.git`、配置和多个源码树
-只是这个快照里的文件。这样多仓任务不需要强行合成一个 Git 仓库。
+必须同时满足以下条件，才可以把 `WorkspaceAccess.confinement` 标成
+`protected_execution`：
 
-源导入必须明确忽略项、符号链接、超大文件和密钥策略。它不能用一次不透明的
-手工 copy 作为长期启动协议。
+1. worker 进程真正运行在 private Child，而不是外部 cwd；
+2. writable surfaces、路径逃逸、进程和凭据边界经过 capability preflight；
+3. verifier 读取 immutable snapshot 或其受保护派生环境；
+4. reference Child 只能读取已发布 ArtifactRef，不能获得 sibling authority；
+5. snapshot/Child 的 retention、恢复和回收具有持久、可重试语义。
+
+仅调用几个 ThinkThread CLI/MCP 命令、但仍让 worker 在普通宿主目录工作，不算
+ThinkThread workspace，也不能宣称 sandbox。
 
 ---
 
-## 7. 单个 candidate 的运行流程
+## 9. Host × Provider 现状
 
-```text
-1. SourceImporter 生成共同 baseline
-2. Provider 从 baseline 创建 candidate 私有 CurrentWorkspace
-3. Host 在该 workspace 中启动 worker
-4. worker 修改文件，并可使用自己的 LocalVcs / results.tsv
-5. worker 请求 verify
-6. Runtime 检查 edit surface
-7. Provider 生成 pre-ver-N ArtifactRef
-8. verifier 针对该精确 ArtifactRef 运行
-9. Runtime 记录 score、Evidence、lineage 和 verifier 结果
-10. 结果合格时发布到 Shared Plane；失败时保留诊断或恢复上一 checkpoint
-11. worker 可把 peer ArtifactRef checkout 到自己的唯一 ref-workspace 阅读并继续自己的实现
-12. 最终选择一个 ArtifactRef，再执行 promotion/export
-```
+| Host | Provider | Candidate cwd | Canonical artifact | 当前状态 |
+| --- | --- | --- | --- | --- |
+| Codex | `git_worktree` | private worktree | `git_commit` | 可用 |
+| Pi | `git_worktree` | private worktree | `git_commit` | 可用 |
+| Codex | `copy` | independent copy | `git_commit` | 可用，artifact-only |
+| Pi | `copy` | independent copy | `git_commit` | 可用，artifact-only |
+| Codex | `thinkthread` | private COW Child | `fs_snapshot` | fail closed，未实现 |
+| Pi | `thinkthread` | private COW Child | `fs_snapshot` | fail closed，未实现 |
 
-### 7.1 Git provider 对应行为
-
-```text
-private worktree
-    -> checkpoint: commit
-    -> verify: commit 对应的精确树
-    -> reference: detached temporary worktree
-    -> restore: reset/checkout provider 管理的私有 worktree
-```
-
-worker 不应 checkout peer commit 到自己的 CurrentWorkspace。那会把对话上下文中
-的“我正在实现 A”与磁盘上的“已经切成 B”混在一起。正确方式是保留 current，
-把每个 worker 唯一的 `ref-workspace` 切到目标 ArtifactRef。
-
-### 7.2 ThinkThread provider 对应行为
-
-```text
-private COW Child
-    -> checkpoint: fs.branch.snapshot(child_id)
-    -> verify: 在 snapshot 派生的受保护执行环境中运行
-    -> reference: 从指定 FsSnapshot 派生只读/可丢弃 reference Child
-    -> restore: 将 candidate Child 恢复到指定 FsSnapshot
-```
-
-candidate 内的 LocalVcs `.git` 和 `results.tsv` 可以进入普通 checkpoint，但不能进入最终
-Root apply。promotion 必须从 baseline snapshot 派生 publish snapshot，只复制 edit surface
-内的产品变化，并把 `.git/**`、`.gp/**`、`.tmp/**` 和 `results.tsv` 保持为 baseline 内容；
-随后执行 `fs.apply(BASE, PUBLISH)`，不能直接 apply 未过滤的 candidate snapshot。
-
-`fs.snapshot.create`/`fs.branch.snapshot` 在架构上是 provider 使用的 ThinkThread
-能力，不是“main agent 派生 subagent 就自动触发”的 Goal Plus 隐式规则。
-Runtime 在 baseline、pre-ver-N、保留候选等明确生命周期点调用 provider；
-Pi extension 或 Codex adapter 不应各自写死一份快照逻辑。
+Git worktree 提供并发版本树、精确 commit、回滚和高效 object sharing，不提供强
+sandbox。Copy 也只是路径级隔离。ThinkThread 的目标价值是 protected filesystem
+execution；在真实 Child host E2E 通过前，三者不能被描述为相同安全等级。
 
 ---
 
-## 8. Shared Plane 与 peer 反馈
+## 10. 当前实现与剩余工作
 
-Shared Plane 发布的是一个可验证的候选事实：
-
-```text
-CandidateEvidence
-├── candidate_id / iteration_id
-├── artifact_ref
-├── parent_artifact_ref
-├── verifier summary / score / status
-├── changed paths and narrow evidence
-└── reference_available
-```
-
-subagent 先通过 Goal Plus MCP 得到 Evidence；当窄 Evidence 不足时，用一个工具把完整
-参考树 checkout 到当前 worker 的稳定 reference 路径：
-
-```text
-search_reference_open
-```
-
-Git provider 把调用映射到 detached worktree，ThinkThread provider 映射到每个 worker
-唯一的 FsSnapshot reference Child。worker 直接用普通文件和命令工具查看返回路径；再次
-调用时同一 reference 被切到新的 ArtifactRef。worker 不需要 fetch peer workspace，也不
-拥有 sibling 的可写 branch authority。
-
-“无 sibling branch authority”具体是：A 可以读取 Shared Plane 授权的 B 的不可变
-产物，但不能继续写 B 的 Child、移动 B 的 head、替 B checkpoint，或读取 B 尚未
-发布的工作目录。读产物与控制别人的执行分支必须分开。
-
----
-
-## 9. verifier、账本与回滚
-
-一次 verify 必须绑定一个不可变 checkpoint，而不是 verifier 启动瞬间碰巧看到的
-可变目录。建议顺序是：
-
-```text
-edit-surface check
-    -> provider.checkpoint(pre-ver-N)
-    -> verifier(checkpoint)
-    -> record result in .gp / results.tsv
-    -> publish Evidence when eligible
-    -> retain, restore, or discard according to policy
-```
-
-`results.tsv` 是实验历史，不是跨 provider 的 canonical artifact。它通常与源码一起
-被 checkpoint，因此回滚到旧 ArtifactRef 时也会看到当时的账本版本；如果策略需要
-保留“回滚后仍不断增长的全局历史”，应由 `.gp` 控制面另外保存，不能靠在 candidate
-目录中事后重新拼账本。
-
----
-
-## 10. 安全边界
-
-Git worktree 解决的是并发版本树和高效共享对象，不是 sandbox：
-
-- worker 仍可能通过绝对路径访问父仓库或其他本地目录；
-- 进程、网络、凭据和系统调用没有因此被限制；
-- Git 元数据和 sibling commit 也不等于细粒度授权。
-
-ThinkThread 的价值之一是把“看到一个 Child id”升级为真正的文件系统执行边界。
-但只有以下条件同时成立时，Goal Plus 才能声明 filesystem confinement：
-
-1. worker 进程本身在 private COW Child 内启动；
-2. cwd 和文件访问都由该执行环境约束；
-3. verifier 也针对不可变 snapshot 或其派生环境运行；
-4. host 不能通过未受控外部路径绕开边界；
-5. provider preflight 已验证当前系统支持这些能力。
-
-因此，“Codex 在普通宿主 cwd 运行，然后远程调用几个 ThinkThread MCP tool”不能
-算 sandbox。当前 ThinkThread provider 尚未实现，上述 Codex confinement 也是明确
-TODO，而不是现有能力。
-
----
-
-## 11. 当前实现与目标差距
-
-| 能力 | 当前状态 | 目标 |
+| 能力 | 状态 | 代码语义 |
 | --- | --- | --- |
-| Provider-neutral `ArtifactRef` | 已实现 | 继续保持业务层不假设 Git SHA |
-| Git/Copy checkpoint、restore | 已实现 | 作为统一语义基线 |
-| Git/Copy 单 worker `ref-workspace` | 已实现 | 保持精确、隔离、数量有界 |
-| 统一 reference checkout MCP | 已实现 | Git/TT 同名同语义 |
-| ThinkThread backend 选择 | 已注册，显式 unsupported | 实现真实 provider，不静默 fallback |
-| ThinkThread baseline/Child/checkpoint | 未实现 | 完成 COW lineage 与 FsSnapshot |
-| ThinkThread verifier execution | 未实现 | verifier 绑定不可变 snapshot |
-| Codex/Pi × ThinkThread host 接入 | 未实现 | worker 真正在 private Child 中运行 |
-| TT reference workspace | 未实现 | 从已发布 snapshot 切换每个 worker 唯一的 reference Child |
-| TT publish snapshot / `fs.apply` | 已实现独立 adapter | 在真实 Child host E2E 中接通 selected snapshot |
-| 多仓 SourceImporter | 未实现 | 精确、可复现地导入完整 workspace |
-| 四组合规模化验证 | 未完成 | 用同一指标矩阵验收 |
+| 默认 `git_worktree + apply` | `[CURRENT]` | WorkspaceSpec 默认值与 Goal Plus completion gate |
+| clean Git freeze/create preflight | `[CURRENT]` | whole-repository dirty state fail-fast |
+| capacity estimate/fail-fast | `[CURRENT]` | FrozenSpec、monitor、report 共享持久数据 |
+| run-local mirror + candidate worktree | `[CURRENT]` | 完整历史、共享 objects、独立 branch |
+| provider-neutral ArtifactRef | `[CURRENT]` | Git commit / TT FsSnapshot 类型约束 |
+| verifier checkpoint/restore/settlement | `[CURRENT]` Git/Copy | immutable attempt 与可达 ledger history |
+| requester-unique reference workspace | `[CURRENT]` Git/Copy | 同一路径切换 settled Evidence artifact |
+| provider-native Git promotion/apply | `[CURRENT]` real Git source | squash publication + explicit cherry-pick |
+| workspace/apply timing | `[CURRENT]` | provider-neutral durable timing |
+| TT filtered publish snapshot/`fs.apply` | `[CURRENT]` adapter | 没有 candidate E2E 输入 |
+| SourceImporter / multi-repo manifest | `[TARGET]` | source preparation 尚内聚于 Git provider |
+| TT baseline/private Child/checkpoint | `[TARGET]` | materialize/checkpoint/restore 未实现 |
+| TT verifier/reference | `[TARGET]` | snapshot-bound execution 与 ref Child 未实现 |
+| Codex/Pi protected TT launch | `[TARGET]` | host capability 当前 fail closed |
+| 四组合 contract/security campaign | `[TARGET]` | 需要真实 TT 环境验收 |
 
-具体实施顺序和服务器批量实验见 [plan.md](plan.md)。
+具体实施顺序和服务器验证矩阵见 [plan.md](plan.md)。
 
 ---
 
-## 12. 非目标与待决策项
+## 11. 非目标
 
-本轮不做：
-
-- 用 ThinkThread 重写 Goal Plus 状态机、Search 或 verifier 协议；
-- 废弃 Git；
-- 强迫 TT workspace 内每次 verify 都执行 `git add && git commit`；
-- 用巨型 diff 代替完整 reference workspace；
-- 把 Shared Plane 变成 peer workspace 的远程写接口；
-- 在 TT provider 完成前宣称 Codex 已获得 sandbox 隔离。
-
-实现前仍需确认：
-
-- ThinkThread 服务端的 snapshot/derive/只读 reference/销毁 API 及错误语义；
-- Linux 执行环境、进程和网络边界的实际保证；
-- baseline 与 reference snapshot 的保留、配额和垃圾回收策略；
-- multi-repo、符号链接、超大文件和敏感文件的导入规则；
-- provider 能力协商与版本兼容策略。
+- 不用 ThinkThread 重写 Goal Plus、Search 或 verifier 协议；
+- 不把 Host lifecycle 状态塞进 WorkspaceProvider；
+- 不废弃 Git，也不把 Git worktree 描述成 sandbox；
+- 不让 worker checkout peer commit 到自己的 CurrentWorkspace；
+- 不把 candidate 的 `.git`、`results.tsv`、`.gp` 或临时文件 apply 到 source root；
+- 不在 TT Child/provider/host E2E 完成前静默 fallback 或宣称 protected execution；
+- 不把 adapter mock/unit coverage 当成四组合运行证据。
