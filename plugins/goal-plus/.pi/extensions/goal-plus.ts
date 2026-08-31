@@ -35,6 +35,7 @@ const isPrintLikeInvocation =
 const STATE_ENTRY_TYPE = "goal-plus-native-state";
 const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
 const GOAL_PLUS_RUNTIME_ENTRY_TYPE = "goal-plus-runtime-start";
+const GOAL_PLUS_COMMAND_CONTEXT_TYPE = "goal-plus-command-context";
 const GOAL_PLUS_PROGRESS_STATUS_KEY = "goal-plus-progress";
 const GOAL_PLUS_PROGRESS_WIDGET_KEY = "goal-plus-progress";
 let workspaceRoot: string | undefined;
@@ -1882,12 +1883,25 @@ async function resumeGoalPlusStart(
 	].join("\n");
 }
 
-function sendUserMessage(pi: ExtensionAPI, message: string, deliverAsFollowUp: boolean) {
-	if (!deliverAsFollowUp) {
-		pi.sendUserMessage(message);
-		return;
-	}
-	pi.sendUserMessage(message, { deliverAs: "followUp" });
+function startGoalPlusMainTurn(
+	pi: ExtensionAPI,
+	context: string,
+	deliverAsFollowUp: boolean,
+) {
+	pi.sendMessage(
+		{
+			customType: GOAL_PLUS_COMMAND_CONTEXT_TYPE,
+			content: context,
+			display: false,
+			details: {
+				goal_plus_id: activeGoalPlusId,
+				entrypoint_status: "host_verified",
+			},
+		},
+		deliverAsFollowUp
+			? { triggerTurn: true, deliverAs: "followUp" }
+			: { triggerTurn: true },
+	);
 }
 
 function registerRuntimeTool(pi: ExtensionAPI, name: string) {
@@ -2326,7 +2340,7 @@ export default function (pi: ExtensionAPI) {
 					: request.action === "edit"
 						? await updateGoalPlusStart(pi, ctx, request.rawGoal)
 						: await createGoalPlusStart(pi, ctx, request.rawGoal);
-				if (prompt) sendUserMessage(pi, prompt, deliverAsFollowUp);
+				if (prompt) startGoalPlusMainTurn(pi, prompt, deliverAsFollowUp);
 			},
 		});
 		pi.registerCommand("goal-plus-with-final-check", {
@@ -2338,7 +2352,7 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				const prompt = await createGoalPlusStart(pi, ctx, rawGoal, true);
-				if (prompt) sendUserMessage(pi, prompt, !ctx.isIdle());
+				if (prompt) startGoalPlusMainTurn(pi, prompt, !ctx.isIdle());
 			},
 		});
 		if (role === "main" && progressPreviewMode) {

@@ -201,6 +201,128 @@ def test_host_command_config_is_typed_persisted_and_removed_from_goal(tmp_path) 
     assert created["payload"]["command_config"]["promotion_mode"] == "artifact_only"
 
 
+def test_partial_command_config_only_constrains_search_fields_user_supplied(
+    tmp_path,
+) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+
+    record = runtime.start_from_host_command(
+        "max_parallel=2 Optimize latency",
+        invocation=_codex_invocation("codex:test:partial-config"),
+    )
+
+    assert record.command_config.model_dump(exclude_none=True) == {
+        "max_parallel": 2,
+    }
+    search_spec = _complete_search_spec()
+    search_spec["budget"]["max_parallel"] = 2
+    search_spec["workspace"] = {
+        "backend": "git_worktree",
+        "promotion_mode": "apply",
+    }
+    search_spec["strategy"] = {"name": "random"}
+
+    saved = runtime.save_spec_draft(
+        record.goal_plus_id,
+        GoalPlusSpecDraft(
+            baseline={},
+            metric={"name": "avg_latency_ms"},
+            correctness_gate={},
+            edit_surface={"allow": ["kernel.py"]},
+            search_spec=search_spec,
+            promotion_rule="lowest valid latency",
+            confidence="high",
+        ),
+    )
+
+    assert saved.spec_draft is not None
+    assert saved.spec_draft.search_spec is not None
+    assert saved.spec_draft.search_spec.workspace.backend == "git_worktree"
+    assert saved.spec_draft.search_spec.strategy.name == "random"
+
+
+def test_empty_command_config_leaves_search_fields_open_if_main_routes_to_search(
+    tmp_path,
+) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+
+    record = runtime.start_from_host_command(
+        "Optimize latency",
+        invocation=_codex_invocation("codex:test:no-config"),
+    )
+
+    assert record.command_config.model_dump(exclude_none=True) == {}
+    search_spec = _complete_search_spec()
+    search_spec["budget"]["max_parallel"] = 3
+    search_spec["workspace"] = {
+        "backend": "git_worktree",
+        "promotion_mode": "apply",
+    }
+    search_spec["strategy"] = {"name": "agent_guided"}
+
+    saved = runtime.save_spec_draft(
+        record.goal_plus_id,
+        GoalPlusSpecDraft(
+            baseline={},
+            metric={"name": "avg_latency_ms"},
+            correctness_gate={},
+            edit_surface={"allow": ["kernel.py"]},
+            search_spec=search_spec,
+            promotion_rule="lowest valid latency",
+            confidence="high",
+        ),
+    )
+
+    assert saved.spec_draft is not None
+    assert saved.spec_draft.search_spec is not None
+    assert saved.spec_draft.search_spec.budget.max_parallel == 3
+    assert saved.spec_draft.search_spec.workspace.backend == "git_worktree"
+    assert saved.spec_draft.search_spec.strategy.name == "agent_guided"
+
+
+def test_search_command_config_may_remain_unused_when_main_finishes_in_goal_mode(
+    tmp_path,
+) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+
+    record = runtime.start_from_host_command(
+        "max_parallel=2 workspace_backend=git_worktree "
+        "promotion_mode=artifact_only strategy=random "
+        "annotator=unused/annotator workers=unused/a,unused/b "
+        "Fix the documentation typo",
+        invocation=_codex_invocation("codex:test:unused-search-config"),
+    )
+    triaged = runtime.record_triage(
+        record.goal_plus_id,
+        {
+            "is_optimization": False,
+            "confidence": "high",
+            "recommended_phase": "goal",
+            "reasons": ["qualitative documentation task"],
+        },
+    )
+    completed = runtime.set_status(
+        record.goal_plus_id,
+        "complete",
+        reason="Main completed the non-Search task directly.",
+        evidence=[{"kind": "review", "result": "passed"}],
+    )
+
+    assert triaged.phase == "goal"
+    assert completed.status == "complete"
+    assert completed.command_config.model_dump(exclude_none=True) == {
+        "max_parallel": 2,
+        "workspace_backend": "git_worktree",
+        "promotion_mode": "artifact_only",
+        "strategy": "random",
+        "annotator": "unused/annotator",
+        "workers": "unused/a,unused/b",
+        "worker_directive": "workers",
+    }
+    assert completed.spec_draft is None
+    assert completed.search_tasks == []
+
+
 @pytest.mark.parametrize(
     "raw_goal",
     [

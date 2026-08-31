@@ -402,7 +402,13 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "new Text(rendered, 0, 0)" in text
     assert "clearPiProgress(ctx);\n\t\t\tappendGoalStats" in text
     assert "ctx.ui.notify(statsMessage" not in text
-    assert "sendUserMessage" in text
+    assert 'GOAL_PLUS_COMMAND_CONTEXT_TYPE = "goal-plus-command-context"' in text
+    assert "startGoalPlusMainTurn" in text
+    assert "customType: GOAL_PLUS_COMMAND_CONTEXT_TYPE" in text
+    assert 'entrypoint_status: "host_verified"' in text
+    assert "display: false" in text
+    assert "{ triggerTurn: true }" in text
+    assert "sendUserMessage" not in text
     assert "GOAL_PLUS_SOURCE_PATH" in text
     assert "sys.path.insert" in text
     assert "goal_plus.pi_tool" in text

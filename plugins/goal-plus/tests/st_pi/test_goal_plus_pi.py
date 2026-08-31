@@ -659,7 +659,8 @@ def test_goal_plus_native_tui_stats_entry_does_not_trigger_followup(
     session_id = "st-pi-goal-plus-native"
     tmux_session = f"st-pi-{int(time.time())}"
     prompt = (
-        "/goal-plus 请只读检查 README.md 是否存在。不要修改文件。"
+        "/goal-plus max_parallel=2 请只读检查 README.md 是否存在。不要修改文件。"
+        "这个目标不需要 Search；max_parallel 配置可以保持未使用。"
         "最后把 Goal Plus 状态设为 complete。"
     )
     shell_command = shlex.join(
@@ -711,6 +712,27 @@ def test_goal_plus_native_tui_stats_entry_does_not_trigger_followup(
     session_path = _session_file(session_dir)
     _assert_goal_plus_jsonl_is_clean(session_path)
     entries = _read_jsonl(session_path)
+    record = _goal_record(search_root)
+    assert record["command_config"] == {"max_parallel": 2}
+    assert record["spec_draft"] is None
+    assert record["search_tasks"] == []
+    session_text = session_path.read_text(encoding="utf-8")
+    assert "GoalPlusEntrypointRequired" not in session_text
+    command_contexts = [
+        entry
+        for entry in entries
+        if entry.get("type") == "custom_message"
+        and entry.get("customType") == "goal-plus-command-context"
+    ]
+    assert len(command_contexts) == 1
+    assert command_contexts[0].get("display") is False
+    assert not any(
+        (entry.get("message") or {}).get("role") == "user"
+        and "继续此 Goal Plus 任务" in json.dumps(
+            (entry.get("message") or {}).get("content"), ensure_ascii=False
+        )
+        for entry in entries
+    )
     stats_indexes = [
         index
         for index, entry in enumerate(entries)
