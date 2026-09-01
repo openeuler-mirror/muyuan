@@ -77,8 +77,7 @@ def test_codex_exact_host_command_can_start_and_complete_goal_plus(
         "without Search or subagents. The host entrypoint has already created the "
         "Goal Plus record; never call goal_plus_create or goal_plus_update_goal. "
         "First record a high-confidence Goal Mode triage. Create one required "
-        "route=main work item, then record dispatch, result, and accepted events in "
-        "order. Read and verify the file, perform the final raw-goal audit, and call "
+        "Read and verify the file, perform the final raw-goal audit, and call "
         "goal_plus_set_status with status=complete and concrete file evidence."
     )
 
@@ -101,6 +100,4 @@ def test_codex_exact_host_command_can_start_and_complete_goal_plus(
     assert invocation["host"] == "codex", result.log_path
     assert invocation["action"] == "start", result.log_path
     assert record["triage"]["recommended_phase"] == "goal", result.log_path
-    assert len(record["work_items"]) == 1, result.log_path
-    assert record["work_items"][0]["route"] == "main", result.log_path
-    assert record["work_items"][0]["status"] == "accepted", result.log_path
+    assert record["work_items"] == [], result.log_path

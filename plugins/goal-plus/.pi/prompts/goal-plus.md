@@ -11,11 +11,11 @@ active `goal_plus_id` 时才继续；同一 session 的后续 turn 沿用该绑�
 如果没有，先用一句简短 commentary 告知用户：“当前未设置最大运行时间，Goal Plus 将持续运行
 直至目标完成或用户手动停止。”这只是告知，不要询问或等待确认；告知后立即继续执行。
 
-入口保留 Main 当前选择的 Pi thinking 档位；复杂任务推荐 `xhigh`，但不得在 Goal Plus 内强制改档。triage 后调用
-`goal_plus_upsert_work_items` 建立当前修订版的
-编排计划。普通独立工作项通过 `pi_goal_plus_run_work_item` 执行；用
-`goal_plus_record_work_event` 记录验收或返工。只有可量化、具有确定性 verifier、隔离编辑面
-和多个有价值假设的工作项才路由到 Search。
+入口保留 Main 当前选择的 Pi thinking 档位；复杂任务推荐 `xhigh`，但不得在 Goal Plus 内强制改档。
+triage 后由 Main 自行执行和拆分；
+需要普通 subagent 时直接调用 `pi_goal_plus_run_work_item` 并传入任务，不要预建工作 DAG。
+Main 检查返回结果，并按实际决定记录验收、返工或取消。只有可量化、具有确定性 verifier、
+隔离编辑面和多个有价值假设的任务才进入 Search。
 普通工作项的 Pi wrapper 会把原生下发与返回操作写入 `orchestration_monitor` metadata；
 `goal_plus_monitor_snapshot(feature_plugins=["orchestration"])` 提供与 Codex 可比较的语义链。
 

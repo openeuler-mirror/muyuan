@@ -14,8 +14,8 @@ Read only the page that owns the question:
 - [docs/api.md](docs/api.md): current MCP and Pi-local tool index.
 - [docs/agent-host-adapters.md](docs/agent-host-adapters.md): capability matrix
   and shared host-pool contract.
-- [docs/ultra.md](docs/ultra.md): host-neutral `/goal-plus` work DAG, effort,
-  delegation, and harness binding contract.
+- [docs/ultra.md](docs/ultra.md): host-neutral `/goal-plus` dispatch records,
+  effort, delegation, and harness binding contract.
 - [docs/feature-plugins.md](docs/feature-plugins.md): optional read-only monitor
   projections and host event metadata.
 - [docs/debugging-runtime.md](docs/debugging-runtime.md): state and host logs.

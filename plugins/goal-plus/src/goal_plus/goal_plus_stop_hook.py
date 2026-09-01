@@ -1392,15 +1392,16 @@ def _goal_context(
         else "无"
     )
     execution_policy = record.policy.get("execution", {})
-    current_work = [
+    active_dispatches = [
         item
         for item in record.work_items
         if item.goal_revision == record.goal_revision
+        and item.status in {"launching", "active"}
     ]
     work_text = (
-        ", ".join(f"{item.work_item_id}={item.status}" for item in current_work)
-        if current_work
-        else "尚未规划"
+        ", ".join(f"{item.work_item_id}={item.status}" for item in active_dispatches)
+        if active_dispatches
+        else "无"
     )
     start_notice = (
         "这是新创建记录的首轮。由你语义检查原始目标或当前对话上下文是否明确给出了整个 "
@@ -1420,12 +1421,12 @@ def _goal_context(
         f"{record.command_config.model_dump(mode='json', exclude_none=True)}。"
         "这些字段是 runtime 强约束；只有未配置字段才由 Agent 判断。\n"
         f"编排 policy：{execution_policy}。\n"
-        f"当前工作项：{work_text}。\n"
+        f"活跃 subagent 派发：{work_text}。\n"
         f"最终检查 policy：{record.policy.get('final_check', {'mode': 'disabled'})}。\n"
         f"当前 phase：{record.phase}；next action：{next_action_text}\n"
         f"{start_notice}"
         "本轮加载并遵循 goal-plus skill。主 Agent 使用 max 推理强度并主动编排普通 subagent；"
-        "用 goal_plus_upsert_work_items 建立计划，用 goal_plus_record_work_event 记录简短交互摘要，"
+        "实际派发时用 goal_plus_record_work_event 记录简短交互摘要，"
         "适合可度量并行探索的工作项自动路由到 Search。\n"
         "以最新用户消息作为判断继续、修订或讨论无关内容的权威依据；不要仅因 Goal Plus "
         "处于 active 就恢复工作。\n"
