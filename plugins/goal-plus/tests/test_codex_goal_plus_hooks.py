@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from goal_plus.goal_plus import EXPLORATION_MODE_LINES, FileGoalPlusRuntime
-from goal_plus.models import SearchSpec
+from goal_plus.models import GoalPlusLinkedSearch, SearchSpec
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.runtime import FileSearchRuntime
 from tests._runtime_helpers import make_project, spec_with_host
@@ -68,6 +68,36 @@ def _stop_hook_events(search_root: Path) -> list[dict]:
         json.loads(path.read_text(encoding="utf-8"))
         for path in sorted(event_dir.glob("*.json"))
     ]
+
+
+def _terminal_report_goal(
+    search_root: Path,
+    *,
+    status: str = "complete",
+) -> tuple[FileGoalPlusRuntime, str]:
+    runtime = FileGoalPlusRuntime(search_root)
+    record = runtime.create_goal("Render the terminal Search report")
+    runtime.activate_session(
+        record.goal_plus_id,
+        {"host": "codex", "session_id": "session-codex"},
+    )
+    record = runtime.status(record.goal_plus_id)
+    linked = GoalPlusLinkedSearch(
+        goal_revision=record.goal_revision,
+        frozen_spec_id="spec_terminal",
+        run_id="run_terminal",
+    )
+    runtime._write_record(
+        record.model_copy(
+            update={"search_tasks": [linked], "linked_search": linked}
+        )
+    )
+    runtime.set_status(
+        record.goal_plus_id,
+        status=status,
+        reason="terminal report fixture",
+    )
+    return runtime, record.goal_plus_id
 
 
 def _write_codex_rollout(
@@ -1110,6 +1140,91 @@ def test_pre_tool_use_denies_goal_mutation_without_exact_host_command(
     assert specific["permissionDecision"] == "deny"
     assert "GoalPlusEntrypointRequired" in specific["permissionDecisionReason"]
     assert not search_root.exists()
+
+
+@pytest.mark.parametrize("terminal_status", ["complete", "blocked", "abandoned"])
+def test_pre_tool_use_allows_linked_report_for_attached_terminal_goal(
+    tmp_path: Path,
+    terminal_status: str,
+) -> None:
+    search_root = tmp_path / ".gp"
+    runtime, goal_plus_id = _terminal_report_goal(
+        search_root,
+        status=terminal_status,
+    )
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-codex",
+            "tool_name": "mcp__goal-plus__search_report",
+            "tool_input": {"run_id": "run_terminal"},
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert runtime.status(goal_plus_id).hook_counters["pre_tool_use"] == 1
+
+
+@pytest.mark.parametrize(
+    ("session_id", "run_id"),
+    [
+        ("other-session", "run_terminal"),
+        ("session-codex", "run_other"),
+    ],
+)
+def test_pre_tool_use_denies_terminal_report_outside_session_run_binding(
+    tmp_path: Path,
+    session_id: str,
+    run_id: str,
+) -> None:
+    search_root = tmp_path / ".gp"
+    _terminal_report_goal(search_root)
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": session_id,
+            "tool_name": "mcp__goal-plus__search_report",
+            "tool_input": {"run_id": run_id},
+        },
+    )
+
+    specific = json.loads(result.stdout)["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    assert "GoalPlusEntrypointRequired" in specific["permissionDecisionReason"]
+
+
+def test_pre_tool_use_denies_terminal_report_for_detached_session(
+    tmp_path: Path,
+) -> None:
+    search_root = tmp_path / ".gp"
+    runtime, goal_plus_id = _terminal_report_goal(search_root)
+    runtime.detach_session(
+        goal_plus_id,
+        session_id="session-codex",
+        reason="test detached terminal session",
+    )
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-codex",
+            "tool_name": "mcp__goal-plus__search_report",
+            "tool_input": {"run_id": "run_terminal"},
+        },
+    )
+
+    specific = json.loads(result.stdout)["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    assert "GoalPlusEntrypointRequired" in specific["permissionDecisionReason"]
 
 
 def test_ordinary_prompt_detaches_goal_and_requires_explicit_resume(

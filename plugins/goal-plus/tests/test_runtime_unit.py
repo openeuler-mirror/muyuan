@@ -4837,6 +4837,56 @@ def test_history_and_report_include_agent_sessions(tmp_path: Path) -> None:
     assert session.agent_session_id in report
 
 
+@pytest.mark.parametrize("goal_status", ["active", "needs_user"])
+def test_report_rejects_linked_nonterminal_goal(
+    tmp_path: Path,
+    goal_status: str,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    goal_dir = runtime.root_dir / "goal-plus" / "gp_report"
+    goal_dir.mkdir(parents=True)
+    write_json(
+        goal_dir / "goal.json",
+        {
+            "goal_plus_id": "gp_report",
+            "status": goal_status,
+            "search_tasks": [{"run_id": run_id}],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="reaches a terminal status"):
+        runtime.report(run_id)
+
+
+@pytest.mark.parametrize("goal_status", ["complete", "blocked", "abandoned"])
+def test_report_allows_linked_terminal_goal(
+    tmp_path: Path,
+    goal_status: str,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    goal_dir = runtime.root_dir / "goal-plus" / "gp_report"
+    goal_dir.mkdir(parents=True)
+    write_json(
+        goal_dir / "goal.json",
+        {
+            "goal_plus_id": "gp_report",
+            "status": goal_status,
+            "search_tasks": [{"run_id": run_id}],
+        },
+    )
+
+    report_path = runtime.report(run_id)
+
+    assert report_path.is_file()
+    assert report_path.with_suffix(".html").is_file()
+
+
 @pytest.mark.pi
 def test_history_projects_latest_structured_research_handoff(tmp_path: Path) -> None:
     project = make_project(tmp_path)

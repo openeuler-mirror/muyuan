@@ -524,6 +524,22 @@ def _runtime_agent_session_ids(value: Any) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def _runtime_run_ids(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        direct = value.get("run_id")
+        if isinstance(direct, str) and direct:
+            found.append(direct)
+        for item in value.values():
+            found.extend(_runtime_run_ids(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_runtime_run_ids(item))
+    elif isinstance(value, str):
+        found.extend(re.findall(r"\brun_[A-Za-z0-9][A-Za-z0-9_.:-]*\b", value))
+    return list(dict.fromkeys(found))
+
+
 def _is_subagent_context(hook_input: dict[str, Any]) -> bool:
     if _hook_event_name(hook_input) == "SubagentStop":
         return True
@@ -1343,6 +1359,35 @@ def _select_session_goal_id(
     return None
 
 
+def _select_terminal_session_report_goal_id(
+    search_root: Path,
+    session_id: str | None,
+    run_id: str | None,
+) -> str | None:
+    if not session_id or not run_id:
+        return None
+    from goal_plus.goal_plus import TERMINAL_STATUSES
+
+    records = []
+    for path in sorted((search_root / "goal-plus").glob("gp_*/goal.json")):
+        record = _load_record(path)
+        if record is not None and record.status in TERMINAL_STATUSES:
+            records.append(record)
+    records.sort(
+        key=lambda record: (record.updated_at, record.goal_plus_id),
+        reverse=True,
+    )
+    for record in records:
+        if (
+            record.active_session is not None
+            and record.active_session.session_id == session_id
+            and record.active_session.state == "attached"
+            and any(task.run_id == run_id for task in record.search_tasks)
+        ):
+            return record.goal_plus_id
+    return None
+
+
 def _select_resumable_goal_id(search_root: Path) -> str | None:
     resumable = _resumable_records(search_root)
     if len(resumable) == 1:
@@ -1733,6 +1778,14 @@ def _handle_pre_tool_use(
         )
         return
     goal_id = _select_session_goal_id(search_root, _session_id(hook_input))
+    if goal_id is None and logical_name == "search_report":
+        run_ids = _runtime_run_ids(_raw_tool_input(hook_input))
+        if len(run_ids) == 1:
+            goal_id = _select_terminal_session_report_goal_id(
+                search_root,
+                _session_id(hook_input),
+                run_ids[0],
+            )
     if goal_id is None:
         if _requires_goal_plus_authorization(tool_name):
             _emit_pre_tool_block(
