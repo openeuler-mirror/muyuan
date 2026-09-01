@@ -1304,30 +1304,41 @@ def _select_session_goal_id(
 ) -> str | None:
     if not session_id:
         return None
-    if include_terminal:
-        records = []
-        for path in sorted((search_root / "goal-plus").glob("gp_*/goal.json")):
-            record = _load_record(path)
-            if record is not None:
-                records.append(record)
-    else:
-        records = _active_records(search_root)
-    for record in records:
+    for record in _active_records(search_root):
         if (
             record.active_session is not None
             and record.active_session.session_id == session_id
             and record.active_session.state == "attached"
         ):
             return record.goal_plus_id
+    if not include_terminal:
+        return None
+
+    records = []
+    for path in (search_root / "goal-plus").glob("gp_*/goal.json"):
+        record = _load_record(path)
+        if (
+            record is not None
+            and record.active_session is not None
+            and record.active_session.session_id == session_id
+        ):
+            records.append(record)
+    records.sort(
+        key=lambda record: (record.updated_at, record.goal_plus_id),
+        reverse=True,
+    )
+    if records:
+        latest = records[0]
+        if latest.status != "active" and latest.active_session.state == "attached":
+            return latest.goal_plus_id
     return None
 
 
-def _select_terminal_session_report_goal_id(
+def _select_terminal_report_goal_id(
     search_root: Path,
-    session_id: str | None,
     run_id: str | None,
 ) -> str | None:
-    if not session_id or not run_id:
+    if not run_id:
         return None
     from goal_plus.goal_plus import TERMINAL_STATUSES
 
@@ -1341,12 +1352,7 @@ def _select_terminal_session_report_goal_id(
         reverse=True,
     )
     for record in records:
-        if (
-            record.active_session is not None
-            and record.active_session.session_id == session_id
-            and record.active_session.state == "attached"
-            and any(task.run_id == run_id for task in record.search_tasks)
-        ):
+        if any(task.run_id == run_id for task in record.search_tasks):
             return record.goal_plus_id
     return None
 
@@ -1574,6 +1580,12 @@ def _handle_user_prompt_submit(
                 "`$goal-plus-with-final-check`。Pi 的 `/goal-plus` 不能在 Codex 中启动。"
             )
             return
+        if goal_id is None:
+            goal_id = _select_session_goal_id(
+                search_root,
+                session_id,
+                include_terminal=True,
+            )
         if goal_id is not None and session_id is not None:
             runtime.detach_session(
                 goal_id,
@@ -1743,9 +1755,8 @@ def _handle_pre_tool_use(
     if goal_id is None and logical_name == "search_report":
         run_ids = _runtime_run_ids(_raw_tool_input(hook_input))
         if len(run_ids) == 1:
-            goal_id = _select_terminal_session_report_goal_id(
+            goal_id = _select_terminal_report_goal_id(
                 search_root,
-                _session_id(hook_input),
                 run_ids[0],
             )
     if goal_id is None:
@@ -1854,6 +1865,37 @@ def _handle_stop_event(
                     **hook_input,
                     "goal_plus_subagent_role": "ordinary",
                 }
+    if event == "stop":
+        record = runtime.status(goal_id)
+        if record.status != "active":
+            session_id = _session_id(hook_input)
+            settled = (
+                runtime.settle_nonactive_stop(
+                    goal_id,
+                    session_id=session_id,
+                )
+                if session_id is not None
+                else None
+            )
+            if settled is None:
+                return {
+                    "decision": "skipped",
+                    "reason": "no_matching_session",
+                    "goal_plus_id": goal_id,
+                    "agent_session_id": None,
+                    "run_id": None,
+                    "candidate_id": None,
+                }
+            _emit_terminal_stats(settled)
+            return {
+                "decision": "allow",
+                "reason": None,
+                "goal_plus_id": goal_id,
+                "agent_session_id": None,
+                "run_id": None,
+                "candidate_id": None,
+            }
+
     gate = runtime.gate(goal_id, event=event, context=gate_context)
     if gate.decision == "block":
         _emit_block(
@@ -1861,8 +1903,6 @@ def _handle_stop_event(
             or gate.reason
             or "Goal Plus 仍处于 active；停止前继续完成任务。"
         )
-    elif event == "stop" and gate.status != "active":
-        _emit_terminal_stats(runtime.status(goal_id))
     return {
         "decision": gate.decision,
         "reason": gate.reason,

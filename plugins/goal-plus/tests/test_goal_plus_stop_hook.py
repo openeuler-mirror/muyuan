@@ -216,6 +216,23 @@ def test_stop_hook_records_allowed_terminal_goal(tmp_path: Path) -> None:
     assert hook_event["decision"] == "allow"
     assert hook_event["outcome"] == "completed"
     assert hook_event["goal_plus_id"] == record.goal_plus_id
+    updated = runtime.status(record.goal_plus_id)
+    assert updated.active_session is not None
+    assert updated.active_session.state == "detached"
+
+    repeated = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "Stop",
+            "session_id": "session-terminal",
+            "stop_reason": "end_turn",
+        },
+    )
+    assert repeated.returncode == 0
+    assert repeated.stdout == ""
+    assert len(_stop_hook_events(search_root)) == 1
+    assert runtime.status(record.goal_plus_id).hook_counters["stop"] == 1
 
 
 def test_stop_hook_records_failure_and_fails_closed(tmp_path: Path) -> None:

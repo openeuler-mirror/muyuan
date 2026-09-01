@@ -1141,7 +1141,7 @@ def test_pre_tool_use_denies_goal_mutation_without_exact_host_command(
 
 
 @pytest.mark.parametrize("terminal_status", ["complete", "blocked", "abandoned"])
-def test_pre_tool_use_allows_linked_report_for_attached_terminal_goal(
+def test_pre_tool_use_allows_linked_report_for_terminal_goal(
     tmp_path: Path,
     terminal_status: str,
 ) -> None:
@@ -1167,18 +1167,7 @@ def test_pre_tool_use_allows_linked_report_for_attached_terminal_goal(
     assert runtime.status(goal_plus_id).hook_counters["pre_tool_use"] == 1
 
 
-@pytest.mark.parametrize(
-    ("session_id", "run_id"),
-    [
-        ("other-session", "run_terminal"),
-        ("session-codex", "run_other"),
-    ],
-)
-def test_pre_tool_use_denies_terminal_report_outside_session_run_binding(
-    tmp_path: Path,
-    session_id: str,
-    run_id: str,
-) -> None:
+def test_pre_tool_use_denies_report_without_terminal_run_link(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     _terminal_report_goal(search_root)
 
@@ -1187,9 +1176,9 @@ def test_pre_tool_use_denies_terminal_report_outside_session_run_binding(
         search_root,
         {
             "hook_event_name": "PreToolUse",
-            "session_id": session_id,
+            "session_id": "other-session",
             "tool_name": "mcp__goal-plus__search_report",
-            "tool_input": {"run_id": run_id},
+            "tool_input": {"run_id": "run_other"},
         },
     )
 
@@ -1198,7 +1187,7 @@ def test_pre_tool_use_denies_terminal_report_outside_session_run_binding(
     assert "GoalPlusEntrypointRequired" in specific["permissionDecisionReason"]
 
 
-def test_pre_tool_use_denies_terminal_report_for_detached_session(
+def test_pre_tool_use_allows_terminal_report_for_detached_original_session(
     tmp_path: Path,
 ) -> None:
     search_root = tmp_path / ".gp"
@@ -1214,15 +1203,15 @@ def test_pre_tool_use_denies_terminal_report_for_detached_session(
         search_root,
         {
             "hook_event_name": "PreToolUse",
-            "session_id": "session-codex",
+            "session_id": "later-codex-session",
             "tool_name": "mcp__goal-plus__search_report",
             "tool_input": {"run_id": "run_terminal"},
         },
     )
 
-    specific = json.loads(result.stdout)["hookSpecificOutput"]
-    assert specific["permissionDecision"] == "deny"
-    assert "GoalPlusEntrypointRequired" in specific["permissionDecisionReason"]
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert runtime.status(goal_plus_id).hook_counters["pre_tool_use"] == 1
 
 
 def test_ordinary_prompt_detaches_goal_and_requires_explicit_resume(
@@ -1667,3 +1656,104 @@ def test_stop_for_terminal_goal_emits_non_llm_stats(tmp_path: Path) -> None:
     assert "phase=intake" in message
     assert "search_tasks=0" in message
     assert "stop=1" in message
+
+    settled = runtime.status(record.goal_plus_id)
+    assert settled.active_session is not None
+    assert settled.active_session.state == "detached"
+    assert (
+        settled.active_session.metadata["detach_reason"]
+        == "nonactive_stop_summary_emitted"
+    )
+    assert "stop_summary_emitted_at" in settled.active_session.metadata
+
+    repeated = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "Stop",
+            "session_id": "session-codex",
+            "goal_plus_id": record.goal_plus_id,
+        },
+    )
+    assert repeated.returncode == 0, repeated.stderr
+    assert repeated.stdout == ""
+    assert runtime.status(record.goal_plus_id).hook_counters["stop"] == 1
+
+
+def test_stop_prefers_new_active_goal_over_older_terminal_goal(
+    tmp_path: Path,
+) -> None:
+    search_root = tmp_path / ".gp"
+    runtime = FileGoalPlusRuntime(search_root)
+    terminal = runtime.create_goal("Completed work")
+    runtime.activate_session(
+        terminal.goal_plus_id,
+        {"host": "codex", "session_id": "session-codex"},
+    )
+    runtime.set_status(
+        terminal.goal_plus_id,
+        status="complete",
+        reason="final audit passed",
+    )
+    active = runtime.create_goal("Implement the new active work")
+    runtime.activate_session(
+        active.goal_plus_id,
+        {"host": "codex", "session_id": "session-codex"},
+    )
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "Stop",
+            "session_id": "session-codex",
+        },
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["decision"] == "block"
+    assert "Implement the new active work" in payload["reason"]
+    assert runtime.status(active.goal_plus_id).hook_counters["stop"] == 1
+    assert runtime.status(terminal.goal_plus_id).hook_counters == {}
+
+
+def test_ordinary_prompt_detaches_terminal_goal_before_next_stop(
+    tmp_path: Path,
+) -> None:
+    search_root = tmp_path / ".gp"
+    runtime = FileGoalPlusRuntime(search_root)
+    record = runtime.create_goal("Completed work")
+    runtime.activate_session(
+        record.goal_plus_id,
+        {"host": "codex", "session_id": "session-codex"},
+    )
+    runtime.set_status(
+        record.goal_plus_id,
+        status="complete",
+        reason="final audit passed",
+    )
+
+    ordinary = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "prompt": "What is the current branch?",
+        },
+    )
+    assert ordinary.stdout == ""
+    updated = runtime.status(record.goal_plus_id)
+    assert updated.active_session is not None
+    assert updated.active_session.state == "detached"
+
+    stop = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "Stop",
+            "session_id": "session-codex",
+        },
+    )
+    assert stop.stdout == ""
+    assert runtime.status(record.goal_plus_id).hook_counters == {}

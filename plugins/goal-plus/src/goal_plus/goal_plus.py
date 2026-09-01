@@ -1115,6 +1115,65 @@ class FileGoalPlusRuntime:
         return updated
 
     @serialized_goal_mutation
+    def settle_nonactive_stop(
+        self,
+        goal_plus_id: str,
+        *,
+        session_id: str,
+    ) -> GoalPlusRecord | None:
+        """Consume one non-active Stop summary and detach its host session."""
+        record = self._load_record(goal_plus_id)
+        if record.status == "active":
+            raise RuntimeError(
+                f"Goal Plus {goal_plus_id} is active; use gate() for its Stop event"
+            )
+        active = record.active_session
+        if (
+            active is None
+            or active.session_id != session_id
+            or active.state != "attached"
+        ):
+            return None
+
+        now = utc_timestamp()
+        counters = dict(record.hook_counters)
+        counters["stop"] = counters.get("stop", 0) + 1
+        detach_reason = "nonactive_stop_summary_emitted"
+        detached = active.model_copy(
+            update={
+                "state": "detached",
+                "last_seen_at": now,
+                "metadata": {
+                    **active.metadata,
+                    "detach_reason": detach_reason,
+                    "stop_summary_emitted_at": now,
+                },
+            }
+        )
+        updated = record.model_copy(
+            update={
+                "active_session": detached,
+                "hook_counters": counters,
+                "updated_at": now,
+            }
+        )
+        self._write_record(updated)
+        self._append_event(
+            goal_plus_id,
+            "gate_allowed",
+            {"event": "stop", "reason": None},
+        )
+        self._append_event(
+            goal_plus_id,
+            "session_detached",
+            {
+                "session_id": session_id,
+                "reason": detach_reason,
+            },
+        )
+        return updated
+
+    @serialized_goal_mutation
     def record_session_gate_skipped(
         self,
         goal_plus_id: str,

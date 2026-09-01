@@ -151,6 +151,8 @@ candidate 自己的 verifier 提交，不会要求它执行 parent-only selectio
 Goal Plus Goal、Search 或 session context 的自动 Stop/SubagentStop 调用才会把 hook event 写入
 `.gp/host-logs/codex-hook-events/`，供最终报告和排障使用。
 
+Goal Plus session 结束后可以调用 `search_report` 生成报告。
+
 Codex 与 runtime 的职责边界见 [Agent Host Adapters](agent-host-adapters.md)，Evidence 和 Tool View
 生命周期见[共享平面](shared-plane.md#global-evidence)。
 
