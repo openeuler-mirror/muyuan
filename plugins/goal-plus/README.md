@@ -25,7 +25,6 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | Pi only | `./install.sh --pi` |
 | Codex and Pi | `./install.sh --codex --pi` |
 | Pi development | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
-| Codex plus Pi development | `./install.sh --codex --pi-dev && source .goal-plus-dev/set_env.sh` |
 | Show Pi development environments | `./install.sh --env-show` |
 | Check only | `./install.sh --codex --pi --dry-run` |
 
@@ -39,19 +38,14 @@ does not modify Pi authentication or global configuration.
 
 ## Uninstallation
 
-| Removal | Command |
-| --- | --- |
-| Pi registration | `pi remove .` |
-| Codex registration | `codex plugin remove goal-plus@goal-plus && codex plugin marketplace remove goal-plus` |
-| Python runtime | `python -m pip uninstall -y goal-plus` |
-| Pi development | `rm -rf -- .goal-plus-dev` |
-| Retired Codex local install | `codex plugin remove goal-plus@goal-plus-local && codex plugin marketplace remove goal-plus-local` |
+```bash
+./uninstall.sh
+```
 
-Remove host registrations before the Python runtime, using the same checkout
-and Python environment as installation. Uninstallation does not delete target
-workspace `.gp/` records or promoted changes. Detailed behavior is documented
-in [Development](docs/development.md), [Pi](docs/pi.md), and
-[Codex](docs/codex.md).
+The uninstaller removes Codex and Pi registrations owned by this checkout, its
+managed Pi development environment, and the matching Python runtime. It does
+not delete target workspace `.gp/` records or revert promoted changes. Use
+`./uninstall.sh --dry-run` to inspect the plan first.
 
 Start a goal in Pi:
 
