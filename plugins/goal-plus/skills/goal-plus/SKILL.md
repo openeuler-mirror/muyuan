@@ -1,9 +1,11 @@
 ---
 name: goal-plus
-description: 运行、恢复或编辑 Codex Goal Plus 任务，包括需要独立最终审查员的 $goal-plus-with-final-check 任务，并可通过 goal-plus MCP server 升级为 Agentic Search。
+description: 仅供 Goal Plus Main Agent 运行、恢复或编辑 Codex Goal Plus（含 $goal-plus-with-final-check），并通过 goal-plus MCP 编排 Agentic Search；不适用于 Search candidate worker。
 ---
 
 # Codex 的 Goal Plus
+
+此 skill 仅供 Goal Plus Main Agent 使用，不适用于 Search candidate worker。
 
 对 `$goal-plus` 使用此 skill，这是 Ultra 编排工作流。主 Agent 请求 max 推理强度，
 主动委派独立工作；当成功标准可度量且已冻结时，再升级为多候选 Agentic Search。

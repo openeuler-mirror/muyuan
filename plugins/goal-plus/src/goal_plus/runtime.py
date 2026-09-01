@@ -5114,7 +5114,7 @@ class FileSearchRuntime:
             "交付修改仅限 candidate_task.allowed_files。candidate_task.denied_files 和冻结的 verifier 资产保持只读，但可读取、导入和 profile。",
             "workspace/.tmp/ 是 runtime 提供的 candidate-local 可写临时区，不属于交付 edit surface；可用于 scratch，并在计划变化或收尾前用简短 JSON 更新 .tmp/handoff.json，供后续恢复。",
             "可在不修改只读文件的前提下，运行候选工作区内的测试、runner、evaluator 及其他本地诊断；这些结果只属于当前 candidate，不会进入 Global Evidence、被其他 worker 看到或参与最终选择。",
-            "每项实质变更后，及时使用当前 agent_session_id 调用 search_run_verifier，并用一句话 hypothesis 描述实际尝试；只有其返回结果会结算为正式 Evidence 并贡献给共享搜索。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
+            "Frozen verifier 是唯一权威验证路径。每项实质变更后，及时调用 search_run_verifier(agent_session_id=...) 验证，并用一句话 hypothesis 描述实际尝试；只有其返回结果会结算为正式 Evidence 并贡献给共享搜索。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
             "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
             "在分配的 host budget 内工作；收到用户停止、run 失效或 host 截止提示时及时收尾。",
             "窄代码证据可以直接比较 commit；改动较大或需要浏览完整实现时，调用 search_reference_open 把该 Evidence checkout 到当前 agent 唯一的 ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的 reference commit；所有实现修改仍留在 candidate workspace。不要访问或 fetch peer 的真实工作区。",

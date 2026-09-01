@@ -123,7 +123,10 @@ goal-plus --goal-plus-host-hook
 
 首次使用或更新 hook 后，应通过 `/hooks` 检查并信任它们。hook 负责预创建 `$goal-plus`、恢复
 active record、限制 write/Search 调用、绑定 session 所有权，并保证 candidate
-在自己的 verifier 提交持久化前会被阻止结束。Selection、promotion 和 final audit 始终由 parent 所有。
+在自己的 verifier 提交持久化前会被阻止结束。`UserPromptSubmit` 和 `SessionStart` 会在绑定
+Goal Plus 前识别 child：普通 subagent 不接收 Main context，Search candidate 仅在 initial
+或 fresh launch 时接收紧凑的 candidate context，同一 session continuation 不重复注入。
+Selection、promotion 和 final audit 始终由 parent 所有。
 
 只有大小写精确的 `$goal-plus`、`$goal-plus edit`、`$goal-plus resume` 和
 `$goal-plus-with-final-check` 会授权 Goal Plus。`/goal-plus`、自然语言请求、skill 自动加载和

@@ -447,6 +447,33 @@ def _search_candidate_permission_agent(hook_input: dict[str, Any]) -> str | None
     return task_name
 
 
+def _transcript_declares_subagent(hook_input: dict[str, Any]) -> bool:
+    value = _transcript_path(hook_input)
+    if not value:
+        return False
+    path = Path(value).expanduser()
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for _ in range(8):
+                line = handle.readline()
+                if not line:
+                    break
+                payload = json.loads(line)
+                if payload.get("type") != "session_meta":
+                    continue
+                meta = payload.get("payload")
+                if not isinstance(meta, dict):
+                    return False
+                source = meta.get("source")
+                return meta.get("thread_source") == "subagent" or (
+                    isinstance(source, dict)
+                    and isinstance(source.get("subagent"), dict)
+                )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return False
+
+
 def _tool_use_id(hook_input: dict[str, Any]) -> str | None:
     for key in ("tool_use_id", "toolUseId"):
         value = hook_input.get(key)
@@ -524,6 +551,12 @@ def _is_subagent_context(hook_input: dict[str, Any]) -> bool:
         if target.get("agent") or target.get("agent_id") or target.get("agentId"):
             return True
     return False
+
+
+def _is_child_prompt_context(hook_input: dict[str, Any]) -> bool:
+    return _is_subagent_context(hook_input) or _transcript_declares_subagent(
+        hook_input
+    )
 
 
 def _is_final_checker_context(hook_input: dict[str, Any]) -> bool:
@@ -606,6 +639,27 @@ def _candidate_session_from_transcript(
             and session.host == "codex"
             and is_search_candidate_session(session)
         ):
+            return session
+    return None
+
+
+def _candidate_session_from_launch_prompt(
+    search_root: Path,
+    hook_input: dict[str, Any],
+) -> Any | None:
+    prompt = _prompt(hook_input).strip()
+    if not prompt:
+        return None
+    for agent_session_id in _runtime_agent_session_ids(prompt):
+        session = find_agent_session(search_root, agent_session_id)
+        if (
+            session is None
+            or session.host != "codex"
+            or not is_search_candidate_session(session)
+        ):
+            continue
+        launch_message = session.launch.get("message")
+        if isinstance(launch_message, str) and launch_message.strip() == prompt:
             return session
     return None
 
@@ -1437,6 +1491,17 @@ def _goal_context(
     return f"{context}\n{role_model_context}" if role_model_context else context
 
 
+def _candidate_context(session: Any) -> str:
+    agent_session_id = session.agent_session_id
+    return (
+        "此 Codex subagent 是 Search candidate，不是 Goal Plus Main Agent。\n"
+        f"调用 search_get_agent_context(agent_session_id=\"{agent_session_id}\")；"
+        "返回的 candidate_task 是完整工作契约。\n"
+        "Goal Plus 和 Search 编排 skills 仅适用于父 Main Agent，不适用于本 worker；"
+        "规划、创建 candidate、最终选择、报告和 promotion 均由父 Main Agent 负责。"
+    )
+
+
 def _emit_additional_context(
     event_name: str,
     context: str,
@@ -1569,6 +1634,17 @@ def _handle_user_prompt_submit(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> None:
+    candidate_session = _candidate_session_from_launch_prompt(search_root, hook_input)
+    if candidate_session is not None:
+        if candidate_session.launch.get("tool") != "followup_task":
+            _emit_additional_context(
+                "UserPromptSubmit",
+                _candidate_context(candidate_session),
+            )
+        return
+    if _is_child_prompt_context(hook_input):
+        return
+
     session_id = _session_id(hook_input)
     goal_id = _select_session_goal_id(search_root, session_id)
     request = _goal_plus_request(hook_input)
@@ -1720,6 +1796,8 @@ def _handle_session_start(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> None:
+    if _is_child_prompt_context(hook_input):
+        return
     session_id = _session_id(hook_input)
     goal_id = _select_session_goal_id(search_root, session_id)
     if goal_id is not None and session_id is not None:

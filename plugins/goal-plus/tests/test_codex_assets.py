@@ -17,6 +17,15 @@ def test_installable_plugin_skills_match_project_local_codex_skills() -> None:
 pytestmark = pytest.mark.codex
 
 
+def test_codex_orchestration_skills_exclude_search_candidate_workers() -> None:
+    for name in ("goal-plus", "search"):
+        text = (ROOT / ".codex" / "skills" / name / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        assert "仅供 Goal Plus Main Agent" in text
+        assert "不适用于 Search candidate worker" in text
+
+
 def test_codex_goal_plus_skill_records_modes_and_mcp_tools() -> None:
     text = (ROOT / ".codex" / "skills" / "goal-plus" / "SKILL.md").read_text(
         encoding="utf-8"

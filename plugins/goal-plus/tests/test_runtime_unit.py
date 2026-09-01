@@ -1410,12 +1410,16 @@ def test_worker_policy_documents_host_launch_contract(tmp_path: Path) -> None:
     assert plan.worker_policy["host"] == "codex"
     assert plan.worker_policy["worker_agent_type"] == "search_candidate_agent"
     assert "worker_mode" not in tasks[0].strategy_metadata
-    assert any("当前 agent_session_id" in instruction for instruction in tasks[0].instructions)
     assert tasks[0].workspace_access.native_cwd == tasks[0].workspace
     assert tasks[0].workspace_access.bootstrap_required is True
     assert tasks[0].workspace_access.confinement == "soft_path"
     assert any(
-        "search_run_verifier" in instruction for instruction in tasks[0].instructions
+        "Frozen verifier 是唯一权威验证路径" in instruction
+        for instruction in tasks[0].instructions
+    )
+    assert any(
+        "search_run_verifier(agent_session_id=...)" in instruction
+        for instruction in tasks[0].instructions
     )
     combined_instructions = "\n".join(tasks[0].instructions)
     assert tasks[0].allowed_files == ["initial_program.py"]

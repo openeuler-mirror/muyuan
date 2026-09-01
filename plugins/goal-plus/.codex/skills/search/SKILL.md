@@ -1,6 +1,6 @@
 ---
 name: search
-description: Codex 使用 goal-plus MCP server 的 $goal-plus 内部 Search Mode 引擎。
+description: 仅供 Goal Plus Main Agent 使用 goal-plus MCP 的内部 Search Mode 编排引擎；不适用于 Search candidate worker。
 ---
 
 # Codex 的 Search Mode 运行时
