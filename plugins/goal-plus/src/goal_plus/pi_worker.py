@@ -954,7 +954,6 @@ def run_pi_rpc_worker(
     refresh_reason: str | None = None
     runtime_start: dict[str, Any] | None = None
     runtime_start_error: str | None = None
-    pending_state_data: dict[str, Any] | None = None
 
     def _abort_for_timeout() -> None:
         nonlocal timed_out
@@ -965,11 +964,10 @@ def run_pi_rpc_worker(
             pass
 
     try:
-        handshake = rpc.command(
+        rpc.command(
             {"type": "get_state"},
             timeout=min(30, timeout_seconds),
         )
-        pending_state_data = dict((handshake or {}).get("data") or {})
         try:
             runtime_entries = _rpc_entries(
                 rpc,
@@ -1011,14 +1009,10 @@ def run_pi_rpc_worker(
             if remaining <= 0:
                 _abort_for_timeout()
                 break
-            if pending_state_data is not None:
-                data = pending_state_data
-                pending_state_data = None
-            else:
-                state = rpc.command(
-                    {"type": "get_state"}, timeout=min(10, remaining)
-                )
-                data = dict(state.get("data") or {})
+            state = rpc.command(
+                {"type": "get_state"}, timeout=min(10, remaining)
+            )
+            data = dict(state.get("data") or {})
             last_state_data = data
             worker_active = (
                 data.get("isStreaming", False)
