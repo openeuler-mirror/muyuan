@@ -881,8 +881,12 @@ class GoalPlusCommandConfig(SearchModel):
     strategy: str | None = Field(
         default=None, min_length=1, exclude_if=lambda value: value is None
     )
+    # Read-only compatibility for records created before main= was retired.
     main: str | None = Field(
-        default=None, min_length=1, exclude_if=lambda value: value is None
+        default=None,
+        min_length=1,
+        description="Legacy persisted main-model assertion; rejected for new commands.",
+        exclude_if=lambda value: value is None,
     )
     annotator: str | None = Field(
         default=None, min_length=1, exclude_if=lambda value: value is None

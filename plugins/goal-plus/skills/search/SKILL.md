@@ -124,9 +124,8 @@ strategy:
    `selected_models`，每个候选的 selected model 在原生 session 继续期间不可变；
    所有模型仍读取同一个 run 的 `search_get_global_evidence`，模型身份只作为
    candidate/session provenance，不改变候选准入或选择逻辑。`search_create` 不接收
-   第二套模型分配参数。Codex 当前 session 就是 main；`main=` 只是由
-   `UserPromptSubmit` hook 校验的可选兼容断言，不写入 SearchSpec，也不能由 Search
-   切换。省略的角色保持 host 默认或继承语义。ready spec draft 与 command config
+   第二套模型分配参数。Codex 当前 session 就是 main，不能由 Search 切换；`main=` 不是
+   受支持的 Goal Plus 命令配置。省略的角色保持 host 默认或继承语义。ready spec draft 与 command config
    不一致时，runtime 会拒绝保存。
 2. 调用且只调用一次 `search_plan_next(requested_k=budget.max_parallel)`，然后调用且只调用
    一次 `search_start_batch`，创建初始候选。启动 worker 前，把每个返回项的

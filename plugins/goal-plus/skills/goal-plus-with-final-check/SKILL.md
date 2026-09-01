@@ -13,8 +13,8 @@ Codex 的 `UserPromptSubmit` hook 会在模型轮次开始前创建 Goal Plus �
 
 它与 `$goal-plus` 使用同一 typed command config；开头连续的 `key=value` 与目标分离，
 显式字段由 runtime 约束 ready SearchSpec，缺省字段才由 Main 判断。真正可选择的角色是
-`annotator=B workers=C,D`。Codex 当前 session 本身就是 main；`main=` 只保留为
-必须匹配当前 session model 的兼容断言。`models=` 是 `workers=` 的兼容别名。
+`annotator=B workers=C,D`。Codex 当前 session 本身就是 main，`main=` 不是受支持的
+Goal Plus 命令配置。`models=` 是 `workers=` 的兼容别名。
 具体解析和冻结规则由完整的 `goal-plus` skill 定义。
 
 遵循完整的 `goal-plus` skill 工作流，并额外遵守以下强制终态契约：

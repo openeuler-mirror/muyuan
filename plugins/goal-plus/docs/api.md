@@ -63,18 +63,21 @@ token 开始就是自然语言目标：
 支持的 typed key 是（此表由 runtime command option registry 自动生成）：
 
 <!-- BEGIN GENERATED GOAL PLUS COMMAND CONFIG -->
-| Key | Value | 约束目标 |
-| --- | --- | --- |
-| `mode` | `autonomous \| probe` | 探索模式；省略时默认为 `autonomous`。 |
-| `max_parallel` | `正整数` | 约束 `SearchSpec.budget.max_parallel`。 |
-| `max_duration_seconds` | `正整数（秒）` | 从 Goal 创建时间起固定外层 deadline，覆盖 worker、verifier 和收尾边界。 |
-| `workspace_backend` | `copy \| git_worktree \| thinkthread` | 约束 `SearchSpec.workspace.backend`。 |
-| `promotion_mode` | `apply \| artifact_only` | 约束 `SearchSpec.workspace.promotion_mode`。 |
-| `strategy` | `NAME` | 约束 `SearchSpec.strategy.name`。 |
-| `main` | `MODEL` | 当前 main session model 的兼容 assertion，不负责切换模型。 |
-| `annotator` | `MODEL` | 约束 `SearchSpec.strategy.evidence_annotator.model`。 |
-| `workers` / `models` | `MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]` | 约束 `SearchSpec.strategy.models`；带 count 时每个模型都必须带 count。 |
+| Key | Value | Default（省略时） | 约束目标 |
+| --- | --- | --- | --- |
+| `mode` | `autonomous \| probe` | `autonomous` | 探索模式；省略时默认为 `autonomous`。 |
+| `max_parallel` | `正整数` | 未设置；由 Agent 根据任务和资源决定。 | 约束 `SearchSpec.budget.max_parallel`。 |
+| `max_duration_seconds` | `正整数（秒）` | 未设置；不创建命令级外层 deadline。 | 从 Goal 创建时间起固定外层 deadline，覆盖 worker、verifier 和收尾边界。 |
+| `workspace_backend` | `copy \| git_worktree \| thinkthread` | 未设置；由 Agent 根据任务和 host 能力决定。 | 约束 `SearchSpec.workspace.backend`。 |
+| `promotion_mode` | `apply \| artifact_only` | 未设置；由 Agent 根据任务授权和 workspace 决定。 | 约束 `SearchSpec.workspace.promotion_mode`。 |
+| `strategy` | `NAME` | 未设置；由 Agent 选择 maintained strategy。 | 约束 `SearchSpec.strategy.name`。 |
+| `annotator` | `MODEL` | 未设置；不单独指定 annotator model。 | 约束 `SearchSpec.strategy.evidence_annotator.model`。 |
+| `workers` / `models` | `MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]` | 未设置；worker 使用 host 的 parent/default model。 | 约束 `SearchSpec.strategy.models`；带 count 时每个模型都必须带 count。 |
 <!-- END GENERATED GOAL PLUS COMMAND CONFIG -->
+
+`main=` 和单数 `model=` 都不是受支持的配置。main model 必须在启动 Codex/Pi 时或
+提交 Goal Plus 命令前通过 `/model` 选择；Goal Plus 不切换它。数据模型暂时保留 legacy
+`command_config.main`，仅用于读取旧 `.gp` 记录，新建和编辑命令都会拒绝该 key。
 
 解析后的 `GoalPlusRecord.command_config` 是显式用户约束，配置 token 不再保留在
 `raw_goal` 中。高置信度且无 open question 的 spec draft 必须匹配所有显式 Search

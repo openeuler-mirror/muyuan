@@ -77,8 +77,7 @@ def test_pi_goal_plus_prompt_cannot_bootstrap_goal_plus() -> None:
     assert "不要询问或等待确认" in text
     assert "告知后立即继续执行" in text
     assert "feature_plugins=[\"orchestration\"]" in text
-    assert "`main=` 只表示入口已校验当前" in text
-    assert "入口没有切换模型" in text
+    assert "`main=` 不是受支持的" in " ".join(text.split())
     assert ".goal-plus-verifiers/" in text
     assert "`expected_outputs` 只列出" in text
     assert "{{input}}" not in text
@@ -156,7 +155,7 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "在修订或恢复前先澄清" in normalized
     assert "不要仅因 Goal Plus 记录处于 active" in normalized
     assert "Goal Plus 命令不能切换它" in normalized
-    assert "`main=`；它只作为 兼容的一致性断言" in normalized
+    assert "`main=` 不是受支持的 Goal Plus 命令配置" in normalized
     assert "goal_plus_prepare_final_check" in text
     assert "pi_goal_plus_run_final_check" in text
     assert "goal_plus_submit_final_check" in text
@@ -361,12 +360,16 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "command_config 中的字段是 runtime 强约束" in text
     assert "parseGoalPlusRoleModels" in text
     assert "resolveGoalPlusRoleModels" in text
-    assert "assertPiMainModel" in text
-    assert "const current = ctx.model" in text
-    assert "Pi main= is a session-model assertion, not a model selector" in text
-    assert "use /model before /goal-plus" in text
+    assert "assertPiMainModel" not in text
+    assert "const current = ctx.model" not in text
+    assert "main= is not supported" in text
+    assert "with /model before /goal-plus" in text
     assert "pi.setModel(main)" not in text
-    assert "已校验当前 Pi session，未切换模型" in text
+    assert "已校验当前 Pi session，未切换模型" not in text
+    update_start = text.split("async function updateGoalPlusStart", 1)[1].split(
+        "function startGoalPlusMainTurn", 1
+    )[0]
+    assert "parseGoalPlusRoleModels(rawGoal)" in update_start
     assert '"workers" | "models"' in text
     assert "workers= and models= are aliases" in text
     assert "strategy.evidence_annotator.model" in text

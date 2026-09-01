@@ -228,8 +228,7 @@ $goal-plus max_parallel=4 annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-
 
 已经运行的 Codex session 就是 main agent，`$goal-plus` 不能切换它的模型。应在启动时使用
 `codex -m MODEL` 或 `codex exec -m MODEL ...`，也可以在提交 Goal Plus prompt 前使用 `/model`。
-正常使用应省略 `main=`；为兼容旧命令，`main=` 只作为当前 session model 的可选 assertion：
-`UserPromptSubmit` 会校验并在不匹配时阻止执行，但不会把它当成 selector。
+`main=` 不是受支持的 Goal Plus 命令配置；新命令填写它会在创建记录前失败。
 
 `annotator=` 在同一 Codex host 上解析单个模型，并冻结到 `strategy.evidence_annotator.model`。
 `workers=` 将一个或多个模型解析到 `strategy.models`。`models=` 是 `workers=` 的兼容别名，

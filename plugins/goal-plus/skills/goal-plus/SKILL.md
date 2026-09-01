@@ -102,14 +102,13 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    PASS/FAIL、数值排名、candidate-local 结算、selection 或 promotion。MainAgent
    不负责定义这些维度，也不要根据 benchmark 类型向 annotator 预埋固定清单。
    Codex 的 main agent 就是已经运行的当前 session；必须在启动 Codex 时或提交
-   `$goal-plus` 前通过 `/model` 选择，不能由 Goal Plus prompt 切换。通常省略
-   `main=`；它只作为兼容的一致性断言，由 `UserPromptSubmit` hook 与当前 session model
-   比对，不匹配时会在创建或编辑 Goal Plus 记录前拒绝命令。真正的角色模型配置使用
+   `$goal-plus` 前通过 `/model` 选择，不能由 Goal Plus prompt 切换。`main=` 不是受支持的
+   Goal Plus 命令配置；真正的角色模型配置使用
    `annotator=B` 和 `workers=C,D`，并必须调用
    `goal_plus_list_models(host="codex")`，将用户填写的名称解析为唯一可用模型；
    annotator 冻结到 `strategy.evidence_annotator.model`，workers 冻结到
    `strategy.models`。不存在或不唯一时，在创建 run 前直接返回错误。旧的
-   `models=` 是 `workers=` 的兼容别名，两者不能同时填写；单数 `model=` 无效。
+   `models=` 是 `workers=` 的兼容别名，两者不能同时填写；`main=` 和单数 `model=` 无效。
    `workers=A,B max_parallel=4` 表示按 A、B、A、B 轮转；
    `workers=A*1,B*3 max_parallel=4` 表示显式 A1B3，所有显式数量之和必须等于
    `max_parallel`。省略的角色保持 Codex host 默认或继承语义，不从另一个

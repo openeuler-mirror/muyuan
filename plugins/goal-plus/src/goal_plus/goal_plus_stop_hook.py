@@ -209,11 +209,9 @@ def _parse_goal_plus_role_models(raw_goal: str) -> dict[str, str] | None:
     from goal_plus.goal_plus import parse_goal_plus_command_config
 
     _objective, config = parse_goal_plus_command_config(raw_goal)
-    if config.main is None and config.annotator is None and config.workers is None:
+    if config.annotator is None and config.workers is None:
         return None
     result: dict[str, str] = {}
-    if config.main is not None:
-        result["main"] = config.main
     if config.annotator is not None:
         result["annotator"] = config.annotator
     if config.workers is not None:
@@ -222,47 +220,12 @@ def _parse_goal_plus_role_models(raw_goal: str) -> dict[str, str] | None:
     return result
 
 
-def _model_references_match(requested: str, current: str) -> bool:
-    requested_parts = requested.strip().casefold().rsplit("/", 1)
-    current_parts = current.strip().casefold().rsplit("/", 1)
-    return (
-        requested_parts == current_parts or requested_parts[-1] == current_parts[-1]
-    )
-
-
-def _validate_codex_main_model(
-    role_models: dict[str, str] | None,
-    hook_input: dict[str, Any],
-) -> None:
-    requested = role_models.get("main") if role_models is not None else None
-    if requested is None:
-        return
-    current = hook_input.get("model")
-    if not isinstance(current, str) or not current.strip():
-        raise ValueError(
-            "Codex main= is only a session-model assertion and requires Codex to "
-            "report the current model, but this "
-            "UserPromptSubmit event did not include model"
-        )
-    if not _model_references_match(requested, current):
-        raise ValueError(
-            f"main={requested} does not match the current Codex session model "
-            f"{current}. Codex main= is an assertion, not a model selector. Start "
-            "Codex with `codex -m MODEL`, use `/model` before $goal-plus, or omit main=."
-        )
-
-
 def _role_model_context(
     role_models: dict[str, str] | None,
-    hook_input: dict[str, Any],
 ) -> str:
     if role_models is None:
         return ""
     lines = ["已解析 Codex Goal Plus 角色模型："]
-    if "main" in role_models:
-        lines.append(
-            f"- main={hook_input.get('model')}（仅校验当前 Codex session，未切换模型）"
-        )
     if "annotator" in role_models:
         lines.append(
             f"- annotator={role_models['annotator']}，解析后冻结到 "
@@ -1642,7 +1605,6 @@ def _handle_user_prompt_submit(
     ):
         try:
             role_models = _parse_goal_plus_role_models(raw_goal)
-            _validate_codex_main_model(role_models, hook_input)
         except ValueError as exc:
             _emit_user_prompt_block(str(exc))
             return
@@ -1726,7 +1688,7 @@ def _handle_user_prompt_submit(
     )
     goal_context = _goal_context(
         record,
-        role_model_context=_role_model_context(role_models, hook_input),
+        role_model_context=_role_model_context(role_models),
         initial_start=initial_start,
     )
     if permission_message is not None:

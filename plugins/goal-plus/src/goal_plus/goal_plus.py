@@ -112,6 +112,7 @@ class GoalPlusCommandOption:
     key: str
     model_field: str
     value_syntax: str
+    default_description: str
     description: str
     aliases: tuple[str, ...] = ()
     value_kind: Literal[
@@ -129,6 +130,7 @@ GOAL_PLUS_COMMAND_OPTIONS = (
         "mode",
         "mode",
         "autonomous | probe",
+        "`autonomous`",
         "探索模式；省略时默认为 `autonomous`。",
         value_kind="choice",
         choices=("autonomous", "probe"),
@@ -137,6 +139,7 @@ GOAL_PLUS_COMMAND_OPTIONS = (
         "max_parallel",
         "max_parallel",
         "正整数",
+        "未设置；由 Agent 根据任务和资源决定。",
         "约束 `SearchSpec.budget.max_parallel`。",
         value_kind="positive_integer",
     ),
@@ -144,6 +147,7 @@ GOAL_PLUS_COMMAND_OPTIONS = (
         "max_duration_seconds",
         "max_duration_seconds",
         "正整数（秒）",
+        "未设置；不创建命令级外层 deadline。",
         "从 Goal 创建时间起固定外层 deadline，覆盖 worker、verifier 和收尾边界。",
         value_kind="positive_integer",
     ),
@@ -151,6 +155,7 @@ GOAL_PLUS_COMMAND_OPTIONS = (
         "workspace_backend",
         "workspace_backend",
         "copy | git_worktree | thinkthread",
+        "未设置；由 Agent 根据任务和 host 能力决定。",
         "约束 `SearchSpec.workspace.backend`。",
         value_kind="choice",
         choices=("copy", "git_worktree", "thinkthread"),
@@ -159,6 +164,7 @@ GOAL_PLUS_COMMAND_OPTIONS = (
         "promotion_mode",
         "promotion_mode",
         "apply | artifact_only",
+        "未设置；由 Agent 根据任务授权和 workspace 决定。",
         "约束 `SearchSpec.workspace.promotion_mode`。",
         value_kind="choice",
         choices=("apply", "artifact_only"),
@@ -167,19 +173,14 @@ GOAL_PLUS_COMMAND_OPTIONS = (
         "strategy",
         "strategy",
         "NAME",
+        "未设置；由 Agent 选择 maintained strategy。",
         "约束 `SearchSpec.strategy.name`。",
     ),
     GoalPlusCommandOption(
-        "main",
-        "main",
-        "MODEL",
-        "当前 main session model 的兼容 assertion，不负责切换模型。",
-        value_kind="single_model",
-    ),
-    GoalPlusCommandOption(
         "annotator",
         "annotator",
         "MODEL",
+        "未设置；不单独指定 annotator model。",
         "约束 `SearchSpec.strategy.evidence_annotator.model`。",
         value_kind="single_model",
     ),
@@ -187,6 +188,7 @@ GOAL_PLUS_COMMAND_OPTIONS = (
         "workers",
         "workers",
         "MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]",
+        "未设置；worker 使用 host 的 parent/default model。",
         "约束 `SearchSpec.strategy.models`；带 count 时每个模型都必须带 count。",
         aliases=("models",),
         value_kind="worker_models",
@@ -203,12 +205,16 @@ GOAL_PLUS_COMMAND_CONFIG_KEYS = frozenset(GOAL_PLUS_COMMAND_OPTION_BY_KEY)
 def render_goal_plus_command_config_markdown() -> str:
     """Render the public command configuration table from the runtime registry."""
 
-    lines = ["| Key | Value | 约束目标 |", "| --- | --- | --- |"]
+    lines = [
+        "| Key | Value | Default（省略时） | 约束目标 |",
+        "| --- | --- | --- | --- |",
+    ]
     for option in GOAL_PLUS_COMMAND_OPTIONS:
         keys = " / ".join(f"`{key}`" for key in option.accepted_keys)
         value_syntax = option.value_syntax.replace("|", r"\|")
         lines.append(
-            f"| {keys} | `{value_syntax}` | {option.description} |"
+            f"| {keys} | `{value_syntax}` | {option.default_description} | "
+            f"{option.description} |"
         )
     return "\n".join(lines)
 
@@ -358,9 +364,14 @@ def parse_goal_plus_command_config(
             break
         name = match.group("name")
         value = match.group("value").strip()
+        if name == "main":
+            raise ValueError(
+                "main= is not supported; select the main model when starting "
+                "Codex/Pi or with /model before /goal-plus"
+            )
         if name == "model":
             raise ValueError(
-                "model= is not supported; use main=, annotator=, and workers="
+                "model= is not supported; use annotator= and workers="
             )
         if name not in GOAL_PLUS_COMMAND_CONFIG_KEYS:
             supported = ", ".join(sorted(GOAL_PLUS_COMMAND_CONFIG_KEYS))

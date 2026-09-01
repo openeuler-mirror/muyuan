@@ -271,7 +271,7 @@ def test_codex_assets_document_explicit_role_model_syntax() -> None:
     normalized_docs = " ".join(docs.split())
 
     assert "annotator=B workers=C,D" in combined
-    assert "main=" in goal_skill
+    assert "`main=` 不是受支持的" in " ".join(goal_skill.split())
     assert "annotator=" in goal_skill
     assert "workers=" in goal_skill
     assert "`models=` 是 `workers=` 的兼容别名" in combined
@@ -280,7 +280,7 @@ def test_codex_assets_document_explicit_role_model_syntax() -> None:
     assert "不能由 Goal Plus prompt 切换" in goal_skill
     assert "UserPromptSubmit" in docs
     assert "不能切换它的模型" in docs
-    assert "正常使用应省略 `main=`" in normalized_docs
+    assert "`main=` 不是受支持的" in normalized_docs
 
 
 def test_codex_search_skill_documents_parallel_loop_policy() -> None:

@@ -227,9 +227,8 @@ Pi main 判断。完整 key 列表见 [API](api.md#host-command-config)。
 ```
 
 已经运行的 Pi session 就是 main agent，`/goal-plus` 不能切换它的模型。应在启动时使用
-`pi --model MODEL`，或在提交 Goal Plus prompt 前使用 `/model`。正常使用应省略 `main=`；
-为兼容旧命令，`main=` 只作为当前 session model 的可选 assertion：extension 会校验并在不匹配时
-阻止执行，但不会把它当成 selector。
+`pi --model MODEL`，或在提交 Goal Plus prompt 前使用 `/model`。`main=` 不是受支持的
+Goal Plus 命令配置；新命令填写它会在创建记录前失败。
 
 `annotator=` 冻结 `strategy.evidence_annotator.model`；`workers=` 将一个或多个模型解析到
 `strategy.models`。省略某个 role 时保留 host default 或正常继承，不从其他显式 role 推导。

@@ -551,10 +551,8 @@ def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None
         {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
-            "model": "gpt-5.6-sol",
             "prompt": (
-                "$goal-plus main=openai/gpt-5.6-sol "
-                "annotator=gpt-5.6-terra "
+                "$goal-plus annotator=gpt-5.6-terra "
                 "workers=gpt-5.6-terra,gpt-5.6-sol optimize throughput"
             ),
         },
@@ -564,12 +562,12 @@ def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None
     record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
     record = FileGoalPlusRuntime(search_root).status(record_path.parent.name)
     assert record.raw_goal.startswith("optimize throughput")
-    assert record.command_config.main == "openai/gpt-5.6-sol"
+    assert record.command_config.main is None
     assert record.command_config.annotator == "gpt-5.6-terra"
     assert record.command_config.workers == "gpt-5.6-terra,gpt-5.6-sol"
     assert record.command_config.worker_directive == "workers"
     assert "显式命令配置" in context
-    assert "main=gpt-5.6-sol（仅校验当前 Codex session，未切换模型）" in context
+    assert "仅校验当前 Codex session" not in context
     assert "annotator=gpt-5.6-terra" in context
     assert "strategy.evidence_annotator.model" in context
     assert "workers=gpt-5.6-terra,gpt-5.6-sol" in context
@@ -582,7 +580,7 @@ def test_user_prompt_submit_accepts_explicit_role_models(tmp_path: Path) -> None
     [
         (
             "$goal-plus main=gpt-5.6-terra optimize throughput",
-            "Codex main= is an assertion, not a model selector",
+            "main= is not supported",
         ),
         (
             "$goal-plus model=gpt-5.6-sol optimize throughput",
@@ -624,7 +622,7 @@ def test_user_prompt_submit_blocks_invalid_role_models_before_goal_creation(
     assert not list((search_root / "goal-plus").glob("gp_*/goal.json"))
 
 
-def test_user_prompt_submit_blocks_main_mismatch_before_goal_edit(tmp_path: Path) -> None:
+def test_user_prompt_submit_blocks_retired_main_before_goal_edit(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     created = _run_hook(
         tmp_path,
@@ -650,7 +648,7 @@ def test_user_prompt_submit_blocks_main_mismatch_before_goal_edit(tmp_path: Path
         },
     )
 
-    assert "does not match the current Codex session model" in _block_reason(edited)
+    assert "main= is not supported" in _block_reason(edited)
     record = FileGoalPlusRuntime(search_root).status(goal_id)
     assert record.goal_revision == 1
     assert record.raw_goal.startswith("optimize throughput")

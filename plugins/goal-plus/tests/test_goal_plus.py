@@ -231,11 +231,20 @@ def test_host_command_config_registry_is_the_public_single_source() -> None:
 
     assert accepted_keys == GOAL_PLUS_COMMAND_CONFIG_KEYS
     assert canonical_fields == set(GoalPlusCommandConfig.model_fields) - {
-        "worker_directive"
+        "main",
+        "worker_directive",
     }
     assert len(accepted_keys) == sum(
         len(option.accepted_keys) for option in GOAL_PLUS_COMMAND_OPTIONS
     )
+    assert all(option.default_description for option in GOAL_PLUS_COMMAND_OPTIONS)
+
+
+def test_legacy_main_command_config_remains_readable() -> None:
+    config = GoalPlusCommandConfig.model_validate({"main": "legacy/model"})
+
+    assert config.main == "legacy/model"
+    assert "main" not in GOAL_PLUS_COMMAND_CONFIG_KEYS
 
 
 def test_host_command_config_generated_assets_are_current() -> None:
@@ -404,6 +413,7 @@ def test_search_command_config_may_remain_unused_when_main_finishes_in_goal_mode
         "unknown=value Optimize latency",
         "MAX_PARALLEL=2 Optimize latency",
         "max-parallel=2 Optimize latency",
+        "main=gpt-5.6-sol Optimize latency",
         "max_parallel=zero Optimize latency",
         "max_duration_seconds=zero Optimize latency",
         "max_duration_seconds=0 Optimize latency",

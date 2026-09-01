@@ -1500,7 +1500,6 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 }
 
 interface GoalPlusRoleModels {
-	main?: string;
 	annotator?: string;
 	workerDirective?: "workers" | "models";
 }
@@ -1523,17 +1522,19 @@ function leadingCommandDirectives(rawGoal: string): Map<string, string> {
 
 function parseGoalPlusRoleModels(rawGoal: string): GoalPlusRoleModels | undefined {
 	const directives = leadingCommandDirectives(rawGoal);
-	if (directives.has("model")) {
-		throw new Error("model= is not supported; use main=, annotator=, and workers=");
+	if (directives.has("main")) {
+		throw new Error(
+			"main= is not supported; select the main model when starting Pi or with /model before /goal-plus",
+		);
 	}
-	const main = directives.get("main");
+	if (directives.has("model")) {
+		throw new Error("model= is not supported; use annotator= and workers=");
+	}
 	const annotator = directives.get("annotator");
 	const workers = directives.get("workers");
 	const models = directives.get("models");
-	for (const [name, value] of [["main", main], ["annotator", annotator]] as const) {
-		if (value?.includes(",")) {
-			throw new Error(`${name}= accepts exactly one model; use workers= for a list`);
-		}
+	if (annotator?.includes(",")) {
+		throw new Error("annotator= accepts exactly one model; use workers= for a list");
 	}
 	if (workers && models) {
 		throw new Error("workers= and models= are aliases; specify only one");
@@ -1542,9 +1543,8 @@ function parseGoalPlusRoleModels(rawGoal: string): GoalPlusRoleModels | undefine
 	if (workerModels?.split(",").some((value) => value.trim().length === 0)) {
 		throw new Error("workers=/models= contains an empty model reference");
 	}
-	if (!main && !annotator && !workerModels) return undefined;
+	if (!annotator && !workerModels) return undefined;
 	return {
-		main,
 		annotator,
 		workerDirective: workers ? "workers" : models ? "models" : undefined,
 	};
@@ -1568,39 +1568,16 @@ function resolvePiModelReference(ctx: ExtensionContext, requested: string) {
 	return matches[0]!;
 }
 
-function assertPiMainModel(ctx: ExtensionContext, requested: string): string {
-	const expected = resolvePiModelReference(ctx, requested);
-	const current = ctx.model;
-	if (!current) {
-		throw new Error(
-			"Pi main= is a session-model assertion, but the current session did not report a model. " +
-				"Select the model before /goal-plus or omit main=.",
-		);
-	}
-	const expectedId = `${expected.provider}/${expected.id}`;
-	const currentId = `${current.provider}/${current.id}`;
-	if (expectedId.toLowerCase() !== currentId.toLowerCase()) {
-		throw new Error(
-			`main=${requested} does not match the current Pi session model ${currentId}. ` +
-				"Pi main= is a session-model assertion, not a model selector. " +
-				"Start Pi with --model MODEL, use /model before /goal-plus, or omit main=.",
-		);
-	}
-	return expectedId;
-}
-
 function resolveGoalPlusRoleModels(
 	ctx: ExtensionContext,
 	rawGoal: string,
 ): GoalPlusRoleModels | undefined {
 	const requested = parseGoalPlusRoleModels(rawGoal);
 	if (!requested) return undefined;
-	const main = requested.main ? assertPiMainModel(ctx, requested.main) : undefined;
 	const annotator = requested.annotator
 		? resolvePiModelReference(ctx, requested.annotator)
 		: undefined;
 	return {
-		main,
 		annotator: annotator ? `${annotator.provider}/${annotator.id}` : undefined,
 		workerDirective: requested.workerDirective,
 	};
@@ -1627,7 +1604,6 @@ function buildGoalStartPrompt(
 			"",
 			"已解析的模型路由：",
 		);
-		if (roleModels.main) lines.push(`- main: ${roleModels.main}（已校验当前 Pi session，未切换模型）`);
 		if (roleModels.annotator) lines.push(`- annotator: ${roleModels.annotator}`);
 		if (roleModels.workerDirective) {
 			lines.push(`- workers: 使用 command_config.workers（入口别名 ${roleModels.workerDirective}=）。`);
@@ -1808,6 +1784,19 @@ async function updateGoalPlusStart(
 ): Promise<string | undefined> {
 	if (!activeGoalPlusId) {
 		ctx.ui.notify("No active Goal Plus record to edit", "error");
+		return undefined;
+	}
+	try {
+		parseGoalPlusRoleModels(rawGoal);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		ctx.ui.notify(message, "error");
+		pi.sendMessage({
+			customType: "goal-plus-error",
+			content: message,
+			display: true,
+			details: { stage: "model-routing" },
+		});
 		return undefined;
 	}
 	const commandCtx = commandContextFrom(ctx);
@@ -2325,7 +2314,7 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 	// BEGIN GENERATED GOAL PLUS COMMAND CONFIG
-	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_backend=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [main=MODEL] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
+	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_backend=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
 	// END GENERATED GOAL PLUS COMMAND CONFIG
 	if (!isPrintLikeInvocation) {
 		pi.registerCommand("goal-plus", {

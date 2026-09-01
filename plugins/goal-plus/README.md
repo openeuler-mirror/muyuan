@@ -133,8 +133,8 @@ Then submit `$goal-plus <goal>` in Codex or `/goal-plus <goal>` in Pi. Pi keeps
 the selected thinking level; `xhigh` is recommended for complex tasks but is not
 required or forced. In both
 hosts, the main agent is the already-running session selected at launch or with
-`/model`; Goal Plus cannot switch it. Omit `main=` in normal usage. Both entries
-retain `main=` only as an optional assertion that blocks a mismatch. See the
+`/model`; Goal Plus cannot switch it, and `main=` is not a supported command
+configuration key. See the
 [Torch CPU example](examples/model-optimize/README.md) for
 complete Codex and Pi commands with ready-to-paste prompts.
 
