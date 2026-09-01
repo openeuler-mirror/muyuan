@@ -301,10 +301,12 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
    新 Git run 使用一个 squash publication commit 写回原仓；旧的 `legacy_patch` 才从返回的
    `apply_cwd` 执行 `git apply --directory=<apply_directory> <artifact_path>`。
 10. 默认完成 promotion apply；只有显式 `promotion_mode="artifact_only"` 的任务保留 prepared
-    publication。随后调用 `goal_plus_record_search_result`；apply 模式尚未 applied 时 runtime
-    会拒绝记录结果。此时不要调用 `search_report`；
+    publication。随后调用 `goal_plus_record_search_result`，用 summary 登记“搜索完成并验收”；
+    apply 模式尚未 applied 时 runtime 会拒绝记录结果。此时不要调用 `search_report`；
     结果记录只预留规范报告路径，不生成 Markdown 或 HTML。
-11. 执行原始目标审计。评估/编辑契约仍充分时保留同一个 run。新 incumbent 或低性能路线
+11. 在原始工作区检查实际应用后的 diff 并运行整体所需测试；通过后把
+    “补丁应用完成并验收”和具体测试证据留给最终状态 evidence。然后执行原始目标审计。
+    评估/编辑契约仍充分时保留同一个 run。新 incumbent 或低性能路线
     绝不会开启替代 run。只有具体 spec/契约修订或不同的可度量子问题才能创建后继项，
     并使用 `source_run_id`；继承分数在重新验证前仍只是历史。
 12. 执行最终原始目标审计。配置了 `success_threshold` 时，最终最佳分数必须达到它才能

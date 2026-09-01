@@ -160,12 +160,17 @@ Search worker 是由 host-local durable pool 监督的 Pi RPC 进程。每个 wr
 但当前模型不支持 `xhigh` 或用户选择其他档位时仍正常运行。
 
 实际派发普通 subagent 时，Main 把完整任务直接传给 `pi_goal_plus_run_work_item`。该工具继承
-Main 当前 thinking，懒创建 attempt，启动隔离的 Pi RPC child，在进程握手成功后绑定 session，
+Main 当前 thinking，懒创建 attempt，启动隔离的 Pi RPC child，仅在 RPC `get_state` 握手和
+请求的模型/thinking 设置成功后绑定 session，
 等待 child 完成，并用同一个 `attempt_id` 和 `generation` 提交 result。多个相互独立的 tool call
 可以并发执行；复用已返回的 id 会记录 rework 并恢复原 session。
 
 Pi wrapper 只拥有 native launch/wait。main 仍负责 acceptance、rework、integration、Search routing
 和 completion。完整轻量记录协议见 [Ultra Orchestration](ultra.md)。
+
+Search promotion 后，Pi 用 `goal_plus_record_search_result` 登记“搜索完成并验收”，再在原始工作区
+检查实际应用的 diff 和整体测试。最终状态 evidence 另行登记“补丁应用完成并验收”。这两项只是
+收尾证据边界，不创建 DAG 或额外运行时阶段。
 
 ## Search Pool 流程
 

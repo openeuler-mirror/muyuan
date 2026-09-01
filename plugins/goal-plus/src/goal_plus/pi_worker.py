@@ -954,6 +954,7 @@ def run_pi_rpc_worker(
     refresh_reason: str | None = None
     runtime_start: dict[str, Any] | None = None
     runtime_start_error: str | None = None
+    pending_state_data: dict[str, Any] | None = None
 
     def _abort_for_timeout() -> None:
         nonlocal timed_out
@@ -964,6 +965,11 @@ def run_pi_rpc_worker(
             pass
 
     try:
+        handshake = rpc.command(
+            {"type": "get_state"},
+            timeout=min(30, timeout_seconds),
+        )
+        pending_state_data = dict((handshake or {}).get("data") or {})
         try:
             runtime_entries = _rpc_entries(
                 rpc,
@@ -984,8 +990,6 @@ def run_pi_rpc_worker(
         record_runtime_start = getattr(rpc, "record_runtime_start", None)
         if callable(record_runtime_start):
             record_runtime_start(runtime_start, error=runtime_start_error)
-
-        _bind_goal_plus_work_item(launch, root=root, session_id=session_id)
         if provider and model_id:
             rpc.command(
                 {"type": "set_model", "provider": provider, "modelId": model_id},
@@ -996,6 +1000,7 @@ def run_pi_rpc_worker(
                 {"type": "set_thinking_level", "level": selected_thinking},
                 timeout=min(30, timeout_seconds),
             )
+        _bind_goal_plus_work_item(launch, root=root, session_id=session_id)
         rpc.command(
             {"type": "prompt", "message": str(launch["prompt"])},
             timeout=min(60, timeout_seconds),
@@ -1006,8 +1011,14 @@ def run_pi_rpc_worker(
             if remaining <= 0:
                 _abort_for_timeout()
                 break
-            state = rpc.command({"type": "get_state"}, timeout=min(10, remaining))
-            data = dict(state.get("data") or {})
+            if pending_state_data is not None:
+                data = pending_state_data
+                pending_state_data = None
+            else:
+                state = rpc.command(
+                    {"type": "get_state"}, timeout=min(10, remaining)
+                )
+                data = dict(state.get("data") or {})
             last_state_data = data
             worker_active = (
                 data.get("isStreaming", False)
