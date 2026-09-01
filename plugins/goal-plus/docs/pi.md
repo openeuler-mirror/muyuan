@@ -50,6 +50,9 @@ pi-goal-plus
 `PI_CODING_AGENT_DIR`、`CODEX_HOME` 或认证信息；launcher 自己临时加入 venv 的 `bin`，再用
 `--extension` 和 `--skill` 显式加载当前 checkout。
 
+`./install.sh --env-show` 会只读列出安装器已登记及当前 Git worktree 中的 Pi 开发环境、
+源码 commit、状态、单项与总空间占用。
+
 开发态不注册全局 Pi package。若当前用户或目标项目已经注册同一 checkout，Pi 会按绝对资源
 路径去重；来自其他 checkout 或复制路径的 Goal Plus 仍会让安装和每次启动停止并列出冲突。
 断链的旧式 loose-resource symlink 不会被 Pi 加载，也不会阻塞开发态。遇到真实冲突时先显式

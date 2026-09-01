@@ -26,6 +26,7 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | Codex and Pi | `./install.sh --codex --pi` |
 | Pi development | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | Codex plus Pi development | `./install.sh --codex --pi-dev && source .goal-plus-dev/set_env.sh` |
+| Show Pi development environments | `./install.sh --env-show` |
 | Check only | `./install.sh --codex --pi --dry-run` |
 
 Normal installation uses the active `python3`; its scripts directory must be

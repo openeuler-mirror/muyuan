@@ -24,6 +24,7 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | Codex 和 Pi | `./install.sh --codex --pi` |
 | Pi 开发态 | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | Codex 加 Pi 开发态 | `./install.sh --codex --pi-dev && source .goal-plus-dev/set_env.sh` |
+| 查看 Pi 开发环境及空间占用 | `./install.sh --env-show` |
 | 只检查 | `./install.sh --codex --pi --dry-run` |
 
 正常安装使用当前 `python3`，它的 scripts 目录必须位于 `PATH`。`--pi` 与 `--pi-dev`

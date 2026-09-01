@@ -41,6 +41,16 @@ source .goal-plus-dev/set_env.sh
 - `.goal-plus-dev/set_env.sh`：只把 launcher 目录加入当前 shell 的 `PATH`；
 - `.goal-plus-dev/installation.json`：标识该目录由哪个 checkout 管理。
 
+查看安装器已登记及当前 Git worktree 中的 Pi 开发环境、源码版本和总空间占用：
+
+```bash
+./install.sh --env-show
+```
+
+成功的 `--pi-dev` 安装会在用户 state 目录写入一条仅含环境路径和 source 路径的轻量
+registry 记录；它不包含 Pi 配置、模型或认证信息。已删除的环境会显示为 `missing`，不会被
+命令自动清理。
+
 `set_env.sh` 不设置 `CODEX_HOME`、`PI_CODING_AGENT_DIR`，也不把 venv 的 `bin` 全局加入
 当前 shell。`pi-goal-plus` 启动时才临时设置 runtime `PATH`，验证 `goal_plus` 模块确实来自
 当前 checkout，然后通过 Pi 的 `--extension` 和 `--skill` 参数显式加载：

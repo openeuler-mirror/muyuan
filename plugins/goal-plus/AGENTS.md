@@ -150,6 +150,8 @@ its behavior, `scripts/install.py`, the host documentation, and
 - `./install.sh --pi` performs the normal Pi runtime and package install.
 - `./install.sh --pi-dev` creates an ignored `.goal-plus-dev/` editable venv,
   `set_env.sh`, and `pi-goal-plus` launcher for the current checkout.
+- `./install.sh --env-show` lists managed Pi development environments, source
+  versions, health, and allocated disk usage without changing them.
 - `--pi` and `--pi-dev` are mutually exclusive. Either may be combined with
   `--codex` where otherwise valid.
 

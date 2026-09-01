@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -19,6 +20,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEV_SCHEMA = "goal-plus.pi-dev-installation.v1"
+DEV_REGISTRY_SCHEMA = "goal-plus.pi-dev-registry-entry.v1"
 NORMAL_CODEX_PLUGIN_ID = "goal-plus@goal-plus"
 NORMAL_CODEX_MARKETPLACE = "goal-plus"
 NORMAL_RUNTIME_COMMANDS = (
@@ -80,6 +82,258 @@ def _atomic_write(path: Path, content: str, *, mode: int = 0o644) -> None:
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _pi_dev_registry_dir() -> Path:
+    configured = os.environ.get("GOAL_PLUS_INSTALL_STATE_DIR")
+    if configured:
+        state_root = Path(configured).expanduser()
+    else:
+        xdg_state = os.environ.get("XDG_STATE_HOME")
+        state_root = (
+            Path(xdg_state).expanduser()
+            if xdg_state
+            else Path.home() / ".local" / "state"
+        ) / "goal-plus"
+    return state_root.resolve() / "pi-dev-environments"
+
+
+def _pi_dev_registry_path(dev_dir: Path) -> Path:
+    digest = hashlib.sha256(str(dev_dir.resolve()).encode("utf-8")).hexdigest()[:20]
+    return _pi_dev_registry_dir() / f"{digest}.json"
+
+
+def _register_pi_dev_environment(dev_dir: Path) -> None:
+    dev_dir = dev_dir.resolve()
+    payload = {
+        "schema": DEV_REGISTRY_SCHEMA,
+        "dev_dir": str(dev_dir),
+        "receipt_path": str(dev_dir / "installation.json"),
+        "source_path": str(ROOT.resolve()),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _atomic_write(
+        _pi_dev_registry_path(dev_dir),
+        json.dumps(payload, indent=2) + "\n",
+    )
+
+
+def _registered_pi_dev_environments() -> tuple[dict[Path, dict[str, Any]], list[str]]:
+    records: dict[Path, dict[str, Any]] = {}
+    warnings: list[str] = []
+    registry_dir = _pi_dev_registry_dir()
+    if not registry_dir.is_dir():
+        return records, warnings
+    for path in sorted(registry_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema") != DEV_REGISTRY_SCHEMA
+                or not isinstance(payload.get("dev_dir"), str)
+            ):
+                raise ValueError("unrecognized registry entry")
+            dev_dir = Path(payload["dev_dir"]).expanduser().resolve()
+            records[dev_dir] = payload
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            warnings.append(f"could not inspect registry entry {path}: {exc}")
+    return records, warnings
+
+
+def _git_worktree_pi_dev_dirs() -> set[Path]:
+    discovered = {(ROOT / ".goal-plus-dev").resolve()}
+    try:
+        repository_root = Path(
+            _run(
+                ["git", "-C", str(ROOT), "rev-parse", "--show-toplevel"],
+                capture=True,
+            ).stdout.strip()
+        ).resolve()
+        plugin_subdir = ROOT.resolve().relative_to(repository_root)
+        listing = _run(
+            ["git", "-C", str(ROOT), "worktree", "list", "--porcelain"],
+            capture=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return discovered
+    for line in listing.splitlines():
+        if line.startswith("worktree "):
+            worktree = Path(line.removeprefix("worktree ")).resolve()
+            discovered.add((worktree / plugin_subdir / ".goal-plus-dev").resolve())
+    return discovered
+
+
+def _allocated_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    total = 0
+    pending = [path]
+    while pending:
+        current = pending.pop()
+        try:
+            stat = current.lstat()
+            blocks = getattr(stat, "st_blocks", 0)
+            total += int(blocks) * 512 if blocks else int(stat.st_size)
+            if current.is_dir() and not current.is_symlink():
+                pending.extend(current.iterdir())
+        except OSError:
+            continue
+    return total
+
+
+def _human_size(size_bytes: int) -> str:
+    value = float(size_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    raise AssertionError("unreachable")
+
+
+def _dirty_label(value: Any) -> str:
+    if value is True:
+        return "dirty"
+    if value is False:
+        return "clean"
+    return "unknown"
+
+
+def _git_head(path: Path) -> str | None:
+    try:
+        return _run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            capture=True,
+        ).stdout.strip() or None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _git_dirty(path: Path) -> bool | None:
+    try:
+        return bool(
+            _run(
+                ["git", "-C", str(path), "status", "--porcelain"],
+                capture=True,
+            ).stdout.strip()
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _python_version(python: Path) -> str | None:
+    if not python.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            [str(python), "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    return (result.stdout or result.stderr).strip() or None
+
+
+def _inspect_pi_dev_environment(
+    dev_dir: Path,
+    registry_record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    dev_dir = dev_dir.resolve()
+    receipt_path = dev_dir / "installation.json"
+    receipt: dict[str, Any] = {}
+    receipt_error: str | None = None
+    if receipt_path.is_file():
+        try:
+            payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("schema") != DEV_SCHEMA:
+                raise ValueError("unrecognized installation receipt")
+            receipt = payload
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            receipt_error = str(exc)
+
+    source_value = receipt.get("source_path") or (registry_record or {}).get(
+        "source_path"
+    )
+    source = Path(str(source_value)).expanduser().resolve() if source_value else None
+    venv_python_value = receipt.get("venv_python")
+    venv_python = (
+        Path(str(venv_python_value)).expanduser().resolve()
+        if venv_python_value
+        else _venv_python(dev_dir / "venv")
+    )
+    launcher_value = receipt.get("launcher")
+    launcher = (
+        Path(str(launcher_value)).expanduser().resolve()
+        if launcher_value
+        else dev_dir / "bin" / "pi-goal-plus"
+    )
+    if not dev_dir.exists():
+        status = "missing"
+    elif receipt_error:
+        status = "invalid-receipt"
+    elif not receipt:
+        status = "unmanaged"
+    elif (
+        receipt.get("status") != "ready"
+        or not venv_python.is_file()
+        or not launcher.is_file()
+    ):
+        status = "incomplete"
+    elif source is None or not source.is_dir():
+        status = "source-missing"
+    else:
+        status = "ready"
+    return {
+        "status": status,
+        "dev_dir": dev_dir,
+        "source": source,
+        "size_bytes": _allocated_size_bytes(dev_dir),
+        "prepared_commit": receipt.get("source_commit"),
+        "prepared_dirty": receipt.get("source_dirty"),
+        "source_head": _git_head(source) if source and source.is_dir() else None,
+        "source_dirty": _git_dirty(source) if source and source.is_dir() else None,
+        "python_version": _python_version(venv_python),
+        "receipt_error": receipt_error,
+    }
+
+
+def _show_pi_dev_environments(*, current_dev_dir: Path) -> None:
+    registered, warnings = _registered_pi_dev_environments()
+    candidates = set(registered)
+    candidates.update(_git_worktree_pi_dev_dirs())
+    candidates.add(current_dev_dir.expanduser().resolve())
+    rows = [
+        _inspect_pi_dev_environment(path, registered.get(path))
+        for path in sorted(candidates, key=str)
+        if path.exists() or path in registered
+    ]
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    print(f"Pi development environments: {len(rows)}")
+    for row in rows:
+        prepared = str(row["prepared_commit"] or "unknown")[:12]
+        current = str(row["source_head"] or "unknown")[:12]
+        prepared_dirty = _dirty_label(row["prepared_dirty"])
+        current_dirty = _dirty_label(row["source_dirty"])
+        print(f"- [{row['status']}] {_human_size(int(row['size_bytes']))}")
+        print(f"  source: {row['source'] or 'unknown'}")
+        print(f"  environment: {row['dev_dir']}")
+        print(
+            f"  source commit: prepared={prepared} ({prepared_dirty}), "
+            f"current={current} ({current_dirty})"
+        )
+        print(f"  python: {row['python_version'] or 'unavailable'}")
+        if row["receipt_error"]:
+            print(f"  receipt error: {row['receipt_error']}")
+    existing = sum(1 for row in rows if row["status"] != "missing")
+    missing = len(rows) - existing
+    total_size = sum(int(row["size_bytes"]) for row in rows)
+    print(
+        f"Total: {existing} existing, {missing} missing, "
+        f"{_human_size(total_size)} allocated"
+    )
 
 
 def _codex_inventory(codex: str) -> list[dict[str, Any]]:
@@ -486,8 +740,18 @@ esac
 
 export GOAL_PLUS_PI_DEV_ROOT="$goal_plus_root"
 export PATH="$goal_plus_venv/bin:$PATH"
-exec "$goal_plus_pi" --extension {extension} --skill {skill} "$@"
+exec "$goal_plus_pi" --no-extensions --no-prompt-templates \
+  --extension {extension} --skill {skill} "$@"
 """
+
+
+def _print_pi_dev_usage(dev_dir: Path, *, dry_run: bool) -> None:
+    heading = "安装完成后执行：" if dry_run else "后续使用方式（请在当前 shell 执行）："
+    print(heading)
+    print(f"  source {shlex.quote(str((dev_dir / 'set_env.sh').resolve()))}")
+    print("  cd <target-workspace>")
+    print("  pi-goal-plus")
+    print("打开新的 shell 后，需要重新执行上面的 source 命令。")
 
 
 def _prepare_pi_dev(*, dev_dir: Path, pi_executable: str, dry_run: bool) -> None:
@@ -547,18 +811,25 @@ def _prepare_pi_dev(*, dev_dir: Path, pi_executable: str, dry_run: bool) -> None
             }
         )
         _atomic_write(receipt_path, json.dumps(receipt, indent=2) + "\n")
+        try:
+            _register_pi_dev_environment(dev_dir)
+        except OSError as exc:
+            print(
+                "warning: Pi development environment is ready but could not be "
+                f"added to the local environment registry: {exc}",
+                file=sys.stderr,
+            )
     else:
         print(f"Would write: {dev_dir / 'set_env.sh'}")
         print(f"Would write: {dev_dir / 'bin' / 'pi-goal-plus'}")
         print(f"Would write: {receipt_path}")
 
     print(
-        "Pi development environment is ready."
+        "Pi 开发环境已就绪。"
         if not dry_run
-        else "Pi development plan is valid."
+        else "Pi 开发安装计划检查通过。"
     )
-    print(f"  source {shlex.quote(str(dev_dir / 'set_env.sh'))}")
-    print("  pi-goal-plus")
+    _print_pi_dev_usage(dev_dir, dry_run=dry_run)
 
 
 def _install_normal_runtime(*, scripts_dir: Path, dry_run: bool) -> None:
@@ -608,6 +879,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prepare an isolated editable runtime and pi-goal-plus launcher.",
     )
     parser.add_argument(
+        "--env-show",
+        action="store_true",
+        help="List managed Pi development environments and their disk usage.",
+    )
+    parser.add_argument(
         "--pi-dev-dir",
         type=Path,
         default=ROOT / ".goal-plus-dev",
@@ -631,8 +907,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.check_pi_dev_runtime:
         _preflight_pi_dev(cwd=args.check_cwd)
         return 0
+    if args.env_show:
+        if args.codex or args.pi or args.pi_dev or args.dry_run:
+            parser.error("--env-show cannot be combined with install or dry-run options")
+        _show_pi_dev_environments(current_dev_dir=args.pi_dev_dir)
+        return 0
     if not (args.codex or args.pi or args.pi_dev):
-        parser.error("choose at least one of --codex, --pi, or --pi-dev")
+        parser.error("choose --codex, --pi, --pi-dev, or --env-show")
     if args.pi and args.pi_dev:
         parser.error("--pi and --pi-dev are mutually exclusive")
 

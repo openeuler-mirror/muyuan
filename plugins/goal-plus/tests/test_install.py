@@ -62,12 +62,32 @@ def test_pi_dev_assets_scope_only_the_launcher(
     assert "CODEX_HOME" not in set_env
     assert "PI_CODING_AGENT_DIR" not in set_env
     assert "--extension" in launcher
+    assert "--no-extensions" in launcher
+    assert "--no-prompt-templates" in launcher
+    assert launcher.index("--no-extensions") < launcher.index("--extension")
     assert str(ROOT / ".pi" / "extensions" / "goal-plus.ts") in launcher
     assert "--skill" in launcher
     assert str(ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md") in launcher
     assert 'export PATH="$goal_plus_venv/bin:$PATH"' in launcher
     assert "--check-pi-dev-runtime" in launcher
     subprocess.run(["bash", "-n", str(launcher_path)], check=True)
+
+
+def test_pi_dev_usage_output_explains_same_shell_and_target_workspace(
+    installer: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    dev_dir = tmp_path / "dev"
+
+    installer._print_pi_dev_usage(dev_dir, dry_run=False)
+
+    output = capsys.readouterr().out
+    assert "后续使用方式（请在当前 shell 执行）：" in output
+    assert f"source {(dev_dir / 'set_env.sh').resolve()}" in output
+    assert "cd <target-workspace>" in output
+    assert "pi-goal-plus" in output
+    assert "打开新的 shell 后，需要重新执行上面的 source 命令。" in output
 
 
 def test_pi_dev_accepts_same_checkout_user_registration(
@@ -98,6 +118,73 @@ def test_pi_dev_ignores_broken_loose_resource_symlinks(
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
     installer._preflight_pi_dev()
+
+
+def test_env_show_lists_registered_and_current_environments(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_dir = tmp_path / "state"
+    source = tmp_path / "source"
+    source.mkdir()
+    registered = tmp_path / "registered-dev"
+    current = tmp_path / "current-dev"
+    for dev_dir, commit in ((registered, "abc123"), (current, "def456")):
+        python = dev_dir / "venv" / "bin" / "python"
+        launcher = dev_dir / "bin" / "pi-goal-plus"
+        python.parent.mkdir(parents=True)
+        launcher.parent.mkdir(parents=True)
+        python.write_text("python", encoding="utf-8")
+        launcher.write_text("launcher", encoding="utf-8")
+        (dev_dir / "installation.json").write_text(
+            json.dumps(
+                {
+                    "schema": installer.DEV_SCHEMA,
+                    "status": "ready",
+                    "source_path": str(source),
+                    "venv_python": str(python),
+                    "launcher": str(launcher),
+                    "source_commit": commit,
+                    "source_dirty": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setenv("GOAL_PLUS_INSTALL_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(installer, "_git_worktree_pi_dev_dirs", lambda: {current})
+    monkeypatch.setattr(installer, "_git_head", lambda _path: "fedcba")
+    monkeypatch.setattr(installer, "_git_dirty", lambda _path: True)
+    monkeypatch.setattr(installer, "_python_version", lambda _path: "Python 3.12.0")
+    monkeypatch.setattr(installer, "_allocated_size_bytes", lambda _path: 1024)
+    installer._register_pi_dev_environment(registered)
+
+    installer._show_pi_dev_environments(current_dev_dir=current)
+
+    output = capsys.readouterr().out
+    assert "Pi development environments: 2" in output
+    assert "[ready] 1.0 KiB" in output
+    assert str(registered) in output
+    assert str(current) in output
+    assert "prepared=abc123 (clean), current=fedcba (dirty)" in output
+    assert "Total: 2 existing, 0 missing, 2.0 KiB allocated" in output
+
+
+def test_env_show_is_read_only_mode(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shown: list[Path] = []
+    monkeypatch.setattr(
+        installer,
+        "_show_pi_dev_environments",
+        lambda *, current_dev_dir: shown.append(current_dev_dir),
+    )
+
+    assert installer.main(["--env-show", "--pi-dev-dir", str(tmp_path)]) == 0
+    assert shown == [tmp_path]
 
 
 def test_pi_dev_detects_stale_local_goal_plus_path(
