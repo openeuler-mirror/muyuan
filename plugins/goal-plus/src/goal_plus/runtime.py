@@ -822,6 +822,7 @@ class FileSearchRuntime:
                 )
             artifact_entries.append((artifact_path, rel_path))
 
+        self._validate_materialized_verifier_artifacts(spec, artifact_entries)
         for artifact_path, rel_path in artifact_entries:
             verifier_hashes[rel_path] = sha256_file(artifact_path)
 
@@ -1332,6 +1333,11 @@ class FileSearchRuntime:
         env["PYTHONPATH"] = str(cwd) + os.pathsep + env.get("PYTHONPATH", "")
         for name in ("TMPDIR", "TMP", "TEMP", "GOAL_PLUS_VERIFIER_TMPDIR"):
             env[name] = str(temp_dir)
+        # Keep verifier imports deterministic when a candidate rewrites a Python
+        # module with the same size inside the filesystem timestamp granularity.
+        # A per-invocation cache root prevents stale workspace bytecode from
+        # shadowing the current candidate source and remains concurrency-safe.
+        env["PYTHONPYCACHEPREFIX"] = str(temp_dir / "pycache")
         env[VERIFIER_PHASE_ENV] = phase
         if diagnostics_dir is not None:
             env[VERIFIER_DIAGNOSTICS_ENV] = str(diagnostics_dir)
@@ -2129,6 +2135,12 @@ class FileSearchRuntime:
                     None,
                 )
                 if session is not None:
+                    if (
+                        session.directive == normalized_directive
+                        and worker_agent_type_override is None
+                        and worker_budget_override is None
+                    ):
+                        return session
                     expected_launch = self._build_launch_payload(
                         frozen=frozen,
                         candidate_id=candidate_id,
@@ -3073,7 +3085,7 @@ class FileSearchRuntime:
 
         if scope == "process":
             outer_deadline = self._outer_deadline_epoch(
-                os.environ.get(OUTER_DEADLINE_ENV)
+                self._outer_deadline_value(run_id)
             )
             if outer_deadline is not None:
                 verifier_seconds = sum(
@@ -4770,6 +4782,38 @@ class FileSearchRuntime:
             worker_budget=worker_budget,
         )
 
+    def _worker_budget_with_outer_deadline(
+        self,
+        run_id: str,
+        frozen: FrozenSpec,
+        worker_budget: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if worker_budget is None or worker_budget.get("max_runtime_seconds") is None:
+            return worker_budget
+        deadline_value = self._outer_deadline_value(run_id)
+        if deadline_value is None:
+            return worker_budget
+        deadline = self._outer_deadline_epoch(deadline_value)
+        if deadline is None:
+            raise RuntimeError(f"invalid {OUTER_DEADLINE_ENV} value")
+        reserve = float(
+            frozen.spec.strategy.config.get("closeout_reserve_seconds")
+            or frozen.spec.strategy.config.get("reserve_closeout_seconds")
+            or 0
+        )
+        available = deadline - time.time() - reserve
+        if available < 1:
+            raise RuntimeError(
+                "OuterDeadlineExceeded: no candidate worker can start after the "
+                "Goal Plus closeout boundary"
+            )
+        effective = dict(worker_budget)
+        effective["max_runtime_seconds"] = min(
+            int(worker_budget["max_runtime_seconds"]),
+            max(1, math.floor(available)),
+        )
+        return effective
+
     def _build_launch_payload(
         self,
         frozen: FrozenSpec,
@@ -4816,17 +4860,22 @@ class FileSearchRuntime:
         one_paragraph_idea = "; ".join(idea_lines)
 
         adapter = get_agent_host_adapter(frozen.spec.strategy.worker_host)
+        worker_budget = self._worker_budget_with_outer_deadline(
+            candidate_record.task.run_id,
+            frozen,
+            (
+                worker_budget_override
+                if worker_budget_override is not None
+                else self._candidate_worker_budget(frozen, candidate_record)
+            ),
+        )
         return adapter.build_launch_payload(
             worker_agent_type=worker_agent_type,
             candidate_id=candidate_id,
             agent_session_id=agent_session_id,
             short_intent=short_intent,
             one_paragraph_idea=one_paragraph_idea,
-            worker_budget=(
-                worker_budget_override
-                if worker_budget_override is not None
-                else self._candidate_worker_budget(frozen, candidate_record)
-            ),
+            worker_budget=worker_budget,
             worker_launch=self._candidate_worker_launch(frozen, candidate_record),
             root=str(self.root_dir),
             cwd=str(candidate_record.task.workspace),
@@ -4848,6 +4897,15 @@ class FileSearchRuntime:
         )
 
         adapter = get_agent_host_adapter(session.host)
+        worker_budget = self._worker_budget_with_outer_deadline(
+            candidate_record.task.run_id,
+            frozen,
+            (
+                worker_budget_override
+                if worker_budget_override is not None
+                else self._candidate_worker_budget(frozen, candidate_record)
+            ),
+        )
         return adapter.build_continue_payload(
             worker_agent_type=worker_agent_type,
             candidate_id=session.candidate_id,
@@ -4859,11 +4917,7 @@ class FileSearchRuntime:
             root=str(self.root_dir),
             cwd=str(candidate_record.task.workspace),
             worker_prompt=self._worker_prompt_for_host(session.host),
-            worker_budget=(
-                worker_budget_override
-                if worker_budget_override is not None
-                else self._candidate_worker_budget(frozen, candidate_record)
-            ),
+            worker_budget=worker_budget,
             worker_launch=self._candidate_worker_launch(frozen, candidate_record),
             host_metadata=session.host_handle.metadata,
         )
@@ -7172,6 +7226,39 @@ class FileSearchRuntime:
             "promotion_mode='artifact_only'."
         )
 
+    def _validate_materialized_verifier_artifacts(
+        self,
+        spec: SearchSpec,
+        artifact_entries: list[tuple[Path, str]],
+    ) -> None:
+        if spec.workspace.backend not in {"git_worktree", "thinkthread"}:
+            return
+        source = Path(spec.source_path).resolve()
+        try:
+            repository = Path(
+                self._git_output(source, ["git", "rev-parse", "--show-toplevel"])
+                .strip()
+            ).resolve()
+            source_prefix = source.relative_to(repository)
+        except (FileNotFoundError, subprocess.CalledProcessError, ValueError):
+            # Preserve the compatibility path for plain source directories;
+            # the workspace provider owns their synthetic Git baseline.
+            return
+        for _artifact_path, rel_path in artifact_entries:
+            object_path = (source_prefix / rel_path).as_posix()
+            try:
+                self._git_output(
+                    repository,
+                    ["git", "cat-file", "-e", f"HEAD:{object_path}"],
+                )
+            except subprocess.CalledProcessError as exc:
+                raise ValueError(
+                    "VerifierArtifactNotMaterialized: verifier artifact "
+                    f"{rel_path!r} is present in the live filesystem but absent "
+                    "from the frozen source HEAD. Commit the artifact in the "
+                    "standalone source repository before freezing."
+                ) from exc
+
     def _git_artifact_clean(
         self,
         workspace: Path,
@@ -7678,6 +7765,42 @@ class FileSearchRuntime:
             "coverage": "persisted host-native Evidence annotator turn usage",
         }
 
+    def _outer_deadline_value(self, run_id: str) -> str | None:
+        """Resolve the earliest host or linked Goal deadline for one Search run."""
+        values: list[str] = []
+        environment_value = os.environ.get(OUTER_DEADLINE_ENV)
+        if environment_value:
+            values.append(environment_value)
+        for path in sorted((self.root_dir / "goal-plus").glob("gp_*/goal.json")):
+            try:
+                payload = load_json(path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if payload.get("status") in {"blocked", "complete", "abandoned"}:
+                continue
+            search_tasks = payload.get("search_tasks")
+            linked_search = payload.get("linked_search")
+            linked = (
+                isinstance(search_tasks, list)
+                and any(
+                    isinstance(task, dict) and task.get("run_id") == run_id
+                    for task in search_tasks
+                )
+            ) or (
+                isinstance(linked_search, dict)
+                and linked_search.get("run_id") == run_id
+            )
+            deadline = payload.get("outer_deadline_at")
+            if linked and isinstance(deadline, str) and deadline:
+                values.append(deadline)
+        if not values:
+            return None
+        parsed = [(self._outer_deadline_epoch(value), value) for value in values]
+        invalid = next((value for epoch, value in parsed if epoch is None), None)
+        if invalid is not None:
+            return invalid
+        return min(parsed, key=lambda item: float(item[0]))[1]
+
     @staticmethod
     def _outer_deadline_epoch(value: str | None) -> float | None:
         if not value:
@@ -7858,7 +7981,7 @@ class FileSearchRuntime:
         except Exception as exc:
             profile = None
             error = f"invalid annotator profile: {type(exc).__name__}: {exc}"
-        outer_deadline = os.environ.get(OUTER_DEADLINE_ENV) or None
+        outer_deadline = self._outer_deadline_value(run_id)
         if outer_deadline:
             deadline_epoch = self._outer_deadline_epoch(outer_deadline)
             if deadline_epoch is None:

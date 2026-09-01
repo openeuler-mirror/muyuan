@@ -81,7 +81,6 @@ EXAMPLES = {
     },
 }
 
-
 def _prompt_paths() -> list[Path]:
     return [
         EXAMPLES_ROOT / name / prompt
@@ -127,6 +126,13 @@ def test_prompt_entries_use_explicit_config_and_only_circle_routes_models() -> N
         )
         assert objective
         assert config.max_parallel == 2
+        expected_duration = (
+            300
+            if path.parent.name == "circle-packing-git-apply"
+            and "untimed" not in path.name
+            else None
+        )
+        assert config.max_duration_seconds == expected_duration
         assert config.workspace_backend == "git_worktree"
         assert config.promotion_mode == expected_promotion
         assert config.strategy == "agent_guided"
@@ -188,6 +194,8 @@ def test_circle_packing_git_apply_prompts_leave_workflow_to_config() -> None:
         "canonical report",
     )
     example = EXAMPLES_ROOT / "circle-packing-git-apply"
+    spec = json.loads((example / "search-spec.json").read_text(encoding="utf-8"))
+    assert spec["strategy"]["config"]["closeout_reserve_seconds"] == 60
     for name in EXAMPLES["circle-packing-git-apply"]["prompts"]:
         text = (example / name).read_text(encoding="utf-8")
         first_line, body = text.split("\n", 1)
@@ -196,6 +204,16 @@ def test_circle_packing_git_apply_prompts_leave_workflow_to_config() -> None:
         assert "问题：" in body
         assert "修改：" in body
         assert "验收：" in body
+        assert "`workspace/` 是本任务可写的独立源码 Git 仓库" in body
+        assert "`search-spec.json` 作为权威 SearchSpec" in body
+        assert '`source_path="workspace"' in body
+        assert "回写到 `workspace/`" in body
+        assert "Git worktree 干净" in body
+        if name.startswith("pi-"):
+            assert '`worker_host="pi-rpc"' in body
+        else:
+            assert '`worker_host="codex"' in body
+            assert '`worker_agent_type="search_candidate_agent"' in body
         for phrase in forbidden_workflow:
             assert phrase not in body
 

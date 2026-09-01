@@ -175,12 +175,12 @@ def _lease_max_runtime_seconds(
     worker_budget: dict[str, Any],
 ) -> float:
     configured = float(worker_budget["max_runtime_seconds"])
-    outer_deadline = FileSearchRuntime._outer_deadline_epoch(
-        os.environ.get("GOAL_PLUS_OUTER_DEADLINE_AT")
+    runtime = FileSearchRuntime(root_dir)
+    outer_deadline = runtime._outer_deadline_epoch(
+        runtime._outer_deadline_value(run_id)
     )
     if outer_deadline is None:
         return configured
-    runtime = FileSearchRuntime(root_dir)
     run = runtime._load_run(run_id)
     frozen = runtime._load_frozen_spec(run.frozen_spec_id)
     reserve = _closeout_reserve_seconds(frozen.spec.strategy.config)
@@ -203,12 +203,12 @@ def _assert_active_pool_close_allowed(
     active_count = sum(job["status"] in ACTIVE_JOB_STATES for job in jobs)
     if active_count == 0:
         return
-    outer_deadline = FileSearchRuntime._outer_deadline_epoch(
-        os.environ.get("GOAL_PLUS_OUTER_DEADLINE_AT")
+    runtime = FileSearchRuntime(root_dir)
+    outer_deadline = runtime._outer_deadline_epoch(
+        runtime._outer_deadline_value(str(pool["run_id"]))
     )
     if outer_deadline is None:
         return
-    runtime = FileSearchRuntime(root_dir)
     run = runtime._load_run(str(pool["run_id"]))
     if run.invalidated_at:
         return
@@ -334,6 +334,10 @@ def _launch_pool_job(
         if not existing_pythonpath
         else os.pathsep.join((str(source_root), existing_pythonpath))
     )
+    pool = _load_pool(root_dir, pool_id)
+    deadline = FileSearchRuntime(root_dir)._outer_deadline_value(str(pool["run_id"]))
+    if deadline is not None:
+        env["GOAL_PLUS_OUTER_DEADLINE_AT"] = deadline
     command = [
         sys.executable,
         "-m",
@@ -487,6 +491,18 @@ def _submit_pi_search_pool(
             candidate_id,
             worker_budget,
         )
+        if (
+            _lease_max_runtime_seconds(
+                root_dir,
+                str(pool["run_id"]),
+                effective_worker_budget,
+            )
+            < 1
+        ):
+            raise RuntimeError(
+                "OuterDeadlineExceeded: no candidate worker can start after the "
+                "Goal Plus closeout boundary"
+            )
 
         job_id = f"job_{uuid.uuid4().hex[:12]}"
         now = utc_timestamp()

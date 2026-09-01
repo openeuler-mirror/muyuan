@@ -39,6 +39,9 @@
     "name": "agent_guided",
     "orchestration_mode": "parallel_loops",
     "worker_host": "pi-rpc",
+    "config": {
+      "closeout_reserve_seconds": 60
+    },
     "worker_budget": {
       "max_runtime_seconds": 180,
       "max_turns": 8,

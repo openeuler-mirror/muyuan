@@ -57,7 +57,7 @@ native entry、输入 hash、时间和 invocation id；重复 invocation id 幂�
 token 开始就是自然语言目标：
 
 ```text
-/goal-plus max_parallel=2 workspace_backend=git_worktree promotion_mode=artifact_only strategy=agent_guided Optimize the read-only template.
+/goal-plus max_parallel=2 max_duration_seconds=300 workspace_backend=git_worktree promotion_mode=artifact_only strategy=agent_guided Optimize the read-only template.
 ```
 
 支持的 typed key 是：
@@ -66,6 +66,7 @@ token 开始就是自然语言目标：
 | --- | --- |
 | `mode` | `autonomous` 或 `probe` 探索模式 |
 | `max_parallel` | `SearchSpec.budget.max_parallel` |
+| `max_duration_seconds` | 从 Goal 创建时间起计算并持久化 `outer_deadline_at`；约束 worker、verifier 与收尾边界 |
 | `workspace_backend` | `SearchSpec.workspace.backend` |
 | `promotion_mode` | `SearchSpec.workspace.promotion_mode` |
 | `strategy` | `SearchSpec.strategy.name` |
@@ -78,6 +79,10 @@ token 开始就是自然语言目标：
 配置，否则 `goal_plus_save_spec_draft` 拒绝保存；只有 `command_config` 中缺省的字段才由
 Agent 根据目标、host 能力和资源信号决定。未知 key、重复 key、非法 enum、非正整数和不一致
 的 worker count 都在创建 Goal Plus 记录前失败。
+
+`max_duration_seconds` 不映射到 FrozenSpec。runtime 在创建 Goal Plus 记录时固定绝对
+`outer_deadline_at`，并让关联 Search 的 host pool、worker launch 和 verifier 读取同一个
+持久 deadline。达到时间条件后停止新增探索，但仍须选择、回写、复验并审计已经完成的有效结果。
 
 Host-only edit 仍要求 `expected_revision`，防止 stale adapter 覆盖新目标。Search result 以
 `run_id` 为键，因此一个 goal 可以保留多个 Search task；`search_tasks` 是仅追加历史，`linked_search`

@@ -17,8 +17,8 @@ Pi slash command。
 Plus 任务的最大运行时间；如果没有，先简短告知用户：“当前未设置最大运行时间，Goal
 Plus 将持续运行直至目标完成或用户手动停止。”这只是告知，不询问、不等待确认，随后
 立即继续执行。
-入口在 Main 模型选择后把逻辑 `thinking=max` 映射为 Pi `xhigh` 请求，并记录 Pi 按模型能力
-钳制后的实际档位；如果 reasoning 被钳制为 `off`，则拒绝启动，不静默降级。
+入口保留 Main 当前已选择的 Pi thinking 档位并记录实际值，不得强制提升或钳制。
+建议在复杂任务中启动 Pi 时选择 `xhigh`，但模型不支持 `xhigh` 或当前选择其他档位时仍正常运行。
 `/goal-plus-with-final-check` 创建记录时会设置 `policy.final_check.mode="required"`。
 `/goal-plus edit <完整的修订目标>` 由 extension 的 host-only 入口更新 active 记录并递增
 `goal_revision`；最新原始目标取代旧修订版。同一原生 Pi session 内的 provider error、
@@ -56,7 +56,7 @@ lease、外层剩余时间和收尾预留来确定探索时间，并使用可续
 Pi 普通 subagent 通过 `pi_goal_plus_run_work_item` 在隔离的 Pi RPC 子进程运行；该工具会
 创建 launch attempt，在 RPC 进程启动后绑定实际 session，并用同一 generation 提交 `result`
 或 `failed`。它不会为仍 active 的工作项另建 session；过期 launching attempt 才能被下一
-generation 接管。该工具对 child 请求 Pi `xhigh`、等待返回并记录实际档位。同一模型轮次可
+generation 接管。该工具让 child 继承 Main 当前 Pi thinking、等待返回并记录实际档位。同一模型轮次可
 并发调用多个无依赖工作项。主 Agent 必须检查返回证据并记录 `accepted` 或 `rework`。runtime
 进程；生命周期属于 Pi extension。包装器把原生操作写入 `orchestration_monitor` metadata，
 供只读 feature plugin 归一化 Main/worker 交互。不要保存私有推理或完整 transcript。
@@ -338,7 +338,9 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
 创建/检查时间戳和已用时间。使用该 prompt 审计全部要求和目标中已有的任何时间条件。
 时间条件决定何时停止新增工作并转入收尾，但不覆盖已经完成的结果终态。完成后使用
 `complete`，由完成卡分别展示预设时间和实际完成收尾时间；只有确有外部条件导致无法继续时
-才使用 `blocked`。未完成时继续；否则在停止前记录真实终态。不要编造单独的 Goal Plus deadline。
+才使用 `blocked`。未完成时继续；否则在停止前记录真实终态。host command 显式给出
+`max_duration_seconds` 时使用记录中从创建时间计算的 `outer_deadline_at`；缺省时不要编造
+单独的 Goal Plus deadline。
 当前修订版存在工作项时，未 `accepted` 的必需工作项会阻止最终检查和 `complete`。
 
 ### 结果后的 Spec 重新评估

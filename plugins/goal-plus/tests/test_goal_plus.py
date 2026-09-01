@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
 import subprocess
+import time
 
 import pytest
 from pydantic import ValidationError
@@ -183,7 +185,7 @@ def test_host_command_config_is_typed_persisted_and_removed_from_goal(tmp_path) 
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
 
     record = runtime.start_from_host_command(
-        "max_parallel=2 workspace_backend=git_worktree "
+        "max_parallel=2 max_duration_seconds=300 workspace_backend=git_worktree "
         "promotion_mode=artifact_only strategy=agent_guided Optimize latency",
         invocation=_codex_invocation("codex:test:config"),
     )
@@ -192,13 +194,44 @@ def test_host_command_config_is_typed_persisted_and_removed_from_goal(tmp_path) 
     assert "max_parallel=" not in record.raw_goal
     assert record.command_config.model_dump(exclude_none=True) == {
         "max_parallel": 2,
+        "max_duration_seconds": 300,
         "workspace_backend": "git_worktree",
         "promotion_mode": "artifact_only",
         "strategy": "agent_guided",
     }
     assert record.goal_revisions[-1].command_config == record.command_config
+    assert record.outer_deadline_at is not None
+    created_epoch = calendar.timegm(
+        time.strptime(record.created_at, "%Y-%m-%dT%H:%M:%SZ")
+    )
+    deadline_epoch = calendar.timegm(
+        time.strptime(record.outer_deadline_at, "%Y-%m-%dT%H:%M:%SZ")
+    )
+    assert deadline_epoch - created_epoch == 300
     created = runtime.list_events(record.goal_plus_id)[0]
     assert created["payload"]["command_config"]["promotion_mode"] == "artifact_only"
+
+
+def test_edit_preserves_goal_deadline_from_original_creation(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    record = runtime.start_from_host_command(
+        "max_duration_seconds=300 Optimize latency",
+        invocation=_codex_invocation("codex:test:deadline-start"),
+    )
+    deadline = record.outer_deadline_at
+
+    edited = runtime.edit_from_host_command(
+        record.goal_plus_id,
+        "Optimize latency and memory",
+        expected_revision=record.goal_revision,
+        invocation=_codex_invocation(
+            "codex:test:deadline-edit",
+            action="edit",
+        ),
+    )
+
+    assert edited.command_config.max_duration_seconds == 300
+    assert edited.outer_deadline_at == deadline
 
 
 def test_partial_command_config_only_constrains_search_fields_user_supplied(
@@ -328,6 +361,8 @@ def test_search_command_config_may_remain_unused_when_main_finishes_in_goal_mode
     [
         "unknown=value Optimize latency",
         "max_parallel=zero Optimize latency",
+        "max_duration_seconds=zero Optimize latency",
+        "max_duration_seconds=0 Optimize latency",
         "workers=A*1,B Optimize latency",
     ],
 )

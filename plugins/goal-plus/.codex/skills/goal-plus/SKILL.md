@@ -213,7 +213,9 @@ namespace 记录 `followup_task`。
 完成后使用 `complete`，并把预设时间和实际完成收尾时间作为两个独立事实报告。未完成时继续；
 只有确有外部条件导致无法继续时才使用 `blocked`，否则先用真实的终态调用
 `goal_plus_set_status`。
-候选 lease 结束绝不会完成父级 Goal Plus 任务，Goal Plus 也不单独存储任务 deadline。
+候选 lease 结束绝不会完成父级 Goal Plus 任务。只有 host command 显式给出
+`max_duration_seconds` 时，Goal Plus 才从创建时间持久化 `outer_deadline_at`；缺省时不编造
+单独的任务 deadline。
 
 一条 Goal Plus 记录就是完整任务。`search_tasks` 是其仅追加的 Search Mode 任务历史，
 每个 `run_id` 对应一个冻结 spec；`linked_search` 只是当前任务的兼容视图。在一项 Search

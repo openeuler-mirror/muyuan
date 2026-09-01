@@ -21,7 +21,7 @@ from goal_plus.time_advisory import (
 )
 
 
-GOAL_ID_RE = re.compile(r"\bgp_\d+\b")
+GOAL_ID_RE = re.compile(r"gp_\d+")
 GOAL_PLUS_PROMPT_RE = re.compile(
     r"^\s*\$(?P<command>goal-plus(?:-with-final-check)?)"
     r"(?:\s+(?P<body>.*\S))?\s*$",
@@ -101,30 +101,10 @@ def _search_root(session_root: Path) -> Path:
     return default_root
 
 
-def _first_goal_id(value: Any) -> str | None:
-    if isinstance(value, str):
-        match = GOAL_ID_RE.search(value)
-        return match.group(0) if match else None
-    if isinstance(value, dict):
-        for key in ("goal_plus_id", "goalPlusId", "goal_id", "goalId"):
-            found = _first_goal_id(value.get(key))
-            if found:
-                return found
-        for item in value.values():
-            found = _first_goal_id(item)
-            if found:
-                return found
-    if isinstance(value, list):
-        for item in value:
-            found = _first_goal_id(item)
-            if found:
-                return found
-    return None
-
-
-def _explicit_goal_ids(hook_input: dict[str, Any]) -> list[str]:
+def _trusted_goal_id() -> str | None:
+    """Return only the host-provided Goal ID, never model-visible hook text."""
     explicit = os.environ.get("GOAL_PLUS_ID")
-    return [goal_id for goal_id in (explicit, _first_goal_id(hook_input)) if goal_id]
+    return explicit if explicit and GOAL_ID_RE.fullmatch(explicit) else None
 
 
 def _hook_event_name(hook_input: dict[str, Any]) -> str:
@@ -801,9 +781,7 @@ def _record_stop_hook_event(
         details = result or {}
         goal_plus_id = details.get("goal_plus_id")
         if not isinstance(goal_plus_id, str):
-            goal_plus_id = _first_goal_id(hook_input) or _first_goal_id(
-                os.environ.get("GOAL_PLUS_ID")
-            )
+            goal_plus_id = _trusted_goal_id()
         payload = {
             "schema_version": STOP_HOOK_EVENT_SCHEMA_VERSION,
             "invocation_id": invocation_id,
@@ -1329,20 +1307,33 @@ def _resumable_records(search_root: Path) -> list[Any]:
     return records
 
 
-def _select_explicit_goal_id(search_root: Path, hook_input: dict[str, Any]) -> str | None:
+def _select_explicit_goal_id(search_root: Path) -> str | None:
     goals_dir = search_root / "goal-plus"
     if not goals_dir.is_dir():
         return None
-    for goal_id in _explicit_goal_ids(hook_input):
-        if (goals_dir / goal_id / "goal.json").is_file():
-            return goal_id
+    goal_id = _trusted_goal_id()
+    if goal_id is not None and (goals_dir / goal_id / "goal.json").is_file():
+        return goal_id
     return None
 
 
-def _select_session_goal_id(search_root: Path, session_id: str | None) -> str | None:
+def _select_session_goal_id(
+    search_root: Path,
+    session_id: str | None,
+    *,
+    include_terminal: bool = False,
+) -> str | None:
     if not session_id:
         return None
-    for record in _active_records(search_root):
+    if include_terminal:
+        records = []
+        for path in sorted((search_root / "goal-plus").glob("gp_*/goal.json")):
+            record = _load_record(path)
+            if record is not None:
+                records.append(record)
+    else:
+        records = _active_records(search_root)
+    for record in records:
         if (
             record.active_session is not None
             and record.active_session.session_id == session_id
@@ -1369,10 +1360,9 @@ def _select_search_goal_id(search_root: Path, run_id: Any) -> str | None:
 
 
 def _select_hook_goal_id(search_root: Path, hook_input: dict[str, Any]) -> str | None:
-    return _select_explicit_goal_id(search_root, hook_input) or _select_session_goal_id(
-        search_root,
-        _session_id(hook_input),
-    )
+    return _select_session_goal_id(
+        search_root, _session_id(hook_input), include_terminal=True
+    ) or _select_explicit_goal_id(search_root)
 
 
 def _goal_context(

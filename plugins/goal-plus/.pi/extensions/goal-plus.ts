@@ -1223,7 +1223,12 @@ function stringFrom(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function wholeGoalPresetDurationSeconds(rawGoal: string | undefined): number | undefined {
+function wholeGoalPresetDurationSeconds(
+	rawGoal: string | undefined,
+	commandConfig?: Record<string, unknown>,
+): number | undefined {
+	const structured = optionalNumberFrom(commandConfig?.max_duration_seconds);
+	if (structured !== undefined && structured > 0) return structured;
 	if (!rawGoal) return undefined;
 	const english = rawGoal.match(
 		/(?:\bwithin\s+|\bpreset(?:\s+task)?\s+duration\s+is\s+)(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?)\b/i,
@@ -1327,6 +1332,9 @@ function buildGoalCompletionView(
 			? status.linked_search
 			: undefined;
 	const rawGoal = stringFrom(goal?.raw_goal) ?? status.raw_goal;
+	const commandConfig = isRecord(goal?.command_config)
+		? goal.command_config
+		: status.command_config;
 	const promotionVerified = typeof selection?.promotion_verified === "boolean"
 		? selection.promotion_verified
 		: stringFrom(task?.state) === "promoted"
@@ -1336,7 +1344,7 @@ function buildGoalCompletionView(
 	return {
 		status: stringFrom(goal?.status) ?? status.status ?? "unknown",
 		elapsedSeconds: goalElapsedSeconds(snapshot),
-		presetDurationSeconds: wholeGoalPresetDurationSeconds(rawGoal),
+		presetDurationSeconds: wholeGoalPresetDurationSeconds(rawGoal, commandConfig),
 		goalPlusId: stringFrom(goal?.goal_plus_id) ?? status.goal_plus_id ?? activeGoalPlusId,
 		searchTasksTotal: optionalNumberFrom(goal?.search_tasks_total)
 			?? status.search_tasks_total
@@ -1686,22 +1694,32 @@ function goalPlusRequestFromSlashInput(text: string): GoalPlusSlashRequest | und
 	};
 }
 
-function enforceGoalPlusThinking(pi: ExtensionAPI, ctx: ExtensionContext): string | undefined {
+function selectedGoalPlusThinking(pi: ExtensionAPI, ctx: ExtensionContext): string {
 	try {
-		pi.setThinkingLevel("xhigh");
+		return pi.getThinkingLevel();
 	} catch (error) {
-		ctx.ui.notify(`Goal Plus requires main thinking=max: ${String(error)}`, "error");
-		return undefined;
+		ctx.ui.notify(`Goal Plus could not observe the current Pi thinking level: ${String(error)}`, "warning");
+		return "unavailable";
 	}
-	const observed = pi.getThinkingLevel();
-	if (observed === "off") {
-		ctx.ui.notify(
-			"Goal Plus requires main thinking=max; the selected Pi model has reasoning disabled.",
-			"error",
-		);
-		return undefined;
-	}
-	return observed;
+}
+
+function piExecutionPolicy(nativeReasoningEffort: string) {
+	return {
+		execution: {
+			mode: "orchestrated",
+			main_reasoning_effort: "host_selected",
+			delegation: "proactive",
+			search_routing: "auto",
+			completion: "until_terminal",
+			host: {
+				protocol: "goal-plus-ultra-v1",
+				host_id: "pi",
+				native_reasoning_effort: nativeReasoningEffort,
+				enforcement: "host",
+				operations: ["spawn", "wait", "observe"],
+			},
+		},
+	};
 }
 
 async function createGoalPlusStart(
@@ -1738,8 +1756,7 @@ async function createGoalPlusStart(
 		});
 		return undefined;
 	}
-	const observedThinking = enforceGoalPlusThinking(pi, ctx);
-	if (!observedThinking) return undefined;
+	const observedThinking = selectedGoalPlusThinking(pi, ctx);
 	appendPiRuntimeStartEntry(pi, ctx);
 	const commandCtx = commandContextFrom(ctx);
 	const startEntryCount = ctx.sessionManager.getEntries().length;
@@ -1755,20 +1772,7 @@ async function createGoalPlusStart(
 			`pi-entry-${startEntryCount}`,
 		),
 		policy: {
-			execution: {
-				mode: "orchestrated",
-				main_reasoning_effort: "max",
-				delegation: "proactive",
-				search_routing: "auto",
-				completion: "until_terminal",
-				host: {
-					protocol: "goal-plus-ultra-v1",
-					host_id: "pi",
-					native_reasoning_effort: observedThinking,
-					enforcement: "host",
-					operations: ["spawn", "wait", "observe"],
-				},
-			},
+			...piExecutionPolicy(observedThinking),
 			...(withFinalCheck ? { final_check: { mode: "required" } } : {}),
 		},
 	});
@@ -1802,7 +1806,6 @@ async function updateGoalPlusStart(
 	ctx: ExtensionContext,
 	rawGoal: string,
 ): Promise<string | undefined> {
-	if (!enforceGoalPlusThinking(pi, ctx)) return undefined;
 	if (!activeGoalPlusId) {
 		ctx.ui.notify("No active Goal Plus record to edit", "error");
 		return undefined;
@@ -1841,7 +1844,6 @@ async function resumeGoalPlusStart(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 ): Promise<string | undefined> {
-	if (!enforceGoalPlusThinking(pi, ctx)) return undefined;
 	if (!activeGoalPlusId) {
 		ctx.ui.notify("No interrupted Goal Plus record to resume", "error");
 		return undefined;
@@ -2112,6 +2114,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 			if (typeof attemptId !== "string" || typeof generation !== "number") {
 				throw new Error(`Pi work item ${input.work_item_id} did not return an attempt identity`);
 			}
+			const selectedThinking = selectedGoalPlusThinking(pi, ctx);
 			const scope = Array.isArray(workItem.scope) ? workItem.scope.map(String).join(", ") : "current workspace";
 			const acceptance = Array.isArray(workItem.acceptance)
 				? workItem.acceptance.map(String).join("\n- ")
@@ -2122,7 +2125,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 				cwd: status?.source_path || ctx.cwd,
 				agent_session_id: sessionId,
 				session_id: sessionId,
-				thinking_level: "xhigh",
+				thinking_level: selectedThinking === "unavailable" ? undefined : selectedThinking,
 				prompt: [
 					"You are an implementation subagent. Work only on the assigned item.",
 					`Title: ${String(workItem.title || input.work_item_id)}`,
@@ -2178,7 +2181,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 			const observedThinking = typeof metrics.thinking_level === "string"
 				? metrics.thinking_level
 				: undefined;
-			const failed = metadata.timed_out === true || observedThinking === "off" || !observedThinking;
+			const failed = metadata.timed_out === true || !observedThinking;
 			const assistantText = typeof metadata.assistant_text === "string"
 				? metadata.assistant_text.trim()
 				: "";
@@ -2189,7 +2192,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 				goal_plus_id: input.goal_plus_id,
 				work_item_id: input.work_item_id,
 				event: failed ? "failed" : "result",
-				summary: failed ? "Pi subagent did not complete with reasoning enabled." : summary,
+				summary: failed ? "Pi subagent did not complete with a reported thinking level." : summary,
 				host: "pi",
 				task_name: input.work_item_id,
 				agent_id: sessionId,
@@ -2197,7 +2200,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 				generation,
 				transcript_path: typeof metadata.session_file === "string" ? metadata.session_file : undefined,
 				metadata: {
-					requested_reasoning_effort: "xhigh",
+					requested_reasoning_effort: selectedThinking,
 					native_reasoning_effort: observedThinking,
 					orchestration_monitor: {
 						native_operation: "goal-plus-pi-worker",

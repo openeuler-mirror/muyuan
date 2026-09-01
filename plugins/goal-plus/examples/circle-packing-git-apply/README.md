@@ -81,7 +81,8 @@ pi
 
 这些 prompt 的正文只描述问题、允许修改的文件和验收方法。第一行的 typed config
 负责选择运行行为：`workspace_backend=git_worktree` 创建候选 worktree，
-`max_parallel=2` 和 `strategy=agent_guided` 控制 Search，
+`max_parallel=2` 和 `strategy=agent_guided` 控制 Search，`max_duration_seconds=300`
+从 Goal 创建时建立持久的五分钟 deadline；权威 SearchSpec 另外冻结 60 秒收尾预留，
 `promotion_mode=apply` 将选中的发布提交应用回源码仓库。prompt 不需要逐步指挥
 candidate 创建、selection、promotion、apply 或 report。
 

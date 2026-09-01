@@ -433,7 +433,7 @@ def test_create_run_rejects_clean_git_source_at_new_head(tmp_path: Path) -> None
     assert not runtime.runs_dir.exists()
 
 
-def test_git_relocation_failure_aborts_before_second_candidate_or_worker(
+def test_git_freeze_rejects_verifier_ignored_by_outer_repository(
     tmp_path: Path,
 ) -> None:
     repository = tmp_path / "repository"
@@ -460,30 +460,13 @@ def test_git_relocation_failure_aborts_before_second_candidate_or_worker(
     }
     spec_data["process_verifiers"][0]["cwd"] = "case/workspace"
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(spec_data),
-        [nested / "evaluator.py"],
-    )
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    plan = runtime.plan_next(run_id, requested_k=2)
+    with pytest.raises(ValueError, match="VerifierArtifactNotMaterialized"):
+        runtime.freeze_spec(
+            SearchSpec.model_validate(spec_data),
+            [nested / "evaluator.py"],
+        )
 
-    with pytest.raises(RuntimeError, match="WorkspaceRelocationVerifierFailed"):
-        runtime.start_batch(run_id, plan.plan_id)
-
-    run = runtime._load_run(run_id)
-    records = runtime._load_candidate_records(run_id)
-    persisted_plan = runtime._load_plan(run_id, plan.plan_id)
-    assert run.state == RunState.ABORTED
-    assert run.invalidation_reason == "verifier_target_mismatch"
-    assert run.workspace_bootstrap_verification is not None
-    assert run.workspace_bootstrap_verification.passed is False
-    assert run.workspace_bootstrap_verification.candidate_id == "c001"
-    assert run.candidates_total == 1
-    assert [record.candidate_id for record in records] == ["c001"]
-    assert persisted_plan.status == "planned"
-    assert (runtime._run_dir(run_id) / "workspace" / "c001").is_dir()
-    assert not (runtime._run_dir(run_id) / "workspace" / "c002").exists()
-    assert runtime._load_agent_sessions(run_id) == []
+    assert not runtime.specs_dir.exists()
 
 
 def test_git_relocation_rejects_nonignored_verifier_side_effect(

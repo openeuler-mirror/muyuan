@@ -170,7 +170,9 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "/goal-plus mode=probe" in text
     assert "`raw_goal` 的规范末行" in normalized
     assert "任何 worker lease 结束都不会完成" in text
-    assert "不要编造单独的 Goal Plus deadline" in text
+    assert "`max_duration_seconds`" in text
+    assert "`outer_deadline_at`" in text
+    assert "缺省时不要编造" in text
     assert "加入队列" in text
     assert "continuation prompt" in text
     assert "`goal_plus_record_triage` 前不要读取或审计目标文件" in text
@@ -187,7 +189,6 @@ def test_pi_prompt_and_extension_defer_report_until_terminal_state() -> None:
     extension = (ROOT / ".pi" / "extensions" / "goal-plus.ts").read_text(
         encoding="utf-8"
     )
-
     assert "在 Search 执行" in prompt
     assert "绝不能调用 `search_report`" in prompt
     assert "Goal Plus 记录达到终态后" in prompt

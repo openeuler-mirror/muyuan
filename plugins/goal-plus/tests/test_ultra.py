@@ -89,6 +89,21 @@ def test_ultra_policy_is_default_and_host_neutral(tmp_path) -> None:
     assert bound.policy["execution"]["host"]["host_id"] == "deepseek-harness"
     assert bound.policy["execution"]["host"]["enforcement"] == "harness"
 
+    selected = GoalPlusExecutionPolicy.model_validate(
+        {
+            "main_reasoning_effort": "host_selected",
+            "host": {
+                "host_id": "pi",
+                "native_reasoning_effort": "medium",
+                "enforcement": "host",
+                "operations": ["spawn", "wait", "observe"],
+            },
+        }
+    )
+    assert selected.main_reasoning_effort == "host_selected"
+    assert selected.host is not None
+    assert selected.host.native_reasoning_effort == "medium"
+
 
 def test_ultra_host_requires_portable_minimum_lifecycle() -> None:
     with pytest.raises(ValidationError, match="spawn, wait, and observe"):
@@ -507,8 +522,11 @@ def test_ultra_assets_keep_core_host_neutral_and_wire_codex_and_pi() -> None:
     assert "spawn_agent" in codex
     assert 'fork_turns="none"' in codex
     assert "`bind`" in codex
-    assert 'pi.setThinkingLevel("xhigh")' in pi
-    assert 'thinking_level: "xhigh"' in pi
+    assert 'pi.setThinkingLevel("xhigh")' not in pi
+    assert "pi.getThinkingLevel()" in pi
+    assert 'main_reasoning_effort: "host_selected"' in pi
+    assert "thinking_level: selectedThinking" in pi
+    assert 'observedThinking === "off"' not in pi
     assert 'name: "pi_goal_plus_run_work_item"' in pi
     assert 'native_operation: "pi_goal_plus_run_work_item"' in pi
     assert 'native_operation: "goal-plus-pi-worker"' in pi

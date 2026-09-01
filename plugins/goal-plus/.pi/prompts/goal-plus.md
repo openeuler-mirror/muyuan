@@ -11,7 +11,7 @@ active `goal_plus_id` 时才继续；同一 session 的后续 turn 沿用该绑�
 如果没有，先用一句简短 commentary 告知用户：“当前未设置最大运行时间，Goal Plus 将持续运行
 直至目标完成或用户手动停止。”这只是告知，不要询问或等待确认；告知后立即继续执行。
 
-入口已把逻辑 Main `thinking=max` 映射到 Pi 原生最高档。triage 后调用
+入口保留 Main 当前选择的 Pi thinking 档位；复杂任务推荐 `xhigh`，但不得在 Goal Plus 内强制改档。triage 后调用
 `goal_plus_upsert_work_items` 建立当前修订版的
 编排计划。普通独立工作项通过 `pi_goal_plus_run_work_item` 执行；用
 `goal_plus_record_work_event` 记录验收或返工。只有可量化、具有确定性 verifier、隔离编辑面

@@ -65,6 +65,7 @@ def test_circle_packing_git_workspace_applies_selected_commit(
     assert _git(source, "status", "--porcelain=v1", "--untracked-files=all") == ""
 
     spec = json.loads((EXAMPLE / "search-spec.json").read_text(encoding="utf-8"))
+    assert spec["strategy"]["config"]["closeout_reserve_seconds"] == 60
     spec["source_path"] = str(source)
     verifier = source / ".goal-plus-verifiers" / "circle_packing_score.py"
     monkeypatch.chdir(EXAMPLE)

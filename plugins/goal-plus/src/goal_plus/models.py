@@ -835,7 +835,7 @@ class GoalPlusUltraHost(SearchModel):
 
 class GoalPlusExecutionPolicy(SearchModel):
     mode: Literal["orchestrated"] = "orchestrated"
-    main_reasoning_effort: Literal["max"] = "max"
+    main_reasoning_effort: Literal["max", "host_selected"] = "max"
     delegation: Literal["proactive"] = "proactive"
     search_routing: Literal["auto"] = "auto"
     completion: Literal["until_terminal"] = "until_terminal"
@@ -867,6 +867,9 @@ class GoalPlusCommandConfig(SearchModel):
         default=None, exclude_if=lambda value: value is None
     )
     max_parallel: int | None = Field(
+        default=None, gt=0, exclude_if=lambda value: value is None
+    )
+    max_duration_seconds: int | None = Field(
         default=None, gt=0, exclude_if=lambda value: value is None
     )
     workspace_backend: WorkspaceBackend | None = Field(
@@ -1079,6 +1082,7 @@ class GoalPlusRecord(SearchModel):
         default_factory=GoalPlusCommandConfig
     )
     source_path: str | None = None
+    outer_deadline_at: str | None = None
     status: GoalPlusStatus = "active"
     phase: GoalPlusPhase = "intake"
     policy: dict[str, Any] = Field(default_factory=dict)

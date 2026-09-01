@@ -105,6 +105,7 @@ EXPLORATION_MODE_LINES = {
 GOAL_PLUS_COMMAND_CONFIG_KEYS = {
     "mode",
     "max_parallel",
+    "max_duration_seconds",
     "workspace_backend",
     "promotion_mode",
     "strategy",
@@ -254,6 +255,15 @@ def parse_goal_plus_command_config(
         except ValueError as exc:
             raise ValueError("max_parallel= requires a positive integer") from exc
 
+    max_duration_seconds: int | None = None
+    if "max_duration_seconds" in directives:
+        try:
+            max_duration_seconds = int(directives["max_duration_seconds"])
+        except ValueError as exc:
+            raise ValueError(
+                "max_duration_seconds= requires a positive integer"
+            ) from exc
+
     mode = directives.get("mode")
     if mode is not None:
         mode = mode.lower()
@@ -268,6 +278,7 @@ def parse_goal_plus_command_config(
         {
             "mode": mode,
             "max_parallel": max_parallel,
+            "max_duration_seconds": max_duration_seconds,
             "workspace_backend": (
                 directives["workspace_backend"].lower()
                 if "workspace_backend" in directives
@@ -528,6 +539,9 @@ class FileGoalPlusRuntime:
             raw_goal=normalized_raw_goal,
             command_config=command_config,
             source_path=source_path,
+            outer_deadline_at=self._deadline_from_creation(
+                now, command_config.max_duration_seconds
+            ),
             status="active",
             phase="intake",
             policy=normalized_policy,
@@ -738,6 +752,17 @@ class FileGoalPlusRuntime:
             updated_command_config = updated_command_config.model_copy(
                 update={"mode": record.command_config.mode}
             )
+        if (
+            updated_command_config.max_duration_seconds is None
+            and record.command_config.max_duration_seconds is not None
+        ):
+            updated_command_config = updated_command_config.model_copy(
+                update={
+                    "max_duration_seconds": (
+                        record.command_config.max_duration_seconds
+                    )
+                }
+            )
         updated_raw_goal = normalize_goal_plus_raw_goal(
             raw_goal,
             inherited_mode=exploration_mode_from_raw_goal(record.raw_goal),
@@ -785,6 +810,10 @@ class FileGoalPlusRuntime:
             update={
                 "raw_goal": updated_raw_goal,
                 "command_config": updated_command_config,
+                "outer_deadline_at": self._deadline_from_creation(
+                    record.created_at,
+                    updated_command_config.max_duration_seconds,
+                ),
                 "goal_revision": next_revision,
                 "goal_revisions": [*record.goal_revisions, revision],
                 "final_checks": checks,
@@ -2317,6 +2346,21 @@ class FileGoalPlusRuntime:
             raise ValueError("policy.final_check.mode must be 'disabled' or 'required'")
         normalized["final_check"] = {**final_check, "mode": mode}
         return normalized
+
+    @staticmethod
+    def _deadline_from_creation(
+        created_at: str,
+        max_duration_seconds: int | None,
+    ) -> str | None:
+        if max_duration_seconds is None:
+            return None
+        created_epoch = calendar.timegm(
+            time.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
+        )
+        return time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(created_epoch + max_duration_seconds),
+        )
 
     def _final_check_mode(self, record: GoalPlusRecord) -> str:
         final_check = record.policy.get("final_check")
