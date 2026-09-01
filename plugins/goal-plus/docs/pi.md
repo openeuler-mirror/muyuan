@@ -259,6 +259,12 @@ Evidence commit。
 `results.tsv` 路径。只有确实需要旧 verifier 的完整细节时，才调用可能很大的
 `search_list_iterations`。
 
+`candidate_task.acceptance` 包含 FrozenSpec 投影出的稳定验收合同；
+`candidate_task.process_environment` 包含从 freeze 设备快照轮转分配的 candidate 级资源环境。
+Pi supervisor 会把后者注入初始 worker 与 continuation 子进程，worker 启动的本地命令和
+runtime 正式 verifier 因而使用同一设备映射。设备快照只能来自 host 预先注册的
+`GOAL_PLUS_DEVICE_POOLS`；SearchSpec 仅引用 `pool_id`。
+
 worker 始终把 `context.workspace` 作为文件与 shell 操作的显式 cwd，不依赖 wrapper 启动
 目录。任务局部 Skill 无需 spec 配置：runtime 只发现 source Git 已跟踪的
 `.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；在 freeze 的

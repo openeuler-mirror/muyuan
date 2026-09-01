@@ -75,6 +75,10 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    `GoalPlusRecord.command_config` 中的 `max_parallel`、`workspace_backend`、
    `promotion_mode`、`strategy`、`annotator` 和 `workers` 映射到 SearchSpec；ready draft
    不匹配时 runtime 会拒绝保存。未配置字段才根据目标、host 能力和资源信号决定。
+   并行 candidate 使用单卡 accelerator 时，只在 SearchSpec `device_pools` 中引用 host
+   预先注册的 `pool_id`，并让相关 verifier 使用 `<pool_id>:0` 作为 `resource_lock`。
+   host 通过 `GOAL_PLUS_DEVICE_POOLS` 注册非敏感设备清单；SearchSpec 不能指定或读取任意
+   环境变量。runtime 在 freeze 时固定被引用的 pool，并把同一映射投影到 Codex/Pi candidate。
    新 SearchSpec 必须显式设置
    `workspace.backend="git_worktree"`，以便候选共享 Git object database 并解析彼此的
    Evidence commit；`workspace.promotion_mode` 默认是 `apply`。只有受保护 source、只读

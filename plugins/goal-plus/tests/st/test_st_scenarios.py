@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from goal_plus.host_observability import discover_codex_session_file
+from goal_plus.models import AgentSessionRecord
 from .conftest import load_prompt
 from .helpers.report_parser import StReport, extract_st_report, find_run_id_in_stdout
 
@@ -269,6 +271,17 @@ def test_scenario(
             == report.extra["continued_candidate_id"]
         )
         assert sessions[continued_id]["launch"]["tool"] == "followup_task"
+        for payload in sessions.values():
+            transcript = discover_codex_session_file(
+                AgentSessionRecord.model_validate(payload)
+            )
+            assert transcript is not None and transcript.is_file()
+            assert (
+                transcript.read_text(encoding="utf-8").count(
+                    "goal_plus_context_role=search_candidate"
+                )
+                == 1
+            )
         assert run_payload["best_candidate_id"] == report.selected_candidate_id
         assert run_payload["best_score"] == pytest.approx(report.best_score)
 

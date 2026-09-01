@@ -58,6 +58,9 @@ pytest -m "st and st_codex" -k codex_redispatch -v -s -rs
 ST_CODEX_MODEL=gpt-5.6-luna \
   pytest -m "st and st_codex" -k codex_parallel_loop_cycle -v -s -rs
 
+# Codex native child hook isolation and main-session binding
+pytest -m "st and st_codex" -k codex_native_child_hooks -v -s -rs
+
 # Codex one-worker AutoResearch lease: 5 minute lower bound, 7 minute watchdog
 ST_CODEX_TIMEOUT=1200 \
   pytest -m "st and st_codex" -k codex_autoresearch_lease -v -s -rs

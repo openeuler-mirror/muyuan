@@ -619,6 +619,7 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
             },
             "model_pattern": "gpt-5.4-mini",
             "thinking_level": "high",
+            "environment": {"ASCEND_RT_VISIBLE_DEVICES": "5"},
             "continuation": "native_session",
             "metrics_baseline": {
                 "last_entry_id": "entry_1",
@@ -678,6 +679,7 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
     )
     assert popen_env["GOAL_PLUS_SOURCE_PATH"] == str(pi_worker.default_extension_path().parents[2])
     assert popen_env["GOAL_PLUS_PI_ROLE"] == "worker"
+    assert popen_env["ASCEND_RT_VISIBLE_DEVICES"] == "5"
     assert int(popen_env["GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS"]) > 0
     assert handle["metadata"]["raw_logging"] is False
     assert handle["metadata"]["text_log"] is None

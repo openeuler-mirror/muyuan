@@ -16,7 +16,7 @@ from goal_plus.pi_pool import (
     wait_any_pi_search_pool,
 )
 from goal_plus.pi_worker import _workspace_progress_handoff, run_pi_rpc_worker
-from goal_plus.runtime import FileSearchRuntime
+from goal_plus.runtime import DEVICE_POOLS_ENV, FileSearchRuntime
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -328,13 +328,30 @@ def test_pi_rpc_managed_pool_wait_any(st_project_root: Path) -> None:
 
 @pytest.mark.st
 @pytest.mark.st_pi_rpc
-def test_pi_rpc_parallel_loop_cycle(st_project_root: Path) -> None:
+def test_pi_rpc_parallel_loop_cycle(
+    st_project_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime = FileSearchRuntime(st_project_root / ".search")
     spec_data = _circle_packing_pi_spec(
         max_runtime_seconds=int(os.environ.get("ST_PI_CYCLE_WORKER_SECONDS", "90"))
     ).model_dump(mode="json")
     spec_data["budget"] = {"max_parallel": 2}
     spec_data["strategy"]["orchestration_mode"] = "parallel_loops"
+    visibility_env = "GOAL_PLUS_ST_VISIBLE_DEVICES"
+    monkeypatch.setenv(
+        DEVICE_POOLS_ENV,
+        json.dumps(
+            {
+                "st-device": {
+                    "visibility_env": visibility_env,
+                    "devices": ["lane-a", "lane-b"],
+                }
+            }
+        ),
+    )
+    spec_data["process_verifiers"][0]["resource_lock"] = "st-device:0"
+    spec_data["device_pools"] = [{"pool_id": "st-device"}]
     worker_launch = {
         key: value
         for key, value in {
@@ -350,6 +367,10 @@ def test_pi_rpc_parallel_loop_cycle(st_project_root: Path) -> None:
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
+    assert [task.process_environment for task in tasks] == [
+        {visibility_env: "lane-a"},
+        {visibility_env: "lane-b"},
+    ]
 
     opened = open_pi_search_pool(
         root_dir=runtime.root_dir,
@@ -434,6 +455,12 @@ def test_pi_rpc_parallel_loop_cycle(st_project_root: Path) -> None:
     ]
     assert len(first_candidate_sessions) == 1
     assert first_candidate_sessions[0].host_handle.metadata["dispatch_count"] == 2
+    assert (
+        runtime.get_agent_context(first_session_id)["candidate_task"][
+            "process_environment"
+        ]
+        == tasks[int(first_candidate_id.removeprefix("c")) - 1].process_environment
+    )
     assert len({Path(session.workspace).resolve() for session in first_candidate_sessions}) == 1
     with pytest.raises(RuntimeError, match="one initial SearchPlan"):
         runtime.plan_next(run_id, requested_k=1)

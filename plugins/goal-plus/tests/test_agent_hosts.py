@@ -359,6 +359,7 @@ def test_pi_rpc_adapter_builds_worker_payload() -> None:
         root="/tmp/project/.search",
         cwd="/tmp/project/.search/runs/run_1/candidates/c001/workspace",
         worker_prompt="first call search_get_agent_context",
+        process_environment={"ASCEND_RT_VISIBLE_DEVICES": "5"},
     )
 
     assert payload["tool"] == "pi_rpc_worker"
@@ -369,6 +370,7 @@ def test_pi_rpc_adapter_builds_worker_payload() -> None:
     assert "session_dir" not in payload
     assert payload["continuation"] == "native_session"
     assert payload["session_persistence"] == "cross_process"
+    assert payload["environment"] == {"ASCEND_RT_VISIBLE_DEVICES": "5"}
     assert "search_get_agent_context" in payload["prompt"]
     assert "agent_session_id=agent_0001" in payload["prompt"]
     assert "assigned_worker_budget={'max_runtime_seconds': 600" in payload["prompt"]
@@ -454,12 +456,14 @@ def test_pi_rpc_adapter_builds_cross_process_native_session_continuation() -> No
                 "started_at": "2026-07-19T00:00:00Z",
             }
         },
+        process_environment={"ASCEND_RT_VISIBLE_DEVICES": "5"},
     )
 
     assert payload["agent_session_id"] == "agent_0001"
     assert payload["session_id"] == "agent_0001"
     assert payload["continuation"] == "native_session"
     assert payload["session_persistence"] == "cross_process"
+    assert payload["environment"] == {"ASCEND_RT_VISIBLE_DEVICES": "5"}
     assert payload["metrics_baseline"] == {
         "last_entry_id": "entry_7",
         "entry_count": 7,

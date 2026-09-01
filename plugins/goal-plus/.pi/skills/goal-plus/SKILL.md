@@ -125,6 +125,12 @@ unstaged 或 non-ignored untracked 变化会阻止 freeze。编译器产物和�
 `copy` 保留 disposable-copy ranking preflight。未来 ThinkThread backend 在 origin 验证并固定
 snapshot 后不需要 relocation；当前 Pi host 仍会在 freeze 前拒绝 TT，不得 fallback。
 
+并行 candidate 使用单卡 accelerator 时，只在 SearchSpec `device_pools` 中引用 host 预先
+注册的 `pool_id`，并让相关 verifier 使用 `<pool_id>:0` 作为 `resource_lock`。host 通过
+`GOAL_PLUS_DEVICE_POOLS` 注册非敏感设备清单和可见变量；SearchSpec 不能指定或读取任意环境
+变量。runtime 在 freeze 时固定被引用的 pool，Pi supervisor 会把分配的同一 candidate 环境
+注入初始 worker 和 continuation。
+
 对于用语义、大致 shape/dtype 和参考提示描述的 AscendC Direct Invoke 算子目标，
 记录 `scenario="ascendc_direct_invoke"`，并完整读取
 `examples/ascendc-direct-search/SPEC_DISCOVERY.md`。遵循其中的 request schema

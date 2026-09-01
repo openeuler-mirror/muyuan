@@ -409,6 +409,7 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 | `strategy.worker_budget`            | host deadline 和可选 minimum lease                       |
 | `workspace.backend`                 | `git_worktree`（默认）、`copy`，或接口占位 `thinkthread` |
 | `workspace.promotion_mode`          | `apply`（默认）或显式 `artifact_only`                    |
+| `device_pools`                      | 可选的受信任 host pool ID；配置来自 `GOAL_PLUS_DEVICE_POOLS` |
 
 Git source 的 clean 检查独立于 provider：`git_worktree` 现在执行，`thinkthread` 在 host
 capability 接通后复用同一契约。TT baseline 必须从 clean、自包含的 inner-Git checkout 创建

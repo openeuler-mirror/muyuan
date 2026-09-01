@@ -54,6 +54,7 @@ def create_mcp(
         `/tmp` 路径不安全。可选自定义 verifier 必须在 Spec Discovery 期间写入源码拥有
         的路径，绝不能放在 `.gp` 或 `.search`。`expected_outputs` 只包含产物路径/glob，
         不是 stdout parser 配置。`spec.budget.max_parallel` 唯一决定初始候选 Agent 数。
+        可选 `device_pools` 只能引用 host 通过 `GOAL_PLUS_DEVICE_POOLS` 注册的 pool ID。
         """
         goal_runtime.require_host_verified_active_goal()
         return tools.search_freeze_spec(spec, verifier_artifact_paths)
@@ -252,9 +253,9 @@ def create_mcp(
     def search_get_agent_context(agent_session_id: str) -> dict[str, Any]:
         """Subagent 的首次调用，返回权威 id 和工作区。
 
-        返回 run_id、candidate_id、workspace、candidate_task、最佳/最近 iteration 摘要和
-        results.tsv 路径。由 subagent 调用，不由主 agent 调用。subagent 必须把 prompt
-        提供的 id 只当作标签，并将此响应作为事实来源。
+        返回 run_id、candidate_id、workspace、candidate_task（含冻结验收合同与 candidate
+        进程环境）、最佳/最近 iteration 摘要和 results.tsv 路径。由 subagent 调用，不由主
+        agent 调用。subagent 必须把 prompt 提供的 id 只当作标签，并将此响应作为事实来源。
         """
         return tools.search_get_agent_context(agent_session_id)
 

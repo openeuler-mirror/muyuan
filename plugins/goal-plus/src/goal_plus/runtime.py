@@ -44,6 +44,8 @@ from goal_plus.models import (
     CandidateProposal,
     CandidateTask,
     CandidateWorkOrder,
+    DevicePoolInventory,
+    DevicePoolSpec,
     EvidenceAnnotationTask,
     EvidenceDetailReadRecord,
     FeedbackPolicy,
@@ -134,6 +136,7 @@ SUPPLEMENTAL_EVALUATION_ENABLED_ENV = (
 SUPPLEMENTAL_EVALUATION_REQUIRED_ENV = (
     "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED"
 )
+DEVICE_POOLS_ENV = "GOAL_PLUS_DEVICE_POOLS"
 
 
 def _boolean_environment_value(
@@ -772,6 +775,7 @@ class FileSearchRuntime:
         spec = self._apply_global_evidence_mode_from_environment(spec)
         spec = self._normalize_strategy_models(spec)
         self._validate_strategy_config(spec.strategy)
+        device_inventory = self._resolve_device_inventory(spec.device_pools)
         source_root = Path(spec.source_path).resolve()
         self._validate_clean_source_repository(spec)
         workspace_capacity_estimate = estimate_workspace_capacity(
@@ -846,6 +850,7 @@ class FileSearchRuntime:
                     / f"origin-{uuid.uuid4().hex[:12]}"
                 ),
                 source_artifact_ref=source_artifact_ref,
+                device_inventory=device_inventory,
             )
             if not origin_verification.passed:
                 failed = next(
@@ -877,9 +882,13 @@ class FileSearchRuntime:
             )
             source_artifact_ref = source_artifact_after
         else:
-            self._preflight_ranking_verifiers(spec)
+            self._preflight_ranking_verifiers(spec, device_inventory)
 
         spec_payload = spec.model_dump(mode="json")
+        device_inventory_payload = {
+            pool_id: inventory.model_dump(mode="json")
+            for pool_id, inventory in device_inventory.items()
+        }
         spec_hash = sha256_text(
             canonical_json(
                 {
@@ -891,6 +900,7 @@ class FileSearchRuntime:
                         else None
                     ),
                     "task_skills": task_skill_paths,
+                    "device_inventory": device_inventory_payload,
                     "supplemental_evaluation_enabled": supplemental_enabled,
                     "supplemental_evaluation_required": supplemental_required,
                 }
@@ -918,6 +928,7 @@ class FileSearchRuntime:
             workspace_capacity_estimate=workspace_capacity_estimate,
             source_artifact_ref=source_artifact_ref,
             origin_verification=origin_verification,
+            device_inventory=device_inventory,
             created_at=utc_timestamp(),
         )
         write_json(spec_dir / "frozen_spec.json", frozen.model_dump(mode="json"))
@@ -933,11 +944,17 @@ class FileSearchRuntime:
         verifier_hashes: dict[str, str],
         log_dir: Path,
         source_artifact_ref: ArtifactRef | None,
+        device_inventory: dict[str, DevicePoolInventory],
         candidate_id: str | None = None,
     ) -> BootstrapVerification:
         started_at = utc_timestamp()
         log_dir.mkdir(parents=True, exist_ok=True)
         results: list[BootstrapVerifierResult] = []
+        process_environment = self._process_environment_for_index(
+            spec.device_pools,
+            device_inventory,
+            0,
+        )
 
         initial_hash_failures = self._bootstrap_hash_failures(
             workspace,
@@ -966,6 +983,8 @@ class FileSearchRuntime:
                         / f"{index:02d}-{safe_verifier_name(command.name)}.log"
                     ),
                     verifier_hashes=verifier_hashes,
+                    device_inventory=device_inventory,
+                    process_environment=process_environment,
                 )
                 results.append(result)
 
@@ -1032,6 +1051,8 @@ class FileSearchRuntime:
         phase: Literal["origin", "workspace_relocation"],
         log_path: Path,
         verifier_hashes: dict[str, str],
+        device_inventory: dict[str, DevicePoolInventory],
+        process_environment: dict[str, str],
     ) -> BootstrapVerifierResult:
         cwd = (workspace / command.cwd).resolve()
         try:
@@ -1077,8 +1098,14 @@ class FileSearchRuntime:
         diagnostics_dir = log_path.parent / "diagnostics" / log_path.stem
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
+        resource = self._verifier_resource(
+            command.resource_lock,
+            spec.device_pools,
+            device_inventory,
+            process_environment,
+        )
         try:
-            with verifier_resource_lock(command.resource_lock):
+            with verifier_resource_lock(resource):
                 with tempfile.TemporaryDirectory(
                     prefix="goal-plus-verifier-command-"
                 ) as verifier_tmp:
@@ -1090,7 +1117,8 @@ class FileSearchRuntime:
                             Path(verifier_tmp),
                             phase=phase,
                             diagnostics_dir=diagnostics_dir,
-                            resource=command.resource_lock,
+                            resource=resource,
+                            process_environment=process_environment,
                         ),
                         text=True,
                         capture_output=True,
@@ -1202,7 +1230,11 @@ class FileSearchRuntime:
                 }
         return failures
 
-    def _preflight_ranking_verifiers(self, spec: SearchSpec) -> None:
+    def _preflight_ranking_verifiers(
+        self,
+        spec: SearchSpec,
+        device_inventory: dict[str, DevicePoolInventory],
+    ) -> None:
         source_root = Path(spec.source_path).resolve()
         source_workspace = source_root if source_root.is_dir() else source_root.parent
         ranking_verifiers = [
@@ -1210,6 +1242,11 @@ class FileSearchRuntime:
             for command in [*spec.process_verifiers, *spec.promotion_verifiers]
             if command.role == VerifierRole.RANKING_SIGNAL
         ]
+        process_environment = self._process_environment_for_index(
+            spec.device_pools,
+            device_inventory,
+            0,
+        )
 
         with tempfile.TemporaryDirectory(
             prefix="goal-plus-verifier-preflight-"
@@ -1233,8 +1270,14 @@ class FileSearchRuntime:
                     )
 
                 workspace_before = self._hash_verifier_workspace(workspace)
+                resource = self._verifier_resource(
+                    command.resource_lock,
+                    spec.device_pools,
+                    device_inventory,
+                    process_environment,
+                )
                 try:
-                    with verifier_resource_lock(command.resource_lock):
+                    with verifier_resource_lock(resource):
                         with tempfile.TemporaryDirectory(
                             prefix="goal-plus-verifier-command-"
                         ) as verifier_tmp:
@@ -1249,7 +1292,8 @@ class FileSearchRuntime:
                                     verifier_tmp_path,
                                     phase="freeze_preflight",
                                     diagnostics_dir=diagnostics_dir,
-                                    resource=command.resource_lock,
+                                    resource=resource,
+                                    process_environment=process_environment,
                                 ),
                                 text=True,
                                 capture_output=True,
@@ -1328,8 +1372,10 @@ class FileSearchRuntime:
         ],
         diagnostics_dir: Path | None = None,
         resource: str | None = None,
+        process_environment: dict[str, str] | None = None,
     ) -> dict[str, str]:
         env = os.environ.copy()
+        env.update(process_environment or {})
         env["PYTHONPATH"] = str(cwd) + os.pathsep + env.get("PYTHONPATH", "")
         for name in ("TMPDIR", "TMP", "TEMP", "GOAL_PLUS_VERIFIER_TMPDIR"):
             env[name] = str(temp_dir)
@@ -4880,6 +4926,11 @@ class FileSearchRuntime:
             root=str(self.root_dir),
             cwd=str(candidate_record.task.workspace),
             worker_prompt=self._worker_prompt_for_host(frozen.spec.strategy.worker_host),
+            process_environment=(
+                candidate_record.task.process_environment
+                if adapter.capabilities.supports_process_environment
+                else None
+            ),
         )
 
     def _build_continue_launch_payload(
@@ -4920,6 +4971,11 @@ class FileSearchRuntime:
             worker_budget=worker_budget,
             worker_launch=self._candidate_worker_launch(frozen, candidate_record),
             host_metadata=session.host_handle.metadata,
+            process_environment=(
+                candidate_record.task.process_environment
+                if adapter.capabilities.supports_process_environment
+                else None
+            ),
         )
 
     def _worker_prompt_for_host(self, host: str) -> str | None:
@@ -5051,6 +5107,10 @@ class FileSearchRuntime:
         slot: int,
     ) -> CandidateTask:
         workspace = self._run_dir(run.run_id) / "workspace" / candidate_id
+        process_environment = self._candidate_process_environment(
+            frozen,
+            slot - 1,
+        )
 
         workspace_creation_started_at = utc_timestamp()
         workspace_creation_started = time.perf_counter()
@@ -5110,6 +5170,7 @@ class FileSearchRuntime:
 
         instructions = [
             "candidate_task.workspace 是当前候选工作区；工作区内的所有文件都可读取和分析。",
+            "candidate_task.acceptance 是 FrozenSpec 投影出的验收合同；目标、metric 和 constraints 在整个 candidate 生命周期内保持不变。",
             "host launch 不保证切换 cwd；每次文件和 shell 操作都显式使用 candidate_task.workspace。",
             "交付修改仅限 candidate_task.allowed_files。candidate_task.denied_files 和冻结的 verifier 资产保持只读，但可读取、导入和 profile。",
             "workspace/.tmp/ 是 runtime 提供的 candidate-local 可写临时区，不属于交付 edit surface；可用于 scratch，并在计划变化或收尾前用简短 JSON 更新 .tmp/handoff.json，供后续恢复。",
@@ -5119,6 +5180,10 @@ class FileSearchRuntime:
             "在分配的 host budget 内工作；收到用户停止、run 失效或 host 截止提示时及时收尾。",
             "窄代码证据可以直接比较 commit；改动较大或需要浏览完整实现时，调用 search_reference_open 把该 Evidence checkout 到当前 agent 唯一的 ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的 reference commit；所有实现修改仍留在 candidate workspace。不要访问或 fetch peer 的真实工作区。",
         ]
+        if process_environment:
+            instructions.append(
+                "candidate_task.process_environment 是本 candidate 的进程环境；运行本地命令时显式应用这些变量。search_run_verifier 会自动使用同一环境。"
+            )
         if "success_threshold" in frozen.spec.constraints:
             instructions.append(
                 "达到 success_threshold 表示用户目标已经满足，不会强制中断当前 iteration；若剩余预算足以完成一轮有价值的修改和验证，可继续优化，否则正常收尾。"
@@ -5208,6 +5273,13 @@ class FileSearchRuntime:
             share_out_dir=share_out_dir,
             allowed_files=frozen.spec.edit_surface.allow,
             denied_files=frozen.spec.edit_surface.deny,
+            acceptance={
+                "objective": frozen.spec.objective,
+                "metric_name": frozen.spec.metric_name,
+                "metric_direction": frozen.spec.metric_direction,
+                "constraints": frozen.spec.constraints,
+            },
+            process_environment=process_environment,
             instructions=instructions,
             expected_artifacts=["patch", "notes", "logs"],
             stop_conditions={},
@@ -5229,6 +5301,88 @@ class FileSearchRuntime:
                 "workspace_base_revision": materialization.base_revision,
             },
         )
+
+    @staticmethod
+    def _candidate_process_environment(
+        frozen: FrozenSpec,
+        candidate_index: int,
+    ) -> dict[str, str]:
+        return FileSearchRuntime._process_environment_for_index(
+            frozen.spec.device_pools,
+            frozen.device_inventory,
+            candidate_index,
+        )
+
+    @staticmethod
+    def _resolve_device_inventory(
+        device_pools: list[DevicePoolSpec],
+    ) -> dict[str, DevicePoolInventory]:
+        raw_config = os.environ.get(DEVICE_POOLS_ENV, "").strip()
+        if not device_pools:
+            return {}
+        if not raw_config:
+            raise ValueError(
+                f"device pools require trusted host configuration in {DEVICE_POOLS_ENV}"
+            )
+        try:
+            payload = json.loads(raw_config)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{DEVICE_POOLS_ENV} must be a JSON object") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"{DEVICE_POOLS_ENV} must be a JSON object")
+
+        inventory: dict[str, DevicePoolInventory] = {}
+        for pool in device_pools:
+            configured = payload.get(pool.pool_id)
+            if configured is None:
+                raise ValueError(
+                    f"device pool {pool.pool_id!r} is not configured by the host"
+                )
+            inventory[pool.pool_id] = DevicePoolInventory.model_validate(configured)
+        return inventory
+
+    @staticmethod
+    def _process_environment_for_index(
+        device_pools: list[DevicePoolSpec],
+        device_inventory: dict[str, DevicePoolInventory],
+        candidate_index: int,
+    ) -> dict[str, str]:
+        environment: dict[str, str] = {}
+        for pool in device_pools:
+            configured = device_inventory.get(pool.pool_id)
+            if configured is None:
+                raise RuntimeError(
+                    f"frozen device inventory is missing {pool.pool_id!r}"
+                )
+            environment[configured.visibility_env] = configured.devices[
+                candidate_index % len(configured.devices)
+            ]
+        return environment
+
+    @staticmethod
+    def _verifier_resource(
+        resource: str | None,
+        device_pools: list[DevicePoolSpec],
+        device_inventory: dict[str, DevicePoolInventory],
+        process_environment: dict[str, str] | None = None,
+    ) -> str | None:
+        if not resource:
+            return resource
+        pool_id, separator, index = resource.rpartition(":")
+        pool = next(
+            (item for item in device_pools if item.pool_id == pool_id),
+            None,
+        )
+        if not separator or pool is None:
+            return resource
+        logical_index = int(index)
+        configured = device_inventory.get(pool.pool_id)
+        if configured is None or logical_index != 0:
+            return resource
+        physical_device = (process_environment or {}).get(configured.visibility_env)
+        if not physical_device:
+            return resource
+        return f"{pool.pool_id}:{physical_device}"
 
     @staticmethod
     def _results_tsv_path(workspace: Path) -> Path:
@@ -5848,9 +6002,15 @@ class FileSearchRuntime:
         cwd = (record.task.workspace / command.cwd).resolve()
         workspace_before = self._hash_verifier_workspace(record.task.workspace)
         git_head_before = self._git_head(record.task.workspace)
+        resource = self._verifier_resource(
+            command.resource_lock,
+            frozen.spec.device_pools,
+            frozen.device_inventory,
+            record.task.process_environment,
+        )
         start = time.perf_counter()
         try:
-            with verifier_resource_lock(command.resource_lock):
+            with verifier_resource_lock(resource):
                 with tempfile.TemporaryDirectory(
                     prefix="goal-plus-verifier-command-"
                 ) as verifier_tmp:
@@ -5862,7 +6022,8 @@ class FileSearchRuntime:
                             Path(verifier_tmp),
                             phase=verifier_phase,
                             diagnostics_dir=diagnostics_dir,
-                            resource=command.resource_lock,
+                            resource=resource,
+                            process_environment=record.task.process_environment,
                         ),
                         text=True,
                         capture_output=True,

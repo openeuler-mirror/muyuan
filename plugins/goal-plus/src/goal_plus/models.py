@@ -709,6 +709,36 @@ class VerifierCommand(SearchModel):
         return normalized
 
 
+class DevicePoolSpec(SearchModel):
+    pool_id: str = Field(
+        min_length=1,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+
+    @field_validator("pool_id")
+    @classmethod
+    def pool_id_must_be_nonempty(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("device pool id must be non-empty")
+        return normalized
+
+
+class DevicePoolInventory(SearchModel):
+    visibility_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    devices: list[str] = Field(min_length=1)
+
+    @field_validator("devices")
+    @classmethod
+    def devices_must_be_unique_and_nonempty(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value or "," in value for value in normalized):
+            raise ValueError("device ids must be non-empty single-device values")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("device ids must be unique")
+        return normalized
+
+
 class SharedDirSpec(SearchModel):
     enabled: bool = False
     max_tools_per_iteration: int = Field(default=16, gt=0, le=128)
@@ -734,6 +764,7 @@ class SearchSpec(SearchModel):
     budget: Budget
     process_verifiers: list[VerifierCommand] = Field(min_length=1)
     promotion_verifiers: list[VerifierCommand] = Field(default_factory=list)
+    device_pools: list[DevicePoolSpec] = Field(default_factory=list)
     constraints: dict[str, Any] = Field(default_factory=dict)
     root_hypotheses: list[str] = Field(default_factory=list)
     strategy: StrategySpec = Field(default_factory=StrategySpec)
@@ -747,6 +778,28 @@ class SearchSpec(SearchModel):
             raise ValueError("source_path must be non-empty")
         return value
 
+    @model_validator(mode="after")
+    def device_pools_match_verifier_locks(self) -> "SearchSpec":
+        pool_ids = [pool.pool_id for pool in self.device_pools]
+        if len(pool_ids) != len(set(pool_ids)):
+            raise ValueError("device pool ids must be unique")
+        locks = [
+            command.resource_lock
+            for command in [*self.process_verifiers, *self.promotion_verifiers]
+            if command.resource_lock
+        ]
+        for pool_id in pool_ids:
+            matching = [lock for lock in locks if lock.rpartition(":")[0] == pool_id]
+            if not matching:
+                raise ValueError(
+                    f"device pool {pool_id!r} is not referenced by a verifier resource_lock"
+                )
+            if any(lock.rpartition(":")[2] != "0" for lock in matching):
+                raise ValueError(
+                    f"device pool {pool_id!r} only supports single-device resource_lock {pool_id}:0"
+                )
+        return self
+
 
 class SearchSpecDraft(SearchModel):
     """Partially discovered SearchSpec with the same nested field contracts."""
@@ -759,6 +812,7 @@ class SearchSpecDraft(SearchModel):
     budget: Budget | None = None
     process_verifiers: list[VerifierCommand] | None = Field(default=None, min_length=1)
     promotion_verifiers: list[VerifierCommand] | None = None
+    device_pools: list[DevicePoolSpec] | None = None
     constraints: dict[str, Any] | None = None
     root_hypotheses: list[str] | None = None
     strategy: StrategySpec | None = None
@@ -1185,6 +1239,7 @@ class FrozenSpec(SearchModel):
     workspace_capacity_estimate: WorkspaceCapacityEstimate | None = None
     source_artifact_ref: ArtifactRef | None = None
     origin_verification: BootstrapVerification | None = None
+    device_inventory: dict[str, DevicePoolInventory] = Field(default_factory=dict)
     created_at: str
 
 
@@ -1288,6 +1343,8 @@ class CandidateTask(SearchModel):
     share_out_dir: Path | None = None
     allowed_files: list[str]
     denied_files: list[str]
+    acceptance: dict[str, Any] = Field(default_factory=dict)
+    process_environment: dict[str, str] = Field(default_factory=dict)
     instructions: list[str] = Field(default_factory=list)
     expected_artifacts: list[str] = Field(default_factory=list)
     stop_conditions: dict[str, Any] = Field(default_factory=dict)

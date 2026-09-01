@@ -17,11 +17,13 @@ from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.models import (
     CandidateProposal,
     CandidateRecord,
+    DevicePoolSpec,
     RunState,
     ScoreReport,
     SearchSpec,
 )
 from goal_plus.runtime import (
+    DEVICE_POOLS_ENV,
     FileSearchRuntime,
     VERIFIER_OUTPUT_LIMIT_BYTES,
     canonical_json,
@@ -1391,7 +1393,7 @@ def test_candidate_workspace_has_isolated_git_baseline_under_ignored_parent(
     assert runtime._detect_changed_files(project, task.workspace) == ["initial_program.py"]
 
 
-def test_worker_policy_documents_host_launch_contract(tmp_path: Path) -> None:
+def test_worker_task_exposes_host_and_edit_contract(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec = spec_with_strategy(
@@ -3845,6 +3847,125 @@ def test_process_verifier_overrides_verifier_phase_environment(
 
     assert report.process_passed is True
     assert calls[0][1]["env"]["GOAL_PLUS_VERIFIER_PHASE"] == "candidate"
+
+
+def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project(tmp_path)
+    spec_data = spec_for(project, max_parallel=4).model_dump(mode="json")
+    spec_data["constraints"] = {
+        "baseline_median_latency_ms": 6.5,
+        "target_median_latency_ms": 5.2,
+    }
+    spec_data["process_verifiers"][0]["resource_lock"] = "ascend-npu:0"
+    spec_data["device_pools"] = [{"pool_id": "ascend-npu"}]
+    monkeypatch.setenv(
+        DEVICE_POOLS_ENV,
+        canonical_json(
+            {
+                "ascend-npu": {
+                    "visibility_env": "ASCEND_RT_VISIBLE_DEVICES",
+                    "devices": ["4", "5"],
+                }
+            }
+        ),
+    )
+
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    calls: list[dict[str, str]] = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs["env"])
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout='{"combined_score": 0.75}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data),
+        [project / "evaluator.py"],
+    )
+    monkeypatch.setenv(
+        DEVICE_POOLS_ENV,
+        canonical_json(
+            {
+                "ascend-npu": {
+                    "visibility_env": "ASCEND_RT_VISIBLE_DEVICES",
+                    "devices": ["8", "9"],
+                }
+            }
+        ),
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=4)
+    tasks = runtime.start_batch(run_id, plan.plan_id)
+
+    assert [task.process_environment for task in tasks] == [
+        {"ASCEND_RT_VISIBLE_DEVICES": device} for device in ("4", "5", "4", "5")
+    ]
+    assert frozen.device_inventory["ascend-npu"].model_dump(mode="json") == {
+        "visibility_env": "ASCEND_RT_VISIBLE_DEVICES",
+        "devices": ["4", "5"],
+    }
+    assert tasks[0].acceptance == {
+        "objective": frozen.spec.objective,
+        "metric_name": "combined_score",
+        "metric_direction": "maximize",
+        "constraints": spec_data["constraints"],
+    }
+    for task in tasks:
+        runtime.run_verifier(run_id, task.candidate_id)
+
+    assert calls[0]["GOAL_PLUS_VERIFIER_RESOURCE"] == "ascend-npu:4"
+    assert calls[0]["ASCEND_RT_VISIBLE_DEVICES"] == "4"
+    assert [env["ASCEND_RT_VISIBLE_DEVICES"] for env in calls[1:]] == [
+        "4",
+        "5",
+        "4",
+        "5",
+    ]
+    assert [env["GOAL_PLUS_VERIFIER_RESOURCE"] for env in calls[1:]] == [
+        "ascend-npu:4",
+        "ascend-npu:5",
+        "ascend-npu:4",
+        "ascend-npu:5",
+    ]
+
+    session = runtime.start_agent_session(run_id, tasks[1].candidate_id)
+    runtime.bind_agent_handle(
+        session.agent_session_id,
+        {
+            "host": "codex",
+            "external_id": "native-c002",
+            "task_name": session.launch["task_name"],
+        },
+    )
+    runtime.continue_agent_session(session.agent_session_id)
+    context = runtime.get_agent_context(session.agent_session_id)
+    assert context["candidate_task"]["acceptance"] == tasks[1].acceptance
+    assert context["candidate_task"]["process_environment"] == {
+        "ASCEND_RT_VISIBLE_DEVICES": "5"
+    }
+
+
+def test_device_pool_ref_does_not_read_an_unregistered_environment_variable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DEVICE_POOLS_ENV, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-exposed")
+
+    with pytest.raises(ValueError, match=DEVICE_POOLS_ENV) as error:
+        FileSearchRuntime(tmp_path / ".search")._resolve_device_inventory(
+            [DevicePoolSpec(pool_id="OPENAI_API_KEY")]
+        )
+
+    assert "must-not-be-exposed" not in str(error.value)
 
 
 def test_verifier_resource_lock_serializes_candidates_and_persists_diagnostics(
