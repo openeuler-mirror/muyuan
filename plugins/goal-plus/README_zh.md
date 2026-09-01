@@ -65,6 +65,9 @@ $goal-plus mode=probe 先确认向量化是否可行。
 $goal-plus mode=autonomous 深度优化这个 kernel。
 ```
 
+开头连续的 `key=value` 是强类型命令配置；第一个非配置 token 开始就是自然语言目标。
+完整 key、取值范围和作用见 [Host Command Config](docs/api.md#host-command-config)。
+
 编辑、恢复和独立最终检查使用各自宿主的相同前缀：
 
 ```text

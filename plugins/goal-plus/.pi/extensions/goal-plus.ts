@@ -2324,6 +2324,9 @@ export default function (pi: ExtensionAPI) {
 			return box;
 		});
 	}
+	// BEGIN GENERATED GOAL PLUS COMMAND CONFIG
+	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_backend=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [main=MODEL] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
+	// END GENERATED GOAL PLUS COMMAND CONFIG
 	if (!isPrintLikeInvocation) {
 		pi.registerCommand("goal-plus", {
 			description: "运行、编辑或恢复原生 Pi Goal Plus（支持 typed command config）",
@@ -2334,7 +2337,7 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				if (!request || (request.action !== "resume" && !request.rawGoal)) {
-					ctx.ui.notify("Usage: /goal-plus [mode=...] [max_parallel=N] [workspace_backend=...] [promotion_mode=...] [strategy=...] [main=...] [annotator=...] [workers=...] <goal>, /goal-plus edit [config] <full revised goal>, or /goal-plus resume", "error");
+					ctx.ui.notify(`Usage: /goal-plus ${GOAL_PLUS_COMMAND_CONFIG_USAGE} <goal>, /goal-plus edit [config] <full revised goal>, or /goal-plus resume`, "error");
 					return;
 				}
 				const deliverAsFollowUp = !ctx.isIdle();

@@ -60,19 +60,21 @@ token 开始就是自然语言目标：
 /goal-plus max_parallel=2 max_duration_seconds=300 workspace_backend=git_worktree promotion_mode=artifact_only strategy=agent_guided Optimize the read-only template.
 ```
 
-支持的 typed key 是：
+支持的 typed key 是（此表由 runtime command option registry 自动生成）：
 
-| Key | 约束目标 |
-| --- | --- |
-| `mode` | `autonomous` 或 `probe` 探索模式 |
-| `max_parallel` | `SearchSpec.budget.max_parallel` |
-| `max_duration_seconds` | 从 Goal 创建时间起计算并持久化 `outer_deadline_at`；约束 worker、verifier 与收尾边界 |
-| `workspace_backend` | `SearchSpec.workspace.backend` |
-| `promotion_mode` | `SearchSpec.workspace.promotion_mode` |
-| `strategy` | `SearchSpec.strategy.name` |
-| `main` | 当前 main session model 的兼容 assertion |
-| `annotator` | `SearchSpec.strategy.evidence_annotator.model` |
-| `workers` / `models` | `SearchSpec.strategy.models`；两者是互斥别名 |
+<!-- BEGIN GENERATED GOAL PLUS COMMAND CONFIG -->
+| Key | Value | 约束目标 |
+| --- | --- | --- |
+| `mode` | `autonomous \| probe` | 探索模式；省略时默认为 `autonomous`。 |
+| `max_parallel` | `正整数` | 约束 `SearchSpec.budget.max_parallel`。 |
+| `max_duration_seconds` | `正整数（秒）` | 从 Goal 创建时间起固定外层 deadline，覆盖 worker、verifier 和收尾边界。 |
+| `workspace_backend` | `copy \| git_worktree \| thinkthread` | 约束 `SearchSpec.workspace.backend`。 |
+| `promotion_mode` | `apply \| artifact_only` | 约束 `SearchSpec.workspace.promotion_mode`。 |
+| `strategy` | `NAME` | 约束 `SearchSpec.strategy.name`。 |
+| `main` | `MODEL` | 当前 main session model 的兼容 assertion，不负责切换模型。 |
+| `annotator` | `MODEL` | 约束 `SearchSpec.strategy.evidence_annotator.model`。 |
+| `workers` / `models` | `MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]` | 约束 `SearchSpec.strategy.models`；带 count 时每个模型都必须带 count。 |
+<!-- END GENERATED GOAL PLUS COMMAND CONFIG -->
 
 解析后的 `GoalPlusRecord.command_config` 是显式用户约束，配置 token 不再保留在
 `raw_goal` 中。高置信度且无 open question 的 spec draft 必须匹配所有显式 Search

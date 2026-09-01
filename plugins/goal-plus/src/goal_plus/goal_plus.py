@@ -5,9 +5,10 @@ import hashlib
 import json
 import re
 import time
+from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from goal_plus.host_observability import (
@@ -102,18 +103,159 @@ EXPLORATION_MODE_LINES = {
         "完成或停止 Goal Plus 任务。"
     ),
 }
-GOAL_PLUS_COMMAND_CONFIG_KEYS = {
-    "mode",
-    "max_parallel",
-    "max_duration_seconds",
-    "workspace_backend",
-    "promotion_mode",
-    "strategy",
-    "main",
-    "annotator",
-    "workers",
-    "models",
+
+
+@dataclass(frozen=True)
+class GoalPlusCommandOption:
+    """Public metadata for one canonical host-command configuration option."""
+
+    key: str
+    model_field: str
+    value_syntax: str
+    description: str
+    aliases: tuple[str, ...] = ()
+    value_kind: Literal[
+        "raw", "choice", "positive_integer", "single_model", "worker_models"
+    ] = "raw"
+    choices: tuple[str, ...] = ()
+
+    @property
+    def accepted_keys(self) -> tuple[str, ...]:
+        return (self.key, *self.aliases)
+
+
+GOAL_PLUS_COMMAND_OPTIONS = (
+    GoalPlusCommandOption(
+        "mode",
+        "mode",
+        "autonomous | probe",
+        "探索模式；省略时默认为 `autonomous`。",
+        value_kind="choice",
+        choices=("autonomous", "probe"),
+    ),
+    GoalPlusCommandOption(
+        "max_parallel",
+        "max_parallel",
+        "正整数",
+        "约束 `SearchSpec.budget.max_parallel`。",
+        value_kind="positive_integer",
+    ),
+    GoalPlusCommandOption(
+        "max_duration_seconds",
+        "max_duration_seconds",
+        "正整数（秒）",
+        "从 Goal 创建时间起固定外层 deadline，覆盖 worker、verifier 和收尾边界。",
+        value_kind="positive_integer",
+    ),
+    GoalPlusCommandOption(
+        "workspace_backend",
+        "workspace_backend",
+        "copy | git_worktree | thinkthread",
+        "约束 `SearchSpec.workspace.backend`。",
+        value_kind="choice",
+        choices=("copy", "git_worktree", "thinkthread"),
+    ),
+    GoalPlusCommandOption(
+        "promotion_mode",
+        "promotion_mode",
+        "apply | artifact_only",
+        "约束 `SearchSpec.workspace.promotion_mode`。",
+        value_kind="choice",
+        choices=("apply", "artifact_only"),
+    ),
+    GoalPlusCommandOption(
+        "strategy",
+        "strategy",
+        "NAME",
+        "约束 `SearchSpec.strategy.name`。",
+    ),
+    GoalPlusCommandOption(
+        "main",
+        "main",
+        "MODEL",
+        "当前 main session model 的兼容 assertion，不负责切换模型。",
+        value_kind="single_model",
+    ),
+    GoalPlusCommandOption(
+        "annotator",
+        "annotator",
+        "MODEL",
+        "约束 `SearchSpec.strategy.evidence_annotator.model`。",
+        value_kind="single_model",
+    ),
+    GoalPlusCommandOption(
+        "workers",
+        "workers",
+        "MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]",
+        "约束 `SearchSpec.strategy.models`；带 count 时每个模型都必须带 count。",
+        aliases=("models",),
+        value_kind="worker_models",
+    ),
+)
+GOAL_PLUS_COMMAND_OPTION_BY_KEY = {
+    key: option
+    for option in GOAL_PLUS_COMMAND_OPTIONS
+    for key in option.accepted_keys
 }
+GOAL_PLUS_COMMAND_CONFIG_KEYS = frozenset(GOAL_PLUS_COMMAND_OPTION_BY_KEY)
+
+
+def render_goal_plus_command_config_markdown() -> str:
+    """Render the public command configuration table from the runtime registry."""
+
+    lines = ["| Key | Value | 约束目标 |", "| --- | --- | --- |"]
+    for option in GOAL_PLUS_COMMAND_OPTIONS:
+        keys = " / ".join(f"`{key}`" for key in option.accepted_keys)
+        value_syntax = option.value_syntax.replace("|", r"\|")
+        lines.append(
+            f"| {keys} | `{value_syntax}` | {option.description} |"
+        )
+    return "\n".join(lines)
+
+
+def render_goal_plus_command_usage() -> str:
+    """Render the compact config portion of host command usage text."""
+
+    options = []
+    for option in GOAL_PLUS_COMMAND_OPTIONS:
+        key = option.key
+        if option.aliases:
+            key = f"{key}|{'|'.join(option.aliases)}"
+        options.append(f"[{key}={option.value_syntax.replace(' | ', '|')}]")
+    return " ".join(options)
+
+
+def _parse_command_option_value(
+    option: GoalPlusCommandOption, raw_value: str
+) -> str | int:
+    if option.value_kind == "positive_integer":
+        try:
+            return int(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{option.key}= requires a positive integer") from exc
+    if option.value_kind == "choice":
+        value = raw_value.lower()
+        if value not in option.choices:
+            allowed = ", ".join(option.choices)
+            option_name = (
+                "exploration mode" if option.key == "mode" else option.key
+            )
+            raise ValueError(
+                f"unsupported Goal Plus {option_name} {value!r}; "
+                f"expected one of: {allowed}"
+            )
+        return value
+    if option.value_kind == "single_model" and "," in raw_value:
+        raise ValueError(
+            f"{option.key}= accepts exactly one model; use workers= for a list"
+        )
+    if option.value_kind == "worker_models":
+        if any(not value.strip() for value in raw_value.split(",")):
+            raise ValueError("workers=/models= contains an empty model reference")
+        _configured_worker_models(raw_value)
+    return raw_value
+
+
 _COMMAND_CONFIG_DIRECTIVE_RE = re.compile(
     r"^(?P<name>[A-Za-z][A-Za-z0-9_-]*)=(?P<value>[^\s]+)(?:\s+|$)"
 )
@@ -214,7 +356,7 @@ def parse_goal_plus_command_config(
         match = _COMMAND_CONFIG_DIRECTIVE_RE.match(remaining)
         if match is None:
             break
-        name = match.group("name").lower().replace("-", "_")
+        name = match.group("name")
         value = match.group("value").strip()
         if name == "model":
             raise ValueError(
@@ -230,76 +372,26 @@ def parse_goal_plus_command_config(
         directives[name] = value
         remaining = remaining[match.end() :].lstrip()
 
-    workers = directives.get("workers")
-    models = directives.get("models")
-    if workers is not None and models is not None:
-        raise ValueError("workers= and models= are aliases; specify only one")
-    worker_models = workers if workers is not None else models
-    if worker_models is not None and any(
-        not value.strip() for value in worker_models.split(",")
-    ):
-        raise ValueError("workers=/models= contains an empty model reference")
-    if worker_models is not None:
-        _configured_worker_models(worker_models)
-    for name in ("main", "annotator"):
-        value = directives.get(name)
-        if value is not None and "," in value:
-            raise ValueError(
-                f"{name}= accepts exactly one model; use workers= for a list"
-            )
-
-    max_parallel: int | None = None
-    if "max_parallel" in directives:
-        try:
-            max_parallel = int(directives["max_parallel"])
-        except ValueError as exc:
-            raise ValueError("max_parallel= requires a positive integer") from exc
-
-    max_duration_seconds: int | None = None
-    if "max_duration_seconds" in directives:
-        try:
-            max_duration_seconds = int(directives["max_duration_seconds"])
-        except ValueError as exc:
-            raise ValueError(
-                "max_duration_seconds= requires a positive integer"
-            ) from exc
-
-    mode = directives.get("mode")
-    if mode is not None:
-        mode = mode.lower()
-        if mode not in EXPLORATION_MODES:
-            allowed = ", ".join(sorted(EXPLORATION_MODES))
-            raise ValueError(
-                f"unsupported Goal Plus exploration mode {mode!r}; "
-                f"expected one of: {allowed}"
-            )
+    parsed: dict[str, str | int] = {}
+    worker_directive: str | None = None
+    for option in GOAL_PLUS_COMMAND_OPTIONS:
+        supplied_keys = [key for key in option.accepted_keys if key in directives]
+        if len(supplied_keys) > 1:
+            aliases = " and ".join(f"{key}=" for key in supplied_keys)
+            raise ValueError(f"{aliases} are aliases; specify only one")
+        if not supplied_keys:
+            continue
+        supplied_key = supplied_keys[0]
+        parsed[option.model_field] = _parse_command_option_value(
+            option, directives[supplied_key]
+        )
+        if option.model_field == "workers":
+            worker_directive = supplied_key
 
     config = GoalPlusCommandConfig.model_validate(
         {
-            "mode": mode,
-            "max_parallel": max_parallel,
-            "max_duration_seconds": max_duration_seconds,
-            "workspace_backend": (
-                directives["workspace_backend"].lower()
-                if "workspace_backend" in directives
-                else None
-            ),
-            "promotion_mode": (
-                directives["promotion_mode"].lower()
-                if "promotion_mode" in directives
-                else None
-            ),
-            "strategy": directives.get("strategy"),
-            "main": directives.get("main"),
-            "annotator": directives.get("annotator"),
-            "workers": worker_models,
-            "worker_directive": (
-                "workers"
-                if workers is not None
-                else "models"
-                if models is not None
-                else None
-            ),
+            **parsed,
+            "worker_directive": worker_directive,
         }
     )
     if not remaining:

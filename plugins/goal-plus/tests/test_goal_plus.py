@@ -4,17 +4,28 @@ import calendar
 import hashlib
 import json
 import subprocess
+import sys
 import time
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from goal_plus.goal_plus import EXPLORATION_MODE_LINES, FileGoalPlusRuntime
+from goal_plus.goal_plus import (
+    EXPLORATION_MODE_LINES,
+    GOAL_PLUS_COMMAND_CONFIG_KEYS,
+    GOAL_PLUS_COMMAND_OPTIONS,
+    FileGoalPlusRuntime,
+)
 from goal_plus.models import (
+    GoalPlusCommandConfig,
     GoalPlusHostCommandInvocation,
     GoalPlusSpecDraft,
     GoalPlusTriage,
 )
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _codex_invocation(
@@ -212,6 +223,37 @@ def test_host_command_config_is_typed_persisted_and_removed_from_goal(tmp_path) 
     assert created["payload"]["command_config"]["promotion_mode"] == "artifact_only"
 
 
+def test_host_command_config_registry_is_the_public_single_source() -> None:
+    accepted_keys = {
+        key for option in GOAL_PLUS_COMMAND_OPTIONS for key in option.accepted_keys
+    }
+    canonical_fields = {option.model_field for option in GOAL_PLUS_COMMAND_OPTIONS}
+
+    assert accepted_keys == GOAL_PLUS_COMMAND_CONFIG_KEYS
+    assert canonical_fields == set(GoalPlusCommandConfig.model_fields) - {
+        "worker_directive"
+    }
+    assert len(accepted_keys) == sum(
+        len(option.accepted_keys) for option in GOAL_PLUS_COMMAND_OPTIONS
+    )
+
+
+def test_host_command_config_generated_assets_are_current() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "generate_command_config_docs.py"),
+            "--check",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_edit_preserves_goal_deadline_from_original_creation(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.start_from_host_command(
@@ -360,6 +402,8 @@ def test_search_command_config_may_remain_unused_when_main_finishes_in_goal_mode
     "raw_goal",
     [
         "unknown=value Optimize latency",
+        "MAX_PARALLEL=2 Optimize latency",
+        "max-parallel=2 Optimize latency",
         "max_parallel=zero Optimize latency",
         "max_duration_seconds=zero Optimize latency",
         "max_duration_seconds=0 Optimize latency",

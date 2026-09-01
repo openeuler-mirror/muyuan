@@ -351,10 +351,13 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "pi_search_run_candidate" not in text
     assert 'pi.registerCommand("goal-plus"' in text
     assert 'pi.registerCommand("goal-plus-with-final-check"' in text
-    assert "[mode=...]" in text
+    assert "[mode=autonomous|probe]" in text
     assert "typed command config" in text
-    assert "workspace_backend=..." in text
-    assert "promotion_mode=..." in text
+    assert "GOAL_PLUS_COMMAND_CONFIG_USAGE" in text
+    assert "max_duration_seconds=正整数（秒）" in text
+    assert "workers|models=" in text
+    assert "workspace_backend=copy|git_worktree|thinkthread" in text
+    assert "promotion_mode=apply|artifact_only" in text
     assert "command_config 中的字段是 runtime 强约束" in text
     assert "parseGoalPlusRoleModels" in text
     assert "resolveGoalPlusRoleModels" in text
