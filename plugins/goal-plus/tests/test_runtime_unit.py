@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import json
 import os
 import shutil
@@ -26,6 +27,7 @@ from goal_plus.runtime import (
     DEVICE_POOLS_ENV,
     FileSearchRuntime,
     VERIFIER_OUTPUT_LIMIT_BYTES,
+    VERIFIER_RESOURCE_LOCK_DIR_ENV,
     canonical_json,
     copy_source_tree,
     initialize_workspace_git_baseline,
@@ -3854,10 +3856,15 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = make_project(tmp_path)
-    spec_data = spec_for(project, max_parallel=4).model_dump(mode="json")
+    spec_data = spec_for(project, max_parallel=2).model_dump(mode="json")
+    spec_data["candidate_acceptance"] = [
+        "Preserve output correctness across the declared input shapes.",
+        "Improve median latency under the frozen verifier.",
+    ]
     spec_data["constraints"] = {
         "baseline_median_latency_ms": 6.5,
         "target_median_latency_ms": 5.2,
+        "private_runtime_note": "must-not-reach-candidate",
     }
     spec_data["process_verifiers"][0]["resource_lock"] = "ascend-npu:0"
     spec_data["device_pools"] = [{"pool_id": "ascend-npu"}]
@@ -3871,6 +3878,10 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
                 }
             }
         ),
+    )
+    monkeypatch.setenv(
+        VERIFIER_RESOURCE_LOCK_DIR_ENV,
+        str(tmp_path / "host-resource-locks"),
     )
 
     runtime = FileSearchRuntime(tmp_path / ".search")
@@ -3902,22 +3913,17 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
         ),
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
-    plan = runtime.plan_next(run_id, requested_k=4)
+    plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
 
     assert [task.process_environment for task in tasks] == [
-        {"ASCEND_RT_VISIBLE_DEVICES": device} for device in ("4", "5", "4", "5")
+        {"ASCEND_RT_VISIBLE_DEVICES": device} for device in ("4", "5")
     ]
     assert frozen.device_inventory["ascend-npu"].model_dump(mode="json") == {
         "visibility_env": "ASCEND_RT_VISIBLE_DEVICES",
         "devices": ["4", "5"],
     }
-    assert tasks[0].acceptance == {
-        "objective": frozen.spec.objective,
-        "metric_name": "combined_score",
-        "metric_direction": "maximize",
-        "constraints": spec_data["constraints"],
-    }
+    assert tasks[0].acceptance == spec_data["candidate_acceptance"]
     for task in tasks:
         runtime.run_verifier(run_id, task.candidate_id)
 
@@ -3926,12 +3932,8 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
     assert [env["ASCEND_RT_VISIBLE_DEVICES"] for env in calls[1:]] == [
         "4",
         "5",
-        "4",
-        "5",
     ]
     assert [env["GOAL_PLUS_VERIFIER_RESOURCE"] for env in calls[1:]] == [
-        "ascend-npu:4",
-        "ascend-npu:5",
         "ascend-npu:4",
         "ascend-npu:5",
     ]
@@ -3948,9 +3950,134 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
     runtime.continue_agent_session(session.agent_session_id)
     context = runtime.get_agent_context(session.agent_session_id)
     assert context["candidate_task"]["acceptance"] == tasks[1].acceptance
+    assert context["objective"] == frozen.spec.objective
+    assert context["metric_name"] == "combined_score"
+    assert "must-not-reach-candidate" not in canonical_json(context)
     assert context["candidate_task"]["process_environment"] == {
         "ASCEND_RT_VISIBLE_DEVICES": "5"
     }
+
+
+@pytest.mark.parametrize(
+    ("pools", "inventory", "max_parallel", "message"),
+    [
+        (
+            [DevicePoolSpec(pool_id="device")],
+            {
+                "device": {
+                    "visibility_env": "VISIBLE_DEVICES",
+                    "devices": ["0", "1"],
+                }
+            },
+            3,
+            "fewer than budget.max_parallel=3",
+        ),
+        (
+            [DevicePoolSpec(pool_id="first"), DevicePoolSpec(pool_id="second")],
+            {
+                "first": {"visibility_env": "VISIBLE_DEVICES", "devices": ["0"]},
+                "second": {"visibility_env": "VISIBLE_DEVICES", "devices": ["1"]},
+            },
+            1,
+            "use the same visibility_env",
+        ),
+    ],
+)
+def test_device_inventory_rejects_oversubscription_and_ambiguous_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pools: list[DevicePoolSpec],
+    inventory: dict[str, object],
+    max_parallel: int,
+    message: str,
+) -> None:
+    monkeypatch.setenv(DEVICE_POOLS_ENV, canonical_json(inventory))
+
+    with pytest.raises(ValueError, match=message):
+        FileSearchRuntime(tmp_path / ".search")._resolve_device_inventory(
+            pools,
+            max_parallel,
+        )
+
+
+def test_device_pool_lease_releases_after_terminal_or_create_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project(tmp_path)
+    spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    spec_data["process_verifiers"][0]["resource_lock"] = "device:0"
+    spec_data["device_pools"] = [{"pool_id": "device"}]
+    monkeypatch.setenv(
+        DEVICE_POOLS_ENV,
+        canonical_json(
+            {
+                "device": {
+                    "visibility_env": "VISIBLE_DEVICES",
+                    "devices": ["0"],
+                }
+            }
+        ),
+    )
+    monkeypatch.setenv(
+        VERIFIER_RESOURCE_LOCK_DIR_ENV,
+        str(tmp_path / "host-resource-locks"),
+    )
+
+    runtimes = [
+        FileSearchRuntime(tmp_path / ".search-a"),
+        FileSearchRuntime(tmp_path / ".search-b"),
+    ]
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout='{"combined_score": 0.75}\n',
+            stderr="",
+        )
+
+    for runtime in runtimes:
+        monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    frozen_specs = [
+        runtime.freeze_spec(
+            SearchSpec.model_validate(spec_data),
+            [project / "evaluator.py"],
+        )
+        for runtime in runtimes
+    ]
+
+    first_run = runtimes[0].create_run(frozen_specs[0].frozen_spec_id)
+    with pytest.raises(RuntimeError, match="device pool 'device' is leased"):
+        runtimes[1].create_run(frozen_specs[1].frozen_spec_id)
+
+    runtimes[0].invalidate_run(
+        first_run,
+        reason="verifier_contract_invalid",
+        summary="release test lease",
+        evidence=[{"source": "unit test"}],
+    )
+
+    @contextmanager
+    def fail_source_update(run_id: str):
+        if run_id == first_run:
+            raise RuntimeError("source update failed")
+        yield
+
+    monkeypatch.setattr(runtimes[0], "_run_transaction", fail_source_update)
+    with pytest.raises(RuntimeError, match="source update failed"):
+        runtimes[0].create_run(
+            frozen_specs[0].frozen_spec_id,
+            source_run_id=first_run,
+        )
+
+    failed_run_id = next(
+        path.parent.name
+        for path in runtimes[0].runs_dir.glob("run_*/run.json")
+        if path.parent.name != first_run
+    )
+    assert runtimes[0].status(failed_run_id).state == RunState.FAILED
+    assert runtimes[1].create_run(frozen_specs[1].frozen_spec_id).startswith("run_")
 
 
 def test_device_pool_ref_does_not_read_an_unregistered_environment_variable(
@@ -3962,7 +4089,8 @@ def test_device_pool_ref_does_not_read_an_unregistered_environment_variable(
 
     with pytest.raises(ValueError, match=DEVICE_POOLS_ENV) as error:
         FileSearchRuntime(tmp_path / ".search")._resolve_device_inventory(
-            [DevicePoolSpec(pool_id="OPENAI_API_KEY")]
+            [DevicePoolSpec(pool_id="OPENAI_API_KEY")],
+            1,
         )
 
     assert "must-not-be-exposed" not in str(error.value)

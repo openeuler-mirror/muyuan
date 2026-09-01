@@ -83,7 +83,14 @@ host 通过 `GOAL_PLUS_DEVICE_POOLS` 注册受信任的硬件无关映射：
 SearchSpec 只能用 `{"device_pools":[{"pool_id":"cuda"}]}` 引用已注册 pool，对应 verifier
 使用 `<pool_id>:0` 作为 `resource_lock`。它不能提供环境变量名或设备值。未声明 device pool
 的普通 host resource lock 保持原有精确字符串语义。freeze preflight 使用第一条 candidate
-lane 的单设备环境；后续宿主配置变化不会改写已冻结 run 的设备分配。
+lane 的单设备环境；后续宿主配置变化不会改写已冻结 run 的设备分配。每个引用 pool 必须
+至少包含 `budget.max_parallel` 个设备，lane 按顺序一一分配，不会轮转复用；同一 spec 中
+多个 pool 也不能使用相同的 `visibility_env`。
+
+runtime 从 run 创建到 promoted、aborted 或 failed 期间独占每个引用 pool，避免不同 run
+同时把 worker 放到同一组设备。pool lease 和 verifier resource lock 共用
+`GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR`；多个 runtime 进程或容器共享设备时，该变量必须指向
+同一个 host 共享目录，否则只能保证单个文件系统范围内不超售。
 
 ## Candidate 循环
 

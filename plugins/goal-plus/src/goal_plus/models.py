@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StringConstraints,
     field_serializer,
     field_validator,
     model_validator,
@@ -16,6 +17,12 @@ from pydantic import (
 
 class SearchModel(BaseModel):
     model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+
+CandidateAcceptanceCriterion = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+]
 
 
 class RunState(str, Enum):
@@ -765,6 +772,10 @@ class SearchSpec(SearchModel):
     process_verifiers: list[VerifierCommand] = Field(min_length=1)
     promotion_verifiers: list[VerifierCommand] = Field(default_factory=list)
     device_pools: list[DevicePoolSpec] = Field(default_factory=list)
+    candidate_acceptance: list[CandidateAcceptanceCriterion] = Field(
+        default_factory=list,
+        max_length=32,
+    )
     constraints: dict[str, Any] = Field(default_factory=dict)
     root_hypotheses: list[str] = Field(default_factory=list)
     strategy: StrategySpec = Field(default_factory=StrategySpec)
@@ -813,6 +824,10 @@ class SearchSpecDraft(SearchModel):
     process_verifiers: list[VerifierCommand] | None = Field(default=None, min_length=1)
     promotion_verifiers: list[VerifierCommand] | None = None
     device_pools: list[DevicePoolSpec] | None = None
+    candidate_acceptance: list[CandidateAcceptanceCriterion] | None = Field(
+        default=None,
+        max_length=32,
+    )
     constraints: dict[str, Any] | None = None
     root_hypotheses: list[str] | None = None
     strategy: StrategySpec | None = None
@@ -1343,7 +1358,10 @@ class CandidateTask(SearchModel):
     share_out_dir: Path | None = None
     allowed_files: list[str]
     denied_files: list[str]
-    acceptance: dict[str, Any] = Field(default_factory=dict)
+    acceptance: list[CandidateAcceptanceCriterion] = Field(
+        default_factory=list,
+        max_length=32,
+    )
     process_environment: dict[str, str] = Field(default_factory=dict)
     instructions: list[str] = Field(default_factory=list)
     expected_artifacts: list[str] = Field(default_factory=list)
@@ -1355,6 +1373,13 @@ class CandidateTask(SearchModel):
         exclude_if=lambda value: value is None,
     )
     model_provenance: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("acceptance", mode="before")
+    @classmethod
+    def migrate_legacy_acceptance(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return value.get("criteria", [])
+        return value
 
     @model_validator(mode="before")
     @classmethod

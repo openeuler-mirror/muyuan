@@ -54,7 +54,10 @@ def create_mcp(
         `/tmp` 路径不安全。可选自定义 verifier 必须在 Spec Discovery 期间写入源码拥有
         的路径，绝不能放在 `.gp` 或 `.search`。`expected_outputs` 只包含产物路径/glob，
         不是 stdout parser 配置。`spec.budget.max_parallel` 唯一决定初始候选 Agent 数。
-        可选 `device_pools` 只能引用 host 通过 `GOAL_PLUS_DEVICE_POOLS` 注册的 pool ID。
+        可选 `device_pools` 只能引用 host 通过 `GOAL_PLUS_DEVICE_POOLS` 注册的 pool ID；
+        每个引用 pool 至少提供 `spec.budget.max_parallel` 个设备，且不能与另一个引用 pool
+        共用同一可见变量。需要 worker 遵守的公开条件写入 `candidate_acceptance`；
+        `constraints` 保持 runtime 私有。
         """
         goal_runtime.require_host_verified_active_goal()
         return tools.search_freeze_spec(spec, verifier_artifact_paths)
@@ -82,7 +85,9 @@ def create_mcp(
         启动前复检 worker host、workspace backend 和 source Git 状态；当前 Codex/Pi RPC
         请求 ThinkThread，或 Git-backed source 在 freeze 后变 dirty，都会在创建 run 或
         candidate checkout 前失败。
-        只有无法避免新的不可变 run 时才传入 `source_run_id`。新 run 会收到来源 frontier、
+        创建时会在 `GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR` 下独占冻结 spec 引用的 device pool。
+        多个进程或容器共享设备时必须映射同一个 host 锁目录。只有无法避免新的不可变 run
+        时才传入 `source_run_id`。新 run 会收到来源 frontier、
         限定范围的问题和特性账本的有界 snapshot。来源分数只是历史，必须在新契约下重新验证。
         """
         goal_runtime.require_host_verified_active_goal()

@@ -51,7 +51,8 @@ $ARGUMENTS
 创建 draft 和冻结 verifier 前，Main 必须把当前 Search 工作项从原始目标与公开任务契约
 继承的正确性、性能、适用范围和测量方法落实为统一验收契约。candidate iteration、
 selection、promotion 和最终验收必须遵循同一标准；允许使用预先声明的不同成本或覆盖规模，
-但不得临时改变标准。worker 只优化冻结契约。若契约有缺陷，调用
+但不得临时改变标准。需要 worker 遵守的公开条件写入 SearchSpec `candidate_acceptance`，
+不要依靠 runtime 私有的 `constraints` 传递。worker 只优化冻结契约。若契约有缺陷，调用
 `search_invalidate_run` 后修复并重新冻结，不能直接比较新旧契约结果。
 
 冻结前，要求每个 `ranking_signal` 输出一个最终 JSON 对象，其中包含有限数值类型的

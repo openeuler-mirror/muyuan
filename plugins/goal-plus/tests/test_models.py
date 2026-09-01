@@ -61,11 +61,15 @@ def test_candidate_task_drops_legacy_shared_dir_path() -> None:
             "shared_dir": ".gp/runs/run_1/shared",
             "allowed_files": ["initial_program.py"],
             "denied_files": ["evaluator.py"],
+            "acceptance": {
+                "objective": "legacy duplicate",
+                "constraints": {"hidden": "must not be projected"},
+            },
         }
     )
 
     assert "shared_dir" not in task.model_dump(mode="json")
-    assert task.acceptance == {}
+    assert task.acceptance == []
     assert task.process_environment == {}
 
 
@@ -120,6 +124,32 @@ def test_device_pool_ref_cannot_select_a_host_environment_variable() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         DevicePoolSpec.model_validate(
             {"pool_id": "device", "visibility_env": "OPENAI_API_KEY"}
+        )
+
+
+@pytest.mark.parametrize(
+    "candidate_acceptance",
+    [["criterion"] * 33, ["x" * 1001]],
+)
+def test_candidate_acceptance_is_bounded(candidate_acceptance: list[str]) -> None:
+    with pytest.raises(ValidationError):
+        SearchSpec.model_validate(
+            {
+                "objective": "test",
+                "metric_name": "score",
+                "metric_direction": "maximize",
+                "source_path": ".",
+                "edit_surface": {"allow": ["candidate.py"]},
+                "budget": {"max_parallel": 1},
+                "process_verifiers": [
+                    {
+                        "name": "score",
+                        "role": "ranking_signal",
+                        "command": ["true"],
+                    }
+                ],
+                "candidate_acceptance": candidate_acceptance,
+            }
         )
 
 

@@ -492,6 +492,7 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "workspaceGuard" in text
     assert "resource_lock: Type.Optional(Type.String({ minLength: 1 }))" in text
     assert "device_pools: Type.Optional(Type.Array(DevicePoolSpec))" in text
+    assert "candidate_acceptance: Type.Optional(" in text
     assert "MAIN_GATED_TOOLS" in text
     assert "pi_rpc_run_worker" not in text
     assert "GOAL_PLUS_PI_EXPOSE_LOW_LEVEL_WORKER" not in text

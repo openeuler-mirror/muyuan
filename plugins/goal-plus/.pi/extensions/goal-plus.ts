@@ -302,6 +302,9 @@ const SearchSpecSchema = Type.Object(
 		process_verifiers: Type.Array(VerifierCommand, { minItems: 1 }),
 		promotion_verifiers: Type.Optional(Type.Array(VerifierCommand)),
 		device_pools: Type.Optional(Type.Array(DevicePoolSpec)),
+		candidate_acceptance: Type.Optional(
+			Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 32 }),
+		),
 		constraints: Type.Optional(LooseObject),
 		root_hypotheses: Type.Optional(Type.Array(Type.String())),
 		strategy: Type.Optional(StrategySpec),

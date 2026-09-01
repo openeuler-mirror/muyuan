@@ -350,6 +350,10 @@ def test_pi_rpc_parallel_loop_cycle(
             }
         ),
     )
+    monkeypatch.setenv(
+        "GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR",
+        str(st_project_root / ".host-resource-locks"),
+    )
     spec_data["process_verifiers"][0]["resource_lock"] = "st-device:0"
     spec_data["device_pools"] = [{"pool_id": "st-device"}]
     worker_launch = {

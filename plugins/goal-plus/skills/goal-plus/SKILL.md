@@ -78,8 +78,10 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    并行 candidate 使用单卡 accelerator 时，只在 SearchSpec `device_pools` 中引用 host
    预先注册的 `pool_id`，并让相关 verifier 使用 `<pool_id>:0` 作为 `resource_lock`。
    host 通过 `GOAL_PLUS_DEVICE_POOLS` 注册非敏感设备清单；SearchSpec 不能指定或读取任意
-   环境变量。runtime 在 freeze 时固定被引用的 pool，并把同一映射投影到 Codex/Pi candidate。
-   新 SearchSpec 必须显式设置
+   环境变量。`budget.max_parallel` 不得超过任一引用 pool 的设备数；runtime 在 freeze 时固定
+   pool，并在 active run 期间独占它。把需要 worker 遵守的公开验收条件显式写入
+   `candidate_acceptance`；`constraints` 是 runtime 私有配置，不会下发给 worker。
+   冻结操作会在消耗候选预算前拒绝工作区副作用。新 SearchSpec 必须显式设置
    `workspace.backend="git_worktree"`，以便候选共享 Git object database 并解析彼此的
    Evidence commit；`workspace.promotion_mode` 默认是 `apply`。只有受保护 source、只读
    template 或测试 fixture 才显式设置 `promotion_mode="artifact_only"`；`copy` backend

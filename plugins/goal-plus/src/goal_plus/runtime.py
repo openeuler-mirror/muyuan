@@ -137,6 +137,9 @@ SUPPLEMENTAL_EVALUATION_REQUIRED_ENV = (
     "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED"
 )
 DEVICE_POOLS_ENV = "GOAL_PLUS_DEVICE_POOLS"
+DEVICE_LEASE_RELEASE_STATES = frozenset(
+    {RunState.PROMOTED, RunState.ABORTED, RunState.FAILED}
+)
 
 
 def _boolean_environment_value(
@@ -350,15 +353,19 @@ def verifier_resource_lock(resource: str | None):
     if resource is None:
         yield
         return
-    lock_root = Path(
+    lock_root = _host_resource_lock_root()
+    lock_name = f"{sha256_text(resource)}.lock"
+    with exclusive_file_lock(lock_root / lock_name):
+        yield
+
+
+def _host_resource_lock_root() -> Path:
+    return Path(
         os.environ.get(
             VERIFIER_RESOURCE_LOCK_DIR_ENV,
             str(Path(tempfile.gettempdir()) / "goal-plus-verifier-locks"),
         )
     ).resolve()
-    lock_name = f"{sha256_text(resource)}.lock"
-    with exclusive_file_lock(lock_root / lock_name):
-        yield
 
 
 def path_matches(path: str, patterns: list[str]) -> bool:
@@ -775,7 +782,10 @@ class FileSearchRuntime:
         spec = self._apply_global_evidence_mode_from_environment(spec)
         spec = self._normalize_strategy_models(spec)
         self._validate_strategy_config(spec.strategy)
-        device_inventory = self._resolve_device_inventory(spec.device_pools)
+        device_inventory = self._resolve_device_inventory(
+            spec.device_pools,
+            spec.budget.max_parallel,
+        )
         source_root = Path(spec.source_path).resolve()
         self._validate_clean_source_repository(spec)
         workspace_capacity_estimate = estimate_workspace_capacity(
@@ -1529,17 +1539,22 @@ class FileSearchRuntime:
             inherited_research=inherited_research,
             selected_models=selected_models,
         )
-        self._write_run(run)
-        (self._run_dir(run_id) / "candidates").mkdir(parents=True, exist_ok=True)
-        (self._run_dir(run_id) / "workspace").mkdir(parents=True, exist_ok=True)
-        (self._run_dir(run_id) / "plans").mkdir(parents=True, exist_ok=True)
-        (self._run_dir(run_id) / "agent_sessions").mkdir(parents=True, exist_ok=True)
-        if source_run_id:
-            with self._run_transaction(source_run_id):
-                source_run = self._load_run(source_run_id)
-                if source_run.invalidated_at:
-                    source_run.replacement_run_id = run_id
-                    self._write_run(source_run)
+        self._acquire_device_pool_leases(run, frozen)
+        try:
+            (self._run_dir(run_id) / "candidates").mkdir(parents=True, exist_ok=True)
+            (self._run_dir(run_id) / "workspace").mkdir(parents=True, exist_ok=True)
+            (self._run_dir(run_id) / "plans").mkdir(parents=True, exist_ok=True)
+            (self._run_dir(run_id) / "agent_sessions").mkdir(parents=True, exist_ok=True)
+            if source_run_id:
+                with self._run_transaction(source_run_id):
+                    source_run = self._load_run(source_run_id)
+                    if source_run.invalidated_at:
+                        source_run.replacement_run_id = run_id
+                        self._write_run(source_run)
+        except Exception:
+            run.state = RunState.FAILED
+            self._write_run(run)
+            raise
         return run_id
 
     def invalidate_run(
@@ -1781,6 +1796,7 @@ class FileSearchRuntime:
             raise RuntimeError(f"cannot create candidates from state {run.state}")
 
         frozen = self._load_frozen_spec(run.frozen_spec_id)
+        self._acquire_device_pool_leases(run, frozen)
         plan = self._load_plan(run_id, plan_id)
         all_records = self._load_candidate_records(run_id)
         plan_records = sorted(
@@ -1979,6 +1995,7 @@ class FileSearchRuntime:
                     / "workspace-relocation"
                 ),
                 source_artifact_ref=candidate_artifact,
+                device_inventory=frozen.device_inventory,
                 candidate_id=task.candidate_id,
             )
             candidate_artifact_after = provider.current_artifact(task.workspace)
@@ -5170,12 +5187,12 @@ class FileSearchRuntime:
 
         instructions = [
             "candidate_task.workspace 是当前候选工作区；工作区内的所有文件都可读取和分析。",
-            "candidate_task.acceptance 是 FrozenSpec 投影出的验收合同；目标、metric 和 constraints 在整个 candidate 生命周期内保持不变。",
+            "candidate_task.acceptance 是 FrozenSpec 中显式声明、受界且对 worker 可见的验收条件；目标和 metric 使用 context 顶层字段。",
             "host launch 不保证切换 cwd；每次文件和 shell 操作都显式使用 candidate_task.workspace。",
             "交付修改仅限 candidate_task.allowed_files。candidate_task.denied_files 和冻结的 verifier 资产保持只读，但可读取、导入和 profile。",
             "workspace/.tmp/ 是 runtime 提供的 candidate-local 可写临时区，不属于交付 edit surface；可用于 scratch，并在计划变化或收尾前用简短 JSON 更新 .tmp/handoff.json，供后续恢复。",
             "可在不修改只读文件的前提下，运行候选工作区内的测试、runner、evaluator 及其他本地诊断；这些结果只属于当前 candidate，不会进入 Global Evidence、被其他 worker 看到或参与最终选择。",
-            "Frozen verifier 是唯一权威验证路径。每项实质变更后，及时调用 search_run_verifier(agent_session_id=...) 验证，并用一句话 hypothesis 描述实际尝试；只有其返回结果会结算为正式 Evidence 并贡献给共享搜索。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
+            "Frozen verifier 是唯一权威验证路径。每项实质变更后，及时调用 search_run_verifier(agent_session_id=...) 验证，并用一句话 hypothesis 描述实际尝试；只有其返回结果会结算为正式 Evidence 并贡献给共享搜索。对初始化较慢但可能高收益的路线，不要仅凭未完成的本地试探判定失败；剩余时间和 verifier 时限允许时，至少完成一次权威验证后再决定是否放弃。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
             "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
             "在分配的 host budget 内工作；收到用户停止、run 失效或 host 截止提示时及时收尾。",
             "窄代码证据可以直接比较 commit；改动较大或需要浏览完整实现时，调用 search_reference_open 把该 Evidence checkout 到当前 agent 唯一的 ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的 reference commit；所有实现修改仍留在 candidate workspace。不要访问或 fetch peer 的真实工作区。",
@@ -5273,12 +5290,7 @@ class FileSearchRuntime:
             share_out_dir=share_out_dir,
             allowed_files=frozen.spec.edit_surface.allow,
             denied_files=frozen.spec.edit_surface.deny,
-            acceptance={
-                "objective": frozen.spec.objective,
-                "metric_name": frozen.spec.metric_name,
-                "metric_direction": frozen.spec.metric_direction,
-                "constraints": frozen.spec.constraints,
-            },
+            acceptance=frozen.spec.candidate_acceptance,
             process_environment=process_environment,
             instructions=instructions,
             expected_artifacts=["patch", "notes", "logs"],
@@ -5314,8 +5326,106 @@ class FileSearchRuntime:
         )
 
     @staticmethod
+    def _device_pool_lease_path(pool_id: str) -> Path:
+        lease_dir = _host_resource_lock_root() / "device-pool-leases"
+        return lease_dir / f"{sha256_text(pool_id)}.json"
+
+    @staticmethod
+    def _device_pool_lease_owner_is_active(owner: dict[str, Any]) -> bool:
+        root_dir = owner.get("root_dir")
+        run_id = owner.get("run_id")
+        if not isinstance(root_dir, str) or not isinstance(run_id, str):
+            return True
+        try:
+            state = RunState(
+                load_json(Path(root_dir) / "runs" / run_id / "run.json").get("state")
+            )
+        except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+            return True
+        return state not in DEVICE_LEASE_RELEASE_STATES
+
+    def _acquire_device_pool_leases(
+        self,
+        run: RunRecord,
+        frozen: FrozenSpec,
+    ) -> None:
+        pool_ids = sorted(frozen.device_inventory)
+        if not pool_ids:
+            self._write_run(run)
+            return
+
+        lease_dir = _host_resource_lock_root() / "device-pool-leases"
+        lease_dir.mkdir(parents=True, exist_ok=True)
+        with exclusive_file_lock(lease_dir / "registry.lock"):
+            leases_to_write: list[tuple[str, Path]] = []
+            for pool_id in pool_ids:
+                path = self._device_pool_lease_path(pool_id)
+                if not path.exists():
+                    leases_to_write.append((pool_id, path))
+                    continue
+                try:
+                    owner = load_json(path)
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(f"invalid device pool lease: {path}") from exc
+                if not isinstance(owner, dict):
+                    raise RuntimeError(f"invalid device pool lease: {path}")
+                same_owner = (
+                    owner.get("root_dir") == str(self.root_dir)
+                    and owner.get("run_id") == run.run_id
+                )
+                if same_owner:
+                    continue
+                if self._device_pool_lease_owner_is_active(owner):
+                    raise RuntimeError(
+                        f"device pool {pool_id!r} is leased by run "
+                        f"{owner.get('run_id')!r} under {owner.get('root_dir')!r}"
+                    )
+                leases_to_write.append((pool_id, path))
+
+            self._write_run(run)
+            owner = {
+                "root_dir": str(self.root_dir),
+                "run_id": run.run_id,
+                "acquired_at": utc_timestamp(),
+            }
+            written: list[Path] = []
+            try:
+                for pool_id, path in leases_to_write:
+                    write_json(path, {"pool_id": pool_id, **owner})
+                    written.append(path)
+            except Exception:
+                for path in written:
+                    path.unlink(missing_ok=True)
+                run.state = RunState.FAILED
+                write_json(
+                    self._run_dir(run.run_id) / "run.json",
+                    run.model_dump(mode="json"),
+                )
+                raise
+
+    def _release_device_pool_leases(self, run: RunRecord) -> None:
+        frozen = self._load_frozen_spec(run.frozen_spec_id)
+        pool_ids = sorted(frozen.device_inventory)
+        if not pool_ids:
+            return
+        lease_dir = _host_resource_lock_root() / "device-pool-leases"
+        with exclusive_file_lock(lease_dir / "registry.lock"):
+            for pool_id in pool_ids:
+                path = self._device_pool_lease_path(pool_id)
+                try:
+                    owner = load_json(path)
+                except (FileNotFoundError, OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(owner, dict) and (
+                    owner.get("root_dir") == str(self.root_dir)
+                    and owner.get("run_id") == run.run_id
+                ):
+                    path.unlink(missing_ok=True)
+
+    @staticmethod
     def _resolve_device_inventory(
         device_pools: list[DevicePoolSpec],
+        max_parallel: int,
     ) -> dict[str, DevicePoolInventory]:
         raw_config = os.environ.get(DEVICE_POOLS_ENV, "").strip()
         if not device_pools:
@@ -5332,13 +5442,27 @@ class FileSearchRuntime:
             raise ValueError(f"{DEVICE_POOLS_ENV} must be a JSON object")
 
         inventory: dict[str, DevicePoolInventory] = {}
+        visibility_owners: dict[str, str] = {}
         for pool in device_pools:
             configured = payload.get(pool.pool_id)
             if configured is None:
                 raise ValueError(
                     f"device pool {pool.pool_id!r} is not configured by the host"
                 )
-            inventory[pool.pool_id] = DevicePoolInventory.model_validate(configured)
+            resolved = DevicePoolInventory.model_validate(configured)
+            prior_pool = visibility_owners.get(resolved.visibility_env)
+            if prior_pool is not None:
+                raise ValueError(
+                    f"device pools {prior_pool!r} and {pool.pool_id!r} use the same "
+                    f"visibility_env {resolved.visibility_env!r}"
+                )
+            if len(resolved.devices) < max_parallel:
+                raise ValueError(
+                    f"device pool {pool.pool_id!r} has {len(resolved.devices)} device(s), "
+                    f"fewer than budget.max_parallel={max_parallel}"
+                )
+            visibility_owners[resolved.visibility_env] = pool.pool_id
+            inventory[pool.pool_id] = resolved
         return inventory
 
     @staticmethod
@@ -5354,9 +5478,12 @@ class FileSearchRuntime:
                 raise RuntimeError(
                     f"frozen device inventory is missing {pool.pool_id!r}"
                 )
-            environment[configured.visibility_env] = configured.devices[
-                candidate_index % len(configured.devices)
-            ]
+            if not 0 <= candidate_index < len(configured.devices):
+                raise RuntimeError(
+                    f"candidate index {candidate_index} exceeds frozen device pool "
+                    f"{pool.pool_id!r} capacity"
+                )
+            environment[configured.visibility_env] = configured.devices[candidate_index]
         return environment
 
     @staticmethod
@@ -8859,6 +8986,8 @@ class FileSearchRuntime:
 
     def _write_run(self, run: RunRecord) -> None:
         write_json(self._run_dir(run.run_id) / "run.json", run.model_dump(mode="json"))
+        if run.state in DEVICE_LEASE_RELEASE_STATES:
+            self._release_device_pool_leases(run)
 
     def _load_plan(self, run_id: str, plan_id: str) -> SearchPlan:
         return SearchPlan.model_validate(load_json(self._plan_dir(run_id) / f"{plan_id}.json"))
