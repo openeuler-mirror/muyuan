@@ -20,9 +20,6 @@ dev = [
   "pytest>=7.0",
   "pytest-xdist>=3.6,<4.0",
 ]
-bench = [
-  "datasets>=2.18",
-]
 [project.scripts]
 goal-plus = "goal_plus.server:main"
 goal-plus-codex-doctor = "goal_plus.codex_doctor:main"
@@ -30,7 +27,6 @@ goal-plus-pi-tool = "goal_plus.pi_tool:main"
 goal-plus-pi-worker = "goal_plus.pi_worker:main"
 goal-plus-pi-pool = "goal_plus.pi_pool:main"
 goal-plus-evidence-annotator = "goal_plus.evidence_annotator:main"
-goal-plus-bench = "goal_plus.benchmarking.cli:main"
 
 [tool.hatch.version]
 path = "src/goal_plus/_version.py"

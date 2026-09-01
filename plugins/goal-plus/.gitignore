@@ -15,9 +15,6 @@ __pycache__/
 !/examples/model-optimize/workspace-template/.goal-plus-verifiers/
 !/examples/model-optimize/workspace-template/.goal-plus-verifiers/torch_cpu_tokens.py
 .search/
-benchmarks/data/
-benchmarks/reports/
-benchmarks/runs/
 .tmp/
 /examples/circle-packing/workspace/
 /examples/circle-packing-git-apply/workspace/
