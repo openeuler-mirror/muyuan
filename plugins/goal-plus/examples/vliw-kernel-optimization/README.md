@@ -42,11 +42,11 @@ therefore does not change tracked example files or appear in `git status`.
 
 ## Local baseline
 
-Run the public task without Goal Plus:
+Run the public verifier without Goal Plus. The verifier invokes `runner.py`, so
+execute it with `workspace-template/` as its working directory:
 
 ```bash
 cd examples/vliw-kernel-optimization
-python3 workspace-template/runner.py
 (cd workspace-template && python3 .goal-plus-verifiers/vliw_score.py)
 ```
 
