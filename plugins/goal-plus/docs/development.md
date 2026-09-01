@@ -60,9 +60,10 @@ cd /absolute/path/to/target-workspace
 pi-goal-plus
 ```
 
-不要在用户级或目标项目的 Pi settings 中同时注册 Goal Plus。安装时和 launcher 每次启动时
-都会检查重复来源；若报错，先按报告的 source 执行 `pi remove <source>`。其他 Pi package、
-模型设置和认证信息不会被修改。
+用户级或目标项目若已注册同一 checkout，Pi 会按绝对资源路径去重，开发 launcher 可以直接
+使用。安装时和 launcher 每次启动时仍会拒绝来自其他 checkout 或复制路径的 Goal Plus；若
+报错，先按报告的 source 执行 `pi remove <source>`。断链的旧式 loose-resource symlink 不会被
+Pi 加载，也不会阻塞开发态。其他 Pi package、模型设置和认证信息不会被修改。
 
 ### Pi 开发循环
 

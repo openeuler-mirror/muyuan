@@ -50,9 +50,10 @@ pi-goal-plus
 `PI_CODING_AGENT_DIR`、`CODEX_HOME` 或认证信息；launcher 自己临时加入 venv 的 `bin`，再用
 `--extension` 和 `--skill` 显式加载当前 checkout。
 
-开发态不注册全局 Pi package。若当前用户或目标项目已经注册 Goal Plus，安装和每次启动都会
-停止并列出冲突，避免同一进程重复加载。先显式 `pi remove <reported-source>`，再运行
-`pi-goal-plus`。`--pi` 和 `--pi-dev` 不能同时使用。
+开发态不注册全局 Pi package。若当前用户或目标项目已经注册同一 checkout，Pi 会按绝对资源
+路径去重；来自其他 checkout 或复制路径的 Goal Plus 仍会让安装和每次启动停止并列出冲突。
+断链的旧式 loose-resource symlink 不会被 Pi 加载，也不会阻塞开发态。遇到真实冲突时先显式
+`pi remove <reported-source>`，再运行 `pi-goal-plus`。`--pi` 和 `--pi-dev` 不能同时使用。
 
 正常安装和开发安装都只暴露一个面向用户的 `goal-plus` Pi skill。
 

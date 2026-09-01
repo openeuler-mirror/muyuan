@@ -157,8 +157,10 @@ Pi development mode must not modify `CODEX_HOME`, `PI_CODING_AGENT_DIR`, Pi
 settings, models, or authentication. `set_env.sh` adds only the generated
 launcher directory to `PATH`; the launcher scopes the editable venv to its own
 process and explicitly passes the checkout's extension and single Pi skill to
-Pi. Both setup and launch must fail closed when user- or project-scoped Goal
-Plus resources would create a duplicate load.
+Pi. Pi deduplicates an existing registration from this exact checkout by
+absolute resource path. Both setup and launch must fail closed when a different
+user- or project-scoped Goal Plus source would create a duplicate load; broken
+loose-resource symlinks are inactive and must not block development mode.
 
 Normal installation must bind the selected Python interpreter and inherited
 `PATH` to one environment. Reject setup when the interpreter's scripts

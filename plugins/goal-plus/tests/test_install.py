@@ -70,7 +70,7 @@ def test_pi_dev_assets_scope_only_the_launcher(
     subprocess.run(["bash", "-n", str(launcher_path)], check=True)
 
 
-def test_pi_dev_rejects_user_registration(
+def test_pi_dev_accepts_same_checkout_user_registration(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -79,8 +79,25 @@ def test_pi_dev_rejects_user_registration(
     _write_pi_settings(agent_dir, [str(ROOT)])
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
-    with pytest.raises(installer.InstallError, match="loads the checkout explicitly"):
-        installer._preflight_pi_dev()
+    installer._preflight_pi_dev()
+
+
+def test_pi_dev_ignores_broken_loose_resource_symlinks(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_dir = tmp_path / "pi-agent"
+    _write_pi_settings(agent_dir, [str(ROOT)])
+    extension = agent_dir / "extensions" / "goal-plus.ts"
+    skill = agent_dir / "skills" / "goal-plus"
+    extension.parent.mkdir(parents=True)
+    skill.parent.mkdir(parents=True)
+    extension.symlink_to(tmp_path / "missing" / "goal-plus.ts")
+    skill.symlink_to(tmp_path / "missing" / "goal-plus")
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+
+    installer._preflight_pi_dev()
 
 
 def test_pi_dev_detects_stale_local_goal_plus_path(

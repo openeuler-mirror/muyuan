@@ -264,7 +264,10 @@ def _pi_goal_plus_entries(*, cwd: Path | None = None) -> list[dict[str, Any]]:
             )
         )
     for scope, loose_path in loose_paths:
-        if loose_path.exists() or loose_path.is_symlink():
+        # Pi does not load a broken loose-resource symlink. Treating one as an
+        # active registration makes checkout-local development impossible even
+        # though the host will ignore it.
+        if loose_path.exists():
             matches.append(
                 {
                     "scope": scope,
@@ -311,11 +314,22 @@ def _preflight_pi_normal() -> bool:
 
 def _preflight_pi_dev(*, cwd: Path | None = None) -> None:
     entries = _pi_goal_plus_entries(cwd=cwd)
-    if entries:
+    root = ROOT.resolve()
+    allowed_paths = {
+        root,
+        (root / ".pi" / "extensions" / "goal-plus.ts").resolve(),
+        (root / ".pi" / "skills" / "goal-plus").resolve(),
+    }
+    conflicts = [
+        entry
+        for entry in entries
+        if entry.get("resolved_path") not in allowed_paths
+    ]
+    if conflicts:
         raise InstallError(
-            "Pi development mode requires no user/project Goal Plus registration because "
-            "pi-goal-plus loads the checkout explicitly:\n"
-            f"  - {_render_pi_entries(entries)}\n"
+            "Pi development mode found another active Goal Plus source; "
+            "pi-goal-plus already loads this checkout explicitly:\n"
+            f"  - {_render_pi_entries(conflicts)}\n"
             "Remove or disable those Goal Plus resources explicitly. Other Pi packages and "
             "authentication remain untouched."
         )
