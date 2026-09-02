@@ -290,6 +290,26 @@ def test_codex_preflight_rejects_development_plugin(
         installer._preflight_codex("codex")
 
 
+def test_codex_install_refreshes_existing_plugin(
+    installer: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        installer,
+        "_run",
+        lambda argv, **_kwargs: commands.append(argv),
+    )
+
+    installer._install_codex(
+        codex="codex",
+        marketplace_exists=True,
+        dry_run=False,
+    )
+
+    assert commands == [["codex", "plugin", "add", "goal-plus@goal-plus"]]
+
+
 def test_normal_runtime_rejects_commands_from_another_environment(
     installer: ModuleType,
     tmp_path: Path,
