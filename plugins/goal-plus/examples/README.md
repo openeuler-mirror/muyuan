@@ -19,6 +19,7 @@
 | --- | --- | --- | --- |
 | [Circle Packing](circle-packing/README.md) | 最短的完整 Goal Plus 运行与报告演示 | Pi 或 Codex，10 分钟 | Python 标准库 |
 | [Circle Packing：Git 工作区回写](circle-packing-git-apply/README.md) | 真实 Git 候选 worktree 和最佳结果回写 | Pi 或 Codex，5 分钟 | Python 标准库、Git |
+| [Final Check Skill Guard](final-check-skill-guard/README.md) | task-local Skill 打回、修复和重新验收 | Pi 或 Codex，最多 30 分钟 | Python 标准库、Git |
 | [Model Optimize](model-optimize/README.md) | CPU/PyTorch 优化 | Pi 或 Codex，10 分钟 | PyTorch |
 | [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | 带模拟器正确性门禁的程序与调度优化 | Pi，8 分钟 | Python 标准库 |
 | [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | 十个公开案例上的 C++ 编译与布局优化 | Pi，8 分钟 | C++17 编译器 |

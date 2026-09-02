@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+import sys
+import uuid
 
 import pytest
 
+from tests.st.hosts import link_host_assets
 from tests.st.helpers.codex_runner import CodexRunner
 
 
@@ -58,3 +62,60 @@ def test_codex_goal_plus_required_final_checker_smoke(
     assert record["goal_revision"] == 1
     assert record["final_checks"][-1]["checker_host"] == "codex"
     assert record["final_checks"][-1]["status"] == "passed"
+
+
+def test_codex_final_checker_rejects_then_accepts_task_skill_example(
+    st_project_root: Path,
+    st_log_dir: Path,
+) -> None:
+    example = Path(__file__).resolve().parents[2] / "examples" / "final-check-skill-guard"
+    workspace = st_project_root / f"final-check-skill-guard-{uuid.uuid4().hex[:8]}"
+    subprocess.run(
+        [
+            sys.executable,
+            str(example / "prepare_workspace.py"),
+            "--output",
+            str(workspace),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    link_host_assets(workspace, Path(__file__).resolve().parents[2])
+    prompt = (workspace / "codex-goal-prompt.md").read_text(encoding="utf-8")
+    runner = CodexRunner(
+        project_root=workspace,
+        log_dir=st_log_dir,
+        default_timeout=1800,
+    )
+    result = runner.run_streaming(
+        prompt,
+        scenario="codex_final_check_skill_guard",
+        timeout=1800,
+    )
+
+    print(f"\n[codex_final_check_skill_guard] log: {result.log_path}")
+    assert not result.timed_out, result.log_path
+    assert result.returncode == 0, result.log_path
+    goal_files = sorted((workspace / ".gp" / "goal-plus").glob("gp_*/goal.json"))
+    assert len(goal_files) == 1, result.log_path
+    record = json.loads(goal_files[0].read_text(encoding="utf-8"))
+    checks = record["final_checks"]
+    assert record["status"] == "complete", result.log_path
+    assert record["entrypoint_status"] == "host_verified", result.log_path
+    assert [check["status"] for check in checks] == ["failed", "passed"], result.log_path
+    assert checks[0]["check_id"] != checks[1]["check_id"], result.log_path
+    assert checks[0]["findings"], result.log_path
+    assert checks[1]["evidence"], result.log_path
+    guard = subprocess.run(
+        [
+            sys.executable,
+            ".agents/skills/preserve-score-semantics/scripts/check_score_semantics.py",
+        ],
+        cwd=workspace,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert guard.returncode == 0, guard.stdout + guard.stderr
