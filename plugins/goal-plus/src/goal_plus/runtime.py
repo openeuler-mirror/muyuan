@@ -1759,6 +1759,10 @@ class FileSearchRuntime:
         record = self._load_candidate_record(run_id, candidate_id)
         return [it.model_dump(mode="json") for it in record.iterations]
 
+    def list_agent_iterations(self, agent_session_id: str) -> list[dict[str, Any]]:
+        session = self._load_agent_session_by_id(agent_session_id)
+        return self.list_iterations(session.run_id, session.candidate_id)
+
     def list_allocation_decisions(
         self,
         run_id: str,

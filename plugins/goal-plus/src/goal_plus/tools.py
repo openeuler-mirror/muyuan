@@ -295,10 +295,9 @@ class SearchTools:
 
     def search_list_iterations(
         self,
-        run_id: str,
-        candidate_id: str,
+        agent_session_id: str,
     ) -> list[dict[str, Any]]:
-        return self.runtime.list_iterations(run_id, candidate_id)
+        return self.runtime.list_agent_iterations(agent_session_id)
 
     def search_list_allocation_decisions(
         self,

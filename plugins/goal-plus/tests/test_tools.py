@@ -291,7 +291,7 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
             )
         ],
     )
-    runtime.list_iterations.return_value = [
+    runtime.list_agent_iterations.return_value = [
         {"iteration": 1, "score": 0.4, "agent_session_id": "agent_001"},
         {"iteration": 2, "score": 0.7, "agent_session_id": "agent_001"},
     ]
@@ -431,11 +431,11 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         hypothesis="try a fused path",
         toolization_decision=None,
     )
-    iterations = tools.search_list_iterations("run_1", "c001")
+    iterations = tools.search_list_iterations("agent_001")
     assert len(iterations) == 2
     assert iterations[0]["iteration"] == 1
     assert iterations[1]["score"] == 0.7
-    runtime.list_iterations.assert_called_once_with("run_1", "c001")
+    runtime.list_agent_iterations.assert_called_once_with("agent_001")
     assert tools.search_list_allocation_decisions("run_1", "pending") == []
     runtime.list_allocation_decisions.assert_called_once_with("run_1", "pending")
     applied = tools.search_apply_allocation_decision("run_1", "allocation_0001")

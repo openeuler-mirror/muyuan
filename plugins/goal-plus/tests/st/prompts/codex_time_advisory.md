@@ -24,7 +24,8 @@ Freeze the fixture evaluator and run:
    `agent_session_id`, then read the final artifact once more before returning.
 3. Honor the returned parent-watchdog wait/closeout/interrupt sequence.
 4. Bind the returned task handle, run the main-agent verifier, then call
-   `search_list_iterations`, `search_select`, and `search_report`.
+   `search_list_iterations` with the candidate `agent_session_id`, followed by
+   `search_select` and `search_report`.
 
 The test harness supplies an already-expired informational outer deadline.
 The worker must still complete normally; the host hook should inject a

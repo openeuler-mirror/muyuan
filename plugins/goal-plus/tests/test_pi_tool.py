@@ -125,7 +125,7 @@ def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path) -> None:
     iterations = call_pi_tool(
         runtime_root,
         "search_list_iterations",
-        {"run_id": run_id, "candidate_id": task.candidate_id},
+        {"agent_session_id": session.agent_session_id},
     )
     assert iterations[0]["agent_session_id"] == session.agent_session_id
 

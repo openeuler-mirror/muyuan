@@ -383,15 +383,13 @@ def create_mcp(
 
     @mcp.tool()
     def search_list_iterations(
-        run_id: str,
-        candidate_id: str,
+        agent_session_id: str,
     ) -> list[dict[str, Any]]:
-        """返回一个候选可能很大的完整 iteration 历史。
+        """返回当前 agent session 所属候选可能很大的完整 iteration 历史。
 
-        candidate worker 只应查询 agent context 中自己的 run/candidate，并且仅在紧凑
-        context、results.tsv 和 Git 无法回答旧轮次的准确 verifier 事实时调用。
+        仅在紧凑 context、results.tsv 和 Git 无法回答旧轮次的准确 verifier 事实时调用。
         """
-        return tools.search_list_iterations(run_id, candidate_id)
+        return tools.search_list_iterations(agent_session_id)
 
     @mcp.tool()
     def search_list_allocation_decisions(

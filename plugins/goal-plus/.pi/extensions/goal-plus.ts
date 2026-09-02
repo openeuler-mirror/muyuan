@@ -652,8 +652,7 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 	),
 	search_list_iterations: Type.Object(
 		{
-			run_id: Type.String(),
-			candidate_id: Type.String(),
+			agent_session_id: Type.String(),
 		},
 		{ additionalProperties: false },
 	),
@@ -769,7 +768,7 @@ const RuntimeToolDescriptions: Record<string, string> = {
 	search_run_verifier:
 		"为候选运行 process verifier。必须提供一句话 hypothesis 并遵守 candidate_task.instructions。报告在 workspace/results.tsv 中追加且只追加一条已验证记录，并返回 keep/retain/discard/failure 结算；VerifierWorkspaceSideEffect 要求停止并上报。",
 	search_list_iterations:
-		"返回指定 candidate 可能很大的全量 iteration 历史。worker 仅可使用当前 agent context 中自己的 run_id/candidate_id，并且只在紧凑 context、results.tsv 和 Git 无法回答旧轮次的准确 metrics、failure 或 provenance 时调用；不用于常规刷新。",
+		"返回当前 agent session 所属 candidate 可能很大的全量 iteration 历史；只在紧凑 context、results.tsv 和 Git 无法回答旧轮次的准确 metrics、failure 或 provenance 时调用。",
 	search_list_allocation_decisions:
 		"仅当当前 FrozenSpec 使用 orchestration_mode=adaptive_search 时，只读列出其持久化 allocation decisions；不启动、停止或继续 host worker。",
 	search_apply_allocation_decision:

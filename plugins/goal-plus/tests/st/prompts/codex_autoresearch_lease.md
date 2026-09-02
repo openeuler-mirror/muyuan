@@ -47,8 +47,9 @@ Freeze the fixture evaluator and run this exact flow:
    and interrupt if it is still live. Do not apply a shorter main-agent wait or
    treat the 300-second lower bound as an interrupt deadline.
 5. After the worker is terminal, run the main-agent process verifier, then call
-   `search_list_iterations`, `search_list_history`, `search_select`, and
-   `search_report`. Do not inspect or modify the hook's host-log evidence; the
+   `search_list_iterations` with its `agent_session_id`, followed by
+   `search_list_history`, `search_select`, and `search_report`. Do not inspect
+   or modify the hook's host-log evidence; the
    outer Python ST assertion owns that evidence.
 
 ## ST Output Contract
