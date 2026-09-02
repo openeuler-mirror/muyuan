@@ -2380,7 +2380,7 @@ class FileGoalPlusRuntime:
         if check.checker_host == "codex":
             return {
                 "tool": "spawn_agent",
-                "task_name": f"goal_plus_final_check_r{record.goal_revision}",
+                "task_name": f"goal_plus_final_check_{check.check_id}",
                 "agent_type": "goal_plus_final_checker",
                 "fallback_agent_type": "default",
                 "message": prompt,

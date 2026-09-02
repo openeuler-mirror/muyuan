@@ -566,6 +566,7 @@ def test_required_final_check_blocks_stop_and_completes_only_after_pass(tmp_path
     first = runtime.prepare_final_check(record.goal_plus_id, "codex")
     resumed = runtime.prepare_final_check(record.goal_plus_id, "codex")
     assert resumed["check"]["check_id"] == first["check"]["check_id"]
+    assert resumed["launch"]["task_name"] == first["launch"]["task_name"]
     assert first["launch"]["tool"] == "spawn_agent"
     assert first["launch"]["fork_turns"] == "none"
     assert first["launch"]["agent_type"] == "goal_plus_final_checker"
@@ -591,6 +592,7 @@ def test_required_final_check_blocks_stop_and_completes_only_after_pass(tmp_path
 
     second = runtime.prepare_final_check(record.goal_plus_id, "codex")
     assert second["check"]["check_id"] != first["check"]["check_id"]
+    assert second["launch"]["task_name"] != first["launch"]["task_name"]
     completed = runtime.submit_final_check(
         record.goal_plus_id,
         check_id=second["check"]["check_id"],
