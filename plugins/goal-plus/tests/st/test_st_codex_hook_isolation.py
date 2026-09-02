@@ -33,7 +33,8 @@ def _subagent_transcript(task_name: str, parent_thread_id: str) -> Path | None:
     return None
 
 
-def _mcp_tool_results(path: Path, tool_name: str) -> list[object]:
+def _nested_tool_attempt_outputs(path: Path, tool_name: str) -> list[object]:
+    call_ids: set[str] = set()
     results: list[object] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
@@ -41,15 +42,22 @@ def _mcp_tool_results(path: Path, tool_name: str) -> list[object]:
         except json.JSONDecodeError:
             continue
         payload = event.get("payload")
-        if (
-            event.get("type") != "event_msg"
-            or not isinstance(payload, dict)
-            or payload.get("type") != "mcp_tool_call_end"
-        ):
+        if event.get("type") != "response_item" or not isinstance(payload, dict):
             continue
-        invocation = payload.get("invocation")
-        if isinstance(invocation, dict) and invocation.get("tool") == tool_name:
-            results.append(payload.get("result"))
+        if payload.get("type") == "custom_tool_call" and payload.get("name") == "exec":
+            source = payload.get("input")
+            call_id = payload.get("call_id")
+            if (
+                isinstance(source, str)
+                and f"tools.mcp__goal_plus__{tool_name}" in source
+                and isinstance(call_id, str)
+            ):
+                call_ids.add(call_id)
+        elif (
+            payload.get("type") == "custom_tool_call_output"
+            and payload.get("call_id") in call_ids
+        ):
+            results.append(payload.get("output"))
     return results
 
 
@@ -103,7 +111,7 @@ def test_codex_native_child_hooks_preserve_main_binding(
     child_text = child_transcript.read_text(encoding="utf-8")
     assert record["goal_plus_id"] not in child_text
     assert "goal_plus_context_role=search_candidate" not in child_text
-    [probe_result] = _mcp_tool_results(child_transcript, "search_create")
+    [probe_result] = _nested_tool_attempt_outputs(child_transcript, "search_create")
     probe_text = json.dumps(probe_result, ensure_ascii=False)
     assert "GoalPlusRoleDenied" in probe_text
 
