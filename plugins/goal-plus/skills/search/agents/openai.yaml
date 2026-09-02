@@ -1,2 +1,6 @@
+interface:
+  display_name: "Goal Plus Search"
+  short_description: "Orchestrate verifier-guided Search Mode"
+  default_prompt: "Use $search to run the linked Goal Plus Search task."
 policy:
   allow_implicit_invocation: false
