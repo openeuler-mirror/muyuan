@@ -314,7 +314,7 @@ transcript 后，`statistics.orchestrator` 记录 Goal Plus 创建以来不含�
 delta，`statistics.total_usage` 与 worker usage 合并；每个 Search task 仍保留自己的 statistics。
 
 `goal_plus_monitor_snapshot.feature_plugins` 提供可选的只读派生视图。内置 `orchestration`
-plugin 统一展示普通 main/subagent 的 task packet、attempt
+plugin 统一展示普通 main/subagent 的 assignment summary、attempt
 generation、assignment/result/decision，同时保留 Codex/Pi 的原生 operation 名。传入
 `feature_plugins=["orchestration"]` 可显式选择，传入空数组可关闭全部投影。详见
 [Feature Plugin](feature-plugins.md)。

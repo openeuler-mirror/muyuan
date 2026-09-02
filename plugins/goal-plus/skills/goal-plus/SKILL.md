@@ -147,7 +147,7 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
 13. 执行原始目标审计。如果还需要其他有 verifier 支持的 Search，使用相同
     `goal_plus_id` 冻结/创建新 run，并重复步骤 9-12。每个不同的 `run_id`
     都作为另一项 Search 任务追加；不要为新的冻结 spec 复用旧 `run_id`。
-14. 主 Agent 必须检查普通 subagent 返回的代码、证据和测试；采用时可记录 `accepted`，
+14. 主 Agent 必须检查普通 subagent 返回的代码、证据和测试；采用时记录 `accepted`，
     需要原 worker 补充时记录 `rework`，不采用时记录 `cancelled`。这些决定用于监控，
     不替代整体测试。最后执行一次原始目标审计。对于普通 Goal Plus 记录，只有当前目标已满足时
     才调用

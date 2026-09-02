@@ -20,14 +20,14 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
   --pretty
 ```
 
-只知道 `run_id` 时也可以直接查询该 run。需要关闭可选投影时传入 `feature_plugins=[]`；默认的 `orchestration` plugin 会显示普通 subagent work 的 task packet、不透明 worker handle、host 原生操作、attempt generation、`launching`/`bound` 状态、stale-result 数量，以及 assignment/result/decision 流程。它不包含 transcript 路径或内容。
+只知道 `run_id` 时也可以直接查询该 run。需要关闭可选投影时传入 `feature_plugins=[]`；默认的 `orchestration` plugin 会显示普通 subagent dispatch 的 assignment summary、不透明 worker handle、host 原生操作、attempt generation、`launching`/`bound` 状态、stale-result 数量，以及 assignment/result/decision 流程。它不包含 transcript 路径或内容。
 
-### Goal 与 Work DAG
+### Goal 与 Subagent 派发
 
 首先检查：
 
 - `goal_revision`、`goal_revisions_total`、`phase` 和 `next_action`；
-- `work_items` 中 required item 是否已 `accepted`；
+- `feature_plugins.orchestration.dispatches` 中返回的结果是否已有 Main 的 `accepted`、`rework` 或 `cancelled` 决定；
 - subagent attempt 的 `attempt_id`、`generation`、launch deadline 和 bound handle；
 - `feature_plugins.orchestration` 中是否存在迟到的 `stale_result`，以及 main 是否已经记录 acceptance/rework decision；
 - `final_check_policy` 和 `latest_final_check` 是否对应当前 revision。
