@@ -154,6 +154,7 @@ def create_parallel_codex_run(
             run_id,
             task["candidate_id"],
             agent_session_id=session["agent_session_id"],
+            hypothesis=f"Evaluate the implementation prepared by lane {lane_index}.",
         )
         tools.search_run_verifier(run_id, task["candidate_id"])
 
