@@ -1699,6 +1699,26 @@ def test_shared_dir_is_disabled_by_default(tmp_path: Path) -> None:
         "tool_family_catalog"
     ] == []
 
+    candidate_before = runtime._load_candidate_record(run_id, candidate.candidate_id)
+    with pytest.raises(ValueError, match="shared_dir.enabled=true"):
+        runtime.stage_shared_tool(
+            candidate.agent_session_id,
+            name="disabled-probe",
+            summary="must not stage while sharing is disabled",
+            entrypoint="probe.py",
+            candidate_relative_source_paths=["initial_program.py"],
+        )
+    with pytest.raises(ValueError, match="shared_dir.enabled=true"):
+        runtime.copy_shared_tool(
+            candidate.agent_session_id,
+            tool_id="tool_from_disabled_catalog",
+            snapshot_hash="0" * 64,
+        )
+    assert (
+        runtime._load_candidate_record(run_id, candidate.candidate_id)
+        == candidate_before
+    )
+
     candidate.write_program_value(1)
     report = SearchTools(runtime).search_run_verifier(
         run_id,

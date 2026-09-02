@@ -51,6 +51,26 @@ from tests._runtime_helpers import (
 )
 
 
+def _guarded_runtime_state(
+    runtime: FileSearchRuntime,
+    run_id: str,
+    candidate_id: str | None = None,
+    agent_session_id: str | None = None,
+) -> dict[str, object]:
+    state: dict[str, object] = {
+        "run": runtime._load_run(run_id).model_dump(mode="json"),
+    }
+    if candidate_id is not None:
+        state["candidate"] = runtime._load_candidate_record(
+            run_id, candidate_id
+        ).model_dump(mode="json")
+    if agent_session_id is not None:
+        state["agent_session"] = runtime._load_agent_session_by_id(
+            agent_session_id, run_id=run_id
+        ).model_dump(mode="json")
+    return state
+
+
 def test_hash_json_and_path_helpers(tmp_path: Path) -> None:
     file_path = tmp_path / "a.txt"
     file_path.write_text("hello\n", encoding="utf-8")
@@ -1502,13 +1522,35 @@ def test_promote_requires_search_runtime_selection(tmp_path: Path) -> None:
     (workspace / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
     report = runtime.run_verifier(run_id, candidate_id)
     assert report.process_passed is True
+    unselected = _guarded_runtime_state(runtime, run_id, candidate_id)
 
     with pytest.raises(RuntimeError, match="search_select"):
         runtime.promote(run_id, candidate_id)
+    assert _guarded_runtime_state(runtime, run_id, candidate_id) == unselected
 
     selected = runtime.select(run_id)
     assert selected["selected_candidate_id"] == candidate_id
+    ready_to_promote = _guarded_runtime_state(runtime, run_id, candidate_id)
+
+    with pytest.raises(RuntimeError, match="ready_to_promote"):
+        runtime.plan_next(run_id, requested_k=1)
+    with pytest.raises(RuntimeError, match="ready_to_promote"):
+        runtime.start_agent_session(run_id, candidate_id)
+    with pytest.raises(RuntimeError, match="ready_to_promote"):
+        runtime.run_verifier(run_id, candidate_id)
+    assert _guarded_runtime_state(runtime, run_id, candidate_id) == ready_to_promote
+
     assert runtime.promote(run_id, candidate_id).exists()
+    promoted = _guarded_runtime_state(runtime, run_id, candidate_id)
+    with pytest.raises(RuntimeError, match="promoted"):
+        runtime.plan_next(run_id, requested_k=1)
+    with pytest.raises(RuntimeError, match="promoted"):
+        runtime.start_agent_session(run_id, candidate_id)
+    with pytest.raises(RuntimeError, match="promoted"):
+        runtime.run_verifier(run_id, candidate_id)
+    with pytest.raises(RuntimeError, match="promoted"):
+        runtime.select(run_id)
+    assert _guarded_runtime_state(runtime, run_id, candidate_id) == promoted
 
 
 def test_promotion_verifier_is_selected_parent_only(tmp_path: Path) -> None:
@@ -4923,6 +4965,18 @@ def test_run_verifier_rejects_mismatched_agent_session(tmp_path: Path) -> None:
     other_session = runtime.start_agent_session(
         run_id, tasks[1].candidate_id, {"goal": "c1"}
     )
+    state_before = {
+        "target": _guarded_runtime_state(
+            runtime,
+            run_id,
+            tasks[0].candidate_id,
+            session_for_c0.agent_session_id,
+        ),
+        "other_session": runtime._load_agent_session_by_id(
+            other_session.agent_session_id,
+            run_id=run_id,
+        ).model_dump(mode="json"),
+    }
 
     with pytest.raises(ValueError, match="agent_session_id does not belong"):
         runtime.run_verifier(
@@ -4930,6 +4984,19 @@ def test_run_verifier_rejects_mismatched_agent_session(tmp_path: Path) -> None:
             tasks[0].candidate_id,
             agent_session_id=other_session.agent_session_id,
         )
+
+    assert {
+        "target": _guarded_runtime_state(
+            runtime,
+            run_id,
+            tasks[0].candidate_id,
+            session_for_c0.agent_session_id,
+        ),
+        "other_session": runtime._load_agent_session_by_id(
+            other_session.agent_session_id,
+            run_id=run_id,
+        ).model_dump(mode="json"),
+    } == state_before
 
 
 def test_concurrent_run_verifiers_preserve_best_score(
@@ -5190,9 +5257,14 @@ def test_report_rejects_linked_nonterminal_goal(
             "search_tasks": [{"run_id": run_id}],
         },
     )
+    run_before = runtime._load_run(run_id)
 
     with pytest.raises(RuntimeError, match="reaches a terminal status"):
         runtime.report(run_id)
+
+    assert runtime._load_run(run_id) == run_before
+    assert not (runtime._run_dir(run_id) / "report.md").exists()
+    assert not (runtime._run_dir(run_id) / "report.html").exists()
 
 
 @pytest.mark.parametrize("goal_status", ["complete", "blocked", "abandoned"])
@@ -5465,14 +5537,41 @@ def test_invalidate_run_fences_work_and_successor_inherits_research(
 
     assert invalidated.state == RunState.ABORTED
     assert invalidated.invalidation_reason == "verifier_coverage_inadequate"
+    fenced_state = _guarded_runtime_state(
+        runtime,
+        run_id,
+        task.candidate_id,
+        session.agent_session_id,
+    )
     with pytest.raises(RuntimeError, match="invalidated"):
         runtime.run_verifier(run_id, task.candidate_id)
     with pytest.raises(RuntimeError):
         runtime.plan_next(run_id, requested_k=1)
     with pytest.raises(RuntimeError):
         runtime.start_agent_session(run_id, task.candidate_id)
+    with pytest.raises(RuntimeError):
+        runtime.continue_agent_session(session.agent_session_id)
     with pytest.raises(RuntimeError, match="invalidated"):
         runtime.select(run_id)
+    with pytest.raises(RuntimeError, match="invalidated"):
+        runtime.promote(run_id, task.candidate_id)
+    with pytest.raises(RuntimeError, match="invalidated"):
+        runtime.stage_shared_tool(
+            session.agent_session_id,
+            name="late-tool",
+            summary="must not be staged after invalidation",
+            entrypoint="late.py",
+            candidate_relative_source_paths=["initial_program.py"],
+        )
+    assert (
+        _guarded_runtime_state(
+            runtime,
+            run_id,
+            task.candidate_id,
+            session.agent_session_id,
+        )
+        == fenced_state
+    )
 
     successor_id = runtime.create_run(
         frozen.frozen_spec_id,

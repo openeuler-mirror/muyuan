@@ -20,6 +20,7 @@ from goal_plus.goal_plus import (
 from goal_plus.models import (
     GoalPlusCommandConfig,
     GoalPlusHostCommandInvocation,
+    GoalPlusRecord,
     GoalPlusSpecDraft,
     GoalPlusTriage,
 )
@@ -72,6 +73,13 @@ def _complete_search_spec() -> dict:
             }
         ],
     }
+
+
+def _goal_domain_state(record: GoalPlusRecord) -> dict:
+    return record.model_dump(
+        mode="json",
+        exclude={"hook_counters", "created_at", "updated_at"},
+    )
 
 
 def test_goal_plus_runtime_defaults_to_gp_root(tmp_path, monkeypatch) -> None:
@@ -1206,17 +1214,55 @@ def test_link_search_run_rejects_missing_or_mismatched_runtime_run(tmp_path) -> 
     root = tmp_path / ".search"
     runtime = FileGoalPlusRuntime(root)
     record = runtime.create_goal("Optimize model")
+    domain_before = _goal_domain_state(record)
+    events_before = runtime.list_events(record.goal_plus_id)
 
     with pytest.raises(FileNotFoundError, match="Call search_create"):
         runtime.link_search_run(record.goal_plus_id, "spec_abc", "run_0001")
+    assert _goal_domain_state(runtime.status(record.goal_plus_id)) == domain_before
+    assert runtime.list_events(record.goal_plus_id) == events_before
 
     _write_search_run(root, "run_real", "spec_other")
     with pytest.raises(ValueError, match="belongs to frozen spec spec_other"):
         runtime.link_search_run(record.goal_plus_id, "spec_abc", "run_real")
 
     final = runtime.status(record.goal_plus_id)
-    assert final.phase == "intake"
-    assert final.linked_search is None
+    assert _goal_domain_state(final) == domain_before
+    assert runtime.list_events(record.goal_plus_id) == events_before
+
+
+def test_record_search_result_requires_goal_run_link_without_domain_side_effects(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".search"
+    runtime = FileGoalPlusRuntime(root)
+    owner = runtime.start_from_host_command(
+        "Optimize the linked model",
+        invocation=_codex_invocation("codex:test:owner"),
+    )
+    _write_search_run(root, "run_owned", "spec_owned")
+    runtime.link_search_run(owner.goal_plus_id, "spec_owned", "run_owned")
+    runtime.set_status(owner.goal_plus_id, status="abandoned", reason="superseded")
+    unrelated = runtime.start_from_host_command(
+        "Audit an unrelated component",
+        invocation=_codex_invocation("codex:test:unrelated"),
+    )
+    owner_before = _goal_domain_state(runtime.status(owner.goal_plus_id))
+    unrelated_before = _goal_domain_state(runtime.status(unrelated.goal_plus_id))
+    owner_events_before = runtime.list_events(owner.goal_plus_id)
+    unrelated_events_before = runtime.list_events(unrelated.goal_plus_id)
+
+    with pytest.raises(RuntimeError, match="is not linked to search run"):
+        runtime.record_search_result(
+            unrelated.goal_plus_id,
+            run_id="run_owned",
+            selected_candidate_id="c001",
+        )
+
+    assert _goal_domain_state(runtime.status(owner.goal_plus_id)) == owner_before
+    assert _goal_domain_state(runtime.status(unrelated.goal_plus_id)) == unrelated_before
+    assert runtime.list_events(owner.goal_plus_id) == owner_events_before
+    assert runtime.list_events(unrelated.goal_plus_id) == unrelated_events_before
 
 
 def test_record_search_result_prefers_existing_runtime_artifact_paths(tmp_path) -> None:
@@ -1296,6 +1342,8 @@ def test_record_search_result_rejects_unpromoted_run(tmp_path) -> None:
         json.dumps({"state": "ready_to_promote", "selected_candidate_id": "c001"}),
         encoding="utf-8",
     )
+    domain_before = _goal_domain_state(runtime.status(record.goal_plus_id))
+    events_before = runtime.list_events(record.goal_plus_id)
 
     with pytest.raises(RuntimeError, match="search_promote"):
         runtime.record_search_result(
@@ -1304,7 +1352,8 @@ def test_record_search_result_rejects_unpromoted_run(tmp_path) -> None:
             selected_candidate_id="c001",
         )
 
-    assert runtime.status(record.goal_plus_id).phase == "search"
+    assert _goal_domain_state(runtime.status(record.goal_plus_id)) == domain_before
+    assert runtime.list_events(record.goal_plus_id) == events_before
 
 
 def test_record_search_result_allows_artifact_only_provider_native_promotion(
@@ -1396,6 +1445,8 @@ def test_pre_tool_use_blocks_search_before_high_confidence_spec(tmp_path) -> Non
 def test_pre_tool_use_blocks_mutation_before_triage(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("Tidy docs wording")
+    domain_before = _goal_domain_state(record)
+    events_before = runtime.list_events(record.goal_plus_id)
 
     gate = runtime.gate(
         record.goal_plus_id,
@@ -1406,6 +1457,13 @@ def test_pre_tool_use_blocks_mutation_before_triage(tmp_path) -> None:
     assert gate.decision == "block"
     assert "使用变更类工具前" in gate.reason
     assert "判断原始目标" in gate.reason
+    persisted = runtime.status(record.goal_plus_id)
+    events_after = runtime.list_events(record.goal_plus_id)
+    assert _goal_domain_state(persisted) == domain_before
+    assert persisted.hook_counters == {"pre_tool_use": 1}
+    assert events_after[:-1] == events_before
+    assert events_after[-1]["event_type"] == "gate_blocked"
+    assert events_after[-1]["payload"]["event"] == "pre_tool_use"
 
 
 def test_goal_mode_allows_mutation_after_triage(tmp_path) -> None:

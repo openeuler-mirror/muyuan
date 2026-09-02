@@ -488,8 +488,10 @@ def test_supplemental_capability_and_detail_respect_disabled_and_independent_mod
     first, second = candidates
     disabled = runtime.get_agent_context(first[1])
     assert disabled["supplemental_evaluation_enabled"] is False
+    session_before = runtime._load_agent_session_by_id(first[1])
     with pytest.raises(RuntimeError, match="disabled"):
         runtime.get_evidence_detail(first[1], first[0], 1)
+    assert runtime._load_agent_session_by_id(first[1]) == session_before
 
     monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_ENABLED_ENV, "1")
     enabled_runtime, _, enabled_candidates = _search_with_candidates(
