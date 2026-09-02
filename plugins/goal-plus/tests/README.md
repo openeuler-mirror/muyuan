@@ -13,6 +13,7 @@ the only evidence that a real host can complete the user-visible workflow.
 | Codex fast slice | `pytest -m codex -q` | Codex adapter, hooks, assets, pool contract |
 | Pi fast slice | `pytest -m pi -q` | Pi extension, driver, supervisor, assets |
 | Runtime-focused | `pytest tests/test_runtime_unit.py` | Search state machine without a host |
+| Adaptive Search-focused | `pytest tests/adaptive_search -q` | scheduler tasks, lazy allocation, runtime integration, and architecture boundaries |
 | Real-host ST | `pytest -m "(st and (st_codex or st_pi_rpc)) or st_pi" -v -s` | maintained native launch, hooks/events, worker lifecycle, final evidence |
 
 Default tests must never launch Codex or Pi. A host behavior claim requires

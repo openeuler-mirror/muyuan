@@ -59,6 +59,22 @@ circle-packing-git-apply/
 5. 收尾时选择 verifier 验证过的最佳结果，完成 promotion 和 Goal Plus 审计，再生成一次
    最终报告。
 
+## 调度与预算
+
+Maintained host-backed SearchSpecs declare `orchestration_mode`, `worker_host`, and a finite
+`worker_budget`. `worker_budget` limits one worker dispatch or
+renewable lease; it is not the maximum duration of a whole Goal Plus task.
+Paste-ready goal scenarios state their whole-goal limit separately in natural
+language and reserve explicit closeout time.
+
+Set `budget.max_parallel` for `parallel_loops` runs. It is the initial number of
+long-lived candidate lanes.
+Each candidate workspace is a long-lived lane, not a disposable attempt.
+Scheduler-driven replacement instead uses `orchestration_mode="adaptive_search"`,
+a non-null `search_scheduler`, and a Git worktree. `budget.max_parallel` is its live
+candidate limit; optional `budget.max_candidates` bounds cumulative unique candidates,
+while `null` leaves that cumulative count unbounded.
+
 普通 prompt 使用当前 Host 已选择的模型和 Goal Plus 默认值，不固定 `main`、
 `annotator` 或 `workers`。Circle Packing 的 Codex prompt 是唯一的多模型路由示例：两个
 候选通道分别使用 Terra 和 Luna，并由 Terra 执行 Evidence annotation。

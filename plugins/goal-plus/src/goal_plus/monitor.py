@@ -8,6 +8,7 @@ from typing import Any
 
 from goal_plus._version import __version__
 from goal_plus.agent_hosts import get_agent_host_adapter
+from goal_plus.adaptive_search import load_search_scheduler_views
 from goal_plus.feature_plugins import collect_goal_monitor_features
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_observability import collect_codex_transcript_observability
@@ -205,6 +206,52 @@ def _evidence_read_payload(
             (read.read_at for read in detail_reads), default=None
         ),
     }
+
+
+def _scheduler_payload(
+    tasks: tuple[Any, ...],
+) -> tuple[dict[str, Any], dict[str, list[Any]]]:
+    states: dict[str, int] = {}
+    usage: dict[str, int | float] = {}
+    by_candidate: dict[str, list[Any]] = {}
+    pending_ages: list[float] = []
+    now = time.time()
+    for task in tasks:
+        states[task.state] = states.get(task.state, 0) + 1
+        by_candidate.setdefault(task.candidate_id, []).append(task)
+        if task.state in {"pending", "retry_wait"}:
+            created = _parse_utc_timestamp(task.created_at)
+            if created is not None:
+                pending_ages.append(max(0.0, now - created))
+        for key, value in task.usage.items():
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                usage[key] = usage.get(key, 0) + value
+
+    for candidate_tasks in by_candidate.values():
+        candidate_tasks.sort(key=lambda item: item.iteration)
+    return (
+        {
+            "tasks": len(tasks),
+            "attempts": sum(task.attempts for task in tasks),
+            "states": dict(sorted(states.items())),
+            "pending": sum(
+                task.state in {"pending", "retry_wait"} for task in tasks
+            ),
+            "consumed": sum(task.consumed_at is not None for task in tasks),
+            "oldest_pending_age_seconds": max(pending_ages, default=None),
+            "allocation_confirmations": sum(
+                bool(task.reserved_candidate_ids)
+                for task in tasks
+            ),
+            "reschedule_flags": sum(
+                task.output is not None
+                and task.output.allocation_flag
+                for task in tasks
+            ),
+            "usage": dict(sorted(usage.items())),
+        },
+        by_candidate,
+    )
 
 
 def _goal_metric_contexts(
@@ -887,6 +934,7 @@ def goal_plus_monitor_snapshot(
         frozen = FrozenSpec.model_validate(
             load_json(root / "specs" / run.frozen_spec_id / "frozen_spec.json")
         )
+        search_scheduler_enabled = frozen.spec.strategy.search_scheduler is not None
         candidates = _load_candidates(run_path)
         sessions = _load_agent_sessions(run_path)
         plans = _load_plans(run_path)
@@ -1009,6 +1057,61 @@ def goal_plus_monitor_snapshot(
                 ],
             }
 
+        scheduler_views = (
+            load_search_scheduler_views(
+                run_path,
+                skip_invalid_records=True,
+            )
+            if search_scheduler_enabled
+            else None
+        )
+        if scheduler_views is not None:
+            scheduler_payload, schedule_tasks_by_candidate = (
+                _scheduler_payload(scheduler_views.schedule_tasks)
+            )
+            run_payload["scheduler"] = scheduler_payload
+            allocation_decisions = [
+                item.model_dump(mode="json")
+                for item in scheduler_views.allocation_decisions
+            ]
+            replacement_counts = [
+                len(item.get("replacements") or [])
+                for item in allocation_decisions
+            ]
+            run_payload["allocation_decisions"] = {
+                "total": len(allocation_decisions),
+                "pending": sum(
+                    item.get("status") == "pending"
+                    for item in allocation_decisions
+                ),
+                "applied": sum(
+                    item.get("status") == "applied"
+                    for item in allocation_decisions
+                ),
+                "reserved_replacements": sum(replacement_counts),
+                "max_atomic_replacements": max(replacement_counts, default=0),
+                "items": allocation_decisions,
+            }
+        rewards_by_candidate: dict[str, list[Any]] = {}
+        if scheduler_views is not None:
+            rewards = list(scheduler_views.reward_records)
+            for reward in rewards:
+                rewards_by_candidate.setdefault(reward.candidate_id, []).append(reward)
+            reward_values = [item.reward.reward for item in rewards]
+            run_payload["search_scheduler"] = {
+                "rewards": {
+                    "available": bool(rewards),
+                    "reward_count": len(rewards),
+                    "mean_reward": (
+                        sum(reward_values) / len(reward_values)
+                        if reward_values
+                        else 0.0
+                    ),
+                    "best_reward": max(reward_values) if reward_values else None,
+                    "candidate_count": len(rewards_by_candidate),
+                },
+            }
+
         for candidate in candidates:
             candidate_sessions = sessions_by_candidate.get(candidate.candidate_id, [])
             last_iteration = candidate.iterations[-1] if candidate.iterations else None
@@ -1021,6 +1124,8 @@ def goal_plus_monitor_snapshot(
             toolization_signal_counts: dict[str, int] = {}
             toolization_exclusion_counts: dict[str, int] = {}
             toolization_advisory_counts: dict[str, int] = {}
+            candidate_rewards = rewards_by_candidate.get(candidate.candidate_id, [])
+            last_reward = candidate_rewards[-1] if candidate_rewards else None
             for item in candidate.iterations:
                 status = item.shared_tool_publish_status
                 shared_status_counts[status] = shared_status_counts.get(status, 0) + 1
@@ -1041,7 +1146,7 @@ def goal_plus_monitor_snapshot(
                     toolization_advisory_counts[advisory] = (
                         toolization_advisory_counts.get(advisory, 0) + 1
                     )
-            candidates_payload[candidate.candidate_id] = {
+            candidate_payload = {
                 "candidate_id": candidate.candidate_id,
                 "status": candidate.status,
                 "plan_id": candidate.task.plan_id,
@@ -1107,6 +1212,56 @@ def goal_plus_monitor_snapshot(
                 "toolization_advisory_counts": toolization_advisory_counts,
                 "results_tsv": results_tsv,
             }
+            if search_scheduler_enabled:
+                candidate_schedule_tasks = schedule_tasks_by_candidate.get(
+                    candidate.candidate_id,
+                    [],
+                )
+                last_schedule_task = (
+                    candidate_schedule_tasks[-1]
+                    if candidate_schedule_tasks
+                    else None
+                )
+                candidate_payload.update({
+                    "allocation_depth": candidate.task.allocation_depth,
+                    "allocation_eligibility": candidate.allocation_eligibility,
+                    "retired_by_decision_id": candidate.retired_by_decision_id,
+                    "expansion_source": (
+                        candidate.task.expansion_source.model_dump(mode="json")
+                        if candidate.task.expansion_source is not None
+                        else None
+                    ),
+                    "last_scheduler_reward": (
+                        last_reward.model_dump(mode="json")
+                        if last_reward is not None
+                        else None
+                    ),
+                    "scheduler_reward_count": len(candidate_rewards),
+                    "last_allocation_decision_id": (
+                        last_iteration.allocation_decision_id
+                        if last_iteration
+                        else None
+                    ),
+                    "last_allocation_decision_error": (
+                        last_iteration.allocation_decision_error
+                        if last_iteration
+                        else None
+                    ),
+                    "schedule_settlement_watermark": (
+                        candidate.schedule_settlement_watermark
+                    ),
+                    "schedule_tasks_total": len(candidate_schedule_tasks),
+                    "schedule_tasks_pending": sum(
+                        item.state in {"pending", "retry_wait"}
+                        for item in candidate_schedule_tasks
+                    ),
+                    "last_schedule_task": (
+                        last_schedule_task.model_dump(mode="json")
+                        if last_schedule_task is not None
+                        else None
+                    ),
+                })
+            candidates_payload[candidate.candidate_id] = candidate_payload
             if not candidate_sessions and candidate.status == "created":
                 warnings.append(
                     {

@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from goal_plus.adaptive_search import resolve_scheduler_policy
+from goal_plus.adaptive_search.scheduler import SearchSchedulerSpec
 from goal_plus.models import (
     AgentHostHandle,
     AgentSessionRecord,
@@ -15,6 +17,7 @@ from goal_plus.models import (
     CandidateTask,
     DevicePoolSpec,
     EditSurface,
+    FrozenSpec,
     GoalPlusSpecDraft,
     IterationRecord,
     SearchPlan,
@@ -33,7 +36,7 @@ from goal_plus.runtime import (
     SUPPLEMENTAL_EVALUATION_ENABLED_ENV,
     SUPPLEMENTAL_EVALUATION_REQUIRED_ENV,
 )
-from tests._runtime_helpers import make_project
+from tests._runtime_helpers import make_project, spec_for
 
 
 def test_legacy_tool_adoption_declaration_drops_mode() -> None:
@@ -588,15 +591,169 @@ def test_strategy_spec_accepts_supported_worker_hosts() -> None:
         StrategySpec(worker_host="unsupported")  # type: ignore[arg-type]
 
 
-def test_strategy_spec_accepts_parallel_loop_orchestration() -> None:
+def test_strategy_spec_accepts_supported_orchestration_modes() -> None:
     default = StrategySpec()
+    rolling = StrategySpec(orchestration_mode="rolling_candidates")
     parallel = StrategySpec(orchestration_mode="parallel_loops")
 
     assert default.orchestration_mode == "parallel_loops"
+    assert rolling.orchestration_mode == "rolling_candidates"
     assert parallel.orchestration_mode == "parallel_loops"
 
     with pytest.raises(ValidationError):
         StrategySpec(orchestration_mode="conductor")  # type: ignore[arg-type]
+
+
+def test_strategy_spec_uses_optional_search_scheduler() -> None:
+    configured = StrategySpec(
+        orchestration_mode="adaptive_search",
+        search_scheduler={
+            "host": "pi-rpc",
+            "model": "bench-openai/gpt-5.6-sol",
+            "reasoning_effort": "low",
+            "timeout_seconds": 180,
+            "reward": "evidence_llm_value/v3",
+            "allocation": "value_guided_replace/v2",
+        }
+    )
+    assert configured.search_scheduler is not None
+    assert configured.orchestration_mode == "adaptive_search"
+    assert StrategySpec().search_scheduler is None
+
+    with pytest.raises(ValidationError, match="requires strategy.search_scheduler"):
+        StrategySpec(orchestration_mode="adaptive_search")
+    for non_adaptive_mode in ("parallel_loops", "rolling_candidates"):
+        with pytest.raises(ValidationError, match="requires.*adaptive_search"):
+            StrategySpec(
+                orchestration_mode=non_adaptive_mode,
+                search_scheduler=configured.search_scheduler,
+            )
+
+
+def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
+    configured = SearchSchedulerSpec.model_validate(
+        {
+            "host": "pi-rpc",
+            "model": "bench-openai/gpt-5.6-sol",
+            "reasoning_effort": "low",
+            "timeout_seconds": 180,
+            "reward": (
+                "evidence_llm_value/v3 @prompt "
+                "rubric要关注修改代码量"
+            ),
+            "allocation": "value_guided_replace/v2",
+        }
+    )
+    assert configured.host == "pi-rpc"
+    assert configured.model == "bench-openai/gpt-5.6-sol"
+    assert configured.reasoning_effort == "low"
+    assert configured.timeout_seconds == 180
+    reward = resolve_scheduler_policy(configured.reward, kind="reward")
+    assert reward.reference == "evidence_llm_value/v3"
+    assert reward.supplemental_prompt == "rubric要关注修改代码量"
+    configured_payload = configured.model_dump(mode="json")
+    for field in ("host", "model", "reasoning_effort", "timeout_seconds"):
+        incomplete = dict(configured_payload)
+        incomplete.pop(field)
+        with pytest.raises(ValidationError):
+            SearchSchedulerSpec.model_validate(incomplete)
+
+    projected = SearchSchedulerSpec(
+        host="pi-rpc",
+        model="bench-openai/gpt-5.6-sol",
+        reasoning_effort="low",
+        timeout_seconds=180,
+        reward="evidence_llm_value/v3",
+        allocation="value_guided_replace/v2",
+    )
+    assert resolve_scheduler_policy(projected.reward, kind="reward").version == 3
+
+    for retired in (
+        {
+            **configured_payload,
+            "enabled": True,
+        },
+        {
+            **configured_payload,
+            "scheduler": {"model": "gpt-5.2"},
+        },
+        {
+            **configured_payload,
+            "expansion": {"max_depth": 3},
+        },
+        {
+            **configured_payload,
+            "reward": {"script_path": "tools/reward.py"},
+        },
+    ):
+        with pytest.raises(ValidationError):
+            SearchSchedulerSpec.model_validate(retired)
+
+    unregistered = SearchSchedulerSpec.model_validate(
+        {
+            "host": "pi-rpc",
+            "model": "bench-openai/gpt-5.6-sol",
+            "reasoning_effort": "low",
+            "timeout_seconds": 180,
+            "reward": "unregistered/v1",
+            "allocation": "value_guided_replace/v2",
+        }
+    )
+    project = make_project(tmp_path)
+    spec_data = spec_for(project).model_dump(mode="json")
+    spec_data["workspace"] = {"backend": "git_worktree"}
+    spec_data["budget"]["max_candidates"] = spec_data["budget"]["max_parallel"]
+    spec_data["strategy"]["orchestration_mode"] = "adaptive_search"
+    spec_data["strategy"]["search_scheduler"] = unregistered.model_dump(
+        mode="json"
+    )
+    with pytest.raises(ValueError, match="unknown reward scheduler policy"):
+        FileSearchRuntime(tmp_path / ".gp").freeze_spec(
+            SearchSpec.model_validate(spec_data),
+            [project / "evaluator.py"],
+        )
+    with pytest.raises(ValidationError, match="@prompt requires non-empty"):
+        SearchSchedulerSpec.model_validate(
+            {
+                "host": "pi-rpc",
+                "model": "bench-openai/gpt-5.6-sol",
+                "reasoning_effort": "low",
+                "timeout_seconds": 180,
+                "reward": "evidence_llm_value/v3 @prompt",
+                "allocation": "value_guided_replace/v2",
+            }
+        )
+
+
+def test_scheduler_frozen_spec_requires_resolved_policy_snapshot(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    spec_data = spec_for(project).model_dump(mode="json")
+    spec_data["workspace"] = {"backend": "git_worktree"}
+    spec_data["budget"]["max_candidates"] = spec_data["budget"]["max_parallel"]
+    spec_data["strategy"]["orchestration_mode"] = "adaptive_search"
+    spec_data["strategy"]["search_scheduler"] = {
+        "host": "pi-rpc",
+        "model": "bench-openai/gpt-5.6-sol",
+        "reasoning_effort": "low",
+        "timeout_seconds": 180,
+        "reward": "evidence_llm_value/v3",
+        "allocation": "value_guided_replace/v2",
+    }
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data),
+        [project / "evaluator.py"],
+    )
+    payload = frozen.model_dump(mode="json")
+    payload.pop("search_scheduler_policies")
+
+    with pytest.raises(
+        ValidationError,
+        match="configuration and frozen policies must coexist",
+    ):
+        FrozenSpec.model_validate(payload)
 
 
 def test_strategy_spec_accepts_worker_budget() -> None:
@@ -788,6 +945,11 @@ def test_agent_session_record_is_context_handle_with_required_candidate() -> Non
 
 
 def test_search_spec_rejects_invalid_budget_and_blank_source_path() -> None:
+    assert Budget(max_parallel=2, max_candidates=None).max_candidates is None
+    assert Budget(max_parallel=2, max_candidates=2).max_candidates == 2
+    with pytest.raises(ValidationError, match="must be >= budget.max_parallel"):
+        Budget(max_parallel=2, max_candidates=1)
+
     data = valid_spec_dict()
     data["budget"]["max_parallel"] = 0
     with pytest.raises(ValidationError):

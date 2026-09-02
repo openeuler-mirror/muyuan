@@ -1580,7 +1580,13 @@ def _finish_annotation_task(
         # All runtime readers take the run lock, so they see either the old head
         # or the completed View and its new head together.
         runtime._reconcile_tool_family_heads(current.run_id)
-        return result is not None
+        published = result is not None
+    try:
+        runtime.on_evidence_annotation_terminal(task.run_id)
+    except Exception:
+        # Search Scheduler recovery also discovers terminal annotations on rescan.
+        pass
+    return published
 
 
 def _annotation_result(value: str | EvidenceAnnotationResult) -> EvidenceAnnotationResult:
@@ -1720,6 +1726,10 @@ def drain_evidence_annotations(
         finally:
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
+            try:
+                runtime.on_evidence_annotation_terminal(run_id)
+            except Exception:
+                pass
 
 
 def main(argv: list[str] | None = None) -> int:

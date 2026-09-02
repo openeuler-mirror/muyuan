@@ -1,0 +1,88 @@
+{
+  "objective": "maximize single-core PyTorch tokens_per_second while preserving the deterministic workload checksum",
+  "metric_name": "tokens_per_second",
+  "metric_direction": "maximize",
+  "source_path": "examples/model-optimize/workspace-template",
+  "workspace": {
+    "backend": "git_worktree"
+  },
+  "edit_surface": {
+    "allow": [
+      "model.py",
+      "serving.py"
+    ],
+    "deny": [
+      "benchmark.py",
+      "verify.py",
+      "single_thread.py",
+      "workload.json",
+      ".goal-plus-verifiers/**",
+      "cpp_reference/**"
+    ]
+  },
+  "process_verifiers": [
+    {
+      "name": "torch_cpu_validity",
+      "role": "validity_gate",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/torch_cpu_tokens.py",
+        "--validate"
+      ],
+      "timeout_seconds": 60,
+      "resource_lock": "torch-cpu-search-scheduler"
+    },
+    {
+      "name": "torch_cpu_tokens_per_second",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/torch_cpu_tokens.py",
+        "--rank"
+      ],
+      "timeout_seconds": 120,
+      "resource_lock": "torch-cpu-search-scheduler"
+    }
+  ],
+  "promotion_verifiers": [
+    {
+      "name": "torch_cpu_validity",
+      "role": "promotion_gate",
+      "command": [
+        "python",
+        ".goal-plus-verifiers/torch_cpu_tokens.py",
+        "--validate"
+      ],
+      "timeout_seconds": 60,
+      "resource_lock": "torch-cpu-search-scheduler"
+    }
+  ],
+  "budget": {
+    "max_parallel": 2,
+    "max_candidates": 4
+  },
+  "strategy": {
+    "name": "random",
+    "orchestration_mode": "adaptive_search",
+    "worker_host": "codex",
+    "worker_budget": {
+      "max_runtime_seconds": 360,
+      "on_exceed": "interrupt"
+    },
+    "search_scheduler": {
+      "host": "pi-rpc",
+      "model": "bench-openai/gpt-5.6-sol",
+      "reasoning_effort": "low",
+      "timeout_seconds": 180,
+      "reward": "evidence_llm_value/v3 @prompt Pay particular attention to marginal throughput evidence and avoid rewarding repeated measurements.",
+      "allocation": "value_guided_replace/v2"
+    },
+    "config": {
+      "seed": 20260819
+    }
+  },
+  "constraints": {
+    "suggested_batch_size": 2,
+    "task_summary": "Optimize only model.py or serving.py. Keep PyTorch, OpenMP, MKL, and build thread counts at one. Use persisted scheduler Decisions exactly; retired candidates must not start another iteration."
+  }
+}

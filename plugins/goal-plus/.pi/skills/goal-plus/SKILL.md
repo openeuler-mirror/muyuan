@@ -202,6 +202,10 @@ Pi 支持的 strategy name 仅限以下可移植内置子集：
 candidate/subagent 数。
 每个初始候选工作区都是长期自主循环，不创建后续规划轮次或基于质量的替代项。
 
+只有目标或 benchmark 明确要求 runtime reward/allocation，或恢复的 FrozenSpec 已设置
+`strategy.orchestration_mode="adaptive_search"` 时，才读取并完整遵循本 skill 目录下的
+`references/adaptive-search.md`。冻结 adaptive spec 前必须先读取该文件；未开启该模式时不要读取它。
+
 用户或外层 harness 提供 wall-clock、attempt 或 token 预算时：
 
 1. 为主 agent 最终验证、选择、报告和提升预留时间。
@@ -217,8 +221,8 @@ candidate/subagent 数。
    使用 spec 中配置的 `min_runtime_seconds` 再次推算提前关闭时间。
 
 subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁移、结构重启和 rebase 决策。
-主 agent 绝不发送偏好的技术方向。低分、一次没有改进的迭代或其他候选领先，
-都不是停止或替换条件。
+主 agent 绝不发送偏好的技术方向。普通 `parallel_loops` 中，低分、一次没有改进的迭代或
+其他候选领先都不是停止或替换条件。
 
 遵循 `raw_goal` 中的探索模式末行。`probe` 模式下，全局 policy 可以在可行性、潜力和阻塞
 因素已经可信时停止。`autonomous` 模式下，只要还有外层时间，就为每个 active 候选提供
@@ -280,10 +284,12 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
       链接到同一个 `goal_plus_id`。
    绝不能选择或提升已失效的 run。其产物、限定范围的问题和特性仍可作为研究输入，
    但每个旧分数都只是历史，每个导入特性都必须在后继契约下重新验证。
-8. 每个 `candidate_ready` 验证后，只执行全局停止 policy。明确限时持续优化时，达到成功标准、
+8. 每个 `candidate_ready` 验证后，先检查 durable verifier 报告。FrozenSpec 使用
+   `adaptive_search` 时，转入并遵循 `references/adaptive-search.md`；不要同时执行
+   下述 `parallel_loops` continuation policy。普通模式执行全局停止 policy：明确限时持续优化时，达到成功标准、
    分数、排名或近期没有改善都不改变调度；只有“外层剩余时间减最终收尾预留”不足以完成至少一次
-   process verifier 闭环时才停止。否则使用能适应剩余时间的预算，对该准确 `candidate_id` 调用
-   `pi_search_pool_continue`。不要把
+   process verifier 闭环时才停止。如果 policy 为 false，使用能适应剩余时间的预算，对该准确
+   `candidate_id` 调用 `pi_search_pool_continue`。不要把
    `timed_out`、`interrupted` 或 `failed` 当作 candidate-ready continuation。运行时提供以下
    固定中性 continuation prompt：
 

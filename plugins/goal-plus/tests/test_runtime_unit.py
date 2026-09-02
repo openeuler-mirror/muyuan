@@ -23,6 +23,7 @@ from goal_plus.models import (
     ScoreReport,
     SearchSpec,
 )
+from goal_plus.reporting import build_html_report_data, render_html_report
 from goal_plus.runtime import (
     DEVICE_POOLS_ENV,
     FileSearchRuntime,
@@ -3082,8 +3083,32 @@ def test_plan_next_caps_batch_size_to_max_parallel(tmp_path: Path) -> None:
         runtime.plan_next(run_id, requested_k=4)
 
 
+def test_rolling_candidates_remains_scheduler_independent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project(tmp_path)
+    spec_data = spec_for(project).model_dump(mode="json")
+    spec_data["strategy"]["orchestration_mode"] = "rolling_candidates"
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    monkeypatch.setattr(
+        runtime._adaptive_search,
+        "kick_schedule_tasks",
+        lambda _run_id: pytest.fail("rolling_candidates entered Search Scheduler"),
+    )
+
+    assert runtime.search_scheduler_enabled(run_id) is False
+    runtime.on_evidence_annotation_terminal(run_id)
+
+
 def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
@@ -3109,7 +3134,58 @@ def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
     with pytest.raises(RuntimeError, match="one initial SearchPlan"):
         runtime.plan_next(run_id, requested_k=1)
 
+    def reject_scheduler_call(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("default Search entered Search Scheduler execution")
+
+    for method_name in (
+        "assert_candidate_execution_allowed",
+        "resolve_previous_best_score",
+        "resolve_scheduler_barrier",
+        "settle_iteration",
+        "kick_schedule_tasks",
+    ):
+        monkeypatch.setattr(
+            runtime._adaptive_search,
+            method_name,
+            reject_scheduler_call,
+        )
+
+    assert runtime.search_scheduler_enabled(run_id) is False
+    runtime.on_evidence_annotation_terminal(run_id)
+
+    with pytest.raises(RuntimeError, match="requires.*adaptive_search"):
+        runtime.list_allocation_decisions(run_id)
+    with pytest.raises(RuntimeError, match="requires.*adaptive_search"):
+        runtime.apply_allocation_decision(run_id, "allocation_0001")
+
     session = runtime.start_agent_session(run_id, tasks[0].candidate_id)
+    assert "expansion_action_context" not in runtime.get_agent_context(
+        session.agent_session_id
+    )
+    report = runtime.run_verifier(
+        run_id,
+        tasks[0].candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="verify the ordinary parallel loop path",
+    )
+    record = runtime._load_candidate_record(run_id, tasks[0].candidate_id)
+
+    assert report.allocation_decision is None
+    assert record.iterations[-1].schedule_task_id is None
+    assert record.iterations[-1].allocation_decision_id is None
+
+    snapshot = goal_plus_monitor_snapshot(runtime.root_dir, run_id=run_id)
+    assert "search_scheduler" not in snapshot["run"]
+    assert "allocation_decisions" not in snapshot["run"]
+    assert "current_value_estimate" not in snapshot["candidates"][tasks[0].candidate_id]
+
+    report_data = build_html_report_data(runtime.root_dir, run_id)
+    [task_report] = report_data["search_tasks"]
+    assert "allocation_decisions" not in task_report
+    assert "search_graph" not in task_report
+    assert "current_value_estimate" not in task_report["candidates"][0]
+    assert "Reward / allocation" not in render_html_report(report_data)
+
     continued = runtime.continue_agent_session(session.agent_session_id)
     assert continued.agent_session_id == session.agent_session_id
     assert continued.candidate_id == tasks[0].candidate_id
@@ -3196,6 +3272,9 @@ def test_get_agent_context_has_only_authoritative_worker_fields(tmp_path: Path) 
     ):
         assert forbidden not in context, f"get_agent_context must not return {forbidden}"
     assert context["candidate_task"]["candidate_id"] == tasks[0].candidate_id
+    assert context["orchestration_mode"] == "parallel_loops"
+    assert context["search_scheduler_enabled"] is False
+    assert "expansion_action_context" not in context
     assert "history" not in context
     assert "iterations" not in context
     assert "results" not in context

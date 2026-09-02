@@ -126,12 +126,69 @@ origin/relocation bootstrap result 单独保存在 FrozenSpec 和 RunRecord 中�
 计数或候选排名。relocation 失败会以 `verifier_target_mismatch` 自动 abort run，保留 `c001`
 供诊断，且不会启动 worker。
 
-`budget.max_parallel` 是 spec 的初始 candidate 和 live-worker 数量。普通
-`parallel_loops` run 只做一次初始分配，不按分数创建替代 candidate，也没有后续
+`budget.max_parallel` 是 spec 的初始 candidate 数和实时 live-worker 上限 `K`。`parallel_loops`
+只做一次初始分配，不按分数创建替代 candidate，也没有后续
 规划轮次。用户提供 `strategy.models` 时，runtime 在冻结前通过 host adapter 验证
 名称，并在初始 plan 中生成与 lane 一一对应的 `selected_models`：未写数量时轮转，
 全部写数量时按数量展开。每个 selected model 随 candidate 和原生 session 的续跑保持
 不变，但所有 lane 仍共享同一份 Global Evidence。
+
+### Adaptive Search allocation
+
+`strategy.orchestration_mode="adaptive_search"` 是独立于固定候选 `parallel_loops` 的调度流程，
+并要求非 `null` 的 `strategy.search_scheduler`。它保留 Search 的 hard settlement 主流程，只在
+settlement 后增加 scheduler 分支。`adaptive_search.py` 是核心 runtime 的唯一 Adaptive Search facade 并协调
+barrier、scheduler 结果和 Allocation；`scheduler.py` 负责配置、`ScheduleTask`、reward 列表、可恢复
+异步 worker、公共 scheduler context 及一次性 Codex/Pi 调用；`allocation.py` 独立验证、持久化并执行
+Decision；`policies.py` 管理版本化策略及其 reward/allocation context builder。ScheduleTask 和
+Decision 分别由所属模块持久化，不共享 Store。
+
+Adaptive Search 要求 `workspace.backend="git_worktree"`、`budget.max_parallel` 和非空
+`search_scheduler`。可选的 `budget.max_candidates` 限制累计唯一 candidate；`null` 表示不限制，
+有界值必须大于等于 `max_parallel`。`search_scheduler` 直接包含
+host/model/reasoning/timeout 模型调用参数和 `reward`/`allocation` 策略引用。策略使用
+`name/vN [@prompt 补充说明]` 格式，runtime 在 search 开始前解析已注册的准确版本并把策略快照
+写入 FrozenSpec；runtime 根据冻结版本调用注册的 context builder，异步 agent 不查询注册表。四项
+模型调用参数均为必填项且不继承 worker
+profile。配置不接受函数名或脚本路径。并发由
+`budget.max_parallel` 推导，重试采用内部策略。
+backup 和 expansion 分别归入 reward 与 allocation，不再暴露独立参数。
+
+每次 verifier settlement 先写入 `AnnotationTask`；其 completed 或 terminal_error 后，runtime 才把
+精简 Evidence View 投影到 candidate-local `ScheduleTask`。annotation 失败时 View 为 `null`，scheduler
+只收到“参考历史观测自行决定补偿方案”的提示，不采用固定补偿值。一次无 session scheduler 调用按
+reward -> pruning -> optional derivation 顺序同时返回 reward、rubric/UCT/exploration 分量和 allocation
+flag。`scheduler.py` 构造当前结算事实的 `scheduler_context`，再通过 `policies.py` 的统一入口取得
+与准确策略版本匹配的 `reward_context` 和 `allocation_context`。screen 阶段只获得对应 pruning
+所需的统计或精简 peer frontier，只有确认 task 才获得全 candidate reward-bound 节点和 derivation
+规则，并可返回独立的 Decision 草案。task 按 candidate iteration 有序消费，不同
+candidate 可并发，失效进程留下的 pending、running 或 retry_wait task 可以恢复。
+`ScheduleTask.output` 是 reward/flag 的唯一权威记录；runtime 只在读取时从 completed task 索引生成
+reward 列表，不保存 value tree 或 candidate/report reward 副本。reward 只读取当前 candidate 历史；
+screen allocation 读取精简 peer frontier，确认 allocation 才读取全 candidate 节点。reward 记录通过 settlement id、ScheduleTask id 和 node id
+显式绑定到 settled node。系统不维护 run-root tree、graph、transition、backup event、
+action edge 或 hindsight。
+
+lazy allocation 读取上一已完成节点的布尔 flag。上一 flag 为 `false` 时，当前 settlement 不等待
+annotation/scheduler 链；上一 flag 为 `true` 时，runtime 直接把当前 task 视为确认任务并等待当前
+AnnotationTask 和 scheduler。只有当前 flag 再次
+为 `true` 且独立 Decision 草案通过 candidate 容量、retiree 和精确 settled source 校验，
+runtime 才在
+`.gp/runs/<run_id>/allocation-decisions/*.json` 持久化 `AllocationDecision`。Decision 固定退休
+candidate、依据、预留 derived id、source candidate/iteration/node/commit/artifact、探索方向和可选
+worker budget，
+同时 fence 全部 retirees 的下一轮 iteration。
+
+`search_apply_allocation_decision` 幂等预检并物化整份计划：从 Decision 的 source commit 创建
+workspace，继承 results ledger、run-global Evidence 可见性和 selected model，再为每个 replacement
+创建 native `AgentSessionRecord` 并返回 launch payload。host 必须先释放全部 retired live handles，
+再启动全部 payload；它不计算 reward、不选择来源、不改写计划，也不自动 refill。
+
+Evidence annotation 是 ScheduleTask 创建的弱依赖：必须先终态，但 terminal_error 不阻断 scheduler。
+任一侧失败不改变 hard score、
+keep/retain/discard/failure、`best.json`、selection 或 promotion。`parallel_loops` 不创建
+ScheduleTask 或质量驱动的替代 candidate。隐藏答案 benchmark 不能向 scheduler/worker 暴露 gold
+correctness、score 或其派生决策；这类任务继续使用公开格式 verifier 和 gold-independent 聚合。
 
 ## Candidate 循环
 
@@ -219,9 +276,10 @@ run-wide 工具总数限制。
 不改变 score、verifier disposition、selection 或 promotion。实际 staging inventory 与现有
 publication settlement 始终是权威。
 
-main agent 不向 worker 提供后续技术方向。正常路径优先续跑同一个原生 session；
+main agent 不向 worker 提供后续技术方向。`parallel_loops` 优先续跑同一个原生 session；
 redispatch 只用于恢复，并继续使用同一个 candidate 工作区、Git 历史、verifier 历史
-和有界 handoff。
+和有界 handoff。`adaptive_search` 中的 Search Scheduler 只有在 verifier 返回 runtime 已持久化的 allocation decision
+时才停止该 candidate；worker 和 host 都不能自行推断质量剪枝。
 
 ## Global Evidence
 

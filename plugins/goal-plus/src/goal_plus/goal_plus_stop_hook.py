@@ -693,6 +693,27 @@ def _read_json_object(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _session_uses_adaptive_search(search_root: Path, session: Any) -> bool:
+    run = _read_json_object(search_root / "runs" / session.run_id / "run.json")
+    if run is None:
+        return False
+    frozen_spec_id = run.get("frozen_spec_id")
+    if not isinstance(frozen_spec_id, str) or not frozen_spec_id:
+        return False
+    frozen = _read_json_object(
+        search_root / "specs" / frozen_spec_id / "frozen_spec.json"
+    )
+    spec = (frozen or {}).get("spec")
+    if not isinstance(spec, dict):
+        return False
+    strategy = spec.get("strategy")
+    return (
+        isinstance(strategy, dict)
+        and strategy.get("orchestration_mode") == "adaptive_search"
+        and strategy.get("search_scheduler") is not None
+    )
+
+
 def _write_json_object(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f"{path.suffix}.tmp-{os.getpid()}")
@@ -959,9 +980,25 @@ def _autoresearch_lease_stop_context(
     min_verifier_runs = int(evidence.get("min_verifier_runs") or 1)
     remaining_seconds = max(0.0, min_runtime_seconds - elapsed_seconds)
     infrastructure_stop = _candidate_requires_immediate_stop(search_root, session)
+    allocation_stop = False
+    if _session_uses_adaptive_search(search_root, session):
+        candidate_path = (
+            search_root
+            / "runs"
+            / session.run_id
+            / "candidates"
+            / session.candidate_id
+            / "candidate.json"
+        )
+        candidate_payload = _read_json_object(candidate_path)
+        allocation_stop = (
+            candidate_payload is not None
+            and candidate_payload.get("allocation_eligibility") == "retired"
+            and bool(candidate_payload.get("retired_by_decision_id"))
+        )
     verifier_complete = verifier_runs >= min_verifier_runs
     runtime_complete = remaining_seconds <= 0
-    completion_complete = infrastructure_stop or (
+    completion_complete = infrastructure_stop or allocation_stop or (
         verifier_complete and runtime_complete
     )
 
@@ -1003,6 +1040,8 @@ def _autoresearch_lease_stop_context(
                 "release_reason": (
                     "infrastructure_stop_and_report"
                     if infrastructure_stop
+                    else "allocation_decision"
+                    if allocation_stop
                     else "lease_satisfied"
                 ),
             }
@@ -1046,6 +1085,7 @@ def _autoresearch_lease_stop_context(
         "search_candidate_remaining_seconds": remaining_seconds,
         "search_candidate_required_verifier_runs": min_verifier_runs,
         "search_candidate_infrastructure_stop": infrastructure_stop,
+        "search_candidate_allocation_stop": allocation_stop,
     }
 
 
