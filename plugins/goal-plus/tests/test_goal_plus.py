@@ -1113,10 +1113,30 @@ def test_pre_tool_use_defers_promotion_selection_check_to_search_runtime(tmp_pat
     gate = runtime.gate(
         record.goal_plus_id,
         event="pre_tool_use",
-        context={"tool_name": "search_promote"},
+        context={"tool_name": "search_promote", "input": {"run_id": "run_001"}},
     )
 
     assert gate.decision == "allow"
+
+    domain_before = _goal_domain_state(runtime.status(record.goal_plus_id))
+    wrong_run = runtime.gate(
+        record.goal_plus_id,
+        event="pre_tool_use",
+        context={"tool_name": "search_promote", "input": {"run_id": "run_other"}},
+    )
+    wrong_goal = runtime.gate(
+        record.goal_plus_id,
+        event="pre_tool_use",
+        context={
+            "tool_name": "goal_plus_record_triage",
+            "input": {"goal_plus_id": "gp_other"},
+        },
+    )
+    assert wrong_run.decision == "block"
+    assert wrong_goal.decision == "block"
+    assert "GoalPlusOwnershipMismatch" in (wrong_run.reason or "")
+    assert "GoalPlusOwnershipMismatch" in (wrong_goal.reason or "")
+    assert _goal_domain_state(runtime.status(record.goal_plus_id)) == domain_before
 
 
 def test_link_search_run_is_idempotent_and_appends_distinct_search_tasks(tmp_path) -> None:
@@ -1147,6 +1167,12 @@ def test_link_search_run_is_idempotent_and_appends_distinct_search_tasks(tmp_pat
     assert len(
         [event for event in runtime.list_events(record.goal_plus_id) if event["event_type"] == "search_linked"]
     ) == 2
+
+    other = runtime.create_goal("Unrelated optimization")
+    other_before = _goal_domain_state(other)
+    with pytest.raises(RuntimeError, match="already linked to Goal Plus"):
+        runtime.link_search_run(other.goal_plus_id, "spec_abc", "run_001")
+    assert _goal_domain_state(runtime.status(other.goal_plus_id)) == other_before
 
 
 def test_goal_status_recovers_legacy_search_task_history_from_events(tmp_path) -> None:

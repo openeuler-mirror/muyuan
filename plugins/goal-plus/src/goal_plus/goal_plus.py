@@ -291,6 +291,35 @@ MUTATING_TOOL_SUFFIXES = (
     "exec_command",
     "apply_patch",
 )
+GOAL_SCOPED_TOOL_SUFFIXES = (
+    "goal_plus_record_triage",
+    "goal_plus_upsert_work_items",
+    "goal_plus_record_work_event",
+    "goal_plus_save_spec_draft",
+    "goal_plus_link_search_run",
+    "goal_plus_record_search_result",
+    "goal_plus_prepare_final_check",
+    "goal_plus_set_status",
+    "goal_plus_gate",
+)
+LINKED_SEARCH_TOOL_SUFFIXES = (
+    "search_invalidate_run",
+    "search_plan_next",
+    "search_start_batch",
+    "search_start_agent_session",
+    "search_redispatch_candidate",
+    "search_bind_agent_handle",
+    "search_continue_agent_session",
+    "search_run_verifier",
+    "search_select",
+    "search_promote",
+    "search_apply_promotion",
+    "pi_search_pool_open",
+    "pi_search_pool_wait_any",
+    "pi_search_pool_snapshot",
+    "pi_search_pool_continue",
+    "pi_search_pool_close",
+)
 
 
 def serialized_goal_mutation(method):
@@ -1520,6 +1549,11 @@ class FileGoalPlusRuntime:
                 f"search run {run_id} belongs to frozen spec {actual_frozen_spec_id}; "
                 f"cannot link it as {frozen_spec_id}"
             )
+        owner = self._search_run_owner(run_id)
+        if owner is not None and owner != goal_plus_id:
+            raise RuntimeError(
+                f"search run {run_id} is already linked to Goal Plus {owner}"
+            )
         record = self._load_record(goal_plus_id)
         existing = next(
             (task for task in record.search_tasks if task.run_id == run_id),
@@ -2057,6 +2091,14 @@ class FileGoalPlusRuntime:
                     "block",
                     reason=self._search_block_reason(record),
                 )
+            ownership_error = self._tool_ownership_error(record, context)
+            if ownership_error is not None:
+                return self._record_gate(
+                    record,
+                    event,
+                    "block",
+                    reason=ownership_error,
+                )
             if self._is_mutating_tool(tool_name) and self._should_block_mutation(record):
                 return self._record_gate(
                     record,
@@ -2247,6 +2289,89 @@ class FileGoalPlusRuntime:
     def _tool_name(self, context: dict[str, Any]) -> str:
         value = context.get("tool_name") or context.get("toolName") or ""
         return str(value)
+
+    @staticmethod
+    def _tool_input(context: dict[str, Any]) -> dict[str, Any]:
+        for key in ("tool_input", "toolInput", "input"):
+            value = context.get(key)
+            if isinstance(value, dict):
+                return value
+        return {}
+
+    def _tool_ownership_error(
+        self,
+        record: GoalPlusRecord,
+        context: dict[str, Any],
+    ) -> str | None:
+        tool_name = self._tool_name(context)
+        tool_input = self._tool_input(context)
+        if any(
+            self._tool_matches(tool_name, suffix)
+            for suffix in GOAL_SCOPED_TOOL_SUFFIXES
+        ):
+            requested_goal = tool_input.get("goal_plus_id")
+            if requested_goal != record.goal_plus_id:
+                return (
+                    "GoalPlusOwnershipMismatch: tool goal_plus_id does not match "
+                    "the host-authorized Goal Plus record"
+                )
+        if not any(
+            self._tool_matches(tool_name, suffix)
+            for suffix in LINKED_SEARCH_TOOL_SUFFIXES
+        ):
+            return None
+        run_id = self._tool_input_run_id(tool_input)
+        if run_id is None or not any(
+            task.run_id == run_id for task in record.search_tasks
+        ):
+            return (
+                "GoalPlusOwnershipMismatch: Search mutation requires a run linked "
+                "to the host-authorized Goal Plus record"
+            )
+        return None
+
+    def _tool_input_run_id(self, tool_input: dict[str, Any]) -> str | None:
+        run_id = tool_input.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            return run_id
+        agent_session_id = tool_input.get("agent_session_id")
+        if isinstance(agent_session_id, str) and agent_session_id:
+            matches = [
+                path
+                for path in (self.root_dir / "runs").glob(
+                    "*/agent_sessions/*.json"
+                )
+                if path.stem == agent_session_id
+            ]
+            if len(matches) == 1:
+                return matches[0].parents[1].name
+        pool_id = tool_input.get("pool_id")
+        if isinstance(pool_id, str) and pool_id:
+            pool_path = next(
+                (
+                    path
+                    for path in (self.root_dir / "host-pools" / "pi").glob(
+                        "*/pool.json"
+                    )
+                    if path.parent.name == pool_id
+                ),
+                None,
+            )
+            if pool_path is None:
+                return None
+            try:
+                pool_run_id = read_json(pool_path).get("run_id")
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                return None
+            return pool_run_id if isinstance(pool_run_id, str) else None
+        return None
+
+    def _search_run_owner(self, run_id: str) -> str | None:
+        for path in sorted(self.goals_dir.glob("gp_*/goal.json")):
+            record = self._load_record(path.parent.name)
+            if any(task.run_id == run_id for task in record.search_tasks):
+                return record.goal_plus_id
+        return None
 
     def _is_search_tool(self, tool_name: str) -> bool:
         return any(self._tool_matches(tool_name, suffix) for suffix in SEARCH_TOOL_SUFFIXES)
