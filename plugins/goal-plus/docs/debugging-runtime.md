@@ -114,7 +114,7 @@ MCP runtime 不维护 worker process lifecycle、host-sync state 或 cancellatio
     └── promotion/
 ```
 
-新的 `parallel_loops` run 在 `plans/` 下只有一个初始 plan，但同一 candidate 可以有多个 session 和 iteration。旧 run 可能包含多个 plan。
+新的 `parallel_loops` 和 `adaptive_search` run 在 `plans/` 下都只有一个初始 plan，但同一 candidate 可以有多个 session 和 iteration。
 
 ### Candidate 与 Verifier Evidence
 

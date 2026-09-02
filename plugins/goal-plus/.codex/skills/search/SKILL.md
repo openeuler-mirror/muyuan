@@ -76,6 +76,13 @@ strategy:
 父 agent 是完成验证器和继续触发器，不是搜索指挥者。低分、一次没有改进的迭代或其他候选
 领先，都不是停止或替换 worker 的理由。
 
+## 条件式 Adaptive Search 路由
+
+默认执行上述 `parallel_loops` 契约。只有目标或 benchmark 明确要求 runtime reward/allocation，
+或恢复的 FrozenSpec 已设置 `strategy.orchestration_mode="adaptive_search"` 时，才读取并完整遵循
+`../goal-plus/references/adaptive-search.md`。冻结 adaptive spec 前必须先读取该文件；
+未开启该模式时不要读取它。
+
 ## Search Run 预算规划
 
 在 `search_freeze_spec` 前选择整个 run 的预算；预算一旦冻结，不能在该 run 内增长。
@@ -172,7 +179,9 @@ strategy:
    - 刷新 history/monitor，记录 verifier 支持的全局最佳候选/分数是否变化；
    - 只有出现具体评估契约或基础设施失败时才检查 `verifier_assessment`。诊断稀疏、
      分数低或没有改进不代表 verifier 不充分，也不会阻止继续。
-8. 验证后执行全局停止 policy：
+8. 验证后先检查报告。FrozenSpec 使用 `adaptive_search` 时，转入并遵循
+   `../goal-plus/references/adaptive-search.md`；不要同时执行下述 `parallel_loops`
+   continuation policy。普通模式执行以下全局停止 policy：
    - run 失效或用户停止时停止；
    - 仅要求达到目标、没有持续优化时间要求时，达到成功标准可以成功收尾；
    - 明确限时持续优化时，达到成功标准、分数、排名或近期没有改善都不改变调度；只有
@@ -252,7 +261,7 @@ continuation 必须收到根据外层剩余时间推导的单次派发限制：�
 `SubagentStop` hook 强制执行的下限 lease。过早的最终回复会被阻止，并在不把控制权交还
 主流程的情况下继续同一个 Codex worker。该 lease active 时，绝不能发送父级 closeout
 消息。不要轮询或休眠；继续“假设 -> 产物 -> verifier”循环。基础设施
-`stop_and_report` 证据会绕过 lease。
+`stop_and_report` 会释放 lease；Adaptive Search 的额外释放条件只定义在条件引用文件中。
 
 项目 `PostToolUse` hook 也可能向绑定的候选 worker 提供仅供参考的时间提示。
 可用时它可能使用 `GOAL_PLUS_OUTER_DEADLINE_AT`。它绝不会停止 worker，也不能为主 agent、

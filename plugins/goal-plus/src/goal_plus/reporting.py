@@ -11,6 +11,10 @@ from typing import Any
 
 from goal_plus._version import __version__
 from goal_plus.agent_hosts import get_agent_host_adapter
+from goal_plus.adaptive_search import (
+    load_search_scheduler_views,
+    load_schedule_task_view,
+)
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_observability import normalize_pi_cost
 from goal_plus.models import (
@@ -1312,6 +1316,8 @@ def _report_iteration_payload(
     run_id: str,
     candidate_id: str,
     iteration: IterationRecord,
+    *,
+    search_scheduler_enabled: bool,
 ) -> dict[str, Any]:
     annotation_path = (
         run_dir
@@ -1338,6 +1344,22 @@ def _report_iteration_payload(
         if annotation is not None and annotation.state == "completed"
         else None
     )
+    schedule_task = (
+        load_schedule_task_view(
+            run_dir,
+            candidate_id,
+            iteration.iteration,
+        )
+        if search_scheduler_enabled
+        else None
+    )
+    if schedule_task is not None and (
+        schedule_task.run_id != run_id
+        or schedule_task.candidate_id != candidate_id
+        or schedule_task.iteration != iteration.iteration
+        or schedule_task.attempt_commit != iteration.git_head
+    ):
+        raise RuntimeError("ScheduleTask does not match iteration")
     if view is not None and (
         view.run_id != run_id
         or view.candidate_id != candidate_id
@@ -1365,7 +1387,7 @@ def _report_iteration_payload(
                     raise RuntimeError("evidence annotation monitor does not match iteration")
                 annotation_monitor = monitor
 
-    return {
+    payload = {
         "candidate_id": candidate_id,
         "iteration": iteration.iteration,
         "agent_session_id": iteration.agent_session_id,
@@ -1411,6 +1433,25 @@ def _report_iteration_payload(
         "shared_tool_staged_entries": list(iteration.shared_tool_staged_entries),
         "shared_tool_publish_status": iteration.shared_tool_publish_status,
     }
+    if search_scheduler_enabled:
+        payload.update({
+            "scheduler_reward": (
+                schedule_task.output.reward.model_dump(mode="json")
+                if schedule_task is not None and schedule_task.output is not None
+                else None
+            ),
+            "schedule_task": (
+                schedule_task.model_dump(mode="json")
+                if schedule_task is not None
+                else None
+            ),
+            "scheduler_status": iteration.scheduler_status,
+            "schedule_task_id": iteration.schedule_task_id,
+            "scheduler_error": iteration.scheduler_error,
+            "allocation_decision_id": iteration.allocation_decision_id,
+            "allocation_decision_error": iteration.allocation_decision_error,
+        })
+    return payload
 
 
 def _task_details(
@@ -1430,6 +1471,7 @@ def _task_details(
     frozen = FrozenSpec.model_validate(
         load_json(root / "specs" / run.frozen_spec_id / "frozen_spec.json")
     )
+    search_scheduler_enabled = frozen.spec.strategy.search_scheduler is not None
     plans = _load_models(run_dir / "plans", "plan_*.json", SearchPlan)
     candidates = _load_models(
         run_dir / "candidates", "*/candidate.json", CandidateRecord
@@ -1447,6 +1489,16 @@ def _task_details(
             session.agent_session_id
         )
 
+    scheduler_views = (
+        load_search_scheduler_views(run_dir)
+        if search_scheduler_enabled
+        else None
+    )
+    rewards_by_candidate: dict[str, list[Any]] = {}
+    if scheduler_views is not None:
+        for reward in scheduler_views.reward_records:
+            rewards_by_candidate.setdefault(reward.candidate_id, []).append(reward)
+
     candidate_payloads: list[dict[str, Any]] = []
     for candidate in candidates:
         scored = [
@@ -1461,8 +1513,9 @@ def _task_details(
         if scored:
             reverse = frozen.spec.metric_direction == "maximize"
             best = sorted(scored, key=lambda item: item.score, reverse=reverse)[0]
-        candidate_payloads.append(
-            {
+        candidate_rewards = rewards_by_candidate.get(candidate.candidate_id, [])
+        latest_reward = candidate_rewards[-1] if candidate_rewards else None
+        candidate_payload = {
                 "candidate_id": candidate.candidate_id,
                 "status": candidate.status,
                 "plan_id": candidate.task.plan_id,
@@ -1517,11 +1570,32 @@ def _task_details(
                         run_id,
                         candidate.candidate_id,
                         iteration,
+                        search_scheduler_enabled=search_scheduler_enabled,
                     )
                     for iteration in candidate.iterations
                 ],
-            }
-        )
+        }
+        if search_scheduler_enabled:
+            candidate_payload.update({
+                "allocation_depth": candidate.task.allocation_depth,
+                "allocation_eligibility": candidate.allocation_eligibility,
+                "retired_by_decision_id": candidate.retired_by_decision_id,
+                "expansion_source": (
+                    candidate.task.expansion_source.model_dump(mode="json")
+                    if candidate.task.expansion_source is not None
+                    else None
+                ),
+                "scheduler_reward_count": len(candidate_rewards),
+                "latest_scheduler_reward": (
+                    latest_reward.reward.model_dump(mode="json")
+                    if latest_reward is not None
+                    else None
+                ),
+                "schedule_settlement_watermark": (
+                    candidate.schedule_settlement_watermark
+                ),
+            })
+        candidate_payloads.append(candidate_payload)
 
     FileSearchRuntime.attach_external_evaluations(
         run_id,
@@ -1720,7 +1794,7 @@ def _task_details(
         }
         for plan in plans
     ]
-    return {
+    task_payload = {
         **task_summary,
         "is_report_run": run_id == report_run_id,
         "run": run.model_dump(mode="json"),
@@ -1749,6 +1823,22 @@ def _task_details(
         "candidates": candidate_payloads,
         "sessions": session_payloads,
     }
+    if scheduler_views is not None:
+        task_payload.update({
+            "allocation_decisions": [
+                item.model_dump(mode="json")
+                for item in scheduler_views.allocation_decisions
+            ],
+            "schedule_tasks": [
+                task.model_dump(mode="json")
+                for task in scheduler_views.schedule_tasks
+            ],
+            "scheduler_rewards": [
+                item.model_dump(mode="json")
+                for item in scheduler_views.reward_records
+            ],
+        })
+    return task_payload
 
 
 _GOAL_EVENT_LABELS = {
@@ -3475,6 +3565,7 @@ def _render_timeline(
 
 
 def _render_shared_evidence_view(task: dict[str, Any]) -> str:
+    scheduler_enabled = "allocation_decisions" in task
     local_rows = [
         {
             **iteration,
@@ -3764,6 +3855,40 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
                 f"<strong>{_html(score)}</strong>"
                 f'<div class="evidence-score-kind">{_html(item.get("score_kind"))}</div>'
             )
+        reward = item.get("scheduler_reward")
+        schedule_task = item.get("schedule_task")
+        reward_copy = "Not observed"
+        if isinstance(reward, dict):
+            attempt_reward = reward.get("reward")
+            reward_copy = (
+                f"reward {_number(attempt_reward, digits=3)}"
+                f" | uct {_number(reward.get('uct'), digits=3)}"
+            )
+            if item.get("allocation_decision_id"):
+                reward_copy += f" | {_text(item.get('allocation_decision_id'))}"
+            elif item.get("allocation_decision_error"):
+                reward_copy += " | scheduler plan error"
+        if isinstance(schedule_task, dict):
+            output = schedule_task.get("output") or {}
+            flag = output.get("allocation_flag")
+            flag_label = (
+                "reschedule"
+                if flag is True
+                else "continue" if flag is False else "pending"
+            )
+            value_summary = (
+                f"Scheduler {schedule_task.get('state') or 'unknown'}"
+                f" | flag {flag_label}"
+            )
+            if isinstance(reward, dict):
+                reward_copy += f" | {value_summary}"
+            else:
+                reward_copy = value_summary
+        reward_cell = (
+            f'<td class="mono">{_html(reward_copy)}</td>'
+            if scheduler_enabled
+            else ""
+        )
         rows.append(
             f'<tr class="{escape(" ".join(row_classes), quote=True)}"'
             " data-evidence-row"
@@ -3774,6 +3899,7 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
             f'<td class="mono"><strong>{_html(candidate_id)}</strong></td>'
             f'<td class="mono">{_html(item.get("iteration"))}</td>'
             f'<td class="mono">{score_copy}</td>'
+            f"{reward_cell}"
             f"<td>{_status(disposition)}</td>"
             f'<td><div class="evidence-copy">{_html(attempt)}</div></td>'
             f'<td>{view_copy}{view_error}{monitor_copy}<div class="evidence-view-meta">{_status(view_state)}</div></td>'
@@ -3810,6 +3936,7 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
         '<div class="table-scroll evidence-view-scroll">'
         '<table class="evidence-view-table"><thead><tr>'
         "<th>Time</th><th>Candidate</th><th>Iteration</th><th>Score</th>"
+        f'{"<th>Reward / allocation</th>" if scheduler_enabled else ""}'
         "<th>Settlement</th><th>Worker attempt</th><th>Objective View</th>"
         "<th>Toolization Review</th><th>Published Tool View</th>"
         "<th>Tool Adoption Summary</th><th>Revision</th>"
@@ -3832,12 +3959,23 @@ def _render_candidates(task: dict[str, Any]) -> str:
     candidates = task.get("candidates") or []
     if not candidates:
         return "<p>No candidates were persisted.</p>"
+    scheduler_enabled = "allocation_decisions" in task
     rows = []
     for candidate in candidates:
+        current_value = candidate.get("latest_scheduler_reward") or {}
+        scheduler_cells = ""
+        if scheduler_enabled:
+            scheduler_cells = (
+                f'<td>{_status(candidate.get("allocation_eligibility") or "eligible")}</td>'
+                f'<td class="mono">{_html(candidate.get("allocation_depth"))}</td>'
+                f'<td class="mono">{_html((candidate.get("expansion_source") or {}).get("candidate_id"))}</td>'
+                f'<td class="mono">{_html(_number(current_value.get("reward")))}</td>'
+            )
         rows.append(
             f'<tr class="{"selected-row" if candidate.get("selected") else ""}">'
             f'<td class="mono"><strong>{_html(candidate.get("candidate_id"))}</strong></td>'
             f'<td>{_status("selected" if candidate.get("selected") else candidate.get("status"))}</td>'
+            f"{scheduler_cells}"
             f'<td class="mono">{_html(_number(candidate.get("score")))}</td>'
             f'<td class="mono">{_html(_number(candidate.get("best_score")))}</td>'
             f'<td>{_html(candidate.get("process_passed"))}</td>'
@@ -3847,10 +3985,17 @@ def _render_candidates(task: dict[str, Any]) -> str:
             f'<td>{_html(candidate.get("hypothesis"))}</td>'
             "</tr>"
         )
+    scheduler_headers = ""
+    if scheduler_enabled:
+        scheduler_headers = (
+            "<th>Allocation</th><th>Depth</th><th>Source</th>"
+            "<th>Latest reward</th>"
+        )
     return (
         '<div class="table-scroll"><table><thead><tr>'
-        "<th>Candidate</th><th>Status</th><th>Final score</th><th>Best score</th>"
-        "<th>Process pass</th><th>Iterations</th><th>Sessions</th><th>Changed files</th><th>Hypothesis</th>"
+        f"<th>Candidate</th><th>Status</th>{scheduler_headers}"
+        "<th>Final score</th><th>Best score</th><th>Process pass</th>"
+        "<th>Iterations</th><th>Sessions</th><th>Changed files</th><th>Hypothesis</th>"
         f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
     )
 

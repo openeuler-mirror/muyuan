@@ -21,7 +21,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 import uuid
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 try:
     import fcntl
@@ -107,6 +107,9 @@ from goal_plus.workspaces import (
     get_workspace_provider,
     PreparedPromotion,
 )
+
+if TYPE_CHECKING:
+    from goal_plus.adaptive_search import AllocationDecision, ExpansionSource
 
 
 VERIFIER_PHASE_ENV = "GOAL_PLUS_VERIFIER_PHASE"
@@ -534,9 +537,36 @@ class FileSearchRuntime:
         self,
         root_dir: Path | str = DEFAULT_RUNTIME_ROOT,
     ) -> None:
+        from goal_plus.adaptive_search import AdaptiveSearch
+
         self.root_dir = Path(root_dir).resolve()
         self.specs_dir = self.root_dir / "specs"
         self.runs_dir = self.root_dir / "runs"
+        self._adaptive_search = AdaptiveSearch(self)
+
+    @staticmethod
+    def _adaptive_search_is_enabled(frozen: FrozenSpec) -> bool:
+        return frozen.spec.strategy.orchestration_mode == "adaptive_search"
+
+    def search_scheduler_enabled(self, run_id: str) -> bool:
+        run = self._load_run(run_id)
+        frozen = self._load_frozen_spec(run.frozen_spec_id)
+        return self._adaptive_search_is_enabled(frozen)
+
+    def _require_adaptive_search(self, run_id: str) -> FrozenSpec:
+        run = self._load_run(run_id)
+        frozen = self._load_frozen_spec(run.frozen_spec_id)
+        if not self._adaptive_search_is_enabled(frozen):
+            raise RuntimeError(
+                "operation requires strategy.orchestration_mode=adaptive_search"
+            )
+        return frozen
+
+    def on_evidence_annotation_terminal(self, run_id: str) -> None:
+        """Wake the optional scheduler after an AnnotationTask reaches terminal state."""
+
+        if self.search_scheduler_enabled(run_id):
+            self._adaptive_search.kick_schedule_tasks(run_id)
 
     def list_available_models(
         self,
@@ -894,6 +924,17 @@ class FileSearchRuntime:
         else:
             self._preflight_ranking_verifiers(spec, device_inventory)
 
+        scheduler_config = spec.strategy.search_scheduler
+        from goal_plus.adaptive_search import resolve_search_scheduler_policies
+
+        scheduler_policies = (
+            resolve_search_scheduler_policies(
+                reward=scheduler_config.reward,
+                allocation=scheduler_config.allocation,
+            )
+            if scheduler_config is not None
+            else None
+        )
         spec_payload = spec.model_dump(mode="json")
         device_inventory_payload = {
             pool_id: inventory.model_dump(mode="json")
@@ -903,6 +944,11 @@ class FileSearchRuntime:
             canonical_json(
                 {
                     "spec": spec_payload,
+                    "search_scheduler_policies": (
+                        scheduler_policies.model_dump(mode="json")
+                        if scheduler_policies is not None
+                        else None
+                    ),
                     "verifiers": verifier_hashes,
                     "source_artifact_ref": (
                         source_artifact_ref.model_dump(mode="json")
@@ -930,6 +976,7 @@ class FileSearchRuntime:
             frozen_spec_id=frozen_spec_id,
             spec_hash=spec_hash,
             spec=spec,
+            search_scheduler_policies=scheduler_policies,
             supplemental_evaluation_enabled=supplemental_enabled,
             supplemental_evaluation_required=supplemental_required,
             verifier_hashes=verifier_hashes,
@@ -1712,6 +1759,22 @@ class FileSearchRuntime:
         record = self._load_candidate_record(run_id, candidate_id)
         return [it.model_dump(mode="json") for it in record.iterations]
 
+    def list_allocation_decisions(
+        self,
+        run_id: str,
+        status: Literal["pending", "applied"] | None = None,
+    ) -> list[AllocationDecision]:
+        self._require_adaptive_search(run_id)
+        return self._adaptive_search.list_allocation_decisions(run_id, status)
+
+    def apply_allocation_decision(
+        self,
+        run_id: str,
+        decision_id: str,
+    ) -> dict[str, Any]:
+        self._require_adaptive_search(run_id)
+        return self._adaptive_search.apply_allocation_decision(run_id, decision_id)
+
     def plan_next(self, run_id: str, requested_k: int = 4) -> SearchPlan:
         with self._run_transaction(run_id):
             return self._plan_next_locked(run_id, requested_k)
@@ -2124,6 +2187,11 @@ class FileSearchRuntime:
             raise RuntimeError(
                 f"cannot redispatch candidate in status {candidate_record.status}"
             )
+        if self._adaptive_search_is_enabled(frozen):
+            self._adaptive_search.assert_candidate_execution_allowed(
+                candidate_record,
+                "redispatch",
+            )
 
         selected_worker_agent_type = (
             worker_agent_type
@@ -2180,6 +2248,11 @@ class FileSearchRuntime:
 
             candidate_record = self._load_candidate_record(run_id, candidate_id)
             workspace = candidate_record.task.workspace
+            if self._adaptive_search_is_enabled(frozen):
+                self._adaptive_search.assert_candidate_execution_allowed(
+                    candidate_record,
+                    "start_session",
+                )
 
             if worker_budget_override is not None:
                 worker_budget_override = self._normalize_worker_budget_override(
@@ -2411,6 +2484,11 @@ class FileSearchRuntime:
             raise RuntimeError(
                 f"cannot continue candidate in status {candidate_record.status}"
             )
+        if self._adaptive_search_is_enabled(frozen):
+            self._adaptive_search.assert_candidate_execution_allowed(
+                candidate_record,
+                "continue_session",
+            )
 
         worker_budget_override = self._normalize_worker_budget_override(
             worker_host=session.host,
@@ -2571,6 +2649,8 @@ class FileSearchRuntime:
             "objective": frozen.spec.objective,
             "metric_name": frozen.spec.metric_name,
             "metric_direction": frozen.spec.metric_direction,
+            "orchestration_mode": frozen.spec.strategy.orchestration_mode,
+            "search_scheduler_enabled": self._adaptive_search_is_enabled(frozen),
             "run_budget": frozen.spec.budget.model_dump(mode="json"),
             "candidate_task": candidate_record.task.model_dump(mode="json"),
             "tool_family_catalog": self._tool_family_catalog(session.run_id),
@@ -3042,8 +3122,23 @@ class FileSearchRuntime:
                 hypothesis=hypothesis,
                 toolization_decision=toolization_decision,
             )
-        if scope == "process" and agent_session_id is not None:
+            search_scheduler_enabled = False
+            if scope == "process":
+                run = self._load_run(run_id)
+                frozen = self._load_frozen_spec(run.frozen_spec_id)
+                search_scheduler_enabled = self._adaptive_search_is_enabled(frozen)
+            if search_scheduler_enabled:
+                report = self._adaptive_search.resolve_scheduler_barrier(
+                    run_id,
+                    candidate_id,
+                    report,
+                )
+        if scope == "process" and (
+            agent_session_id is not None or search_scheduler_enabled
+        ):
             self._kick_evidence_annotator(run_id)
+            if search_scheduler_enabled:
+                self.on_evidence_annotation_terminal(run_id)
         return report
 
     def _run_verifier(
@@ -3115,6 +3210,14 @@ class FileSearchRuntime:
         if record.status not in {"created", "evaluated"}:
             raise RuntimeError(
                 f"cannot verify candidate in status {record.status}"
+            )
+        if (
+            scope == "process"
+            and self._adaptive_search_is_enabled(frozen)
+        ):
+            self._adaptive_search.assert_candidate_execution_allowed(
+                record,
+                "run_verifier",
             )
         if scope == "promotion":
             if agent_session_id is not None:
@@ -3481,6 +3584,16 @@ class FileSearchRuntime:
                 record,
                 frozen.spec.metric_direction,
             )
+            previous_best_score = (
+                self._adaptive_search.resolve_previous_best_score(
+                    record,
+                    candidate_best_score=(
+                        prior_best.score if prior_best is not None else None
+                    ),
+                )
+                if self._adaptive_search_is_enabled(frozen)
+                else (prior_best.score if prior_best is not None else None)
+            )
             iteration_number = len(record.iterations) + 1
             failure_class = next(
                 (
@@ -3498,6 +3611,10 @@ class FileSearchRuntime:
                 agent_session_id=agent_session_id,
             )
             created_at = utc_timestamp()
+            settlement_id = (
+                f"settlement_{candidate_id}_{iteration_number:04d}_"
+                f"{sha256_text(attempt.git_head)[:12]}"
+            )
             pending_tool_copies = (
                 list(record.pending_tool_copies) if agent_session_id is not None else []
             )
@@ -3541,6 +3658,7 @@ class FileSearchRuntime:
             )
             iteration = IterationRecord(
                 iteration=iteration_number,
+                settlement_id=settlement_id,
                 agent_session_id=agent_session_id,
                 selected_model=(
                     session.selected_model.model
@@ -3614,7 +3732,7 @@ class FileSearchRuntime:
             )
             disposition = self._iteration_disposition(
                 iteration,
-                prior_best,
+                previous_best_score,
                 frozen.spec.metric_direction,
             )
             iteration.disposition = disposition
@@ -3667,6 +3785,15 @@ class FileSearchRuntime:
                 and settled.artifact_hash != best_iteration.artifact_hash
             ):
                 raise RuntimeError("candidate artifact does not match its best iteration")
+            if (
+                best_iteration is None
+                and record.task.expansion_source is not None
+                and settled.artifact_hash
+                != record.task.expansion_source.artifact_hash
+            ):
+                raise RuntimeError(
+                    "derived candidate artifact does not match its initial incumbent"
+                )
             self._apply_candidate_artifact_state(record, settled)
 
             ledger_entry = ResultLedgerEntry(
@@ -3695,6 +3822,27 @@ class FileSearchRuntime:
                 iteration.workspace_artifact_after_settlement = ledger_artifact_ref
                 record.results_ledger_artifact_ref = ledger_artifact_ref
             record.iterations.append(iteration)
+            # Persist the settlement before writing its derived projections.
+            self._write_candidate_record(run_id, record)
+            if agent_session_id is not None or self._adaptive_search_is_enabled(frozen):
+                try:
+                    self._create_evidence_annotation_task(
+                        run_id,
+                        frozen,
+                        candidate_id,
+                        iteration,
+                    )
+                    self._reconcile_tool_family_heads(run_id)
+                except Exception:
+                    # Annotation registration never invalidates settled Evidence.
+                    pass
+            if self._adaptive_search_is_enabled(frozen):
+                self._adaptive_search.settle_iteration(
+                    run,
+                    frozen,
+                    record,
+                    iteration,
+                )
             if pending_tool_copies:
                 consumed = {item.receipt_id for item in pending_tool_copies}
                 record.pending_tool_copies = [
@@ -3730,6 +3878,8 @@ class FileSearchRuntime:
                     "shared_tool_deduplicated_entries": iteration.shared_tool_deduplicated_entries,
                     "toolization_decision": iteration.toolization_decision,
                     "toolization_advisories": iteration.toolization_advisories,
+                    "scheduler_status": iteration.scheduler_status,
+                    "schedule_task_id": iteration.schedule_task_id,
                 }
             )
             record.status = "evaluated"
@@ -3741,18 +3891,6 @@ class FileSearchRuntime:
                 record.promotion_report = None
                 record.promotion_evidence = None
             self._write_candidate_record(run_id, record)
-            if agent_session_id is not None:
-                try:
-                    self._create_evidence_annotation_task(
-                        run_id,
-                        frozen,
-                        candidate_id,
-                        iteration,
-                    )
-                    self._reconcile_tool_family_heads(run_id)
-                except Exception:
-                    # Explanatory Views never invalidate settled verifier Evidence.
-                    pass
 
             if self._update_best_seen(run, frozen.spec, report):
                 if best_iteration is None:
@@ -5051,7 +5189,9 @@ class FileSearchRuntime:
                     slot=slot,
                     intent=hypothesis,
                     hypothesis=hypothesis,
-                    metadata={"strategy": "parallel_loops"},
+                    metadata={
+                        "strategy": frozen.spec.strategy.orchestration_mode
+                    },
                 )
             )
 
@@ -5114,6 +5254,43 @@ class FileSearchRuntime:
             raise ValueError("too many proposals for this plan")
         return
 
+    def _materialize_candidate_record(
+        self,
+        *,
+        run: RunRecord,
+        frozen: FrozenSpec,
+        candidate_id: str,
+        plan: SearchPlan,
+        proposal: CandidateProposal,
+        slot: int,
+        expansion_source: ExpansionSource | None = None,
+        source_record: CandidateRecord | None = None,
+        results_ledger: list[ResultLedgerEntry] | None = None,
+    ) -> CandidateRecord:
+        task = self._create_candidate_task(
+            run=run,
+            frozen=frozen,
+            candidate_id=candidate_id,
+            plan=plan,
+            proposal=proposal,
+            slot=slot,
+            expansion_source=expansion_source,
+            source_record=source_record,
+        )
+        record = CandidateRecord(
+            candidate_id=candidate_id,
+            status="created",
+            task=task,
+            results_ledger=(
+                results_ledger
+                if results_ledger is not None
+                else self._inherited_results_ledger(run, task)
+            ),
+        )
+        self._ensure_results_tsv(record, frozen.spec.metric_name)
+        self._write_candidate_record(run.run_id, record)
+        return record
+
     def _create_candidate_task(
         self,
         run: RunRecord,
@@ -5122,6 +5299,9 @@ class FileSearchRuntime:
         plan: SearchPlan,
         proposal: CandidateProposal,
         slot: int,
+        *,
+        expansion_source: ExpansionSource | None = None,
+        source_record: CandidateRecord | None = None,
     ) -> CandidateTask:
         workspace = self._run_dir(run.run_id) / "workspace" / candidate_id
         process_environment = self._candidate_process_environment(
@@ -5139,9 +5319,13 @@ class FileSearchRuntime:
             run_id=run.run_id,
             candidate_id=candidate_id,
             base_revision=(
-                frozen.source_artifact_ref.id
-                if frozen.source_artifact_ref is not None
-                else None
+                expansion_source.settled_commit
+                if expansion_source is not None
+                else (
+                    frozen.source_artifact_ref.id
+                    if frozen.source_artifact_ref is not None
+                    else None
+                )
             ),
         )
         workspace_creation_timing = WorkspaceOperationTiming(
@@ -5154,7 +5338,8 @@ class FileSearchRuntime:
             outcome="succeeded",
         )
         if (
-            frozen.source_artifact_ref is not None
+            expansion_source is None
+            and frozen.source_artifact_ref is not None
             and materialization.base_revision != frozen.source_artifact_ref.id
         ):
             raise RuntimeError(
@@ -5245,10 +5430,32 @@ class FileSearchRuntime:
         instructions.extend(proposal.instructions)
 
         hypothesis = proposal.hypothesis or proposal.intent or f"候选 {candidate_id}"
-        selected_model = self._selected_model_for_slot(plan, slot)
+        selected_model = (
+            source_record.task.selected_model
+            if source_record is not None
+            else self._selected_model_for_slot(plan, slot)
+        )
         return CandidateTask(
             run_id=run.run_id,
             candidate_id=candidate_id,
+            parent_id=(
+                expansion_source.candidate_id
+                if expansion_source is not None
+                else None
+            ),
+            parent_candidate_ids=(
+                [
+                    *source_record.task.parent_candidate_ids,
+                    source_record.candidate_id,
+                ]
+                if source_record is not None
+                else []
+            ),
+            base_candidate_id=(
+                expansion_source.candidate_id
+                if expansion_source is not None
+                else None
+            ),
             plan_id=plan.plan_id,
             hypothesis=hypothesis,
             workspace=workspace,
@@ -5262,6 +5469,12 @@ class FileSearchRuntime:
             ),
             workspace_creation_timing=workspace_creation_timing,
             task_skill_paths=task_skill_paths,
+            allocation_depth=(
+                source_record.task.allocation_depth + 1
+                if source_record is not None
+                else 0
+            ),
+            expansion_source=expansion_source,
             base_artifact_ref=(
                 ArtifactRef(
                     kind=(
@@ -5311,6 +5524,16 @@ class FileSearchRuntime:
                 "workspace_backend": materialization.backend,
                 "workspace_branch": materialization.branch,
                 "workspace_base_revision": materialization.base_revision,
+                "allocation_depth": (
+                    source_record.task.allocation_depth + 1
+                    if source_record is not None
+                    else 0
+                ),
+                "allocation_source_candidate_id": (
+                    expansion_source.candidate_id
+                    if expansion_source is not None
+                    else None
+                ),
             },
         )
 
@@ -5741,6 +5964,28 @@ class FileSearchRuntime:
             frozen.spec.metric_name,
         )
         return self._candidate_results_ledger(source_record)
+
+    def _source_ledger_at_revision(
+        self,
+        source_record: CandidateRecord,
+        settled_commit: str,
+    ) -> list[ResultLedgerEntry]:
+        entries = self._candidate_results_ledger(source_record)
+        matching_index = next(
+            (
+                index
+                for index, entry in enumerate(entries)
+                if entry.ledger_git_head == settled_commit
+            ),
+            None,
+        )
+        if matching_index is None:
+            if source_record.results_ledger_git_head != settled_commit:
+                raise RuntimeError(
+                    "expansion source ledger revision is not present in candidate history"
+                )
+            matching_index = len(entries) - 1
+        return [entry.model_copy(deep=True) for entry in entries[: matching_index + 1]]
 
     def _render_results_tsv(
         self,
@@ -6669,22 +6914,22 @@ class FileSearchRuntime:
     def _iteration_disposition(
         cls,
         iteration: IterationRecord,
-        prior_best: IterationRecord | None,
+        prior_best_score: float | None,
         metric_direction: Literal["maximize", "minimize"],
     ) -> IterationDisposition:
         if not cls._artifact_iteration_eligible(iteration):
             return "failure"
-        if prior_best is None:
+        if prior_best_score is None:
             return "keep"
-        assert iteration.score is not None and prior_best.score is not None
+        assert iteration.score is not None
         improved = (
-            iteration.score > prior_best.score
+            iteration.score > prior_best_score
             if metric_direction == "maximize"
-            else iteration.score < prior_best.score
+            else iteration.score < prior_best_score
         )
         if improved:
             return "keep"
-        if iteration.score == prior_best.score:
+        if iteration.score == prior_best_score:
             return "retain"
         return "discard"
 
@@ -8247,6 +8492,7 @@ class FileSearchRuntime:
         if (
             iteration.git_head is None
             or iteration.attempt_base_git_head is None
+            or iteration.settlement_id is None
         ):
             raise RuntimeError("worker Evidence requires exact attempt commits")
         existing = self._load_evidence_annotation_task(
@@ -8257,6 +8503,7 @@ class FileSearchRuntime:
                 existing.attempt_commit != iteration.git_head
                 or existing.attempt_base_commit
                 != iteration.attempt_base_git_head
+                or existing.settlement_id != iteration.settlement_id
             ):
                 raise RuntimeError("Evidence annotation task is immutable")
             return existing
@@ -8293,6 +8540,8 @@ class FileSearchRuntime:
             )
         )
         task = EvidenceAnnotationTask(
+            task_id=f"annotation_{iteration.settlement_id}",
+            settlement_id=iteration.settlement_id,
             run_id=run_id,
             candidate_id=candidate_id,
             iteration=iteration.iteration,
@@ -8913,12 +9162,62 @@ class FileSearchRuntime:
 
     def _kick_evidence_annotator(self, run_id: str) -> None:
         try:
+            self._ensure_evidence_annotation_tasks(run_id)
+        except Exception:
+            # Annotation registration never changes settled verifier Evidence.
+            pass
+        try:
             from goal_plus.evidence_annotator import kick_evidence_annotator
 
             kick_evidence_annotator(self.root_dir, run_id)
         except Exception:
             # Evidence settlement and reads never depend on explanatory Views.
             return
+
+    def _drain_evidence_annotations(
+        self,
+        run_id: str,
+        *,
+        wait_for_retries: bool,
+    ) -> None:
+        from goal_plus.evidence_annotator import drain_evidence_annotations
+
+        drain_evidence_annotations(
+            self.root_dir,
+            run_id,
+            wait_for_retries=wait_for_retries,
+        )
+
+    def _ensure_evidence_annotation_tasks(self, run_id: str) -> None:
+        """Idempotently register missing View tasks from settled Evidence."""
+        with self._run_transaction(run_id):
+            if not self._evidence_annotation_run_active(run_id):
+                return
+            run = self._load_run(run_id)
+            frozen = self._load_frozen_spec(run.frozen_spec_id)
+            for record in self._load_candidate_records(run_id):
+                for iteration in record.iterations:
+                    if (
+                        iteration.agent_session_id is None
+                        and not self._adaptive_search_is_enabled(frozen)
+                    ):
+                        continue
+                    try:
+                        if self._load_evidence_annotation_task(
+                            run_id,
+                            record.candidate_id,
+                            iteration.iteration,
+                        ) is not None:
+                            continue
+                        self._create_evidence_annotation_task(
+                            run_id,
+                            frozen,
+                            record.candidate_id,
+                            iteration,
+                        )
+                    except Exception:
+                        # A later verifier settlement or Evidence read retries it.
+                        continue
 
     def _plan_dir(self, run_id: str) -> Path:
         return self._run_dir(run_id) / "plans"

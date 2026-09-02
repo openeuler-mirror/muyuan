@@ -58,10 +58,25 @@ class Budget(SearchModel):
         gt=0,
         description=(
             "一个 Search run 初始创建并实际并行工作的候选 Agent 数量。"
-            "parallel_loops 只创建这一组长期候选，后续继续已有 candidate/session。"
+            "parallel_loops 只创建这一组长期候选，后续继续已有 candidate/session；"
+            "adaptive_search 同时将其作为活跃 worker 上限。"
+        ),
+    )
+    max_candidates: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "一个 run 累计可物化的唯一 candidate 上限；null 表示不限制。"
+            "有界值必须大于等于 max_parallel。"
         ),
     )
     max_tokens: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def candidate_limit_covers_parallel_width(self) -> "Budget":
+        if self.max_candidates is not None and self.max_candidates < self.max_parallel:
+            raise ValueError("budget.max_candidates must be >= budget.max_parallel")
+        return self
 
 
 WorkspaceBackend = Literal["copy", "git_worktree", "thinkthread"]
@@ -604,6 +619,8 @@ class EvidenceDetailReadRecord(SearchModel):
 
 
 class EvidenceAnnotationTask(SearchModel):
+    task_id: str = Field(min_length=1)
+    settlement_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     candidate_id: str = Field(min_length=1)
     iteration: int = Field(ge=1)
@@ -647,12 +664,24 @@ class EvidenceAnnotationTask(SearchModel):
     created_at: str
     updated_at: str
 
+    @model_validator(mode="after")
+    def terminal_state_matches_view(self) -> "EvidenceAnnotationTask":
+        if self.state == "completed" and self.view is None:
+            raise ValueError("completed annotation task requires an Evidence View")
+        if self.state != "completed" and self.view is not None:
+            raise ValueError("only completed annotation task can provide an Evidence View")
+        if self.state == "terminal_error" and not self.last_error:
+            raise ValueError("terminal annotation task requires an error")
+        return self
+
 
 class StrategySpec(SearchModel):
     name: str = "agent_guided"
-    orchestration_mode: Literal["rolling_candidates", "parallel_loops"] = (
-        "parallel_loops"
-    )
+    orchestration_mode: Literal[
+        "rolling_candidates",
+        "parallel_loops",
+        "adaptive_search",
+    ] = "parallel_loops"
     worker_host: AgentHostKind = "codex"
     worker_agent_type: str | None = None
     worker_budget: WorkerBudget | None = None
@@ -663,6 +692,10 @@ class StrategySpec(SearchModel):
     models: list[ModelSpec] = Field(
         default_factory=list,
         exclude_if=lambda value: not value,
+    )
+    search_scheduler: SearchSchedulerSpec | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
     )
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -679,6 +712,22 @@ class StrategySpec(SearchModel):
         if value is not None and not value.strip():
             raise ValueError("worker_agent_type must be non-empty when provided")
         return value
+
+    @model_validator(mode="after")
+    def adaptive_search_requires_scheduler_configuration(self) -> "StrategySpec":
+        adaptive_search = self.orchestration_mode == "adaptive_search"
+        scheduler_configured = self.search_scheduler is not None
+        if adaptive_search and not scheduler_configured:
+            raise ValueError(
+                "strategy.orchestration_mode=adaptive_search requires "
+                "strategy.search_scheduler"
+            )
+        if scheduler_configured and not adaptive_search:
+            raise ValueError(
+                "strategy.search_scheduler requires "
+                "strategy.orchestration_mode=adaptive_search"
+            )
+        return self
 
 
 class VerifierCommand(SearchModel):
@@ -809,6 +858,15 @@ class SearchSpec(SearchModel):
                 raise ValueError(
                     f"device pool {pool_id!r} only supports single-device resource_lock {pool_id}:0"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def strategy_extension_constraints_are_valid(self) -> "SearchSpec":
+        scheduler = self.strategy.search_scheduler
+        if scheduler is not None:
+            scheduler.validate_integration_constraints(
+                workspace_backend=self.workspace.backend,
+            )
         return self
 
 
@@ -1246,6 +1304,10 @@ class FrozenSpec(SearchModel):
     frozen_spec_id: str
     spec_hash: str
     spec: SearchSpec
+    search_scheduler_policies: ResolvedSearchSchedulerPolicies | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     supplemental_evaluation_enabled: bool = False
     supplemental_evaluation_required: bool = False
     verifier_hashes: dict[str, str]
@@ -1256,6 +1318,34 @@ class FrozenSpec(SearchModel):
     origin_verification: BootstrapVerification | None = None
     device_inventory: dict[str, DevicePoolInventory] = Field(default_factory=dict)
     created_at: str
+
+    @model_validator(mode="after")
+    def scheduler_configuration_has_frozen_policies(self) -> "FrozenSpec":
+        configured = self.spec.strategy.search_scheduler
+        policies = self.search_scheduler_policies
+        if (configured is None) != (policies is None):
+            raise ValueError(
+                "search_scheduler configuration and frozen policies must coexist"
+            )
+        if configured is not None and policies is not None:
+            reward_ref, reward_marker, reward_prompt = configured.reward.partition(
+                "@prompt"
+            )
+            allocation_ref, allocation_marker, allocation_prompt = (
+                configured.allocation.partition("@prompt")
+            )
+            if (
+                policies.reward.reference != reward_ref.strip()
+                or policies.reward.supplemental_prompt
+                != (reward_prompt.strip() if reward_marker else None)
+                or policies.allocation.reference != allocation_ref.strip()
+                or policies.allocation.supplemental_prompt
+                != (allocation_prompt.strip() if allocation_marker else None)
+            ):
+                raise ValueError(
+                    "frozen scheduler policies do not match scheduler configuration"
+                )
+        return self
 
 
 ToolPublicationIntent = Literal[
@@ -1353,6 +1443,11 @@ class CandidateTask(SearchModel):
     workspace_provider_handle: dict[str, Any] = Field(default_factory=dict)
     workspace_creation_timing: WorkspaceOperationTiming | None = None
     task_skill_paths: list[Path] = Field(default_factory=list)
+    allocation_depth: int = Field(default=0, ge=0)
+    expansion_source: ExpansionSource | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     base_artifact_ref: ArtifactRef | None = None
     workspace_access: WorkspaceAccess = Field(default_factory=WorkspaceAccess)
     share_out_dir: Path | None = None
@@ -1529,6 +1624,18 @@ class ScoreReport(SearchModel):
         default_factory=list,
         exclude_if=lambda value: not value,
     )
+    scheduler_status: ScheduleTaskState | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    schedule_task_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    allocation_decision: AllocationDecision | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class PromotionEvidence(SearchModel):
@@ -1591,6 +1698,10 @@ class PromotionRecord(SearchModel):
 
 class IterationRecord(SearchModel):
     iteration: int
+    settlement_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     agent_session_id: str | None = None
     selected_model: str | None = Field(
         default=None,
@@ -1622,6 +1733,26 @@ class IterationRecord(SearchModel):
     metrics: dict[str, Any] = Field(default_factory=dict)
     log_paths: list[str] = Field(default_factory=list)
     disposition: IterationDisposition | None = None
+    schedule_task_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    scheduler_status: ScheduleTaskState | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    scheduler_error: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    allocation_decision_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    allocation_decision_error: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     restored_to_iteration: int | None = Field(default=None, ge=1)
     restored_to_git_head: str | None = None
     workspace_git_head_after_settlement: str | None = None
@@ -1731,6 +1862,7 @@ class RunRecord(SearchModel):
     next_candidate_index: int = 1
     next_plan_index: int = 1
     next_agent_session_index: int = 1
+    next_allocation_decision_index: int = 1
     candidates_total: int = 0
     candidates_evaluated: int = 0
     best_candidate_id: str | None = None
@@ -1760,6 +1892,12 @@ class CandidateRecord(SearchModel):
     candidate_id: str
     status: Literal["created", "evaluated", "failed"]
     task: CandidateTask
+    allocation_eligibility: AllocationEligibility = "eligible"
+    schedule_settlement_watermark: int = Field(default=0, ge=0)
+    retired_by_decision_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     detected_changed_files: list[str] = Field(default_factory=list)
     touched_denied_files: bool = False
     changed_outside_allowed: bool = False

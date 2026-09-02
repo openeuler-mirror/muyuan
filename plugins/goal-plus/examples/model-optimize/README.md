@@ -35,6 +35,11 @@ In the new Codex thread, paste the complete contents of
 the `$goal-plus` skill, lifecycle hooks, and MCP server; the target itself has
 no project-local `.codex/` configuration.
 
+For direct runtime validation, [`workspace-template/search-scheduler-spec.json`](workspace-template/search-scheduler-spec.json)
+freezes the marginal-value `evidence_llm_value/v3` reward policy and
+`value_guided_replace/v2` allocation policy against the same maintained
+workspace; completed `ScheduleTask` records remain the reward index.
+
 ## Run with Pi
 
 Start the installed Pi package from the target directory:

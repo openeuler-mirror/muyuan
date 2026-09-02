@@ -207,7 +207,6 @@ def test_pi_goal_plus_skill_documents_parallel_loop_policy() -> None:
     )
     normalized = " ".join(text.split())
 
-    assert 'orchestration_mode: "parallel_loops"' in text
     assert "每个初始候选工作区都是长期自主循环" in normalized
     assert "调用且只调用一次" in normalized
     assert "运行时会拒绝" in normalized
@@ -245,6 +244,101 @@ def test_pi_goal_plus_skill_documents_parallel_loop_policy() -> None:
     assert "deepen_incumbent" not in text
     assert "transfer_feature" not in text
     assert "macro_restart" not in text
+
+
+def test_pi_assets_document_runtime_owned_scheduler_allocation() -> None:
+    public_skill = (ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    skill = (
+        ROOT
+        / ".pi"
+        / "skills"
+        / "goal-plus"
+        / "references"
+        / "adaptive-search.md"
+    ).read_text(encoding="utf-8")
+    worker = (ROOT / ".pi" / "prompts" / "search-candidate-worker.md").read_text(
+        encoding="utf-8"
+    )
+    extension = (ROOT / ".pi" / "extensions" / "goal-plus.ts").read_text(
+        encoding="utf-8"
+    )
+    normalized_public_skill = " ".join(public_skill.split())
+    normalized_skill = " ".join(skill.split())
+
+    assert "references/adaptive-search.md" in public_skill
+    assert "未开启该模式时不要读取它" in public_skill
+    assert "ScheduleTask" not in public_skill
+    assert "evidence_llm_value/v3" not in public_skill
+    assert "# Pi Adaptive Search" in skill
+    assert "`parallel_loops` 不允许配置 scheduler" in skill
+    assert "evidence_llm_value/v1" not in skill
+    assert "evidence_llm_value/v2" not in skill
+    assert "value_guided_replace/v1" not in skill
+    assert "evidence_llm_value/v3" in skill
+    assert "value_guided_replace/v2" in skill
+    assert "`build_context`" in skill
+    assert "fixed_reward_threshold/v1" not in skill
+    assert "shadow_noop/v1" not in skill
+    assert "@prompt" in skill
+    assert (
+        "只有目标或 benchmark 明确要求 runtime reward/allocation 时，才改用"
+        not in normalized_public_skill
+    )
+    assert "budget.max_candidates" in skill
+    assert "`null` 表示不限制" in skill
+    assert "当时可用并发槽位" in skill
+    assert "ScheduleTask" in skill
+    assert "可恢复、可并发、一次性无 session" in skill
+    assert "scheduler_status=pending" in skill
+    assert "自动从 `budget.max_parallel` 推导" in normalized_skill
+    assert "不设置单份 Decision" in normalized_skill
+    assert "全部 candidate" in skill
+    assert "不能只启动第一项" in skill
+    assert "completed ScheduleTask" in skill
+    assert "上一 flag 为 `true`" in normalized_skill
+    assert "search_list_allocation_decisions" in skill
+    assert "search_apply_allocation_decision" in skill
+    assert "手动 pool submit" in skill
+    assert "AnnotationTask 是 ScheduleTask 创建的弱依赖" in skill
+    assert "terminal_error" in skill
+    assert "执行公共 skill 的全局停止 policy" in skill
+    assert "allocation_decision" in worker
+    assert "`context.search_scheduler_enabled == true`" in worker
+    assert "只有 `search_run_verifier` 返回非空" in worker
+    assert "才会因 Scheduler 调度停止编辑" in worker
+    assert "`scheduler_status=pending`" in worker
+    assert "本身既不是等待条件，也不是停止条件" in worker
+    assert "未触发其他停止条件" in worker
+    assert "worker 不计算 reward" in worker
+    assert "不启动派生 worker" in worker
+    assert "expansion_action_context" not in worker
+    assert "search_scheduler: Type.Optional" in extension
+    assert "max_candidates: Type.Optional" in extension
+    assert "累计唯一 candidate 上限；null 表示不限制" in extension
+    assert "const SearchSchedulerSpec" in extension
+    assert "host: Type.Union([" in extension
+    assert "model: Type.String({ minLength: 1 })" in extension
+    assert "reasoning_effort: Type.String({ minLength: 1 })" in extension
+    assert "timeout_seconds: PositiveInteger" in extension
+    assert "reward: Type.String({ minLength: 1 })" in extension
+    assert "allocation: Type.String({ minLength: 1 })" in extension
+    assert "const SchedulerPolicyInput" not in extension
+    assert "script_path: Type.Optional(NullableString)" not in extension
+    assert "max_async_calls" not in extension
+    assert "max_replacements_per_decision" not in extension
+    assert "search_list_allocation_decisions: Type.Object" in extension
+    assert "search_apply_allocation_decision: Type.Object" in extension
+    assert "仅当当前 FrozenSpec 使用 orchestration_mode=adaptive_search" in extension
+    assert "runtime 已返回准确 decision" in extension
+    assert "expansion_action_context" not in extension
+    assert "workerAllocationDecisionId" in extension
+    assert 'name === "search_run_verifier"' in extension
+    main_tools = extension.split("const mainTools = [", 1)[1].split("];", 1)[0]
+    assert '"search_list_allocation_decisions"' in main_tools
+    assert '"search_apply_allocation_decision"' in main_tools
+    assert "pi_search_pool_submit" not in extension
 
 
 def test_pi_worker_prompt_defers_to_runtime_candidate_contract() -> None:
@@ -556,6 +650,7 @@ def test_pi_extension_has_precise_tool_schemas_and_error_classification() -> Non
     assert "const AcceptanceViewSpec = Type.Object" not in text
     assert "acceptance_view: Type.Optional" not in text
     assert 'Type.Literal("parallel_loops")' in text
+    assert 'Type.Literal("adaptive_search")' in text
     assert "search_invalidate_run: Type.Object" in text
     assert "source_run_id: Type.Optional(" in text
     assert 'pattern: "^run_"' in text

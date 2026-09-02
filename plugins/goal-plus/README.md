@@ -191,6 +191,7 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 | Need | Read |
 | --- | --- |
 | Architecture, shared Evidence, rollback, and end-to-end flow | [Shared Plane](docs/shared-plane.md) |
+| Adaptive Search mode and Search Scheduler behavior | [Adaptive Search](docs/adaptive-search.md) |
 | Current MCP and Pi-local tools | [API](docs/api.md) |
 | Host capability comparison | [Agent Host Adapters](docs/agent-host-adapters.md) |
 | Ultra work orchestration | [Ultra Orchestration](docs/ultra.md) |

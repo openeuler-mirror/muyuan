@@ -138,6 +138,54 @@ Git backend 的 freeze 会直接在 `SearchSpec.source_path` 执行一次完整 
 `verifier_target_mismatch` abort run，保留 `c001`，不创建后续 candidate 或 agent session。
 这两类 bootstrap Evidence 不属于 candidate iteration，不参与 score、ledger 或选择。
 
+A new Codex/Pi spec uses `strategy.orchestration_mode="parallel_loops"` for fixed
+candidates or `"adaptive_search"` for Scheduler-driven replacement.
+`search_plan_next(requested_k)` can be called only once for either run.
+
+An `adaptive_search` run requires a non-null `search_scheduler` and still has one initial plan, but
+may replace a retired lane through persisted runtime decisions. It requires a
+Git worktree. `budget.max_parallel` is the live candidate limit; optional
+`budget.max_candidates` limits cumulative unique candidates, while `null` is
+unbounded and any finite value must be at least `max_parallel`. After hard settlement, the runtime
+persists an `AnnotationTask`; only after it reaches `completed` or
+`terminal_error` does the runtime persist a `ScheduleTask` with its compact
+Evidence View projection. A recoverable, concurrent, one-shot scheduler call
+applies reward, pruning, and optional derivation in order. Only a lazy-confirmation
+task receives the all-candidate allocation context plus derivation instructions and may return a separate
+Decision draft. `allocation_flag` is boolean (`false=continue`,
+`true=reschedule`). `ScheduleTask.output` is authoritative; completed rewards
+are exposed as a read-time list indexed from ScheduleTasks and are not copied
+into a value-tree file or candidate/report record. Rewards retain explicit
+settlement-id, ScheduleTask-id, and node-id bindings. A failed annotation supplies
+`view=null` plus guidance to choose any compensation from historical observations;
+the runtime defines no fixed compensation. There is no run-root tree, graph, value-backup,
+action-edge, or hindsight projection. A verifier report may include
+`scheduler_status`, `schedule_task_id`, and `allocation_decision`. The main agent
+applies the exact Decision and launches every returned session payload; it does
+not author a replacement. Reward never replaces the hard metric used by
+`search_select`.
+
+Lazy allocation waits only when the previous completed flag was `true`. An
+ordinary `true` flag contains no plan. A current confirmation `true` must
+include a separate draft; the Decision service
+validates and persists it with retirees, rationale, reserved derived ids, exact
+settled source nodes, exploration directions, and optional worker budgets. The
+scheduler chooses how many available reserved ids to use; there is no separate
+per-Decision replacement or expansion-depth setting. Otherwise the task completes
+asynchronously and the worker continues without polling it.
+Before a decision becomes visible, its triggering iteration has completed Git
+and results-ledger settlement. AnnotationTask is a weak prerequisite for
+ScheduleTask creation: it must be terminal, but `terminal_error` continues with
+`view=null` and historical-compensation guidance. Missing annotation tasks are
+idempotently recovered from durable iterations on later verifier settlements or
+Global Evidence reads. Retirement
+fences only the candidate's next iteration: it neither cancels View generation
+nor removes the settled result from Global Evidence. While annotation is still
+pending, `schedule_task_id` may be absent.
+Hidden-answer QA benchmarks must not use this feedback path: gold-derived
+correctness, reward, or allocation is an answer oracle. Keep only public format
+validation worker-visible and score all final answers externally.
+
 只有原合同无法继续使用时才创建 successor：
 
 ```text
@@ -196,6 +244,13 @@ resume 之间累计。
 `recent_iterations`，而不是完整 `results` / `iterations`。`result_count`、`iteration_count` 和
 `results_tsv` 保留准确 provenance。只有确实需要旧 verifier 细节时才调用 `search_list_iterations`。
 
+`search_get_agent_context` exposes `orchestration_mode` and `search_scheduler_enabled` so worker
+prompts can distinguish fixed `parallel_loops` from `adaptive_search` while retaining Scheduler
+terminology. It also exposes `supplemental_evaluation_enabled`. When it is
+false, workers do not wait for or request supplemental evaluation. When enabled,
+`search_get_global_evidence` adds only `supplemental_available=true`; full summary,
+dimensions, peer comparisons, and limitations are
+fetched for a selected immutable row through `search_get_evidence_detail`.
 ### Evidence 与按需详情
 
 | 工具                         | 调用方           | 用途                                           |

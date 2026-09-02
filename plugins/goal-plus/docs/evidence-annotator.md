@@ -23,9 +23,9 @@ Evidence Annotator 不创建 `AgentSessionRecord`，不占用 candidate lane，�
 agent registry 或 Pi host pool。它有独立的 run-scoped drainer 进程，但 verifier、选择和
 promotion 都不会等待这个进程。
 
-只有带 `agent_session_id` 的 worker process-verifier 调用会创建 annotation task。
-main agent 的 parent fallback verification 和 promotion verification 不会进入 Global
-Evidence，也不会创建 View。
+带 `agent_session_id` 的 worker process-verifier 调用会创建 annotation task。启用
+Adaptive Search 时，parent process verification 也会创建 annotation task，以满足 ScheduleTask
+的 Evidence View 前置关系；promotion verification 不会创建 View。
 
 ## 端到端流程
 
@@ -299,6 +299,11 @@ Worker 首次修改前读取 Evidence；此后每完成三次 verifier iteration
 `candidate.json` 中的 iteration 仍是 verifier Evidence 的事实来源。annotation task 只保存
 派生 View 和执行状态；Global Evidence 在读取时从 iteration 与 task 即时投影，不维护第二份
 可写 Evidence ledger。
+
+task 注册是可恢复的独立分支，不是 reward、allocation 或 candidate retirement 的提交前置条件。
+若注册写入瞬时失败，后续 worker verifier 结算或 Global Evidence 读取会扫描已持久化 worker
+iteration 并幂等补齐缺失 task；candidate 已被 retirement fence 不影响该恢复。反向同样成立：
+reward evaluator 或 allocation policy 失败不影响 task 注册和 View 重试。
 
 `iteration-<n>.json` 中的 `usage` 和 `attempt_history` 会累计成功或失败调用的 host-native
 token/cost 观测。不得从 transcript 猜测缺失 usage，也不要手工修改 task、View 或重试状态。

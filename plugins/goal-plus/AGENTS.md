@@ -76,7 +76,33 @@ worker through the selected host.
   machine for raw goal intake, triage, spec drafts, gates, and search links.
 - `src/goal_plus/runtime.py`: file-backed Search Mode state
   machine for workspace copy, verifier execution, selection, reports, and
-  promotion.
+  promotion. It also owns shared deterministic timestamps, hashes, file locks,
+  and atomic JSON/text I/O for persistent runtime state. Its adaptive integration
+  is intentionally limited to selecting
+  `orchestration_mode="adaptive_search"` and calling one `AdaptiveSearch` facade.
+- `src/goal_plus/adaptive_search/adaptive_search.py`: the only Adaptive Search facade
+  consumed by `FileSearchRuntime`. It owns settlement/barrier hooks, coordinates
+  scheduler results with Allocation, composes read-only views, and performs the
+  one-way Pydantic schema binding. It does not own persisted scheduler state.
+- `src/goal_plus/adaptive_search/scheduler.py`: scheduler configuration,
+  ScheduleTask schemas and persistence, common scheduler context, recoverable
+  async task management, and dedicated one-shot Codex/Pi backends. It composes
+  policy-built contexts but must not build reward/allocation context or persist
+  and apply AllocationDecision records.
+- `src/goal_plus/adaptive_search/allocation.py`: AllocationDecision contracts,
+  persistence, validation, candidate retirement, workspace derivation, and native
+  session creation. It accepts normalized trigger/reward bindings and must not
+  import or mutate ScheduleTask.
+- `src/goal_plus/adaptive_search/policies.py`: versioned reward/allocation policy
+  registration, `@prompt` parsing, frozen policy projections, and the context
+  builders bound to each policy version. It must remain independent of runtime,
+  scheduler task management, and Allocation execution.
+  Do not recreate graph, backup-event, action-edge, hindsight, a shared Store, or
+  a generic `adaptive_search/models.py` layer.
+- Treat Adaptive Search as an optional orchestration mode. Core runtime and host
+  lifecycle hooks route into it only when frozen `strategy.orchestration_mode` is
+  `"adaptive_search"`; the facade and its Scheduler/Allocation internals validate
+  non-null `strategy.search_scheduler` before executing Scheduler services.
 - `src/goal_plus/agent_hosts.py`: maintained Codex/Pi adapters. Keep host
   launch/continue/budget mapping here.
 - `src/goal_plus/tools.py`: JSON-friendly facade used by tests and
@@ -163,7 +189,8 @@ Current host expectations:
   and continue the same native worker through
   `search_continue_agent_session` plus `followup_task` while no global stop
   condition is true. Main must not choose later technical directions or create
-  quality-based replacements.
+  quality-based replacements. Scheduler-driven replacement uses the separate
+  `adaptive_search` mode and requires a non-null `search_scheduler`.
 - Pi RPC supports the portable builtin strategy subset. `worker_budget`
   requires `max_runtime_seconds`; `max_turns` is only a prompt hint. Optional
   `min_runtime_seconds`/`min_verifier_runs` form a cumulative pool-supervisor
@@ -185,7 +212,9 @@ Current host expectations:
   extension pre-tool guarding and skill stop gates, but no Codex Stop hook
   parity. Its main-agent pool is a durable host supervisor under
   `.gp/host-pools/pi/` with explicit open/wait-any/snapshot/continue/close
-  tools; it never plans or auto-refills candidates.
+  tools; it never plans or auto-refills candidates in `parallel_loops`.
+  Scheduler-driven replacement uses the separate `adaptive_search` mode and
+  requires a non-null `search_scheduler`.
   This is cross-process native-session continuation, not a promise that one Pi
   OS process remains resident for the full run. Add a persistent same-PID host
   supervisor only if process identity itself becomes a requirement.

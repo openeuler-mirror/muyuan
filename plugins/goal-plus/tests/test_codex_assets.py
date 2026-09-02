@@ -27,6 +27,13 @@ def test_installable_plugin_skills_match_project_local_codex_skills() -> None:
         project_skill = ROOT / ".codex" / "skills" / name / "SKILL.md"
         plugin_skill = ROOT / "skills" / name / "SKILL.md"
         assert plugin_skill.read_bytes() == project_skill.read_bytes()
+    project_reference = (
+        ROOT / ".codex" / "skills" / "goal-plus" / "references" / "adaptive-search.md"
+    )
+    plugin_reference = (
+        ROOT / "skills" / "goal-plus" / "references" / "adaptive-search.md"
+    )
+    assert plugin_reference.read_bytes() == project_reference.read_bytes()
 
 
 @pytest.mark.parametrize("name", ORCHESTRATION_SKILLS)
@@ -106,6 +113,7 @@ def test_codex_goal_plus_skill_records_modes_and_mcp_tools() -> None:
         "开放式补充评价发生在每次 Evidence 结算之后",
         "也不改变硬",
         "candidate-local 结算",
+        "明确要求 runtime reward/allocation 时才使用",
     ):
         assert expected in text
     assert "mode_hint" not in text
@@ -337,6 +345,79 @@ def test_codex_search_skill_documents_parallel_loop_policy() -> None:
     assert "deepen_incumbent" not in text
     assert "transfer_feature" not in text
     assert "macro_restart" not in text
+
+
+def test_codex_assets_document_runtime_owned_scheduler_allocation() -> None:
+    public_skill = (ROOT / ".codex" / "skills" / "search" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    public_goal_skill = (
+        ROOT / ".codex" / "skills" / "goal-plus" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    skill = (
+        ROOT
+        / ".codex"
+        / "skills"
+        / "goal-plus"
+        / "references"
+        / "adaptive-search.md"
+    ).read_text(encoding="utf-8")
+    worker = (ROOT / ".codex" / "agents" / "search_candidate_agent.toml").read_text(
+        encoding="utf-8"
+    )
+    normalized_skill = " ".join(skill.split())
+
+    for public_text in (public_goal_skill, public_skill):
+        assert "references/adaptive-search.md" in public_text
+        assert "ScheduleTask" not in public_text
+        assert "evidence_llm_value/v3" not in public_text
+    assert "未开启该模式时不要读取它" in public_skill
+    assert "# Codex Adaptive Search" in skill
+    assert "只在准备冻结或恢复的 `FrozenSpec`" in skill
+    assert "`parallel_loops` 不允许配置 scheduler" in skill
+    assert "evidence_llm_value/v1" not in skill
+    assert "evidence_llm_value/v2" not in skill
+    assert "value_guided_replace/v1" not in skill
+    assert "evidence_llm_value/v3" in skill
+    assert "value_guided_replace/v2" in skill
+    assert "`build_context`" in skill
+    assert "fixed_reward_threshold/v1" not in skill
+    assert "shadow_noop/v1" not in skill
+    assert "@prompt" in skill
+    assert "budget.max_candidates" in skill
+    assert "`null` 表示不限制" in skill
+    assert "当时可用并发槽位约束" in skill
+    assert "search_list_allocation_decisions" in skill
+    assert "search_apply_allocation_decision" in skill
+    assert "spawn_agent" in skill
+    assert "ScheduleTask" in skill
+    assert "一次无 session 推理" in skill
+    assert "可恢复的异步" in skill
+    assert "scheduler_status=pending" in skill
+    assert "runtime 自动" in skill
+    assert "allocation_flag" in skill
+    assert "completed ScheduleTask" in normalized_skill
+    assert "上一 flag 是 `true`" in skill
+    assert "不设置单份 Decision" in skill
+    assert "所有返回 payload" in skill
+    assert "不能只启动第一项" in skill
+    assert "不创建 `ScheduleTask`" in skill
+    assert "质量驱动的替代 candidate" in skill
+    assert "AnnotationTask 是 ScheduleTask 创建的弱依赖" in skill
+    assert "terminal_error" in skill
+    assert "只禁止下一轮 iteration" in skill
+    assert "allocation_decision" in worker
+    assert "`context.search_scheduler_enabled == true`" in worker
+    assert "只有 `search_run_verifier` 返回非空" in worker
+    assert "才会因 Scheduler 调度停止编辑" in worker
+    assert "`scheduler_status=pending`" in worker
+    assert "本身既不是等待条件，也不是停止条件" in worker
+    assert "未触发其他停止条件" in worker
+    assert "worker 不计算 reward" in worker
+    assert "不启动派生 worker" in worker
+    assert "decision 为空时" in skill
+    assert "全局停止和同候选 continuation" in skill
+    assert "expansion_action_context" not in worker
 
 
 def test_codex_search_skill_documents_worker_budget_watchdog() -> None:

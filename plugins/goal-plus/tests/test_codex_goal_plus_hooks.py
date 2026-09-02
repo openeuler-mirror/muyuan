@@ -152,6 +152,7 @@ def _codex_search_worker(
     tmp_path: Path,
     *,
     worker_budget: dict | None = None,
+    search_scheduler: bool = False,
 ) -> tuple[FileSearchRuntime, str, str, str]:
     project = make_project(tmp_path)
     payload = spec_with_host(
@@ -165,6 +166,22 @@ def _codex_search_worker(
         "max_turns": 8,
         "on_exceed": "interrupt",
     }
+    if search_scheduler:
+        payload["budget"]["max_candidates"] = 2
+        payload["workspace"] = {"backend": "git_worktree"}
+        payload["strategy"].update(
+            {
+                "orchestration_mode": "adaptive_search",
+                "search_scheduler": {
+                    "host": "codex",
+                    "model": "gpt-5.2",
+                    "reasoning_effort": "low",
+                    "timeout_seconds": 180,
+                    "reward": "evidence_llm_value/v3",
+                    "allocation": "value_guided_replace/v2",
+                },
+            }
+        )
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"])
     run_id = runtime.create_run(frozen.frozen_spec_id)

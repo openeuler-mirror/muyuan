@@ -410,6 +410,31 @@ def create_mcp(
         return tools.search_list_iterations(run_id, candidate_id)
 
     @mcp.tool()
+    def search_list_allocation_decisions(
+        run_id: str,
+        status: Literal["pending", "applied"] | None = None,
+    ) -> list[dict[str, Any]]:
+        """仅当 FrozenSpec 使用 adaptive_search 时读取持久化资源分配决策。
+
+        该工具只读，不启动、继续或中断任何 host worker。未传 status 时返回全部决策。
+        """
+        return tools.search_list_allocation_decisions(run_id, status)
+
+    @mcp.tool()
+    def search_apply_allocation_decision(
+        run_id: str,
+        decision_id: str,
+    ) -> dict[str, Any]:
+        """仅当 FrozenSpec 使用 adaptive_search 时幂等应用准确决策。
+
+        runtime 先预检 decision 中全部 replacement，再保留被剪枝候选的 Evidence、物化
+        所有派生 workspace、创建 agent-session provenance，并返回每个 replacement 的 host
+        launch payload。调用方仍须通过 Codex/Pi host 启动全部 worker 并绑定原生 handle；
+        该工具不监督 worker 生命周期。
+        """
+        return tools.search_apply_allocation_decision(run_id, decision_id)
+
+    @mcp.tool()
     def search_select(run_id: str) -> dict[str, Any]:
         """按分数选择最佳已评估候选。在验证候选后调用。"""
         return tools.search_select(run_id)

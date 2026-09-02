@@ -61,6 +61,8 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
         "search_get_agent_observability",
         "search_run_verifier",
         "search_list_iterations",
+        "search_list_allocation_decisions",
+        "search_apply_allocation_decision",
         "search_select",
         "search_report",
         "search_promote",
@@ -247,9 +249,44 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     strategy = spec_schema["properties"]["strategy"]
     assert "worker_budget" in strategy["properties"]
     assert "evidence_annotator" in strategy["properties"]
+    orchestration = strategy["properties"]["orchestration_mode"]
+    assert orchestration["default"] == "parallel_loops"
+    assert set(orchestration["enum"]) == {
+        "rolling_candidates",
+        "parallel_loops",
+        "adaptive_search",
+    }
+    scheduler_schema = next(
+        item
+        for item in strategy["properties"]["search_scheduler"]["anyOf"]
+        if item.get("type") == "object"
+    )
+    scheduler = scheduler_schema["properties"]
+    assert set(scheduler) == {
+        "host",
+        "model",
+        "reasoning_effort",
+        "timeout_seconds",
+        "reward",
+        "allocation",
+    }
+    assert set(scheduler_schema["required"]) == {
+        "host",
+        "model",
+        "reasoning_effort",
+        "timeout_seconds",
+        "reward",
+        "allocation",
+    }
+    assert "default" not in scheduler["timeout_seconds"]
+    assert scheduler["reward"]["type"] == "string"
+    assert "enabled" not in scheduler
+    assert "script_path" not in scheduler
 
     budget = spec_schema["properties"]["budget"]["properties"]
     assert "初始创建并实际并行工作" in budget["max_parallel"]["description"]
+    assert "null 表示不限制" in budget["max_candidates"]["description"]
+    assert "大于等于 max_parallel" in budget["max_candidates"]["description"]
 
     freeze_description = " ".join(tools["search_freeze_spec"].description.split())
     assert "唯一决定初始候选 Agent 数" in freeze_description

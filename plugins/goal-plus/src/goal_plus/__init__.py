@@ -23,6 +23,13 @@ from goal_plus.models import (
     VerifierResult,
     VerifierRole,
 )
+from goal_plus.adaptive_search.adaptive_search import (
+    bind_search_scheduler_schemas as _bind_search_scheduler_schemas,
+)
+
+_bind_search_scheduler_schemas()
+del _bind_search_scheduler_schemas
+
 from goal_plus.runtime import FileSearchRuntime
 
 __all__ = [

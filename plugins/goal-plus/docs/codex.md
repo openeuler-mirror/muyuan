@@ -200,7 +200,7 @@ main agent 将 payload 投影到当前 tool schema。`task_name`、`message` 和
 中明确列出，并通过 `context.candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。child
 完整读取清单中的 Skill，不扫描 parent/global/plugin 或其他 candidate 路径。
 
-标准并行循环如下：
+标准 `parallel_loops` 并行循环如下：
 
 1. freeze `strategy.orchestration_mode="parallel_loops"`，只规划一次并启动全部初始 candidate；
 2. 对每个 `search_start_agent_session` 返回的 payload 真实调用 `spawn_agent`；该 session
@@ -247,6 +247,12 @@ continuation 中保持不变。省略 `workers=` 和 `models=` 时，child 继�
 
 model catalog 只负责发现。若当前 `spawn_agent` schema 无法接收所选 model override，
 启动会明确失败。
+
+`adaptive_search` run 要求显式配置 `search_scheduler`，保持相同初始步骤，但 verifier 结算后可能返回 runtime
+拥有的 `allocation_decision`。main 不再继续已退休 worker，而是幂等应用准确 decision，把返回的
+派生 session launch payload 映射到 `spawn_agent`，并确保活跃数不超过 `max_parallel`。child
+从 decision 指定的 verifier-backed Git settlement 启动，并继承 run Evidence 和模型
+provenance；reward 不改变最终 hard-score selection。
 
 ## Worker Deadline
 

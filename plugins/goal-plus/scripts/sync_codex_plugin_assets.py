@@ -14,20 +14,24 @@ SKILLS = (
     "goal-plus-with-final-check",
     "search",
 )
+SKILL_RESOURCES = {
+    "goal-plus": (Path("references/adaptive-search.md"),),
+}
 
 
 def sync(*, check: bool) -> list[Path]:
     stale: list[Path] = []
     for name in SKILLS:
-        source = ROOT / ".codex" / "skills" / name / "SKILL.md"
-        destination = ROOT / "skills" / name / "SKILL.md"
-        source_bytes = source.read_bytes()
-        if destination.is_file() and destination.read_bytes() == source_bytes:
-            continue
-        stale.append(destination)
-        if not check:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
+        for relative_path in (Path("SKILL.md"), *SKILL_RESOURCES.get(name, ())):
+            source = ROOT / ".codex" / "skills" / name / relative_path
+            destination = ROOT / "skills" / name / relative_path
+            source_bytes = source.read_bytes()
+            if destination.is_file() and destination.read_bytes() == source_bytes:
+                continue
+            stale.append(destination)
+            if not check:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
     return stale
 
 
