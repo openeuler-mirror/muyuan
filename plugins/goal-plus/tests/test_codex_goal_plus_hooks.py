@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,7 @@ from goal_plus.goal_plus import EXPLORATION_MODE_LINES, FileGoalPlusRuntime
 from goal_plus.models import GoalPlusLinkedSearch, SearchSpec
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.runtime import FileSearchRuntime
+from goal_plus.tools import SearchTools
 from tests._runtime_helpers import make_project, spec_with_host
 
 
@@ -180,6 +182,45 @@ def _codex_search_worker(
         )
     )
     return runtime, run_id, task.candidate_id, session.agent_session_id
+
+
+def _write_codex_subagent_transcript(
+    path: Path,
+    *,
+    parent_session_id: str,
+    child_session_id: str,
+    prefix_lines: list[str] | None = None,
+) -> None:
+    lines = list(prefix_lines or [])
+    lines.append(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": child_session_id,
+                    "parent_thread_id": parent_session_id,
+                    "thread_source": "subagent",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "parent_thread_id": parent_session_id,
+                            }
+                        }
+                    },
+                },
+            }
+        )
+    )
+    path.write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _candidate_session_id(context: str) -> str:
+    match = re.search(r'agent_session_id="(agent_[^"]+)"', context)
+    assert match is not None, context
+    return match.group(1)
 
 
 def test_user_prompt_submit_precreates_and_binds_goal(tmp_path: Path) -> None:
@@ -960,6 +1001,192 @@ def test_session_start_detaches_bound_goal_until_explicit_resume(tmp_path: Path)
     updated = runtime.status(record.goal_plus_id)
     assert updated.active_session is not None
     assert updated.active_session.state == "detached"
+
+
+def test_child_hooks_do_not_inherit_or_rebind_main_goal_context(tmp_path: Path) -> None:
+    search_root = tmp_path / ".gp"
+    runtime = FileGoalPlusRuntime(search_root)
+    record = runtime.create_goal("Optimize model throughput")
+    runtime.activate_session(
+        record.goal_plus_id,
+        {
+            "host": "codex",
+            "session_id": "session-main",
+            "transcript_path": "/tmp/main.jsonl",
+        },
+    )
+    main_binding = runtime.status(record.goal_plus_id).active_session
+    assert main_binding is not None
+    expected_binding = main_binding.model_dump(mode="json")
+    transcript = tmp_path / "ordinary-subagent.jsonl"
+    _write_codex_subagent_transcript(
+        transcript,
+        parent_session_id="session-main",
+        child_session_id="child-ordinary",
+        prefix_lines=["not-json", *[json.dumps({"type": "header"})] * 8],
+    )
+
+    for hook_input in (
+        {
+            "hook_event_name": "SessionStart",
+            "session_id": "session-main",
+            "transcript_path": str(transcript),
+        },
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-main",
+            "transcript_path": str(transcript),
+            "prompt": "Inspect this isolated work item.",
+        },
+    ):
+        result = _run_hook(tmp_path, search_root, hook_input)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    pre_tool = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-main",
+            "transcript_path": str(transcript),
+            "tool_name": "mcp__goal-plus__search_create",
+            "tool_input": {"frozen_spec_id": "spec_missing"},
+        },
+    )
+    assert pre_tool.returncode == 0
+    assert pre_tool.stdout == ""
+
+    child_goal = runtime.create_goal("Child-owned probe")
+    post_tool = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PostToolUse",
+            "session_id": "session-main",
+            "transcript_path": str(transcript),
+            "tool_name": "mcp__goal-plus__goal_plus_create",
+            "tool_response": {"goal_plus_id": child_goal.goal_plus_id},
+        },
+    )
+    assert post_tool.returncode == 0
+    assert post_tool.stdout == ""
+    assert runtime.status(child_goal.goal_plus_id).active_session is None
+
+    stop = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "Stop",
+            "session_id": "session-main",
+            "transcript_path": str(transcript),
+        },
+    )
+    assert stop.returncode == 0
+    assert stop.stdout == ""
+
+    active = runtime.status(record.goal_plus_id).active_session
+    assert active is not None
+    assert active.model_dump(mode="json") == expected_binding
+    assert runtime.status(record.goal_plus_id).hook_counters == {}
+
+
+def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    search_runtime, run_id, candidate_id, agent_session_id = _codex_search_worker(
+        tmp_path
+    )
+    search_root = search_runtime.root_dir
+    goal_runtime = FileGoalPlusRuntime(search_root)
+    record = goal_runtime.create_goal("Optimize model throughput")
+    goal_runtime.activate_session(
+        record.goal_plus_id,
+        {
+            "host": "codex",
+            "session_id": "session-main",
+            "transcript_path": "/tmp/main.jsonl",
+        },
+    )
+    main_binding = goal_runtime.status(record.goal_plus_id).active_session
+    assert main_binding is not None
+    expected_binding = main_binding.model_dump(mode="json")
+    transcript = tmp_path / "search-candidate.jsonl"
+    _write_codex_subagent_transcript(
+        transcript,
+        parent_session_id="session-main",
+        child_session_id="child-search",
+    )
+    session = search_runtime._load_agent_session_by_id(agent_session_id)
+
+    initial = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-main",
+            "transcript_path": str(transcript),
+            "prompt": session.launch["message"],
+        },
+    )
+    context = _additional_context(initial, "UserPromptSubmit")
+    context_session_id = _candidate_session_id(context)
+    assert context_session_id == agent_session_id
+    worker_context = SearchTools(search_runtime).search_get_agent_context(
+        context_session_id
+    )
+    assert worker_context["candidate_id"] == candidate_id
+    assert Path(worker_context["workspace"]) == session.workspace
+    assert record.goal_plus_id not in context
+    assert record.raw_goal not in context
+
+    search_runtime.bind_agent_handle(
+        agent_session_id,
+        {
+            "host": "codex",
+            "external_id": "child-search",
+            "task_name": session.launch["task_name"],
+        },
+    )
+    continued = search_runtime.continue_agent_session(agent_session_id)
+    continuation = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-main",
+            "transcript_path": str(transcript),
+            "prompt": continued.launch["message"],
+        },
+    )
+    assert continuation.returncode == 0
+    assert continuation.stdout == ""
+
+    fresh = search_runtime.redispatch_candidate(run_id, candidate_id)
+    fresh_context = _additional_context(
+        _run_hook(
+            tmp_path,
+            search_root,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-main",
+                "transcript_path": str(transcript),
+                "prompt": fresh.launch["message"],
+            },
+        ),
+        "UserPromptSubmit",
+    )
+    fresh_session_id = _candidate_session_id(fresh_context)
+    assert fresh_session_id == fresh.agent_session_id
+    fresh_worker_context = SearchTools(search_runtime).search_get_agent_context(
+        fresh_session_id
+    )
+    assert fresh_worker_context["candidate_id"] == candidate_id
+    assert Path(fresh_worker_context["workspace"]) == session.workspace
+
+    active = goal_runtime.status(record.goal_plus_id).active_session
+    assert active is not None
+    assert active.model_dump(mode="json") == expected_binding
 
 
 def test_post_tool_time_advisory_only_targets_search_candidate_subagent_once(

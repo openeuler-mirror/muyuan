@@ -52,6 +52,7 @@ parent/global/plugin 或 peer candidate Skill。
 | 能力 | Codex | Pi RPC |
 | --- | --- | --- |
 | 启动 | 异步 `spawn_agent`；无 `cwd`，worker 从 context bootstrap worktree | host-local supervisor 启动前台 Pi 子进程；worker仍核对 context workspace |
+| Candidate 进程环境 | `spawn_agent` 无 `env`；worker 对本地命令显式应用 `candidate_task.process_environment` | supervisor 把同一 `process_environment` 注入 Pi worker 进程 |
 | 等待 | `wait_agent` 任意事件唤醒，再用 `list_agents` 收集终态 | `pi_search_pool_wait_any` |
 | 续跑 | `followup_task` 复用同一 worker | 新进程恢复同一 native session |
 | Deadline | parent watchdog 管理每次派发 | 累计 pool lease + Pi 进程 watchdog |
@@ -64,6 +65,32 @@ parent/global/plugin 或 peer candidate Skill。
 两种 host 都只支持固定的初始并行循环。当前可移植 planner 为 `agent_guided`（含
 `agent`、`default`）和 `random`（含 `random_mode`）。两个 host 当前都不声明 `thinkthread`
 capability；runtime 会在 freeze/create 边界拒绝该 backend。
+
+资源分配由 runtime 在 freeze 时解析并固定，不由 Adapter 各自推断。Codex/Pi 的正式 verifier
+都使用 CandidateTask 中持久化的进程环境和解析后的物理资源锁；Pi 还能在 worker 进程边界直接
+强制该环境。Codex 原生 `spawn_agent` 当前不支持 `env`，所以它的本地 profile 命令必须按
+candidate contract 显式应用环境变量，不能把 parent 的逻辑设备 `:0` 当作已隔离设备。
+
+host 通过 `GOAL_PLUS_DEVICE_POOLS` 注册受信任的硬件无关映射：
+
+```json
+{
+  "cuda":{"visibility_env":"CUDA_VISIBLE_DEVICES","devices":["0","1"]},
+  "ascend-npu":{"visibility_env":"ASCEND_RT_VISIBLE_DEVICES","devices":["4","5"]}
+}
+```
+
+SearchSpec 只能用 `{"device_pools":[{"pool_id":"cuda"}]}` 引用已注册 pool，对应 verifier
+使用 `<pool_id>:0` 作为 `resource_lock`。它不能提供环境变量名或设备值。未声明 device pool
+的普通 host resource lock 保持原有精确字符串语义。freeze preflight 使用第一条 candidate
+lane 的单设备环境；后续宿主配置变化不会改写已冻结 run 的设备分配。每个引用 pool 必须
+至少包含 `budget.max_parallel` 个设备，lane 按顺序一一分配，不会轮转复用；同一 spec 中
+多个 pool 也不能使用相同的 `visibility_env`。
+
+runtime 从 run 创建到 promoted、aborted 或 failed 期间独占每个引用 pool，避免不同 run
+同时把 worker 放到同一组设备。pool lease 和 verifier resource lock 共用
+`GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR`；多个 runtime 进程或容器共享设备时，该变量必须指向
+同一个 host 共享目录，否则只能保证单个文件系统范围内不超售。
 
 ## Candidate 循环
 

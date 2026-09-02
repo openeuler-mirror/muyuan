@@ -1,9 +1,11 @@
 ---
 name: goal-plus
-description: 运行、恢复或编辑 Codex Goal Plus 任务，包括需要独立最终审查员的 $goal-plus-with-final-check 任务，并可通过 goal-plus MCP server 升级为 Agentic Search。
+description: 仅供 Goal Plus Main Agent 运行、恢复或编辑 Codex Goal Plus（含 $goal-plus-with-final-check），并通过 goal-plus MCP 编排 Agentic Search；不适用于 Search candidate worker。
 ---
 
 # Codex 的 Goal Plus
+
+此 skill 仅供 Goal Plus Main Agent 使用，不适用于 Search candidate worker。
 
 对 `$goal-plus` 使用此 skill，这是 Ultra 编排工作流。主 Agent 请求 max 推理强度，
 主动委派独立工作；当成功标准可度量且已冻结时，再升级为多候选 Agentic Search。
@@ -73,7 +75,13 @@ Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registr
    `GoalPlusRecord.command_config` 中的 `max_parallel`、`workspace_backend`、
    `promotion_mode`、`strategy`、`annotator` 和 `workers` 映射到 SearchSpec；ready draft
    不匹配时 runtime 会拒绝保存。未配置字段才根据目标、host 能力和资源信号决定。
-   新 SearchSpec 必须显式设置
+   并行 candidate 使用单卡 accelerator 时，只在 SearchSpec `device_pools` 中引用 host
+   预先注册的 `pool_id`，并让相关 verifier 使用 `<pool_id>:0` 作为 `resource_lock`。
+   host 通过 `GOAL_PLUS_DEVICE_POOLS` 注册非敏感设备清单；SearchSpec 不能指定或读取任意
+   环境变量。`budget.max_parallel` 不得超过任一引用 pool 的设备数；runtime 在 freeze 时固定
+   pool，并在 active run 期间独占它。把需要 worker 遵守的公开验收条件显式写入
+   `candidate_acceptance`；`constraints` 是 runtime 私有配置，不会下发给 worker。
+   冻结操作会在消耗候选预算前拒绝工作区副作用。新 SearchSpec 必须显式设置
    `workspace.backend="git_worktree"`，以便候选共享 Git object database 并解析彼此的
    Evidence commit；`workspace.promotion_mode` 默认是 `apply`。只有受保护 source、只读
    template 或测试 fixture 才显式设置 `promotion_mode="artifact_only"`；`copy` backend

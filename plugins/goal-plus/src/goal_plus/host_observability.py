@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from goal_plus.codex_transcript import read_codex_session_meta
 from goal_plus.codex_pricing import (
     CODEX_PRICING_AS_OF,
     CODEX_PRICING_CATALOG,
@@ -349,24 +350,6 @@ def _codex_sessions_root(codex_home: Path | None = None) -> Path:
     return base if base.name == "sessions" else base / "sessions"
 
 
-def _codex_session_meta(path: Path) -> dict[str, Any] | None:
-    try:
-        with path.open("r", encoding="utf-8") as stream:
-            for _ in range(8):
-                line = stream.readline()
-                if not line:
-                    break
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if event.get("type") == "session_meta" and isinstance(event.get("payload"), dict):
-                    return event["payload"]
-    except OSError:
-        return None
-    return None
-
-
 def _codex_agent_path(meta: dict[str, Any]) -> str | None:
     direct = _string(meta.get("agent_path"))
     if direct:
@@ -419,7 +402,7 @@ def discover_codex_session_file(
         try:
             candidates = directory.rglob("*.jsonl")
             for path in candidates:
-                meta = _codex_session_meta(path)
+                meta = read_codex_session_meta(path)
                 if meta is None:
                     continue
                 agent_path = _codex_agent_path(meta)

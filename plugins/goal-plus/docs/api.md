@@ -405,10 +405,13 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 | `ranking_signals`                   | 产生 metric 的 command                                   |
 | `promotion_verifiers`               | promotion 前必须通过的检查                               |
 | `budget.max_parallel`               | 初始 candidate 和活跃 worker 数                          |
+| `candidate_acceptance`              | 受界且显式下发给 worker 的验收条件                       |
+| `constraints`                       | runtime 私有的结构化控制数据，不下发给 worker            |
 | `strategy.worker_host`              | 执行 host：`pi-rpc` 或 `codex`                           |
 | `strategy.worker_budget`            | host deadline 和可选 minimum lease                       |
 | `workspace.backend`                 | `git_worktree`（默认）、`copy`，或接口占位 `thinkthread` |
 | `workspace.promotion_mode`          | `apply`（默认）或显式 `artifact_only`                    |
+| `device_pools`                      | 可选的受信任 host pool ID；配置来自 `GOAL_PLUS_DEVICE_POOLS` |
 
 Git source 的 clean 检查独立于 provider：`git_worktree` 现在执行，`thinkthread` 在 host
 capability 接通后复用同一契约。TT baseline 必须从 clean、自包含的 inner-Git checkout 创建
@@ -424,6 +427,11 @@ checkpoint 或 snapshot reference。TT Child 内执行 Codex 和 FsSnapshot 接�
 每条 ranking command 必须成功退出，并输出最后一个 JSON object，其中 `metric_name` 对应 finite
 number。临时 verifier 输出必须位于 `GOAL_PLUS_VERIFIER_TMPDIR`；verifier artifact 和 evaluation
 input 都会用 hash 固定。
+
+每个引用 device pool 必须至少提供 `budget.max_parallel` 个设备，且同一 spec 的多个 pool
+不能复用同一个可见变量。lane 与设备一一对应。active run 通过
+`GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR` 下的 host pool lease 防止跨 run 超售；共享设备的多个
+进程或容器必须使用同一个共享锁目录。
 
 ## 错误语义
 

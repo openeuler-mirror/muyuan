@@ -156,6 +156,17 @@ origin/relocation bootstrap result 单独保存在 FrozenSpec 和 RunRecord 中�
 结果进入正式 Evidence。Runtime 根据该 run 的实际 Evidence、supplemental evaluation 与
 `shared_dir` 开关生成 `candidate_task.instructions`；静态 Codex/Pi worker prompt 不描述未启用的能力。
 
+`candidate_task.acceptance` 只包含 FrozenSpec `candidate_acceptance` 中显式声明、受界且
+对 worker 可见的验收条件；objective 和 metric 位于 agent context 顶层，`constraints` 保持
+runtime 私有。`candidate_task.process_environment` 是该 lane 的进程环境。host 在
+`GOAL_PLUS_DEVICE_POOLS` 中注册受信任的 pool、可见变量和非敏感设备清单；SearchSpec 的
+`device_pools` 只能引用 `pool_id`，不能选择任意宿主环境变量。若 verifier 以
+`resource_lock="<pool_id>:0"` 声明单卡资源，runtime 会在 freeze 时固定该 pool 并按 candidate
+一一分配不同设备；pool 容量不足或多个 pool 共用同一可见变量时 freeze 直接失败。正式
+verifier 使用对应环境和物理设备锁，freeze preflight 使用第一条 lane 的单设备环境，
+continuation 沿用同一个 CandidateTask，不重新分配资源。active run 还会在 host 共享的
+`GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR` 下持有 pool lease，防止其他 run 超售同一 pool。
+
 candidate 不需要在修改前提交 iteration plan。`hypothesis` 是完成尝试后的事实性
 自述，与 verifier 结果一起保存；它不是 pending plan，也不形成协调锁。多个
 candidate 可以同时读取同一版 Evidence 并并发工作。

@@ -1,9 +1,11 @@
 ---
 name: goal-plus-with-final-check
-description: 运行 Goal Plus，并要求在完成前由独立 Codex 最终检查员进行检查。
+description: 仅供 Goal Plus Main Agent 运行带独立最终检查的 Codex Goal Plus；不适用于 Search candidate worker。
 ---
 
 # 带最终检查的 Goal Plus
+
+此 skill 仅供 Goal Plus Main Agent 使用，不适用于 Search candidate worker。
 
 对 `$goal-plus-with-final-check` 使用此 skill。
 Codex 的 `UserPromptSubmit` hook 会在模型轮次开始前创建 Goal Plus 记录，并设置

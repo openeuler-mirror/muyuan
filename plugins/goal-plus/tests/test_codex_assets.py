@@ -7,13 +7,39 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+ORCHESTRATION_SKILLS = ("goal-plus", "goal-plus-with-final-check", "search")
+
+
+def _skill_frontmatter(path: Path) -> dict[str, str]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines and lines[0] == "---"
+    closing = lines.index("---", 1)
+    metadata: dict[str, str] = {}
+    for line in lines[1:closing]:
+        key, separator, value = line.partition(":")
+        assert separator
+        metadata[key.strip()] = value.strip()
+    return metadata
 
 
 def test_installable_plugin_skills_match_project_local_codex_skills() -> None:
-    for name in ("goal-plus", "goal-plus-with-final-check", "search"):
+    for name in ORCHESTRATION_SKILLS:
         project_skill = ROOT / ".codex" / "skills" / name / "SKILL.md"
         plugin_skill = ROOT / "skills" / name / "SKILL.md"
         assert plugin_skill.read_bytes() == project_skill.read_bytes()
+
+
+@pytest.mark.parametrize("name", ORCHESTRATION_SKILLS)
+def test_codex_orchestration_skills_are_main_only(name: str) -> None:
+    metadata = _skill_frontmatter(
+        ROOT / ".codex" / "skills" / name / "SKILL.md"
+    )
+
+    assert metadata["name"] == name
+    assert "仅供 Goal Plus Main Agent" in metadata["description"]
+    assert "不适用于 Search candidate worker" in metadata["description"]
+
+
 pytestmark = pytest.mark.codex
 
 
@@ -102,6 +128,8 @@ def test_codex_mcp_config_registers_search_runtime() -> None:
         "OPENAI_API_KEY",
         "SFORGE_AGENT_API_KEY",
         "GOAL_PLUS_OUTER_DEADLINE_AT",
+        "GOAL_PLUS_DEVICE_POOLS",
+        "GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR",
         "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED",
         "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED",
         "GOAL_PLUS_EVIDENCE_ANNOTATOR_MODEL",

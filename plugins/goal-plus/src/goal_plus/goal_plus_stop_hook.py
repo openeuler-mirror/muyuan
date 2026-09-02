@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from goal_plus.codex_transcript import (
+    iter_codex_transcript_header,
+    read_codex_session_meta,
+)
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT
 from goal_plus.time_advisory import (
     build_search_time_advisory,
@@ -395,35 +399,21 @@ def _codex_subagent_task_name(hook_input: dict[str, Any]) -> str | None:
     transcript = _transcript_path(hook_input)
     if transcript is None:
         return None
-    try:
-        with Path(transcript).expanduser().open(encoding="utf-8") as handle:
-            for _ in range(12):
-                line = handle.readline()
-                if not line:
-                    break
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(event, dict) or event.get("type") != "session_meta":
-                    continue
-                payload = event.get("payload")
-                if not isinstance(payload, dict):
-                    continue
-                source = payload.get("source")
-                subagent = source.get("subagent") if isinstance(source, dict) else None
-                thread_spawn = (
-                    subagent.get("thread_spawn") if isinstance(subagent, dict) else None
-                )
-                agent_path = (
-                    thread_spawn.get("agent_path")
-                    if isinstance(thread_spawn, dict)
-                    else None
-                )
-                if isinstance(agent_path, str) and agent_path:
-                    return agent_path
-    except OSError:
+    meta = read_codex_session_meta(Path(transcript).expanduser())
+    if meta is None:
         return None
+    source = meta.get("source")
+    subagent = source.get("subagent") if isinstance(source, dict) else None
+    thread_spawn = (
+        subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+    )
+    agent_path = (
+        thread_spawn.get("agent_path")
+        if isinstance(thread_spawn, dict)
+        else None
+    )
+    if isinstance(agent_path, str) and agent_path:
+        return agent_path
     return None
 
 
@@ -445,6 +435,19 @@ def _search_candidate_permission_agent(hook_input: dict[str, Any]) -> str | None
     if task_name is None or not Path(task_name).name.startswith("search_agent_"):
         return None
     return task_name
+
+
+def _transcript_declares_subagent(hook_input: dict[str, Any]) -> bool:
+    value = _transcript_path(hook_input)
+    if not value:
+        return False
+    meta = read_codex_session_meta(Path(value).expanduser())
+    if meta is None:
+        return False
+    source = meta.get("source")
+    return meta.get("thread_source") == "subagent" or (
+        isinstance(source, dict) and isinstance(source.get("subagent"), dict)
+    )
 
 
 def _tool_use_id(hook_input: dict[str, Any]) -> str | None:
@@ -526,6 +529,12 @@ def _is_subagent_context(hook_input: dict[str, Any]) -> bool:
     return False
 
 
+def _is_child_context(hook_input: dict[str, Any]) -> bool:
+    return _is_subagent_context(hook_input) or _transcript_declares_subagent(
+        hook_input
+    )
+
+
 def _is_final_checker_context(hook_input: dict[str, Any]) -> bool:
     for key in ("agent_type", "agentType", "task_name", "taskName", "role"):
         value = hook_input.get(key)
@@ -571,20 +580,12 @@ def _agent_transcript_started_at(hook_input: dict[str, Any]) -> datetime | None:
     path = _agent_transcript_path(hook_input)
     if path is None:
         return None
-    try:
-        with path.open(encoding="utf-8") as handle:
-            for _ in range(8):
-                line = handle.readline()
-                if not line:
-                    break
-                payload = json.loads(line)
-                timestamp = payload.get("timestamp")
-                if isinstance(timestamp, str):
-                    parsed = _utc_datetime(timestamp)
-                    if parsed is not None:
-                        return parsed
-    except (OSError, json.JSONDecodeError):
-        return None
+    for payload in iter_codex_transcript_header(path):
+        timestamp = payload.get("timestamp")
+        if isinstance(timestamp, str):
+            parsed = _utc_datetime(timestamp)
+            if parsed is not None:
+                return parsed
     return None
 
 
@@ -606,6 +607,27 @@ def _candidate_session_from_transcript(
             and session.host == "codex"
             and is_search_candidate_session(session)
         ):
+            return session
+    return None
+
+
+def _candidate_session_from_launch_prompt(
+    search_root: Path,
+    hook_input: dict[str, Any],
+) -> Any | None:
+    prompt = _prompt(hook_input).strip()
+    if not prompt:
+        return None
+    for agent_session_id in _runtime_agent_session_ids(prompt):
+        session = find_agent_session(search_root, agent_session_id)
+        if (
+            session is None
+            or session.host != "codex"
+            or not is_search_candidate_session(session)
+        ):
+            continue
+        launch_message = session.launch.get("message")
+        if isinstance(launch_message, str) and launch_message.strip() == prompt:
             return session
     return None
 
@@ -644,24 +666,13 @@ def _candidate_session_from_native_identity(
             session.launch.get("task_name"),
         }:
             return session
-        try:
-            with native_path.open(encoding="utf-8") as handle:
-                for _ in range(8):
-                    line = handle.readline()
-                    if not line:
-                        break
-                    payload = json.loads(line)
-                    if payload.get("type") != "session_meta":
-                        continue
-                    meta = payload.get("payload")
-                    if isinstance(meta, dict) and identity in {
-                        meta.get("id"),
-                        meta.get("session_id"),
-                        meta.get("agent_path"),
-                    }:
-                        return session
-        except (OSError, json.JSONDecodeError):
-            continue
+        meta = read_codex_session_meta(native_path)
+        if meta is not None and identity in {
+            meta.get("id"),
+            meta.get("session_id"),
+            meta.get("agent_path"),
+        }:
+            return session
     return None
 
 
@@ -1042,7 +1053,7 @@ def _search_candidate_agent_session_id(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> str | None:
-    if not _is_subagent_context(hook_input) or _is_final_checker_context(hook_input):
+    if not _is_child_context(hook_input) or _is_final_checker_context(hook_input):
         return None
     identity = _subagent_identity(hook_input)
     direct: str | None = None
@@ -1437,6 +1448,18 @@ def _goal_context(
     return f"{context}\n{role_model_context}" if role_model_context else context
 
 
+def _candidate_context(session: Any) -> str:
+    agent_session_id = session.agent_session_id
+    return (
+        "goal_plus_context_role=search_candidate\n"
+        "此 Codex subagent 是 Search candidate，不是 Goal Plus Main Agent。\n"
+        f"调用 search_get_agent_context(agent_session_id=\"{agent_session_id}\")；"
+        "返回的 candidate_task 是完整工作契约。\n"
+        "Goal Plus 和 Search 编排 skills 仅适用于父 Main Agent，不适用于本 worker；"
+        "规划、创建 candidate、最终选择、报告和 promotion 均由父 Main Agent 负责。"
+    )
+
+
 def _emit_additional_context(
     event_name: str,
     context: str,
@@ -1569,6 +1592,17 @@ def _handle_user_prompt_submit(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> None:
+    candidate_session = _candidate_session_from_launch_prompt(search_root, hook_input)
+    if candidate_session is not None:
+        if candidate_session.launch.get("tool") != "followup_task":
+            _emit_additional_context(
+                "UserPromptSubmit",
+                _candidate_context(candidate_session),
+            )
+        return
+    if _is_child_context(hook_input):
+        return
+
     session_id = _session_id(hook_input)
     goal_id = _select_session_goal_id(search_root, session_id)
     request = _goal_plus_request(hook_input)
@@ -1720,6 +1754,8 @@ def _handle_session_start(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> None:
+    if _is_child_context(hook_input):
+        return
     session_id = _session_id(hook_input)
     goal_id = _select_session_goal_id(search_root, session_id)
     if goal_id is not None and session_id is not None:
@@ -1736,7 +1772,7 @@ def _handle_pre_tool_use(
     hook_input: dict[str, Any],
 ) -> None:
     tool_name = _tool_name(hook_input)
-    if _is_subagent_context(hook_input) or not _should_gate_tool(tool_name):
+    if _is_child_context(hook_input) or not _should_gate_tool(tool_name):
         return
     logical_name = _logical_tool_name(tool_name)
     if logical_name == "goal_plus_create":
@@ -1778,6 +1814,15 @@ def _handle_stop_event(
     *,
     event: str,
 ) -> dict[str, Any]:
+    if event == "stop" and _is_child_context(hook_input):
+        return {
+            "decision": "skipped",
+            "reason": "child_session",
+            "goal_plus_id": None,
+            "agent_session_id": None,
+            "run_id": None,
+            "candidate_id": None,
+        }
     candidate_context = None
     if event == "subagent_stop" and not _is_final_checker_context(hook_input):
         candidate_context = _search_candidate_stop_context(search_root, hook_input)

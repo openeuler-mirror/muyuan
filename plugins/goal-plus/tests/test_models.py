@@ -13,6 +13,7 @@ from goal_plus.models import (
     CandidateRecord,
     CandidateProposal,
     CandidateTask,
+    DevicePoolSpec,
     EditSurface,
     GoalPlusSpecDraft,
     IterationRecord,
@@ -60,10 +61,96 @@ def test_candidate_task_drops_legacy_shared_dir_path() -> None:
             "shared_dir": ".gp/runs/run_1/shared",
             "allowed_files": ["initial_program.py"],
             "denied_files": ["evaluator.py"],
+            "acceptance": {
+                "objective": "legacy duplicate",
+                "constraints": {"hidden": "must not be projected"},
+            },
         }
     )
 
     assert "shared_dir" not in task.model_dump(mode="json")
+    assert task.acceptance == []
+    assert task.process_environment == {}
+
+
+@pytest.mark.parametrize(
+    ("pools", "resource_lock", "message"),
+    [
+        (
+            [{"pool_id": "device"}, {"pool_id": "device"}],
+            "device:0",
+            "device pool ids must be unique",
+        ),
+        (
+            [{"pool_id": "device"}],
+            None,
+            "is not referenced by a verifier resource_lock",
+        ),
+        (
+            [{"pool_id": "device"}],
+            "device:1",
+            "only supports single-device resource_lock device:0",
+        ),
+    ],
+)
+def test_device_pools_require_unambiguous_logical_locks(
+    pools: list[dict[str, str]],
+    resource_lock: str | None,
+    message: str,
+) -> None:
+    payload = {
+        "objective": "test",
+        "metric_name": "score",
+        "metric_direction": "maximize",
+        "source_path": ".",
+        "edit_surface": {"allow": ["candidate.py"]},
+        "budget": {"max_parallel": 1},
+        "process_verifiers": [
+            {
+                "name": "score",
+                "role": "ranking_signal",
+                "command": ["true"],
+                **({"resource_lock": resource_lock} if resource_lock else {}),
+            }
+        ],
+        "device_pools": pools,
+    }
+
+    with pytest.raises(ValueError, match=message):
+        SearchSpec.model_validate(payload)
+
+
+def test_device_pool_ref_cannot_select_a_host_environment_variable() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        DevicePoolSpec.model_validate(
+            {"pool_id": "device", "visibility_env": "OPENAI_API_KEY"}
+        )
+
+
+@pytest.mark.parametrize(
+    "candidate_acceptance",
+    [["criterion"] * 33, ["x" * 1001]],
+)
+def test_candidate_acceptance_is_bounded(candidate_acceptance: list[str]) -> None:
+    with pytest.raises(ValidationError):
+        SearchSpec.model_validate(
+            {
+                "objective": "test",
+                "metric_name": "score",
+                "metric_direction": "maximize",
+                "source_path": ".",
+                "edit_surface": {"allow": ["candidate.py"]},
+                "budget": {"max_parallel": 1},
+                "process_verifiers": [
+                    {
+                        "name": "score",
+                        "role": "ranking_signal",
+                        "command": ["true"],
+                    }
+                ],
+                "candidate_acceptance": candidate_acceptance,
+            }
+        )
 
 
 def test_legacy_iteration_infers_shared_tool_publish_status() -> None:

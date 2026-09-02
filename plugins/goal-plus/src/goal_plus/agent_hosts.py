@@ -41,6 +41,7 @@ class HostCapabilities:
     supports_usage_metadata: bool = False
     supports_process_kill: bool = False
     supported_workspace_backends: frozenset[WorkspaceBackend] = frozenset()
+    supports_process_environment: bool = False
     pool: HostPoolContract = field(default_factory=HostPoolContract)
 
 
@@ -74,6 +75,7 @@ class AgentHostAdapter(Protocol):
         root: str | None = None,
         cwd: str | None = None,
         worker_prompt: str | None = None,
+        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         ...
 
@@ -93,6 +95,7 @@ class AgentHostAdapter(Protocol):
         worker_budget: dict[str, Any] | None = None,
         worker_launch: dict[str, Any] | None = None,
         host_metadata: dict[str, Any] | None = None,
+        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         ...
 
@@ -406,6 +409,7 @@ class CodexAdapter:
         root: str | None = None,
         cwd: str | None = None,
         worker_prompt: str | None = None,
+        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         task_name = _codex_task_name(agent_session_id)
         worker_contract = _worker_contract(worker_prompt)
@@ -461,6 +465,7 @@ class CodexAdapter:
         worker_budget: dict[str, Any] | None = None,
         worker_launch: dict[str, Any] | None = None,
         host_metadata: dict[str, Any] | None = None,
+        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         target = task_name or external_id
         if not target:
@@ -495,6 +500,7 @@ class PiRpcAdapter:
         supports_usage_metadata=True,
         supports_process_kill=True,
         supported_workspace_backends=frozenset({"copy", "git_worktree"}),
+        supports_process_environment=True,
         pool=HostPoolContract(
             launch_mode="async",
             wait_mode="wait_any",
@@ -647,6 +653,7 @@ class PiRpcAdapter:
         root: str | None = None,
         cwd: str | None = None,
         worker_prompt: str | None = None,
+        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "tool": "pi_rpc_worker",
@@ -668,6 +675,8 @@ class PiRpcAdapter:
         }
         if worker_agent_type:
             payload["worker_agent_type"] = worker_agent_type
+        if process_environment:
+            payload["environment"] = process_environment
         if worker_launch:
             if worker_launch.get("model") is not None:
                 payload["model_pattern"] = worker_launch["model"]
@@ -694,6 +703,7 @@ class PiRpcAdapter:
         worker_budget: dict[str, Any] | None = None,
         worker_launch: dict[str, Any] | None = None,
         host_metadata: dict[str, Any] | None = None,
+        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         session_id = (external_id or "").strip()
         if not session_id:
@@ -721,6 +731,8 @@ class PiRpcAdapter:
         }
         if worker_agent_type:
             payload["worker_agent_type"] = worker_agent_type
+        if process_environment:
+            payload["environment"] = process_environment
         if worker_launch:
             if worker_launch.get("model") is not None:
                 payload["model_pattern"] = worker_launch["model"]

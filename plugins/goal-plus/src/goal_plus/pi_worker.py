@@ -887,6 +887,10 @@ def run_pi_rpc_worker(
             )
     env = {
         **os.environ,
+        **{
+            str(name): str(value)
+            for name, value in dict(launch.get("environment") or {}).items()
+        },
         "GOAL_PLUS_ROOT": str(root),
         "GOAL_PLUS_PI_ROLE": worker_role,
         "GOAL_PLUS_SOURCE_PATH": str(default_extension_path().parents[2]),
