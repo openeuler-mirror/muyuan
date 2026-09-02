@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -100,6 +101,26 @@ def test_pi_dev_accepts_same_checkout_user_registration(
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
     installer._preflight_pi_dev()
+
+
+def test_pi_registration_resolves_relative_source_from_symlinked_agent_path(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_parent = tmp_path / "real" / "nested"
+    real_parent.mkdir(parents=True)
+    alias_parent = tmp_path / "alias"
+    alias_parent.symlink_to(real_parent, target_is_directory=True)
+    agent_dir = alias_parent / "pi-agent"
+    relative_source = os.path.relpath(ROOT.resolve(), start=agent_dir)
+    _write_pi_settings(agent_dir, [relative_source])
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+
+    entries = installer._pi_goal_plus_entries()
+
+    assert len(entries) == 1
+    assert entries[0]["resolved_path"] == ROOT.resolve()
 
 
 def test_pi_dev_ignores_broken_loose_resource_symlinks(
@@ -328,6 +349,34 @@ def test_pi_dev_dry_run_does_not_create_managed_directory(
 
     assert installer.main(["--pi-dev", "--pi-dev-dir", str(dev_dir), "--dry-run"]) == 0
     assert not dev_dir.exists()
+
+
+def test_pi_dev_install_prefers_binary_dependencies(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        installer,
+        "_run",
+        lambda argv, **_kwargs: commands.append(argv),
+    )
+    monkeypatch.setattr(
+        installer,
+        "_git_source_state",
+        lambda: {"source_commit": "abc123", "source_dirty": False},
+    )
+
+    installer._prepare_pi_dev(
+        dev_dir=tmp_path / "pi-dev",
+        pi_executable="/opt/pi/bin/pi",
+        dry_run=True,
+    )
+
+    pip_command = next(command for command in commands if "pip" in command)
+    assert "--prefer-binary" in pip_command
+    assert f"{ROOT}[dev]" in pip_command
 
 
 def test_pi_install_modes_are_mutually_exclusive(installer: ModuleType) -> None:

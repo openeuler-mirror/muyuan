@@ -23,7 +23,6 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | 仅 Pi | `./install.sh --pi` |
 | Codex 和 Pi | `./install.sh --codex --pi` |
 | Pi 开发态 | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
-| Codex 加 Pi 开发态 | `./install.sh --codex --pi-dev && source .goal-plus-dev/set_env.sh` |
 | 查看 Pi 开发环境及空间占用 | `./install.sh --env-show` |
 | 只检查 | `./install.sh --codex --pi --dry-run` |
 
@@ -35,17 +34,13 @@ Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus
 
 ## 卸载
 
-| 卸载内容 | 命令 |
-| --- | --- |
-| Pi 注册 | `pi remove .` |
-| Codex 注册 | `codex plugin remove goal-plus@goal-plus && codex plugin marketplace remove goal-plus` |
-| Python runtime | `python -m pip uninstall -y goal-plus` |
-| Pi 开发态 | `rm -rf -- .goal-plus-dev` |
-| 旧 Codex local 安装 | `codex plugin remove goal-plus@goal-plus-local && codex plugin marketplace remove goal-plus-local` |
+```bash
+./uninstall.sh
+```
 
-先删除宿主注册，再从安装时使用的同一个 Python 环境卸载 runtime。卸载不会删除目标 workspace
-中的 `.gp/` 记录，也不会回退已经提升的修改。细节见 [Development](docs/development.md)、
-[Pi](docs/pi.md) 与 [Codex](docs/codex.md)。
+卸载器只移除当前 checkout 拥有的 Codex 和 Pi 注册、受管 Pi 开发环境以及匹配的
+Python runtime。它不会删除目标 workspace 中的 `.gp/` 记录，也不会回退已经提升的修改。
+使用 `./uninstall.sh --dry-run` 可以先检查卸载计划。
 
 在 Pi 中启动目标：
 

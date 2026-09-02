@@ -424,11 +424,15 @@ def _preflight_codex(codex: str) -> tuple[bool, bool]:
 
 def _pi_agent_dir() -> Path:
     configured = os.environ.get("PI_CODING_AGENT_DIR")
-    return (
-        Path(configured).expanduser().resolve()
+    path = (
+        Path(configured).expanduser()
         if configured
         else Path.home() / ".pi" / "agent"
     )
+    # Pi stores local package sources relative to the configured settings path.
+    # Preserve that lexical anchor (for example /tmp on macOS) so
+    # _local_source_path can normalize the relative source the same way Pi does.
+    return Path(os.path.abspath(path))
 
 
 def _package_source(entry: Any) -> str | None:
@@ -444,7 +448,10 @@ def _local_source_path(source: str, settings_path: Path) -> Path | None:
         return None
     candidate = Path(source).expanduser()
     if not candidate.is_absolute():
-        candidate = settings_path.parent / candidate
+        # Normalize `..` against Pi's lexical settings path before resolving
+        # filesystem symlinks. On macOS, resolving /tmp to /private/tmp first
+        # can otherwise turn a valid relative source into /private/Users/....
+        candidate = Path(os.path.abspath(settings_path.parent / candidate))
     return candidate.resolve()
 
 
@@ -780,7 +787,15 @@ def _prepare_pi_dev(*, dev_dir: Path, pi_executable: str, dry_run: bool) -> None
     if not python.is_file():
         _run([sys.executable, "-m", "venv", str(venv)], dry_run=dry_run)
     _run(
-        [str(python), "-m", "pip", "install", "-e", f"{ROOT}[dev]"],
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--prefer-binary",
+            "-e",
+            f"{ROOT}[dev]",
+        ],
         dry_run=dry_run,
     )
 

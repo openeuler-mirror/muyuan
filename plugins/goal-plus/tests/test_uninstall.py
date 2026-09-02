@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -32,6 +35,75 @@ def test_uninstall_entrypoint_is_executable() -> None:
 
     assert entrypoint.is_file()
     assert entrypoint.stat().st_mode & 0o111
+
+
+def _isolated_entrypoint_env(bin_dir: Path) -> dict[str, str]:
+    dirname = shutil.which("dirname")
+    assert dirname is not None
+    (bin_dir / "dirname").symlink_to(dirname)
+    env = os.environ.copy()
+    env.pop("PYTHON", None)
+    env["PATH"] = str(bin_dir)
+    return env
+
+
+def test_uninstall_entrypoint_accepts_python_shebang(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    command = bin_dir / "goal-plus"
+    command.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    command.chmod(0o755)
+
+    completed = subprocess.run(
+        ["/bin/bash", str(ROOT / "uninstall.sh"), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_isolated_entrypoint_env(bin_dir),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Uninstall Goal Plus components" in completed.stdout
+
+
+def test_uninstall_entrypoint_uses_sibling_python_for_shell_wrapper(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    command = bin_dir / "goal-plus"
+    command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    command.chmod(0o755)
+    (bin_dir / "python3").symlink_to(sys.executable)
+
+    completed = subprocess.run(
+        ["/bin/bash", str(ROOT / "uninstall.sh"), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_isolated_entrypoint_env(bin_dir),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Uninstall Goal Plus components" in completed.stdout
+
+
+def test_uninstall_entrypoint_rejects_non_python_override(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    env = _isolated_entrypoint_env(bin_dir)
+    env["PYTHON"] = "/bin/sh"
+
+    completed = subprocess.run(
+        ["/bin/bash", str(ROOT / "uninstall.sh"), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 1
+    assert "PYTHON is not a working Python 3.10+ interpreter" in completed.stderr
 
 
 def test_codex_plan_removes_only_current_checkout(
