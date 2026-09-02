@@ -23,14 +23,13 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | --- | --- |
 | Codex only | `./install.sh --codex` |
 | Pi only | `./install.sh --pi` |
-| Codex and Pi | `./install.sh --codex --pi` |
 | Pi development | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | Show Pi development environments | `./install.sh --env-show` |
-| Check only | `./install.sh --codex --pi --dry-run` |
 
 Normal installation uses the active `python3`; its scripts directory must be
 on `PATH`. `--pi` and `--pi-dev` are mutually exclusive. Keep the checkout at
-the same path while a host is installed.
+the same path while a host is installed. Add `--dry-run` to an installation
+command to inspect its plan without making changes.
 
 On first Codex use, start a new thread, review and trust Goal Plus in `/hooks`,
 then start one more fresh thread. Pi development starts with `pi-goal-plus` and
@@ -38,14 +37,21 @@ does not modify Pi authentication or global configuration.
 
 ## Uninstallation
 
-```bash
-./uninstall.sh
-```
+| Uninstall | Command |
+| --- | --- |
+| Everything owned by this checkout | `./uninstall.sh` |
+| Codex registration | `./uninstall.sh --codex` |
+| Pi registration | `./uninstall.sh --pi` |
+| Pi development environment | `./uninstall.sh --pi-dev` |
+| Normal Python runtime | `./uninstall.sh --runtime` |
+| Inspect the full plan | `./uninstall.sh --dry-run` |
 
-The uninstaller removes Codex and Pi registrations owned by this checkout, its
-managed Pi development environment, and the matching Python runtime. It does
-not delete target workspace `.gp/` records or revert promoted changes. Use
-`./uninstall.sh --dry-run` to inspect the plan first.
+With a selector, the uninstaller removes only that component. Normal host
+installations use the shared Python runtime, so removing one host preserves
+the runtime. Runtime removal fails closed while an unselected registration
+owned by this checkout still needs it. Pi development uses its own managed
+environment. Uninstallation never deletes target workspace `.gp/` records or
+reverts promoted changes.
 
 Start a goal in Pi:
 

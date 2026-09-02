@@ -21,26 +21,31 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | --- | --- |
 | 仅 Codex | `./install.sh --codex` |
 | 仅 Pi | `./install.sh --pi` |
-| Codex 和 Pi | `./install.sh --codex --pi` |
 | Pi 开发态 | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | 查看 Pi 开发环境及空间占用 | `./install.sh --env-show` |
-| 只检查 | `./install.sh --codex --pi --dry-run` |
 
 正常安装使用当前 `python3`，它的 scripts 目录必须位于 `PATH`。`--pi` 与 `--pi-dev`
-互斥；任一宿主仍在使用 Goal Plus 时，都要保留 checkout 的原路径。
+互斥；任一宿主仍在使用 Goal Plus 时，都要保留 checkout 的原路径。给安装命令追加
+`--dry-run` 可以只检查计划而不执行修改。
 
 Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus，然后再新建一个
 线程。Pi 开发态通过 `pi-goal-plus` 启动，不修改 Pi 认证或全局配置。
 
 ## 卸载
 
-```bash
-./uninstall.sh
-```
+| 卸载内容 | 命令 |
+| --- | --- |
+| 当前 checkout 拥有的全部组件 | `./uninstall.sh` |
+| Codex 注册 | `./uninstall.sh --codex` |
+| Pi 注册 | `./uninstall.sh --pi` |
+| Pi 开发环境 | `./uninstall.sh --pi-dev` |
+| 正常 Python runtime | `./uninstall.sh --runtime` |
+| 检查完整卸载计划 | `./uninstall.sh --dry-run` |
 
-卸载器只移除当前 checkout 拥有的 Codex 和 Pi 注册、受管 Pi 开发环境以及匹配的
-Python runtime。它不会删除目标 workspace 中的 `.gp/` 记录，也不会回退已经提升的修改。
-使用 `./uninstall.sh --dry-run` 可以先检查卸载计划。
+指定选择器时，卸载器只移除对应组件。正常宿主安装使用共享的 Python runtime，因此只
+卸载一个宿主时会保留 runtime；如果当前 checkout 仍有未选择的宿主注册依赖它，runtime
+卸载会拒绝执行。Pi 开发态使用独立的受管环境。卸载始终不会删除目标 workspace 中的
+`.gp/` 记录，也不会回退已经提升的修改。
 
 在 Pi 中启动目标：
 

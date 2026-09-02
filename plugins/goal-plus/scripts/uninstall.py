@@ -26,6 +26,18 @@ import install as install_support  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "goal-plus"
+COMPONENT_CODEX = "codex"
+COMPONENT_PI = "pi"
+COMPONENT_PI_DEV = "pi-dev"
+COMPONENT_RUNTIME = "runtime"
+ALL_COMPONENTS = frozenset(
+    {
+        COMPONENT_CODEX,
+        COMPONENT_PI,
+        COMPONENT_PI_DEV,
+        COMPONENT_RUNTIME,
+    }
+)
 
 
 class UninstallError(RuntimeError):
@@ -111,7 +123,9 @@ def _codex_plan(codex: str | None) -> tuple[bool, bool, list[str]]:
     return remove_plugin, remove_marketplace, notes
 
 
-def _pi_sources(pi: str | None) -> tuple[tuple[str, ...], list[str]]:
+def _pi_sources(
+    pi: str | None, *, require_executable: bool = True
+) -> tuple[tuple[str, ...], list[str]]:
     root = ROOT.resolve()
     sources: list[str] = []
     notes: list[str] = []
@@ -126,7 +140,7 @@ def _pi_sources(pi: str | None) -> tuple[tuple[str, ...], list[str]]:
                 f"Preserved Pi registration from another source: {entry['source']}"
             )
     unique_sources = tuple(dict.fromkeys(sources))
-    if unique_sources and pi is None:
+    if unique_sources and pi is None and require_executable:
         raise UninstallError(
             "Pi registration points to this checkout, but the pi executable is not "
             "on PATH"
@@ -200,19 +214,66 @@ def _runtime_plan() -> tuple[bool, list[str]]:
     return True, []
 
 
-def _build_plan(dev_dir: Path) -> UninstallPlan:
-    codex = shutil.which("codex")
-    pi = shutil.which("pi")
-    remove_plugin, remove_marketplace, codex_notes = _codex_plan(codex)
-    pi_sources, pi_notes = _pi_sources(pi)
-    remove_dev_dir, remove_registry, dev_notes = _pi_dev_plan(dev_dir)
-    remove_runtime, runtime_notes = _runtime_plan()
+def _build_plan(
+    dev_dir: Path, *, components: frozenset[str] | None = None
+) -> UninstallPlan:
+    selected = ALL_COMPONENTS if components is None else components
+    if not selected or not selected.issubset(ALL_COMPONENTS):
+        raise UninstallError(f"invalid uninstall component selection: {sorted(selected)}")
+
+    remove_codex = COMPONENT_CODEX in selected
+    remove_pi = COMPONENT_PI in selected
+    remove_pi_dev = COMPONENT_PI_DEV in selected
+    remove_python = COMPONENT_RUNTIME in selected
+
+    inspect_codex = remove_codex or remove_python
+    inspect_pi = remove_pi or remove_python
+    codex = shutil.which("codex") if inspect_codex else None
+    pi = shutil.which("pi") if inspect_pi else None
+
+    owned_plugin = False
+    owned_marketplace = False
+    codex_notes: list[str] = []
+    if inspect_codex:
+        owned_plugin, owned_marketplace, codex_notes = _codex_plan(codex)
+
+    owned_pi_sources: tuple[str, ...] = ()
+    pi_notes: list[str] = []
+    if inspect_pi:
+        owned_pi_sources, pi_notes = _pi_sources(
+            pi,
+            require_executable=remove_pi,
+        )
+
+    remove_dev_dir: Path | None = None
+    remove_registry: Path | None = None
+    dev_notes: list[str] = []
+    if remove_pi_dev:
+        remove_dev_dir, remove_registry, dev_notes = _pi_dev_plan(dev_dir)
+
+    remove_runtime = False
+    runtime_notes: list[str] = []
+    if remove_python:
+        remove_runtime, runtime_notes = _runtime_plan()
+        remaining_hosts: list[str] = []
+        if remove_runtime and not remove_codex and (owned_plugin or owned_marketplace):
+            remaining_hosts.append("Codex")
+        if remove_runtime and not remove_pi and owned_pi_sources:
+            remaining_hosts.append("Pi")
+        if remaining_hosts:
+            rendered = " and ".join(remaining_hosts)
+            raise UninstallError(
+                "refusing to remove the Python runtime while this checkout's "
+                f"{rendered} registration remains; remove that host first or omit "
+                "--runtime"
+            )
+
     return UninstallPlan(
-        codex_executable=codex,
-        remove_codex_plugin=remove_plugin,
-        remove_codex_marketplace=remove_marketplace,
-        pi_executable=pi,
-        pi_sources=pi_sources,
+        codex_executable=codex if remove_codex else None,
+        remove_codex_plugin=remove_codex and owned_plugin,
+        remove_codex_marketplace=remove_codex and owned_marketplace,
+        pi_executable=pi if remove_pi else None,
+        pi_sources=owned_pi_sources if remove_pi else (),
         pi_dev_dir=remove_dev_dir,
         pi_dev_registry_path=remove_registry,
         remove_runtime=remove_runtime,
@@ -293,7 +354,30 @@ def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Uninstall Goal Plus components owned by this checkout."
+        description=(
+            "Uninstall Goal Plus components owned by this checkout. With no "
+            "component selector, remove all owned components."
+        )
+    )
+    parser.add_argument(
+        "--codex",
+        action="store_true",
+        help="Remove this checkout's Codex registration.",
+    )
+    parser.add_argument(
+        "--pi",
+        action="store_true",
+        help="Remove this checkout's normal Pi registration.",
+    )
+    parser.add_argument(
+        "--pi-dev",
+        action="store_true",
+        help="Remove this checkout's managed Pi development environment.",
+    )
+    parser.add_argument(
+        "--runtime",
+        action="store_true",
+        help="Remove the matching normal Python runtime.",
     )
     parser.add_argument(
         "--pi-dev-dir",
@@ -312,10 +396,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _selected_components(args: argparse.Namespace) -> frozenset[str]:
+    selected = frozenset(
+        component
+        for component, enabled in (
+            (COMPONENT_CODEX, args.codex),
+            (COMPONENT_PI, args.pi),
+            (COMPONENT_PI_DEV, args.pi_dev),
+            (COMPONENT_RUNTIME, args.runtime),
+        )
+        if enabled
+    )
+    return selected or ALL_COMPONENTS
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        plan = _build_plan(args.pi_dev_dir)
+        plan = _build_plan(
+            args.pi_dev_dir,
+            components=_selected_components(args),
+        )
         _print_plan(plan, dry_run=args.dry_run)
         if plan.has_changes:
             _execute(plan, dry_run=args.dry_run)

@@ -106,6 +106,20 @@ def test_uninstall_entrypoint_rejects_non_python_override(tmp_path: Path) -> Non
     assert "PYTHON is not a working Python 3.10+ interpreter" in completed.stderr
 
 
+def test_component_selection_defaults_to_all(uninstaller: ModuleType) -> None:
+    args = uninstaller.build_parser().parse_args([])
+
+    assert uninstaller._selected_components(args) == uninstaller.ALL_COMPONENTS
+
+
+def test_component_selection_keeps_only_explicit_flags(
+    uninstaller: ModuleType,
+) -> None:
+    args = uninstaller.build_parser().parse_args(["--codex", "--pi"])
+
+    assert uninstaller._selected_components(args) == frozenset({"codex", "pi"})
+
+
 def test_codex_plan_removes_only_current_checkout(
     uninstaller: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -263,6 +277,143 @@ def test_runtime_plan_preserves_another_source(
 
     assert remove_runtime is False
     assert str(other_source) in notes[0]
+
+
+def test_build_plan_codex_only_does_not_inspect_other_components(
+    uninstaller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(uninstaller.shutil, "which", lambda _name: "/opt/bin/codex")
+    monkeypatch.setattr(
+        uninstaller,
+        "_codex_plan",
+        lambda _codex: (True, True, []),
+    )
+    monkeypatch.setattr(
+        uninstaller,
+        "_pi_sources",
+        lambda *_args, **_kwargs: pytest.fail("Pi should not be inspected"),
+    )
+    monkeypatch.setattr(
+        uninstaller,
+        "_pi_dev_plan",
+        lambda _dev_dir: pytest.fail("Pi development should not be inspected"),
+    )
+    monkeypatch.setattr(
+        uninstaller,
+        "_runtime_plan",
+        lambda: pytest.fail("runtime should not be inspected"),
+    )
+
+    plan = uninstaller._build_plan(
+        tmp_path / "dev",
+        components=frozenset({"codex"}),
+    )
+
+    assert plan.remove_codex_plugin is True
+    assert plan.remove_codex_marketplace is True
+    assert plan.pi_sources == ()
+    assert plan.pi_dev_dir is None
+    assert plan.remove_runtime is False
+
+
+def test_build_plan_pi_dev_only_does_not_inspect_normal_hosts(
+    uninstaller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dev_dir = tmp_path / "dev"
+    registry = tmp_path / "registry.json"
+    monkeypatch.setattr(
+        uninstaller,
+        "_pi_dev_plan",
+        lambda _dev_dir: (dev_dir, registry, []),
+    )
+    monkeypatch.setattr(
+        uninstaller,
+        "_codex_plan",
+        lambda _codex: pytest.fail("Codex should not be inspected"),
+    )
+    monkeypatch.setattr(
+        uninstaller,
+        "_pi_sources",
+        lambda *_args, **_kwargs: pytest.fail("normal Pi should not be inspected"),
+    )
+    monkeypatch.setattr(
+        uninstaller,
+        "_runtime_plan",
+        lambda: pytest.fail("runtime should not be inspected"),
+    )
+
+    plan = uninstaller._build_plan(
+        dev_dir,
+        components=frozenset({"pi-dev"}),
+    )
+
+    assert plan.pi_dev_dir == dev_dir
+    assert plan.pi_dev_registry_path == registry
+    assert plan.remove_runtime is False
+
+
+@pytest.mark.parametrize(
+    ("owned_codex", "owned_pi", "expected_host"),
+    [
+        (True, False, "Codex"),
+        (False, True, "Pi"),
+        (True, True, "Codex and Pi"),
+    ],
+)
+def test_runtime_removal_refuses_unselected_host_registrations(
+    uninstaller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    owned_codex: bool,
+    owned_pi: bool,
+    expected_host: str,
+) -> None:
+    monkeypatch.setattr(uninstaller.shutil, "which", lambda name: f"/opt/bin/{name}")
+    monkeypatch.setattr(
+        uninstaller,
+        "_codex_plan",
+        lambda _codex: (owned_codex, False, []),
+    )
+    monkeypatch.setattr(
+        uninstaller,
+        "_pi_sources",
+        lambda *_args, **_kwargs: ((str(ROOT),), []) if owned_pi else ((), []),
+    )
+    monkeypatch.setattr(uninstaller, "_runtime_plan", lambda: (True, []))
+
+    with pytest.raises(uninstaller.UninstallError, match=expected_host):
+        uninstaller._build_plan(
+            tmp_path / "dev",
+            components=frozenset({"runtime"}),
+        )
+
+
+def test_runtime_removal_allows_selected_host_registration(
+    uninstaller: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(uninstaller.shutil, "which", lambda name: f"/opt/bin/{name}")
+    monkeypatch.setattr(
+        uninstaller,
+        "_codex_plan",
+        lambda _codex: (True, True, []),
+    )
+    monkeypatch.setattr(uninstaller, "_pi_sources", lambda *_args, **_kwargs: ((), []))
+    monkeypatch.setattr(uninstaller, "_runtime_plan", lambda: (True, []))
+
+    plan = uninstaller._build_plan(
+        tmp_path / "dev",
+        components=frozenset({"codex", "runtime"}),
+    )
+
+    assert plan.remove_codex_plugin is True
+    assert plan.remove_codex_marketplace is True
+    assert plan.remove_runtime is True
 
 
 def test_execute_removes_hosts_before_runtime(
