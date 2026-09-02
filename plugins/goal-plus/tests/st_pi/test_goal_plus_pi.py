@@ -237,8 +237,7 @@ def test_goal_plus_exact_command_can_start_and_complete_goal_plus(
             f"{probe}，证明其完整 trimmed content 恰好是 exact-pi-host-command。"
             "不要修改任何文件；使用 Goal Mode，不要进入 Search，不要启动 subagent。"
             "原生 Pi host entrypoint 已经创建记录；不要调用 goal_plus_create 或 "
-            "goal_plus_update_goal。先记录高置信 Goal Mode triage，再创建一个 required、"
-            "route=main 的工作项，依次记录 dispatch、result、accepted。完成原始目标审计后，"
+            "goal_plus_update_goal。先记录高置信 Goal Mode triage。完成原始目标审计后，"
             "使用具体文件证据调用 goal_plus_set_status(status=complete)。"
         ),
     ]
@@ -264,9 +263,7 @@ def test_goal_plus_exact_command_can_start_and_complete_goal_plus(
     assert invocation["command"] == "/goal-plus"
     assert invocation["action"] == "start"
     assert record["triage"]["recommended_phase"] == "goal"
-    assert len(record["work_items"]) == 1
-    assert record["work_items"][0]["route"] == "main"
-    assert record["work_items"][0]["status"] == "accepted"
+    assert record["work_items"] == []
     _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
 
 

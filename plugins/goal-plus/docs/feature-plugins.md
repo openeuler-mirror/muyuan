@@ -13,13 +13,13 @@ goal_plus_monitor_snapshot(feature_plugins=[])
 
 ## Orchestration View 内容
 
-内置 `orchestration` plugin 把普通 `route="subagent"` work 投影为一套 host-neutral 交互结构：
+内置 `orchestration` plugin 把实际发生的普通 subagent 派发投影为一套 host-neutral 交互结构：
 
 ```text
 assignment -> worker_update(bound) -> result -> decision
 ```
 
-每个 work item 包含 task packet（`title`、`objective`、`scope`、`depends_on` 和 `acceptance`）、不透明的 worker 标识、当前状态和带方向的 event 摘要。attempt 部分还包含 generation、`launching`/`bound` 状态、launch deadline 和 stale-result 数量。旧 generation 仍以 `stale_result` 显示，但不会替换当前 worker。
+每条 dispatch 包含 assignment summary、不透明的 worker 标识、当前状态和带方向的 event 摘要。attempt 部分还包含 generation、`launching`/`bound` 状态、launch deadline 和 stale-result 数量。旧 generation 仍以 `stale_result` 显示，但不会替换当前 worker。
 
 投影不包含 transcript 内容或路径，只返回 `transcript_available` 布尔值。它展示的是已持久化的协调事实，不推断模型意图，也不参与 work item 状态转换。
 
@@ -39,7 +39,7 @@ assignment -> worker_update(bound) -> result -> decision
 
 只会暴露符合 identifier 形式的 operation 名；类似 prompt 或格式异常的值会被忽略。`direction` 和 `semantic_event` 是受限的可选 override，省略时由持久 work-event kind 推导。
 
-Codex 通常记录 `spawn_agent`、`wait_agent` 和 `followup_task`；Pi wrapper 记录 `pi_goal_plus_run_work_item` 和 `goal-plus-pi-worker`。两者的原生命令和等待方式不同，但 task packet、result 和 main-owned acceptance 语义可以直接比较。
+Codex 通常记录 `spawn_agent`、`wait_agent` 和 `followup_task`；Pi wrapper 记录 `pi_goal_plus_run_work_item` 和 `goal-plus-pi-worker`。两者的原生命令和等待方式不同，但 assignment、result 和 main-owned decision 语义可以直接比较。
 
 仓库提供一条确定性的协议对比：
 

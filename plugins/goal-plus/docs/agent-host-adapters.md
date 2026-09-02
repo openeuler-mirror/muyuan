@@ -7,7 +7,7 @@ Codex 或 Pi host 负责实际启动、等待、续跑和停止 worker。Host Ad
 系统整体边界见[共享平面](shared-plane.md)。本文只说明 Host Adapter 的统一契约、Codex/Pi 差异和恢复要求。
 
 普通 Goal Mode 不使用这套 Search Adapter，而是遵循 [`goal-plus-ultra-v1`](ultra.md) 的
-work DAG 合同。Ultra 可以由 Pi、Codex 或外部 harness 实现，不受 `AgentHostKind`
+轻量 dispatch 合同。Ultra 可以由 Pi、Codex 或外部 harness 实现，不受 `AgentHostKind`
 限制；只有进入 verifier-guided Search Mode 后，才使用本文的 candidate pool 契约。
 
 ## 统一运行模型

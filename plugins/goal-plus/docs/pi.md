@@ -155,18 +155,22 @@ Search worker 是由 host-local durable pool 监督的 Pi RPC 进程。每个 wr
 
 ## 普通 Goal Mode
 
-普通任务使用 [`goal-plus-ultra-v1`](ultra.md) work DAG。Pi binding 保留 Main 在提交
+普通任务使用 [`goal-plus-ultra-v1`](ultra.md) 轻量 dispatch 记录，不预建 work DAG。Pi binding 保留 Main 在提交
 `/goal-plus` 时已经选择的 thinking 档位并记录实际 level，不会强制改档。复杂任务推荐 `xhigh`，
 但当前模型不支持 `xhigh` 或用户选择其他档位时仍正常运行。
 
-`route="subagent"` 的 work item 通过 `pi_goal_plus_run_work_item` 执行。该工具继承 Main 当前
-thinking，并启动隔离的 Pi RPC
-child，在进程启动后绑定 durable attempt，等待 child 完成，并用同一个 `attempt_id` 和 `generation`
-提交 result。已经 active 的 item 会被拒绝，不会悄悄创建 replacement session。多个相互独立的
-tool call 可以并发执行。
+实际派发普通 subagent 时，Main 把完整任务直接传给 `pi_goal_plus_run_work_item`。该工具继承
+Main 当前 thinking，懒创建 attempt，启动隔离的 Pi RPC child，仅在 RPC `get_state` 握手和
+请求的模型/thinking 设置成功后绑定 session，
+等待 child 完成，并用同一个 `attempt_id` 和 `generation` 提交 result。多个相互独立的 tool call
+可以并发执行；复用已返回的 id 会记录 rework 并恢复原 session。
 
 Pi wrapper 只拥有 native launch/wait。main 仍负责 acceptance、rework、integration、Search routing
-和 completion。完整 work-item state machine 见 [Ultra Orchestration](ultra.md)。
+和 completion。完整轻量记录协议见 [Ultra Orchestration](ultra.md)。
+
+Search promotion 后，Pi 用 `goal_plus_record_search_result` 登记“搜索完成并验收”，再在原始工作区
+检查实际应用的 diff 和整体测试。最终状态 evidence 另行登记“补丁应用完成并验收”。这两项只是
+收尾证据边界，不创建 DAG 或额外运行时阶段。
 
 ## Search Pool 流程
 

@@ -20,14 +20,14 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
   --pretty
 ```
 
-只知道 `run_id` 时也可以直接查询该 run。需要关闭可选投影时传入 `feature_plugins=[]`；默认的 `orchestration` plugin 会显示普通 subagent work 的 task packet、不透明 worker handle、host 原生操作、attempt generation、`launching`/`bound` 状态、stale-result 数量，以及 assignment/result/decision 流程。它不包含 transcript 路径或内容。
+只知道 `run_id` 时也可以直接查询该 run。需要关闭可选投影时传入 `feature_plugins=[]`；默认的 `orchestration` plugin 会显示普通 subagent dispatch 的 assignment summary、不透明 worker handle、host 原生操作、attempt generation、`launching`/`bound` 状态、stale-result 数量，以及 assignment/result/decision 流程。它不包含 transcript 路径或内容。
 
-### Goal 与 Work DAG
+### Goal 与 Subagent 派发
 
 首先检查：
 
 - `goal_revision`、`goal_revisions_total`、`phase` 和 `next_action`；
-- `work_items` 中 required item 是否已 `accepted`；
+- `feature_plugins.orchestration.dispatches` 中返回的结果是否已有 Main 的 `accepted`、`rework` 或 `cancelled` 决定；
 - subagent attempt 的 `attempt_id`、`generation`、launch deadline 和 bound handle；
 - `feature_plugins.orchestration` 中是否存在迟到的 `stale_result`，以及 main 是否已经记录 acceptance/rework decision；
 - `final_check_policy` 和 `latest_final_check` 是否对应当前 revision。
@@ -77,7 +77,7 @@ Goal Plus 有两层状态：
 
 | Owner | 负责内容 |
 |---|---|
-| runtime | goal/work DAG、frozen spec、candidate workspace、iteration、verifier score、selection、report 和 promotion patch |
+| runtime | goal/subagent dispatch 记录、frozen spec、candidate workspace、iteration、verifier score、selection、report 和 promotion patch |
 | Codex/Pi/其他 host | worker launch、wait、message、continuation、deadline、interrupt 和原生日志 |
 
 MCP runtime 不维护 worker process lifecycle、host-sync state 或 cancellation。内部 Evidence annotator 是例外：candidate 下保存 annotation task 和有界 retry，run 下保存 single-flight drainer state。
@@ -249,7 +249,7 @@ worker 应立即停止并报告。main 修复 source-owned verifier，使临时�
 
 | 工具 | 内容 |
 |---|---|
-| `goal_plus_monitor_snapshot(...)` | Goal/work DAG、Search、session、host 和 feature plugin 的组合视图 |
+| `goal_plus_monitor_snapshot(...)` | Goal/subagent dispatch、Search、session、host 和 feature plugin 的组合视图 |
 | `search_status(run_id)` | run state、candidate count 和 best score |
 | `search_list_history(run_id, top_n, sort_by)` | candidate ranking 和研究汇总 |
 | `search_list_iterations(run_id, candidate_id)` | 单个 candidate 可能很大的完整 verifier history |

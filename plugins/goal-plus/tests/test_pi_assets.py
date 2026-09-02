@@ -583,6 +583,8 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "activateGoal(pi, status, startEntryCount, canPersistGoalState(ctx.mode))" in text
     assert "await ctx.waitForIdle()" not in text
     assert "在 goal_plus_record_triage 前不要读取或审计目标文件" in text
+    assert "直接调用 pi_goal_plus_run_work_item 并传入完整 task" in text
+    assert "不要调用 Codex spawn_agent" in text
     assert "workspaceGuard" in text
     assert "resource_lock: Type.Optional(Type.String({ minLength: 1 }))" in text
     assert "device_pools: Type.Optional(Type.Array(DevicePoolSpec))" in text
@@ -748,6 +750,8 @@ def test_pi_extension_has_precise_tool_schemas_and_error_classification() -> Non
     ].split("const ModelSpec = Type.Object", 1)[0]
     assert "pi_provider: Type.Optional(NullableString)" in annotator_schema
     assert "goal_plus_monitor_snapshot: Type.Object" in text
+    assert "goal_plus_upsert_work_items" not in text
+    assert "task: Type.String({ minLength: 1, maxLength: 4000 })" in text
     assert 'Type.Literal("bind")' in text
     assert "goal_plus_work_item" in text
     assert "sessionId = String(workItem.agent_id)" in text
@@ -893,3 +897,18 @@ def test_pi_goal_plus_reassesses_spec_after_real_result() -> None:
     assert "不是新的运行时阶段" in prompt
     assert "不得调用 `goal_plus_create`" in prompt
     assert "不得调用 `goal_plus_update_goal`" in prompt
+
+
+def test_pi_goal_plus_records_search_and_applied_patch_acceptance_in_order() -> None:
+    skill = (ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    prompt = (ROOT / ".pi" / "prompts" / "goal-plus.md").read_text(
+        encoding="utf-8"
+    )
+
+    search_acceptance = skill.index("搜索完成并验收")
+    patch_acceptance = skill.index("补丁应用完成并验收")
+    completion = skill.index("`goal_plus_set_status`", patch_acceptance)
+    assert search_acceptance < patch_acceptance < completion
+    assert "不创建 DAG 或额外运行时阶段" in prompt

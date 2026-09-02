@@ -11,15 +11,15 @@ Search 流程中的位置、调用方和所有权。
 1. Codex `$goal-plus` 或 Pi `/goal-plus` 的 host adapter 在模型轮次前把 typed command
    config 与自然语言目标分离，保存两者并记录 host-command invocation Evidence；
 2. `goal_plus_record_triage` 确定直接处理，还是先做 verifier/spec discovery；
-3. `goal_plus_upsert_work_items` 建立当前 revision 的
-   work DAG，main 按 route 自行处理、派发 subagent 或进入 Search；
-4. Search route 先 `search_freeze_spec`，再 `search_create` 并通过 `goal_plus_link_search_run`
+3. main 直接执行原始目标；实际派发普通 subagent 时，由 `goal_plus_record_work_event`
+   按 dispatch/bind/result 记录轻量 attempt；
+4. 进入 Search 时先 `search_freeze_spec`，再 `search_create` 并通过 `goal_plus_link_search_run`
    关联；
 5. `search_plan_next` 和 `search_start_batch` 只创建一次初始 candidate，host 启动固定 worker pool；
 6. worker 循环读取 context/Evidence、修改 workspace、调用 `search_run_verifier`；
 7. 达到全局停止条件后，host 先停止所有 worker，再执行 `search_select` 和
    `search_promote`；任务授权写回 source 时再执行 `search_apply_promotion`；
-8. main 接受各 work item，完成
+8. main 检查普通 subagent 和 Search 结果，完成
    `goal_plus_record_search_result`、final check 和终态审计，最后为每个已记录 run 调用一次 `search_report`。
 
 Search runtime 不启动或监督 worker。Codex/Pi 的启动、wait-any、continuation 和 interrupt 由
@@ -34,8 +34,7 @@ host 负责，详见
 | `goal_plus_status`               | 读取 goal phase、revision、关联 task 和 Evidence                             |
 | `goal_plus_update_goal`          | deny-only 兼容 tombstone；始终报错，不修改记录                               |
 | `goal_plus_record_triage`        | 选择普通 goal 工作或 verifier/spec discovery                                 |
-| `goal_plus_upsert_work_items`    | 创建或更新当前 revision 的 host-neutral work DAG                             |
-| `goal_plus_record_work_event`    | 管理按 generation 隔离的 subagent attempt，并记录结果、决策或 Search routing |
+| `goal_plus_record_work_event`    | 按实际派发懒创建 subagent 记录，并管理 generation、结果和 Main 决策          |
 | `goal_plus_save_spec_draft`      | 持久化带类型的 candidate Search spec                                         |
 | `goal_plus_list_models`          | 列出 Codex 或 Pi host 当前可用模型                                           |
 | `goal_plus_link_search_run`      | 向 goal 追加 frozen Search run                                               |
@@ -93,16 +92,17 @@ Host-only edit 仍要求 `expected_revision`，防止 stale adapter 覆盖新目
 `run_id` 为键，因此一个 goal 可以保留多个 Search task；`search_tasks` 是仅追加历史，`linked_search`
 只是当前 task 的兼容视图。
 
-### Work DAG 与 Attempt
+### Subagent Attempt
 
-每条 Goal Plus record 默认遵循 [`goal-plus-ultra-v1`](ultra.md)。`route="main"`
-由 main 直接完成，`route="subagent"` 走 host 原生派发，`route="search"` 进入后文的 verifier-guided
-Search。work event 是持久协调事实，但启动、等待、通信、中断和原生日志仍由 host 所有。
+每条 Goal Plus record 默认遵循 [`goal-plus-ultra-v1`](ultra.md)。main 自行拆解任务；只有实际
+派发普通 subagent 时才懒创建记录。Search 使用后文独立的 verifier-guided 状态。work event 是
+持久协调事实，但启动、等待、通信、中断和原生日志仍由 host 所有。
 
-对 subagent work item，`dispatch` 只生成 `attempt_id`、`generation` 和 launch
+`dispatch` 只生成 `attempt_id`、`generation` 和 launch
 deadline。host 启动成功后记录 `bind`，并在 `message`、`result`、`failed` 中携带同一 attempt
 identity。过期 generation 的迟到结果保留为 `stale_result` Evidence，不能修改当前 item。main 检查
-`result_ready` 后记录 `accepted` 或 `rework`；required item 未全部接受时，completion gate 不会放行。
+`result_ready` 后记录 `accepted`、`rework` 或 `cancelled`。只有仍处于 `launching` 或 `active`
+的派发会阻止 final check 与 completion。
 
 ## 创建 Search Run
 
@@ -369,7 +369,7 @@ transcript 后，`statistics.orchestrator` 记录 Goal Plus 创建以来不含�
 delta，`statistics.total_usage` 与 worker usage 合并；每个 Search task 仍保留自己的 statistics。
 
 `goal_plus_monitor_snapshot.feature_plugins` 提供可选的只读派生视图。内置 `orchestration`
-plugin 统一展示普通 main/subagent 的 task packet、attempt
+plugin 统一展示普通 main/subagent 的 assignment summary、attempt
 generation、assignment/result/decision，同时保留 Codex/Pi 的原生 operation 名。传入
 `feature_plugins=["orchestration"]` 可显式选择，传入空数组可关闭全部投影。详见
 [Feature Plugin](feature-plugins.md)。

@@ -161,17 +161,17 @@ Codex 与 runtime 的职责边界见 [Agent Host Adapters](agent-host-adapters.m
 
 ## 普通 Goal Mode
 
-普通任务使用 [`goal-plus-ultra-v1`](ultra.md) work DAG，而不是 Search candidate pool。runtime 记录
-work item、依赖、attempt 和 Evidence-backed transition；Codex 通过 collaboration tool 执行
-`spawn_agent`、`wait_agent`、`followup_task` 等原生操作，main 负责 acceptance、rework、integration
-和 completion。
+普通任务使用 [`goal-plus-ultra-v1`](ultra.md) 轻量 dispatch 记录，而不是 Search candidate pool。
+Main 自行拆解任务；只在实际调用 collaboration tool 时记录 attempt。Codex 通过
+`spawn_agent`、`wait_agent`、`followup_task` 等原生操作执行，main 负责 acceptance、rework、
+integration 和 completion。
 
 Ultra 的逻辑要求是 main reasoning effort `max`。Codex host 应在第一个 main turn 启动前选择 `max`，
 并记录 `native_reasoning_effort=max`；project hook 只能记录和 gate，不能修改已经开始的首轮
 reasoning effort。
 
-只有 work item 具有 numeric metric、deterministic verifier、isolated edit surface、多个有价值
-hypothesis 和足够 budget 时，main 才把它 route 到 Search Mode。普通 subagent work 与后文的 Search
+只有任务具有 numeric metric、deterministic verifier、isolated edit surface、多个有价值
+hypothesis 和足够 budget 时，main 才进入 Search Mode。普通 subagent 记录与后文的 Search
 candidate lifecycle 相互独立。
 
 ## Search 并行循环
