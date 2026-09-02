@@ -425,8 +425,9 @@ def test_create_mcp_constructs_runtime_with_configured_root(
             created_goal_runtimes.append(root_dir)
 
     class FakeTools:
-        def __init__(self, runtime):
+        def __init__(self, runtime, goal_runtime):
             self.runtime = runtime
+            self.goal_runtime = goal_runtime
 
         def search_freeze_spec(self, *args, **kwargs):
             return {}

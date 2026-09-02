@@ -27,7 +27,9 @@ from goal_plus.models import (
     VerifierRole,
     WorkspaceCapacityEstimate,
 )
+from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import GoalPlusTools, SearchTools
+from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
 
 def spec_dict() -> dict:
@@ -100,10 +102,33 @@ def goal_plus_record() -> GoalPlusRecord:
     )
 
 
+def test_search_bootstrap_requires_active_host_verified_goal(tmp_path: Path) -> None:
+    root = tmp_path / ".gp"
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(root)
+    tools = SearchTools(runtime)
+    spec = spec_for(project, max_parallel=1)
+
+    with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
+        tools.search_freeze_spec(spec, [str(project / "evaluator.py")])
+    assert not (root / "specs").exists()
+
+    frozen_without_facade = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
+        tools.search_create(frozen_without_facade.frozen_spec_id)
+    assert not (root / "runs").exists()
+
+    start_host_verified_goal(root, project)
+
+    frozen = tools.search_freeze_spec(spec, [str(project / "evaluator.py")])
+    created = tools.search_create(frozen["frozen_spec_id"])
+    assert created["run_id"].startswith("run_")
+
+
 def test_search_freeze_spec_converts_input_and_serializes_output() -> None:
     runtime = Mock()
     runtime.freeze_spec.return_value = frozen_spec()
-    tools = SearchTools(runtime)
+    tools = SearchTools(runtime, Mock())
 
     result = tools.search_freeze_spec(spec_dict(), ["evaluator.py"])
 
@@ -129,7 +154,9 @@ def test_search_freeze_spec_lists_task_local_skills() -> None:
         task_skill_paths=[".agents/skills/review/SKILL.md"]
     )
 
-    result = SearchTools(runtime).search_freeze_spec(spec_dict(), ["evaluator.py"])
+    result = SearchTools(runtime, Mock()).search_freeze_spec(
+        spec_dict(), ["evaluator.py"]
+    )
 
     assert result["task_skill_notice"] == (
         "Git-tracked task-local Skills visible from source: "
@@ -309,7 +336,7 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         Path("/tmp/source/repository"),
         "task",
     )
-    tools = SearchTools(runtime)
+    tools = SearchTools(runtime, Mock())
 
     assert tools.search_create("spec_123") == {"run_id": "run_1"}
     invalidated = tools.search_invalidate_run(
@@ -556,7 +583,7 @@ def test_parent_and_promotion_verifiers_do_not_inject_global_evidence() -> None:
 def test_search_create_uses_models_frozen_in_the_spec() -> None:
     runtime = Mock()
     runtime.create_run.return_value = "run_1"
-    tools = SearchTools(runtime)
+    tools = SearchTools(runtime, Mock())
 
     assert tools.search_create("spec_123") == {"run_id": "run_1"}
     runtime.create_run.assert_called_once_with(

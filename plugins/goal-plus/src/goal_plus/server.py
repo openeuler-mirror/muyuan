@@ -27,7 +27,7 @@ def create_mcp(
 
     runtime = FileSearchRuntime(root_dir)
     goal_runtime = FileGoalPlusRuntime(root_dir)
-    tools = SearchTools(runtime)
+    tools = SearchTools(runtime, goal_runtime)
     goal_tools = GoalPlusTools(goal_runtime)
     mcp = FastMCP("goal-plus", version=__version__)
 
@@ -58,7 +58,6 @@ def create_mcp(
         共用同一可见变量。需要 worker 遵守的公开条件写入 `candidate_acceptance`；
         `constraints` 保持 runtime 私有。
         """
-        goal_runtime.require_host_verified_active_goal()
         return tools.search_freeze_spec(spec, verifier_artifact_paths)
 
     @mcp.tool()
@@ -89,7 +88,6 @@ def create_mcp(
         时才传入 `source_run_id`。新 run 会收到来源 frontier、
         限定范围的问题和特性账本的有界 snapshot。来源分数只是历史，必须在新契约下重新验证。
         """
-        goal_runtime.require_host_verified_active_goal()
         return tools.search_create(frozen_spec_id, source_run_id)
 
     @mcp.tool()

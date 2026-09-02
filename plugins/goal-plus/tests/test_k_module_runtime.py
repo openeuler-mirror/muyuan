@@ -8,6 +8,7 @@ import pytest
 from goal_plus.models import RunState
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import SearchTools
+from tests._runtime_helpers import start_host_verified_goal
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "k_module_problem"
@@ -39,8 +40,10 @@ def project_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def tools(tmp_path: Path) -> SearchTools:
-    return SearchTools(FileSearchRuntime(tmp_path / ".search"))
+def tools(tmp_path: Path, project_dir: Path) -> SearchTools:
+    root = tmp_path / ".search"
+    start_host_verified_goal(root, project_dir)
+    return SearchTools(FileSearchRuntime(root))
 
 
 def spec_for(project: Path) -> dict:

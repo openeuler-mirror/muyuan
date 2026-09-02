@@ -28,14 +28,24 @@ from goal_plus.workspaces import format_workspace_capacity_notice
 class SearchTools:
     """JSON-friendly tool layer shared by tests and the MCP server."""
 
-    def __init__(self, runtime: FileSearchRuntime) -> None:
+    def __init__(
+        self,
+        runtime: FileSearchRuntime,
+        goal_runtime: FileGoalPlusRuntime | None = None,
+    ) -> None:
         self.runtime = runtime
+        self.goal_runtime = goal_runtime
+
+    def _require_search_bootstrap(self) -> None:
+        goals = self.goal_runtime or FileGoalPlusRuntime(self.runtime.root_dir)
+        goals.require_host_verified_active_goal()
 
     def search_freeze_spec(
         self,
         spec: dict[str, Any] | SearchSpec,
         verifier_artifact_paths: list[str],
     ) -> dict[str, Any]:
+        self._require_search_bootstrap()
         parsed_spec = spec if isinstance(spec, SearchSpec) else SearchSpec.model_validate(spec)
         frozen = self.runtime.freeze_spec(
             parsed_spec,
@@ -60,6 +70,7 @@ class SearchTools:
         frozen_spec_id: str,
         source_run_id: str | None = None,
     ) -> dict[str, str]:
+        self._require_search_bootstrap()
         return {
             "run_id": self.runtime.create_run(
                 frozen_spec_id,
