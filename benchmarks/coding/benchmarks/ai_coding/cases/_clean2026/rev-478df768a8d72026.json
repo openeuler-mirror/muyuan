@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-478df768a8d72026",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "pylint检查报告代码不符合规范：文件读写操作未显式指定编码方式。期望所有文件操作显式使用UTF-8编码，但当前代码中未指定编码。",
+  "context": {
+    "files": [
+      {
+        "path": "compile_json.py",
+        "content": "# Copyright 2024 Huawei Technologies Co., Ltd\n#\n# Licensed under the Apache License, Version 2.0 (the \"License\");\n# you may not use this file except in compliance with the License.\n# You may obtain a copy of the License at\n#\n# htt/workspace/www.apache.org/licenses/LICENSE-2.0\n#\n# Unless required by applicable law or agreed to in writing, software\n# distributed under the License is distributed on an \"AS IS\" BASIS,\n# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n# See the License for the specific language governing permissions and\n# limitations under the License.\n# ============================================================================\n\n\"\"\"This Model use to process compile json to mapping json item.\"\"\"\nimport os\nimport sys\n\nkey = '\\\"file\\\":'\n\n\ndef extract_and_process_lines(root_path):\n    \"\"\"\n    Transpose compile json to mapping json\n    \"\"\"\n    for filename in os.listdir(root_path):\n        unique_directories = set()\n        if filename.startswith('Compile') and filename.endswith('.json'):\n            file_path = os.path.join(root_path, filename)\n            with open(file_path, 'r') as file:\n                for line in file:\n                    if key in line:\n                        parts = line.split('/')\n                        path_pre = '/'.join(parts[:-1])\n                        unique_directories.add(path_pre)\n\n        sorted_unique_lines = list(unique_directories)\n        sorted_unique_lines.sort()\n        output_file_path = os.path.join(root_path, 'processed_' + filename)\n        print(\"proce file name:\", output_file_path)\n\n        final_lines = []\n        for i, line in enumerate(sorted_unique_lines):\n            stripped_line = line.strip()\n            is_subset = False\n            for j, other_line in enumerate(sorted_unique_lines):\n                other_stripped_line = other_line.strip()\n                if i != j and stripped_line != other_stripped_line and other_stripped_line in stripped_line:\n                    is_subset = True\n                    break\n            if not is_subset:\n                if 'akg/' in stripped_line or 'third_party/' in stripped_line or 'build/' in stripped_line:\n                    continue\n                start_index = stripped_line.find('mindspore')\n                if start_index != -1:\n                    new_line = stripped_line[start_index + len('mindspore') + 1:]\n                    new_line = '\"' + new_line + '\",\\n'\n                    final_lines.append(new_line)\n\n        if not final_lines:\n            with open(output_file_path, 'w') as file:\n                file.writelines(final_lines)\n\n\nif __name__ == \"__main__\":\n    if len(sys.argv) != 2:\n        print(\"Usage: python script.py <directory_path>\")\n        sys.exit(1)\n\n    directory_path = sys.argv[1]\n\n    if not os.path.exists(directory_path):\n        print(f\"Error: The directory '{directory_path}' does not exist.\")\n        sys.exit(1)\n\n    if not os.path.isdir(directory_path):\n        print(f\"Error: '{directory_path}' is not a directory.\")\n        sys.exit(1)\n\n    extract_and_process_lines(directory_path)\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_compile_json.py",
+        "content": "import os\nimport tempfile\nfrom unittest.mock import patch\nimport compile_json\n\n\ndef test_read_open_specifies_utf8_encoding():\n    \"\"\"open() for reading Compile JSON files should specify encoding='utf-8'.\"\"\"\n    with tempfile.TemporaryDirectory() as tmpdir:\n        compile_file = os.path.join(tmpdir, 'Compile_test.json')\n        with open(compile_file, 'w', encoding='utf-8') as f:\n            f.write('{\"file\": \"/path/to/mindspore/sub/file.py\"}\\n')\n\n        calls = []\n        real_open = open\n\n        def tracking_open(*args, **kwargs):\n            calls.append({'args': args, 'kwargs': kwargs})\n            return real_open(*args, **kwargs)\n\n        with patch('builtins.open', tracking_open):\n            compile_json.extract_and_process_lines(tmpdir)\n\n        read_calls = [c for c in calls\n                      if (len(c['args']) > 1 and 'r' in str(c['args'][1]))\n                      or (len(c['args']) <= 1 and 'mode' not in c['kwargs'])]\n\n        assert len(read_calls) > 0, \"Should have at least one read open call\"\n        for c in read_calls:\n            assert c['kwargs'].get('encoding') == 'utf-8', \\\n                f\"Read open should specify encoding='utf-8', got kwargs: {c['kwargs']}\"\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-37a3efe8-4e3-63ac51be45278d20; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "compile_json.py",
+        "content": "# Copyright 2024 Huawei Technologies Co., Ltd\n#\n# Licensed under the Apache License, Version 2.0 (the \"License\");\n# you may not use this file except in compliance with the License.\n# You may obtain a copy of the License at\n#\n# htt/workspace/www.apache.org/licenses/LICENSE-2.0\n#\n# Unless required by applicable law or agreed to in writing, software\n# distributed under the License is distributed on an \"AS IS\" BASIS,\n# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n# See the License for the specific language governing permissions and\n# limitations under the License.\n# ============================================================================\n\n\"\"\"This Model use to process compile json to mapping json item.\"\"\"\nimport os\nimport sys\n\nkey = '\\\"file\\\":'\n\n\ndef extract_and_process_lines(root_path):\n    \"\"\"\n    Transpose compile json to mapping json\n    \"\"\"\n    for filename in os.listdir(root_path):\n        unique_directories = set()\n        if filename.startswith('Compile') and filename.endswith('.json'):\n            file_path = os.path.join(root_path, filename)\n            with open(file_path, 'r', encoding='utf-8') as file:\n                for line in file:\n                    if key in line:\n                        parts = line.split('/')\n                        path_pre = '/'.join(parts[:-1])\n                        unique_directories.add(path_pre)\n\n        sorted_unique_lines = list(unique_directories)\n        sorted_unique_lines.sort()\n        output_file_path = os.path.join(root_path, 'processed_' + filename)\n        print(\"proce file name:\", output_file_path)\n\n        final_lines = []\n        for i, line in enumerate(sorted_unique_lines):\n            stripped_line = line.strip()\n            is_subset = False\n            for j, other_line in enumerate(sorted_unique_lines):\n                other_stripped_line = other_line.strip()\n                if i != j and stripped_line != other_stripped_line and other_stripped_line in stripped_line:\n                    is_subset = True\n                    break\n            if not is_subset:\n                if 'akg/' in stripped_line or 'third_party/' in stripped_line or 'build/' in stripped_line:\n                    continue\n                start_index = stripped_line.find('mindspore')\n                if start_index != -1:\n                    new_line = stripped_line[start_index + len('mindspore') + 1:]\n                    new_line = '\"' + new_line + '\",\\n'\n                    final_lines.append(new_line)\n\n        if not final_lines:\n            with open(output_file_path, 'w', encoding='utf-8') as file:\n                file.writelines(final_lines)\n\n\nif __name__ == \"__main__\":\n    if len(sys.argv) != 2:\n        print(\"Usage: python script.py <directory_path>\")\n        sys.exit(1)\n\n    directory_path = sys.argv[1]\n\n    if not os.path.exists(directory_path):\n        print(f\"Error: The directory '{directory_path}' does not exist.\")\n        sys.exit(1)\n\n    if not os.path.isdir(directory_path):\n        print(f\"Error: '{directory_path}' is not a directory.\")\n        sys.exit(1)\n\n    extract_and_process_lines(directory_path)\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_compile_json_spec.py",
+        "content": "import os\nimport tempfile\nfrom unittest.mock import patch\nimport compile_json\n\n\ndef test_write_open_specifies_utf8_encoding():\n    \"\"\"open() for writing output files should specify encoding='utf-8'.\"\"\"\n    with tempfile.TemporaryDirectory() as tmpdir:\n        compile_file = os.path.join(tmpdir, 'Compile_test.json')\n        with open(compile_file, 'w', encoding='utf-8') as f:\n            f.write('{\"file\": \"/path/to/akg/sub/file.py\"}\\n')\n\n        calls = []\n        real_open = open\n\n        def tracking_open(*args, **kwargs):\n            calls.append({'args': args, 'kwargs': kwargs})\n            return real_open(*args, **kwargs)\n\n        with patch('builtins.open', tracking_open):\n            compile_json.extract_and_process_lines(tmpdir)\n\n        write_calls = [c for c in calls\n                       if len(c['args']) > 1 and 'w' in str(c['args'][1])]\n\n        assert len(write_calls) > 0, \"Should have at least one write open call\"\n        for c in write_calls:\n            assert c['kwargs'].get('encoding') == 'utf-8', \\\n                f\"Write open should specify encoding='utf-8', got kwargs: {c['kwargs']}\"\n\n\ndef test_basic_processing_with_mindspore_path():\n    \"\"\"Processing a Compile JSON with mindspore path should work correctly.\"\"\"\n    with tempfile.TemporaryDirectory() as tmpdir:\n        compile_file = os.path.join(tmpdir, 'Compile_test.json')\n        with open(compile_file, 'w', encoding='utf-8') as f:\n            f.write('{\"file\": \"/path/to/mindspore/sub/file.py\"}\\n')\n\n        compile_json.extract_and_process_lines(tmpdir)\n\n        output_file = os.path.join(tmpdir, 'processed_Compile_test.json')\n        assert not os.path.exists(output_file), \\\n            \"Output file should not be created when final_lines is not empty\"\n\n\ndef test_empty_output_writes_empty_file():\n    \"\"\"When final_lines is empty, an empty output file should be written.\"\"\"\n    with tempfile.TemporaryDirectory() as tmpdir:\n        compile_file = os.path.join(tmpdir, 'Compile_test.json')\n        with open(compile_file, 'w', encoding='utf-8') as f:\n            f.write('{\"file\": \"/path/to/akg/sub/file.py\"}\\n')\n\n        compile_json.extract_and_process_lines(tmpdir)\n\n        output_file = os.path.join(tmpdir, 'processed_Compile_test.json')\n        assert os.path.exists(output_file), \\\n            \"Output file should be created when final_lines is empty\"\n        with open(output_file, 'r', encoding='utf-8') as f:\n            content = f.read()\n        assert content == '', \"Output file should be empty\"\n"
+      }
+    ],
+    "protected_paths": [
+      "test_compile_json.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-37a3efe8-4e30-9faa-a3f0-ca5137ed6321",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "compile_json.py#30efc4520314",
+    "reverse_edits": 2,
+    "difficulty": "medium",
+    "fingerprint": "v3:f8fa2b010bdfff1d",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

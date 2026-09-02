@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-b8d1d015a9c3a458",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "When inspecting an autograd grad_fn object, there was no way to pull out the saved tensor metadata (name, shape, dtype, memory size) for the tensors it retained. Expected a function named extract_saved_tensors(grad_fn) that walks the grad_fn's saved attributes and returns a list of dicts with keys name, shape, dtype, size_bytes, and size_formatted for recognized saved tensors (attributes starting with _saved_mat, plus _saved_result, _saved_bias, _saved_weight), while skipping _raw_saved_ variants, None values, non-tensor values, and attributes that raise RuntimeError on access; instead no such function existed.",
+  "context": {
+    "files": [
+      {
+        "path": "my_memviz.py",
+        "content": "from dataclasses import dataclass, field\nfrom typing import List, Dict, Any\n\n\ndef format_bytes(num_bytes):\n    if num_bytes == 0:\n        return \"0\"\n    return \"{:,}\".format(num_bytes)\n\n\ndef calculate_tensor_memory(tensor):\n    return tensor.nelement() * tensor.element_size()\n\n\n@dataclass\nclass GraphNode:\n    node_id: int\n    op_type: str\n    output_shape: List[int]\n    saved_tensors: List[Dict[str, Any]] = field(default_factory=list)\n    saved_memory_bytes: int = 0\n\n\nclass Graph:\n    def __init__(self):\n        self.nodes: List[GraphNode] = []\n        self.edges: List[Dict[str, int]] = []\n        self.total_saved_memory_bytes: int = 0\n\n    def add_node(self, node: GraphNode):\n        self.nodes.append(node)\n        self.total_saved_memory_bytes += node.saved_memory_bytes\n\n    def add_edge(self, from_id: int, to_id: int):\n        self.edges.append({\"from\": from_id, \"to\": to_id})\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_my_memviz.py",
+        "content": "import my_memviz\n\n\nclass FakeTensor:\n    def __init__(self, shape, dtype=\"torch.float32\", element_size=4):\n        self._shape = list(shape)\n        self._dtype = dtype\n        self._element_size = element_size\n\n    @property\n    def shape(self):\n        return self._shape\n\n    @property\n    def dtype(self):\n        return self._dtype\n\n    def nelement(self):\n        n = 1\n        for s in self._shape:\n            n *= s\n        return n\n\n    def element_size(self):\n        return self._element_size\n\n\nclass FakeGradFn:\n    def __init__(self, **kwargs):\n        for k, v in kwargs.items():\n            setattr(self, k, v)\n\n\ndef test_extract_saved_tensors_exists_and_returns_list():\n    assert hasattr(my_memviz, \"extract_saved_tensors\")\n    result = my_memviz.extract_saved_tensors(FakeGradFn())\n    assert isinstance(result, list)\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-d1217e80-4ba-685eb3d508808872; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "my_memviz.py",
+        "content": "from dataclasses import dataclass, field\nfrom typing import List, Dict, Any\n\n\ndef format_bytes(num_bytes):\n    if num_bytes == 0:\n        return \"0\"\n    return \"{:,}\".format(num_bytes)\n\n\ndef calculate_tensor_memory(tensor):\n    return tensor.nelement() * tensor.element_size()\n\n\ndef extract_saved_tensors(grad_fn):\n    saved_tensors = []\n    \n    for attr_name in dir(grad_fn):\n        if attr_name.startswith('_saved_') and not attr_name.startswith('_saved_') and attr_name != '_saved':\n            continue\n        if attr_name.startswith('_saved_') and not attr_name.startswith('_raw_saved_'):\n            if attr_name.startswith('_saved_mat') or attr_name == '_saved_result' or attr_name == '_saved_bias' or attr_name == '_saved_weight':\n                try:\n                    tensor = getattr(grad_fn, attr_name)\n                    if tensor is not None and hasattr(tensor, 'shape'):\n                        name = attr_name.replace('_saved_', '')\n                        saved_tensors.append({\n                            \"name\": name,\n                            \"shape\": list(tensor.shape),\n                            \"dtype\": str(tensor.dtype).replace(\"torch.\", \"\"),\n                            \"size_bytes\": calculate_tensor_memory(tensor),\n                            \"size_formatted\": format_bytes(calculate_tensor_memory(tensor))\n                        })\n                except RuntimeError:\n                    pass\n    \n    return saved_tensors\n\n\n@dataclass\nclass GraphNode:\n    node_id: int\n    op_type: str\n    output_shape: List[int]\n    saved_tensors: List[Dict[str, Any]] = field(default_factory=list)\n    saved_memory_bytes: int = 0\n\n\nclass Graph:\n    def __init__(self):\n        self.nodes: List[GraphNode] = []\n        self.edges: List[Dict[str, int]] = []\n        self.total_saved_memory_bytes: int = 0\n\n    def add_node(self, node: GraphNode):\n        self.nodes.append(node)\n        self.total_saved_memory_bytes += node.saved_memory_bytes\n\n    def add_edge(self, from_id: int, to_id: int):\n        self.edges.append({\"from\": from_id, \"to\": to_id})\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_my_memviz_spec.py",
+        "content": "import my_memviz\n\n\nclass FakeTensor:\n    def __init__(self, shape, dtype=\"torch.float32\", element_size=4):\n        self._shape = list(shape)\n        self._dtype = dtype\n        self._element_size = element_size\n\n    @property\n    def shape(self):\n        return self._shape\n\n    @property\n    def dtype(self):\n        return self._dtype\n\n    def nelement(self):\n        n = 1\n        for s in self._shape:\n            n *= s\n        return n\n\n    def element_size(self):\n        return self._element_size\n\n\nclass FakeGradFn:\n    def __init__(self, **kwargs):\n        for k, v in kwargs.items():\n            setattr(self, k, v)\n\n\ndef test_extract_saved_tensors_mat1_full_metadata():\n    tensor = FakeTensor([2, 3])\n    grad_fn = FakeGradFn(_saved_mat1=tensor)\n    result = my_memviz.extract_saved_tensors(grad_fn)\n    assert len(result) == 1\n    item = result[0]\n    assert item[\"name\"] == \"mat1\"\n    assert item[\"shape\"] == [2, 3]\n    assert item[\"dtype\"] == \"float32\"\n    assert item[\"size_bytes\"] == 24\n    assert item[\"size_formatted\"] == \"24\"\n\n\ndef test_extract_saved_tensors_result():\n    tensor = FakeTensor([4])\n    grad_fn = FakeGradFn(_saved_result=tensor)\n    result = my_memviz.extract_saved_tensors(grad_fn)\n    assert len(result) == 1\n    assert result[0][\"name\"] == \"result\"\n\n\ndef test_extract_saved_tensors_bias_and_weight():\n    bias = FakeTensor([3])\n    weight = FakeTensor([3, 4])\n    grad_fn = FakeGradFn(_saved_bias=bias, _saved_weight=weight)\n    result = my_memviz.extract_saved_tensors(grad_fn)\n    names = sorted(r[\"name\"] for r in result)\n    assert names == [\"bias\", \"weight\"]\n\n\ndef test_extract_saved_tensors_skips_raw_saved():\n    tensor = FakeTensor([2, 3])\n    grad_fn = FakeGradFn(_raw_saved_mat1=tensor, _saved_mat1=tensor)\n    result = my_memviz.extract_saved_tensors(grad_fn)\n    names = [r[\"name\"] for r in result]\n    assert names == [\"mat1\"]\n\n\ndef test_extract_saved_tensors_skips_none():\n    grad_fn = FakeGradFn(_saved_result=None)\n    result = my_memviz.extract_saved_tensors(grad_fn)\n    assert result == []\n\n\ndef test_extract_saved_tensors_skips_non_tensor():\n    grad_fn = FakeGradFn(_saved_result=\"not a tensor\")\n    result = my_memviz.extract_saved_tensors(grad_fn)\n    assert result == []\n\n\ndef test_extract_saved_tensors_handles_runtime_error_on_access():\n    class RaisingGradFn:\n        @property\n        def _saved_result(self):\n            raise RuntimeError(\"inaccessible\")\n\n    result = my_memviz.extract_saved_tensors(RaisingGradFn())\n    assert result == []\n\n\ndef test_extract_saved_tensors_dtype_prefix_stripped():\n    tensor = FakeTensor([2], dtype=\"torch.float64\", element_size=8)\n    grad_fn = FakeGradFn(_saved_weight=tensor)\n    result = my_memviz.extract_saved_tensors(grad_fn)\n    assert len(result) == 1\n    assert result[0][\"dtype\"] == \"float64\"\n    assert result[0][\"size_bytes\"] == 16\n\n\ndef test_format_bytes_zero():\n    assert my_memviz.format_bytes(0) == \"0\"\n\n\ndef test_format_bytes_thousands():\n    assert my_memviz.format_bytes(1234567) == \"1,234,567\"\n\n\ndef test_calculate_tensor_memory():\n    t = FakeTensor([2, 3], element_size=4)\n    assert my_memviz.calculate_tensor_memory(t) == 24\n\n\ndef test_graph_add_node_accumulates_memory():\n    g = my_memviz.Graph()\n    n1 = my_memviz.GraphNode(node_id=0, op_type=\"add\", output_shape=[2], saved_memory_bytes=100)\n    n2 = my_memviz.GraphNode(node_id=1, op_type=\"mul\", output_shape=[2], saved_memory_bytes=200)\n    g.add_node(n1)\n    g.add_node(n2)\n    assert g.total_saved_memory_bytes == 300\n    assert len(g.nodes) == 2\n\n\ndef test_graph_add_edge():\n    g = my_memviz.Graph()\n    g.add_edge(0, 1)\n    assert g.edges == [{\"from\": 0, \"to\": 1}]\n"
+      }
+    ],
+    "protected_paths": [
+      "test_my_memviz.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-d1217e80-4ba8-9d34-bcbb-263494cabad4",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "my_memviz.py#45836e156201",
+    "reverse_edits": 2,
+    "difficulty": "easy",
+    "fingerprint": "v3:177be56283fcdc7f",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

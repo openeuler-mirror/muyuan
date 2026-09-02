@@ -1,0 +1,111 @@
+[project]
+name = "aibench"
+version = "0.1.0"
+description = "AI-assisted programming benchmark harness for Agentic Scaling"
+readme = "README.md"
+# 3.11.4, not 3.11: `tarfile.extractall(filter=...)` — which `_safe_extract_tar` relies on to
+# reject device nodes and strip setuid bits — was backported no earlier than that.
+requires-python = ">=3.11.4"
+# Not an open-source grant. The repository carries no licence file, so this metadata is where the
+# reservation is stated — a packaging tool or a mirror cannot present the project as
+# unlicensed-therefore-free.
+license = { text = "LicenseRef-Proprietary" }
+authors = [{ name = "caohaotiantian", email = "caohaotiantian@gmail.com" }]
+dependencies = [
+  "httpx>=0.27",
+  "pyyaml>=6.0",
+  "jsonschema>=4.22",
+  "rich>=13.7",
+  "pytest>=8.0",
+  "pymysql>=1.2.0",
+  "sqlalchemy>=2.0.51",
+  "openpyxl>=3.1.5",
+]
+
+[project.optional-dependencies]
+# Packages `configs/grading-env.yaml` promises the grading environment provides. Declared there
+# and installed here; tests/test_grading_env.py asserts the two agree, and
+# `generate-cases --reverse` refuses to spend model calls when the promise is unmet.
+grading = [
+  "numpy>=1.26",
+  "pandas>=2.0",
+  "requests>=2.31",
+  "matplotlib>=3.8",
+  "flask>=3.0",
+  "av>=12.0",
+]
+dev = [
+  "ruff>=0.9.0",
+  "pre-commit>=4.0.0",
+  "markdown>=3.5",
+]
+
+[project.scripts]
+aibench = "aibench.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aibench"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/aibench" = "aibench"
+
+# A neutral index, pinned so the lock does not carry whichever mirror the machine that resolved
+# it happened to have configured. `uv.lock` records `pypi.tuna.tsinghua.edu.cn` for every
+# package because one machine's untracked `~/.config/uv/uv.toml` said so, which a replayer
+# outside that network cannot reach. Point `UV_INDEX` at a mirror to override locally.
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+# `-ra` so a skip is visible. Two test classes skip silently where node is absent, taking the
+# whole JavaScript grading path — collection-error detection and reporter-format tally included
+# — with them, while the suite stays green under a bare `-q`.
+addopts = "-ra --strict-markers --strict-config"
+
+# Ruff: lint + import sort + format
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+exclude = [
+  ".venv",
+  "runs",
+  "benchmarks",
+  ".e2e-artifacts",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort (import sorting)
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "SIM", # flake8-simplify
+  "RUF", # ruff-specific
+]
+ignore = [
+  "E501",   # line length handled by formatter
+  "RUF001", # allow fullwidth chars in Chinese user-facing strings / regex
+  "RUF002", # allow en-dash etc. in docstrings
+  "RUF003", # allow fullwidth chars in comments
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["aibench"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+docstring-code-format = true

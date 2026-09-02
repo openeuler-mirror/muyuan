@@ -1,0 +1,2118 @@
+=== case: rev-05e88429bf55fa4d ===
+--- a/config_diff_analyzer.py
++++ b/config_diff_analyzer.py
+@@ -21,6 +21,9 @@
+ 
+   # 指定配置目录
+   python3 config_diff_analyzer.py /old /new --conf-dirs conf,etc -o diff.csv
++
++  # 跳过额外目录（这些目录下的配置文件不会出现在结果中）
++  python3 config_diff_analyzer.py /path/to/project --skip-dirs dist,tmp -o result.csv
+ 
+   # 只发现文件，不解析
+   python3 config_diff_analyzer.py /path/to/project --discover-only -o discovery.csv
+@@ -115,14 +118,18 @@
+     return False
+ 
+ 
+-def discover_config_files(root, extra_dirs=None):
++def discover_config_files(root, extra_dirs=None, extra_skip_dirs=None):
+     results = []
+     conf_dirs = set(_CONF_DIRS)
+     if extra_dirs:
+         conf_dirs.update(d.strip() for d in extra_dirs.split(",") if d.strip())
+ 
++    skip_dirs = set(_SKIP_DIRS)
++    if extra_skip_dirs:
++        skip_dirs.update(d.strip() for d in extra_skip_dirs.split(",") if d.strip())
++
+     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
++        dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+         reldir = os.path.relpath(dirpath, root)
+ 
+         for fname in filenames:
+@@ -472,6 +479,8 @@
+                         help="输出文件")
+     parser.add_argument("--conf-dirs", default="",
+                         help="额外的配置目录名，逗号分隔（默认 conf,etc,config）")
++    parser.add_argument("--skip-dirs", default="",
++                        help="额外要跳过的目录名，逗号分隔（这些目录下的配置文件不会出现在结果中）")
+     parser.add_argument("--discover-only", action="store_true",
+                         help="只发现配置文件，不解析内容")
+     parser.add_argument("--names", default="",
+@@ -488,14 +497,14 @@
+         print("━" * 50)
+         print("📦 旧版本配置文件发现")
+         print("━" * 50)
+-        old_files = discover_config_files(old_root, args.conf_dirs)
++        old_files = discover_config_files(old_root, args.conf_dirs, args.skip_dirs)
+         print(f"   发现 {len(old_files)} 个配置文件")
+ 
+         print()
+         print("━" * 50)
+         print("📦 新版本配置文件发现")
+         print("━" * 50)
+-        new_files = discover_config_files(new_root, args.conf_dirs)
++        new_files = discover_config_files(new_root, args.conf_dirs, args.skip_dirs)
+         print(f"   发现 {len(new_files)} 个配置文件")
+ 
+         if args.names:
+@@ -519,7 +528,7 @@
+     else:
+         root = os.path.abspath(dirs[0])
+         print(f"📂 扫描配置文件: {root}")
+-        files = discover_config_files(root, args.conf_dirs)
++        files = discover_config_files(root, args.conf_dirs, args.skip_dirs)
+         print(f"   发现 {len(files)} 个配置文件")
+ 
+         if args.names:
+
+=== case: rev-09f7740f614d3ea9 ===
+--- a/build.py
++++ b/build.py
+@@ -142,8 +142,14 @@
+ 
+ 
+ def setup_cangjie_env(env: dict[str, str], sdk: Path, plat: str, spec: PlatformSpec) -> None:
+-    """按 envsetup 等价规则构造仓颉 SDK 运行环境"""
+-    home = ensure(sdk / "build-tools", "CANGJIE_HOME")
++    """按 envsetup 等价规则构造仓颉 SDK 运行环境
++
++    支持两种 SDK 安装结构：
++      1. SDK Manager 安装：含 build-tools 子目录，CANGJIE_HOME 指向 build-tools；
++      2. 独立安装：无 build-tools 子目录，CANGJIE_HOME 指向 SDK 根目录。
++    """
++    build_tools = sdk / "build-tools"
++    home = build_tools if build_tools.exists() else ensure(sdk, "CANGJIE_HOME")
+     env["CANGJIE_HOME"] = str(home)
+ 
+     rt_dir = spec.runtime_dir.format(arch=host_arch())
+
+=== case: rev-0a13d6e43c487375 ===
+--- a/build.py
++++ b/build.py
+@@ -51,10 +51,12 @@
+         print(result.stdout)
+         
+     except subprocess.CalledProcessError as e:
+-        print(f"return code: {e.returncode}")
++        print(f"Warning: JNI build skipped (return code: {e.returncode}).")
+         print(f"error: {e.stderr}")
++        print("Please install the required JNI build dependencies and re-run the build.")
+     except FileNotFoundError:
+-        print("cannot find build.py")
++        print("Warning: cannot find build.py, JNI build skipped.")
++        print("Please make sure the JNI build script is available and re-run the build.")
+ 
+ def download_boundscheck():
+     cmd = ["git", "clone", "-b", "OpenHarmony-v6.0-Release", "http/workspace/gitcode.com/openharmony/third_party_bounds_checking_function.git", "boundscheck"]
+
+=== case: rev-0c386957a849ab91 ===
+--- a/medium_search.py
++++ b/medium_search.py
+@@ -1,15 +1,18 @@
+ """Medium/Blogger Search Tool for Agentic RL technical discussions.
+ 
+-Provides simplified but practical blog article retrieval and quality filtering.
++Provides practical blog article retrieval and quality filtering using real
++RSS feeds.
+ 
+ Features:
+-- Blog article search by keywords
++- Blog article search by keywords (fetched from real RSS feeds)
+ - Author credibility assessment
+ - Article quality scoring
+ - Key technical article identification
+ - Technical depth evaluation
+ 
+-Note: This is a simplified implementation using web search approach.
++The tool fetches real articles from Medium's public RSS feeds. When real
++data cannot be retrieved (network error, empty feed, parse failure, etc.)
++an empty list is returned instead of fabricated/mock data.
+ """
+ 
+ import requests
+@@ -18,24 +21,28 @@
+ from typing import List, Dict, Any, Optional
+ from datetime import datetime, timedelta
+ from pathlib import Path
+-import json
+ import re
++import xml.etree.ElementTree as ET
+ 
+ logger = logging.getLogger(__name__)
+ 
+ 
+-class EnhancedMediumSearchTool:
+-    """Medium/Blogger search tool for technical discussions."""
+-    
+-    SEARCH_ENDPOINTS = {
+-        "medium": "http/workspace/medium.com/search",
+-        "google_blog": "http/workspace/www.google.com/search"
+-    }
+-    
++class RealMediumSearchTool:
++    """Medium/Blogger search tool for technical discussions.
++
++    Fetches real articles from Medium's public RSS feeds. Returns an empty
++    list whenever real data cannot be obtained so that callers never receive
++    fabricated/mock articles.
++    """
++
++    # Medium exposes public RSS feeds per tag, e.g.
++    #   https://medium.com/feed/tag/reinforcement-learning
++    RSS_FEED_TEMPLATE = "https://medium.com/feed/tag/{tag}"
++
+     RATE_LIMIT_DELAY = 2.0
+     MAX_RETRIES = 2
+     TIMEOUT = 20
+-    
++
+     QUALITY_KEYWORDS = [
+         "implementation",
+         "tutorial",
+@@ -45,266 +52,392 @@
+         "guide",
+         "case study"
+     ]
+-    
++
+     def __init__(self, max_results: int = 10, retry_count: int = 2):
+         self.max_results = max_results
+         self.retry_count = retry_count
+-        
++
+         self.session = requests.Session()
+-        
++
+         self.cache_path = Path("knowledge_base/medium_cache")
+         self.cache_path.mkdir(parents=True, exist_ok=True)
+-        
+-        logger.info("="*70)
++
++        logger.info("=" * 70)
+         logger.info("Medium/Blogger工具初始化完成")
+-        logger.info("="*70)
++        logger.info("=" * 70)
+         logger.info(f"  最大结果数: {self.max_results}")
+         logger.info(f"  重试次数: {self.retry_count}")
+         logger.info(f"  质量关键词: {len(self.QUALITY_KEYWORDS)}个")
+-        
++
+     def search_articles(self, keywords: List[str], time_range_hours: int = 168) -> List[Dict[str, Any]]:
+-        """Search technical blog articles by keywords."""
+-        logger.info("\n" + "="*70)
++        """Search technical blog articles by keywords from real RSS feeds.
++
++        Returns an empty list if no real articles could be fetched.
++        """
++        logger.info("\n" + "=" * 70)
+         logger.info("Medium/Blogger文章搜索开始")
+-        logger.info("="*70)
+-        
+-        all_articles = []
+-        
+-        search_queries = [
+-            "Agentic Reinforcement Learning tutorial",
+-            "LLM Agent implementation guide",
+-            "Multi-Agent RL deep dive",
+-            "Autonomous Agent best practices"
+-        ]
+-        
+-        for query in search_queries[:2]:
+-            logger.info(f"\n搜索查询: {query}")
+-            
+-            articles = self._search_medium_mock(query, time_range_hours)
+-            
++        logger.info("=" * 70)
++
++        all_articles: List[Dict[str, Any]] = []
++
++        tags = self._keywords_to_tags(keywords)
++
++        if not tags:
++            logger.info("  未提供有效关键词，跳过搜索")
++            return []
++
++        for tag in tags:
++            logger.info(f"\n搜索标签(RSS): {tag}")
++
++            articles = self._fetch_medium_rss(tag, time_range_hours)
++
+             if articles:
+                 all_articles.extend(articles)
+-                logger.info(f"  ✓ 找到 {len(articles)} 篇文章")
+-            
++                logger.info(f"  ✓ 从RSS获取 {len(articles)} 篇文章")
++            else:
++                logger.info("  ✗ 未能从RSS获取真实文章")
++
+             time.sleep(self.RATE_LIMIT_DELAY)
+-        
++
+         unique_articles = self._deduplicate_articles(all_articles)
+-        
+         quality_filtered = self._filter_by_quality(unique_articles)
+-        
++
+         logger.info(f"\n总计找到 {len(quality_filtered)} 篇高质量文章")
+-        
+-        return quality_filtered
+-    
+-    def _search_medium_mock(self, query: str, time_range_hours: int) -> List[Dict[str, Any]]:
+-        """Mock search implementation (returns sample articles)."""
+-        
+-        logger.info("  使用Mock数据演示功能")
+-        
+-        sample_articles = [
+-            {
+-                "title": "Building Autonomous Agents with LLMs and Reinforcement Learning",
+-                "author": "AI Researcher",
+-                "publication": "Towards Data Science",
+-                "url": "http/workspace/medium.com/@ai-researcher/building-agents-llm-rl",
+-                "published_date": "2026-04-10",
+-                "reading_time": 12,
+-                "claps": 850,
+-                "comments": 45,
+-                "tags": ["reinforcement-learning", "LLM", "agents", "autonomous"],
+-                "excerpt": "A comprehensive guide to building autonomous agents using LLMs as policy networks...",
+-                "quality_score": 9,
+-                "source": "medium",
+-                "is_technical": True,
+-                "has_code_examples": True
+-            },
+-            {
+-                "title": "Deep Dive into Multi-Agent Reinforcement Learning Systems",
+-                "author": "RL Expert",
+-                "publication": "Medium Tech Blog",
+-                "url": "http/workspace/medium.com/@rl-expert/multi-agent-rl-deep-dive",
+-                "published_date": "2026-04-09",
+-                "reading_time": 15,
+-                "claps": 1200,
+-                "comments": 68,
+-                "tags": ["multi-agent", "reinforcement-learning", "systems"],
+-                "excerpt": "Understanding coordination and competition in multi-agent RL systems...",
+-                "quality_score": 8,
+-                "source": "medium",
+-                "is_technical": True,
+-                "has_code_examples": True
+-            },
+-            {
+-                "title": "World Models for Agent Planning: A Tutorial",
+-                "author": "ML Engineer",
+-                "publication": "Machine Learning Blog",
+-                "url": "http/workspace/medium.com/@ml-engineer/world-models-tutorial",
+-                "published_date": "2026-04-08",
+-                "reading_time": 10,
+-                "claps": 620,
+-                "comments": 32,
+-                "tags": ["world-models", "planning", "agents"],
+-                "excerpt": "Step-by-step tutorial on implementing world models for agent forward planning...",
+-                "quality_score": 8,
+-                "source": "medium",
+-                "is_technical": True,
+-                "has_code_examples": True
+-            },
+-            {
+-                "title": "PPO Algorithm Implementation from Scratch",
+-                "author": "Python Developer",
+-                "publication": "Towards AI",
+-                "url": "http/workspace/medium.com/@python-dev/ppo-implementation",
+-                "published_date": "2026-04-07",
+-                "reading_time": 18,
+-                "claps": 1500,
+-                "comments": 85,
+-                "tags": ["PPO", "reinforcement-learning", "implementation"],
+-                "excerpt": "Complete implementation guide for Proximal Policy Optimization algorithm...",
+-                "quality_score": 9,
+-                "source": "medium",
+-                "is_technical": True,
+-                "has_code_examples": True
+-            },
+-            {
+-                "title": "LangChain Agent Architecture Deep Dive",
+-                "author": "Tech Writer",
+-                "publication": "Tech Insights",
+-                "url": "http/workspace/medium.com/@tech-writer/langchain-agent",
+-                "published_date": "2026-04-06",
+-                "reading_time": 8,
+-                "claps": 430,
+-                "comments": 22,
+-                "tags": ["langchain", "agents", "architecture"],
+-                "excerpt": "Understanding the architecture behind LangChain agent framework...",
+-                "quality_score": 7,
+-                "source": "medium",
+-                "is_technical": True,
+-                "has_code_examples": False
+-            }
+-        ]
+-        
++
++        return quality_filtered[:self.max_results]
++
++    # ------------------------------------------------------------------
++    # Real RSS fetching
++    # ------------------------------------------------------------------
++    def _keywords_to_tags(self, keywords: List[str]) -> List[str]:
++        """Convert raw keywords into Medium RSS tag slugs."""
++        if not keywords:
++            return []
++
++        tags: List[str] = []
++        for kw in keywords:
++            if not kw:
++                continue
++            # Normalise to a Medium-style tag slug (lowercase, hyphenated).
++            slug = re.sub(r"[^a-z0-9]+", "-", kw.strip().lower()).strip("-")
++            if slug:
++                tags.append(slug)
++
++        # De-duplicate while preserving order.
++        seen = set()
++        unique_tags = []
++        for t in tags:
++            if t not in seen:
++                seen.add(t)
++                unique_tags.append(t)
++        return unique_tags
++
++    def _fetch_medium_rss(self, tag: str, time_range_hours: int) -> List[Dict[str, Any]]:
++        """Fetch and parse a Medium tag RSS feed.
++
++        Returns an empty list on any failure (network, HTTP error, parse
++        error, empty feed). Never returns fabricated data.
++        """
++        feed_url = self.RSS_FEED_TEMPLATE.format(tag=tag)
++        logger.info(f"  请求RSS源: {feed_url}")
++
++        content = self._http_get(feed_url)
++        if not content:
++            return []
++
++        items = self._parse_rss_items(content)
++        if not items:
++            return []
++
+         cutoff_date = datetime.now() - timedelta(hours=time_range_hours)
+-        
+-        filtered_articles = []
+-        
+-        for article in sample_articles:
+-            pub_date_str = article.get("published_date", "")
+-            
+-            if pub_date_str:
+-                try:
+-                    pub_date = datetime.strptime(pub_date_str, "%Y-%m-%d")
+-                    
+-                    if pub_date >= cutoff_date:
+-                        filtered_articles.append(article)
+-                        
+-                except ValueError:
+-                    filtered_articles.append(article)
+-        
+-        return filtered_articles[:self.max_results]
+-    
++
++        articles: List[Dict[str, Any]] = []
++        for item in items:
++            article = self._rss_item_to_article(item)
++            if not article:
++                continue
++
++            # Time-range filtering (only when a date could be parsed).
++            pub_date = article.get("_published_dt")
++            if pub_date is not None and pub_date < cutoff_date:
++                continue
++
++            articles.append(article)
++
++        return articles
++
++    def _http_get(self, url: str) -> Optional[str]:
++        """Perform an HTTP GET with retries. Returns text or None on failure."""
++        last_error: Optional[str] = None
++        for attempt in range(self.retry_count + 1):
++            try:
++                response = self.session.get(url, timeout=self.TIMEOUT)
++                if response.status_code != 200:
++                    last_error = f"HTTP {response.status_code}"
++                    logger.warning(f"  HTTP请求失败: {last_error} (尝试 {attempt + 1})")
++                    continue
++
++                text = response.text
++                if not text or not text.strip():
++                    last_error = "空响应体"
++                    logger.warning(f"  {last_error} (尝试 {attempt + 1})")
++                    continue
++
++                return text
++            except requests.RequestException as exc:
++                last_error = str(exc)
++                logger.warning(f"  网络请求异常: {last_error} (尝试 {attempt + 1})")
++                time.sleep(self.RATE_LIMIT_DELAY)
++
++        logger.error(f"  无法获取真实数据: {last_error}")
++        return None
++
++    def _parse_rss_items(self, content: str) -> List[ET.Element]:
++        """Parse RSS XML content and return the list of <item> elements.
++
++        Returns an empty list on parse failure.
++        """
++        try:
++            root = ET.fromstring(content)
++        except ET.ParseError as exc:
++            logger.error(f"  RSS解析失败: {exc}")
++            return []
++
++        # RSS 2.0: channel/item. Atom: entry. Support both.
++        items = root.findall(".//item")
++        if not items:
++            items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
++
++        return items
++
++    def _rss_item_to_article(self, item: ET.Element) -> Optional[Dict[str, Any]]:
++        """Convert a single RSS <item> element into an article dict."""
++        def _text(tag: str) -> str:
++            node = item.find(tag)
++            if node is not None and node.text:
++                return node.text.strip()
++            return ""
++
++        def _find_text(*tags: str) -> str:
++            for tag in tags:
++                node = item.find(tag)
++                if node is not None and node.text:
++                    return node.text.strip()
++            return ""
++
++        title = _text("title")
++        link = _find_text("link", "guid")
++        description = _text("description")
++        author = _find_text("dc:creator", "author", "{http://purl.org/dc/elements/1.1/}creator")
++        pub_date_str = _find_text("pubDate", "{http://www.w3.org/2005/Atom}published")
++
++        if not title and not link:
++            return None
++
++        published_dt = self._parse_date(pub_date_str)
++        published_date = published_dt.strftime("%Y-%m-%d") if published_dt else ""
++
++        tags = self._extract_tags(item, description, title)
++
++        excerpt = self._strip_html(description)[:200] if description else ""
++
++        has_code = "<code" in description.lower() or "<pre" in description.lower()
++        is_technical = self._is_technical(title, description, tags)
++
++        article: Dict[str, Any] = {
++            "title": title,
++            "author": author or "Unknown",
++            "publication": "Medium",
++            "url": link,
++            "published_date": published_date,
++            "reading_time": 0,
++            "claps": 0,
++            "comments": 0,
++            "tags": tags,
++            "excerpt": excerpt,
++            "quality_score": 0,
++            "source": "medium",
++            "is_technical": is_technical,
++            "has_code_examples": has_code,
++        }
++
++        article["quality_score"] = self._calculate_quality_score(article)
++        article.pop("_published_dt", None)
++        if published_dt is not None:
++            article["_published_dt"] = published_dt
++
++        return article
++
++    # ------------------------------------------------------------------
++    # Helpers
++    # ------------------------------------------------------------------
++    def _parse_date(self, date_str: str) -> Optional[datetime]:
++        """Best-effort parse of common RSS date formats."""
++        if not date_str:
++            return None
++
++        # RFC 822 / RFC 2822 (e.g. "Mon, 10 Apr 2026 10:00:00 GMT")
++        for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z",
++                    "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ",
++                    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
++            try:
++                return datetime.strptime(date_str.strip(), fmt)
++            except ValueError:
++                continue
++
++        # Try fromisoformat for ISO 8601 variants.
++        try:
++            return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
++        except (ValueError, TypeError):
++            return None
++
++    def _extract_tags(self, item: ET.Element, description: str, title: str) -> List[str]:
++        """Extract tag/category list from an RSS item."""
++        tags: List[str] = []
++        for cat in item.findall("category"):
++            if cat.text and cat.text.strip():
++                tags.append(cat.text.strip())
++        for cat in item.findall("{http://purl.org/dc/elements/1.1/}subject"):
++            if cat.text and cat.text.strip():
++                tags.append(cat.text.strip())
++
++        if not tags:
++            # Fall back to keywords found in the title/description.
++            text = f"{title} {description}".lower()
++            for kw in self.QUALITY_KEYWORDS:
++                if kw in text:
++                    tags.append(kw)
++        return tags
++
++    def _is_technical(self, title: str, description: str, tags: List[str]) -> bool:
++        text = f"{title} {description} {' '.join(tags)}".lower()
++        return any(kw in text for kw in self.QUALITY_KEYWORDS)
++
++    def _strip_html(self, text: str) -> str:
++        """Remove HTML tags from a string."""
++        clean = re.sub(r"<[^>]+>", " ", text or "")
++        clean = re.sub(r"\s+", " ", clean)
++        return clean.strip()
++
+     def assess_author_credibility(self, author_name: str) -> Dict[str, Any]:
+         """Assess author credibility based on available indicators."""
+         logger.info(f"\n评估作者可信度: {author_name}")
+-        
++
+         credibility = {
+             "author_name": author_name,
+-            "credibility_score": 7.0,
+-            "is_verified": True,
+-            "total_articles": 25,
+-            "avg_quality": 8.0,
+-            "expertise_areas": ["reinforcement-learning", "LLM", "agents"],
++            "credibility_score": 0.0,
++            "is_verified": False,
++            "total_articles": 0,
++            "avg_quality": 0.0,
++            "expertise_areas": [],
+             "source": "medium"
+         }
+-        
++
+         logger.info(f"  ✓ 可信度评估完成")
+         logger.info(f"    可信度评分: {credibility['credibility_score']}/10")
+         logger.info(f"    总文章数: {credibility['total_articles']}")
+-        
++
+         return credibility
+-    
++
+     def get_article_details(self, article_url: str) -> Dict[str, Any]:
+-        """Get detailed information about a specific article."""
++        """Get detailed information about a specific article from its URL."""
+         logger.info(f"\n获取文章详情: {article_url}")
+-        
+-        details = {
++
++        details: Dict[str, Any] = {
+             "url": article_url,
+-            "title": "Sample Article Title",
+-            "author": "Sample Author",
++            "title": "",
++            "author": "",
+             "publication": "Medium",
+-            "published_date": "2026-04-10",
+-            "reading_time": 12,
+-            "claps": 850,
+-            "comments": 45,
+-            "word_count": 3000,
+-            "code_blocks": 3,
+-            "images": 5,
+-            "quality_score": 9,
+-            "technical_depth": "high",
++            "published_date": "",
++            "reading_time": 0,
++            "claps": 0,
++            "comments": 0,
++            "word_count": 0,
++            "code_blocks": 0,
++            "images": 0,
++            "quality_score": 0,
++            "technical_depth": "unknown",
+             "source": "medium"
+         }
+-        
++
++        content = self._http_get(article_url)
++        if not content:
++            logger.info("  ✗ 无法获取文章详情")
++            return details
++
++        # Best-effort extraction of <title> and <meta> tags.
++        title_match = re.search(r"<title[^>]*>(.*?)</title>", content, re.IGNORECASE | re.DOTALL)
++        if title_match:
++            details["title"] = self._strip_html(title_match.group(1))
++
++        author_match = re.search(
++            r'<meta[^>]+(?:name|property)=["\'](?:author|article:author)["\'][^>]*content=["\']([^"\']+)["\']',
++            content, re.IGNORECASE)
++        if author_match:
++            details["author"] = author_match.group(1).strip()
++
+         logger.info(f"  ✓ 文章详情获取成功")
+         logger.info(f"    质量评分: {details['quality_score']}/10")
+         logger.info(f"    技术深度: {details['technical_depth']}")
+-        
++
+         return details
+-    
++
+     def _filter_by_quality(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+         """Filter articles by quality indicators."""
+-        
+         filtered = []
+-        
+         for article in articles:
+             quality_score = article.get("quality_score", 0)
+-            
+             if quality_score >= 7:
+                 is_technical = article.get("is_technical", False)
+                 has_code = article.get("has_code_examples", False)
+-                
+                 if is_technical or has_code:
+                     filtered.append(article)
+-        
+-        return sorted(filtered, key=lambda x: x["quality_score"], reverse=True)
+-    
++
++        return sorted(filtered, key=lambda x: x.get("quality_score", 0), reverse=True)
++
+     def _deduplicate_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+         """Remove duplicate articles based on title."""
+         unique = []
+         seen_titles = set()
+-        
+         for article in articles:
+             title = article.get("title", "").lower()
+-            
+             if title not in seen_titles:
+                 unique.append(article)
+                 seen_titles.add(title)
+-        
+         return unique
+-    
++
+     def _calculate_quality_score(self, article: Dict[str, Any]) -> int:
+-        """Calculate quality score from article indicators."""
++        """Calculate quality score from indicators available in RSS feeds.
++
++        Real Medium RSS feeds do not expose claps/comments/reading_time, so
++        the score is derived from signals that are actually present: quality
++        keywords, code examples, tags, and a meaningful excerpt.
++        """
++        score = 5
++
++        if article.get("is_technical", False):
++            score += 2
++        if article.get("has_code_examples", False):
++            score += 1
++        if article.get("tags"):
++            score += 1
++        if article.get("excerpt"):
++            score += 1
++
++        # Engagement signals (only present for non-RSS / enriched articles).
+         claps = article.get("claps", 0)
+         comments = article.get("comments", 0)
+         reading_time = article.get("reading_time", 0)
+-        has_code = article.get("has_code_examples", False)
+-        
+-        score = 5
+-        
+         if claps > 1000:
+             score += 2
+         elif claps > 500:
+             score += 1
+-        
+         if comments > 50:
+             score += 1
+-        
+         if reading_time > 10:
+             score += 1
+-        
+-        if has_code:
+-            score += 1
+-        
++
+         return min(10, score)
+ 
+ 
+-MediumSearchTool = EnhancedMediumSearchTool
++MediumSearchTool = RealMediumSearchTool
+
+=== case: rev-0f878818dfebd4f3 ===
+--- a/lifecycleTypes.ts
++++ b/lifecycleTypes.ts
+@@ -44,6 +44,7 @@
+   | 'RUNNING'
+   | 'EXITING'
+   | 'COMPLETED'
++  | 'REWORK'
+   | 'FAILED'
+ 
+ export type StageState =
+@@ -107,7 +108,8 @@
+   ENTERING: ['RUNNING', 'FAILED'] as const,
+   RUNNING: ['EXITING', 'FAILED'] as const,
+   EXITING: ['COMPLETED', 'FAILED'] as const,
+-  COMPLETED: [] as const,
++  COMPLETED: ['REWORK'] as const,
++  REWORK: ['ENTERING'] as const,
+   FAILED: [] as const,
+ } as const satisfies Record<NodeState, readonly NodeState[]>
+ 
+
+=== case: rev-10cc572e61227773 ===
+--- a/dynamic_project_discovery.py
++++ b/dynamic_project_discovery.py
+@@ -84,6 +84,7 @@
+         self.discovered_projects: List[Dict] = []
+         self.existing_watchlist: Set[str] = set()
+         self.project_stats: Dict[str, Dict] = {}
++        self.raw_discussions: List[Dict] = []
+         
+         self._load_existing_watchlist()
+         
+@@ -132,6 +133,9 @@
+         
+         all_mentions = hn_projects + reddit_projects + pwc_projects + trending_projects + arxiv_projects
+         
++        # Accumulate raw discussion data for downstream use
++        self.raw_discussions.extend(all_mentions)
++        
+         logger.info(f"\n  总计听说: {len(all_mentions)} 个项目提及")
+         
+         logger.info("\n" + "="*80)
+@@ -194,6 +198,8 @@
+             "worth_following": len(evaluated_projects),
+             "added_to_watchlist": len(evaluated_projects),
+             "projects": evaluated_projects,
++            "raw_discussions": self.raw_discussions,
++            "discussions_count": len(self.raw_discussions),
+             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+         }
+ 
+
+=== case: rev-1b77e6e910b9452e ===
+--- a/build.py
++++ b/build.py
+@@ -140,6 +140,12 @@
+         android_api_level = "23"
+         result.append("-DCMAKE_ANDROID_NDK=" + os.path.join(args.target_toolchain, "../../../../.."))
+         result.append("-DCMAKE_ANDROID_API=" + (android_api_level if android_api_level else ""))
++    version = getattr(args, "version", None)
++    if version:
++        result.append("-DSTDX_VERSION=" + str(version))
++    soversion = getattr(args, "soversion", None)
++    if soversion:
++        result.append("-DSTDX_SOVERSION=" + str(soversion))
+     return result
+ 
+ def build(args):
+@@ -391,6 +397,12 @@
+     parser_build.add_argument(
+         "--without-effect-handlers", dest="without_effect_handlers", action="store_true", help="build a version without effect handlers"
+     )
++    parser_build.add_argument(
++        "--version", dest="version", type=str, help="set the version of the stdx library (e.g. 1.0.5)"
++    )
++    parser_build.add_argument(
++        "--soversion", dest="soversion", type=str, help="set the SOVERSION of the stdx library (e.g. 1)"
++    )
+     parser_build.set_defaults(func=build)
+ 
+     parser_install = subparsers.add_parser("install", help="install targets")
+
+=== case: rev-1ef6270942e0e740 ===
+--- a/my_memviz.py
++++ b/my_memviz.py
+@@ -19,3 +19,31 @@
+     output_shape: List[int]
+     saved_tensors: List[Dict[str, Any]] = field(default_factory=list)
+     saved_memory_bytes: int = 0
++
++
++@dataclass
++class GraphEdge:
++    src_id: int
++    dst_id: int
++
++
++class Graph:
++    """A container for building a computation graph.
++
++    Nodes can be added and their saved memory is accumulated into a running
++    total. Edges record the source and destination node identifiers.
++    """
++
++    def __init__(self):
++        self.nodes: List[GraphNode] = []
++        self.edges: List[GraphEdge] = []
++        self.total_saved_memory_bytes: int = 0
++
++    def add_node(self, node: GraphNode) -> None:
++        """Add a node and accumulate its saved memory into the running total."""
++        self.nodes.append(node)
++        self.total_saved_memory_bytes += node.saved_memory_bytes
++
++    def add_edge(self, src_id: int, dst_id: int) -> None:
++        """Record an edge between a source and destination node identifier."""
++        self.edges.append(GraphEdge(src_id=src_id, dst_id=dst_id))
+
+=== case: rev-20f1e5a5d9460800 ===
+(no change)
+
+=== case: rev-298ab8b9d9d05d08 ===
+(no change)
+
+=== case: rev-2a048ca51fb7465e ===
+--- a/flight.py
++++ b/flight.py
+@@ -47,6 +47,7 @@
+     duration: Optional[int] = None  # 行程时长（分钟）
+     stopover_info: Optional[str] = None  # 经停信息
+     transfer_count: int = 0  # 中转次数（默认直飞）
++    meet_requirements: bool = False  # 是否满足筛选要求（价格+中转次数）
+ 
+ 
+ @dataclass
+
+=== case: rev-2b813e27ba5902d5 ===
+--- a/settings.py
++++ b/settings.py
+@@ -54,6 +54,14 @@
+     'file': 'data/app.log'
+ }
+ 
++# Server酱微信推送配置
++SERVERCHAN_CONFIG = {
++    'enabled': True,           # 是否启用Server酱推送
++    'sckey': '***',            # Server酱的SCKEY（SendKey）
++    'url': 'https://sctapi.ftqq.com',  # Server酱推送API地址
++    'title_prefix': 'AI知识推送',  # 推送消息标题前缀
++}
++
+ # LaTeX 公式渲染配置
+ LATEX_RENDER_CONFIG = {
+     'enabled': True,           # 是否启用公式渲染
+
+=== case: rev-2c8c411c1642b559 ===
+(no change)
+
+=== case: rev-326ff6ffac10f77e ===
+--- a/models.py
++++ b/models.py
+@@ -106,6 +106,8 @@
+     chat_type: str | None = None
+     # 定时任务执行时使用的 mode（"plan" 或 "agent"），创建时从对话上下文继承；无上下文时默认 "agent"
+     mode: str = "agent"
++    # 提醒类任务：执行一次后自动删除
++    delete_after_run: bool = False
+ 
+     def to_dict(self) -> dict[str, Any]:
+         d: dict[str, Any] = {
+@@ -127,6 +129,7 @@
+             d["chat_type"] = self.chat_type
+         if self.mode:
+             d["mode"] = self.mode
++        d["delete_after_run"] = bool(self.delete_after_run)
+         return d
+ 
+     @staticmethod
+@@ -196,6 +199,12 @@
+             if isinstance(mode_raw, str) and str(mode_raw).strip()
+             else "agent"
+         )
++
++        # 兼容驼峰命名 deleteAfterRun 的旧数据
++        delete_after_run_raw = data.get("delete_after_run")
++        if delete_after_run_raw is None and "deleteAfterRun" in data:
++            delete_after_run_raw = data.get("deleteAfterRun")
++        delete_after_run = bool(delete_after_run_raw) if delete_after_run_raw is not None else False
+         return CronJob(
+             id=job_id,
+             name=name,
+@@ -211,6 +220,7 @@
+             updated_at=updated_at_f,
+             chat_type=job_chat_type,
+             mode=job_mode,
++            delete_after_run=delete_after_run,
+         )
+ 
+ 
+
+=== case: rev-39cf6aaba64b4c04 ===
+--- a/models.py
++++ b/models.py
+@@ -211,10 +211,30 @@
+     job_id: str
+     wake_at_iso: str
+     push_at_iso: str
+-    status: str = "pending"  # pending|running|succeeded|failed
++    status: str = "pending"  # pending|running|succeeded|failed|cancelled
+     placeholder_sent: bool = False
+     pushed_final: bool = False
+     started_at: float | None = None
+     finished_at: float | None = None
+     result_text: str | None = None
+     error: str | None = None
++    # Cancellation metadata: when the run was cancelled and who cancelled it.
++    cancelled_at: float | None = None
++    cancelled_by: str | None = None
++
++    def to_dict(self) -> dict[str, Any]:
++        return {
++            "run_id": self.run_id,
++            "job_id": self.job_id,
++            "wake_at_iso": self.wake_at_iso,
++            "push_at_iso": self.push_at_iso,
++            "status": self.status,
++            "placeholder_sent": bool(self.placeholder_sent),
++            "pushed_final": bool(self.pushed_final),
++            "started_at": self.started_at,
++            "finished_at": self.finished_at,
++            "result_text": self.result_text,
++            "error": self.error,
++            "cancelled_at": self.cancelled_at,
++            "cancelled_by": self.cancelled_by,
++        }
+
+=== case: rev-478df768a8d72026 ===
+--- a/compile_json.py
++++ b/compile_json.py
+@@ -28,7 +28,7 @@
+         unique_directories = set()
+         if filename.startswith('Compile') and filename.endswith('.json'):
+             file_path = os.path.join(root_path, filename)
+-            with open(file_path, 'r') as file:
++            with open(file_path, 'r', encoding='utf-8') as file:
+                 for line in file:
+                     if key in line:
+                         parts = line.split('/')
+@@ -59,7 +59,7 @@
+                     final_lines.append(new_line)
+ 
+         if not final_lines:
+-            with open(output_file_path, 'w') as file:
++            with open(output_file_path, 'w', encoding='utf-8') as file:
+                 file.writelines(final_lines)
+ 
+ 
+
+=== case: rev-607e8f191190459d ===
+(no change)
+
+=== case: rev-6b86e3bbf4e8f22b ===
+(no change)
+
+=== case: rev-6e01e26bfba9221a ===
+--- a/__manifest__.py
++++ b/__manifest__.py
+@@ -9,6 +9,7 @@
+     'license': 'LGPL-3',
+     'data': [
+         'views/issue_analysis_views.xml',
++        'views/res_config_settings_views.xml',
+     ],
+     'demo': [],
+     'installable': True,
+--- a/views/res_config_settings_views.xml
++++ b/views/res_config_settings_views.xml
+@@ -0,0 +1,19 @@
++<?xml version="1.0" encoding="utf-8"?>
++<odoo>
++    <record id="res_config_settings_view_form" model="ir.ui.view">
++        <field name="name">res.config.settings.view.form.inherit.issue.analysis</field>
++        <field name="model">res.config.settings</field>
++        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
++        <field name="arch" type="xml">
++            <xpath expr="//form" position="inside">
++                <app data-string="AI Issue Analysis" string="AI Issue Analysis" name="issue_analysis">
++                    <block title="AI Issue Analysis" name="issue_analysis_settings">
++                        <setting id="issue_analysis_api_key" string="API Key">
++                            <field name="issue_analysis_api_key"/>
++                        </setting>
++                    </block>
++                </app>
++            </xpath>
++        </field>
++    </record>
++</odoo>
+
+=== case: rev-6f10facedc91ac5a ===
+--- a/my_memviz.py
++++ b/my_memviz.py
+@@ -1,5 +1,6 @@
++import warnings
+ from dataclasses import dataclass, field
+-from typing import List, Dict, Any
++from typing import List, Dict, Any, Optional
+ 
+ 
+ def format_bytes(num_bytes):
+@@ -58,3 +59,100 @@
+ 
+     def add_edge(self, from_id: int, to_id: int):
+         self.edges.append({"from": from_id, "to": to_id})
++
++
++def _get_op_type(grad_fn) -> str:
++    """Best-effort human-readable name for an autograd node."""
++    name_attr = getattr(grad_fn, "name", None)
++    if name_attr is not None:
++        # ``name`` may be a method (PyTorch) or a plain string attribute.
++        if callable(name_attr):
++            try:
++                value = name_attr()
++                if isinstance(value, str) and value:
++                    return value
++            except TypeError:
++                pass
++        elif isinstance(name_attr, str) and name_attr:
++            return name_attr
++    return type(grad_fn).__name__
++
++
++def _unwrap_next_function(entry):
++    """``next_functions`` entries may be ``(grad_fn, index)`` tuples or bare nodes."""
++    if isinstance(entry, (list, tuple)):
++        return entry[0] if len(entry) > 0 else None
++    return entry
++
++
++def _node_output_shape(grad_fn, current_tensor) -> List[int]:
++    """Determine the output shape associated with a grad_fn when possible."""
++    if current_tensor is not None and hasattr(current_tensor, "shape"):
++        try:
++            return list(current_tensor.shape)
++        except TypeError:
++            return list(current_tensor.shape) if current_tensor.shape is not None else []
++    variable = getattr(grad_fn, "variable", None)
++    if variable is not None and hasattr(variable, "shape"):
++        try:
++            return list(variable.shape)
++        except TypeError:
++            return list(variable.shape) if variable.shape is not None else []
++    return []
++
++
++def traverse_graph(output_tensor, input_tensor, graph: "Graph", visited: Optional[Dict[int, int]] = None):
++    """Walk the autograd graph from ``output_tensor`` back toward ``input_tensor``.
++
++    Builds a memory graph by creating :class:`GraphNode` entries (with op type and
++    saved-tensor information) and connecting parent/child nodes with edges. Emits a
++    warning when ``output_tensor`` has no ``grad_fn`` and therefore no graph to walk.
++    """
++    if visited is None:
++        visited = {}
++
++    grad_fn = getattr(output_tensor, "grad_fn", None)
++    if grad_fn is None:
++        warnings.warn(
++            "output tensor has no grad_fn; cannot traverse the autograd graph"
++        )
++        return
++
++    _traverse_grad_fn(grad_fn, output_tensor, input_tensor, graph, visited)
++
++
++def _traverse_grad_fn(grad_fn, current_tensor, input_tensor, graph: "Graph", visited: Dict[int, int]) -> Optional[int]:
++    key = id(grad_fn)
++    if key in visited:
++        return visited[key]
++
++    op_type = _get_op_type(grad_fn)
++    saved_tensors = extract_saved_tensors(grad_fn)
++    saved_memory = sum(t.get("size_bytes", 0) for t in saved_tensors)
++    output_shape = _node_output_shape(grad_fn, current_tensor)
++
++    node = GraphNode(
++        node_id=len(graph.nodes),
++        op_type=op_type,
++        output_shape=output_shape,
++        saved_tensors=saved_tensors,
++        saved_memory_bytes=saved_memory,
++    )
++    graph.add_node(node)
++    visited[key] = node.node_id
++
++    # Stop once we have reached the input tensor's accumulator.
++    variable = getattr(grad_fn, "variable", None)
++    if input_tensor is not None and variable is input_tensor:
++        return node.node_id
++
++    next_functions = getattr(grad_fn, "next_functions", None) or []
++    for entry in next_functions:
++        child = _unwrap_next_function(entry)
++        if child is None:
++            continue
++        child_id = _traverse_grad_fn(child, None, input_tensor, graph, visited)
++        if child_id is not None:
++            graph.add_edge(node.node_id, child_id)
++
++    return node.node_id
+
+=== case: rev-738db5f8753b49f2 ===
+--- a/lifecycleTypes.ts
++++ b/lifecycleTypes.ts
+@@ -44,6 +44,7 @@
+   | 'RUNNING'
+   | 'EXITING'
+   | 'COMPLETED'
++  | 'REWORK'
+   | 'FAILED'
+ 
+ export type StageState =
+@@ -107,7 +108,10 @@
+   ENTERING: ['RUNNING', 'FAILED'] as const,
+   RUNNING: ['EXITING', 'FAILED'] as const,
+   EXITING: ['COMPLETED', 'FAILED'] as const,
+-  COMPLETED: [] as const,
++  // A completed node is no longer terminal: it may transition to REWORK,
++  // and from REWORK back to ENTERING to support a rework workflow.
++  COMPLETED: ['REWORK'] as const,
++  REWORK: ['ENTERING'] as const,
+   FAILED: [] as const,
+ } as const satisfies Record<NodeState, readonly NodeState[]>
+ 
+
+=== case: rev-74ba9c286a152c50 ===
+--- a/prepare-revision.mjs
++++ b/prepare-revision.mjs
+@@ -22,11 +22,17 @@
+ const args = parseArgs({
+   options: {
+     source: { type: 'string', short: 's', multiple: true },
++    'session-path': { type: 'string' },
++    'max-size': { type: 'string' },
++    'ttl': { type: 'string' },
+   },
+   strict: true,
+ });
+ 
+ const sourcePaths = args.values.source || [];
++const sessionPath = args.values['session-path'];
++const maxSize = args.values['max-size'];
++const ttl = args.values['ttl'];
+ 
+ if (sourcePaths.length === 0) {
+   const result = {
+@@ -38,7 +44,13 @@
+   process.exit(1);
+ }
+ 
+-const baseDir = join(tmpdir(), 'interactive-revision');
++// Determine the session directory. When --session-path is provided it is used
++// directly as the session directory; otherwise we fall back to a shared
++// directory under the OS temp dir. Because the manifest lives inside the
++// session directory, different session paths maintain completely separate
++// file lists (the same source file can be added to multiple independent
++// sessions without triggering a duplicate error).
++const baseDir = sessionPath || join(tmpdir(), 'interactive-revision');
+ const manifestPath = join(baseDir, 'manifest.json');
+ 
+ async function prepareRevision() {
+@@ -53,6 +65,17 @@
+   } catch {
+     // No existing manifest, create new
+     manifest = { files: [], createdAt: new Date().toISOString() };
++  }
++
++  // Persist session configuration supplied via options (max-size / ttl).
++  if (!manifest.config) {
++    manifest.config = {};
++  }
++  if (maxSize !== undefined) {
++    manifest.config.maxSize = maxSize;
++  }
++  if (ttl !== undefined) {
++    manifest.config.ttl = ttl;
+   }
+ 
+   // Process each source file
+
+=== case: rev-7ef5353e673af1af ===
+--- a/index.ts
++++ b/index.ts
+@@ -9,7 +9,7 @@
+ 
+ export const COMMAND_DIRS = {
+   opencode: '.opencode/command',
+-  default: '.hyper-designer/command',
++  default: '.adtspec/command',
+ } as const
+ 
+ export const ARCHIVE_DIR = 'archive'
+
+=== case: rev-809ac0ba498403fa ===
+--- a/api.js
++++ b/api.js
+@@ -94,6 +94,14 @@
+     }).then(r => r.json())
+   },
+ 
++  uploadImage(token, formData) {
++    return fetch(`${API_BASE}/admin/upload-image`, {
++      method: 'POST',
++      headers: { 'Authorization': `Bearer ${token}` },
++      body: formData
++    }).then(r => r.json())
++  },
++
+   getStats(token) {
+     return fetch(`${API_BASE}/stats`, {
+       headers: { 'Authorization': `Bearer ${token}` }
+
+=== case: rev-85d5e687ce9f7d51 ===
+--- a/settings.py
++++ b/settings.py
+@@ -38,8 +38,8 @@
+     'difficulty_levels': ['初级', '中级', '高级'],
+     'default_difficulty': '初级',
+     'schedule_time': '10:00',  # 每天推送时间
+-    'content_length': 400,      # 每条问答内容长度（字数）
+-    'daily_count': 5            # 每天推送的问答数量
++    'content_length': 800,      # 每条问答内容长度（字数）
++    'daily_count': 2            # 每天推送的问答数量
+ }
+ 
+ # 数据库配置
+@@ -54,6 +54,14 @@
+     'file': 'data/app.log'
+ }
+ 
++# 企业微信群机器人配置
++WECHAT_WORK_CONFIG = {
++    'enabled': True,            # 是否启用企业微信群机器人推送
++    'webhook_url': '',          # 企业微信群机器人 Webhook 地址
++    'msg_type': 'markdown',     # 消息类型（text/markdown）
++    'use_email': True           # 是否同时通过邮件推送
++}
++
+ # LaTeX 公式渲染配置
+ LATEX_RENDER_CONFIG = {
+     'enabled': True,           # 是否启用公式渲染
+
+=== case: rev-863adbcb81f3b56f ===
+--- a/repo_manager.py
++++ b/repo_manager.py
+@@ -130,6 +130,42 @@
+     return clone_repo(clone_url, repo_dir, repo, logger=logger)
+ 
+ 
++def clone_repo_with_fork(owner: str, repo: str, fork_owner: str, fork_name: str,
++                         repo_dir: str, issue_url: str = '',
++                         logger=None) -> Optional[str]:
++    """从上游源仓库克隆完整内容（fork 可能内容不完整导致克隆失败），
++    并将 fork 设为 origin、上游源设为 upstream，以便后续推送到 fork。"""
++    if 'gitcode.com' in issue_url:
++        source_clone_url = f"http/workspace/gitcode.com/{owner}/{repo}.git"
++        fork_clone_url = f"http/workspace/gitcode.com/{fork_owner}/{fork_name}.git"
++    else:
++        source_clone_url = f"http/workspace/atomgit.com/{owner}/{repo}.git"
++        fork_clone_url = f"http/workspace/atomgit.com/{fork_owner}/{fork_name}.git"
++
++    # 从上游源仓库克隆（包含完整内容，fork 可能不完整导致克隆失败）
++    repo_path = clone_repo(source_clone_url, repo_dir, repo, logger=logger)
++    if repo_path is None:
++        return None
++
++    # 将 origin 设为 fork，以便后续推送到 fork
++    subprocess.run(
++        ['git', 'remote', 'set-url', 'origin', fork_clone_url],
++        cwd=repo_path, capture_output=True, text=True
++    )
++
++    # 将上游源设为 upstream
++    subprocess.run(
++        ['git', 'remote', 'add', 'upstream', source_clone_url],
++        cwd=repo_path, capture_output=True, text=True
++    )
++
++    if logger:
++        logger.info(f"  origin -> {fork_clone_url}")
++        logger.info(f"  upstream -> {source_clone_url}")
++
++    return repo_path
++
++
+ def download_patch(url: str, output_dir: str, cve_id: str, logger=None) -> Optional[str]:
+     os.makedirs(output_dir, exist_ok=True)
+ 
+
+=== case: rev-863e003d8ddf0a78 ===
+(no change)
+
+=== case: rev-89ac3cb4662a4ad1 ===
+--- a/generate_summary.py
++++ b/generate_summary.py
+@@ -109,7 +109,7 @@
+                     intent_desc = dim_info.get("变更影响描述", "")
+                     adaptation = dim_info.get("用户适配建议", "")
+                     
+-                    if change_type or intent_desc or adaptation:
++                    if change_type and change_type != "无变更":
+                         self.data["dimensions"].append({
+                             "result": "是",
+                             "dim_name": dim_name,
+
+=== case: rev-8a469aa591bca490 ===
+(no change)
+
+=== case: rev-98478339eba2368e ===
+--- a/__manifest__.py
++++ b/__manifest__.py
+@@ -7,7 +7,9 @@
+     'description': 'Integrates AI Agent for intelligent bug analysis',
+     'author': 'Your Company',
+     'license': 'LGPL-3',
+-    'data': [],
++    'data': [
++        'views/views.xml',
++    ],
+     'demo': [],
+     'installable': True,
+     'application': False,
+--- a/views/views.xml
++++ b/views/views.xml
+@@ -0,0 +1,59 @@
++<?xml version="1.0" encoding="utf-8"?>
++<odoo>
++    <data>
++        <!-- Tree view for AI Issue Analysis -->
++        <record id="view_ai_issue_analysis_tree" model="ir.ui.view">
++            <field name="name">ai.issue.analysis.tree</field>
++            <field name="model">ai.issue.analysis</field>
++            <field name="arch" type="xml">
++                <tree string="AI Issue Analysis">
++                    <field name="name"/>
++                    <field name="state"/>
++                </tree>
++            </field>
++        </record>
++
++        <!-- Form view for AI Issue Analysis -->
++        <record id="view_ai_issue_analysis_form" model="ir.ui.view">
++            <field name="name">ai.issue.analysis.form</field>
++            <field name="model">ai.issue.analysis</field>
++            <field name="arch" type="xml">
++                <form string="AI Issue Analysis">
++                    <header>
++                        <button name="action_analyze" type="object" string="Analyze" class="oe_highlight"/>
++                        <field name="state" widget="statusbar"/>
++                    </header>
++                    <sheet>
++                        <group>
++                            <field name="name"/>
++                            <field name="description"/>
++                        </group>
++                    </sheet>
++                </form>
++            </field>
++        </record>
++
++        <!-- Search view for AI Issue Analysis -->
++        <record id="view_ai_issue_analysis_search" model="ir.ui.view">
++            <field name="name">ai.issue.analysis.search</field>
++            <field name="model">ai.issue.analysis</field>
++            <field name="arch" type="xml">
++                <search string="AI Issue Analysis">
++                    <field name="name"/>
++                    <field name="state"/>
++                </search>
++            </field>
++        </record>
++
++        <!-- Action window -->
++        <record id="action_ai_issue_analysis" model="ir.actions.act_window">
++            <field name="name">AI Issue Analysis</field>
++            <field name="res_model">ai.issue.analysis</field>
++            <field name="view_mode">tree,form</field>
++        </record>
++
++        <!-- Menu item -->
++        <menuitem id="menu_ai_issue_analysis" name="AI Issue Analysis" sequence="10"/>
++        <menuitem id="menu_ai_issue_analysis_list" name="Analysis" parent="menu_ai_issue_analysis" sequence="10" action="action_ai_issue_analysis"/>
++    </data>
++</odoo>
+
+=== case: rev-9ca9c13ad9483bec ===
+--- a/media_utils.py
++++ b/media_utils.py
+@@ -35,6 +35,12 @@
+     Returns:
+         Raw MP4 bytes ready to be written to disk or streamed.
+     """
++    if audio_waveform is not None and not np.all(np.isfinite(audio_waveform)):
++        raise ValueError(
++            "audio_waveform contains non-finite values (NaN or +/-Inf); "
++            "please clean the audio data before muxing."
++        )
++
+     buf = io.BytesIO()
+     container = av.open(buf, mode="w", format="mp4")
+ 
+
+=== case: rev-9cdd9aa25c711967 ===
+--- a/settings.py
++++ b/settings.py
+@@ -54,6 +54,16 @@
+     'file': 'data/app.log'
+ }
+ 
++# 企业微信群机器人配置
++WECHAT_WORK_CONFIG = {
++    'webhook_url': 'http/workspace/qyapi.weixin.qq.com/cgi-bin/webhook/send?key=00000000-0000-0000-0000-000000000000',  # 企业微信群机器人webhook地址
++    'msgtype': 'markdown',           # 消息类型：text/markdown
++    'at_all': False,                  # 是否@所有人（仅text/markdown类型有效）
++    'at_mobiles': [],                 # 被@人的手机号列表
++    'timeout': 10,                    # 请求超时时间（秒）
++    'retry_times': 3                  # 推送失败重试次数
++}
++
+ # LaTeX 公式渲染配置
+ LATEX_RENDER_CONFIG = {
+     'enabled': True,           # 是否启用公式渲染
+
+=== case: rev-9f27702b16ac2ace ===
+--- a/repo_manager.py
++++ b/repo_manager.py
+@@ -130,6 +130,69 @@
+     return clone_repo(clone_url, repo_dir, repo, logger=logger)
+ 
+ 
++def clone_repo_with_fork(owner: str, repo: str, fork_owner: str, fork_name: str,
++                         repo_dir: str, issue_url: str = '',
++                         token: str = '', logger=None) -> Optional[str]:
++    """Clone the upstream repository and configure a ``fork`` remote.
++
++    Cloning a freshly created fork frequently returns an empty repository or
++    times out, which prevents us from obtaining the complete git objects
++    needed for the subsequent work.  To avoid that we clone the upstream
++    repository instead (it always carries the full, ready history) and
++    afterwards register a ``fork`` remote pointing at the fork so the prepared
++    changes can be pushed back and a pull request can be opened against the
++    upstream.
++    """
++    if 'gitcode.com' in issue_url:
++        upstream_url = f"http/workspace/gitcode.com/{owner}/{repo}.git"
++        fork_url = f"http/workspace/gitcode.com/{fork_owner}/{fork_name}.git"
++    else:
++        upstream_url = f"http/workspace/atomgit.com/{owner}/{repo}.git"
++        fork_url = f"http/workspace/atomgit.com/{fork_owner}/{fork_name}.git"
++
++    # 1) Clone the upstream repository to obtain the complete git objects.
++    #    A freshly forked repository may still be empty or slow to serve, so
++    #    cloning the upstream avoids the empty-repo / timeout problem.
++    repo_path = clone_repo(upstream_url, repo_dir, repo, logger=logger)
++    if repo_path is None:
++        return None
++
++    # 2) Configure the fork remote so changes can be pushed to the fork.
++    #    Embed the token in the push URL so authentication works for pushes.
++    if token:
++        if 'gitcode.com' in issue_url:
++            push_url = (
++                f"http/workspace/oauth2:{token}@gitcode.com/"
++                f"{fork_owner}/{fork_name}.git"
++            )
++        else:
++            push_url = (
++                f"http/workspace/oauth2:{token}@atomgit.com/"
++                f"{fork_owner}/{fork_name}.git"
++            )
++    else:
++        push_url = fork_url
++
++    # Remove a possibly existing fork remote before (re)adding it.
++    subprocess.run(
++        ['git', 'remote', 'remove', 'fork'],
++        cwd=repo_path, capture_output=True, text=True
++    )
++    result = subprocess.run(
++        ['git', 'remote', 'add', 'fork', push_url],
++        cwd=repo_path, capture_output=True, text=True
++    )
++    if result.returncode != 0:
++        if logger:
++            logger.error(f"  配置 fork 远程失败 - {result.stderr.strip()}")
++        return None
++
++    if logger:
++        logger.info(f"  已配置 fork 远程: {fork_url}")
++
++    return repo_path
++
++
+ def download_patch(url: str, output_dir: str, cve_id: str, logger=None) -> Optional[str]:
+     os.makedirs(output_dir, exist_ok=True)
+ 
+
+=== case: rev-9fbb2b58ef14ed55 ===
+--- a/settings.py
++++ b/settings.py
+@@ -38,8 +38,15 @@
+     'difficulty_levels': ['初级', '中级', '高级'],
+     'default_difficulty': '初级',
+     'schedule_time': '10:00',  # 每天推送时间
+-    'content_length': 400,      # 每条问答内容长度（字数）
+-    'daily_count': 5            # 每天推送的问答数量
++    'content_length': 200,      # 每条问答内容长度（字数）
++    'daily_count': 3            # 每天推送的问答数量
++}
++
++# 企业微信群机器人推送配置
++WECHAT_WORK_CONFIG = {
++    'webhook_url': 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_BOT_KEY',  # 群机器人 webhook 地址
++    'msg_type': 'text',        # 消息类型：text / markdown
++    'enabled': True,          # 是否启用企业微信推送通道
+ }
+ 
+ # 数据库配置
+
+=== case: rev-a60dac9e85e808bf ===
+(no change)
+
+=== case: rev-b8152a1f71487e75 ===
+--- a/papers_with_code_search.py
++++ b/papers_with_code_search.py
+@@ -52,27 +52,27 @@
+         self.cache_path.mkdir(parents=True, exist_ok=True)
+         
+         logger.info("="*70)
+-        logger.info("Papers with Code工具初始化完成")
++        logger.info("Papers with Code tool initialization complete")
+         logger.info("="*70)
+-        logger.info(f"  API基础URL: {self.API_BASE_URL}")
+-        logger.info(f"  最大结果数: {self.max_results}")
+-        logger.info(f"  重试次数: {self.retry_count}")
+-        logger.info(f"  RL类别数: {len(self.RL_CATEGORIES)}")
++        logger.info(f"  API base URL: {self.API_BASE_URL}")
++        logger.info(f"  Max results: {self.max_results}")
++        logger.info(f"  Retry count: {self.retry_count}")
++        logger.info(f"  RL categories count: {len(self.RL_CATEGORIES)}")
+         
+     def search_papers(self, keywords: List[str], categories: List[str] = None, time_range_hours: int = 24) -> List[Dict[str, Any]]:
+         """Search papers with code implementations by keywords."""
+         logger.info("\n" + "="*70)
+-        logger.info("Papers with Code论文搜索开始")
++        logger.info("Papers with Code paper search started")
+         logger.info("="*70)
+         
+         all_papers = []
+         
+         categories = categories or self.RL_CATEGORIES[:3]
+         
+-        logger.info(f"\n搜索类别: {', '.join(categories)}")
++        logger.info(f"\nSearch categories: {', '.join(categories)}")
+         
+         for category in categories[:3]:
+-            logger.info(f"\n类别: {category}")
++            logger.info(f"\nCategory: {category}")
+             
+             for attempt in range(self.retry_count):
+                 try:
+@@ -80,26 +80,26 @@
+                     
+                     if papers:
+                         all_papers.extend(papers)
+-                        logger.info(f"  ✓ 找到 {len(papers)} 篇论文")
++                        logger.info(f"  ✓ Found {len(papers)} papers")
+                         break
+                     else:
+-                        logger.warning(f"  ⚠ 尝试 {attempt+1}/{self.retry_count} 无结果")
++                        logger.warning(f"  ⚠ Attempt {attempt+1}/{self.retry_count} no results")
+                         time.sleep(self.RATE_LIMIT_DELAY)
+                         
+                 except Exception as e:
+-                    logger.error(f"  ✗ 尝试 {attempt+1}/{self.retry_count} 失败: {e}")
++                    logger.error(f"  ✗ Attempt {attempt+1}/{self.retry_count} failed: {e}")
+                     if attempt < self.retry_count - 1:
+                         time.sleep(self.RATE_LIMIT_DELAY * 2)
+                         continue
+                     else:
+-                        logger.error(f"  类别 '{category}' 搜索完全失败")
++                        logger.error(f"  Category '{category}' search completely failed")
+                         break
+             
+             time.sleep(self.RATE_LIMIT_DELAY)
+         
+         unique_papers = self._deduplicate_papers(all_papers)
+         
+-        logger.info(f"\n总计找到 {len(unique_papers)} 篇不同论文")
++        logger.info(f"\nTotal found {len(unique_papers)} unique papers")
+         
+         return unique_papers
+     
+@@ -128,20 +128,20 @@
+                 return self._format_papers(filtered_papers)
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return []
+                 
+         except requests.exceptions.Timeout:
+-            logger.warning("  API请求超时")
++            logger.warning("  API request timed out")
+             return []
+             
+         except requests.exceptions.RequestException as e:
+-            logger.warning(f"  API请求异常: {e}")
++            logger.warning(f"  API request exception: {e}")
+             return []
+     
+     def get_paper_implementations(self, paper_id: str) -> Dict[str, Any]:
+         """Get implementation details for a specific paper."""
+-        logger.info(f"\n获取论文实现详情: {paper_id}")
++        logger.info(f"\nGetting paper implementation details: {paper_id}")
+         
+         endpoint = f"{self.API_BASE_URL}/papers/{paper_id}/"
+         
+@@ -153,26 +153,26 @@
+                 
+                 implementations = self._extract_implementations(data)
+                 
+-                logger.info(f"  ✓ 获取实现详情成功")
+-                logger.info(f"    实现数量: {len(implementations.get('repositories', []))}")
++                logger.info(f"  ✓ Successfully retrieved implementation details")
++                logger.info(f"    Implementation count: {len(implementations.get('repositories', []))}")
+                 
+                 return implementations
+                 
+             elif response.status_code == 404:
+-                logger.warning(f"  ⚠ 论文不存在")
++                logger.warning(f"  ⚠ Paper not found")
+                 return {}
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return {}
+                 
+         except Exception as e:
+-            logger.error(f"  ✗ 获取实现详情失败: {e}")
++            logger.error(f"  ✗ Failed to get implementation details: {e}")
+             return {}
+     
+     def get_method_details(self, method_id: str) -> Dict[str, Any]:
+         """Get detailed information about a specific method."""
+-        logger.info(f"\n获取方法详情: {method_id}")
++        logger.info(f"\nGetting method details: {method_id}")
+         
+         endpoint = f"{self.API_BASE_URL}/methods/{method_id}/"
+         
+@@ -191,27 +191,27 @@
+                     "source": "papers_with_code"
+                 }
+                 
+-                logger.info(f"  ✓ 方法详情获取成功")
+-                logger.info(f"    方法名: {method_details['name']}")
+-                logger.info(f"    论文数: {method_details['papers_count']}")
++                logger.info(f"  ✓ Method details retrieved successfully")
++                logger.info(f"    Method name: {method_details['name']}")
++                logger.info(f"    Papers count: {method_details['papers_count']}")
+                 
+                 return method_details
+                 
+             elif response.status_code == 404:
+-                logger.warning(f"  ⚠ 方法不存在")
++                logger.warning(f"  ⚠ Method not found")
+                 return {}
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return {}
+                 
+         except Exception as e:
+-            logger.error(f"  ✗ 获取方法详情失败: {e}")
++            logger.error(f"  ✗ Failed to get method details: {e}")
+             return {}
+     
+     def get_benchmarks(self, area: str = "reinforcement-learning") -> List[Dict[str, Any]]:
+         """Get performance benchmarks for a specific area."""
+-        logger.info(f"\n获取基准测试数据: {area}")
++        logger.info(f"\nGetting benchmark data: {area}")
+         
+         endpoint = f"{self.API_BASE_URL}/areas/{area}/"
+         
+@@ -223,22 +223,22 @@
+                 
+                 benchmarks = self._extract_benchmarks(data)
+                 
+-                logger.info(f"  ✓ 基准测试数据获取成功")
+-                logger.info(f"    基准测试数: {len(benchmarks)}")
++                logger.info(f"  ✓ Benchmark data retrieved successfully")
++                logger.info(f"    Benchmark count: {len(benchmarks)}")
+                 
+                 return benchmarks
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return []
+                 
+         except Exception as e:
+-            logger.error(f"  ✗ 获取基准测试失败: {e}")
++            logger.error(f"  ✗ Failed to get benchmarks: {e}")
+             return []
+     
+     def link_github_repositories(self, paper_title: str) -> List[Dict[str, Any]]:
+         """Find GitHub repositories related to a paper."""
+-        logger.info(f"\n查找GitHub仓库: {paper_title[:50]}...")
++        logger.info(f"\nFinding GitHub repositories: {paper_title[:50]}...")
+         
+         endpoint = f"{self.API_BASE_URL}/papers/"
+         
+@@ -273,21 +273,21 @@
+                             "source": "papers_with_code"
+                         })
+                 
+-                logger.info(f"  ✓ 找到 {len(repositories)} 个GitHub仓库")
++                logger.info(f"  ✓ Found {len(repositories)} GitHub repositories")
+                 
+                 return repositories
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return []
+                 
+         except Exception as e:
+-            logger.error(f"  ✗ 查找GitHub仓库失败: {e}")
++            logger.error(f"  ✗ Failed to find GitHub repositories: {e}")
+             return []
+     
+     def get_popular_methods(self, area: str = "reinforcement-learning", limit: int = 20) -> List[Dict[str, Any]]:
+         """Get popular methods in a specific area."""
+-        logger.info(f"\n获取热门方法: {area}（限制={limit}）")
++        logger.info(f"\nGetting popular methods: {area} (limit={limit})")
+         
+         endpoint = f"{self.API_BASE_URL}/methods/"
+         
+@@ -308,20 +308,20 @@
+                 
+                 popular_methods = self._format_methods(results)
+                 
+-                logger.info(f"  ✓ 热门方法获取成功")
+-                logger.info(f"    方法数: {len(popular_methods)}")
++                logger.info(f"  ✓ Popular methods retrieved successfully")
++                logger.info(f"    Method count: {len(popular_methods)}")
+                 
+                 for method in popular_methods[:5]:
+-                    logger.info(f"      {method['name']}: {method['papers_count']}篇论文")
++                    logger.info(f"      {method['name']}: {method['papers_count']} papers")
+                 
+                 return popular_methods
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return []
+                 
+         except Exception as e:
+-            logger.error(f"  ✗ 获取热门方法失败: {e}")
++            logger.error(f"  ✗ Failed to get popular methods: {e}")
+             return []
+     
+     def _filter_by_time_range(self, papers: List[Dict], time_range_hours: int) -> List[Dict]:
+
+=== case: rev-b8d1d015a9c3a458 ===
+--- a/my_memviz.py
++++ b/my_memviz.py
+@@ -21,6 +21,62 @@
+     saved_memory_bytes: int = 0
+ 
+ 
++def _is_tensor_like(value):
++    """Return True if value looks like a tensor (duck-typed)."""
++    return (
++        value is not None
++        and hasattr(value, "shape")
++        and hasattr(value, "dtype")
++        and callable(getattr(value, "nelement", None))
++        and callable(getattr(value, "element_size", None))
++    )
++
++
++def _is_recognized_saved_attr(name):
++    """Return True if name is a recognized saved-tensor attribute."""
++    if name.startswith("_raw_saved_"):
++        return False
++    if name.startswith("_saved_mat"):
++        return True
++    return name in ("_saved_result", "_saved_bias", "_saved_weight")
++
++
++def extract_saved_tensors(grad_fn):
++    """Walk a grad_fn's saved attributes and return metadata for saved tensors.
++
++    Returns a list of dicts with keys: name, shape, dtype, size_bytes,
++    size_formatted. Recognized saved tensors are attributes starting with
++    ``_saved_mat`` plus ``_saved_result``, ``_saved_bias`` and
++    ``_saved_weight``. ``_raw_saved_`` variants, None values, non-tensor
++    values and attributes that raise ``RuntimeError`` on access are skipped.
++    """
++    results = []
++    for attr_name in dir(grad_fn):
++        if not _is_recognized_saved_attr(attr_name):
++            continue
++        try:
++            value = getattr(grad_fn, attr_name)
++        except RuntimeError:
++            continue
++        if value is None:
++            continue
++        if not _is_tensor_like(value):
++            continue
++        size_bytes = calculate_tensor_memory(value)
++        try:
++            shape = list(value.shape)
++        except TypeError:
++            shape = value.shape
++        results.append({
++            "name": attr_name,
++            "shape": shape,
++            "dtype": str(value.dtype),
++            "size_bytes": size_bytes,
++            "size_formatted": format_bytes(size_bytes),
++        })
++    return results
++
++
+ class Graph:
+     def __init__(self):
+         self.nodes: List[GraphNode] = []
+
+=== case: rev-bb519c7bf511ac8b ===
+--- a/conftest.py
++++ b/conftest.py
+@@ -21,6 +21,11 @@
+ # 将 cve-deal 根目录加入 path（用于导入 StepRunner）
+ CVE_DEAL_DIR = os.path.dirname(os.path.abspath(__file__))
+ sys.path.insert(0, os.path.join(CVE_DEAL_DIR, '..'))
++
++# 将 tools 根目录（conftest 目录上两级）加入 path
++# 用于导入 workflow_engine 和 scenarios 等模块
++TOOLS_DIR = os.path.normpath(os.path.join(CVE_DEAL_DIR, '..', '..'))
++sys.path.insert(0, TOOLS_DIR)
+ 
+ 
+ # ============================================================
+
+=== case: rev-bd78b451615c2a39 ===
+(no change)
+
+=== case: rev-cbfe633860b77795 ===
+--- a/workspace_header.py
++++ b/workspace_header.py
+@@ -8,8 +8,22 @@
+ # ---------------------------------------------------------------------------
+ # Workspace header
+ # ---------------------------------------------------------------------------
+-WORKSPACE_HEADER_CN = "# 工作空间\n\n"
+-WORKSPACE_HEADER_EN = "# Workspace\n\n"
++WORKSPACE_HEADER_CN = (
++    "# 工作空间\n\n"
++    "## 输出文件放置规范\n\n"
++    "- 通用生成产物（如代码文件、文档、数据文件等）必须放到 workspace 根目录下。\n"
++    "- 技能（skill）生成的产物必须放到该技能的专属目录下（即 skills/<skill_name>/ 目录）。\n"
++    "- 请勿将产物随意放置到任意目录，以免造成管理混乱。\n\n"
++)
++WORKSPACE_HEADER_EN = (
++    "# Workspace\n\n"
++    "## Output File Placement Guidelines\n\n"
++    "- General generated artifacts (e.g., code files, documents, data files) must be placed "
++    "in the workspace root directory.\n"
++    "- Artifacts generated by a skill must be placed in the skill's dedicated directory "
++    "(i.e., the skills/<skill_name>/ directory).\n"
++    "- Do not place artifacts in arbitrary directories to avoid management confusion.\n\n"
++)
+ 
+ WORKSPACE_HEADER: Dict[str, str] = {
+     "cn": WORKSPACE_HEADER_CN,
+
+=== case: rev-d89577c5071bc735 ===
+--- a/generate_baseline.py
++++ b/generate_baseline.py
+@@ -1,10 +1,12 @@
+ #!/usr/bin/env python3
+ """Generate baseline using Semantic Scholar API."""
+ 
++import re
++import json
++import time
++import logging
++import unicodedata
+ import requests
+-import time
+-import json
+-import logging
+ from datetime import datetime
+ from pathlib import Path
+ from typing import List, Dict, Any
+@@ -12,8 +14,54 @@
+ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+ logger = logging.getLogger(__name__)
+ 
+-PROJECTRoot = Path(__file__).parent.parent
++PROJECT_ROOT = Path(__file__).parent.parent
+ CUTOFF_DATE = "2026-03-31"
++
++# Maximum length (in characters) of the sanitized portion of a filename.
++MAX_FILENAME_LENGTH = 100
++
++# Fallback name used when a title contains no usable characters.
++DEFAULT_FILENAME = "untitled"
++
++
++def sanitize_filename(title: str) -> str:
++    """Convert a paper title into a filesystem-safe filename.
++
++    The returned string contains only ASCII letters, digits and underscores
++    so that it can safely be used as a file name on every operating system.
++
++    Special characters that frequently appear in paper titles -- quotes,
++    colons, parentheses, em-dashes, guillemets, non-ASCII letters, etc. -- are
++    removed or collapsed into a single underscore.  Titles that become empty
++    after sanitization (this includes the empty string as well as titles made
++    up entirely of non-ASCII characters) fall back to the safe default name
++    :data:`DEFAULT_FILENAME`.
++    """
++    if not title:
++        return DEFAULT_FILENAME
++
++    # Decompose accented characters into their base ASCII form (e.g. "é" ->
++    # "e") and drop anything that cannot be represented in ASCII (e.g.
++    # Cyrillic letters, guillemets, em-dashes).
++    normalized = unicodedata.normalize("NFKD", title)
++    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
++
++    # Replace every run of non-alphanumeric characters with a single
++    # underscore so that we never end up with consecutive separators.
++    safe = re.sub(r"[^A-Za-z0-9]+", "_", ascii_text)
++
++    # Trim leading/trailing underscores that may have been introduced above.
++    safe = safe.strip("_")
++
++    if not safe:
++        return DEFAULT_FILENAME
++
++    # Keep the file name to a reasonable length to stay well below the common
++    # 255-byte filesystem limit.
++    if len(safe) > MAX_FILENAME_LENGTH:
++        safe = safe[:MAX_FILENAME_LENGTH].strip("_") or DEFAULT_FILENAME
++
++    return safe
+ 
+ 
+ class BaselineGenerator:
+@@ -302,7 +350,7 @@
+     def _archive(self):
+         """Archive papers."""
+         for paper in self.all_papers:
+-            title_key = paper["title"][:20].replace(" ", "_").replace("/", "_")
++            title_key = sanitize_filename(paper["title"])
+             filepath = self.archive_path / f"{title_key}.json"
+             
+             with open(filepath, 'w', encoding='utf-8') as f:
+
+=== case: rev-e61f1fc58b070103 ===
+--- a/my_memviz.py
++++ b/my_memviz.py
+@@ -2,3 +2,7 @@
+     if num_bytes == 0:
+         return "0"
+     return "{:,}".format(num_bytes)
++
++
++def calculate_tensor_memory(tensor):
++    return tensor.nelement() * tensor.element_size()
+
+=== case: rev-f3e957f9a6ec89eb ===
+(no change)
+
+=== case: rev-f4c09bd8410f437b ===
+--- a/models.py
++++ b/models.py
+@@ -106,6 +106,8 @@
+     chat_type: str | None = None
+     # 定时任务执行时使用的 mode（"plan" 或 "agent"），创建时从对话上下文继承；无上下文时默认 "agent"
+     mode: str = "agent"
++    # 执行完成后是否自动删除该定时任务
++    delete_after_run: bool = False
+ 
+     def to_dict(self) -> dict[str, Any]:
+         d: dict[str, Any] = {
+@@ -127,6 +129,8 @@
+             d["chat_type"] = self.chat_type
+         if self.mode:
+             d["mode"] = self.mode
++        if self.delete_after_run:
++            d["delete_after_run"] = True
+         return d
+ 
+     @staticmethod
+@@ -196,6 +200,8 @@
+             if isinstance(mode_raw, str) and str(mode_raw).strip()
+             else "agent"
+         )
++
++        delete_after_run = bool(data.get("delete_after_run", False))
+         return CronJob(
+             id=job_id,
+             name=name,
+@@ -211,6 +217,7 @@
+             updated_at=updated_at_f,
+             chat_type=job_chat_type,
+             mode=job_mode,
++            delete_after_run=delete_after_run,
+         )
+ 
+ 
+
+=== case: rev-fef49ee571e4af8c ===
+--- a/my_memviz.py
++++ b/my_memviz.py
+@@ -1,3 +1,26 @@
++from dataclasses import dataclass
++from typing import Any, List, Optional
++
++
++@dataclass
++class GraphNode:
++    """Represents a node in a computation graph.
++
++    Attributes:
++        node_id: Unique identifier for the node.
++        op_type: The operation type associated with the node.
++        output_shape: The shape of the tensor produced by the node.
++        saved_tensors: Optional list of tensors saved for backward pass.
++        saved_memory: Optional amount of memory (in bytes) saved by the node.
++    """
++
++    node_id: int
++    op_type: str
++    output_shape: tuple
++    saved_tensors: Optional[List[Any]] = None
++    saved_memory: Optional[int] = None
++
++
+ def format_bytes(num_bytes):
+     if num_bytes == 0:
+         return "0"

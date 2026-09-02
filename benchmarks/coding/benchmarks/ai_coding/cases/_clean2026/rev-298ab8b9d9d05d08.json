@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-298ab8b9d9d05d08",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "javascript",
+  "prompt": "When calling resolveRuntimeContext with a cwd but no builtinRoot or pluginRoot, the default builtinRoot and pluginRoot paths are resolved relative to the workspace root (cwd). They should instead be resolved relative to the package root where the SDK module file resides, so they remain stable regardless of the working directory. The cacheFilePath default should continue to be relative to the workspace root.",
+  "context": {
+    "files": [
+      {
+        "path": "runtimeContext.ts",
+        "content": "import { isAbsolute, resolve } from 'path'\n\nexport interface RuntimeContext {\n  workspaceRoot: string\n  builtinRoot: string\n  pluginRoot: string\n  cacheFilePath: string\n}\n\nexport interface RuntimeContextInput {\n  cwd?: string\n  workspaceRoot?: string\n  builtinRoot?: string\n  pluginRoot?: string\n  cacheFilePath?: string\n}\n\nfunction resolveFromWorkspace(workspaceRoot: string, pathValue: string | undefined, fallbackRelative: string): string {\n  if (!pathValue || pathValue.trim().length === 0) {\n    return resolve(workspaceRoot, fallbackRelative)\n  }\n  if (isAbsolute(pathValue)) {\n    return resolve(pathValue)\n  }\n  return resolve(workspaceRoot, pathValue)\n}\n\nexport function resolveRuntimeContext(input: RuntimeContextInput = {}): RuntimeContext {\n  const baseCwd = input.cwd ?? process.cwd()\n  const workspaceRoot = input.workspaceRoot\n    ? resolve(baseCwd, input.workspaceRoot)\n    : resolve(baseCwd)\n\n  return {\n    workspaceRoot,\n    builtinRoot: resolveFromWorkspace(workspaceRoot, input.builtinRoot, 'builtin'),\n    pluginRoot: resolveFromWorkspace(workspaceRoot, input.pluginRoot, 'plugins'),\n    cacheFilePath: resolveFromWorkspace(\n      workspaceRoot,\n      input.cacheFilePath,\n      '.neo-designer/state/workflow-registry-cache.json',\n    ),\n  }\n}\n",
+        "role": "impl"
+      },
+      {
+        "path": "runtimeContext.test.ts",
+        "content": "import { test } from 'node:test'\nimport { strict as assert } from 'node:assert'\nimport { dirname, resolve } from 'path'\nimport { fileURLToPath } from 'url'\nimport { resolveRuntimeContext } from './runtimeContext.ts'\n\nconst TEST_DIR = dirname(fileURLToPath(import.meta.url))\nconst PACKAGE_ROOT = resolve(TEST_DIR, '..', '..', '..')\n\n\ntest('default builtinRoot resolves relative to package root, not workspace root', () => {\n  const cwd = '/tmp/neo-test-workspace'\n  const ctx = resolveRuntimeContext({ cwd })\n  assert.equal(ctx.builtinRoot, resolve(PACKAGE_ROOT, 'builtin'))\n  assert.notEqual(ctx.builtinRoot, resolve(ctx.workspaceRoot, 'builtin'))\n})\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-4bf0e8dc-da9-ea4a0312f834fb7c; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "node --test",
+    "gold_files": [
+      {
+        "path": "runtimeContext.ts",
+        "content": "import { dirname, isAbsolute, resolve } from 'path'\nimport { fileURLToPath } from 'url'\n\n// 自动发现 package 根目录（packages/core）\n// runtimeContext.ts 位于 packages/core/src/access/sdk/runtimeContext.ts\n// 向上 3 级到达 packages/core\nconst SDK_DIR = dirname(fileURLToPath(import.meta.url))\nconst PACKAGE_ROOT = resolve(SDK_DIR, '..', '..', '..')\n\nexport interface RuntimeContext {\n  workspaceRoot: string\n  builtinRoot: string\n  pluginRoot: string\n  cacheFilePath: string\n}\n\nexport interface RuntimeContextInput {\n  cwd?: string\n  workspaceRoot?: string\n  builtinRoot?: string\n  pluginRoot?: string\n  cacheFilePath?: string\n}\n\nfunction resolveFromWorkspace(workspaceRoot: string, pathValue: string | undefined, fallbackAbsolute: string): string {\n  if (!pathValue || pathValue.trim().length === 0) {\n    // 使用 package 相对路径作为默认值\n    return fallbackAbsolute\n  }\n  if (isAbsolute(pathValue)) {\n    return resolve(pathValue)\n  }\n  return resolve(workspaceRoot, pathValue)\n}\n\nexport function resolveRuntimeContext(input: RuntimeContextInput = {}): RuntimeContext {\n  const baseCwd = input.cwd ?? process.cwd()\n  const workspaceRoot = input.workspaceRoot\n    ? resolve(baseCwd, input.workspaceRoot)\n    : resolve(baseCwd)\n\n  return {\n    workspaceRoot,\n    builtinRoot: resolveFromWorkspace(workspaceRoot, input.builtinRoot, resolve(PACKAGE_ROOT, 'builtin')),\n    pluginRoot: resolveFromWorkspace(workspaceRoot, input.pluginRoot, resolve(PACKAGE_ROOT, 'plugins')),\n    cacheFilePath: resolveFromWorkspace(\n      workspaceRoot,\n      input.cacheFilePath,\n      resolve(workspaceRoot, '.neo-designer/state/workflow-registry-cache.json'),\n    ),\n  }\n}\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "runtimeContext_spec.test.ts",
+        "content": "import { test } from 'node:test'\nimport { strict as assert } from 'node:assert'\nimport { dirname, resolve } from 'path'\nimport { fileURLToPath } from 'url'\nimport { resolveRuntimeContext } from './runtimeContext.ts'\n\nconst TEST_DIR = dirname(fileURLToPath(import.meta.url))\nconst PACKAGE_ROOT = resolve(TEST_DIR, '..', '..', '..')\n\n\ntest('default pluginRoot resolves relative to package root, not workspace root', () => {\n  const cwd = '/tmp/neo-test-workspace'\n  const ctx = resolveRuntimeContext({ cwd })\n  assert.equal(ctx.pluginRoot, resolve(PACKAGE_ROOT, 'plugins'))\n  assert.notEqual(ctx.pluginRoot, resolve(ctx.workspaceRoot, 'plugins'))\n})\n\n\ntest('default cacheFilePath resolves relative to workspace root', () => {\n  const cwd = '/tmp/neo-test-workspace'\n  const ctx = resolveRuntimeContext({ cwd })\n  assert.equal(\n    ctx.cacheFilePath,\n    resolve(ctx.workspaceRoot, '.neo-designer/state/workflow-registry-cache.json'),\n  )\n})\n\n\ntest('absolute builtinRoot is used as-is', () => {\n  const ctx = resolveRuntimeContext({ cwd: '/tmp/ws', builtinRoot: '/custom/builtin' })\n  assert.equal(ctx.builtinRoot, resolve('/custom/builtin'))\n})\n\n\ntest('relative builtinRoot resolves against workspace root', () => {\n  const ctx = resolveRuntimeContext({ cwd: '/tmp/ws', builtinRoot: 'my-builtin' })\n  assert.equal(ctx.builtinRoot, resolve(ctx.workspaceRoot, 'my-builtin'))\n})\n\n\ntest('whitespace-only builtinRoot falls back to package root default', () => {\n  const ctx = resolveRuntimeContext({ cwd: '/tmp/ws', builtinRoot: '   ' })\n  assert.equal(ctx.builtinRoot, resolve(PACKAGE_ROOT, 'builtin'))\n})\n"
+      }
+    ],
+    "protected_paths": [
+      "runtimeContext.test.ts"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-4bf0e8dc-da99-9177-8a21-fd127dfbc4cf",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "runtimeContext.ts#c79c60754bf5",
+    "reverse_edits": 1,
+    "difficulty": "easy",
+    "fingerprint": "v3:e6f6ee75cd6ad516",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

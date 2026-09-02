@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-738db5f8753b49f2",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "javascript",
+  "prompt": "The node lifecycle contract should support a rework flow: a completed node should be able to transition to a rework state, and from rework back to entering. Currently, completed nodes are terminal with no path to rework, and no rework state exists in the node lifecycle.",
+  "context": {
+    "files": [
+      {
+        "path": "lifecycleTypes.ts",
+        "content": "/**\n * Lifecycle contract types (Wave 1, Task 2).\n *\n * NOTE: This file intentionally contains *types and transition tables only*.\n * The actual LifecycleManager implementation comes later.\n */\n\nexport type IsoTimestamp = string\n\n/**\n * Node lifecycle events.\n *\n * Ordering guarantees (per node instance):\n * - ENTER_STARTED occurs at most once.\n * - ENTER_* outcome occurs at most once, and only after ENTER_STARTED.\n * - EXIT_STARTED occurs at most once, and only after ENTER_SUCCEEDED.\n * - EXIT_* outcome occurs at most once, and only after EXIT_STARTED.\n */\nexport type NodeLifecycleEventType =\n  | 'ENTER_STARTED'\n  | 'ENTER_SUCCEEDED'\n  | 'ENTER_FAILED'\n  | 'EXIT_STARTED'\n  | 'EXIT_SUCCEEDED'\n  | 'EXIT_FAILED'\n\nexport type StageLifecycleEventType =\n  | 'ENTER_STARTED'\n  | 'ENTER_SUCCEEDED'\n  | 'ENTER_FAILED'\n  | 'EXIT_STARTED'\n  | 'EXIT_SUCCEEDED'\n  | 'EXIT_FAILED'\n\nexport type NodeEnterOutcomeEventType = 'ENTER_SUCCEEDED' | 'ENTER_FAILED'\nexport type NodeExitOutcomeEventType = 'EXIT_SUCCEEDED' | 'EXIT_FAILED'\n\nexport type StageEnterOutcomeEventType = 'ENTER_SUCCEEDED' | 'ENTER_FAILED'\nexport type StageExitOutcomeEventType = 'EXIT_SUCCEEDED' | 'EXIT_FAILED'\n\nexport type NodeState =\n  | 'PENDING'\n  | 'ENTERING'\n  | 'RUNNING'\n  | 'EXITING'\n  | 'COMPLETED'\n  | 'FAILED'\n\nexport type StageState =\n  | 'PENDING'\n  | 'ENTERING'\n  | 'RUNNING'\n  | 'EXITING'\n  | 'COMPLETED'\n  | 'FAILED'\n\nexport interface NodeLifecycleEventBase {\n  scope: 'node'\n  type: NodeLifecycleEventType\n  at: IsoTimestamp\n  taskId: string\n  stageId: string\n  nodeId: string\n}\n\nexport type NodeLifecycleEvent =\n  | (NodeLifecycleEventBase & {\n      type: 'ENTER_STARTED' | 'EXIT_STARTED'\n    })\n  | (NodeLifecycleEventBase & {\n      type: 'ENTER_SUCCEEDED' | 'EXIT_SUCCEEDED'\n      result?: unknown\n    })\n  | (NodeLifecycleEventBase & {\n      type: 'ENTER_FAILED' | 'EXIT_FAILED'\n      error: unknown\n    })\n\nexport interface StageLifecycleEventBase {\n  scope: 'stage'\n  type: StageLifecycleEventType\n  at: IsoTimestamp\n  taskId: string\n  stageId: string\n}\n\nexport type StageLifecycleEvent =\n  | (StageLifecycleEventBase & {\n      type: 'ENTER_STARTED' | 'EXIT_STARTED'\n    })\n  | (StageLifecycleEventBase & {\n      type: 'ENTER_SUCCEEDED' | 'EXIT_SUCCEEDED'\n      result?: unknown\n    })\n  | (StageLifecycleEventBase & {\n      type: 'ENTER_FAILED' | 'EXIT_FAILED'\n      error: unknown\n    })\n\n/**\n * Allowed state transitions (type-level contract).\n *\n * The runtime transition engine must enforce these tables.\n */\nexport const NODE_STATE_TRANSITIONS = {\n  PENDING: ['ENTERING'] as const,\n  ENTERING: ['RUNNING', 'FAILED'] as const,\n  RUNNING: ['EXITING', 'FAILED'] as const,\n  EXITING: ['COMPLETED', 'FAILED'] as const,\n  COMPLETED: [] as const,\n  FAILED: [] as const,\n} as const satisfies Record<NodeState, readonly NodeState[]>\n\nexport type NodeNextState<S extends NodeState> =\n  (typeof NODE_STATE_TRANSITIONS)[S][number]\n\nexport const STAGE_STATE_TRANSITIONS = {\n  PENDING: ['ENTERING'] as const,\n  ENTERING: ['RUNNING', 'FAILED'] as const,\n  RUNNING: ['EXITING', 'FAILED'] as const,\n  EXITING: ['COMPLETED', 'FAILED'] as const,\n  COMPLETED: [] as const,\n  FAILED: [] as const,\n} as const satisfies Record<StageState, readonly StageState[]>\n\nexport type StageNextState<S extends StageState> =\n  (typeof STAGE_STATE_TRANSITIONS)[S][number]\n",
+        "role": "impl"
+      },
+      {
+        "path": "lifecycleTypes.test.ts",
+        "content": "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport { NODE_STATE_TRANSITIONS, STAGE_STATE_TRANSITIONS } from './lifecycleTypes.ts'\n\nconst nodeTransitions = NODE_STATE_TRANSITIONS as Record<string, readonly string[]>\nconst stageTransitions = STAGE_STATE_TRANSITIONS as Record<string, readonly string[]>\n\n\ntest('COMPLETED node state allows transition to REWORK', () => {\n  const next = nodeTransitions.COMPLETED\n  assert.ok(next.includes('REWORK'), 'COMPLETED should allow REWORK as a next state')\n})\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-e530546a-d69-c3d55e31fe682ebd; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "node --test",
+    "gold_files": [
+      {
+        "path": "lifecycleTypes.ts",
+        "content": "/**\n * Lifecycle contract types (Wave 1, Task 2).\n *\n * NOTE: This file intentionally contains *types and transition tables only*.\n * The actual LifecycleManager implementation comes later.\n */\n\nexport type IsoTimestamp = string\n\n/**\n * Node lifecycle events.\n *\n * Ordering guarantees (per node instance):\n * - ENTER_STARTED occurs at most once.\n * - ENTER_* outcome occurs at most once, and only after ENTER_STARTED.\n * - EXIT_STARTED occurs at most once, and only after ENTER_SUCCEEDED.\n * - EXIT_* outcome occurs at most once, and only after EXIT_STARTED.\n * - REWORK_ENTERED occurs at most once, and only after COMPLETED.\n * - REWORK_COMPLETED occurs at most once, and only after REWORK_ENTERED.\n */\nexport type NodeLifecycleEventType =\n  | 'ENTER_STARTED'\n  | 'ENTER_SUCCEEDED'\n  | 'ENTER_FAILED'\n  | 'EXIT_STARTED'\n  | 'EXIT_SUCCEEDED'\n  | 'EXIT_FAILED'\n  | 'REWORK_ENTERED'\n  | 'REWORK_COMPLETED'\n\nexport type StageLifecycleEventType =\n  | 'ENTER_STARTED'\n  | 'ENTER_SUCCEEDED'\n  | 'ENTER_FAILED'\n  | 'EXIT_STARTED'\n  | 'EXIT_SUCCEEDED'\n  | 'EXIT_FAILED'\n\nexport type NodeEnterOutcomeEventType = 'ENTER_SUCCEEDED' | 'ENTER_FAILED'\nexport type NodeExitOutcomeEventType = 'EXIT_SUCCEEDED' | 'EXIT_FAILED'\n\nexport type StageEnterOutcomeEventType = 'ENTER_SUCCEEDED' | 'ENTER_FAILED'\nexport type StageExitOutcomeEventType = 'EXIT_SUCCEEDED' | 'EXIT_FAILED'\n\nexport type NodeState =\n  | 'PENDING'\n  | 'ENTERING'\n  | 'RUNNING'\n  | 'EXITING'\n  | 'COMPLETED'\n  | 'FAILED'\n  | 'REWORK'\n\nexport type StageState =\n  | 'PENDING'\n  | 'ENTERING'\n  | 'RUNNING'\n  | 'EXITING'\n  | 'COMPLETED'\n  | 'FAILED'\n\nexport interface NodeLifecycleEventBase {\n  scope: 'node'\n  type: NodeLifecycleEventType\n  at: IsoTimestamp\n  taskId: string\n  stageId: string\n  nodeId: string\n}\n\nexport type NodeLifecycleEvent =\n  | (NodeLifecycleEventBase & {\n      type: 'ENTER_STARTED' | 'EXIT_STARTED'\n    })\n  | (NodeLifecycleEventBase & {\n      type: 'ENTER_SUCCEEDED' | 'EXIT_SUCCEEDED'\n      result?: unknown\n    })\n  | (NodeLifecycleEventBase & {\n      type: 'ENTER_FAILED' | 'EXIT_FAILED'\n      error: unknown\n    })\n\nexport interface StageLifecycleEventBase {\n  scope: 'stage'\n  type: StageLifecycleEventType\n  at: IsoTimestamp\n  taskId: string\n  stageId: string\n}\n\nexport type StageLifecycleEvent =\n  | (StageLifecycleEventBase & {\n      type: 'ENTER_STARTED' | 'EXIT_STARTED'\n    })\n  | (StageLifecycleEventBase & {\n      type: 'ENTER_SUCCEEDED' | 'EXIT_SUCCEEDED'\n      result?: unknown\n    })\n  | (StageLifecycleEventBase & {\n      type: 'ENTER_FAILED' | 'EXIT_FAILED'\n      error: unknown\n    })\n\n/**\n * Allowed state transitions (type-level contract).\n *\n * The runtime transition engine must enforce these tables.\n */\nexport const NODE_STATE_TRANSITIONS = {\n  PENDING: ['ENTERING'] as const,\n  ENTERING: ['RUNNING', 'FAILED'] as const,\n  RUNNING: ['EXITING', 'FAILED'] as const,\n  EXITING: ['COMPLETED', 'FAILED'] as const,\n  COMPLETED: ['REWORK'] as const,\n  FAILED: [] as const,\n  REWORK: ['ENTERING'] as const,\n} as const satisfies Record<NodeState, readonly NodeState[]>\n\nexport type NodeNextState<S extends NodeState> =\n  (typeof NODE_STATE_TRANSITIONS)[S][number]\n\nexport const STAGE_STATE_TRANSITIONS = {\n  PENDING: ['ENTERING'] as const,\n  ENTERING: ['RUNNING', 'FAILED'] as const,\n  RUNNING: ['EXITING', 'FAILED'] as const,\n  EXITING: ['COMPLETED', 'FAILED'] as const,\n  COMPLETED: [] as const,\n  FAILED: [] as const,\n} as const satisfies Record<StageState, readonly StageState[]>\n\nexport type StageNextState<S extends StageState> =\n  (typeof STAGE_STATE_TRANSITIONS)[S][number]\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "lifecycleTypes_spec.test.ts",
+        "content": "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\nimport { NODE_STATE_TRANSITIONS, STAGE_STATE_TRANSITIONS } from './lifecycleTypes.ts'\n\nconst nodeTransitions = NODE_STATE_TRANSITIONS as Record<string, readonly string[]>\nconst stageTransitions = STAGE_STATE_TRANSITIONS as Record<string, readonly string[]>\n\n\ntest('REWORK node state exists and transitions to ENTERING', () => {\n  assert.ok('REWORK' in nodeTransitions, 'REWORK should be a key in node transitions')\n  const next = nodeTransitions.REWORK\n  assert.ok(Array.isArray(next), 'REWORK transitions should be an array')\n  assert.ok(next.includes('ENTERING'), 'REWORK should allow ENTERING as a next state')\n})\n\n\ntest('rework cycle: COMPLETED -> REWORK -> ENTERING is a valid path', () => {\n  const fromCompleted = nodeTransitions.COMPLETED\n  assert.ok(fromCompleted.includes('REWORK'), 'COMPLETED should allow REWORK')\n  const fromRework = nodeTransitions.REWORK\n  assert.ok(Array.isArray(fromRework), 'REWORK state should exist')\n  assert.ok(fromRework.includes('ENTERING'), 'REWORK should allow ENTERING')\n})\n\n\ntest('existing PENDING -> ENTERING transition is preserved', () => {\n  assert.deepEqual([...nodeTransitions.PENDING], ['ENTERING'])\n})\n\n\ntest('FAILED node state remains terminal', () => {\n  assert.deepEqual([...nodeTransitions.FAILED], [])\n})\n\n\ntest('stage COMPLETED remains terminal (stages do not support rework)', () => {\n  assert.deepEqual([...stageTransitions.COMPLETED], [])\n})\n"
+      }
+    ],
+    "protected_paths": [
+      "lifecycleTypes.test.ts"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-e530546a-d699-9587-b098-761f6a3a29d0",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "lifecycleTypes.ts#2529ca986b9c",
+    "reverse_edits": 3,
+    "difficulty": "medium",
+    "fingerprint": "v3:aeeb70f791a6a21e",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

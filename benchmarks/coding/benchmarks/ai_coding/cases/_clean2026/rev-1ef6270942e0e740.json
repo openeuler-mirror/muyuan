@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-1ef6270942e0e740",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "The module should provide a container to build a computation graph: instantiate it, add nodes that accumulate their saved memory into a running total, and add edges that record source and destination identifiers. Currently the module only defines individual node records — referencing the graph container raises AttributeError.",
+  "context": {
+    "files": [
+      {
+        "path": "my_memviz.py",
+        "content": "from dataclasses import dataclass, field\nfrom typing import List, Dict, Any\n\n\ndef format_bytes(num_bytes):\n    if num_bytes == 0:\n        return \"0\"\n    return \"{:,}\".format(num_bytes)\n\n\ndef calculate_tensor_memory(tensor):\n    return tensor.nelement() * tensor.element_size()\n\n\n@dataclass\nclass GraphNode:\n    node_id: int\n    op_type: str\n    output_shape: List[int]\n    saved_tensors: List[Dict[str, Any]] = field(default_factory=list)\n    saved_memory_bytes: int = 0\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_my_memviz.py",
+        "content": "import pytest\nimport my_memviz\n\n\ndef test_graph_exists_and_instantiable():\n    assert hasattr(my_memviz, 'Graph')\n    g = my_memviz.Graph()\n    assert isinstance(g, my_memviz.Graph)\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-437878bf-151-f292e2eb75487831; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "my_memviz.py",
+        "content": "from dataclasses import dataclass, field\nfrom typing import List, Dict, Any\n\n\ndef format_bytes(num_bytes):\n    if num_bytes == 0:\n        return \"0\"\n    return \"{:,}\".format(num_bytes)\n\n\ndef calculate_tensor_memory(tensor):\n    return tensor.nelement() * tensor.element_size()\n\n\n@dataclass\nclass GraphNode:\n    node_id: int\n    op_type: str\n    output_shape: List[int]\n    saved_tensors: List[Dict[str, Any]] = field(default_factory=list)\n    saved_memory_bytes: int = 0\n\n\nclass Graph:\n    def __init__(self):\n        self.nodes: List[GraphNode] = []\n        self.edges: List[Dict[str, int]] = []\n        self.total_saved_memory_bytes: int = 0\n\n    def add_node(self, node: GraphNode):\n        self.nodes.append(node)\n        self.total_saved_memory_bytes += node.saved_memory_bytes\n\n    def add_edge(self, from_id: int, to_id: int):\n        self.edges.append({\"from\": from_id, \"to\": to_id})\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_my_memviz_spec.py",
+        "content": "import pytest\nimport my_memviz\n\n\ndef test_graph_initial_state():\n    g = my_memviz.Graph()\n    assert g.nodes == []\n    assert g.edges == []\n    assert g.total_saved_memory_bytes == 0\n\n\ndef test_add_node_accumulates_memory():\n    g = my_memviz.Graph()\n    node1 = my_memviz.GraphNode(\n        node_id=0,\n        op_type=\"conv\",\n        output_shape=[1, 64, 32, 32],\n        saved_memory_bytes=1024,\n    )\n    node2 = my_memviz.GraphNode(\n        node_id=1,\n        op_type=\"relu\",\n        output_shape=[1, 64, 32, 32],\n        saved_memory_bytes=2048,\n    )\n    g.add_node(node1)\n    assert g.total_saved_memory_bytes == 1024\n    assert len(g.nodes) == 1\n    assert g.nodes[0] is node1\n    g.add_node(node2)\n    assert g.total_saved_memory_bytes == 3072\n    assert len(g.nodes) == 2\n    assert g.nodes[1] is node2\n\n\ndef test_add_edge_stores_from_to():\n    g = my_memviz.Graph()\n    g.add_edge(0, 1)\n    g.add_edge(1, 2)\n    assert len(g.edges) == 2\n    assert g.edges[0] == {\"from\": 0, \"to\": 1}\n    assert g.edges[1] == {\"from\": 1, \"to\": 2}\n\n\ndef test_graph_node_still_works():\n    node = my_memviz.GraphNode(\n        node_id=5,\n        op_type=\"matmul\",\n        output_shape=[2, 2],\n    )\n    assert node.node_id == 5\n    assert node.op_type == \"matmul\"\n    assert node.output_shape == [2, 2]\n    assert node.saved_tensors == []\n    assert node.saved_memory_bytes == 0\n\n\ndef test_format_bytes_still_works():\n    assert my_memviz.format_bytes(0) == \"0\"\n    assert my_memviz.format_bytes(1000) == \"1,000\"\n    assert my_memviz.format_bytes(1234567) == \"1,234,567\"\n"
+      }
+    ],
+    "protected_paths": [
+      "test_my_memviz.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-437878bf-151c-90d4-81b7-82ec1bcf7fac",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "my_memviz.py#45836e156201",
+    "reverse_edits": 1,
+    "difficulty": "easy",
+    "fingerprint": "v3:9f8ac39669938d8c",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

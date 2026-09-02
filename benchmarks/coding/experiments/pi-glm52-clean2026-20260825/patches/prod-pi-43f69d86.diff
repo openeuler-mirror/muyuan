@@ -1,0 +1,2753 @@
+=== case: rev-05e88429bf55fa4d ===
+--- a/config_diff_analyzer.py
++++ b/config_diff_analyzer.py
+@@ -115,14 +115,28 @@
+     return False
+ 
+ 
+-def discover_config_files(root, extra_dirs=None):
++def _parse_dir_list(value):
++    """Normalize a directory-list argument into a set of names.
++
++    Accepts ``None``, a comma-separated string, or any iterable of strings.
++    """
++    if not value:
++        return set()
++    if isinstance(value, str):
++        return {d.strip() for d in value.split(",") if d.strip()}
++    try:
++        return {str(d).strip() for d in value if str(d).strip()}
++    except TypeError:
++        return set()
++
++
++def discover_config_files(root, extra_dirs=None, extra_skip_dirs=None):
+     results = []
+-    conf_dirs = set(_CONF_DIRS)
+-    if extra_dirs:
+-        conf_dirs.update(d.strip() for d in extra_dirs.split(",") if d.strip())
++    conf_dirs = set(_CONF_DIRS) | _parse_dir_list(extra_dirs)
++    skip_dirs = set(_SKIP_DIRS) | _parse_dir_list(extra_skip_dirs)
+ 
+     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
++        dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+         reldir = os.path.relpath(dirpath, root)
+ 
+         for fname in filenames:
+@@ -472,6 +486,10 @@
+                         help="输出文件")
+     parser.add_argument("--conf-dirs", default="",
+                         help="额外的配置目录名，逗号分隔（默认 conf,etc,config）")
++    parser.add_argument("--skip-dirs", "--exclude-dirs", dest="skip_dirs",
++                        default="",
++                        help="额外要跳过的目录名，逗号分隔"
++                        "（这些目录下的配置文件不会出现在结果中）")
+     parser.add_argument("--discover-only", action="store_true",
+                         help="只发现配置文件，不解析内容")
+     parser.add_argument("--names", default="",
+@@ -488,14 +506,14 @@
+         print("━" * 50)
+         print("📦 旧版本配置文件发现")
+         print("━" * 50)
+-        old_files = discover_config_files(old_root, args.conf_dirs)
++        old_files = discover_config_files(old_root, args.conf_dirs, args.skip_dirs)
+         print(f"   发现 {len(old_files)} 个配置文件")
+ 
+         print()
+         print("━" * 50)
+         print("📦 新版本配置文件发现")
+         print("━" * 50)
+-        new_files = discover_config_files(new_root, args.conf_dirs)
++        new_files = discover_config_files(new_root, args.conf_dirs, args.skip_dirs)
+         print(f"   发现 {len(new_files)} 个配置文件")
+ 
+         if args.names:
+@@ -519,7 +537,7 @@
+     else:
+         root = os.path.abspath(dirs[0])
+         print(f"📂 扫描配置文件: {root}")
+-        files = discover_config_files(root, args.conf_dirs)
++        files = discover_config_files(root, args.conf_dirs, args.skip_dirs)
+         print(f"   发现 {len(files)} 个配置文件")
+ 
+         if args.names:
+
+=== case: rev-09f7740f614d3ea9 ===
+--- a/build.py
++++ b/build.py
+@@ -142,8 +142,14 @@
+ 
+ 
+ def setup_cangjie_env(env: dict[str, str], sdk: Path, plat: str, spec: PlatformSpec) -> None:
+-    """按 envsetup 等价规则构造仓颉 SDK 运行环境"""
+-    home = ensure(sdk / "build-tools", "CANGJIE_HOME")
++    """按 envsetup 等价规则构造仓颉 SDK 运行环境
++
++    支持两种 SDK 安装结构：
++    - SDK Manager 安装：工具链位于 ``sdk/build-tools`` 子目录；
++    - 独立安装：工具链直接位于 ``sdk`` 根目录（无 ``build-tools``）。
++    """
++    build_tools = sdk / "build-tools"
++    home = build_tools if build_tools.exists() else ensure(sdk, "CANGJIE_HOME")
+     env["CANGJIE_HOME"] = str(home)
+ 
+     rt_dir = spec.runtime_dir.format(arch=host_arch())
+
+=== case: rev-0a13d6e43c487375 ===
+--- a/build.py
++++ b/build.py
+@@ -49,12 +49,14 @@
+             cwd=None
+         )
+         print(result.stdout)
+-        
++
+     except subprocess.CalledProcessError as e:
++        print("JNI build skipped")
+         print(f"return code: {e.returncode}")
+-        print(f"error: {e.stderr}")
++        print("Please install the JNI build dependencies and try again.")
+     except FileNotFoundError:
+-        print("cannot find build.py")
++        print("Warning: cannot find build.py, JNI build skipped")
++        print("Please install the JNI build dependencies and try again.")
+ 
+ def download_boundscheck():
+     cmd = ["git", "clone", "-b", "OpenHarmony-v6.0-Release", "http/workspace/gitcode.com/openharmony/third_party_bounds_checking_function.git", "boundscheck"]
+
+=== case: rev-0c386957a849ab91 ===
+--- a/medium_search.py
++++ b/medium_search.py
+@@ -1,20 +1,23 @@
+ """Medium/Blogger Search Tool for Agentic RL technical discussions.
+ 
+-Provides simplified but practical blog article retrieval and quality filtering.
++Provides blog article retrieval and quality filtering using real RSS feeds.
+ 
+ Features:
+-- Blog article search by keywords
++- Blog article search by keywords via Medium RSS feeds
+ - Author credibility assessment
+ - Article quality scoring
+ - Key technical article identification
+ - Technical depth evaluation
+ 
+-Note: This is a simplified implementation using web search approach.
++The tool fetches real articles from Medium's public RSS feeds. When real
++data cannot be retrieved (network errors, empty feeds, etc.) it returns an
++empty list rather than fabricated/mock data.
+ """
+ 
+ import requests
+ import time
+ import logging
++import xml.etree.ElementTree as ET
+ from typing import List, Dict, Any, Optional
+ from datetime import datetime, timedelta
+ from pathlib import Path
+@@ -24,18 +27,19 @@
+ logger = logging.getLogger(__name__)
+ 
+ 
+-class EnhancedMediumSearchTool:
+-    """Medium/Blogger search tool for technical discussions."""
+-    
+-    SEARCH_ENDPOINTS = {
+-        "medium": "http/workspace/medium.com/search",
+-        "google_blog": "http/workspace/www.google.com/search"
+-    }
+-    
++class RealMediumSearchTool:
++    """Medium/Blogger search tool that fetches real articles from RSS feeds."""
++
++    # Medium exposes public RSS feeds per tag, e.g.
++    #   https://medium.com/feed/tag/{tag}
++    # and per author, e.g.
++    #   https://medium.com/feed/@{username}
++    RSS_BASE_URL = "https://medium.com/feed"
++
+     RATE_LIMIT_DELAY = 2.0
+     MAX_RETRIES = 2
+     TIMEOUT = 20
+-    
++
+     QUALITY_KEYWORDS = [
+         "implementation",
+         "tutorial",
+@@ -43,268 +47,446 @@
+         "analysis",
+         "best practices",
+         "guide",
+-        "case study"
++        "case study",
+     ]
+-    
++
+     def __init__(self, max_results: int = 10, retry_count: int = 2):
+         self.max_results = max_results
+         self.retry_count = retry_count
+-        
++
+         self.session = requests.Session()
+-        
++        self.session.headers.update(
++            {
++                "User-Agent": (
++                    "Mozilla/5.0 (compatible; MediumSearchTool/1.0; "
++                    "+https://example.com/bot)"
++                ),
++                "Accept": "application/rss+xml, application/xml, text/xml, */*",
++            }
++        )
++
+         self.cache_path = Path("knowledge_base/medium_cache")
+         self.cache_path.mkdir(parents=True, exist_ok=True)
+-        
+-        logger.info("="*70)
++
++        logger.info("=" * 70)
+         logger.info("Medium/Blogger工具初始化完成")
+-        logger.info("="*70)
++        logger.info("=" * 70)
+         logger.info(f"  最大结果数: {self.max_results}")
+         logger.info(f"  重试次数: {self.retry_count}")
+         logger.info(f"  质量关键词: {len(self.QUALITY_KEYWORDS)}个")
+-        
+-    def search_articles(self, keywords: List[str], time_range_hours: int = 168) -> List[Dict[str, Any]]:
+-        """Search technical blog articles by keywords."""
+-        logger.info("\n" + "="*70)
++
++    # ------------------------------------------------------------------
++    # Public API
++    # ------------------------------------------------------------------
++    def search_articles(
++        self, keywords: List[str], time_range_hours: int = 168
++    ) -> List[Dict[str, Any]]:
++        """Search technical blog articles by keywords using real RSS feeds.
++
++        Returns an empty list when no real data can be retrieved.
++        """
++        logger.info("\n" + "=" * 70)
+         logger.info("Medium/Blogger文章搜索开始")
+-        logger.info("="*70)
+-        
+-        all_articles = []
+-        
+-        search_queries = [
+-            "Agentic Reinforcement Learning tutorial",
+-            "LLM Agent implementation guide",
+-            "Multi-Agent RL deep dive",
+-            "Autonomous Agent best practices"
+-        ]
+-        
+-        for query in search_queries[:2]:
+-            logger.info(f"\n搜索查询: {query}")
+-            
+-            articles = self._search_medium_mock(query, time_range_hours)
+-            
+-            if articles:
+-                all_articles.extend(articles)
+-                logger.info(f"  ✓ 找到 {len(articles)} 篇文章")
+-            
+-            time.sleep(self.RATE_LIMIT_DELAY)
+-        
+-        unique_articles = self._deduplicate_articles(all_articles)
+-        
++        logger.info("=" * 70)
++
++        if not keywords:
++            logger.info("  未提供关键词，返回空列表")
++            return []
++
++        query = self._build_query(keywords)
++        logger.info(f"\n搜索查询: {query}")
++
++        raw_articles = self._fetch_rss_articles(query, time_range_hours)
++
++        if not raw_articles:
++            logger.info("  未能从RSS源获取真实文章，返回空列表")
++            return []
++
++        logger.info(f"  ✓ 从RSS源获取到 {len(raw_articles)} 篇真实文章")
++
++        unique_articles = self._deduplicate_articles(raw_articles)
+         quality_filtered = self._filter_by_quality(unique_articles)
+-        
++
+         logger.info(f"\n总计找到 {len(quality_filtered)} 篇高质量文章")
+-        
+-        return quality_filtered
+-    
+-    def _search_medium_mock(self, query: str, time_range_hours: int) -> List[Dict[str, Any]]:
+-        """Mock search implementation (returns sample articles)."""
+-        
+-        logger.info("  使用Mock数据演示功能")
+-        
+-        sample_articles = [
+-            {
+-                "title": "Building Autonomous Agents with LLMs and Reinforcement Learning",
+-                "author": "AI Researcher",
+-                "publication": "Towards Data Science",
+-                "url": "http/workspace/medium.com/@ai-researcher/building-agents-llm-rl",
+-                "published_date": "2026-04-10",
+-                "reading_time": 12,
+-                "claps": 850,
+-                "comments": 45,
+-                "tags": ["reinforcement-learning", "LLM", "agents", "autonomous"],
+-                "excerpt": "A comprehensive guide to building autonomous agents using LLMs as policy networks...",
+-                "quality_score": 9,
+-                "source": "medium",
+-                "is_technical": True,
+-                "has_code_examples": True
+-            },
+-            {
+-                "title": "Deep Dive into Multi-Agent Reinforcement Learning Systems",
+-                "author": "RL Expert",
+-                "publication": "Medium Tech Blog",
+-                "url": "http/workspace/medium.com/@rl-expert/multi-agent-rl-deep-dive",
+-                "published_date": "2026-04-09",
+-                "reading_time": 15,
+-                "claps": 1200,
+-                "comments": 68,
+-                "tags": ["multi-agent", "reinforcement-learning", "systems"],
+-                "excerpt": "Understanding coordination and competition in multi-agent RL systems...",
+-                "quality_score": 8,
+-                "source": "medium",
+-                "is_technical": True,
+-                "has_code_examples": True
+-            },
+-            {
+-                "title": "World Models for Agent Planning: A Tutorial",
+-                "author": "ML Engineer",
+-                "publication": "Machine Learning Blog",
+-                "url": "http/workspace/medium.com/@ml-engineer/world-models-tutorial",
+-                "published_date": "2026-04-08",
+-                "reading_time": 10,
+-                "claps": 620,
+-                "comments": 32,
+-                "tags": ["world-models", "planning", "agents"],
+-                "excerpt": "Step-by-step tutorial on implementing world models for agent forward planning...",
+-                "quality_score": 8,
+-                "source": "medium",
+-                "is_technical": True,
+-                "has_code_examples": True
+-            },
+-            {
+-                "title": "PPO Algorithm Implementation from Scratch",
+-                "author": "Python Developer",
+-                "publication": "Towards AI",
+-                "url": "http/workspace/medium.com/@python-dev/ppo-implementation",
+-                "published_date": "2026-04-07",
+-                "reading_time": 18,
+-                "claps": 1500,
+-                "comments": 85,
+-                "tags": ["PPO", "reinforcement-learning", "implementation"],
+-                "excerpt": "Complete implementation guide for Proximal Policy Optimization algorithm...",
+-                "quality_score": 9,
+-                "source": "medium",
+-                "is_technical": True,
+-                "has_code_examples": True
+-            },
+-            {
+-                "title": "LangChain Agent Architecture Deep Dive",
+-                "author": "Tech Writer",
+-                "publication": "Tech Insights",
+-                "url": "http/workspace/medium.com/@tech-writer/langchain-agent",
+-                "published_date": "2026-04-06",
+-                "reading_time": 8,
+-                "claps": 430,
+-                "comments": 22,
+-                "tags": ["langchain", "agents", "architecture"],
+-                "excerpt": "Understanding the architecture behind LangChain agent framework...",
+-                "quality_score": 7,
+-                "source": "medium",
+-                "is_technical": True,
+-                "has_code_examples": False
+-            }
+-        ]
+-        
+-        cutoff_date = datetime.now() - timedelta(hours=time_range_hours)
+-        
+-        filtered_articles = []
+-        
+-        for article in sample_articles:
+-            pub_date_str = article.get("published_date", "")
+-            
+-            if pub_date_str:
+-                try:
+-                    pub_date = datetime.strptime(pub_date_str, "%Y-%m-%d")
+-                    
+-                    if pub_date >= cutoff_date:
+-                        filtered_articles.append(article)
+-                        
+-                except ValueError:
+-                    filtered_articles.append(article)
+-        
+-        return filtered_articles[:self.max_results]
+-    
++
++        return quality_filtered[: self.max_results]
++
+     def assess_author_credibility(self, author_name: str) -> Dict[str, Any]:
+-        """Assess author credibility based on available indicators."""
++        """Assess author credibility based on available indicators.
++
++        Returns an empty/neutral assessment when real data is unavailable.
++        """
+         logger.info(f"\n评估作者可信度: {author_name}")
+-        
+-        credibility = {
++
++        credibility: Dict[str, Any] = {
+             "author_name": author_name,
+-            "credibility_score": 7.0,
+-            "is_verified": True,
+-            "total_articles": 25,
+-            "avg_quality": 8.0,
+-            "expertise_areas": ["reinforcement-learning", "LLM", "agents"],
+-            "source": "medium"
++            "credibility_score": 0.0,
++            "is_verified": False,
++            "total_articles": 0,
++            "avg_quality": 0.0,
++            "expertise_areas": [],
++            "source": "medium",
+         }
+-        
++
++        # Attempt to fetch the author's RSS feed for real indicators.
++        feed_url = f"{self.RSS_BASE_URL}/@{author_name}"
++        articles = self._fetch_rss_articles(author_name, time_range_hours=0)
++
++        if articles:
++            credibility["total_articles"] = len(articles)
++            scores = [a.get("quality_score", 0) for a in articles]
++            credibility["avg_quality"] = (
++                sum(scores) / len(scores) if scores else 0.0
++            )
++            credibility["credibility_score"] = min(
++                10.0, credibility["avg_quality"]
++            )
++            credibility["is_verified"] = True
++            tags = set()
++            for a in articles:
++                tags.update(a.get("tags", []))
++            credibility["expertise_areas"] = sorted(tags)
++
+         logger.info(f"  ✓ 可信度评估完成")
+         logger.info(f"    可信度评分: {credibility['credibility_score']}/10")
+         logger.info(f"    总文章数: {credibility['total_articles']}")
+-        
++
+         return credibility
+-    
++
+     def get_article_details(self, article_url: str) -> Dict[str, Any]:
+-        """Get detailed information about a specific article."""
++        """Get detailed information about a specific article.
++
++        Returns an empty dict when real data cannot be retrieved.
++        """
+         logger.info(f"\n获取文章详情: {article_url}")
+-        
+-        details = {
++
++        if not article_url:
++            logger.info("  未提供文章URL，返回空详情")
++            return {}
++
++        details: Dict[str, Any] = {
+             "url": article_url,
+-            "title": "Sample Article Title",
+-            "author": "Sample Author",
+-            "publication": "Medium",
+-            "published_date": "2026-04-10",
+-            "reading_time": 12,
+-            "claps": 850,
+-            "comments": 45,
+-            "word_count": 3000,
+-            "code_blocks": 3,
+-            "images": 5,
+-            "quality_score": 9,
+-            "technical_depth": "high",
+-            "source": "medium"
++            "title": "",
++            "author": "",
++            "publication": "",
++            "published_date": "",
++            "reading_time": 0,
++            "claps": 0,
++            "comments": 0,
++            "word_count": 0,
++            "code_blocks": 0,
++            "images": 0,
++            "quality_score": 0,
++            "technical_depth": "unknown",
++            "source": "medium",
+         }
+-        
+-        logger.info(f"  ✓ 文章详情获取成功")
++
++        try:
++            response = self._http_get(article_url)
++            if response is not None:
++                text = response.text or ""
++                details["word_count"] = len(text.split())
++                details["code_blocks"] = len(re.findall(r"<pre", text))
++                details["images"] = len(re.findall(r"<img", text))
++                details["quality_score"] = self._score_from_text(text)
++                details["technical_depth"] = self._depth_from_text(text)
++        except Exception as e:
++            logger.warning(f"  获取文章详情失败: {e}")
++
++        logger.info(f"  ✓ 文章详情获取完成")
+         logger.info(f"    质量评分: {details['quality_score']}/10")
+         logger.info(f"    技术深度: {details['technical_depth']}")
+-        
++
+         return details
+-    
+-    def _filter_by_quality(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++
++    # ------------------------------------------------------------------
++    # RSS fetching / parsing
++    # ------------------------------------------------------------------
++    def _build_query(self, keywords: List[str]) -> str:
++        """Build a search query string from keywords."""
++        return " ".join(k.strip() for k in keywords if k and k.strip())
++
++    def _fetch_rss_articles(
++        self, query: str, time_range_hours: int
++    ) -> List[Dict[str, Any]]:
++        """Fetch and parse real articles from Medium RSS feeds.
++
++        Returns an empty list if no real data can be retrieved.
++        """
++        tags = self._extract_tags(query)
++        if not tags:
++            tags = [re.sub(r"[^a-zA-Z0-9]+", "-", query.lower()).strip("-")]
++
++        cutoff_date: Optional[datetime] = None
++        if time_range_hours and time_range_hours > 0:
++            cutoff_date = datetime.now() - timedelta(hours=time_range_hours)
++
++        articles: List[Dict[str, Any]] = []
++
++        for tag in tags[:3]:
++            feed_url = f"{self.RSS_BASE_URL}/tag/{tag}"
++            logger.info(f"  抓取RSS源: {feed_url}")
++
++            feed_articles = self._parse_feed(feed_url, cutoff_date)
++            if feed_articles:
++                articles.extend(feed_articles)
++                logger.info(f"  ✓ 从 {tag} 获取 {len(feed_articles)} 篇文章")
++
++            time.sleep(self.RATE_LIMIT_DELAY)
++
++        return articles
++
++    def _extract_tags(self, query: str) -> List[str]:
++        """Extract candidate RSS tags from a query string."""
++        stop_words = {
++            "a", "an", "the", "and", "or", "of", "for", "to", "in", "on",
++            "with", "using", "via", "by", "from", "into", "about",
++        }
++        tokens = re.findall(r"[a-zA-Z0-9]+", query.lower())
++        tags = [t for t in tokens if t not in stop_words and len(t) > 2]
++        # Deduplicate while preserving order.
++        seen = set()
++        unique_tags = []
++        for t in tags:
++            if t not in seen:
++                seen.add(t)
++                unique_tags.append(t)
++        return unique_tags
++
++    def _parse_feed(
++        self, feed_url: str, cutoff_date: Optional[datetime]
++    ) -> List[Dict[str, Any]]:
++        """Parse a single RSS feed into article dicts.
++
++        Returns an empty list on any failure (no mock fallback).
++        """
++        response = self._http_get(feed_url)
++        if response is None:
++            return []
++
++        try:
++            root = ET.fromstring(response.content)
++        except ET.ParseError as e:
++            logger.warning(f"  RSS解析失败 ({feed_url}): {e}")
++            return []
++
++        # RSS 2.0 items live under channel/item. Atom feeds use entry.
++        items = root.findall(".//item")
++        if not items:
++            items = root.findall(".//entry")
++        if not items:
++            return []
++
++        articles: List[Dict[str, Any]] = []
++        for item in items:
++            article = self._parse_item(item)
++            if not article:
++                continue
++
++            pub_date_str = article.get("published_date", "")
++            if cutoff_date and pub_date_str:
++                pub_date = self._parse_date(pub_date_str)
++                if pub_date and pub_date < cutoff_date:
++                    continue
++
++            articles.append(article)
++
++        return articles
++
++    def _parse_item(self, item: ET.Element) -> Optional[Dict[str, Any]]:
++        """Parse a single RSS <item> / Atom <entry> element."""
++        title = self._text(item, "title")
++        link = self._text(item, "link")
++        if not link:
++            link_el = item.find("link")
++            if link_el is not None:
++                link = link_el.get("href") or link_el.text or ""
++        if not title and not link:
++            return None
++
++        author = self._text(item, "dc:creator") or self._text(
++            item, "author"
++        ) or self._text(item, "name")
++        pub_date = (
++            self._text(item, "pubDate")
++            or self._text(item, "published")
++            or self._text(item, "updated")
++        )
++        excerpt = self._text(item, "description") or self._text(
++            item, "summary"
++        ) or self._text(item, "content")
++        categories = [
++            (el.text or "").strip()
++            for el in item.findall("category")
++            if (el.text or "").strip()
++        ]
++
++        text_for_scoring = f"{title} {excerpt}"
++        quality_score = self._score_from_text(text_for_scoring)
++        is_technical = self._is_technical(text_for_scoring)
++        has_code = bool(
++            re.search(r"<pre|<code|```", excerpt or "")
++        ) or "code" in (excerpt or "").lower()
++
++        return {
++            "title": title or "(untitled)",
++            "author": author or "",
++            "publication": "Medium",
++            "url": link or "",
++            "published_date": pub_date or "",
++            "reading_time": max(1, len((excerpt or "").split()) // 200),
++            "claps": 0,
++            "comments": 0,
++            "tags": categories,
++            "excerpt": (excerpt or "")[:300],
++            "quality_score": quality_score,
++            "source": "medium",
++            "is_technical": is_technical,
++            "has_code_examples": has_code,
++        }
++
++    # ------------------------------------------------------------------
++    # HTTP helpers
++    # ------------------------------------------------------------------
++    def _http_get(self, url: str) -> Optional[requests.Response]:
++        """Perform an HTTP GET with retries. Returns None on failure."""
++        last_error: Optional[Exception] = None
++        for attempt in range(self.retry_count + 1):
++            try:
++                response = self.session.get(
++                    url, timeout=self.TIMEOUT
++                )
++                if response.status_code == 200:
++                    return response
++                logger.warning(
++                    f"  HTTP {response.status_code} for {url} "
++                    f"(attempt {attempt + 1})"
++                )
++            except requests.RequestException as e:
++                last_error = e
++                logger.warning(
++                    f"  请求失败 ({url}, attempt {attempt + 1}): {e}"
++                )
++            time.sleep(self.RATE_LIMIT_DELAY)
++        if last_error:
++            logger.warning(f"  最终放弃抓取 {url}: {last_error}")
++        return None
++
++    # ------------------------------------------------------------------
++    # Scoring / filtering helpers
++    # ------------------------------------------------------------------
++    def _score_from_text(self, text: str) -> int:
++        """Calculate a rough quality score from article text."""
++        if not text:
++            return 0
++        score = 5
++        low = text.lower()
++        for kw in self.QUALITY_KEYWORDS:
++            if kw in low:
++                score += 1
++                break
++        if re.search(r"\bcode\b|\bimplementation\b|\bexample\b", low):
++            score += 1
++        if len(text) > 500:
++            score += 1
++        return min(10, score)
++
++    def _depth_from_text(self, text: str) -> str:
++        if not text:
++            return "unknown"
++        if len(text) > 2000 or "<pre" in text or "```" in text:
++            return "high"
++        if len(text) > 500:
++            return "medium"
++        return "low"
++
++    def _is_technical(self, text: str) -> bool:
++        if not text:
++            return False
++        low = text.lower()
++        tech_markers = [
++            "algorithm", "model", "training", "implementation", "code",
++            "architecture", "reinforcement", "learning", "agent", "policy",
++        ]
++        return any(m in low for m in tech_markers)
++
++    def _parse_date(self, date_str: str) -> Optional[datetime]:
++        """Parse a date string in several common RSS/Atom formats."""
++        if not date_str:
++            return None
++        formats = [
++            "%a, %d %b %Y %H:%M:%S %Z",
++            "%a, %d %b %Y %H:%M:%S %z",
++            "%Y-%m-%dT%H:%M:%S%z",
++            "%Y-%m-%dT%H:%M:%S.%fZ",
++            "%Y-%m-%dT%H:%M:%SZ",
++            "%Y-%m-%d",
++        ]
++        for fmt in formats:
++            try:
++                return datetime.strptime(date_str.strip(), fmt)
++            except ValueError:
++                continue
++        return None
++
++    def _text(self, item: ET.Element, tag: str) -> str:
++        """Get trimmed text of the first child matching `tag` (any ns)."""
++        el = item.find(tag)
++        if el is None:
++            # Try ignoring namespaces.
++            el = item.find(f".//{{*}}{tag.split(':')[-1]}")
++        if el is not None and el.text:
++            return el.text.strip()
++        return ""
++
++    def _filter_by_quality(
++        self, articles: List[Dict[str, Any]]
++    ) -> List[Dict[str, Any]]:
+         """Filter articles by quality indicators."""
+-        
+         filtered = []
+-        
+         for article in articles:
+             quality_score = article.get("quality_score", 0)
+-            
+             if quality_score >= 7:
+                 is_technical = article.get("is_technical", False)
+                 has_code = article.get("has_code_examples", False)
+-                
+                 if is_technical or has_code:
+                     filtered.append(article)
+-        
+-        return sorted(filtered, key=lambda x: x["quality_score"], reverse=True)
+-    
+-    def _deduplicate_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++        return sorted(
++            filtered, key=lambda x: x.get("quality_score", 0), reverse=True
++        )
++
++    def _deduplicate_articles(
++        self, articles: List[Dict[str, Any]]
++    ) -> List[Dict[str, Any]]:
+         """Remove duplicate articles based on title."""
+         unique = []
+         seen_titles = set()
+-        
+         for article in articles:
+             title = article.get("title", "").lower()
+-            
+             if title not in seen_titles:
+                 unique.append(article)
+                 seen_titles.add(title)
+-        
+         return unique
+-    
++
+     def _calculate_quality_score(self, article: Dict[str, Any]) -> int:
+         """Calculate quality score from article indicators."""
+         claps = article.get("claps", 0)
+         comments = article.get("comments", 0)
+         reading_time = article.get("reading_time", 0)
+         has_code = article.get("has_code_examples", False)
+-        
++
+         score = 5
+-        
+         if claps > 1000:
+             score += 2
+         elif claps > 500:
+             score += 1
+-        
+         if comments > 50:
+             score += 1
+-        
+         if reading_time > 10:
+             score += 1
+-        
+         if has_code:
+             score += 1
+-        
+         return min(10, score)
+ 
+ 
+-MediumSearchTool = EnhancedMediumSearchTool
++MediumSearchTool = RealMediumSearchTool
+
+=== case: rev-0f878818dfebd4f3 ===
+--- a/lifecycleTypes.ts
++++ b/lifecycleTypes.ts
+@@ -44,6 +44,7 @@
+   | 'RUNNING'
+   | 'EXITING'
+   | 'COMPLETED'
++  | 'REWORK'
+   | 'FAILED'
+ 
+ export type StageState =
+@@ -107,7 +108,8 @@
+   ENTERING: ['RUNNING', 'FAILED'] as const,
+   RUNNING: ['EXITING', 'FAILED'] as const,
+   EXITING: ['COMPLETED', 'FAILED'] as const,
+-  COMPLETED: [] as const,
++  COMPLETED: ['REWORK'] as const,
++  REWORK: ['ENTERING'] as const,
+   FAILED: [] as const,
+ } as const satisfies Record<NodeState, readonly NodeState[]>
+ 
+
+=== case: rev-10cc572e61227773 ===
+--- a/dynamic_project_discovery.py
++++ b/dynamic_project_discovery.py
+@@ -84,6 +84,7 @@
+         self.discovered_projects: List[Dict] = []
+         self.existing_watchlist: Set[str] = set()
+         self.project_stats: Dict[str, Dict] = {}
++        self.raw_discussions: List[Dict] = []
+         
+         self._load_existing_watchlist()
+         
+@@ -194,6 +195,8 @@
+             "worth_following": len(evaluated_projects),
+             "added_to_watchlist": len(evaluated_projects),
+             "projects": evaluated_projects,
++            "discussions": self.raw_discussions,
++            "discussions_count": len(self.raw_discussions),
+             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+         }
+ 
+@@ -264,6 +267,15 @@
+                         combined = title + " " + selftext
+                         
+                         repo = self._extract_github_repo(url, combined)
++                        
++                        self.raw_discussions.append({
++                            "source": f"reddit_{subreddit}",
++                            "title": title,
++                            "url": url,
++                            "selftext": selftext,
++                            "score": post_data.get("score", 0),
++                            "repo": repo
++                        })
+                         
+                         if repo:
+                             projects.append({
+
+=== case: rev-1b77e6e910b9452e ===
+--- a/build.py
++++ b/build.py
+@@ -140,6 +140,14 @@
+         android_api_level = "23"
+         result.append("-DCMAKE_ANDROID_NDK=" + os.path.join(args.target_toolchain, "../../../../.."))
+         result.append("-DCMAKE_ANDROID_API=" + (android_api_level if android_api_level else ""))
++    # Pass through the library version and SOVERSION so that the generated
++    # shared libraries carry the proper version information.
++    version = getattr(args, "version", None)
++    soversion = getattr(args, "soversion", None)
++    if version:
++        result.append("-DSTDX_VERSION=" + str(version))
++    if soversion:
++        result.append("-DSTDX_SOVERSION=" + str(soversion))
+     return result
+ 
+ def build(args):
+@@ -391,6 +399,14 @@
+     parser_build.add_argument(
+         "--without-effect-handlers", dest="without_effect_handlers", action="store_true", help="build a version without effect handlers"
+     )
++    parser_build.add_argument(
++        "--version", dest="version", type=str, default=None,
++        help="set the version of the stdx library (e.g. 1.0.5)"
++    )
++    parser_build.add_argument(
++        "--soversion", dest="soversion", type=str, default=None,
++        help="set the SOVERSION of the stdx library (e.g. 1)"
++    )
+     parser_build.set_defaults(func=build)
+ 
+     parser_install = subparsers.add_parser("install", help="install targets")
+
+=== case: rev-1ef6270942e0e740 ===
+--- a/my_memviz.py
++++ b/my_memviz.py
+@@ -19,3 +19,25 @@
+     output_shape: List[int]
+     saved_tensors: List[Dict[str, Any]] = field(default_factory=list)
+     saved_memory_bytes: int = 0
++
++
++@dataclass
++class GraphEdge:
++    src_id: int
++    dst_id: int
++
++
++@dataclass
++class Graph:
++    nodes: Dict[int, GraphNode] = field(default_factory=dict)
++    edges: List[GraphEdge] = field(default_factory=list)
++    total_saved_memory_bytes: int = 0
++
++    def add_node(self, node: GraphNode) -> None:
++        """Add a node to the graph, accumulating its saved memory into the running total."""
++        self.nodes[node.node_id] = node
++        self.total_saved_memory_bytes += node.saved_memory_bytes
++
++    def add_edge(self, src_id: int, dst_id: int) -> None:
++        """Record an edge between a source and destination node identifier."""
++        self.edges.append(GraphEdge(src_id=src_id, dst_id=dst_id))
+
+=== case: rev-20f1e5a5d9460800 ===
+(no change)
+
+=== case: rev-298ab8b9d9d05d08 ===
+--- a/runtimeContext.ts
++++ b/runtimeContext.ts
+@@ -1,4 +1,5 @@
+-import { isAbsolute, resolve } from 'path'
++import { dirname, isAbsolute, resolve } from 'path'
++import { fileURLToPath } from 'url'
+ 
+ export interface RuntimeContext {
+   workspaceRoot: string
+@@ -15,14 +16,41 @@
+   cacheFilePath?: string
+ }
+ 
+-function resolveFromWorkspace(workspaceRoot: string, pathValue: string | undefined, fallbackRelative: string): string {
++// Directory containing this SDK module file.
++const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
++// Package root where this SDK resides. The default builtinRoot/pluginRoot
++// values are resolved relative to this location so they remain stable
++// regardless of the caller's working directory.
++const PACKAGE_ROOT = resolve(MODULE_DIR, '..', '..', '..')
++
++const DEFAULT_BUILTIN_REL = 'builtin'
++const DEFAULT_PLUGIN_REL = 'plugins'
++const DEFAULT_CACHE_REL = '.neo-designer/state/workflow-registry-cache.json'
++
++/**
++ * Resolve a path value.
++ *
++ * - When no value is provided, the fallback is resolved relative to
++ *   `fallbackBase` (e.g. the package root for builtin/plugin roots, or the
++ *   workspace root for the cache file).
++ * - When an absolute value is provided, it is normalized as-is.
++ * - When a relative value is provided, it is resolved relative to
++ *   `relativeBase` (the workspace root), preserving the previous behavior for
++ *   explicitly supplied paths.
++ */
++function resolvePath(
++  pathValue: string | undefined,
++  fallbackBase: string,
++  relativeBase: string,
++  fallbackRelative: string,
++): string {
+   if (!pathValue || pathValue.trim().length === 0) {
+-    return resolve(workspaceRoot, fallbackRelative)
++    return resolve(fallbackBase, fallbackRelative)
+   }
+   if (isAbsolute(pathValue)) {
+     return resolve(pathValue)
+   }
+-  return resolve(workspaceRoot, pathValue)
++  return resolve(relativeBase, pathValue)
+ }
+ 
+ export function resolveRuntimeContext(input: RuntimeContextInput = {}): RuntimeContext {
+@@ -33,12 +61,23 @@
+ 
+   return {
+     workspaceRoot,
+-    builtinRoot: resolveFromWorkspace(workspaceRoot, input.builtinRoot, 'builtin'),
+-    pluginRoot: resolveFromWorkspace(workspaceRoot, input.pluginRoot, 'plugins'),
+-    cacheFilePath: resolveFromWorkspace(
++    builtinRoot: resolvePath(
++      input.builtinRoot,
++      PACKAGE_ROOT,
+       workspaceRoot,
++      DEFAULT_BUILTIN_REL,
++    ),
++    pluginRoot: resolvePath(
++      input.pluginRoot,
++      PACKAGE_ROOT,
++      workspaceRoot,
++      DEFAULT_PLUGIN_REL,
++    ),
++    cacheFilePath: resolvePath(
+       input.cacheFilePath,
+-      '.neo-designer/state/workflow-registry-cache.json',
++      workspaceRoot,
++      workspaceRoot,
++      DEFAULT_CACHE_REL,
+     ),
+   }
+ }
+
+=== case: rev-2a048ca51fb7465e ===
+--- a/flight.py
++++ b/flight.py
+@@ -30,6 +30,7 @@
+         duration: 行程时长（分钟，若存在转机则为总时长）
+         stopover_info: 经停信息（如"经停 武汉"）
+         transfer_count: 中转次数（0=直飞，1=一次中转，2=二次中转等）
++        meet_requirements: 是否满足过滤要求（价格 + 中转次数）
+     """
+     flight_no: str
+     airline: str
+@@ -47,6 +48,7 @@
+     duration: Optional[int] = None  # 行程时长（分钟）
+     stopover_info: Optional[str] = None  # 经停信息
+     transfer_count: int = 0  # 中转次数（默认直飞）
++    meet_requirements: bool = False  # 是否满足过滤要求（价格 + 中转次数）
+ 
+ 
+ @dataclass
+
+=== case: rev-2b813e27ba5902d5 ===
+--- a/settings.py
++++ b/settings.py
+@@ -54,6 +54,13 @@
+     'file': 'data/app.log'
+ }
+ 
++# Server酱（微信推送）配置
++SERVERCHAN_CONFIG = {
++    'enabled': True,               # 是否启用微信推送
++    'sckey': '***',                # Server酱 SendKey
++    'url': 'https://sctapi.ftqq.com',  # Server酱推送接口地址
++}
++
+ # LaTeX 公式渲染配置
+ LATEX_RENDER_CONFIG = {
+     'enabled': True,           # 是否启用公式渲染
+
+=== case: rev-2c8c411c1642b559 ===
+--- a/generate_baseline.py
++++ b/generate_baseline.py
+@@ -1,6 +1,8 @@
+ #!/usr/bin/env python3
+ """Generate baseline using Semantic Scholar API."""
+ 
++import hashlib
++import re
+ import requests
+ import time
+ import json
+@@ -12,8 +14,38 @@
+ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+ logger = logging.getLogger(__name__)
+ 
+-PROJECTRoot = Path(__file__).parent.parent
++PROJECT_ROOT = Path(__file__).parent.parent
+ CUTOFF_DATE = "2026-03-31"
++
++
++def sanitize_filename(title: str, max_length: int = 20) -> str:
++    """Convert a paper title into a safe filename.
++
++    Removes special characters, replaces whitespace with underscores,
++    truncates to ``max_length``, and returns a hash-based fallback name
++    for empty or otherwise problematic titles.
++    """
++    # Guard against empty or non-string input with a hash-based fallback.
++    if not isinstance(title, str) or not title.strip():
++        raw = title if isinstance(title, str) else str(title)
++        digest = hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()
++        return digest[:max_length] if max_length > 0 else digest
++
++    # Keep only alphanumerics and whitespace, then turn whitespace into
++    # underscores (collapsing runs of whitespace).
++    cleaned = re.sub(r"[^a-zA-Z0-9\s]", "", title)
++    cleaned = re.sub(r"\s+", "_", cleaned.strip())
++
++    # If nothing usable remains, fall back to a hash of the original title.
++    if not cleaned or cleaned.strip("_") == "":
++        digest = hashlib.md5(title.encode("utf-8", errors="ignore")).hexdigest()
++        return digest[:max_length] if max_length > 0 else digest
++
++    # Truncate to the requested maximum length.
++    if max_length > 0 and len(cleaned) > max_length:
++        cleaned = cleaned[:max_length]
++
++    return cleaned
+ 
+ 
+ class BaselineGenerator:
+@@ -302,7 +334,7 @@
+     def _archive(self):
+         """Archive papers."""
+         for paper in self.all_papers:
+-            title_key = paper["title"][:20].replace(" ", "_").replace("/", "_")
++            title_key = sanitize_filename(paper.get("title", ""))
+             filepath = self.archive_path / f"{title_key}.json"
+             
+             with open(filepath, 'w', encoding='utf-8') as f:
+
+=== case: rev-326ff6ffac10f77e ===
+--- a/models.py
++++ b/models.py
+@@ -106,6 +106,8 @@
+     chat_type: str | None = None
+     # 定时任务执行时使用的 mode（"plan" 或 "agent"），创建时从对话上下文继承；无上下文时默认 "agent"
+     mode: str = "agent"
++    # 执行一次后自动删除（用于提醒类任务）
++    delete_after_run: bool = False
+ 
+     def to_dict(self) -> dict[str, Any]:
+         d: dict[str, Any] = {
+@@ -127,6 +129,7 @@
+             d["chat_type"] = self.chat_type
+         if self.mode:
+             d["mode"] = self.mode
++        d["delete_after_run"] = bool(self.delete_after_run)
+         return d
+ 
+     @staticmethod
+@@ -196,6 +199,12 @@
+             if isinstance(mode_raw, str) and str(mode_raw).strip()
+             else "agent"
+         )
++
++        # 兼容驼峰命名 deleteAfterRun 的旧数据
++        delete_after_run_raw = data.get("delete_after_run")
++        if delete_after_run_raw is None:
++            delete_after_run_raw = data.get("deleteAfterRun")
++        job_delete_after_run = bool(delete_after_run_raw)
+         return CronJob(
+             id=job_id,
+             name=name,
+@@ -211,6 +220,7 @@
+             updated_at=updated_at_f,
+             chat_type=job_chat_type,
+             mode=job_mode,
++            delete_after_run=job_delete_after_run,
+         )
+ 
+ 
+
+=== case: rev-39cf6aaba64b4c04 ===
+--- a/models.py
++++ b/models.py
+@@ -205,16 +205,92 @@
+ 
+ @dataclass
+ class CronRunState:
+-    """In-memory state for a single scheduled run (not persisted)."""
++    """State for a single scheduled run.
++
++    May be persisted (e.g. to cron_runs.json) and returned in API responses,
++    hence the to_dict/from_dict serialization helpers below.
++    """
+ 
+     run_id: str
+     job_id: str
+     wake_at_iso: str
+     push_at_iso: str
+-    status: str = "pending"  # pending|running|succeeded|failed
++    status: str = "pending"  # pending|running|succeeded|failed|cancelled
+     placeholder_sent: bool = False
+     pushed_final: bool = False
+     started_at: float | None = None
+     finished_at: float | None = None
+     result_text: str | None = None
+     error: str | None = None
++    # Cancellation metadata: when the run was cancelled and who cancelled it.
++    cancelled_at: float | None = None
++    cancelled_by: str | None = None
++
++    def to_dict(self) -> dict[str, Any]:
++        return {
++            "run_id": self.run_id,
++            "job_id": self.job_id,
++            "wake_at_iso": self.wake_at_iso,
++            "push_at_iso": self.push_at_iso,
++            "status": self.status,
++            "placeholder_sent": bool(self.placeholder_sent),
++            "pushed_final": bool(self.pushed_final),
++            "started_at": self.started_at,
++            "finished_at": self.finished_at,
++            "result_text": self.result_text,
++            "error": self.error,
++            "cancelled_at": self.cancelled_at,
++            "cancelled_by": self.cancelled_by,
++        }
++
++    @staticmethod
++    def from_dict(data: dict[str, Any]) -> "CronRunState":
++        run_id = str(data.get("run_id") or "").strip()
++        job_id = str(data.get("job_id") or "").strip()
++        wake_at_iso = str(data.get("wake_at_iso") or "").strip()
++        push_at_iso = str(data.get("push_at_iso") or "").strip()
++
++        if not run_id:
++            raise ValueError("run_id is required")
++        if not job_id:
++            raise ValueError("job_id is required")
++        if not wake_at_iso:
++            raise ValueError("wake_at_iso is required")
++        if not push_at_iso:
++            raise ValueError("push_at_iso is required")
++
++        status = str(data.get("status") or "pending").strip() or "pending"
++
++        started_at_raw = data.get("started_at", None)
++        finished_at_raw = data.get("finished_at", None)
++        cancelled_at_raw = data.get("cancelled_at", None)
++        started_at = float(started_at_raw) if isinstance(started_at_raw, (int, float)) else None
++        finished_at = float(finished_at_raw) if isinstance(finished_at_raw, (int, float)) else None
++        cancelled_at = float(cancelled_at_raw) if isinstance(cancelled_at_raw, (int, float)) else None
++
++        result_text_raw = data.get("result_text", None)
++        error_raw = data.get("error", None)
++        cancelled_by_raw = data.get("cancelled_by", None)
++        result_text = str(result_text_raw) if result_text_raw is not None else None
++        error = str(error_raw) if error_raw is not None else None
++        cancelled_by = (
++            str(cancelled_by_raw).strip()
++            if isinstance(cancelled_by_raw, str) and str(cancelled_by_raw).strip()
++            else None
++        )
++
++        return CronRunState(
++            run_id=run_id,
++            job_id=job_id,
++            wake_at_iso=wake_at_iso,
++            push_at_iso=push_at_iso,
++            status=status,
++            placeholder_sent=bool(data.get("placeholder_sent", False)),
++            pushed_final=bool(data.get("pushed_final", False)),
++            started_at=started_at,
++            finished_at=finished_at,
++            result_text=result_text,
++            error=error,
++            cancelled_at=cancelled_at,
++            cancelled_by=cancelled_by,
++        )
+
+=== case: rev-478df768a8d72026 ===
+--- a/compile_json.py
++++ b/compile_json.py
+@@ -28,7 +28,7 @@
+         unique_directories = set()
+         if filename.startswith('Compile') and filename.endswith('.json'):
+             file_path = os.path.join(root_path, filename)
+-            with open(file_path, 'r') as file:
++            with open(file_path, 'r', encoding='utf-8') as file:
+                 for line in file:
+                     if key in line:
+                         parts = line.split('/')
+@@ -59,7 +59,7 @@
+                     final_lines.append(new_line)
+ 
+         if not final_lines:
+-            with open(output_file_path, 'w') as file:
++            with open(output_file_path, 'w', encoding='utf-8') as file:
+                 file.writelines(final_lines)
+ 
+ 
+
+=== case: rev-607e8f191190459d ===
+(no change)
+
+=== case: rev-6b86e3bbf4e8f22b ===
+(no change)
+
+=== case: rev-6e01e26bfba9221a ===
+--- a/__manifest__.py
++++ b/__manifest__.py
+@@ -9,6 +9,7 @@
+     'license': 'LGPL-3',
+     'data': [
+         'views/issue_analysis_views.xml',
++        'views/res_config_settings_views.xml',
+     ],
+     'demo': [],
+     'installable': True,
+
+=== case: rev-6f10facedc91ac5a ===
+--- a/my_memviz.py
++++ b/my_memviz.py
+@@ -1,5 +1,6 @@
++import warnings
+ from dataclasses import dataclass, field
+-from typing import List, Dict, Any
++from typing import List, Dict, Any, Optional
+ 
+ 
+ def format_bytes(num_bytes):
+@@ -58,3 +59,80 @@
+ 
+     def add_edge(self, from_id: int, to_id: int):
+         self.edges.append({"from": from_id, "to": to_id})
++
++
++def _iter_next_functions(grad_fn):
++    """Yield the parent grad_fn objects referenced by ``grad_fn.next_functions``.
++
++    ``next_functions`` may be a sequence of grad_fn objects or (as in real
++    PyTorch) a sequence of ``(grad_fn, index)`` tuples. ``None`` entries are
++    skipped.
++    """
++    next_functions = getattr(grad_fn, "next_functions", None)
++    if not next_functions:
++        return []
++    parents = []
++    for entry in next_functions:
++        if entry is None:
++            continue
++        if isinstance(entry, tuple):
++            entry = entry[0]
++        if entry is not None:
++            parents.append(entry)
++    return parents
++
++
++def traverse_graph(output_tensor, input_tensor, graph, visited=None):
++    """Walk the autograd graph from ``output_tensor`` back toward ``input_tensor``.
++
++    A :class:`GraphNode` is created for each ``grad_fn`` encountered, recording
++    the op type and any saved tensors. Parent (input) and child (output) nodes
++    are connected with edges via :meth:`Graph.add_edge`.
++
++    If ``output_tensor`` has no ``grad_fn`` the graph cannot be traversed and a
++    ``UserWarning`` is emitted instead.
++    """
++    if visited is None:
++        visited = {}
++
++    grad_fn = getattr(output_tensor, "grad_fn", None)
++    if grad_fn is None:
++        warnings.warn(
++            "Output tensor has no grad_fn; cannot traverse the autograd graph.",
++            UserWarning,
++            stacklevel=2,
++        )
++        return
++
++    input_grad_fn = getattr(input_tensor, "grad_fn", None)
++
++    def _visit(current_grad_fn, output_shape):
++        key = id(current_grad_fn)
++        if key in visited:
++            return visited[key]
++
++        node_id = len(graph.nodes)
++        saved_tensors = extract_saved_tensors(current_grad_fn)
++        saved_memory = sum(t["size_bytes"] for t in saved_tensors)
++        node = GraphNode(
++            node_id=node_id,
++            op_type=type(current_grad_fn).__name__,
++            output_shape=list(output_shape) if output_shape is not None else [],
++            saved_tensors=saved_tensors,
++            saved_memory_bytes=saved_memory,
++        )
++        graph.add_node(node)
++        visited[key] = node_id
++
++        # Stop once we have reached the input tensor's grad_fn boundary.
++        if current_grad_fn is input_grad_fn:
++            return node_id
++
++        for parent_grad_fn in _iter_next_functions(current_grad_fn):
++            parent_id = _visit(parent_grad_fn, None)
++            if parent_id is not None:
++                graph.add_edge(parent_id, node_id)
++
++        return node_id
++
++    _visit(grad_fn, getattr(output_tensor, "shape", None))
+
+=== case: rev-738db5f8753b49f2 ===
+--- a/lifecycleTypes.ts
++++ b/lifecycleTypes.ts
+@@ -44,6 +44,7 @@
+   | 'RUNNING'
+   | 'EXITING'
+   | 'COMPLETED'
++  | 'REWORK'
+   | 'FAILED'
+ 
+ export type StageState =
+@@ -107,7 +108,8 @@
+   ENTERING: ['RUNNING', 'FAILED'] as const,
+   RUNNING: ['EXITING', 'FAILED'] as const,
+   EXITING: ['COMPLETED', 'FAILED'] as const,
+-  COMPLETED: [] as const,
++  COMPLETED: ['REWORK'] as const,
++  REWORK: ['ENTERING'] as const,
+   FAILED: [] as const,
+ } as const satisfies Record<NodeState, readonly NodeState[]>
+ 
+
+=== case: rev-74ba9c286a152c50 ===
+--- a/prepare-revision.mjs
++++ b/prepare-revision.mjs
+@@ -22,11 +22,17 @@
+ const args = parseArgs({
+   options: {
+     source: { type: 'string', short: 's', multiple: true },
++    'session-path': { type: 'string' },
++    'max-size': { type: 'string' },
++    ttl: { type: 'string' },
+   },
+   strict: true,
+ });
+ 
+ const sourcePaths = args.values.source || [];
++const sessionPath = args.values['session-path'];
++const maxSize = args.values['max-size'];
++const ttl = args.values['ttl'];
+ 
+ if (sourcePaths.length === 0) {
+   const result = {
+@@ -38,7 +44,7 @@
+   process.exit(1);
+ }
+ 
+-const baseDir = join(tmpdir(), 'interactive-revision');
++const baseDir = sessionPath || join(tmpdir(), 'interactive-revision');
+ const manifestPath = join(baseDir, 'manifest.json');
+ 
+ async function prepareRevision() {
+@@ -54,6 +60,10 @@
+     // No existing manifest, create new
+     manifest = { files: [], createdAt: new Date().toISOString() };
+   }
++
++  // Record session-level options (if provided)
++  if (maxSize !== undefined) manifest.maxSize = maxSize;
++  if (ttl !== undefined) manifest.ttl = ttl;
+ 
+   // Process each source file
+   const files = manifest.files || [];
+@@ -140,6 +150,7 @@
+   const result = {
+     success: true,
+     baseDir,
++    sessionPath: baseDir,
+     files: files,           // All files in session
+     newFiles: addedFiles,   // Files successfully added this call
+     errors: errors.length > 0 ? errors : undefined,
+
+=== case: rev-7ef5353e673af1af ===
+--- a/index.ts
++++ b/index.ts
+@@ -9,7 +9,7 @@
+ 
+ export const COMMAND_DIRS = {
+   opencode: '.opencode/command',
+-  default: '.hyper-designer/command',
++  default: '.adtspec/command',
+ } as const
+ 
+ export const ARCHIVE_DIR = 'archive'
+
+=== case: rev-809ac0ba498403fa ===
+--- a/api.js
++++ b/api.js
+@@ -94,6 +94,14 @@
+     }).then(r => r.json())
+   },
+ 
++  uploadImage(token, formData) {
++    return fetch(`${API_BASE}/admin/upload-image`, {
++      method: 'POST',
++      headers: { 'Authorization': `Bearer ${token}` },
++      body: formData
++    }).then(r => r.json())
++  },
++
+   getStats(token) {
+     return fetch(`${API_BASE}/stats`, {
+       headers: { 'Authorization': `Bearer ${token}` }
+
+=== case: rev-85d5e687ce9f7d51 ===
+--- a/settings.py
++++ b/settings.py
+@@ -38,8 +38,16 @@
+     'difficulty_levels': ['初级', '中级', '高级'],
+     'default_difficulty': '初级',
+     'schedule_time': '10:00',  # 每天推送时间
+-    'content_length': 400,      # 每条问答内容长度（字数）
+-    'daily_count': 5            # 每天推送的问答数量
++    'content_length': 800,      # 每条问答内容长度（字数）
++    'daily_count': 2            # 每天推送的问答数量
++}
++
++# 企业微信群机器人配置
++WECHAT_WORK_CONFIG = {
++    'enabled': True,                          # 是否启用企业微信群机器人推送
++    'webhook_url': 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send',  # 群机器人 webhook 地址
++    'msg_type': 'markdown',                   # 消息类型（text/markdown）
++    'use_email': True                         # 是否同时通过邮件推送
+ }
+ 
+ # 数据库配置
+
+=== case: rev-863adbcb81f3b56f ===
+--- a/repo_manager.py
++++ b/repo_manager.py
+@@ -130,6 +130,52 @@
+     return clone_repo(clone_url, repo_dir, repo, logger=logger)
+ 
+ 
++def clone_repo_with_fork(source_clone_url: str, fork_clone_url: str,
++                         repo_dir: str, repo_name: str,
++                         logger=None) -> Optional[str]:
++    """从上游源仓库克隆完整内容，并将 fork 设为 origin、上游源设为 upstream。
++
++    Fork 仓库刚创建时可能内容不完整或为空，直接克隆 fork 会失败或得到空仓库。
++    因此先从上游源仓库克隆完整内容，再调整远程仓库地址：
++      - origin    -> fork 仓库（用于后续推送到 fork）
++      - upstream  -> 上游源仓库（用于后续同步更新）
++    """
++    # 从上游源仓库克隆完整内容
++    repo_path = clone_repo(source_clone_url, repo_dir, repo_name, logger=logger)
++    if repo_path is None:
++        return None
++
++    # clone 后默认 origin 指向上游源，将其改名为 upstream
++    rename = subprocess.run(
++        ['git', 'remote', 'rename', 'origin', 'upstream'],
++        cwd=repo_path, capture_output=True, text=True
++    )
++    if rename.returncode != 0:
++        # origin 不存在或重命名失败，直接添加 upstream 指向上游源
++        subprocess.run(
++            ['git', 'remote', 'add', 'upstream', source_clone_url],
++            cwd=repo_path, capture_output=True, text=True
++        )
++
++    # 新增 origin 指向 fork（用于后续推送到 fork）
++    add_origin = subprocess.run(
++        ['git', 'remote', 'add', 'origin', fork_clone_url],
++        cwd=repo_path, capture_output=True, text=True
++    )
++    if add_origin.returncode != 0:
++        # origin 已存在，更新其地址指向 fork
++        subprocess.run(
++            ['git', 'remote', 'set-url', 'origin', fork_clone_url],
++            cwd=repo_path, capture_output=True, text=True
++        )
++
++    if logger:
++        logger.info(f"  设置 origin -> {fork_clone_url}")
++        logger.info(f"  设置 upstream -> {source_clone_url}")
++
++    return repo_path
++
++
+ def download_patch(url: str, output_dir: str, cve_id: str, logger=None) -> Optional[str]:
+     os.makedirs(output_dir, exist_ok=True)
+ 
+
+=== case: rev-863e003d8ddf0a78 ===
+--- a/__manifest__.py
++++ b/__manifest__.py
+@@ -9,6 +9,7 @@
+     'license': 'LGPL-3',
+     'data': [
+         'views/issue_analysis_views.xml',
++        'data/automation_data.xml',
+     ],
+     'demo': [],
+     'installable': True,
+--- a/data/automation_data.xml
++++ b/data/automation_data.xml
+@@ -0,0 +1,19 @@
++<?xml version="1.0" encoding="utf-8"?>
++<odoo>
++    <data noupdate="1">
++        <!-- Automation rules that create the required automation records
++             when the module is installed. -->
++        <record id="automation_rule_issue_analysis_on_create" model="base.automation">
++            <field name="name">AI Issue Analysis: Trigger on Creation</field>
++            <field name="active" eval="True"/>
++            <field name="trigger">on_create</field>
++            <field name="state">code</field>
++        </record>
++        <record id="automation_rule_issue_analysis_on_write" model="base.automation">
++            <field name="name">AI Issue Analysis: Trigger on Update</field>
++            <field name="active" eval="True"/>
++            <field name="trigger">on_write</field>
++            <field name="state">code</field>
++        </record>
++    </data>
++</odoo>
+--- a/views/issue_analysis_views.xml
++++ b/views/issue_analysis_views.xml
+@@ -0,0 +1,19 @@
++<?xml version="1.0" encoding="utf-8"?>
++<odoo>
++    <data>
++        <!-- Issue analysis views -->
++        <record id="view_issue_analysis_form" model="ir.ui.view">
++            <field name="name">issue.analysis.form</field>
++            <field name="model">issue.analysis</field>
++            <field name="arch" type="xml">
++                <form string="Issue Analysis">
++                    <sheet>
++                        <group>
++                            <field name="name"/>
++                        </group>
++                    </sheet>
++                </form>
++            </field>
++        </record>
++    </data>
++</odoo>
+
+=== case: rev-89ac3cb4662a4ad1 ===
+--- a/generate_summary.py
++++ b/generate_summary.py
+@@ -109,7 +109,7 @@
+                     intent_desc = dim_info.get("变更影响描述", "")
+                     adaptation = dim_info.get("用户适配建议", "")
+                     
+-                    if change_type or intent_desc or adaptation:
++                    if change_type and change_type != "无变更":
+                         self.data["dimensions"].append({
+                             "result": "是",
+                             "dim_name": dim_name,
+
+=== case: rev-8a469aa591bca490 ===
+(no change)
+
+=== case: rev-98478339eba2368e ===
+--- a/__manifest__.py
++++ b/__manifest__.py
+@@ -7,7 +7,9 @@
+     'description': 'Integrates AI Agent for intelligent bug analysis',
+     'author': 'Your Company',
+     'license': 'LGPL-3',
+-    'data': [],
++    'data': [
++        'views/ai_issue_analysis_views.xml',
++    ],
+     'demo': [],
+     'installable': True,
+     'application': False,
+--- a/views/ai_issue_analysis_views.xml
++++ b/views/ai_issue_analysis_views.xml
+@@ -0,0 +1,79 @@
++<?xml version="1.0" encoding="utf-8"?>
++<odoo>
++    <data>
++
++        <!-- Form view -->
++        <record id="view_form_ai_issue_analysis" model="ir.ui.view">
++            <field name="name">ai.issue.analysis.form</field>
++            <field name="model">ai.issue.analysis</field>
++            <field name="arch" type="xml">
++                <form string="AI Issue Analysis">
++                    <header>
++                        <button name="action_analyze" string="Analyze"
++                                type="object" class="btn-primary"/>
++                    </header>
++                    <sheet>
++                        <group>
++                            <field name="name"/>
++                            <field name="state"/>
++                        </group>
++                        <group string="Analysis">
++                            <field name="description"/>
++                            <field name="result"/>
++                        </group>
++                    </sheet>
++                </form>
++            </field>
++        </record>
++
++        <!-- Tree / list view -->
++        <record id="view_tree_ai_issue_analysis" model="ir.ui.view">
++            <field name="name">ai.issue.analysis.tree</field>
++            <field name="model">ai.issue.analysis</field>
++            <field name="arch" type="xml">
++                <tree string="AI Issue Analysis">
++                    <field name="name"/>
++                    <field name="state"/>
++                </tree>
++            </field>
++        </record>
++
++        <!-- Search view -->
++        <record id="view_search_ai_issue_analysis" model="ir.ui.view">
++            <field name="name">ai.issue.analysis.search</field>
++            <field name="model">ai.issue.analysis</field>
++            <field name="arch" type="xml">
++                <search string="AI Issue Analysis">
++                    <field name="name"/>
++                    <field name="state"/>
++                    <filter name="draft" string="Draft"
++                            domain="[('state', '=', 'draft')]"/>
++                </search>
++            </field>
++        </record>
++
++        <!-- Action -->
++        <record id="action_ai_issue_analysis" model="ir.actions.act_window">
++            <field name="name">AI Issue Analysis</field>
++            <field name="res_model">ai.issue.analysis</field>
++            <field name="view_mode">tree,form</field>
++            <field name="help" type="html">
++                <p class="o_view_nocontent_smiling_face">
++                    Create a new analysis
++                </p>
++            </field>
++        </record>
++
++        <!-- Menu -->
++        <menuitem id="menu_ai_issue_analysis_root"
++                  name="AI Issue Analysis"
++                  sequence="10"/>
++
++        <menuitem id="menu_ai_issue_analysis"
++                  name="Analysis"
++                  parent="menu_ai_issue_analysis_root"
++                  action="action_ai_issue_analysis"
++                  sequence="10"/>
++
++    </data>
++</odoo>
+
+=== case: rev-9ca9c13ad9483bec ===
+--- a/media_utils.py
++++ b/media_utils.py
+@@ -34,7 +34,19 @@
+ 
+     Returns:
+         Raw MP4 bytes ready to be written to disk or streamed.
++
++    Raises:
++        ValueError: If ``audio_waveform`` contains NaN or +/-Inf values.
+     """
++    if audio_waveform is not None:
++        audio_arr = np.asarray(audio_waveform)
++        if audio_arr.dtype.kind in ("f", "c") and not np.all(np.isfinite(audio_arr)):
++            raise ValueError(
++                "audio_waveform contains NaN or +/-Inf values; "
++                "please clean the audio data (e.g. replace non-finite "
++                "samples with zeros) before muxing into MP4."
++            )
++
+     buf = io.BytesIO()
+     container = av.open(buf, mode="w", format="mp4")
+ 
+
+=== case: rev-9cdd9aa25c711967 ===
+--- a/settings.py
++++ b/settings.py
+@@ -54,6 +54,12 @@
+     'file': 'data/app.log'
+ }
+ 
++# 企业微信群机器人配置
++WECHAT_WORK_CONFIG = {
++    'webhook_url': 'http/workspace/qyapi.weixin.qq.com/cgi-bin/webhook/send?key=00000000-0000-0000-0000-000000000000',  # 企业微信群机器人 Webhook 地址
++    'msg_type': 'text',  # 消息类型：text、markdown
++}
++
+ # LaTeX 公式渲染配置
+ LATEX_RENDER_CONFIG = {
+     'enabled': True,           # 是否启用公式渲染
+
+=== case: rev-9f27702b16ac2ace ===
+--- a/repo_manager.py
++++ b/repo_manager.py
+@@ -130,6 +130,68 @@
+     return clone_repo(clone_url, repo_dir, repo, logger=logger)
+ 
+ 
++def clone_repo_with_fork(owner: str, repo: str, fork_owner: str, fork_name: str,
++                         repo_dir: str, token: str, issue_url: str = '',
++                         logger=None) -> Optional[str]:
++    """Clone the upstream repository and configure the fork as a remote.
++
++    A freshly created fork frequently reports as an empty repository or the
++    clone times out because its git objects have not been fully populated yet,
++    which leaves no complete object database for subsequent operations. To
++    guarantee a complete set of git objects, the repository is cloned from the
++    upstream source instead of the fork. After the clone succeeds, the fork is
++    registered as a remote (``fork``) so that local changes can be pushed back
++    to the fork and a PR opened against the upstream repository.
++    """
++    # 1. Clone from the upstream source to obtain complete git objects.
++    repo_path = clone_repo_from_source(
++        owner, repo, repo_dir, issue_url=issue_url, logger=logger
++    )
++    if repo_path is None:
++        if logger:
++            logger.error("  从上游克隆失败，无法继续配置 fork 远程仓库")
++        return None
++
++    # 2. Build the fork clone URL, embedding the token so pushes authenticate.
++    if 'gitcode.com' in issue_url:
++        fork_clone_url = (
++            f"http/workspace/{token}@gitcode.com/"
++            f"{fork_owner}/{fork_name}.git"
++        )
++    else:
++        fork_clone_url = (
++            f"http/workspace/{token}@atomgit.com/"
++            f"{fork_owner}/{fork_name}.git"
++        )
++
++    # 3. Register (or update) the fork remote so changes can be pushed back.
++    add_result = subprocess.run(
++        ['git', 'remote', 'add', 'fork', fork_clone_url],
++        cwd=repo_path,
++        capture_output=True,
++        text=True,
++    )
++    if add_result.returncode != 0:
++        # The remote may already exist; update its URL instead of failing.
++        set_result = subprocess.run(
++            ['git', 'remote', 'set-url', 'fork', fork_clone_url],
++            cwd=repo_path,
++            capture_output=True,
++            text=True,
++        )
++        if set_result.returncode != 0:
++            if logger:
++                logger.error(
++                    f"  配置 fork 远程仓库失败: {set_result.stderr.strip()}"
++                )
++            return None
++
++    if logger:
++        logger.info(f"  已配置 fork 远程仓库: {fork_owner}/{fork_name}")
++
++    return repo_path
++
++
+ def download_patch(url: str, output_dir: str, cve_id: str, logger=None) -> Optional[str]:
+     os.makedirs(output_dir, exist_ok=True)
+ 
+
+=== case: rev-9fbb2b58ef14ed55 ===
+(no change)
+
+=== case: rev-a60dac9e85e808bf ===
+--- a/rank.py
++++ b/rank.py
+@@ -27,7 +27,8 @@
+     
+     def score(self, run_result: Dict[str, Any], witness_record: Dict[str, Any], 
+                diagnosis: Dict[str, Any], static_audit_result: Dict[str, Any] = None,
+-               test_plan_audit_result: Dict[str, Any] = None, build_result: Dict[str, Any] = None) -> Dict[str, Any]:
++               test_plan_audit_result: Dict[str, Any] = None, build_result: Dict[str, Any] = None,
++               iteration_count: int = 0) -> Dict[str, Any]:
+         """
+         Score test results (重构后：API 级汇总评分)
+         
+@@ -38,6 +39,7 @@
+             static_audit_result: Static audit result (蓝军审计结果)
+             test_plan_audit_result: Test plan audit result (蓝军审计结果)
+             build_result: Build result (API 级汇总，包含编译结果)
++            iteration_count: 迭代轮数，用于计算迭代加成
+             
+         Returns:
+             Rank result (API 级汇总)
+@@ -52,24 +54,32 @@
+             "stability_score": self._score_stability(run_result)
+         }
+         
+-        # Calculate overall score (加权平均 - 调整权重，提高编译权重)
++        # Calculate overall score (加权平均 - 调整权重：提高审计权重，降低编译权重)
+         weights = {
+-            "compile_score": 0.35,
+-            "runtime_score": 0.20,
+-            "pass_rate_score": 0.15,
+-            "audit_score": 0.15,
+-            "evidence_score": 0.10,
++            "compile_score": 0.20,
++            "runtime_score": 0.15,
++            "pass_rate_score": 0.10,
++            "audit_score": 0.35,
++            "evidence_score": 0.15,
+             "stability_score": 0.05
+         }
+         
+-        overall_score = sum(scores[k] * weights[k] for k in scores.keys())
++        base_score = sum(scores[k] * weights[k] for k in scores.keys())
++        
++        # Calculate iteration bonus (迭代加成)
++        iteration_bonus = self._compute_iteration_bonus(iteration_count)
++        final_score = min(1.0, base_score + iteration_bonus)
+         
+         return {
+-            "overall_score": overall_score,
++            "overall_score": final_score,
++            "base_score": base_score,
++            "iteration_count": iteration_count,
++            "iteration_bonus": iteration_bonus,
++            "final_score": final_score,
+             "scores": scores,
+             "weights": weights,
+-            "rank": self._get_rank(overall_score),
+-            "message": f"Overall score: {overall_score:.2f}"
++            "rank": self._get_rank(final_score),
++            "message": f"Overall score: {final_score:.2f}"
+         }
+     
+     def _score_compile(self, run_result: Dict[str, Any]) -> float:
+@@ -127,6 +137,9 @@
+         """
+         Score audit results (蓝军审计)
+         
++        支持嵌套结构：审计结果可能将 overall_assessment / recommendation
++        嵌套在任意层级，此处递归查找以避免因结构嵌套而误判为高分。
++        
+         Args:
+             static_audit_result: Static audit result
+             test_plan_audit_result: Test plan audit result
+@@ -137,31 +150,74 @@
+         # Score test plan audit
+         test_plan_score = 1.0
+         if test_plan_audit_result:
+-            overall = test_plan_audit_result.get('overall_assessment', {})
+-            recommendation = overall.get('recommendation', 'unknown')
+-            
+-            if recommendation == 'accept':
+-                test_plan_score = 1.0
+-            elif recommendation == 'needs_improvement':
+-                test_plan_score = 0.6
+-            elif recommendation == 'reject':
+-                test_plan_score = 0.3
++            recommendation = self._extract_recommendation(test_plan_audit_result)
++            test_plan_score = self._recommendation_to_score(recommendation)
+         
+         # Score static audit
+         static_score = 1.0
+         if static_audit_result:
+-            overall = static_audit_result.get('overall_assessment', {})
+-            recommendation = overall.get('recommendation', 'unknown')
+-            
+-            if recommendation == 'accept':
+-                static_score = 1.0
+-            elif recommendation == 'needs_improvement':
+-                static_score = 0.6
+-            elif recommendation == 'reject':
+-                static_score = 0.3
++            recommendation = self._extract_recommendation(static_audit_result)
++            static_score = self._recommendation_to_score(recommendation)
+         
+         # Combine scores (average)
+         return (test_plan_score + static_score) / 2.0
++    
++    def _find_nested(self, data: Any, key: str) -> Any:
++        """递归在嵌套的 dict/list 中查找指定 key 的值。"""
++        if isinstance(data, dict):
++            if key in data:
++                return data[key]
++            for value in data.values():
++                result = self._find_nested(value, key)
++                if result is not None:
++                    return result
++        elif isinstance(data, list):
++            for item in data:
++                result = self._find_nested(item, key)
++                if result is not None:
++                    return result
++        return None
++    
++    def _extract_recommendation(self, audit_result: Dict[str, Any]) -> str:
++        """
++        从可能嵌套的审计结果中提取 recommendation。
++        
++        优先查找 overall_assessment（可能嵌套在任意层级），
++        再回退到直接查找 recommendation。
++        """
++        if not audit_result:
++            return None
++        
++        overall = self._find_nested(audit_result, 'overall_assessment')
++        if overall is not None:
++            if isinstance(overall, dict):
++                if 'recommendation' in overall:
++                    return overall.get('recommendation')
++            elif isinstance(overall, str):
++                return overall
++        
++        return self._find_nested(audit_result, 'recommendation')
++    
++    def _recommendation_to_score(self, recommendation: str) -> float:
++        """将审计 recommendation 映射为得分。"""
++        if recommendation == 'accept':
++            return 1.0
++        elif recommendation == 'needs_improvement':
++            return 0.6
++        elif recommendation == 'reject':
++            return 0.3
++        return 1.0
++    
++    def _compute_iteration_bonus(self, iteration_count: int) -> float:
++        """
++        计算迭代加成。
++        
++        每轮迭代给予一定加成，并设置上限，避免无限累加。
++        """
++        if not iteration_count or iteration_count <= 0:
++            return 0.0
++        # 每轮 0.02 加成，上限 0.10
++        return min(0.10, iteration_count * 0.02)
+     
+     def _score_evidence(self, witness_record: Dict[str, Any]) -> float:
+         """Score evidence (API 级：证据覆盖率)"""
+
+=== case: rev-b8152a1f71487e75 ===
+--- a/papers_with_code_search.py
++++ b/papers_with_code_search.py
+@@ -52,27 +52,27 @@
+         self.cache_path.mkdir(parents=True, exist_ok=True)
+         
+         logger.info("="*70)
+-        logger.info("Papers with Code工具初始化完成")
++        logger.info("Papers with Code initialization complete")
+         logger.info("="*70)
+-        logger.info(f"  API基础URL: {self.API_BASE_URL}")
+-        logger.info(f"  最大结果数: {self.max_results}")
+-        logger.info(f"  重试次数: {self.retry_count}")
+-        logger.info(f"  RL类别数: {len(self.RL_CATEGORIES)}")
++        logger.info(f"  API base URL: {self.API_BASE_URL}")
++        logger.info(f"  Max results: {self.max_results}")
++        logger.info(f"  Retry count: {self.retry_count}")
++        logger.info(f"  RL categories count: {len(self.RL_CATEGORIES)}")
+         
+     def search_papers(self, keywords: List[str], categories: List[str] = None, time_range_hours: int = 24) -> List[Dict[str, Any]]:
+         """Search papers with code implementations by keywords."""
+         logger.info("\n" + "="*70)
+-        logger.info("Papers with Code论文搜索开始")
++        logger.info("Papers with Code paper search started")
+         logger.info("="*70)
+         
+         all_papers = []
+         
+         categories = categories or self.RL_CATEGORIES[:3]
+         
+-        logger.info(f"\n搜索类别: {', '.join(categories)}")
++        logger.info(f"\nSearch categories: {', '.join(categories)}")
+         
+         for category in categories[:3]:
+-            logger.info(f"\n类别: {category}")
++            logger.info(f"\nCategory: {category}")
+             
+             for attempt in range(self.retry_count):
+                 try:
+@@ -80,26 +80,26 @@
+                     
+                     if papers:
+                         all_papers.extend(papers)
+-                        logger.info(f"  ✓ 找到 {len(papers)} 篇论文")
++                        logger.info(f"  ✓ Found {len(papers)} papers")
+                         break
+                     else:
+-                        logger.warning(f"  ⚠ 尝试 {attempt+1}/{self.retry_count} 无结果")
++                        logger.warning(f"  ⚠ Attempt {attempt+1}/{self.retry_count} no results")
+                         time.sleep(self.RATE_LIMIT_DELAY)
+                         
+                 except Exception as e:
+-                    logger.error(f"  ✗ 尝试 {attempt+1}/{self.retry_count} 失败: {e}")
++                    logger.error(f"  ✗ Attempt {attempt+1}/{self.retry_count} failed: {e}")
+                     if attempt < self.retry_count - 1:
+                         time.sleep(self.RATE_LIMIT_DELAY * 2)
+                         continue
+                     else:
+-                        logger.error(f"  类别 '{category}' 搜索完全失败")
++                        logger.error(f"  Category '{category}' search completely failed")
+                         break
+             
+             time.sleep(self.RATE_LIMIT_DELAY)
+         
+         unique_papers = self._deduplicate_papers(all_papers)
+         
+-        logger.info(f"\n总计找到 {len(unique_papers)} 篇不同论文")
++        logger.info(f"\nTotal found {len(unique_papers)} unique papers")
+         
+         return unique_papers
+     
+@@ -128,20 +128,20 @@
+                 return self._format_papers(filtered_papers)
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return []
+                 
+         except requests.exceptions.Timeout:
+-            logger.warning("  API请求超时")
++            logger.warning("  API request timed out")
+             return []
+             
+         except requests.exceptions.RequestException as e:
+-            logger.warning(f"  API请求异常: {e}")
++            logger.warning(f"  API request exception: {e}")
+             return []
+     
+     def get_paper_implementations(self, paper_id: str) -> Dict[str, Any]:
+         """Get implementation details for a specific paper."""
+-        logger.info(f"\n获取论文实现详情: {paper_id}")
++        logger.info(f"\nGetting paper implementation details: {paper_id}")
+         
+         endpoint = f"{self.API_BASE_URL}/papers/{paper_id}/"
+         
+@@ -153,26 +153,26 @@
+                 
+                 implementations = self._extract_implementations(data)
+                 
+-                logger.info(f"  ✓ 获取实现详情成功")
+-                logger.info(f"    实现数量: {len(implementations.get('repositories', []))}")
++                logger.info(f"  ✓ Successfully retrieved implementation details")
++                logger.info(f"    Implementation count: {len(implementations.get('repositories', []))}")
+                 
+                 return implementations
+                 
+             elif response.status_code == 404:
+-                logger.warning(f"  ⚠ 论文不存在")
++                logger.warning(f"  ⚠ Paper not found")
+                 return {}
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return {}
+                 
+         except Exception as e:
+-            logger.error(f"  ✗ 获取实现详情失败: {e}")
++            logger.error(f"  ✗ Failed to get implementation details: {e}")
+             return {}
+     
+     def get_method_details(self, method_id: str) -> Dict[str, Any]:
+         """Get detailed information about a specific method."""
+-        logger.info(f"\n获取方法详情: {method_id}")
++        logger.info(f"\nGetting method details: {method_id}")
+         
+         endpoint = f"{self.API_BASE_URL}/methods/{method_id}/"
+         
+@@ -191,27 +191,27 @@
+                     "source": "papers_with_code"
+                 }
+                 
+-                logger.info(f"  ✓ 方法详情获取成功")
+-                logger.info(f"    方法名: {method_details['name']}")
+-                logger.info(f"    论文数: {method_details['papers_count']}")
++                logger.info(f"  ✓ Method details retrieved successfully")
++                logger.info(f"    Method name: {method_details['name']}")
++                logger.info(f"    Papers count: {method_details['papers_count']}")
+                 
+                 return method_details
+                 
+             elif response.status_code == 404:
+-                logger.warning(f"  ⚠ 方法不存在")
++                logger.warning(f"  ⚠ Method not found")
+                 return {}
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return {}
+                 
+         except Exception as e:
+-            logger.error(f"  ✗ 获取方法详情失败: {e}")
++            logger.error(f"  ✗ Failed to get method details: {e}")
+             return {}
+     
+     def get_benchmarks(self, area: str = "reinforcement-learning") -> List[Dict[str, Any]]:
+         """Get performance benchmarks for a specific area."""
+-        logger.info(f"\n获取基准测试数据: {area}")
++        logger.info(f"\nGetting benchmark data: {area}")
+         
+         endpoint = f"{self.API_BASE_URL}/areas/{area}/"
+         
+@@ -223,22 +223,22 @@
+                 
+                 benchmarks = self._extract_benchmarks(data)
+                 
+-                logger.info(f"  ✓ 基准测试数据获取成功")
+-                logger.info(f"    基准测试数: {len(benchmarks)}")
++                logger.info(f"  ✓ Benchmark data retrieved successfully")
++                logger.info(f"    Benchmark count: {len(benchmarks)}")
+                 
+                 return benchmarks
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return []
+                 
+         except Exception as e:
+-            logger.error(f"  ✗ 获取基准测试失败: {e}")
++            logger.error(f"  ✗ Failed to get benchmarks: {e}")
+             return []
+     
+     def link_github_repositories(self, paper_title: str) -> List[Dict[str, Any]]:
+         """Find GitHub repositories related to a paper."""
+-        logger.info(f"\n查找GitHub仓库: {paper_title[:50]}...")
++        logger.info(f"\nFinding GitHub repositories: {paper_title[:50]}...")
+         
+         endpoint = f"{self.API_BASE_URL}/papers/"
+         
+@@ -273,21 +273,21 @@
+                             "source": "papers_with_code"
+                         })
+                 
+-                logger.info(f"  ✓ 找到 {len(repositories)} 个GitHub仓库")
++                logger.info(f"  ✓ Found {len(repositories)} GitHub repositories")
+                 
+                 return repositories
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return []
+                 
+         except Exception as e:
+-            logger.error(f"  ✗ 查找GitHub仓库失败: {e}")
++            logger.error(f"  ✗ Failed to find GitHub repositories: {e}")
+             return []
+     
+     def get_popular_methods(self, area: str = "reinforcement-learning", limit: int = 20) -> List[Dict[str, Any]]:
+         """Get popular methods in a specific area."""
+-        logger.info(f"\n获取热门方法: {area}（限制={limit}）")
++        logger.info(f"\nGetting popular methods: {area} (limit={limit})")
+         
+         endpoint = f"{self.API_BASE_URL}/methods/"
+         
+@@ -308,20 +308,20 @@
+                 
+                 popular_methods = self._format_methods(results)
+                 
+-                logger.info(f"  ✓ 热门方法获取成功")
+-                logger.info(f"    方法数: {len(popular_methods)}")
++                logger.info(f"  ✓ Popular methods retrieved successfully")
++                logger.info(f"    Method count: {len(popular_methods)}")
+                 
+                 for method in popular_methods[:5]:
+-                    logger.info(f"      {method['name']}: {method['papers_count']}篇论文")
++                    logger.info(f"      {method['name']}: {method['papers_count']} papers")
+                 
+                 return popular_methods
+                 
+             else:
+-                logger.warning(f"  API返回状态码: {response.status_code}")
++                logger.warning(f"  API returned status code: {response.status_code}")
+                 return []
+                 
+         except Exception as e:
+-            logger.error(f"  ✗ 获取热门方法失败: {e}")
++            logger.error(f"  ✗ Failed to get popular methods: {e}")
+             return []
+     
+     def _filter_by_time_range(self, papers: List[Dict], time_range_hours: int) -> List[Dict]:
+
+=== case: rev-b8d1d015a9c3a458 ===
+--- a/my_memviz.py
++++ b/my_memviz.py
+@@ -1,5 +1,5 @@
+ from dataclasses import dataclass, field
+-from typing import List, Dict, Any
++from typing import List, Dict, Any, Optional
+ 
+ 
+ def format_bytes(num_bytes):
+@@ -10,6 +10,68 @@
+ 
+ def calculate_tensor_memory(tensor):
+     return tensor.nelement() * tensor.element_size()
++
++
++def _is_tensor_like(value) -> bool:
++    """Return True if value looks like a tensor (has shape/dtype/nelement/element_size)."""
++    return (
++        value is not None
++        and hasattr(value, "shape")
++        and hasattr(value, "dtype")
++        and hasattr(value, "nelement")
++        and hasattr(value, "element_size")
++    )
++
++
++def extract_saved_tensors(grad_fn) -> List[Dict[str, Any]]:
++    """Walk a grad_fn's saved attributes and return metadata for recognized saved tensors.
++
++    Recognized attribute names are those starting with ``_saved_mat`` plus the
++    explicit names ``_saved_result``, ``_saved_bias`` and ``_saved_weight``.
++
++    The following are skipped:
++      * ``_raw_saved_`` variants (to avoid double counting)
++      * attributes that raise ``RuntimeError`` on access
++      * ``None`` values
++      * non-tensor values
++    """
++    recognized: List[Dict[str, Any]] = []
++
++    for name in dir(grad_fn):
++        # Skip _raw_saved_ variants entirely.
++        if name.startswith("_raw_saved_"):
++            continue
++
++        # Only consider recognized saved-tensor attribute names.
++        if not (
++            name.startswith("_saved_mat")
++            or name in ("_saved_result", "_saved_bias", "_saved_weight")
++        ):
++            continue
++
++        # Accessing a saved-tensor property may raise RuntimeError (e.g. when
++        # the saved data has been freed). Skip those attributes.
++        try:
++            value = getattr(grad_fn, name)
++        except RuntimeError:
++            continue
++
++        # Skip None values and non-tensor values.
++        if not _is_tensor_like(value):
++            continue
++
++        size_bytes = calculate_tensor_memory(value)
++        recognized.append(
++            {
++                "name": name,
++                "shape": list(value.shape),
++                "dtype": str(value.dtype),
++                "size_bytes": size_bytes,
++                "size_formatted": format_bytes(size_bytes),
++            }
++        )
++
++    return recognized
+ 
+ 
+ @dataclass
+
+=== case: rev-bb519c7bf511ac8b ===
+--- a/conftest.py
++++ b/conftest.py
+@@ -21,6 +21,10 @@
+ # 将 cve-deal 根目录加入 path（用于导入 StepRunner）
+ CVE_DEAL_DIR = os.path.dirname(os.path.abspath(__file__))
+ sys.path.insert(0, os.path.join(CVE_DEAL_DIR, '..'))
++
++# 将 tools 根目录（conftest 上两级）加入 path，用于导入 workflow_engine 和 scenarios
++TOOLS_DIR = os.path.normpath(os.path.join(CVE_DEAL_DIR, '..', '..'))
++sys.path.insert(0, TOOLS_DIR)
+ 
+ 
+ # ============================================================
+
+=== case: rev-bd78b451615c2a39 ===
+(no change)
+
+=== case: rev-cbfe633860b77795 ===
+--- a/workspace_header.py
++++ b/workspace_header.py
+@@ -8,8 +8,22 @@
+ # ---------------------------------------------------------------------------
+ # Workspace header
+ # ---------------------------------------------------------------------------
+-WORKSPACE_HEADER_CN = "# 工作空间\n\n"
+-WORKSPACE_HEADER_EN = "# Workspace\n\n"
++WORKSPACE_HEADER_CN = (
++    "# 工作空间\n\n"
++    "## 输出文件放置规范\n\n"
++    "- 通用生成产物（如代码文件、文档、数据文件等）必须放到 workspace 根目录下。\n"
++    "- 技能（skill）生成的产物必须放到该技能的专属目录下（即 skills/<skill_name>/ 目录）。\n"
++    "- 请勿将产物随意放置到任意目录，以免造成管理混乱。\n\n"
++)
++WORKSPACE_HEADER_EN = (
++    "# Workspace\n\n"
++    "## Output File Placement Guidelines\n\n"
++    "- General generated artifacts (e.g. code files, documents, data files) must be placed "
++    "in the workspace root directory.\n"
++    "- Artifacts generated by a skill must be placed in that skill's dedicated directory "
++    "(i.e. under skills/<skill_name>/).\n"
++    "- Do not place artifacts in arbitrary directories to avoid management confusion.\n\n"
++)
+ 
+ WORKSPACE_HEADER: Dict[str, str] = {
+     "cn": WORKSPACE_HEADER_CN,
+
+=== case: rev-d89577c5071bc735 ===
+--- a/generate_baseline.py
++++ b/generate_baseline.py
+@@ -5,6 +5,7 @@
+ import time
+ import json
+ import logging
++import re
+ from datetime import datetime
+ from pathlib import Path
+ from typing import List, Dict, Any
+@@ -12,8 +13,33 @@
+ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+ logger = logging.getLogger(__name__)
+ 
+-PROJECTRoot = Path(__file__).parent.parent
++PROJECT_ROOT = Path(__file__).parent.parent
+ CUTOFF_DATE = "2026-03-31"
++
++
++def sanitize_filename(title: str) -> str:
++    """Convert a paper title into a filesystem-safe filename.
++
++    The resulting name contains only ASCII letters, digits and underscores.
++    Any run of disallowed characters (whitespace, punctuation, quotes,
++    colons, parentheses, non-ASCII letters, etc.) is collapsed into a single
++    underscore. Leading and trailing underscores are stripped. An empty or
++    whitespace-only title yields the safe default ``untitled``.
++    """
++    if not title or not title.strip():
++        return "untitled"
++
++    # Collapse every run of non-ASCII-alphanumeric characters into one '_'
++    name = re.sub(r'[^a-zA-Z0-9]+', '_', title)
++
++    # Trim leading/trailing underscores left by the substitution
++    name = name.strip('_')
++
++    # If nothing meaningful remained, fall back to a safe default
++    if not name:
++        return "untitled"
++
++    return name
+ 
+ 
+ class BaselineGenerator:
+@@ -302,7 +328,7 @@
+     def _archive(self):
+         """Archive papers."""
+         for paper in self.all_papers:
+-            title_key = paper["title"][:20].replace(" ", "_").replace("/", "_")
++            title_key = sanitize_filename(paper["title"])
+             filepath = self.archive_path / f"{title_key}.json"
+             
+             with open(filepath, 'w', encoding='utf-8') as f:
+
+=== case: rev-e61f1fc58b070103 ===
+--- a/my_memviz.py
++++ b/my_memviz.py
+@@ -2,3 +2,7 @@
+     if num_bytes == 0:
+         return "0"
+     return "{:,}".format(num_bytes)
++
++
++def calculate_tensor_memory(tensor):
++    return tensor.nelement() * tensor.element_size()
+
+=== case: rev-f3e957f9a6ec89eb ===
+--- a/prepare-revision.mjs
++++ b/prepare-revision.mjs
+@@ -1,32 +1,37 @@
+ #!/usr/bin/env node
+ /**
+- * Prepare Revision Script (Global Manifest Approach)
+- * 
++ * Prepare Revision Script (Session-Isolated Manifest Approach)
++ *
+  * Creates backup snapshots with unique UUID prefix.
+- * Appends to global manifest.json in $TMPDIR/interactive-revision/.
++ * Sessions are isolated by --session-path (the "call path") so that files
++ * from different call paths never mix in the same manifest.
++ * Each session stores its own manifest.json, log file, and snapshots under
++ * $TMPDIR/interactive-revision/<session-dir>/.
+  * User will edit original source files directly.
+- * 
+- * Usage: node prepare-revision.mjs --source <path1> --source <path2> ...
+- * 
++ *
++ * Usage: node prepare-revision.mjs --source <path1> --source <path2> ... --session-path <callPath>
++ *
+  * Output: JSON with snapshot mappings
+- * 
++ *
+  * Requires: Node.js >= 18.0.0
+  */
+ 
+-import { access, mkdir, copyFile, writeFile, readFile } from 'fs/promises';
++import { access, mkdir, copyFile, writeFile, readFile, appendFile } from 'fs/promises';
+ import { tmpdir } from 'os';
+ import { join, basename } from 'path';
+-import { randomUUID } from 'crypto';
++import { randomUUID, createHash } from 'crypto';
+ import { parseArgs } from 'util';
+ 
+ const args = parseArgs({
+   options: {
+     source: { type: 'string', short: 's', multiple: true },
++    'session-path': { type: 'string' },
+   },
+   strict: true,
+ });
+ 
+ const sourcePaths = args.values.source || [];
++const sessionPath = args.values['session-path'] || 'default';
+ 
+ if (sourcePaths.length === 0) {
+   const result = {
+@@ -38,21 +43,58 @@
+   process.exit(1);
+ }
+ 
++// Base directory: $TMPDIR/interactive-revision
+ const baseDir = join(tmpdir(), 'interactive-revision');
+-const manifestPath = join(baseDir, 'manifest.json');
++
++/**
++ * Derive a stable, filesystem-safe session directory name from the call path.
++ * A short hash is appended to guarantee that distinct call paths never collide
++ * even if their sanitized forms happen to match, which is what gives us
++ * per-call-path session isolation.
++ */
++function deriveSessionDirName(callPath) {
++  const sanitized = String(callPath)
++    .replace(/[^a-zA-Z0-9._-]+/g, '-')
++    .replace(/^-+|-+$/g, '')
++    .slice(0, 48);
++  const hash = createHash('sha256').update(String(callPath)).digest('hex').slice(0, 8);
++  const name = sanitized.length > 0 ? sanitized : 'session';
++  return `${name}-${hash}`;
++}
++
++const sessionDirName = deriveSessionDirName(sessionPath);
++const sessionDir = join(baseDir, sessionDirName);
++const manifestPath = join(sessionDir, 'manifest.json');
++const logPath = join(sessionDir, 'prepare.log');
++
++async function writeLog(message) {
++  const line = `[${new Date().toISOString()}] ${message}\n`;
++  try {
++    await appendFile(logPath, line, 'utf-8');
++  } catch {
++    // Logging must never break the main flow
++  }
++}
+ 
+ async function prepareRevision() {
+-  // Create base directory
+-  await mkdir(baseDir, { recursive: true });
+-
+-  // Read existing manifest (if exists)
++  // Create base + session directories (all session data lives under baseDir)
++  await mkdir(sessionDir, { recursive: true });
++  await writeLog(`Session initialized for call path: ${sessionPath}`);
++
++  // Read existing session manifest (if exists) -- isolated per session-path
+   let manifest;
+   try {
+     const manifestContent = await readFile(manifestPath, 'utf-8');
+     manifest = JSON.parse(manifestContent);
++    await writeLog(`Loaded existing session manifest (${(manifest.files || []).length} file(s))`);
+   } catch {
+-    // No existing manifest, create new
+-    manifest = { files: [], createdAt: new Date().toISOString() };
++    // No existing manifest for this session, create new
++    manifest = {
++      sessionPath,
++      files: [],
++      createdAt: new Date().toISOString(),
++    };
++    await writeLog('Created new session manifest');
+   }
+ 
+   // Process each source file
+@@ -69,29 +111,32 @@
+         sourcePath,
+         message: `Source file does not exist: ${sourcePath}`,
+       });
++      await writeLog(`ERROR: ${sourcePath} does not exist`);
+       continue;
+     }
+ 
+-    // Check if already in manifest (avoid duplicate)
++    // Check if already in this session's manifest (avoid duplicate)
+     const existingEntry = files.find(f => f.sourcePath === sourcePath);
+     if (existingEntry) {
+       errors.push({
+         sourcePath,
+         message: `File already in session: ${sourcePath}. Snapshot ID: ${existingEntry.snapshotId}`,
+       });
++      await writeLog(`SKIP: ${sourcePath} already in session (snapshot ${existingEntry.snapshotId})`);
+       continue;
+     }
+ 
+-    // Generate unique snapshot ID and path
++    // Generate unique snapshot ID and path (stored within the session dir)
+     const snapshotId = randomUUID();
+     const fileName = basename(sourcePath);
+     const snapshotFileName = `${snapshotId}-${fileName}`;
+-    const snapshotPath = join(baseDir, snapshotFileName);
++    const snapshotPath = join(sessionDir, snapshotFileName);
+ 
+     // Copy backup
+     try {
+       await copyFile(sourcePath, snapshotPath);
+-      
++      await writeLog(`BACKUP: ${sourcePath} -> ${snapshotPath}`);
++
+       const newEntry = {
+         sourcePath,
+         snapshotPath,
+@@ -107,21 +152,25 @@
+         sourcePath,
+         message: `Failed to create backup: ${err.message}`,
+       });
++      await writeLog(`ERROR: failed to back up ${sourcePath}: ${err.message}`);
+     }
+   }
+ 
+   // Write manifest
++  manifest.sessionPath = sessionPath;
+   manifest.files = files;
+   manifest.updatedAt = new Date().toISOString();
+-  
++
+   try {
+     await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
++    await writeLog(`Manifest written (${files.length} file(s) total)`);
+   } catch (error) {
+     const err = error instanceof Error ? error : new Error(String(error));
+     errors.push({
+       sourcePath: 'manifest',
+       message: `Failed to write manifest: ${err.message}`,
+     });
++    await writeLog(`ERROR: failed to write manifest: ${err.message}`);
+   }
+ 
+   // Build result
+@@ -140,12 +189,14 @@
+   const result = {
+     success: true,
+     baseDir,
+-    files: files,           // All files in session
+-    newFiles: addedFiles,   // Files successfully added this call
++    sessionPath,
++    sessionDir,
++    files,               // All files in session
++    newFiles: addedFiles, // Files successfully added this call
+     errors: errors.length > 0 ? errors : undefined,
+     message: `${addedFiles.length} file(s) added. Session now has ${files.length} file(s) total. User should edit the original source files directly. After edits, call: finalize-revision`,
+   };
+-  
++
+   console.log(JSON.stringify(result, null, 2));
+ }
+ 
+
+=== case: rev-f4c09bd8410f437b ===
+--- a/models.py
++++ b/models.py
+@@ -106,6 +106,8 @@
+     chat_type: str | None = None
+     # 定时任务执行时使用的 mode（"plan" 或 "agent"），创建时从对话上下文继承；无上下文时默认 "agent"
+     mode: str = "agent"
++    # 为 True 时，任务执行完成后自动删除自身记录（一次性定时任务）。
++    delete_after_run: bool = False
+ 
+     def to_dict(self) -> dict[str, Any]:
+         d: dict[str, Any] = {
+@@ -127,6 +129,8 @@
+             d["chat_type"] = self.chat_type
+         if self.mode:
+             d["mode"] = self.mode
++        if self.delete_after_run:
++            d["delete_after_run"] = True
+         return d
+ 
+     @staticmethod
+@@ -196,6 +200,8 @@
+             if isinstance(mode_raw, str) and str(mode_raw).strip()
+             else "agent"
+         )
++
++        delete_after_run = bool(data.get("delete_after_run", False))
+         return CronJob(
+             id=job_id,
+             name=name,
+@@ -211,6 +217,7 @@
+             updated_at=updated_at_f,
+             chat_type=job_chat_type,
+             mode=job_mode,
++            delete_after_run=delete_after_run,
+         )
+ 
+ 
+
+=== case: rev-fef49ee571e4af8c ===
+--- a/my_memviz.py
++++ b/my_memviz.py
+@@ -1,3 +1,26 @@
++from dataclasses import dataclass, field
++from typing import List, Optional, Tuple
++
++
++@dataclass
++class GraphNode:
++    """Represents a node in a computation graph.
++
++    Attributes:
++        node_id: Unique identifier for the node.
++        op_type: The operation type associated with the node.
++        output_shape: The shape of the tensor produced by the node.
++        saved_tensors: Optional list of tensors saved for backward pass.
++        saved_memory: Optional memory (in bytes) used by saved tensors.
++    """
++
++    node_id: int
++    op_type: str
++    output_shape: Tuple[int, ...]
++    saved_tensors: List = field(default_factory=list)
++    saved_memory: int = 0
++
++
+ def format_bytes(num_bytes):
+     if num_bytes == 0:
+         return "0"

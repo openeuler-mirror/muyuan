@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-6e01e26bfba9221a",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "When installing the module, not all view files declared in the manifest are loaded. The manifest's data list should include all view XML files needed for the module's interface, but a configuration view file is missing from the list, so the configuration interface is unavailable after installation.",
+  "context": {
+    "files": [
+      {
+        "path": "__manifest__.py",
+        "content": "{\n    'name': 'AI Issue Analysis',\n    'version': '17.0.1.0.0',\n    'depends': ['base'],\n    'category': 'Tools',\n    'summary': 'AI-powered bug analysis integration',\n    'description': 'Integrates AI Agent for intelligent bug analysis',\n    'author': 'Your Company',\n    'license': 'LGPL-3',\n    'data': [\n        'views/issue_analysis_views.xml',\n    ],\n    'demo': [],\n    'installable': True,\n    'application': False,\n    'auto_install': False,\n}\n",
+        "role": "impl"
+      },
+      {
+        "path": "test___manifest__.py",
+        "content": "import __manifest__\n\nwith open(__manifest__.__file__) as f:\n    manifest = eval(f.read())\n\n\ndef test_manifest_is_dict():\n    assert isinstance(manifest, dict)\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-bf91c7af-7a5-faa25aa42c2afcb5; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "__manifest__.py",
+        "content": "{\n    'name': 'AI Issue Analysis',\n    'version': '17.0.1.0.0',\n    'depends': ['base'],\n    'category': 'Tools',\n    'summary': 'AI-powered bug analysis integration',\n    'description': 'Integrates AI Agent for intelligent bug analysis',\n    'author': 'Your Company',\n    'license': 'LGPL-3',\n    'data': [\n        'views/issue_analysis_views.xml',\n        'views/ai_config_views.xml',\n    ],\n    'demo': [],\n    'installable': True,\n    'application': False,\n    'auto_install': False,\n}\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test___manifest___spec.py",
+        "content": "import __manifest__\n\nwith open(__manifest__.__file__) as f:\n    manifest = eval(f.read())\n\n\ndef test_data_key_exists():\n    assert 'data' in manifest\n\n\ndef test_data_is_list():\n    assert isinstance(manifest['data'], list)\n\n\ndef test_original_view_file_present():\n    assert 'views/issue_analysis_views.xml' in manifest['data']\n\n\ndef test_ai_config_views_file_present():\n    assert 'views/ai_config_views.xml' in manifest['data']\n\n\ndef test_data_has_at_least_two_entries():\n    assert len(manifest['data']) >= 2\n"
+      }
+    ],
+    "protected_paths": [
+      "test___manifest__.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-bf91c7af-7a53-93c8-91b2-40e21b2a79f3",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "__manifest__.py#308d5b7734c7",
+    "reverse_edits": 1,
+    "difficulty": "easy",
+    "fingerprint": "v3:63522290ee4ece2d",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

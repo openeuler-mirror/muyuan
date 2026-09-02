@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-2a048ca51fb7465e",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "FlightInfo objects should be able to track whether they meet filtering requirements (price + transfer count). When creating a FlightInfo with meet_requirements=True, it fails. When accessing meet_requirements on an existing FlightInfo, the attribute is not present.",
+  "context": {
+    "files": [
+      {
+        "path": "flight.py",
+        "content": "\"\"\"\n航班数据模型定义\n\n使用dataclasses定义轻量级数据结构，避免Pydantic的验证开销。\n\"\"\"\n\nfrom dataclasses import dataclass\nfrom datetime import datetime, date\nfrom typing import List, Optional\n\n\n@dataclass\nclass FlightInfo:\n    \"\"\"航班信息数据模型\n    \n    Attributes:\n        flight_no: 航班号（如\"CA123\"）\n        airline: 航空公司名称\n        departure_time: 出发时间\n        arrival_time: 到达时间\n        price: 价格（人民币）\n        departure_airport: 出发机场\n        arrival_airport: 到达机场\n        platform: 数据来源平台（\"ctrip\"/\"ly\"）\n        flight_type: 航班类型（\"single\"/\"round\"/\"return_single\"）\n        departure_city: 出发城市\n        arrival_city: 到达城市\n        departure_date: 出发日期\n        return_date: 返程日期（可选，仅往返航班）\n        duration: 行程时长（分钟，若存在转机则为总时长）\n        stopover_info: 经停信息（如\"经停 武汉\"）\n        transfer_count: 中转次数（0=直飞，1=一次中转，2=二次中转等）\n    \"\"\"\n    flight_no: str\n    airline: str\n    departure_time: datetime\n    arrival_time: datetime\n    price: float\n    departure_airport: str\n    arrival_airport: str\n    platform: str\n    flight_type: str\n    departure_city: str\n    arrival_city: str\n    departure_date: date\n    return_date: Optional[date] = None\n    duration: Optional[int] = None  # 行程时长（分钟）\n    stopover_info: Optional[str] = None  # 经停信息\n    transfer_count: int = 0  # 中转次数（默认直飞）\n\n\n@dataclass\nclass ScanConfig:\n    \"\"\"扫描配置数据模型\n    \n    Attributes:\n        departures: 出发城市列表\n        destinations: 目的地城市列表\n        departure_dates: 出发日期列表\n        return_dates: 返程日期列表\n        round_trip: 是否为往返航班\n        max_price_single: 单程航班最大价格（人民币）\n        max_price_round: 往返航班最大价格（人民币）\n        retry_count: 重试次数\n        retry_delay: 重试延迟（秒）\n        request_interval: 请求间隔（秒）\n    \"\"\"\n    departures: List[str]\n    destinations: List[str]\n    departure_dates: List[date]\n    return_dates: List[date]\n    round_trip: bool\n    max_price_single: int\n    max_price_round: int\n    retry_count: int\n    retry_delay: int\n    request_interval: int\n\n\n@dataclass\nclass ScanResult:\n    \"\"\"扫描结果数据模型\n    \n    Attributes:\n        scan_time: 扫描时间\n        total_routes: 总路由数\n        success_routes: 成功路由数\n        failed_routes: 失败路由数\n        low_price_flights: 低价航班列表\n        errors: 错误信息列表\n    \"\"\"\n    scan_time: datetime\n    total_routes: int\n    success_routes: int\n    failed_routes: int\n    low_price_flights: List[FlightInfo]\n    errors: List[str]\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_flight.py",
+        "content": "import pytest\nfrom datetime import datetime, date\nimport flight\n\n\ndef make_flight(**kwargs):\n    \"\"\"Helper to create a FlightInfo with sensible defaults.\"\"\"\n    defaults = dict(\n        flight_no=\"CA123\",\n        airline=\"中国国航\",\n        departure_time=datetime(2024, 1, 15, 8, 0),\n        arrival_time=datetime(2024, 1, 15, 10, 0),\n        price=500.0,\n        departure_airport=\"PEK\",\n        arrival_airport=\"SHA\",\n        platform=\"ctrip\",\n        flight_type=\"single\",\n        departure_city=\"北京\",\n        arrival_city=\"上海\",\n        departure_date=date(2024, 1, 15),\n    )\n    defaults.update(kwargs)\n    return flight.FlightInfo(**defaults)\n\n\ndef test_meet_requirements_default_false():\n    \"\"\"meet_requirements should exist and default to False.\"\"\"\n    f = make_flight()\n    assert hasattr(f, \"meet_requirements\")\n    assert f.meet_requirements is False\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-157e7623-4e6-f1d71f6303debd5b; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "flight.py",
+        "content": "\"\"\"\n航班数据模型定义\n\n使用dataclasses定义轻量级数据结构，避免Pydantic的验证开销。\n\"\"\"\n\nfrom dataclasses import dataclass\nfrom datetime import datetime, date\nfrom typing import List, Optional\n\n\n@dataclass\nclass FlightInfo:\n    \"\"\"航班信息数据模型\n    \n    Attributes:\n        flight_no: 航班号（如\"CA123\"）\n        airline: 航空公司名称\n        departure_time: 出发时间\n        arrival_time: 到达时间\n        price: 价格（人民币）\n        departure_airport: 出发机场\n        arrival_airport: 到达机场\n        platform: 数据来源平台（\"ctrip\"/\"ly\"）\n        flight_type: 航班类型（\"single\"/\"round\"/\"return_single\"）\n        departure_city: 出发城市\n        arrival_city: 到达城市\n        departure_date: 出发日期\n        return_date: 返程日期（可选，仅往返航班）\n        duration: 行程时长（分钟，若存在转机则为总时长）\n        stopover_info: 经停信息（如\"经停 武汉\"）\n        transfer_count: 中转次数（0=直飞，1=一次中转，2=二次中转等）\n    \"\"\"\n    flight_no: str\n    airline: str\n    departure_time: datetime\n    arrival_time: datetime\n    price: float\n    departure_airport: str\n    arrival_airport: str\n    platform: str\n    flight_type: str\n    departure_city: str\n    arrival_city: str\n    departure_date: date\n    return_date: Optional[date] = None\n    duration: Optional[int] = None  # 行程时长（分钟）\n    stopover_info: Optional[str] = None  # 经停信息\n    transfer_count: int = 0  # 中转次数（默认直飞）\n    meet_requirements: bool = False  # 是否满足筛选条件（价格+转机次数）\n\n\n@dataclass\nclass ScanConfig:\n    \"\"\"扫描配置数据模型\n    \n    Attributes:\n        departures: 出发城市列表\n        destinations: 目的地城市列表\n        departure_dates: 出发日期列表\n        return_dates: 返程日期列表\n        round_trip: 是否为往返航班\n        max_price_single: 单程航班最大价格（人民币）\n        max_price_round: 往返航班最大价格（人民币）\n        retry_count: 重试次数\n        retry_delay: 重试延迟（秒）\n        request_interval: 请求间隔（秒）\n    \"\"\"\n    departures: List[str]\n    destinations: List[str]\n    departure_dates: List[date]\n    return_dates: List[date]\n    round_trip: bool\n    max_price_single: int\n    max_price_round: int\n    retry_count: int\n    retry_delay: int\n    request_interval: int\n\n\n@dataclass\nclass ScanResult:\n    \"\"\"扫描结果数据模型\n    \n    Attributes:\n        scan_time: 扫描时间\n        total_routes: 总路由数\n        success_routes: 成功路由数\n        failed_routes: 失败路由数\n        low_price_flights: 低价航班列表\n        errors: 错误信息列表\n    \"\"\"\n    scan_time: datetime\n    total_routes: int\n    success_routes: int\n    failed_routes: int\n    low_price_flights: List[FlightInfo]\n    errors: List[str]\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_flight_spec.py",
+        "content": "import pytest\nfrom datetime import datetime, date\nimport flight\n\n\ndef make_flight(**kwargs):\n    \"\"\"Helper to create a FlightInfo with sensible defaults.\"\"\"\n    defaults = dict(\n        flight_no=\"CA123\",\n        airline=\"中国国航\",\n        departure_time=datetime(2024, 1, 15, 8, 0),\n        arrival_time=datetime(2024, 1, 15, 10, 0),\n        price=500.0,\n        departure_airport=\"PEK\",\n        arrival_airport=\"SHA\",\n        platform=\"ctrip\",\n        flight_type=\"single\",\n        departure_city=\"北京\",\n        arrival_city=\"上海\",\n        departure_date=date(2024, 1, 15),\n    )\n    defaults.update(kwargs)\n    return flight.FlightInfo(**defaults)\n\n\ndef test_meet_requirements_set_true():\n    \"\"\"meet_requirements should be settable to True via constructor.\"\"\"\n    f = make_flight(meet_requirements=True)\n    assert f.meet_requirements is True\n\n\ndef test_meet_requirements_in_dataclass_fields():\n    \"\"\"meet_requirements should be a declared dataclass field.\"\"\"\n    field_names = list(flight.FlightInfo.__dataclass_fields__.keys())\n    assert \"meet_requirements\" in field_names\n\n\ndef test_meet_requirements_is_bool_type():\n    \"\"\"meet_requirements should be a bool, not just truthy/falsy.\"\"\"\n    f = make_flight()\n    assert isinstance(f.meet_requirements, bool)\n    f2 = make_flight(meet_requirements=True)\n    assert isinstance(f2.meet_requirements, bool)\n\n\ndef test_existing_transfer_count_still_works():\n    \"\"\"Existing field transfer_count should still default to 0 (regression guard).\"\"\"\n    f = make_flight()\n    assert f.transfer_count == 0\n    f2 = make_flight(transfer_count=2)\n    assert f2.transfer_count == 2\n"
+      }
+    ],
+    "protected_paths": [
+      "test_flight.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-157e7623-4e6f-9b43-ae76-60401ae2e27f",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "flight.py#e5a2fce0f12b",
+    "reverse_edits": 1,
+    "difficulty": "medium",
+    "fingerprint": "v3:d6af4189fd5595e4",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

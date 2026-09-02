@@ -1,0 +1,71 @@
+{
+  "case_id": "rev-fef49ee571e4af8c",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "I need to represent graph nodes as objects with a node id, op type, output shape, and optional saved tensors / saved memory. When I try to instantiate `GraphNode` from `my_memviz`, it fails because the class is not defined. The existing `format_bytes` and `calculate_tensor_memory` helpers should keep working.",
+  "context": {
+    "files": [
+      {
+        "path": "my_memviz.py",
+        "content": "def format_bytes(num_bytes):\n    if num_bytes == 0:\n        return \"0\"\n    return \"{:,}\".format(num_bytes)\n\n\ndef calculate_tensor_memory(tensor):\n    return tensor.nelement() * tensor.element_size()\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_my_memviz.py",
+        "content": "import pytest\nimport my_memviz\nfrom dataclasses import is_dataclass, fields\n\n\ndef test_graph_node_exists():\n    assert hasattr(my_memviz, \"GraphNode\"), \"GraphNode class should be defined\"\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-9313261f-d4d-9ecba8bd5fc13345; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "my_memviz.py",
+        "content": "from dataclasses import dataclass, field\nfrom typing import List, Dict, Any\n\n\ndef format_bytes(num_bytes):\n    if num_bytes == 0:\n        return \"0\"\n    return \"{:,}\".format(num_bytes)\n\n\ndef calculate_tensor_memory(tensor):\n    return tensor.nelement() * tensor.element_size()\n\n\n@dataclass\nclass GraphNode:\n    node_id: int\n    op_type: str\n    output_shape: List[int]\n    saved_tensors: List[Dict[str, Any]] = field(default_factory=list)\n    saved_memory_bytes: int = 0\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_my_memviz_spec.py",
+        "content": "import pytest\nimport my_memviz\nfrom dataclasses import is_dataclass, fields\n\n\ndef test_graph_node_is_dataclass():\n    assert is_dataclass(my_memviz.GraphNode)\n\n\ndef test_graph_node_required_fields():\n    node = my_memviz.GraphNode(node_id=1, op_type=\"add\", output_shape=[2, 3])\n    assert node.node_id == 1\n    assert node.op_type == \"add\"\n    assert node.output_shape == [2, 3]\n\n\ndef test_graph_node_defaults():\n    node = my_memviz.GraphNode(node_id=0, op_type=\"noop\", output_shape=[])\n    assert node.saved_tensors == []\n    assert node.saved_memory_bytes == 0\n\n\ndef test_graph_node_saved_tensors_independent_per_instance():\n    n1 = my_memviz.GraphNode(node_id=1, op_type=\"a\", output_shape=[1])\n    n2 = my_memviz.GraphNode(node_id=2, op_type=\"b\", output_shape=[2])\n    n1.saved_tensors.append({\"name\": \"t\"})\n    assert n1.saved_tensors == [{\"name\": \"t\"}]\n    assert n2.saved_tensors == []\n\n\ndef test_format_bytes_still_works():\n    assert my_memviz.format_bytes(0) == \"0\"\n    assert my_memviz.format_bytes(1000) == \"1,000\"\n    assert my_memviz.format_bytes(1234567) == \"1,234,567\"\n"
+      }
+    ],
+    "protected_paths": [
+      "test_my_memviz.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "chatcmpl-9313261f-d4d8-9861-81cf-f0bb1c6d043f",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "my_memviz.py#45836e156201",
+    "reverse_edits": 1,
+    "difficulty": "easy",
+    "fingerprint": "v3:57401f9709e3a863",
+    "validity_ok": false,
+    "validity_issues": [
+      {
+        "code": "hidden_test_requires_unknowable_kwarg",
+        "severity": "error",
+        "message": "hidden test test_my_memviz_spec.py passes node_id, op_type, output_shape to the implementation, and the name appears in no visible file, test, or prompt"
+      },
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "case_id": "rev-9cdd9aa25c711967",
+  "schema_version": "0.1",
+  "task_type": "bugfix",
+  "language": "python",
+  "prompt": "需要使用企业微信群机器人推送功能，配置 webhook_url 为 http/workspace/qyapi.weixin.qq.com/cgi-bin/webhook/send?key=00000000-0000-0000-0000-000000000000，但配置文件中缺少企业微信机器人相关配置，访问时提示找不到 WECHAT_WORK_CONFIG，无法获取到 webhook_url。",
+  "context": {
+    "files": [
+      {
+        "path": "settings.py",
+        "content": "\"\"\"\n配置文件 - AI知识推送系统\n\"\"\"\n\n# SMTP邮件配置\nSMTP_CONFIG = {\n    'host': 'smtp.qq.com',  # QQ邮箱SMTP服务器\n    'port': 465,               # SSL端口\n    'username': 'benchmark-user@example.com',            # 发送邮箱\n    'password': '***',            # QQ邮箱授权码（不是邮箱密码）\n    'to_email': 'benchmark-user@example.com',            # 接收推送的邮箱\n    'use_tls': False\n}\n\n# LLM API配置\nLLM_CONFIG = {\n    'api_key': '***',             # 请填写你的API密钥\n    'model': 'GLM-4.7',    # 使用GLM-4.7模型\n    'base_url': 'htt/workspace/llm-gateway.example.invalid:8080/v1',\n    'temperature': 0.7,\n    'max_tokens': 500\n}\n\n# 学习配置\nLEARNING_CONFIG = {\n    'domains': [\n        '大模型训练推理',\n        '模型微调技术',\n        '提示词工程',\n        '推理优化',\n        '模型量化',\n        '分布式训练',\n        '模型评估',\n        'LoRA微调',\n        'RLHF训练',\n        '模型部署'\n    ],\n    'difficulty_levels': ['初级', '中级', '高级'],\n    'default_difficulty': '初级',\n    'schedule_time': '10:00',  # 每天推送时间\n    'content_length': 400,      # 每条问答内容长度（字数）\n    'daily_count': 5            # 每天推送的问答数量\n}\n\n# 数据库配置\nDATABASE_CONFIG = {\n    'path': 'data/learning.db'\n}\n\n# 日志配置\nLOGGING_CONFIG = {\n    'level': 'INFO',\n    'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',\n    'file': 'data/app.log'\n}\n\n# LaTeX 公式渲染配置\nLATEX_RENDER_CONFIG = {\n    'enabled': True,           # 是否启用公式渲染\n    'dpi': 300,                # 图片 DPI\n    'fontsize': 14,            # 字体大小\n    'color': '#000000',        # 字体颜色\n    'cache_dir': 'data/latex_cache',  # 缓存目录\n    'fallback_to_text': True   # 渲染失败时是否回退到文本\n}\n",
+        "role": "impl"
+      },
+      {
+        "path": "test_settings.py",
+        "content": "import settings\n\n\ndef test_wechat_work_config_exists():\n    assert hasattr(settings, 'WECHAT_WORK_CONFIG'), 'WECHAT_WORK_CONFIG 配置不存在'\n    assert isinstance(settings.WECHAT_WORK_CONFIG, dict)\n",
+        "role": "test"
+      }
+    ],
+    "notes": "reverse-constructed from db-021775207873-1cf6fd74f51eae22; defect is a real edit"
+  },
+  "grader": {
+    "mode": "script",
+    "command": "python -m pytest -q",
+    "gold_files": [
+      {
+        "path": "settings.py",
+        "content": "\"\"\"\n配置文件 - AI知识推送系统\n\"\"\"\n\n# SMTP邮件配置\nSMTP_CONFIG = {\n    'host': 'smtp.qq.com',  # QQ邮箱SMTP服务器\n    'port': 465,               # SSL端口\n    'username': 'benchmark-user@example.com',            # 发送邮箱\n    'password': '***',            # QQ邮箱授权码（不是邮箱密码）\n    'to_email': 'benchmark-user@example.com',            # 接收推送的邮箱\n    'use_tls': False\n}\n\n# LLM API配置\nLLM_CONFIG = {\n    'api_key': '***',             # 请填写你的API密钥\n    'model': 'GLM-4.7',    # 使用GLM-4.7模型\n    'base_url': 'htt/workspace/llm-gateway.example.invalid:8080/v1',\n    'temperature': 0.7,\n    'max_tokens': 500\n}\n\n# 学习配置\nLEARNING_CONFIG = {\n    'domains': [\n        '大模型训练推理',\n        '模型微调技术',\n        '提示词工程',\n        '推理优化',\n        '模型量化',\n        '分布式训练',\n        '模型评估',\n        'LoRA微调',\n        'RLHF训练',\n        '模型部署'\n    ],\n    'difficulty_levels': ['初级', '中级', '高级'],\n    'default_difficulty': '初级',\n    'schedule_time': '10:00',  # 每天推送时间\n    'content_length': 400,      # 每条问答内容长度（字数）\n    'daily_count': 5            # 每天推送的问答数量\n}\n\n# 数据库配置\nDATABASE_CONFIG = {\n    'path': 'data/learning.db'\n}\n\n# 日志配置\nLOGGING_CONFIG = {\n    'level': 'INFO',\n    'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',\n    'file': 'data/app.log'\n}\n\n# LaTeX 公式渲染配置\nLATEX_RENDER_CONFIG = {\n    'enabled': True,           # 是否启用公式渲染\n    'dpi': 300,                # 图片 DPI\n    'fontsize': 14,            # 字体大小\n    'color': '#000000',        # 字体颜色\n    'cache_dir': 'data/latex_cache',  # 缓存目录\n    'fallback_to_text': True   # 渲染失败时是否回退到文本\n}\n\n# 企业微信群机器人配置\nWECHAT_WORK_CONFIG = {\n    'enabled': True,           # 是否启用企业微信机器人推送\n    'webhook_url': 'http/workspace/qyapi.weixin.qq.com/cgi-bin/webhook/send?key=00000000-0000-0000-0000-000000000000',         # 企业微信群机器人的Webhook URL\n    'msg_type': 'markdown',    # 消息类型：'markdown' 或 'text'\n    'use_email': False         # 是否同时发送邮件（双推送）\n}\n"
+      }
+    ],
+    "hidden_tests": [
+      {
+        "path": "test_settings_spec.py",
+        "content": "import settings\n\n\ndef test_webhook_url_configured_correctly():\n    config = settings.WECHAT_WORK_CONFIG\n    assert 'webhook_url' in config, 'webhook_url 未配置'\n    expected = 'http/workspace/qyapi.weixin.qq.com/cgi-bin/webhook/send?key=00000000-0000-0000-0000-000000000000'\n    assert config['webhook_url'] == expected, f\"webhook_url 配置错误: {config.get('webhook_url')}\"\n\n\ndef test_wechat_work_config_fields():\n    config = settings.WECHAT_WORK_CONFIG\n    assert config.get('enabled') is True, 'enabled 应为 True'\n    assert config.get('msg_type') in ('markdown', 'text'), 'msg_type 应为 markdown 或 text'\n    assert config.get('use_email') is False, 'use_email 应为 False'\n\n\ndef test_webhook_url_format_valid():\n    url = settings.WECHAT_WORK_CONFIG['webhook_url']\n    assert url.startswith('http/workspace/'), 'webhook_url 应使用 https 协议'\n    assert 'qyapi.weixin.qq.com' in url, 'webhook_url 应为企业微信域名'\n    assert 'key=' in url, 'webhook_url 应包含 key 参数'\n\n\ndef test_existing_configs_still_intact():\n    assert hasattr(settings, 'SMTP_CONFIG')\n    assert hasattr(settings, 'LLM_CONFIG')\n    assert hasattr(settings, 'LEARNING_CONFIG')\n    assert settings.SMTP_CONFIG['host'] == 'smtp.qq.com'\n    assert settings.LLM_CONFIG['model'] == 'GLM-4.7'\n    assert settings.LEARNING_CONFIG['daily_count'] == 5\n    assert settings.LATEX_RENDER_CONFIG['enabled'] is True\n"
+      }
+    ],
+    "protected_paths": [
+      "test_settings.py"
+    ]
+  },
+  "metadata": {
+    "generation": "reverse",
+    "source": "llm_chat_records",
+    "source_session_id": "02177520787381378a562a5d1f9d83a31bddf8475539eafb949d2",
+    "review_status": "needs_review",
+    "split": "auto",
+    "weak_grader": false,
+    "tier_requested": "T2",
+    "reverse_source": "settings.py#18de47e8eacc",
+    "reverse_edits": 3,
+    "difficulty": "easy",
+    "fingerprint": "v3:d481169c6260459e",
+    "validity_ok": true,
+    "validity_issues": [
+      {
+        "code": "tier_missing",
+        "severity": "warn",
+        "message": "metadata.tier is not set"
+      }
+    ],
+    "uncollectable_stub": false,
+    "uncollectable_reference": false,
+    "difficulty_scale": "size_heuristic",
+    "validity_unverified": []
+  }
+}
