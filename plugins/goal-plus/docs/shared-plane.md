@@ -33,7 +33,7 @@ main agent
 各组件的职责边界如下：
 
 | 所有者 | 职责 |
-|---|---|
+| ------ | ---- |
 | Search runtime | 冻结合同、物化工作区、提交 Git 和 verifier Evidence、回滚、选择、报告与 promotion |
 | candidate worker | 选择自己的技术方向、修改自己的工作区、调用 verifier、提交 handoff |
 | main agent | triage、spec discovery、初始 candidate 分配、全局停止、最终收尾、确认 verifier 失效 |
@@ -43,6 +43,12 @@ main agent
 Search runtime 不是 worker supervisor。`AgentSessionRecord` 只记录上下文、来源和
 宿主 launch payload，不表示进程是否存活。Pi 的 pool 状态因此单独保存在
 `.gp/host-pools/pi/`；Codex 生命周期由原生 agent registry 管理。
+
+Goal Plus intake 将 host command 开头连续的 typed `key=value` 与自然语言目标分离。
+`GoalPlusRecord.command_config` 保存显式配置，`raw_goal` 只保存目标和探索模式指导；
+host-command invocation 继续保存原始输入 hash。ready SearchSpec draft 必须匹配显式
+配置，只有缺省字段才由 main agent 在 Spec Discovery 中决定。因此 config precedence
+由 runtime 校验，不依赖 prompt 是否正确复述。
 
 ## SearchSpec 与评价合同
 
@@ -60,8 +66,13 @@ Search runtime 不是 worker supervisor。`AgentSessionRecord` 只记录上下�
 
 - 使用 Pydantic 校验 SearchSpec 结构；
 - hash-pin verifier artifact；
-- 在一次性源码副本中预执行 ranking verifier；
-- 检查退出码、数值 metric、超时和工作区副作用。
+- 对 Git source 在 origin 执行一次 process-verifier suite，并固定 clean source commit；
+- 在 run 的首个 Git worktree 中重复一次相同 suite，证明 relocation 后的路径合同有效；
+- 检查退出码、数值 metric、超时、verifier hash 和 source identity。
+
+`copy` 仍保留旧的 disposable-copy ranking preflight。未来的 ThinkThread backend 在 origin
+验证后固定 provider-native snapshot，不重复 relocation；当前 Codex/Pi 对 TT candidate 路径
+仍会 fail closed。
 
 Runtime 不理解具体 benchmark 的语义，也不会自动证明本地 verifier 与官方 Judge
 等价。公开评分公式、有效性条件、每例资源限制和聚合方式是否完整进入 verifier，仍由
@@ -102,12 +113,18 @@ worker，再冻结修正后的 spec，创建 successor run。旧分数不能跨�
 
 一次正常的 Search run 按以下顺序执行：
 
-1. main agent 冻结 SearchSpec 和 verifier artifact。
-2. 一次初始 `SearchPlan` 分配固定 candidate lane。
-3. 每个 candidate 获得独立工作区并开始自主循环。
-4. 宿主以 wait-any 方式返回完成事件；较慢 lane 不阻塞其他 lane 发布 Evidence。
-5. 只要全局停止条件未满足，宿主续跑同一个 candidate、原生 session 和工作区。
-6. 收尾时先让所有 live worker 静止，再选择精确 commit，执行 promotion gate 并生成报告。
+1. main agent 提交 SearchSpec；runtime 在 origin 验证 verifier 并冻结 source artifact。
+2. `search_create` 确认 source identity 未变化，一次初始 `SearchPlan` 分配固定 lane。
+3. Git backend 先物化 `c001` 并执行 relocation gate；通过后才物化其余 candidate。
+4. 每个 candidate 获得独立工作区并开始自主循环。
+5. 宿主以 wait-any 方式返回完成事件；较慢 lane 不阻塞其他 lane 发布 Evidence。
+6. 只要全局停止条件未满足，宿主续跑同一个 candidate、原生 session 和工作区。
+7. 收尾时先让所有 live worker 静止，再选择精确 commit，执行 promotion gate 并生成报告。
+
+origin/relocation bootstrap result 单独保存在 FrozenSpec 和 RunRecord 中，并由 monitor/report
+展示。它不是 candidate iteration，不进入 Global Evidence、`results.tsv`、worker verifier
+计数或候选排名。relocation 失败会以 `verifier_target_mismatch` 自动 abort run，保留 `c001`
+供诊断，且不会启动 worker。
 
 `budget.max_parallel` 是 spec 的初始 candidate 和 live-worker 数量。普通
 `parallel_loops` run 只做一次初始分配，不按分数创建替代 candidate，也没有后续
@@ -203,7 +220,13 @@ redispatch 只用于恢复，并继续使用同一个 candidate 工作区、Git 
 {
   "candidate_id": "c001",
   "iteration": 3,
+  "artifact_ref": {
+    "kind": "git_commit",
+    "id": "<exact-attempt-commit>",
+    "provider": "git_worktree"
+  },
   "commit": "<exact-attempt-commit>",
+  "reference_available": true,
   "score": 13350,
   "disposition": "keep",
   "view": "将调度逻辑改为按依赖深度分组。",
@@ -224,7 +247,8 @@ worker verifier 原子消费 copy receipt。当前 schema 中的 `adopted_tools`
 也不改变硬分、retain/discard、选择或 promotion。
 工具化决策本身不进入 Global Evidence。完整状态流保持为：
 `ToolizationDecision -> IterationRecord`，以及独立的
-`staging -> passing verifier -> SharedToolRecord -> Tool View -> Global Evidence -> copy receipt -> adopted_tools`。
+`staging -> passing verifier -> SharedToolRecord -> Tool View -> Global Evidence`
+`-> copy receipt -> adopted_tools`。
 
 完整评价不在窄视图中重复返回。worker 仅在 `search_get_agent_context` 的
 `supplemental_evaluation_enabled=true` 且目标行
@@ -313,6 +337,22 @@ invalidated、aborted 或 failed run 的发布 fence 继续拒绝修改。需要
 
 ## Git 与 Candidate-Local Best
 
+新 `git_worktree` run 不再删除 source 的 `.git` 后重新初始化。Runtime 对真实 Git source
+创建 run-local bare mirror，保留完整 refs、commit history 和对象，再从启动 HEAD 建立
+baseline ref 与各 candidate worktree。`source_path` 位于 repository 子目录时，worktree 仍是
+完整 repository，worker cwd 和 edit surface 则保持相对于该 source 子目录。
+
+Git-backed source 的规范输入是 clean `HEAD`。`search_freeze_spec` 在 origin verifier 前检查
+整个 repository，验证后再次检查并把 HEAD 固定为 `source_artifact_ref`；`search_create` 在写入
+run 前复检 clean 状态和准确 commit。staged、unstaged 或 non-ignored untracked 任一存在都会
+以 `DirtySourceWorkspace` 失败，clean 但 HEAD 已变化则以 `FrozenSourceChanged` 失败。Runtime
+不自动 stash、clean 或提交 source。`.gp`、`.search`、`.tmp` 等既有 runtime-noise 排除项不参与
+判脏。确实要把当前目录状态作为输入时，显式使用 `copy + artifact_only`。
+
+run-local mirror 以 frozen commit 建立 baseline。`search_start_batch` 先物化 `c001`，确认其 HEAD
+与 frozen artifact 一致，并在该 logical workspace 重跑 process verifier；只有通过后才创建
+剩余 candidate。该 relocation gate 专门阻止 origin 路径能运行、worktree 路径却失效的合同。
+
 Evidence 中的 commit 表示 verifier 实际读取的完整 Git tree，不是相对于初始源码的
 patch。Runtime 分别记录：
 
@@ -340,8 +380,20 @@ attempt、恢复和 ledger commit 都保持可达。因此下一轮始终从 can
 规划，而 Global Evidence 仍保留好、差和失败的全部尝试。一个 candidate 的回滚不会
 改变 peer 工作区，也不会修改 peer 的判断。
 
-`git_worktree` 后端下，各 candidate 共享一个 Git common directory。只有在代码级
-证据确有必要时，candidate 才从自己的工作区渐进式查看 peer Evidence commit：
+最终 promotion 不改写或压缩 candidate branch。Runtime 以 run baseline 为 parent、以 selected
+artifact 的允许产品文件为 tree，另行创建一个 squash publication commit；`results.tsv`、`.gp`、
+`.tmp` 和 Git metadata 不进入该提交。`search_apply_promotion` 把这一个提交 cherry-pick
+回原 repository，因此产品历史保持单提交，而完整 autoresearch running history 仍留在 run-local refs。
+`workspace.promotion_mode` 默认是 `apply`，Goal Plus 在 apply 完成前拒绝记录 Search result；
+只有受保护 source、只读 template 或测试 fixture 显式使用 `artifact_only`。
+
+freeze 还会持久化 `workspace_capacity_estimate`。它同时区分当前 source scope、有效
+materialized source、整个 repository 的每-node checkout、`max_parallel` 个 node 合计和共享
+object store；因此 Git 子目录任务不会错误地只按子目录估算，也不会简单使用 `du cwd × K`。
+保守上界和目标文件系统可用空间共同产生 `fits_available_space`，并进入 monitor/report。
+
+`git_worktree` 后端下，各 candidate 共享一个 Git common directory。窄、单文件证据可以
+从自己的工作区渐进式查看 peer Evidence commit：
 
 任务局部 Skill 仍属于 source baseline，而不是共享平面。runtime 自动发现 source Git
 index 中的 `.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；
@@ -355,7 +407,21 @@ git show <commit>:<allowed-file>
 git diff HEAD <commit> -- <allowed-file>
 ```
 
-candidate 不应 checkout、reset 或修改 peer revision。最终 promotion artifact 虽然是
+改动较大或需要浏览完整实现时，candidate 调用 `search_reference_open`。runtime 把 root-owned
+Evidence identity checkout 到当前 worker 唯一、稳定的 detached reference worktree：
+
+```text
+candidate workspace/       # 当前 worker 的实现工作区
+ref-workspace/             # 当前 worker 的参考 checkout
+```
+
+worker 直接使用普通文件和命令工具查看返回路径。再次调用会丢弃 ref-workspace 的本地变化，
+并把同一目录切到新的 Evidence commit；不会创建第二个 reference 目录，也不要求 worker
+close。candidate 的实现修改始终留在自己的 workspace，不访问 peer 活动 workspace。未来
+ThinkThread provider 应把同一个 checkout API 映射到每个 worker 唯一的 snapshot-derived
+reference child。
+
+最终 promotion artifact 虽然是
 相对于 source 生成的 patch，但这不会改变 Evidence commit 代表完整代码树的语义。
 
 ## 选择、Promotion 与失效

@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.goal_plus import (
+    GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED,
+    GOAL_PLUS_ENTRYPOINT_REQUIRED,
+    FileGoalPlusRuntime,
+)
 from goal_plus.models import (
     AgentHostKind,
     CandidateProposal,
@@ -19,6 +23,7 @@ from goal_plus.models import (
 )
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.runtime import FileSearchRuntime, format_task_skill_listing
+from goal_plus.workspaces import format_workspace_capacity_notice
 
 
 class SearchTools:
@@ -45,6 +50,10 @@ class SearchTools:
             if frozen.task_skill_paths
             else "No Git-tracked task-local Skills found under .agents/skills."
         )
+        if frozen.workspace_capacity_estimate is not None:
+            payload["workspace_capacity_notice"] = format_workspace_capacity_notice(
+                frozen.workspace_capacity_estimate
+            )
         return payload
 
     def search_create(
@@ -173,6 +182,18 @@ class SearchTools:
     ) -> list[dict[str, Any]]:
         return self.runtime.get_global_evidence(agent_session_id)
 
+    def search_reference_open(
+        self,
+        agent_session_id: str,
+        source_candidate_id: str,
+        source_iteration: int,
+    ) -> dict[str, Any]:
+        return self.runtime.open_reference_workspace(
+            agent_session_id,
+            source_candidate_id,
+            source_iteration,
+        ).model_dump(mode="json")
+
     def search_copy_shared_tool(
         self,
         agent_session_id: str,
@@ -279,8 +300,9 @@ class SearchTools:
             "html_report_path": str(report_path.with_suffix(".html")),
         }
 
-    def search_promote(self, run_id: str, candidate_id: str) -> dict[str, str]:
+    def search_promote(self, run_id: str, candidate_id: str) -> dict[str, Any]:
         artifact_path = self.runtime.promote(run_id, candidate_id)
+        promotion = self.runtime.promotion_record(run_id)
         source_path, apply_cwd, apply_directory = (
             self.runtime.promotion_apply_coordinates(run_id)
         )
@@ -289,7 +311,22 @@ class SearchTools:
             "source_path": str(source_path),
             "apply_cwd": str(apply_cwd),
             "apply_directory": apply_directory,
+            "promotion_id": promotion.promotion_id,
+            "provider": promotion.provider,
+            "strategy": promotion.strategy,
+            "promotion_mode": promotion.promotion_mode,
+            "apply_required": promotion.promotion_mode == "apply",
+            "state": promotion.state,
+            "publication_artifact_ref": (
+                promotion.publication_artifact_ref.model_dump(mode="json")
+                if promotion.publication_artifact_ref is not None
+                else None
+            ),
         }
+
+    def search_apply_promotion(self, run_id: str) -> dict[str, Any]:
+        promotion = self.runtime.apply_promotion(run_id)
+        return promotion.model_dump(mode="json")
 
     def goal_plus_monitor_snapshot(
         self,
@@ -319,11 +356,8 @@ class GoalPlusTools:
         source_path: str | None = None,
         policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self.runtime.create_goal(
-            raw_goal=raw_goal,
-            source_path=source_path,
-            policy=policy,
-        ).model_dump(mode="json")
+        del raw_goal, source_path, policy
+        raise RuntimeError(GOAL_PLUS_ENTRYPOINT_REQUIRED)
 
     def goal_plus_status(self, goal_plus_id: str) -> dict[str, Any]:
         record = self.runtime.status(goal_plus_id)
@@ -342,12 +376,8 @@ class GoalPlusTools:
         expected_revision: int,
         reason: str | None = None,
     ) -> dict[str, Any]:
-        return self.runtime.update_goal(
-            goal_plus_id,
-            raw_goal=raw_goal,
-            expected_revision=expected_revision,
-            reason=reason,
-        ).model_dump(mode="json")
+        del goal_plus_id, raw_goal, expected_revision, reason
+        raise RuntimeError(GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED)
 
     def goal_plus_record_triage(
         self,

@@ -57,7 +57,12 @@ class Budget(SearchModel):
     max_tokens: int | None = Field(default=None, gt=0)
 
 
-WorkspaceBackend = Literal["copy", "git_worktree"]
+WorkspaceBackend = Literal["copy", "git_worktree", "thinkthread"]
+ArtifactKind = Literal["git_commit", "fs_snapshot"]
+WorkspaceAccessKind = Literal["soft_path", "protected_execution"]
+PromotionState = Literal["prepared", "applied", "apply_failed"]
+PromotionStrategy = Literal["legacy_patch", "squash_commit", "fs_apply"]
+WorkspaceOperationOutcome = Literal["succeeded", "failed"]
 IterationDisposition = Literal["keep", "retain", "discard", "failure"]
 SharedToolPublishStatus = Literal[
     "legacy_unknown", "not_staged",
@@ -101,6 +106,115 @@ VerifierInvalidationReason = Literal[
 
 class WorkspaceSpec(SearchModel):
     backend: WorkspaceBackend = "git_worktree"
+    promotion_mode: Literal["apply", "artifact_only"] = "apply"
+
+    @model_validator(mode="before")
+    @classmethod
+    def copy_backend_defaults_to_artifact_only(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if value.get("backend") != "copy" or "promotion_mode" in value:
+            return value
+        payload = dict(value)
+        payload["promotion_mode"] = "artifact_only"
+        return payload
+
+    @model_validator(mode="after")
+    def copy_backend_cannot_apply_provider_native_promotion(self) -> "WorkspaceSpec":
+        if self.backend == "copy" and self.promotion_mode == "apply":
+            raise ValueError(
+                "workspace backend 'copy' requires promotion_mode='artifact_only'"
+            )
+        return self
+
+
+class WorkspaceCapacityEstimate(SearchModel):
+    """Pre-materialization storage estimate for one frozen SearchSpec."""
+
+    source_path: str
+    backend: WorkspaceBackend
+    basis: Literal[
+        "git_tracked_checkout",
+        "synthetic_git_checkout",
+        "source_tree_copy",
+        "thinkthread_remote",
+    ]
+    worktree_nodes: int = Field(ge=1)
+    source_scope_files: int = Field(ge=0)
+    source_scope_bytes: int = Field(ge=0)
+    materialized_source_files: int = Field(ge=0)
+    materialized_source_bytes: int = Field(ge=0)
+    checkout_scope_path: str | None = None
+    checkout_files_per_node: int | None = Field(default=None, ge=0)
+    checkout_bytes_per_node: int | None = Field(default=None, ge=0)
+    candidate_checkouts_bytes: int | None = Field(default=None, ge=0)
+    shared_object_store_bytes: int | None = Field(default=None, ge=0)
+    estimated_incremental_bytes: int | None = Field(default=None, ge=0)
+    conservative_upper_bound_bytes: int | None = Field(default=None, ge=0)
+    available_bytes: int | None = Field(default=None, ge=0)
+    fits_available_space: bool | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class ArtifactRef(SearchModel):
+    """Provider-neutral identity for one immutable candidate artifact."""
+
+    kind: ArtifactKind
+    id: str = Field(min_length=1)
+    provider: WorkspaceBackend
+
+    @model_validator(mode="after")
+    def kind_matches_backend(self) -> "ArtifactRef":
+        expected = "fs_snapshot" if self.provider == "thinkthread" else "git_commit"
+        if self.kind != expected:
+            raise ValueError(
+                f"artifact kind {self.kind} is incompatible with {self.provider}; "
+                f"expected {expected}"
+            )
+        return self
+
+
+class WorkspaceAccess(SearchModel):
+    logical_root: str = "workspace"
+    native_cwd: Path | None = None
+    bootstrap_required: bool = True
+    confinement: WorkspaceAccessKind = "soft_path"
+    writable_surfaces: list[str] = Field(default_factory=list)
+    managed_root: Path | None = None
+    source_subdir: str = "."
+    provider_handle: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkspaceOperationTiming(SearchModel):
+    """Durable provider-neutral timing for one workspace operation."""
+
+    started_at: str
+    completed_at: str
+    duration_seconds: float = Field(ge=0)
+    outcome: WorkspaceOperationOutcome
+
+
+class ReferenceWorkspaceAccess(SearchModel):
+    kind: Literal["filesystem_path", "provider_tools"]
+    root: Path | None = None
+    readonly_contract: Literal["soft_detected", "enforced"]
+
+
+class ReferenceWorkspaceRecord(SearchModel):
+    reference_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    requester_agent_session_id: str = Field(min_length=1)
+    source_candidate_id: str = Field(min_length=1)
+    source_iteration: int = Field(ge=1)
+    artifact_ref: ArtifactRef
+    display_name: str = Field(min_length=1)
+    workspace_backend: WorkspaceBackend
+    access: ReferenceWorkspaceAccess
+    state: Literal["open", "closed"] = "open"
+    integrity_status: Literal["clean", "contaminated", "unavailable"] = "clean"
+    created_at: str
+    expires_at: str | None = None
+    closed_at: str | None = None
 
 
 class EditSurface(SearchModel):
@@ -410,6 +524,10 @@ class EvidenceViewRecord(SearchModel):
     candidate_id: str = Field(min_length=1)
     iteration: int = Field(ge=1)
     attempt_commit: str = Field(min_length=1)
+    attempt_artifact_ref: ArtifactRef | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     description: str = Field(min_length=1, max_length=1000)
     supplemental_evaluation: SupplementalEvaluation | None = None
     comparison_basis: list[EvidenceComparisonReference] = Field(
@@ -433,6 +551,10 @@ class GlobalEvidenceViewReference(SearchModel):
     candidate_id: str = Field(min_length=1)
     iteration: int = Field(ge=1)
     commit: str = Field(min_length=1)
+    artifact_ref: ArtifactRef | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     view_created_at: str
     supplemental_evaluation_present: bool = False
 
@@ -468,6 +590,10 @@ class EvidenceDetailReadRecord(SearchModel):
     candidate_id: str = Field(min_length=1)
     iteration: int = Field(ge=1)
     commit: str = Field(min_length=1)
+    artifact_ref: ArtifactRef | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class EvidenceAnnotationTask(SearchModel):
@@ -476,6 +602,14 @@ class EvidenceAnnotationTask(SearchModel):
     iteration: int = Field(ge=1)
     attempt_base_commit: str = Field(min_length=1)
     attempt_commit: str = Field(min_length=1)
+    attempt_base_artifact_ref: ArtifactRef | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    attempt_artifact_ref: ArtifactRef | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     attempt_changed_files: list[str] = Field(default_factory=list)
     task_context_source: Literal[
         "goal_plus_raw_goal",
@@ -647,6 +781,9 @@ GoalPlusDiscoveryOrigin = Literal["initial", "in_progress"]
 GoalPlusGateEvent = Literal["stop", "subagent_stop", "pre_tool_use", "user_prompt_submit"]
 GoalPlusGateDecision = Literal["allow", "block"]
 GoalPlusSessionState = Literal["attached", "stale", "detached"]
+GoalPlusEntrypointStatus = Literal["host_verified", "legacy_unverified"]
+GoalPlusEntrypointHost = Literal["codex", "pi"]
+GoalPlusEntrypointAction = Literal["start", "edit", "resume"]
 GoalPlusWorkRoute = Literal["main", "subagent", "search"]
 GoalPlusWorkStatus = Literal[
     "planned",
@@ -698,7 +835,7 @@ class GoalPlusUltraHost(SearchModel):
 
 class GoalPlusExecutionPolicy(SearchModel):
     mode: Literal["orchestrated"] = "orchestrated"
-    main_reasoning_effort: Literal["max"] = "max"
+    main_reasoning_effort: Literal["max", "host_selected"] = "max"
     delegation: Literal["proactive"] = "proactive"
     search_routing: Literal["auto"] = "auto"
     completion: Literal["until_terminal"] = "until_terminal"
@@ -723,9 +860,59 @@ GoalPlusFinalCheckStatus = Literal[
 GoalPlusFinalCheckerHost = Literal["codex", "pi"]
 
 
+class GoalPlusCommandConfig(SearchModel):
+    """Explicit host-command settings, separate from the natural-language goal."""
+
+    mode: Literal["autonomous", "probe"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    max_parallel: int | None = Field(
+        default=None, gt=0, exclude_if=lambda value: value is None
+    )
+    max_duration_seconds: int | None = Field(
+        default=None, gt=0, exclude_if=lambda value: value is None
+    )
+    workspace_backend: WorkspaceBackend | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    promotion_mode: Literal["apply", "artifact_only"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    strategy: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
+    # Read-only compatibility for records created before main= was retired.
+    main: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Legacy persisted main-model assertion; rejected for new commands.",
+        exclude_if=lambda value: value is None,
+    )
+    annotator: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
+    workers: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
+    worker_directive: Literal["workers", "models"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def worker_directive_matches_workers(self) -> "GoalPlusCommandConfig":
+        if (self.workers is None) != (self.worker_directive is None):
+            raise ValueError(
+                "workers and worker_directive must either both be set or both be absent"
+            )
+        return self
+
+
 class GoalPlusGoalRevision(SearchModel):
     revision: int = Field(ge=1)
     raw_goal: str = Field(min_length=1)
+    command_config: GoalPlusCommandConfig = Field(
+        default_factory=GoalPlusCommandConfig
+    )
     reason: str | None = None
     created_at: str
 
@@ -845,10 +1032,61 @@ class GoalPlusActiveSession(SearchModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GoalPlusHostCommandInvocation(SearchModel):
+    """Immutable evidence that a supported host command authorized one action."""
+
+    host: GoalPlusEntrypointHost
+    transport: Literal["codex_user_prompt_submit", "pi_extension_command"]
+    command: Literal[
+        "$goal-plus",
+        "$goal-plus-with-final-check",
+        "/goal-plus",
+        "/goal-plus-with-final-check",
+    ]
+    action: GoalPlusEntrypointAction
+    session_id: str = Field(min_length=1, max_length=512)
+    native_entry_id: str | None = Field(default=None, min_length=1, max_length=512)
+    invocation_id: str = Field(
+        min_length=1,
+        max_length=512,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    raw_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    invoked_at: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def match_host_transport_and_command(self) -> "GoalPlusHostCommandInvocation":
+        expected_transport = {
+            "codex": "codex_user_prompt_submit",
+            "pi": "pi_extension_command",
+        }[self.host]
+        if self.transport != expected_transport:
+            raise ValueError(
+                f"Goal Plus host {self.host} requires transport {expected_transport}"
+            )
+        expected_prefix = "$" if self.host == "codex" else "/"
+        if not self.command.startswith(expected_prefix):
+            raise ValueError(
+                f"Goal Plus host {self.host} requires the {expected_prefix} command prefix"
+            )
+        if self.action in {"edit", "resume"} and self.command not in {
+            "$goal-plus",
+            "/goal-plus",
+        }:
+            raise ValueError(
+                "Goal Plus edit/resume must use the host's base goal-plus command"
+            )
+        return self
+
+
 class GoalPlusRecord(SearchModel):
     goal_plus_id: str
     raw_goal: str = Field(min_length=1)
+    command_config: GoalPlusCommandConfig = Field(
+        default_factory=GoalPlusCommandConfig
+    )
     source_path: str | None = None
+    outer_deadline_at: str | None = None
     status: GoalPlusStatus = "active"
     phase: GoalPlusPhase = "intake"
     policy: dict[str, Any] = Field(default_factory=dict)
@@ -862,12 +1100,18 @@ class GoalPlusRecord(SearchModel):
     linked_search: GoalPlusLinkedSearch | None = None
     next_action: GoalPlusNextAction | None = None
     active_session: GoalPlusActiveSession | None = None
+    entrypoint_status: GoalPlusEntrypointStatus = "legacy_unverified"
+    host_command_invocations: list[GoalPlusHostCommandInvocation] = Field(
+        default_factory=list
+    )
     hook_counters: dict[str, int] = Field(default_factory=dict)
     created_at: str
     updated_at: str
 
     @model_validator(mode="after")
     def synchronize_search_task_compatibility_view(self) -> "GoalPlusRecord":
+        if self.host_command_invocations:
+            self.entrypoint_status = "host_verified"
         if not self.goal_revisions:
             self.goal_revisions = [
                 GoalPlusGoalRevision(
@@ -878,8 +1122,15 @@ class GoalPlusRecord(SearchModel):
                 )
             ]
         latest_revision = self.goal_revisions[-1]
-        if latest_revision.revision != self.goal_revision or latest_revision.raw_goal != self.raw_goal:
-            raise ValueError("raw_goal and goal_revision must match the latest goal revision")
+        if (
+            latest_revision.revision != self.goal_revision
+            or latest_revision.raw_goal != self.raw_goal
+            or latest_revision.command_config != self.command_config
+        ):
+            raise ValueError(
+                "raw_goal, command_config, and goal_revision must match the latest "
+                "goal revision"
+            )
         if not self.search_tasks and self.linked_search is not None:
             self.search_tasks = [self.linked_search.model_copy(deep=True)]
         elif self.search_tasks:
@@ -900,6 +1151,28 @@ class GoalPlusGateResult(SearchModel):
     continuation_prompt: str | None = None
 
 
+class BootstrapVerifierResult(SearchModel):
+    name: str
+    role: VerifierRole
+    passed: bool
+    score: float | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    log_path: Path | None = None
+    failure_class: str | None = None
+
+
+class BootstrapVerification(SearchModel):
+    phase: Literal["origin", "workspace_relocation"]
+    backend: WorkspaceBackend
+    passed: bool
+    aggregate_score: float | None = None
+    verifier_results: list[BootstrapVerifierResult] = Field(default_factory=list)
+    source_artifact_ref: ArtifactRef | None = None
+    candidate_id: str | None = None
+    started_at: str
+    completed_at: str
+
+
 class FrozenSpec(SearchModel):
     frozen_spec_id: str
     spec_hash: str
@@ -909,6 +1182,9 @@ class FrozenSpec(SearchModel):
     verifier_hashes: dict[str, str]
     frozen_verifier_paths: dict[str, str]
     task_skill_paths: list[str] = Field(default_factory=list)
+    workspace_capacity_estimate: WorkspaceCapacityEstimate | None = None
+    source_artifact_ref: ArtifactRef | None = None
+    origin_verification: BootstrapVerification | None = None
     created_at: str
 
 
@@ -1002,7 +1278,13 @@ class CandidateTask(SearchModel):
     workspace_backend: WorkspaceBackend = "copy"
     workspace_branch: str | None = None
     workspace_base_revision: str | None = None
+    workspace_managed_root: Path | None = None
+    workspace_source_subdir: str = "."
+    workspace_provider_handle: dict[str, Any] = Field(default_factory=dict)
+    workspace_creation_timing: WorkspaceOperationTiming | None = None
     task_skill_paths: list[Path] = Field(default_factory=list)
+    base_artifact_ref: ArtifactRef | None = None
+    workspace_access: WorkspaceAccess = Field(default_factory=WorkspaceAccess)
     share_out_dir: Path | None = None
     allowed_files: list[str]
     denied_files: list[str]
@@ -1148,6 +1430,8 @@ class ScoreReport(SearchModel):
     best_iteration: int | None = Field(default=None, ge=1)
     best_git_head: str | None = None
     workspace_git_head_after_settlement: str | None = None
+    best_artifact_ref: ArtifactRef | None = None
+    workspace_artifact_after_settlement: ArtifactRef | None = None
     shared_tool_staged_entries: list[str] | None = None
     shared_tool_staged_file_count: int | None = Field(default=None, ge=0)
     shared_tool_staged_bytes: int | None = Field(default=None, ge=0)
@@ -1169,9 +1453,58 @@ class PromotionEvidence(SearchModel):
     candidate_id: str
     selected_git_head: str | None = None
     git_head: str | None = None
+    selected_artifact_ref: ArtifactRef | None = None
+    artifact_ref: ArtifactRef | None = None
     artifact_hash: str
     passed: bool
     created_at: str
+
+
+class PromotionRecord(SearchModel):
+    """Prepared provider-native publication and its explicit apply result."""
+
+    promotion_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    candidate_id: str = Field(min_length=1)
+    provider: WorkspaceBackend
+    strategy: PromotionStrategy
+    promotion_mode: Literal["apply", "artifact_only"] = "apply"
+    state: PromotionState = "prepared"
+    base_artifact_ref: ArtifactRef
+    selected_artifact_ref: ArtifactRef
+    publication_artifact_ref: ArtifactRef | None = None
+    artifact_path: Path | None = None
+    source_repository: Path | None = None
+    source_subdir: str = "."
+    changed_files: list[str] = Field(default_factory=list)
+    provider_handle: dict[str, str] = Field(default_factory=dict)
+    apply_request_id: str | None = None
+    applied_source_revision: str | None = None
+    apply_result: dict[str, Any] = Field(default_factory=dict)
+    apply_timing: WorkspaceOperationTiming | None = None
+    error: str | None = None
+    created_at: str
+    applied_at: str | None = None
+
+    @model_validator(mode="after")
+    def strategy_matches_provider(self) -> "PromotionRecord":
+        if self.strategy == "squash_commit" and self.provider != "git_worktree":
+            raise ValueError("squash_commit promotion requires git_worktree")
+        if self.strategy == "fs_apply" and self.provider != "thinkthread":
+            raise ValueError("fs_apply promotion requires thinkthread")
+        if self.base_artifact_ref.provider != self.provider:
+            raise ValueError("promotion base artifact provider must match promotion")
+        if self.selected_artifact_ref.provider != self.provider:
+            raise ValueError(
+                "promotion selected artifact provider must match promotion"
+            )
+        if self.strategy != "legacy_patch":
+            publication = self.publication_artifact_ref
+            if publication is None or publication.provider != self.provider:
+                raise ValueError(
+                    "provider-native promotion requires a matching publication artifact"
+                )
+        return self
 
 
 class IterationRecord(SearchModel):
@@ -1188,8 +1521,13 @@ class IterationRecord(SearchModel):
     process_passed: bool | None = None
     git_head: str | None = None
     attempt_base_git_head: str | None = None
+    artifact_ref: ArtifactRef | None = None
+    attempt_base_artifact_ref: ArtifactRef | None = None
     attempt_changed_files: list[str] = Field(default_factory=list)
     ledger_git_head: str | None = None
+    ledger_artifact_ref: ArtifactRef | None = None
+    artifact_clean: bool | None = None
+    artifact_status: list[str] = Field(default_factory=list)
     git_artifact_clean: bool | None = None
     git_status: list[str] = Field(default_factory=list)
     failure_class: str | None = None
@@ -1205,6 +1543,8 @@ class IterationRecord(SearchModel):
     restored_to_iteration: int | None = Field(default=None, ge=1)
     restored_to_git_head: str | None = None
     workspace_git_head_after_settlement: str | None = None
+    restored_to_artifact_ref: ArtifactRef | None = None
+    workspace_artifact_after_settlement: ArtifactRef | None = None
     adopted_tools: list[ToolAdoptionRecord] = Field(default_factory=list, exclude_if=lambda value: not value)
     adoption_confounded: bool | None = Field(default=None, exclude_if=lambda value: value is None)
     shared_tools: list[SharedToolRecord] = Field(default_factory=list)
@@ -1249,6 +1589,8 @@ class ResultLedgerEntry(SearchModel):
     iteration: int | None = Field(default=None, ge=1)
     git_head: str | None = None
     ledger_git_head: str | None = None
+    artifact_ref: ArtifactRef | None = None
+    ledger_artifact_ref: ArtifactRef | None = None
     metric_name: str = Field(min_length=1)
     score: float | None = None
     status: str = Field(min_length=1)
@@ -1273,11 +1615,12 @@ class RunSummary(SearchModel):
 
 
 class BestArtifactRecord(SearchModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     run_id: str
     candidate_id: str
     iteration: int = Field(ge=1)
-    commit: str = Field(min_length=1)
+    commit: str | None = Field(default=None, min_length=1)
+    artifact_ref: ArtifactRef | None = None
     score: float
     metric_name: str = Field(min_length=1)
     metric_direction: Literal["minimize", "maximize"]
@@ -1286,12 +1629,22 @@ class BestArtifactRecord(SearchModel):
     changed_files: list[str] = Field(default_factory=list)
     updated_at: str
 
+    @model_validator(mode="after")
+    def require_artifact_identity(self) -> "BestArtifactRecord":
+        if self.artifact_ref is None and self.commit is None:
+            raise ValueError("best artifact requires artifact_ref or legacy commit")
+        return self
+
 
 class RunRecord(SearchModel):
     run_id: str
     state: RunState
     frozen_spec_id: str
     source_path: str
+    source_repository: Path | None = None
+    source_subdir: str = "."
+    source_artifact_ref: ArtifactRef | None = None
+    workspace_bootstrap_verification: BootstrapVerification | None = None
     created_at: str
     next_candidate_index: int = 1
     next_plan_index: int = 1
@@ -1304,7 +1657,9 @@ class RunRecord(SearchModel):
     selected_score: float | None = None
     selected_iteration: int | None = None
     selected_git_head: str | None = None
+    selected_artifact_ref: ArtifactRef | None = None
     selected_artifact_hash: str | None = None
+    promotion: PromotionRecord | None = None
     budget_used: dict[str, Any] = Field(default_factory=dict)
     source_run_id: str | None = None
     inherited_research: dict[str, Any] = Field(default_factory=dict)
@@ -1333,6 +1688,7 @@ class CandidateRecord(SearchModel):
     iterations: list[IterationRecord] = Field(default_factory=list)
     results_ledger: list[ResultLedgerEntry] = Field(default_factory=list)
     results_ledger_git_head: str | None = None
+    results_ledger_artifact_ref: ArtifactRef | None = None
 
 
 class AgentSessionRecord(SearchModel):

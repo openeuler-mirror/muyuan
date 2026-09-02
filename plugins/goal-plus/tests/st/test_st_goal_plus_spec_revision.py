@@ -56,10 +56,11 @@ def test_codex_goal_plus_revises_goal_and_frozen_spec_after_first_result(
         "same candidate.txt. Only candidate.txt may be edited. Complete only after "
         "the second result is selected, reported, promoted, and recorded."
     )
-    result = runner.run_streaming(
+    first_result = runner.run_streaming(
         (
-            "Create exactly one Goal Plus record with goal_plus_create using this initial "
-            f"raw goal and source_path={str(workspace)!r}:\n{initial_goal}\n\n"
+            f"$goal-plus {initial_goal}\n\n"
+            f"Use source_path={str(workspace)!r}. The host entrypoint already created "
+            "the Goal Plus record; never call goal_plus_create or goal_plus_update_goal. "
             "For the first SearchSpec, use metric_name=score, direction=maximize, "
             "workspace.backend=copy, process verifier "
             ".goal-plus-verifiers/simple_score.py, no promotion verifiers, and allow only "
@@ -67,15 +68,31 @@ def test_codex_goal_plus_revises_goal_and_frozen_spec_after_first_result(
             "worker_agent_type=search_candidate_agent, "
             "max_parallel=1 and worker_budget with "
             "max_runtime_seconds=90, max_turns=4, on_exceed=interrupt. Freeze the exact "
-            "verifier artifact and complete the full Search flow through selection, report, "
+            "verifier artifact and complete the Search flow through selection, "
             "promotion, and goal_plus_record_search_result. Direct the candidate worker to "
             "set candidate.txt to an integer that reaches the simple verifier cap.\n\n"
             "After the first meaningful result, use the existing raw-goal audit and choose "
             "revise_goal because a large relative improvement under the simple capped proxy "
-            "does not prove the deeper objective. Call goal_plus_update_goal with "
-            "expected_revision=1 and this complete revised raw goal:\n"
-            f"{revised_goal}\n\n"
-            "Re-triage revision 2, save a new high-confidence draft, and freeze a different "
+            "does not prove the deeper objective. Do not edit the goal yourself. Set Goal "
+            "Plus status to needs_user with a next action requesting exact $goal-plus edit, "
+            "then stop without generating search_report."
+        ),
+        scenario="codex_goal_plus_spec_revision_first",
+        timeout=1200,
+    )
+
+    assert not first_result.timed_out, first_result.log_path
+    assert first_result.returncode == 0, first_result.log_path
+    goal_file = next(search_root.glob("goal-plus/gp_*/goal.json"))
+    first_record = json.loads(goal_file.read_text(encoding="utf-8"))
+    assert first_record["status"] == "needs_user", first_result.log_path
+    assert first_record["goal_revision"] == 1
+
+    result = runner.run_streaming(
+        (
+            f"$goal-plus edit {revised_goal}\n\n"
+            "The host entrypoint already updated the existing record. Re-triage revision 2, "
+            "save a new high-confidence draft, and freeze a different "
             "SearchSpec that is identical except that it uses and freezes "
             ".goal-plus-verifiers/strict_score.py. Create and link a different run_id, then "
             "complete the full second Search flow. Direct the second candidate worker to set "
@@ -83,7 +100,7 @@ def test_codex_goal_plus_revises_goal_and_frozen_spec_after_first_result(
             "Search task only as historical evidence. Mark Goal Plus complete only after both "
             "runs are promoted and both results are recorded."
         ),
-        scenario="codex_goal_plus_spec_revision",
+        scenario="codex_goal_plus_spec_revision_second",
         timeout=1200,
     )
 

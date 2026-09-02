@@ -21,11 +21,15 @@ from goal_plus.time_advisory import (
 )
 
 
-GOAL_ID_RE = re.compile(r"\bgp_\d+\b")
+GOAL_ID_RE = re.compile(r"gp_\d+")
 GOAL_PLUS_PROMPT_RE = re.compile(
-    r"^\s*(?:/|\$)(?P<command>goal-plus(?:-with-final-check)?)"
+    r"^\s*\$(?P<command>goal-plus(?:-with-final-check)?)"
     r"(?:\s+(?P<body>.*\S))?\s*$",
-    re.IGNORECASE | re.DOTALL,
+    re.DOTALL,
+)
+GOAL_PLUS_LIKE_PROMPT_RE = re.compile(
+    r"^\s*[/\$]goal-plus(?:-with-final-check)?(?:\s|$)",
+    re.IGNORECASE,
 )
 DISABLE_VALUES = {"1", "true", "yes", "on"}
 STOP_HOOK_EVENT_SCHEMA_VERSION = 1
@@ -97,30 +101,10 @@ def _search_root(session_root: Path) -> Path:
     return default_root
 
 
-def _first_goal_id(value: Any) -> str | None:
-    if isinstance(value, str):
-        match = GOAL_ID_RE.search(value)
-        return match.group(0) if match else None
-    if isinstance(value, dict):
-        for key in ("goal_plus_id", "goalPlusId", "goal_id", "goalId"):
-            found = _first_goal_id(value.get(key))
-            if found:
-                return found
-        for item in value.values():
-            found = _first_goal_id(item)
-            if found:
-                return found
-    if isinstance(value, list):
-        for item in value:
-            found = _first_goal_id(item)
-            if found:
-                return found
-    return None
-
-
-def _explicit_goal_ids(hook_input: dict[str, Any]) -> list[str]:
+def _trusted_goal_id() -> str | None:
+    """Return only the host-provided Goal ID, never model-visible hook text."""
     explicit = os.environ.get("GOAL_PLUS_ID")
-    return [goal_id for goal_id in (explicit, _first_goal_id(hook_input)) if goal_id]
+    return explicit if explicit and GOAL_ID_RE.fullmatch(explicit) else None
 
 
 def _hook_event_name(hook_input: dict[str, Any]) -> str:
@@ -158,116 +142,90 @@ def _goal_plus_request(hook_input: dict[str, Any]) -> dict[str, Any] | None:
         return None
     command = match.group("command").lower()
     body = (match.group("body") or "").strip()
-    if command == "goal-plus" and body.lower() == "resume":
-        return {"action": "resume", "raw_goal": None}
-    if command == "goal-plus" and body.lower().startswith("edit "):
+    if command == "goal-plus" and body == "resume":
+        return {"action": "resume", "raw_goal": None, "command": "$goal-plus"}
+    if command == "goal-plus" and (body == "edit" or body.startswith("edit ")):
         raw_goal = body[5:].strip()
-        return {"action": "edit", "raw_goal": raw_goal or None}
+        return {
+            "action": "edit",
+            "raw_goal": raw_goal or None,
+            "command": "$goal-plus",
+        }
+    normalized_body = body.casefold()
+    if command == "goal-plus" and (
+        normalized_body == "resume"
+        or normalized_body == "edit"
+        or normalized_body.startswith("edit ")
+    ):
+        return {
+            "action": "invalid",
+            "raw_goal": None,
+            "command": "$goal-plus",
+            "invalid_reason": (
+                "Codex Goal Plus 子命令必须精确写成小写 `$goal-plus edit` 或 "
+                "`$goal-plus resume`。"
+            ),
+        }
     return {
         "action": "start",
         "raw_goal": body or None,
         "final_check": command == "goal-plus-with-final-check",
+        "command": f"${command}",
     }
 
 
-def _command_directive(raw_goal: str, name: str) -> str | None:
-    marker = re.compile(rf"(?:^|\s){re.escape(name)}=", re.IGNORECASE)
-    markers = list(marker.finditer(raw_goal))
-    if len(markers) > 1:
-        raise ValueError(f"$goal-plus accepts at most one {name}= directive")
-    if not markers:
-        return None
-    value_match = re.search(
-        rf"(?:^|\s){re.escape(name)}=([^\s]+)",
-        raw_goal,
-        re.IGNORECASE,
-    )
-    value = value_match.group(1).strip() if value_match is not None else ""
-    if not value:
-        raise ValueError(f"{name}= requires a value")
-    return value
+def _looks_like_goal_plus_command(hook_input: dict[str, Any]) -> bool:
+    return GOAL_PLUS_LIKE_PROMPT_RE.match(_prompt(hook_input)) is not None
 
 
-def _role_model_directive(raw_goal: str, name: str) -> str | None:
-    value = _command_directive(raw_goal, name)
-    if value is not None and "," in value:
-        raise ValueError(
-            f"{name}= accepts exactly one model; use workers= for a list"
-        )
-    return value
+def _codex_host_invocation(
+    hook_input: dict[str, Any],
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    session_id = _session_id(hook_input)
+    if session_id is None:
+        raise ValueError("Codex $goal-plus requires a host session_id")
+    prompt = _prompt(hook_input)
+    native_entry_id = _turn_id(hook_input) or _tool_use_id(hook_input)
+    identity = "\0".join((session_id, native_entry_id or "", prompt))
+    invocation_id = f"codex:{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+    return {
+        "host": "codex",
+        "transport": "codex_user_prompt_submit",
+        "command": request["command"],
+        "action": request["action"],
+        "session_id": session_id,
+        "native_entry_id": native_entry_id,
+        "invocation_id": invocation_id,
+        "raw_input_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "invoked_at": datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+    }
 
 
 def _parse_goal_plus_role_models(raw_goal: str) -> dict[str, str] | None:
-    if re.search(r"(?:^|\s)model=", raw_goal, re.IGNORECASE):
-        raise ValueError(
-            "model= is not supported; use annotator= and workers=. Codex main= "
-            "is only an assertion about the already-running session model"
-        )
-    main = _role_model_directive(raw_goal, "main")
-    annotator = _role_model_directive(raw_goal, "annotator")
-    workers = _command_directive(raw_goal, "workers")
-    models = _command_directive(raw_goal, "models")
-    if workers is not None and models is not None:
-        raise ValueError("workers= and models= are aliases; specify only one")
-    worker_models = workers if workers is not None else models
-    if worker_models is not None and any(
-        not value.strip() for value in worker_models.split(",")
-    ):
-        raise ValueError("workers=/models= contains an empty model reference")
-    if main is None and annotator is None and worker_models is None:
+    from goal_plus.goal_plus import parse_goal_plus_command_config
+
+    _objective, config = parse_goal_plus_command_config(raw_goal)
+    if config.annotator is None and config.workers is None:
         return None
     result: dict[str, str] = {}
-    if main is not None:
-        result["main"] = main
-    if annotator is not None:
-        result["annotator"] = annotator
-    if worker_models is not None:
-        result["workers"] = worker_models
-        result["worker_directive"] = "workers" if workers is not None else "models"
+    if config.annotator is not None:
+        result["annotator"] = config.annotator
+    if config.workers is not None:
+        result["workers"] = config.workers
+        result["worker_directive"] = config.worker_directive or "workers"
     return result
-
-
-def _model_references_match(requested: str, current: str) -> bool:
-    requested_parts = requested.strip().casefold().rsplit("/", 1)
-    current_parts = current.strip().casefold().rsplit("/", 1)
-    return (
-        requested_parts == current_parts or requested_parts[-1] == current_parts[-1]
-    )
-
-
-def _validate_codex_main_model(
-    role_models: dict[str, str] | None,
-    hook_input: dict[str, Any],
-) -> None:
-    requested = role_models.get("main") if role_models is not None else None
-    if requested is None:
-        return
-    current = hook_input.get("model")
-    if not isinstance(current, str) or not current.strip():
-        raise ValueError(
-            "Codex main= is only a session-model assertion and requires Codex to "
-            "report the current model, but this "
-            "UserPromptSubmit event did not include model"
-        )
-    if not _model_references_match(requested, current):
-        raise ValueError(
-            f"main={requested} does not match the current Codex session model "
-            f"{current}. Codex main= is an assertion, not a model selector. Start "
-            "Codex with `codex -m MODEL`, use `/model` before $goal-plus, or omit main=."
-        )
 
 
 def _role_model_context(
     role_models: dict[str, str] | None,
-    hook_input: dict[str, Any],
 ) -> str:
     if role_models is None:
         return ""
     lines = ["已解析 Codex Goal Plus 角色模型："]
-    if "main" in role_models:
-        lines.append(
-            f"- main={hook_input.get('model')}（仅校验当前 Codex session，未切换模型）"
-        )
     if "annotator" in role_models:
         lines.append(
             f"- annotator={role_models['annotator']}，解析后冻结到 "
@@ -282,11 +240,6 @@ def _role_model_context(
         "省略的角色保持 Codex host 默认或继承语义；不要从其他显式角色推导默认值。"
     )
     return "\n".join(lines)
-
-
-def _is_goal_plus_create_tool(tool_name: str) -> bool:
-    normalized = tool_name.replace("-", "_")
-    return normalized.endswith("goal_plus_create")
 
 
 def _session_id(hook_input: dict[str, Any]) -> str | None:
@@ -333,6 +286,167 @@ def _transcript_path(hook_input: dict[str, Any]) -> str | None:
     return None
 
 
+def _turn_id(hook_input: dict[str, Any]) -> str | None:
+    for key in ("turn_id", "turnId"):
+        value = hook_input.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _codex_turn_context(hook_input: dict[str, Any]) -> dict[str, Any] | None:
+    """Read the effective permission snapshot for this exact Codex turn."""
+    transcript = _transcript_path(hook_input)
+    turn_id = _turn_id(hook_input)
+    if transcript is None or turn_id is None:
+        return None
+    path = Path(transcript).expanduser()
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict) or event.get("type") != "turn_context":
+                    continue
+                payload = event.get("payload")
+                if isinstance(payload, dict) and payload.get("turn_id") == turn_id:
+                    return payload
+    except OSError:
+        return None
+    return None
+
+
+def _compact_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _permission_profile_display(
+    turn_context: dict[str, Any],
+) -> tuple[str, str, str, str]:
+    profile = turn_context.get("permission_profile")
+    if not isinstance(profile, dict):
+        return "unknown", "unknown", "unknown", "unknown"
+    profile_type = profile.get("type")
+    if profile_type == "disabled":
+        return "disabled", "disabled", "unrestricted", "enabled"
+    if profile_type == "external":
+        network = profile.get("network", "unknown")
+        return (
+            "external",
+            "external",
+            "external",
+            network if isinstance(network, str) else _compact_json(network),
+        )
+    if profile_type == "managed":
+        file_system = profile.get("file_system", "unknown")
+        network = profile.get("network", "unknown")
+        return (
+            "managed",
+            "managed",
+            file_system if isinstance(file_system, str) else _compact_json(file_system),
+            network if isinstance(network, str) else _compact_json(network),
+        )
+    return _compact_json(profile), "unknown", "unknown", "unknown"
+
+
+def _codex_permission_message(agent: str, hook_input: dict[str, Any]) -> str:
+    turn_context = _codex_turn_context(hook_input)
+    if turn_context is None:
+        permission_mode = hook_input.get("permission_mode") or "unknown"
+        return (
+            "Goal Plus Codex 运行时权限："
+            f"agent={agent}; source=unavailable; hook_permission_mode={permission_mode}; "
+            "未匹配当前 turn_context，未从 TOML 或环境变量推断。"
+        )
+
+    profile, enforcement, file_system, network = _permission_profile_display(
+        turn_context
+    )
+    active_profile = turn_context.get("active_permission_profile")
+    active_profile_id = (
+        active_profile.get("id")
+        if isinstance(active_profile, dict)
+        and isinstance(active_profile.get("id"), str)
+        else "unnamed"
+    )
+    sandbox = turn_context.get("sandbox_policy")
+    sandbox_display = (
+        sandbox.get("type")
+        if isinstance(sandbox, dict) and isinstance(sandbox.get("type"), str)
+        else _compact_json(sandbox)
+    )
+    roots = turn_context.get("workspace_roots")
+    roots_display = _compact_json(roots) if isinstance(roots, list) else "not_recorded"
+    return (
+        "Goal Plus Codex 运行时权限："
+        f"agent={agent}; source=rollout.turn_context; "
+        f"turn_id={turn_context.get('turn_id')}; "
+        f"approval_policy={turn_context.get('approval_policy', 'unknown')}; "
+        f"approvals_reviewer={turn_context.get('approvals_reviewer', 'unknown')}; "
+        f"active_profile={active_profile_id}; permission_profile={profile}; "
+        f"enforcement={enforcement}; filesystem={file_system}; network={network}; "
+        f"sandbox={sandbox_display}; workspace_roots={roots_display}."
+    )
+
+
+def _codex_subagent_task_name(hook_input: dict[str, Any]) -> str | None:
+    transcript = _transcript_path(hook_input)
+    if transcript is None:
+        return None
+    try:
+        with Path(transcript).expanduser().open(encoding="utf-8") as handle:
+            for _ in range(12):
+                line = handle.readline()
+                if not line:
+                    break
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict) or event.get("type") != "session_meta":
+                    continue
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                source = payload.get("source")
+                subagent = source.get("subagent") if isinstance(source, dict) else None
+                thread_spawn = (
+                    subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+                )
+                agent_path = (
+                    thread_spawn.get("agent_path")
+                    if isinstance(thread_spawn, dict)
+                    else None
+                )
+                if isinstance(agent_path, str) and agent_path:
+                    return agent_path
+    except OSError:
+        return None
+    return None
+
+
+def _search_candidate_permission_agent(hook_input: dict[str, Any]) -> str | None:
+    if _hook_event_name(hook_input) != "PreToolUse":
+        return None
+    tool_name = _tool_name(hook_input).replace("-", "_")
+    raw_tool_input = _raw_tool_input(hook_input)
+    raw_text = (
+        raw_tool_input
+        if isinstance(raw_tool_input, str)
+        else _compact_json(raw_tool_input)
+    )
+    if not tool_name.endswith("search_get_agent_context") and (
+        "search_get_agent_context" not in raw_text
+    ):
+        return None
+    task_name = _codex_subagent_task_name(hook_input)
+    if task_name is None or not Path(task_name).name.startswith("search_agent_"):
+        return None
+    return task_name
+
+
 def _tool_use_id(hook_input: dict[str, Any]) -> str | None:
     for key in ("tool_use_id", "toolUseId"):
         value = hook_input.get(key)
@@ -370,6 +484,22 @@ def _runtime_agent_session_ids(value: Any) -> list[str]:
         found.extend(
             re.findall(r"\bagent_[A-Za-z0-9][A-Za-z0-9_.:-]*\b", value)
         )
+    return list(dict.fromkeys(found))
+
+
+def _runtime_run_ids(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        direct = value.get("run_id")
+        if isinstance(direct, str) and direct:
+            found.append(direct)
+        for item in value.values():
+            found.extend(_runtime_run_ids(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_runtime_run_ids(item))
+    elif isinstance(value, str):
+        found.extend(re.findall(r"\brun_[A-Za-z0-9][A-Za-z0-9_.:-]*\b", value))
     return list(dict.fromkeys(found))
 
 
@@ -630,9 +760,7 @@ def _record_stop_hook_event(
         details = result or {}
         goal_plus_id = details.get("goal_plus_id")
         if not isinstance(goal_plus_id, str):
-            goal_plus_id = _first_goal_id(hook_input) or _first_goal_id(
-                os.environ.get("GOAL_PLUS_ID")
-            )
+            goal_plus_id = _trusted_goal_id()
         payload = {
             "schema_version": STOP_HOOK_EVENT_SCHEMA_VERSION,
             "invocation_id": invocation_id,
@@ -1142,25 +1270,97 @@ def _active_records(search_root: Path) -> list[Any]:
     return active
 
 
-def _select_explicit_goal_id(search_root: Path, hook_input: dict[str, Any]) -> str | None:
+def _resumable_records(search_root: Path) -> list[Any]:
+    goals_dir = search_root / "goal-plus"
+    if not goals_dir.is_dir():
+        return []
+    records = []
+    for path in goals_dir.glob("gp_*/goal.json"):
+        record = _load_record(path)
+        if record is not None and record.status in {"active", "needs_user"}:
+            records.append(record)
+    records.sort(
+        key=lambda record: (record.updated_at, record.goal_plus_id),
+        reverse=True,
+    )
+    return records
+
+
+def _select_explicit_goal_id(search_root: Path) -> str | None:
     goals_dir = search_root / "goal-plus"
     if not goals_dir.is_dir():
         return None
-    for goal_id in _explicit_goal_ids(hook_input):
-        if (goals_dir / goal_id / "goal.json").is_file():
-            return goal_id
+    goal_id = _trusted_goal_id()
+    if goal_id is not None and (goals_dir / goal_id / "goal.json").is_file():
+        return goal_id
     return None
 
 
-def _select_session_goal_id(search_root: Path, session_id: str | None) -> str | None:
+def _select_session_goal_id(
+    search_root: Path,
+    session_id: str | None,
+    *,
+    include_terminal: bool = False,
+) -> str | None:
     if not session_id:
         return None
     for record in _active_records(search_root):
         if (
             record.active_session is not None
             and record.active_session.session_id == session_id
+            and record.active_session.state == "attached"
         ):
             return record.goal_plus_id
+    if not include_terminal:
+        return None
+
+    records = []
+    for path in (search_root / "goal-plus").glob("gp_*/goal.json"):
+        record = _load_record(path)
+        if (
+            record is not None
+            and record.active_session is not None
+            and record.active_session.session_id == session_id
+        ):
+            records.append(record)
+    records.sort(
+        key=lambda record: (record.updated_at, record.goal_plus_id),
+        reverse=True,
+    )
+    if records:
+        latest = records[0]
+        if latest.status != "active" and latest.active_session.state == "attached":
+            return latest.goal_plus_id
+    return None
+
+
+def _select_terminal_report_goal_id(
+    search_root: Path,
+    run_id: str | None,
+) -> str | None:
+    if not run_id:
+        return None
+    from goal_plus.goal_plus import TERMINAL_STATUSES
+
+    records = []
+    for path in sorted((search_root / "goal-plus").glob("gp_*/goal.json")):
+        record = _load_record(path)
+        if record is not None and record.status in TERMINAL_STATUSES:
+            records.append(record)
+    records.sort(
+        key=lambda record: (record.updated_at, record.goal_plus_id),
+        reverse=True,
+    )
+    for record in records:
+        if any(task.run_id == run_id for task in record.search_tasks):
+            return record.goal_plus_id
+    return None
+
+
+def _select_resumable_goal_id(search_root: Path) -> str | None:
+    resumable = _resumable_records(search_root)
+    if len(resumable) == 1:
+        return resumable[0].goal_plus_id
     return None
 
 
@@ -1174,10 +1374,9 @@ def _select_search_goal_id(search_root: Path, run_id: Any) -> str | None:
 
 
 def _select_hook_goal_id(search_root: Path, hook_input: dict[str, Any]) -> str | None:
-    return _select_explicit_goal_id(search_root, hook_input) or _select_session_goal_id(
-        search_root,
-        _session_id(hook_input),
-    )
+    return _select_session_goal_id(
+        search_root, _session_id(hook_input), include_terminal=True
+    ) or _select_explicit_goal_id(search_root)
 
 
 def _goal_context(
@@ -1213,9 +1412,13 @@ def _goal_context(
     )
     context = (
         f"此 Codex session 的 Goal Plus 处于 active：goal_plus_id={record.goal_plus_id}。\n"
-        "运行时记录已经存在；不要再次调用 goal_plus_create。\n"
+        "该记录已经由本轮精确 `$goal-plus` host command 创建或授权；"
+        "skill 和 MCP 不能创建或恢复记录。\n"
         f"当前目标修订版：{record.goal_revision}。\n"
         f"当前原始目标：{record.raw_goal}\n"
+        "显式命令配置："
+        f"{record.command_config.model_dump(mode='json', exclude_none=True)}。"
+        "这些字段是 runtime 强约束；只有未配置字段才由 Agent 判断。\n"
         f"编排 policy：{execution_policy}。\n"
         f"当前工作项：{work_text}。\n"
         f"最终检查 policy：{record.policy.get('final_check', {'mode': 'disabled'})}。\n"
@@ -1226,25 +1429,30 @@ def _goal_context(
         "适合可度量并行探索的工作项自动路由到 Search。\n"
         "以最新用户消息作为判断继续、修订或讨论无关内容的权威依据；不要仅因 Goal Plus "
         "处于 active 就恢复工作。\n"
-        "如果消息改变了实际范围、交付物或成功标准，使用完整修订后的原始目标和当前预期"
-        "修订版调用 goal_plus_update_goal，然后重新 triage。否则保持修订版不变，"
-        "并在恢复前澄清有歧义的意图。\n"
+        "如果用户要改变实际范围、交付物或成功标准，停止本轮变更并要求用户使用精确的 "
+        "`$goal-plus edit <完整修订目标>`；不要调用 goal_plus_update_goal。否则保持"
+        "修订版不变。\n"
         "以 goal_plus_* 工具和已链接的 Search 运行时作为权威依据。"
     )
     return f"{context}\n{role_model_context}" if role_model_context else context
 
 
-def _emit_additional_context(event_name: str, context: str) -> None:
+def _emit_additional_context(
+    event_name: str,
+    context: str,
+    *,
+    system_message: str | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "additionalContext": context,
+        }
+    }
+    if system_message is not None:
+        payload["systemMessage"] = system_message
     print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": event_name,
-                    "additionalContext": context,
-                }
-            },
-            ensure_ascii=False,
-        )
+        json.dumps(payload, ensure_ascii=False)
     )
 
 
@@ -1268,10 +1476,10 @@ def _emit_pre_tool_block(reason: str) -> None:
 
 
 def _should_gate_tool(tool_name: str) -> bool:
-    normalized = tool_name.strip().lower().replace("-", "_")
-    logical_name = normalized.rsplit("__", 1)[-1]
+    logical_name = _logical_tool_name(tool_name)
     return (
         logical_name.startswith("search_")
+        or logical_name.startswith("goal_plus_")
         or logical_name in {
             "pi_rpc_run_worker",
             "pi_search_pool_open",
@@ -1288,35 +1496,28 @@ def _should_gate_tool(tool_name: str) -> bool:
     )
 
 
-def _handle_post_tool_use(
-    runtime: Any,
-    hook_input: dict[str, Any],
-    goal_id: str,
-    session_id: str,
-) -> None:
-    runtime.activate_session(
-        goal_id,
-        {
-            "host": _host_kind(hook_input),
-            "session_id": session_id,
-            "transcript_path": _transcript_path(hook_input),
-            "tool_use_id": _tool_use_id(hook_input),
-        },
-    )
+def _logical_tool_name(tool_name: str) -> str:
+    normalized = tool_name.strip().lower().replace("-", "_")
+    return normalized.rsplit("__", 1)[-1]
 
 
-def _post_tool_use_bind_target(hook_input: dict[str, Any]) -> tuple[str, str] | None:
-    if not _is_goal_plus_create_tool(_tool_name(hook_input)):
-        return None
-    if _is_subagent_context(hook_input):
-        return None
-    goal_id = _first_goal_id(hook_input.get("tool_response"))
-    if goal_id is None:
-        goal_id = _first_goal_id(hook_input.get("toolResponse"))
-    session_id = _session_id(hook_input)
-    if not goal_id or not session_id:
-        return None
-    return goal_id, session_id
+GOAL_PLUS_READ_ONLY_TOOLS = {
+    "goal_plus_status",
+    "goal_plus_monitor_snapshot",
+    "goal_plus_list_models",
+    "search_status",
+    "search_list_history",
+    "search_list_iterations",
+    "search_get_agent_observability",
+}
+
+
+def _requires_goal_plus_authorization(tool_name: str) -> bool:
+    logical_name = _logical_tool_name(tool_name)
+    return (
+        logical_name.startswith(("goal_plus_", "search_"))
+        and logical_name not in GOAL_PLUS_READ_ONLY_TOOLS
+    ) or logical_name.startswith("pi_search_pool_")
 
 
 def _record_session_gate_skipped(
@@ -1371,40 +1572,86 @@ def _handle_user_prompt_submit(
     session_id = _session_id(hook_input)
     goal_id = _select_session_goal_id(search_root, session_id)
     request = _goal_plus_request(hook_input)
+    if request is None:
+        if _looks_like_goal_plus_command(hook_input):
+            _emit_user_prompt_block(
+                "Codex Goal Plus 只接受精确的 `$goal-plus`、"
+                "`$goal-plus edit`、`$goal-plus resume` 或 "
+                "`$goal-plus-with-final-check`。Pi 的 `/goal-plus` 不能在 Codex 中启动。"
+            )
+            return
+        if goal_id is None:
+            goal_id = _select_session_goal_id(
+                search_root,
+                session_id,
+                include_terminal=True,
+            )
+        if goal_id is not None and session_id is not None:
+            runtime.detach_session(
+                goal_id,
+                session_id=session_id,
+                reason="ordinary_user_prompt_requires_explicit_resume",
+            )
+        return
+    if request.get("action") == "invalid":
+        _emit_user_prompt_block(
+            str(request.get("invalid_reason") or "Codex Goal Plus 命令格式无效。")
+        )
+        return
+    if session_id is None:
+        _emit_user_prompt_block("Codex $goal-plus 缺少 host session_id，已拒绝启动。")
+        return
+    if request.get("action") != "resume" and not request.get("raw_goal"):
+        _emit_user_prompt_block(
+            "Codex $goal-plus 需要完整目标；edit 也必须提供完整修订目标。"
+        )
+        return
+
+    invocation = _codex_host_invocation(hook_input, request)
     role_models: dict[str, str] | None = None
     initial_start = False
-    raw_goal = request.get("raw_goal") if request is not None else None
+    raw_goal = request.get("raw_goal")
     if (
-        request is not None
-        and request.get("action") in {"start", "edit"}
+        request.get("action") in {"start", "edit"}
         and isinstance(raw_goal, str)
     ):
         try:
             role_models = _parse_goal_plus_role_models(raw_goal)
-            _validate_codex_main_model(role_models, hook_input)
         except ValueError as exc:
             _emit_user_prompt_block(str(exc))
             return
-    if (
-        goal_id is not None
-        and request is not None
-        and request.get("action") == "edit"
-        and isinstance(request.get("raw_goal"), str)
-    ):
+    action = request["action"]
+    if action in {"edit", "resume"} and goal_id is None:
+        goal_id = _select_resumable_goal_id(search_root)
+    if action == "edit" and goal_id is not None and isinstance(raw_goal, str):
         current = runtime.status(goal_id)
-        runtime.update_goal(
+        runtime.edit_from_host_command(
             goal_id,
-            raw_goal=request["raw_goal"],
+            raw_goal=raw_goal,
             expected_revision=current.goal_revision,
             reason="user edited the Goal Plus objective through Codex",
+            invocation=invocation,
         )
-    elif (
-        goal_id is None
-        and request is not None
-        and request.get("action") == "start"
-        and isinstance(request.get("raw_goal"), str)
-        and session_id is not None
-    ):
+    elif action == "resume" and goal_id is not None:
+        runtime.resume_from_host_command(goal_id, invocation=invocation)
+    elif action == "start" and isinstance(raw_goal, str):
+        if goal_id is not None:
+            current = runtime.status(goal_id)
+            if not any(
+                item.invocation_id == invocation["invocation_id"]
+                for item in current.host_command_invocations
+            ):
+                _emit_user_prompt_block(
+                    f"Goal Plus {goal_id} 仍处于 active。请使用 `$goal-plus resume`、"
+                    "`$goal-plus edit <完整目标>`，或先显式结束当前任务。"
+                )
+                return
+        elif _resumable_records(search_root):
+            _emit_user_prompt_block(
+                "当前 workspace 已有 active Goal Plus。请使用 `$goal-plus resume` 或 "
+                "`$goal-plus edit <完整目标>`；不会隐式创建第二条任务。"
+            )
+            return
         policy = {
             "execution": {
                 "host": {
@@ -1420,14 +1667,19 @@ def _handle_user_prompt_submit(
                 else {}
             ),
         }
-        record = runtime.create_goal(
-            request["raw_goal"],
-            source_path=str(search_root.parent),
-            policy=policy,
+        if goal_id is None:
+            record = runtime.start_from_host_command(
+                raw_goal,
+                source_path=str(search_root.parent),
+                policy=policy,
+                invocation=invocation,
+            )
+            goal_id = record.goal_plus_id
+            initial_start = True
+    if goal_id is None:
+        _emit_user_prompt_block(
+            "没有可编辑或恢复的 active Goal Plus；请使用 `$goal-plus <完整目标>` 启动。"
         )
-        goal_id = record.goal_plus_id
-        initial_start = True
-    if goal_id is None or session_id is None:
         return
     record = runtime.activate_session(
         goal_id,
@@ -1435,16 +1687,31 @@ def _handle_user_prompt_submit(
             "host": _host_kind(hook_input),
             "session_id": session_id,
             "transcript_path": _transcript_path(hook_input),
+            "metadata": {
+                "authorized_by": "codex_user_prompt_submit",
+                "host_invocation_id": invocation["invocation_id"],
+                "native_entry_id": invocation.get("native_entry_id"),
+            },
         },
     )
     runtime.gate(goal_id, event="user_prompt_submit", context=hook_input)
+    permission_message = (
+        _codex_permission_message("main", hook_input) if initial_start else None
+    )
+    goal_context = _goal_context(
+        record,
+        role_model_context=_role_model_context(role_models),
+        initial_start=initial_start,
+    )
+    if permission_message is not None:
+        goal_context = (
+            f"{goal_context}\n\n{permission_message}\n"
+            "在本轮第一条用户可见进度中完整照抄上一行权限摘要。"
+        )
     _emit_additional_context(
         "UserPromptSubmit",
-        _goal_context(
-            record,
-            role_model_context=_role_model_context(role_models, hook_input),
-            initial_start=initial_start,
-        ),
+        goal_context,
+        system_message=permission_message,
     )
 
 
@@ -1453,10 +1720,14 @@ def _handle_session_start(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> None:
-    goal_id = _select_hook_goal_id(search_root, hook_input)
-    if goal_id is None:
-        return
-    _emit_additional_context("SessionStart", _goal_context(runtime.status(goal_id)))
+    session_id = _session_id(hook_input)
+    goal_id = _select_session_goal_id(search_root, session_id)
+    if goal_id is not None and session_id is not None:
+        runtime.detach_session(
+            goal_id,
+            session_id=session_id,
+            reason="session_start_requires_explicit_resume",
+        )
 
 
 def _handle_pre_tool_use(
@@ -1464,10 +1735,36 @@ def _handle_pre_tool_use(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> None:
-    if _is_subagent_context(hook_input) or not _should_gate_tool(_tool_name(hook_input)):
+    tool_name = _tool_name(hook_input)
+    if _is_subagent_context(hook_input) or not _should_gate_tool(tool_name):
         return
-    goal_id = _select_hook_goal_id(search_root, hook_input)
+    logical_name = _logical_tool_name(tool_name)
+    if logical_name == "goal_plus_create":
+        _emit_pre_tool_block(
+            "GoalPlusEntrypointRequired: 使用 Codex `$goal-plus <目标>` 启动；"
+            "skill、MCP 和模型调用不能创建 Goal Plus。"
+        )
+        return
+    if logical_name == "goal_plus_update_goal":
+        _emit_pre_tool_block(
+            "GoalPlusEntrypointRequired: 使用 Codex `$goal-plus edit <完整目标>` 修订；"
+            "MCP 和模型调用不能修改 Goal Plus 目标。"
+        )
+        return
+    goal_id = _select_session_goal_id(search_root, _session_id(hook_input))
+    if goal_id is None and logical_name == "search_report":
+        run_ids = _runtime_run_ids(_raw_tool_input(hook_input))
+        if len(run_ids) == 1:
+            goal_id = _select_terminal_report_goal_id(
+                search_root,
+                run_ids[0],
+            )
     if goal_id is None:
+        if _requires_goal_plus_authorization(tool_name):
+            _emit_pre_tool_block(
+                "GoalPlusEntrypointRequired: 当前 Codex turn 未由精确的 `$goal-plus`、"
+                "`$goal-plus edit` 或 `$goal-plus resume` 授权，已拒绝 Goal Plus/Search 变更。"
+            )
         return
     gate = runtime.gate(goal_id, event="pre_tool_use", context=hook_input)
     if gate.decision == "block":
@@ -1568,6 +1865,37 @@ def _handle_stop_event(
                     **hook_input,
                     "goal_plus_subagent_role": "ordinary",
                 }
+    if event == "stop":
+        record = runtime.status(goal_id)
+        if record.status != "active":
+            session_id = _session_id(hook_input)
+            settled = (
+                runtime.settle_nonactive_stop(
+                    goal_id,
+                    session_id=session_id,
+                )
+                if session_id is not None
+                else None
+            )
+            if settled is None:
+                return {
+                    "decision": "skipped",
+                    "reason": "no_matching_session",
+                    "goal_plus_id": goal_id,
+                    "agent_session_id": None,
+                    "run_id": None,
+                    "candidate_id": None,
+                }
+            _emit_terminal_stats(settled)
+            return {
+                "decision": "allow",
+                "reason": None,
+                "goal_plus_id": goal_id,
+                "agent_session_id": None,
+                "run_id": None,
+                "candidate_id": None,
+            }
+
     gate = runtime.gate(goal_id, event=event, context=gate_context)
     if gate.decision == "block":
         _emit_block(
@@ -1575,8 +1903,6 @@ def _handle_stop_event(
             or gate.reason
             or "Goal Plus 仍处于 active；停止前继续完成任务。"
         )
-    elif event == "stop" and gate.status != "active":
-        _emit_terminal_stats(runtime.status(goal_id))
     return {
         "decision": gate.decision,
         "reason": gate.reason,
@@ -1654,13 +1980,43 @@ def main() -> int:
 
     try:
         event_name = _hook_event_name(hook_input)
+        if event_name == "PreToolUse":
+            # A Search candidate normally runs inside its Git worktree.  That
+            # worktree has its own `.git` marker but no `.gp`, so permission
+            # reporting must not depend on rediscovering the parent's runtime.
+            # Codex's real PreToolUse payload also does not need to repeat an
+            # `agent_id`: the transcript session_meta is the authoritative
+            # source for whether this is a subagent and its task path.
+            subagent_task = _codex_subagent_task_name(hook_input)
+            permission_agent = _search_candidate_permission_agent(hook_input)
+            if permission_agent is not None:
+                permission_message = _codex_permission_message(
+                    permission_agent, hook_input
+                )
+                _emit_additional_context(
+                    "PreToolUse",
+                    f"{permission_message}\n"
+                    "把上一行作为本 Search candidate session 的权限事实，并在最终交接中完整照抄。",
+                    system_message=permission_message,
+                )
+                return 0
+            if subagent_task is not None or _is_subagent_context(hook_input):
+                return 0
         if event_name in {"UserPromptSubmit", "SessionStart", "PreToolUse"}:
             from goal_plus.goal_plus import FileGoalPlusRuntime
 
-            if event_name != "UserPromptSubmit" and not search_root.exists():
+            if event_name == "SessionStart" and not search_root.exists():
+                return 0
+            if (
+                event_name == "PreToolUse"
+                and not search_root.exists()
+                and not _requires_goal_plus_authorization(_tool_name(hook_input))
+            ):
                 return 0
             if event_name == "UserPromptSubmit":
-                if not search_root.exists() and _goal_plus_prompt(hook_input) is None:
+                if not search_root.exists() and not _looks_like_goal_plus_command(
+                    hook_input
+                ):
                     return 0
                 runtime = FileGoalPlusRuntime(search_root)
                 _handle_user_prompt_submit(runtime, search_root, hook_input)
@@ -1676,18 +2032,6 @@ def main() -> int:
             time_advisory = _search_candidate_time_advisory(search_root, hook_input)
             if time_advisory is not None:
                 _emit_additional_context("PostToolUse", time_advisory)
-                return 0
-            target = _post_tool_use_bind_target(hook_input)
-            if target is None:
-                return 0
-            goal_id, session_id = target
-            goal_path = search_root / "goal-plus" / goal_id / "goal.json"
-            if not goal_path.is_file():
-                return 0
-            from goal_plus.goal_plus import FileGoalPlusRuntime
-
-            runtime = FileGoalPlusRuntime(search_root)
-            _handle_post_tool_use(runtime, hook_input, goal_id, session_id)
             return 0
 
         if event_name not in {"Stop", "SubagentStop"}:
@@ -1702,5 +2046,25 @@ def main() -> int:
         )
         return 0
     except Exception as exc:
-        print(f"[goal-plus-hook] allowing host action because hook failed: {exc}", file=sys.stderr)
+        event_name = _hook_event_name(hook_input)
+        if event_name == "UserPromptSubmit" and _looks_like_goal_plus_command(
+            hook_input
+        ):
+            _emit_user_prompt_block(
+                f"Goal Plus host entrypoint failed closed; no task was started: {exc}"
+            )
+            return 0
+        if event_name == "PreToolUse" and _requires_goal_plus_authorization(
+            _tool_name(hook_input)
+        ):
+            _emit_pre_tool_block(
+                f"Goal Plus authorization check failed closed: {exc}"
+            )
+            return 0
+        if event_name in {"Stop", "SubagentStop"}:
+            goal_id = _select_hook_goal_id(search_root, hook_input)
+            if goal_id is not None:
+                _emit_block(f"Goal Plus stop gate failed closed: {exc}")
+                return 0
+        print(f"[goal-plus-hook] non-authorizing hook failed: {exc}", file=sys.stderr)
         return 0

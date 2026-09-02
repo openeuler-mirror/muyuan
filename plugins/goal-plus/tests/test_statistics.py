@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from goal_plus.models import WorkspaceOperationTiming
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.statistics import build_run_statistics
 
@@ -70,6 +71,17 @@ def test_run_statistics_split_worker_parent_usage_and_stable_terminal_time(
     runtime.promote(run_id, task.candidate_id)
 
     run = runtime._load_run(run_id)
+    assert run.promotion is not None
+    run.promotion = run.promotion.model_copy(
+        update={
+            "apply_timing": WorkspaceOperationTiming(
+                started_at="2026-01-01T00:00:00Z",
+                completed_at="2026-01-01T00:00:02.500000Z",
+                duration_seconds=2.5,
+                outcome="succeeded",
+            )
+        }
+    )
     candidates = runtime._load_candidate_records(run_id)
     sessions = runtime._load_agent_sessions(run_id)
     observations = {
@@ -119,6 +131,7 @@ def test_run_statistics_split_worker_parent_usage_and_stable_terminal_time(
     )
 
     assert first_snapshot["scores"]["target_reached"] is True
+    assert first_snapshot["schema_version"] == 2
     assert first_snapshot["scores"]["best_improvement_from_baseline"] == 1.0
     assert first_snapshot["workers"]["productive_sessions"] == 1
     assert first_snapshot["workers"]["successful_sessions"] == 1
@@ -146,6 +159,26 @@ def test_run_statistics_split_worker_parent_usage_and_stable_terminal_time(
     assert first_snapshot["selection"]["survived"] is True
     assert first_snapshot["timing"]["time_to_first_improvement_seconds"] is not None
     assert first_snapshot["timing"]["time_to_threshold_seconds"] is not None
+    assert first_snapshot["timing"]["workspace_creation_seconds_total"] is not None
+    assert first_snapshot["timing"]["workspace_creation_seconds_mean"] is not None
+    assert first_snapshot["timing"]["workspace_creation_seconds_max"] is not None
+    assert first_snapshot["timing"]["workspace_creation_candidates_observed"] == 1
+    assert first_snapshot["timing"]["promotion_apply_seconds"] == 2.5
+    workspace_operations = first_snapshot["workspace_operations"]
+    assert workspace_operations["provider"] == "copy"
+    assert workspace_operations["promotion_mode"] == "artifact_only"
+    capacity = workspace_operations["capacity_estimate"]
+    assert capacity["worktree_nodes"] == 1
+    assert capacity["basis"] == "source_tree_copy"
+    assert capacity["checkout_bytes_per_node"] > 0
+    assert capacity["fits_available_space"] is True
+    assert workspace_operations["workspace_creation"]["attempts_observed"] == 1
+    assert workspace_operations["workspace_creation"]["succeeded"] == 1
+    assert workspace_operations["promotion_apply"] == {
+        "observed": True,
+        "outcome": "succeeded",
+        "duration_seconds": 2.5,
+    }
     assert first_snapshot["verifiers"]["process_runs"] == 1
     assert first_snapshot["verifiers"]["worker_process_runs"] == 1
     assert first_snapshot["verifiers"]["parent_process_runs"] == 0

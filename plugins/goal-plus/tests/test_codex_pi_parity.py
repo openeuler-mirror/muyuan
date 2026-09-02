@@ -53,6 +53,9 @@ def test_codex_and_pi_publish_native_parity_capabilities() -> None:
     assert codex.supports_service_tier is True
     assert codex.supports_usage_metadata is True
     assert codex.supports_process_kill is False
+    assert codex.supported_workspace_backends == frozenset(
+        {"copy", "git_worktree"}
+    )
     assert codex.pool.launch_mode == "async"
     assert codex.pool.wait_mode == "wait_any"
     assert codex.pool.continuation_mode == "same_worker"
@@ -64,6 +67,7 @@ def test_codex_and_pi_publish_native_parity_capabilities() -> None:
     assert pi.supports_service_tier is False
     assert pi.supports_usage_metadata is True
     assert pi.supports_process_kill is True
+    assert pi.supported_workspace_backends == frozenset({"copy", "git_worktree"})
     assert pi.pool.launch_mode == "async"
     assert pi.pool.wait_mode == "wait_any"
     assert pi.pool.continuation_mode == "native_session"
@@ -77,7 +81,7 @@ def test_codex_and_pi_share_role_model_command_interface() -> None:
     normalized_pi = " ".join(pi.split())
 
     for text in (codex, pi):
-        assert "main=" in text
+        assert "`main=` 不是受支持的" in " ".join(text.split())
         assert "annotator=" in text
         assert "workers=" in text
         assert "models=" in text
@@ -88,10 +92,8 @@ def test_codex_and_pi_share_role_model_command_interface() -> None:
     assert "Pi session 就是 main agent" in normalized_pi
     assert "不能切换它的模型" in normalized_codex
     assert "不能切换它的模型" in normalized_pi
-    assert "可选 assertion" in normalized_codex
-    assert "可选 assertion" in normalized_pi
-    assert "不会把它当成 selector" in normalized_codex
-    assert "不会把它当成 selector" in normalized_pi
+    assert "新命令填写它会在创建记录前失败" in normalized_codex
+    assert "新命令填写它会在创建记录前失败" in normalized_pi
 
 
 @pytest.mark.parametrize(

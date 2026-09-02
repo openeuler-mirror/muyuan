@@ -12,83 +12,40 @@ Pi and Codex are the supported host paths.
 
 ## Installation
 
-### User installation
-
-Obtain Muyuan from its current GitCode repository and enter the Goal Plus
-source directory:
+Run the installer from the Goal Plus source directory with the intended Python
+environment already active:
 
 ```bash
-git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git
-cd muyuan/plugins/goal-plus
-python -m pip install .
+git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-plus
 ```
 
-This installs the Goal Plus commands into the active local Python environment.
-If that environment already provides `goal-plus`, no separate runtime install
-is needed.
+| Installation | Command |
+| --- | --- |
+| Codex only | `./install.sh --codex` |
+| Pi only | `./install.sh --pi` |
+| Codex and Pi | `./install.sh --codex --pi` |
+| Pi development | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
+| Show Pi development environments | `./install.sh --env-show` |
+| Check only | `./install.sh --codex --pi --dry-run` |
 
-Install or remove the Pi package with Pi itself:
-
-```bash
-pi install .
-pi remove .
-```
-
-Install or remove the Codex plugin with Codex itself:
-
-```bash
-codex plugin marketplace add .
-codex plugin add goal-plus@goal-plus
-
-codex plugin remove goal-plus@goal-plus
-codex plugin marketplace remove goal-plus
-```
-
-After removing Goal Plus from every host, optionally remove it from that Python
-environment with:
-
-```bash
-python -m pip uninstall -y goal-plus
-```
-
-Keep this source directory while either host is installed. Pi loads the local
-package from it, and Codex retains it as the configured marketplace source.
+Normal installation uses the active `python3`; its scripts directory must be
+on `PATH`. `--pi` and `--pi-dev` are mutually exclusive. Keep the checkout at
+the same path while a host is installed.
 
 On first Codex use, start a new thread, review and trust Goal Plus in `/hooks`,
-then start one more fresh thread. Verify it with:
+then start one more fresh thread. Pi development starts with `pi-goal-plus` and
+does not modify Pi authentication or global configuration.
+
+## Uninstallation
 
 ```bash
-codex plugin list
-goal-plus-codex-doctor --project-root .
+./uninstall.sh
 ```
 
-### Development checkout
-
-For editable development, enter the same plugin directory and install the
-checkout with development dependencies:
-
-```bash
-cd muyuan/plugins/goal-plus
-python -m pip install -e ".[dev]"
-```
-
-Pi can load the checkout directly:
-
-```bash
-pi install .
-pi remove .
-```
-
-Codex uses the local refresh script while plugin assets are being edited:
-
-```bash
-python scripts/install_codex_plugin.py --skip-runtime-install
-python scripts/install_codex_plugin.py --uninstall --keep-runtime
-```
-
-Run `python -m pip uninstall -y goal-plus` after neither development host needs
-the editable runtime. Detailed development and update behavior belongs in
-[Pi](docs/pi.md) and [Codex](docs/codex.md).
+The uninstaller removes Codex and Pi registrations owned by this checkout, its
+managed Pi development environment, and the matching Python runtime. It does
+not delete target workspace `.gp/` records or revert promoted changes. Use
+`./uninstall.sh --dry-run` to inspect the plan first.
 
 Start a goal in Pi:
 
@@ -97,6 +54,7 @@ Start a goal in Pi:
 /goal-plus Optimize p95 latency for two hours without changing correctness.
 /goal-plus mode=probe Check whether vectorization is viable.
 /goal-plus mode=autonomous Deeply optimize the kernel.
+/goal-plus max_parallel=2 promotion_mode=artifact_only Optimize this read-only template.
 ```
 
 The equivalent Codex entry uses the installed skill:
@@ -106,6 +64,7 @@ $goal-plus Fix this bug and verify the test suite.
 $goal-plus Optimize p95 latency for two hours without changing correctness.
 $goal-plus mode=probe Check whether vectorization is viable.
 $goal-plus mode=autonomous Deeply optimize the kernel.
+$goal-plus max_parallel=2 promotion_mode=artifact_only Optimize this read-only template.
 ```
 
 Edit, resume, and independent-final-check commands use the same host-specific
@@ -120,17 +79,33 @@ Pi:    /goal-plus-with-final-check <goal>
 Codex: $goal-plus-with-final-check <goal>
 ```
 
+These exact host commands are the only Goal Plus authority boundary. Natural
+language requests, automatic skill loading, direct MCP calls, and the generic
+Pi CLI facade cannot create, edit, or resume a Goal Plus record. The legacy
+`goal_plus_create` and `goal_plus_update_goal` MCP names remain as deny-only
+tombstones so cached clients receive an explicit `GoalPlusEntrypointRequired`
+error without mutating `.gp` state. A persisted active record is not
+automatically authorized in a later turn; use the exact host-specific
+`resume` command.
+
+Leading `key=value` command configuration is parsed and persisted separately
+from the natural-language goal. The first non-config token starts the goal.
+Explicit values are enforced against a ready SearchSpec draft, while omitted
+fields remain Agent decisions. See [API](docs/api.md#host-command-config) for
+the supported keys.
+
 One request starts an autonomous run. The agent decides whether Goal Mode is
 enough or a frozen verifier makes parallel Search useful; entering Search does
 not require an extra approval step. `mode=autonomous` (the default) gives
 every initial candidate substantial, renewable same-workspace exploration leases;
-`mode=probe` asks for short feasibility probes first. This exploration mode is
-stored as guidance in the final line of `raw_goal`, not as a scheduler state.
+`mode=probe` asks for short feasibility probes first. The explicit mode is
+recorded in `command_config`; its operational guidance remains in the final line
+of `raw_goal`, not as scheduler state.
 
 ## Hosts
 
 | Host | Integration assets | Entry | Search worker path |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Pi | installed Pi package | `/goal-plus` or `pi -p "/goal-plus ..."` | durable Pi RPC pool; see [Pi](docs/pi.md) |
 | Codex | installed plugin | `$goal-plus` skill prompt | fixed parallel loops with native same-worker continuation; Codex 0.144.1+ hooks cover `UserPromptSubmit`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
 
@@ -145,13 +120,15 @@ Start Pi from the workspace you want to change:
 
 ```bash
 cd <target-workspace>
-pi --model <provider/main-model> --thinking max
+pi --model <provider/main-model> --thinking xhigh
 ```
 
-Then submit `$goal-plus <goal>` in Codex or `/goal-plus <goal>` in Pi. In both
+Then submit `$goal-plus <goal>` in Codex or `/goal-plus <goal>` in Pi. Pi keeps
+the selected thinking level; `xhigh` is recommended for complex tasks but is not
+required or forced. In both
 hosts, the main agent is the already-running session selected at launch or with
-`/model`; Goal Plus cannot switch it. Omit `main=` in normal usage. Both entries
-retain `main=` only as an optional assertion that blocks a mismatch. See the
+`/model`; Goal Plus cannot switch it, and `main=` is not a supported command
+configuration key. See the
 [Torch CPU example](examples/model-optimize/README.md) for
 complete Codex and Pi commands with ready-to-paste prompts.
 
@@ -183,6 +160,12 @@ not choose later technical directions or replace low-scoring candidates.
 Slower workers do not block completed work from being evaluated. See
 [Shared Plane](docs/shared-plane.md).
 
+For Git worktrees, freezing first runs the process-verifier suite once in the
+clean origin and pins that exact commit. Batch startup then verifies the same
+suite in `c001` before materializing the remaining lanes or starting workers.
+This catches source-root and relative-path mistakes before candidate work uses
+the Search budget; the bootstrap checks are not candidate iterations.
+
 Keep one run for one valid evaluation/edit contract. If a successor is
 unavoidable, `source_run_id` preserves bounded frontier/features/scoped
 pitfalls as research context, never as reusable scores.
@@ -200,7 +183,7 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 ## Documentation
 
 | Need | Read |
-|---|---|
+| --- | --- |
 | Architecture, shared Evidence, rollback, and end-to-end flow | [Shared Plane](docs/shared-plane.md) |
 | Current MCP and Pi-local tools | [API](docs/api.md) |
 | Host capability comparison | [Agent Host Adapters](docs/agent-host-adapters.md) |
@@ -214,3 +197,20 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 
 Benchmark-specific tasks, evaluators, campaigns, and comparison evidence are
 not part of this isolated runtime directory.
+
+## Workspace and Sandbox Architecture
+
+Goal Plus uses a two-layer workspace model. **Git + Git** combines an outer
+Git-worktree workspace with inner Git candidate history. **ThinkThread + Git**
+keeps the same inner Git history inside a private ThinkThread COW Child, adding
+snapshot-based artifacts and protected execution. Both modes start from a
+clean inner Git baseline with no managed untracked product files.
+
+Git + Git is available in Codex and Pi. ThinkThread + Git currently has the
+filtered promotion adapter, while Child creation, Search checkpointing,
+snapshot-bound verification, references, and host execution remain fail-closed.
+Copy remains an explicit artifact-only compatibility path.
+
+See [Workspace and Sandbox Architecture](docs/workspace-sandbox-arch.md) for
+the `new -> search -> apply` ASCII flow, design invariants, and the Git/TT
+behavior comparison.

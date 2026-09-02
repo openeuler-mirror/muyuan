@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from goal_plus.models import (
     AgentHostHandle,
     AgentSessionRecord,
+    ArtifactRef,
     Budget,
     CandidateRecord,
     CandidateProposal,
@@ -407,22 +408,60 @@ def test_verifier_resource_lock_rejects_blank_names() -> None:
         VerifierCommand.model_validate(command)
 
 
-def test_search_spec_supports_copy_and_git_worktree_workspace_backends() -> None:
+def test_search_spec_supports_registered_workspace_backends() -> None:
     default_spec = SearchSpec.model_validate(valid_spec_dict())
     assert default_spec.workspace.backend == "git_worktree"
     assert default_spec.model_dump(mode="json")["workspace"] == {
-        "backend": "git_worktree"
+        "backend": "git_worktree",
+        "promotion_mode": "apply",
     }
 
     copy_data = valid_spec_dict()
     copy_data["workspace"] = {"backend": "copy"}
     copy_spec = SearchSpec.model_validate(copy_data)
     assert copy_spec.workspace.backend == "copy"
+    assert copy_spec.workspace.promotion_mode == "artifact_only"
+
+    thinkthread_data = valid_spec_dict()
+    thinkthread_data["workspace"] = {"backend": "thinkthread"}
+    thinkthread_spec = SearchSpec.model_validate(thinkthread_data)
+    assert thinkthread_spec.workspace.backend == "thinkthread"
+    assert thinkthread_spec.workspace.promotion_mode == "apply"
+
+    invalid_copy_data = valid_spec_dict()
+    invalid_copy_data["workspace"] = {
+        "backend": "copy",
+        "promotion_mode": "apply",
+    }
+    with pytest.raises(ValidationError, match="artifact_only"):
+        SearchSpec.model_validate(invalid_copy_data)
 
     invalid_data = valid_spec_dict()
     invalid_data["workspace"] = {"backend": "overlay"}
     with pytest.raises(ValidationError):
         SearchSpec.model_validate(invalid_data)
+
+
+def test_artifact_ref_enforces_provider_kind_pairing() -> None:
+    git_ref = ArtifactRef(
+        kind="git_commit",
+        id="abc123",
+        provider="git_worktree",
+    )
+    snapshot_ref = ArtifactRef(
+        kind="fs_snapshot",
+        id="snap_123",
+        provider="thinkthread",
+    )
+
+    assert git_ref.model_dump(mode="json")["provider"] == "git_worktree"
+    assert snapshot_ref.kind == "fs_snapshot"
+    with pytest.raises(ValidationError, match="incompatible"):
+        ArtifactRef(
+            kind="git_commit",
+            id="snap_123",
+            provider="thinkthread",
+        )
 
 
 def test_search_spec_requires_structured_strategy() -> None:

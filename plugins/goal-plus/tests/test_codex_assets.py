@@ -45,13 +45,23 @@ def test_codex_goal_plus_skill_records_modes_and_mcp_tools() -> None:
         ".goal-plus-verifiers/",
         "`expected_outputs`",
         '`workspace.backend="git_worktree"`',
+        '`workspace.promotion_mode` 默认是 `apply`',
+        "DirtySourceWorkspace",
+        "workspace_capacity_notice",
+        "fits_available_space=false",
         "$goal-plus-with-final-check",
         "$goal-plus edit",
         "$goal-plus mode=autonomous",
         "$goal-plus mode=probe",
-        "`raw_goal` 的规范末行",
+        "GoalPlusRecord.command_config",
+        "只有缺省字段才由 Main",
+        "ready draft",
+        "`raw_goal`",
+        "规范末行",
         "候选 lease 结束绝不会完成",
-        "不单独存储任务 deadline",
+        "`max_duration_seconds`",
+        "`outer_deadline_at`",
+        "缺省时不编造",
         "把最新用户消息视为",
         "范围、交付物或成功标准",
         "goal_plus_update_goal",
@@ -130,10 +140,14 @@ def test_codex_assets_wire_goal_plus_host_hooks() -> None:
 
     text = (ROOT / "docs" / "codex.md").read_text(encoding="utf-8")
     assert "installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook" in text
-    assert "PostToolUse(goal_plus_create)" in text
+    assert "不再存在 `PostToolUse(goal_plus_create)`" in text
+    assert "SessionStart` 只保留可恢复" in text
+    assert "fail closed" in text
     assert "UserPromptSubmit" in text
     assert "PreToolUse" in text
     assert "SubagentStop" in text
+    assert "turn_context" in text
+    assert "不从 TOML、环境变量或" in text
     assert "自己的 verifier 提交持久化前会被阻止结束" in text
     assert "普通 subagent 不继承 parent 的 next action" in text
     assert "goal-plus --goal-plus-host-hook" in text
@@ -159,6 +173,16 @@ def test_codex_plugin_default_prompts_use_skill_syntax() -> None:
     assert all(prompt.startswith("$goal-plus") for prompt in prompts)
 
 
+def test_codex_goal_plus_skills_are_explicit_only() -> None:
+    for root in (ROOT / ".codex" / "skills", ROOT / "skills"):
+        for name in ("goal-plus", "goal-plus-with-final-check", "search"):
+            metadata = root / name / "agents" / "openai.yaml"
+            assert metadata.is_file()
+            assert "allow_implicit_invocation: false" in metadata.read_text(
+                encoding="utf-8"
+            )
+
+
 def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     text = (ROOT / ".codex" / "skills" / "search" / "SKILL.md").read_text(
         encoding="utf-8"
@@ -169,6 +193,10 @@ def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     assert "search_get_agent_observability" in text
     assert "spawn_agent" in text
     assert "search_bind_agent_handle" in text
+    assert "只分配持久 session" in text
+    assert "非空 receiver thread id" in text
+    assert "真实返回的 thread id" in text
+    assert "不得调用空 `wait`/`wait_agent`" in text
     assert "终态绑定会自动采集" in text
     assert "search_bind_opencode_session" not in text
     assert "background" not in text.lower()
@@ -179,7 +207,16 @@ def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in text
     assert "VerifierWorkspaceSideEffect" in text
     assert "固定 `/tmp`" in text
+    assert "origin 运行一次 process-verifier suite" in text
+    assert "WorkspaceRelocationVerifierFailed" in text
+    assert "verifier_target_mismatch" in text
+    assert "只有通过后才创建其余 lane" in text
+    assert "一次性源码副本" not in text
     assert '`workspace.backend="git_worktree"`' in text
+    assert '`workspace.promotion_mode="apply"`' in text
+    assert "DirtySourceWorkspace" in text
+    assert "workspace_capacity_notice" in text
+    assert "fits_available_space=false" in text
     assert ".agents/skills/<name>/SKILL.md" in text
     assert "task_skill_notice" in text
     assert "candidate_task.task_skill_paths" in text
@@ -187,6 +224,23 @@ def test_codex_search_skill_uses_spawn_agent_and_generic_bind() -> None:
     assert "仓外 Skill 继续由 host 管理" in text
     assert "parent cwd 不是 candidate workspace" in text
     assert '`strategy.config.global_evidence_mode` 必须使用 `"manual"`' in text
+
+
+def test_codex_skills_use_native_mcp_tools_without_resource_discovery() -> None:
+    for name in ("goal-plus", "search"):
+        text = (ROOT / ".codex" / "skills" / name / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        normalized = " ".join(text.split())
+
+        assert "list_mcp_resources" in text
+        assert "list_mcp_resource_templates" in text
+        assert "不枚举 tool" in normalized or "不会列出 MCP tool" in normalized
+        assert "原生 MCP tools" in normalized
+        assert "直接调用当前 tool registry" in normalized
+        assert "`mcp_tool_call`" in text
+        assert "shell、Python" in normalized
+        assert "原生 MCP tool call" in normalized
 
 
 def test_codex_search_skill_projects_launch_metadata_to_current_tool_schema() -> None:
@@ -217,7 +271,7 @@ def test_codex_assets_document_explicit_role_model_syntax() -> None:
     normalized_docs = " ".join(docs.split())
 
     assert "annotator=B workers=C,D" in combined
-    assert "main=" in goal_skill
+    assert "`main=` 不是受支持的" in " ".join(goal_skill.split())
     assert "annotator=" in goal_skill
     assert "workers=" in goal_skill
     assert "`models=` 是 `workers=` 的兼容别名" in combined
@@ -226,7 +280,7 @@ def test_codex_assets_document_explicit_role_model_syntax() -> None:
     assert "不能由 Goal Plus prompt 切换" in goal_skill
     assert "UserPromptSubmit" in docs
     assert "不能切换它的模型" in docs
-    assert "正常使用应省略 `main=`" in normalized_docs
+    assert "`main=` 不是受支持的" in normalized_docs
 
 
 def test_codex_search_skill_documents_parallel_loop_policy() -> None:
@@ -431,8 +485,8 @@ def test_codex_goal_plus_defers_report_until_terminal_state() -> None:
     assert "`search_report`" in goal_skill
     assert "绝不能生成中间 Goal Plus 报告" in normalized_goal_skill
     assert "只有 Goal Plus 记录达到终态" in goal_skill
-    assert "对独立 Search" in search_skill
-    assert "只在提升后调用 `search_report`" in search_skill
+    assert "不能创建 Goal Plus" in search_skill
+    assert "创建 standalone run" in search_skill
 
 
 def test_codex_final_checker_and_with_check_alias_are_read_only_and_independent() -> None:

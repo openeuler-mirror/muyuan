@@ -36,7 +36,10 @@ from goal_plus.agent_hosts import (
 from goal_plus.models import (
     AgentHostHandle,
     AgentSessionRecord,
+    ArtifactRef,
     BestArtifactRecord,
+    BootstrapVerification,
+    BootstrapVerifierResult,
     CandidateRecord,
     CandidateProposal,
     CandidateTask,
@@ -50,6 +53,9 @@ from goal_plus.models import (
     GlobalEvidenceViewReference,
     IterationDisposition,
     PromotionEvidence,
+    PromotionRecord,
+    ReferenceWorkspaceAccess,
+    ReferenceWorkspaceRecord,
     RunRecord,
     RunState,
     RunSummary,
@@ -75,6 +81,9 @@ from goal_plus.models import (
     VerifierRole,
     WorkerBudget,
     WorkerLaunchOptions,
+    WorkspaceAccess,
+    WorkspaceBackend,
+    WorkspaceOperationTiming,
 )
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT, host_assets_root
 from goal_plus.shared_dir import (
@@ -88,10 +97,13 @@ from goal_plus.workspaces import (
     IGNORED_NAMES,
     IGNORED_SUFFIXES,
     copy_source_tree,
+    estimate_workspace_capacity,
     initialize_workspace_git_baseline,
     list_files,
     list_source_files,
     materialize_candidate_workspace,
+    get_workspace_provider,
+    PreparedPromotion,
 )
 
 
@@ -170,6 +182,9 @@ class _CandidateArtifactState:
     touched_denied_files: bool
     changed_outside_allowed: bool
     artifact_hash: str
+    artifact_ref: ArtifactRef | None
+    artifact_status: list[str]
+    artifact_clean: bool
     git_head: str | None
     git_status: list[str]
     git_artifact_clean: bool
@@ -752,11 +767,19 @@ class FileSearchRuntime:
                 f"{SUPPLEMENTAL_EVALUATION_REQUIRED_ENV}=1 requires "
                 f"{SUPPLEMENTAL_EVALUATION_ENABLED_ENV}=1"
             )
+        self._validate_host_workspace_backend(spec)
         spec = _normalize_verifier_cwds_for_candidate_workspace(spec)
         spec = self._apply_global_evidence_mode_from_environment(spec)
         spec = self._normalize_strategy_models(spec)
         self._validate_strategy_config(spec.strategy)
         source_root = Path(spec.source_path).resolve()
+        self._validate_clean_source_repository(spec)
+        workspace_capacity_estimate = estimate_workspace_capacity(
+            source=source_root,
+            backend=spec.workspace.backend,
+            worktree_nodes=spec.budget.max_parallel,
+            destination_root=self.root_dir,
+        )
         verifier_hashes: dict[str, str] = {}
         artifact_entries: list[tuple[Path, str]] = []
         task_skill_paths = discover_git_tracked_task_skills(source_root)
@@ -799,10 +822,62 @@ class FileSearchRuntime:
                 )
             artifact_entries.append((artifact_path, rel_path))
 
-        self._preflight_ranking_verifiers(spec)
-
+        self._validate_materialized_verifier_artifacts(spec, artifact_entries)
         for artifact_path, rel_path in artifact_entries:
             verifier_hashes[rel_path] = sha256_file(artifact_path)
+
+        provider = get_workspace_provider(spec.workspace.backend)
+        source_artifact_ref = (
+            provider.current_artifact(source_root)
+            if spec.workspace.backend in {"git_worktree", "thinkthread"}
+            else None
+        )
+        origin_verification: BootstrapVerification | None = None
+        if spec.workspace.backend in {"git_worktree", "thinkthread"}:
+            origin_verification = self._run_bootstrap_verifiers(
+                spec=spec,
+                workspace=source_root,
+                backend=spec.workspace.backend,
+                phase="origin",
+                verifier_hashes=verifier_hashes,
+                log_dir=(
+                    self.root_dir
+                    / "bootstrap"
+                    / f"origin-{uuid.uuid4().hex[:12]}"
+                ),
+                source_artifact_ref=source_artifact_ref,
+            )
+            if not origin_verification.passed:
+                failed = next(
+                    (
+                        result
+                        for result in origin_verification.verifier_results
+                        if not result.passed
+                    ),
+                    None,
+                )
+                detail = (
+                    f" {failed.name}: {failed.failure_class}."
+                    if failed is not None
+                    else ""
+                )
+                raise ValueError(
+                    "OriginVerifierFailed: process verifier suite did not pass "
+                    f"in source_path '{source_root}'.{detail}"
+                )
+            self._validate_clean_source_repository(spec)
+            source_artifact_after = provider.current_artifact(source_root)
+            if source_artifact_after != source_artifact_ref:
+                raise ValueError(
+                    "OriginArtifactChanged: source artifact changed while origin "
+                    "verification was running"
+                )
+            origin_verification = origin_verification.model_copy(
+                update={"source_artifact_ref": source_artifact_after}
+            )
+            source_artifact_ref = source_artifact_after
+        else:
+            self._preflight_ranking_verifiers(spec)
 
         spec_payload = spec.model_dump(mode="json")
         spec_hash = sha256_text(
@@ -810,6 +885,11 @@ class FileSearchRuntime:
                 {
                     "spec": spec_payload,
                     "verifiers": verifier_hashes,
+                    "source_artifact_ref": (
+                        source_artifact_ref.model_dump(mode="json")
+                        if source_artifact_ref is not None
+                        else None
+                    ),
                     "task_skills": task_skill_paths,
                     "supplemental_evaluation_enabled": supplemental_enabled,
                     "supplemental_evaluation_required": supplemental_required,
@@ -835,10 +915,292 @@ class FileSearchRuntime:
             verifier_hashes=verifier_hashes,
             frozen_verifier_paths=frozen_verifier_paths,
             task_skill_paths=task_skill_paths,
+            workspace_capacity_estimate=workspace_capacity_estimate,
+            source_artifact_ref=source_artifact_ref,
+            origin_verification=origin_verification,
             created_at=utc_timestamp(),
         )
         write_json(spec_dir / "frozen_spec.json", frozen.model_dump(mode="json"))
         return frozen
+
+    def _run_bootstrap_verifiers(
+        self,
+        *,
+        spec: SearchSpec,
+        workspace: Path,
+        backend: WorkspaceBackend,
+        phase: Literal["origin", "workspace_relocation"],
+        verifier_hashes: dict[str, str],
+        log_dir: Path,
+        source_artifact_ref: ArtifactRef | None,
+        candidate_id: str | None = None,
+    ) -> BootstrapVerification:
+        started_at = utc_timestamp()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        results: list[BootstrapVerifierResult] = []
+
+        initial_hash_failures = self._bootstrap_hash_failures(
+            workspace,
+            verifier_hashes,
+        )
+        if initial_hash_failures:
+            results.append(
+                BootstrapVerifierResult(
+                    name="frozen_hash_check",
+                    role=VerifierRole.ANTI_CHEAT_GATE,
+                    passed=False,
+                    score=0.0,
+                    metrics={"hash_failures": initial_hash_failures},
+                    failure_class="FrozenVerifierModified",
+                )
+            )
+        else:
+            for index, command in enumerate(spec.process_verifiers, start=1):
+                result = self._run_bootstrap_command(
+                    spec=spec,
+                    workspace=workspace,
+                    command=command,
+                    phase=phase,
+                    log_path=(
+                        log_dir
+                        / f"{index:02d}-{safe_verifier_name(command.name)}.log"
+                    ),
+                    verifier_hashes=verifier_hashes,
+                )
+                results.append(result)
+
+            final_hash_failures = self._bootstrap_hash_failures(
+                workspace,
+                verifier_hashes,
+            )
+            if final_hash_failures:
+                results.append(
+                    BootstrapVerifierResult(
+                        name="frozen_hash_check_after_verifier",
+                        role=VerifierRole.ANTI_CHEAT_GATE,
+                        passed=False,
+                        score=0.0,
+                        metrics={"hash_failures": final_hash_failures},
+                        failure_class="FrozenVerifierModified",
+                    )
+                )
+
+        hard_failed = any(
+            not result.passed
+            and result.role
+            in {
+                VerifierRole.VALIDITY_GATE,
+                VerifierRole.PROCESS_GATE,
+                VerifierRole.RANKING_SIGNAL,
+                VerifierRole.ANTI_CHEAT_GATE,
+            }
+            for result in results
+        )
+        passed = not hard_failed and all(
+            result.passed or result.role == VerifierRole.DIAGNOSTIC_SIGNAL
+            for result in results
+        )
+        aggregate_score = next(
+            (
+                result.score
+                for result in results
+                if result.score is not None
+                and result.role != VerifierRole.ANTI_CHEAT_GATE
+            ),
+            None,
+        )
+        if not passed:
+            aggregate_score = 0.0
+        return BootstrapVerification(
+            phase=phase,
+            backend=backend,
+            passed=passed,
+            aggregate_score=aggregate_score,
+            verifier_results=results,
+            source_artifact_ref=source_artifact_ref,
+            candidate_id=candidate_id,
+            started_at=started_at,
+            completed_at=utc_timestamp(),
+        )
+
+    def _run_bootstrap_command(
+        self,
+        *,
+        spec: SearchSpec,
+        workspace: Path,
+        command: VerifierCommand,
+        phase: Literal["origin", "workspace_relocation"],
+        log_path: Path,
+        verifier_hashes: dict[str, str],
+    ) -> BootstrapVerifierResult:
+        cwd = (workspace / command.cwd).resolve()
+        try:
+            cwd.relative_to(workspace.resolve())
+        except ValueError:
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=False,
+                score=0.0,
+                metrics={"cwd": str(cwd)},
+                failure_class="VerifierCwdEscapedWorkspace",
+            )
+        if not cwd.is_dir():
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=False,
+                score=0.0,
+                metrics={"cwd": str(cwd)},
+                failure_class="VerifierCwdMissing",
+            )
+        if command.command[0] == "goal-plus-internal":
+            known = command.command[1:] == ["check-frozen-hashes"]
+            failures = (
+                self._bootstrap_hash_failures(workspace, verifier_hashes)
+                if known
+                else {"command": {"expected": "check-frozen-hashes", "actual": None}}
+            )
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=known and not failures,
+                score=1.0 if known and not failures else 0.0,
+                metrics={"hash_failures": failures},
+                failure_class=(
+                    None
+                    if known and not failures
+                    else "FrozenVerifierModified" if known else "UnknownInternalCommand"
+                ),
+            )
+
+        diagnostics_dir = log_path.parent / "diagnostics" / log_path.stem
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        start = time.perf_counter()
+        try:
+            with verifier_resource_lock(command.resource_lock):
+                with tempfile.TemporaryDirectory(
+                    prefix="goal-plus-verifier-command-"
+                ) as verifier_tmp:
+                    completed = self._execute_verifier_process(
+                        command.command,
+                        cwd=cwd,
+                        env=self._verifier_environment(
+                            cwd,
+                            Path(verifier_tmp),
+                            phase=phase,
+                            diagnostics_dir=diagnostics_dir,
+                            resource=command.resource_lock,
+                        ),
+                        text=True,
+                        capture_output=True,
+                        timeout=command.timeout_seconds,
+                        check=False,
+                    )
+            metrics = self._parse_metrics(completed.stdout)
+            metrics.setdefault("returncode", completed.returncode)
+            metrics.setdefault("elapsed_seconds", time.perf_counter() - start)
+            metrics.update(self._verifier_diagnostics(diagnostics_dir))
+            score = self._score_from_metrics(spec.metric_name, metrics)
+            missing_numeric_metric = (
+                completed.returncode == 0
+                and not self._has_verifier_error(metrics)
+                and command.role == VerifierRole.RANKING_SIGNAL
+                and score is None
+            )
+            passed = (
+                completed.returncode == 0
+                and not self._has_verifier_error(metrics)
+                and not missing_numeric_metric
+            )
+            log_path.write_text(
+                _bounded_log(
+                    "\n".join(
+                        [
+                            f"$ {' '.join(command.command)}",
+                            f"cwd: {cwd}",
+                            f"returncode: {completed.returncode}",
+                            "",
+                            "## stdout",
+                            completed.stdout,
+                            "## stderr",
+                            completed.stderr,
+                        ]
+                    )
+                ),
+                encoding="utf-8",
+            )
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=passed,
+                score=score,
+                metrics=metrics,
+                log_path=log_path,
+                failure_class=(
+                    None
+                    if passed
+                    else "MissingNumericMetric"
+                    if missing_numeric_metric
+                    else "VerifierCommandFailed"
+                ),
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = self._coerce_verifier_output(exc.stdout)
+            stderr = self._coerce_verifier_output(exc.stderr)
+            log_path.write_text(
+                _bounded_log(
+                    "\n".join(
+                        [
+                            f"$ {' '.join(command.command)}",
+                            f"cwd: {cwd}",
+                            f"timeout_seconds: {command.timeout_seconds}",
+                            "",
+                            "## stdout",
+                            stdout,
+                            "## stderr",
+                            stderr,
+                        ]
+                    )
+                ),
+                encoding="utf-8",
+            )
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=False,
+                score=0.0,
+                metrics={"timeout_seconds": command.timeout_seconds},
+                log_path=log_path,
+                failure_class="Timeout",
+            )
+        except OSError as exc:
+            log_path.write_text(_bounded_log(str(exc)), encoding="utf-8")
+            return BootstrapVerifierResult(
+                name=command.name,
+                role=command.role,
+                passed=False,
+                score=0.0,
+                metrics={"error": str(exc)},
+                log_path=log_path,
+                failure_class="VerifierStartFailed",
+            )
+
+    @staticmethod
+    def _bootstrap_hash_failures(
+        workspace: Path,
+        verifier_hashes: dict[str, str],
+    ) -> dict[str, dict[str, str | None]]:
+        failures: dict[str, dict[str, str | None]] = {}
+        for relative_path, expected_hash in verifier_hashes.items():
+            path = workspace / relative_path
+            actual_hash = sha256_file(path) if path.is_file() else None
+            if actual_hash != expected_hash:
+                failures[relative_path] = {
+                    "expected": expected_hash,
+                    "actual": actual_hash,
+                }
+        return failures
 
     def _preflight_ranking_verifiers(self, spec: SearchSpec) -> None:
         source_root = Path(spec.source_path).resolve()
@@ -957,7 +1319,13 @@ class FileSearchRuntime:
         cwd: Path,
         temp_dir: Path,
         *,
-        phase: Literal["freeze_preflight", "candidate", "promotion"],
+        phase: Literal[
+            "freeze_preflight",
+            "origin",
+            "workspace_relocation",
+            "candidate",
+            "promotion",
+        ],
         diagnostics_dir: Path | None = None,
         resource: str | None = None,
     ) -> dict[str, str]:
@@ -965,6 +1333,11 @@ class FileSearchRuntime:
         env["PYTHONPATH"] = str(cwd) + os.pathsep + env.get("PYTHONPATH", "")
         for name in ("TMPDIR", "TMP", "TEMP", "GOAL_PLUS_VERIFIER_TMPDIR"):
             env[name] = str(temp_dir)
+        # Keep verifier imports deterministic when a candidate rewrites a Python
+        # module with the same size inside the filesystem timestamp granularity.
+        # A per-invocation cache root prevents stale workspace bytecode from
+        # shadowing the current candidate source and remains concurrency-safe.
+        env["PYTHONPYCACHEPREFIX"] = str(temp_dir / "pycache")
         env[VERIFIER_PHASE_ENV] = phase
         if diagnostics_dir is not None:
             env[VERIFIER_DIAGNOSTICS_ENV] = str(diagnostics_dir)
@@ -1064,6 +1437,25 @@ class FileSearchRuntime:
         source_run_id: str | None = None,
     ) -> str:
         frozen = self._load_frozen_spec(frozen_spec_id)
+        self._validate_host_workspace_backend(frozen.spec)
+        self._validate_clean_source_repository(frozen.spec)
+        if frozen.source_artifact_ref is not None:
+            current_source_artifact = get_workspace_provider(
+                frozen.spec.workspace.backend
+            ).current_artifact(Path(frozen.spec.source_path))
+            if current_source_artifact != frozen.source_artifact_ref:
+                raise RuntimeError(
+                    "FrozenSourceChanged: current origin artifact does not match "
+                    f"frozen source artifact {frozen.source_artifact_ref.id}"
+                )
+        capacity = frozen.workspace_capacity_estimate
+        if capacity is not None and capacity.fits_available_space is False:
+            raise RuntimeError(
+                "workspace capacity preflight failed: conservative upper bound "
+                f"{capacity.conservative_upper_bound_bytes} bytes exceeds "
+                f"available space {capacity.available_bytes} bytes for "
+                f"{capacity.worktree_nodes} nodes"
+            )
         selected_models = self._expand_selected_models(
             frozen.spec.strategy.models,
             frozen.spec.budget.max_parallel,
@@ -1085,6 +1477,7 @@ class FileSearchRuntime:
             state=RunState.RUNNING,
             frozen_spec_id=frozen.frozen_spec_id,
             source_path=str(Path(frozen.spec.source_path).resolve()),
+            source_artifact_ref=frozen.source_artifact_ref,
             created_at=utc_timestamp(),
             source_run_id=source_run_id,
             inherited_research=inherited_research,
@@ -1348,9 +1741,6 @@ class FileSearchRuntime:
             (record for record in all_records if record.task.plan_id == plan_id),
             key=lambda record: record.candidate_id,
         )
-        for record in plan_records:
-            self._ensure_results_tsv(record, frozen.spec.metric_name)
-            self._write_candidate_record(run_id, record)
         if all_records:
             highest_index = max(
                 int(record.candidate_id.removeprefix("c")) for record in all_records
@@ -1370,6 +1760,14 @@ class FileSearchRuntime:
                     f"started plan {plan_id} is missing candidate state for {exc.args[0]}"
                 ) from exc
             if tasks:
+                self._ensure_workspace_bootstrap_verification(
+                    run=run,
+                    frozen=frozen,
+                    task=tasks[0],
+                )
+                for record in plan_records:
+                    self._ensure_results_tsv(record, frozen.spec.metric_name)
+                    self._write_candidate_record(run_id, record)
                 run.state = RunState.WAITING_FOR_WORKERS
                 self._write_run(run)
             return tasks
@@ -1408,6 +1806,15 @@ class FileSearchRuntime:
                 )
 
         tasks = [record.task for record in plan_records]
+        if tasks:
+            self._ensure_workspace_bootstrap_verification(
+                run=run,
+                frozen=frozen,
+                task=tasks[0],
+            )
+            for record in plan_records:
+                self._ensure_results_tsv(record, frozen.spec.metric_name)
+                self._write_candidate_record(run_id, record)
         for index, proposal in enumerate(
             candidate_proposals[len(plan_records):], start=len(plan_records) + 1
         ):
@@ -1426,13 +1833,19 @@ class FileSearchRuntime:
                 task=task,
                 results_ledger=self._inherited_results_ledger(run, task),
             )
-            self._ensure_results_tsv(record, frozen.spec.metric_name)
             self._write_candidate_record(run_id, record)
             tasks.append(task)
             run.next_candidate_index += 1
             run.candidates_total += 1
-            run.state = RunState.WAITING_FOR_WORKERS
             self._write_run(run)
+            if len(tasks) == 1:
+                self._ensure_workspace_bootstrap_verification(
+                    run=run,
+                    frozen=frozen,
+                    task=task,
+                )
+            self._ensure_results_tsv(record, frozen.spec.metric_name)
+            self._write_candidate_record(run_id, record)
 
         if tasks:
             run.state = RunState.WAITING_FOR_WORKERS
@@ -1442,6 +1855,164 @@ class FileSearchRuntime:
             self._write_run(run)
 
         return tasks
+
+    def _ensure_workspace_bootstrap_verification(
+        self,
+        *,
+        run: RunRecord,
+        frozen: FrozenSpec,
+        task: CandidateTask,
+    ) -> None:
+        provider = get_workspace_provider(frozen.spec.workspace.backend)
+        if (
+            not provider.capabilities.requires_relocation_verification
+            or frozen.origin_verification is None
+        ):
+            return
+        if run.workspace_bootstrap_verification is not None:
+            if not run.workspace_bootstrap_verification.passed:
+                raise RuntimeError(
+                    "WorkspaceRelocationVerifierFailed: the persisted candidate "
+                    "workspace bootstrap verification did not pass"
+                )
+            return
+
+        if run.source_artifact_ref is None and task.base_artifact_ref is not None:
+            # A plain-directory Git source gets a provider-created baseline during
+            # c001 materialization. Recover that persisted task anchor when an
+            # interrupted candidate-record write precedes the run-record write.
+            run.source_artifact_ref = task.base_artifact_ref
+            self._write_run(run)
+
+        candidate_artifact = provider.current_artifact(task.workspace)
+        if (
+            run.source_artifact_ref is not None
+            and candidate_artifact != run.source_artifact_ref
+        ):
+            verification = BootstrapVerification(
+                phase="workspace_relocation",
+                backend=frozen.spec.workspace.backend,
+                passed=False,
+                aggregate_score=0.0,
+                verifier_results=[
+                    BootstrapVerifierResult(
+                        name="source_artifact_check",
+                        role=VerifierRole.ANTI_CHEAT_GATE,
+                        passed=False,
+                        score=0.0,
+                        metrics={
+                            "expected": (
+                                run.source_artifact_ref.model_dump(mode="json")
+                                if run.source_artifact_ref is not None
+                                else None
+                            ),
+                            "actual": (
+                                candidate_artifact.model_dump(mode="json")
+                                if candidate_artifact is not None
+                                else None
+                            ),
+                        },
+                        failure_class="FrozenSourceChanged",
+                    )
+                ],
+                source_artifact_ref=candidate_artifact,
+                candidate_id=task.candidate_id,
+                started_at=utc_timestamp(),
+                completed_at=utc_timestamp(),
+            )
+        else:
+            verification = self._run_bootstrap_verifiers(
+                spec=frozen.spec,
+                workspace=task.workspace,
+                backend=frozen.spec.workspace.backend,
+                phase="workspace_relocation",
+                verifier_hashes=frozen.verifier_hashes,
+                log_dir=(
+                    self._run_dir(run.run_id)
+                    / "bootstrap"
+                    / "workspace-relocation"
+                ),
+                source_artifact_ref=candidate_artifact,
+                candidate_id=task.candidate_id,
+            )
+            candidate_artifact_after = provider.current_artifact(task.workspace)
+            candidate_status = provider.status(
+                task.workspace,
+                ignore_runtime_noise=True,
+            )
+            postcheck_results = list(verification.verifier_results)
+            if candidate_artifact_after != run.source_artifact_ref:
+                postcheck_results.append(
+                    BootstrapVerifierResult(
+                        name="source_artifact_check_after_verifier",
+                        role=VerifierRole.ANTI_CHEAT_GATE,
+                        passed=False,
+                        score=0.0,
+                        metrics={
+                            "expected": (
+                                run.source_artifact_ref.model_dump(mode="json")
+                                if run.source_artifact_ref is not None
+                                else None
+                            ),
+                            "actual": (
+                                candidate_artifact_after.model_dump(mode="json")
+                                if candidate_artifact_after is not None
+                                else None
+                            ),
+                        },
+                        failure_class="FrozenSourceChanged",
+                    )
+                )
+            if candidate_status:
+                postcheck_results.append(
+                    BootstrapVerifierResult(
+                        name="workspace_clean_check_after_verifier",
+                        role=VerifierRole.ANTI_CHEAT_GATE,
+                        passed=False,
+                        score=0.0,
+                        metrics={"git_status": candidate_status},
+                        failure_class="VerifierWorkspaceSideEffect",
+                    )
+                )
+            if len(postcheck_results) != len(verification.verifier_results):
+                verification = verification.model_copy(
+                    update={
+                        "passed": False,
+                        "aggregate_score": 0.0,
+                        "verifier_results": postcheck_results,
+                        "source_artifact_ref": candidate_artifact_after,
+                    }
+                )
+
+        run.workspace_bootstrap_verification = verification
+        if verification.passed:
+            self._write_run(run)
+            return
+
+        run.state = RunState.ABORTED
+        run.invalidated_at = utc_timestamp()
+        run.invalidation_reason = "verifier_target_mismatch"
+        run.invalidation_summary = (
+            "The verifier passed in origin but failed in the first materialized "
+            "candidate workspace."
+        )
+        run.invalidation_evidence = [verification.model_dump(mode="json")]
+        self._write_run(run)
+        failed = next(
+            (
+                result
+                for result in verification.verifier_results
+                if not result.passed
+            ),
+            None,
+        )
+        detail = (
+            f" {failed.name}: {failed.failure_class}." if failed is not None else ""
+        )
+        raise RuntimeError(
+            "WorkspaceRelocationVerifierFailed: verifier behavior in candidate "
+            f"{task.candidate_id} did not match origin.{detail}"
+        )
 
     def start_agent_session(
         self,
@@ -1564,6 +2135,12 @@ class FileSearchRuntime:
                     None,
                 )
                 if session is not None:
+                    if (
+                        session.directive == normalized_directive
+                        and worker_agent_type_override is None
+                        and worker_budget_override is None
+                    ):
+                        return session
                     expected_launch = self._build_launch_payload(
                         frozen=frozen,
                         candidate_id=candidate_id,
@@ -1811,6 +2388,11 @@ class FileSearchRuntime:
             "score": iteration.score,
             "process_passed": iteration.process_passed,
             "git_head": iteration.git_head,
+            "artifact_ref": (
+                iteration.artifact_ref.model_dump(mode="json")
+                if iteration.artifact_ref is not None
+                else None
+            ),
             "attempt_base_git_head": iteration.attempt_base_git_head,
             "attempt_changed_files": list(iteration.attempt_changed_files),
             "failure_class": iteration.failure_class,
@@ -1820,6 +2402,11 @@ class FileSearchRuntime:
             "restored_to_git_head": iteration.restored_to_git_head,
             "workspace_git_head_after_settlement": (
                 iteration.workspace_git_head_after_settlement
+            ),
+            "workspace_artifact_after_settlement": (
+                iteration.workspace_artifact_after_settlement.model_dump(mode="json")
+                if iteration.workspace_artifact_after_settlement is not None
+                else None
             ),
             "created_at": iteration.created_at,
         }
@@ -1867,7 +2454,10 @@ class FileSearchRuntime:
                     ),
                 }
             )
-        results_were_initialized = candidate_record.results_ledger_git_head is not None
+        results_were_initialized = bool(
+            candidate_record.results_ledger_artifact_ref
+            or candidate_record.results_ledger_git_head
+        )
         results_tsv = self._ensure_results_tsv(
             candidate_record,
             frozen.spec.metric_name,
@@ -1904,6 +2494,17 @@ class FileSearchRuntime:
             ),
             "directive": session.directive,
             "workspace": str(session.workspace),
+            "workspace_access": candidate_record.task.workspace_access.model_dump(
+                mode="json"
+            ),
+            "reference_workspaces": [
+                reference.model_dump(mode="json")
+                for reference in self._load_reference_workspaces(
+                    session.run_id,
+                    requester_agent_session_id=session.agent_session_id,
+                    open_only=True,
+                )
+            ],
             "objective": frozen.spec.objective,
             "metric_name": frozen.spec.metric_name,
             "metric_direction": frozen.spec.metric_direction,
@@ -1941,8 +2542,8 @@ class FileSearchRuntime:
                     "git_head": self._git_head(candidate_record.task.workspace),
                     "git_status": workspace_status,
                     "dirty": bool(workspace_status),
-                    "changed_files": self._detect_changed_files(
-                        Path(run.source_path), candidate_record.task.workspace
+                    "changed_files": self._candidate_changed_files(
+                        run, candidate_record
                     ),
                 },
             },
@@ -1978,6 +2579,11 @@ class FileSearchRuntime:
                     candidate_id=str(entry["candidate_id"]),
                     iteration=int(entry["iteration"]),
                     commit=str(entry["commit"]),
+                    artifact_ref=(
+                        ArtifactRef.model_validate(entry["artifact_ref"])
+                        if entry.get("artifact_ref") is not None
+                        else None
+                    ),
                     view_created_at=str(entry["view_created_at"]),
                     supplemental_evaluation_present=(
                         bool(entry.get("supplemental_available"))
@@ -2028,6 +2634,124 @@ class FileSearchRuntime:
             )
         self._kick_evidence_annotator(session.run_id)
         return view
+
+    def open_reference_workspace(
+        self,
+        agent_session_id: str,
+        source_candidate_id: str,
+        source_iteration: int,
+    ) -> ReferenceWorkspaceRecord:
+        """Check out one exact settled artifact in the worker's ref-workspace."""
+        candidate_id = source_candidate_id
+        iteration = source_iteration
+        session = self._load_agent_session_by_id(agent_session_id)
+        with self._run_transaction(session.run_id):
+            session = self._load_agent_session_by_id(
+                agent_session_id,
+                run_id=session.run_id,
+            )
+            run = self._load_run(session.run_id)
+            frozen = self._load_frozen_spec(run.frozen_spec_id)
+            if (
+                self._global_evidence_mode(frozen.spec.strategy.config)
+                == "independent"
+                and candidate_id != session.candidate_id
+            ):
+                raise PermissionError(
+                    "independent Global Evidence only exposes the caller's candidate"
+                )
+            source = self._load_candidate_record(session.run_id, candidate_id)
+            evidence = next(
+                (
+                    item
+                    for item in source.iterations
+                    if item.iteration == iteration
+                    and item.agent_session_id is not None
+                ),
+                None,
+            )
+            if evidence is None:
+                raise ValueError("settled worker Evidence iteration not found")
+            artifact_ref = evidence.artifact_ref
+            if artifact_ref is None and evidence.git_head is not None:
+                artifact_ref = ArtifactRef(
+                    kind="git_commit",
+                    id=evidence.git_head,
+                    provider=source.task.workspace_backend,
+                )
+            if artifact_ref is None:
+                raise RuntimeError("Evidence iteration has no immutable artifact")
+
+            identity = canonical_json({"requester": session.agent_session_id})
+            reference_id = f"ref_{sha256_text(identity)[:16]}"
+            display_name = "ref-workspace"
+            destination = (
+                self._run_dir(session.run_id)
+                / "reference-workspaces"
+                / session.agent_session_id
+                / display_name
+            )
+            for previous in self._load_reference_workspaces(
+                session.run_id,
+                requester_agent_session_id=session.agent_session_id,
+                open_only=True,
+            ):
+                previous_source = self._load_candidate_record(
+                    session.run_id,
+                    previous.source_candidate_id,
+                )
+                available = previous.access.root is not None and previous.access.root.is_dir()
+                clean = False
+                if previous.access.root is not None:
+                    clean = get_workspace_provider(
+                        previous.workspace_backend
+                    ).remove_reference(
+                        previous_source.task.workspace,
+                        previous.artifact_ref,
+                        previous.access.root,
+                    )
+                if previous.reference_id != reference_id:
+                    self._write_reference_workspace(
+                        previous.model_copy(
+                            update={
+                                "state": "closed",
+                                "integrity_status": (
+                                    "unavailable"
+                                    if not available
+                                    else "clean"
+                                    if clean
+                                    else "contaminated"
+                                ),
+                                "closed_at": utc_timestamp(),
+                            }
+                        )
+                    )
+            provider = get_workspace_provider(source.task.workspace_backend)
+            reference_root = provider.materialize_reference(
+                source.task.workspace,
+                artifact_ref,
+                destination,
+            )
+            record = ReferenceWorkspaceRecord(
+                reference_id=reference_id,
+                run_id=session.run_id,
+                requester_agent_session_id=session.agent_session_id,
+                source_candidate_id=candidate_id,
+                source_iteration=iteration,
+                artifact_ref=artifact_ref,
+                display_name=display_name,
+                workspace_backend=source.task.workspace_backend,
+                access=ReferenceWorkspaceAccess(
+                    kind="filesystem_path",
+                    root=reference_root,
+                    readonly_contract="soft_detected",
+                ),
+                state="open",
+                integrity_status="clean",
+                created_at=utc_timestamp(),
+            )
+            self._write_reference_workspace(record)
+            return record
 
     def get_evidence_detail(
         self,
@@ -2089,6 +2813,11 @@ class FileSearchRuntime:
                 candidate_id=candidate_id,
                 iteration=iteration,
                 commit=str(entry["commit"]),
+                artifact_ref=(
+                    ArtifactRef.model_validate(entry["artifact_ref"])
+                    if entry.get("artifact_ref") is not None
+                    else None
+                ),
             )
             self._write_agent_session(
                 session.model_copy(
@@ -2333,11 +3062,11 @@ class FileSearchRuntime:
             if (
                 run.state != RunState.READY_TO_PROMOTE
                 or run.selected_candidate_id != candidate_id
-                or not run.selected_git_head
+                or not (run.selected_artifact_ref or run.selected_git_head)
             ):
                 raise RuntimeError(
                     "promotion verification requires the candidate and immutable "
-                    "Git revision selected by search_select"
+                    "artifact selected by search_select"
                 )
 
         session: AgentSessionRecord | None = None
@@ -2356,7 +3085,7 @@ class FileSearchRuntime:
 
         if scope == "process":
             outer_deadline = self._outer_deadline_epoch(
-                os.environ.get(OUTER_DEADLINE_ENV)
+                self._outer_deadline_value(run_id)
             )
             if outer_deadline is not None:
                 verifier_seconds = sum(
@@ -2383,50 +3112,65 @@ class FileSearchRuntime:
                         f"{closeout_seconds:.1f}s"
                     )
 
-        results_were_initialized = record.results_ledger_git_head is not None
+        results_were_initialized = bool(
+            record.results_ledger_artifact_ref or record.results_ledger_git_head
+        )
         self._ensure_results_tsv(record, frozen.spec.metric_name)
         if not results_were_initialized:
             self._write_candidate_record(run_id, record)
         pre_attempt_settled_head = record.results_ledger_git_head
+        pre_attempt_artifact_ref = record.results_ledger_artifact_ref
+        if pre_attempt_artifact_ref is None and pre_attempt_settled_head is not None:
+            pre_attempt_artifact_ref = ArtifactRef(
+                kind="git_commit",
+                id=pre_attempt_settled_head,
+                provider=record.task.workspace_backend,
+            )
 
         try:
             state = self._candidate_artifact_state(run, frozen, record)
             self._apply_candidate_artifact_state(record, state)
             if scope == "process":
-                attempt_git_head = self._commit_workspace_iteration(
-                    record.task.workspace,
+                attempt_artifact_ref = self._commit_workspace_iteration(
+                    record,
                     (
                         f"search verifier iteration "
                         f"{candidate_id}:{len(record.iterations) + 1}"
                     ),
                 )
-                if attempt_git_head is None or pre_attempt_settled_head is None:
+                attempt_git_head = (
+                    attempt_artifact_ref.id
+                    if attempt_artifact_ref is not None
+                    and attempt_artifact_ref.kind == "git_commit"
+                    else None
+                )
+                if attempt_artifact_ref is None or pre_attempt_artifact_ref is None:
                     raise RuntimeError(
-                        "candidate verifier requires a committed attempt and settled head"
+                        "candidate verifier requires immutable attempt and settled artifacts"
                     )
-                if self._git_returncode(
+                provider = get_workspace_provider(record.task.workspace_backend)
+                if not provider.is_descendant(
                     record.task.workspace,
-                    [
-                        "git",
-                        "merge-base",
-                        "--is-ancestor",
-                        pre_attempt_settled_head,
-                        attempt_git_head,
-                    ],
-                ) != 0:
+                    pre_attempt_artifact_ref,
+                    attempt_artifact_ref,
+                ):
                     raise RuntimeError(
-                        "candidate Git history diverged from the settled results ledger"
+                        "candidate artifact history diverged from the settled results ledger"
                     )
-                attempt_changed_files = self._git_changed_files(
+                attempt_changed_files = provider.changed_files(
                     record.task.workspace,
-                    pre_attempt_settled_head,
-                    attempt_git_head,
+                    pre_attempt_artifact_ref,
+                    attempt_artifact_ref,
+                    self._candidate_git_pathspecs(),
                 )
                 state = self._candidate_artifact_state(run, frozen, record)
                 self._apply_candidate_artifact_state(record, state)
-                if state.git_head != attempt_git_head or not state.git_artifact_clean:
+                if (
+                    state.artifact_ref != attempt_artifact_ref
+                    or not state.artifact_clean
+                ):
                     raise RuntimeError(
-                        "candidate attempt is not fully captured by its Git commit"
+                        "candidate attempt is not fully captured by its artifact"
                     )
 
             precheck = self._precheck_candidate(frozen, record)
@@ -2450,6 +3194,7 @@ class FileSearchRuntime:
                     report=report,
                     attempt=state,
                     pre_attempt_settled_head=pre_attempt_settled_head,
+                    pre_attempt_settled_artifact_ref=pre_attempt_artifact_ref,
                     attempt_changed_files=attempt_changed_files,
                     hypothesis=hypothesis,
                     agent_session_id=agent_session_id,
@@ -2473,6 +3218,8 @@ class FileSearchRuntime:
                     candidate_id=candidate_id,
                     selected_git_head=run.selected_git_head,
                     git_head=run.selected_git_head,
+                    selected_artifact_ref=run.selected_artifact_ref,
+                    artifact_ref=state.artifact_ref,
                     artifact_hash=state.artifact_hash,
                     passed=bool(report.promotion_passed),
                     created_at=utc_timestamp(),
@@ -2652,6 +3399,7 @@ class FileSearchRuntime:
         report: ScoreReport,
         attempt: _CandidateArtifactState,
         pre_attempt_settled_head: str | None,
+        pre_attempt_settled_artifact_ref: ArtifactRef | None,
         attempt_changed_files: list[str],
         hypothesis: str | None,
         agent_session_id: str | None,
@@ -2666,7 +3414,7 @@ class FileSearchRuntime:
                 raise RuntimeError(
                     "parent process verifier cannot settle a candidate with pending tool copies"
                 )
-            prior_best = self._best_git_iteration_record(
+            prior_best = self._best_artifact_iteration_record(
                 record,
                 frozen.spec.metric_direction,
             )
@@ -2747,7 +3495,11 @@ class FileSearchRuntime:
                 process_passed=report.process_passed,
                 git_head=attempt.git_head,
                 attempt_base_git_head=pre_attempt_settled_head,
+                artifact_ref=attempt.artifact_ref,
+                attempt_base_artifact_ref=pre_attempt_settled_artifact_ref,
                 attempt_changed_files=attempt_changed_files,
+                artifact_clean=attempt.artifact_clean,
+                artifact_status=attempt.artifact_status,
                 git_artifact_clean=attempt.git_artifact_clean,
                 git_status=attempt.git_status,
                 failure_class=failure_class,
@@ -2807,30 +3559,45 @@ class FileSearchRuntime:
             if disposition in {"keep", "retain"}:
                 best_iteration = iteration
             else:
-                target = (
-                    prior_best.git_head
+                target_artifact_ref = (
+                    prior_best.artifact_ref
                     if prior_best is not None
-                    else pre_attempt_settled_head
+                    else pre_attempt_settled_artifact_ref
                 )
-                if target is None:
+                if (
+                    target_artifact_ref is None
+                    and prior_best is not None
+                    and prior_best.git_head is not None
+                ):
+                    target_artifact_ref = ArtifactRef(
+                        kind="git_commit",
+                        id=prior_best.git_head,
+                        provider=record.task.workspace_backend,
+                    )
+                if target_artifact_ref is None:
                     raise RuntimeError("candidate rollback has no restoration target")
                 iteration.restored_to_iteration = (
                     prior_best.iteration if prior_best is not None else None
                 )
-                iteration.restored_to_git_head = target
-                self._restore_candidate_artifact(
+                iteration.restored_to_git_head = (
+                    target_artifact_ref.id
+                    if target_artifact_ref.kind == "git_commit"
+                    else None
+                )
+                restored_artifact_ref = self._restore_candidate_artifact(
                     record,
                     frozen.spec.metric_name,
-                    target,
+                    target_artifact_ref,
                     (
                         f"goal-plus restore {candidate_id} best after "
                         f"iteration {iteration_number}"
                     ),
                 )
+                iteration.restored_to_artifact_ref = restored_artifact_ref
                 best_iteration = prior_best
 
             settled = self._candidate_artifact_state(run, frozen, record)
-            if not settled.git_artifact_clean:
+            if not settled.artifact_clean:
                 raise RuntimeError("candidate artifact is dirty after settlement")
             if (
                 best_iteration is not None
@@ -2844,6 +3611,7 @@ class FileSearchRuntime:
                 source_candidate_id=candidate_id,
                 iteration=iteration_number,
                 git_head=attempt.git_head,
+                artifact_ref=attempt.artifact_ref,
                 metric_name=frozen.spec.metric_name,
                 score=report.aggregate_score,
                 status="pass" if report.process_passed else "fail",
@@ -2858,6 +3626,11 @@ class FileSearchRuntime:
             )
             iteration.ledger_git_head = ledger_git_head
             iteration.workspace_git_head_after_settlement = ledger_git_head
+            ledger_artifact_ref = ledger_entry.ledger_artifact_ref
+            if ledger_artifact_ref is not None:
+                iteration.ledger_artifact_ref = ledger_artifact_ref
+                iteration.workspace_artifact_after_settlement = ledger_artifact_ref
+                record.results_ledger_artifact_ref = ledger_artifact_ref
             record.iterations.append(iteration)
             if pending_tool_copies:
                 consumed = {item.receipt_id for item in pending_tool_copies}
@@ -2877,6 +3650,14 @@ class FileSearchRuntime:
                         best_iteration.git_head if best_iteration is not None else None
                     ),
                     "workspace_git_head_after_settlement": ledger_git_head,
+                    "best_artifact_ref": (
+                        best_iteration.artifact_ref
+                        if best_iteration is not None
+                        else None
+                    ),
+                    "workspace_artifact_after_settlement": (
+                        iteration.workspace_artifact_after_settlement
+                    ),
                     "shared_tool_staged_entries": iteration.shared_tool_staged_entries,
                     "shared_tool_staged_file_count": iteration.shared_tool_staged_file_count,
                     "shared_tool_staged_bytes": iteration.shared_tool_staged_bytes,
@@ -2891,7 +3672,7 @@ class FileSearchRuntime:
             record.status = "evaluated"
             record.score_report = report
             if record.promotion_evidence and (
-                record.promotion_evidence.git_head != report.best_git_head
+                record.promotion_evidence.artifact_ref != report.best_artifact_ref
                 or record.promotion_evidence.artifact_hash != settled.artifact_hash
             ):
                 record.promotion_report = None
@@ -2977,19 +3758,25 @@ class FileSearchRuntime:
         selected_score: float | None = None
         selected_record: CandidateRecord | None = None
         selected_iteration: int | None = None
+        selected_artifact_ref: ArtifactRef | None = None
         selected_git_head: str | None = None
         final_report: ScoreReport | None = None
         selection_evidence_source = "parent_verifier"
-        for option_score, option_record, option_iteration, option_git_head in ranked:
+        for (
+            option_score,
+            option_record,
+            option_iteration,
+            option_artifact_ref,
+        ) in ranked:
             option_record = self._load_candidate_record(
                 run_id,
                 option_record.candidate_id,
             )
-            if option_git_head:
+            if option_artifact_ref:
                 self._restore_candidate_artifact(
                     option_record,
                     frozen.spec.metric_name,
-                    option_git_head,
+                    option_artifact_ref,
                     (
                         f"goal-plus select {option_record.candidate_id} "
                         f"iteration {option_iteration}"
@@ -3000,7 +3787,14 @@ class FileSearchRuntime:
                     iteration
                     for iteration in option_record.iterations
                     if iteration.iteration == option_iteration
-                    and iteration.git_head == option_git_head
+                    and (
+                        iteration.artifact_ref == option_artifact_ref
+                        or (
+                            iteration.artifact_ref is None
+                            and option_artifact_ref is not None
+                            and iteration.git_head == option_artifact_ref.id
+                        )
+                    )
                     and iteration.agent_session_id is not None
                 ),
                 None,
@@ -3008,14 +3802,20 @@ class FileSearchRuntime:
             current = self._candidate_artifact_state(run, frozen, option_record)
             if (
                 worker_iteration is not None
-                and self._git_iteration_eligible(worker_iteration)
+                and self._artifact_iteration_eligible(worker_iteration)
                 and worker_iteration.artifact_hash == current.artifact_hash
-                and current.git_artifact_clean
+                and current.artifact_clean
             ):
                 selected_score = option_score
                 selected_record = option_record
                 selected_iteration = option_iteration
-                selected_git_head = option_git_head
+                selected_artifact_ref = option_artifact_ref
+                selected_git_head = (
+                    option_artifact_ref.id
+                    if option_artifact_ref is not None
+                    and option_artifact_ref.kind == "git_commit"
+                    else None
+                )
                 selection_evidence_source = "worker_evidence"
                 break
             report = self.run_verifier(run_id, option_record.candidate_id)
@@ -3023,7 +3823,13 @@ class FileSearchRuntime:
                 selected_score = report.aggregate_score
                 selected_record = option_record
                 selected_iteration = option_iteration
-                selected_git_head = option_git_head
+                selected_artifact_ref = option_artifact_ref
+                selected_git_head = (
+                    option_artifact_ref.id
+                    if option_artifact_ref is not None
+                    and option_artifact_ref.kind == "git_commit"
+                    else None
+                )
                 final_report = report
                 break
 
@@ -3034,8 +3840,8 @@ class FileSearchRuntime:
             )
             raise RuntimeError("no selected candidate has passing verification")
 
-        selected_changed_files = self._detect_changed_files(
-            Path(run.source_path), selected_record.task.workspace
+        selected_changed_files = self._candidate_changed_files(
+            run, selected_record, selected_artifact_ref
         )
         selected_artifact_hash = self._artifact_hash(
             selected_record.task.workspace,
@@ -3051,6 +3857,7 @@ class FileSearchRuntime:
             run.selected_score = selected_score
             run.selected_iteration = selected_iteration
             run.selected_git_head = selected_git_head
+            run.selected_artifact_ref = selected_artifact_ref
             run.selected_artifact_hash = selected_artifact_hash
             run.budget_used.pop("selection_blocked_reason", None)
             selected_record = self._load_candidate_record(
@@ -3061,8 +3868,15 @@ class FileSearchRuntime:
                     iteration
                     for iteration in selected_record.iterations
                     if iteration.iteration == selected_iteration
-                    and iteration.git_head == selected_git_head
-                    and self._git_iteration_eligible(iteration)
+                    and (
+                        iteration.artifact_ref == selected_artifact_ref
+                        or (
+                            iteration.artifact_ref is None
+                            and selected_artifact_ref is not None
+                            and iteration.git_head == selected_artifact_ref.id
+                        )
+                    )
+                    and self._artifact_iteration_eligible(iteration)
                 ),
                 None,
             )
@@ -3078,15 +3892,20 @@ class FileSearchRuntime:
             "selected_score": selected_score,
             "selected_iteration": selected_iteration,
             "selected_git_head": selected_git_head,
+            "selected_artifact_ref": (
+                run.selected_artifact_ref.model_dump(mode="json")
+                if run.selected_artifact_ref is not None
+                else None
+            ),
             "selected_artifact_hash": selected_artifact_hash,
             "selection_basis_score": (
                 next(
                     (
                         score
-                        for score, record, iteration, git_head in ranked
+                        for score, record, iteration, artifact_ref in ranked
                         if record.candidate_id == selected_record.candidate_id
                         and iteration == selected_iteration
-                        and git_head == selected_git_head
+                        and artifact_ref == selected_artifact_ref
                     ),
                     selected_score,
                 )
@@ -3167,11 +3986,41 @@ class FileSearchRuntime:
                 f"{self._markdown_cell(canonical_json(run.invalidation_evidence))}"
             ),
             "",
-            "## Strategy Plans",
+            "## Bootstrap Verification",
             "",
-            "| Plan | Status | Strategy | Orchestration | Requested | Planned | Started Candidates | Trace |",
-            "|---|---|---|---|---:|---:|---|---|",
+            "Bootstrap checks are control-plane gates. They are not candidate "
+            "iterations and do not participate in ranking.",
+            "",
+            "| Phase | Backend | Candidate | Passed | Score | Source Artifact | Verifiers |",
+            "|---|---|---|---|---:|---|---|",
         ]
+        for verification in [
+            frozen.origin_verification,
+            run.workspace_bootstrap_verification,
+        ]:
+            if verification is None:
+                continue
+            artifact = verification.source_artifact_ref
+            verifier_summary = ", ".join(
+                f"{result.name}={'pass' if result.passed else 'fail'}"
+                for result in verification.verifier_results
+            )
+            lines.append(
+                f"| `{verification.phase}` | `{verification.backend}` | "
+                f"`{verification.candidate_id or ''}` | {verification.passed} | "
+                f"{'' if verification.aggregate_score is None else verification.aggregate_score} | "
+                f"{self._markdown_cell(artifact.id if artifact is not None else '')} | "
+                f"{self._markdown_cell(verifier_summary)} |"
+            )
+        lines.extend(
+            [
+                "",
+                "## Strategy Plans",
+                "",
+                "| Plan | Status | Strategy | Orchestration | Requested | Planned | Started Candidates | Trace |",
+                "|---|---|---|---|---:|---:|---|---|",
+            ]
+        )
         for plan in plans:
             trace = plan.strategy_trace.get("reason") or plan.strategy_trace.get("selection_rule") or ""
             lines.append(
@@ -3376,14 +4225,21 @@ class FileSearchRuntime:
             raise RuntimeError(message)
 
         record = self._load_candidate_record(run_id, candidate_id)
-        if not run.selected_git_head:
+        selected_artifact_ref = run.selected_artifact_ref
+        if selected_artifact_ref is None and run.selected_git_head is not None:
+            selected_artifact_ref = ArtifactRef(
+                kind="git_commit",
+                id=run.selected_git_head,
+                provider=record.task.workspace_backend,
+            )
+        if selected_artifact_ref is None:
             reject_promotion(
-                "cannot promote candidate without an immutable selected Git revision"
+                "cannot promote candidate without an immutable selected artifact"
             )
         current = self._candidate_artifact_state(run, frozen, record)
         if run.selected_artifact_hash is not None and (
             current.artifact_hash != run.selected_artifact_hash
-            or not current.git_artifact_clean
+            or not current.artifact_clean
         ):
             reject_promotion(
                 "cannot promote candidate because the selected artifact changed"
@@ -3391,7 +4247,7 @@ class FileSearchRuntime:
         self._restore_candidate_artifact(
             record,
             frozen.spec.metric_name,
-            run.selected_git_head,
+            selected_artifact_ref,
             f"goal-plus promote {candidate_id} selected revision",
         )
         selected = self._candidate_artifact_state(run, frozen, record)
@@ -3411,8 +4267,14 @@ class FileSearchRuntime:
                 iteration
                 for iteration in record.iterations
                 if iteration.iteration == run.selected_iteration
-                and iteration.git_head == run.selected_git_head
-                and self._git_iteration_eligible(iteration)
+                and (
+                    iteration.artifact_ref == selected_artifact_ref
+                    or (
+                        iteration.artifact_ref is None
+                        and iteration.git_head == run.selected_git_head
+                    )
+                )
+                and self._artifact_iteration_eligible(iteration)
                 and iteration.artifact_hash == selected.artifact_hash
             ),
             None,
@@ -3436,8 +4298,8 @@ class FileSearchRuntime:
             )
             run = self._load_run(run_id)
             record = self._load_candidate_record(run_id, candidate_id)
-            detected_changed = self._detect_changed_files(
-                Path(run.source_path), record.task.workspace
+            detected_changed = self._candidate_changed_files(
+                run, record, selected_artifact_ref
             )
             artifact_hash = self._artifact_hash(
                 record.task.workspace, detected_changed
@@ -3447,8 +4309,8 @@ class FileSearchRuntime:
             evidence_is_current = bool(
                 evidence
                 and evidence.candidate_id == candidate_id
-                and evidence.selected_git_head == run.selected_git_head
-                and evidence.git_head == run.selected_git_head
+                and evidence.selected_artifact_ref == selected_artifact_ref
+                and evidence.artifact_ref == selected.artifact_ref
                 and evidence.artifact_hash == artifact_hash
                 and evidence.artifact_hash == run.selected_artifact_hash
                 and evidence.passed
@@ -3464,13 +4326,90 @@ class FileSearchRuntime:
             promotion_dir = self._run_dir(run_id) / "promotion"
             promotion_dir.mkdir(parents=True, exist_ok=True)
             patch_path = promotion_dir / f"{candidate_id}.patch"
-            self._write_patch(
-                Path(run.source_path),
-                record.task.workspace,
-                run.selected_git_head,
-                detected_changed,
-                patch_path,
+            provider = get_workspace_provider(record.task.workspace_backend)
+            provider_native_promotion = bool(
+                run.source_artifact_ref is not None
+                and provider.capabilities.prepare_promotion
+                and (
+                    record.task.workspace_backend == "thinkthread"
+                    or run.source_repository is not None
+                )
             )
+            if provider_native_promotion:
+                assert run.source_artifact_ref is not None
+                prepared = provider.prepare_promotion(
+                    run_dir=self._run_dir(run_id),
+                    run_id=run_id,
+                    candidate_id=candidate_id,
+                    source=Path(run.source_path),
+                    workspace=record.task.workspace,
+                    source_subdir=run.source_subdir,
+                    base_artifact_ref=run.source_artifact_ref,
+                    selected_artifact_ref=selected_artifact_ref,
+                    changed_files=detected_changed,
+                )
+                if prepared.artifact_path is None:
+                    raise RuntimeError(
+                        "provider-native promotion did not produce an artifact"
+                    )
+                patch_path = prepared.artifact_path
+                run.promotion = PromotionRecord(
+                    promotion_id=f"promotion_{candidate_id}",
+                    run_id=run_id,
+                    candidate_id=candidate_id,
+                    provider=prepared.provider,
+                    strategy=prepared.strategy,
+                    promotion_mode=frozen.spec.workspace.promotion_mode,
+                    base_artifact_ref=prepared.base_artifact_ref,
+                    selected_artifact_ref=prepared.selected_artifact_ref,
+                    publication_artifact_ref=(
+                        prepared.publication_artifact_ref
+                    ),
+                    artifact_path=prepared.artifact_path,
+                    source_repository=prepared.source_repository,
+                    source_subdir=prepared.source_subdir,
+                    changed_files=list(prepared.changed_files),
+                    provider_handle=dict(prepared.provider_handle),
+                    apply_request_id=prepared.provider_handle.get(
+                        "apply_request_id"
+                    ),
+                    created_at=utc_timestamp(),
+                )
+            else:
+                if selected_artifact_ref.kind != "git_commit":
+                    raise RuntimeError(
+                        "promotion publication currently requires a supported "
+                        "provider artifact"
+                    )
+                self._write_patch(
+                    Path(run.source_path),
+                    record.task.workspace,
+                    selected_artifact_ref.id,
+                    detected_changed,
+                    patch_path,
+                )
+                base_ref = record.task.base_artifact_ref
+                if base_ref is None:
+                    base_ref = ArtifactRef(
+                        kind="git_commit",
+                        id=record.task.workspace_base_revision
+                        or selected_artifact_ref.id,
+                        provider=record.task.workspace_backend,
+                    )
+                run.promotion = PromotionRecord(
+                    promotion_id=f"promotion_{candidate_id}",
+                    run_id=run_id,
+                    candidate_id=candidate_id,
+                    provider=record.task.workspace_backend,
+                    strategy="legacy_patch",
+                    promotion_mode=frozen.spec.workspace.promotion_mode,
+                    base_artifact_ref=base_ref,
+                    selected_artifact_ref=selected_artifact_ref,
+                    artifact_path=patch_path,
+                    source_subdir=record.task.workspace_source_subdir,
+                    changed_files=detected_changed,
+                    created_at=utc_timestamp(),
+                )
             run.state = RunState.PROMOTED
             run.selected_candidate_id = candidate_id
             self._write_run(run)
@@ -3478,6 +4417,85 @@ class FileSearchRuntime:
         if report_path.exists() and not self._blocking_goal_report_records(run_id):
             self.report(run_id)
         return patch_path
+
+    def apply_promotion(self, run_id: str) -> PromotionRecord:
+        """Apply one prepared provider-native publication to its source root."""
+
+        with self._run_transaction(run_id):
+            run = self._load_run(run_id)
+            if run.state != RunState.PROMOTED or run.promotion is None:
+                raise RuntimeError("search_promote must prepare a promotion before apply")
+            promotion = run.promotion
+            if promotion.state == "applied":
+                return promotion
+            if promotion.promotion_mode == "artifact_only":
+                raise RuntimeError(
+                    "promotion is artifact-only; freeze the SearchSpec with "
+                    "workspace.promotion_mode='apply' to authorize source write-back"
+                )
+            if promotion.strategy == "legacy_patch":
+                raise RuntimeError(
+                    "legacy patch promotions remain export-only; apply the saved patch "
+                    "with its returned coordinates"
+                )
+            prepared = PreparedPromotion(
+                provider=promotion.provider,
+                strategy=promotion.strategy,
+                base_artifact_ref=promotion.base_artifact_ref,
+                selected_artifact_ref=promotion.selected_artifact_ref,
+                publication_artifact_ref=promotion.publication_artifact_ref,
+                artifact_path=promotion.artifact_path,
+                source_repository=promotion.source_repository,
+                source_subdir=promotion.source_subdir,
+                changed_files=tuple(promotion.changed_files),
+                provider_handle=promotion.provider_handle,
+            )
+            apply_started_at = utc_timestamp()
+            apply_started = time.perf_counter()
+            try:
+                result = get_workspace_provider(
+                    promotion.provider
+                ).apply_promotion(prepared)
+            except Exception as exc:
+                apply_timing = WorkspaceOperationTiming(
+                    started_at=apply_started_at,
+                    completed_at=utc_timestamp(),
+                    duration_seconds=max(0.0, time.perf_counter() - apply_started),
+                    outcome="failed",
+                )
+                run.promotion = promotion.model_copy(
+                    update={
+                        "state": "apply_failed",
+                        "apply_timing": apply_timing,
+                        "error": f"{type(exc).__name__}: {exc}"[:2000],
+                    }
+                )
+                self._write_run(run)
+                raise
+            apply_timing = WorkspaceOperationTiming(
+                started_at=apply_started_at,
+                completed_at=utc_timestamp(),
+                duration_seconds=max(0.0, time.perf_counter() - apply_started),
+                outcome="succeeded",
+            )
+            run.promotion = promotion.model_copy(
+                update={
+                    "state": "applied",
+                    "applied_source_revision": result.source_revision,
+                    "apply_result": dict(result.details),
+                    "apply_timing": apply_timing,
+                    "error": None,
+                    "applied_at": apply_timing.completed_at,
+                }
+            )
+            self._write_run(run)
+            return run.promotion
+
+    def promotion_record(self, run_id: str) -> PromotionRecord:
+        run = self._load_run(run_id)
+        if run.promotion is None:
+            raise RuntimeError("run has no prepared promotion")
+        return run.promotion
 
     def promotion_apply_coordinates(self, run_id: str) -> tuple[Path, Path, str]:
         run = self._load_run(run_id)
@@ -3520,6 +4538,22 @@ class FileSearchRuntime:
                 f"{strategy.worker_host} worker_host does not support strategy "
                 f"{strategy.name}; use default/agent_guided or random"
             )
+
+    @staticmethod
+    def _validate_host_workspace_backend(spec: SearchSpec) -> None:
+        host = spec.strategy.worker_host
+        backend = spec.workspace.backend
+        supported = (
+            get_agent_host_adapter(host).capabilities.supported_workspace_backends
+        )
+        if backend in supported:
+            return
+        supported_names = ", ".join(sorted(supported))
+        raise UnsupportedHostCapability(
+            f"{host} worker_host does not support workspace backend {backend!r}; "
+            f"supported backends: {supported_names}. Candidate checkout was "
+            "rejected before Search run creation."
+        )
 
     @staticmethod
     def _apply_global_evidence_mode_from_environment(spec: SearchSpec) -> SearchSpec:
@@ -3748,6 +4782,38 @@ class FileSearchRuntime:
             worker_budget=worker_budget,
         )
 
+    def _worker_budget_with_outer_deadline(
+        self,
+        run_id: str,
+        frozen: FrozenSpec,
+        worker_budget: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if worker_budget is None or worker_budget.get("max_runtime_seconds") is None:
+            return worker_budget
+        deadline_value = self._outer_deadline_value(run_id)
+        if deadline_value is None:
+            return worker_budget
+        deadline = self._outer_deadline_epoch(deadline_value)
+        if deadline is None:
+            raise RuntimeError(f"invalid {OUTER_DEADLINE_ENV} value")
+        reserve = float(
+            frozen.spec.strategy.config.get("closeout_reserve_seconds")
+            or frozen.spec.strategy.config.get("reserve_closeout_seconds")
+            or 0
+        )
+        available = deadline - time.time() - reserve
+        if available < 1:
+            raise RuntimeError(
+                "OuterDeadlineExceeded: no candidate worker can start after the "
+                "Goal Plus closeout boundary"
+            )
+        effective = dict(worker_budget)
+        effective["max_runtime_seconds"] = min(
+            int(worker_budget["max_runtime_seconds"]),
+            max(1, math.floor(available)),
+        )
+        return effective
+
     def _build_launch_payload(
         self,
         frozen: FrozenSpec,
@@ -3794,17 +4860,22 @@ class FileSearchRuntime:
         one_paragraph_idea = "; ".join(idea_lines)
 
         adapter = get_agent_host_adapter(frozen.spec.strategy.worker_host)
+        worker_budget = self._worker_budget_with_outer_deadline(
+            candidate_record.task.run_id,
+            frozen,
+            (
+                worker_budget_override
+                if worker_budget_override is not None
+                else self._candidate_worker_budget(frozen, candidate_record)
+            ),
+        )
         return adapter.build_launch_payload(
             worker_agent_type=worker_agent_type,
             candidate_id=candidate_id,
             agent_session_id=agent_session_id,
             short_intent=short_intent,
             one_paragraph_idea=one_paragraph_idea,
-            worker_budget=(
-                worker_budget_override
-                if worker_budget_override is not None
-                else self._candidate_worker_budget(frozen, candidate_record)
-            ),
+            worker_budget=worker_budget,
             worker_launch=self._candidate_worker_launch(frozen, candidate_record),
             root=str(self.root_dir),
             cwd=str(candidate_record.task.workspace),
@@ -3826,6 +4897,15 @@ class FileSearchRuntime:
         )
 
         adapter = get_agent_host_adapter(session.host)
+        worker_budget = self._worker_budget_with_outer_deadline(
+            candidate_record.task.run_id,
+            frozen,
+            (
+                worker_budget_override
+                if worker_budget_override is not None
+                else self._candidate_worker_budget(frozen, candidate_record)
+            ),
+        )
         return adapter.build_continue_payload(
             worker_agent_type=worker_agent_type,
             candidate_id=session.candidate_id,
@@ -3837,11 +4917,7 @@ class FileSearchRuntime:
             root=str(self.root_dir),
             cwd=str(candidate_record.task.workspace),
             worker_prompt=self._worker_prompt_for_host(session.host),
-            worker_budget=(
-                worker_budget_override
-                if worker_budget_override is not None
-                else self._candidate_worker_budget(frozen, candidate_record)
-            ),
+            worker_budget=worker_budget,
             worker_launch=self._candidate_worker_launch(frozen, candidate_record),
             host_metadata=session.host_handle.metadata,
         )
@@ -3976,6 +5052,8 @@ class FileSearchRuntime:
     ) -> CandidateTask:
         workspace = self._run_dir(run.run_id) / "workspace" / candidate_id
 
+        workspace_creation_started_at = utc_timestamp()
+        workspace_creation_started = time.perf_counter()
         materialization = materialize_candidate_workspace(
             backend=frozen.spec.workspace.backend,
             run_dir=self._run_dir(run.run_id),
@@ -3983,10 +5061,51 @@ class FileSearchRuntime:
             workspace=workspace,
             run_id=run.run_id,
             candidate_id=candidate_id,
+            base_revision=(
+                frozen.source_artifact_ref.id
+                if frozen.source_artifact_ref is not None
+                else None
+            ),
         )
+        workspace_creation_timing = WorkspaceOperationTiming(
+            started_at=workspace_creation_started_at,
+            completed_at=utc_timestamp(),
+            duration_seconds=max(
+                0.0,
+                time.perf_counter() - workspace_creation_started,
+            ),
+            outcome="succeeded",
+        )
+        if (
+            frozen.source_artifact_ref is not None
+            and materialization.base_revision != frozen.source_artifact_ref.id
+        ):
+            raise RuntimeError(
+                "FrozenSourceChanged: materialized candidate base revision "
+                f"{materialization.base_revision!r} does not match frozen source "
+                f"artifact {frozen.source_artifact_ref.id!r}"
+            )
+        if run.source_artifact_ref is None and materialization.base_revision is not None:
+            artifact_kind = (
+                "fs_snapshot"
+                if materialization.backend == "thinkthread"
+                else "git_commit"
+            )
+            run.source_artifact_ref = ArtifactRef(
+                kind=artifact_kind,
+                id=materialization.base_revision,
+                provider=materialization.backend,
+            )
+        run.source_subdir = materialization.source_subdir
+        repository_value = (materialization.provider_handle or {}).get(
+            "source_repository"
+        )
+        if repository_value:
+            run.source_repository = Path(repository_value)
+        workspace = materialization.workspace
         task_skill_paths = materialized_task_skill_paths(
             frozen,
-            materialization.workspace,
+            workspace,
         )
 
         instructions = [
@@ -3998,6 +5117,7 @@ class FileSearchRuntime:
             "每项实质变更后，及时使用当前 agent_session_id 调用 search_run_verifier，并用一句话 hypothesis 描述实际尝试；只有其返回结果会结算为正式 Evidence 并贡献给共享搜索。以 verifier 返回后的工作区状态为准，继续下一轮，不要自行恢复已结算状态。",
             "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
             "在分配的 host budget 内工作；收到用户停止、run 失效或 host 截止提示时及时收尾。",
+            "窄代码证据可以直接比较 commit；改动较大或需要浏览完整实现时，调用 search_reference_open 把该 Evidence checkout 到当前 agent 唯一的 ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的 reference commit；所有实现修改仍留在 candidate workspace。不要访问或 fetch peer 的真实工作区。",
         ]
         if "success_threshold" in frozen.spec.constraints:
             instructions.append(
@@ -4053,7 +5173,38 @@ class FileSearchRuntime:
             workspace_backend=materialization.backend,
             workspace_branch=materialization.branch,
             workspace_base_revision=materialization.base_revision,
+            workspace_managed_root=materialization.managed_root,
+            workspace_source_subdir=materialization.source_subdir,
+            workspace_provider_handle=dict(
+                materialization.provider_handle or {}
+            ),
+            workspace_creation_timing=workspace_creation_timing,
             task_skill_paths=task_skill_paths,
+            base_artifact_ref=(
+                ArtifactRef(
+                    kind=(
+                        "fs_snapshot"
+                        if materialization.backend == "thinkthread"
+                        else "git_commit"
+                    ),
+                    id=materialization.base_revision,
+                    provider=materialization.backend,
+                )
+                if materialization.base_revision is not None
+                else None
+            ),
+            workspace_access=WorkspaceAccess(
+                logical_root="workspace",
+                native_cwd=workspace,
+                bootstrap_required=frozen.spec.strategy.worker_host == "codex",
+                confinement="soft_path",
+                writable_surfaces=list(frozen.spec.edit_surface.allow),
+                managed_root=materialization.managed_root,
+                source_subdir=materialization.source_subdir,
+                provider_handle=dict(
+                    materialization.provider_handle or {}
+                ),
+            ),
             share_out_dir=share_out_dir,
             allowed_files=frozen.spec.edit_surface.allow,
             denied_files=frozen.spec.edit_surface.deny,
@@ -4182,6 +5333,10 @@ class FileSearchRuntime:
                     iteration=iteration.iteration if iteration else None,
                     git_head=git_head.strip() or None,
                     ledger_git_head=iteration.ledger_git_head if iteration else None,
+                    artifact_ref=(iteration.artifact_ref if iteration else None),
+                    ledger_artifact_ref=(
+                        iteration.ledger_artifact_ref if iteration else None
+                    ),
                     metric_name=metric_name,
                     score=score,
                     status=normalized_status,
@@ -4199,6 +5354,8 @@ class FileSearchRuntime:
                     iteration=iteration.iteration,
                     git_head=iteration.git_head,
                     ledger_git_head=iteration.ledger_git_head,
+                    artifact_ref=iteration.artifact_ref,
+                    ledger_artifact_ref=iteration.ledger_artifact_ref,
                     metric_name=metric_name,
                     score=iteration.score,
                     status="pass" if iteration.process_passed else "fail",
@@ -4232,6 +5389,8 @@ class FileSearchRuntime:
                     iteration=iteration.iteration,
                     git_head=iteration.git_head,
                     ledger_git_head=iteration.ledger_git_head,
+                    artifact_ref=iteration.artifact_ref,
+                    ledger_artifact_ref=iteration.ledger_artifact_ref,
                     metric_name=metric_name,
                     score=iteration.score,
                     status="pass" if iteration.process_passed else "fail",
@@ -4373,24 +5532,33 @@ class FileSearchRuntime:
         record: CandidateRecord,
         metric_name: str,
     ) -> Path:
-        if record.results_ledger_git_head is not None:
+        if (
+            record.results_ledger_artifact_ref is not None
+            or record.results_ledger_git_head is not None
+        ):
             return self._assert_results_tsv_unchanged(record, metric_name)
-        if not record.results_ledger and record.results_ledger_git_head is None:
+        if not record.results_ledger:
             record.results_ledger = self._read_results_tsv(record)
-        if record.results_ledger_git_head is None:
+        if record.results_ledger_artifact_ref is None:
             self._backfill_results_ledger_from_iterations(record, metric_name)
         path = self._results_tsv_path(record.task.workspace)
         write_text(path, self._render_results_tsv(record.results_ledger, metric_name))
         self._initialize_workspace_git_for_results(record.task.workspace)
-        ledger_git_head = self._commit_results_tsv(
-            record.task.workspace,
+        ledger_artifact_ref = self._commit_results_tsv(
+            record,
             f"goal-plus results ledger sync {record.candidate_id}",
         )
-        if ledger_git_head is None:
+        if ledger_artifact_ref is None:
             raise RuntimeError(
                 "ResultsLedgerCommitError: failed to commit workspace/results.tsv"
             )
+        ledger_git_head = (
+            ledger_artifact_ref.id
+            if ledger_artifact_ref.kind == "git_commit"
+            else None
+        )
         record.results_ledger_git_head = ledger_git_head
+        record.results_ledger_artifact_ref = ledger_artifact_ref
         self._assert_results_tsv_unchanged(record, metric_name)
         return path
 
@@ -4399,7 +5567,7 @@ class FileSearchRuntime:
         record: CandidateRecord,
         entry: ResultLedgerEntry,
         metric_name: str,
-    ) -> str:
+    ) -> str | None:
         path = self._assert_results_tsv_unchanged(record, metric_name)
         before = self._render_results_tsv(record.results_ledger, metric_name)
         after = self._render_results_tsv(
@@ -4414,21 +5582,28 @@ class FileSearchRuntime:
                 "one row without changing the existing workspace/results.tsv"
             )
         write_text(path, after)
-        ledger_git_head = self._commit_results_tsv(
-            record.task.workspace,
+        ledger_artifact_ref = self._commit_results_tsv(
+            record,
             (
                 f"goal-plus results ledger {record.candidate_id}:"
                 f"{entry.iteration or 'legacy'}"
             ),
         )
-        if ledger_git_head is None:
+        if ledger_artifact_ref is None:
             raise RuntimeError(
                 "ResultsLedgerCommitError: failed to commit the appended "
                 "workspace/results.tsv row"
             )
+        ledger_git_head = (
+            ledger_artifact_ref.id
+            if ledger_artifact_ref.kind == "git_commit"
+            else None
+        )
         entry.ledger_git_head = ledger_git_head
+        entry.ledger_artifact_ref = ledger_artifact_ref
         record.results_ledger.append(entry)
         record.results_ledger_git_head = ledger_git_head
+        record.results_ledger_artifact_ref = ledger_artifact_ref
         self._assert_results_tsv_unchanged(record, metric_name)
         return ledger_git_head
 
@@ -5052,16 +6227,26 @@ class FileSearchRuntime:
         record: CandidateRecord,
         iteration: IterationRecord,
     ) -> None:
-        if not self._git_iteration_eligible(iteration) or not iteration.artifact_hash:
-            raise RuntimeError("run best iteration is not Git-backed")
+        if not self._artifact_iteration_eligible(iteration) or not iteration.artifact_hash:
+            raise RuntimeError("run best iteration is not artifact-backed")
         workspace = record.task.workspace.resolve().relative_to(
             self._run_dir(run.run_id).resolve()
         )
+        artifact_ref = iteration.artifact_ref
+        if artifact_ref is None and iteration.git_head is not None:
+            artifact_ref = ArtifactRef(
+                kind="git_commit",
+                id=iteration.git_head,
+                provider=record.task.workspace_backend,
+            )
+        if artifact_ref is None:
+            raise RuntimeError("run best iteration has no artifact identity")
         best = BestArtifactRecord(
             run_id=run.run_id,
             candidate_id=record.candidate_id,
             iteration=iteration.iteration,
-            commit=str(iteration.git_head),
+            commit=(artifact_ref.id if artifact_ref.kind == "git_commit" else None),
+            artifact_ref=artifact_ref,
             score=float(iteration.score),
             metric_name=spec.metric_name,
             metric_direction=spec.metric_direction,
@@ -5175,13 +6360,19 @@ class FileSearchRuntime:
         )
 
     @staticmethod
-    def _git_iteration_eligible(iteration: IterationRecord) -> bool:
+    def _artifact_iteration_eligible(iteration: IterationRecord) -> bool:
+        identity_available = bool(iteration.artifact_ref or iteration.git_head)
+        artifact_clean = (
+            iteration.artifact_clean
+            if iteration.artifact_clean is not None
+            else iteration.git_artifact_clean
+        )
         return bool(
             iteration.process_passed is True
             and iteration.score is not None
             and math.isfinite(iteration.score)
-            and iteration.git_head
-            and iteration.git_artifact_clean is True
+            and identity_available
+            and artifact_clean is True
             and not iteration.touched_denied_files
             and not iteration.changed_outside_allowed
         )
@@ -5193,7 +6384,7 @@ class FileSearchRuntime:
         prior_best: IterationRecord | None,
         metric_direction: Literal["maximize", "minimize"],
     ) -> IterationDisposition:
-        if not cls._git_iteration_eligible(iteration):
+        if not cls._artifact_iteration_eligible(iteration):
             return "failure"
         if prior_best is None:
             return "keep"
@@ -5215,9 +6406,7 @@ class FileSearchRuntime:
         record: CandidateRecord,
         metric_direction: Literal["maximize", "minimize"],
     ) -> IterationRecord | None:
-        current_changed = self._detect_changed_files(
-            Path(run.source_path), record.task.workspace
-        )
+        current_changed = self._candidate_changed_files(run, record)
         current_artifact_hash = self._artifact_hash(
             record.task.workspace, current_changed
         )
@@ -5263,7 +6452,7 @@ class FileSearchRuntime:
             reverse=reverse,
         )[0]
 
-    def _best_git_iteration_record(
+    def _best_artifact_iteration_record(
         self,
         record: CandidateRecord,
         metric_direction: Literal["maximize", "minimize"],
@@ -5271,7 +6460,7 @@ class FileSearchRuntime:
         scored = [
             iteration
             for iteration in record.iterations
-            if self._git_iteration_eligible(iteration)
+            if self._artifact_iteration_eligible(iteration)
             and iteration.disposition not in {"discard", "failure"}
         ]
         if not scored:
@@ -5288,12 +6477,12 @@ class FileSearchRuntime:
         run: RunRecord,
         records: list[CandidateRecord],
         metric_direction: Literal["maximize", "minimize"],
-    ) -> list[tuple[float, CandidateRecord, int | None, str | None]]:
-        options: list[tuple[float, CandidateRecord, int | None, str | None]] = []
+    ) -> list[tuple[float, CandidateRecord, int | None, ArtifactRef | None]]:
+        options: list[
+            tuple[float, CandidateRecord, int | None, ArtifactRef | None]
+        ] = []
         for record in records:
-            current_changed = self._detect_changed_files(
-                Path(run.source_path), record.task.workspace
-            )
+            current_changed = self._candidate_changed_files(run, record)
             current_artifact_hash = self._artifact_hash(
                 record.task.workspace, current_changed
             )
@@ -5307,13 +6496,20 @@ class FileSearchRuntime:
                     or iteration.disposition in {"discard", "failure"}
                 ):
                     continue
-                if iteration.git_head and iteration.git_artifact_clean is True:
+                artifact_ref = iteration.artifact_ref
+                if artifact_ref is None and iteration.git_head is not None:
+                    artifact_ref = ArtifactRef(
+                        kind="git_commit",
+                        id=iteration.git_head,
+                        provider=record.task.workspace_backend,
+                    )
+                if artifact_ref and self._artifact_iteration_eligible(iteration):
                     options.append(
                         (
                             iteration.score,
                             record,
                             iteration.iteration,
-                            iteration.git_head,
+                            artifact_ref,
                         )
                     )
                 elif iteration.artifact_hash == current_artifact_hash:
@@ -5808,6 +7004,83 @@ class FileSearchRuntime:
                 changed.append(rel_path)
         return changed
 
+    def _candidate_changed_files(
+        self,
+        run: RunRecord,
+        record: CandidateRecord,
+        artifact_ref: ArtifactRef | None = None,
+    ) -> list[str]:
+        provider = get_workspace_provider(record.task.workspace_backend)
+        target = artifact_ref or provider.current_artifact(record.task.workspace)
+        base = run.source_artifact_ref
+        if (
+            record.task.workspace_backend == "git_worktree"
+            and base is not None
+            and target is not None
+            and base.provider == target.provider
+        ):
+            changed = provider.changed_files(
+                record.task.workspace,
+                base,
+                target,
+                self._candidate_git_pathspecs(),
+            )
+            logical_changes = [
+                path
+                for path in changed
+                if path != RESULTS_TSV_RELATIVE_PATH
+            ]
+            return sorted(
+                set(logical_changes)
+                | set(
+                    self._git_changes_outside_logical_workspace(
+                        record.task,
+                        base,
+                        target,
+                    )
+                )
+            )
+        return self._detect_changed_files(
+            Path(run.source_path), record.task.workspace
+        )
+
+    def _git_changes_outside_logical_workspace(
+        self,
+        task: CandidateTask,
+        base: ArtifactRef,
+        target: ArtifactRef,
+    ) -> list[str]:
+        managed_root = task.workspace_managed_root
+        source_subdir = task.workspace_source_subdir
+        if managed_root is None or source_subdir == ".":
+            return []
+        value = self._git_output(
+            managed_root,
+            [
+                "git",
+                "diff",
+                "--name-only",
+                "-z",
+                base.id,
+                target.id,
+                "--",
+                ".",
+            ],
+        )
+        source_prefix = f"{source_subdir.rstrip('/')}/"
+        parent_prefix = "../" * len(Path(source_subdir).parts)
+        outside: list[str] = []
+        for path in value.split("\0"):
+            if not path or path.startswith(source_prefix):
+                continue
+            candidate = Path(path)
+            if any(part in IGNORED_NAMES for part in candidate.parts):
+                continue
+            if any(candidate.name.endswith(suffix) for suffix in IGNORED_SUFFIXES):
+                continue
+            outside.append(f"{parent_prefix}{path}")
+        return outside
+
     def _candidate_artifact_state(
         self,
         run: RunRecord,
@@ -5815,7 +7088,7 @@ class FileSearchRuntime:
         record: CandidateRecord,
     ) -> _CandidateArtifactState:
         workspace = record.task.workspace
-        changed_files = self._detect_changed_files(Path(run.source_path), workspace)
+        changed_files = self._candidate_changed_files(run, record)
         touched_denied = any(
             path_matches(path, frozen.spec.edit_surface.deny)
             for path in changed_files
@@ -5827,18 +7100,29 @@ class FileSearchRuntime:
         max_changes = frozen.spec.edit_surface.max_file_changes
         if max_changes is not None and len(changed_files) > max_changes:
             outside_allowed = True
-        git_head = self._git_head(workspace)
+        provider = get_workspace_provider(record.task.workspace_backend)
+        artifact_ref = provider.current_artifact(workspace)
+        git_head = (
+            artifact_ref.id
+            if artifact_ref is not None and artifact_ref.kind == "git_commit"
+            else None
+        )
+        artifact_status = provider.status(workspace)
+        artifact_clean = artifact_ref is not None and not provider.status(
+            workspace,
+            ignore_runtime_noise=True,
+        )
         return _CandidateArtifactState(
             changed_files=changed_files,
             touched_denied_files=touched_denied,
             changed_outside_allowed=outside_allowed,
             artifact_hash=self._artifact_hash(workspace, changed_files),
+            artifact_ref=artifact_ref,
+            artifact_status=artifact_status,
+            artifact_clean=artifact_clean,
             git_head=git_head,
-            git_status=self._git_status(workspace),
-            git_artifact_clean=self._git_artifact_clean(
-                workspace,
-                git_head,
-            ),
+            git_status=artifact_status,
+            git_artifact_clean=artifact_clean if git_head is not None else False,
         )
 
     @staticmethod
@@ -5871,6 +7155,7 @@ class FileSearchRuntime:
         workspace: Path,
         *,
         ignore_runtime_noise: bool = False,
+        strict: bool = False,
     ) -> list[str]:
         command = ["git", "status", "--porcelain=v1", "--untracked-files=all"]
         if ignore_runtime_noise:
@@ -5888,9 +7173,91 @@ class FileSearchRuntime:
             command.extend(["--", ".", *exclusions])
         try:
             value = self._git_output(workspace, command)
-        except (FileNotFoundError, subprocess.CalledProcessError):
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            if strict:
+                detail = getattr(exc, "stderr", "") or str(exc)
+                raise RuntimeError(
+                    "SourceGitPreflightFailed: could not inspect the source Git "
+                    f"repository at {workspace}: {detail.strip()}"
+                ) from exc
             return []
         return [line for line in value.splitlines() if line.strip()]
+
+    def _validate_clean_source_repository(self, spec: SearchSpec) -> None:
+        if spec.workspace.backend not in {"git_worktree", "thinkthread"}:
+            return
+
+        source = Path(spec.source_path).resolve()
+        probe = source if source.is_dir() else source.parent
+        try:
+            repository_text = self._git_output(
+                probe,
+                ["git", "rev-parse", "--show-toplevel"],
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "SourceGitPreflightFailed: Git is required for workspace backend "
+                f"{spec.workspace.backend!r}"
+            ) from exc
+        except subprocess.CalledProcessError:
+            # Plain directories keep the existing synthetic Git baseline path.
+            return
+
+        repository = Path(repository_text.strip()).resolve()
+        status = self._git_status(
+            repository,
+            ignore_runtime_noise=True,
+            strict=True,
+        )
+        if not status:
+            return
+
+        preview_limit = 10
+        preview = "; ".join(status[:preview_limit])
+        remaining = len(status) - preview_limit
+        suffix = f"; ... and {remaining} more" if remaining > 0 else ""
+        raise ValueError(
+            "DirtySourceWorkspace: workspace backend "
+            f"{spec.workspace.backend!r} requires a clean Git HEAD, but "
+            f"{repository} has {len(status)} staged, unstaged, or non-ignored "
+            f"untracked path(s): {preview}{suffix}. Commit, stash, remove, or "
+            "ignore those paths before freezing the SearchSpec. To intentionally "
+            "snapshot the current filesystem, use workspace.backend='copy' with "
+            "promotion_mode='artifact_only'."
+        )
+
+    def _validate_materialized_verifier_artifacts(
+        self,
+        spec: SearchSpec,
+        artifact_entries: list[tuple[Path, str]],
+    ) -> None:
+        if spec.workspace.backend not in {"git_worktree", "thinkthread"}:
+            return
+        source = Path(spec.source_path).resolve()
+        try:
+            repository = Path(
+                self._git_output(source, ["git", "rev-parse", "--show-toplevel"])
+                .strip()
+            ).resolve()
+            source_prefix = source.relative_to(repository)
+        except (FileNotFoundError, subprocess.CalledProcessError, ValueError):
+            # Preserve the compatibility path for plain source directories;
+            # the workspace provider owns their synthetic Git baseline.
+            return
+        for _artifact_path, rel_path in artifact_entries:
+            object_path = (source_prefix / rel_path).as_posix()
+            try:
+                self._git_output(
+                    repository,
+                    ["git", "cat-file", "-e", f"HEAD:{object_path}"],
+                )
+            except subprocess.CalledProcessError as exc:
+                raise ValueError(
+                    "VerifierArtifactNotMaterialized: verifier artifact "
+                    f"{rel_path!r} is present in the live filesystem but absent "
+                    "from the frozen source HEAD. Commit the artifact in the "
+                    "standalone source repository before freezing."
+                ) from exc
 
     def _git_artifact_clean(
         self,
@@ -6061,145 +7428,62 @@ class FileSearchRuntime:
                 "Git repository for workspace/results.tsv"
             ) from exc
 
-    def _commit_results_tsv(self, workspace: Path, message: str) -> str | None:
-        try:
-            self._git_output(
-                workspace,
-                ["git", "add", "--", RESULTS_TSV_RELATIVE_PATH],
-            )
-            staged_returncode = self._git_returncode(
-                workspace,
-                [
-                    "git",
-                    "diff",
-                    "--cached",
-                    "--quiet",
-                    "--",
-                    RESULTS_TSV_RELATIVE_PATH,
-                ],
-            )
-            if staged_returncode == 0:
-                return self._git_head(workspace)
-            if staged_returncode != 1:
-                return None
-            self._git_output(
-                workspace,
-                [
-                    "git",
-                    "-c",
-                    "user.name=goal-plus",
-                    "-c",
-                    "user.email=goal-plus@example.invalid",
-                    "commit",
-                    "-q",
-                    "--no-verify",
-                    "--only",
-                    "-m",
-                    message,
-                    "--",
-                    RESULTS_TSV_RELATIVE_PATH,
-                ],
-            )
-            return self._git_head(workspace)
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            return None
+    def _commit_results_tsv(
+        self,
+        record: CandidateRecord,
+        message: str,
+    ) -> ArtifactRef | None:
+        return get_workspace_provider(record.task.workspace_backend).checkpoint(
+            record.task.workspace,
+            message,
+            [RESULTS_TSV_RELATIVE_PATH],
+        )
 
     def _commit_workspace_iteration(
         self,
-        workspace: Path,
+        record: CandidateRecord,
         message: str,
-    ) -> str | None:
-        pathspecs = self._candidate_git_pathspecs()
-        try:
-            self._git_output(
-                workspace, ["git", "add", "-A", "-f", "--", *pathspecs]
-            )
-            staged_returncode = self._git_returncode(
-                workspace,
-                ["git", "diff", "--cached", "--quiet", "--", *pathspecs],
-            )
-            if staged_returncode == 0:
-                return self._git_head(workspace)
-            if staged_returncode != 1:
-                return None
-            self._git_output(
-                workspace,
-                [
-                    "git",
-                    "-c",
-                    "user.name=goal-plus",
-                    "-c",
-                    "user.email=goal-plus@example.invalid",
-                    "commit",
-                    "-q",
-                    "--no-verify",
-                    "-m",
-                    message,
-                ],
-            )
-            return self._git_head(workspace)
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            return None
+    ) -> ArtifactRef | None:
+        return get_workspace_provider(record.task.workspace_backend).checkpoint(
+            record.task.workspace,
+            message,
+            self._candidate_git_pathspecs(),
+        )
 
     def _restore_candidate_artifact(
         self,
         record: CandidateRecord,
         metric_name: str,
-        revision: str,
+        revision: str | ArtifactRef,
         message: str,
-    ) -> str:
+    ) -> ArtifactRef:
         workspace = record.task.workspace
         self._assert_results_tsv_unchanged(record, metric_name)
         ledger_text = self._render_results_tsv(record.results_ledger, metric_name)
+        artifact_ref = (
+            revision
+            if isinstance(revision, ArtifactRef)
+            else ArtifactRef(
+                kind="git_commit",
+                id=revision,
+                provider=record.task.workspace_backend,
+            )
+        )
         try:
-            self._git_output(
+            restored = get_workspace_provider(
+                record.task.workspace_backend
+            ).restore(
                 workspace,
-                [
-                    "git",
-                    "restore",
-                    f"--source={revision}",
-                    "--staged",
-                    "--worktree",
-                    "--",
-                    ".",
-                ],
+                artifact_ref,
+                {RESULTS_TSV_RELATIVE_PATH: ledger_text},
+                message,
             )
-            write_text(self._results_tsv_path(workspace), ledger_text)
-            self._git_output(
-                workspace,
-                ["git", "add", "--", RESULTS_TSV_RELATIVE_PATH],
-            )
-            staged_returncode = self._git_returncode(
-                workspace,
-                ["git", "diff", "--cached", "--quiet"],
-            )
-            if staged_returncode == 1:
-                self._git_output(
-                    workspace,
-                    [
-                        "git",
-                        "-c",
-                        "user.name=goal-plus",
-                        "-c",
-                        "user.email=goal-plus@example.invalid",
-                        "commit",
-                        "-q",
-                        "--no-verify",
-                        "-m",
-                        message,
-                    ],
-                )
-            elif staged_returncode != 0:
-                raise RuntimeError("could not inspect staged restoration")
-        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        except RuntimeError as exc:
             raise RuntimeError(
-                f"failed to restore candidate artifact from {revision}"
+                f"failed to restore candidate artifact from {artifact_ref.id}"
             ) from exc
         self._assert_results_tsv_unchanged(record, metric_name)
-        git_head = self._git_head(workspace)
-        if git_head is None:
-            raise RuntimeError("candidate restoration produced no Git HEAD")
-        return git_head
+        return restored
 
     def _hash_tree(
         self,
@@ -6378,6 +7662,47 @@ class FileSearchRuntime:
     def _candidate_dir(self, run_id: str, candidate_id: str) -> Path:
         return self._run_dir(run_id) / "candidates" / candidate_id
 
+    def _reference_workspace_path(
+        self,
+        run_id: str,
+        reference_id: str,
+    ) -> Path:
+        return self._run_dir(run_id) / "references" / f"{reference_id}.json"
+
+    def _write_reference_workspace(
+        self,
+        record: ReferenceWorkspaceRecord,
+    ) -> None:
+        write_json(
+            self._reference_workspace_path(record.run_id, record.reference_id),
+            record.model_dump(mode="json"),
+        )
+
+    def _load_reference_workspaces(
+        self,
+        run_id: str,
+        *,
+        requester_agent_session_id: str | None = None,
+        open_only: bool = False,
+    ) -> list[ReferenceWorkspaceRecord]:
+        reference_dir = self._run_dir(run_id) / "references"
+        if not reference_dir.exists():
+            return []
+        records = [
+            ReferenceWorkspaceRecord.model_validate(load_json(path))
+            for path in sorted(reference_dir.glob("ref_*.json"))
+        ]
+        if requester_agent_session_id is not None:
+            records = [
+                record
+                for record in records
+                if record.requester_agent_session_id
+                == requester_agent_session_id
+            ]
+        if open_only:
+            records = [record for record in records if record.state == "open"]
+        return records
+
     def _evidence_annotation_task_path(
         self,
         run_id: str,
@@ -6439,6 +7764,42 @@ class FileSearchRuntime:
             "states": states,
             "coverage": "persisted host-native Evidence annotator turn usage",
         }
+
+    def _outer_deadline_value(self, run_id: str) -> str | None:
+        """Resolve the earliest host or linked Goal deadline for one Search run."""
+        values: list[str] = []
+        environment_value = os.environ.get(OUTER_DEADLINE_ENV)
+        if environment_value:
+            values.append(environment_value)
+        for path in sorted((self.root_dir / "goal-plus").glob("gp_*/goal.json")):
+            try:
+                payload = load_json(path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if payload.get("status") in {"blocked", "complete", "abandoned"}:
+                continue
+            search_tasks = payload.get("search_tasks")
+            linked_search = payload.get("linked_search")
+            linked = (
+                isinstance(search_tasks, list)
+                and any(
+                    isinstance(task, dict) and task.get("run_id") == run_id
+                    for task in search_tasks
+                )
+            ) or (
+                isinstance(linked_search, dict)
+                and linked_search.get("run_id") == run_id
+            )
+            deadline = payload.get("outer_deadline_at")
+            if linked and isinstance(deadline, str) and deadline:
+                values.append(deadline)
+        if not values:
+            return None
+        parsed = [(self._outer_deadline_epoch(value), value) for value in values]
+        invalid = next((value for epoch, value in parsed if epoch is None), None)
+        if invalid is not None:
+            return invalid
+        return min(parsed, key=lambda item: float(item[0]))[1]
 
     @staticmethod
     def _outer_deadline_epoch(value: str | None) -> float | None:
@@ -6620,7 +7981,7 @@ class FileSearchRuntime:
         except Exception as exc:
             profile = None
             error = f"invalid annotator profile: {type(exc).__name__}: {exc}"
-        outer_deadline = os.environ.get(OUTER_DEADLINE_ENV) or None
+        outer_deadline = self._outer_deadline_value(run_id)
         if outer_deadline:
             deadline_epoch = self._outer_deadline_epoch(outer_deadline)
             if deadline_epoch is None:
@@ -6649,6 +8010,8 @@ class FileSearchRuntime:
             iteration=iteration.iteration,
             attempt_base_commit=iteration.attempt_base_git_head,
             attempt_commit=iteration.git_head,
+            attempt_base_artifact_ref=iteration.attempt_base_artifact_ref,
+            attempt_artifact_ref=iteration.artifact_ref,
             attempt_changed_files=list(iteration.attempt_changed_files),
             task_context_source=task_context_source,
             task_context_ref=task_context_ref,
@@ -6679,15 +8042,29 @@ class FileSearchRuntime:
         iteration: IterationRecord,
         view: EvidenceViewRecord | None,
         discoverable_tool_ids: set[str] | None = None,
+        workspace_backend: WorkspaceBackend = "git_worktree",
     ) -> dict[str, Any]:
         tool_views = {
             item.tool_id: item
             for item in (view.tool_views if view is not None else [])
         }
+        artifact_ref = iteration.artifact_ref
+        if artifact_ref is None and iteration.git_head is not None:
+            artifact_ref = ArtifactRef(
+                kind="git_commit",
+                id=iteration.git_head,
+                provider=workspace_backend,
+            )
         entry = {
             "candidate_id": candidate_id,
             "iteration": iteration.iteration,
             "commit": iteration.git_head,
+            "artifact_ref": (
+                artifact_ref.model_dump(mode="json")
+                if artifact_ref is not None
+                else None
+            ),
+            "reference_available": artifact_ref is not None,
             "score": iteration.score,
             "disposition": iteration.disposition,
             "view": view.description if view is not None else None,
@@ -6718,7 +8095,12 @@ class FileSearchRuntime:
             else set()
         )
         evidence = [
-            (iteration.created_at, record.candidate_id, iteration)
+            (
+                iteration.created_at,
+                record.candidate_id,
+                iteration,
+                record.task.workspace_backend,
+            )
             for record in self._load_candidate_records(run_id)
             for iteration in record.iterations
             if iteration.agent_session_id is not None
@@ -6731,7 +8113,7 @@ class FileSearchRuntime:
             )
         )
         result = []
-        for _, candidate_id, iteration in evidence:
+        for _, candidate_id, iteration, workspace_backend in evidence:
             task = self._load_evidence_annotation_task(
                 run_id, candidate_id, iteration.iteration
             )
@@ -6753,6 +8135,7 @@ class FileSearchRuntime:
                     iteration,
                     view,
                     discoverable_tool_ids,
+                    workspace_backend,
                 )
             )
         return result
@@ -7133,7 +8516,7 @@ class FileSearchRuntime:
                 iteration
                 for iteration in record.iterations
                 if iteration.agent_session_id is not None
-                and self._git_iteration_eligible(iteration)
+                and self._artifact_iteration_eligible(iteration)
                 and iteration.disposition in {None, "keep", "retain"}
             ]
             if not eligible:
@@ -7338,7 +8721,11 @@ class FileSearchRuntime:
         record = CandidateRecord.model_validate(
             load_json(self._candidate_dir(run_id, candidate_id) / "candidate.json")
         )
-        if not record.results_ledger and record.results_ledger_git_head is None:
+        if (
+            not record.results_ledger
+            and record.results_ledger_artifact_ref is None
+            and record.results_ledger_git_head is None
+        ):
             record.results_ledger = self._read_results_tsv(record)
         return record
 

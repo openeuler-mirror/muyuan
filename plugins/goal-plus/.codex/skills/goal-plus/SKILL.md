@@ -10,32 +10,43 @@ description: 运行、恢复或编辑 Codex Goal Plus 任务，包括需要独�
 
 使用 `goal-plus` MCP server 暴露的逻辑 `goal_plus_*` 和 `search_*` 工具。
 Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工具名匹配。
+Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registry 中与逻辑名匹配的
+工具，例如 `goal_plus_status`。成功调用会留下 `mcp_tool_call` 事件。
+`list_mcp_resources` 和 `list_mcp_resource_templates` 只枚举 MCP resource，不枚举 tool，
+空结果也不表示 Goal Plus tool 不可用；不得用它们做 tool discovery。不得通过
+`exec_command`、shell、Python 或手写 stdio client 调用 Goal Plus server，也不得用
+这类旁路代替上述原生 MCP tool call。
 
 ## 工作流
 
-1. 首先读取隐藏的 Codex hook 上下文。如果其中包含 active 的 `goal_plus_id`，
-   则 `UserPromptSubmit` hook 已在本模型轮次前创建并绑定记录；使用该 id，
-   不要再次调用 `goal_plus_create`。如果没有 hook 上下文，调用
-   `goal_plus_create(raw_goal=..., policy={"execution":{"host":{"host_id":"codex",
-   "native_reasoning_effort":"max","enforcement":"requested","operations":
-   ["spawn","send","wait","interrupt","observe"]}}})` 作为兼容后备。
+1. 首先读取隐藏的 Codex hook 上下文。只有其中明确包含本轮由精确
+   `$goal-plus`、`$goal-plus edit`、`$goal-plus resume` 或
+   `$goal-plus-with-final-check` host command 授权的 active `goal_plus_id` 时，
+   才能执行此工作流。skill 本身不能创建、编辑、恢复或授权 Goal Plus；不得调用
+   `goal_plus_create` 或 `goal_plus_update_goal`，也不得通过 MCP、CLI、shell、Python
+   或手写 stdio client 绕过 host 入口。如果缺少该上下文，立即停止所有 Goal Plus / Search
+   变更，并要求用户使用精确的 `$goal-plus <完整目标>`、`$goal-plus edit <完整目标>`
+   或 `$goal-plus resume`。
    仅在新记录的首轮，由 Main 语义检查原始目标或当前对话上下文是否明确给出了整个 Goal
    Plus 任务的最大运行时间；如果没有，先简短告知用户：“当前未设置最大运行时间，Goal
    Plus 将持续运行直至目标完成或用户手动停止。”这只是告知，不询问、不等待确认，随后
    立即继续执行。
    `$goal-plus-with-final-check` 会预先创建，并设置
-   `policy.final_check.mode="required"`。`$goal-plus edit <完整的修订目标>`
-   会在模型轮次前更新同一记录；使用新的 `goal_revision`，不要继续旧修订版。
+   `policy.final_check.mode="required"`。`$goal-plus edit <完整的修订目标>` 会由 host
+   在模型轮次前更新同一记录；使用新的 `goal_revision`，不要继续旧修订版。
    host 中断后，`$goal-plus resume` 会恢复同一个 active 修订版。
    `$goal-plus mode=autonomous <目标>`（默认）要求为初始候选分配充足 lease，
    并在没有全局停止条件时继续同一候选；`$goal-plus mode=probe <目标>`
    要求进行短期可行性、潜力和阻塞因素探查。未指定 mode 的编辑保留当前选择。
-   运行时只把它存为 `raw_goal` 的规范末行，不把它作为 phase、Search strategy
-   或运行时字段。
+   显式 mode 保存在 `GoalPlusRecord.command_config`，对应执行指导仍写入 `raw_goal`
+   的规范末行；它不是 phase 或 Search strategy。
+   host adapter 会把开头连续的 typed `key=value` 配置与自然语言目标分开；第一个非配置
+   token 开始就是目标。`command_config` 中的显式字段必须原样落实。只有缺省字段才由 Main
+   判断。不要从 `raw_goal` 重新解析配置，也不要用自然语言覆盖显式配置。
    恢复 active 记录前，把最新用户消息视为本轮的权威依据：
    - 如果它继续或引导现有目标，但没有改变范围、交付物或成功标准，保留当前修订版。
-   - 如果它改变了实际范围、交付物或成功标准，使用完整修订目标和当前
-     `expected_revision` 调用 `goal_plus_update_goal`，然后在继续工作前重新 triage。
+   - 如果它改变了实际范围、交付物或成功标准，停止变更并要求用户使用精确的
+     `$goal-plus edit <完整修订目标>`；不得由模型调用 `goal_plus_update_goal`。
    - 如果消息与目标无关，直接回复而不改变目标。如果它与目标的关系不明确，
      在修订或恢复前先澄清。不要仅因 Goal Plus 记录处于 active 就恢复工作。
 2. 检查足够的上下文以分类任务。
@@ -52,14 +63,32 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
    `expected_outputs` 只列出产物路径或 glob，不解析 stdout。要求 verifier 保持候选
    工作区只读，并使用唯一的 `GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR`（或 Python
    `tempfile`）存放编译器和临时输出；并行 Search 下固定 `/tmp` 路径不安全。
-   冻结操作会在消耗候选预算前拒绝工作区副作用。新 SearchSpec 必须显式设置
+   Git freeze 会先在 MainAgent 给出的 origin `source_path` 运行一次 process-verifier
+   suite，验证后复检 clean HEAD 与 verifier hash，并把该 commit 固定到 FrozenSpec；
+   `search_create` 会拒绝已切换到另一个 clean HEAD 的 source。第一次
+   `search_start_batch` 随后先在 `c001` worktree 重复该 suite，通过后才创建其余 lane。
+   relocation 失败时 run 会自动 abort 并保留 `c001`，不得启动 worker；修复
+   `source_path`、verifier `cwd` 或 artifact 合同后重新 freeze/create。两次 bootstrap
+   验证都不属于 candidate iteration。先把
+   `GoalPlusRecord.command_config` 中的 `max_parallel`、`workspace_backend`、
+   `promotion_mode`、`strategy`、`annotator` 和 `workers` 映射到 SearchSpec；ready draft
+   不匹配时 runtime 会拒绝保存。未配置字段才根据目标、host 能力和资源信号决定。
+   新 SearchSpec 必须显式设置
    `workspace.backend="git_worktree"`，以便候选共享 Git object database 并解析彼此的
-   Evidence commit；只有用户明确要求兼容隔离时才能设置 `copy`。任务本地 Skill 无需写入
+   Evidence commit；`workspace.promotion_mode` 默认是 `apply`。只有受保护 source、只读
+   template 或测试 fixture 才显式设置 `promotion_mode="artifact_only"`；`copy` backend
+   自动使用 artifact-only。只有用户明确要求兼容隔离时才能设置 `copy`。任务本地 Skill 无需写入
    SearchSpec；把它提交到 source Git 的 `.agents/skills/<name>/SKILL.md`，同一 Skill 目录内
    的所有资源也必须由 Git 跟踪。freeze 返回的
-   `task_skill_notice` 会列出自动发现结果，每个 candidate 的 `task_skill_paths` 会指向自己
+   `task_skill_notice` 会列出自动发现结果；`workspace_capacity_notice` 会同时展示当前 source
+   大小、按 `budget.max_parallel` 计算的 node checkout、共享 Git object store、保守上界和
+   可用空间。必须在 `search_create` 前展示该预检；`fits_available_space=false` 时不得创建
+   run。每个 candidate 的 `task_skill_paths` 会指向自己
    worktree 中的对应文件；`search_start_batch` 还会为每个 subagent 返回一条启动清单。
    将这些清单明确展示出来，不扫描 parent 或 global/plugin Skill。使用
+   `git_worktree` 以及未来的 ThinkThread backend 时，source Git 必须对应 clean `HEAD`。
+   `DirtySourceWorkspace` 发生后原样展示路径和修复提示并停止启动；不得自动 stash、clean
+   或 commit source。确实需要当前 filesystem 状态时显式改用 `copy + artifact_only`。
    `goal_plus_save_spec_draft` 保存完整契约。
    创建 draft 和冻结 verifier 前，Main 必须把当前 Search 工作项从原始目标与公开任务契约
    继承的正确性、性能、适用范围和测量方法落实为统一验收契约。candidate iteration、
@@ -73,18 +102,16 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
    PASS/FAIL、数值排名、candidate-local 结算、selection 或 promotion。MainAgent
    不负责定义这些维度，也不要根据 benchmark 类型向 annotator 预埋固定清单。
    Codex 的 main agent 就是已经运行的当前 session；必须在启动 Codex 时或提交
-   `$goal-plus` 前通过 `/model` 选择，不能由 Goal Plus prompt 切换。通常省略
-   `main=`；它只作为兼容的一致性断言，由 `UserPromptSubmit` hook 与当前 session model
-   比对，不匹配时会在创建或编辑 Goal Plus 记录前拒绝命令。真正的角色模型配置使用
+   `$goal-plus` 前通过 `/model` 选择，不能由 Goal Plus prompt 切换。`main=` 不是受支持的
+   Goal Plus 命令配置；真正的角色模型配置使用
    `annotator=B` 和 `workers=C,D`，并必须调用
    `goal_plus_list_models(host="codex")`，将用户填写的名称解析为唯一可用模型；
    annotator 冻结到 `strategy.evidence_annotator.model`，workers 冻结到
    `strategy.models`。不存在或不唯一时，在创建 run 前直接返回错误。旧的
-   `models=` 是 `workers=` 的兼容别名，两者不能同时填写；单数 `model=` 无效。
+   `models=` 是 `workers=` 的兼容别名，两者不能同时填写；`main=` 和单数 `model=` 无效。
    `workers=A,B max_parallel=4` 表示按 A、B、A、B 轮转；
-   `workers=A,B A1B3 max_parallel=4`（等价写法 `workers=A*1,B*3`）表示显式
-   A1B3，所有显式数量之和必须等于 `max_parallel`。`workers=A,B 每个一个`
-   表示 `max_parallel=2`。省略的角色保持 Codex host 默认或继承语义，不从另一个
+   `workers=A*1,B*3 max_parallel=4` 表示显式 A1B3，所有显式数量之和必须等于
+   `max_parallel`。省略的角色保持 Codex host 默认或继承语义，不从另一个
    显式角色猜默认值；没有填写 `annotator=`、`workers=` 或 `models=` 时不要探测目录。
    对于用语义、大致 shape/dtype 和参考提示描述的 AscendC Direct Invoke 算子目标，
    记录 `scenario="ascendc_direct_invoke"`，并完整读取
@@ -113,9 +140,12 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
     只创建一次初始候选集合，然后验证并恢复这些相同的候选 worker；依次使用
     `search_freeze_spec`、`search_create`、`search_plan_next`、
     `search_start_batch`、`search_start_agent_session`、最终
-    `search_run_verifier`、`search_select` 和 `search_promote`。
+    `search_run_verifier`、`search_select` 和 `search_promote`。任务授权写回 source 时，
+    对新的 provider-native promotion 调用 `search_apply_promotion`；artifact-only 或受保护
+    source 任务保留 prepared publication，不执行 apply。旧 `legacy_patch` 仅在任务授权时
+    按 `search_promote` 返回的坐标写回。
 11. `search_create` 后调用 `goal_plus_link_search_run`。
-12. 选择并提升后调用 `goal_plus_record_search_result`。此时不要调用
+12. 选择并提升后，在任务授权时完成 apply，再调用 `goal_plus_record_search_result`。此时不要调用
     `search_report`。结果记录只预留规范 Markdown 和 HTML 路径，不创建报告。
 13. 执行原始目标审计。如果还需要其他有 verifier 支持的 Search，使用相同
     `goal_plus_id` 冻结/创建新 run，并重复步骤 9-12。每个不同的 `run_id`
@@ -126,6 +156,11 @@ Codex 可能显示带客户端特定前缀的 MCP 工具；按最后的逻辑工
     或 `rework`。最后执行一次原始目标审计。对于普通 Goal Plus 记录，只有当前目标已满足时
     才调用
     `goal_plus_set_status(status="complete", evidence=[...])`。当
+    目标给出预设时长或时间预算时，把它作为停止新工作和衡量效率的独立观测条件：若必需工作、
+    验证、提升和审计已经完成，即使实际收尾晚于预设，也仍使用 `complete`。在 evidence 和最终
+    展示中分别记录预设时间与实际完成收尾时间，不要输出 `late`，也不要仅因超出预设而使用
+    `blocked`；`blocked` 只表示仍缺少外部输入、权限、资源或状态变化，导致任务确实无法继续。
+    当
     `policy.final_check.mode="required"` 时：
     - 调用 `goal_plus_prepare_final_check(checker_host="codex")`
     - 把 `launch.task_name`、`launch.message` 和 `launch.fork_turns` 映射到当前
@@ -173,8 +208,13 @@ namespace 记录 `followup_task`。
 
 顶层 Stop gate 会阻止每条仍处于 active 的记录，并返回完整的当前原始目标、创建/检查
 时间戳、已用时间、phase、next action 和最终检查 policy。根据该 prompt 审计全部目标要求
-以及任何时间条件。未完成时继续；否则先用真实的终态调用 `goal_plus_set_status`。
-候选 lease 结束绝不会完成父级 Goal Plus 任务，Goal Plus 也不单独存储任务 deadline。
+以及任何时间条件。时间条件决定何时停止新增工作并转入收尾，但不覆盖已经完成的结果终态；
+完成后使用 `complete`，并把预设时间和实际完成收尾时间作为两个独立事实报告。未完成时继续；
+只有确有外部条件导致无法继续时才使用 `blocked`，否则先用真实的终态调用
+`goal_plus_set_status`。
+候选 lease 结束绝不会完成父级 Goal Plus 任务。只有 host command 显式给出
+`max_duration_seconds` 时，Goal Plus 才从创建时间持久化 `outer_deadline_at`；缺省时不编造
+单独的任务 deadline。
 
 一条 Goal Plus 记录就是完整任务。`search_tasks` 是其仅追加的 Search Mode 任务历史，
 每个 `run_id` 对应一个冻结 spec；`linked_search` 只是当前任务的兼容视图。在一项 Search
@@ -227,15 +267,19 @@ Search Mode 用于已冻结、可度量的优化。它把候选工作区创建�
 
 ## Hook 兼容性
 
-安装版 plugin 在 `hooks/hooks.json` 提供 Codex 0.144.1+ Goal Plus host hook；
-未启用 plugin 的项目本地开发可把 `.codex/hooks.example.json` 复制为
-`.codex/hooks.json`，两种来源不能同时启用。
-它们会为 `UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、
+installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook；
+`.codex/hooks.example.json` 只是必须与它同步的开发源码模板，不是另一条安装路径。
+该 hook 会为 `UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、
 `Stop` 和 `SubagentStop` 运行 `goal-plus --goal-plus-host-hook`。
 `UserPromptSubmit` 会在模型轮次前预先创建并绑定 `$goal-plus`，
 也识别 `$goal-plus-with-final-check` 和显式 `$goal-plus edit` 更新。
-`SessionStart` 恢复与 session 绑定的 active id。`PreToolUse` 强制执行 Search 和变更
-gate。`PostToolUse(goal_plus_create)` 仍作为兼容绑定后备。Search 候选 subagent 的
+新记录首轮会显示与当前 `turn_id` 精确匹配的 Codex 运行时权限；Search candidate
+第一次读取自己的 agent context 前也会显示其自身权限。该信息来自 Codex transcript 的
+`turn_context`，缺失时保持 unavailable，不能从 TOML、环境变量或 parent 权限猜测。
+Main 在首条用户可见进度中、Search candidate 在最终交接中完整照抄 hook 给出的权限摘要。
+`SessionStart` 只发现可恢复状态，不授权或注入 active id；用户必须显式提交
+`$goal-plus resume`。`PreToolUse` 对未由本轮精确 host command 授权的 Goal Plus / Search
+变更 fail closed。不存在 `PostToolUse(goal_plus_create)` 兼容后备。Search 候选 subagent 的
 PostTool 事件还会执行一次只读 verifier 时间提示检查；它们绝不会绑定 Goal Plus 所有权，
 主 agent、最终检查员和普通 subagent 的事件会被忽略。顶层 `Stop` 会强制执行完整原始目标
 和耗时审计，直到主 agent 记录终态。

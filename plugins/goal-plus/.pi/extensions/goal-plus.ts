@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { type TSchema, Type } from "typebox";
 import {
 	buildPiCompletionPresentation,
@@ -33,6 +34,8 @@ const isPrintLikeInvocation =
 	(modeArgIndex >= 0 && process.argv[modeArgIndex + 1] === "json");
 const STATE_ENTRY_TYPE = "goal-plus-native-state";
 const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
+const GOAL_PLUS_RUNTIME_ENTRY_TYPE = "goal-plus-runtime-start";
+const GOAL_PLUS_COMMAND_CONTEXT_TYPE = "goal-plus-command-context";
 const GOAL_PLUS_PROGRESS_STATUS_KEY = "goal-plus-progress";
 const GOAL_PLUS_PROGRESS_WIDGET_KEY = "goal-plus-progress";
 let workspaceRoot: string | undefined;
@@ -43,6 +46,7 @@ let continuationCount = 0;
 let workerContinuationCount = 0;
 let activeGoalStartedAt: string | undefined;
 let activeGoalStartEntryCount = 0;
+let goalPlusSessionAuthorized = false;
 
 const INSTALL_HINT =
 	'Install this project into the Python environment that launches Pi: python -m pip install -e ".[dev]".';
@@ -228,6 +232,7 @@ const StrategySpec = Type.Object(
 const WorkspaceSpec = Type.Object(
 	{
 		backend: Type.Optional(Type.Union([Type.Literal("copy"), Type.Literal("git_worktree")])),
+		promotion_mode: Type.Optional(Type.Union([Type.Literal("apply"), Type.Literal("artifact_only")])),
 	},
 	{ additionalProperties: false },
 );
@@ -315,7 +320,7 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 	goal_plus_create: Type.Object(
 		{
 			raw_goal: Type.String(),
-			source_path: Type.Optional(Type.String()),
+			source_path: Type.Optional(NullableString),
 			policy: Type.Optional(LooseObject),
 		},
 		{ additionalProperties: false },
@@ -325,8 +330,8 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 		{
 			goal_plus_id: Type.String(),
 			raw_goal: Type.String(),
-			expected_revision: Type.Number(),
-			reason: Type.Optional(Type.String()),
+			expected_revision: Type.Integer(),
+			reason: Type.Optional(NullableString),
 		},
 		{ additionalProperties: false },
 	),
@@ -562,6 +567,14 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 		{ agent_session_id: Type.String() },
 		{ additionalProperties: false },
 	),
+	search_reference_open: Type.Object(
+		{
+			agent_session_id: Type.String(),
+			source_candidate_id: Type.String(),
+			source_iteration: PositiveInteger,
+		},
+		{ additionalProperties: false },
+	),
 	search_copy_shared_tool: Type.Object(
 		{
 			agent_session_id: Type.String(),
@@ -641,6 +654,10 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 		},
 		{ additionalProperties: false },
 	),
+	search_apply_promotion: Type.Object(
+		{ run_id: Type.String() },
+		{ additionalProperties: false },
+	),
 		pi_search_pool_open: Type.Object(
 			{
 				run_id: Type.String(),
@@ -703,13 +720,15 @@ const RuntimeToolDescriptions: Record<string, string> = {
 	goal_plus_save_spec_draft:
 		"保存发现的 SearchSpec draft。新的 Pi spec 使用 orchestration_mode=parallel_loops，以 max_parallel 作为初始 candidate/subagent 数。",
 	search_freeze_spec:
-		"冻结不可变的 SearchSpec 和 verifier bundle。预检使用一次性源码副本，并拒绝 verifier 工作区副作用；并发 Search 下 verifier 临时文件必须放入唯一的 GOAL_PLUS_VERIFIER_TMPDIR/TMPDIR，绝不能使用固定 /tmp 路径。parallel_loops 模式由一份初始 plan 创建长期候选。",
+		"冻结不可变的 SearchSpec、verifier bundle 和 source artifact。Git backend 先在 clean origin 运行 process verifier；第一次 search_start_batch 再在 c001 worktree 验证 relocation，通过后才创建其余 lane。bootstrap 结果不是 candidate iteration。并发 Search 下 verifier 临时文件必须放入唯一的 GOAL_PLUS_VERIFIER_TMPDIR/TMPDIR，绝不能使用固定 /tmp 路径。",
 	search_create:
 		"从 frozen_spec_id 创建 Search run。初始 run 必须省略 source_run_id，或在 strict schema 下传 null；仅在已有真实前驱时传入准确的 run_* ID，绝不能传 initial 或 in_progress。",
 	search_get_agent_context:
 		"读取当前 worker 的紧凑权威 candidate 上下文，包括最近三轮、最佳轮次和 results.tsv 路径。candidate_task.share_out_dir 非空表示已启用 shared_dir，并返回不含路径和源码的 tool_family_catalog；catalog 用 revision_head 指定唯一更新基线，并用 revision_allowed、published_version_count 和 max_published_versions_per_family 暴露容量。toolization_decision 使用 repeated_workflow、domain_construction_or_probe、behavior_or_invariant_checker、reproducer_fixture_or_case_generator、parser_trace_or_comparator、peer_setup_or_feedback_reduction。搜索期测试文件，以及 candidate 自己编写并纳入最终交付的正式回归测试、功能验证函数、复现、fixture/case、差分和不变量检查可以工具化；测试框架、test_ 文件名、属于正式测试或验证同一目标行为都不是 restricted_artifact 理由。发布时仍须把显式选择的测试及依赖复制到 .tmp/tool-drafts/，并确保它能在 peer workspace 运行且不依赖 candidate 私有临时状态。candidate 产品实现、冻结 verifier/runner/grader、隐藏答案/评分逻辑、日志、原始数据、凭据和构建输出仍受限；共享测试不得复制、代理或近似重建隐藏反馈。短小、任务专属、来自 inline code 或只输出退出码都不是排除理由。首次工具发布保持低门槛。no_toolizable_material 表示累计回顾后确实没有工具。family 更新仅在 revision_allowed=true 时引用 revision_head.tool_id：capability_extension 必须新增稳定 capability/coverage key；adoption_fix 必须有同 family 的真实 copy/adoption 事实和具体缺陷；contract_change 必须为有价值的入口、输入、输出或依赖变化新增稳定契约键。不得靠改名或同义键制造增量。revision_allowed=false 时使用 revision_blocker 的准确值；existing_family_sufficient、no_material_tool_delta 和 max_published_versions_reached 是 revision-only 排除项，runtime 会在 catalog 尚无 family 时拒绝；existing_family_sufficient 仅表示 revision_head 已覆盖需求；no_material_tool_delta 仅表示已有 family 没有上述实质增量；draft_not_ready 只用于具体的安全性、完整性、可移植性或 peer 可运行性阻塞。",
 	search_get_global_evidence:
-		"读取当前 run 的窄 Global Evidence 视图。每项包含 verifier attempt commit、硬 score、keep/retain/discard/failure disposition、可能延迟的客观 View、可选 supplemental evaluation 的可用标记，以及启用 shared_dir 后已由 annotator 描述并由 runtime 绑定的 shared_tools/tool_view。任一 View 为 null 时都无需等待，可先依据 Evidence 独立探索。",
+		"读取当前 run 的窄 Global Evidence 视图。每项包含 provider-neutral artifact_ref、兼容 commit、硬 score、keep/retain/discard/failure disposition、reference_available、可能延迟的客观 View、可选 supplemental evaluation 的可用标记，以及启用 shared_dir 后已由 annotator 描述并由 runtime 绑定的 shared_tools/tool_view。任一 View 为 null 时都无需等待，可先依据 Evidence 独立探索。",
+	search_reference_open:
+		"把一条已结算 Evidence checkout 到当前 worker 唯一的 ref-workspace。再次调用会把同一目录切到新的精确 commit；直接用普通文件和命令工具查看返回的 root，所有实现修改仍留在 candidate workspace。",
 	search_copy_shared_tool:
 		"将已出现在 Global Evidence 的 Tool View 所对应的精确 shared-dir 快照复制到当前 candidate 的本地临时 inbox，供阅读源码或自主复用；复制不要求调用原工具。只有直接执行、导入或依赖原快照时，才先在当前 workspace 验证入口、依赖、路径假设和输出语义。下一次 worker verifier 会原子消费 receipt；当前 adopted_tools 只证明快照曾复制进本轮上下文，不证明原工具被执行或其代码被保留，也不改变选择、排名或硬分。",
 	search_stage_shared_tool:
@@ -749,6 +768,26 @@ const MAIN_GATED_TOOLS = new Set([
 	"pi_goal_plus_run_final_check",
 	"pi_goal_plus_run_work_item",
 ]);
+const MAIN_READ_ONLY_RUNTIME_TOOLS = new Set([
+	"goal_plus_status",
+	"goal_plus_monitor_snapshot",
+	"goal_plus_list_models",
+	"search_status",
+	"search_list_history",
+	"search_list_iterations",
+	"search_get_agent_observability",
+]);
+
+function requiresGoalPlusAuthorization(toolName: string): boolean {
+	if (MAIN_READ_ONLY_RUNTIME_TOOLS.has(toolName)) return false;
+	return (
+		toolName.startsWith("goal_plus_") ||
+		toolName.startsWith("search_") ||
+		toolName.startsWith("pi_search_pool_") ||
+		toolName === "pi_goal_plus_run_final_check" ||
+		toolName === "pi_goal_plus_run_work_item"
+	);
+}
 
 interface GoalPlusNativeState {
 	activeGoalPlusId?: string;
@@ -770,6 +809,7 @@ interface GoalPlusNextActionPayload {
 interface GoalPlusStatusPayload {
 	goal_plus_id?: string;
 	raw_goal?: string;
+	command_config?: Record<string, unknown>;
 	goal_revision?: number;
 	goal_revisions?: unknown[];
 	policy?: Record<string, unknown>;
@@ -815,6 +855,23 @@ interface GoalPlusStatsEntry {
 	collapsedLineCount: number;
 }
 
+interface PiRuntimeStartEntry {
+	schema_version: 1;
+	agent: string;
+	host: "pi" | "pi-rpc";
+	mode: string;
+	project_trusted: boolean;
+	active_tools: string[];
+	active_builtin_tools: string[];
+	active_non_builtin_tools: string[];
+	pi_sandbox: "none";
+	pi_builtin_tool_approval: "none";
+	filesystem_access: "launcher-process-user";
+	network_access: "host-policy-unreported";
+	cwd: string;
+	captured_at: string;
+}
+
 interface CommandInvocation {
 	command: string;
 	argsPrefix: string[];
@@ -839,6 +896,60 @@ function optionalNumberFrom(value: unknown): number | undefined {
 
 function commandContextFrom(ctx: ExtensionContext): CommandRuntimeContext {
 	return { cwd: ctx.cwd };
+}
+
+function piRuntimeAgent(): string {
+	return role === "worker" ? "candidate" : role;
+}
+
+function buildPiRuntimeStartEntry(pi: ExtensionAPI, ctx: ExtensionContext): PiRuntimeStartEntry {
+	const activeTools = [...new Set(pi.getActiveTools())].sort();
+	const builtinToolNames = new Set(
+		pi.getAllTools()
+			.filter((tool) => tool.sourceInfo.source === "builtin")
+			.map((tool) => tool.name),
+	);
+	const activeBuiltinTools = activeTools.filter((name) => builtinToolNames.has(name));
+	const activeNonBuiltinTools = activeTools.filter((name) => !builtinToolNames.has(name));
+	return {
+		schema_version: 1,
+		agent: piRuntimeAgent(),
+		host: role === "main" ? "pi" : "pi-rpc",
+		mode: ctx.mode,
+		project_trusted: ctx.isProjectTrusted(),
+		active_tools: activeTools,
+		active_builtin_tools: activeBuiltinTools,
+		active_non_builtin_tools: activeNonBuiltinTools,
+		pi_sandbox: "none",
+		pi_builtin_tool_approval: "none",
+		filesystem_access: "launcher-process-user",
+		network_access: "host-policy-unreported",
+		cwd: ctx.cwd,
+		captured_at: new Date().toISOString(),
+	};
+}
+
+function appendPiRuntimeStartEntry(pi: ExtensionAPI, ctx: ExtensionContext): PiRuntimeStartEntry {
+	const entry = buildPiRuntimeStartEntry(pi, ctx);
+	pi.appendEntry<PiRuntimeStartEntry>(GOAL_PLUS_RUNTIME_ENTRY_TYPE, entry);
+	return entry;
+}
+
+function renderPiRuntimeStartEntry(entry: PiRuntimeStartEntry, expanded: boolean): string[] {
+	const trust = entry.project_trusted ? "true" : "false";
+	const lines = [
+		`Pi start · agent=${entry.agent} · host=${entry.host} · mode=${entry.mode} · project_trusted=${trust} · sandbox=${entry.pi_sandbox} · builtin_approval=${entry.pi_builtin_tool_approval}`,
+		`tools=${entry.active_builtin_tools.length} builtin + ${entry.active_non_builtin_tools.length} non-builtin · filesystem=${entry.filesystem_access} · network=${entry.network_access}`,
+	];
+	if (expanded) {
+		lines.push(
+			`cwd=${entry.cwd}`,
+			`builtin_tools=${entry.active_builtin_tools.join(",") || "none"}`,
+			`non_builtin_tools=${entry.active_non_builtin_tools.join(",") || "none"}`,
+			`captured_at=${entry.captured_at}`,
+		);
+	}
+	return lines;
 }
 
 function sourceRoot(ctx: CommandRuntimeContext): string {
@@ -948,6 +1059,74 @@ async function runJsonCli(pi: ExtensionAPI, ctx: CommandRuntimeContext, tool: st
 	};
 }
 
+async function runHostCommandCli(
+	pi: ExtensionAPI,
+	ctx: CommandRuntimeContext,
+	tool: "goal_plus_host_start" | "goal_plus_host_edit" | "goal_plus_host_resume",
+	args: Record<string, unknown>,
+) {
+	const invocation = projectModuleInvocation(ctx, "goal-plus-pi-tool", "goal_plus.pi_tool");
+	const capabilityToken = randomUUID();
+	const capabilityRoot = isAbsolute(runtimeRoot) ? runtimeRoot : join(ctx.cwd, runtimeRoot);
+	const capabilityDir = join(capabilityRoot, "host-entrypoint", "pi");
+	const capabilityPath = join(capabilityDir, `${capabilityToken}.json`);
+	mkdirSync(capabilityDir, { recursive: true });
+	writeFileSync(
+		capabilityPath,
+		JSON.stringify({ token: capabilityToken, issued_at_ms: Date.now() }),
+		{ encoding: "utf8", flag: "wx", mode: 0o600 },
+	);
+	const result = await (async () => {
+		try {
+			return await pi.exec(invocation.command, [
+				...invocation.argsPrefix,
+				"--root",
+				runtimeRoot,
+				"--host-entrypoint",
+				"--host-capability",
+				capabilityToken,
+				"--args-json",
+				JSON.stringify(args),
+				tool,
+			]);
+		} finally {
+			rmSync(capabilityPath, { force: true });
+		}
+	})();
+	if (result.code !== 0) {
+		const failure = commandFailure(tool, invocation, result);
+		return {
+			content: [{ type: "text" as const, text: failure.text }],
+			details: failure.details,
+		};
+	}
+	const parsed = JSON.parse(result.stdout || "null");
+	return {
+		content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
+		details: parsed,
+	};
+}
+
+function piHostInvocation(
+	ctx: ExtensionContext,
+	command: "/goal-plus" | "/goal-plus-with-final-check",
+	action: "start" | "edit" | "resume",
+	rawInput: string,
+	nativeEntryId: string,
+) {
+	return {
+		host: "pi",
+		transport: "pi_extension_command",
+		command,
+		action,
+		session_id: `pi:${ctx.cwd}`,
+		native_entry_id: nativeEntryId,
+		invocation_id: `pi:${randomUUID()}`,
+		raw_input_sha256: createHash("sha256").update(rawInput).digest("hex"),
+		invoked_at: new Date().toISOString(),
+	};
+}
+
 function persistGoalState(pi: ExtensionAPI) {
 	pi.appendEntry(STATE_ENTRY_TYPE, {
 		activeGoalPlusId,
@@ -1044,15 +1223,24 @@ function stringFrom(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function wholeGoalDeadlineSeconds(rawGoal: string | undefined): number | undefined {
+function wholeGoalPresetDurationSeconds(
+	rawGoal: string | undefined,
+	commandConfig?: Record<string, unknown>,
+): number | undefined {
+	const structured = optionalNumberFrom(commandConfig?.max_duration_seconds);
+	if (structured !== undefined && structured > 0) return structured;
 	if (!rawGoal) return undefined;
-	const english = rawGoal.match(/\bwithin\s+(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?)\b/i);
+	const english = rawGoal.match(
+		/(?:\bwithin\s+|\bpreset(?:\s+task)?\s+duration\s+is\s+)(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?)\b/i,
+	);
 	if (english) {
 		const value = Number(english[1]);
 		const unit = english[2].toLowerCase();
 		return value * (unit.startsWith("hour") ? 3600 : unit.startsWith("minute") ? 60 : 1);
 	}
-	const chinese = rawGoal.match(/(\d+(?:\.\d+)?)\s*(秒|分钟|小时)(?:内|以内)/);
+	const chinese = rawGoal.match(
+		/预设(?:任务)?时间(?:为|是)\s*(\d+(?:\.\d+)?)\s*(秒|分钟|小时)/,
+	) ?? rawGoal.match(/(\d+(?:\.\d+)?)\s*(秒|分钟|小时)(?:内|以内)/);
 	if (!chinese) return undefined;
 	const value = Number(chinese[1]);
 	return value * (chinese[2] === "小时" ? 3600 : chinese[2] === "分钟" ? 60 : 1);
@@ -1144,6 +1332,9 @@ function buildGoalCompletionView(
 			? status.linked_search
 			: undefined;
 	const rawGoal = stringFrom(goal?.raw_goal) ?? status.raw_goal;
+	const commandConfig = isRecord(goal?.command_config)
+		? goal.command_config
+		: status.command_config;
 	const promotionVerified = typeof selection?.promotion_verified === "boolean"
 		? selection.promotion_verified
 		: stringFrom(task?.state) === "promoted"
@@ -1153,7 +1344,7 @@ function buildGoalCompletionView(
 	return {
 		status: stringFrom(goal?.status) ?? status.status ?? "unknown",
 		elapsedSeconds: goalElapsedSeconds(snapshot),
-		deadlineSeconds: wholeGoalDeadlineSeconds(rawGoal),
+		presetDurationSeconds: wholeGoalPresetDurationSeconds(rawGoal, commandConfig),
 		goalPlusId: stringFrom(goal?.goal_plus_id) ?? status.goal_plus_id ?? activeGoalPlusId,
 		searchTasksTotal: optionalNumberFrom(goal?.search_tasks_total)
 			?? status.search_tasks_total
@@ -1282,12 +1473,14 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 		`status: ${status.status ?? "unknown"}`,
 		`phase: ${status.phase ?? "unknown"}`,
 		`goal_revision: ${status.goal_revision ?? 1}`,
+		`command_config: ${JSON.stringify(status.command_config ?? {})}`,
 		`final_check_policy: ${JSON.stringify(status.policy?.final_check ?? { mode: "disabled" })}`,
 		"",
 			"原始目标：",
 		status.raw_goal ?? "",
 		"",
 			"规则：",
+			"- command_config 中的字段是 runtime 强约束；只有未配置字段才由你判断。",
 			"- 将原始目标与实现猜测分开。",
 			"- 每次 phase 变化后更新 goal-plus 状态。",
 			"- Search 是自主升级：spec draft 达到高置信度且无 open question 后，直接通过 Search Mode gate，不要请求用户批准。",
@@ -1307,39 +1500,42 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 }
 
 interface GoalPlusRoleModels {
-	main?: string;
 	annotator?: string;
 	workerDirective?: "workers" | "models";
 }
 
-function commandDirective(rawGoal: string, name: string): string | undefined {
-	const marker = new RegExp(`(?:^|\\s)${name}=`, "gi");
-	const markers = [...rawGoal.matchAll(marker)];
-	if (markers.length > 1) {
-		throw new Error(`/goal-plus accepts at most one ${name}= directive`);
+function leadingCommandDirectives(rawGoal: string): Map<string, string> {
+	let remaining = rawGoal.trim();
+	const directives = new Map<string, string>();
+	while (remaining.length > 0) {
+		const match = remaining.match(/^([A-Za-z][A-Za-z0-9_-]*)=([^\s]+)(?:\s+|$)/);
+		if (!match) break;
+		const name = match[1]!.toLowerCase().replace(/-/g, "_");
+		if (directives.has(name)) {
+			throw new Error(`/goal-plus accepts at most one ${name}= directive`);
+		}
+		directives.set(name, match[2]!.trim());
+		remaining = remaining.slice(match[0].length).trimStart();
 	}
-	if (markers.length === 0) return undefined;
-	const value = rawGoal.match(new RegExp(`(?:^|\\s)${name}=([^\\s]+)`, "i"))?.[1]?.trim();
-	if (!value) throw new Error(`${name}= requires a value`);
-	return value;
-}
-
-function roleModelDirective(rawGoal: string, name: string): string | undefined {
-	const value = commandDirective(rawGoal, name);
-	if (value?.includes(",")) {
-		throw new Error(`${name}= accepts exactly one model; use workers= for a list`);
-	}
-	return value;
+	return directives;
 }
 
 function parseGoalPlusRoleModels(rawGoal: string): GoalPlusRoleModels | undefined {
-	if (/(?:^|\s)model=/i.test(rawGoal)) {
-		throw new Error("model= is not supported; use main=, annotator=, and workers=");
+	const directives = leadingCommandDirectives(rawGoal);
+	if (directives.has("main")) {
+		throw new Error(
+			"main= is not supported; select the main model when starting Pi or with /model before /goal-plus",
+		);
 	}
-	const main = roleModelDirective(rawGoal, "main");
-	const annotator = roleModelDirective(rawGoal, "annotator");
-	const workers = commandDirective(rawGoal, "workers");
-	const models = commandDirective(rawGoal, "models");
+	if (directives.has("model")) {
+		throw new Error("model= is not supported; use annotator= and workers=");
+	}
+	const annotator = directives.get("annotator");
+	const workers = directives.get("workers");
+	const models = directives.get("models");
+	if (annotator?.includes(",")) {
+		throw new Error("annotator= accepts exactly one model; use workers= for a list");
+	}
 	if (workers && models) {
 		throw new Error("workers= and models= are aliases; specify only one");
 	}
@@ -1347,9 +1543,8 @@ function parseGoalPlusRoleModels(rawGoal: string): GoalPlusRoleModels | undefine
 	if (workerModels?.split(",").some((value) => value.trim().length === 0)) {
 		throw new Error("workers=/models= contains an empty model reference");
 	}
-	if (!main && !annotator && !workerModels) return undefined;
+	if (!annotator && !workerModels) return undefined;
 	return {
-		main,
 		annotator,
 		workerDirective: workers ? "workers" : models ? "models" : undefined,
 	};
@@ -1373,39 +1568,16 @@ function resolvePiModelReference(ctx: ExtensionContext, requested: string) {
 	return matches[0]!;
 }
 
-function assertPiMainModel(ctx: ExtensionContext, requested: string): string {
-	const expected = resolvePiModelReference(ctx, requested);
-	const current = ctx.model;
-	if (!current) {
-		throw new Error(
-			"Pi main= is a session-model assertion, but the current session did not report a model. " +
-				"Select the model before /goal-plus or omit main=.",
-		);
-	}
-	const expectedId = `${expected.provider}/${expected.id}`;
-	const currentId = `${current.provider}/${current.id}`;
-	if (expectedId.toLowerCase() !== currentId.toLowerCase()) {
-		throw new Error(
-			`main=${requested} does not match the current Pi session model ${currentId}. ` +
-				"Pi main= is a session-model assertion, not a model selector. " +
-				"Start Pi with --model MODEL, use /model before /goal-plus, or omit main=.",
-		);
-	}
-	return expectedId;
-}
-
 function resolveGoalPlusRoleModels(
 	ctx: ExtensionContext,
 	rawGoal: string,
 ): GoalPlusRoleModels | undefined {
 	const requested = parseGoalPlusRoleModels(rawGoal);
 	if (!requested) return undefined;
-	const main = requested.main ? assertPiMainModel(ctx, requested.main) : undefined;
 	const annotator = requested.annotator
 		? resolvePiModelReference(ctx, requested.annotator)
 		: undefined;
 	return {
-		main,
 		annotator: annotator ? `${annotator.provider}/${annotator.id}` : undefined,
 		workerDirective: requested.workerDirective,
 	};
@@ -1423,16 +1595,18 @@ function buildGoalStartPrompt(
 		"",
 		"原始目标：",
 		status.raw_goal ?? "",
+		"",
+		"显式命令配置（runtime 将在 SearchSpec draft 保存时校验）：",
+		JSON.stringify(status.command_config ?? {}),
 	];
 	if (roleModels) {
 		lines.push(
 			"",
 			"已解析的模型路由：",
 		);
-		if (roleModels.main) lines.push(`- main: ${roleModels.main}（已校验当前 Pi session，未切换模型）`);
 		if (roleModels.annotator) lines.push(`- annotator: ${roleModels.annotator}`);
 		if (roleModels.workerDirective) {
-			lines.push(`- workers: 使用原始目标中的 ${roleModels.workerDirective}= 分配。`);
+			lines.push(`- workers: 使用 command_config.workers（入口别名 ${roleModels.workerDirective}=）。`);
 		}
 		lines.push(
 			"- 冻结 SearchSpec 时，只写入显式角色：annotator 写入 strategy.evidence_annotator.model；workers=/models= 按原有分配规则写入 strategy.models。未指定的角色保持现有 host 默认或继承语义。",
@@ -1441,11 +1615,12 @@ function buildGoalStartPrompt(
 	lines.push(
 		"",
 		"重要事项：",
-		"- goal_plus_create 工具已经创建此记录。不要为该目标再次调用 goal_plus_create。",
+		"- command_config 中的字段必须原样落实；只有未配置字段才允许自主判断。",
+		"- 原生 Pi `/goal-plus` host command 已创建并授权此记录；skill、MCP 和模型工具不能创建或恢复 Goal Plus。",
 		"- 这是新创建记录的首轮。由你语义检查原始目标或当前对话上下文是否明确给出了整个 Goal Plus 任务的最大运行时间；如果没有，先用一句简短 commentary 告知用户：‘当前未设置最大运行时间，Goal Plus 将持续运行直至目标完成或用户手动停止。’这只是告知，不要询问或等待确认；告知后立即继续执行。",
 		"- 加载并遵循 goal-plus skill。",
 		"- 以最新用户消息作为判断继续、修订或讨论无关内容的权威依据；不要仅因 Goal Plus 处于 active 就恢复工作。",
-		"- 如果消息改变了实际范围、交付物或成功标准，使用完整修订后的原始目标和当前 expected_revision 调用 goal_plus_update_goal，然后重新 triage。否则保持修订版不变，并在恢复前澄清有歧义的意图。",
+		"- 如果用户要改变实际范围、交付物或成功标准，停止本轮变更并要求使用精确的 `/goal-plus edit <完整修订目标>`；不要调用 goal_plus_update_goal。否则保持修订版不变。",
 		"- 除了加载 goal-plus skill 之外，在 goal_plus_record_triage 前不要读取或审计目标文件。",
 		"- 首先使用 goal_plus_record_triage 记录 triage。",
 		"- 如果原始目标明确要求 verifier 引导的 Search Mode，并提供可度量的 verifier 或 metric，不要将其降级为普通 Goal Mode。",
@@ -1458,9 +1633,10 @@ function buildGoalStartPrompt(
 }
 
 interface GoalPlusSlashRequest {
-	action: "start" | "edit" | "resume";
+	action: "start" | "edit" | "resume" | "invalid";
 	rawGoal: string;
 	withFinalCheck: boolean;
+	invalidReason?: string;
 }
 
 function goalPlusRequestFromSlashInput(text: string): GoalPlusSlashRequest | undefined {
@@ -1468,11 +1644,24 @@ function goalPlusRequestFromSlashInput(text: string): GoalPlusSlashRequest | und
 	if (!match) return undefined;
 	const command = match[1];
 	const body = (match[2] ?? "").trim();
-	if (command === "goal-plus" && body.toLowerCase() === "resume") {
+	if (command === "goal-plus" && body === "resume") {
 		return { action: "resume", rawGoal: "", withFinalCheck: false };
 	}
-	if (command === "goal-plus" && body.toLowerCase().startsWith("edit ")) {
+	if (command === "goal-plus" && (body === "edit" || body.startsWith("edit "))) {
 		return { action: "edit", rawGoal: body.slice(5).trim(), withFinalCheck: false };
+	}
+	const normalizedBody = body.toLowerCase();
+	if (command === "goal-plus" && (
+		normalizedBody === "resume"
+		|| normalizedBody === "edit"
+		|| normalizedBody.startsWith("edit ")
+	)) {
+		return {
+			action: "invalid",
+			rawGoal: "",
+			withFinalCheck: false,
+			invalidReason: "Pi Goal Plus subcommands must be exact lowercase edit or resume.",
+		};
 	}
 	return {
 		action: "start",
@@ -1481,22 +1670,32 @@ function goalPlusRequestFromSlashInput(text: string): GoalPlusSlashRequest | und
 	};
 }
 
-function enforceGoalPlusThinking(pi: ExtensionAPI, ctx: ExtensionContext): string | undefined {
+function selectedGoalPlusThinking(pi: ExtensionAPI, ctx: ExtensionContext): string {
 	try {
-		pi.setThinkingLevel("xhigh");
+		return pi.getThinkingLevel();
 	} catch (error) {
-		ctx.ui.notify(`Goal Plus requires main thinking=max: ${String(error)}`, "error");
-		return undefined;
+		ctx.ui.notify(`Goal Plus could not observe the current Pi thinking level: ${String(error)}`, "warning");
+		return "unavailable";
 	}
-	const observed = pi.getThinkingLevel();
-	if (observed === "off") {
-		ctx.ui.notify(
-			"Goal Plus requires main thinking=max; the selected Pi model has reasoning disabled.",
-			"error",
-		);
-		return undefined;
-	}
-	return observed;
+}
+
+function piExecutionPolicy(nativeReasoningEffort: string) {
+	return {
+		execution: {
+			mode: "orchestrated",
+			main_reasoning_effort: "host_selected",
+			delegation: "proactive",
+			search_routing: "auto",
+			completion: "until_terminal",
+			host: {
+				protocol: "goal-plus-ultra-v1",
+				host_id: "pi",
+				native_reasoning_effort: nativeReasoningEffort,
+				enforcement: "host",
+				operations: ["spawn", "wait", "observe"],
+			},
+		},
+	};
 }
 
 async function createGoalPlusStart(
@@ -1505,6 +1704,20 @@ async function createGoalPlusStart(
 	rawGoal: string,
 	withFinalCheck = false,
 ): Promise<string | undefined> {
+	if (activeGoalPlusId) {
+		const current = await refreshActiveGoal(
+			pi,
+			commandContextFrom(ctx),
+			canPersistGoalState(ctx.mode),
+		);
+		if (current && !isTerminalStatus(current.status)) {
+			ctx.ui.notify(
+				`Goal Plus ${activeGoalPlusId} is still active; use /goal-plus resume or /goal-plus edit <full goal>.`,
+				"error",
+			);
+			return undefined;
+		}
+	}
 	let roleModels: GoalPlusRoleModels | undefined;
 	try {
 		roleModels = resolveGoalPlusRoleModels(ctx, rawGoal);
@@ -1519,28 +1732,23 @@ async function createGoalPlusStart(
 		});
 		return undefined;
 	}
-	const observedThinking = enforceGoalPlusThinking(pi, ctx);
-	if (!observedThinking) return undefined;
+	const observedThinking = selectedGoalPlusThinking(pi, ctx);
+	appendPiRuntimeStartEntry(pi, ctx);
 	const commandCtx = commandContextFrom(ctx);
 	const startEntryCount = ctx.sessionManager.getEntries().length;
-	const result = await runJsonCli(pi, commandCtx, "goal_plus_create", {
+	const command = withFinalCheck ? "/goal-plus-with-final-check" : "/goal-plus";
+	const result = await runHostCommandCli(pi, commandCtx, "goal_plus_host_start", {
 		raw_goal: rawGoal,
 		source_path: ctx.cwd,
+		invocation: piHostInvocation(
+			ctx,
+			command,
+			"start",
+			`${command} ${rawGoal}`,
+			`pi-entry-${startEntryCount}`,
+		),
 		policy: {
-			execution: {
-				mode: "orchestrated",
-				main_reasoning_effort: "max",
-				delegation: "proactive",
-				search_routing: "auto",
-				completion: "until_terminal",
-				host: {
-					protocol: "goal-plus-ultra-v1",
-					host_id: "pi",
-					native_reasoning_effort: observedThinking,
-					enforcement: "host",
-					operations: ["spawn", "wait", "observe"],
-				},
-			},
+			...piExecutionPolicy(observedThinking),
 			...(withFinalCheck ? { final_check: { mode: "required" } } : {}),
 		},
 	});
@@ -1549,15 +1757,16 @@ async function createGoalPlusStart(
 		const details =
 			isRecord(result.details) && typeof result.details.error === "string"
 				? result.details.error
-				: "goal_plus_create did not return a goal_plus_id";
+				: "Pi /goal-plus host entrypoint did not return a goal_plus_id";
 		pi.sendMessage({
 			customType: "goal-plus-error",
 			content: details,
 			display: true,
-			details: { tool: "goal_plus_create" },
+			details: { tool: "goal_plus_host_start" },
 		});
 		return undefined;
 	}
+	goalPlusSessionAuthorized = true;
 	activateGoal(pi, status, startEntryCount, canPersistGoalState(ctx.mode));
 	pi.sendMessage({
 		customType: "goal-plus-created",
@@ -1573,22 +1782,43 @@ async function updateGoalPlusStart(
 	ctx: ExtensionContext,
 	rawGoal: string,
 ): Promise<string | undefined> {
-	if (!enforceGoalPlusThinking(pi, ctx)) return undefined;
 	if (!activeGoalPlusId) {
 		ctx.ui.notify("No active Goal Plus record to edit", "error");
+		return undefined;
+	}
+	try {
+		parseGoalPlusRoleModels(rawGoal);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		ctx.ui.notify(message, "error");
+		pi.sendMessage({
+			customType: "goal-plus-error",
+			content: message,
+			display: true,
+			details: { stage: "model-routing" },
+		});
 		return undefined;
 	}
 	const commandCtx = commandContextFrom(ctx);
 	const current = await refreshActiveGoal(pi, commandCtx, canPersistGoalState(ctx.mode));
 	if (!current?.goal_plus_id || typeof current.goal_revision !== "number") return undefined;
-	const result = await runJsonCli(pi, commandCtx, "goal_plus_update_goal", {
+	const nativeEntryId = `pi-entry-${ctx.sessionManager.getEntries().length}`;
+	const result = await runHostCommandCli(pi, commandCtx, "goal_plus_host_edit", {
 		goal_plus_id: current.goal_plus_id,
 		raw_goal: rawGoal,
 		expected_revision: current.goal_revision,
 		reason: "user edited the Goal Plus objective through Pi",
+		invocation: piHostInvocation(
+			ctx,
+			"/goal-plus",
+			"edit",
+			`/goal-plus edit ${rawGoal}`,
+			nativeEntryId,
+		),
 	});
 	const status = statusFrom(result.details);
 	if (!status?.goal_plus_id) return undefined;
+	goalPlusSessionAuthorized = true;
 	activateGoal(pi, status, undefined, canPersistGoalState(ctx.mode));
 	return [
 			"用户已编辑 Goal Plus 目标。",
@@ -1603,20 +1833,38 @@ async function resumeGoalPlusStart(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 ): Promise<string | undefined> {
-	if (!enforceGoalPlusThinking(pi, ctx)) return undefined;
 	if (!activeGoalPlusId) {
 		ctx.ui.notify("No interrupted Goal Plus record to resume", "error");
 		return undefined;
 	}
-	const status = await refreshActiveGoal(
+	const current = await refreshActiveGoal(
 		pi,
 		commandContextFrom(ctx),
 		canPersistGoalState(ctx.mode),
 	);
-	if (!status || isTerminalStatus(status.status)) {
+	if (!current || isTerminalStatus(current.status)) {
 		ctx.ui.notify("The previous Goal Plus record is already terminal", "error");
 		return undefined;
 	}
+	const result = await runHostCommandCli(
+		pi,
+		commandContextFrom(ctx),
+		"goal_plus_host_resume",
+		{
+			goal_plus_id: activeGoalPlusId,
+			invocation: piHostInvocation(
+				ctx,
+				"/goal-plus",
+				"resume",
+				"/goal-plus resume",
+				`pi-entry-${ctx.sessionManager.getEntries().length}`,
+			),
+		},
+	);
+	const status = statusFrom(result.details);
+	if (!status?.goal_plus_id) return undefined;
+	goalPlusSessionAuthorized = true;
+	activateGoal(pi, status, undefined, canPersistGoalState(ctx.mode));
 	return [
 			"从持久化运行时状态恢复被中断的 Goal Plus 任务。",
 		`goal_plus_id: ${status.goal_plus_id ?? activeGoalPlusId}`,
@@ -1626,12 +1874,25 @@ async function resumeGoalPlusStart(
 	].join("\n");
 }
 
-function sendUserMessage(pi: ExtensionAPI, message: string, deliverAsFollowUp: boolean) {
-	if (!deliverAsFollowUp) {
-		pi.sendUserMessage(message);
-		return;
-	}
-	pi.sendUserMessage(message, { deliverAs: "followUp" });
+function startGoalPlusMainTurn(
+	pi: ExtensionAPI,
+	context: string,
+	deliverAsFollowUp: boolean,
+) {
+	pi.sendMessage(
+		{
+			customType: GOAL_PLUS_COMMAND_CONTEXT_TYPE,
+			content: context,
+			display: false,
+			details: {
+				goal_plus_id: activeGoalPlusId,
+				entrypoint_status: "host_verified",
+			},
+		},
+		deliverAsFollowUp
+			? { triggerTurn: true, deliverAs: "followUp" }
+			: { triggerTurn: true },
+	);
 }
 
 function registerRuntimeTool(pi: ExtensionAPI, name: string) {
@@ -1646,7 +1907,7 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string) {
 			const startEntryCount = ctx.sessionManager.getEntries().length;
 			const canPersistPiState = canPersistGoalState(ctx.mode);
 			const result = await runJsonCli(pi, commandCtx, name, params as Record<string, unknown>);
-			if (["goal_plus_create", "goal_plus_update_goal", "goal_plus_submit_final_check"].includes(name)) {
+			if (name === "goal_plus_submit_final_check") {
 				activateGoal(pi, result.details, startEntryCount, canPersistPiState);
 			}
 			if (name === "search_get_agent_context") {
@@ -1842,6 +2103,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 			if (typeof attemptId !== "string" || typeof generation !== "number") {
 				throw new Error(`Pi work item ${input.work_item_id} did not return an attempt identity`);
 			}
+			const selectedThinking = selectedGoalPlusThinking(pi, ctx);
 			const scope = Array.isArray(workItem.scope) ? workItem.scope.map(String).join(", ") : "current workspace";
 			const acceptance = Array.isArray(workItem.acceptance)
 				? workItem.acceptance.map(String).join("\n- ")
@@ -1852,7 +2114,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 				cwd: status?.source_path || ctx.cwd,
 				agent_session_id: sessionId,
 				session_id: sessionId,
-				thinking_level: "xhigh",
+				thinking_level: selectedThinking === "unavailable" ? undefined : selectedThinking,
 				prompt: [
 					"You are an implementation subagent. Work only on the assigned item.",
 					`Title: ${String(workItem.title || input.work_item_id)}`,
@@ -1908,7 +2170,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 			const observedThinking = typeof metrics.thinking_level === "string"
 				? metrics.thinking_level
 				: undefined;
-			const failed = metadata.timed_out === true || observedThinking === "off" || !observedThinking;
+			const failed = metadata.timed_out === true || !observedThinking;
 			const assistantText = typeof metadata.assistant_text === "string"
 				? metadata.assistant_text.trim()
 				: "";
@@ -1919,7 +2181,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 				goal_plus_id: input.goal_plus_id,
 				work_item_id: input.work_item_id,
 				event: failed ? "failed" : "result",
-				summary: failed ? "Pi subagent did not complete with reasoning enabled." : summary,
+				summary: failed ? "Pi subagent did not complete with a reported thinking level." : summary,
 				host: "pi",
 				task_name: input.work_item_id,
 				agent_id: sessionId,
@@ -1927,7 +2189,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 				generation,
 				transcript_path: typeof metadata.session_file === "string" ? metadata.session_file : undefined,
 				metadata: {
-					requested_reasoning_effort: "xhigh",
+					requested_reasoning_effort: selectedThinking,
 					native_reasoning_effort: observedThinking,
 					orchestration_monitor: {
 						native_operation: "goal-plus-pi-worker",
@@ -1964,7 +2226,7 @@ function workspaceGuard(event: ToolCallEvent) {
 	if (!sawContext) {
 		const readOnly = new Set(["read", "grep", "find", "ls"]);
 		if (readOnly.has(event.toolName)) return undefined;
-			return { block: true, reason: "使用变更类工具前调用 search_get_agent_context。" };
+		return { block: true, reason: "使用变更类工具前调用 search_get_agent_context。" };
 	}
 	if (!workspaceRoot) return undefined;
 	if (!["edit", "write", "bash"].includes(event.toolName)) return undefined;
@@ -1980,9 +2242,22 @@ function workspaceGuard(event: ToolCallEvent) {
 
 async function mainGate(event: ToolCallEvent, ctx: ExtensionContext) {
 	if (role !== "main") return undefined;
-	if (!event.toolName.startsWith("search_") && !MAIN_GATED_TOOLS.has(event.toolName)) return undefined;
+	const requiresAuthorization = requiresGoalPlusAuthorization(event.toolName);
+	if (requiresAuthorization && !goalPlusSessionAuthorized) {
+		return {
+			block: true,
+			reason: "GoalPlusEntrypointRequired: this Pi session was not authorized by exact /goal-plus, /goal-plus edit, or /goal-plus resume input.",
+		};
+	}
+	if (!requiresAuthorization && !MAIN_GATED_TOOLS.has(event.toolName)) return undefined;
+	if (!goalPlusSessionAuthorized) return undefined;
 	const goalPlusId = activeGoalPlusId;
-	if (!goalPlusId) return undefined;
+	if (!goalPlusId) {
+		return {
+			block: true,
+			reason: "GoalPlusEntrypointRequired: no host-authorized Goal Plus record is active for this Pi session.",
+		};
+	}
 	const commandCtx = commandContextFrom(ctx);
 	const gate = await runJsonCli(piForGate, commandCtx, "goal_plus_gate", {
 		goal_plus_id: goalPlusId,
@@ -2001,6 +2276,21 @@ let piForGate: ExtensionAPI;
 export default function (pi: ExtensionAPI) {
 	piForGate = pi;
 	if (typeof pi.registerEntryRenderer === "function") {
+		pi.registerEntryRenderer<PiRuntimeStartEntry>(GOAL_PLUS_RUNTIME_ENTRY_TYPE, (entry, { expanded }, theme) => {
+			const lines = renderPiRuntimeStartEntry(entry.data, expanded);
+			const box = new Box(1, 0, (text) => theme.bg("customMessageBg", text));
+			lines.forEach((line, index) => {
+				const rendered = index === 0
+					? `${theme.fg("accent", "[goal-plus]")} ${theme.fg("accent", line)}`
+					: index === 1
+						? line
+						: theme.fg("dim", line);
+				box.addChild(new Text(rendered, 0, 0));
+			});
+			return box;
+		});
+	}
+	if (typeof pi.registerEntryRenderer === "function") {
 		pi.registerEntryRenderer<GoalPlusStatsEntry>(GOAL_PLUS_STATS_ENTRY_TYPE, (entry, { expanded }, theme) => {
 			const data = entry.data;
 			const lines = (data?.message ?? "Goal Plus stats").split("\n");
@@ -2008,18 +2298,13 @@ export default function (pi: ExtensionAPI) {
 			const visibleLines = expanded ? lines : lines.slice(0, collapsedLineCount);
 			const box = new Box(1, 0, (text) => theme.bg("customMessageBg", text));
 			visibleLines.forEach((line, index) => {
-				const lateMarker = " · LATE ";
-				const lateIndex = line.indexOf(lateMarker);
-				const baseLine = lateIndex >= 0 ? line.slice(0, lateIndex) : line;
-				const lateLine = lateIndex >= 0 ? line.slice(lateIndex) : "";
 				const statusLine = data?.status === "complete"
-					? theme.fg("success", baseLine)
+					? theme.fg("success", line)
 					: data?.status === "blocked"
-						? theme.fg("error", baseLine)
-						: theme.fg("accent", baseLine);
-				const renderedStatusLine = `${statusLine}${lateLine ? theme.fg("error", lateLine) : ""}`;
+						? theme.fg("error", line)
+						: theme.fg("accent", line);
 				const rendered = index === 0
-					? `${theme.fg("accent", "[goal-plus]")} ${renderedStatusLine}`
+					? `${theme.fg("accent", "[goal-plus]")} ${statusLine}`
 					: index < collapsedLineCount
 						? line
 						: theme.fg("dim", line);
@@ -2028,13 +2313,20 @@ export default function (pi: ExtensionAPI) {
 			return box;
 		});
 	}
+	// BEGIN GENERATED GOAL PLUS COMMAND CONFIG
+	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_backend=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
+	// END GENERATED GOAL PLUS COMMAND CONFIG
 	if (!isPrintLikeInvocation) {
 		pi.registerCommand("goal-plus", {
-			description: "运行、编辑或恢复原生 Pi Goal Plus（支持显式角色模型）",
+			description: "运行、编辑或恢复原生 Pi Goal Plus（支持 typed command config）",
 			handler: async (args, ctx) => {
 				const request = goalPlusRequestFromSlashInput(`/goal-plus ${args}`);
+				if (request?.action === "invalid") {
+					ctx.ui.notify(request.invalidReason ?? "Invalid Goal Plus command", "error");
+					return;
+				}
 				if (!request || (request.action !== "resume" && !request.rawGoal)) {
-					ctx.ui.notify("Usage: /goal-plus [mode=autonomous|probe] [main=model] [annotator=model] [workers=model,...] <goal>, /goal-plus edit [mode=...] <full revised goal>, or /goal-plus resume", "error");
+					ctx.ui.notify(`Usage: /goal-plus ${GOAL_PLUS_COMMAND_CONFIG_USAGE} <goal>, /goal-plus edit [config] <full revised goal>, or /goal-plus resume`, "error");
 					return;
 				}
 				const deliverAsFollowUp = !ctx.isIdle();
@@ -2043,7 +2335,7 @@ export default function (pi: ExtensionAPI) {
 					: request.action === "edit"
 						? await updateGoalPlusStart(pi, ctx, request.rawGoal)
 						: await createGoalPlusStart(pi, ctx, request.rawGoal);
-				if (prompt) sendUserMessage(pi, prompt, deliverAsFollowUp);
+				if (prompt) startGoalPlusMainTurn(pi, prompt, deliverAsFollowUp);
 			},
 		});
 		pi.registerCommand("goal-plus-with-final-check", {
@@ -2051,11 +2343,11 @@ export default function (pi: ExtensionAPI) {
 			handler: async (args, ctx) => {
 				const rawGoal = args.trim();
 				if (!rawGoal) {
-					ctx.ui.notify("Usage: /goal-plus-with-final-check [mode=autonomous|probe] [main=model] [annotator=model] [workers=model,...] <goal>", "error");
+					ctx.ui.notify("Usage: /goal-plus-with-final-check [typed-config] <goal>", "error");
 					return;
 				}
 				const prompt = await createGoalPlusStart(pi, ctx, rawGoal, true);
-				if (prompt) sendUserMessage(pi, prompt, !ctx.isIdle());
+				if (prompt) startGoalPlusMainTurn(pi, prompt, !ctx.isIdle());
 			},
 		});
 		if (role === "main" && progressPreviewMode) {
@@ -2084,9 +2376,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	const mainTools = [
-		"goal_plus_create",
 		"goal_plus_status",
-		"goal_plus_update_goal",
 		"goal_plus_monitor_snapshot",
 		"goal_plus_list_models",
 		"goal_plus_record_triage",
@@ -2112,7 +2402,8 @@ export default function (pi: ExtensionAPI) {
 		"search_select",
 		"search_report",
 		"search_promote",
-			"pi_search_pool_open",
+		"search_apply_promotion",
+		"pi_search_pool_open",
 		"pi_search_pool_wait_any",
 		"pi_search_pool_snapshot",
 		"pi_search_pool_continue",
@@ -2121,6 +2412,7 @@ export default function (pi: ExtensionAPI) {
 	const workerTools = [
 		"search_get_agent_context",
 		"search_get_global_evidence",
+		"search_reference_open",
 		"search_stage_shared_tool",
 		"search_copy_shared_tool",
 		"search_get_evidence_detail",
@@ -2143,11 +2435,18 @@ export default function (pi: ExtensionAPI) {
 		registerPiWorkItemTool(pi);
 	}
 	pi.on("input", async (event, ctx) => {
-		if (role !== "main" || (ctx.mode !== "print" && ctx.mode !== "json")) {
+		if (role !== "main") {
 			return { action: "continue" };
 		}
 		const request = goalPlusRequestFromSlashInput(event.text);
-		if (request === undefined) return { action: "continue" };
+		if (request === undefined) {
+			return { action: "continue" };
+		}
+		if (ctx.mode !== "print" && ctx.mode !== "json") return { action: "continue" };
+		if (request.action === "invalid") {
+			ctx.ui.notify(request.invalidReason ?? "Invalid Goal Plus command", "error");
+			return { action: "handled" };
+		}
 		if (request.action !== "resume" && !request.rawGoal) {
 			ctx.ui.notify("Goal Plus command requires a goal", "error");
 			return { action: "handled" };
@@ -2164,7 +2463,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		return workspaceGuard(event) || (await mainGate(event, ctx));
 	});
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		goalPlusSessionAuthorized = false;
+		if (role !== "main" && event.reason !== "reload") {
+			appendPiRuntimeStartEntry(pi, ctx);
+		}
 		if (role === "main" && progressPreviewMode) {
 			showPiProgress(ctx, PI_PROGRESS_PREVIEWS[progressPreviewMode]);
 			return;
@@ -2187,7 +2490,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 	pi.on("before_agent_start", async (_event, ctx) => {
-		if (role !== "main" || !activeGoalPlusId) return;
+		if (role !== "main" || !activeGoalPlusId || !goalPlusSessionAuthorized) return;
 		const commandCtx = commandContextFrom(ctx);
 		const status = await refreshActiveGoal(pi, commandCtx, canPersistGoalState(ctx.mode));
 		if (!status || isTerminalStatus(status.status)) return;
@@ -2206,10 +2509,12 @@ export default function (pi: ExtensionAPI) {
 			lastMessage?.role === "assistant" &&
 			lastMessage.stopReason === "length" &&
 			countToolCalls(lastMessage.content) === 0;
-		if (
-			lastMessage?.role === "assistant" &&
-			(lastMessage.stopReason === "error" || lastMessage.stopReason === "aborted")
-		) {
+		if (lastMessage?.role === "assistant" && lastMessage.stopReason === "error") {
+			// Pi may retry after a transient provider error without a new user message.
+			// The exact host command authorizes this native session, not one model turn.
+			return;
+		}
+		if (lastMessage?.role === "assistant" && lastMessage.stopReason === "aborted") {
 			return;
 		}
 		if (ctx.hasPendingMessages()) return;
@@ -2234,7 +2539,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			return;
 		}
-		if (role !== "main" || !activeGoalPlusId) return;
+		if (role !== "main" || !activeGoalPlusId || !goalPlusSessionAuthorized) return;
 		const commandCtx = commandContextFrom(ctx);
 		const mode = ctx.mode;
 		const persist = canPersistGoalState(mode);
@@ -2287,6 +2592,7 @@ export default function (pi: ExtensionAPI) {
 			activeGoalStartEntryCount = 0;
 			continuationCount = 0;
 			cachedGoalStatus = undefined;
+			goalPlusSessionAuthorized = false;
 			if (persist) persistGoalState(pi);
 		}
 	});

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 import os
 import shutil
 import subprocess
@@ -11,6 +12,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from goal_plus.agent_hosts import UnsupportedHostCapability
+from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.models import (
     CandidateProposal,
     CandidateRecord,
@@ -178,6 +181,387 @@ def test_freeze_spec_is_stable_and_copies_verifier(tmp_path: Path) -> None:
     assert first.frozen_spec_id == second.frozen_spec_id
     assert first.verifier_hashes["evaluator.py"] == sha256_file(project / "evaluator.py")
     assert Path(first.frozen_verifier_paths["evaluator.py"]).exists()
+
+
+def _spec_with_workspace_backend(project: Path, backend: str) -> SearchSpec:
+    payload = spec_for(project).model_dump(mode="json")
+    payload["workspace"] = {"backend": backend}
+    return SearchSpec.model_validate(payload)
+
+
+def _initialize_source_repository(project: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    git_commit_all(project, "source baseline")
+
+
+@pytest.mark.parametrize("dirty_kind", ["staged", "unstaged", "untracked"])
+def test_freeze_spec_rejects_dirty_git_source_before_preflight(
+    tmp_path: Path,
+    dirty_kind: str,
+) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    if dirty_kind == "untracked":
+        (project / "scratch.txt").write_text("temporary\n", encoding="utf-8")
+    else:
+        (project / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
+        if dirty_kind == "staged":
+            subprocess.run(
+                ["git", "add", "initial_program.py"],
+                cwd=project,
+                check=True,
+            )
+
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    with pytest.raises(ValueError, match="DirtySourceWorkspace") as exc_info:
+        runtime.freeze_spec(
+            _spec_with_workspace_backend(project, "git_worktree"),
+            [project / "evaluator.py"],
+        )
+
+    expected_path = "scratch.txt" if dirty_kind == "untracked" else "initial_program.py"
+    assert expected_path in str(exc_info.value)
+    assert "workspace.backend='copy'" in str(exc_info.value)
+    assert not runtime.specs_dir.exists()
+
+
+def test_freeze_spec_allows_ignored_untracked_git_source(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    (project / ".gitignore").write_text("scratch.txt\n", encoding="utf-8")
+    _initialize_source_repository(project)
+    (project / "scratch.txt").write_text("temporary\n", encoding="utf-8")
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+
+    assert frozen.spec.workspace.backend == "git_worktree"
+
+
+def test_git_freeze_verifies_origin_and_first_candidate_before_search(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    counter = tmp_path / "verifier-count.txt"
+    (project / "evaluator.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        f"counter = Path({str(counter)!r})\n"
+        "count = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+        "counter.write_text(str(count))\n"
+        "if count == 2 and (Path.cwd().parent / 'c002').exists():\n"
+        "    raise SystemExit('c002 existed before relocation verification')\n"
+        "print(json.dumps({'combined_score': 3.5}))\n",
+        encoding="utf-8",
+    )
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+
+    assert counter.read_text(encoding="utf-8") == "1"
+    assert frozen.source_artifact_ref is not None
+    assert frozen.origin_verification is not None
+    assert frozen.origin_verification.phase == "origin"
+    assert frozen.origin_verification.passed is True
+    assert frozen.origin_verification.aggregate_score == 3.5
+
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+    tasks = runtime.start_batch(run_id, plan.plan_id)
+    run = runtime._load_run(run_id)
+
+    assert [task.candidate_id for task in tasks] == ["c001", "c002"]
+    assert all(
+        task.workspace_base_revision == frozen.source_artifact_ref.id
+        for task in tasks
+    )
+    assert counter.read_text(encoding="utf-8") == "2"
+    assert run.workspace_bootstrap_verification is not None
+    assert run.workspace_bootstrap_verification.phase == "workspace_relocation"
+    assert run.workspace_bootstrap_verification.candidate_id == "c001"
+    assert run.workspace_bootstrap_verification.passed is True
+    assert run.workspace_bootstrap_verification.aggregate_score == 3.5
+    assert all(not record.iterations for record in runtime._load_candidate_records(run_id))
+    monitor = goal_plus_monitor_snapshot(runtime.root_dir, run_id=run_id)
+    assert monitor["run"]["source_artifact_ref"] == frozen.source_artifact_ref.model_dump(
+        mode="json"
+    )
+    assert monitor["run"]["origin_verification"]["passed"] is True
+    assert (
+        monitor["run"]["workspace_bootstrap_verification"]["candidate_id"]
+        == "c001"
+    )
+
+    report_path = runtime.report(run_id)
+    report_text = report_path.read_text(encoding="utf-8")
+    html_text = report_path.with_suffix(".html").read_text(encoding="utf-8")
+    assert "## Bootstrap Verification" in report_text
+    assert "`workspace_relocation`" in report_text
+    assert "Bootstrap Verification" in html_text
+    assert "workspace_relocation" in html_text
+
+
+def test_git_freeze_rejects_failing_origin_verifier_before_spec_creation(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    (project / "evaluator.py").write_text(
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+    )
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    with pytest.raises(ValueError, match="OriginVerifierFailed"):
+        runtime.freeze_spec(
+            _spec_with_workspace_backend(project, "git_worktree"),
+            [project / "evaluator.py"],
+        )
+
+    assert not runtime.specs_dir.exists()
+    assert list((runtime.root_dir / "bootstrap").glob("origin-*/*score*.log"))
+
+
+def test_git_origin_verifier_may_write_ignored_cache(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    (project / ".gitignore").write_text("cache/\n", encoding="utf-8")
+    (project / "evaluator.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "Path('cache').mkdir(exist_ok=True)\n"
+        "Path('cache/result.txt').write_text('compiled')\n"
+        "print(json.dumps({'combined_score': 1}))\n",
+        encoding="utf-8",
+    )
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+
+    assert frozen.origin_verification is not None
+    assert frozen.origin_verification.passed is True
+    assert (project / "cache" / "result.txt").is_file()
+    assert subprocess.check_output(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=project,
+        text=True,
+    ) == ""
+
+
+def test_freeze_spec_copy_backend_allows_dirty_git_source(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    (project / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (project / "scratch.txt").write_text("temporary\n", encoding="utf-8")
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+
+    assert frozen.spec.workspace.backend == "copy"
+    assert frozen.spec.workspace.promotion_mode == "artifact_only"
+
+
+def test_freeze_spec_git_worktree_keeps_plain_directory_support(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+
+    assert frozen.spec.workspace.backend == "git_worktree"
+
+
+def test_freeze_spec_checks_the_whole_repository_for_nested_source(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    project = make_project(repository)
+    (repository / "README.md").write_text("baseline\n", encoding="utf-8")
+    _initialize_source_repository(repository)
+    (repository / "README.md").write_text("dirty\n", encoding="utf-8")
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    with pytest.raises(ValueError, match="README.md"):
+        runtime.freeze_spec(
+            _spec_with_workspace_backend(project, "git_worktree"),
+            [project / "evaluator.py"],
+        )
+
+
+def test_create_run_rechecks_clean_git_source(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+    (project / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="DirtySourceWorkspace"):
+        runtime.create_run(frozen.frozen_spec_id)
+
+    assert not runtime.runs_dir.exists()
+
+
+def test_create_run_rejects_clean_git_source_at_new_head(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+    (project / "initial_program.py").write_text("VALUE = 2\n", encoding="utf-8")
+    git_commit_all(project, "new clean source head")
+
+    with pytest.raises(RuntimeError, match="FrozenSourceChanged"):
+        runtime.create_run(frozen.frozen_spec_id)
+
+    assert not runtime.runs_dir.exists()
+
+
+def test_git_freeze_rejects_verifier_ignored_by_outer_repository(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    nested = repository / "case" / "workspace"
+    nested.mkdir(parents=True)
+    (nested / "initial_program.py").write_text("VALUE = 0\n", encoding="utf-8")
+    (nested / "evaluator.py").write_text(
+        "import json\nprint(json.dumps({'combined_score': 1}))\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=nested, check=True)
+    git_commit_all(nested, "nested task")
+
+    (repository / ".gitignore").write_text("case/workspace/\n", encoding="utf-8")
+    (repository / "README.md").write_text("outer repository\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    git_commit_all(repository, "outer source")
+
+    spec_data = spec_for(repository, max_parallel=2).model_dump(mode="json")
+    spec_data["workspace"] = {"backend": "git_worktree"}
+    spec_data["edit_surface"] = {
+        "allow": ["case/workspace/initial_program.py"],
+        "deny": ["case/workspace/evaluator.py"],
+    }
+    spec_data["process_verifiers"][0]["cwd"] = "case/workspace"
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    with pytest.raises(ValueError, match="VerifierArtifactNotMaterialized"):
+        runtime.freeze_spec(
+            SearchSpec.model_validate(spec_data),
+            [nested / "evaluator.py"],
+        )
+
+    assert not runtime.specs_dir.exists()
+
+
+def test_git_relocation_rejects_nonignored_verifier_side_effect(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    (project / "evaluator.py").write_text(
+        "import json\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "if os.environ.get('GOAL_PLUS_VERIFIER_PHASE') == 'workspace_relocation':\n"
+        "    Path('initial_program.py').write_text('VALUE = 99\\n')\n"
+        "print(json.dumps({'combined_score': 1}))\n",
+        encoding="utf-8",
+    )
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+
+    with pytest.raises(RuntimeError, match="WorkspaceRelocationVerifierFailed"):
+        runtime.start_batch(run_id, plan.plan_id)
+
+    run = runtime._load_run(run_id)
+    assert run.workspace_bootstrap_verification is not None
+    failures = [
+        result.failure_class
+        for result in run.workspace_bootstrap_verification.verifier_results
+        if not result.passed
+    ]
+    assert "VerifierWorkspaceSideEffect" in failures
+    assert run.candidates_total == 1
+
+
+def test_create_run_ignores_runtime_state_inside_source_repository(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(project / ".gp")
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+
+    assert runtime.status(run_id).run_id == run_id
+
+
+@pytest.mark.parametrize("worker_host", ["codex", "pi-rpc"])
+def test_freeze_spec_rejects_thinkthread_before_verifier_preflight(
+    tmp_path: Path,
+    worker_host: str,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec_data = spec_for(project).model_dump(mode="json")
+    spec_data["strategy"]["worker_host"] = worker_host
+    spec_data["workspace"] = {"backend": "thinkthread"}
+    with pytest.raises(
+        UnsupportedHostCapability,
+        match=rf"{worker_host} worker_host does not support workspace backend 'thinkthread'",
+    ) as exc_info:
+        runtime.freeze_spec(
+            SearchSpec.model_validate(spec_data),
+            [project / "evaluator.py"],
+        )
+
+    assert "supported backends: copy, git_worktree" in str(exc_info.value)
+    assert "before Search run creation" in str(exc_info.value)
+    assert not runtime.specs_dir.exists()
+    assert not runtime.runs_dir.exists()
+
+
+def test_create_run_rechecks_existing_thinkthread_frozen_spec(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen_path = runtime.specs_dir / frozen.frozen_spec_id / "frozen_spec.json"
+    payload = load_json(frozen_path)
+    payload["spec"]["workspace"] = {"backend": "thinkthread"}
+    write_json(frozen_path, payload)
+
+    with pytest.raises(
+        UnsupportedHostCapability,
+        match="codex worker_host does not support workspace backend 'thinkthread'",
+    ):
+        runtime.create_run(frozen.frozen_spec_id)
+
+    assert not runtime.runs_dir.exists()
 
 
 def test_freeze_spec_rejects_verifier_workspace_side_effect_without_mutating_source(
@@ -424,6 +808,10 @@ def test_visible_verifier_failure_returns_diagnostics_and_preserves_logs(
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
+
+    assert task.workspace_creation_timing is not None
+    assert task.workspace_creation_timing.outcome == "succeeded"
+    assert task.workspace_creation_timing.duration_seconds >= 0
 
     task.workspace.joinpath("initial_program.py").write_text(
         "VALUE = 1\n",
@@ -743,22 +1131,16 @@ def test_git_tracked_task_skills_are_discovered_in_each_candidate_worktree(
         "# Checks\n\nInspect the candidate worktree only.\n",
         encoding="utf-8",
     )
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    git_commit_all(project, "source baseline")
+    git_exclude = project / ".git" / "info" / "exclude"
+    git_exclude.write_text(
+        f"{git_exclude.read_text(encoding='utf-8')}\n.agents/skills/untracked/\n",
+        encoding="utf-8",
+    )
     untracked_skill = project / ".agents" / "skills" / "untracked" / "SKILL.md"
     untracked_skill.parent.mkdir(parents=True)
     untracked_skill.write_text("# Untracked\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    subprocess.run(
-        [
-            "git",
-            "add",
-            "initial_program.py",
-            "evaluator.py",
-            "config.yaml",
-            ".agents/skills/review",
-        ],
-        cwd=project,
-        check=True,
-    )
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec_data = spec_with_host(
         project,
@@ -1029,6 +1411,9 @@ def test_worker_policy_documents_host_launch_contract(tmp_path: Path) -> None:
     assert plan.worker_policy["worker_agent_type"] == "search_candidate_agent"
     assert "worker_mode" not in tasks[0].strategy_metadata
     assert any("当前 agent_session_id" in instruction for instruction in tasks[0].instructions)
+    assert tasks[0].workspace_access.native_cwd == tasks[0].workspace
+    assert tasks[0].workspace_access.bootstrap_required is True
+    assert tasks[0].workspace_access.confinement == "soft_path"
     assert any(
         "search_run_verifier" in instruction for instruction in tasks[0].instructions
     )
@@ -1043,6 +1428,13 @@ def test_worker_policy_documents_host_launch_contract(tmp_path: Path) -> None:
     assert "success_threshold" not in combined_instructions
     for runtime_detail in ("results.tsv", "worker_agent_type"):
         assert runtime_detail not in combined_instructions
+    assert "search_reference_open" in combined_instructions
+    assert "当前 agent 唯一的 ref-workspace" in combined_instructions
+    assert "同一目录切到新的 reference commit" in combined_instructions
+    assert "search_reference_list/read/exec" not in combined_instructions
+    assert "search_reference_close" not in combined_instructions
+    assert "不要访问或 fetch peer 的真实工作区" in combined_instructions
+    assert "When steps run out the host will ask you" not in combined_instructions
 
     (tasks[0].workspace / ".tmp" / "handoff.json").write_text(
         '{"summary": "resume here"}\n',
@@ -1540,6 +1932,310 @@ def test_promote_patch_uses_selected_commit_after_evidence_check(
     ) == "VALUE = 1\n"
 
 
+def test_git_promotion_preserves_running_history_and_applies_one_squash_commit(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    source_head = git_commit_all(project, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+
+    assert task.workspace_creation_timing is not None
+    assert task.workspace_creation_timing.outcome == "succeeded"
+    assert task.workspace_creation_timing.duration_seconds >= 0
+
+    task.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    git_commit_all(task.workspace, "autoresearch running commit")
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    patch_path = runtime.promote(run_id, task.candidate_id)
+    prepared = runtime.promotion_record(run_id)
+
+    assert patch_path.is_file()
+    assert prepared.strategy == "squash_commit"
+    assert prepared.publication_artifact_ref is not None
+    publication = prepared.publication_artifact_ref.id
+    assert subprocess.check_output(
+        ["git", "rev-list", "--count", f"{source_head}..{publication}"],
+        cwd=task.workspace,
+        text=True,
+    ).strip() == "1"
+    assert int(
+        subprocess.check_output(
+            ["git", "rev-list", "--count", f"{source_head}..HEAD"],
+            cwd=task.workspace,
+            text=True,
+        ).strip()
+    ) >= 2
+
+    applied = runtime.apply_promotion(run_id)
+
+    assert applied.state == "applied"
+    assert applied.apply_timing is not None
+    assert applied.apply_timing.outcome == "succeeded"
+    assert applied.apply_timing.duration_seconds >= 0
+    assert applied.applied_source_revision == subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True
+    ).strip()
+    assert subprocess.check_output(
+        ["git", "rev-list", "--count", f"{source_head}..HEAD"],
+        cwd=project,
+        text=True,
+    ).strip() == "1"
+    assert project.joinpath("initial_program.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 1\n"
+    assert not project.joinpath("results.tsv").exists()
+
+    persisted = runtime._load_run(run_id)
+    assert persisted.promotion is not None
+    persisted.promotion = persisted.promotion.model_copy(
+        update={
+            "state": "prepared",
+            "applied_source_revision": None,
+            "apply_result": {},
+            "applied_at": None,
+        }
+    )
+    runtime._write_run(persisted)
+    recovered = runtime.apply_promotion(run_id)
+
+    assert recovered.apply_result["method"] == "git_existing_cherry_pick"
+    assert subprocess.check_output(
+        ["git", "rev-list", "--count", f"{source_head}..HEAD"],
+        cwd=project,
+        text=True,
+    ).strip() == "1"
+
+
+def test_create_rejects_failed_workspace_capacity_preflight(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        spec_for(project, max_parallel=4),
+        [project / "evaluator.py"],
+    )
+    assert frozen.workspace_capacity_estimate is not None
+    failed_estimate = frozen.workspace_capacity_estimate.model_copy(
+        update={
+            "available_bytes": 0,
+            "fits_available_space": False,
+        }
+    )
+    failed_frozen = frozen.model_copy(
+        update={"workspace_capacity_estimate": failed_estimate}
+    )
+    (runtime._spec_dir(frozen.frozen_spec_id) / "frozen_spec.json").write_text(
+        json.dumps(failed_frozen.model_dump(mode="json")),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="capacity preflight failed"):
+        runtime.create_run(frozen.frozen_spec_id)
+
+
+def test_git_run_local_worktree_and_apply_work_inside_source_gp(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    project.joinpath(".gitignore").write_text(".gp/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    source_head = git_commit_all(project, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(project / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+
+    assert task.workspace_managed_root is not None
+    assert task.workspace_managed_root.is_relative_to(project / ".gp")
+    task.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    runtime.promote(run_id, task.candidate_id)
+    runtime.apply_promotion(run_id)
+
+    assert project.joinpath("initial_program.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 1\n"
+    assert subprocess.check_output(
+        ["git", "rev-list", "--count", f"{source_head}..HEAD"],
+        cwd=project,
+        text=True,
+    ).strip() == "1"
+    assert subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=project, text=True
+    ).strip() == ""
+
+
+def test_git_promotion_apply_is_noop_when_product_tree_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    source_head = git_commit_all(project, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    runtime.promote(run_id, task.candidate_id)
+    applied = runtime.apply_promotion(run_id)
+
+    assert applied.apply_result["method"] == "git_noop"
+    assert subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True
+    ).strip() == source_head
+
+
+def test_git_promotion_applies_nested_source_subdir_only(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    project = make_project(repository)
+    repository.joinpath("README.md").write_text("root\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    source_head = git_commit_all(repository, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+
+    assert task.workspace_source_subdir == "project"
+    assert task.workspace_managed_root is not None
+    assert task.workspace == task.workspace_managed_root / "project"
+    task.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    runtime.promote(run_id, task.candidate_id)
+    runtime.apply_promotion(run_id)
+
+    assert project.joinpath("initial_program.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 1\n"
+    assert repository.joinpath("README.md").read_text(encoding="utf-8") == "root\n"
+    assert subprocess.check_output(
+        ["git", "diff", "--name-only", f"{source_head}..HEAD"],
+        cwd=repository,
+        text=True,
+    ).splitlines() == ["project/initial_program.py"]
+
+
+def test_nested_git_workspace_rejects_committed_changes_outside_source_subdir(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    project = make_project(repository)
+    repository.joinpath("README.md").write_text("root\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    git_commit_all(repository, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    assert task.workspace_managed_root is not None
+
+    task.workspace_managed_root.joinpath("README.md").write_text(
+        "candidate escaped\n", encoding="utf-8"
+    )
+    git_commit_all(task.workspace_managed_root, "outside logical source")
+    report = runtime.run_verifier(run_id, task.candidate_id)
+    record = runtime._load_candidate_record(run_id, task.candidate_id)
+
+    assert report.process_passed is False
+    assert "../README.md" in record.detected_changed_files
+    assert record.changed_outside_allowed is True
+
+
+def test_git_promotion_conflict_aborts_without_cherry_pick_state(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    git_commit_all(project, "source baseline")
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["workspace"] = {"backend": "git_worktree"}
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data), [project / "evaluator.py"]
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    task.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    runtime.promote(run_id, task.candidate_id)
+
+    project.joinpath("initial_program.py").write_text(
+        "VALUE = 99\n", encoding="utf-8"
+    )
+    source_revision = git_commit_all(project, "conflicting source change")
+
+    with pytest.raises(RuntimeError, match="cherry-pick"):
+        runtime.apply_promotion(run_id)
+
+    assert subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True
+    ).strip() == source_revision
+    assert subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=project, text=True
+    ).strip() == ""
+    assert subprocess.run(
+        ["git", "rev-parse", "--verify", "CHERRY_PICK_HEAD"],
+        cwd=project,
+        check=False,
+        capture_output=True,
+        text=True,
+    ).returncode != 0
+    failed_promotion = runtime.promotion_record(run_id)
+    assert failed_promotion.state == "apply_failed"
+    assert failed_promotion.apply_timing is not None
+    assert failed_promotion.apply_timing.outcome == "failed"
+    assert failed_promotion.apply_timing.duration_seconds >= 0
+
 
 @pytest.mark.codex
 def test_worker_policy_includes_host_capabilities_for_codex(tmp_path: Path) -> None:
@@ -1784,6 +2480,9 @@ def test_start_agent_session_returns_pi_rpc_launch_payload(tmp_path: Path) -> No
     assert session.launch["run_id"] == run_id
     assert session.launch["root"] == str(runtime.root_dir)
     assert session.launch["cwd"] == str(task.workspace)
+    assert task.workspace_access.native_cwd == task.workspace
+    assert task.workspace_access.bootstrap_required is False
+    assert task.workspace_access.confinement == "soft_path"
     assert session.launch["session_id"] == session.agent_session_id
     assert session.launch["budget_control"]["mode"] == "pi_rpc_process_watchdog"
     assert session.launch["budget_control"]["max_runtime_seconds"] == 600
@@ -3776,8 +4475,11 @@ def test_legacy_tmp_results_tsv_migrates_and_backfills_missing_iterations(
     legacy_record = load_json(candidate_path)
     legacy_record.pop("results_ledger", None)
     legacy_record.pop("results_ledger_git_head", None)
+    legacy_record.pop("results_ledger_artifact_ref", None)
     for iteration in legacy_record["iterations"]:
         iteration.pop("ledger_git_head", None)
+        iteration.pop("ledger_artifact_ref", None)
+        iteration.pop("workspace_artifact_after_settlement", None)
         iteration.pop("hypothesis", None)
         iteration["summary"] = ""
     write_json(candidate_path, legacy_record)
@@ -4133,6 +4835,56 @@ def test_history_and_report_include_agent_sessions(tmp_path: Path) -> None:
     report = report_path.read_text(encoding="utf-8")
     assert "## Agent Sessions" in report
     assert session.agent_session_id in report
+
+
+@pytest.mark.parametrize("goal_status", ["active", "needs_user"])
+def test_report_rejects_linked_nonterminal_goal(
+    tmp_path: Path,
+    goal_status: str,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    goal_dir = runtime.root_dir / "goal-plus" / "gp_report"
+    goal_dir.mkdir(parents=True)
+    write_json(
+        goal_dir / "goal.json",
+        {
+            "goal_plus_id": "gp_report",
+            "status": goal_status,
+            "search_tasks": [{"run_id": run_id}],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="reaches a terminal status"):
+        runtime.report(run_id)
+
+
+@pytest.mark.parametrize("goal_status", ["complete", "blocked", "abandoned"])
+def test_report_allows_linked_terminal_goal(
+    tmp_path: Path,
+    goal_status: str,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    goal_dir = runtime.root_dir / "goal-plus" / "gp_report"
+    goal_dir.mkdir(parents=True)
+    write_json(
+        goal_dir / "goal.json",
+        {
+            "goal_plus_id": "gp_report",
+            "status": goal_status,
+            "search_tasks": [{"run_id": run_id}],
+        },
+    )
+
+    report_path = runtime.report(run_id)
+
+    assert report_path.is_file()
+    assert report_path.with_suffix(".html").is_file()
 
 
 @pytest.mark.pi

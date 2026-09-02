@@ -44,6 +44,15 @@ The runtime owns:
 - durable `.gp/` run state
 - report generation and promotion patches
 
+Goal Plus startup authority belongs only to the host command adapters: exact
+Codex `$goal-plus...` input through `UserPromptSubmit`, or exact Pi
+`/goal-plus...` input through the native extension command handler. Skills,
+prompts, model-facing MCP tools, generic CLI facades, SessionStart, and ordinary
+natural-language requests must never create, edit, resume, or authorize a Goal
+Plus record. Keep `goal_plus_create` and `goal_plus_update_goal` deny-only if
+their legacy names remain exposed, and fail closed on host-command or mutating
+tool authorization errors.
+
 The host code-agent or host-local supervisor owns:
 
 - worker launch, lifecycle, stop/interrupt, and return values
@@ -58,45 +67,6 @@ must stay outside Search run records and preserve the ownership boundary.
 `search_start_agent_session` returns a host-native launch payload. The main
 agent must treat that launch payload as authoritative and spawn a foreground
 worker through the selected host.
-
-## Hidden-Answer Benchmarking
-
-Standard-answer benchmarks such as MMLU/formal_logic, ARC, WinoGrande,
-TruthfulQA, and GSM8K require a benchmark protocol that keeps correctness
-feedback hidden from workers. Do not report those results from normal Search
-Mode when workers can call a verifier that returns correctness, score, gold
-labels, predictions, or any other hidden-answer signal. Even a bare correct /
-incorrect result is an oracle for multiple-choice tasks.
-
-It is fine to expose a public verifier that only checks submission format, such
-as `answer.json` shape, a valid choice label, or a parseable numeric answer.
-For hidden-answer benchmarks, keep the scoring grader outside the worker-visible
-SearchSpec and run it only after all candidate answers are final.
-
-When building or running such benchmarks:
-
-- For comparison against an existing completed run, reuse the repository case
-  identity manifest and verify `benchmark`, `case_index`, and
-  `question_sha256`. Do not silently replace it with "first N" cases. The
-  checked-in manifest must not include raw questions, gold answers, result
-  history, or local filesystem paths.
-- Do not put gold labels, answer keys, gold-file paths, or hidden-answer scoring
-  commands in frozen specs, worker context, candidate workspaces, public
-  process verifiers, or promotion verifiers visible to workers.
-- Answering agents must not use web search, external lookup, or local answer
-  search outside the candidate workspace. Do not inspect Hugging Face caches,
-  benchmark reports/runs, other repositories, or dataset files to recover
-  answers.
-- Do not select a final answer by verifier score or `search_select` when the
-  score uses hidden gold. Use a gold-independent rule such as majority vote,
-  first valid answer with a fixed tie-break, or another predeclared aggregator.
-- Store hidden gold only in the parent evaluator after worker execution, or keep
-  it in memory until scoring. Do not create adjacent `_gold` files before worker
-  runs.
-- If a user asks to benchmark `/goal-plus` on hidden-answer datasets, explain
-  this protocol distinction before running: normal verifier-guided Search Mode
-  measures optimization with feedback, while hidden-answer QA benchmarks measure
-  answer quality under verifier-hidden evaluation.
 
 ## Directory Map
 
@@ -131,6 +101,43 @@ Generated or local-only state:
 - Raw host logs and transcripts should stay in ignored locations such as
   `.gp/host-logs/`.
 
+## Installation Modes
+
+`install.sh` is the supported source-checkout installation entry point. Keep
+its behavior, `scripts/install.py`, the host documentation, and
+`tests/test_install.py` aligned.
+
+- `./install.sh --codex` performs the normal Codex runtime and plugin install.
+- `./install.sh --pi` performs the normal Pi runtime and package install.
+- `./install.sh --pi-dev` creates an ignored `.goal-plus-dev/` editable venv,
+  `set_env.sh`, and `pi-goal-plus` launcher for the current checkout.
+- `./install.sh --env-show` lists managed Pi development environments, source
+  versions, health, and allocated disk usage without changing them.
+- `--pi` and `--pi-dev` are mutually exclusive. Either may be combined with
+  `--codex` where otherwise valid.
+
+Pi development mode must not modify `CODEX_HOME`, `PI_CODING_AGENT_DIR`, Pi
+settings, models, or authentication. `set_env.sh` adds only the generated
+launcher directory to `PATH`; the launcher scopes the editable venv to its own
+process and explicitly passes the checkout's extension and single Pi skill to
+Pi. Pi deduplicates an existing registration from this exact checkout by
+absolute resource path. Both setup and launch must fail closed when a different
+user- or project-scoped Goal Plus source would create a duplicate load; broken
+loose-resource symlinks are inactive and must not block development mode.
+
+Normal installation must bind the selected Python interpreter and inherited
+`PATH` to one environment. Reject setup when the interpreter's scripts
+directory is absent from `PATH` or an existing Goal Plus command resolves from
+another environment; the host assets invoke these console scripts by name.
+
+Codex has no separate checkout-local development profile. Do not restore the
+retired `goal-plus@goal-plus-local` staging marketplace or
+`scripts/install_codex_plugin.py`; Codex development uses the normal
+`goal-plus@goal-plus` installation. All installers must inspect existing host
+registrations before writes, accept an idempotent registration from this exact
+checkout, and report actionable cleanup commands for conflicts instead of
+silently replacing another checkout or deleting user-managed data.
+
 ## Host Adapter Rules
 
 Keep runtime behavior host-neutral. Host-specific behavior belongs in
@@ -145,7 +152,12 @@ Current host expectations:
   may inject one advisory when available time is below the observed average
   verifier-submission time; this does not stop the worker. Codex 0.144.1+ ships
   `UserPromptSubmit`, `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, and
-  `SubagentStop` hooks with session ownership binding and terminal stats.
+  `SubagentStop` hooks with session ownership binding and terminal stats. The
+  initial main turn and each Search candidate's first context call display the
+  exact matching Codex `turn_context` permission snapshot; missing snapshots
+  stay unavailable rather than falling back to TOML inference. The same compact
+  line is model-visible so main can repeat it in initial progress and the
+  candidate can preserve it in its final handoff.
   New Codex specs use `orchestration_mode="parallel_loops"`: create initial
   candidates once, validate each completion, observe the verifier-backed best,
   and continue the same native worker through
@@ -232,6 +244,12 @@ python -m pytest -q          # parallel fast gate (default: -n 4 --dist=load)
 git diff --check
 ```
 
+Whenever tracked Markdown changes, list the affected files with
+`git diff --name-only HEAD -- '*.md'` and run `markdownlint-cli2` on every
+listed Markdown file before handoff. For documentation and templates, also
+verify affected relative links. If a required checker is unavailable, state
+which check was skipped and why.
+
 Parallelism policy: use at most 50% of available CPUs for the default gate,
 capped at `--numprocesses 16`. `pytest.ini` sets `-n 4` as a conservative
 default for laptops; on large servers override upward:
@@ -315,9 +333,10 @@ same monitor/statistics layer, then writes both canonical artifacts:
 - `.gp/runs/<run_id>/report.html`
 
 The normal Goal Plus completion flow must not generate an intermediate report.
-The required order is `search_select`, `search_promote`,
-`goal_plus_record_search_result`, final raw-goal audit, terminal Goal Plus
-status, then one `search_report` call for every successfully recorded run. The
+The required order is `search_select`, `search_promote`, optional
+`search_apply_promotion` when the task authorizes writing back to the source,
+`goal_plus_record_search_result`, final raw-goal audit, terminal Goal Plus status,
+then one `search_report` call for every successfully recorded run. The
 result-recording call reserves the canonical Markdown and HTML paths even
 though neither file exists yet. A linked Goal Plus run rejects `search_report`
 while its record is still `active` or `needs_user`.

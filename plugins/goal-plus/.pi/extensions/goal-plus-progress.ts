@@ -48,7 +48,7 @@ export interface GoalPlusCandidateCompletion {
 export interface GoalPlusCompletionView {
 	status: string;
 	elapsedSeconds: number;
-	deadlineSeconds?: number;
+	presetDurationSeconds?: number;
 	goalPlusId?: string;
 	searchTasksTotal: number;
 	candidatesTotal?: number;
@@ -98,10 +98,10 @@ function formatHumanDuration(seconds: number): string {
 	const minutes = Math.floor((safeSeconds % 3600) / 60);
 	const remainingSeconds = safeSeconds % 60;
 	const parts: string[] = [];
-	if (hours > 0) parts.push(`${hours}h`);
-	if (minutes > 0) parts.push(`${minutes}m`);
-	if (remainingSeconds > 0 || parts.length === 0) parts.push(`${remainingSeconds}s`);
-	return parts.join(" ");
+	if (hours > 0) parts.push(`${hours}小时`);
+	if (minutes > 0) parts.push(`${minutes}分钟`);
+	if (remainingSeconds > 0 || parts.length === 0) parts.push(`${remainingSeconds}秒`);
+	return parts.join("");
 }
 
 function formatCompactNumber(value: number): string {
@@ -159,15 +159,12 @@ function completionCandidateLine(candidate: GoalPlusCandidateCompletion): string
 
 export function buildPiCompletionPresentation(view: GoalPlusCompletionView): PiCompletionPresentation {
 	const elapsed = formatHumanDuration(view.elapsedSeconds);
-	let header = `${view.status.toUpperCase()} · ${elapsed}`;
-	if (view.deadlineSeconds !== undefined) {
-		header += ` / ${formatHumanDuration(view.deadlineSeconds)}`;
-		if (view.elapsedSeconds > view.deadlineSeconds) {
-			header += ` · LATE +${formatHumanDuration(view.elapsedSeconds - view.deadlineSeconds)}`;
-		}
-	}
-
-	const lines = [header];
+	const lines = [view.status.toUpperCase()];
+	lines.push(
+		view.presetDurationSeconds === undefined
+			? `Time    未设置预设时间 · 实际完成收尾时间为 ${elapsed}`
+			: `Time    预设时间为 ${formatHumanDuration(view.presetDurationSeconds)} · 实际完成收尾时间为 ${elapsed}`,
+	);
 	const result = completionResultLine(view);
 	if (result) lines.push(result);
 	const searchParts: string[] = [];
@@ -326,7 +323,7 @@ export const PI_PROGRESS_PREVIEWS: Record<"active" | "complete", GoalPlusProgres
 export const PI_COMPLETION_PREVIEW: GoalPlusCompletionView = {
 	status: "complete",
 	elapsedSeconds: 410,
-	deadlineSeconds: 300,
+	presetDurationSeconds: 300,
 	goalPlusId: "gp_0001",
 	searchTasksTotal: 1,
 	candidatesTotal: 2,

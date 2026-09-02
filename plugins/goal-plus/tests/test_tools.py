@@ -3,15 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 from goal_plus.models import (
     AgentHostHandle,
     AgentSessionRecord,
+    ArtifactRef,
     CandidateProposal,
     CandidateTask,
     FrozenSpec,
     GoalPlusGateResult,
     GoalPlusNextAction,
     GoalPlusRecord,
+    PromotionRecord,
     RunState,
     RunRecord,
     RunSummary,
@@ -21,6 +25,7 @@ from goal_plus.models import (
     StrategySpec,
     VerifierResult,
     VerifierRole,
+    WorkspaceCapacityEstimate,
 )
 from goal_plus.tools import GoalPlusTools, SearchTools
 
@@ -57,6 +62,25 @@ def frozen_spec(*, task_skill_paths: list[str] | None = None) -> FrozenSpec:
         verifier_hashes={"evaluator.py": "abc"},
         frozen_verifier_paths={"evaluator.py": "/tmp/evaluator.py"},
         task_skill_paths=task_skill_paths or [],
+        workspace_capacity_estimate=WorkspaceCapacityEstimate(
+            source_path="/tmp/source",
+            backend="git_worktree",
+            basis="git_tracked_checkout",
+            worktree_nodes=2,
+            source_scope_files=3,
+            source_scope_bytes=100,
+            materialized_source_files=2,
+            materialized_source_bytes=80,
+            checkout_scope_path="/tmp/source",
+            checkout_files_per_node=2,
+            checkout_bytes_per_node=40,
+            candidate_checkouts_bytes=80,
+            shared_object_store_bytes=20,
+            estimated_incremental_bytes=80,
+            conservative_upper_bound_bytes=100,
+            available_bytes=1000,
+            fits_available_space=True,
+        ),
         created_at="2026-06-24T00:00:00Z",
     )
 
@@ -91,6 +115,11 @@ def test_search_freeze_spec_converts_input_and_serializes_output() -> None:
     assert result["task_skill_paths"] == []
     assert result["task_skill_notice"] == (
         "No Git-tracked task-local Skills found under .agents/skills."
+    )
+    assert result["workspace_capacity_notice"] == (
+        "Workspace preflight: source=100.0 B, materialized=80.0 B, nodes=2, "
+        "per_node=40.0 B, candidate_checkouts=80.0 B, shared_objects=20.0 B, "
+        "upper_bound=100.0 B, free=1000.0 B, fits=yes."
     )
 
 
@@ -242,6 +271,33 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     runtime.select.return_value = {"selected_candidate_id": "c001"}
     runtime.report.return_value = Path("/tmp/report.md")
     runtime.promote.return_value = Path("/tmp/c001.patch")
+    runtime.promotion_record.return_value = PromotionRecord(
+        promotion_id="promotion_c001",
+        run_id="run_1",
+        candidate_id="c001",
+        provider="git_worktree",
+        strategy="squash_commit",
+        base_artifact_ref=ArtifactRef(
+            kind="git_commit", id="base123", provider="git_worktree"
+        ),
+        selected_artifact_ref=ArtifactRef(
+            kind="git_commit", id="selected123", provider="git_worktree"
+        ),
+        publication_artifact_ref=ArtifactRef(
+            kind="git_commit", id="publish123", provider="git_worktree"
+        ),
+        artifact_path=Path("/tmp/c001.patch"),
+        created_at="2026-06-24T00:00:00Z",
+    )
+    runtime.apply_promotion.return_value = (
+        runtime.promotion_record.return_value.model_copy(
+            update={
+                "state": "applied",
+                "applied_source_revision": "source456",
+                "applied_at": "2026-06-24T00:01:00Z",
+            }
+        )
+    )
     runtime.promotion_apply_coordinates.return_value = (
         Path("/tmp/source/repository/task"),
         Path("/tmp/source/repository"),
@@ -357,7 +413,19 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         "source_path": "/tmp/source/repository/task",
         "apply_cwd": "/tmp/source/repository",
         "apply_directory": "task",
+        "promotion_id": "promotion_c001",
+        "provider": "git_worktree",
+        "strategy": "squash_commit",
+        "promotion_mode": "apply",
+        "apply_required": True,
+        "state": "prepared",
+        "publication_artifact_ref": {
+            "kind": "git_commit",
+            "id": "publish123",
+            "provider": "git_worktree",
+        },
     }
+    assert tools.search_apply_promotion("run_1")["state"] == "applied"
 
     proposal_arg = runtime.start_batch.call_args.args[2][0]
     assert isinstance(proposal_arg, CandidateProposal)
@@ -547,22 +615,23 @@ def test_goal_plus_tools_delegate_runtime_calls_with_models() -> None:
     )
     tools = GoalPlusTools(runtime)
 
-    created = tools.goal_plus_create(
-        raw_goal="Optimize a benchmark if possible",
-        source_path=".",
-        policy={"max_discovery_turns": 1},
-    )
-    assert created["goal_plus_id"] == "gp_0001"
+    with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
+        tools.goal_plus_create(
+            raw_goal="Optimize a benchmark if possible",
+            source_path=".",
+            policy={"max_discovery_turns": 1},
+        )
     status = tools.goal_plus_status("gp_0001")
     assert status["evidence_log"][0]["event_type"] == "created"
     assert status["search_tasks_total"] == 0
     assert status["current_search_run_id"] is None
-    assert tools.goal_plus_update_goal(
-        "gp_0001",
-        "Revised objective",
-        expected_revision=1,
-        reason="user edit",
-    )["goal_revision"] == 2
+    with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
+        tools.goal_plus_update_goal(
+            "gp_0001",
+            "Revised objective",
+            expected_revision=1,
+            reason="user edit",
+        )
     assert tools.goal_plus_record_triage(
         "gp_0001",
         {
@@ -633,15 +702,6 @@ def test_goal_plus_tools_delegate_runtime_calls_with_models() -> None:
         context={"turn_id": "turn_1"},
     )["continuation_prompt"] == "continue triage"
 
-    runtime.create_goal.assert_called_once_with(
-        raw_goal="Optimize a benchmark if possible",
-        source_path=".",
-        policy={"max_discovery_turns": 1},
-    )
-    runtime.update_goal.assert_called_once_with(
-        "gp_0001",
-        raw_goal="Revised objective",
-        expected_revision=1,
-        reason="user edit",
-    )
+    runtime.create_goal.assert_not_called()
+    runtime.update_goal.assert_not_called()
     runtime.link_search_run.assert_called_once_with("gp_0001", "spec_1", "run_1")

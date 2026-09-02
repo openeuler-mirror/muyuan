@@ -9,6 +9,7 @@ import pytest
 from goal_plus import __version__
 import goal_plus.server as server_module
 from goal_plus.server import create_mcp
+from tests._fastmcp_helpers import tools_by_name
 
 
 def test_create_mcp(tmp_path: Path) -> None:
@@ -37,7 +38,7 @@ def test_cli_exposes_package_version(
 def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
 
     assert set(tools) == {
         "search_freeze_spec",
@@ -53,6 +54,7 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
         "search_continue_agent_session",
         "search_get_agent_context",
         "search_get_global_evidence",
+        "search_reference_open",
         "search_stage_shared_tool",
         "search_copy_shared_tool",
         "search_get_evidence_detail",
@@ -62,6 +64,7 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
         "search_select",
         "search_report",
         "search_promote",
+        "search_apply_promotion",
         "goal_plus_create",
         "goal_plus_status",
         "goal_plus_update_goal",
@@ -82,7 +85,7 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
 
 def test_invalidate_run_and_successor_expose_contract_fields(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
 
     create_properties = tools["search_create"].parameters["properties"]
     invalidation = tools["search_invalidate_run"].parameters
@@ -104,10 +107,21 @@ def test_invalidate_run_and_successor_expose_contract_fields(tmp_path: Path) -> 
     assert "中断 host pool" in description
 
 
+def test_legacy_goal_entrypoint_tools_are_deny_only_tombstones(tmp_path: Path) -> None:
+    tools = asyncio.run(tools_by_name(create_mcp(tmp_path / ".search")))
+
+    create_description = " ".join(tools["goal_plus_create"].description.split())
+    update_description = " ".join(tools["goal_plus_update_goal"].description.split())
+    assert "始终报错" in create_description
+    assert "`$goal-plus`" in create_description
+    assert "始终报错" in update_description
+    assert "`/goal-plus edit`" in update_description
+
+
 def test_start_agent_session_returns_launch_payload(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
     schema = tools["search_start_agent_session"].parameters
 
     properties = schema["properties"]
@@ -122,7 +136,7 @@ def test_start_agent_session_returns_launch_payload(tmp_path: Path) -> None:
 def test_redispatch_candidate_exposes_worker_overrides(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
     schema = tools["search_redispatch_candidate"].parameters
 
     properties = schema["properties"]
@@ -136,7 +150,7 @@ def test_redispatch_candidate_exposes_worker_overrides(tmp_path: Path) -> None:
 def test_continue_agent_session_exposes_neutral_continuation_schema(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
 
     assert "agent_session_id" in tools["search_continue_agent_session"].parameters["properties"]
     assert "directive" not in tools["search_continue_agent_session"].parameters["properties"]
@@ -145,7 +159,7 @@ def test_continue_agent_session_exposes_neutral_continuation_schema(tmp_path: Pa
 def test_run_verifier_exposes_optional_agent_session_id(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
     schema = tools["search_run_verifier"].parameters
 
     assert "agent_session_id" in schema["properties"]
@@ -212,7 +226,7 @@ def test_run_verifier_exposes_optional_agent_session_id(tmp_path: Path) -> None:
 
 def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
 
     spec_schema = tools["search_freeze_spec"].parameters["properties"]["spec"]
 
@@ -242,6 +256,7 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     assert "一次性源码副本" in freeze_description
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in freeze_description
     assert "固定 `/tmp` 路径不安全" in freeze_description
+    assert "clean HEAD" in freeze_description
 
     verifier_description = " ".join(
         tools["search_run_verifier"].description.split()
@@ -252,7 +267,7 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
 
 def test_plan_next_exposes_per_round_budget_semantics(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
 
     plan_tool = tools["search_plan_next"]
     requested_k = plan_tool.parameters["properties"]["requested_k"]
@@ -267,7 +282,7 @@ def test_plan_next_exposes_per_round_budget_semantics(tmp_path: Path) -> None:
 
 def test_spec_draft_exposes_partial_nested_search_spec_schema(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
 
     draft = tools["goal_plus_save_spec_draft"].parameters["properties"][
         "spec_draft"
@@ -292,7 +307,7 @@ def test_spec_draft_exposes_partial_nested_search_spec_schema(tmp_path: Path) ->
 def test_goal_plus_gate_exposes_hook_friendly_schema(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
     schema = tools["goal_plus_gate"].parameters
 
     assert "goal_plus_id" in schema["properties"]
@@ -303,7 +318,7 @@ def test_goal_plus_gate_exposes_hook_friendly_schema(tmp_path: Path) -> None:
 def test_goal_plus_monitor_snapshot_exposes_read_only_schema(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
     schema = tools["goal_plus_monitor_snapshot"].parameters
 
     assert "goal_plus_id" in schema["properties"]
@@ -315,7 +330,7 @@ def test_goal_plus_monitor_snapshot_exposes_read_only_schema(tmp_path: Path) -> 
 def test_agent_observability_exposes_read_only_schema(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
     schema = tools["search_get_agent_observability"].parameters
 
     assert set(schema["required"]) == {"agent_session_id"}
@@ -329,7 +344,7 @@ def test_goal_plus_create_has_no_mode_hint_or_verifier_confirm_tool(
 ) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
-    tools = asyncio.run(mcp.get_tools())
+    tools = asyncio.run(tools_by_name(mcp))
     create_schema = tools["goal_plus_create"].parameters
 
     assert "mode_hint" not in create_schema["properties"]
@@ -426,6 +441,9 @@ def test_create_mcp_constructs_runtime_with_configured_root(
             return {}
 
         def search_promote(self, *args, **kwargs):
+            return {}
+
+        def search_apply_promotion(self, *args, **kwargs):
             return {}
 
     class FakeGoalTools:

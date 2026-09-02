@@ -1,9 +1,11 @@
 # Circle Packing Quick Live Run
 
-This is the recommended five-minute Goal Plus usability scenario. It starts a
-real interactive Pi `/goal-plus` or Codex `$goal-plus` task, launches two native
+This is the recommended compact Goal Plus usability scenario. It starts a real
+interactive Pi `/goal-plus` or Codex `$goal-plus` task, launches two native
 candidate lanes, and uses a deterministic public verifier. The workspace
-depends only on the Python standard library.
+depends only on the Python standard library. Each host has a five-minute preset
+variant and an untimed variant so completion semantics can be checked
+independently from efficiency measurement.
 
 ## Run with Codex
 
@@ -18,6 +20,9 @@ codex -m gpt-5.6-terra -c model_reasoning_effort=max
 Then paste the complete contents of
 [`codex-goal-prompt.md`](codex-goal-prompt.md).
 
+For the variant with no top-level time condition, use
+[`codex-goal-prompt-untimed.md`](codex-goal-prompt-untimed.md).
+
 ## Run with Pi
 
 Start the installed Pi package from the same example directory:
@@ -29,6 +34,9 @@ pi
 
 Then paste the complete contents of
 [`pi-goal-prompt.md`](pi-goal-prompt.md).
+
+For the variant with no top-level time condition, use
+[`pi-goal-prompt-untimed.md`](pi-goal-prompt-untimed.md).
 
 The Pi prompt does not pin `main`, `annotator`, or `workers`; it uses the model
 already selected in Pi and the installed Goal Plus defaults. This keeps the
@@ -46,21 +54,32 @@ canonical reports remain under `.gp/`; this demonstration deliberately does
 not apply the selected patch back to `workspace-template/`. Therefore a normal
 Pi or Codex run does not change tracked example files or appear in `git status`.
 
-## Five-minute contract
+## Five-minute preset variant
 
-- The complete Goal Plus task must settle within five minutes.
+- The preset task duration is five minutes.
 - Candidate work stops after four minutes.
 - Each worker lease is capped at three minutes.
 - The final minute is reserved for selection, promotion, reporting, and
   terminal settlement.
 
 The short run is intended to expose the real flow and measured result. It may
-finish without improving the baseline.
+finish without improving the baseline. The preset is an efficiency observation,
+not a result-status gate: after valid artifacts and required audits are settled,
+the Goal remains complete even when final settlement finishes after the preset.
+The completion card reports the preset duration and actual closeout completion
+time as separate facts.
 
 On a cold Codex session with maximum reasoning, skill loading and Goal Plus
-intake can consume most of the candidate window. Treat the strict five-minute
-prompt as a deadline/closeout UX exercise; it may reach a terminal deadline
-status even after preserving and promoting a valid result.
+intake can consume most of the candidate window. Use the measured preset versus
+actual closeout values to diagnose that overhead without changing the valid
+result status.
+
+## Untimed variant
+
+The untimed prompt text does not define a top-level time condition. It starts
+the same two fixed lanes, requires at least one settled verifier-backed result
+from each, then closes the pool without continuation work and performs the same
+selection, artifact-only promotion, source-integrity check, and reporting flow.
 
 ## Local baseline
 

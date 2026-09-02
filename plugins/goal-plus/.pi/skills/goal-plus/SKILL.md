@@ -7,18 +7,24 @@ description: 当 Pi 收到可能需要 Goal Mode、Spec Discovery Mode、有界 
 
 ## 入口契约
 
-原生 Pi `/goal-plus` 命令会在模型轮次开始前创建 Goal Plus 记录。
+原生 Pi `/goal-plus` 命令会在模型轮次开始前创建 Goal Plus 记录，并把当前原生 Pi
+session 绑定到该 active `goal_plus_id`。只有 extension 曾通过精确 `/goal-plus`、
+`/goal-plus edit`、`/goal-plus resume` 或 `/goal-plus-with-final-check` host command 授权
+当前 session 时，才能执行本 skill。skill、prompt、MCP 和模型工具都不能创建、编辑、
+恢复或授权 Goal Plus；当前 session 缺少授权上下文时立即停止，并要求用户使用精确的
+Pi slash command。
 仅在新记录的首轮，由 Main 语义检查原始目标或当前对话上下文是否明确给出了整个 Goal
 Plus 任务的最大运行时间；如果没有，先简短告知用户：“当前未设置最大运行时间，Goal
 Plus 将持续运行直至目标完成或用户手动停止。”这只是告知，不询问、不等待确认，随后
 立即继续执行。
-入口在 Main 模型选择后把逻辑 `thinking=max` 映射为 Pi `xhigh` 请求，并记录 Pi 按模型能力
-钳制后的实际档位；如果 reasoning 被钳制为 `off`，则拒绝启动，不静默降级。
+入口保留 Main 当前已选择的 Pi thinking 档位并记录实际值，不得强制提升或钳制。
+建议在复杂任务中启动 Pi 时选择 `xhigh`，但模型不支持 `xhigh` 或当前选择其他档位时仍正常运行。
 `/goal-plus-with-final-check` 创建记录时会设置 `policy.final_check.mode="required"`。
-`/goal-plus edit <完整的修订目标>` 对 active 记录调用 `goal_plus_update_goal` 并递增
-`goal_revision`；最新原始目标取代旧修订版。Pi 轮次中断后，`/goal-plus resume`
-会继续同一个持久化 active 修订版。如果使用兼容 prompt 路径且尚无 active 的
-`goal_plus_id`，第一次工具调用必须是 `goal_plus_create(raw_goal=...)`。
+`/goal-plus edit <完整的修订目标>` 由 extension 的 host-only 入口更新 active 记录并递增
+`goal_revision`；最新原始目标取代旧修订版。同一原生 Pi session 内的 provider error、
+自动重试、普通 follow-up 或用户中止不会撤销已有授权。Pi 进程/session 重启或切换后，
+只有显式 `/goal-plus resume` 会把新 session 重新绑定到同一个持久化 active 修订版。
+不存在兼容 prompt fallback；不得调用 `goal_plus_create` 或 `goal_plus_update_goal`。
 目标记录存在之前，不要 triage、Search 或编辑。除了加载 goal-plus skill 之外，
 在 `goal_plus_record_triage` 前不要读取或审计目标文件。
 
@@ -26,27 +32,31 @@ Plus 将持续运行直至目标完成或用户手动停止。”这只是告知
 lease、外层剩余时间和收尾预留来确定探索时间，并使用可续期的同候选 continuation；
 不另行规定固定的分钟或小时上限。
 `/goal-plus mode=probe <目标>` 选择短期可行性、潜力和阻塞因素探查。省略 mode 时默认
-使用 `autonomous`；未指定 mode 的编辑保留当前选择。运行时只把它存为 `raw_goal`
-的规范末行，不把它作为 phase、Search strategy 或运行时字段。
+使用 `autonomous`；未指定 mode 的编辑保留当前选择。显式 mode 保存在
+`GoalPlusRecord.command_config`，对应指导仍写入 `raw_goal` 的规范末行；它不是 phase
+或 Search strategy。host adapter 会把开头连续的 typed `key=value` 配置与自然语言目标
+分开；第一个非配置 token 开始就是目标。`command_config` 中的显式字段必须原样落实。
+只有缺省字段才由 Main 判断。不要从 `raw_goal` 重新解析配置，也不要用自然语言覆盖显式配置。
 
 恢复 active 记录前，把最新用户消息视为本轮权威依据。消息只继续或引导现有目标时，
-保留当前修订版。如果它改变了实际范围、交付物或成功标准，使用完整修订目标和当前
-`expected_revision` 调用 `goal_plus_update_goal`，然后在继续工作前重新 triage。
+保留当前修订版。如果它改变了实际范围、交付物或成功标准，停止变更并要求用户使用精确的
+`/goal-plus edit <完整修订目标>`；不得由模型调用 `goal_plus_update_goal`。
 如果消息无关，直接回复而不改变目标。如果它与目标的关系不明确，在修订或恢复前先澄清；
 不要仅因 Goal Plus 记录处于 active 就恢复工作。
 
 ## Goal Mode
 
 当请求尚不是可验证的优化/Search 任务时使用 Goal Mode。使用
-`goal_plus_record_triage({ goal_plus_id, triage: { is_optimization, confidence, recommended_phase, identified_at, scenario, reasons, missing } })`
-记录 triage，并将面向用户的目标与实现猜测分开。随后用 `goal_plus_upsert_work_items`
+`goal_plus_record_triage` 记录 triage；字段包括 `goal_plus_id`、`is_optimization`、
+`confidence`、`recommended_phase`、`identified_at`、`scenario`、`reasons` 和 `missing`。
+将面向用户的目标与实现猜测分开。随后用 `goal_plus_upsert_work_items`
 建立当前修订版工作项 DAG。主 Agent 保留关键路径与最终集成；独立工作项使用
 `route="subagent"`。Goal Mode 下不要创建 SearchSpec。
 
 Pi 普通 subagent 通过 `pi_goal_plus_run_work_item` 在隔离的 Pi RPC 子进程运行；该工具会
 创建 launch attempt，在 RPC 进程启动后绑定实际 session，并用同一 generation 提交 `result`
 或 `failed`。它不会为仍 active 的工作项另建 session；过期 launching attempt 才能被下一
-generation 接管。该工具对 child 请求 Pi `xhigh`、等待返回并记录实际档位。同一模型轮次可
+generation 接管。该工具让 child 继承 Main 当前 Pi thinking、等待返回并记录实际档位。同一模型轮次可
 并发调用多个无依赖工作项。主 Agent 必须检查返回证据并记录 `accepted` 或 `rework`。runtime
 进程；生命周期属于 Pi extension。包装器把原生操作写入 `orchestration_monitor` metadata，
 供只读 feature plugin 归一化 Main/worker 交互。不要保存私有推理或完整 transcript。
@@ -78,12 +88,11 @@ ranking verifier 必须输出一个最终 JSON 对象，其中包含有限数值
 契约无效时会在候选 worker 启动前拒绝 spec。
 
 Pi 的 Main 就是已经运行的当前 session；必须在启动 Pi 时用 `--model` 或提交
-`/goal-plus` 前通过 `/model` 选择，Goal Plus 命令不能切换它。通常省略 `main=`；它只作为
-兼容的一致性断言，由扩展与当前 session model 比对，不匹配时在创建 Goal Plus 记录前拒绝
-命令。真正的角色模型配置使用 `annotator=B` 冻结 Evidence Annotation 模型，使用
+`/goal-plus` 前通过 `/model` 选择，Goal Plus 命令不能切换它。`main=` 不是受支持的 Goal Plus
+命令配置。真正的角色模型配置使用 `annotator=B` 冻结 Evidence Annotation 模型，使用
 `workers=C,D` 分配 Candidate Worker。只解析用户实际填写的角色；省略的角色保持现有 host
-默认或继承语义，不从另一个显式角色猜默认值。扩展把已校验的规范化
-`provider/model` Main 断言和显式 Annotator 路由注入启动上下文。冻结 SearchSpec 时把显式
+默认或继承语义，不从另一个显式角色猜默认值。扩展把已解析的显式 Annotator 路由注入
+启动上下文。冻结 SearchSpec 时把显式
 Annotator 写入 `strategy.evidence_annotator.model`。
 
 不要在 SearchSpec 中生成软 rubric 或预设评价维度。Spec Discovery 只能冻结硬 metric、
@@ -93,20 +102,28 @@ verifier、编辑范围、预算和 promotion 合同。开放式补充评价发�
 PASS/FAIL、数值排名、candidate-local 结算、selection 或 promotion。MainAgent
 不负责定义这些维度，也不要根据 benchmark 类型向 annotator 预埋固定清单。
 
-如果原始命令包含 `workers=...` 或兼容别名 `models=...`，先调用
+如果 `GoalPlusRecord.command_config` 包含 `workers=...`，先调用
 `goal_plus_list_models(host="pi-rpc")`，将用户
 填写的名称解析为唯一可用模型并冻结到 `strategy.models`；不存在或不唯一时，在创建
 run 前直接返回错误。`workers=A,B max_parallel=4` 表示 A、B、A、B；
-`workers=A,B A1B3 max_parallel=4`（等价写法 `workers=A*1,B*3`）表示显式
-A1B3，数量之和必须等于
-`max_parallel`。`workers=A,B 每个一个` 表示 `max_parallel=2`。`workers=` 与
-`models=` 不能同时出现。没有填写任一 Worker 参数时不要探测目录，保持 Pi 当前默认模型。
+`workers=A*1,B*3 max_parallel=4` 表示显式 A1B3，数量之和必须等于
+`max_parallel`。没有填写 Worker 参数时不要探测目录，保持 Pi 当前默认模型。
 
-冻结预检在一次性源码副本中运行，并要求 verifier 保持该工作区只读。编译器产物和临时
-输出应放入唯一的 `GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` 或 Python
-`tempfile.TemporaryDirectory()`。绝不能使用固定 `/tmp` 路径，因为受管 Pi pool
-可能并发验证多个候选。任何 `VerifierWorkspaceSideEffect` 都必须修复并重新冻结，
-然后 Search run 才能使用候选预算。
+Git freeze 会在 MainAgent 给出的 origin `source_path` 运行一次 process-verifier suite，
+验证后复检 clean HEAD 和 verifier hash，并固定该 commit；`search_create` 会拒绝 source
+切换到另一个 clean HEAD。第一次 `search_start_batch` 会先创建 `c001`，在真实 worktree
+重复同一 suite，通过后才创建其余 lane。`WorkspaceRelocationVerifierFailed` 表示 run 已以
+`verifier_target_mismatch` abort 并保留 `c001`；不得启动 Pi pool，应修复 `source_path`、
+verifier `cwd` 或 artifact 合同后重新 freeze/create。bootstrap 结果不是 candidate iteration。
+
+origin verifier 可以留下 Git-ignored cache；Runtime 不清理或猜测这些产物，但 staged、
+unstaged 或 non-ignored untracked 变化会阻止 freeze。编译器产物和临时输出仍应优先放入唯一的
+`GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` 或 Python `tempfile.TemporaryDirectory()`。绝不能使用
+固定 `/tmp` 路径，因为受管 Pi pool 可能并发验证多个候选。candidate verifier 返回
+`VerifierWorkspaceSideEffect` 时仍必须按失效流程修复并重新冻结。
+
+`copy` 保留 disposable-copy ranking preflight。未来 ThinkThread backend 在 origin 验证并固定
+snapshot 后不需要 relocation；当前 Pi host 仍会在 freeze 前拒绝 TT，不得 fallback。
 
 对于用语义、大致 shape/dtype 和参考提示描述的 AscendC Direct Invoke 算子目标，
 记录 `scenario="ascendc_direct_invoke"`，并完整读取
@@ -132,7 +149,10 @@ A1B3，数量之和必须等于
 
 `origin="initial"` 和 `origin="in_progress"` 仅表示 provenance，遵循相同的自主准入规则。
 
-调用 `search_freeze_spec` 前，确保 SearchSpec strategy 设置
+调用 `search_freeze_spec` 前，先把 `GoalPlusRecord.command_config` 中的
+`max_parallel`、`workspace_backend`、`promotion_mode`、`strategy`、`annotator` 和
+`workers` 映射到 SearchSpec；ready draft 不匹配时 runtime 会拒绝保存，未配置字段才根据
+目标、host 能力和资源信号决定。随后确保 SearchSpec strategy 设置
 `worker_host: "pi-rpc"` 和 `orchestration_mode: "parallel_loops"`。Pi Search Mode
 必须通过 Pi RPC driver 运行一组固定的初始自主候选循环。不能省略这些字段；旧运行时默认值
 不能表达该 policy。
@@ -142,12 +162,20 @@ A1B3，数量之和必须等于
 保险选择 `"auto"`。
 
 新 SearchSpec 还必须显式设置 `workspace.backend="git_worktree"`，使候选共享 Git object
-database，并能解析 Global Evidence 中的 peer commit。只有用户明确要求兼容隔离时才能设置
-`workspace.backend="copy"`。
+database，并能解析 Global Evidence 中的 peer commit。`workspace.promotion_mode` 默认是
+`apply`；只有受保护 source、只读 template 或测试 fixture 才显式设置
+`promotion_mode="artifact_only"`。只有用户明确要求兼容隔离时才能设置
+`workspace.backend="copy"`，它自动使用 artifact-only。
+
+`git_worktree` 以及未来的 ThinkThread backend 只接受 clean Git `HEAD`。遇到
+`DirtySourceWorkspace` 时原样展示路径和修复提示并停止启动，不得自动 stash、clean 或
+commit source；确实需要当前 filesystem 状态时显式使用 `copy + artifact_only`。
 
 任务本地 Skill 无需 SearchSpec 配置。只识别 source Git 已跟踪的
 `.agents/skills/<name>/SKILL.md`，且同一 Skill 目录内所有资源都必须由 Git 跟踪。freeze 的
-`task_skill_notice` 会列出发现结果，必须明确展示；
+`task_skill_notice` 会列出发现结果，必须明确展示；`workspace_capacity_notice` 会同时展示
+当前 source 大小、按 `budget.max_parallel` 计算的 node checkout、共享 Git object store、
+保守上界和可用空间，必须在创建 run 前展示，且 `fits_available_space=false` 时不得创建；
 每个 candidate 的 `candidate_task.task_skill_paths` 返回自己 worktree 中的绝对文件路径。Pi worker 逐一读取
 这份清单，不扫描 parent、global/plugin 或其他 candidate 路径。
 
@@ -202,8 +230,20 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
    仓外 Skill 继续由 host 管理。
 5. 调用 `pi_search_pool_open(run_id, candidate_ids, directive?, worker_budgets?, final_verify=true, max_parallel=<budget.max_parallel>)`。
    `worker_budgets` 必须按 `candidate_id` 映射，例如
-   `{"c001": {"min_runtime_seconds": 500, "min_verifier_runs": 1, "max_runtime_seconds": 600, "on_exceed": "interrupt"}}`，不能直接传一份
-   WorkerBudget。它启动 detached 受管 worker，并立即返回持久化 `pool_id`。
+   不能直接传一份 WorkerBudget。例如：
+
+   ```json
+   {
+     "c001": {
+       "min_runtime_seconds": 500,
+       "min_verifier_runs": 1,
+       "max_runtime_seconds": 600,
+       "on_exceed": "interrupt"
+     }
+   }
+   ```
+
+   它启动 detached 受管 worker，并立即返回持久化 `pool_id`。
 6. 调用 `pi_search_pool_wait_any(pool_id, timeout_seconds=...)`。处理每个返回事件。
    如果顶层结果是 `timed_out=true`、`events=[]` 且 `active_count>0`，这只是本次轮询超时；
    继续调用 `pi_search_pool_wait_any`，不能调用 `pi_search_pool_close`、选择或提升。
@@ -254,20 +294,28 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
 9. 正常选择前等待准确 snapshot 的 `active_count=0`，再调用
    `pi_search_pool_close(mode="drain")`。只有 run 已按第 7 步失效时，主 agent 才对仍有
    active job 的 pool 使用 `mode="interrupt"`。运行时会拒绝在真实 closeout reserve 之外
-   提前关闭 active pool。pool 关闭后再按提升要求调用 `search_select` 和 `search_promote`。
+   提前关闭 active pool。pool 关闭后再按提升要求调用 `search_select` 和 `search_promote`；
+   frozen `workspace.promotion_mode="apply"` 时必须调用 `search_apply_promotion`。
    `search_select` 对 verifier 记录的 iteration 排名并 checkout 最佳已提交候选的
    `git_head`。准确 worker Evidence 已经覆盖该产物时直接用于选择；没有这种证据的旧记录才
    使用父级 process verifier。配置的 promotion verifier 仍是选中 revision 的最终 gate。
-   promotion patch 相对于返回的 `source_path`；写回源码时从返回的 `apply_cwd` 执行
-   `git apply --directory=<apply_directory> <artifact_path>`，不要根据当前 Git cwd 猜路径。
-10. 调用 `goal_plus_record_search_result`。此时不要调用 `search_report`；结果记录只预留
-    规范报告路径，不生成 Markdown 或 HTML。
+   新 Git run 使用一个 squash publication commit 写回原仓；旧的 `legacy_patch` 才从返回的
+   `apply_cwd` 执行 `git apply --directory=<apply_directory> <artifact_path>`。
+10. 默认完成 promotion apply；只有显式 `promotion_mode="artifact_only"` 的任务保留 prepared
+    publication。随后调用 `goal_plus_record_search_result`；apply 模式尚未 applied 时 runtime
+    会拒绝记录结果。此时不要调用 `search_report`；
+    结果记录只预留规范报告路径，不生成 Markdown 或 HTML。
 11. 执行原始目标审计。评估/编辑契约仍充分时保留同一个 run。新 incumbent 或低性能路线
     绝不会开启替代 run。只有具体 spec/契约修订或不同的可度量子问题才能创建后继项，
     并使用 `source_run_id`；继承分数在重新验证前仍只是历史。
 12. 执行最终原始目标审计。配置了 `success_threshold` 时，最终最佳分数必须达到它才能
     将记录标记为成功；预算结束但未达标时保留最佳产物，不得声称验收通过。普通记录使用
-    `goal_plus_set_status` 完成。如果
+    `goal_plus_set_status` 完成。
+    目标给出预设时长或时间预算，把它作为停止新增候选工作和衡量效率的独立观测条件。必需工作、
+    验证、提升和审计完成后，即使实际收尾晚于预设也使用 `complete`；在 evidence 与完成卡中
+    分别记录预设时间和实际完成收尾时间，不要输出 `late`，也不要仅因超出预设而使用
+    `blocked`。`blocked` 只表示仍缺少外部输入、权限、资源或状态变化而确实无法继续。
+    如果
     `policy.final_check.mode="required"`，则：
     - 调用 `goal_plus_prepare_final_check(checker_host="pi")`
     - 把准确返回的 `launch` 对象传给 `pi_goal_plus_run_final_check`
@@ -287,7 +335,11 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
 
 顶层 stop gate 会阻止每条仍处于 active 的 Goal Plus 记录，并返回完整当前原始目标以及
 创建/检查时间戳和已用时间。使用该 prompt 审计全部要求和目标中已有的任何时间条件。
-未完成时继续；否则在停止前记录真实终态。不要编造单独的 Goal Plus deadline。
+时间条件决定何时停止新增工作并转入收尾，但不覆盖已经完成的结果终态。完成后使用
+`complete`，由完成卡分别展示预设时间和实际完成收尾时间；只有确有外部条件导致无法继续时
+才使用 `blocked`。未完成时继续；否则在停止前记录真实终态。host command 显式给出
+`max_duration_seconds` 时使用记录中从创建时间计算的 `outer_deadline_at`；缺省时不要编造
+单独的 Goal Plus deadline。
 当前修订版存在工作项时，未 `accepted` 的必需工作项会阻止最终检查和 `complete`。
 
 ### 结果后的 Spec 重新评估
@@ -305,8 +357,8 @@ subagent 负责其候选工作区内的瓶颈分析、假设选择、特性迁�
   产物。诊断稀疏、分数低、进展缓慢或更好的搜索思路都不是充分证据。
 - `keep_spec_with_justification`：当前 spec 仍是原始目标的可信 proxy。说明保留它的证据，
   并继续 Search。每条候选循环都仍可探索更深或结构不同的方法；由各 subagent 自行决定。
-- `revise_goal`：实际范围、交付物或成功标准需要改变。使用完整修订后的原始目标和当前
-  `expected_revision` 调用 `goal_plus_update_goal`，重新 triage，然后为该修订版发现并冻结 spec。
+- `revise_goal`：实际范围、交付物或成功标准需要改变。停止本轮变更并要求用户使用精确的
+  `/goal-plus edit <完整修订目标>`；host 更新后再重新 triage，并为新修订版发现和冻结 spec。
 
 这些标签描述现有原始目标审计中的主 agent 决策；它们不是新的运行时状态、额外工作流 phase
 或用户审批 checkpoint。

@@ -270,6 +270,17 @@ def _message_summary(message: Any) -> dict[str, Any]:
 
 def _compact_pi_event(event: dict[str, Any]) -> dict[str, Any] | None:
     event_type = str(event.get("type") or "unknown")
+    if event_type == "goal_plus_runtime_start":
+        snapshot = event.get("snapshot")
+        return {
+            "type": event_type,
+            "snapshot": snapshot if isinstance(snapshot, dict) else None,
+            **(
+                {"error": _bounded_error(event.get("error"))}
+                if event.get("error")
+                else {}
+            ),
+        }
     if event_type == "message_update":
         return None
     if event_type in {"message_start", "message_end"}:
@@ -462,6 +473,20 @@ class _RpcClient:
         with self.text_log.open("a", encoding="utf-8") as handle:
             handle.write(line)
 
+    def record_runtime_start(
+        self,
+        snapshot: dict[str, Any] | None,
+        *,
+        error: str | None = None,
+    ) -> None:
+        self._append_event(
+            {
+                "type": "goal_plus_runtime_start",
+                "snapshot": snapshot,
+                "error": error,
+            }
+        )
+
     def auto_retry_pending(self) -> bool:
         with self._condition:
             return time.monotonic() < self._auto_retry_until
@@ -597,6 +622,63 @@ def _last_entry_id(entries: list[dict[str, Any]]) -> str | None:
         return None
     value = entries[-1].get("id")
     return str(value) if value is not None else None
+
+
+_PI_RUNTIME_START_ENTRY_TYPE = "goal-plus-runtime-start"
+_PI_RUNTIME_START_STRING_FIELDS = (
+    "agent",
+    "host",
+    "mode",
+    "pi_sandbox",
+    "pi_builtin_tool_approval",
+    "filesystem_access",
+    "network_access",
+    "cwd",
+    "captured_at",
+)
+_PI_RUNTIME_START_TOOL_FIELDS = (
+    "active_tools",
+    "active_builtin_tools",
+    "active_non_builtin_tools",
+)
+
+
+def _latest_pi_runtime_start(
+    entries: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    for entry in reversed(entries):
+        if (
+            entry.get("type") != "custom"
+            or entry.get("customType") != _PI_RUNTIME_START_ENTRY_TYPE
+        ):
+            continue
+        data = entry.get("data")
+        if not isinstance(data, dict):
+            continue
+        snapshot: dict[str, Any] = {
+            "schema_version": (
+                int(data["schema_version"])
+                if isinstance(data.get("schema_version"), int)
+                else 1
+            ),
+            "project_trusted": (
+                data.get("project_trusted")
+                if isinstance(data.get("project_trusted"), bool)
+                else None
+            ),
+        }
+        for field in _PI_RUNTIME_START_STRING_FIELDS:
+            value = data.get(field)
+            snapshot[field] = value if isinstance(value, str) else None
+        for field in _PI_RUNTIME_START_TOOL_FIELDS:
+            value = data.get(field)
+            snapshot[field] = (
+                [str(item) for item in value if isinstance(item, str)][:256]
+                if isinstance(value, list)
+                else []
+            )
+        return snapshot
+    return None
 
 
 def _combine_pi_usage(
@@ -870,6 +952,8 @@ def run_pi_rpc_worker(
     last_state_data: dict[str, Any] = {}
     pi_metrics: dict[str, Any] | None = None
     refresh_reason: str | None = None
+    runtime_start: dict[str, Any] | None = None
+    runtime_start_error: str | None = None
 
     def _abort_for_timeout() -> None:
         nonlocal timed_out
@@ -880,6 +964,27 @@ def run_pi_rpc_worker(
             pass
 
     try:
+        try:
+            runtime_entries = _rpc_entries(
+                rpc,
+                timeout=min(10, timeout_seconds),
+                since=(
+                    str(metrics_baseline["last_entry_id"])
+                    if metrics_baseline.get("last_entry_id")
+                    else None
+                ),
+            )
+            runtime_start = _latest_pi_runtime_start(runtime_entries)
+            if runtime_start is None:
+                runtime_start_error = (
+                    "Pi session did not expose a goal-plus-runtime-start entry"
+                )
+        except Exception as exc:
+            runtime_start_error = f"Pi runtime start probe failed: {exc}"
+        record_runtime_start = getattr(rpc, "record_runtime_start", None)
+        if callable(record_runtime_start):
+            record_runtime_start(runtime_start, error=runtime_start_error)
+
         _bind_goal_plus_work_item(launch, root=root, session_id=session_id)
         if provider and model_id:
             rpc.command(
@@ -1054,6 +1159,10 @@ def run_pi_rpc_worker(
                 "duration_seconds": duration_seconds,
                 "errors": [str(exc)],
             }
+        if pi_metrics is not None:
+            pi_metrics["runtime_start"] = runtime_start
+            if runtime_start_error is not None:
+                pi_metrics["runtime_start_error"] = runtime_start_error
         _kill_process_group(proc)
 
     progress_handoff = _workspace_progress_handoff(
@@ -1076,6 +1185,8 @@ def run_pi_rpc_worker(
             "process_pid": getattr(proc, "pid", None),
             "session_file": pi_metrics.get("session_file") if pi_metrics else None,
             "pi_metrics": pi_metrics,
+            "runtime_start": runtime_start,
+            "runtime_start_error": runtime_start_error,
             "assistant_text": assistant_text,
             "progress_handoff": progress_handoff,
             "timed_out": timed_out,

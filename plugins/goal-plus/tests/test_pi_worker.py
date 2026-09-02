@@ -98,6 +98,31 @@ def _assistant_usage(
     }
 
 
+def _runtime_start_entry(*, entry_id: str = "runtime_1") -> dict[str, Any]:
+    return {
+        "type": "custom",
+        "id": entry_id,
+        "customType": "goal-plus-runtime-start",
+        "data": {
+            "schema_version": 1,
+            "agent": "candidate",
+            "host": "pi-rpc",
+            "mode": "rpc",
+            "project_trusted": True,
+            "active_tools": ["read", "bash", "search_get_agent_context"],
+            "active_builtin_tools": ["read", "bash"],
+            "active_non_builtin_tools": ["search_get_agent_context"],
+            "pi_sandbox": "none",
+            "pi_builtin_tool_approval": "none",
+            "filesystem_access": "launcher-process-user",
+            "network_access": "host-policy-unreported",
+            "cwd": "/tmp/candidate",
+            "captured_at": "2026-08-26T08:00:00.000Z",
+            "ignored_secret": "must not propagate",
+        },
+    }
+
+
 def test_summarize_pi_entries_reports_totals_and_latest_cache_hit_rate() -> None:
     assert hasattr(pi_worker, "summarize_pi_entries")
     summary = pi_worker.summarize_pi_entries(
@@ -129,6 +154,33 @@ def test_summarize_pi_entries_reports_totals_and_latest_cache_hit_rate() -> None
     }
 
 
+def test_latest_pi_runtime_start_returns_only_bounded_runtime_fields() -> None:
+    snapshot = pi_worker._latest_pi_runtime_start(
+        [
+            _runtime_start_entry(),
+            {"type": "custom", "customType": "other", "data": {"agent": "wrong"}},
+        ]
+    )
+
+    assert snapshot == {
+        "schema_version": 1,
+        "project_trusted": True,
+        "agent": "candidate",
+        "host": "pi-rpc",
+        "mode": "rpc",
+        "pi_sandbox": "none",
+        "pi_builtin_tool_approval": "none",
+        "filesystem_access": "launcher-process-user",
+        "network_access": "host-policy-unreported",
+        "cwd": "/tmp/candidate",
+        "captured_at": "2026-08-26T08:00:00.000Z",
+        "active_tools": ["read", "bash", "search_get_agent_context"],
+        "active_builtin_tools": ["read", "bash"],
+        "active_non_builtin_tools": ["search_get_agent_context"],
+    }
+    assert "ignored_secret" not in snapshot
+
+
 def test_rpc_client_compacts_stream_updates_and_skips_text_log_by_default(
     tmp_path: Path,
 ) -> None:
@@ -149,6 +201,9 @@ def test_rpc_client_compacts_stream_updates_and_skips_text_log_by_default(
                 "usage": {"input": 10, "output": 2},
             },
         }
+    )
+    client.record_runtime_start(
+        pi_worker._latest_pi_runtime_start([_runtime_start_entry()])
     )
     client._append_event(
         {
@@ -174,14 +229,16 @@ def test_rpc_client_compacts_stream_updates_and_skips_text_log_by_default(
     events = [json.loads(line) for line in log_text.splitlines()]
     assert [event["type"] for event in events] == [
         "message_end",
+        "goal_plus_runtime_start",
         "tool_execution_end",
         "response",
     ]
     assert events[0]["role"] == "assistant"
     assert events[0]["content_types"] == ["thinking"]
-    assert events[1]["tool_name"] == "search_get_agent_context"
-    assert events[2]["command"] == "get_entries"
-    assert events[2]["entry_count"] == 1
+    assert events[1]["snapshot"]["project_trusted"] is True
+    assert events[2]["tool_name"] == "search_get_agent_context"
+    assert events[3]["command"] == "get_entries"
+    assert events[3]["entry_count"] == 1
     assert "SECRET" not in log_text
     assert not (tmp_path / "events.txt").exists()
 
@@ -487,9 +544,10 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
         _assistant_usage(input_tokens=100, output_tokens=10, cache_read=50, cost_total=0.01)
     ]
     delta_entries = [
+        _runtime_start_entry(entry_id="runtime_2"),
         _assistant_usage(input_tokens=25, output_tokens=5, cache_read=75, cost_total=0.02),
     ]
-    delta_entries[0]["id"] = "entry_2"
+    delta_entries[1]["id"] = "entry_2"
     commands: list[str] = []
     entries_payloads: list[dict[str, Any]] = []
     popen_cmd: list[str] = []
@@ -578,7 +636,7 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
     assert metrics["model"] == "gpt-5.4-mini"
     assert metrics["thinking_level"] == "high"
     assert metrics["baseline_entry_count"] == 1
-    assert metrics["final_entry_count"] == 2
+    assert metrics["final_entry_count"] == 3
     assert metrics["duration_seconds"] >= 2.0
     assert metrics["dispatch_duration_seconds"] >= 0
     assert metrics["baseline_last_entry_id"] == "entry_1"
@@ -602,8 +660,13 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
         "latestCacheHitRate": 75.0,
     }
     assert metrics["session_stats"] == {"tokens": {"input": 125}}
-    assert commands.count("get_entries") == 1
-    assert entries_payloads == [{"type": "get_entries", "since": "entry_1"}]
+    assert metrics["runtime_start"]["agent"] == "candidate"
+    assert metrics["runtime_start"]["project_trusted"] is True
+    assert commands.count("get_entries") == 2
+    assert entries_payloads == [
+        {"type": "get_entries", "since": "entry_1"},
+        {"type": "get_entries", "since": "entry_1"},
+    ]
     assert "set_thinking_level" in commands
     assert popen_cmd[0:3] == ["pi", "--model", "gpt-5.4-mini"]
     assert "--no-session" not in popen_cmd
@@ -619,6 +682,8 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
     assert handle["metadata"]["raw_logging"] is False
     assert handle["metadata"]["text_log"] is None
     assert handle["metadata"]["session_file"] == str(session_dir / "2026_agent_1.jsonl")
+    assert handle["metadata"]["runtime_start"]["host"] == "pi-rpc"
+    assert handle["metadata"]["runtime_start_error"] is None
     assert handle["metadata"]["continuation"] == "native_session"
     assert handle["metadata"]["process_pid"] == 4321
     assert handle["metadata"]["progress_handoff"]["status"] == "completed"

@@ -5,9 +5,10 @@ import hashlib
 import json
 import re
 import time
+from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from goal_plus.host_observability import (
@@ -16,12 +17,14 @@ from goal_plus.host_observability import (
 )
 from goal_plus.models import (
     GoalPlusActiveSession,
+    GoalPlusCommandConfig,
     GoalPlusFinalCheck,
     GoalPlusFinalCheckerHost,
     GoalPlusExecutionPolicy,
     GoalPlusGateEvent,
     GoalPlusGateResult,
     GoalPlusGoalRevision,
+    GoalPlusHostCommandInvocation,
     GoalPlusLinkedSearch,
     GoalPlusNextAction,
     GoalPlusRecord,
@@ -40,6 +43,16 @@ from goal_plus.runtime import discover_git_tracked_task_skills, exclusive_file_l
 
 
 TERMINAL_STATUSES: set[GoalPlusStatus] = {"blocked", "complete", "abandoned"}
+GOAL_PLUS_ENTRYPOINT_REQUIRED = (
+    "GoalPlusEntrypointRequired: Goal Plus can only be started by Codex "
+    "$goal-plus or Pi /goal-plus. Skill, MCP, CLI, and model-initiated creation "
+    "are not permitted."
+)
+GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED = (
+    "GoalPlusEntrypointRequired: Goal Plus objectives can only be edited by "
+    "Codex $goal-plus edit or Pi /goal-plus edit. MCP, CLI, skill, and "
+    "model-initiated edits are not permitted."
+)
 DEFAULT_EXECUTION_POLICY = GoalPlusExecutionPolicy().model_dump(mode="json")
 DEFAULT_WORK_LAUNCH_TTL_SECONDS = 120
 WORK_EVENT_STATUS = {
@@ -90,9 +103,167 @@ EXPLORATION_MODE_LINES = {
         "完成或停止 Goal Plus 任务。"
     ),
 }
-_EXPLORATION_MODE_ARGUMENT_RE = re.compile(
-    r"^mode=(?P<mode>[^\s]+)(?:\s+|$)",
-    re.IGNORECASE,
+
+
+@dataclass(frozen=True)
+class GoalPlusCommandOption:
+    """Public metadata for one canonical host-command configuration option."""
+
+    key: str
+    model_field: str
+    value_syntax: str
+    default_description: str
+    description: str
+    aliases: tuple[str, ...] = ()
+    value_kind: Literal[
+        "raw", "choice", "positive_integer", "single_model", "worker_models"
+    ] = "raw"
+    choices: tuple[str, ...] = ()
+
+    @property
+    def accepted_keys(self) -> tuple[str, ...]:
+        return (self.key, *self.aliases)
+
+
+GOAL_PLUS_COMMAND_OPTIONS = (
+    GoalPlusCommandOption(
+        "mode",
+        "mode",
+        "autonomous | probe",
+        "`autonomous`",
+        "探索模式；省略时默认为 `autonomous`。",
+        value_kind="choice",
+        choices=("autonomous", "probe"),
+    ),
+    GoalPlusCommandOption(
+        "max_parallel",
+        "max_parallel",
+        "正整数",
+        "未设置；由 Agent 根据任务和资源决定。",
+        "约束 `SearchSpec.budget.max_parallel`。",
+        value_kind="positive_integer",
+    ),
+    GoalPlusCommandOption(
+        "max_duration_seconds",
+        "max_duration_seconds",
+        "正整数（秒）",
+        "未设置；不创建命令级外层 deadline。",
+        "从 Goal 创建时间起固定外层 deadline，覆盖 worker、verifier 和收尾边界。",
+        value_kind="positive_integer",
+    ),
+    GoalPlusCommandOption(
+        "workspace_backend",
+        "workspace_backend",
+        "copy | git_worktree | thinkthread",
+        "未设置；由 Agent 根据任务和 host 能力决定。",
+        "约束 `SearchSpec.workspace.backend`。",
+        value_kind="choice",
+        choices=("copy", "git_worktree", "thinkthread"),
+    ),
+    GoalPlusCommandOption(
+        "promotion_mode",
+        "promotion_mode",
+        "apply | artifact_only",
+        "未设置；由 Agent 根据任务授权和 workspace 决定。",
+        "约束 `SearchSpec.workspace.promotion_mode`。",
+        value_kind="choice",
+        choices=("apply", "artifact_only"),
+    ),
+    GoalPlusCommandOption(
+        "strategy",
+        "strategy",
+        "NAME",
+        "未设置；由 Agent 选择 maintained strategy。",
+        "约束 `SearchSpec.strategy.name`。",
+    ),
+    GoalPlusCommandOption(
+        "annotator",
+        "annotator",
+        "MODEL",
+        "未设置；不单独指定 annotator model。",
+        "约束 `SearchSpec.strategy.evidence_annotator.model`。",
+        value_kind="single_model",
+    ),
+    GoalPlusCommandOption(
+        "workers",
+        "workers",
+        "MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]",
+        "未设置；worker 使用 host 的 parent/default model。",
+        "约束 `SearchSpec.strategy.models`；带 count 时每个模型都必须带 count。",
+        aliases=("models",),
+        value_kind="worker_models",
+    ),
+)
+GOAL_PLUS_COMMAND_OPTION_BY_KEY = {
+    key: option
+    for option in GOAL_PLUS_COMMAND_OPTIONS
+    for key in option.accepted_keys
+}
+GOAL_PLUS_COMMAND_CONFIG_KEYS = frozenset(GOAL_PLUS_COMMAND_OPTION_BY_KEY)
+
+
+def render_goal_plus_command_config_markdown() -> str:
+    """Render the public command configuration table from the runtime registry."""
+
+    lines = [
+        "| Key | Value | Default（省略时） | 约束目标 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for option in GOAL_PLUS_COMMAND_OPTIONS:
+        keys = " / ".join(f"`{key}`" for key in option.accepted_keys)
+        value_syntax = option.value_syntax.replace("|", r"\|")
+        lines.append(
+            f"| {keys} | `{value_syntax}` | {option.default_description} | "
+            f"{option.description} |"
+        )
+    return "\n".join(lines)
+
+
+def render_goal_plus_command_usage() -> str:
+    """Render the compact config portion of host command usage text."""
+
+    options = []
+    for option in GOAL_PLUS_COMMAND_OPTIONS:
+        key = option.key
+        if option.aliases:
+            key = f"{key}|{'|'.join(option.aliases)}"
+        options.append(f"[{key}={option.value_syntax.replace(' | ', '|')}]")
+    return " ".join(options)
+
+
+def _parse_command_option_value(
+    option: GoalPlusCommandOption, raw_value: str
+) -> str | int:
+    if option.value_kind == "positive_integer":
+        try:
+            return int(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{option.key}= requires a positive integer") from exc
+    if option.value_kind == "choice":
+        value = raw_value.lower()
+        if value not in option.choices:
+            allowed = ", ".join(option.choices)
+            option_name = (
+                "exploration mode" if option.key == "mode" else option.key
+            )
+            raise ValueError(
+                f"unsupported Goal Plus {option_name} {value!r}; "
+                f"expected one of: {allowed}"
+            )
+        return value
+    if option.value_kind == "single_model" and "," in raw_value:
+        raise ValueError(
+            f"{option.key}= accepts exactly one model; use workers= for a list"
+        )
+    if option.value_kind == "worker_models":
+        if any(not value.strip() for value in raw_value.split(",")):
+            raise ValueError("workers=/models= contains an empty model reference")
+        _configured_worker_models(raw_value)
+    return raw_value
+
+
+_COMMAND_CONFIG_DIRECTIVE_RE = re.compile(
+    r"^(?P<name>[A-Za-z][A-Za-z0-9_-]*)=(?P<value>[^\s]+)(?:\s+|$)"
 )
 SEARCH_TOOL_SUFFIXES = (
     "search_freeze_spec",
@@ -109,6 +280,7 @@ SEARCH_TOOL_SUFFIXES = (
     "search_select",
     "search_report",
     "search_promote",
+    "search_apply_promotion",
     "pi_search_pool_open",
     "pi_search_pool_wait_any",
     "pi_search_pool_snapshot",
@@ -179,23 +351,72 @@ def exploration_mode_from_raw_goal(raw_goal: str) -> str | None:
     return None
 
 
+def parse_goal_plus_command_config(
+    raw_goal: str,
+) -> tuple[str, GoalPlusCommandConfig]:
+    """Split leading typed key=value directives from the natural-language goal."""
+
+    remaining = raw_goal.strip()
+    directives: dict[str, str] = {}
+    while remaining:
+        match = _COMMAND_CONFIG_DIRECTIVE_RE.match(remaining)
+        if match is None:
+            break
+        name = match.group("name")
+        value = match.group("value").strip()
+        if name == "main":
+            raise ValueError(
+                "main= is not supported; select the main model when starting "
+                "Codex/Pi or with /model before /goal-plus"
+            )
+        if name == "model":
+            raise ValueError(
+                "model= is not supported; use annotator= and workers="
+            )
+        if name not in GOAL_PLUS_COMMAND_CONFIG_KEYS:
+            supported = ", ".join(sorted(GOAL_PLUS_COMMAND_CONFIG_KEYS))
+            raise ValueError(
+                f"unsupported Goal Plus command config {name}=; supported: {supported}"
+            )
+        if name in directives:
+            raise ValueError(f"/goal-plus accepts at most one {name}= directive")
+        directives[name] = value
+        remaining = remaining[match.end() :].lstrip()
+
+    parsed: dict[str, str | int] = {}
+    worker_directive: str | None = None
+    for option in GOAL_PLUS_COMMAND_OPTIONS:
+        supplied_keys = [key for key in option.accepted_keys if key in directives]
+        if len(supplied_keys) > 1:
+            aliases = " and ".join(f"{key}=" for key in supplied_keys)
+            raise ValueError(f"{aliases} are aliases; specify only one")
+        if not supplied_keys:
+            continue
+        supplied_key = supplied_keys[0]
+        parsed[option.model_field] = _parse_command_option_value(
+            option, directives[supplied_key]
+        )
+        if option.model_field == "workers":
+            worker_directive = supplied_key
+
+    config = GoalPlusCommandConfig.model_validate(
+        {
+            **parsed,
+            "worker_directive": worker_directive,
+        }
+    )
+    if not remaining:
+        raise ValueError("raw_goal must include an objective after command config")
+    return remaining, config
+
+
 def normalize_goal_plus_raw_goal(
     raw_goal: str,
     *,
     inherited_mode: str | None = None,
 ) -> str:
-    normalized = raw_goal.strip()
-    argument_match = _EXPLORATION_MODE_ARGUMENT_RE.match(normalized)
-    explicit_mode: str | None = None
-    if argument_match is not None:
-        explicit_mode = argument_match.group("mode").lower()
-        if explicit_mode not in EXPLORATION_MODES:
-            allowed = ", ".join(sorted(EXPLORATION_MODES))
-            raise ValueError(
-                f"unsupported Goal Plus exploration mode {explicit_mode!r}; "
-                f"expected one of: {allowed}"
-            )
-        normalized = normalized[argument_match.end() :].strip()
+    normalized, command_config = parse_goal_plus_command_config(raw_goal)
+    explicit_mode = command_config.mode
 
     embedded_mode = exploration_mode_from_raw_goal(normalized)
     if embedded_mode is not None:
@@ -208,6 +429,90 @@ def normalize_goal_plus_raw_goal(
     if mode not in EXPLORATION_MODES:
         mode = "autonomous"
     return f"{normalized}\n\n{EXPLORATION_MODE_LINES[mode]}"
+
+
+def _model_reference_matches(requested: str, configured: str) -> bool:
+    requested_parts = requested.strip().casefold().rsplit("/", 1)
+    configured_parts = configured.strip().casefold().rsplit("/", 1)
+    return (
+        requested_parts == configured_parts
+        or requested_parts[-1] == configured_parts[-1]
+    )
+
+
+def _configured_worker_models(value: str) -> list[tuple[str, int | None]]:
+    parsed: list[tuple[str, int | None]] = []
+    count_modes: set[bool] = set()
+    for item in value.split(","):
+        model = item.strip()
+        count: int | None = None
+        count_match = re.fullmatch(r"(.+)\*(\d+)", model)
+        if count_match is not None:
+            model = count_match.group(1).strip()
+            count = int(count_match.group(2))
+            if count <= 0:
+                raise ValueError("workers= model counts must be positive")
+        if not model:
+            raise ValueError("workers= contains an empty model reference")
+        count_modes.add(count is not None)
+        parsed.append((model, count))
+    if len(count_modes) > 1:
+        raise ValueError(
+            "workers= must specify counts for every model or for no models"
+        )
+    return parsed
+
+
+def _validate_command_config_for_search_spec(
+    config: GoalPlusCommandConfig,
+    spec: SearchSpec,
+) -> None:
+    checks = {
+        "max_parallel": (config.max_parallel, spec.budget.max_parallel),
+        "workspace_backend": (config.workspace_backend, spec.workspace.backend),
+        "promotion_mode": (config.promotion_mode, spec.workspace.promotion_mode),
+        "strategy": (config.strategy, spec.strategy.name),
+    }
+    for name, (requested, configured) in checks.items():
+        if requested is not None and requested != configured:
+            raise ValueError(
+                f"explicit command config {name}={requested} requires SearchSpec "
+                f"{name}={requested}; received {configured}"
+            )
+
+    if config.annotator is not None:
+        configured_annotator = spec.strategy.evidence_annotator.model
+        if configured_annotator is None or not _model_reference_matches(
+            config.annotator,
+            configured_annotator,
+        ):
+            raise ValueError(
+                "explicit command config annotator= must match "
+                "SearchSpec strategy.evidence_annotator.model"
+            )
+
+    if config.workers is not None:
+        requested_models = _configured_worker_models(config.workers)
+        configured_models = spec.strategy.models
+        if len(requested_models) != len(configured_models):
+            raise ValueError(
+                "explicit command config workers= must match SearchSpec strategy.models"
+            )
+        for (requested_model, requested_count), configured_model in zip(
+            requested_models,
+            configured_models,
+            strict=True,
+        ):
+            if not _model_reference_matches(requested_model, configured_model.model):
+                raise ValueError(
+                    "explicit command config workers= must match SearchSpec "
+                    "strategy.models in order"
+                )
+            if requested_count != configured_model.count:
+                raise ValueError(
+                    "explicit command config workers= counts must match SearchSpec "
+                    "strategy.models counts"
+                )
 
 
 def _elapsed_seconds(created_at: str) -> int | None:
@@ -324,15 +629,22 @@ class FileGoalPlusRuntime:
         raw_goal: str,
         source_path: str | None = None,
         policy: dict[str, Any] | None = None,
+        *,
+        host_invocation: GoalPlusHostCommandInvocation | None = None,
     ) -> GoalPlusRecord:
         goal_plus_id = self._next_goal_id()
         now = utc_timestamp()
         normalized_policy = self._normalize_policy(policy)
+        _objective, command_config = parse_goal_plus_command_config(raw_goal)
         normalized_raw_goal = normalize_goal_plus_raw_goal(raw_goal)
         record = GoalPlusRecord(
             goal_plus_id=goal_plus_id,
             raw_goal=normalized_raw_goal,
+            command_config=command_config,
             source_path=source_path,
+            outer_deadline_at=self._deadline_from_creation(
+                now, command_config.max_duration_seconds
+            ),
             status="active",
             phase="intake",
             policy=normalized_policy,
@@ -341,6 +653,7 @@ class FileGoalPlusRuntime:
                 GoalPlusGoalRevision(
                     revision=1,
                     raw_goal=normalized_raw_goal,
+                    command_config=command_config,
                     reason="目标已创建",
                     created_at=now,
                 )
@@ -349,6 +662,14 @@ class FileGoalPlusRuntime:
                 kind="record_triage",
                 description="判断原始目标应按 /goal 运行，还是升级到 Search Mode。",
                 required=True,
+            ),
+            entrypoint_status=(
+                "host_verified" if host_invocation is not None else "legacy_unverified"
+            ),
+            host_command_invocations=(
+                [host_invocation.model_copy(deep=True)]
+                if host_invocation is not None
+                else []
             ),
             created_at=now,
             updated_at=now,
@@ -359,8 +680,16 @@ class FileGoalPlusRuntime:
             "created",
             {
                 "raw_goal": record.raw_goal,
+                "command_config": command_config.model_dump(
+                    mode="json", exclude_none=True
+                ),
                 "goal_revision": record.goal_revision,
                 "policy": record.policy,
+                "host_invocation": (
+                    host_invocation.model_dump(mode="json")
+                    if host_invocation is not None
+                    else None
+                ),
             },
         )
         return record
@@ -388,8 +717,112 @@ class FileGoalPlusRuntime:
         write_json(self._orchestrator_observability_path(goal_plus_id), observation)
         return observation
 
+    def start_from_host_command(
+        self,
+        raw_goal: str,
+        *,
+        invocation: GoalPlusHostCommandInvocation | dict[str, Any],
+        source_path: str | None = None,
+        policy: dict[str, Any] | None = None,
+    ) -> GoalPlusRecord:
+        parsed = (
+            invocation
+            if isinstance(invocation, GoalPlusHostCommandInvocation)
+            else GoalPlusHostCommandInvocation.model_validate(invocation)
+        )
+        if parsed.action != "start":
+            raise ValueError("Goal Plus start requires a host invocation with action=start")
+        with exclusive_file_lock(self.root_dir / "goal-plus-entrypoint.lock"):
+            existing = self._record_for_host_invocation(parsed.invocation_id)
+            if existing is not None and existing.status not in TERMINAL_STATUSES:
+                return existing
+            nonterminal = self._nonterminal_records()
+            if nonterminal:
+                active_ids = ", ".join(record.goal_plus_id for record in nonterminal)
+                raise RuntimeError(
+                    "A nonterminal Goal Plus record already exists: "
+                    f"{active_ids}. Use the exact host edit/resume command instead."
+                )
+            return self.create_goal(
+                raw_goal,
+                source_path=source_path,
+                policy=policy,
+                host_invocation=parsed,
+            )
+
     def status(self, goal_plus_id: str) -> GoalPlusRecord:
         return self._load_record(goal_plus_id)
+
+    def require_host_verified_active_goal(self) -> GoalPlusRecord:
+        nonterminal = self._nonterminal_records()
+        if (
+            len(nonterminal) != 1
+            or nonterminal[0].status != "active"
+            or nonterminal[0].entrypoint_status != "host_verified"
+            or not nonterminal[0].host_command_invocations
+        ):
+            detail = "none" if not nonterminal else "ambiguous or unverified"
+            raise RuntimeError(
+                f"{GOAL_PLUS_ENTRYPOINT_REQUIRED} Active host-verified records: {detail}."
+            )
+        return nonterminal[0]
+
+    def _nonterminal_records(self) -> list[GoalPlusRecord]:
+        if not self.goals_dir.is_dir():
+            return []
+        records = [
+            self._load_record(path.parent.name)
+            for path in sorted(self.goals_dir.glob("gp_*/goal.json"))
+        ]
+        return [record for record in records if record.status not in TERMINAL_STATUSES]
+
+    @staticmethod
+    def _has_host_invocation(
+        record: GoalPlusRecord,
+        invocation_id: str,
+    ) -> bool:
+        return any(
+            invocation.invocation_id == invocation_id
+            for invocation in record.host_command_invocations
+        )
+
+    def _with_host_invocation(
+        self,
+        record: GoalPlusRecord,
+        invocation: GoalPlusHostCommandInvocation,
+    ) -> GoalPlusRecord:
+        if self._has_host_invocation(record, invocation.invocation_id):
+            return record
+        return record.model_copy(
+            update={
+                "entrypoint_status": "host_verified",
+                "host_command_invocations": [
+                    *record.host_command_invocations,
+                    invocation.model_copy(deep=True),
+                ],
+                "updated_at": utc_timestamp(),
+            }
+        )
+
+    def _record_for_host_invocation(
+        self,
+        invocation_id: str,
+    ) -> GoalPlusRecord | None:
+        if not self.goals_dir.is_dir():
+            return None
+        matches: list[GoalPlusRecord] = []
+        for path in sorted(self.goals_dir.glob("gp_*/goal.json"), reverse=True):
+            record = self._load_record(path.parent.name)
+            if self._has_host_invocation(record, invocation_id):
+                matches.append(record)
+        return next(
+            (
+                record
+                for record in matches
+                if record.status not in TERMINAL_STATUSES
+            ),
+            matches[0] if matches else None,
+        )
 
     @serialized_goal_mutation
     def update_goal(
@@ -398,19 +831,59 @@ class FileGoalPlusRuntime:
         raw_goal: str,
         expected_revision: int,
         reason: str | None = None,
+        *,
+        host_invocation: GoalPlusHostCommandInvocation | None = None,
     ) -> GoalPlusRecord:
         record = self._load_record(goal_plus_id)
+        if host_invocation is not None:
+            if host_invocation.action != "edit":
+                raise ValueError(
+                    "Goal Plus edit requires a host invocation with action=edit"
+                )
+            if self._has_host_invocation(record, host_invocation.invocation_id):
+                return record
         if record.goal_revision != expected_revision:
             raise RuntimeError(
                 f"Goal Plus revision conflict: expected {expected_revision}, "
                 f"current revision is {record.goal_revision}."
             )
+        _objective, updated_command_config = parse_goal_plus_command_config(raw_goal)
+        if (
+            updated_command_config.mode is None
+            and record.command_config.mode is not None
+        ):
+            updated_command_config = updated_command_config.model_copy(
+                update={"mode": record.command_config.mode}
+            )
+        if (
+            updated_command_config.max_duration_seconds is None
+            and record.command_config.max_duration_seconds is not None
+        ):
+            updated_command_config = updated_command_config.model_copy(
+                update={
+                    "max_duration_seconds": (
+                        record.command_config.max_duration_seconds
+                    )
+                }
+            )
         updated_raw_goal = normalize_goal_plus_raw_goal(
             raw_goal,
             inherited_mode=exploration_mode_from_raw_goal(record.raw_goal),
         )
-        if updated_raw_goal == record.raw_goal:
-            return record
+        if (
+            updated_raw_goal == record.raw_goal
+            and updated_command_config == record.command_config
+        ):
+            if host_invocation is None:
+                return record
+            updated = self._with_host_invocation(record, host_invocation)
+            self._write_record(updated)
+            self._append_event(
+                goal_plus_id,
+                "host_command_authorized",
+                host_invocation.model_dump(mode="json"),
+            )
+            return updated
 
         now = utc_timestamp()
         next_revision = record.goal_revision + 1
@@ -432,12 +905,18 @@ class FileGoalPlusRuntime:
         revision = GoalPlusGoalRevision(
             revision=next_revision,
             raw_goal=updated_raw_goal,
+            command_config=updated_command_config,
             reason=reason or "用户编辑了 Goal Plus 目标",
             created_at=now,
         )
         updated = record.model_copy(
             update={
                 "raw_goal": updated_raw_goal,
+                "command_config": updated_command_config,
+                "outer_deadline_at": self._deadline_from_creation(
+                    record.created_at,
+                    updated_command_config.max_duration_seconds,
+                ),
                 "goal_revision": next_revision,
                 "goal_revisions": [*record.goal_revisions, revision],
                 "final_checks": checks,
@@ -455,6 +934,19 @@ class FileGoalPlusRuntime:
                     required=True,
                     metadata={"goal_revision": next_revision},
                 ),
+                "entrypoint_status": (
+                    "host_verified"
+                    if host_invocation is not None
+                    else record.entrypoint_status
+                ),
+                "host_command_invocations": (
+                    [
+                        *record.host_command_invocations,
+                        host_invocation.model_copy(deep=True),
+                    ]
+                    if host_invocation is not None
+                    else record.host_command_invocations
+                ),
                 "updated_at": now,
             }
         )
@@ -467,8 +959,73 @@ class FileGoalPlusRuntime:
                 "goal_revision": next_revision,
                 "previous_raw_goal": record.raw_goal,
                 "raw_goal": updated_raw_goal,
+                "previous_command_config": record.command_config.model_dump(
+                    mode="json", exclude_none=True
+                ),
+                "command_config": updated_command_config.model_dump(
+                    mode="json", exclude_none=True
+                ),
                 "reason": revision.reason,
+                "host_invocation": (
+                    host_invocation.model_dump(mode="json")
+                    if host_invocation is not None
+                    else None
+                ),
             },
+        )
+        return updated
+
+    def edit_from_host_command(
+        self,
+        goal_plus_id: str,
+        raw_goal: str,
+        *,
+        expected_revision: int,
+        invocation: GoalPlusHostCommandInvocation | dict[str, Any],
+        reason: str | None = None,
+    ) -> GoalPlusRecord:
+        parsed = (
+            invocation
+            if isinstance(invocation, GoalPlusHostCommandInvocation)
+            else GoalPlusHostCommandInvocation.model_validate(invocation)
+        )
+        return self.update_goal(
+            goal_plus_id,
+            raw_goal,
+            expected_revision,
+            reason,
+            host_invocation=parsed,
+        )
+
+    @serialized_goal_mutation
+    def resume_from_host_command(
+        self,
+        goal_plus_id: str,
+        *,
+        invocation: GoalPlusHostCommandInvocation | dict[str, Any],
+    ) -> GoalPlusRecord:
+        parsed = (
+            invocation
+            if isinstance(invocation, GoalPlusHostCommandInvocation)
+            else GoalPlusHostCommandInvocation.model_validate(invocation)
+        )
+        if parsed.action != "resume":
+            raise ValueError(
+                "Goal Plus resume requires a host invocation with action=resume"
+            )
+        record = self._load_record(goal_plus_id)
+        if self._has_host_invocation(record, parsed.invocation_id):
+            return record
+        if record.status != "active":
+            raise RuntimeError(
+                f"Goal Plus {goal_plus_id} is {record.status}; only active records can resume"
+            )
+        updated = self._with_host_invocation(record, parsed)
+        self._write_record(updated)
+        self._append_event(
+            goal_plus_id,
+            "host_command_authorized",
+            parsed.model_dump(mode="json"),
         )
         return updated
 
@@ -520,6 +1077,99 @@ class FileGoalPlusRuntime:
             goal_plus_id,
             "session_activated",
             parsed.model_dump(mode="json"),
+        )
+        return updated
+
+    @serialized_goal_mutation
+    def detach_session(
+        self,
+        goal_plus_id: str,
+        *,
+        session_id: str,
+        reason: str,
+    ) -> GoalPlusRecord:
+        record = self._load_record(goal_plus_id)
+        active = record.active_session
+        if active is None or active.session_id != session_id:
+            return record
+        now = utc_timestamp()
+        detached = active.model_copy(
+            update={
+                "state": "detached",
+                "last_seen_at": now,
+                "metadata": {**active.metadata, "detach_reason": reason},
+            }
+        )
+        updated = record.model_copy(
+            update={"active_session": detached, "updated_at": now}
+        )
+        self._write_record(updated)
+        self._append_event(
+            goal_plus_id,
+            "session_detached",
+            {
+                "session_id": session_id,
+                "reason": reason,
+            },
+        )
+        return updated
+
+    @serialized_goal_mutation
+    def settle_nonactive_stop(
+        self,
+        goal_plus_id: str,
+        *,
+        session_id: str,
+    ) -> GoalPlusRecord | None:
+        """Consume one non-active Stop summary and detach its host session."""
+        record = self._load_record(goal_plus_id)
+        if record.status == "active":
+            raise RuntimeError(
+                f"Goal Plus {goal_plus_id} is active; use gate() for its Stop event"
+            )
+        active = record.active_session
+        if (
+            active is None
+            or active.session_id != session_id
+            or active.state != "attached"
+        ):
+            return None
+
+        now = utc_timestamp()
+        counters = dict(record.hook_counters)
+        counters["stop"] = counters.get("stop", 0) + 1
+        detach_reason = "nonactive_stop_summary_emitted"
+        detached = active.model_copy(
+            update={
+                "state": "detached",
+                "last_seen_at": now,
+                "metadata": {
+                    **active.metadata,
+                    "detach_reason": detach_reason,
+                    "stop_summary_emitted_at": now,
+                },
+            }
+        )
+        updated = record.model_copy(
+            update={
+                "active_session": detached,
+                "hook_counters": counters,
+                "updated_at": now,
+            }
+        )
+        self._write_record(updated)
+        self._append_event(
+            goal_plus_id,
+            "gate_allowed",
+            {"event": "stop", "reason": None},
+        )
+        self._append_event(
+            goal_plus_id,
+            "session_detached",
+            {
+                "session_id": session_id,
+                "reason": detach_reason,
+            },
         )
         return updated
 
@@ -931,8 +1581,15 @@ class FileGoalPlusRuntime:
                 if isinstance(search_spec, SearchSpecDraft)
                 else search_spec
             )
-            SearchSpec.model_validate(search_spec_data)
+            resolved_search_spec = SearchSpec.model_validate(search_spec_data)
+        else:
+            resolved_search_spec = None
         record = self._load_record(goal_plus_id)
+        if resolved_search_spec is not None:
+            _validate_command_config_for_search_spec(
+                record.command_config,
+                resolved_search_spec,
+            )
         origin = parsed.origin or (
             record.triage.identified_at if record.triage is not None else "in_progress"
         )
@@ -1047,6 +1704,15 @@ class FileGoalPlusRuntime:
             raise RuntimeError(
                 "Call search_promote for the selected candidate before recording "
                 "the Goal Plus search result."
+            )
+        promotion = run_state.get("promotion")
+        if isinstance(promotion, dict) and (
+            promotion.get("promotion_mode") == "apply"
+            and promotion.get("state") != "applied"
+        ):
+            raise RuntimeError(
+                "Call search_apply_promotion before recording a Search result whose "
+                "workspace.promotion_mode is 'apply'."
             )
         runtime_selected_candidate_id = run_state.get("selected_candidate_id")
         if not runtime_selected_candidate_id:
@@ -1725,9 +2391,13 @@ class FileGoalPlusRuntime:
             f"最终检查 policy：{final_check_text}\n\n"
             "对照持久证据审计完整原始目标中的每项要求。如果原始目标包含时间限制，使用上述"
             "时间戳进行判断：只要仍有可用时间且目标未完成，就继续工作；达到或超过时间条件时，"
-            "保留最佳持久结果并完成必需审计。如果没有时间限制，继续到目标满足，或确有阻塞因素"
-            "导致无法完成。worker lease 或 probe 结束绝不会完成 Goal Plus 任务。停止前，"
-            "使用 complete、blocked 或 abandoned 调用 goal_plus_set_status，并提供真实原因和证据。"
+            "停止新增工作、保留最佳持久结果并完成必需审计。时间条件不覆盖已经完成的结果终态："
+            "若必需工作、验证、提升和审计已经完成，即使实际收尾晚于预设也使用 complete，并在"
+            "evidence 中分别记录预设时间和实际完成收尾时间；不要输出 late，也不要仅因超出预设"
+            "而使用 blocked。blocked 只表示仍缺少外部输入、权限、资源或状态变化，导致任务确实"
+            "无法继续。如果没有时间限制，继续到目标满足，或出现这种真实阻塞。worker lease 或"
+            "probe 结束绝不会完成 Goal Plus 任务。停止前，使用 complete、blocked 或 abandoned"
+            "调用 goal_plus_set_status，并提供真实原因和证据。"
         )
 
     def _continuation_prompt(self, record: GoalPlusRecord) -> str:
@@ -1838,6 +2508,21 @@ class FileGoalPlusRuntime:
             raise ValueError("policy.final_check.mode must be 'disabled' or 'required'")
         normalized["final_check"] = {**final_check, "mode": mode}
         return normalized
+
+    @staticmethod
+    def _deadline_from_creation(
+        created_at: str,
+        max_duration_seconds: int | None,
+    ) -> str | None:
+        if max_duration_seconds is None:
+            return None
+        created_epoch = calendar.timegm(
+            time.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
+        )
+        return time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(created_epoch + max_duration_seconds),
+        )
 
     def _final_check_mode(self, record: GoalPlusRecord) -> str:
         final_check = record.policy.get("final_check")

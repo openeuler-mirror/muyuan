@@ -984,6 +984,17 @@ def _milliseconds(value: Any) -> str:
     return f"{formatted} ms"
 
 
+def _bytes(value: Any) -> str:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return "Not observed"
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(amount) < 1024 or unit == "TiB":
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{amount:.1f} TiB"
+
+
 def _number(value: Any, *, digits: int = 2) -> str:
     if not isinstance(value, int | float) or isinstance(value, bool):
         return "Not observed"
@@ -1720,6 +1731,17 @@ def _task_details(
             "objective": frozen.spec.objective,
             "metric_name": frozen.spec.metric_name,
             "metric_direction": frozen.spec.metric_direction,
+            "workspace_backend": frozen.spec.workspace.backend,
+            "source_artifact_ref": (
+                frozen.source_artifact_ref.model_dump(mode="json")
+                if frozen.source_artifact_ref is not None
+                else None
+            ),
+            "origin_verification": (
+                frozen.origin_verification.model_dump(mode="json")
+                if frozen.origin_verification is not None
+                else None
+            ),
             "strategy": frozen.spec.strategy.model_dump(mode="json", exclude_none=True),
             "budget": frozen.spec.budget.model_dump(mode="json", exclude_none=True),
         },
@@ -3884,8 +3906,30 @@ def _render_statistics(task: dict[str, Any]) -> str:
     usage = statistics.get("usage") or {}
     efficiency = statistics.get("efficiency") or {}
     lineage = statistics.get("lineage") or {}
+    workspace_operations = statistics.get("workspace_operations") or {}
+    workspace_capacity = workspace_operations.get("capacity_estimate") or {}
     tables = [
         ("Timing", timing, {key: _duration for key in timing if "_seconds" in key}),
+        (
+            "Workspace Capacity Preflight",
+            {
+                key: workspace_capacity.get(key)
+                for key in (
+                    "basis",
+                    "worktree_nodes",
+                    "source_scope_bytes",
+                    "materialized_source_bytes",
+                    "checkout_bytes_per_node",
+                    "candidate_checkouts_bytes",
+                    "shared_object_store_bytes",
+                    "estimated_incremental_bytes",
+                    "conservative_upper_bound_bytes",
+                    "available_bytes",
+                    "fits_available_space",
+                )
+            },
+            {key: _bytes for key in workspace_capacity if key.endswith("_bytes")},
+        ),
         (
             "Workers",
             workers,
@@ -4264,6 +4308,8 @@ def _render_task(
         f'{_render_timeline(task.get("timeline") or {}, title="Search Execution Timeline", include_score_chart=not bool(trajectory))}'
         '<p class="footnote">This axis is scoped to this Search run. Worker bars show actual host execution, not the configured maximum or an aspirational exploration window.</p>'
         "</section>"
+        '<section class="subsection"><h3>Bootstrap Verification</h3>'
+        f"{_render_bootstrap_verification(task)}</section>"
         '<section class="subsection"><h3>Shared Evidence View</h3>'
         f"{_render_shared_evidence_view(task)}</section>"
         '<section class="subsection"><h3>Candidate Evidence</h3>'
@@ -4275,6 +4321,52 @@ def _render_task(
         '<details class="summary-block"><summary>Raw normalized Search statistics</summary>'
         f"<pre>{escape(json.dumps(stats, indent=2, ensure_ascii=False, sort_keys=True))}</pre></details>"
         "</section></article>"
+    )
+
+
+def _render_bootstrap_verification(task: dict[str, Any]) -> str:
+    frozen = task.get("frozen_spec") or {}
+    run = task.get("run") or {}
+    verifications = [
+        frozen.get("origin_verification"),
+        run.get("workspace_bootstrap_verification"),
+    ]
+    rows = []
+    for verification in verifications:
+        if not isinstance(verification, dict):
+            continue
+        artifact = verification.get("source_artifact_ref") or {}
+        results = verification.get("verifier_results") or []
+        verifier_summary = ", ".join(
+            f"{result.get('name')}={'pass' if result.get('passed') else 'fail'}"
+            for result in results
+            if isinstance(result, dict)
+        )
+        rows.append(
+            "<tr>"
+            f"<td><code>{_html(verification.get('phase'))}</code></td>"
+            f"<td><code>{_html(verification.get('backend'))}</code></td>"
+            f"<td><code>{_html(verification.get('candidate_id'))}</code></td>"
+            f"<td>{_status('passed' if verification.get('passed') else 'failed')}</td>"
+            f"<td class=\"mono\">{_html(_number(verification.get('aggregate_score'), digits=4))}</td>"
+            f"<td><code>{_html(artifact.get('id'))}</code></td>"
+            f"<td>{_html(verifier_summary)}</td>"
+            "</tr>"
+        )
+    if not rows:
+        return (
+            "<p>No origin or workspace-relocation bootstrap verification was "
+            "recorded for this run.</p>"
+        )
+    return (
+        "<p>These control-plane gates are separate from candidate iterations "
+        "and ranking.</p>"
+        '<div class="table-scroll"><table><thead><tr>'
+        "<th>Phase</th><th>Backend</th><th>Candidate</th><th>Status</th>"
+        "<th>Score</th><th>Source artifact</th><th>Verifiers</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>"
     )
 
 

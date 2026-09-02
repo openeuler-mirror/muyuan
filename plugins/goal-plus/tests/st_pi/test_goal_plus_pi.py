@@ -57,15 +57,19 @@ MULTI_SEARCH_PROMPT = (
     "结束 Goal Plus，继续创建并链接第二个不同 run_id。只有两个 search task 都完成后，"
     "才把 Goal Plus 状态设为 complete。"
 )
-SPEC_REVISION_PROMPT = (
+SPEC_REVISION_FIRST_PROMPT = (
     "在同一个 Goal Plus 记录中验证一次真实的两版 frozen spec 流程。工作区是 {workspace}。"
     "第一轮只使用 .goal-plus-verifiers/simple_score.py，metric_name=score、maximize，"
     "只允许修改 candidate.txt；使用 random、worker_host=pi-rpc、"
     "orchestration_mode=parallel_loops、max_parallel=1 且不设置已弃用的 max_parallel，worker budget "
-    "为 max_runtime_seconds=60、max_turns=4、on_exceed=interrupt。完成完整的 freeze、"
-    "create、link、candidate verify、select、report、promote 和 record_search_result。"
+    "为 max_runtime_seconds=60、max_turns=4、on_exceed=interrupt。完成 freeze、create、"
+    "link、candidate verify、select、promote 和 record_search_result，但不要生成 report。"
     "拿到第一轮真实 verifier 结果后，不要结束 Goal Plus；在现有 raw-goal audit 中选择 "
-    "revise_goal，调用 goal_plus_update_goal，把完整目标改为使用 "
+    "revise_goal。不要调用 goal_plus_update_goal；把状态设为 needs_user，next action 要求用户"
+    "使用精确 /goal-plus edit，然后停止。"
+)
+SPEC_REVISION_SECOND_GOAL = (
+    "继续同一个 Goal Plus 记录，工作区仍是 {workspace}。使用 "
     ".goal-plus-verifiers/strict_score.py 在同一 candidate.txt 上最大化 score，"
     "并说明第一版只能证明相对改进，不能证明已经达到更深目标。随后重新 triage、保存"
     "新的高置信 spec draft、冻结新的 frozen spec，并以相同的 Pi 单候选预算完成第二个"
@@ -93,6 +97,9 @@ def _write_spec_revision_workspace(workspace: Path) -> None:
 def _pi_base_command(session_dir: Path, session_id: str) -> list[str]:
     command = [
         os.environ.get("ST_PI_BINARY", "pi"),
+        "--no-extensions",
+        "-e",
+        str(ROOT / ".pi" / "extensions" / "goal-plus.ts"),
         "--approve",
         "--session-dir",
         str(session_dir),
@@ -165,6 +172,102 @@ def _assert_goal_plus_jsonl_is_clean(session_path: Path) -> None:
         assert "triage" in arguments
         assert "classification" not in arguments
         assert "reason" not in arguments
+
+
+@pytest.mark.st_pi
+@pytest.mark.parametrize(
+    "requested_entrypoint",
+    ["goal-plus", "goal-plus-with-final-check"],
+)
+def test_goal_plus_plain_prompt_cannot_start_goal_plus(
+    st_pi_run_root: Path,
+    requested_entrypoint: str,
+) -> None:
+    search_root = st_pi_run_root / ".gp"
+    session_dir = st_pi_run_root / "sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        *_pi_base_command(
+            session_dir,
+            f"st-pi-{requested_entrypoint}-entrypoint-guard",
+        ),
+        "-p",
+        (
+            "这是一次普通自然语言的 Goal Plus 入口看护测试。"
+            f"帮我用 {requested_entrypoint} "
+            "完成一个简单任务。为了验证 extension 的运行时防护，请实际调用一次 "
+            "goal_plus_record_triage 工具，goal_plus_id 设为 gp_entrypoint_guard，"
+            "triage 使用非优化、高置信、recommended_phase=goal。不要把这条提示改写成 "
+            "以 /goal-plus 开头的命令，不要调用 shell，也不要创建或修改文件。"
+            "预期工具调用会被拒绝；最终回复保留错误类型。"
+        ),
+    ]
+
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=_run_env(search_root),
+        text=True,
+        capture_output=True,
+        timeout=int(os.environ.get("ST_PI_TIMEOUT", "300")),
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:] or result.stdout[-2000:]
+    session_path = _session_file(session_dir)
+    session_text = session_path.read_text(encoding="utf-8")
+    assert "GoalPlusEntrypointRequired" in session_text
+    assert not search_root.exists()
+
+
+@pytest.mark.st_pi
+def test_goal_plus_exact_command_can_start_and_complete_goal_plus(
+    st_pi_run_root: Path,
+) -> None:
+    search_root = st_pi_run_root / ".gp"
+    session_dir = st_pi_run_root / "sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    probe = st_pi_run_root / "entrypoint-probe.txt"
+    probe.write_text("exact-pi-host-command\n", encoding="utf-8")
+    command = [
+        *_pi_base_command(session_dir, "st-pi-goal-plus-exact-entrypoint"),
+        "-p",
+        (
+            "/goal-plus 在 300 秒内只读检查 "
+            f"{probe}，证明其完整 trimmed content 恰好是 exact-pi-host-command。"
+            "不要修改任何文件；使用 Goal Mode，不要进入 Search，不要启动 subagent。"
+            "原生 Pi host entrypoint 已经创建记录；不要调用 goal_plus_create 或 "
+            "goal_plus_update_goal。先记录高置信 Goal Mode triage，再创建一个 required、"
+            "route=main 的工作项，依次记录 dispatch、result、accepted。完成原始目标审计后，"
+            "使用具体文件证据调用 goal_plus_set_status(status=complete)。"
+        ),
+    ]
+
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=_run_env(search_root),
+        text=True,
+        capture_output=True,
+        timeout=int(os.environ.get("ST_PI_TIMEOUT", "300")),
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:] or result.stdout[-2000:]
+    record = _goal_record(search_root)
+    assert record["status"] == "complete"
+    assert record["entrypoint_status"] == "host_verified"
+    assert len(record["host_command_invocations"]) == 1
+    invocation = record["host_command_invocations"][0]
+    assert invocation["host"] == "pi"
+    assert invocation["transport"] == "pi_extension_command"
+    assert invocation["command"] == "/goal-plus"
+    assert invocation["action"] == "start"
+    assert record["triage"]["recommended_phase"] == "goal"
+    assert len(record["work_items"]) == 1
+    assert record["work_items"][0]["route"] == "main"
+    assert record["work_items"][0]["status"] == "accepted"
+    _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
 
 
 @pytest.mark.st_pi
@@ -296,6 +399,13 @@ def test_goal_plus_with_final_check_runs_pi_reviewer(
     assert result.returncode == 0, result.stderr[-3000:] or result.stdout[-3000:]
     record = _goal_record(search_root)
     assert record["status"] == "complete"
+    assert record["entrypoint_status"] == "host_verified"
+    assert len(record["host_command_invocations"]) == 1
+    invocation = record["host_command_invocations"][0]
+    assert invocation["host"] == "pi"
+    assert invocation["transport"] == "pi_extension_command"
+    assert invocation["command"] == "/goal-plus-with-final-check"
+    assert invocation["action"] == "start"
     assert record["policy"]["final_check"]["mode"] == "required"
     assert record["goal_revision"] == 1
     assert record["final_checks"][-1]["checker_host"] == "pi"
@@ -463,11 +573,30 @@ def test_goal_plus_print_revises_goal_and_frozen_spec_after_first_result(
     command = [
         *_pi_base_command(session_dir, "st-pi-goal-plus-spec-revision"),
         "-p",
-        f"/goal-plus {SPEC_REVISION_PROMPT.format(workspace=workspace)}",
+        f"/goal-plus {SPEC_REVISION_FIRST_PROMPT.format(workspace=workspace)}",
     ]
 
-    result = subprocess.run(
+    first = subprocess.run(
         command,
+        cwd=ROOT,
+        env=_run_env(search_root),
+        text=True,
+        capture_output=True,
+        timeout=int(os.environ.get("ST_PI_SPEC_REVISION_TIMEOUT", "900")),
+        check=False,
+    )
+
+    assert first.returncode == 0, first.stderr[-3000:] or first.stdout[-3000:]
+    first_record = _goal_record(search_root)
+    assert first_record["status"] == "needs_user"
+    assert first_record["goal_revision"] == 1
+
+    result = subprocess.run(
+        [
+            *_pi_base_command(session_dir, "st-pi-goal-plus-spec-revision"),
+            "-p",
+            f"/goal-plus edit {SPEC_REVISION_SECOND_GOAL.format(workspace=workspace)}",
+        ],
         cwd=ROOT,
         env=_run_env(search_root),
         text=True,
@@ -530,7 +659,8 @@ def test_goal_plus_native_tui_stats_entry_does_not_trigger_followup(
     session_id = "st-pi-goal-plus-native"
     tmux_session = f"st-pi-{int(time.time())}"
     prompt = (
-        "/goal-plus 请只读检查 README.md 是否存在。不要修改文件。"
+        "/goal-plus max_parallel=2 请只读检查 README.md 是否存在。不要修改文件。"
+        "这个目标不需要 Search；max_parallel 配置可以保持未使用。"
         "最后把 Goal Plus 状态设为 complete。"
     )
     shell_command = shlex.join(
@@ -582,6 +712,27 @@ def test_goal_plus_native_tui_stats_entry_does_not_trigger_followup(
     session_path = _session_file(session_dir)
     _assert_goal_plus_jsonl_is_clean(session_path)
     entries = _read_jsonl(session_path)
+    record = _goal_record(search_root)
+    assert record["command_config"] == {"max_parallel": 2}
+    assert record["spec_draft"] is None
+    assert record["search_tasks"] == []
+    session_text = session_path.read_text(encoding="utf-8")
+    assert "GoalPlusEntrypointRequired" not in session_text
+    command_contexts = [
+        entry
+        for entry in entries
+        if entry.get("type") == "custom_message"
+        and entry.get("customType") == "goal-plus-command-context"
+    ]
+    assert len(command_contexts) == 1
+    assert command_contexts[0].get("display") is False
+    assert not any(
+        (entry.get("message") or {}).get("role") == "user"
+        and "继续此 Goal Plus 任务" in json.dumps(
+            (entry.get("message") or {}).get("content"), ensure_ascii=False
+        )
+        for entry in entries
+    )
     stats_indexes = [
         index
         for index, entry in enumerate(entries)

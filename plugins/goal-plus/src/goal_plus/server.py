@@ -39,8 +39,13 @@ def create_mcp(
     ) -> dict[str, Any]:
         """将 SearchSpec 及其 verifier 文件冻结为不可变 bundle。
 
-        返回 `frozen_spec_id` 和 `task_skill_notice`，应在 `search_create` 前调用。后者列出
-        source Git index 中 `.agents/skills/*/SKILL.md` 的自动发现结果。verifier 文件按 hash 固定；
+        冻结前校验 worker host、workspace backend 和 source Git 状态；`git_worktree`
+        及未来的 ThinkThread backend 要求整个 source repository 对应 clean HEAD，dirty
+        source 会在 verifier preflight 前失败。当前 Codex/Pi RPC 请求 ThinkThread 也会失败。
+        返回 `frozen_spec_id`、`task_skill_notice` 和 `workspace_capacity_notice`，应在
+        `search_create` 前调用。后两者分别列出 source Git index 中
+        `.agents/skills/*/SKILL.md` 的自动发现结果，以及按 `budget.max_parallel` 计算的
+        source/worktree/object-store 容量预检。verifier 文件按 hash 固定；
         候选执行期间修改它们会强制分数为 0.0。冻结会预检每个 `ranking_signal`：
         它必须以 0 退出，并输出一个最终 JSON 对象，其中包含有限数值类型的
         `spec.metric_name`，例如 `{"score": 123.0}`。verifier 命令在一次性源码副本中
@@ -50,6 +55,7 @@ def create_mcp(
         的路径，绝不能放在 `.gp` 或 `.search`。`expected_outputs` 只包含产物路径/glob，
         不是 stdout parser 配置。`spec.budget.max_parallel` 唯一决定初始候选 Agent 数。
         """
+        goal_runtime.require_host_verified_active_goal()
         return tools.search_freeze_spec(spec, verifier_artifact_paths)
 
     @mcp.tool()
@@ -72,9 +78,13 @@ def create_mcp(
     ) -> dict[str, str]:
         """从冻结 spec 启动 Search run，并返回 `run_id`。
 
+        启动前复检 worker host、workspace backend 和 source Git 状态；当前 Codex/Pi RPC
+        请求 ThinkThread，或 Git-backed source 在 freeze 后变 dirty，都会在创建 run 或
+        candidate checkout 前失败。
         只有无法避免新的不可变 run 时才传入 `source_run_id`。新 run 会收到来源 frontier、
         限定范围的问题和特性账本的有界 snapshot。来源分数只是历史，必须在新契约下重新验证。
         """
+        goal_runtime.require_host_verified_active_goal()
         return tools.search_create(frozen_spec_id, source_run_id)
 
     @mcp.tool()
@@ -262,6 +272,24 @@ def create_mcp(
         return tools.search_get_global_evidence(agent_session_id)
 
     @mcp.tool()
+    def search_reference_open(
+        agent_session_id: str,
+        source_candidate_id: str,
+        source_iteration: Annotated[int, Field(ge=1)],
+    ) -> dict[str, Any]:
+        """把一条已结算 Evidence checkout 到当前 worker 的 ref-workspace。
+
+        每个 worker 只有一个稳定目录；再次调用会把同一目录切到新的精确 commit。
+        返回的 root 可直接使用普通文件和命令工具查看，但不是 peer 的活动 workspace，
+        实现修改仍应只发生在 candidate workspace。
+        """
+        return tools.search_reference_open(
+            agent_session_id,
+            source_candidate_id,
+            source_iteration,
+        )
+
+    @mcp.tool()
     def search_copy_shared_tool(
         agent_session_id: str,
         tool_id: str,
@@ -386,9 +414,14 @@ def create_mcp(
         return tools.search_report(run_id)
 
     @mcp.tool()
-    def search_promote(run_id: str, candidate_id: str) -> dict[str, str]:
-        """将所选候选导出为 patch，不改变主源码工作区。"""
+    def search_promote(run_id: str, candidate_id: str) -> dict[str, Any]:
+        """准备 provider-native publication，不改变主源码工作区。"""
         return tools.search_promote(run_id, candidate_id)
+
+    @mcp.tool()
+    def search_apply_promotion(run_id: str) -> dict[str, Any]:
+        """按 frozen promotion mode 将 publication 写回 Git repo 或 ThinkThread Root。"""
+        return tools.search_apply_promotion(run_id)
 
     @mcp.tool()
     def goal_plus_create(
@@ -396,7 +429,10 @@ def create_mcp(
         source_path: str | None = None,
         policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """triage 前根据原始用户目标创建 goal-plus 记录。"""
+        """已禁用的兼容入口；始终报错且绝不创建记录。
+
+        只能用 Codex `$goal-plus` 或 Pi `/goal-plus` 由宿主入口创建 Goal Plus。
+        """
         return goal_tools.goal_plus_create(raw_goal, source_path, policy)
 
     @mcp.tool()
@@ -411,7 +447,10 @@ def create_mcp(
         expected_revision: int,
         reason: str | None = None,
     ) -> dict[str, Any]:
-        """原地替换实际目标，并开始新的可审计修订版。"""
+        """已禁用的兼容入口；始终报错且绝不修改目标。
+
+        只能用 Codex `$goal-plus edit` 或 Pi `/goal-plus edit` 由宿主入口修订。
+        """
         return goal_tools.goal_plus_update_goal(
             goal_plus_id,
             raw_goal,
@@ -549,7 +588,7 @@ def create_mcp(
         evidence: list[dict[str, Any]] | None = None,
         next_action: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """根据证据完成、阻塞或暂停后，设置 goal-plus 状态。"""
+        """根据证据设置终态；耗时超出预设不等于 blocked。"""
         return goal_tools.goal_plus_set_status(
             goal_plus_id,
             status,

@@ -46,33 +46,42 @@ def test_pyproject_exposes_pi_console_scripts() -> None:
     assert 'goal-plus-pi-pool = "goal_plus.pi_pool:main"' in text
 
 
-def test_pi_goal_plus_prompt_starts_with_create_call() -> None:
+def test_pi_goal_plus_prompt_cannot_bootstrap_goal_plus() -> None:
     text = (ROOT / ".pi" / "prompts" / "goal-plus.md").read_text(encoding="utf-8")
 
-    assert 'goal_plus_create(raw_goal="$ARGUMENTS")' in text
+    assert "此文件只是兼容说明，不能启动 Goal Plus" in text
+    assert "不得调用 `goal_plus_create`" in text
+    assert "原生 Pi extension" in text
+    assert "host command" in text
     assert 'worker_host: "pi-rpc"' in text
     assert 'worker_mode: "agent-session-pool"' not in text
     assert 'orchestration_mode: "parallel_loops"' in text
     assert '`workspace.backend="git_worktree"`' in text
+    assert '`workspace.promotion_mode` 默认是 `apply`' in text
+    assert "DirtySourceWorkspace" in text
+    assert "workspace_capacity_notice" in text
+    assert "fits_available_space=false" in text
     assert '有限数值类型的' in text
     assert '`spec.metric_name`' in text
     assert ".goal-plus-verifiers/" in text
     assert "`expected_outputs` 只列出产物路径或 glob" in text
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in text
     assert "固定的 `/tmp`" in text
+    assert "origin `source_path` 运行一次" in text
+    assert "WorkspaceRelocationVerifierFailed" in text
+    assert "verifier_target_mismatch" in text
+    assert "bootstrap 结果不是 candidate iteration" in text
     assert "`goal_plus_record_triage` 之前不要读取或审计目标文件" in text
     assert "当前未设置最大运行时间" in text
     assert "当前对话上下文" in text
     assert "不要询问或等待确认" in text
     assert "告知后立即继续执行" in text
     assert "feature_plugins=[\"orchestration\"]" in text
-    assert "`main=` 只表示入口已校验当前" in text
-    assert "入口没有切换模型" in text
+    assert "`main=` 不是受支持的" in " ".join(text.split())
     assert ".goal-plus-verifiers/" in text
     assert "`expected_outputs` 只列出" in text
     assert "{{input}}" not in text
-    assert text.index("goal_plus_create") < text.index("Goal Plus")
-    assert text.index("goal_plus_create") < text.index("goal_plus_record_triage")
+    assert "把 `$ARGUMENTS` 当作已授权目标" in text
 
 
 def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
@@ -88,7 +97,8 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "自动升级到 Search Mode" in text
     assert "不要要求用户" in text
     assert "用户提示有用但可选" in text
-    assert "goal_plus_create" in text
+    assert "不得调用 `goal_plus_create`" in text
+    assert "缺少授权" in text
     assert "goal_plus_gate" in text
     assert "goal_plus_monitor_snapshot" in text
     assert "主要只读监控路径" in text
@@ -99,6 +109,14 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert 'worker_mode: "agent-session-pool"' not in text
     assert 'orchestration_mode: "parallel_loops"' in text
     assert '`workspace.backend="git_worktree"`' in text
+    assert '`workspace.promotion_mode` 默认是' in text
+    assert "DirtySourceWorkspace" in text
+    assert "origin `source_path` 运行一次 process-verifier suite" in text
+    assert "WorkspaceRelocationVerifierFailed" in text
+    assert "verifier_target_mismatch" in text
+    assert "bootstrap 结果不是 candidate iteration" in text
+    assert "workspace_capacity_notice" in text
+    assert "fits_available_space=false" in text
     assert ".agents/skills/<name>/SKILL.md" in text
     assert "task_skill_notice" in text
     assert "candidate_task.task_skill_paths" in text
@@ -118,6 +136,7 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "search_select" in text
     assert "search_report" in text
     assert "search_promote" in text
+    assert "search_apply_promotion" in text
     assert "apply_cwd" in text
     assert "apply_directory" in text
     assert "跨进程原生 session continuation" in text
@@ -136,7 +155,7 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "在修订或恢复前先澄清" in normalized
     assert "不要仅因 Goal Plus 记录处于 active" in normalized
     assert "Goal Plus 命令不能切换它" in normalized
-    assert "`main=`；它只作为 兼容的一致性断言" in normalized
+    assert "`main=` 不是受支持的 Goal Plus 命令配置" in normalized
     assert "goal_plus_prepare_final_check" in text
     assert "pi_goal_plus_run_final_check" in text
     assert "goal_plus_submit_final_check" in text
@@ -150,7 +169,9 @@ def test_pi_goal_plus_skill_records_modes_and_gate() -> None:
     assert "/goal-plus mode=probe" in text
     assert "`raw_goal` 的规范末行" in normalized
     assert "任何 worker lease 结束都不会完成" in text
-    assert "不要编造单独的 Goal Plus deadline" in text
+    assert "`max_duration_seconds`" in text
+    assert "`outer_deadline_at`" in text
+    assert "缺省时不要编造" in text
     assert "加入队列" in text
     assert "continuation prompt" in text
     assert "`goal_plus_record_triage` 前不要读取或审计目标文件" in text
@@ -167,7 +188,6 @@ def test_pi_prompt_and_extension_defer_report_until_terminal_state() -> None:
     extension = (ROOT / ".pi" / "extensions" / "goal-plus.ts").read_text(
         encoding="utf-8"
     )
-
     assert "在 Search 执行" in prompt
     assert "绝不能调用 `search_report`" in prompt
     assert "Goal Plus 记录达到终态后" in prompt
@@ -255,6 +275,9 @@ def test_pi_workspace_schema_needs_no_task_skill_configuration() -> None:
     )[0]
 
     assert "skill_roots" not in workspace_schema
+    assert "promotion_mode" in workspace_schema
+    assert 'Type.Literal("apply")' in workspace_schema
+    assert 'Type.Literal("artifact_only")' in workspace_schema
 
 
 def test_pi_goal_plus_skill_uses_the_same_family_revision_contract() -> None:
@@ -304,27 +327,49 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "GOAL_PLUS_PI_ROLE" in text
     assert 'role === "main"' in text
     assert 'role === "worker"' in text
-    assert "goal_plus_create" in text
+    assert "goal_plus_host_start" in text
+    assert "runHostCommandCli" in text
+    assert '"--host-entrypoint"' in text
+    assert '"--host-capability"' in text
+    assert "capabilityToken = randomUUID()" in text
+    assert 'flag: "wx"' in text
+    assert "goalPlusSessionAuthorized" in text
+    assert "goalPlusTurnAuthorized" not in text
     assert "search_get_agent_context" in text
     assert "search_run_verifier" in text
     assert "workspace/results.tsv" in text
     assert "且只追加一条已验证记录" in text
     assert "VerifierWorkspaceSideEffect" in text
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in text
+    assert "clean origin 运行 process verifier" in text
+    assert "c001 worktree 验证 relocation" in text
+    assert "bootstrap 结果不是 candidate iteration" in text
+    assert "一次性源码副本" not in text
     assert "pi_rpc_run_worker" not in text
     assert "pi_search_run_batch" not in text
     assert "pi_search_run_candidate" not in text
     assert 'pi.registerCommand("goal-plus"' in text
     assert 'pi.registerCommand("goal-plus-with-final-check"' in text
-    assert "mode=autonomous|probe" in text
+    assert "[mode=autonomous|probe]" in text
+    assert "typed command config" in text
+    assert "GOAL_PLUS_COMMAND_CONFIG_USAGE" in text
+    assert "max_duration_seconds=正整数（秒）" in text
+    assert "workers|models=" in text
+    assert "workspace_backend=copy|git_worktree|thinkthread" in text
+    assert "promotion_mode=apply|artifact_only" in text
+    assert "command_config 中的字段是 runtime 强约束" in text
     assert "parseGoalPlusRoleModels" in text
     assert "resolveGoalPlusRoleModels" in text
-    assert "assertPiMainModel" in text
-    assert "const current = ctx.model" in text
-    assert "Pi main= is a session-model assertion, not a model selector" in text
-    assert "use /model before /goal-plus" in text
+    assert "assertPiMainModel" not in text
+    assert "const current = ctx.model" not in text
+    assert "main= is not supported" in text
+    assert "with /model before /goal-plus" in text
     assert "pi.setModel(main)" not in text
-    assert "已校验当前 Pi session，未切换模型" in text
+    assert "已校验当前 Pi session，未切换模型" not in text
+    update_start = text.split("async function updateGoalPlusStart", 1)[1].split(
+        "function startGoalPlusMainTurn", 1
+    )[0]
+    assert "parseGoalPlusRoleModels(rawGoal)" in update_start
     assert '"workers" | "models"' in text
     assert "workers= and models= are aliases" in text
     assert "strategy.evidence_annotator.model" in text
@@ -337,6 +382,27 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert 'lastMessage.stopReason === "error"' in text
     assert 'lastMessage.stopReason === "aborted"' in text
     assert 'lastMessage.stopReason === "length"' in text
+    agent_end = text.split('pi.on("agent_end"', 1)[1]
+    provider_error_branch = agent_end.split(
+        'lastMessage.stopReason === "error"', 1
+    )[1].split('lastMessage.stopReason === "aborted"', 1)[0]
+    aborted_branch = agent_end.split(
+        'lastMessage.stopReason === "aborted"', 1
+    )[1].split("if (ctx.hasPendingMessages())", 1)[0]
+    assert "goalPlusSessionAuthorized = false" not in provider_error_branch
+    assert "goalPlusSessionAuthorized = false" not in aborted_branch
+    assert "authorizes this native session" in provider_error_branch
+    input_handler = text.split('pi.on("input"', 1)[1].split(
+        'pi.on("tool_call"', 1
+    )[0]
+    ordinary_input_branch = input_handler.split(
+        "if (request === undefined)", 1
+    )[1].split("if (ctx.mode", 1)[0]
+    assert "goalPlusSessionAuthorized = false" not in ordinary_input_branch
+    session_start = text.split('pi.on("session_start"', 1)[1].split(
+        'pi.on("before_agent_start"', 1
+    )[0]
+    assert "goalPlusSessionAuthorized = false" in session_start
     assert "countToolCalls(lastMessage.content) === 0" in text
     assert "if (lengthWithoutToolCall) return;" in text
     assert 'recoveryReason: "length_without_tool_call"' not in text
@@ -350,6 +416,18 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "沿用已加载的运行时上下文和 Evidence；探索新方向" in text
     assert '{ triggerTurn: true, deliverAs: "followUp" }' in text
     assert "goal-plus-stats" in text
+    assert "goal-plus-runtime-start" in text
+    assert "buildPiRuntimeStartEntry" in text
+    assert "agent=${entry.agent} · host=${entry.host} · mode=${entry.mode}" in text
+    assert "ctx.isProjectTrusted()" in text
+    assert "pi.getActiveTools()" in text
+    assert 'pi_sandbox: "none"' in text
+    assert 'pi_builtin_tool_approval: "none"' in text
+    assert 'filesystem_access: "launcher-process-user"' in text
+    assert 'network_access: "host-policy-unreported"' in text
+    assert "appendPiRuntimeStartEntry(pi, ctx)" in text
+    assert "event.reason !== \"reload\"" in text
+    assert "registerEntryRenderer<PiRuntimeStartEntry>" in text
     assert "registerEntryRenderer<GoalPlusStatsEntry>" in text
     assert "appendEntry<GoalPlusStatsEntry>" in text
     assert 'customType: "goal-plus-stats"' not in text
@@ -365,7 +443,13 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "new Text(rendered, 0, 0)" in text
     assert "clearPiProgress(ctx);\n\t\t\tappendGoalStats" in text
     assert "ctx.ui.notify(statsMessage" not in text
-    assert "sendUserMessage" in text
+    assert 'GOAL_PLUS_COMMAND_CONTEXT_TYPE = "goal-plus-command-context"' in text
+    assert "startGoalPlusMainTurn" in text
+    assert "customType: GOAL_PLUS_COMMAND_CONTEXT_TYPE" in text
+    assert 'entrypoint_status: "host_verified"' in text
+    assert "display: false" in text
+    assert "{ triggerTurn: true }" in text
+    assert "sendUserMessage" not in text
     assert "GOAL_PLUS_SOURCE_PATH" in text
     assert "sys.path.insert" in text
     assert "goal_plus.pi_tool" in text
@@ -378,6 +462,10 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert 'pi.on("input"' in text
     assert 'action: "transform"' in text
     assert "goalPlusRequestFromSlashInput" in text
+    assert 'body === "resume"' in text
+    assert 'body === "edit" || body.startsWith("edit ")' in text
+    assert 'action: "invalid"' in text
+    assert "subcommands must be exact lowercase edit or resume" in text
     assert "createGoalPlusStart" in text
     assert "updateGoalPlusStart" in text
     assert "resumeGoalPlusStart" in text
@@ -390,11 +478,14 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert "不要将其降级为普通 Goal Mode" in text
     assert "以最新用户消息作为" in text
     assert "范围、交付物或成功标准" in text
-    assert "恢复前澄清有歧义的意图" in text
+    assert "/goal-plus edit <完整修订目标>" in text
     assert "绝不能编造 frozen_spec_id" in text
-    assert '"goal_plus_update_goal", "goal_plus_submit_final_check"' in text
+    assert 'if (name === "goal_plus_submit_final_check")' in text
     assert "activateGoal(pi, result.details, startEntryCount, canPersistPiState)" in text
     assert 'if (name === "goal_plus_create" && canPersistPiState)' not in text
+    main_tools = text.split("const mainTools = [", 1)[1].split("];", 1)[0]
+    assert '"goal_plus_create"' not in main_tools
+    assert '"goal_plus_update_goal"' not in main_tools
     assert "activateGoal(pi, status, startEntryCount, canPersistGoalState(ctx.mode))" in text
     assert "await ctx.waitForIdle()" not in text
     assert "在 goal_plus_record_triage 前不要读取或审计目标文件" in text
@@ -441,7 +532,11 @@ def test_pi_extension_has_gated_progress_ui_preview() -> None:
     assert "continue candidate loops" in progress
     assert "buildPiCompletionPresentation" in progress
     assert "PI_COMPLETION_PREVIEW" in progress
-    assert "LATE +" in progress
+    assert "LATE +" not in progress
+    assert 'lateMarker = " · LATE "' not in extension
+    assert "presetDurationSeconds" in progress
+    assert "预设时间为" in progress
+    assert "实际完成收尾时间为" in progress
     assert 'formatUsage("Usage ", totalUsage)' in progress
     assert 'lines.push("Lanes")' in progress
 
@@ -564,6 +659,7 @@ def test_pi_extension_has_precise_tool_schemas_and_error_classification() -> Non
     assert 'native_operation: "goal-plus-pi-worker"' in text
     assert "orchestration_monitor" in text
     assert "search_get_agent_observability: Type.Object" in text
+    assert "goal_plus_create: Type.Object" in text
     assert "goal_plus_update_goal: Type.Object" in text
     assert "goal_plus_prepare_final_check: Type.Object" in text
     assert "goal_plus_submit_final_check: Type.Object" in text
@@ -634,7 +730,7 @@ def test_pi_docs_record_runner_logs_and_native_stop_gate() -> None:
     assert "pi_search_pool_continue" in combined
     assert "Pi 与 Codex 的差异" in combined
     assert "Pi 当前只支持以下可移植内置策略" in combined
-    assert "在模型运行前创建 `/goal-plus`" in combined
+    assert "在模型运行前创建或授权 Goal Plus" in combined
     assert "pi -p" in combined
     assert "--session-dir" in combined
     assert ".gp/host-sessions/pi/" in combined
@@ -649,8 +745,13 @@ def test_pi_docs_record_runner_logs_and_native_stop_gate() -> None:
     assert "custom entry" in combined
     assert "main+worker 合计用量" in combined
     assert "不再额外发送一份重复的统计通知" in combined
+    assert "goal-plus-runtime-start" in combined
+    assert "project_trusted=true" in combined
+    assert "launcher-process-user" in combined
+    assert "host-policy-unreported" in combined
+    assert "metadata.runtime_start" in combined
     assert "不会触发另一个 assistant turn" in combined
-    assert "不是 host process 级 Stop hook" in combined
+    assert "不是 host process 级 Stop hook" in normalized
 
 
 def test_pi_goal_plus_skill_documents_multiple_search_tasks_and_monitoring() -> None:
@@ -693,4 +794,5 @@ def test_pi_goal_plus_reassesses_spec_after_real_result() -> None:
     assert "goal_plus_update_goal" in skill
     assert "不是新的运行时状态" in skill
     assert "不是新的运行时阶段" in prompt
-    assert "bootstrap" not in combined.lower()
+    assert "不得调用 `goal_plus_create`" in prompt
+    assert "不得调用 `goal_plus_update_goal`" in prompt

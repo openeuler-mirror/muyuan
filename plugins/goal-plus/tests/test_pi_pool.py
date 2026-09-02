@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import os
 from pathlib import Path
 import threading
@@ -9,6 +10,7 @@ from typing import Any
 import pytest
 
 import goal_plus.pi_pool as pi_pool
+from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.pi_pool import (
     close_pi_search_pool,
     continue_pi_search_pool,
@@ -999,6 +1001,79 @@ def test_pi_pool_lease_reserves_outer_closeout(
     )
 
     assert effective == 100
+
+
+def test_pi_pool_uses_durable_linked_goal_deadline_without_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec_data = _pi_rpc_spec_with_budget(
+        project, max_parallel=1
+    ).model_dump(mode="json")
+    spec_data["strategy"]["config"] = {"closeout_reserve_seconds": 30}
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    goals = FileGoalPlusRuntime(runtime.root_dir)
+    goal = goals.create_goal("max_duration_seconds=100 Optimize evaluator")
+    linked = goals.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
+    assert linked.outer_deadline_at is not None
+    deadline_epoch = calendar.timegm(
+        time.strptime(linked.outer_deadline_at, "%Y-%m-%dT%H:%M:%SZ")
+    )
+    monkeypatch.delenv("GOAL_PLUS_OUTER_DEADLINE_AT", raising=False)
+    monkeypatch.setattr(pi_pool.time, "time", lambda: deadline_epoch - 50)
+
+    effective = pi_pool._lease_max_runtime_seconds(
+        runtime.root_dir,
+        run_id,
+        {"max_runtime_seconds": 200},
+    )
+
+    assert effective == 20
+
+
+def test_pi_pool_refuses_new_worker_after_durable_closeout_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec_data = _pi_rpc_spec_with_budget(
+        project, max_parallel=1
+    ).model_dump(mode="json")
+    spec_data["strategy"]["config"] = {"closeout_reserve_seconds": 30}
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    candidate_id = _planned_candidates(runtime, run_id, 1)[0]
+    goals = FileGoalPlusRuntime(runtime.root_dir)
+    goal = goals.create_goal("max_duration_seconds=100 Optimize evaluator")
+    linked = goals.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
+    assert linked.outer_deadline_at is not None
+    deadline_epoch = calendar.timegm(
+        time.strptime(linked.outer_deadline_at, "%Y-%m-%dT%H:%M:%SZ")
+    )
+    monkeypatch.delenv("GOAL_PLUS_OUTER_DEADLINE_AT", raising=False)
+    monkeypatch.setattr(pi_pool.time, "time", lambda: deadline_epoch - 20)
+
+    with pytest.raises(RuntimeError, match="OuterDeadlineExceeded"):
+        open_pi_search_pool(
+            root_dir=runtime.root_dir,
+            run_id=run_id,
+            candidate_ids=[candidate_id],
+        )
+
+    snapshot = snapshot_pi_search_pool(root_dir=runtime.root_dir, run_id=run_id)
+    assert len(snapshot["pools"]) == 1
+    assert snapshot["pools"][0]["state"] == "closed"
+    assert snapshot["pools"][0]["jobs"] == []
 
 
 def test_pi_pool_minimum_lease_fits_effective_outer_budget() -> None:

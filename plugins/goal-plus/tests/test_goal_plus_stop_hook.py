@@ -216,9 +216,26 @@ def test_stop_hook_records_allowed_terminal_goal(tmp_path: Path) -> None:
     assert hook_event["decision"] == "allow"
     assert hook_event["outcome"] == "completed"
     assert hook_event["goal_plus_id"] == record.goal_plus_id
+    updated = runtime.status(record.goal_plus_id)
+    assert updated.active_session is not None
+    assert updated.active_session.state == "detached"
+
+    repeated = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "Stop",
+            "session_id": "session-terminal",
+            "stop_reason": "end_turn",
+        },
+    )
+    assert repeated.returncode == 0
+    assert repeated.stdout == ""
+    assert len(_stop_hook_events(search_root)) == 1
+    assert runtime.status(record.goal_plus_id).hook_counters["stop"] == 1
 
 
-def test_stop_hook_records_failure_and_still_fails_open(tmp_path: Path) -> None:
+def test_stop_hook_records_failure_and_fails_closed(tmp_path: Path) -> None:
     search_root = tmp_path / ".search"
     goal_dir = search_root / "goal-plus" / "gp_999"
     goal_dir.mkdir(parents=True)
@@ -230,13 +247,15 @@ def test_stop_hook_records_failure_and_still_fails_open(tmp_path: Path) -> None:
         {
             "hook_event_name": "Stop",
             "session_id": "session-broken",
-            "goal_plus_id": "gp_999",
         },
+        GOAL_PLUS_ID="gp_999",
     )
 
     assert result.returncode == 0
-    assert result.stdout == ""
-    assert "allowing host action because hook failed" in result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["decision"] == "block"
+    assert "failed closed" in payload["reason"]
+    assert result.stderr == ""
     hook_event = _stop_hook_events(search_root)[0]
     assert hook_event["decision"] == "error"
     assert hook_event["outcome"] == "failed"
@@ -286,7 +305,58 @@ def test_stop_hook_can_target_explicit_goal_id(tmp_path: Path) -> None:
     assert runtime.list_events(first.goal_plus_id)[-1]["event_type"] == "gate_blocked"
 
 
-def test_post_tool_use_goal_plus_create_binds_main_session(tmp_path: Path) -> None:
+def test_stop_hook_does_not_bind_goal_id_from_assistant_text(tmp_path: Path) -> None:
+    search_root = tmp_path / ".search"
+    runtime = FileGoalPlusRuntime(search_root)
+    record = runtime.create_goal("Optimize model throughput")
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "Stop",
+            "session_id": "unrelated-codex-session",
+            "last_assistant_message": (
+                f"Why is Pi Goal Plus {record.goal_plus_id} involved?"
+            ),
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert runtime.list_events(record.goal_plus_id)[-1]["event_type"] == (
+        "session_gate_skipped"
+    )
+    hook_event = _stop_hook_events(search_root)[0]
+    assert hook_event["decision"] == "skipped"
+    assert hook_event["goal_plus_id"] == record.goal_plus_id
+
+
+def test_stop_hook_does_not_trust_top_level_goal_id_without_session(
+    tmp_path: Path,
+) -> None:
+    search_root = tmp_path / ".search"
+    runtime = FileGoalPlusRuntime(search_root)
+    record = runtime.create_goal("Optimize model throughput")
+
+    result = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "Stop",
+            "session_id": "unrelated-codex-session",
+            "goal_plus_id": record.goal_plus_id,
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert runtime.list_events(record.goal_plus_id)[-1]["event_type"] == (
+        "session_gate_skipped"
+    )
+
+
+def test_post_tool_use_goal_plus_create_never_binds_main_session(tmp_path: Path) -> None:
     search_root = tmp_path / ".search"
     runtime = FileGoalPlusRuntime(search_root)
     record = runtime.create_goal("Optimize model throughput")
@@ -306,11 +376,7 @@ def test_post_tool_use_goal_plus_create_binds_main_session(tmp_path: Path) -> No
     assert result.returncode == 0
     assert result.stdout == ""
     updated = runtime.status(record.goal_plus_id)
-    assert updated.active_session is not None
-    assert updated.active_session.host == "codex"
-    assert updated.active_session.session_id == "session-main"
-    assert updated.active_session.transcript_path == "/tmp/main.jsonl"
-    assert updated.active_session.state == "attached"
+    assert updated.active_session is None
 
 
 def test_post_tool_use_goal_plus_create_ignores_subagent_context(tmp_path: Path) -> None:

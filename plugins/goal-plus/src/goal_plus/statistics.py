@@ -14,7 +14,7 @@ from goal_plus.models import (
 )
 
 
-STATISTICS_SCHEMA_VERSION = 1
+STATISTICS_SCHEMA_VERSION = 2
 TERMINAL_RUN_STATES = {"promoted", "aborted", "failed"}
 USAGE_FIELDS = (
     "input_tokens",
@@ -280,6 +280,22 @@ def build_run_statistics(
         _verifier_results_elapsed(report.verifier_results)
         for report in promotion_reports
     )
+    workspace_creation_timings = [
+        candidate.task.workspace_creation_timing
+        for candidate in candidates
+        if candidate.task.workspace_creation_timing is not None
+    ]
+    workspace_creation_durations = [
+        timing.duration_seconds for timing in workspace_creation_timings
+    ]
+    promotion_apply_timing = (
+        run.promotion.apply_timing if run.promotion is not None else None
+    )
+    workspace_capacity_estimate = (
+        frozen.workspace_capacity_estimate.model_dump(mode="json")
+        if frozen.workspace_capacity_estimate is not None
+        else None
+    )
     failure_classes = [iteration.failure_class for iteration in iterations]
     for report in promotion_reports:
         failure_classes.extend(result.failure_class for result in report.verifier_results)
@@ -297,6 +313,15 @@ def build_run_statistics(
         if candidate.promotion_evidence is not None
         and (epoch := _epoch(candidate.promotion_evidence.created_at)) is not None
     )
+    evidence_epochs.extend(
+        epoch
+        for timing in workspace_creation_timings
+        if (epoch := _epoch(timing.completed_at)) is not None
+    )
+    if promotion_apply_timing is not None:
+        apply_completed_epoch = _epoch(promotion_apply_timing.completed_at)
+        if apply_completed_epoch is not None:
+            evidence_epochs.append(apply_completed_epoch)
     run_age = (
         max(0.0, now_epoch - created_epoch) if created_epoch is not None else None
     )
@@ -431,6 +456,15 @@ def build_run_statistics(
         for observation in observations
     ):
         missing.append("worker_time_to_first_token")
+    if len(workspace_creation_timings) < len(candidates):
+        missing.append("workspace_creation_duration")
+    if (
+        run.promotion is not None
+        and run.promotion.strategy != "legacy_patch"
+        and run.promotion.state in {"applied", "apply_failed"}
+        and promotion_apply_timing is None
+    ):
+        missing.append("promotion_apply_duration")
 
     return {
         "schema_version": STATISTICS_SCHEMA_VERSION,
@@ -473,11 +507,79 @@ def build_run_statistics(
             "time_to_selected_score_seconds": time_to_selected_score,
             "worker_duration_seconds_total": sum(durations) if durations else None,
             "worker_duration_sessions_observed": len(durations),
+            "workspace_creation_seconds_total": (
+                sum(workspace_creation_durations)
+                if workspace_creation_durations
+                else None
+            ),
+            "workspace_creation_seconds_mean": (
+                sum(workspace_creation_durations) / len(workspace_creation_durations)
+                if workspace_creation_durations
+                else None
+            ),
+            "workspace_creation_seconds_max": (
+                max(workspace_creation_durations)
+                if workspace_creation_durations
+                else None
+            ),
+            "workspace_creation_candidates_observed": len(
+                workspace_creation_timings
+            ),
+            "promotion_apply_seconds": (
+                promotion_apply_timing.duration_seconds
+                if promotion_apply_timing is not None
+                else None
+            ),
             "process_verifier_elapsed_seconds_total": process_verifier_elapsed,
             "promotion_verifier_elapsed_seconds_observed": promotion_verifier_elapsed,
             "verifier_elapsed_seconds_total": (
                 process_verifier_elapsed + promotion_verifier_elapsed
             ),
+        },
+        "workspace_operations": {
+            "provider": frozen.spec.workspace.backend,
+            "promotion_mode": frozen.spec.workspace.promotion_mode,
+            "capacity_estimate": workspace_capacity_estimate,
+            "workspace_creation": {
+                "attempts_observed": len(workspace_creation_timings),
+                "succeeded": sum(
+                    timing.outcome == "succeeded"
+                    for timing in workspace_creation_timings
+                ),
+                "failed": sum(
+                    timing.outcome == "failed"
+                    for timing in workspace_creation_timings
+                ),
+                "total_seconds": (
+                    sum(workspace_creation_durations)
+                    if workspace_creation_durations
+                    else None
+                ),
+                "mean_seconds": (
+                    sum(workspace_creation_durations)
+                    / len(workspace_creation_durations)
+                    if workspace_creation_durations
+                    else None
+                ),
+                "max_seconds": (
+                    max(workspace_creation_durations)
+                    if workspace_creation_durations
+                    else None
+                ),
+            },
+            "promotion_apply": {
+                "observed": promotion_apply_timing is not None,
+                "outcome": (
+                    promotion_apply_timing.outcome
+                    if promotion_apply_timing is not None
+                    else None
+                ),
+                "duration_seconds": (
+                    promotion_apply_timing.duration_seconds
+                    if promotion_apply_timing is not None
+                    else None
+                ),
+            },
         },
         "workers": {
             "sessions_total": len(sessions),
@@ -575,6 +677,42 @@ def aggregate_run_statistics(statistics: Iterable[dict[str, Any] | None]) -> dic
     verifiers = [record.get("verifiers", {}) for record in records]
     scores = [record.get("scores", {}) for record in records]
     selection = [record.get("selection", {}) for record in records]
+    workspace_operations = [
+        record.get("workspace_operations", {}) for record in records
+    ]
+    workspace_creation = [
+        operation.get("workspace_creation", {})
+        for operation in workspace_operations
+        if isinstance(operation, dict)
+    ]
+    promotion_apply = [
+        operation.get("promotion_apply", {})
+        for operation in workspace_operations
+        if isinstance(operation, dict)
+    ]
+    workspace_creation_attempts = sum(
+        int(operation.get("attempts_observed") or 0)
+        for operation in workspace_creation
+        if isinstance(operation, dict)
+    )
+    workspace_creation_total_seconds = sum(
+        float(value)
+        for operation in workspace_creation
+        if isinstance(operation, dict)
+        and (value := _number(operation.get("total_seconds"))) is not None
+    )
+    workspace_creation_maxima = [
+        float(value)
+        for operation in workspace_creation
+        if isinstance(operation, dict)
+        and (value := _number(operation.get("max_seconds"))) is not None
+    ]
+    promotion_apply_durations = [
+        float(value)
+        for operation in promotion_apply
+        if isinstance(operation, dict)
+        and (value := _number(operation.get("duration_seconds"))) is not None
+    ]
     targets_known = sum(score.get("target") is not None for score in scores)
     targets_reached = sum(score.get("target_reached") is True for score in scores)
     selections_total = sum(item.get("selected") is True for item in selection)
@@ -624,6 +762,60 @@ def aggregate_run_statistics(statistics: Iterable[dict[str, Any] | None]) -> dic
                 "promotion_passed",
                 "promotion_failed",
             )
+        },
+        "workspace_operations": {
+            "providers": _counter(
+                str(operation.get("provider"))
+                if isinstance(operation, dict) and operation.get("provider")
+                else None
+                for operation in workspace_operations
+            ),
+            "workspace_creation": {
+                "attempts_observed": workspace_creation_attempts,
+                "succeeded": sum(
+                    int(operation.get("succeeded") or 0)
+                    for operation in workspace_creation
+                    if isinstance(operation, dict)
+                ),
+                "failed": sum(
+                    int(operation.get("failed") or 0)
+                    for operation in workspace_creation
+                    if isinstance(operation, dict)
+                ),
+                "total_seconds": (
+                    workspace_creation_total_seconds
+                    if workspace_creation_attempts
+                    else None
+                ),
+                "mean_seconds": (
+                    workspace_creation_total_seconds / workspace_creation_attempts
+                    if workspace_creation_attempts
+                    else None
+                ),
+                "max_seconds": (
+                    max(workspace_creation_maxima)
+                    if workspace_creation_maxima
+                    else None
+                ),
+            },
+            "promotion_apply": {
+                "attempts_observed": len(promotion_apply_durations),
+                "succeeded": sum(
+                    operation.get("outcome") == "succeeded"
+                    for operation in promotion_apply
+                    if isinstance(operation, dict)
+                ),
+                "failed": sum(
+                    operation.get("outcome") == "failed"
+                    for operation in promotion_apply
+                    if isinstance(operation, dict)
+                ),
+                "total_seconds": (
+                    sum(promotion_apply_durations)
+                    if promotion_apply_durations
+                    else None
+                ),
+            },
         },
         "usage": aggregate_usage(
             [record.get("usage") for record in records],

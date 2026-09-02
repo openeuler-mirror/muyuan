@@ -464,7 +464,7 @@ def _agent_observability(
         payload = get_agent_host_adapter(session.host).collect_observability(session)
     except Exception as exc:
         payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "agent_session_id": session.agent_session_id,
             "run_id": session.run_id,
             "candidate_id": session.candidate_id,
@@ -495,6 +495,23 @@ def _agent_observability(
                 "session_file": session.host_handle.metadata.get("session_file"),
             },
             "handoff": {"present": False, "source_path": None, "error": None},
+            "runtime_start": {
+                "source": "unavailable",
+                "agent": None,
+                "host": session.host,
+                "mode": None,
+                "project_trusted": None,
+                "active_tools": [],
+                "active_builtin_tools": [],
+                "active_non_builtin_tools": [],
+                "pi_sandbox": None,
+                "pi_builtin_tool_approval": None,
+                "filesystem_access": None,
+                "network_access": None,
+                "cwd": None,
+                "captured_at": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
             "errors": [f"{type(exc).__name__}: {exc}"],
         }
     if cache is not None:
@@ -923,6 +940,21 @@ def goal_plus_monitor_snapshot(
             "frozen_spec_id": run.frozen_spec_id,
             "created_at": run.created_at,
             "source_path": run.source_path,
+            "source_artifact_ref": (
+                run.source_artifact_ref.model_dump(mode="json")
+                if run.source_artifact_ref is not None
+                else None
+            ),
+            "origin_verification": (
+                frozen.origin_verification.model_dump(mode="json")
+                if frozen.origin_verification is not None
+                else None
+            ),
+            "workspace_bootstrap_verification": (
+                run.workspace_bootstrap_verification.model_dump(mode="json")
+                if run.workspace_bootstrap_verification is not None
+                else None
+            ),
             "plans_count": plans_count,
             "planning_rounds_total": plans_count,
             "started_rounds_total": started_rounds_total,
@@ -934,6 +966,11 @@ def goal_plus_monitor_snapshot(
             "selected_score": run.selected_score,
             "selected_iteration": run.selected_iteration,
             "selected_git_head": run.selected_git_head,
+            "promotion": (
+                run.promotion.model_dump(mode="json")
+                if run.promotion is not None
+                else None
+            ),
             "budget_used": run.budget_used,
             "evidence_annotations": _evidence_annotation_payload(run_path),
             "evidence_reads": _evidence_read_payload(sessions),

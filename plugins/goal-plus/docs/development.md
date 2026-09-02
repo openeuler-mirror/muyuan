@@ -1,243 +1,171 @@
 # Goal Plus 开发指南
 
-Goal Plus 的开发内容包括共享的 Python runtime，以及 Pi、Codex 两套宿主集成。
-开发者需要从本地 Muyuan checkout editable 安装 runtime，再将待调试的宿主连接到
-同一个 checkout。修改代码后，应根据文件所属的加载边界刷新宿主，并在新进程或
-新线程中验证改动。
+Goal Plus 由共享 Python runtime、Pi package 和 Codex plugin 组成。仓库只提供一个统一
+安装入口：`install.sh`。Codex 使用正常安装；Pi 另外提供 checkout-local 开发态，便于在不
+切换 Pi 账号配置的情况下测试当前源码。
 
-## 代码与加载边界
+## 安装模式
 
-开发前先确认改动属于哪一部分：
+| 命令 | Python runtime | 宿主资产 | 宿主配置 |
+| --- | --- | --- | --- |
+| `./install.sh --codex` | 非 editable，安装到所选 Python | 注册当前 checkout 的正常 Codex plugin | 写正常 Codex marketplace/plugin 注册 |
+| `./install.sh --pi` | 非 editable，安装到所选 Python | 注册当前 checkout 的 Pi package | 写 Pi 用户 package 注册 |
+| `./install.sh --pi-dev` | editable，安装到 `.goal-plus-dev/venv` | launcher 显式加载当前 Pi extension 和 skill | 不修改 Pi 用户配置 |
 
-| 开发内容 | 源码位置 | 加载方式 |
-|---|---|---|
-| Python runtime | `src/goal_plus/` | Pi、Codex 通过当前 Python 环境中的 `goal-plus` 命令加载 editable checkout |
-| Pi package | `package.json`、`.pi/extensions/`、`.pi/skills/` | Pi 直接读取已注册的 checkout 路径 |
-| Codex skill | `.codex/skills/` | 同步到顶层 `skills/` 后，由开发态 plugin staging 副本加载 |
-| Codex hook | `.codex/hooks.example.json` | 同步到 `hooks/hooks.json` 后，由开发态 plugin staging 副本加载 |
-| 其他 Codex plugin 资产 | `.mcp.json`、`.codex-plugin/plugin.json` | 由开发态 plugin staging 副本加载 |
-
-Python runtime 使用 editable 安装，因此修改 `src/goal_plus/` 后通常无需重新安装。
-Pi 直接读取 checkout 中的宿主资产；Codex 的静态资产则需要重新复制到开发态
-plugin。两者都不会修改已经启动的进程或线程中已加载的旧内容。
-
----
-
-## 建立基础开发环境
-
-为当前 Goal Plus checkout 建立独立的 Python 环境：
+`--pi` 和 `--pi-dev` 互斥；`--codex --pi` 与 `--codex --pi-dev` 都有效。正常安装使用
+当前 shell 的 `python3`。先激活目标环境；也可以显式选择该环境的解释器，但它的 scripts
+目录仍须位于 `PATH`：
 
 ```bash
-cd /absolute/path/to/muyuan/plugins/goal-plus
-python -m venv /absolute/path/to/goal-plus-venv
-source /absolute/path/to/goal-plus-venv/bin/activate
-python -m pip install -e ".[dev]"
+PYTHON=/absolute/path/to/python ./install.sh --codex --pi
 ```
 
-确认 runtime 来源正确：
-
-```bash
-python -c 'import goal_plus; print(goal_plus.__file__)'
-command -v goal-plus
-```
-
-`goal_plus.__file__` 应位于当前 checkout 的 `src/goal_plus/` 下，`goal-plus` 命令
-应来自刚激活的 Python 环境。后续安装、刷新和启动 Pi 或 Codex 时，都应继续使用
-这个环境。
-
----
+安装器会先检查同名宿主资源。来源不同、旧版 staging 安装或散落的同名 Pi asset 都会
+使安装失败，并显示冲突来源；不要通过复制、覆盖或修改宿主账号目录绕过检查。
 
 ## 开发 Pi 集成
 
-### 将 Pi 连接到 Checkout
+### 建立开发环境
 
-Pi 的开发态 package 直接注册本地源码路径：
-
-```bash
-source /absolute/path/to/goal-plus-venv/bin/activate
-pi install /absolute/path/to/muyuan/plugins/goal-plus
-pi list
-```
-
-`pi list` 应显示当前 checkout 的绝对路径。此后 Pi 会从该路径读取
-`package.json`、extension 和 skill，不会创建需要单独刷新的资产副本。
-
-### 开发循环
-
-开发 Pi 集成时，按以下流程进行：
-
-1. 修改 `src/goal_plus/`、`.pi/extensions/`、`.pi/skills/` 或
-   `package.json`；
-2. 运行与改动对应的自动测试；
-3. 结束正在运行的 Pi 进程；
-4. 在同一 Python 环境中启动新的 Pi 进程；
-5. 从目标 workspace 执行一次真实的 `/goal-plus` 调用。
-
-修改 Python runtime 或 Pi 资产后都不需要重复执行 `pi install`：前者由 editable
-安装指向 checkout，后者由 Pi 直接读取 checkout。只有 checkout 路径发生变化或
-Pi 的 package 注册需要修复时，才重新注册：
+在当前 Goal Plus checkout 中运行：
 
 ```bash
-pi remove /absolute/path/to/old/muyuan/plugins/goal-plus
-pi install /absolute/path/to/muyuan/plugins/goal-plus
+./install.sh --pi-dev
+source .goal-plus-dev/set_env.sh
 ```
 
-### 验证 Pi 改动
+安装器创建：
+
+- `.goal-plus-dev/venv`：editable 安装当前 checkout 和开发依赖；
+- `.goal-plus-dev/bin/pi-goal-plus`：固定到当前 checkout 的 Pi launcher；
+- `.goal-plus-dev/set_env.sh`：只把 launcher 目录加入当前 shell 的 `PATH`；
+- `.goal-plus-dev/installation.json`：标识该目录由哪个 checkout 管理。
+
+查看安装器已登记及当前 Git worktree 中的 Pi 开发环境、源码版本和总空间占用：
+
+```bash
+./install.sh --env-show
+```
+
+成功的 `--pi-dev` 安装会在用户 state 目录写入一条仅含环境路径和 source 路径的轻量
+registry 记录；它不包含 Pi 配置、模型或认证信息。已删除的环境会显示为 `missing`，不会被
+命令自动清理。
+
+`set_env.sh` 不设置 `CODEX_HOME`、`PI_CODING_AGENT_DIR`，也不把 venv 的 `bin` 全局加入
+当前 shell。`pi-goal-plus` 启动时才临时设置 runtime `PATH`，验证 `goal_plus` 模块确实来自
+当前 checkout，然后通过 Pi 的 `--extension` 和 `--skill` 参数显式加载：
+
+```text
+.pi/extensions/goal-plus.ts
+.pi/skills/goal-plus/SKILL.md
+```
+
+当前 Pi package 只有这一个面向用户的 skill。Search 是 Goal Plus 内部模式，不是第二个
+用户级 Pi skill。
+
+### 从目标 workspace 启动
+
+```bash
+cd /absolute/path/to/target-workspace
+pi-goal-plus
+```
+
+用户级或目标项目若已注册同一 checkout，Pi 会按绝对资源路径去重，开发 launcher 可以直接
+使用。安装时和 launcher 每次启动时仍会拒绝来自其他 checkout 或复制路径的 Goal Plus；若
+报错，先按报告的 source 执行 `pi remove <source>`。断链的旧式 loose-resource symlink 不会被
+Pi 加载，也不会阻塞开发态。其他 Pi package、模型设置和认证信息不会被修改。
+
+### Pi 开发循环
+
+1. 修改 `src/goal_plus/`、`.pi/extensions/`、`.pi/skills/` 或 `package.json`；
+2. 依赖或 `pyproject.toml` 变化时重跑 `./install.sh --pi-dev`；
+3. 运行对应自动测试；
+4. 结束旧 Pi 进程；
+5. 从目标 workspace 重新运行 `pi-goal-plus`；
+6. 执行一次真实的 `/goal-plus` 调用。
 
 Pi package、extension 或 skill 变更至少运行：
 
 ```bash
-python -m pytest -q tests/test_pi_assets.py
+python -m pytest -q tests/test_install.py tests/test_pi_assets.py
 ```
 
-涉及 worker、pool 或 RPC 时，继续运行对应的 `tests/test_pi_*.py`；需要验证真实
-宿主行为时，运行 `tests/st_pi/` 中相应的集成测试。
-
-完成自动检查后，从实际目标 workspace 启动新的 Pi 进程：
-
-```bash
-cd /absolute/path/to/target-workspace
-source /absolute/path/to/goal-plus-venv/bin/activate
-pi -p "/goal-plus 检查当前工作区并给出简短结论"
-```
-
-这一步用于确认新 extension、skill 和 Python runtime 已在同一次宿主调用中生效。
-
----
+涉及 worker、pool 或 RPC 时继续运行对应 `tests/test_pi_*.py`；只有具备 Pi credentials
+和所需 provider 时才运行 `tests/st_pi/`。
 
 ## 开发 Codex 集成
 
-### 安装开发态 Plugin
+### 只使用正常 Plugin
 
-Codex 不直接读取 checkout 中的静态 plugin 资产。开发脚本会把当前资产复制到
-`${CODEX_HOME:-~/.codex}/local-marketplaces/goal-plus`，并安装为固定的开发态
-标识 `goal-plus@goal-plus-local`：
+Codex 不再提供 `goal-plus@goal-plus-local`、cachebuster staging 或 checkout-local profile。
+从当前 checkout 安装或更新时统一运行：
 
 ```bash
-source /absolute/path/to/goal-plus-venv/bin/activate
-cd /absolute/path/to/muyuan/plugins/goal-plus
-python scripts/install_codex_plugin.py --skip-runtime-install
-codex plugin list
+./install.sh --codex
 ```
 
-开发环境中只应启用 `goal-plus@goal-plus-local`。如果同时存在
-`goal-plus@goal-plus`，Codex 可能重复加载同一组 skill、hook 和 MCP 配置，应先
-删除非开发态注册：
+这会安装当前 Python runtime，并保留唯一的正常来源 `goal-plus@goal-plus`。安装或代码更新后
+新建 Codex thread；hook 内容变化时，在 `/hooks` 中重新检查并信任，再新建一个 thread。
+
+若旧开发安装仍存在，先显式删除注册：
 
 ```bash
-codex plugin remove goal-plus@goal-plus
-codex plugin marketplace remove goal-plus
+codex plugin remove goal-plus@goal-plus-local
+codex plugin marketplace remove goal-plus-local
 ```
 
-安装完成后，新建 Codex 线程，在 `/hooks` 中检查并信任 Goal Plus；再新建一个
-线程，使全部 handler 从 `SessionStart` 开始加载。
+确认 `${CODEX_HOME:-~/.codex}/local-marketplaces/goal-plus` 确实是已退休 installer 生成的目录
+后，才由开发者自行删除。统一安装器不会递归删除用户目录。
 
-### 开发 Python Runtime
+### 修改 Codex 资产
 
-只修改 `src/goal_plus/` 时，不需要刷新 plugin，也不需要重复 editable 安装。
-结束当前 Codex 线程并新建线程，使新的 MCP server 和 hook 命令加载 checkout 中的
-最新 Python 代码。
-
-### 开发 Codex Skill
-
-`.codex/skills/` 是 Codex skill 的开发源码，顶层 `skills/` 是安装到 plugin 的
-发布副本。修改 skill 后先同步两者，再刷新开发态 plugin：
+`.codex/skills/` 是 skill 的开发源码，顶层 `skills/` 是 plugin 发布面。修改 skill 后同步：
 
 ```bash
-cd /absolute/path/to/muyuan/plugins/goal-plus
 python scripts/sync_codex_plugin_assets.py
 python scripts/sync_codex_plugin_assets.py --check
-python scripts/install_codex_plugin.py --skip-runtime-install
 ```
 
-刷新完成后，在新建的 Codex 线程中验证 skill。
+`.codex/hooks.example.json` 是 hook 的开发源码模板，`hooks/hooks.json` 是 plugin 发布面；修改时
+保持两者一致，但前者不是另一条安装路径。`.mcp.json` 和 `.codex-plugin/plugin.json` 直接属于
+正常 plugin。
 
-### 开发 Codex Hook
-
-`.codex/hooks.example.json` 是项目本地 hook 模板，`hooks/hooks.json` 是 plugin
-使用的副本。修改 hook 后同步副本并刷新 plugin：
-
-```bash
-cd /absolute/path/to/muyuan/plugins/goal-plus
-cp .codex/hooks.example.json hooks/hooks.json
-python scripts/install_codex_plugin.py --skip-runtime-install
-```
-
-hook 内容变化会产生新的信任哈希。新建线程后，在 `/hooks` 中重新检查并信任，
-然后再新建一个用于测试的线程。
-
-### 开发其他 Codex Plugin 资产
-
-修改 `.mcp.json`、`.codex-plugin/plugin.json` 或其他顶层 plugin 资产后，刷新
-开发态 plugin：
+完成资产同步后重跑 `./install.sh --codex`，再使用新 thread 验证。至少运行：
 
 ```bash
-python scripts/install_codex_plugin.py --skip-runtime-install
-```
-
-安装脚本会生成新的 cachebuster，并替换当前 `CODEX_HOME` 中的
-`goal-plus@goal-plus-local` staging 副本；仓库中的正式版本号不会改变。静态资产
-刷新后必须在新建的 Codex 线程中验证。
-
-### 验证 Codex 改动
-
-Codex skill、hook 或 plugin 资产变更至少运行：
-
-```bash
-python -m pytest -q tests/test_codex_assets.py tests/test_codex_doctor.py
-```
-
-随后从目标 workspace 检查实际开发态安装：
-
-```bash
-cd /absolute/path/to/target-workspace
-source /absolute/path/to/goal-plus-venv/bin/activate
+python -m pytest -q tests/test_install.py tests/test_codex_assets.py \
+  tests/test_codex_doctor.py
 goal-plus-codex-doctor --project-root .
 ```
 
-最后在完成刷新和 hook 信任的新线程中运行最小 `$goal-plus` 任务，确认当前加载的
-skill、hook、MCP server 和 Python runtime 均来自正在开发的 checkout。
+统一安装器不通过修改 `CODEX_HOME` 为多个 checkout 创建隔离配置。同一 Codex 配置只能注册
+一个正常 Goal Plus source；并行 checkout 开发需要在宿主之外提供完整隔离边界，不能让后一次
+安装静默替换前一次来源。
 
----
+## 同时开发 Pi 并使用 Codex
+
+若 Codex 只需正常安装，而 Pi 要跟踪当前 checkout 的 editable 代码，可以一次准备：
+
+```bash
+./install.sh --codex --pi-dev
+source .goal-plus-dev/set_env.sh
+```
+
+Codex 使用所选 Python 环境中的正常 runtime；`pi-goal-plus` 使用自己的开发 venv。两条路径
+不会共享 Python executable，也不会通过环境脚本切换宿主账号或认证。
 
 ## 改动后的更新动作
 
-| 修改内容 | Pi | Codex |
-|---|---|---|
-| `src/goal_plus/**/*.py` | 重启 Pi 后验证 | 新建线程后验证 |
-| `.pi/extensions/**`、`.pi/skills/**`、`package.json` | 重启 Pi 后验证；无需重新 `pi install` | 无需刷新 |
-| `.codex/skills/**` | 无需刷新 | 同步 skill、刷新 plugin、新建线程 |
-| `.codex/hooks.example.json`、`hooks/hooks.json` | 无需刷新 | 同步 hook、刷新 plugin、重新信任、新建线程 |
-| `.mcp.json`、`.codex-plugin/plugin.json`、其他顶层 plugin 资产 | 无需刷新 | 刷新 plugin、新建线程 |
-| Python 依赖或 `pyproject.toml` | 重新 editable 安装并重启 Pi | 重新 editable 安装、刷新 plugin 并新建线程 |
+| 修改内容 | Pi `--pi-dev` | Codex `--codex` |
+| --- | --- | --- |
+| `src/goal_plus/**/*.py` | 重启 `pi-goal-plus` | 重跑安装器并新建 thread |
+| Python 依赖或 `pyproject.toml` | 重跑安装器并重启 | 重跑安装器并新建 thread |
+| `.pi/extensions/**`、`.pi/skills/**`、`package.json` | 重启 `pi-goal-plus` | 无需更新 |
+| `.codex/skills/**` | 无需更新 | 同步发布副本、重跑安装器、新建 thread |
+| Codex hook 或 plugin 资产 | 无需更新 | 同步相应副本、重跑安装器、重新信任并新建 thread |
 
-一次改动涉及多个加载边界时，应合并执行相应动作。例如同时修改 Python runtime
-和 Codex hook，需要刷新 plugin、重新信任 hook，并在新线程中验证两部分改动。
-
----
-
-## 隔离并行开发环境
-
-每位开发者或每个并行开发版本都应使用独立的 checkout、Python 环境和目标
-workspace。不同操作系统账号的 Pi、Codex 全局配置由各自主目录隔离；如果多个
-版本共用同一账号，还必须分别设置：
-
-- `CODEX_HOME`；
-- `PI_CODING_AGENT_DIR`。
-
-```bash
-source /absolute/path/to/developer-a/venv/bin/activate
-export CODEX_HOME=/absolute/path/to/developer-a/codex-home
-export PI_CODING_AGENT_DIR=/absolute/path/to/developer-a/pi-agent
-```
-
-安装、刷新和启动宿主时必须保持这些环境一致。Codex 的开发态标识固定为
-`goal-plus@goal-plus-local`，同一个 `CODEX_HOME` 中后一次刷新会替换前一个版本；
-Pi 的 package 注册和模型配置则归属于当前 `PI_CODING_AGENT_DIR`。仅指定源码路径
-不能隔离共享的 Python `PATH` 或宿主注册信息。
-
-Goal Plus 运行状态保存在目标 workspace 的 `.gp/` 中，agent 修改也直接作用于该
-workspace。因此，并行开发还需要使用不同的目标目录或 Git worktree。
+Goal Plus 运行状态保存在目标 workspace 的 `.gp/` 中。并行开发即使宿主安装已经隔离，也要
+使用不同的目标目录或 Git worktree，避免不同进程写同一份运行状态。
 
 ## 相关文档
 

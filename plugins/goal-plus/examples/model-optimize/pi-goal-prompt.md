@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 Optimize the read-only Torch CPU template in the current directory and deliver the result as a report without modifying the template.
+/goal-plus max_parallel=2 workspace_backend=git_worktree promotion_mode=artifact_only strategy=agent_guided Optimize the read-only Torch CPU template in the current directory and deliver the result as a report without modifying the template.
 
 The entire Goal Plus task must reach a terminal status within 10 minutes of
 creation. Do not start or continue candidate work after 8 minutes; reserve the
@@ -21,6 +21,8 @@ reference and use `MAX_JOBS=1` for extension builds.
 
 Use `workspace-template` as the Search source path, the maintained
 `agent_guided` strategy, and a Git worktree-backed Search with two fixed lanes.
+Freeze `workspace.promotion_mode="artifact_only"` because this tracked template
+is a read-only demonstration exception to the normal apply default.
 Run the lanes, select and promote the best verifier-backed valid result, settle
 the Goal Plus record, and produce the compact result and canonical report. Keep
 the promotion patch under `.gp/`; do not apply it back to

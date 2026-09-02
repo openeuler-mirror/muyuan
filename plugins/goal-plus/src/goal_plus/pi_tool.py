@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,7 +18,7 @@ from goal_plus.pi_pool import (
     snapshot_pi_search_pool,
     wait_any_pi_search_pool,
 )
-from goal_plus.runtime import FileSearchRuntime
+from goal_plus.runtime import FileSearchRuntime, exclusive_file_lock
 from goal_plus.tools import GoalPlusTools, SearchTools
 
 
@@ -35,6 +37,7 @@ SEARCH_TOOL_NAMES = {
     "search_continue_agent_session",
     "search_get_agent_context",
     "search_get_global_evidence",
+    "search_reference_open",
     "search_stage_shared_tool",
     "search_copy_shared_tool",
     "search_get_evidence_detail",
@@ -44,6 +47,7 @@ SEARCH_TOOL_NAMES = {
     "search_select",
     "search_report",
     "search_promote",
+    "search_apply_promotion",
 }
 
 GOAL_PLUS_TOOL_NAMES = {
@@ -60,6 +64,12 @@ GOAL_PLUS_TOOL_NAMES = {
     "goal_plus_submit_final_check",
     "goal_plus_set_status",
     "goal_plus_gate",
+}
+
+PI_HOST_COMMAND_NAMES = {
+    "goal_plus_host_start",
+    "goal_plus_host_edit",
+    "goal_plus_host_resume",
 }
 
 
@@ -203,6 +213,76 @@ def call_pi_tool(
     return tools[tool_name](**(args or {}))
 
 
+def call_pi_host_command(
+    root_dir: Path | str,
+    command_name: str,
+    args: dict[str, Any],
+    *,
+    capability_token: str,
+) -> dict[str, Any]:
+    """Dispatch the Pi extension's non-model host-command control path."""
+
+    if command_name not in PI_HOST_COMMAND_NAMES:
+        raise ValueError(f"unsupported Pi host command: {command_name}")
+    _consume_pi_host_capability(root_dir, capability_token)
+    runtime = FileGoalPlusRuntime(root_dir)
+    invocation = args.get("invocation")
+    if not isinstance(invocation, dict):
+        raise ValueError("Pi host command requires invocation evidence")
+    if command_name == "goal_plus_host_start":
+        record = runtime.start_from_host_command(
+            raw_goal=str(args.get("raw_goal") or ""),
+            source_path=(
+                str(args["source_path"])
+                if args.get("source_path") is not None
+                else None
+            ),
+            policy=(args.get("policy") if isinstance(args.get("policy"), dict) else None),
+            invocation=invocation,
+        )
+    elif command_name == "goal_plus_host_edit":
+        record = runtime.edit_from_host_command(
+            str(args.get("goal_plus_id") or ""),
+            str(args.get("raw_goal") or ""),
+            expected_revision=int(args.get("expected_revision") or 0),
+            reason=(str(args["reason"]) if args.get("reason") is not None else None),
+            invocation=invocation,
+        )
+    else:
+        record = runtime.resume_from_host_command(
+            str(args.get("goal_plus_id") or ""),
+            invocation=invocation,
+        )
+    return record.model_dump(mode="json")
+
+
+def _consume_pi_host_capability(
+    root_dir: Path | str,
+    capability_token: str,
+) -> None:
+    if re.fullmatch(r"[0-9a-f-]{36}", capability_token) is None:
+        raise RuntimeError("invalid Pi host-entrypoint capability")
+    root = Path(root_dir).resolve()
+    capability_dir = root / "host-entrypoint" / "pi"
+    capability_path = capability_dir / f"{capability_token}.json"
+    with exclusive_file_lock(root / "host-entrypoint" / "pi-capability.lock"):
+        try:
+            payload = json.loads(capability_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "GoalPlusEntrypointRequired: missing one-time Pi extension capability"
+            ) from exc
+        capability_path.unlink(missing_ok=True)
+        if payload.get("token") != capability_token:
+            raise RuntimeError("invalid Pi host-entrypoint capability payload")
+        issued_at_ms = payload.get("issued_at_ms")
+        if not isinstance(issued_at_ms, (int, float)):
+            raise RuntimeError("invalid Pi host-entrypoint capability timestamp")
+        age_ms = int(time.time() * 1000) - int(issued_at_ms)
+        if age_ms < -5_000 or age_ms > 120_000:
+            raise RuntimeError("expired Pi host-entrypoint capability")
+
+
 def _read_args(args_json: str | None) -> dict[str, Any]:
     raw = args_json
     if raw is None:
@@ -229,11 +309,35 @@ def main(argv: list[str] | None = None) -> int:
         "--args-json",
         help="JSON object of tool arguments. Defaults to stdin.",
     )
+    parser.add_argument(
+        "--host-entrypoint",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--host-capability", help=argparse.SUPPRESS)
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
     parsed = parser.parse_args(argv)
 
     try:
-        result = call_pi_tool(parsed.root, parsed.tool, _read_args(parsed.args_json))
+        tool_args = _read_args(parsed.args_json)
+        if parsed.host_entrypoint:
+            if not parsed.host_capability:
+                raise RuntimeError(
+                    "GoalPlusEntrypointRequired: missing one-time Pi extension capability"
+                )
+            result = call_pi_host_command(
+                parsed.root,
+                parsed.tool,
+                tool_args,
+                capability_token=parsed.host_capability,
+            )
+        else:
+            if parsed.tool in PI_HOST_COMMAND_NAMES:
+                raise RuntimeError(
+                    "GoalPlusEntrypointRequired: Pi host commands are available only "
+                    "to the native /goal-plus extension entrypoint."
+                )
+            result = call_pi_tool(parsed.root, parsed.tool, tool_args)
     except Exception as exc:
         print(
             json.dumps(

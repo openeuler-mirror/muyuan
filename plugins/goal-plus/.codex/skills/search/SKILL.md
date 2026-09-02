@@ -5,27 +5,44 @@ description: Codex 使用 goal-plus MCP server 的 $goal-plus 内部 Search Mode
 
 # Codex 的 Search Mode 运行时
 
-在 `$goal-plus` 已把目标升级到 Search Mode 后使用此 skill，或用它对已经可度量的
-SearchSpec 进行显式底层调试。普通用户入口是 `$goal-plus`。
+只在本轮精确 `$goal-plus` host command 已授权 active `goal_plus_id`，且该 Goal Plus
+记录已把工作项升级到 Search Mode 后使用此 skill。没有 host 授权 id 时立即停止；此 skill
+不能创建 Goal Plus、冻结 standalone spec、创建 standalone run，或把自然语言请求升级为
+Goal Plus。普通用户入口只有 `$goal-plus`。
 
 使用 `goal-plus` MCP server 暴露的逻辑 `search_*` 工具。Codex 可能显示带客户端特定
 前缀的 MCP 工具；按最后的逻辑工具名匹配。
+Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registry 中与逻辑名匹配的
+工具，例如 `search_freeze_spec`。成功调用会留下 `mcp_tool_call` 事件。
+`list_mcp_resources` 和 `list_mcp_resource_templates` 不会列出 MCP tool，空结果也不是
+Search tool 缺失证据；不得用它们探测工具。不得通过 `exec_command`、shell、Python
+或手写 stdio client 调用 Goal Plus server，也不得以这种旁路代替上述原生 MCP tool call。
 
 ## Verifier 冻结契约
 
-不要在 `source_path` 手工运行拟定的 `ranking_signal`。将命令和 verifier 产物直接传给
-`search_freeze_spec`；它会在一次性源码副本中运行预检，并确认最后一个非空 stdout 行是
-JSON，其中包含有限数值类型的 `spec.metric_name`，例如
+不要在 `source_path` 手工预跑拟定的 verifier。将命令和 verifier 产物直接传给
+`search_freeze_spec`；Git backend 会在 origin 运行一次 process-verifier suite，固定验证过的
+clean HEAD，并确认 ranking signal 的最后一个非空 stdout 行是 JSON，其中包含有限
+数值类型的 `spec.metric_name`，例如
 `{"combined_score": 123.0}`。只在必要时创建自定义 verifier 文件，并在冻结前的 Spec
 Discovery 阶段将其写入源码拥有的路径，例如 `.goal-plus-verifiers/`，绝不能放在 `.gp/`
 或 `.search/` 中。freeze 工具会暴露完整的嵌套 `SearchSpec` schema。
 `expected_outputs` 只接受产物路径或 glob，不解析 stdout。
 
-冻结预检在一次性源码副本中运行，并将候选工作区视为只读。verifier 必须把编译器产物和
-临时输出放入 `GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` 或
-`tempfile.TemporaryDirectory()`。绝不能使用固定 `/tmp` 路径：并行候选验证会发生冲突。
-任何工作区变更都会触发 `VerifierWorkspaceSideEffect`；启动候选前应修复 verifier
-并冻结新 spec。
+origin verifier 可以按自身构建逻辑生成 Git-ignored cache；Runtime 不清理或猜测这些产物。
+它会在验证后复检 clean 状态、HEAD 和 verifier hash。任何 staged、unstaged 或 non-ignored
+untracked 变化都会阻止冻结。verifier 仍应优先把编译器产物和临时输出放入唯一的
+`GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` 或 `tempfile.TemporaryDirectory()`。绝不能使用
+固定 `/tmp` 路径：并行 candidate verification 会发生冲突。
+
+`search_create` 后，Git 的第一次 `search_start_batch` 会先创建 `c001` 并在真实 worktree
+重复同一 suite；只有通过后才创建其余 lane。`WorkspaceRelocationVerifierFailed` 表示
+origin 能运行但 candidate 路径合同不成立。该 run 已以 `verifier_target_mismatch` abort，
+`c001` 被保留供诊断，且不能为它启动 worker。修复 MainAgent 提供的 `source_path`、verifier
+`cwd` 或 artifact 合同后重新 freeze/create；不要手工复制文件或绕过 gate。
+
+`copy` 保留 disposable-copy ranking preflight。未来 ThinkThread backend 在 origin 验证并固定
+snapshot 后不需要 relocation；当前 Codex host 仍会在 freeze 前拒绝 TT，不得 fallback。
 
 如果运行时验证返回 `VerifierWorkspaceSideEffect`、
 `metrics.infrastructure_failure=true` 或 `metrics.candidate_action=stop_and_report`，
@@ -53,7 +70,7 @@ strategy:
 - worker 终态事件触发验证并继续同一 worker，而不是开始另一轮规划；
 - 正常执行绝不创建替代候选或补充 slot；
 - 运行时拒绝对该 run 的第二次 `search_plan_next` 调用；
-- `search_select` 和 `search_promote` 仍是父级拥有的最终 Search action；
+- `search_select`、`search_promote` 和 `search_apply_promotion` 仍是父级拥有的最终 Search action；
   对 Goal Plus，`search_report` 要延迟到父级 Goal Plus 记录达到终态。
 
 父 agent 是完成验证器和继续触发器，不是搜索指挥者。低分、一次没有改进的迭代或其他候选
@@ -82,28 +99,34 @@ strategy:
    则调用 `search_create`。新 spec 必须设置
    `strategy.orchestration_mode="parallel_loops"`、`worker_host="codex"` 和唯一的
    `budget.max_parallel`；同时必须显式设置 `workspace.backend="git_worktree"`。
-   只有用户明确要求兼容隔离时才能设置 `copy`。
+   `workspace.promotion_mode` 默认是 `apply`；只有受保护 source、只读 template 或测试 fixture
+   才显式设置 `artifact_only`。只有用户明确要求兼容隔离时才能设置 `copy`。
+   `git_worktree` 以及未来的 ThinkThread backend 只接受 clean Git `HEAD`；遇到
+   `DirtySourceWorkspace` 时展示路径和修复提示并停止启动，不得自动 stash、clean 或 commit。
+   确实需要当前 filesystem 状态时显式使用 `copy + artifact_only`。
    任务本地 Skill 不需要 spec 配置。只识别 source Git 已跟踪的
    `.agents/skills/<name>/SKILL.md`，且同一 Skill 目录内所有资源都必须由 Git 跟踪；
-   `search_freeze_spec.task_skill_notice` 会列出发现结果，
-   必须把该提示明确展示出来。candidate materialization 会把对应 worktree 绝对路径放入
+   `search_freeze_spec.task_skill_notice` 会列出发现结果，必须把该提示明确展示出来。
+   同时展示 `workspace_capacity_notice`；它按 `budget.max_parallel` 计算完整 repository
+   checkout 和共享 object store，若 `fits_available_space=false` 则不得调用 `search_create`。
+   candidate materialization 会把对应 worktree 绝对路径放入
    `candidate_task.task_skill_paths`。不要扫描或复制 parent/global/plugin Skill。
    除非用户明确要求自动注入，或已有运行 Evidence 证明当前 worker 无法可靠遵守
    manual 刷新契约，否则 `strategy.config.global_evidence_mode` 必须使用 `"manual"`；
    不得仅为便利或保险选择 `"auto"`。
-   原始 `$goal-plus` 命令包含 `annotator=B` 时，先调用
+   `GoalPlusRecord.command_config` 是显式强约束：先应用其中的 `max_parallel`、
+   `workspace_backend`、`promotion_mode` 和 `strategy`，只有缺省字段才由 Main 判断。
+   `command_config.annotator=B` 时，先调用
    `goal_plus_list_models(host="codex")` 并将唯一匹配冻结到
-   `strategy.evidence_annotator.model`。包含 `workers=A,B` 或兼容别名
-   `models=A,B` 时，用同一目录解析并冻结到 `strategy.models`；两个 Worker 别名不能
-   同时出现。`workers=A,B` 按 `max_parallel` 轮转；用户写
-   `workers=A,B A1B3`（或 `workers=A*1,B*3`）时使用显式数量，数量之和必须等于
-   `max_parallel`；`workers=A,B 每个一个` 表示 `max_parallel=2`。运行时据此生成有序
+   `strategy.evidence_annotator.model`。`command_config.workers=A,B` 时，用同一目录解析并
+   冻结到 `strategy.models`。无 count 时按 `max_parallel` 轮转；
+   `workers=A*1,B*3` 使用显式数量，数量之和必须等于 `max_parallel`。运行时据此生成有序
    `selected_models`，每个候选的 selected model 在原生 session 继续期间不可变；
    所有模型仍读取同一个 run 的 `search_get_global_evidence`，模型身份只作为
    candidate/session provenance，不改变候选准入或选择逻辑。`search_create` 不接收
-   第二套模型分配参数。Codex 当前 session 就是 main；`main=` 只是由
-   `UserPromptSubmit` hook 校验的可选兼容断言，不写入 SearchSpec，也不能由 Search
-   切换。省略的角色保持 host 默认或继承语义。
+   第二套模型分配参数。Codex 当前 session 就是 main，不能由 Search 切换；`main=` 不是
+   受支持的 Goal Plus 命令配置。省略的角色保持 host 默认或继承语义。ready spec draft 与 command config
+   不一致时，runtime 会拒绝保存。
 2. 调用且只调用一次 `search_plan_next(requested_k=budget.max_parallel)`，然后调用且只调用
    一次 `search_start_batch`，创建初始候选。启动 worker 前，把每个返回项的
    `task_skill_notice` 逐条展示给用户；它列出该 subagent worktree 中已获得的全部仓内 Skill，
@@ -124,9 +147,18 @@ strategy:
    - launch message 和 context 会列出 `task_local_skills_visible`/
      `candidate_task.task_skill_paths`；没有 Skill 时明确显示 `none`。worker 逐一完整读取并
      遵循列出的 `SKILL.md`，只按需读取同目录资源；不要扫描 parent/global/plugin 或 peer Skill。
-5. 使用 `host="codex"` 调用 `search_bind_agent_handle`，绑定返回的 task name/nickname。
+   `search_start_agent_session` 只分配持久 session 并返回 launch payload，绝不代表
+   worker 已经启动。必须对每个 payload 真实调用一次 `spawn_agent`，并确认调用成功返回
+   非空 receiver thread id；不得用 shell/Python 直接写 runtime state 来代替 host 操作。
+5. 只有对应 `spawn_agent` 成功后，才使用 `host="codex"` 调用
+   `search_bind_agent_handle`。把真实返回的 thread id 绑定为 `external_id`，并保留返回的
+   task name/nickname；绝不能把 launch payload 中预分配的 task name、candidate id 或
+   agent session id 冒充已启动的 handle。全部 `budget.max_parallel` 个真实 worker 启动并
+   绑定之前不得进入等待。
 6. 跟踪每个 live worker 及其自身 watchdog deadline。使用无 target 的 `wait_agent`，
-   然后使用 `list_agents`，处理每个已达终态的 worker。仅有进度的唤醒不是完成事件。
+   然后使用 `list_agents`，处理每个已达终态的 worker。调用 wait 时必须已有非空 live
+   receiver 集合；没有实际 worker 时不得调用空 `wait`/`wait_agent`，应回到 launch
+   失败处理。仅有进度的唤醒不是完成事件。
 7. 对每个终态 worker：
    - 从 `search_list_history` 或 `goal_plus_monitor_snapshot` 读取当前 run 的最佳结果；
    - 使用 `search_bind_agent_handle` 绑定终态 handle 和摘要；终态绑定会自动采集有界的
@@ -168,9 +200,15 @@ strategy:
     `interrupt_agent`，观察终态，并像其他完成事件一样验证。一个 worker 超时不会停止
     其他 worker。
 12. 全局停止 policy 为 true 时，drain 或中断每个 live worker，然后按要求调用
-    `search_select` 和 `search_promote`。选择使用 verifier 支持的 Git iteration；
-    promotion patch 相对于返回的 `source_path`；写回源码时从返回的 `apply_cwd` 执行
-    `git apply --directory=<apply_directory> <artifact_path>`，不要根据当前 Git cwd 猜路径。
+    `search_select` 和 `search_promote`。选择使用 verifier 支持的 immutable artifact。
+    当 frozen `workspace.promotion_mode="apply"` 且 promotion 返回
+    `strategy=squash_commit` 或 `strategy=fs_apply` 时，必须调用
+    `search_apply_promotion`；Git 会把保留的 running history
+    作为一个 publication commit cherry-pick 回原仓，ThinkThread 会应用 publish snapshot。
+    只有显式 `promotion_mode="artifact_only"` 的任务保留 prepared publication，不调用
+    apply。仅旧的
+    `strategy=legacy_patch` 在任务授权写回时从返回的 `apply_cwd` 执行
+    `git apply --directory=<apply_directory> <artifact_path>`。
     不要只为记录临时最佳而提升。该 Search 属于 Goal Plus 时，不调用 `search_report`
     就交还控制；Goal Plus skill 会在父记录达到终态后生成且只生成一次报告。
     对独立 Search，只在提升后调用 `search_report`。
@@ -243,9 +281,12 @@ worker 可先依据 commit、score、disposition 和自己的推理独立探索�
 快照生成。其中维度由 annotator
 根据实际 Evidence 后验提出，不来自 FrozenSpec；动态比较、置信度与 limitations 只是第三方
 观察，不是分数、推荐或 promotion gate；它不改变硬分结算规则。worker 可以据此
-形成自己的下一轮假设，但应独立核对。只有代码级证据确有必要时，才在当前 workspace 使用
-`git diff HEAD <commit> -- <allowed-file>` 做只读比较，不访问其他 candidate workspace，
-也不 checkout/reset peer commit。修改完成后，worker 在 `search_run_verifier` 中用一句话
+形成自己的下一轮假设，但应独立核对。窄、单文件代码证据可在当前 workspace 使用
+`git diff HEAD <commit> -- <allowed-file>` 做只读比较；改动较大或需要浏览完整实现时，
+对目标 Evidence 调用 `search_reference_open`，把它 checkout 到当前 worker 唯一的
+ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的
+reference commit；所有实现修改仍留在 candidate workspace。不访问其他 candidate 的真实
+workspace。修改完成后，worker 在 `search_run_verifier` 中用一句话
 `hypothesis` 客观概括实际尝试。
 
 当 FrozenSpec 显式启用 `shared_dir` 时，candidate 只能从 Global Evidence 的
@@ -279,7 +320,8 @@ workspace 运行且不依赖 candidate 私有临时状态的能力，只要命�
 这些具体排除项才支持 `not_applicable`。`no_toolizable_material` 表示回顾本轮及此前尚未发布的材料后
 确实没有工具；它与已有 family 没有实质 revision 增量不同。首次发布阶段不得使用 revision-only
 排除项；runtime 会在 catalog 尚无 family 时拒绝 `existing_family_sufficient`、
-`no_material_tool_delta` 和 `max_published_versions_reached`。`revision_allowed=false` 时使用 `revision_blocker` 的准确值；
+`no_material_tool_delta` 和 `max_published_versions_reached`。
+`revision_allowed=false` 时使用 `revision_blocker` 的准确值；
 `existing_family_sufficient` 仅表示 `revision_head` 已经覆盖需求；`no_material_tool_delta` 仅用于已有
 shared-tool family，表示没有上述实质增量；`draft_not_ready` 仅表示具体的安全性、
 完整性、可移植性或 peer 可运行性阻塞，不能用短小、任务专属、inline 来源或未润色作为理由。

@@ -1457,14 +1457,32 @@ def test_statistics_renders_observed_session_count_as_count() -> None:
                 "timing": {
                     "worker_duration_seconds_total": 12.5,
                     "worker_duration_sessions_observed": 4,
-                }
+                    "workspace_creation_seconds_total": 2.25,
+                    "promotion_apply_seconds": 0.75,
+                },
+                "workspace_operations": {
+                    "capacity_estimate": {
+                        "basis": "git_tracked_checkout",
+                        "worktree_nodes": 4,
+                        "checkout_bytes_per_node": 4 * 1024 * 1024,
+                        "candidate_checkouts_bytes": 16 * 1024 * 1024,
+                        "conservative_upper_bound_bytes": 24 * 1024 * 1024,
+                        "fits_available_space": True,
+                    }
+                },
             }
         }
     )
 
     assert "12.5s" in html
+    assert "2.2s" in html
+    assert "0.8s" in html
     assert ">4</strong>" in html
     assert "4.0s" not in html
+    assert "Workspace Capacity Preflight" in html
+    assert "4.0 MiB" in html
+    assert "16.0 MiB" in html
+    assert "24.0 MiB" in html
 
 
 def test_report_candidate_final_score_uses_settled_best_after_failure(

@@ -1,13 +1,50 @@
 from __future__ import annotations
 
+import calendar
+import hashlib
 import json
 import subprocess
+import sys
+import time
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from goal_plus.goal_plus import EXPLORATION_MODE_LINES, FileGoalPlusRuntime
-from goal_plus.models import GoalPlusSpecDraft, GoalPlusTriage
+from goal_plus.goal_plus import (
+    EXPLORATION_MODE_LINES,
+    GOAL_PLUS_COMMAND_CONFIG_KEYS,
+    GOAL_PLUS_COMMAND_OPTIONS,
+    FileGoalPlusRuntime,
+)
+from goal_plus.models import (
+    GoalPlusCommandConfig,
+    GoalPlusHostCommandInvocation,
+    GoalPlusSpecDraft,
+    GoalPlusTriage,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _codex_invocation(
+    invocation_id: str,
+    *,
+    action: str = "start",
+    raw_input: str = "$goal-plus Test",
+) -> GoalPlusHostCommandInvocation:
+    return GoalPlusHostCommandInvocation(
+        host="codex",
+        transport="codex_user_prompt_submit",
+        command="$goal-plus",
+        action=action,
+        session_id="session-test",
+        native_entry_id=f"turn-{invocation_id}",
+        invocation_id=invocation_id,
+        raw_input_sha256=hashlib.sha256(raw_input.encode()).hexdigest(),
+        invoked_at="2026-08-28T00:00:00Z",
+    )
 
 
 def _write_search_run(root, run_id: str, frozen_spec_id: str) -> None:
@@ -69,10 +106,75 @@ def test_create_goal_plus_record_writes_state_and_event(tmp_path) -> None:
     assert record.phase == "intake"
     assert not hasattr(record, "mode_hint")
     assert record.next_action.kind == "record_triage"  # type: ignore[union-attr]
+    assert record.entrypoint_status == "legacy_unverified"
 
     loaded = runtime.status(record.goal_plus_id)
     assert loaded.goal_plus_id == record.goal_plus_id
     assert runtime.list_events(record.goal_plus_id)[0]["event_type"] == "created"
+
+
+def test_host_command_start_is_verified_and_idempotent(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    invocation = _codex_invocation("codex:test:start")
+
+    first = runtime.start_from_host_command(
+        "Improve the README examples",
+        invocation=invocation,
+        source_path=".",
+    )
+    second = runtime.start_from_host_command(
+        "Improve the README examples",
+        invocation=invocation,
+        source_path=".",
+    )
+
+    assert first.goal_plus_id == second.goal_plus_id
+    assert first.entrypoint_status == "host_verified"
+    assert [item.invocation_id for item in first.host_command_invocations] == [
+        "codex:test:start"
+    ]
+    assert len(list((runtime.goals_dir).glob("gp_*/goal.json"))) == 1
+    assert runtime.require_host_verified_active_goal().goal_plus_id == first.goal_plus_id
+
+
+def test_host_command_start_rejects_second_nonterminal_goal(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    first = runtime.start_from_host_command(
+        "Improve the README examples",
+        invocation=_codex_invocation("codex:test:first"),
+    )
+
+    with pytest.raises(RuntimeError, match="nonterminal Goal Plus record"):
+        runtime.start_from_host_command(
+            "Start a different task",
+            invocation=_codex_invocation("codex:test:second"),
+        )
+
+    assert [path.parent.name for path in runtime.goals_dir.glob("gp_*/goal.json")] == [
+        first.goal_plus_id
+    ]
+
+
+def test_legacy_unverified_goal_cannot_authorize_search_bootstrap(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    runtime.create_goal("Legacy test fixture")
+
+    with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
+        runtime.require_host_verified_active_goal()
+
+
+def test_host_command_invocation_rejects_wrong_host_prefix() -> None:
+    with pytest.raises(ValidationError, match="requires the \\$ command prefix"):
+        GoalPlusHostCommandInvocation(
+            host="codex",
+            transport="codex_user_prompt_submit",
+            command="/goal-plus",
+            action="start",
+            session_id="session-test",
+            invocation_id="codex:test:wrong-prefix",
+            raw_input_sha256="0" * 64,
+            invoked_at="2026-08-28T00:00:00Z",
+        )
 
 
 def test_create_goal_normalizes_explicit_exploration_mode(tmp_path) -> None:
@@ -90,6 +192,294 @@ def test_create_goal_normalizes_explicit_exploration_mode(tmp_path) -> None:
         runtime.create_goal("mode=fast Try approach A")
 
 
+def test_host_command_config_is_typed_persisted_and_removed_from_goal(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+
+    record = runtime.start_from_host_command(
+        "max_parallel=2 max_duration_seconds=300 workspace_backend=git_worktree "
+        "promotion_mode=artifact_only strategy=agent_guided Optimize latency",
+        invocation=_codex_invocation("codex:test:config"),
+    )
+
+    assert record.raw_goal.startswith("Optimize latency")
+    assert "max_parallel=" not in record.raw_goal
+    assert record.command_config.model_dump(exclude_none=True) == {
+        "max_parallel": 2,
+        "max_duration_seconds": 300,
+        "workspace_backend": "git_worktree",
+        "promotion_mode": "artifact_only",
+        "strategy": "agent_guided",
+    }
+    assert record.goal_revisions[-1].command_config == record.command_config
+    assert record.outer_deadline_at is not None
+    created_epoch = calendar.timegm(
+        time.strptime(record.created_at, "%Y-%m-%dT%H:%M:%SZ")
+    )
+    deadline_epoch = calendar.timegm(
+        time.strptime(record.outer_deadline_at, "%Y-%m-%dT%H:%M:%SZ")
+    )
+    assert deadline_epoch - created_epoch == 300
+    created = runtime.list_events(record.goal_plus_id)[0]
+    assert created["payload"]["command_config"]["promotion_mode"] == "artifact_only"
+
+
+def test_host_command_config_registry_is_the_public_single_source() -> None:
+    accepted_keys = {
+        key for option in GOAL_PLUS_COMMAND_OPTIONS for key in option.accepted_keys
+    }
+    canonical_fields = {option.model_field for option in GOAL_PLUS_COMMAND_OPTIONS}
+
+    assert accepted_keys == GOAL_PLUS_COMMAND_CONFIG_KEYS
+    assert canonical_fields == set(GoalPlusCommandConfig.model_fields) - {
+        "main",
+        "worker_directive",
+    }
+    assert len(accepted_keys) == sum(
+        len(option.accepted_keys) for option in GOAL_PLUS_COMMAND_OPTIONS
+    )
+    assert all(option.default_description for option in GOAL_PLUS_COMMAND_OPTIONS)
+
+
+def test_legacy_main_command_config_remains_readable() -> None:
+    config = GoalPlusCommandConfig.model_validate({"main": "legacy/model"})
+
+    assert config.main == "legacy/model"
+    assert "main" not in GOAL_PLUS_COMMAND_CONFIG_KEYS
+
+
+def test_host_command_config_generated_assets_are_current() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "generate_command_config_docs.py"),
+            "--check",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_edit_preserves_goal_deadline_from_original_creation(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    record = runtime.start_from_host_command(
+        "max_duration_seconds=300 Optimize latency",
+        invocation=_codex_invocation("codex:test:deadline-start"),
+    )
+    deadline = record.outer_deadline_at
+
+    edited = runtime.edit_from_host_command(
+        record.goal_plus_id,
+        "Optimize latency and memory",
+        expected_revision=record.goal_revision,
+        invocation=_codex_invocation(
+            "codex:test:deadline-edit",
+            action="edit",
+        ),
+    )
+
+    assert edited.command_config.max_duration_seconds == 300
+    assert edited.outer_deadline_at == deadline
+
+
+def test_partial_command_config_only_constrains_search_fields_user_supplied(
+    tmp_path,
+) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+
+    record = runtime.start_from_host_command(
+        "max_parallel=2 Optimize latency",
+        invocation=_codex_invocation("codex:test:partial-config"),
+    )
+
+    assert record.command_config.model_dump(exclude_none=True) == {
+        "max_parallel": 2,
+    }
+    search_spec = _complete_search_spec()
+    search_spec["budget"]["max_parallel"] = 2
+    search_spec["workspace"] = {
+        "backend": "git_worktree",
+        "promotion_mode": "apply",
+    }
+    search_spec["strategy"] = {"name": "random"}
+
+    saved = runtime.save_spec_draft(
+        record.goal_plus_id,
+        GoalPlusSpecDraft(
+            baseline={},
+            metric={"name": "avg_latency_ms"},
+            correctness_gate={},
+            edit_surface={"allow": ["kernel.py"]},
+            search_spec=search_spec,
+            promotion_rule="lowest valid latency",
+            confidence="high",
+        ),
+    )
+
+    assert saved.spec_draft is not None
+    assert saved.spec_draft.search_spec is not None
+    assert saved.spec_draft.search_spec.workspace.backend == "git_worktree"
+    assert saved.spec_draft.search_spec.strategy.name == "random"
+
+
+def test_empty_command_config_leaves_search_fields_open_if_main_routes_to_search(
+    tmp_path,
+) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+
+    record = runtime.start_from_host_command(
+        "Optimize latency",
+        invocation=_codex_invocation("codex:test:no-config"),
+    )
+
+    assert record.command_config.model_dump(exclude_none=True) == {}
+    search_spec = _complete_search_spec()
+    search_spec["budget"]["max_parallel"] = 3
+    search_spec["workspace"] = {
+        "backend": "git_worktree",
+        "promotion_mode": "apply",
+    }
+    search_spec["strategy"] = {"name": "agent_guided"}
+
+    saved = runtime.save_spec_draft(
+        record.goal_plus_id,
+        GoalPlusSpecDraft(
+            baseline={},
+            metric={"name": "avg_latency_ms"},
+            correctness_gate={},
+            edit_surface={"allow": ["kernel.py"]},
+            search_spec=search_spec,
+            promotion_rule="lowest valid latency",
+            confidence="high",
+        ),
+    )
+
+    assert saved.spec_draft is not None
+    assert saved.spec_draft.search_spec is not None
+    assert saved.spec_draft.search_spec.budget.max_parallel == 3
+    assert saved.spec_draft.search_spec.workspace.backend == "git_worktree"
+    assert saved.spec_draft.search_spec.strategy.name == "agent_guided"
+
+
+def test_search_command_config_may_remain_unused_when_main_finishes_in_goal_mode(
+    tmp_path,
+) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+
+    record = runtime.start_from_host_command(
+        "max_parallel=2 workspace_backend=git_worktree "
+        "promotion_mode=artifact_only strategy=random "
+        "annotator=unused/annotator workers=unused/a,unused/b "
+        "Fix the documentation typo",
+        invocation=_codex_invocation("codex:test:unused-search-config"),
+    )
+    triaged = runtime.record_triage(
+        record.goal_plus_id,
+        {
+            "is_optimization": False,
+            "confidence": "high",
+            "recommended_phase": "goal",
+            "reasons": ["qualitative documentation task"],
+        },
+    )
+    completed = runtime.set_status(
+        record.goal_plus_id,
+        "complete",
+        reason="Main completed the non-Search task directly.",
+        evidence=[{"kind": "review", "result": "passed"}],
+    )
+
+    assert triaged.phase == "goal"
+    assert completed.status == "complete"
+    assert completed.command_config.model_dump(exclude_none=True) == {
+        "max_parallel": 2,
+        "workspace_backend": "git_worktree",
+        "promotion_mode": "artifact_only",
+        "strategy": "random",
+        "annotator": "unused/annotator",
+        "workers": "unused/a,unused/b",
+        "worker_directive": "workers",
+    }
+    assert completed.spec_draft is None
+    assert completed.search_tasks == []
+
+
+@pytest.mark.parametrize(
+    "raw_goal",
+    [
+        "unknown=value Optimize latency",
+        "MAX_PARALLEL=2 Optimize latency",
+        "max-parallel=2 Optimize latency",
+        "main=gpt-5.6-sol Optimize latency",
+        "max_parallel=zero Optimize latency",
+        "max_duration_seconds=zero Optimize latency",
+        "max_duration_seconds=0 Optimize latency",
+        "workers=A*1,B Optimize latency",
+    ],
+)
+def test_host_command_config_rejects_invalid_directives(tmp_path, raw_goal: str) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+
+    with pytest.raises((ValueError, ValidationError)):
+        runtime.create_goal(raw_goal)
+
+
+def test_explicit_command_config_enforces_ready_search_spec(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    record = runtime.create_goal(
+        "max_parallel=2 promotion_mode=artifact_only Optimize latency"
+    )
+    search_spec = _complete_search_spec()
+
+    with pytest.raises(ValueError, match="max_parallel=2"):
+        runtime.save_spec_draft(
+            record.goal_plus_id,
+            GoalPlusSpecDraft(
+                baseline={},
+                metric={"name": "avg_latency_ms"},
+                correctness_gate={},
+                edit_surface={"allow": ["kernel.py"]},
+                search_spec=search_spec,
+                promotion_rule="lowest valid latency",
+                confidence="high",
+            ),
+        )
+
+    search_spec["budget"]["max_parallel"] = 2
+    with pytest.raises(ValueError, match="promotion_mode=artifact_only"):
+        runtime.save_spec_draft(
+            record.goal_plus_id,
+            GoalPlusSpecDraft(
+                baseline={},
+                metric={"name": "avg_latency_ms"},
+                correctness_gate={},
+                edit_surface={"allow": ["kernel.py"]},
+                search_spec=search_spec,
+                promotion_rule="lowest valid latency",
+                confidence="high",
+            ),
+        )
+
+    search_spec["workspace"] = {"promotion_mode": "artifact_only"}
+    saved = runtime.save_spec_draft(
+        record.goal_plus_id,
+        GoalPlusSpecDraft(
+            baseline={},
+            metric={"name": "avg_latency_ms"},
+            correctness_gate={},
+            edit_surface={"allow": ["kernel.py"]},
+            search_spec=search_spec,
+            promotion_rule="lowest valid latency",
+            confidence="high",
+        ),
+    )
+
+    assert saved.spec_draft is not None
+
+
 def test_update_goal_preserves_or_explicitly_changes_exploration_mode(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("mode=probe Try approach A")
@@ -100,6 +490,7 @@ def test_update_goal_preserves_or_explicitly_changes_exploration_mode(tmp_path) 
         expected_revision=1,
     )
     assert preserved.raw_goal.endswith(EXPLORATION_MODE_LINES["probe"])
+    assert preserved.command_config.mode == "probe"
 
     changed = runtime.update_goal(
         record.goal_plus_id,
@@ -107,6 +498,7 @@ def test_update_goal_preserves_or_explicitly_changes_exploration_mode(tmp_path) 
         expected_revision=2,
     )
     assert changed.raw_goal.endswith(EXPLORATION_MODE_LINES["autonomous"])
+    assert changed.command_config.mode == "autonomous"
 
 
 def test_update_goal_creates_revision_and_supersedes_pending_check(tmp_path) -> None:
@@ -424,6 +816,8 @@ def test_goal_like_triage_blocks_stop_until_terminal_status(tmp_path) -> None:
     assert "created_at_utc" in gate.continuation_prompt
     assert "checked_at_utc" in gate.continuation_prompt
     assert "elapsed:" in gate.continuation_prompt
+    assert "即使实际收尾晚于预设也使用 complete" in gate.continuation_prompt
+    assert "不要仅因超出预设而使用 blocked" in gate.continuation_prompt
     assert "goal_plus_set_status" in gate.continuation_prompt
 
 
@@ -909,6 +1303,78 @@ def test_record_search_result_rejects_unpromoted_run(tmp_path) -> None:
         )
 
     assert runtime.status(record.goal_plus_id).phase == "search"
+
+
+def test_record_search_result_allows_artifact_only_provider_native_promotion(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".search"
+    runtime = FileGoalPlusRuntime(root)
+    record = runtime.create_goal("Optimize model")
+    _write_search_run(root, "run_001", "spec_abc")
+    runtime.link_search_run(record.goal_plus_id, "spec_abc", "run_001")
+    run_dir = root / "runs" / "run_001"
+    promotion_path = run_dir / "promotion" / "c001.patch"
+    promotion_path.parent.mkdir(parents=True)
+    promotion_path.write_text("patch\n", encoding="utf-8")
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "state": "promoted",
+                "selected_candidate_id": "c001",
+                "promotion": {
+                    "strategy": "squash_commit",
+                    "promotion_mode": "artifact_only",
+                    "state": "prepared",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    final = runtime.record_search_result(
+        record.goal_plus_id,
+        run_id="run_001",
+        selected_candidate_id="c001",
+    )
+
+    assert final.linked_search is not None
+    assert final.linked_search.selected_candidate_id == "c001"
+
+
+def test_record_search_result_requires_default_provider_native_apply(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".search"
+    runtime = FileGoalPlusRuntime(root)
+    record = runtime.create_goal("Optimize model")
+    _write_search_run(root, "run_001", "spec_abc")
+    runtime.link_search_run(record.goal_plus_id, "spec_abc", "run_001")
+    run_dir = root / "runs" / "run_001"
+    promotion_path = run_dir / "promotion" / "c001.patch"
+    promotion_path.parent.mkdir(parents=True)
+    promotion_path.write_text("patch\n", encoding="utf-8")
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "state": "promoted",
+                "selected_candidate_id": "c001",
+                "promotion": {
+                    "strategy": "squash_commit",
+                    "promotion_mode": "apply",
+                    "state": "prepared",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="search_apply_promotion"):
+        runtime.record_search_result(
+            record.goal_plus_id,
+            run_id="run_001",
+            selected_candidate_id="c001",
+        )
 
 
 def test_pre_tool_use_blocks_search_before_high_confidence_spec(tmp_path) -> None:
