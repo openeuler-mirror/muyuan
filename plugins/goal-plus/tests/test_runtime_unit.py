@@ -2648,15 +2648,15 @@ def test_redispatch_candidate_overrides_codex_worker_budget(tmp_path: Path) -> N
     assert redispatched.launch["budget_control"] == {
         "mode": "parent_watchdog",
         "max_runtime_seconds": 30,
-        "initial_wait_timeout_ms": 24000,
-        "soft_closeout_seconds": 6,
+        "initial_wait_timeout_ms": 20000,
+        "soft_closeout_seconds": 10,
         "closeout_tool": "send_message",
         "closeout_target": redispatched.launch["task_name"],
         "closeout_message": (
             "Worker 的截止时间临近。停止启动新工作；如有需要，最后运行一次 "
             "search_run_verifier，更新 .tmp/handoff.json，并返回简洁摘要。"
         ),
-        "final_wait_timeout_ms": 6000,
+        "final_wait_timeout_ms": 10000,
         "on_exceed": "interrupt",
         "interrupt_tool": "interrupt_agent",
         "interrupt_target": redispatched.launch["task_name"],

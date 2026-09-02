@@ -274,8 +274,9 @@ Adapter 会返回两阶段 parent watchdog：
 ```
 
 parent 先等待到 soft closeout，发送一次收尾消息，再等待 final window；只有第二次超时才调用
-interrupt。`max_turns` 只是提示，不是 Codex 强制上限。每次 continuation 可以使用新的 dispatch
-budget，不修改 frozen spec。
+interrupt。两段原生等待各自至少为 10 秒，因此 Codex worker budget 至少为 20 秒。
+`max_turns` 只是提示，不是 Codex 强制上限。每次 continuation 可以使用新的 dispatch budget，
+不修改 frozen spec。
 
 持续 AutoResearch 可配置 `min_runtime_seconds`，并可选配置 `min_verifier_runs`：
 

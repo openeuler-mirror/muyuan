@@ -25,6 +25,7 @@ PORTABLE_STRATEGY_MODES = {
     "random",
     "random_mode",
 }
+CODEX_MIN_WAIT_SECONDS = 10
 
 
 class UnsupportedHostCapability(RuntimeError):
@@ -190,13 +191,6 @@ def _codex_task_name(agent_session_id: str) -> str:
     return f"search_{normalized or 'agent'}"
 
 
-def _budget_max_runtime_ms(worker_budget: dict[str, Any]) -> int | None:
-    seconds = worker_budget.get("max_runtime_seconds")
-    if seconds is None:
-        return None
-    return int(seconds) * 1000
-
-
 def _soft_closeout_seconds(max_runtime_seconds: int) -> int:
     return min(45, max(5, int(max_runtime_seconds) // 5))
 
@@ -243,15 +237,21 @@ def _codex_budget_control(
         "interrupt_tool": "interrupt_agent",
         "interrupt_target": target,
     }
-    max_runtime_ms = _budget_max_runtime_ms(worker_budget)
-    if max_runtime_seconds is not None and max_runtime_ms is not None:
-        soft_closeout_seconds = _soft_closeout_seconds(int(max_runtime_seconds))
-        final_wait_timeout_ms = soft_closeout_seconds * 1000
+    if max_runtime_seconds is not None:
+        soft_closeout_seconds = max(
+            CODEX_MIN_WAIT_SECONDS,
+            _soft_closeout_seconds(int(max_runtime_seconds)),
+        )
+        initial_wait_seconds = int(max_runtime_seconds) - soft_closeout_seconds
+        if initial_wait_seconds < CODEX_MIN_WAIT_SECONDS:
+            raise ValueError(
+                "codex worker_budget.max_runtime_seconds must accommodate "
+                "two native wait intervals"
+            )
         min_runtime_seconds = worker_budget.get("min_runtime_seconds")
         if (
             min_runtime_seconds is not None
-            and int(min_runtime_seconds)
-            >= int(max_runtime_seconds) - soft_closeout_seconds
+            and int(min_runtime_seconds) >= initial_wait_seconds
         ):
             raise ValueError(
                 "codex worker_budget.min_runtime_seconds must end before the "
@@ -260,12 +260,12 @@ def _codex_budget_control(
             )
         budget_control.update(
             {
-                "initial_wait_timeout_ms": max_runtime_ms - final_wait_timeout_ms,
+                "initial_wait_timeout_ms": initial_wait_seconds * 1000,
                 "soft_closeout_seconds": soft_closeout_seconds,
                 "closeout_tool": "send_message",
                 "closeout_target": target,
                 "closeout_message": CODEX_CLOSEOUT_MESSAGE,
-                "final_wait_timeout_ms": final_wait_timeout_ms,
+                "final_wait_timeout_ms": soft_closeout_seconds * 1000,
             }
         )
         if min_runtime_seconds is not None or worker_budget.get(
