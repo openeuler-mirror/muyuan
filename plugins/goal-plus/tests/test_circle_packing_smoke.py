@@ -45,10 +45,10 @@ def test_circle_packing_promotion_exports_report_without_changing_template(
         / ".goal-plus-verifiers"
         / "circle_packing_score.py"
     )
-    monkeypatch.chdir(ROOT)
+    monkeypatch.chdir(EXAMPLE)
     tools = SearchTools(FileSearchRuntime(tmp_path / ".gp"))
 
-    frozen = tools.search_freeze_spec(spec, [str(verifier.relative_to(ROOT))])
+    frozen = tools.search_freeze_spec(spec, [str(verifier.relative_to(EXAMPLE))])
     run_id = tools.search_create(frozen["frozen_spec_id"])["run_id"]
     plan = tools.search_plan_next(run_id, 2)
     tasks = tools.search_start_batch(

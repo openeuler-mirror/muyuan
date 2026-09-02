@@ -1,8 +1,8 @@
 {
-  "objective": "maximize the valid radius sum for 26 circles in the unit square",
+  "objective": "在单位正方形内合法放置 26 个圆，并最大化半径之和",
   "metric_name": "sum_radii",
   "metric_direction": "maximize",
-  "source_path": "examples/circle-packing/workspace-template",
+  "source_path": "workspace-template",
   "edit_surface": {
     "allow": [
       "initial_program.py"
@@ -51,6 +51,6 @@
   },
   "constraints": {
     "suggested_batch_size": 2,
-    "task_summary": "Return exactly 26 non-overlapping circles inside the unit square and maximize the sum of their radii."
+    "task_summary": "在单位正方形内返回恰好 26 个互不重叠的圆，并最大化所有圆的半径之和。"
   }
 }

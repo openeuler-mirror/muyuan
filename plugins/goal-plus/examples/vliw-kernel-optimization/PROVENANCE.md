@@ -1,11 +1,10 @@
-# Provenance
+# 来源说明
 
-- Upstream project: `ByteDance-Seed/EdgeBench`
-- Task: `vliw_kernel_optimization`
-- License: Apache-2.0; see [`LICENSE.edgebench`](LICENSE.edgebench)
-- Local source: the public worker interface previously validated by
-  `bench-goal-plus/local_examples/vliw_kernel_optimization`
+- 上游项目：`ByteDance-Seed/EdgeBench`
+- 上游任务：`vliw_kernel_optimization`
+- 许可证：Apache-2.0，参见 [`LICENSE.edgebench`](LICENSE.edgebench)
+- 本地来源：此前由
+  `bench-goal-plus/local_examples/vliw_kernel_optimization` 验证的公开 worker 接口
 
-This example retains the public simulator, starter solution, runner, verifier,
-and public cases. It intentionally excludes held-out controller cases and does
-not claim official EdgeBench comparability.
+本示例保留了公开模拟器、初始解、runner、verifier 和公开案例。它刻意不包含隐藏
+controller 案例，也不声称结果可以与 EdgeBench 官方成绩直接比较。

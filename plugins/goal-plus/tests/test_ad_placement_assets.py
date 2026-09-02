@@ -108,7 +108,7 @@ def test_search_spec_matches_edgebench_submission_surface_and_public_tools() -> 
     )
     spec = SearchSpec.model_validate(data)
 
-    assert spec.source_path == "examples/edgebench-ad-placement/workspace-template"
+    assert spec.source_path == "workspace-template"
     assert spec.edit_surface.allow == ["solution.cpp"]
     assert spec.metric_name == "local_score_sum"
     assert spec.metric_direction == "maximize"
@@ -119,5 +119,6 @@ def test_search_spec_matches_edgebench_submission_surface_and_public_tools() -> 
     assert spec.promotion_verifiers == []
     assert spec.strategy.orchestration_mode == "parallel_loops"
     assert spec.workspace.backend == "git_worktree"
-    assert "CPU-only/no-internet" in spec.constraints["edgebench_alignment"]
+    assert "CPU-only" in spec.constraints["edgebench_alignment"]
+    assert "离线" in spec.constraints["edgebench_alignment"]
     assert "1 GB" in spec.constraints["edgebench_alignment"]

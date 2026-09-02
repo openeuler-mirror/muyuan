@@ -1,8 +1,8 @@
 {
-  "objective": "maximize the summed EdgeBench-format ad placement score on public deterministic cases",
+  "objective": "在公开确定性案例上最大化 EdgeBench 格式的广告布局总分",
   "metric_name": "local_score_sum",
   "metric_direction": "maximize",
-  "source_path": "examples/edgebench-ad-placement/workspace-template",
+  "source_path": "workspace-template",
   "edit_surface": {
     "allow": [
       "solution.cpp"
@@ -32,6 +32,9 @@
     "name": "agent_guided",
     "orchestration_mode": "parallel_loops",
     "worker_host": "pi-rpc",
+    "config": {
+      "closeout_reserve_seconds": 120
+    },
     "worker_budget": {
       "max_runtime_seconds": 240,
       "max_turns": 6,
@@ -43,9 +46,9 @@
     "promotion_mode": "artifact_only"
   },
   "constraints": {
-    "suggested_batch_size": 4,
-    "task_summary": "Edit solution.cpp. Read n followed by n x/y/r triples and print n non-overlapping integer rectangles. Use tools/bin/gen with a seed file and tools/bin/tester for public local scoring.",
-    "edgebench_alignment": "The submitted file, text I/O, generator CLI, tester CLI, Score = <integer> output, compiler mode, five-second per-case limit, CPU-only/no-internet rule, and documented 1 GB memory limit match EdgeBench ad_placement_optimization. Cases and scoring remain public synthetic fixtures; no hidden judge is wired into GP."
+    "suggested_batch_size": 2,
+    "task_summary": "只修改 solution.cpp。读取 n 和 n 组 x/y/r，输出 n 个互不重叠的整数矩形，并使用公开 generator 和 tester 优化本地得分。",
+    "edgebench_alignment": "提交文件、文本 I/O、generator CLI、tester CLI、Score = <integer> 输出、编译模式、单案例五秒限制、CPU-only 和离线规则，以及 1 GB 内存说明与 EdgeBench ad_placement_optimization 合同一致。案例和评分仍是公开合成 fixture，Goal Plus 不包含隐藏 judge。"
   },
   "root_hypotheses": []
 }

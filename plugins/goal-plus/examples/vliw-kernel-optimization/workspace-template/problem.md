@@ -1,48 +1,56 @@
-# Problem
+# VLIW Kernel Optimization 任务
 
-Optimize the generated kernel for a custom VLIW/SIMD machine.
+为自定义 VLIW/SIMD 机器优化生成的 kernel。
 
-## Task
+## 任务
 
-Edit `solution.py`, specifically `KernelBuilder.build_kernel`, so that it generates a faster instruction program for the machine defined in `problem.py`.
+修改 `solution.py`，重点优化 `KernelBuilder.build_kernel`，使它为 `problem.py`
+定义的机器生成更快的指令程序。
 
-The generated program must produce the same final output values as `reference_kernel2`.
+生成程序的最终输出必须与 `reference_kernel2` 完全一致。
 
-The main workload is:
+主要 workload：
 
 - `forest_height = 10`
 - `rounds = 16`
 - `batch_size = 256`
 
-## Machine Model
+## 机器模型
 
-The simulator in `problem.py` models a custom architecture with these per-cycle slot limits:
+`problem.py` 中的模拟器定义了自定义架构，每个周期具有以下 slot 上限：
 
-- `alu`: 12 slots
-- `valu`: 6 slots
-- `load`: 2 slots
-- `store`: 2 slots
-- `flow`: 1 slot
+- `alu`：12 个 slot
+- `valu`：6 个 slot
+- `load`：2 个 slot
+- `store`：2 个 slot
+- `flow`：1 个 slot
 
-SIMD vector length is `VLEN = 8`. The machine has one core. Instruction effects are written at the end of a cycle, so slots in the same instruction bundle read the old scratch values.
+SIMD 向量长度是 `VLEN = 8`，机器只有一个 core。指令效果在周期结束时写入，因此同一个
+instruction bundle 中的 slot 读取的是旧 scratch 值。
 
-## Required Interface
+## 必需接口
 
-`solution.py` must define:
+`solution.py` 必须定义：
 
 ```python
 class KernelBuilder:
-    def build_kernel(self, forest_height: int, n_nodes: int, batch_size: int, rounds: int):
+    def build_kernel(
+        self,
+        forest_height: int,
+        n_nodes: int,
+        batch_size: int,
+        rounds: int,
+    ):
         ...
 ```
 
-The runner will instantiate `KernelBuilder`, call `build_kernel`, then execute `kb.instrs` on the simulator. You may add helper methods, constants, and scratch allocation logic inside `solution.py`.
+runner 会实例化 `KernelBuilder`，调用 `build_kernel`，然后在模拟器上执行
+`kb.instrs`。可以在 `solution.py` 内增加 helper method、常量和 scratch 分配逻辑。
 
-## Scoring
+## 评分
 
-The official score is based on simulated cycle count on hidden/generated test cases. Lower is better. Correctness is required before cycle count is considered.
-
-The original baseline produces `147734` cycles on the main workload. Thresholds reported by the verifier include:
+评分首先要求结果正确，然后比较模拟周期数，越低越好。初始实现在主要 workload 上产生
+`147734` 个周期。verifier 报告的参考阈值包括：
 
 - `<147734`
 - `<18532`
@@ -53,31 +61,30 @@ The original baseline produces `147734` cycles on the main workload. Thresholds 
 - `<1487`
 - `<1363`
 
-For scoring, `cycles` means the maximum cycle count across all correct performance cases in the case file:
+`cycles` 是案例文件中所有正确 performance case 的最大周期数：
 
 ```text
-Score = invalid                                if any case is incorrect
-Score = cycles                                 otherwise
+Score = invalid                                任一案例不正确
+Score = cycles                                 所有案例都正确
 ```
 
-Lower scores are better. Incorrect submissions are invalid and are not eligible
-for best-score comparison. The runner prints the final line as
-`Score: <value>` for correct submissions, or `Score: invalid` if correctness
-fails.
+错误提交无效，不能参与最佳结果比较。正确时 runner 最后一行输出 `Score: <value>`，
+否则输出 `Score: invalid`。
 
-## Local Run
+## 本地运行
 
-Use the public runner:
+运行公开 runner：
 
 ```bash
 python3 runner.py
 ```
 
-This reads `test_cases/public_cases.json`, imports `solution.py`, and calls `verifier.py`. Public cases are only for smoke testing and do not define the official score. The private evaluator uses different hidden seeds.
+它会读取 `test_cases/public_cases.json`，导入 `solution.py`，再调用 `verifier.py`。
+这些公开案例只用于本地正确性和性能演示，不代表官方隐藏评测。
 
-## Constraints
+## 约束
 
-- Do not use network access.
-- Do not change `problem.py` semantics.
-- Do not modify hidden/private evaluation files.
-- Do not hard-code answers for specific random seeds or generated instances.
+- 不要访问网络。
+- 不要改变 `problem.py` 的语义。
+- 不要修改评测文件。
+- 不要为特定随机 seed 或生成实例硬编码答案。
