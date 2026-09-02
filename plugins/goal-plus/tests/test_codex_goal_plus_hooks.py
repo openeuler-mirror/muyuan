@@ -64,6 +64,15 @@ def _block_reason(result: subprocess.CompletedProcess[str]) -> str:
     return payload["reason"]
 
 
+def _pre_tool_denial(result: subprocess.CompletedProcess[str]) -> str:
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    specific = payload["hookSpecificOutput"]
+    assert specific["hookEventName"] == "PreToolUse"
+    assert specific["permissionDecision"] == "deny"
+    return specific["permissionDecisionReason"]
+
+
 def _stop_hook_events(search_root: Path) -> list[dict]:
     event_dir = search_root / "host-logs" / "codex-hook-events"
     return [
@@ -515,8 +524,8 @@ def test_ordinary_subagent_does_not_get_goal_plus_permission_banner(
         },
     )
 
-    assert result.returncode == 0
-    assert result.stdout == ""
+    assert "GoalPlusRoleDenied" in _pre_tool_denial(result)
+    assert "systemMessage" not in json.loads(result.stdout)
 
 
 def test_user_prompt_submit_uses_nested_thread_cwd_for_default_root(
@@ -893,6 +902,43 @@ def test_codex_interrupted_final_checker_is_recorded_and_can_stop(tmp_path: Path
     )
     runtime.prepare_final_check(record.goal_plus_id, "codex")
 
+    main_submission = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-codex",
+            "tool_name": "mcp__goal-plus__goal_plus_submit_final_check",
+            "tool_input": {"goal_plus_id": record.goal_plus_id},
+        },
+    )
+    assert "GoalPlusRoleDenied" in _pre_tool_denial(main_submission)
+
+    checker_status = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "agent_id": "checker-1",
+            "agent_type": "goal_plus_final_checker",
+            "tool_name": "mcp__goal-plus__goal_plus_status",
+            "tool_input": {"goal_plus_id": record.goal_plus_id},
+        },
+    )
+    assert checker_status.stdout == ""
+    checker_mutation = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "agent_id": "checker-1",
+            "agent_type": "goal_plus_final_checker",
+            "tool_name": "mcp__goal-plus__goal_plus_set_status",
+            "tool_input": {"goal_plus_id": record.goal_plus_id},
+        },
+    )
+    assert "GoalPlusRoleDenied" in _pre_tool_denial(checker_mutation)
+
     result = _run_hook(
         tmp_path,
         search_root,
@@ -1125,8 +1171,7 @@ def test_child_hooks_do_not_inherit_or_rebind_main_goal_context(tmp_path: Path) 
             "tool_input": {"frozen_spec_id": "spec_missing"},
         },
     )
-    assert pre_tool.returncode == 0
-    assert pre_tool.stdout == ""
+    assert "GoalPlusRoleDenied" in _pre_tool_denial(pre_tool)
 
     child_goal = runtime.create_goal("Child-owned probe")
     post_tool = _run_hook(
@@ -1210,6 +1255,47 @@ def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
     assert Path(worker_context["workspace"]) == session.workspace
     assert record.goal_plus_id not in context
     assert record.raw_goal not in context
+
+    own_context = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-main",
+            "transcript_path": str(transcript),
+            "tool_name": "mcp__goal-plus__search_get_agent_context",
+            "tool_input": {"agent_session_id": agent_session_id},
+        },
+    )
+    assert own_context.returncode == 0
+    assert own_context.stdout == ""
+
+    peer = search_runtime.redispatch_candidate(run_id, candidate_id)
+    peer_denial = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-main",
+            "transcript_path": str(transcript),
+            "tool_name": "mcp__goal-plus__search_get_agent_context",
+            "tool_input": {"agent_session_id": peer.agent_session_id},
+        },
+    )
+    assert "GoalPlusSessionMismatch" in _pre_tool_denial(peer_denial)
+
+    orchestration_denial = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-main",
+            "transcript_path": str(transcript),
+            "tool_name": "mcp__goal-plus__search_select",
+            "tool_input": {"run_id": run_id},
+        },
+    )
+    assert "GoalPlusRoleDenied" in _pre_tool_denial(orchestration_denial)
 
     search_runtime.bind_agent_handle(
         agent_session_id,
@@ -1312,9 +1398,9 @@ def test_post_tool_time_advisory_only_targets_search_candidate_subagent_once(
         tmp_path,
         search_root,
         {
-            "hook_event_name": "PostToolUse",
-            "agent_id": "search-worker-agent",
-            "agent_type": "default",
+                "hook_event_name": "PostToolUse",
+                "agent_id": "search-worker-agent",
+                "agent_type": "search_candidate_agent",
             "tool_name": "functions.exec",
             "tool_input": (
                 "const r = await tools.mcp__goal_plus__search_get_agent_context("

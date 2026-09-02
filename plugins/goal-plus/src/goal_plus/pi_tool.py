@@ -19,7 +19,12 @@ from goal_plus.pi_pool import (
     wait_any_pi_search_pool,
 )
 from goal_plus.runtime import FileSearchRuntime, exclusive_file_lock
-from goal_plus.tools import GoalPlusTools, SearchTools
+from goal_plus.tools import (
+    GoalPlusTools,
+    SearchTools,
+    ToolCallerRole,
+    require_tool_role,
+)
 
 
 SEARCH_TOOL_NAMES = {
@@ -211,7 +216,25 @@ def call_pi_tool(
     tools = _registry(root_dir)
     if tool_name not in tools:
         raise ValueError(f"unsupported pi tool: {tool_name}")
-    return tools[tool_name](**(args or {}))
+    arguments = args or {}
+    role_name = os.environ.get("GOAL_PLUS_PI_ROLE", "main")
+    roles: dict[str, ToolCallerRole] = {
+        "main": "main",
+        "worker": "candidate",
+        "final-checker": "final_checker",
+        "ordinary": "ordinary",
+    }
+    role = roles.get(role_name, "ordinary")
+    requested_session = arguments.get("agent_session_id")
+    require_tool_role(
+        role,
+        tool_name,
+        caller_agent_session_id=os.environ.get("GOAL_PLUS_AGENT_SESSION_ID"),
+        requested_agent_session_ids=(
+            [requested_session] if isinstance(requested_session, str) else []
+        ),
+    )
+    return tools[tool_name](**arguments)
 
 
 def call_pi_host_command(

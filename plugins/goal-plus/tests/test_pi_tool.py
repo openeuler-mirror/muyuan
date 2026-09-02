@@ -130,6 +130,61 @@ def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path) -> None:
     assert iterations[0]["agent_session_id"] == session.agent_session_id
 
 
+def test_pi_worker_tools_are_scoped_to_their_agent_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project(tmp_path)
+    runtime_root = tmp_path / ".search"
+    runtime = FileSearchRuntime(runtime_root)
+    frozen = runtime.freeze_spec(
+        spec_for(project, max_parallel=2),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+    tasks = runtime.start_batch(run_id, plan.plan_id)
+    own = runtime.start_agent_session(run_id, tasks[0].candidate_id)
+    peer = runtime.start_agent_session(run_id, tasks[1].candidate_id)
+    monkeypatch.setenv("GOAL_PLUS_PI_ROLE", "worker")
+    monkeypatch.setenv("GOAL_PLUS_AGENT_SESSION_ID", own.agent_session_id)
+
+    context = call_pi_tool(
+        runtime_root,
+        "search_get_agent_context",
+        {"agent_session_id": own.agent_session_id},
+    )
+    assert context["candidate_id"] == tasks[0].candidate_id
+
+    with pytest.raises(PermissionError, match="GoalPlusSessionMismatch"):
+        call_pi_tool(
+            runtime_root,
+            "search_get_agent_context",
+            {"agent_session_id": peer.agent_session_id},
+        )
+    with pytest.raises(PermissionError, match="GoalPlusRoleDenied"):
+        call_pi_tool(runtime_root, "search_select", {"run_id": run_id})
+
+
+def test_pi_main_cannot_submit_final_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOAL_PLUS_PI_ROLE", raising=False)
+    with pytest.raises(PermissionError, match="GoalPlusRoleDenied"):
+        call_pi_tool(
+            tmp_path / ".gp",
+            "goal_plus_submit_final_check",
+            {
+                "goal_plus_id": "gp_missing",
+                "check_id": "fc_missing",
+                "goal_revision": 1,
+                "verdict": "fail",
+                "summary": "must be rejected before lookup",
+            },
+        )
+
+
 def test_pi_tool_stages_explicit_candidate_drafts(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"

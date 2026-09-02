@@ -68,9 +68,8 @@ def test_codex_native_child_hooks_preserve_main_binding(
     raw_goal = "Return the exact marker native-child-hook-isolation after independent review."
     result = runner.run_streaming(
         (
-            "Create exactly one Goal Plus record with goal_plus_create using source_path='.' "
-            f"and this raw goal: {raw_goal}\n\n"
-            "Record Goal Mode triage. Upsert one required route=subagent work item whose "
+            f"$goal-plus {raw_goal} "
+            "Record Goal Mode triage and upsert one required route=subagent work item whose "
             "objective is to call the logical goal-plus MCP search_create once with "
             f"frozen_spec_id='{probe_spec_id}', confirm the expected missing-spec runtime "
             "error, and then return the exact marker native-child-hook-isolation. Execute "
@@ -106,8 +105,7 @@ def test_codex_native_child_hooks_preserve_main_binding(
     assert "goal_plus_context_role=search_candidate" not in child_text
     [probe_result] = _mcp_tool_results(child_transcript, "search_create")
     probe_text = json.dumps(probe_result, ensure_ascii=False)
-    assert probe_spec_id in probe_text
-    assert "permissionDecision" not in probe_text
+    assert "GoalPlusRoleDenied" in probe_text
 
     main_transcript = Path(active_session["transcript_path"])
     assert main_transcript.is_file()

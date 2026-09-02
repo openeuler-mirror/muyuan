@@ -836,6 +836,48 @@ def _bind_goal_plus_work_item(
     )
 
 
+def _record_interrupted_final_check(
+    launch: dict[str, Any],
+    *,
+    root: Path,
+    timed_out: bool,
+    exit_code: int | None,
+) -> None:
+    if launch.get("role") != "final-checker":
+        return
+    goal_plus_id = launch.get("goal_plus_id")
+    check_id = launch.get("check_id")
+    goal_revision = launch.get("goal_revision")
+    if not (
+        isinstance(goal_plus_id, str)
+        and isinstance(check_id, str)
+        and isinstance(goal_revision, int)
+    ):
+        return
+    from goal_plus.goal_plus import FileGoalPlusRuntime
+
+    runtime = FileGoalPlusRuntime(root)
+    record = runtime.status(goal_plus_id)
+    check = next(
+        (item for item in record.final_checks if item.check_id == check_id),
+        None,
+    )
+    if check is None or check.status != "pending":
+        return
+    runtime.submit_final_check(
+        goal_plus_id,
+        check_id=check_id,
+        goal_revision=goal_revision,
+        verdict="interrupted",
+        summary=(
+            "Pi final checker timed out before submitting a verdict."
+            if timed_out
+            else "Pi final checker exited before submitting a verdict."
+        ),
+        checker_metadata={"exit_code": exit_code, "timed_out": timed_out},
+    )
+
+
 def run_pi_rpc_worker(
     launch: dict[str, Any],
     *,
@@ -893,6 +935,7 @@ def run_pi_rpc_worker(
         },
         "GOAL_PLUS_ROOT": str(root),
         "GOAL_PLUS_PI_ROLE": worker_role,
+        "GOAL_PLUS_AGENT_SESSION_ID": agent_session_id,
         "GOAL_PLUS_SOURCE_PATH": str(default_extension_path().parents[2]),
     }
     if worker_continue_until_ms is not None:
@@ -1173,6 +1216,12 @@ def run_pi_rpc_worker(
             if runtime_start_error is not None:
                 pi_metrics["runtime_start_error"] = runtime_start_error
         _kill_process_group(proc)
+        _record_interrupted_final_check(
+            launch,
+            root=root,
+            timed_out=timed_out,
+            exit_code=proc.returncode,
+        )
 
     progress_handoff = _workspace_progress_handoff(
         cwd,

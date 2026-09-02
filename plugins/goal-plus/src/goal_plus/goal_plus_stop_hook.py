@@ -23,6 +23,7 @@ from goal_plus.time_advisory import (
     find_agent_session,
     is_search_candidate_session,
 )
+from goal_plus.tools import ToolCallerRole, require_tool_role
 
 
 GOAL_ID_RE = re.compile(r"gp_\d+")
@@ -487,7 +488,7 @@ def _runtime_agent_session_ids(value: Any) -> list[str]:
         found.extend(
             re.findall(r"\bagent_[A-Za-z0-9][A-Za-z0-9_.:-]*\b", value)
         )
-    return list(dict.fromkeys(found))
+    return [value for value in dict.fromkeys(found) if value != "agent_session_id"]
 
 
 def _runtime_run_ids(value: Any) -> list[str]:
@@ -536,6 +537,11 @@ def _is_child_context(hook_input: dict[str, Any]) -> bool:
 
 
 def _is_final_checker_context(hook_input: dict[str, Any]) -> bool:
+    transcript_task = _codex_subagent_task_name(hook_input)
+    if transcript_task is not None and Path(transcript_task).name.startswith(
+        "goal_plus_final_check_"
+    ):
+        return True
     for key in ("agent_type", "agentType", "task_name", "taskName", "role"):
         value = hook_input.get(key)
         if isinstance(value, str) and (
@@ -553,6 +559,8 @@ def _subagent_identity(hook_input: dict[str, Any]) -> str | None:
         "agentId",
         "agent_transcript_path",
         "agentTranscriptPath",
+        "transcript_path",
+        "transcriptPath",
     ):
         value = hook_input.get(key)
         if isinstance(value, str) and value:
@@ -586,28 +594,6 @@ def _agent_transcript_started_at(hook_input: dict[str, Any]) -> datetime | None:
             parsed = _utc_datetime(timestamp)
             if parsed is not None:
                 return parsed
-    return None
-
-
-def _candidate_session_from_transcript(
-    search_root: Path,
-    hook_input: dict[str, Any],
-) -> Any | None:
-    path = _agent_transcript_path(hook_input)
-    if path is None:
-        return None
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    for candidate_session_id in _runtime_agent_session_ids(text):
-        session = find_agent_session(search_root, candidate_session_id)
-        if (
-            session is not None
-            and session.host == "codex"
-            and is_search_candidate_session(session)
-        ):
-            return session
     return None
 
 
@@ -672,6 +658,26 @@ def _candidate_session_from_native_identity(
             meta.get("session_id"),
             meta.get("agent_path"),
         }:
+            return session
+    return None
+
+
+def _candidate_session_from_task_name(
+    search_root: Path,
+    hook_input: dict[str, Any],
+) -> Any | None:
+    task_name = _codex_subagent_task_name(hook_input)
+    if task_name is None:
+        return None
+    expected = Path(task_name).name
+    for path in sorted((search_root / "runs").glob("*/agent_sessions/*.json")):
+        session = find_agent_session(search_root, path.stem)
+        if (
+            session is not None
+            and session.host == "codex"
+            and is_search_candidate_session(session)
+            and Path(str(session.launch.get("task_name") or "")).name == expected
+        ):
             return session
     return None
 
@@ -1096,73 +1102,50 @@ def _search_candidate_agent_session_id(
     if not _is_child_context(hook_input) or _is_final_checker_context(hook_input):
         return None
     identity = _subagent_identity(hook_input)
-    direct: str | None = None
-    for candidate_session_id in _runtime_agent_session_ids(
-        _raw_tool_input(hook_input)
-    ):
-        session = find_agent_session(search_root, candidate_session_id)
-        if (
-            session is not None
-            and session.host == "codex"
-            and is_search_candidate_session(session)
-        ):
-            direct = candidate_session_id
-            break
-    if direct is not None:
+    mapped_session = None
+    if identity is not None:
+        mapping = _read_json_object(_identity_path(search_root, identity))
+        mapped = mapping.get("agent_session_id") if mapping else None
+        if isinstance(mapped, str) and mapped:
+            candidate = find_agent_session(search_root, mapped)
+            if (
+                candidate is not None
+                and candidate.host == "codex"
+                and is_search_candidate_session(candidate)
+            ):
+                mapped_session = candidate
+    session = (
+        mapped_session
+        or _candidate_session_from_task_name(search_root, hook_input)
+        or _candidate_session_from_native_identity(search_root, hook_input)
+    )
+    if session is None and _declares_search_candidate(hook_input):
+        requested = _runtime_agent_session_ids(_raw_tool_input(hook_input))
+        if len(requested) == 1:
+            candidate = find_agent_session(search_root, requested[0])
+            if (
+                candidate is not None
+                and candidate.host == "codex"
+                and is_search_candidate_session(candidate)
+            ):
+                session = candidate
+    if session is not None:
         if identity is not None:
             _write_json_object(
                 _identity_path(search_root, identity),
                 {
-                    "agent_session_id": direct,
-                    "mapped_at": datetime.now(timezone.utc)
-                    .replace(microsecond=0)
-                    .isoformat()
-                    .replace("+00:00", "Z"),
-                },
-            )
-        direct_session = find_agent_session(search_root, direct)
-        if direct_session is not None:
-            _ensure_autoresearch_lease(
-                search_root,
-                direct_session,
-                hook_input,
-            )
-        return direct
-    transcript_session = _candidate_session_from_transcript(
-        search_root,
-        hook_input,
-    ) or _candidate_session_from_native_identity(search_root, hook_input)
-    if transcript_session is not None:
-        if identity is not None:
-            _write_json_object(
-                _identity_path(search_root, identity),
-                {
-                    "agent_session_id": transcript_session.agent_session_id,
+                    "agent_session_id": session.agent_session_id,
                     "mapped_at": _utc_text(_utc_now()),
-                    "source": "agent_transcript_path",
+                    "source": "codex_subagent_identity",
                 },
             )
         _ensure_autoresearch_lease(
             search_root,
-            transcript_session,
+            session,
             hook_input,
         )
-        return transcript_session.agent_session_id
-    if identity is None:
-        return None
-    mapping = _read_json_object(_identity_path(search_root, identity))
-    mapped = mapping.get("agent_session_id") if mapping else None
-    if not isinstance(mapped, str) or not mapped:
-        return None
-    session = find_agent_session(search_root, mapped)
-    if (
-        session is None
-        or session.host != "codex"
-        or not is_search_candidate_session(session)
-    ):
-        return None
-    _ensure_autoresearch_lease(search_root, session, hook_input)
-    return mapped
+        return session.agent_session_id
+    return None
 
 
 def _declares_search_candidate(hook_input: dict[str, Any]) -> bool:
@@ -1535,18 +1518,24 @@ def _emit_user_prompt_block(reason: str) -> None:
     print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
 
 
-def _emit_pre_tool_block(reason: str) -> None:
+def _emit_pre_tool_block(
+    reason: str,
+    *,
+    additional_context: str | None = None,
+    system_message: str | None = None,
+) -> None:
+    specific: dict[str, Any] = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+    }
+    if additional_context is not None:
+        specific["additionalContext"] = additional_context
+    payload: dict[str, Any] = {"hookSpecificOutput": specific}
+    if system_message is not None:
+        payload["systemMessage"] = system_message
     print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            },
-            ensure_ascii=False,
-        )
+        json.dumps(payload, ensure_ascii=False)
     )
 
 
@@ -1574,6 +1563,82 @@ def _should_gate_tool(tool_name: str) -> bool:
 def _logical_tool_name(tool_name: str) -> str:
     normalized = tool_name.strip().lower().replace("-", "_")
     return normalized.rsplit("__", 1)[-1]
+
+
+def _goal_plus_tool_names(hook_input: dict[str, Any]) -> list[str]:
+    direct = _logical_tool_name(_tool_name(hook_input))
+    if direct.startswith(
+        ("goal_plus_", "search_", "pi_search_pool_", "pi_goal_plus_")
+    ):
+        return [direct]
+    raw = _raw_tool_input(hook_input)
+    text = raw if isinstance(raw, str) else _compact_json(raw)
+    return list(
+        dict.fromkeys(
+            re.findall(
+                r"(?<![A-Za-z0-9])((?:goal_plus|search|pi_search_pool|pi_goal_plus)_[A-Za-z0-9_]+)\b",
+                text,
+            )
+        )
+    )
+
+
+def _handle_role_pre_tool_use(
+    search_root: Path,
+    hook_input: dict[str, Any],
+) -> bool:
+    child = _is_child_context(hook_input)
+    if not child:
+        role: ToolCallerRole = "main"
+        agent_session_id = None
+    elif _is_final_checker_context(hook_input):
+        role = "final_checker"
+        agent_session_id = None
+    else:
+        agent_session_id = _search_candidate_agent_session_id(search_root, hook_input)
+        role = "candidate" if agent_session_id is not None else "ordinary"
+
+    tool_names = _goal_plus_tool_names(hook_input)
+    if not tool_names:
+        return child
+
+    permission_agent = _search_candidate_permission_agent(hook_input)
+    permission_message = (
+        _codex_permission_message(permission_agent, hook_input)
+        if permission_agent is not None
+        else None
+    )
+    try:
+        for tool_name in tool_names:
+            require_tool_role(
+                role,
+                tool_name,
+                caller_agent_session_id=agent_session_id,
+                requested_agent_session_ids=_runtime_agent_session_ids(
+                    _raw_tool_input(hook_input)
+                ),
+            )
+    except PermissionError as exc:
+        _emit_pre_tool_block(
+            str(exc),
+            additional_context=(
+                f"{permission_message}\n"
+                "把上一行作为本 Search candidate session 的权限事实，并在最终交接中完整照抄。"
+                if permission_message is not None
+                else None
+            ),
+            system_message=permission_message,
+        )
+        return True
+
+    if permission_message is not None:
+        _emit_additional_context(
+            "PreToolUse",
+            f"{permission_message}\n"
+            "把上一行作为本 Search candidate session 的权限事实，并在最终交接中完整照抄。",
+            system_message=permission_message,
+        )
+    return child
 
 
 GOAL_PLUS_READ_ONLY_TOOLS = {
@@ -1646,6 +1711,16 @@ def _handle_user_prompt_submit(
 ) -> None:
     candidate_session = _candidate_session_from_launch_prompt(search_root, hook_input)
     if candidate_session is not None:
+        identity = _subagent_identity(hook_input)
+        if identity is not None:
+            _write_json_object(
+                _identity_path(search_root, identity),
+                {
+                    "agent_session_id": candidate_session.agent_session_id,
+                    "mapped_at": _utc_text(_utc_now()),
+                    "source": "launch_prompt",
+                },
+            )
         if candidate_session.launch.get("tool") != "followup_task":
             _emit_additional_context(
                 "UserPromptSubmit",
@@ -1833,7 +1908,7 @@ def _handle_pre_tool_use(
     hook_input: dict[str, Any],
 ) -> None:
     tool_name = _tool_name(hook_input)
-    if _is_child_context(hook_input) or not _should_gate_tool(tool_name):
+    if not _should_gate_tool(tool_name):
         return
     logical_name = _logical_tool_name(tool_name)
     if logical_name == "goal_plus_create":
@@ -2093,20 +2168,7 @@ def main() -> int:
             # Codex's real PreToolUse payload also does not need to repeat an
             # `agent_id`: the transcript session_meta is the authoritative
             # source for whether this is a subagent and its task path.
-            subagent_task = _codex_subagent_task_name(hook_input)
-            permission_agent = _search_candidate_permission_agent(hook_input)
-            if permission_agent is not None:
-                permission_message = _codex_permission_message(
-                    permission_agent, hook_input
-                )
-                _emit_additional_context(
-                    "PreToolUse",
-                    f"{permission_message}\n"
-                    "把上一行作为本 Search candidate session 的权限事实，并在最终交接中完整照抄。",
-                    system_message=permission_message,
-                )
-                return 0
-            if subagent_task is not None or _is_subagent_context(hook_input):
+            if _handle_role_pre_tool_use(search_root, hook_input):
                 return 0
         if event_name in {"UserPromptSubmit", "SessionStart", "PreToolUse"}:
             from goal_plus.goal_plus import FileGoalPlusRuntime

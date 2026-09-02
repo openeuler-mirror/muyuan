@@ -25,6 +25,54 @@ from goal_plus.runtime import FileSearchRuntime, format_task_skill_listing
 from goal_plus.workspaces import format_workspace_capacity_notice
 
 
+ToolCallerRole = Literal["main", "candidate", "final_checker", "ordinary"]
+
+CANDIDATE_TOOL_NAMES = frozenset(
+    {
+        "search_get_agent_context",
+        "search_get_global_evidence",
+        "search_reference_open",
+        "search_stage_shared_tool",
+        "search_copy_shared_tool",
+        "search_get_evidence_detail",
+        "search_run_verifier",
+        "search_list_iterations",
+    }
+)
+FINAL_CHECKER_TOOL_NAMES = frozenset(
+    {"goal_plus_status", "goal_plus_submit_final_check"}
+)
+
+
+def require_tool_role(
+    role: ToolCallerRole,
+    tool_name: str,
+    *,
+    caller_agent_session_id: str | None = None,
+    requested_agent_session_ids: list[str] | None = None,
+) -> None:
+    """Enforce model-facing role boundaries identified by a trusted host."""
+
+    if role == "main":
+        allowed = tool_name != "goal_plus_submit_final_check"
+    elif role == "candidate":
+        allowed = tool_name in CANDIDATE_TOOL_NAMES
+    elif role == "final_checker":
+        allowed = tool_name in FINAL_CHECKER_TOOL_NAMES
+    else:
+        allowed = False
+    if not allowed:
+        raise PermissionError(f"GoalPlusRoleDenied: {role} cannot call {tool_name}")
+    if role == "candidate" and (
+        caller_agent_session_id is None
+        or set(requested_agent_session_ids or []) != {caller_agent_session_id}
+    ):
+        raise PermissionError(
+            "GoalPlusSessionMismatch: candidate tools require the caller's own "
+            "agent_session_id"
+        )
+
+
 class SearchTools:
     """JSON-friendly tool layer shared by tests and the MCP server."""
 

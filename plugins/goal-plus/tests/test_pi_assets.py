@@ -586,8 +586,6 @@ def test_pi_extension_registers_role_tools_gate_and_workspace_guard() -> None:
     assert 'role === "final-checker"' in text
     assert "registerPiFinalCheckTool" in text
     assert "最终检查审查员只能进行只读操作" in text
-    assert 'verdict: "interrupted"' in text
-    assert "timed out before submitting a verdict" in text
 
 
 def test_pi_extension_has_gated_progress_ui_preview() -> None:
@@ -761,6 +759,7 @@ def test_pi_extension_has_precise_tool_schemas_and_error_classification() -> Non
     assert '"search_start_agent_session"' not in main_tools
     assert '"search_bind_agent_handle"' not in main_tools
     assert '"search_continue_agent_session"' not in main_tools
+    assert '"goal_plus_submit_final_check"' not in main_tools
     assert '"pi_search_pool_wait_any"' in main_tools
     assert '"search_invalidate_run"' in main_tools
     assert '"pi_search_pool_continue"' in main_tools

@@ -2008,33 +2008,10 @@ function registerPiFinalCheckTool(pi: ExtensionAPI) {
 				JSON.stringify(launch),
 			]);
 			const goalPlusId = typeof launch.goal_plus_id === "string" ? launch.goal_plus_id : activeGoalPlusId;
-			const checkId = typeof launch.check_id === "string" ? launch.check_id : undefined;
-			const goalRevision = typeof launch.goal_revision === "number" ? launch.goal_revision : undefined;
 			const handle = result.code === 0 ? JSON.parse(result.stdout || "{}") : undefined;
-			let statusResult = goalPlusId
+			const statusResult = goalPlusId
 				? await runJsonCli(pi, commandCtx, "goal_plus_status", { goal_plus_id: goalPlusId })
 				: undefined;
-			const status = statusFrom(statusResult?.details);
-			const latestCheck = Array.isArray(status?.final_checks) ? status.final_checks.at(-1) : undefined;
-			const checkerTimedOut = isRecord(handle) && isRecord(handle.metadata) && handle.metadata.timed_out === true;
-			if (
-				goalPlusId && checkId && goalRevision !== undefined &&
-				isRecord(latestCheck) && latestCheck.check_id === checkId && latestCheck.status === "pending"
-			) {
-				await runJsonCli(pi, commandCtx, "goal_plus_submit_final_check", {
-					goal_plus_id: goalPlusId,
-					check_id: checkId,
-					goal_revision: goalRevision,
-					verdict: "interrupted",
-					summary: result.code !== 0
-						? "Pi final checker process failed before submitting a verdict."
-						: checkerTimedOut
-							? "Pi final checker timed out before submitting a verdict."
-							: "Pi final checker exited before submitting a verdict.",
-					checker_metadata: { exit_code: result.code, timed_out: checkerTimedOut },
-				});
-				statusResult = await runJsonCli(pi, commandCtx, "goal_plus_status", { goal_plus_id: goalPlusId });
-			}
 			if (result.code !== 0) {
 				const failure = commandFailure("pi_goal_plus_run_final_check", invocation, result);
 				const details = { ...failure.details, status: statusResult?.details };
@@ -2413,7 +2390,6 @@ export default function (pi: ExtensionAPI) {
 		"goal_plus_link_search_run",
 		"goal_plus_record_search_result",
 		"goal_plus_prepare_final_check",
-		"goal_plus_submit_final_check",
 		"goal_plus_set_status",
 		"goal_plus_gate",
 		"pi_goal_plus_run_work_item",
