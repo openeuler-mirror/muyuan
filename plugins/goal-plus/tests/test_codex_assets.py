@@ -505,69 +505,29 @@ def test_codex_search_reuses_exact_worker_evidence_before_parent_verification() 
     text = (ROOT / ".codex" / "skills" / "search" / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    exclusion_clause = text.split("只有 `single_common_command`", 1)[1].split(
-        "这些具体排除项才支持 `not_applicable`", 1
-    )[0]
-    exclusions = ["single_common_command", *exclusion_clause.split("`")[1::2]]
 
     assert "准确 worker Evidence" in text
     assert "仅在没有匹配 Evidence 时" in text
     assert "apply_cwd" in text
     assert "apply_directory" in text
     assert 'search_run_verifier(hypothesis="主流程完成验证")' not in text
-    assert "shared_tools[*].tool_view" in text
-    assert "Tool View 前不向 candidate 暴露" in text
-    assert "search_copy_shared_tool" in text
-    assert "search_stage_shared_tool" in text
-    assert "toolization_decision" in text
-    assert "repeated_workflow" in text
-    assert "domain_construction_or_probe" in text
-    assert "behavior_or_invariant_checker" in text
-    assert "reproducer_fixture_or_case_generator" in text
-    assert "parser_trace_or_comparator" in text
-    assert "peer_setup_or_feedback_reduction" in text
-    assert "repeated_sequence" not in text
-    assert "domain_probe" not in text
-    assert "parser_or_trace" not in text
-    assert "peer_setup_reduction" not in text
-    assert "测试代码按用途而不是文件名分类" in text
-    assert "测试文件，以及 candidate" in text
-    assert "`test_` 文件名、属于正式测试或验证同一" in text
-    assert "candidate 自己编写并纳入最终交付或主补丁的正式回归测试" in text
-    assert "显式选择的测试及依赖" in text
-    assert "candidate 产品实现" in text
-    assert "冻结 verifier/runner/grader" in text
-    assert "隐藏答案或评分逻辑" in text
-    assert "不得复制、代理或近似重建隐藏反馈" in text
-    assert "revision_allowed=true" in text
-    assert "revision_head.tool_id" in text
-    assert "revision_allowed=false` 时使用 `revision_blocker` 的准确值" in text
-    assert exclusions == [
-        "single_common_command",
-        "logic_free_wrapper",
-        "restricted_artifact",
-        "candidate_private_state",
-        "duplicate_snapshot",
+    for runtime_only_detail in (
+        "shared_dir",
+        "shared_tools",
+        "toolization_decision",
+        "repeated_workflow",
+        "behavior_or_invariant_checker",
         "no_toolizable_material",
-        "existing_family_sufficient",
-        "no_material_tool_delta",
         "draft_not_ready",
-        "max_published_versions_reached",
-    ]
-    assert "capability_extension` 必须新增稳定" in text
-    assert "adoption_fix` 必须有同 family 的真实 copy/adoption 事实" in text
-    assert "contract_change` 必须" in text
-    assert "新增稳定的契约键" in text
-    assert "不能靠改名或改写同义键" in text
-    assert "draft_not_ready` 仅表示具体的安全性" in text
-    assert "runtime 会在 catalog 尚无 family 时拒绝" in text
-    assert "receipt" in text
-    assert "Tool View 只用于发现和初筛" in text
-    assert "不规定复用方式，也不是采用建议" in text
-    assert "复制本身不要求调用原工具" in text
-    assert "先阅读 manifest、入口和源码" in text
-    assert "只读分析或改写源码不要求先运行原工具" in text
-    assert "当前 `adopted_tools` 只证明该快照曾复制进" in text
+        "search_copy_shared_tool",
+        "search_stage_shared_tool",
+    ):
+        assert runtime_only_detail not in text
+
+    packaged = (ROOT / "skills" / "search" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert text == packaged
 
 
 def test_codex_search_uses_open_posthoc_evaluation_as_non_gating_feedback() -> None:

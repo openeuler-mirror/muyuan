@@ -190,10 +190,10 @@ def test_run_verifier_exposes_optional_agent_session_id(tmp_path: Path) -> None:
         "snapshot_hash",
     ]
     copy_description = tools["search_copy_shared_tool"].description
-    assert "供阅读源码或自主复用" in copy_description
-    assert "复制不要求调用原工具" in copy_description
-    assert "只有直接执行、导入或依赖原快照时" in copy_description
-    assert "当前 adopted_tools 只证明快照曾复制进本轮上下文" in copy_description
+    assert "精确 id/hash" in copy_description
+    assert "临时 inbox" in copy_description
+    assert "具体采用契约见 candidate instructions" in copy_description
+    assert "adopted_tools" not in copy_description
     assert tools["search_stage_shared_tool"].parameters["required"] == [
         "agent_session_id",
         "name",
@@ -202,16 +202,16 @@ def test_run_verifier_exposes_optional_agent_session_id(tmp_path: Path) -> None:
         "candidate_relative_source_paths",
     ]
     stage_description = tools["search_stage_shared_tool"].description
-    assert "revision_allowed=true" in stage_description
-    assert "revision_head.tool_id" in stage_description
-    assert "capability_extension 必须" in stage_description
-    assert "adoption_fix 必须有同 family 的真实" in stage_description
-    assert "contract_change 必须" in stage_description
-    assert "不得靠改名或同义键制造增量" in stage_description
-    assert "搜索期间的测试/checker/harness" in stage_description
-    assert "正式回归测试可以 staging" in stage_description
-    assert "candidate 产品实现、冻结" in stage_description
-    assert "共享测试不得复制、代理" in stage_description
+    assert ".tmp/tool-drafts/" in stage_description
+    assert "只执行" in stage_description
+    assert "passing verifier 结算" in stage_description
+    for runtime_only_detail in (
+        "revision_allowed=true",
+        "capability_extension",
+        "adoption_fix",
+        "candidate 产品实现",
+    ):
+        assert runtime_only_detail not in stage_description
     assert tools["search_get_global_evidence"].parameters["required"] == [
         "agent_session_id"
     ]

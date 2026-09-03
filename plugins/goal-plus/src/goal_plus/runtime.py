@@ -5422,9 +5422,11 @@ class FileSearchRuntime:
             share_out_dir.mkdir(parents=True, exist_ok=True)
             instructions.extend(
                 [
-                    f"shared_dir 已启用。可复用的诊断、测试或分析流程先放入 {TOOL_DRAFTS_RELATIVE_PATH}/，再用 search_stage_shared_tool 发布；不要发布 candidate 产品实现、冻结评分逻辑、凭据或构建输出。",
-                    "每次 search_run_verifier 都提交与实际 staging 一致的 toolization_decision；没有可共享内容时给出具体原因。",
-                    "通过 Global Evidence 发现共享工具；需要源码时用 search_copy_shared_tool 复制准确快照到本地，检查后自主决定是否复用。共享工具及其 View 不改变正式 Evidence、排名或 promotion。",
+                    "shared_dir 发布方规则：每次 verifier 前回顾尚未发布的命令、临时代码和测试材料；凡能在 peer workspace 独立运行并降低同一 run 内诊断、验证或复现成本的 checker、fixture、probe、parser 或多步 workflow，默认提炼为最小工具。按用途而非文件名分类；不得发布 candidate 产品实现、冻结 verifier/runner/grader、隐藏答案或评分逻辑、日志、原始数据、凭据或构建输出。",
+                    f"将显式源文件及依赖放在 {TOOL_DRAFTS_RELATIVE_PATH}/，再用 search_stage_shared_tool 生成 {SHARE_OUT_RELATIVE_PATH}/ staging。首次发布使用 publication_intent=new；更新 family 时只使用 tool_family_catalog 返回的合法 revision_head 和 revision_blocker。capability_extension/contract_change 需要新增稳定语义键，adoption_fix 需要真实采用事实和具体缺陷，不得用改名或同义键制造增量。",
+                    "not_applicable 使用工具 schema 中最准确的 exclusion：no_toolizable_material 表示累计回顾后没有工具；existing_family_sufficient 表示现有 family 已覆盖需求；no_material_tool_delta 表示已有 family 没有实质 revision；draft_not_ready 只表示具体的安全、完整、可移植或 peer 可运行性阻塞。",
+                    "每次归属于当前 worker 的 process verifier 都提交与实际 staging 一致的 toolization_decision。runtime 以 staging inventory 和 publication settlement 为权威；decision 缺失或不匹配只生成 advisory，不改变 score、disposition、selection 或 promotion。",
+                    "shared_dir 采用方规则：通过 Global Evidence 的 Tool View 发现工具；Tool View 不代表推荐或源码行为。可能相关时用 search_copy_shared_tool 和准确的 tool_id、snapshot_hash 复制快照，检查 manifest 和源码后自主决定是否采用；receipt 只表示复制，不表示采用，也不改变 verifier 结算或硬分。",
                 ]
             )
         instructions.extend(proposal.instructions)
