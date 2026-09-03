@@ -730,7 +730,7 @@ def test_pi_extension_has_precise_tool_schemas_and_error_classification() -> Non
     assert "catalog 尚无 family 时拒绝" in text
     assert "toolization_decision：staged 至少包含一个当前 capability-oriented signal" in text
     assert "toolization_review_missing、toolization_stage_missing 或 toolization_decision_mismatch" in text
-    assert "初始创建并实际并行工作的候选 Agent 数量" in text
+    assert "初始 candidate 数和实时活跃 candidate 上限 K" in text
     assert "标准流程令 requested_k 等于 max_parallel" in text
     freeze_schema = text.split("search_freeze_spec: Type.Object", 1)[1].split(
         "search_create: Type.Object", 1
