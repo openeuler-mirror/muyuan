@@ -154,6 +154,23 @@ def test_project_hooks_require_current_trusted_hashes(tmp_path: Path) -> None:
     )
 
 
+def test_project_hooks_require_interrupt_for_native_pause(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    codex_home = tmp_path / "codex-home"
+    payload = _make_project_assets(project_root)
+    _write_trusted_config(codex_home, project_root, payload)
+    del payload["hooks"]["Interrupt"]
+    (project_root / ".codex" / "hooks.json").write_text(
+        json.dumps(payload), encoding="utf-8",
+    )
+    result = codex_doctor._check_hooks(
+        codex_home=codex_home, project_root=project_root, installation=None,
+    )
+    assert result.status == "fail"
+    assert {"event": "Interrupt", "reason": "missing event"} in result.details["failures"]
+
+
 def test_collect_report_accepts_complete_project_local_setup(
     tmp_path: Path,
     monkeypatch,
@@ -175,7 +192,7 @@ def test_collect_report_accepts_complete_project_local_setup(
     ) -> subprocess.CompletedProcess[str]:
         del codex_home, timeout
         if argv[-1] == "--version" and argv[0].endswith("codex"):
-            stdout = "codex-cli 0.148.0\n"
+            stdout = "codex-cli 0.151.0\n"
         elif argv[-1] == "--version" and argv[0].endswith("goal-plus"):
             stdout = "goal-plus 0.1.0\n"
         elif argv[-2:] == ["plugin", "list"]:

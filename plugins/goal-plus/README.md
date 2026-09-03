@@ -73,26 +73,27 @@ $goal-plus mode=autonomous Deeply optimize the kernel.
 $goal-plus max_parallel=2 promotion_mode=artifact_only Optimize this read-only template.
 ```
 
-Edit, resume, and independent-final-check commands use the same host-specific
-prefix:
+Edit and independent-final-check commands use the same host-specific prefix:
 
 ```text
 Pi:    /goal-plus edit <full revised goal>
 Codex: $goal-plus edit <full revised goal>
-Pi:    /goal-plus resume
-Codex: $goal-plus resume
 Pi:    /goal-plus-with-final-check <goal>
 Codex: $goal-plus-with-final-check <goal>
 ```
 
-These exact host commands are the only Goal Plus authority boundary. Natural
-language requests, automatic skill loading, direct MCP calls, and the generic
-Pi CLI facade cannot create, edit, or resume a Goal Plus record. The legacy
+There is no Goal Plus resume command. Resume the original native host session
+with `codex resume <session-id>` / `codex exec resume <session-id> <prompt>` or
+Pi `--session` / `--continue`; Goal Plus then reconciles the persisted task with
+that exact session. See [Native Session Resume](docs/resume.md).
+
+The exact Goal Plus host commands above are the only create/edit authority
+boundary. Natural-language requests, automatic skill loading, direct MCP calls,
+and the generic Pi CLI facade cannot create or edit a Goal Plus record. The legacy
 `goal_plus_create` and `goal_plus_update_goal` MCP names remain as deny-only
 tombstones so cached clients receive an explicit `GoalPlusEntrypointRequired`
-error without mutating `.gp` state. A persisted active record is not
-automatically authorized in a later turn; use the exact host-specific
-`resume` command.
+error without mutating `.gp` state. Native resume never creates or revises a
+Goal Plus task; `$goal-plus edit` or `/goal-plus edit` remains required for that.
 
 Leading `key=value` command configuration is parsed and persisted separately
 from the natural-language goal. The first non-config token starts the goal.
@@ -113,7 +114,7 @@ of `raw_goal`, not as scheduler state.
 | Host | Integration assets | Entry | Search worker path |
 | --- | --- | --- | --- |
 | Pi | installed Pi package | `/goal-plus` or `pi -p "/goal-plus ..."` | durable Pi RPC pool; see [Pi](docs/pi.md) |
-| Codex | installed plugin | `$goal-plus` skill prompt | fixed parallel loops with native same-worker continuation; Codex 0.144.1+ hooks cover `UserPromptSubmit`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
+| Codex | installed plugin | `$goal-plus` skill prompt | fixed parallel loops with native same-worker continuation; Codex 0.151.0+ hooks include `UserPromptSubmit`, `Interrupt`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
 
 Start an installed Codex plugin from the workspace you want to change:
 

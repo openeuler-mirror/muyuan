@@ -84,25 +84,30 @@ GOAL_PLUS_UI_PREVIEW=active \
 /goal-plus mode=autonomous Deeply optimize the kernel.
 ```
 
-`/goal-plus edit`、`/goal-plus resume` 和 `/goal-plus-with-final-check` 与 Codex 使用同一套 goal
-revision 语义。required final check 由独立、只读的 Pi RPC reviewer 执行。
+`/goal-plus edit` 和 `/goal-plus-with-final-check` 与 Codex 使用同一套 goal revision 语义。
+required final check 由独立、只读的 Pi RPC reviewer 执行。
 
-这些大小写精确的 slash command 是唯一入口。自然语言请求、skill/prompt 自动加载、直接 MCP
-调用和通用 `goal-plus-pi-tool` 不能创建、编辑或恢复 Goal Plus。extension 通过未注册为模型 tool 的
+这些大小写精确的 slash command 是唯一创建/编辑入口。自然语言请求、skill/prompt 自动加载、
+直接 MCP 调用和通用 `goal-plus-pi-tool` 不能创建或编辑 Goal Plus。extension 通过未注册为模型 tool 的
 host-command control path 调用 runtime，并为每次调用签发 120 秒内有效、原子消费的 one-time
 capability；只有 `--host-entrypoint` 标志而没有该 capability 仍会被拒绝。这个一次性 capability
 只保护单次 host-control 调用，不是模型 turn 或 Goal 的授权期限。`goal_plus_create` 和
 `goal_plus_update_goal` 只保留为 deny-only tombstone。host-control 调用成功后，精确 slash command
-会把当前原生 Pi session 绑定到 active Goal Plus 记录；同一 session 内的普通 follow-up、用户中止、
-临时 provider error 和自动重试都沿用该授权。Pi 进程/session 重启或切换后，内存中的授权绑定消失；
-即使持久化状态中仍有 active ID，也必须显式使用 `/goal-plus resume` 绑定新 session。
+会把当前原生 Pi session 绑定到 active Goal Plus 记录。同一 session 内的普通 follow-up、临时
+provider error 和自动重试会沿用该绑定；用户 abort 会把它标记为 paused。
+
+Goal Plus 不提供 `/goal-plus resume`。恢复使用 Pi 原生 `--session <id>`、`--continue` 或交互式
+`--resume`。只有与持久化 `active_session.session_id` 精确相同的 native session 才能继续；不同
+session 或 `--fork` 不继承。完整语义见[原生 Session Resume](resume.md)。
 
 ## Pi 与 Codex 的差异
 
 Pi 使用 extension event，而不是项目 hook 文件。extension 只会在 interactive、RPC、print 和 JSON
-模式解析到精确 slash command 后，在模型运行前创建或授权 Goal Plus，保存 active ID，并绑定当前
-原生 session；后续每个 agent turn 都会注入隐藏 context。普通 input 不会自行创建、编辑、恢复或
-授权记录，但会沿用当前 session 已有的绑定。SessionStart 不会根据持久化 active ID 自动授权；
+模式解析到精确 slash command 后，在模型运行前创建或编辑 Goal Plus，保存 active ID，并绑定当前
+原生 session；后续每个 agent turn 都会注入隐藏 context。普通 input 不会自行创建或编辑记录，但在
+精确同一 native session 中会作为权威用户输入继续 unfinished Goal。`session_start` 会核对持久化
+绑定：attached 的交互式 promptless resume 可直接续跑，paused/needs-user 会询问。headless
+恢复必须提供普通用户 prompt；没有 prompt 时不发起模型 turn。
 未绑定 session 的 Goal Plus/Search 变更会被 tool gate 拒绝。它提供原生 turn-level stop gate，
 但不是 host process 级 Stop hook。
 
@@ -133,7 +138,7 @@ main turn 结束时，仍为 active 的 Goal Plus record 会携带完整 raw goa
 继续执行。Pi 只有在 agent 写入终态后才停止；worker watchdog 到期只是一次 dispatch event，
 不代表 goal 完成。
 
-进入终态时，Pi extension 会在 `agent_end` 后静默通过只读 monitor 读取持久化结果，
+进入终态时，Pi extension 会在 `agent_settled` 后静默通过只读 monitor 读取持久化结果，
 再写入唯一一条可展开的 Goal Plus 完成卡。模型不需要为了最终展示再次调用 monitor；
 最终回复只保留一句交接语，避免自然语言结果、可见 tool JSON 和完成卡三重重复。
 默认视图只保留四类高价值信息：终态与整个目标耗时、选中结果及相对基线变化、

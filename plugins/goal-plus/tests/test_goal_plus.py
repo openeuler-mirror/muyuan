@@ -185,6 +185,156 @@ def test_host_command_invocation_rejects_wrong_host_prefix() -> None:
         )
 
 
+def test_host_command_invocation_rejects_removed_resume_action() -> None:
+    with pytest.raises(ValidationError):
+        GoalPlusHostCommandInvocation(
+            host="codex",
+            transport="codex_user_prompt_submit",
+            command="$goal-plus",
+            action="resume",
+            session_id="session-test",
+            invocation_id="codex:test:resume",
+            raw_input_sha256="0" * 64,
+            invoked_at="2026-08-28T00:00:00Z",
+        )
+
+
+def test_native_session_continuation_state_machine(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    record = runtime.start_from_host_command(
+        "Improve the README examples",
+        invocation=_codex_invocation("codex:test:session-state"),
+    )
+    runtime.activate_session(
+        record.goal_plus_id,
+        {"host": "codex", "session_id": "session-test"},
+    )
+
+    codex_start = runtime.handle_host_session_event(
+        record.goal_plus_id,
+        host="codex",
+        session_id="session-test",
+        event="session_start",
+        delivery="next_user_turn",
+        interaction="interactive",
+    )
+    assert codex_start.decision == "wait_for_user"
+    assert codex_start.reason == "host_requires_user_turn"
+
+    interrupted = runtime.handle_host_session_event(
+        record.goal_plus_id,
+        host="codex",
+        session_id="session-test",
+        event="interrupt",
+        delivery="next_user_turn",
+        interaction="interactive",
+    )
+    assert interrupted.session_state == "paused"
+    assert interrupted.decision == "stop"
+    assert runtime.status(record.goal_plus_id).active_session.state == "paused"
+
+    resumed_by_user = runtime.handle_host_session_event(
+        record.goal_plus_id,
+        host="codex",
+        session_id="session-test",
+        event="user_turn",
+        delivery="next_user_turn",
+        interaction="interactive",
+    )
+    assert resumed_by_user.decision == "continue_after_user"
+    assert resumed_by_user.session_state == "attached"
+    assert runtime.status(record.goal_plus_id).active_session.state == "attached"
+
+    pi_auto = runtime.handle_host_session_event(
+        record.goal_plus_id,
+        host="codex",
+        session_id="session-test",
+        event="session_start",
+        delivery="auto",
+        interaction="headless",
+    )
+    assert pi_auto.decision == "continue_now"
+
+    mismatch = runtime.handle_host_session_event(
+        record.goal_plus_id,
+        host="codex",
+        session_id="session-other",
+        event="session_start",
+        delivery="auto",
+        interaction="headless",
+    )
+    assert mismatch.decision == "stop"
+    assert mismatch.reason == "session_mismatch"
+
+
+def test_paused_headless_session_fails_closed(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    record = runtime.start_from_host_command(
+        "Improve the README examples",
+        invocation=_codex_invocation("codex:test:paused-headless"),
+    )
+    runtime.activate_session(
+        record.goal_plus_id,
+        {"host": "codex", "session_id": "session-test", "state": "paused"},
+    )
+
+    decision = runtime.handle_host_session_event(
+        record.goal_plus_id,
+        host="codex",
+        session_id="session-test",
+        event="session_start",
+        delivery="auto",
+        interaction="headless",
+    )
+
+    assert decision.decision == "stop"
+    assert decision.reason == "paused_headless"
+
+
+@pytest.mark.parametrize("host", ["codex", "pi-rpc"])
+@pytest.mark.parametrize(
+    "state,status,event,interaction,decision",
+    [
+        ("attached", "active", "session_start", "interactive", "continue_now"),
+        ("paused", "active", "session_start", "interactive", "ask_user"),
+        ("paused", "active", "session_start", "headless", "stop"),
+        ("attached", "needs_user", "session_start", "interactive", "ask_user"),
+        ("attached", "needs_user", "session_start", "headless", "stop"),
+        ("paused", "active", "user_turn", "headless", "continue_after_user"),
+        ("paused", "active", "continue_confirmed", "interactive", "continue_now"),
+        ("detached", "active", "user_turn", "interactive", "stop"),
+        ("stale", "active", "continue_confirmed", "interactive", "stop"),
+        ("attached", "complete", "user_turn", "interactive", "stop"),
+        ("attached", "blocked", "session_start", "interactive", "stop"),
+        ("attached", "abandoned", "continue_confirmed", "interactive", "stop"),
+    ],
+)
+def test_native_continuation_host_parity(
+    tmp_path, host, state, status, event, interaction, decision,
+) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".gp")
+    record = runtime.create_goal(raw_goal="Read the original README")
+    record = runtime.activate_session(
+        record.goal_plus_id, {"host": host, "session_id": "native-id", "state": state},
+    )
+    # Seed domain preconditions, independent of status-transition prerequisites.
+    record = record.model_copy(update={"status": status})
+    runtime._write_record(record)
+    for _ in range(2):
+        outcome = runtime.handle_host_session_event(
+            record.goal_plus_id, host=host, session_id="native-id", event=event,
+            delivery="auto", interaction=interaction,
+        )
+        assert outcome.decision == decision
+        after = runtime.status(record.goal_plus_id)
+        assert after.raw_goal == record.raw_goal
+        assert after.goal_revision == record.goal_revision
+        assert after.host_command_invocations == record.host_command_invocations
+        assert after.status == status
+        if decision == "stop":
+            assert after.active_session == record.active_session
+
+
 def test_create_goal_normalizes_explicit_exploration_mode(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
 

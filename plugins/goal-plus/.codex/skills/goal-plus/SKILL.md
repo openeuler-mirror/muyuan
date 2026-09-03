@@ -11,8 +11,8 @@ candidate 边界、workspace、verifier、promotion 和 feature gate 由 runtime
 
 从 Codex host 已绑定的 session 读取 active `goal_plus_id`。通过当前 registry 中的原生
 `goal_plus_*` 和 `search_*` MCP tools 操作状态；不要通过 shell 或手写 client 调用 server，
-也不要用 MCP resource discovery 判断 tool 是否存在。缺少授权时，请用户使用 `$goal-plus`、
-`$goal-plus edit` 或 `$goal-plus resume`。
+也不要用 MCP resource discovery 判断 tool 是否存在。新建或修订目标使用 `$goal-plus` 或
+`$goal-plus edit`；中断后通过 `codex resume <session-id>` 恢复原生 session，再发送消息继续。
 
 ## 主流程
 

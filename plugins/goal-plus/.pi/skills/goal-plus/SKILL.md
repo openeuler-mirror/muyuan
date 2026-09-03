@@ -1,6 +1,6 @@
 ---
 name: goal-plus
-description: 仅供 Goal Plus Main Agent 处理 Pi 的 /goal-plus、/goal-plus edit、/goal-plus resume 和 /goal-plus-with-final-check；不适用于 Search candidate worker。
+description: 仅供 Goal Plus Main Agent 处理 Pi 的 /goal-plus、/goal-plus edit 和 /goal-plus-with-final-check；不适用于 Search candidate worker。
 ---
 
 # Pi 的 Goal Plus
@@ -12,6 +12,7 @@ workspace、verifier、promotion 和 feature gate 由 runtime 强制执行；以
 当前 Pi session 必须已由精确 slash command 绑定 active `goal_plus_id`；skill 和兼容 prompt 不
 创建、编辑或恢复记录。入口保留当前 Pi model 与 thinking 档位，并持久化 typed
 `command_config`。显式配置必须落实，只有缺省项由 Main 决定。
+中断后通过 Pi 原生 `--session`、`--continue` 或 `--resume` 恢复 session，再发送消息继续。
 
 ## 主流程
 

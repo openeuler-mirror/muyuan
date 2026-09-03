@@ -65,16 +65,17 @@ def test_codex_mcp_and_hook_assets_register_runtime_entrypoints() -> None:
     assert set(hooks["hooks"]) == {
         "UserPromptSubmit",
         "SessionStart",
+        "Interrupt",
         "PreToolUse",
         "PostToolUse",
         "Stop",
         "SubagentStop",
     }
-    for handlers in hooks["hooks"].values():
+    for event, handlers in hooks["hooks"].items():
         handler = handlers[0]["hooks"][0]
         assert handler["type"] == "command"
         assert handler["command"] == "goal-plus --goal-plus-host-hook"
-        assert handler["timeout"] == 30
+        assert handler["timeout"] == (3 if event == "Interrupt" else 30)
 
 def test_codex_plugin_default_prompts_use_goal_plus_skill() -> None:
     manifest = json.loads(

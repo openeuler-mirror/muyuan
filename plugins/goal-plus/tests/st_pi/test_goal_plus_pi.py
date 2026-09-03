@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shlex
 import shutil
 import subprocess
@@ -265,6 +266,175 @@ def test_goal_plus_exact_command_can_start_and_complete_goal_plus(
     assert record["triage"]["recommended_phase"] == "goal"
     assert record["work_items"] == []
     _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
+
+
+def _run_native_tui_resume(command: list[str], search_root: Path, log_path: Path) -> None:
+    if os.name != "posix":
+        pytest.skip("native TUI resume ST requires a POSIX PTY")
+    import fcntl
+    import pty
+    import select
+    import struct
+    import termios
+
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 35, 120, 0, 0))
+    process = subprocess.Popen(
+        command, cwd=ROOT, env={**_run_env(search_root), "TERM": "xterm-256color"},
+        stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
+    )
+    os.close(slave)
+    try:
+        with log_path.open("wb") as log:
+            deadline = time.monotonic() + int(os.environ.get("ST_PI_TIMEOUT", "300"))
+            while time.monotonic() < deadline:
+                assert process.poll() is None, f"Pi TUI exited; see {log_path}"
+                if select.select([master], [], [], 0.1)[0]:
+                    log.write(os.read(master, 65536))
+                    log.flush()
+                if _goal_record(search_root)["status"] == "complete":
+                    return
+            pytest.fail(f"Pi TUI did not complete the resumed Goal; see {log_path}")
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=10)
+        os.close(master)
+
+
+@pytest.mark.st_pi
+@pytest.mark.parametrize(
+    "interruption,resume_mode",
+    [("process_loss", "json"), ("user_abort", "json"),
+     ("process_loss", "tui"), ("process_loss", "tui_prompt")],
+)
+def test_goal_plus_native_session_resume(
+    st_pi_run_root: Path,
+    interruption: str,
+    resume_mode: str,
+) -> None:
+    search_root = st_pi_run_root / ".gp"
+    session_dir = st_pi_run_root / "sessions"
+    session_dir.mkdir()
+    session_id = "st-pi-native-resume"
+    probe = st_pi_run_root / "resume-probe.txt"
+    log_path = st_pi_run_root / "initial.log"
+    prompt = (
+        f"/goal-plus 在 300 秒内只读验证 {probe} 的完整 trimmed content 是 native-resume-ok。"
+        "不要修改文件，不要进入 Search 或启动 worker。先记录高置信 Goal Mode triage。"
+        "测试控制器会在宿主进程重启后创建该文件；文件出现前保持 active，不要记录终态或"
+        "needs_user。原生 session 恢复后，读取文件并用具体证据完成原始目标审计，调用 "
+        "goal_plus_set_status(status=complete)。"
+    )
+    command = _pi_base_command(session_dir, session_id)
+    if interruption == "user_abort":
+        command.extend(["--mode", "rpc"])
+    else:
+        command.extend(["-p", "--mode", "json", prompt])
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=_run_env(search_root),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if interruption == "user_abort" else subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            if interruption == "user_abort":
+                process.stdin.write(json.dumps({"type": "prompt", "message": prompt}) + "\n")
+                process.stdin.flush()
+            deadline = time.monotonic() + int(os.environ.get("ST_PI_TIMEOUT", "300"))
+            while time.monotonic() < deadline:
+                assert process.poll() is None, log_path.read_text(encoding="utf-8")[-4000:]
+                goal_files = list((search_root / "goal-plus").glob("gp_*/goal.json"))
+                if goal_files:
+                    record = _goal_record(search_root)
+                    if record.get("triage") and list(session_dir.glob("*.jsonl")):
+                        break
+                time.sleep(0.1)
+            else:
+                pytest.fail(f"Pi did not persist triage before timeout; see {log_path}")
+            if interruption == "user_abort":
+                process.stdin.write(json.dumps({"type": "abort"}) + "\n")
+                process.stdin.flush()
+                pause_deadline = time.monotonic() + 30
+                while time.monotonic() < pause_deadline:
+                    if _goal_record(search_root)["active_session"]["state"] == "paused":
+                        break
+                    assert process.poll() is None, log_path
+                    time.sleep(0.1)
+                else:
+                    pytest.fail(f"Pi abort did not pause the binding; see {log_path}")
+        finally:
+            if process.poll() is None:
+                # Stop only this test-owned process tree after durable evidence.
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=10)
+
+    before = _goal_record(search_root)
+    assert before["status"] == "active"
+    assert before["active_session"]["session_id"] == session_id
+    expected_state = "paused" if interruption == "user_abort" else "attached"
+    assert before["active_session"]["state"] == expected_state
+    resume_command = _pi_base_command(session_dir, session_id)
+    resume_command[resume_command.index("--session-id")] = "--session"
+    print_resume_command = [*resume_command, "-p", "--mode", "json"]
+
+    # Print mode without a user prompt restores the session but must not race
+    # a fire-and-forget model turn against CLI shutdown.
+    empty = subprocess.run(
+        print_resume_command,
+        cwd=ROOT,
+        env=_run_env(search_root),
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert empty.returncode == 0, empty.stderr[-3000:]
+    assert '"type":"agent_start"' not in empty.stdout
+    assert _goal_record(search_root)["status"] == "active"
+    assert _goal_record(search_root)["active_session"]["state"] == expected_state
+
+    probe.write_text("native-resume-ok\n", encoding="utf-8")
+    continuation = "Continue the active Goal Plus task in this same native session."
+    if resume_mode.startswith("tui"):
+        _run_native_tui_resume(
+            [*resume_command, *([continuation] if resume_mode == "tui_prompt" else [])],
+            search_root, st_pi_run_root / "resumed.log",
+        )
+    else:
+        resumed = subprocess.run(
+            [*print_resume_command, continuation],
+            cwd=ROOT,
+            env=_run_env(search_root),
+            text=True,
+            capture_output=True,
+            timeout=int(os.environ.get("ST_PI_TIMEOUT", "300")),
+            check=False,
+        )
+        (st_pi_run_root / "resumed.log").write_text(
+            resumed.stdout + resumed.stderr, encoding="utf-8"
+        )
+        assert resumed.returncode == 0, resumed.stderr[-3000:] or resumed.stdout[-3000:]
+    after = _goal_record(search_root)
+    assert after["status"] == "complete"
+    assert after["goal_plus_id"] == before["goal_plus_id"]
+    assert after["goal_revision"] == before["goal_revision"]
+    assert after["host_command_invocations"] == before["host_command_invocations"]
+    assert after["active_session"]["session_id"] == session_id
+    decisions = [
+        event["payload"]
+        for event in _goal_events(search_root, after["goal_plus_id"])
+        if event["event_type"] == "session_continuation_decided"
+    ]
+    expected_decision = "continue_now" if resume_mode == "tui" else "continue_after_user"
+    assert any(item["decision"] == expected_decision for item in decisions)
+    if resume_mode == "tui_prompt":
+        assert not any(item["decision"] == "continue_now" for item in decisions)
 
 
 @pytest.mark.st_pi

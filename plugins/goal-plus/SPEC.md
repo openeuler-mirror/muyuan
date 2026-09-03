@@ -81,22 +81,25 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 
 ## 授权边界
 
-只有以下精确 host command 可以创建、编辑或恢复 Goal Plus：
+只有以下精确 host command 可以创建或编辑 Goal Plus：
 
-- Codex：`$goal-plus ...`、`$goal-plus edit ...`、`$goal-plus resume`
-- Pi：`/goal-plus ...`、`/goal-plus edit ...`、`/goal-plus resume`
+- Codex：`$goal-plus ...`、`$goal-plus edit ...`
+- Pi：`/goal-plus ...`、`/goal-plus edit ...`
 - 独立最终检查：`$goal-plus-with-final-check ...` 或 `/goal-plus-with-final-check ...`
 
-自然语言提及、skill 自动发现、SessionStart、普通 child、candidate worker、直接 MCP 调用和
-generic CLI 都不构成授权。Search bootstrap、Main 后续操作、candidate 操作和终态 report
+Goal Plus 不定义 `resume` command。恢复由 Codex/Pi 原生 session 命令完成，再由共享
+continuation 状态机核对持久化 `active_session`。自然语言提及、skill 自动发现、普通 child、
+candidate worker、直接 MCP 调用和 generic CLI 都不能创建或编辑 Goal Plus。Search bootstrap、
+Main 后续操作、candidate 操作和终态 report
 分别使用其可验证的归属依据；run 完成链接后，Main 对该 run 的操作必须与当前 Goal 的持久化
 链接一致。同一 turn 内的 Codex `SessionStart(source=compact)` 和追加 `UserPromptSubmit` 只保留
 已有绑定，不创建授权；新 turn 的普通 `UserPromptSubmit` 和其他 SessionStart source 不保留
 绑定。拒绝时不得改变领域状态。
 
-“不构成授权”表示这些入口不能创建或重新绑定 session；普通消息也不会撤销由精确 host
-command 建立、仍处于 active 的同一原生 session 绑定。只有 session identity 变化、显式
-lifecycle 结束或终态结算才会使该绑定失效；新 session 必须使用精确的 resume command。
+同一原生 session 中，普通用户消息优先作为下一轮输入，并继续 unfinished Goal。用户中断会把
+绑定标记为 paused；交互式恢复必须由用户确认或提交下一条普通消息，headless promptless 恢复则
+fail closed。不同 session、fork、detached 绑定或终态 Goal 都不会继承 continuation 权限。
+完整状态转换见 [`docs/resume.md`](docs/resume.md)。
 
 ## Goal 生命周期
 

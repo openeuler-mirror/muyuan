@@ -396,7 +396,7 @@ def test_user_prompt_submit_uses_nested_thread_cwd_for_default_root(
     assert not (repository / ".gp").exists()
 
 
-def test_user_prompt_submit_resume_finds_existing_parent_root(tmp_path: Path) -> None:
+def test_native_session_followup_finds_existing_parent_root(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     workspace = repository / "examples" / "circle-packing" / "workspace"
     workspace.mkdir(parents=True)
@@ -422,7 +422,7 @@ def test_user_prompt_submit_resume_finds_existing_parent_root(tmp_path: Path) ->
             {
                 "hook_event_name": "UserPromptSubmit",
                 "session_id": "session-parent",
-                "prompt": "$goal-plus resume",
+                "prompt": "Continue the current Goal Plus work.",
             }
         ),
         text=True,
@@ -434,8 +434,9 @@ def test_user_prompt_submit_resume_finds_existing_parent_root(tmp_path: Path) ->
     context = _additional_context(result, "UserPromptSubmit")
     assert record.goal_plus_id in context
     resumed = runtime.status(record.goal_plus_id)
-    assert resumed.entrypoint_status == "host_verified"
-    assert resumed.host_command_invocations[-1].action == "resume"
+    assert resumed.active_session is not None
+    assert resumed.active_session.state == "attached"
+    assert resumed.host_command_invocations == []
     assert not (workspace / ".gp").exists()
 
 
@@ -638,7 +639,7 @@ def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> No
         search_root,
         {"hook_event_name": "SessionStart", "session_id": "session-codex"},
     )
-    assert restored.stdout == ""
+    assert goal_id in _additional_context(restored, "SessionStart")
     preserved = FileGoalPlusRuntime(search_root).status(goal_id)
     assert preserved.active_session is not None
     assert preserved.active_session.state == "attached"
@@ -674,7 +675,7 @@ def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> No
     assert initial_context != edited_context
 
 
-def test_interrupted_session_explicit_resume_keeps_same_revision(tmp_path: Path) -> None:
+def test_native_codex_resume_continues_on_next_user_turn(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     _run_hook(
         tmp_path,
@@ -688,16 +689,42 @@ def test_interrupted_session_explicit_resume_keeps_same_revision(tmp_path: Path)
     record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
     goal_id = record_path.parent.name
 
+    interrupted = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "Interrupt",
+            "session_id": "session-codex",
+        },
+    )
+    assert interrupted.stdout == ""
+    paused = FileGoalPlusRuntime(search_root).status(goal_id)
+    assert paused.active_session is not None
+    assert paused.active_session.state == "paused"
+
     resumed = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "SessionStart",
+            "session_id": "session-codex",
+        },
+    )
+    assert goal_id in _additional_context(resumed, "SessionStart")
+    still_paused = FileGoalPlusRuntime(search_root).status(goal_id)
+    assert still_paused.active_session is not None
+    assert still_paused.active_session.state == "paused"
+
+    continued = _run_hook(
         tmp_path,
         search_root,
         {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
-            "prompt": "$goal-plus resume",
+            "prompt": "Continue from where we stopped.",
         },
     )
-    context = _additional_context(resumed, "UserPromptSubmit")
+    context = _additional_context(continued, "UserPromptSubmit")
     record = FileGoalPlusRuntime(search_root).status(goal_id)
     assert record.goal_revision == 1
     assert record.raw_goal == (
@@ -705,6 +732,9 @@ def test_interrupted_session_explicit_resume_keeps_same_revision(tmp_path: Path)
         + EXPLORATION_MODE_LINES["autonomous"]
     )
     assert goal_id in context
+    assert record.active_session is not None
+    assert record.active_session.state == "attached"
+    assert [item.action for item in record.host_command_invocations] == ["start"]
 
 
 def test_codex_interrupted_final_checker_is_recorded_and_can_stop(tmp_path: Path) -> None:
@@ -894,7 +924,7 @@ def test_session_start_preserves_same_session_without_authorizing_new_session(
         hook_input["source"] = source
     result = _run_hook(tmp_path, search_root, hook_input)
 
-    assert result.stdout == ""
+    assert record.goal_plus_id in _additional_context(result, "SessionStart")
     updated = runtime.status(record.goal_plus_id)
     assert updated.active_session is not None
     assert updated.active_session.state == "attached"
@@ -1654,7 +1684,7 @@ def test_ordinary_prompt_preserves_same_session_authorization(
     if ordinary_turn_id is not None:
         ordinary_input["turn_id"] = ordinary_turn_id
     ordinary = _run_hook(tmp_path, search_root, ordinary_input)
-    assert ordinary.stdout == ""
+    assert goal_id in _additional_context(ordinary, "UserPromptSubmit")
     record = FileGoalPlusRuntime(search_root).status(goal_id)
     assert record.active_session is not None
     assert record.active_session.state == "attached"
@@ -1725,7 +1755,7 @@ def test_ordinary_prompt_does_not_reactivate_detached_session(tmp_path: Path) ->
         "hookSpecificOutput"
     ]["permissionDecisionReason"]
 
-    resumed = _run_hook(
+    rejected = _run_hook(
         tmp_path,
         search_root,
         {
@@ -1734,11 +1764,12 @@ def test_ordinary_prompt_does_not_reactivate_detached_session(tmp_path: Path) ->
             "prompt": "$goal-plus resume",
         },
     )
-    assert goal_id in _additional_context(resumed, "UserPromptSubmit")
-    reattached = runtime.status(goal_id)
-    assert reattached.active_session is not None
-    assert reattached.active_session.state == "attached"
-    assert reattached.host_command_invocations[-1].action == "resume"
+    payload = json.loads(rejected.stdout)
+    assert payload["decision"] == "block"
+    assert "没有 `$goal-plus resume` 子命令" in payload["reason"]
+    still_detached = runtime.status(goal_id)
+    assert still_detached.active_session is not None
+    assert still_detached.active_session.state == "detached"
 
 
 def test_pre_tool_use_ignores_unrelated_tool(tmp_path: Path) -> None:

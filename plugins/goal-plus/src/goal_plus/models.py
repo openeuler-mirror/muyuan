@@ -907,10 +907,25 @@ GoalPlusRecommendedPhase = Literal["goal", "spec_discovery", "search"]
 GoalPlusDiscoveryOrigin = Literal["initial", "in_progress"]
 GoalPlusGateEvent = Literal["stop", "subagent_stop", "pre_tool_use", "user_prompt_submit"]
 GoalPlusGateDecision = Literal["allow", "block"]
-GoalPlusSessionState = Literal["attached", "stale", "detached"]
+GoalPlusSessionState = Literal["attached", "paused", "stale", "detached"]
 GoalPlusEntrypointStatus = Literal["host_verified", "legacy_unverified"]
 GoalPlusEntrypointHost = Literal["codex", "pi"]
-GoalPlusEntrypointAction = Literal["start", "edit", "resume"]
+GoalPlusEntrypointAction = Literal["start", "edit"]
+GoalPlusHostSessionEvent = Literal[
+    "session_start",
+    "user_turn",
+    "interrupt",
+    "continue_confirmed",
+]
+GoalPlusHostSessionDelivery = Literal["auto", "next_user_turn"]
+GoalPlusHostSessionInteraction = Literal["interactive", "headless"]
+GoalPlusHostSessionDecisionKind = Literal[
+    "continue_now",
+    "continue_after_user",
+    "ask_user",
+    "wait_for_user",
+    "stop",
+]
 GoalPlusWorkStatus = Literal[
     "launching",
     "active",
@@ -1144,6 +1159,15 @@ class GoalPlusActiveSession(SearchModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GoalPlusHostSessionDecision(SearchModel):
+    goal_plus_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    record_status: GoalPlusStatus
+    session_state: GoalPlusSessionState | Literal["terminal", "unavailable"]
+    decision: GoalPlusHostSessionDecisionKind
+    reason: str = Field(min_length=1)
+
+
 class GoalPlusHostCommandInvocation(SearchModel):
     """Immutable evidence that a supported host command authorized one action."""
 
@@ -1181,13 +1205,11 @@ class GoalPlusHostCommandInvocation(SearchModel):
             raise ValueError(
                 f"Goal Plus host {self.host} requires the {expected_prefix} command prefix"
             )
-        if self.action in {"edit", "resume"} and self.command not in {
+        if self.action == "edit" and self.command not in {
             "$goal-plus",
             "/goal-plus",
         }:
-            raise ValueError(
-                "Goal Plus edit/resume must use the host's base goal-plus command"
-            )
+            raise ValueError("Goal Plus edit must use the host's base goal-plus command")
         return self
 
 

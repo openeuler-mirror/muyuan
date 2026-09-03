@@ -44,12 +44,15 @@ codex plugin marketplace remove goal-plus
 ### Checkout 更新
 
 Codex 不再提供单独的 `goal-plus-local` staging 开发安装。开发或更新当前 checkout 后，重新运行
-正常安装命令更新 Python runtime，并在新的 Codex thread 中加载当前 source assets：
+正常安装命令更新 Python runtime 和 Codex 缓存中的 plugin assets，再开启新的 Codex thread：
 
 ```bash
 cd <Muyuan checkout>/plugins/goal-plus
 ./install.sh --codex
 ```
+
+即使插件已经安装，安装器也会重新执行 `codex plugin add goal-plus@goal-plus` 刷新缓存；
+只更新 Python runtime 或 marketplace source 不会更新运行中的 hooks/skills。
 
 统一安装器不会修改 `CODEX_HOME`，也不会为多个 checkout 创建隐式 profile。同一个 Codex 配置中
 只保留一个 `goal-plus@goal-plus` 来源；多 checkout 并行开发需要由开发者显式使用独立账号或
@@ -58,7 +61,7 @@ cd <Muyuan checkout>/plugins/goal-plus
 可安装的 Codex surface 包含：
 
 - `skills/`：三个 Codex skill；
-- `hooks/hooks.json`：Codex 0.144.1 及以上版本发现的六个 lifecycle hook；
+- `hooks/hooks.json`：七个 lifecycle hook，包括用于持久化用户暂停的 `Interrupt`；
 - `.mcp.json`：共享的 `goal-plus --root .gp` server；
 - `.codex-plugin/plugin.json`：plugin metadata。
 
@@ -85,7 +88,8 @@ args = ["--root", ".gp"]
 goal-plus-codex-doctor --project-root .
 ```
 
-doctor 会检查 Codex 0.144.1+、`goal-plus` executable 及 Python source provenance、plugin/skill
+doctor 会检查 Codex 0.151.0+（本次原生 Interrupt/resume 合同的验证基线）、`goal-plus`
+executable 及 Python source provenance、plugin/skill
 加载、MCP 启用状态、hook path 与 trust hash、内置/custom agent role 覆盖范围，以及只读 Codex model
 catalog。required check 失败时命令返回非零，支持 `--json`；安装、更新或修改 trust 后都应使用新
 thread。`--skip-model-check` 只适合离线排障，正式 multi-model preflight 不应跳过该项。
@@ -115,7 +119,8 @@ $goal-plus mode=autonomous Deeply optimize the kernel.
 
 installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook。开发源码中的
 `.codex/hooks.example.json` 保持同一份声明，供资产一致性测试使用，不是另一条安装路径。
-`UserPromptSubmit`、`SessionStart`、`PreToolUse`、`PostToolUse`、`Stop` 和 `SubagentStop` 都调用：
+`UserPromptSubmit`、`SessionStart`、`Interrupt`、`PreToolUse`、`PostToolUse`、`Stop` 和
+`SubagentStop` 都调用：
 
 ```text
 goal-plus --goal-plus-host-hook
@@ -128,16 +133,19 @@ Goal Plus 前识别 child：普通 subagent 不接收 Main context，Search cand
 或 fresh launch 时接收紧凑的 candidate context，同一 session continuation 不重复注入。
 Selection、promotion 和 final audit 始终由 parent 所有。
 
-只有大小写精确的 `$goal-plus`、`$goal-plus edit`、`$goal-plus resume` 和
+只有大小写精确的 `$goal-plus`、`$goal-plus edit` 和
 `$goal-plus-with-final-check` 会授权 Goal Plus。`/goal-plus`、自然语言请求、skill 自动加载和
 MCP/CLI 直调都不能创建记录。`goal_plus_create`/`goal_plus_update_goal` 是 deny-only tombstone，
 不再存在 `PostToolUse(goal_plus_create)` 所有权 fallback。
 
-`SessionStart` 和普通用户消息都不会创建或重新授权 Goal Plus，但也不会解除由精确 host command
-建立、仍处于 active 的同一 Codex session 绑定。hook 只有在 `session_id` 与持久化 attached
-session 精确匹配时才沿用该授权；新 session 或已经 detached 的 session 必须用
-`$goal-plus resume`。未授权 session 对 Goal Plus/Search 变更的 `PreToolUse` 检查 fail closed；
-只有显示和只读监控故障可以 fail open。
+Goal Plus 不提供 `$goal-plus resume`。使用 `codex resume <session-id>` 恢复交互式 session；
+`SessionStart` 只恢复上下文，不凭空创建模型 turn，下一条普通用户消息会作为权威输入并继续
+unfinished Goal。无交互的 exec 恢复必须显式发送普通 prompt，例如
+`codex exec resume <session-id> "Continue the active task."`。`Interrupt` 会把绑定标记为 paused；
+paused session 恢复后需要用户消息/确认，不会在没有输入时自动运行。不同 session、fork、detached
+绑定和终态 Goal 都不会继承 continuation 权限。未授权 session 对 Goal Plus/Search 变更的
+`PreToolUse` 检查 fail closed；只有显示和只读监控故障可以 fail open。详见
+[原生 Session Resume](resume.md)。
 普通 subagent 不继承 parent 的 next action。
 
 Candidate 的初始 `UserPromptSubmit` 只注入 runtime 绑定的 role 与

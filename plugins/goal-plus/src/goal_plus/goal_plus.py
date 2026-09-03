@@ -16,6 +16,7 @@ from goal_plus.host_observability import (
     normalize_pi_usage,
 )
 from goal_plus.models import (
+    AgentHostKind,
     GoalPlusActiveSession,
     GoalPlusCommandConfig,
     GoalPlusFinalCheck,
@@ -25,6 +26,10 @@ from goal_plus.models import (
     GoalPlusGateResult,
     GoalPlusGoalRevision,
     GoalPlusHostCommandInvocation,
+    GoalPlusHostSessionDecision,
+    GoalPlusHostSessionDelivery,
+    GoalPlusHostSessionEvent,
+    GoalPlusHostSessionInteraction,
     GoalPlusLinkedSearch,
     GoalPlusNextAction,
     GoalPlusRecord,
@@ -774,7 +779,8 @@ class FileGoalPlusRuntime:
                 active_ids = ", ".join(record.goal_plus_id for record in nonterminal)
                 raise RuntimeError(
                     "A nonterminal Goal Plus record already exists: "
-                    f"{active_ids}. Use the exact host edit/resume command instead."
+                    f"{active_ids}. Resume its native host session or use the exact "
+                    "host edit command instead."
                 )
             return self.create_goal(
                 raw_goal,
@@ -1045,36 +1051,137 @@ class FileGoalPlusRuntime:
         )
 
     @serialized_goal_mutation
-    def resume_from_host_command(
+    def handle_host_session_event(
         self,
         goal_plus_id: str,
         *,
-        invocation: GoalPlusHostCommandInvocation | dict[str, Any],
-    ) -> GoalPlusRecord:
-        parsed = (
-            invocation
-            if isinstance(invocation, GoalPlusHostCommandInvocation)
-            else GoalPlusHostCommandInvocation.model_validate(invocation)
-        )
-        if parsed.action != "resume":
-            raise ValueError(
-                "Goal Plus resume requires a host invocation with action=resume"
-            )
+        host: AgentHostKind,
+        session_id: str,
+        event: GoalPlusHostSessionEvent,
+        delivery: GoalPlusHostSessionDelivery,
+        interaction: GoalPlusHostSessionInteraction,
+    ) -> GoalPlusHostSessionDecision:
+        """Apply the host-neutral native-session continuation state machine."""
+
         record = self._load_record(goal_plus_id)
-        if self._has_host_invocation(record, parsed.invocation_id):
-            return record
-        if record.status != "active":
-            raise RuntimeError(
-                f"Goal Plus {goal_plus_id} is {record.status}; only active records can resume"
+        active = record.active_session
+        decision = "stop"
+        reason = "session_unavailable"
+        session_state: str = active.state if active is not None else "unavailable"
+
+        if record.status in TERMINAL_STATUSES:
+            session_state = "terminal"
+            reason = "goal_terminal"
+        elif (
+            active is None
+            or active.host != host
+            or active.session_id != session_id
+        ):
+            reason = "session_mismatch"
+        elif active.state in {"stale", "detached"}:
+            reason = f"session_{active.state}"
+        elif event == "interrupt":
+            now = utc_timestamp()
+            if active.state != "paused":
+                active = active.model_copy(
+                    update={
+                        "state": "paused",
+                        "last_seen_at": now,
+                        "metadata": {
+                            **active.metadata,
+                            "pause_reason": "host_interrupt",
+                        },
+                    }
+                )
+                record = record.model_copy(
+                    update={"active_session": active, "updated_at": now}
+                )
+                self._write_record(record)
+                self._append_event(
+                    goal_plus_id,
+                    "session_paused",
+                    {
+                        "host": host,
+                        "session_id": session_id,
+                        "reason": "host_interrupt",
+                    },
+                )
+            session_state = "paused"
+            reason = "host_interrupt"
+        elif event in {"user_turn", "continue_confirmed"}:
+            if active.state == "paused":
+                now = utc_timestamp()
+                active = active.model_copy(
+                    update={
+                        "state": "attached",
+                        "last_seen_at": now,
+                        "metadata": {
+                            key: value
+                            for key, value in active.metadata.items()
+                            if key != "pause_reason"
+                        },
+                    }
+                )
+                record = record.model_copy(
+                    update={"active_session": active, "updated_at": now}
+                )
+                self._write_record(record)
+                self._append_event(
+                    goal_plus_id,
+                    "session_reactivated",
+                    {"host": host, "session_id": session_id, "event": event},
+                )
+            session_state = "attached"
+            decision = (
+                "continue_now"
+                if event == "continue_confirmed"
+                else "continue_after_user"
             )
-        updated = self._with_host_invocation(record, parsed)
-        self._write_record(updated)
+            reason = event
+        elif record.status == "needs_user":
+            reason = "goal_needs_user"
+            if interaction == "interactive":
+                decision = (
+                    "ask_user" if delivery == "auto" else "wait_for_user"
+                )
+        elif active.state == "paused":
+            session_state = "paused"
+            if interaction == "interactive":
+                decision = (
+                    "ask_user" if delivery == "auto" else "wait_for_user"
+                )
+                reason = "session_paused"
+            else:
+                reason = "paused_headless"
+        elif event == "session_start":
+            session_state = "attached"
+            if delivery == "auto":
+                decision = "continue_now"
+                reason = "active_native_session"
+            else:
+                decision = "wait_for_user"
+                reason = "host_requires_user_turn"
+
+        result = GoalPlusHostSessionDecision(
+            goal_plus_id=goal_plus_id,
+            session_id=session_id,
+            record_status=record.status,
+            session_state=session_state,
+            decision=decision,
+            reason=reason,
+        )
         self._append_event(
             goal_plus_id,
-            "host_command_authorized",
-            parsed.model_dump(mode="json"),
+            "session_continuation_decided",
+            {
+                "host": host,
+                "event": event,
+                "delivery": delivery,
+                "interaction": interaction,
+                **result.model_dump(mode="json"),
+            },
         )
-        return updated
+        return result
 
     @serialized_goal_mutation
     def activate_session(

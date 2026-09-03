@@ -28,7 +28,8 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     import tomli as tomllib
 
 
-MIN_CODEX_VERSION = (0, 144, 1)
+# Validated native Interrupt + session resume contract.
+MIN_CODEX_VERSION = (0, 151, 0)
 REQUIRED_SKILLS = (
     "goal-plus",
     "goal-plus-with-final-check",
@@ -37,6 +38,7 @@ REQUIRED_SKILLS = (
 HOOK_EVENT_LABELS = {
     "UserPromptSubmit": "user_prompt_submit",
     "SessionStart": "session_start",
+    "Interrupt": "interrupt",
     "PreToolUse": "pre_tool_use",
     "PostToolUse": "post_tool_use",
     "Stop": "stop",

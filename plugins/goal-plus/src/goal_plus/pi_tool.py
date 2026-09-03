@@ -75,7 +75,7 @@ GOAL_PLUS_TOOL_NAMES = {
 PI_HOST_COMMAND_NAMES = {
     "goal_plus_host_start",
     "goal_plus_host_edit",
-    "goal_plus_host_resume",
+    "goal_plus_host_session_event",
 }
 
 
@@ -253,6 +253,31 @@ def call_pi_host_command(
         raise ValueError(f"unsupported Pi host command: {command_name}")
     _consume_pi_host_capability(root_dir, capability_token)
     runtime = FileGoalPlusRuntime(root_dir)
+    if command_name == "goal_plus_host_session_event":
+        event = args.get("event")
+        delivery = args.get("delivery")
+        interaction = args.get("interaction")
+        if event not in {
+            "session_start",
+            "user_turn",
+            "interrupt",
+            "continue_confirmed",
+        }:
+            raise ValueError("unsupported Pi host session event")
+        if delivery not in {"auto", "next_user_turn"}:
+            raise ValueError("unsupported Pi host session delivery")
+        if interaction not in {"interactive", "headless"}:
+            raise ValueError("unsupported Pi host session interaction")
+        decision = runtime.handle_host_session_event(
+            str(args.get("goal_plus_id") or ""),
+            host="pi-rpc",
+            session_id=str(args.get("session_id") or ""),
+            event=event,
+            delivery=delivery,
+            interaction=interaction,
+        )
+        return decision.model_dump(mode="json")
+
     invocation = args.get("invocation")
     if not isinstance(invocation, dict):
         raise ValueError("Pi host command requires invocation evidence")
@@ -275,11 +300,18 @@ def call_pi_host_command(
             reason=(str(args["reason"]) if args.get("reason") is not None else None),
             invocation=invocation,
         )
-    else:
-        record = runtime.resume_from_host_command(
-            str(args.get("goal_plus_id") or ""),
-            invocation=invocation,
-        )
+    record = runtime.activate_session(
+        record.goal_plus_id,
+        {
+            "host": "pi-rpc",
+            "session_id": str(invocation.get("session_id") or ""),
+            "metadata": {
+                "authorized_by": "pi_extension_command",
+                "host_invocation_id": invocation.get("invocation_id"),
+                "native_entry_id": invocation.get("native_entry_id"),
+            },
+        },
+    )
     return record.model_dump(mode="json")
 
 

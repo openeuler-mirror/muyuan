@@ -62,6 +62,9 @@ ST_CODEX_MODEL=gpt-5.6-luna \
 # Codex native child hook isolation and main-session binding
 pytest -m "st and st_codex" -k codex_native_child_hooks -v -s -rs
 
+# Real Codex Interrupt hook, then exec resume with an ordinary user prompt
+pytest -n 0 -m "st and st_codex" -k exec_native_resume_after_interrupt -v -s -rs
+
 # Codex one-worker AutoResearch lease: 5 minute lower bound, 7 minute watchdog
 ST_CODEX_TIMEOUT=1200 \
   pytest -m "st and st_codex" -k codex_autoresearch_lease -v -s -rs
@@ -81,6 +84,11 @@ pytest -m st_pi -v -s -rs
 
 # Native Pi ends a turn early, then the Stop gate triggers a follow-up turn
 pytest -m st_pi -k stop_gate_intercepts -v -s -rs
+
+# Process loss / RPC abort, JSON no-op and ordinary resume, plus native PTY resume
+# PTY cases cover promptless TUI continuation and startup user-message priority.
+ST_PI_BINARY="$PWD/.goal-plus-dev/bin/pi-goal-plus" \
+  pytest -n 0 -m st_pi -k native_session_resume -v -s -rs
 
 # Required independent final checks
 pytest -m "st and st_codex" -k goal_plus_required_final_checker -v -s -rs

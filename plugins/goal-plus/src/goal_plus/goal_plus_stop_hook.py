@@ -78,7 +78,7 @@ def _find_session_root(hook_input: dict[str, Any] | None = None) -> Path:
     ):
         # The MCP server resolves its default `.gp` root from the Codex thread
         # cwd. A new Goal Plus request must use that same cwd even when it is
-        # nested inside a larger Git repository. Edit/resume requests still scan
+        # nested inside a larger Git repository. Edit requests still scan
         # upward so an existing parent task remains discoverable. Later main and
         # candidate hooks rediscover the newly created nearest `.gp` root.
         return cwd
@@ -147,8 +147,17 @@ def _goal_plus_request(hook_input: dict[str, Any]) -> dict[str, Any] | None:
         return None
     command = match.group("command").lower()
     body = (match.group("body") or "").strip()
-    if command == "goal-plus" and body == "resume":
-        return {"action": "resume", "raw_goal": None, "command": "$goal-plus"}
+    if command == "goal-plus" and body.casefold() == "resume":
+        return {
+            "action": "invalid",
+            "raw_goal": None,
+            "command": "$goal-plus",
+            "invalid_reason": (
+                "Goal Plus 没有 `$goal-plus resume` 子命令。请使用 Codex 原生 "
+                "`codex resume <session-id>`；恢复同一 session 后，下一条普通用户消息会"
+                "继续或调整当前 Goal Plus。"
+            ),
+        }
     if command == "goal-plus" and (body == "edit" or body.startswith("edit ")):
         raw_goal = body[5:].strip()
         return {
@@ -158,8 +167,7 @@ def _goal_plus_request(hook_input: dict[str, Any]) -> dict[str, Any] | None:
         }
     normalized_body = body.casefold()
     if command == "goal-plus" and (
-        normalized_body == "resume"
-        or normalized_body == "edit"
+        normalized_body == "edit"
         or normalized_body.startswith("edit ")
     ):
         return {
@@ -167,8 +175,7 @@ def _goal_plus_request(hook_input: dict[str, Any]) -> dict[str, Any] | None:
             "raw_goal": None,
             "command": "$goal-plus",
             "invalid_reason": (
-                "Codex Goal Plus 子命令必须精确写成小写 `$goal-plus edit` 或 "
-                "`$goal-plus resume`。"
+                "Codex Goal Plus 子命令必须精确写成小写 `$goal-plus edit`。"
             ),
         }
     return {
@@ -1260,14 +1267,16 @@ def _select_session_goal_id(
     session_id: str | None,
     *,
     include_terminal: bool = False,
+    include_paused: bool = False,
 ) -> str | None:
     if not session_id:
         return None
-    for record in _active_records(search_root):
+    allowed_states = {"attached", "paused"} if include_paused else {"attached"}
+    for record in _resumable_records(search_root):
         if (
             record.active_session is not None
             and record.active_session.session_id == session_id
-            and record.active_session.state == "attached"
+            and record.active_session.state in allowed_states
         ):
             return record.goal_plus_id
     if not include_terminal:
@@ -1637,21 +1646,40 @@ def _handle_user_prompt_submit(
         return
 
     session_id = _session_id(hook_input)
-    goal_id = _select_session_goal_id(search_root, session_id)
+    goal_id = _select_session_goal_id(
+        search_root,
+        session_id,
+        include_paused=True,
+    )
     request = _goal_plus_request(hook_input)
     if request is None:
         if _looks_like_goal_plus_command(hook_input):
             _emit_user_prompt_block(
                 "Codex Goal Plus 只接受精确的 `$goal-plus`、"
-                "`$goal-plus edit`、`$goal-plus resume` 或 "
+                "`$goal-plus edit` 或 "
                 "`$goal-plus-with-final-check`。Pi 的 `/goal-plus` 不能在 Codex 中启动。"
             )
             return
         if goal_id is not None:
-            # Exact host commands authorize the native Codex session, not only
-            # the command's model turn. Ordinary same-session follow-ups keep
-            # the existing binding, while detached or different sessions still
-            # fail closed in PreToolUse until an explicit resume.
+            decision = runtime.handle_host_session_event(
+                goal_id,
+                host=_host_kind(hook_input),
+                session_id=session_id,
+                event="user_turn",
+                delivery="next_user_turn",
+                interaction="interactive",
+            )
+            if decision.decision == "continue_after_user":
+                record = runtime.status(goal_id)
+                runtime.gate(
+                    goal_id,
+                    event="user_prompt_submit",
+                    context=hook_input,
+                )
+                _emit_additional_context(
+                    "UserPromptSubmit",
+                    _goal_context(record),
+                )
             return
         terminal_goal_id = _select_session_goal_id(
             search_root,
@@ -1675,7 +1703,7 @@ def _handle_user_prompt_submit(
     if session_id is None:
         _emit_user_prompt_block("Codex $goal-plus 缺少 host session_id，已拒绝启动。")
         return
-    if request.get("action") != "resume" and not request.get("raw_goal"):
+    if not request.get("raw_goal"):
         _emit_user_prompt_block(
             "Codex $goal-plus 需要完整目标；edit 也必须提供完整修订目标。"
         )
@@ -1695,7 +1723,7 @@ def _handle_user_prompt_submit(
             _emit_user_prompt_block(str(exc))
             return
     action = request["action"]
-    if action in {"edit", "resume"} and goal_id is None:
+    if action == "edit" and goal_id is None:
         goal_id = _select_resumable_goal_id(search_root)
     if action == "edit" and goal_id is not None and isinstance(raw_goal, str):
         current = runtime.status(goal_id)
@@ -1706,8 +1734,6 @@ def _handle_user_prompt_submit(
             reason="user edited the Goal Plus objective through Codex",
             invocation=invocation,
         )
-    elif action == "resume" and goal_id is not None:
-        runtime.resume_from_host_command(goal_id, invocation=invocation)
     elif action == "start" and isinstance(raw_goal, str):
         if goal_id is not None:
             current = runtime.status(goal_id)
@@ -1716,13 +1742,13 @@ def _handle_user_prompt_submit(
                 for item in current.host_command_invocations
             ):
                 _emit_user_prompt_block(
-                    f"Goal Plus {goal_id} 仍处于 active。请使用 `$goal-plus resume`、"
-                    "`$goal-plus edit <完整目标>`，或先显式结束当前任务。"
+                    f"Goal Plus {goal_id} 仍处于 active。请恢复它的 Codex session、"
+                    "使用 `$goal-plus edit <完整目标>`，或先显式结束当前任务。"
                 )
                 return
         elif _resumable_records(search_root):
             _emit_user_prompt_block(
-                "当前 workspace 已有 active Goal Plus。请使用 `$goal-plus resume` 或 "
+                "当前 workspace 已有 active Goal Plus。请恢复它的 Codex session 或使用 "
                 "`$goal-plus edit <完整目标>`；不会隐式创建第二条任务。"
             )
             return
@@ -1752,7 +1778,7 @@ def _handle_user_prompt_submit(
             initial_start = True
     if goal_id is None:
         _emit_user_prompt_block(
-            "没有可编辑或恢复的 active Goal Plus；请使用 `$goal-plus <完整目标>` 启动。"
+            "没有可编辑的 active Goal Plus；请使用 `$goal-plus <完整目标>` 启动。"
         )
         return
     record = runtime.activate_session(
@@ -1784,11 +1810,52 @@ def _handle_session_start(
 ) -> None:
     if _is_child_context(hook_input):
         return
-    # SessionStart is not an authorization source, but it must not revoke an
-    # existing binding for the same durable Codex session either. A different
-    # session_id cannot select this record in PreToolUse and must explicitly
-    # use `$goal-plus resume` before making Goal Plus/Search changes.
-    del runtime, search_root
+    session_id = _session_id(hook_input)
+    goal_id = _select_session_goal_id(
+        search_root,
+        session_id,
+        include_paused=True,
+    )
+    if goal_id is None or session_id is None:
+        return
+    decision = runtime.handle_host_session_event(
+        goal_id,
+        host=_host_kind(hook_input),
+        session_id=session_id,
+        event="session_start",
+        delivery="next_user_turn",
+        interaction="interactive",
+    )
+    if decision.decision in {"wait_for_user", "ask_user"}:
+        _emit_additional_context(
+            "SessionStart",
+            _goal_context(runtime.status(goal_id)),
+        )
+
+
+def _handle_interrupt(
+    runtime: Any,
+    search_root: Path,
+    hook_input: dict[str, Any],
+) -> None:
+    if _is_child_context(hook_input):
+        return
+    session_id = _session_id(hook_input)
+    goal_id = _select_session_goal_id(
+        search_root,
+        session_id,
+        include_paused=True,
+    )
+    if goal_id is None or session_id is None:
+        return
+    runtime.handle_host_session_event(
+        goal_id,
+        host=_host_kind(hook_input),
+        session_id=session_id,
+        event="interrupt",
+        delivery="next_user_turn",
+        interaction="interactive",
+    )
 
 
 def _handle_pre_tool_use(
@@ -1830,8 +1897,8 @@ def _handle_pre_tool_use(
     if goal_id is None:
         if _requires_hook_authorization(hook_input):
             _emit_pre_tool_block(
-                "GoalPlusEntrypointRequired: 当前 Codex session 未由精确的 `$goal-plus`、"
-                "`$goal-plus edit` 或 `$goal-plus resume` 授权，已拒绝 Goal Plus/Search 变更。"
+                "GoalPlusEntrypointRequired: 当前 Codex session 未由精确的 `$goal-plus` 或 "
+                "`$goal-plus edit` 授权，且不是其原生恢复 session，已拒绝 Goal Plus/Search 变更。"
             )
         return
     gate = runtime.gate(goal_id, event="pre_tool_use", context=hook_input)
@@ -2062,10 +2129,15 @@ def main() -> int:
             # worktree has no local runtime root.
             if _handle_role_pre_tool_use(search_root, hook_input):
                 return 0
-        if event_name in {"UserPromptSubmit", "SessionStart", "PreToolUse"}:
+        if event_name in {
+            "UserPromptSubmit",
+            "SessionStart",
+            "Interrupt",
+            "PreToolUse",
+        }:
             from goal_plus.goal_plus import FileGoalPlusRuntime
 
-            if event_name == "SessionStart" and not search_root.exists():
+            if event_name in {"SessionStart", "Interrupt"} and not search_root.exists():
                 return 0
             if (
                 event_name == "PreToolUse"
@@ -2083,6 +2155,9 @@ def main() -> int:
             elif event_name == "SessionStart":
                 runtime = FileGoalPlusRuntime(search_root)
                 _handle_session_start(runtime, search_root, hook_input)
+            elif event_name == "Interrupt":
+                runtime = FileGoalPlusRuntime(search_root)
+                _handle_interrupt(runtime, search_root, hook_input)
             else:
                 runtime = FileGoalPlusRuntime(search_root)
                 _handle_pre_tool_use(runtime, search_root, hook_input)
