@@ -1,442 +1,197 @@
-# AGENTS.md
+# Goal Plus 开发约定
 
-This file is the entry point for agents developing or maintaining this
-repository. It applies to the whole repository unless a nested `AGENTS.md`
-overrides it.
+本文件是 `plugins/goal-plus/` 下所有开发工作的入口，适用于整个目录，除非更深层的
+`AGENTS.md` 明确覆盖。它说明应先读什么、代码和状态归谁负责、修改必须遵守哪些约束，
+以及交付前需要什么证据；不重复完整产品规格或功能使用手册。
 
-## Read First
+## 文档入口
 
-Read only the page that owns the question:
+先读 [SPEC.md](SPEC.md) 了解稳定系统合同，再按改动范围选择文档：
 
-- [README.md](README.md): install, quick start, and document map.
-- [docs/shared-plane.md](docs/shared-plane.md): architecture, ownership,
-  shared Evidence, candidate settlement, and end-to-end flow.
-- [docs/api.md](docs/api.md): current MCP and Pi-local tool index.
-- [docs/agent-host-adapters.md](docs/agent-host-adapters.md): capability matrix
-  and shared host-pool contract.
-- [docs/ultra.md](docs/ultra.md): host-neutral `/goal-plus` dispatch records,
-  effort, delegation, and harness binding contract.
-- [docs/feature-plugins.md](docs/feature-plugins.md): optional read-only monitor
-  projections and host event metadata.
-- [docs/debugging-runtime.md](docs/debugging-runtime.md): state and host logs.
-- [docs/codex.md](docs/codex.md) and [docs/pi.md](docs/pi.md):
-  host-specific setup and behavior.
-- [examples/README.md](examples/README.md): example specs, strategy modes, and
-  scenario prompts.
-- [tests/README.md](tests/README.md): unit/integration/system test layout and
-  commands.
+| 改动范围 | 文档 |
+| --- | --- |
+| 安装、快速开始和文档索引 | [README.md](README.md) |
+| Search 架构、Evidence、selection 和 promotion | [共享平面](docs/shared-plane.md) |
+| Adaptive Search 与 Search Scheduler | [Adaptive Search](docs/adaptive-search.md) |
+| Main delegation 与轻量 dispatch 记录 | [Ultra 编排](docs/ultra.md) |
+| MCP 与 Pi-local tool 合同 | [API](docs/api.md) |
+| Codex/Pi 共同边界 | [Agent Host Adapters](docs/agent-host-adapters.md) |
+| Codex 或 Pi 的安装与宿主行为 | [Codex](docs/codex.md)、[Pi](docs/pi.md) |
+| Monitor feature plugin | [Feature Plugins](docs/feature-plugins.md) |
+| 状态、日志和 report 排障 | [Runtime 调试](docs/debugging-runtime.md) |
+| Checkout 开发与安装刷新 | [开发指南](docs/development.md) |
+| SearchSpec 示例 | [Examples](examples/README.md) |
+| 测试层次、marker 和真实 host ST | [Tests](tests/README.md) |
 
-## Core Boundary
+受版本控制的 model、行为测试和文档共同定义当前协议。旧日志、`.gp/` 产物和 transcript
+只用于诊断，不作为协议来源。
 
-This project is a `/goal-plus` runtime with an internal Search Mode engine. Its
-core is the durable shared plane described in `docs/shared-plane.md`. The Search
-runtime is not a worker supervisor; host integrations may provide a supervisor
-behind the documented host-pool contract.
+## 架构边界
 
-The runtime owns:
+Goal Plus 包含 Goal Mode、内部 Search Mode 和 host 集成。Runtime 负责持久化领域状态；
+Main Agent 负责理解目标、拆解工作、决定 delegation/Search 和审查结果；candidate 负责在
+自己的合同和 workspace 内探索；host 负责真实进程或 native agent 的生命周期。
 
-- goal-plus intake, triage, spec drafts, verifier confirmation state, and final
-  audit evidence
-- frozen specs and verifier artifacts
-- candidate workspace creation
-- planning and strategy state
-- verifier execution and score reports
-- durable `.gp/` run state
-- report generation and promotion patches
+Search runtime 不是 worker supervisor。不要在 runtime 或 SearchTools 中增加 host wait loop、
+heartbeat、进程 liveness、通用 abort API 或观察总线。`AgentSessionRecord` 是 context 与
+provenance 绑定，不代表进程存活；launch payload 是 host 启动 worker 的权威输入。
 
-Goal Plus startup authority belongs only to the host command adapters: exact
-Codex `$goal-plus...` input through `UserPromptSubmit`, or exact Pi
-`/goal-plus...` input through the native extension command handler. Skills,
-prompts, model-facing MCP tools, generic CLI facades, SessionStart, and ordinary
-natural-language requests must never create, edit, resume, or authorize a Goal
-Plus record. Keep `goal_plus_create` and `goal_plus_update_goal` deny-only if
-their legacy names remain exposed, and fail closed on host-command or mutating
-tool authorization errors.
+Ultra 只记录实际发生的 dispatch 和 attempt identity，不要求预建 work DAG。Search 使用自己的
+FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 subagent dispatch。
 
-The host code-agent or host-local supervisor owns:
+### 状态与代码 owner
 
-- worker launch, lifecycle, stop/interrupt, and return values
-- host step, turn, or time budget enforcement
-- native logs and transcripts
+规则应落在掌握可信输入或持久状态的最窄 owner 中：
 
-Do not add SearchTools/runtime-owned wait loops, abort APIs, heartbeats,
-lifecycle status, observation buses, or host-sync state. Host-local pool state
-must stay outside Search run records and preserve the ownership boundary.
+| Owner | 职责 |
+| --- | --- |
+| `models.py` | 严格 schema、字段边界和跨字段结构不变量 |
+| `goal_plus.py` | Goal 授权、revision、phase、dispatch attempt、Search link 和终态 |
+| `runtime.py` | FrozenSpec、workspace、candidate、verifier、Evidence、selection、promotion 和 report |
+| `adaptive_search/adaptive_search.py` | Adaptive settlement/barrier 的统一 facade 与模块协调 |
+| `adaptive_search/scheduler.py` | ScheduleTask、scheduler context、异步调用和调用后端 |
+| `adaptive_search/allocation.py` | AllocationDecision、retirement、派生 workspace/session 和执行校验 |
+| `adaptive_search/policies.py` | 版本化 reward/allocation policy 与对应 context builder |
+| `tools.py` | Codex/Pi 共用 facade 和 caller 前置条件 |
+| `server.py`、`pi_tool.py` | MCP/Pi 参数转换、调用和序列化 |
+| `agent_hosts.py`、Pi pool/worker | Host launch、budget、continuation、interrupt 和 host-local 状态 |
+| Codex hook、Pi extension | 可信 command transport、session identity 和 host lifecycle 事实 |
+| `monitor.py`、`reporting.py` | 持久状态的只读投影与最终静态报告 |
+| Runtime 生成的 `candidate_task` | Candidate edit surface、环境和已启用能力的可见合同 |
+| Skill/prompt | 用户意图、评价设计、技术方向等必须由模型判断的工作 |
 
-`AgentSessionRecord` is a context/provenance handle, not a lifecycle record.
-`search_start_agent_session` returns a host-native launch payload. The main
-agent must treat that launch payload as authoritative and spawn a foreground
-worker through the selected host.
+`runtime.py` 仅根据 orchestration mode 调用 `AdaptiveSearch` facade，不重复实现其调度与分配
+逻辑。Adaptive Search 的具体行为合同见 [Adaptive Search](docs/adaptive-search.md)。
 
-## Directory Map
+## 实现原则
 
-- `src/goal_plus/models.py`: strict Pydantic data models and
-  validation.
-- `src/goal_plus/goal_plus.py`: file-backed goal-plus state
-  machine for raw goal intake, triage, spec drafts, gates, and search links.
-- `src/goal_plus/runtime.py`: file-backed Search Mode state
-  machine for workspace copy, verifier execution, selection, reports, and
-  promotion. It also owns shared deterministic timestamps, hashes, file locks,
-  and atomic JSON/text I/O for persistent runtime state. Its adaptive integration
-  is intentionally limited to selecting
-  `orchestration_mode="adaptive_search"` and calling one `AdaptiveSearch` facade.
-- `src/goal_plus/adaptive_search/adaptive_search.py`: the only Adaptive Search facade
-  consumed by `FileSearchRuntime`. It owns settlement/barrier hooks, coordinates
-  scheduler results with Allocation, composes read-only views, and performs the
-  one-way Pydantic schema binding. It does not own persisted scheduler state.
-- `src/goal_plus/adaptive_search/scheduler.py`: scheduler configuration,
-  ScheduleTask schemas and persistence, common scheduler context, recoverable
-  async task management, and dedicated one-shot Codex/Pi backends. It composes
-  policy-built contexts but must not build reward/allocation context or persist
-  and apply AllocationDecision records.
-- `src/goal_plus/adaptive_search/allocation.py`: AllocationDecision contracts,
-  persistence, validation, candidate retirement, workspace derivation, and native
-  session creation. It accepts normalized trigger/reward bindings and must not
-  import or mutate ScheduleTask.
-- `src/goal_plus/adaptive_search/policies.py`: versioned reward/allocation policy
-  registration, `@prompt` parsing, frozen policy projections, and the context
-  builders bound to each policy version. It must remain independent of runtime,
-  scheduler task management, and Allocation execution.
-  Do not recreate graph, backup-event, action-edge, hindsight, a shared Store, or
-  a generic `adaptive_search/models.py` layer.
-- Treat Adaptive Search as an optional orchestration mode. Core runtime and host
-  lifecycle hooks route into it only when frozen `strategy.orchestration_mode` is
-  `"adaptive_search"`; the facade and its Scheduler/Allocation internals validate
-  non-null `strategy.search_scheduler` before executing Scheduler services.
-- `src/goal_plus/agent_hosts.py`: maintained Codex/Pi adapters. Keep host
-  launch/continue/budget mapping here.
-- `src/goal_plus/tools.py`: JSON-friendly facade used by tests and
-  MCP.
-- `src/goal_plus/server.py`: FastMCP stdio server.
-- `src/goal_plus/pi_tool.py` and
-  `src/goal_plus/pi_worker.py`: Pi extension facade and Pi RPC
-  worker runner. `src/goal_plus/pi_pool.py` is the durable host-local pool
-  supervisor.
-- `.codex/`: Codex goal-plus/search skills and worker agent assets.
-- `.pi/`: Pi prompt templates, skills, and extension tools.
-- `docs/`: shared-plane architecture, API, adapter, host, and debug
-  documentation.
-- `examples/`: example SearchSpec files.
-- `tests/`: unit/integration tests, asset tests, fixtures, and system tests.
+### 确定性规则由代码执行
 
-Generated or local-only state:
+先判断规则属于哪一类：
 
-- `.gp/` is runtime output and is gitignored.
-- `.tmp/` is local scratch and is gitignored.
-- `docs/superpowers/` is gitignored.
-- Raw host logs and transcripts should stay in ignored locations such as
-  `.gp/host-logs/`.
+1. **可确定规则**：输入与持久状态足以判定。例如 caller role、Goal/run 归属、phase、edit
+   surface、artifact、容量和 promotion 前态。必须由 model、facade 或状态 owner 执行。
+2. **Host 事实**：只有宿主知道的 command transport、session identity、worker handle、deadline
+   和进程状态。由 hook、extension、adapter 或 supervisor 采集和验证。
+3. **模型判断**：需要理解用户目标、设计 evaluator、评价边际价值或选择探索方向。保留在
+   skill/prompt，代码校验其结构和后续状态转换。
 
-## Installation Modes
+所有模型生成的结构化结果都是非可信输入。Pydantic model 负责结构边界，状态 owner 在持久化
+或执行前校验 identity、归属、artifact、容量、当前状态和幂等前态。AGENTS、SPEC、README、
+skill 和普通 prompt 可以解释规则，但不能成为确定性规则的唯一防线。
 
-`install.sh` is the supported source-checkout installation entry point. Keep
-its behavior, `scripts/install.py`, the host documentation, and
-`tests/test_install.py` aligned.
+### 保持状态边界
 
-- `./install.sh --codex` performs the normal Codex runtime and plugin install.
-- `./install.sh --pi` performs the normal Pi runtime and package install.
-- `./install.sh --pi-dev` creates an ignored `.goal-plus-dev/` editable venv,
-  `set_env.sh`, and `pi-goal-plus` launcher for the current checkout.
-- `./install.sh --env-show` lists managed Pi development environments, source
-  versions, health, and allocated disk usage without changing them.
-- `--pi` and `--pi-dev` are mutually exclusive. Either may be combined with
-  `--codex` where otherwise valid.
+- Search bootstrap、Main 后续操作、candidate 操作和终态 report 分别使用其可验证的归属依据；
+  run 完成链接后，Main 对该 run 的操作必须匹配当前 Goal 的持久化链接。
+- 非法调用不得改变 Goal、run、candidate、Evidence、selection 或 promotion 等领域状态。
+  审计事件、counter、lock 和临时目录属于操作性状态，是否允许变化由入口合同明确说明。
+- 异步任务失败、重试或恢复只能更新它拥有的 task/worker/审计状态，不得撤销已经结算的
+  verifier Evidence 或改写 hard score。
+- 持久化状态是恢复依据，prompt 记忆不是。恢复逻辑必须幂等，不通过手工改写 `.gp/` 跨 gate。
 
-Pi development mode must not modify `CODEX_HOME`, `PI_CODING_AGENT_DIR`, Pi
-settings, models, or authentication. `set_env.sh` adds only the generated
-launcher directory to `PATH`; the launcher scopes the editable venv to its own
-process and explicitly passes the checkout's extension and single Pi skill to
-Pi. Pi deduplicates an existing registration from this exact checkout by
-absolute resource path. Both setup and launch must fail closed when a different
-user- or project-scoped Goal Plus source would create a duplicate load; broken
-loose-resource symlinks are inactive and must not block development mode.
+### 保持隔离与最小可见性
 
-Normal installation must bind the selected Python interpreter and inherited
-`PATH` to one environment. Reject setup when the interpreter's scripts
-directory is absent from `PATH` or an existing Goal Plus command resolves from
-another environment; the host assets invoke these console scripts by name.
+- Candidate 只获得 runtime 投影的工作合同。不得泄露 Main context、peer workspace、credential、
+  runtime-private constraints、hidden evaluation 或任意 host environment variable。
+- Candidate 可以读取自己的 workspace 并本地诊断，但交付修改受 `allowed_files` 限制；冻结
+  verifier 和 `denied_files` 保持只读。
+- 可选能力关闭时，不生成对应工具说明或操作要求；启用时由 runtime 根据冻结配置动态投影。
+- Codex 与 Pi 共用的业务规则在 shared facade 或领域 owner 中实现一次；host 层只处理自己的
+  可信事实，不复制业务状态机。
 
-Codex has no separate checkout-local development profile. Do not restore the
-retired `goal-plus@goal-plus-local` staging marketplace or
-`scripts/install_codex_plugin.py`; Codex development uses the normal
-`goal-plus@goal-plus` installation. All installers must inspect existing host
-registrations before writes, accept an idempotent registration from this exact
-checkout, and report actionable cleanup commands for conflicts instead of
-silently replacing another checkout or deleting user-managed data.
+### 保持实现精简
 
-## Host Adapter Rules
+- 优先修改现有状态 owner。新生产抽象必须统一至少两处真实重复、封闭已有职责边界，或关闭
+  测试复现的绕过；不要预建 policy DSL、通用快照框架、错误体系或测试 runner。
+- 使用现有 Pydantic model 和结构化 API，不用 ad hoc JSON 或字符串解析代替已有合同。
+- Skill/prompt 只保留模型判断与正常调用路径，不复制 schema、错误分支或已由代码拒绝的规则。
+  删除仍承担真实功能入口的 task-specific workflow 前，必须先迁移并证明等价。
+- 将已有 prompt 防御迁移到代码时，先用行为测试复现绕过并建立等价 gate，再删除对应文字
+  约束；不保留旧路径兼容层。
+- 不增加未要求的旧格式兼容、双写或 fallback。确需迁移时，明确旧数据边界、切换方式和删除
+  条件。
+- 不使用无来源的魔数。协议边界需要命名、依据和边界测试。
+- Verifier 执行和 artifact 绑定必须确定、可复现，并由 runtime 掌握。
 
-Keep runtime behavior host-neutral. Host-specific behavior belongs in
-`agent_hosts.py`, host asset files, and host docs/tests.
+## 修改流程
 
-Current host expectations:
+1. 确认改动所属 owner，阅读对应规格、文档和现有测试。
+2. 用最小行为测试明确预期，测试规模与改动风险匹配。
+3. 在 owner 边界内完成最小实现，并同步受影响的 facade、host asset 或 projection。
+4. 运行 focused test，再按影响范围运行 default、integration 或真实 host ST。
+5. 系统不变量变化时更新 `SPEC.md`；用户可见合同变化时更新对应专项文档。
+6. 检查最终 diff，排除无关修改、生成状态和 credential。
 
-- Codex supports the portable builtin strategy subset. `worker_budget` requires
-  `max_runtime_seconds` and is enforced by parent watchdog metadata:
-  an initial `wait_agent`, one `send_message` closeout, a final wait, then
-  `interrupt_agent` when the deadline expires. Search candidate PostTool hooks
-  may inject one advisory when available time is below the observed average
-  verifier-submission time; this does not stop the worker. Codex 0.144.1+ ships
-  `UserPromptSubmit`, `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, and
-  `SubagentStop` hooks with session ownership binding and terminal stats. The
-  initial main turn and each Search candidate's first context call display the
-  exact matching Codex `turn_context` permission snapshot; missing snapshots
-  stay unavailable rather than falling back to TOML inference. The same compact
-  line is model-visible so main can repeat it in initial progress and the
-  candidate can preserve it in its final handoff.
-  New Codex specs use `orchestration_mode="parallel_loops"`: create initial
-  candidates once, validate each completion, observe the verifier-backed best,
-  and continue the same native worker through
-  `search_continue_agent_session` plus `followup_task` while no global stop
-  condition is true. Main must not choose later technical directions or create
-  quality-based replacements. Scheduler-driven replacement uses the separate
-  `adaptive_search` mode and requires a non-null `search_scheduler`.
-- Pi RPC supports the portable builtin strategy subset. `worker_budget`
-  requires `max_runtime_seconds`; `max_turns` is only a prompt hint. Optional
-  `min_runtime_seconds`/`min_verifier_runs` form a cumulative pool-supervisor
-  lease: an early native turn resumes the same Pi session in the same slot and
-  worktree until the minimum is met or the cumulative upper bound/outer
-  closeout is reached. Pi uses
-  `goal-plus-pi-worker` to launch foreground `pi --mode rpc` workers
-  from candidate workspaces, persists native sessions under
-  `.gp/host-sessions/pi/`, and explicitly loads `.pi/extensions/goal-plus.ts`.
-  The runner may send one advisory `steer` after
-  a Search candidate tool completes when available time is below the observed
-  average verifier-submission time. `pi_search_pool_continue` starts a new Pi
-  process that resumes the same native session and the same candidate/workspace;
-  incremental `get_entries(since=...)` metrics avoid retransferring the prior
-  transcript. New Pi specs use `orchestration_mode="parallel_loops"`; the same
-  native session resumes after each validated completion while no global stop
-  condition is true. Exact durable worker Evidence is reused by pool completion
-  and selection instead of creating duplicate parent process iterations. Pi has
-  extension pre-tool guarding and skill stop gates, but no Codex Stop hook
-  parity. Its main-agent pool is a durable host supervisor under
-  `.gp/host-pools/pi/` with explicit open/wait-any/snapshot/continue/close
-  tools; it never plans or auto-refills candidates in `parallel_loops`.
-  Scheduler-driven replacement uses the separate `adaptive_search` mode and
-  requires a non-null `search_scheduler`.
-  This is cross-process native-session continuation, not a promise that one Pi
-  OS process remains resident for the full run. Add a persistent same-PID host
-  supervisor only if process identity itself becomes a requirement.
+## Host 与资产同步
 
-Maintained strategy names for Codex and Pi are currently:
+Host asset 是可执行产品界面，不是装饰性文档。
 
-- `agent_guided`
-- `agent`
-- `default`
-- `random`
-- `random_mode`
+- Codex canonical skill 位于 `.codex/skills/`；发布副本位于 `skills/`。修改后运行：
 
-Do not enable additional Codex or Pi strategies without adding unit or
-mock coverage for launch payloads and at least one real smoke path when the
-behavior depends on host execution.
+  ```bash
+  python scripts/sync_codex_plugin_assets.py
+  python scripts/sync_codex_plugin_assets.py --check
+  ```
 
-Host worker execution may be synchronous or managed asynchronous according to
-`HostPoolContract`. Do not add untracked background work: every asynchronous
-path needs an explicit wait/snapshot/close contract, budget enforcement,
-matching host skills, and deterministic tests.
+- Codex 合同变化时检查 `.codex/skills/`、`.codex/agents/`、hook/config 模板及
+  `tests/test_codex_assets.py`。
+- Pi 合同变化时检查 `.pi/prompts/`、`.pi/skills/`、`.pi/extensions/`、worker/pool 及
+  `tests/test_pi_assets.py`。
+- 不要让任一 host asset 重新引用已删除的 runtime API。共同业务合同不得只在某一端修复。
+- `install.sh` 是唯一受支持的源码安装入口。安装行为变化时同步 `scripts/install.py`、安装测试
+  和 [开发指南](docs/development.md)；不要静默替换另一 checkout 或删除用户管理的数据。
 
-Do not describe a host as fully hook-enforced Goal Plus unless the repository
-ships and tests hook wiring at all relevant Stop, SubagentStop, and PreToolUse
-checkpoints. Codex provides those Goal Plus lifecycle checkpoints, but this is
-not host process supervision.
+Pi checkout-local 开发和 Codex 正常 plugin 刷新的具体步骤见
+[开发指南](docs/development.md)。不要把账号、认证或全局 host 配置写进仓库。
 
-## Asset And Prompt Changes
+## 测试与验收
 
-Host assets are executable product surface, not decorative docs. When changing
-the runtime contract, update the matching assets and tests:
+测试应验证行为、返回结构和状态变化，不断言整段 prompt、中文措辞或内部调用顺序。可以断言
+稳定 schema、窄的 reason token 和真正属于接口的文字。
 
-- Codex: `.codex/skills/goal-plus/SKILL.md`,
-  `.codex/skills/goal-plus-with-final-check/SKILL.md`,
-  `.codex/skills/search/SKILL.md`,
-  `.codex/agents/search_candidate_agent.toml`,
-  `.codex/agents/goal_plus_final_checker.toml`, `.codex/config.example.toml`, and
-  `tests/test_codex_assets.py`.
-- Pi: `.pi/prompts/goal-plus.md`, `.pi/prompts/search-candidate-worker.md`,
-  `.pi/skills/goal-plus/SKILL.md`, `.pi/extensions/goal-plus.ts`, and
-  `tests/test_pi_assets.py`.
+- 共同业务规则在 shared facade/runtime 层测试一次。
+- MCP、Pi 和 Codex 各保留薄的入口、序列化及 host-specific 测试。
+- 状态 gate 同时覆盖合法前态、非法前态、领域状态不变和允许的操作性副作用。
+- Worker context 或操作性 prompt 变化时验证结构化 projection，而不是复述文案。
+- 修改 hook、Pi extension、worker context、skill/prompt 的真实操作合同时，运行对应真实 host ST；
+  mock 不能替代 lifecycle 证据。
 
-Do not let agents rediscover retired runtime APIs. The deleted lifecycle,
-observation, submit, abort, and host-sync APIs must not reappear in host assets.
-
-## Testing
-
-`pytest.ini` registers markers and defaults to `-n 4 --dist=load`. The default
-gate runs maintained fast tests in parallel; `integration`, `example`, `st`,
-and `st_pi` tests are skipped unless named in `-m`. See
-[tests/README.md](tests/README.md) for the full marker matrix.
-
-Default verification:
+修改过程中运行相关 test node/file；每个可提交改动运行：
 
 ```bash
-python -m pytest -q          # parallel fast gate (default: -n 4 --dist=load)
+python -m pytest -q
 git diff --check
 ```
 
-Whenever tracked Markdown changes, list the affected files with
-`git diff --name-only HEAD -- '*.md'` and run `markdownlint-cli2` on every
-listed Markdown file before handoff. For documentation and templates, also
-verify affected relative links. If a required checker is unavailable, state
-which check was skipped and why.
-
-Parallelism policy: use at most 50% of available CPUs for the default gate,
-capped at `--numprocesses 16`. `pytest.ini` sets `-n 4` as a conservative
-default for laptops; on large servers override upward:
+阶段结束按影响范围运行：
 
 ```bash
-python -m pytest -n 8 -q              # 16-core+ server
-python -m pytest -n 16 -q             # 32-core+ server (do not exceed)
-python -m pytest -p no:xdist -q       # disable parallelism entirely
+python -m pytest -m integration -q
+python -m pytest -m example -q
+python -m pytest -m codex -q
+python -m pytest -m pi -q
 ```
 
-When `python -c "import os; print(os.cpu_count())"` returns N, pick
-`-n min(N // 2, 16)`. Larger values cause git lock contention inside the
-runtime tests and stop scaling.
+真实 host ST 的命令与前置条件见 [Tests](tests/README.md)。环境不具备时明确记录未验证行为，
+不得把跳过描述成通过。默认测试使用 `pytest.ini` 的并行配置；覆盖并行度时不超过可用 CPU 的
+一半和 16 workers，避免 Git lock contention。
 
-Focused tests:
+Markdown 改动必须运行 `markdownlint-cli2` 并检查受影响的相对链接。
 
-```bash
-python -m pytest tests/test_runtime_unit.py -q
-python -m pytest tests/test_agent_hosts.py tests/test_models.py -q
-python -m pytest tests/test_codex_assets.py tests/test_pi_assets.py -q
-python -m pytest -m codex -q          # all codex-slice tests
-python -m pytest -m pi -q             # all pi-slice tests
-```
+## 调试与本地状态
 
-Opt-in slices:
+排查运行问题时：
 
-```bash
-python -m pytest -m integration -q   # multi-component end-to-end
-python -m pytest -m example -q         # examples/* fixtures drive real assets
-python -m pytest -m "(st and (st_codex or st_pi_rpc)) or st_pi" -v -s
-```
+1. 先用 `goal_plus_monitor_snapshot` 查看 Goal/Search 持久状态。
+2. Monitor 未投影所需字段时，再读取 `.gp/runs/<run_id>/` 中的准确记录。
+3. 只有分析 worker/host 行为时才查看 native transcript 或 raw log。
+4. 使用 `goal_plus_id`、`run_id`、`candidate_id`、`agent_session_id` 和 host handle 关联记录。
 
-Run ST only when Codex/Pi credentials and the `goal-plus` MCP
-connection are available. See [tests/README.md](tests/README.md) for preflight
-checks and environment variables.
+Report 是终态持久数据的静态投影，不是 live UI。生成顺序和恢复方法见
+[Runtime 调试](docs/debugging-runtime.md)。缺失的观测数据保持 unavailable，不从 transcript 猜测。
 
-## Debugging
-
-Use [docs/debugging-runtime.md](docs/debugging-runtime.md) as the first debug
-entry point.
-
-High-level rule:
-
-1. Use the read-only monitor tool first for Goal Plus/Search status.
-2. Inspect `.gp/runs/<run_id>/...` only when the monitor output does not
-   include the field or artifact you need.
-3. Inspect the host-native transcript/log only when debugging worker behavior.
-4. Cross-reference by `agent_session_id`, `candidate_id`, and host handle.
-
-Goal Plus/Search monitoring:
-
-- Prefer the MCP monitor tool `goal_plus_monitor_snapshot` for active or
-  completed Goal Plus/Search runs. It summarizes goal status, linked run state,
-  search strategy and latest-plan state, selected candidate, candidate scores,
-  verifier counts, subagent liveness, Pi token/cost/context metrics, stale
-  warnings, and report/promotion paths. Use `strategy.name` to identify the
-  initial planning mode; maintained runs have one plan.
-- If the MCP tool is not directly exposed in the current host, use the matching
-  facade instead of manually tailing files, for example:
-
-  ```bash
-  goal-plus-pi-tool goal_plus_monitor_snapshot \
-    --root .gp \
-    --args-json '{"goal_plus_id":"gp_...","run_id":"run_...","stale_after_seconds":120}' \
-    --pretty
-  ```
-
-- Use raw `.gp/` files and host logs as a fallback for missing fields,
-  transcript details, or verifier log inspection. Do not use manual file tailing
-  as the primary monitoring path.
-
-### HTML Report Export
-
-`report.html` is an on-demand rendering of durable `.gp` state, not a live UI
-owned by Pi, Codex, or a worker. `search_report(run_id)` reads the current
-Goal Plus record, every linked Search task, plans, candidates, verifier
-iterations, promotion evidence, and available host observability through the
-same monitor/statistics layer, then writes both canonical artifacts:
-
-- `.gp/runs/<run_id>/report.md`
-- `.gp/runs/<run_id>/report.html`
-
-The normal Goal Plus completion flow must not generate an intermediate report.
-The required order is `search_select`, `search_promote`, optional
-`search_apply_promotion` when the task authorizes writing back to the source,
-`goal_plus_record_search_result`, final raw-goal audit, terminal Goal Plus status,
-then one `search_report` call for every successfully recorded run. The
-result-recording call reserves the canonical Markdown and HTML paths even
-though neither file exists yet. A linked Goal Plus run rejects `search_report`
-while its record is still `active` or `needs_user`.
-
-`search_promote` refreshes a legacy report only when no linked Goal Plus record
-is still active. Standalone Search may call `search_report` after promotion.
-Merely reaching a budget limit, finishing workers, selecting a candidate,
-promoting it, or recording the result does not generate a report. The report is
-a final static view and must reflect a terminal Goal Plus status (`complete`,
-`blocked`, or `abandoned`).
-
-Reports are reproducible views over saved evidence. To generate a missing
-report or refresh an old one, call the logical MCP tool again with the existing
-run id:
-
-```text
-search_report(run_id="run_...")
-```
-
-This recovery path remains valid after the original Pi/Codex main-agent or
-worker sessions have exited. A later agent does not need the old conversation
-context: it only needs the existing `run_id` and access to the same configured
-`.gp` root. It should call `goal_plus_monitor_snapshot` first when the run id or
-artifact state is uncertain, confirm the linked Goal Plus record is terminal,
-then call `search_report`. If native host logs or observability were never
-persisted or have since been removed, generate the report anyway and leave
-those metrics unavailable; do not rerun the Goal Plus task merely to fill
-presentation gaps.
-
-When MCP tools are unavailable in Pi, use the local facade:
-
-```bash
-goal-plus-pi-tool search_report \
-  --root .gp \
-  --args-json '{"run_id":"run_..."}' \
-  --pretty
-```
-
-The HTML file is self-contained and opens directly without a web server. Never
-invent absent metrics from transcript text: unavailable persisted evidence must
-remain `Not observed`/unavailable in the report.
-
-Host log sources:
-
-- Codex: `codex exec --json`, `${CODEX_HOME:-~/.codex}/sessions/...`, and
-  optional `RUST_LOG=debug codex -c log_dir=./.codex-log`.
-- Pi RPC: metadata-only `.gp/host-logs/pi-rpc-<agent_session_id>.jsonl` and,
-  only when raw logging is explicitly enabled,
-  `.gp/host-logs/pi-rpc-<agent_session_id>.txt`.
-
-Never commit raw logs, transcripts, `.gp/`, or credentials.
-
-## Implementation Style
-
-- Keep changes scoped to the runtime/adapter/asset boundary implied by the
-  task.
-- Prefer existing Pydantic models and runtime helper methods over ad hoc JSON
-  manipulation.
-- Keep `.gp` state shape backward-readable unless a migration is explicitly
-  designed.
-- Keep verifier execution deterministic and runtime-owned.
-- Do not edit frozen verifier artifacts or candidate workspaces by hand except
-  inside tests that intentionally create fixtures.
-- Use `apply_patch` for manual file edits.
-- Use ASCII unless the target file already uses non-ASCII or the content
-  clearly needs it.
-
-## Commit Hygiene
-
-- Keep commits focused.
-- Do not commit `.gp/`, `.tmp/`, raw host logs, local transcripts, auth
-  files, or generated caches.
-- Before committing behavior changes, run `python -m pytest -q` and
-  `git diff --check`.
+- 不提交 `.gp/`、`.tmp/`、`.goal-plus-dev/`、transcript、raw log、credential 或 cache。
+- 不手工修改 FrozenSpec、candidate workspace 或既有运行状态来制造通过结果。
+- 保留用户已有修改；并行实验使用不同目标目录或 Git worktree。
+- Commit 保持单一目的，避免无关格式化和生成文件变动。

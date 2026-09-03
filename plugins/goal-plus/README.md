@@ -190,6 +190,7 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 
 | Need | Read |
 | --- | --- |
+| Stable product and runtime contract | [System Specification](SPEC.md) |
 | Architecture, shared Evidence, rollback, and end-to-end flow | [Shared Plane](docs/shared-plane.md) |
 | Adaptive Search mode and Search Scheduler behavior | [Adaptive Search](docs/adaptive-search.md) |
 | Current MCP and Pi-local tools | [API](docs/api.md) |

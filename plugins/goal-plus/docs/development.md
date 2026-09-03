@@ -4,6 +4,9 @@ Goal Plus 由共享 Python runtime、Pi package 和 Codex plugin 组成。仓库
 安装入口：`install.sh`。Codex 使用正常安装；Pi 另外提供 checkout-local 开发态，便于在不
 切换 Pi 账号配置的情况下测试当前源码。
 
+修改防御性 runtime 规则前先阅读仓库级 [开发约定](../AGENTS.md) 和
+[系统规格](../SPEC.md)。本页只说明安装、刷新和本地验证环境，不重复运行时行为合同。
+
 ## 安装模式
 
 | 命令 | Python runtime | 宿主资产 | 宿主配置 |
