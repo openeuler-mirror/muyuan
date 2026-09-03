@@ -84,6 +84,7 @@ pytest -m st_pi -k stop_gate_intercepts -v -s -rs
 
 # Required independent final checks
 pytest -m "st and st_codex" -k goal_plus_required_final_checker -v -s -rs
+pytest -m "st and st_codex" -k final_checker_rejects_then_accepts -v -s -rs
 pytest -m st_pi -k with_final_check_runs_pi_reviewer -v -s -rs
 
 # All maintained hosts
