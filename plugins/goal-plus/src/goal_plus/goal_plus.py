@@ -293,7 +293,6 @@ MUTATING_TOOL_SUFFIXES = (
 )
 GOAL_SCOPED_TOOL_SUFFIXES = (
     "goal_plus_record_triage",
-    "goal_plus_upsert_work_items",
     "goal_plus_record_work_event",
     "goal_plus_save_spec_draft",
     "goal_plus_link_search_run",
@@ -311,6 +310,8 @@ LINKED_SEARCH_TOOL_SUFFIXES = (
     "search_bind_agent_handle",
     "search_continue_agent_session",
     "search_run_verifier",
+    "search_list_allocation_decisions",
+    "search_apply_allocation_decision",
     "search_select",
     "search_promote",
     "search_apply_promotion",

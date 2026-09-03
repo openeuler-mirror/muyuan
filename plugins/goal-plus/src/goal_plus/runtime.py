@@ -5403,6 +5403,10 @@ class FileSearchRuntime:
             instructions.append(
                 "Global Evidence 使用 auto 模式：每次 search_run_verifier 返回的 global_evidence_snapshot 已自动注入最新共享 View，直接使用该快照继续。"
             )
+        if self._adaptive_search_is_enabled(frozen):
+            instructions.append(
+                "Adaptive Search 已启用：只有 search_run_verifier 返回非空 allocation_decision 才停止编辑并向 Main 交接；scheduler_status=pending 或空 decision 时继续当前循环。不要自行计算 reward、应用 decision 或启动派生 worker。"
+            )
         if frozen.supplemental_evaluation_enabled:
             instructions.append(
                 "开放式补充评价已启用；仅对 Evidence 中 supplemental_available=true 且确需深挖的条目调用 search_get_evidence_detail。补充评价不是硬分或 promotion gate。"

@@ -1473,11 +1473,11 @@ def test_worker_task_exposes_host_and_edit_contract(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("mode", "supplemental", "threshold"),
+    ("mode", "supplemental", "threshold", "adaptive"),
     [
-        ("manual", True, True),
-        ("auto", False, False),
-        ("independent", False, False),
+        ("manual", True, True, False),
+        ("auto", False, False, True),
+        ("independent", False, False, False),
     ],
 )
 def test_worker_instructions_match_enabled_capabilities(
@@ -1486,17 +1486,32 @@ def test_worker_instructions_match_enabled_capabilities(
     mode: str,
     supplemental: bool,
     threshold: bool,
+    adaptive: bool,
 ) -> None:
     monkeypatch.setenv(
         "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED",
         "1" if supplemental else "0",
     )
     project = make_project(tmp_path)
-    data = spec_with_strategy(
-        project,
-        {"name": "random", "config": {"global_evidence_mode": mode}},
-        max_parallel=1,
-    ).model_dump(mode="json")
+    strategy = {"name": "random", "config": {"global_evidence_mode": mode}}
+    if adaptive:
+        strategy.update(
+            {
+                "orchestration_mode": "adaptive_search",
+                "search_scheduler": {
+                    "host": "pi-rpc",
+                    "model": "scheduler-model",
+                    "reasoning_effort": "low",
+                    "timeout_seconds": 60,
+                    "reward": "evidence_llm_value/v3",
+                    "allocation": "value_guided_replace/v2",
+                },
+            }
+        )
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["strategy"] = strategy
+    if adaptive:
+        data["workspace"]["backend"] = "git_worktree"
     data["constraints"] = {"success_threshold": 1.0} if threshold else {}
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
@@ -1513,6 +1528,7 @@ def test_worker_instructions_match_enabled_capabilities(
     assert ("search_get_evidence_detail" in instructions) is supplemental
     assert ("success_threshold" in instructions) is threshold
     assert ("否则正常收尾" in instructions) is threshold
+    assert ("allocation_decision" in instructions) is adaptive
 
 
 def test_promote_requires_search_runtime_selection(tmp_path: Path) -> None:

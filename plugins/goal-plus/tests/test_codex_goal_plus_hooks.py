@@ -2040,6 +2040,86 @@ def test_search_candidate_autoresearch_lease_blocks_until_runtime_then_releases(
     assert released["stop_attempts"] == 2
 
 
+def test_adaptive_retirement_releases_candidate_lease(tmp_path: Path) -> None:
+    search_runtime, run_id, candidate_id, agent_session_id = _codex_search_worker(
+        tmp_path,
+        worker_budget={
+            "min_runtime_seconds": 300,
+            "min_verifier_runs": 2,
+            "max_runtime_seconds": 420,
+            "on_exceed": "interrupt",
+        },
+        search_scheduler=True,
+    )
+    search_root = search_runtime.root_dir
+    goal_runtime = FileGoalPlusRuntime(search_root)
+    goal = goal_runtime.create_goal("Adaptively optimize model throughput")
+    goal_runtime.activate_session(
+        goal.goal_plus_id,
+        {"host": "codex", "session_id": "parent-session"},
+    )
+    goal_runtime.link_search_run(
+        goal.goal_plus_id,
+        search_runtime._load_run(run_id).frozen_spec_id,
+        run_id,
+    )
+    agent_identity = "adaptive-search-worker"
+    _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PostToolUse",
+            "agent_id": agent_identity,
+            "agent_type": "search_candidate_agent",
+            "tool_name": "mcp__goal-plus__search_get_agent_context",
+            "tool_input": {"agent_session_id": agent_session_id},
+        },
+    )
+
+    active = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "SubagentStop",
+            "session_id": "child-session",
+            "agent_id": agent_identity,
+        },
+    )
+    assert json.loads(active.stdout)["decision"] == "block"
+
+    candidate = search_runtime._load_candidate_record(run_id, candidate_id)
+    search_runtime._write_candidate_record(
+        run_id,
+        candidate.model_copy(
+            update={
+                "allocation_eligibility": "retired",
+                "retired_by_decision_id": "allocation_0001",
+            }
+        ),
+    )
+    retired = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "SubagentStop",
+            "session_id": "child-session",
+            "agent_id": agent_identity,
+        },
+    )
+
+    assert retired.stdout == ""
+    lease = json.loads(
+        (
+            search_root
+            / "host-logs"
+            / "codex-autoresearch-leases"
+            / f"{agent_session_id}.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert lease["status"] == "released"
+    assert lease["release_reason"] == "allocation_decision"
+
+
 def test_ordinary_subagent_stop_does_not_inherit_parent_next_action(
     tmp_path: Path,
 ) -> None:

@@ -1080,7 +1080,7 @@ def test_high_confidence_spec_draft_links_search_and_final_audit(tmp_path) -> No
     assert runtime.gate(record.goal_plus_id, event="stop", context={}).decision == "allow"
 
 
-def test_pre_tool_use_defers_promotion_selection_check_to_search_runtime(tmp_path) -> None:
+def test_pre_tool_use_enforces_goal_and_linked_run_ownership(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("Optimize kernel latency")
     runtime.record_triage(
@@ -1124,6 +1124,17 @@ def test_pre_tool_use_defers_promotion_selection_check_to_search_runtime(tmp_pat
         event="pre_tool_use",
         context={"tool_name": "search_promote", "input": {"run_id": "run_other"}},
     )
+    wrong_allocations = [
+        runtime.gate(
+            record.goal_plus_id,
+            event="pre_tool_use",
+            context={"tool_name": tool_name, "input": {"run_id": "run_other"}},
+        )
+        for tool_name in (
+            "search_list_allocation_decisions",
+            "search_apply_allocation_decision",
+        )
+    ]
     wrong_goal = runtime.gate(
         record.goal_plus_id,
         event="pre_tool_use",
@@ -1133,8 +1144,13 @@ def test_pre_tool_use_defers_promotion_selection_check_to_search_runtime(tmp_pat
         },
     )
     assert wrong_run.decision == "block"
+    assert all(item.decision == "block" for item in wrong_allocations)
     assert wrong_goal.decision == "block"
     assert "GoalPlusOwnershipMismatch" in (wrong_run.reason or "")
+    assert all(
+        "GoalPlusOwnershipMismatch" in (item.reason or "")
+        for item in wrong_allocations
+    )
     assert "GoalPlusOwnershipMismatch" in (wrong_goal.reason or "")
     assert _goal_domain_state(runtime.status(record.goal_plus_id)) == domain_before
 

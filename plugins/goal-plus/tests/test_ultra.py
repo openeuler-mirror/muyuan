@@ -486,5 +486,4 @@ def test_ultra_assets_use_native_hosts_without_dag_planning() -> None:
     assert 'role: "ordinary"' in pi
     assert "goal_plus_work_item" in pi
     assert '"bind"' in pi_worker
-    assert '"native_operation":"spawn_agent"' in codex
     assert "deepseek-harness" in docs

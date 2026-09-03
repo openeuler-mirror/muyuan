@@ -252,7 +252,7 @@ worker 应立即停止并报告。main 修复 source-owned verifier，使临时�
 | `goal_plus_monitor_snapshot(...)` | Goal/subagent dispatch、Search、session、host 和 feature plugin 的组合视图 |
 | `search_status(run_id)` | run state、candidate count 和 best score |
 | `search_list_history(run_id, top_n, sort_by)` | candidate ranking 和研究汇总 |
-| `search_list_iterations(run_id, candidate_id)` | 单个 candidate 可能很大的完整 verifier history |
+| `search_list_iterations(agent_session_id)` | 当前 candidate 可能很大的完整 verifier history |
 | `search_get_agent_context(agent_session_id)` | 有界的 best/recent context、恢复字段和 `results.tsv` 路径 |
 | `search_get_global_evidence(agent_session_id)` | 当前 Evidence mode 允许的 settled worker Evidence 和 View |
 | `search_get_evidence_detail(agent_session_id, candidate_id, iteration)` | 按需 supplemental evaluation |

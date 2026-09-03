@@ -28,7 +28,7 @@ from goal_plus.models import (
     WorkspaceCapacityEstimate,
 )
 from goal_plus.runtime import FileSearchRuntime
-from goal_plus.tools import GoalPlusTools, SearchTools
+from goal_plus.tools import GoalPlusTools, SearchTools, require_tool_role
 from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
 
@@ -100,6 +100,20 @@ def goal_plus_record() -> GoalPlusRecord:
         created_at="2026-07-06T00:00:00Z",
         updated_at="2026-07-06T00:00:00Z",
     )
+
+
+def test_candidate_role_cannot_manage_adaptive_allocation() -> None:
+    for tool_name in (
+        "search_list_allocation_decisions",
+        "search_apply_allocation_decision",
+    ):
+        with pytest.raises(PermissionError, match="GoalPlusRoleDenied"):
+            require_tool_role(
+                "candidate",
+                tool_name,
+                caller_agent_session_id="agent_001",
+                requested_agent_session_ids=[],
+            )
 
 
 def test_search_bootstrap_requires_active_host_verified_goal(tmp_path: Path) -> None:
