@@ -59,19 +59,19 @@ ScheduleTask 索引 reward，普通调用读取当前 candidate 历史，确认 
 历史。不保存 value tree 或 candidate/report reward 副本，也不存在 run-root tree、graph、backup
 event、action edge 或 hindsight 投影。
 
-lazy allocation 使用上一已结算节点的 flag：若上一 flag 是 `false` 或尚未完成，当前 worker
-不等待 annotation/scheduler 链；若上一 flag 是 `true`，runtime 直接把当前 settlement task 视为
+lazy allocation 使用上一已结算节点的 flag：若上一 flag 是 `false` 或尚未完成，runtime 不阻塞
+当前 verifier response；若上一 flag 是 `true`，runtime 直接把当前 settlement task 视为
 确认任务并等待 AnnotationTask 和 scheduler 完成。只有当前 flag 再次为 `true` 且 plan 合法时，
 runtime 才持久化 `AllocationDecision`。plan 来自独立的 `SchedulerOutput.decision`，包含全部退休
 candidate、依据、预留派生 candidate id、精确来源节点、探索方向和可选 worker budget。
 `allocation_flag`、lazy confirmation 和 Decision 输出条件属于 runtime 公共协议，不属于
-allocation policy。scheduler 自主选择这些字段；worker 和父 agent 不计算 reward，不补写或改写
-Decision。
+allocation policy。reward、flag 和 Decision 只由 scheduler 产出，runtime 负责校验和持久化，host
+只消费持久化结果。
 
 AnnotationTask 是 ScheduleTask 创建的弱依赖：必须先终态，但 terminal_error 仍以 `view=null`
 和历史补偿提示创建 ScheduleTask。任一侧失败不改变硬 score、已完成 settlement、最终选择或
-promotion。`scheduler_status=pending` 且 `allocation_decision=null` 不是等待条件，worker 继续当前
-循环且不轮询；此时 `schedule_task_id` 可以为空。`search_select` 和 promotion 始终只使用硬
+promotion。`scheduler_status=pending` 且 `allocation_decision=null` 表示本次 response 没有调度
+Decision；此时 `schedule_task_id` 可以为空。`search_select` 和 promotion 始终只使用硬
 verifier score；reward、UCT 和 flag 只服务 scheduler 调度。
 
 ## Decision 执行

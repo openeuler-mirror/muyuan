@@ -394,6 +394,8 @@ def test_codex_assets_document_runtime_owned_scheduler_allocation() -> None:
     assert "一次无 session 推理" in skill
     assert "可恢复的异步" in skill
     assert "scheduler_status=pending" in skill
+    assert "worker 继续当前" not in skill
+    assert "worker 和父 agent 不计算 reward" not in skill
     assert "runtime 自动" in skill
     assert "allocation_flag" in skill
     assert "completed ScheduleTask" in normalized_skill
@@ -406,15 +408,9 @@ def test_codex_assets_document_runtime_owned_scheduler_allocation() -> None:
     assert "AnnotationTask 是 ScheduleTask 创建的弱依赖" in skill
     assert "terminal_error" in skill
     assert "只禁止下一轮 iteration" in skill
-    assert "allocation_decision" in worker
-    assert "`context.search_scheduler_enabled == true`" in worker
-    assert "只有 `search_run_verifier` 返回非空" in worker
-    assert "才会因 Scheduler 调度停止编辑" in worker
-    assert "`scheduler_status=pending`" in worker
-    assert "本身既不是等待条件，也不是停止条件" in worker
-    assert "未触发其他停止条件" in worker
-    assert "worker 不计算 reward" in worker
-    assert "不启动派生 worker" in worker
+    assert "allocation_decision" not in worker
+    assert "search_scheduler_enabled" not in worker
+    assert "scheduler_status=pending" not in worker
     assert "decision 为空时" in skill
     assert "全局停止和同候选 continuation" in skill
     assert "expansion_action_context" not in worker

@@ -5430,6 +5430,14 @@ class FileSearchRuntime:
                 ]
             )
         instructions.extend(proposal.instructions)
+        if self._adaptive_search_is_enabled(frozen):
+            instructions.append(
+                "Adaptive Search scheduler 已启用：仅就 Scheduler 调度而言，只有 "
+                "search_run_verifier 返回非空 allocation_decision 时才停止编辑并返回父 agent；"
+                "scheduler_status=pending 或空 decision 都不要求等待或停止。若未触发 "
+                "candidate_task 的其他停止条件，继续当前自主循环。不要自行计算 reward、"
+                "应用 decision 或启动派生 worker。"
+            )
 
         hypothesis = proposal.hypothesis or proposal.intent or f"候选 {candidate_id}"
         selected_model = (

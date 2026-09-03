@@ -3274,6 +3274,8 @@ def test_get_agent_context_has_only_authoritative_worker_fields(tmp_path: Path) 
     assert context["candidate_task"]["candidate_id"] == tasks[0].candidate_id
     assert context["orchestration_mode"] == "parallel_loops"
     assert context["search_scheduler_enabled"] is False
+    instructions = " ".join(context["candidate_task"]["instructions"])
+    assert "Adaptive Search scheduler 已启用" not in instructions
     assert "expansion_action_context" not in context
     assert "history" not in context
     assert "iterations" not in context

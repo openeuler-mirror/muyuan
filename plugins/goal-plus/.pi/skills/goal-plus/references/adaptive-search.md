@@ -53,18 +53,18 @@ pending/running/retry_wait task。`ScheduleTask.output` 是 reward/flag 的唯�
 allocation 时读取全 candidate 历史。系统不保存 value tree 或 candidate/report reward 副本，也不
 维护 run-root tree、graph、backup event、action edge 或 hindsight。
 
-lazy allocation 根据上一已完成节点的 flag 决定是否等待当前 annotation/scheduler 链：上一 flag
-为 `false` 时不等待；上一 flag 为 `true` 时，runtime 直接把当前 task 视为确认任务并等待。只有
+lazy allocation 根据上一已完成节点的 flag 决定 runtime 是否阻塞当前 verifier response：上一 flag
+为 `false` 时不阻塞；上一 flag 为 `true` 时，runtime 直接把当前 task 视为确认任务并等待。只有
 当前 flag 再次为 `true` 且独立的 `SchedulerOutput.decision` 合法时，runtime 才持久化标准
 `AllocationDecision`，其中包含全部退休 candidate、依据、预留派生 candidate id、精确 settled
 source node、探索方向和可选 worker budget。普通异步 task 不读取全 candidate reward 历史，也不
-生成 Decision 草案；只有确认 task 获得全 candidate allocation context。Pi worker、main 和
-supervisor 不计算 reward、不选择来源、不补写 Decision，也不轮询 task。
+生成 Decision 草案；只有确认 task 获得全 candidate allocation context。reward、flag 和 Decision
+只由 scheduler 产出，runtime 负责校验和持久化，host 只消费持久化结果。
 
 AnnotationTask 是 ScheduleTask 创建的弱依赖：必须先终态，但 terminal_error 仍以 `view=null` 和
 历史补偿提示创建 ScheduleTask。任一侧失败不改变硬 score、settlement、selection 或 promotion。
-`scheduler_status=pending` 且 `allocation_decision=null` 不是等待条件，继续当前 worker；此时
-`schedule_task_id` 可以为空。
+`scheduler_status=pending` 且 `allocation_decision=null` 表示本次 response 没有调度 Decision；
+此时 `schedule_task_id` 可以为空。
 
 ## Decision 执行
 

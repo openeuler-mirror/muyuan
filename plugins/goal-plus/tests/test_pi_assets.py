@@ -292,6 +292,8 @@ def test_pi_assets_document_runtime_owned_scheduler_allocation() -> None:
     assert "ScheduleTask" in skill
     assert "可恢复、可并发、一次性无 session" in skill
     assert "scheduler_status=pending" in skill
+    assert "继续当前 worker" not in skill
+    assert "Pi worker、main 和 supervisor 不计算 reward" not in skill
     assert "自动从 `budget.max_parallel` 推导" in normalized_skill
     assert "不设置单份 Decision" in normalized_skill
     assert "全部 candidate" in skill
@@ -304,15 +306,9 @@ def test_pi_assets_document_runtime_owned_scheduler_allocation() -> None:
     assert "AnnotationTask 是 ScheduleTask 创建的弱依赖" in skill
     assert "terminal_error" in skill
     assert "执行公共 skill 的全局停止 policy" in skill
-    assert "allocation_decision" in worker
-    assert "`context.search_scheduler_enabled == true`" in worker
-    assert "只有 `search_run_verifier` 返回非空" in worker
-    assert "才会因 Scheduler 调度停止编辑" in worker
-    assert "`scheduler_status=pending`" in worker
-    assert "本身既不是等待条件，也不是停止条件" in worker
-    assert "未触发其他停止条件" in worker
-    assert "worker 不计算 reward" in worker
-    assert "不启动派生 worker" in worker
+    assert "allocation_decision" not in worker
+    assert "search_scheduler_enabled" not in worker
+    assert "scheduler_status=pending" not in worker
     assert "expansion_action_context" not in worker
     assert "search_scheduler: Type.Optional" in extension
     assert "max_candidates: Type.Optional" in extension
