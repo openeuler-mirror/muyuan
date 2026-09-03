@@ -3,6 +3,7 @@ command = "goal-plus"
 args = ["--root", ".gp"]
 env_vars = [
   "CODEX_HOME",
+  "PI_CODING_AGENT_DIR",
   "OPENAI_API_KEY",
   "SFORGE_AGENT_API_KEY",
   "GOAL_PLUS_OUTER_DEADLINE_AT",

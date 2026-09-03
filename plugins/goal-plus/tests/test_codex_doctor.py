@@ -246,6 +246,7 @@ def test_plugin_assets_keep_project_hook_contract() -> None:
     assert manifest["mcpServers"] == "./.mcp.json"
     assert mcp["mcpServers"]["goal-plus"]["command"] == "goal-plus"
     assert mcp["mcpServers"]["goal-plus"]["args"] == ["--root", ".gp"]
+    assert "PI_CODING_AGENT_DIR" in mcp["mcpServers"]["goal-plus"]["env_vars"]
 
 
 def test_enabled_plugin_rejects_duplicate_ancestor_goal_plus_hooks(
