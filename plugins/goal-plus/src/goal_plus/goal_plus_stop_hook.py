@@ -1797,6 +1797,11 @@ def _handle_session_start(
 ) -> None:
     if _is_child_context(hook_input):
         return
+    # Codex emits SessionStart(source="compact") transparently in the middle of
+    # the current turn. It keeps the same session and turn authorization, so it
+    # must not be treated like a fresh startup, resume, or clear boundary.
+    if hook_input.get("source") == "compact":
+        return
     session_id = _session_id(hook_input)
     goal_id = _select_session_goal_id(search_root, session_id)
     if goal_id is not None and session_id is not None:

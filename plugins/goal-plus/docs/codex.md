@@ -133,8 +133,10 @@ Selection、promotion 和 final audit 始终由 parent 所有。
 MCP/CLI 直调都不能创建记录。`goal_plus_create`/`goal_plus_update_goal` 是 deny-only tombstone，
 不再存在 `PostToolUse(goal_plus_create)` 所有权 fallback。
 
-`SessionStart` 只保留可恢复的持久状态，不注入或授权 active goal；普通用户消息会解除该 session 的
-Goal Plus 执行绑定。必须用 `$goal-plus resume` 才能继续。未授权 turn 对 Goal Plus/Search 变更的
+`SessionStart` 的 `startup`、`resume`、`clear` 或未知 source 只保留可恢复的持久状态，不注入或
+授权 active goal；普通用户消息也会解除该 session 的 Goal Plus 执行绑定。必须用
+`$goal-plus resume` 才能继续。宿主在同一 turn 内透明触发的 `source=compact` 不构成新授权，
+也不会撤销该 session 已有的精确 host-command 绑定。未授权 turn 对 Goal Plus/Search 变更的
 `PreToolUse` 检查 fail closed；只有显示和只读监控故障可以 fail open。
 普通 subagent 不继承 parent 的 next action。
 

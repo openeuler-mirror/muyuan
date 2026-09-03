@@ -90,7 +90,8 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 自然语言提及、skill 自动发现、SessionStart、普通 child、candidate worker、直接 MCP 调用和
 generic CLI 都不构成授权。Search bootstrap、Main 后续操作、candidate 操作和终态 report
 分别使用其可验证的归属依据；run 完成链接后，Main 对该 run 的操作必须与当前 Goal 的持久化
-链接一致。拒绝时不得改变领域状态。
+链接一致。宿主在同一 turn 内透明触发的 Codex `SessionStart(source=compact)` 只保留已有绑定，
+不创建授权；其他 SessionStart source 不保留绑定。拒绝时不得改变领域状态。
 
 ## Goal 生命周期
 
