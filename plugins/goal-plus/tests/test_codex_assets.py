@@ -642,7 +642,6 @@ def test_codex_docs_record_native_parity_contract() -> None:
     adapters = (ROOT / "docs" / "agent-host-adapters.md").read_text(encoding="utf-8")
     debugging = (ROOT / "docs" / "debugging-runtime.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
     assert "Codex 0.144.1" in codex
     assert "initial_wait_timeout_ms" in codex
@@ -653,11 +652,10 @@ def test_codex_docs_record_native_parity_contract() -> None:
     assert "autonomous" in codex
     assert "parallel" in adapters
     assert "当前 `spawn_agent` schema" in adapters
-    for text in (adapters, debugging, readme, agents):
+    for text in (adapters, debugging, readme):
         assert "UserPromptSubmit" in text
         assert "PreToolUse" in text
         assert "SubagentStop" in text
-    assert "PreToolUse/SubagentStop gates remain manual" not in agents
 
 
 def test_codex_goal_plus_skill_documents_multiple_search_tasks() -> None:

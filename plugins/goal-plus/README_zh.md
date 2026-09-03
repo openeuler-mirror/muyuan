@@ -154,6 +154,7 @@ Selected Git Head 和 Artifact Hash，之后才生成可被 Git 应用的 Patch�
 
 | 需求 | 文档 |
 | --- | --- |
+| 稳定的产品与 runtime 合同 | [系统规格](SPEC.md) |
 | 架构、共享 Evidence、回滚和端到端流程 | [Shared Plane](docs/shared-plane.md) |
 | 当前 MCP 与 Pi 本地工具 | [API](docs/api.md) |
 | 宿主能力对比 | [Agent Host Adapters](docs/agent-host-adapters.md) |
