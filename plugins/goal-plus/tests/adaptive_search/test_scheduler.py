@@ -506,6 +506,15 @@ def test_annotation_terminal_hook_uses_frozen_scheduler_config(
     context = runtime.get_agent_context(session.agent_session_id)
     assert context["orchestration_mode"] == "adaptive_search"
     assert context["search_scheduler_enabled"] is True
+    task_instructions = context["candidate_task"]["instructions"]
+    instructions = " ".join(task_instructions)
+    assert "Adaptive Search scheduler 已启用" in instructions
+    assert "仅就 Scheduler 调度而言" in instructions
+    assert "只有 search_run_verifier 返回非空 allocation_decision" in instructions
+    assert "scheduler_status=pending 或空 decision 都不要求等待或停止" in instructions
+    assert "candidate_task 的其他停止条件" in instructions
+    assert "不要自行计算 reward、应用 decision 或启动派生 worker" in instructions
+    assert task_instructions[-1].startswith("Adaptive Search scheduler 已启用")
     runtime.on_evidence_annotation_terminal(run_id)
 
     assert calls == [run_id]

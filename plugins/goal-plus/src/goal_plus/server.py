@@ -271,8 +271,8 @@ def create_mcp(
 
         每项只包含 candidate_id、iteration、score、keep/retain/discard/failure disposition、
         verifier attempt commit、可能延迟的客观 View，以及可选 supplemental evaluation
-        的可用标记；启用 shared_dir 时还可包含已绑定 Tool View 的共享工具。任何 View 为 null
-        都不影响 verifier Evidence；worker 不需要等待，可先依据 Evidence 独立探索。
+        的可用标记。任何 View 为 null 都不影响 verifier Evidence；worker 不需要等待，
+        可先依据 Evidence 独立探索。
         """
         return tools.search_get_global_evidence(agent_session_id)
 
@@ -300,11 +300,9 @@ def create_mcp(
         tool_id: str,
         snapshot_hash: str,
     ) -> dict[str, Any]:
-        """按精确 id/hash 复制已绑定 Tool View 的快照，供阅读源码或自主复用。
+        """按 Global Evidence 中的精确 id/hash 复制 shared-dir 快照到临时 inbox。
 
-        复制不要求调用原工具。只有直接执行、导入或依赖原快照时，才先在当前
-        workspace 验证入口、依赖、路径假设和输出语义。下一次 worker verifier
-        会消费 receipt；当前 adopted_tools 只证明快照曾复制进本轮上下文。
+        receipt 由下一次 worker verifier 消费；具体采用契约见 candidate instructions。
         """
         return tools.search_copy_shared_tool(agent_session_id, tool_id, snapshot_hash)
 
@@ -324,17 +322,8 @@ def create_mcp(
     ) -> dict[str, Any]:
         """将显式的 candidate tool drafts 安全复制到下一次 verifier staging。
 
-        source paths 必须位于当前 candidate 的 `.tmp/tool-drafts/` 下。首次发布使用
-        publication_intent=new。搜索期间的测试/checker/harness，以及 candidate 自己编写
-        并纳入最终交付的正式回归测试可以 staging；candidate 产品实现、冻结
-        verifier/runner/grader、隐藏答案或评分逻辑不可 staging。共享测试不得复制、代理
-        或近似重建隐藏反馈。
-        family 更新仅在 tool_family_catalog 的
-        revision_allowed=true 时引用 revision_head.tool_id：capability_extension 必须
-        新增稳定 capability/coverage key；adoption_fix 必须有同 family 的真实
-        copy/adoption 事实和具体缺陷；contract_change 必须为有价值的入口、输入、输出
-        或依赖变化新增稳定契约键。不得靠改名或同义键制造增量。该工具只执行 staging；
-        只有归属于当前 worker 且通过的 process verifier 才能发布快照。
+        source paths 必须位于当前 candidate 的 `.tmp/tool-drafts/` 下。该工具只执行
+        staging；路径和 revision 合法性由 runtime 校验，发布由 passing verifier 结算。
         """
         return tools.search_stage_shared_tool(
             agent_session_id,
@@ -378,9 +367,7 @@ def create_mcp(
         """Subagent 带 `agent_session_id` 自评分；主流程最终验证不带它。
 
         subagent 传入准确 `run_id`、`candidate_id`、自己的 `agent_session_id`、一句话
-        `hypothesis` 并省略 `scope`；启用 shared-dir 时还可提交结构化
-        `toolization_decision`。缺失或与实际 staging 不匹配只记录 advisory，不改变评分、
-        结算、选择或 promotion；决策保存在 iteration 中但不进入 Global Evidence。
+        `hypothesis` 并省略 `scope`，同时遵守 candidate instructions。
         hypothesis 应客观概括本轮实际尝试。运行时随后在继承的 `workspace/results.tsv`
         中追加且只追加一条已验证记录并提交账本。主 agent 不带 `agent_session_id` 的
         内部复验不要求 hypothesis；`promotion` 只属于主流程。带

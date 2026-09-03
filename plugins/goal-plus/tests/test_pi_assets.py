@@ -292,6 +292,8 @@ def test_pi_assets_document_runtime_owned_scheduler_allocation() -> None:
     assert "ScheduleTask" in skill
     assert "可恢复、可并发、一次性无 session" in skill
     assert "scheduler_status=pending" in skill
+    assert "继续当前 worker" not in skill
+    assert "Pi worker、main 和 supervisor 不计算 reward" not in skill
     assert "自动从 `budget.max_parallel` 推导" in normalized_skill
     assert "不设置单份 Decision" in normalized_skill
     assert "全部 candidate" in skill
@@ -304,15 +306,9 @@ def test_pi_assets_document_runtime_owned_scheduler_allocation() -> None:
     assert "AnnotationTask 是 ScheduleTask 创建的弱依赖" in skill
     assert "terminal_error" in skill
     assert "执行公共 skill 的全局停止 policy" in skill
-    assert "allocation_decision" in worker
-    assert "`context.search_scheduler_enabled == true`" in worker
-    assert "只有 `search_run_verifier` 返回非空" in worker
-    assert "才会因 Scheduler 调度停止编辑" in worker
-    assert "`scheduler_status=pending`" in worker
-    assert "本身既不是等待条件，也不是停止条件" in worker
-    assert "未触发其他停止条件" in worker
-    assert "worker 不计算 reward" in worker
-    assert "不启动派生 worker" in worker
+    assert "allocation_decision" not in worker
+    assert "search_scheduler_enabled" not in worker
+    assert "scheduler_status=pending" not in worker
     assert "expansion_action_context" not in worker
     assert "search_scheduler: Type.Optional" in extension
     assert "max_candidates: Type.Optional" in extension
@@ -374,30 +370,22 @@ def test_pi_workspace_schema_needs_no_task_skill_configuration() -> None:
     assert 'Type.Literal("artifact_only")' in workspace_schema
 
 
-def test_pi_goal_plus_skill_uses_the_same_family_revision_contract() -> None:
+def test_pi_goal_plus_skill_defers_shared_dir_worker_contract_to_runtime() -> None:
     text = (ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md").read_text(
         encoding="utf-8"
     )
 
-    for expected in (
+    for runtime_only_detail in (
+        "shared_dir",
+        "toolization_decision",
         "revision_allowed=true",
         "revision_head.tool_id",
         "capability_extension",
         "adoption_fix",
-        "contract_change",
-        "新增稳定契约键",
-        "不得靠改名或同义键制造增量",
-        "revision_allowed=false",
-        "revision_blocker",
         "no_toolizable_material",
-        "existing_family_sufficient",
-        "no_material_tool_delta",
         "draft_not_ready",
-        "max_published_versions_reached",
     ):
-        assert expected in text
-    assert "no_material_tool_delta` 仅用于已有" in text
-    assert "catalog 尚无 family 时拒绝" in text
+        assert runtime_only_detail not in text
 
 
 def test_pi_skill_documents_post_tool_time_advisory() -> None:
@@ -708,29 +696,21 @@ def test_pi_extension_has_precise_tool_schemas_and_error_classification() -> Non
     assert "maxItems: 32" in stage_schema
     assert "maxItems: 64" in stage_schema
     assert stage_schema.count("uniqueItems: true") == 2
-    assert "candidate_task.share_out_dir 非空表示已启用 shared_dir" in text
-    assert "revision_head 指定唯一更新基线" in text
-    assert "revision_allowed、published_version_count" in text
-    assert "revision_allowed=false 时使用 revision_blocker 的准确值" in text
-    assert "adoption_fix 必须有同 family 的真实 copy/adoption 事实" in text
-    assert "不要求制造新键" in text
-    assert "draft_not_ready 只用于具体的安全性" in text
-    assert "供阅读源码或自主复用；复制不要求调用原工具" in text
-    assert "当前 adopted_tools 只证明快照曾复制进本轮上下文" in text
-    assert "toolization_decision 使用 repeated_workflow、domain_construction_or_probe" in text
-    assert "behavior_or_invariant_checker" in text
-    assert "reproducer_fixture_or_case_generator" in text
-    assert "parser_trace_or_comparator" in text
-    assert "peer_setup_or_feedback_reduction" in text
-    assert "candidate 自己编写并纳入最终交付的正式回归测试" in text
-    assert "测试框架、test_ 文件名、属于正式测试或验证同一目标行为" in text
-    assert "candidate 产品实现、冻结 verifier/runner/grader、隐藏答案/评分逻辑" in text
-    assert "正式回归测试可发布" in text
-    assert "no_toolizable_material 表示累计回顾后确实没有工具" in text
-    assert "catalog 尚无 family 时拒绝" in text
-    assert "toolization_decision：staged 至少包含一个当前 capability-oriented signal" in text
-    assert "toolization_review_missing、toolization_stage_missing 或 toolization_decision_mismatch" in text
-    assert "初始创建并实际并行工作的候选 Agent 数量" in text
+    assert "包括 candidate_task.instructions" in text
+    assert "按 Global Evidence 中的 tool_id 和 snapshot_hash" in text
+    assert "该工具只负责 staging" in text
+    assert "必须提供一句话 hypothesis 并遵守 candidate_task.instructions" in text
+    descriptions = text.split("const RuntimeToolDescriptions", 1)[1].split(
+        "function resolveToolDescription", 1
+    )[0]
+    for runtime_only_detail in (
+        "behavior_or_invariant_checker",
+        "no_toolizable_material",
+        "draft_not_ready",
+        "toolization_review_missing",
+    ):
+        assert runtime_only_detail not in descriptions
+    assert "初始 candidate 数和实时活跃 candidate 上限 K" in text
     assert "标准流程令 requested_k 等于 max_parallel" in text
     freeze_schema = text.split("search_freeze_spec: Type.Object", 1)[1].split(
         "search_create: Type.Object", 1

@@ -200,14 +200,26 @@ def test_process_verifier_publishes_share_out_into_global_evidence(
     assert "shared_dir" not in producer_context["candidate_task"]
     assert (shared_dir / "index.json").is_file()
     instructions = " ".join(producer_context["candidate_task"]["instructions"])
-    assert "shared_dir 已启用" in instructions
+    assert "shared_dir 发布方规则" in instructions
+    assert "降低同一 run 内诊断、验证或复现成本" in instructions
+    assert "按用途而非文件名分类" in instructions
     assert "candidate 产品实现" in instructions
-    assert "冻结评分逻辑" in instructions
+    assert "冻结 verifier/runner/grader、隐藏答案或评分逻辑" in instructions
     assert ".tmp/tool-drafts" in instructions
     assert "search_stage_shared_tool" in instructions
+    assert "tool_family_catalog 返回的合法 revision_head 和 revision_blocker" in instructions
+    assert "不得用改名或同义键制造增量" in instructions
+    assert "no_toolizable_material 表示累计回顾后没有工具" in instructions
+    assert "existing_family_sufficient 表示现有 family 已覆盖需求" in instructions
+    assert "no_material_tool_delta 表示已有 family 没有实质 revision" in instructions
+    assert "draft_not_ready 只表示具体的安全" in instructions
     assert "toolization_decision" in instructions
+    assert "不改变 score、disposition、selection 或 promotion" in instructions
     assert "search_copy_shared_tool" in instructions
-    assert "共享工具及其 View 不改变正式 Evidence、排名或 promotion" in instructions
+    assert "shared_dir 采用方规则" in instructions
+    assert "Tool View 不代表推荐或源码行为" in instructions
+    assert "检查 manifest 和源码后自主决定是否采用" in instructions
+    assert "receipt 只表示复制，不表示采用" in instructions
     assert str(shared_dir) not in instructions
     assert "shared/index.json" not in instructions
 
