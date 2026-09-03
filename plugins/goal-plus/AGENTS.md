@@ -80,6 +80,11 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 或执行前校验 identity、归属、artifact、容量、当前状态和幂等前态。AGENTS、SPEC、README、
 skill 和普通 prompt 可以解释规则，但不能成为确定性规则的唯一防线。
 
+例如，skill 只需告诉 candidate 在实质修改后调用 `search_run_verifier`。Host adapter 负责提供
+可信的 session identity；shared facade/runtime 校验该 session 的 run/candidate 归属、workspace
+和 verifier 前态后才执行并记录 Evidence。不要把这些校验复述进 Codex、Pi 的 prompt，也不要
+让 host adapter 各自实现一套。
+
 ### 保持状态边界
 
 - Search bootstrap、Main 后续操作、candidate 操作和终态 report 分别使用其可验证的归属依据；
