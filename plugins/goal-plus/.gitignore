@@ -14,6 +14,8 @@ __pycache__/
 !/examples/edgebench-ad-placement/workspace-template/.goal-plus-verifiers/ad_local_score.py
 !/examples/model-optimize/workspace-template/.goal-plus-verifiers/
 !/examples/model-optimize/workspace-template/.goal-plus-verifiers/torch_cpu_tokens.py
+!/examples/final-check-skill-guard/workspace-template/.goal-plus-verifiers/
+!/examples/final-check-skill-guard/workspace-template/.goal-plus-verifiers/score_throughput.py
 .search/
 .tmp/
 /examples/circle-packing/workspace/
