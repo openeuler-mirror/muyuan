@@ -48,9 +48,10 @@ host 负责，详见
 的解析，以及 Pi extension 对精确 `/goal-plus...` 的 command handler 可以调用 runtime 的
 host-command control path。每次授权都会持久化 host、transport、command、action、session、
 native entry、输入 hash、时间和 invocation id；重复 invocation id 幂等返回同一记录。
-普通消息、skill 自动加载、MCP/CLI 直调、错误 host 前缀和 SessionStart 都不授权后续变更；
-Codex 同一 turn 内的追加 `UserPromptSubmit` 和 `SessionStart(source=compact)` 仅保留已有的
-host-command 绑定，不创建新授权。
+普通消息、skill 自动加载、MCP/CLI 直调、错误 host 前缀和 SessionStart 都不能创建或重新绑定
+session。普通消息不会撤销精确 host command 已建立、仍处于 active 的同一原生 session 绑定；
+SessionStart 是否仍属同一原生 session 由 host adapter 根据可信 lifecycle identity 判定，不能仅凭
+持久化 active ID 自动授权新 session。
 
 ### Host Command Config
 

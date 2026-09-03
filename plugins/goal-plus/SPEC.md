@@ -94,6 +94,10 @@ generic CLI 都不构成授权。Search bootstrap、Main 后续操作、candidat
 已有绑定，不创建授权；新 turn 的普通 `UserPromptSubmit` 和其他 SessionStart source 不保留
 绑定。拒绝时不得改变领域状态。
 
+“不构成授权”表示这些入口不能创建或重新绑定 session；普通消息也不会撤销由精确 host
+command 建立、仍处于 active 的同一原生 session 绑定。只有 session identity 变化、显式
+lifecycle 结束或终态结算才会使该绑定失效；新 session 必须使用精确的 resume command。
+
 ## Goal 生命周期
 
 一条 Goal 的正常流程是：

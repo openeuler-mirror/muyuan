@@ -9,7 +9,7 @@ description: 仅供 Goal Plus Main Agent 运行、恢复或编辑 Codex Goal Plu
 candidate 边界、workspace、verifier、promotion 和 feature gate 由 runtime 强制执行；以工具
 返回的 schema、`next_action` 和错误为准。
 
-当前轮必须已有 Codex host command 注入的 active `goal_plus_id`。通过当前 registry 中的原生
+从 Codex host 已绑定的 session 读取 active `goal_plus_id`。通过当前 registry 中的原生
 `goal_plus_*` 和 `search_*` MCP tools 操作状态；不要通过 shell 或手写 client 调用 server，
 也不要用 MCP resource discovery 判断 tool 是否存在。缺少授权时，请用户使用 `$goal-plus`、
 `$goal-plus edit` 或 `$goal-plus resume`。

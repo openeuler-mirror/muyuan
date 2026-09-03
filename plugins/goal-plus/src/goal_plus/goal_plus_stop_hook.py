@@ -1383,7 +1383,7 @@ def _goal_context(
     )
     context = (
         f"此 Codex session 的 Goal Plus 处于 active：goal_plus_id={record.goal_plus_id}。\n"
-        "该记录已经由本轮精确 `$goal-plus` host command 创建或授权；"
+        "该记录已经由当前 session 的精确 `$goal-plus` host command 创建或授权；"
         "skill 和 MCP 不能创建或恢复记录。\n"
         f"当前目标修订版：{record.goal_revision}。\n"
         f"当前原始目标：{record.raw_goal}\n"
@@ -1647,21 +1647,24 @@ def _handle_user_prompt_submit(
                 "`$goal-plus-with-final-check`。Pi 的 `/goal-plus` 不能在 Codex 中启动。"
             )
             return
-        if goal_id is None:
-            goal_id = _select_session_goal_id(
-                search_root,
-                session_id,
-                include_terminal=True,
-            )
-        if goal_id is not None and session_id is not None:
-            if _matches_authorized_turn(runtime.status(goal_id), hook_input):
-                # Codex delivers user steering inside the currently authorized
-                # turn as another UserPromptSubmit event.
+        if goal_id is not None:
+            # Exact host commands authorize the native Codex session, not only
+            # the command's model turn. Ordinary same-session follow-ups keep
+            # the existing binding, while detached or different sessions still
+            # fail closed in PreToolUse until an explicit resume.
+            return
+        terminal_goal_id = _select_session_goal_id(
+            search_root,
+            session_id,
+            include_terminal=True,
+        )
+        if terminal_goal_id is not None and session_id is not None:
+            if _matches_authorized_turn(runtime.status(terminal_goal_id), hook_input):
                 return
             runtime.detach_session(
-                goal_id,
+                terminal_goal_id,
                 session_id=session_id,
-                reason="ordinary_user_prompt_requires_explicit_resume",
+                reason="ordinary_user_prompt_after_terminal_goal",
             )
         return
     if request.get("action") == "invalid":
@@ -1781,19 +1784,11 @@ def _handle_session_start(
 ) -> None:
     if _is_child_context(hook_input):
         return
-    session_id = _session_id(hook_input)
-    goal_id = _select_session_goal_id(search_root, session_id)
-    if goal_id is not None and session_id is not None:
-        # Codex emits compact SessionStart transparently inside the current turn.
-        if hook_input.get("source") == "compact" and _matches_authorized_turn(
-            runtime.status(goal_id), hook_input
-        ):
-            return
-        runtime.detach_session(
-            goal_id,
-            session_id=session_id,
-            reason="session_start_requires_explicit_resume",
-        )
+    # SessionStart is not an authorization source, but it must not revoke an
+    # existing binding for the same durable Codex session either. A different
+    # session_id cannot select this record in PreToolUse and must explicitly
+    # use `$goal-plus resume` before making Goal Plus/Search changes.
+    del runtime, search_root
 
 
 def _handle_pre_tool_use(
@@ -1835,7 +1830,7 @@ def _handle_pre_tool_use(
     if goal_id is None:
         if _requires_hook_authorization(hook_input):
             _emit_pre_tool_block(
-                "GoalPlusEntrypointRequired: 当前 Codex turn 未由精确的 `$goal-plus`、"
+                "GoalPlusEntrypointRequired: 当前 Codex session 未由精确的 `$goal-plus`、"
                 "`$goal-plus edit` 或 `$goal-plus resume` 授权，已拒绝 Goal Plus/Search 变更。"
             )
         return
