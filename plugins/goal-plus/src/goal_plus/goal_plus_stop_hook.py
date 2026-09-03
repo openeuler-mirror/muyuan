@@ -1923,7 +1923,15 @@ def _handle_pre_tool_use(
             "MCP 和模型调用不能修改 Goal Plus 目标。"
         )
         return
-    goal_id = _select_session_goal_id(search_root, _session_id(hook_input))
+    allow_terminal_session = (
+        logical_name == "goal_plus_gate"
+        and _tool_input(hook_input).get("event") == "stop"
+    )
+    goal_id = _select_session_goal_id(
+        search_root,
+        _session_id(hook_input),
+        include_terminal=allow_terminal_session,
+    )
     if goal_id is None and logical_name == "search_report":
         run_ids = _runtime_run_ids(_raw_tool_input(hook_input))
         if len(run_ids) == 1:

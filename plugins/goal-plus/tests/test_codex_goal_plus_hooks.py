@@ -1598,6 +1598,40 @@ def test_pre_tool_use_allows_terminal_report_for_detached_original_session(
     assert runtime.status(goal_plus_id).hook_counters["pre_tool_use"] == 1
 
 
+def test_pre_tool_use_allows_terminal_stop_gate_only_for_attached_session(
+    tmp_path: Path,
+) -> None:
+    search_root = tmp_path / ".gp"
+    runtime, goal_plus_id = _terminal_report_goal(search_root)
+    tool_input = {"goal_plus_id": goal_plus_id, "event": "stop", "context": {}}
+
+    allowed = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-codex",
+            "tool_name": "mcp__goal-plus__goal_plus_gate",
+            "tool_input": tool_input,
+        },
+    )
+    denied = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "other-session",
+            "tool_name": "mcp__goal-plus__goal_plus_gate",
+            "tool_input": tool_input,
+        },
+    )
+
+    assert allowed.returncode == 0, allowed.stderr
+    assert allowed.stdout == ""
+    assert "GoalPlusEntrypointRequired" in _pre_tool_denial(denied)
+    assert runtime.status(goal_plus_id).hook_counters["pre_tool_use"] == 1
+
+
 @pytest.mark.parametrize("terminal", [False, True])
 def test_same_turn_user_steering_preserves_authorized_goal_turn(
     tmp_path: Path,
