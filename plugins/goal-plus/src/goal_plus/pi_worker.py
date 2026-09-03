@@ -951,6 +951,8 @@ def run_pi_rpc_worker(
     cmd = [pi_binary]
     if selected_model_pattern:
         cmd.extend(["--model", selected_model_pattern])
+    if worker_role == "worker":
+        cmd.append("--no-context-files")
     cmd.extend(
         [
             "--mode",

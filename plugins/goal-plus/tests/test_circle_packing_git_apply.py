@@ -74,7 +74,10 @@ def test_circle_packing_git_workspace_applies_selected_commit(
     start_host_verified_goal(root, source)
     tools = SearchTools(FileSearchRuntime(root))
 
-    frozen = tools.search_freeze_spec(spec, [str(verifier)])
+    frozen = tools.search_freeze_spec(
+        spec,
+        [str(verifier.relative_to(source))],
+    )
     run_id = tools.search_create(frozen["frozen_spec_id"])["run_id"]
     plan = tools.search_plan_next(run_id, 2)
     tasks = tools.search_start_batch(

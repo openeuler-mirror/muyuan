@@ -141,15 +141,11 @@ host-command 绑定。未授权 turn 对 Goal Plus/Search 变更的 `PreToolUse`
 只有显示和只读监控故障可以 fail open。
 普通 subagent 不继承 parent 的 next action。
 
-首次 `$goal-plus` 的 `UserPromptSubmit` 会从 hook 提供的 `transcript_path` 中读取与 `turn_id`
-精确匹配的 Codex `turn_context`，并通过 `systemMessage` 显示 main agent 实际生效的 approval、
-reviewer、permission profile、filesystem、network、sandbox 和 workspace roots。Codex Search
-candidate 第一次调用 `search_get_agent_context` 前，现有 `PreToolUse` hook 会用 candidate 自己的
-transcript 显示同一组实际权限。解析只接受当前 turn 的结构化运行时快照；缺失或不匹配时明确显示
-unavailable，不从 TOML、环境变量或父 session 猜测 child 权限。由于 Codex transcript 不是稳定 hook
-API，这条显示链路保持 fail-open，并由 host 契约测试和真实 Codex smoke 共同覆盖。hook
-同时返回精简的 model-visible additional context：main 在首条进度中、candidate
-在最终交接中照抄同一行，避免仅依赖不会进入模型上下文的 UI warning。
+Candidate 的初始 `UserPromptSubmit` 只注入 runtime 绑定的 role 与
+`agent_session_id`；完整工作说明已包含在 host launch message，并由
+`search_get_agent_context` 返回权威合同。Hook 不重复权限、workspace 或交接文案。
+Codex native subagent 仍会按宿主规则自动加载适用的 `AGENTS.md`；当前没有关闭该行为的
+subagent launch 字段，Goal Plus 不再用额外 prompt 抵消它。
 
 顶层 `Stop` 遇到 active Goal Plus record 时，会重新提供完整 raw goal、elapsed time、phase、next
 action 和 final-check policy，要求 main agent 继续或记录终态。candidate 的 `SubagentStop` 只检查
@@ -197,7 +193,8 @@ main agent 将 payload 投影到当前 tool schema。`task_name`、`message` 和
 都支持时才能传递。
 
 `spawn_agent` 没有 `cwd`，所以 launch 时不会把 child 切换到 candidate worktree。child 必须先调用
-`search_get_agent_context`，然后把 `context.workspace` 显式用于每次文件、编辑和 shell 操作。
+`search_get_agent_context`，然后把 `context.candidate_task.workspace` 显式用于每次文件、编辑和
+shell 操作。
 任务本地 Skill 无需配置：runtime 只发现 source Git 已跟踪的 `.agents/skills/<name>/SKILL.md`，
 并要求该 Skill 目录内所有文件都由 Git 跟踪；在 freeze 的 `task_skill_notice` 和 launch message
 中明确列出，并通过 `context.candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。child

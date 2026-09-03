@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 import pytest
 
 from goal_plus import __version__
@@ -132,6 +133,70 @@ def test_start_agent_session_returns_launch_payload(tmp_path: Path) -> None:
     # The legacy admission parameters (budget, visibility_mode) are gone.
     assert "budget" not in properties
     assert "visibility_mode" not in properties
+
+
+def test_mcp_exposes_structured_triage_and_candidate_proposals(tmp_path: Path) -> None:
+    tools = asyncio.run(tools_by_name(create_mcp(tmp_path / ".search")))
+
+    triage = tools["goal_plus_record_triage"].parameters["properties"]["triage"]
+    proposals = tools["search_start_batch"].parameters["properties"]["proposals"]
+    proposal_items = proposals["anyOf"][0]["items"]
+
+    assert set(triage["required"]) == {
+        "is_optimization",
+        "confidence",
+        "recommended_phase",
+    }
+    assert set(triage["properties"]) == {
+        "is_optimization",
+        "confidence",
+        "recommended_phase",
+        "identified_at",
+        "scenario",
+        "reasons",
+        "missing",
+    }
+    assert proposal_items["required"] == ["intent"]
+    assert set(proposal_items["properties"]) == {
+        "hypothesis",
+        "intent",
+        "expected_tradeoff",
+        "instructions",
+        "metadata",
+    }
+
+
+def test_mcp_returns_large_worker_context_once_as_compact_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "agent_session_id": "agent_001",
+        "candidate_task": {"workspace": "/tmp/candidate one"},
+    }
+    monkeypatch.setattr(
+        server_module.SearchTools,
+        "search_get_agent_context",
+        lambda _self, _agent_session_id: payload,
+    )
+
+    async def call_context():
+        async with Client(create_mcp(tmp_path / ".search")) as client:
+            return await client.call_tool(
+                "search_get_agent_context",
+                {"agent_session_id": "agent_001"},
+            )
+
+    result = asyncio.run(call_context())
+
+    assert result.structured_content is None
+    assert len(result.content) == 1
+    assert json.loads(result.content[0].text) == payload
+    assert result.content[0].text == json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def test_redispatch_candidate_exposes_worker_overrides(tmp_path: Path) -> None:

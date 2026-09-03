@@ -848,6 +848,7 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
     assert popen_cmd[0:3] == ["pi", "--model", "gpt-5.4-mini"]
     assert "--no-session" not in popen_cmd
     assert "--no-extensions" in popen_cmd
+    assert "--no-context-files" in popen_cmd
     assert popen_cmd.index("--no-extensions") < popen_cmd.index("-e")
     assert popen_cmd.count("-e") == 1
     assert popen_cmd[popen_cmd.index("--session-dir") + 1] == str(

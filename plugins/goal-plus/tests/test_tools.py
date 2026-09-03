@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import (
     AgentHostHandle,
     AgentSessionRecord,
@@ -134,21 +135,49 @@ def test_search_bootstrap_requires_active_host_verified_goal(tmp_path: Path) -> 
 
     start_host_verified_goal(root, project)
 
-    frozen = tools.search_freeze_spec(spec, [str(project / "evaluator.py")])
+    frozen = tools.search_freeze_spec(spec, ["evaluator.py"])
     created = tools.search_create(frozen["frozen_spec_id"])
     assert created["run_id"].startswith("run_")
 
 
-def test_search_freeze_spec_converts_input_and_serializes_output() -> None:
+def test_tool_facades_reject_targets_outside_active_goal(tmp_path: Path) -> None:
+    root = tmp_path / ".gp"
+    project = make_project(tmp_path)
+    start_host_verified_goal(root, project)
+    goal_runtime = FileGoalPlusRuntime(root)
+    record = goal_runtime.require_host_verified_active_goal()
+    before = record.model_dump(mode="json")
+
+    with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
+        GoalPlusTools(goal_runtime).goal_plus_set_status("gp_9999", "complete")
+    with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
+        SearchTools(FileSearchRuntime(root), goal_runtime).search_select(
+            "run_unlinked"
+        )
+    with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
+        SearchTools(FileSearchRuntime(root), goal_runtime).search_create(
+            "spec_missing",
+            source_run_id="run_unlinked",
+        )
+
+    assert goal_runtime.status(record.goal_plus_id).model_dump(mode="json") == before
+    assert not (root / "runs").exists()
+
+
+def test_search_freeze_spec_resolves_source_relative_artifacts(
+    tmp_path: Path,
+) -> None:
     runtime = Mock()
     runtime.freeze_spec.return_value = frozen_spec()
     tools = SearchTools(runtime, Mock())
+    spec = spec_dict()
+    spec["source_path"] = str(tmp_path)
 
-    result = tools.search_freeze_spec(spec_dict(), ["evaluator.py"])
+    result = tools.search_freeze_spec(spec, ["evaluator.py"])
 
     spec_arg, paths_arg = runtime.freeze_spec.call_args.args
     assert isinstance(spec_arg, SearchSpec)
-    assert paths_arg == [Path("evaluator.py")]
+    assert paths_arg == [tmp_path / "evaluator.py"]
     assert result["frozen_spec_id"] == "spec_123"
     assert result["spec"]["process_verifiers"][0]["role"] == "ranking_signal"
     assert result["task_skill_paths"] == []
@@ -160,6 +189,18 @@ def test_search_freeze_spec_converts_input_and_serializes_output() -> None:
         "per_node=40.0 B, candidate_checkouts=80.0 B, shared_objects=20.0 B, "
         "upper_bound=100.0 B, free=1000.0 B, fits=yes."
     )
+
+
+@pytest.mark.parametrize("artifact", ["../evaluator.py", "/tmp/evaluator.py"])
+def test_search_freeze_spec_rejects_non_source_relative_artifacts(
+    tmp_path: Path,
+    artifact: str,
+) -> None:
+    spec = spec_dict()
+    spec["source_path"] = str(tmp_path / "source")
+
+    with pytest.raises(ValueError, match="source_path-relative"):
+        SearchTools(Mock(), Mock()).search_freeze_spec(spec, [artifact])
 
 
 def test_search_freeze_spec_lists_task_local_skills() -> None:

@@ -1681,7 +1681,7 @@ def test_shared_dir_is_disabled_by_default(tmp_path: Path) -> None:
     runtime, run_id, [candidate, _peer] = _shared_run(tmp_path, enabled=False)
     context = runtime.get_agent_context(candidate.agent_session_id)
     task = context["candidate_task"]
-    assert task["share_out_dir"] is None
+    assert "share_out_dir" not in task
     assert "shared_dir" not in task
     assert not (runtime._run_dir(run_id) / "shared").exists()
     instructions = " ".join(task["instructions"])
@@ -1695,9 +1695,9 @@ def test_shared_dir_is_disabled_by_default(tmp_path: Path) -> None:
     shared_dir = runtime._run_dir(run_id) / "shared"
     shared_dir.mkdir(parents=True)
     (shared_dir / "index.json").write_text("{invalid", encoding="utf-8")
-    assert runtime.get_agent_context(candidate.agent_session_id)[
-        "tool_family_catalog"
-    ] == []
+    assert "tool_family_catalog" not in runtime.get_agent_context(
+        candidate.agent_session_id
+    )
 
     candidate_before = runtime._load_candidate_record(run_id, candidate.candidate_id)
     with pytest.raises(ValueError, match="shared_dir.enabled=true"):

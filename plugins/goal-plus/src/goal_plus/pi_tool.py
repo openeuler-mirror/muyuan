@@ -189,8 +189,9 @@ def _pi_goal_plus_finalize_reports_tool(
 
 
 def _registry(root_dir: Path | str) -> dict[str, Callable[..., Any]]:
-    search_tools = SearchTools(FileSearchRuntime(root_dir))
-    goal_tools = GoalPlusTools(FileGoalPlusRuntime(root_dir))
+    goal_runtime = FileGoalPlusRuntime(root_dir)
+    search_tools = SearchTools(FileSearchRuntime(root_dir), goal_runtime)
+    goal_tools = GoalPlusTools(goal_runtime)
     tools: dict[str, Callable[..., Any]] = {}
     for name in SEARCH_TOOL_NAMES:
         tools[name] = getattr(search_tools, name)
@@ -234,6 +235,8 @@ def call_pi_tool(
             [requested_session] if isinstance(requested_session, str) else []
         ),
     )
+    if tool_name.startswith("pi_search_pool_"):
+        FileGoalPlusRuntime(root_dir).require_active_tool_target(tool_name, arguments)
     return tools[tool_name](**arguments)
 
 

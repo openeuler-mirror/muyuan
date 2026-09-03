@@ -116,10 +116,7 @@ def _write_codex_rollout(
     *,
     turn_id: str,
     agent_path: str | None = None,
-    approval_policy: str = "never",
-    approvals_reviewer: str = "user",
-    permission_profile: dict | None = None,
-    active_permission_profile: dict | None = None,
+    turn_started_at: str | None = None,
 ) -> None:
     events: list[dict] = []
     if agent_path is not None:
@@ -133,24 +130,15 @@ def _write_codex_rollout(
                 },
             }
         )
-    events.extend(
-        [
-            {"not": "valid json line"},
-            {
-                "type": "turn_context",
-                "payload": {
-                    "turn_id": turn_id,
-                    "approval_policy": approval_policy,
-                    "approvals_reviewer": approvals_reviewer,
-                    "sandbox_policy": {"type": "danger-full-access"},
-                    "permission_profile": permission_profile or {"type": "disabled"},
-                    "active_permission_profile": active_permission_profile
-                    or {"id": ":danger-full-access"},
-                    "workspace_roots": [str(path.parent)],
-                },
-            },
-        ]
-    )
+    turn_context = {
+        "type": "turn_context",
+        "payload": {
+            "turn_id": turn_id,
+        },
+    }
+    if turn_started_at is not None:
+        turn_context["timestamp"] = turn_started_at
+    events.extend([{"not": "valid json line"}, turn_context])
     path.write_text(
         "{broken\n" + "".join(json.dumps(event) + "\n" for event in events),
         encoding="utf-8",
@@ -244,7 +232,7 @@ def _write_codex_subagent_transcript(
 
 
 def _candidate_session_id(context: str) -> str:
-    match = re.search(r'agent_session_id="(agent_[^"]+)"', context)
+    match = re.search(r"goal_plus_agent_session_id=(agent_\S+)", context)
     assert match is not None, context
     return match.group(1)
 
@@ -337,164 +325,6 @@ def test_natural_language_goal_plus_request_does_not_create_state(tmp_path: Path
 
     assert result.stdout == ""
     assert not search_root.exists()
-
-
-def test_user_prompt_submit_displays_effective_codex_permissions(tmp_path: Path) -> None:
-    search_root = tmp_path / ".gp"
-    transcript = tmp_path / "rollout-main.jsonl"
-    _write_codex_rollout(transcript, turn_id="turn-main")
-
-    result = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "session-codex",
-            "turn_id": "turn-main",
-            "transcript_path": str(transcript),
-            "permission_mode": "bypassPermissions",
-            "prompt": "$goal-plus Inspect runtime permissions",
-        },
-    )
-
-    payload = json.loads(result.stdout)
-    message = payload["systemMessage"]
-    context = payload["hookSpecificOutput"]["additionalContext"]
-    assert "agent=main" in message
-    assert "source=rollout.turn_context" in message
-    assert "approval_policy=never" in message
-    assert "approvals_reviewer=user" in message
-    assert "active_profile=:danger-full-access" in message
-    assert "permission_profile=disabled" in message
-    assert "enforcement=disabled" in message
-    assert "filesystem=unrestricted" in message
-    assert "network=enabled" in message
-    assert "sandbox=danger-full-access" in message
-    assert "TOML" not in message
-    assert message in context
-    assert "第一条用户可见进度中完整照抄" in context
-
-
-def test_user_prompt_submit_does_not_infer_stale_permissions(tmp_path: Path) -> None:
-    search_root = tmp_path / ".gp"
-    transcript = tmp_path / "rollout-stale.jsonl"
-    _write_codex_rollout(
-        transcript,
-        turn_id="previous-turn",
-        approval_policy="on-request",
-        permission_profile={
-            "type": "managed",
-            "file_system": {"type": "restricted", "entries": []},
-            "network": "restricted",
-        },
-        active_permission_profile={"id": ":workspace"},
-    )
-
-    result = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "session-codex",
-            "turn_id": "current-turn",
-            "transcript_path": str(transcript),
-            "permission_mode": "bypassPermissions",
-            "prompt": "$goal-plus Inspect runtime permissions",
-        },
-    )
-
-    message = json.loads(result.stdout)["systemMessage"]
-    assert "source=unavailable" in message
-    assert "hook_permission_mode=bypassPermissions" in message
-    assert "未从 TOML 或环境变量推断" in message
-    assert "approval_policy=on-request" not in message
-    assert ":workspace" not in message
-
-
-def test_candidate_first_context_call_displays_its_own_permissions(
-    tmp_path: Path,
-) -> None:
-    search_root = tmp_path / ".gp"
-    search_root.mkdir()
-    transcript = tmp_path / "rollout-worker.jsonl"
-    _write_codex_rollout(
-        transcript,
-        turn_id="turn-worker",
-        agent_path="/root/search_agent_20260826_demo_001",
-        approvals_reviewer="auto_review",
-    )
-
-    result = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "PreToolUse",
-            "session_id": "session-codex",
-            "turn_id": "turn-worker",
-            "transcript_path": str(transcript),
-            "permission_mode": "bypassPermissions",
-            "agent_id": "worker-thread",
-            "agent_type": "default",
-            "tool_name": "functions.exec",
-            "tool_input": (
-                "await tools.mcp__goal_plus__search_get_agent_context("
-                "{agent_session_id:'agent_demo_001'})"
-            ),
-        },
-    )
-
-    message = json.loads(result.stdout)["systemMessage"]
-    assert "agent=/root/search_agent_20260826_demo_001" in message
-    assert "source=rollout.turn_context" in message
-    assert "turn_id=turn-worker" in message
-    assert "approvals_reviewer=auto_review" in message
-    assert "filesystem=unrestricted" in message
-    assert "network=enabled" in message
-    context = _additional_context(result, "PreToolUse")
-    assert message in context
-    assert "最终交接中完整照抄" in context
-
-
-def test_candidate_permission_display_does_not_require_local_search_root(
-    tmp_path: Path,
-) -> None:
-    workspace = tmp_path / "candidate-worktree"
-    workspace.mkdir()
-    (workspace / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
-    transcript = workspace / "rollout-worker.jsonl"
-    _write_codex_rollout(
-        transcript,
-        turn_id="turn-worker",
-        agent_path="/root/search_agent_20260826_demo_001",
-    )
-
-    result = subprocess.run(
-        HOOK_CLI,
-        cwd=workspace,
-        input=json.dumps(
-            {
-                "hook_event_name": "PreToolUse",
-                "turn_id": "turn-worker",
-                "transcript_path": str(transcript),
-                "tool_name": "mcp__goal_plus__search_get_agent_context",
-                "tool_input": {"agent_session_id": "agent_demo_001"},
-            }
-        ),
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            key: value
-            for key, value in os.environ.items()
-            if key not in {"GOAL_PLUS_SEARCH_ROOT", "GOAL_PLUS_PROJECT_ROOT"}
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    message = json.loads(result.stdout)["systemMessage"]
-    assert "agent=/root/search_agent_20260826_demo_001" in message
-    assert "source=rollout.turn_context" in message
-    assert "turn_id=turn-worker" in message
 
 
 def test_ordinary_subagent_does_not_get_goal_plus_permission_banner(
@@ -759,14 +589,10 @@ def test_user_prompt_submit_is_idempotent_for_bound_session(tmp_path: Path) -> N
     assert len(records) == 1
     assert "当前未设置最大运行时间" in first_context
     assert "当前未设置最大运行时间" not in second_context
-    assert "Goal Plus Codex 运行时权限" in first_context
-    assert "Goal Plus Codex 运行时权限" not in second_context
     assert "\n".join(
         line
         for line in first_context.splitlines()
         if not line.startswith("这是新创建记录的首轮。")
-        and not line.startswith("Goal Plus Codex 运行时权限：")
-        and not line.startswith("在本轮第一条用户可见进度中")
     ).rstrip() == second_context
 
 
@@ -1252,7 +1078,7 @@ def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
         context_session_id
     )
     assert worker_context["candidate_id"] == candidate_id
-    assert Path(worker_context["workspace"]) == session.workspace
+    assert Path(worker_context["candidate_task"]["workspace"]) == session.workspace
     assert record.goal_plus_id not in context
     assert record.raw_goal not in context
 
@@ -1339,7 +1165,7 @@ def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
         fresh_session_id
     )
     assert fresh_worker_context["candidate_id"] == candidate_id
-    assert Path(fresh_worker_context["workspace"]) == session.workspace
+    assert Path(fresh_worker_context["candidate_task"]["workspace"]) == session.workspace
 
     active = goal_runtime.status(record.goal_plus_id).active_session
     assert active is not None
@@ -1462,6 +1288,60 @@ def test_post_tool_time_advisory_only_targets_search_candidate_subagent_once(
     assert subagent["time_advisory"]["agent_session_id"] == agent_session_id
 
 
+def test_post_tool_time_advisory_uses_current_codex_turn_budget(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, candidate_id, agent_session_id = _codex_search_worker(
+        tmp_path,
+        worker_budget={
+            "max_runtime_seconds": 60,
+            "max_turns": 8,
+            "on_exceed": "interrupt",
+        },
+    )
+    runtime.run_verifier(
+        run_id,
+        candidate_id,
+        agent_session_id=agent_session_id,
+        hypothesis="Current-turn deadline sample",
+    )
+    session = runtime._load_agent_session_by_id(agent_session_id, run_id=run_id)
+    transcript = tmp_path / "rollout-worker-deadline.jsonl"
+    _write_codex_rollout(
+        transcript,
+        turn_id="turn-worker-deadline",
+        agent_path=f"/root/{session.launch['task_name']}",
+        turn_started_at=(datetime.now(timezone.utc) - timedelta(seconds=90))
+        .isoformat()
+        .replace("+00:00", "Z"),
+    )
+
+    advisory = _run_hook(
+        tmp_path,
+        runtime.root_dir,
+        {
+            "hook_event_name": "PostToolUse",
+            "session_id": "worker-native-session",
+            "turn_id": "turn-worker-deadline",
+            "transcript_path": str(transcript),
+            "tool_name": "read",
+            "tool_input": {"path": "initial_program.py"},
+        },
+    )
+
+    assert "时间提示（仅供参考）" in _additional_context(advisory, "PostToolUse")
+    evidence_path = (
+        runtime.root_dir
+        / "host-logs"
+        / "codex-time-advisory"
+        / "sent"
+        / f"{agent_session_id}.json"
+    )
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["deadline_source"] == "host_worker_deadline"
+    assert evidence["remaining_seconds"] == 0
+
+
 def test_pre_tool_use_blocks_search_before_spec_is_ready(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     runtime = FileGoalPlusRuntime(search_root)
@@ -1521,6 +1401,37 @@ def test_pre_tool_use_denies_goal_mutation_without_exact_host_command(
     specific = payload["hookSpecificOutput"]
     assert specific["permissionDecision"] == "deny"
     assert "GoalPlusEntrypointRequired" in specific["permissionDecisionReason"]
+    assert not search_root.exists()
+
+
+def test_pre_tool_use_gates_only_actual_nested_goal_plus_calls(tmp_path: Path) -> None:
+    search_root = tmp_path / ".gp"
+    nested_mutation = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "ordinary-session",
+            "tool_name": "functions.exec",
+            "tool_input": (
+                "await tools.mcp__goal_plus__goal_plus_set_status("
+                "{goal_plus_id: 'gp_9999', status: 'complete'});"
+            ),
+        },
+    )
+    ordinary_child_command = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "agent_id": "ordinary-child",
+            "tool_name": "functions.exec",
+            "tool_input": "await tools.exec_command({cmd: 'rg search_run_verifier src/'});",
+        },
+    )
+
+    assert "GoalPlusEntrypointRequired" in _pre_tool_denial(nested_mutation)
+    assert ordinary_child_command.stdout == ""
     assert not search_root.exists()
 
 

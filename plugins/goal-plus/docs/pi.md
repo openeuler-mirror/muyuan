@@ -252,15 +252,15 @@ Pi 当前 default。
 
 ## Worker 上下文与恢复
 
-candidate worker 只能使用 `search_get_agent_context`、
-`search_get_global_evidence`、`search_get_evidence_detail`、`search_reference_open`、
-`search_stage_shared_tool`、`search_copy_shared_tool`、`search_run_verifier` 和
-`search_list_iterations`。`search_reference_open` 返回当前 worker 唯一的
+candidate worker 初始只注册 `search_get_agent_context`。取得 runtime contract 后再注册
+Global Evidence、reference、verifier 和完整 iteration history 工具；只有启用 supplemental
+evaluation 或 `shared_dir` 时才分别注册 detail 或共享工具。`search_reference_open` 返回当前
+worker 唯一的
 reference checkout 路径；worker 直接用普通文件和命令工具查看，再次调用时同一目录切到新的
 Evidence commit。
 
-`search_get_agent_context` 返回有界的 best/recent 摘要、权威 ID、workspace 和 durable
-`results.tsv` 路径。只有确实需要旧 verifier 的完整细节时，才调用可能很大的
+`search_get_agent_context` 返回有界的 best/recent 摘要、权威 ID、精简 `candidate_task` 和
+durable `results.tsv` 路径。只有确实需要旧 verifier 的完整细节时，才调用可能很大的
 `search_list_iterations`。
 
 `candidate_task.acceptance` 只包含 FrozenSpec `candidate_acceptance` 中显式声明的稳定验收
@@ -273,8 +273,9 @@ runtime 正式 verifier 因而使用同一设备映射。设备快照只能来�
 `GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR` 映射到同一个 host 目录，供 active run 的 pool lease
 和正式 verifier resource lock 共用。
 
-worker 始终把 `context.workspace` 作为文件与 shell 操作的显式 cwd，不依赖 wrapper 启动
-目录。任务局部 Skill 无需 spec 配置：runtime 只发现 source Git 已跟踪的
+worker 始终把 `context.candidate_task.workspace` 作为文件与 shell 操作的显式 cwd，不依赖
+wrapper 启动目录。Pi worker 进程使用 `--no-context-files`，不会额外加载仓库级
+`AGENTS.md`/`CLAUDE.md`。任务局部 Skill 无需 spec 配置：runtime 只发现 source Git 已跟踪的
 `.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；在 freeze 的
 `task_skill_notice` 和 launch prompt 中明确列出，
 并通过 `candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。worker 完整读取这份
@@ -286,8 +287,8 @@ manual 模式下，worker 在第一次修改前读取 Global Evidence，之后�
 一句话 `hypothesis` 调用 verifier；`null` View 只表示 annotator 尚未发布，不要求等待。
 
 同进程 continuation 沿用已经加载的 context 和 Evidence。跨进程恢复同一 native session 时，
-只重新加载紧凑的权威 candidate context，完整 worker contract 和已加载 Evidence 仍由持久 session
-保留。
+extension 从 session 恢复 workspace 和已启用能力的最小投影，不把完整 context 再次注入模型；
+完整 worker contract 和已加载 Evidence 仍由持久 session 保留。
 
 如果 assistant response 以 `stopReason="length"` 结束且没有 tool call，worker-local extension
 不再续接该上下文。driver 会返回 refresh signal，由 pool supervisor 为同一 candidate 和 workspace

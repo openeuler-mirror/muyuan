@@ -21,6 +21,8 @@ def _subagent_transcript(task_name: str, parent_thread_id: str) -> Path | None:
         meta = read_codex_session_meta(path)
         if not meta or meta.get("parent_thread_id") != parent_thread_id:
             continue
+        if meta.get("id") == task_name:
+            return path
         source = meta.get("source")
         subagent = source.get("subagent") if isinstance(source, dict) else None
         spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None

@@ -34,7 +34,8 @@ Search runtime 不承担 worker supervisor 职责。`search_start_agent_session`
 
 每个 candidate 由 runtime 物化到独立 Git worktree。host launch
 payload 中的 workspace 只是 provenance：Codex `spawn_agent` 没有 `cwd` 字段，Pi 虽能设置 process
-cwd，worker 仍必须先调用 `search_get_agent_context`，并把返回的 `context.workspace`
+cwd，worker 仍必须先调用 `search_get_agent_context`，并把返回的
+`context.candidate_task.workspace`
 作为每次文件和 shell 操作的显式 cwd。parent cwd、其他 candidate workspace 和 `.gp`
 内部路径都不是 candidate 工作目录。
 

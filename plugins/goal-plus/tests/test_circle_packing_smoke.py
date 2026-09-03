@@ -51,7 +51,10 @@ def test_circle_packing_promotion_exports_report_without_changing_template(
     start_host_verified_goal(root, EXAMPLE)
     tools = SearchTools(FileSearchRuntime(root))
 
-    frozen = tools.search_freeze_spec(spec, [str(verifier.relative_to(EXAMPLE))])
+    frozen = tools.search_freeze_spec(
+        spec,
+        [str(verifier.relative_to(WORKSPACE_TEMPLATE))],
+    )
     run_id = tools.search_create(frozen["frozen_spec_id"])["run_id"]
     plan = tools.search_plan_next(run_id, 2)
     tasks = tools.search_start_batch(

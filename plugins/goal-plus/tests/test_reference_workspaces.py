@@ -55,9 +55,6 @@ def test_reference_workspace_is_exact_browsable_and_reused(
     source_id, source_session, source_workspace = candidates[0]
     _, requester_session, _ = candidates[1]
     tools = SearchTools(runtime)
-    context = tools.search_get_agent_context(requester_session)
-    assert context["workspace_access"]["confinement"] == "soft_path"
-    assert context["workspace_access"]["bootstrap_required"] is True
 
     (source_workspace / "initial_program.py").write_text(
         "VALUE = 1\n",

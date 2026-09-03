@@ -8,6 +8,7 @@ interrupt, or mutate runtime state.
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -84,21 +85,9 @@ def is_search_candidate_session(session: AgentSessionRecord) -> bool:
     return agent_type.startswith("search_candidate")
 
 
-def _run_records(
-    root: Path,
-    run_id: str,
-) -> tuple[list[AgentSessionRecord], list[CandidateRecord]]:
+def _candidate_records(root: Path, run_id: str) -> list[CandidateRecord]:
     run_dir = root / "runs" / run_id
-    sessions: list[AgentSessionRecord] = []
     candidates: list[CandidateRecord] = []
-    for path in sorted((run_dir / "agent_sessions").glob("*.json")):
-        payload = _load_json(path)
-        if payload is None:
-            continue
-        try:
-            sessions.append(AgentSessionRecord.model_validate(payload))
-        except ValueError:
-            continue
     for path in sorted((run_dir / "candidates").glob("*/candidate.json")):
         payload = _load_json(path)
         if payload is None:
@@ -107,52 +96,49 @@ def _run_records(
             candidates.append(CandidateRecord.model_validate(payload))
         except ValueError:
             continue
-    return sessions, candidates
+    return candidates
 
 
-def _candidate_timings(
-    sessions: list[AgentSessionRecord],
-    candidates: list[CandidateRecord],
-) -> list[dict[str, Any]]:
-    starts_by_candidate: dict[str, list[tuple[float, str]]] = {}
-    for session in sessions:
-        created = _timestamp(session.created_at)
-        if created is not None:
-            starts_by_candidate.setdefault(session.candidate_id, []).append(
-                (created, session.created_at)
-            )
+def _iteration_verifier_seconds(iteration: Any) -> float | None:
+    elapsed = 0.0
+    observed = False
+    for metrics in iteration.metrics.values():
+        if not isinstance(metrics, dict):
+            continue
+        value = metrics.get("elapsed_seconds")
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and value >= 0
+        ):
+            elapsed += float(value)
+            observed = True
+    return elapsed if observed else None
+
+
+def _candidate_timings(candidates: list[CandidateRecord]) -> list[dict[str, Any]]:
 
     timings: list[dict[str, Any]] = []
     for candidate in candidates:
-        starts = starts_by_candidate.get(candidate.candidate_id) or []
-        subagent_iterations = [
-            iteration
+        observed_iterations = [
+            (iteration, elapsed)
             for iteration in candidate.iterations
             if iteration.agent_session_id is not None
-            and _timestamp(iteration.created_at) is not None
+            for elapsed in [_iteration_verifier_seconds(iteration)]
+            if elapsed is not None
         ]
-        if not starts or not subagent_iterations:
+        if not observed_iterations:
             continue
-        first_start_epoch, first_start = min(starts, key=lambda item: item[0])
-        last_iteration = max(
-            subagent_iterations,
-            key=lambda iteration: _timestamp(iteration.created_at) or 0.0,
-        )
-        last_verifier_epoch = _timestamp(last_iteration.created_at)
-        if last_verifier_epoch is None:
-            continue
-        elapsed = max(0.0, last_verifier_epoch - first_start_epoch)
-        if elapsed <= 0:
-            continue
-        verifier_count = len(subagent_iterations)
+        elapsed = sum(item[1] for item in observed_iterations)
+        verifier_count = len(observed_iterations)
         timings.append(
             {
                 "candidate_id": candidate.candidate_id,
                 "elapsed_seconds": elapsed,
                 "verifier_count": verifier_count,
                 "average_seconds": elapsed / verifier_count,
-                "first_session_at": first_start,
-                "last_verifier_at": last_iteration.created_at,
+                "last_verifier_at": observed_iterations[-1][0].created_at,
             }
         )
     return timings
@@ -168,14 +154,6 @@ def _available_time(
     choices: list[tuple[float, str]] = []
     if remaining_seconds is not None:
         choices.append((max(0.0, float(remaining_seconds)), "host_worker_deadline"))
-    else:
-        budget = session.launch.get("budget_control")
-        max_runtime = budget.get("max_runtime_seconds") if isinstance(budget, dict) else None
-        started = _timestamp(session.created_at)
-        if isinstance(max_runtime, (int, float)) and started is not None:
-            choices.append(
-                (max(0.0, started + float(max_runtime) - now_epoch), "worker_budget")
-            )
 
     outer_deadline = _deadline_timestamp(
         outer_deadline_at
@@ -250,8 +228,7 @@ def build_search_time_advisory(
     if available is None:
         return None
     available_seconds, deadline_source = available
-    sessions, candidates = _run_records(root, session.run_id)
-    timings = _candidate_timings(sessions, candidates)
+    timings = _candidate_timings(_candidate_records(root, session.run_id))
     total_verifier_count = sum(
         int(timing["verifier_count"]) for timing in timings
     )

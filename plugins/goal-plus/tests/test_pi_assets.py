@@ -127,7 +127,16 @@ def test_pi_extension_exposes_role_scoped_adaptive_tools() -> None:
     assert '"search_apply_allocation_decision"' in main_tools
     assert '"search_list_allocation_decisions"' not in worker_tools
     assert '"search_apply_allocation_decision"' not in worker_tools
-    assert '"search_run_verifier"' in worker_tools
+    assert worker_tools.strip() == '"search_get_agent_context"'
+    dynamic_tools = extension.split("for (const tool of [", 1)[1].split("])", 1)[0]
+    assert '"search_run_verifier"' in dynamic_tools
+    assert 'if (candidateTask.share_out_dir)' in extension
+    assert "details.supplemental_evaluation_enabled === true" in extension
+    assert "pi.appendEntry(WORKER_CONTEXT_ENTRY_TYPE" in extension
+    assert (
+        "activateWorkerContext(pi, entry?.data, registeredRuntimeTools, false)"
+        in extension
+    )
 
 
 def test_pi_extension_keeps_typed_search_and_host_contracts() -> None:

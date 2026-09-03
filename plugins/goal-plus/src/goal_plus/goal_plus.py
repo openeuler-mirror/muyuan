@@ -309,7 +309,14 @@ LINKED_SEARCH_TOOL_SUFFIXES = (
     "search_redispatch_candidate",
     "search_bind_agent_handle",
     "search_continue_agent_session",
+    "search_get_agent_context",
+    "search_get_global_evidence",
+    "search_reference_open",
+    "search_stage_shared_tool",
+    "search_copy_shared_tool",
+    "search_get_evidence_detail",
     "search_run_verifier",
+    "search_list_iterations",
     "search_list_allocation_decisions",
     "search_apply_allocation_decision",
     "search_select",
@@ -792,6 +799,20 @@ class FileGoalPlusRuntime:
                 f"{GOAL_PLUS_ENTRYPOINT_REQUIRED} Active host-verified records: {detail}."
             )
         return nonterminal[0]
+
+    def require_active_tool_target(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> GoalPlusRecord:
+        record = self.require_host_verified_active_goal()
+        error = self._tool_ownership_error(
+            record,
+            {"tool_name": tool_name, "tool_input": tool_input},
+        )
+        if error is not None:
+            raise RuntimeError(error)
+        return record
 
     def _nonterminal_records(self) -> list[GoalPlusRecord]:
         if not self.goals_dir.is_dir():
@@ -2316,17 +2337,31 @@ class FileGoalPlusRuntime:
                     "GoalPlusOwnershipMismatch: tool goal_plus_id does not match "
                     "the host-authorized Goal Plus record"
                 )
-        if not any(
+        requires_linked_run = any(
             self._tool_matches(tool_name, suffix)
             for suffix in LINKED_SEARCH_TOOL_SUFFIXES
-        ):
+        )
+        source_run_id = tool_input.get("source_run_id")
+        is_successor_create = (
+            self._tool_matches(tool_name, "search_create")
+            and source_run_id is not None
+        )
+        if is_successor_create:
+            requires_linked_run = True
+        if not requires_linked_run:
             return None
-        run_id = self._tool_input_run_id(tool_input)
+        run_id = (
+            source_run_id
+            if is_successor_create
+            and isinstance(source_run_id, str)
+            and source_run_id
+            else self._tool_input_run_id(tool_input)
+        )
         if run_id is None or not any(
             task.run_id == run_id for task in record.search_tasks
         ):
             return (
-                "GoalPlusOwnershipMismatch: Search mutation requires a run linked "
+                "GoalPlusOwnershipMismatch: Search operation requires a run linked "
                 "to the host-authorized Goal Plus record"
             )
         return None

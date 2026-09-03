@@ -63,9 +63,11 @@ revision 的知识材料，不调用外部 AscendC Agent、plugin 或编排工�
 
 ## Pi Search
 
-1. 调用 `search_freeze_spec`、`search_create` 和 `goal_plus_link_search_run`。
+1. 用相对 `source_path` 的 verifier artifact 路径调用 `search_freeze_spec`，再调用
+   `search_create` 和 `goal_plus_link_search_run`。
 2. 调用一次 `search_plan_next(requested_k=budget.max_parallel)` 和一次 `search_start_batch`，创建
-   初始 candidate。普通 `parallel_loops` 不补 lane 或重新规划。
+   初始 candidate。只有 plan 返回 `requires_agent_proposals=true` 时才向
+   `search_start_batch` 传 `proposals`。普通 `parallel_loops` 不补 lane 或重新规划。
 3. 用全部 candidate ids 调用 `pi_search_pool_open(..., max_parallel=budget.max_parallel,
    final_verify=true)`；pool 负责 session 启动、绑定、watchdog 和 durable verifier Evidence。
 4. 用 `pi_search_pool_wait_any` 等待事件，以 `pi_search_pool_snapshot` 核对状态。全局停止条件未

@@ -33,6 +33,7 @@ const isPrintLikeInvocation =
 	process.argv.includes("--mode=json") ||
 	(modeArgIndex >= 0 && process.argv[modeArgIndex + 1] === "json");
 const STATE_ENTRY_TYPE = "goal-plus-native-state";
+const WORKER_CONTEXT_ENTRY_TYPE = "goal-plus-worker-context";
 const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
 const GOAL_PLUS_RUNTIME_ENTRY_TYPE = "goal-plus-runtime-start";
 const GOAL_PLUS_COMMAND_CONTEXT_TYPE = "goal-plus-command-context";
@@ -1088,7 +1089,7 @@ async function runJsonCli(pi: ExtensionAPI, ctx: CommandRuntimeContext, tool: st
 	}
 	const parsed = JSON.parse(result.stdout || "null");
 	return {
-		content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
+		content: [{ type: "text" as const, text: JSON.stringify(parsed) }],
 		details: parsed,
 	};
 }
@@ -1930,7 +1931,9 @@ function startGoalPlusMainTurn(
 	);
 }
 
-function registerRuntimeTool(pi: ExtensionAPI, name: string) {
+function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<string>) {
+	if (registered.has(name)) return;
+	registered.add(name);
 	pi.registerTool({
 		name,
 		label: name,
@@ -1946,9 +1949,7 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string) {
 				activateGoal(pi, result.details, startEntryCount, canPersistPiState);
 			}
 			if (name === "search_get_agent_context") {
-				const details = result.details as { workspace?: string } | undefined;
-				workspaceRoot = details?.workspace;
-				sawContext = true;
+				activateWorkerContext(pi, result.details, registered, true);
 			}
 			if (role === "worker" && name === "search_run_verifier" && isRecord(result.details)) {
 				const decision = result.details.allocation_decision;
@@ -1988,6 +1989,56 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string) {
 			}
 			: undefined,
 	});
+}
+
+function activateWorkerContext(
+	pi: ExtensionAPI,
+	details: unknown,
+	registered: Set<string>,
+	persist: boolean,
+) {
+	if (!isRecord(details) || !isRecord(details.candidate_task)) return;
+	const agentSessionId = details.agent_session_id;
+	const candidateTask = details.candidate_task;
+	const workspace = candidateTask.workspace;
+	if (
+		typeof agentSessionId !== "string" ||
+		typeof workspace !== "string" ||
+		(process.env.GOAL_PLUS_AGENT_SESSION_ID &&
+			process.env.GOAL_PLUS_AGENT_SESSION_ID !== agentSessionId)
+	) return;
+	const firstActivation = !sawContext;
+	workspaceRoot = workspace;
+	sawContext = true;
+	for (const tool of [
+		"search_get_global_evidence",
+		"search_reference_open",
+		"search_run_verifier",
+		"search_list_iterations",
+	]) {
+		registerRuntimeTool(pi, tool, registered);
+	}
+	if (candidateTask.share_out_dir) {
+		registerRuntimeTool(pi, "search_stage_shared_tool", registered);
+		registerRuntimeTool(pi, "search_copy_shared_tool", registered);
+	}
+	if (details.supplemental_evaluation_enabled === true) {
+		registerRuntimeTool(pi, "search_get_evidence_detail", registered);
+	}
+	if (persist && firstActivation) {
+		pi.appendEntry(WORKER_CONTEXT_ENTRY_TYPE, {
+			agent_session_id: agentSessionId,
+			candidate_task: {
+				workspace,
+				...(candidateTask.share_out_dir
+					? { share_out_dir: candidateTask.share_out_dir }
+					: {}),
+			},
+			...(details.supplemental_evaluation_enabled === true
+				? { supplemental_evaluation_enabled: true }
+				: {}),
+		});
+	}
 }
 
 function registerPiFinalCheckTool(pi: ExtensionAPI) {
@@ -2414,16 +2465,7 @@ export default function (pi: ExtensionAPI) {
 		"pi_search_pool_continue",
 		"pi_search_pool_close",
 	];
-	const workerTools = [
-		"search_get_agent_context",
-		"search_get_global_evidence",
-		"search_reference_open",
-		"search_stage_shared_tool",
-		"search_copy_shared_tool",
-		"search_get_evidence_detail",
-		"search_run_verifier",
-		"search_list_iterations",
-	];
+	const workerTools = ["search_get_agent_context"];
 	const finalCheckerTools = ["goal_plus_status", "goal_plus_submit_final_check"];
 	const roleTools = role === "worker"
 		? workerTools
@@ -2432,8 +2474,9 @@ export default function (pi: ExtensionAPI) {
 			: role === "ordinary"
 				? []
 				: mainTools;
+	const registeredRuntimeTools = new Set<string>();
 	for (const tool of roleTools) {
-		registerRuntimeTool(pi, tool);
+		registerRuntimeTool(pi, tool, registeredRuntimeTools);
 	}
 	if (role === "main") {
 		registerPiFinalCheckTool(pi);
@@ -2472,6 +2515,14 @@ export default function (pi: ExtensionAPI) {
 		goalPlusSessionAuthorized = false;
 		if (role !== "main" && event.reason !== "reload") {
 			appendPiRuntimeStartEntry(pi, ctx);
+		}
+		if (role === "worker") {
+			const entry = ctx.sessionManager.getEntries()
+				.filter((item: { type: string; customType?: string }) =>
+					item.type === "custom" && item.customType === WORKER_CONTEXT_ENTRY_TYPE)
+				.pop() as { data?: unknown } | undefined;
+			activateWorkerContext(pi, entry?.data, registeredRuntimeTools, false);
+			return;
 		}
 		if (role === "main" && progressPreviewMode) {
 			showPiProgress(ctx, PI_PROGRESS_PREVIEWS[progressPreviewMode]);

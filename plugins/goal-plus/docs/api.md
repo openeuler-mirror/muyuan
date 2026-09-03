@@ -234,7 +234,7 @@ session 在 continuation 中保持选定模型。模型 identity 只用于 prove
 | `search_redispatch_candidate`    | main             | 在同一 candidate workspace 创建 fresh session                                |
 | `search_bind_agent_handle`       | main/host driver | 绑定 Codex 或 Pi 原生 handle                                                 |
 | `search_continue_agent_session`  | main             | host 支持时返回原生同 worker continuation 字段                               |
-| `search_get_agent_context`       | candidate worker | 加载权威 ID、workspace、有界 candidate history 和恢复数据                    |
+| `search_get_agent_context`       | candidate worker | 加载精简的权威 candidate contract 与恢复数据                                 |
 | `search_get_agent_observability` | main/monitor     | 读取单个 session 的归一化 model、timing、usage、artifact 和 handoff Evidence |
 
 `search_start_agent_session` 只创建 runtime handle，不启动 worker。调用方必须使用返回的 `launch`
@@ -244,15 +244,19 @@ resume 之间累计。
 
 `search_get_agent_context` 默认返回有界结构：`latest_result`、`best_iteration` 和
 `recent_iterations`，而不是完整 `results` / `iterations`。`result_count`、`iteration_count` 和
-`results_tsv` 保留准确 provenance。只有确实需要旧 verifier 细节时才调用 `search_list_iterations`。
+`results_tsv` 保留准确 provenance。持久化的完整 `CandidateTask` 只投影为工作所需字段；host、
+model、directive、workspace access、scheduler mode 和 run budget 不重复下发。只有确实需要旧
+verifier 细节时才调用 `search_list_iterations`。
 
-`search_get_agent_context` exposes `orchestration_mode` and `search_scheduler_enabled` so worker
-prompts can distinguish fixed `parallel_loops` from `adaptive_search` while retaining Scheduler
-terminology. It also exposes `supplemental_evaluation_enabled`. When it is
-false, workers do not wait for or request supplemental evaluation. When enabled,
-`search_get_global_evidence` adds only `supplemental_available=true`; full summary,
-dimensions, peer comparisons, and limitations are
-fetched for a selected immutable row through `search_get_evidence_detail`.
+开启 supplemental evaluation 时，context 才返回
+`supplemental_evaluation_enabled=true`，`search_get_global_evidence` 只增加
+`supplemental_available=true`；完整 summary、dimensions、peer comparisons 和 limitations
+通过 `search_get_evidence_detail` 按 immutable row 获取。关闭时不暴露该能力。
+
+Codex MCP 对 context、Global Evidence、detail 和完整 iteration history 使用单个紧凑
+`TextContent`，避免同时把同一 JSON 放入 `content` 和 `structuredContent`。Pi-local facade
+保留结构化 `details`，给模型的文本同样使用紧凑 JSON。
+
 ### Evidence 与按需详情
 
 | 工具                         | 调用方           | 用途                                           |
@@ -328,7 +332,7 @@ staging -> passing process verifier -> immutable snapshot -> Tool View -> Global
 Tool View 和 adoption 只提供研究参考，不产生独立工具分数或 selection
 rule。完整共享平面语义见[共享平面](shared-plane.md#global-evidence)。
 
-`search_get_agent_context.tool_family_catalog` 只暴露 family/head
+启用 `shared_dir` 时，`search_get_agent_context.tool_family_catalog` 只暴露 family/head
 identity、版本容量、累计 capability/coverage key 和 contract
 fingerprint，不包含路径或源码。首次发布使用 `publication_intent=new`；更新只在
 `revision_allowed=true` 时引用唯一的 `revision_head.tool_id`：`capability_extension`
@@ -398,6 +402,8 @@ pass；失败时 run 保持可重试，且不输出 patch。
 不会自动 stash、clean 或 commit source；有意使用当前 filesystem 状态时改用
 `workspace.backend="copy"`，其 promotion 固定为 `artifact_only`。普通非 Git 目录仍沿用现有
 synthetic Git baseline。`.gp`、`.search`、`.tmp` 等既有 runtime-noise 排除项不参与判脏。
+MCP/Pi facade 的 `verifier_artifact_paths` 只接受相对 `source_path` 且不含 `..` 的路径；runtime
+解析后再冻结，避免 host cwd 或绝对路径改变 artifact 归属。
 
 runtime 在 provider 调用的公共边界记录时间：每个 candidate 的
 `task.workspace_creation_timing` 覆盖 workspace materialization，每条 provider-native
@@ -468,7 +474,7 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 | `strategy.worker_budget`            | host deadline 和可选 minimum lease                       |
 | `workspace.backend`                 | `git_worktree`（默认）、`copy`，或接口占位 `thinkthread` |
 | `workspace.promotion_mode`          | `apply`（默认）或显式 `artifact_only`                    |
-| `device_pools`                      | 可选的受信任 host pool ID；配置来自 `GOAL_PLUS_DEVICE_POOLS` |
+| `device_pools`                      | 受信任的 host device pool ID                             |
 
 Git source 的 clean 检查独立于 provider：`git_worktree` 现在执行，`thinkthread` 在 host
 capability 接通后复用同一契约。TT baseline 必须从 clean、自包含的 inner-Git checkout 创建

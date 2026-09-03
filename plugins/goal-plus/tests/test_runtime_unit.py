@@ -1196,7 +1196,7 @@ def test_git_tracked_task_skills_are_discovered_in_each_candidate_worktree(
 
         session = runtime.start_agent_session(run_id, task.candidate_id)
         context = runtime.get_agent_context(session.agent_session_id)
-        assert context["workspace"] == str(task.workspace)
+        assert context["candidate_task"]["workspace"] == str(task.workspace)
         assert context["candidate_task"]["task_skill_paths"] == [str(expected_skill)]
         assert any(
             "host launch 不保证切换 cwd" in instruction
@@ -3327,13 +3327,30 @@ def test_get_agent_context_has_only_authoritative_worker_fields(tmp_path: Path) 
         "budget",
         "peer_status",
         "observations",
+        "selected_model",
+        "model_provenance",
+        "host",
+        "host_handle",
+        "directive",
+        "workspace",
+        "workspace_access",
+        "orchestration_mode",
+        "search_scheduler_enabled",
+        "run_budget",
     ):
         assert forbidden not in context, f"get_agent_context must not return {forbidden}"
-    assert context["candidate_task"]["candidate_id"] == tasks[0].candidate_id
-    assert context["orchestration_mode"] == "parallel_loops"
-    assert context["search_scheduler_enabled"] is False
-    instructions = " ".join(context["candidate_task"]["instructions"])
-    assert "Adaptive Search scheduler 已启用" not in instructions
+    assert context["candidate_id"] == tasks[0].candidate_id
+    assert set(context["candidate_task"]) == {
+        "hypothesis",
+        "workspace",
+        "allowed_files",
+        "denied_files",
+        "instructions",
+    }
+    assert context["candidate_task"]["workspace"] == str(tasks[0].workspace)
+    assert "expected_artifacts" not in context["candidate_task"]
+    assert "proposal" not in context["candidate_task"]
+    assert "strategy_metadata" not in context["candidate_task"]
     assert "expansion_action_context" not in context
     assert "history" not in context
     assert "iterations" not in context
@@ -3961,6 +3978,44 @@ def test_run_verifier_parses_subprocess_metrics_with_mock(
     assert report.aggregate_score == 0.75
     assert calls[0][1]["cwd"] == workspace.resolve()
     assert "PYTHONPATH" in calls[0][1]["env"]
+
+
+@pytest.mark.parametrize(
+    ("metric_name", "metric_value"),
+    [("elapsed_seconds", 123.0), ("returncode", 17.0)],
+)
+def test_run_verifier_preserves_ranking_metric_named_like_runtime_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metric_name: str,
+    metric_value: float,
+) -> None:
+    project = make_project(tmp_path)
+    spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    spec_data["metric_name"] = metric_name
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    candidate_id = runtime.start_batch(run_id, plan.plan_id)[0].candidate_id
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=json.dumps({metric_name: metric_value}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+
+    report = runtime.run_verifier(run_id, candidate_id)
+
+    assert report.aggregate_score == metric_value
+    assert report.verifier_results[0].metrics[metric_name] == metric_value
 
 
 def test_process_verifier_overrides_verifier_phase_environment(
