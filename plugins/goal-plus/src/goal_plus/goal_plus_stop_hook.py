@@ -1385,6 +1385,17 @@ def _select_session_goal_id(
     return None
 
 
+def _matches_authorized_turn(record: Any, hook_input: dict[str, Any]) -> bool:
+    active_session = record.active_session
+    turn_id = _turn_id(hook_input)
+    return bool(
+        active_session is not None
+        and active_session.state == "attached"
+        and turn_id is not None
+        and active_session.metadata.get("native_entry_id") == turn_id
+    )
+
+
 def _select_terminal_report_goal_id(
     search_root: Path,
     run_id: str | None,
@@ -1662,6 +1673,10 @@ def _handle_user_prompt_submit(
                 include_terminal=True,
             )
         if goal_id is not None and session_id is not None:
+            if _matches_authorized_turn(runtime.status(goal_id), hook_input):
+                # Codex delivers user steering inside the currently authorized
+                # turn as another UserPromptSubmit event.
+                return
             runtime.detach_session(
                 goal_id,
                 session_id=session_id,
@@ -1797,14 +1812,14 @@ def _handle_session_start(
 ) -> None:
     if _is_child_context(hook_input):
         return
-    # Codex emits SessionStart(source="compact") transparently in the middle of
-    # the current turn. It keeps the same session and turn authorization, so it
-    # must not be treated like a fresh startup, resume, or clear boundary.
-    if hook_input.get("source") == "compact":
-        return
     session_id = _session_id(hook_input)
     goal_id = _select_session_goal_id(search_root, session_id)
     if goal_id is not None and session_id is not None:
+        # Codex emits compact SessionStart transparently inside the current turn.
+        if hook_input.get("source") == "compact" and _matches_authorized_turn(
+            runtime.status(goal_id), hook_input
+        ):
+            return
         runtime.detach_session(
             goal_id,
             session_id=session_id,

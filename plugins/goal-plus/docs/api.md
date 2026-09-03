@@ -49,7 +49,8 @@ host 负责，详见
 host-command control path。每次授权都会持久化 host、transport、command、action、session、
 native entry、输入 hash、时间和 invocation id；重复 invocation id 幂等返回同一记录。
 普通消息、skill 自动加载、MCP/CLI 直调、错误 host 前缀和 SessionStart 都不授权后续变更；
-Codex `SessionStart(source=compact)` 仅保留同一 turn 已有的 host-command 绑定，不创建新授权。
+Codex 同一 turn 内的追加 `UserPromptSubmit` 和 `SessionStart(source=compact)` 仅保留已有的
+host-command 绑定，不创建新授权。
 
 ### Host Command Config
 

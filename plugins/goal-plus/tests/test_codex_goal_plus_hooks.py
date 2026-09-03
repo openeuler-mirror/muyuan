@@ -999,7 +999,9 @@ def test_interrupted_codex_final_checker_must_submit_before_subagent_stop(
     assert released.stdout == ""
 
 
-@pytest.mark.parametrize("source", [None, "startup", "resume", "clear", "future"])
+@pytest.mark.parametrize(
+    "source", [None, "startup", "resume", "clear", "future", "compact"]
+)
 def test_session_start_detaches_bound_goal_until_explicit_resume(
     tmp_path: Path,
     source: str | None,
@@ -1510,8 +1512,10 @@ def test_pre_tool_use_allows_terminal_report_for_detached_original_session(
     assert runtime.status(goal_plus_id).hook_counters["pre_tool_use"] == 1
 
 
-def test_ordinary_prompt_detaches_goal_and_requires_explicit_resume(
+@pytest.mark.parametrize("terminal", [False, True])
+def test_same_turn_user_steering_preserves_authorized_goal_turn(
     tmp_path: Path,
+    terminal: bool,
 ) -> None:
     search_root = tmp_path / ".gp"
     _run_hook(
@@ -1520,21 +1524,77 @@ def test_ordinary_prompt_detaches_goal_and_requires_explicit_resume(
         {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
+            "turn_id": "turn-goal",
+            "prompt": "$goal-plus Implement requirement A",
+        },
+    )
+    record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
+    runtime = FileGoalPlusRuntime(search_root)
+    if terminal:
+        runtime.set_status(
+            record_path.parent.name,
+            status="complete",
+            reason="final audit passed",
+        )
+
+    steering = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "turn_id": "turn-goal",
+            "prompt": "Use the newly available NPU workers as well.",
+        },
+    )
+
+    assert steering.stdout == ""
+    record = runtime.status(record_path.parent.name)
+    assert record.active_session is not None
+    assert record.active_session.state == "attached"
+    assert len(record.host_command_invocations) == 1
+
+    if not terminal:
+        next_tool = _run_hook(
+            tmp_path,
+            search_root,
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "session-codex",
+                "turn_id": "turn-goal",
+                "tool_name": "mcp__goal-plus__goal_plus_record_triage",
+            },
+        )
+        assert next_tool.stdout == ""
+
+
+@pytest.mark.parametrize("ordinary_turn_id", [None, "turn-other"])
+def test_ordinary_prompt_detaches_goal_and_requires_explicit_resume(
+    tmp_path: Path,
+    ordinary_turn_id: str | None,
+) -> None:
+    search_root = tmp_path / ".gp"
+    _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "turn_id": "turn-goal",
             "prompt": "$goal-plus Implement requirement A",
         },
     )
     record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
     goal_id = record_path.parent.name
 
-    ordinary = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "session-codex",
-            "prompt": "What is the current branch?",
-        },
-    )
+    ordinary_input = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "session-codex",
+        "prompt": "What is the current branch?",
+    }
+    if ordinary_turn_id is not None:
+        ordinary_input["turn_id"] = ordinary_turn_id
+    ordinary = _run_hook(tmp_path, search_root, ordinary_input)
     assert ordinary.stdout == ""
     record = FileGoalPlusRuntime(search_root).status(goal_id)
     assert record.active_session is not None
@@ -2021,7 +2081,11 @@ def test_ordinary_prompt_detaches_terminal_goal_before_next_stop(
     record = runtime.create_goal("Completed work")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {
+            "host": "codex",
+            "session_id": "session-codex",
+            "metadata": {"native_entry_id": "turn-goal"},
+        },
     )
     runtime.set_status(
         record.goal_plus_id,
@@ -2035,6 +2099,7 @@ def test_ordinary_prompt_detaches_terminal_goal_before_next_stop(
         {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
+            "turn_id": "turn-other",
             "prompt": "What is the current branch?",
         },
     )
