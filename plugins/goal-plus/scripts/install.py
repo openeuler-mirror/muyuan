@@ -549,6 +549,40 @@ def _render_pi_entries(entries: list[dict[str, Any]]) -> str:
     return "\n  - ".join(lines)
 
 
+def _pi_conflict_uninstall_commands(entries: list[dict[str, Any]]) -> list[str]:
+    """Return copyable removal commands when the conflicting owner is known."""
+    commands: list[str] = []
+    for entry in entries:
+        resolved = entry.get("resolved_path")
+        settings_path = entry.get("settings_path")
+        source = entry.get("source")
+        if (
+            settings_path is not None
+            and isinstance(resolved, Path)
+            and (resolved / "uninstall.sh").is_file()
+        ):
+            command = f"(cd {shlex.quote(str(resolved))} && ./uninstall.sh --pi)"
+        elif settings_path is not None and isinstance(source, str):
+            command = shlex.join(["pi", "remove", source])
+        else:
+            continue
+        if command not in commands:
+            commands.append(command)
+    return commands
+
+
+def _render_pi_conflict_remediation(entries: list[dict[str, Any]]) -> str:
+    commands = _pi_conflict_uninstall_commands(entries)
+    if not commands:
+        return "Remove or disable those Goal Plus resources explicitly, then rerun the installer."
+    rendered = "\n".join(f"  {command}" for command in commands)
+    return (
+        "Uninstall the conflicting Pi registration with:\n"
+        f"{rendered}\n"
+        "Then rerun this installer."
+    )
+
+
 def _preflight_pi_normal() -> bool:
     entries = _pi_goal_plus_entries()
     root = ROOT.resolve()
@@ -565,7 +599,7 @@ def _preflight_pi_normal() -> bool:
         raise InstallError(
             "Pi already has a conflicting Goal Plus installation:\n"
             f"  - {_render_pi_entries(conflicts)}\n"
-            "Remove or disable those Goal Plus resources explicitly, then rerun the installer."
+            f"{_render_pi_conflict_remediation(conflicts)}"
         )
     return same_root
 
@@ -588,8 +622,8 @@ def _preflight_pi_dev(*, cwd: Path | None = None) -> None:
             "Pi development mode found another active Goal Plus source; "
             "pi-goal-plus already loads this checkout explicitly:\n"
             f"  - {_render_pi_entries(conflicts)}\n"
-            "Remove or disable those Goal Plus resources explicitly. Other Pi packages and "
-            "authentication remain untouched."
+            f"{_render_pi_conflict_remediation(conflicts)}\n"
+            "Other Pi packages and authentication remain untouched."
         )
 
 
