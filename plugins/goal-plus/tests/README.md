@@ -86,9 +86,14 @@ pytest -m st_pi -v -s -rs
 pytest -m st_pi -k stop_gate_intercepts -v -s -rs
 
 # Process loss / RPC abort, JSON no-op and ordinary resume, plus native PTY resume
-# PTY cases cover promptless TUI continuation and startup user-message priority.
+# PTY cases cover promptless TUI continuation, the --resume picker, and startup
+# user-message priority; JSON cases cover exact --session and --continue.
 ST_PI_BINARY="$PWD/.goal-plus-dev/bin/pi-goal-plus" \
   pytest -n 0 -m st_pi -k native_session_resume -v -s -rs
+
+# Native interactive Codex resume plus fork isolation
+pytest -n 0 -m "st and st_codex" \
+  -k "interactive_native_resume or interactive_fork" -v -s -rs
 
 # Required independent final checks
 pytest -m "st and st_codex" -k goal_plus_required_final_checker -v -s -rs

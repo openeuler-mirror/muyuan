@@ -116,6 +116,25 @@ def _pi_base_command(session_dir: Path, session_id: str) -> list[str]:
     return command
 
 
+def _pi_resume_command(
+    session_dir: Path,
+    session_id: str,
+    selector: str,
+) -> list[str]:
+    command = _pi_base_command(session_dir, session_id)
+    session_id_index = command.index("--session-id")
+    del command[session_id_index : session_id_index + 2]
+    if selector == "session":
+        command.extend(["--session", session_id])
+    elif selector == "continue":
+        command.append("--continue")
+    elif selector == "resume":
+        command.append("--resume")
+    else:
+        raise ValueError(f"unknown Pi resume selector: {selector}")
+    return command
+
+
 def _run_env(search_root: Path) -> dict[str, str]:
     return {
         **os.environ,
@@ -268,7 +287,13 @@ def test_goal_plus_exact_command_can_start_and_complete_goal_plus(
     _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
 
 
-def _run_native_tui_resume(command: list[str], search_root: Path, log_path: Path) -> None:
+def _run_native_tui_resume(
+    command: list[str],
+    search_root: Path,
+    log_path: Path,
+    *,
+    select_from_picker: bool = False,
+) -> None:
     if os.name != "posix":
         pytest.skip("native TUI resume ST requires a POSIX PTY")
     import fcntl
@@ -284,15 +309,27 @@ def _run_native_tui_resume(command: list[str], search_root: Path, log_path: Path
         stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
     )
     os.close(slave)
+    picker_selected = not select_from_picker
+    output = bytearray()
     try:
         with log_path.open("wb") as log:
             deadline = time.monotonic() + int(os.environ.get("ST_PI_TIMEOUT", "300"))
             while time.monotonic() < deadline:
                 assert process.poll() is None, f"Pi TUI exited; see {log_path}"
                 if select.select([master], [], [], 0.1)[0]:
-                    log.write(os.read(master, 65536))
+                    chunk = os.read(master, 65536)
+                    output.extend(chunk)
+                    log.write(chunk)
                     log.flush()
+                if (
+                    not picker_selected
+                    and b"Resume Session (Current Folder)" in output
+                    and b"goal_plus_id:" in output
+                ):
+                    os.write(master, b"\r")
+                    picker_selected = True
                 if _goal_record(search_root)["status"] == "complete":
+                    assert picker_selected
                     return
             pytest.fail(f"Pi TUI did not complete the resumed Goal; see {log_path}")
     finally:
@@ -304,14 +341,21 @@ def _run_native_tui_resume(command: list[str], search_root: Path, log_path: Path
 
 @pytest.mark.st_pi
 @pytest.mark.parametrize(
-    "interruption,resume_mode",
-    [("process_loss", "json"), ("user_abort", "json"),
-     ("process_loss", "tui"), ("process_loss", "tui_prompt")],
+    "interruption,resume_mode,selector",
+    [
+        pytest.param("process_loss", "json", "session", id="session-json-process-loss"),
+        pytest.param("user_abort", "json", "session", id="session-json-user-abort"),
+        pytest.param("process_loss", "tui", "session", id="session-tui-promptless"),
+        pytest.param("process_loss", "tui_prompt", "session", id="session-tui-prompt"),
+        pytest.param("process_loss", "json", "continue", id="continue-json"),
+        pytest.param("process_loss", "tui_prompt", "resume", id="resume-picker-tui"),
+    ],
 )
 def test_goal_plus_native_session_resume(
     st_pi_run_root: Path,
     interruption: str,
     resume_mode: str,
+    selector: str,
 ) -> None:
     search_root = st_pi_run_root / ".gp"
     session_dir = st_pi_run_root / "sessions"
@@ -379,32 +423,34 @@ def test_goal_plus_native_session_resume(
     assert before["active_session"]["session_id"] == session_id
     expected_state = "paused" if interruption == "user_abort" else "attached"
     assert before["active_session"]["state"] == expected_state
-    resume_command = _pi_base_command(session_dir, session_id)
-    resume_command[resume_command.index("--session-id")] = "--session"
+    resume_command = _pi_resume_command(session_dir, session_id, selector)
     print_resume_command = [*resume_command, "-p", "--mode", "json"]
 
     # Print mode without a user prompt restores the session but must not race
     # a fire-and-forget model turn against CLI shutdown.
-    empty = subprocess.run(
-        print_resume_command,
-        cwd=ROOT,
-        env=_run_env(search_root),
-        text=True,
-        capture_output=True,
-        timeout=30,
-        check=False,
-    )
-    assert empty.returncode == 0, empty.stderr[-3000:]
-    assert '"type":"agent_start"' not in empty.stdout
-    assert _goal_record(search_root)["status"] == "active"
-    assert _goal_record(search_root)["active_session"]["state"] == expected_state
+    if selector != "resume":
+        empty = subprocess.run(
+            print_resume_command,
+            cwd=ROOT,
+            env=_run_env(search_root),
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        assert empty.returncode == 0, empty.stderr[-3000:]
+        assert '"type":"agent_start"' not in empty.stdout
+        assert _goal_record(search_root)["status"] == "active"
+        assert _goal_record(search_root)["active_session"]["state"] == expected_state
 
     probe.write_text("native-resume-ok\n", encoding="utf-8")
     continuation = "Continue the active Goal Plus task in this same native session."
     if resume_mode.startswith("tui"):
         _run_native_tui_resume(
             [*resume_command, *([continuation] if resume_mode == "tui_prompt" else [])],
-            search_root, st_pi_run_root / "resumed.log",
+            search_root,
+            st_pi_run_root / "resumed.log",
+            select_from_picker=selector == "resume",
         )
     else:
         resumed = subprocess.run(

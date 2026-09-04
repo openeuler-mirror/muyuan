@@ -55,6 +55,11 @@ codex exec resume --last "Continue the active Goal Plus task."
 该 prompt 触发 `UserPromptSubmit`，共享状态机确认 session identity 后继续。用户 interrupt 会先把
 binding 标记为 paused；无 prompt 的 headless 恢复没有继续授权。
 
+`codex fork <session-id>` 与 resume 不同：Codex 会复制源 session 的历史和配置，但为 fork
+创建新的 session ID，并记录 `forked_from_id`。因此 fork 可以用于从旧对话尝试另一条路线，不能
+继承源 session 的 Goal Plus 执行绑定；即使复制的历史中包含 Goal Plus 上下文，新 ID 仍会按
+`session_mismatch` fail closed，源绑定保持不变。
+
 ## Pi
 
 Pi 使用原生 session 选项：
@@ -98,4 +103,5 @@ needs-user、session mismatch、状态探测失败或终态都 fail closed，har
 3. Codex exec resume 通过普通 prompt 继续，不依赖交互；
 4. Pi 通过稳定 session ID 与普通 prompt headless 续跑；paused headless 不自动继续；
 5. Pi/Codex 的 mismatch、fork、detached、terminal 都不继承；
-6. EdgeBench 只在 status probe 明确返回 `native_continuation_ready` 时恢复稳定 Pi session。
+6. 真实 PTY 覆盖交互式 `codex resume` 与 Pi `--resume` picker，Pi `--continue` 覆盖最近 session；
+7. EdgeBench 只在 status probe 明确返回 `native_continuation_ready` 时恢复稳定 Pi session。
