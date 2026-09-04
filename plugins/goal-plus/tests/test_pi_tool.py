@@ -11,6 +11,7 @@ import pytest
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.pi_tool import call_pi_host_command, call_pi_tool
 from goal_plus.models import SearchSpec
+from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.runtime import FileSearchRuntime
 
 from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
@@ -83,7 +84,67 @@ def test_pi_host_command_control_path_creates_verified_record(tmp_path: Path) ->
     assert result["raw_goal"].startswith("Test Pi config")
     assert result["command_config"]["max_parallel"] == 2
     assert result["command_config"]["promotion_mode"] == "artifact_only"
+    assert result["active_session"]["host"] == "pi-rpc"
+    assert result["active_session"]["session_id"] == "pi:test"
+    assert result["active_session"]["state"] == "attached"
     assert not capability.exists()
+
+
+def test_pi_host_session_event_uses_native_session_identity(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".gp"
+    runtime = FileGoalPlusRuntime(runtime_root)
+    record = runtime.create_goal("Continue in the same native Pi session")
+    runtime.activate_session(
+        record.goal_plus_id,
+        {"host": "pi-rpc", "session_id": "pi-session-1"},
+    )
+
+    token = "00000000-0000-4000-8000-000000000003"
+    capability = runtime_root / "host-entrypoint" / "pi" / f"{token}.json"
+    capability.parent.mkdir(parents=True)
+    capability.write_text(
+        json.dumps({"token": token, "issued_at_ms": int(time.time() * 1000)}),
+        encoding="utf-8",
+    )
+    continued = call_pi_host_command(
+        runtime_root,
+        "goal_plus_host_session_event",
+        {
+            "goal_plus_id": record.goal_plus_id,
+            "session_id": "pi-session-1",
+            "event": "session_start",
+            "delivery": "auto",
+            "interaction": "headless",
+        },
+        capability_token=token,
+    )
+    assert continued["decision"] == "wait_for_user"
+    assert continued["session_state"] == "attached"
+
+    mismatch_token = "00000000-0000-4000-8000-000000000004"
+    mismatch_capability = (
+        runtime_root / "host-entrypoint" / "pi" / f"{mismatch_token}.json"
+    )
+    mismatch_capability.write_text(
+        json.dumps(
+            {"token": mismatch_token, "issued_at_ms": int(time.time() * 1000)}
+        ),
+        encoding="utf-8",
+    )
+    mismatch = call_pi_host_command(
+        runtime_root,
+        "goal_plus_host_session_event",
+        {
+            "goal_plus_id": record.goal_plus_id,
+            "session_id": "pi-session-2",
+            "event": "session_start",
+            "delivery": "auto",
+            "interaction": "headless",
+        },
+        capability_token=mismatch_token,
+    )
+    assert mismatch["decision"] == "stop"
+    assert mismatch["reason"] == "session_mismatch"
 
 
 def test_pi_host_command_rejects_missing_one_time_capability(tmp_path: Path) -> None:

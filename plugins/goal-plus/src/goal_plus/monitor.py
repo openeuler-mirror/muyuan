@@ -478,6 +478,7 @@ def _goal_payload(record: GoalPlusRecord | None) -> dict[str, Any] | None:
     return {
         "goal_plus_id": record.goal_plus_id,
         "status": record.status,
+        "control": record.control.model_dump(mode="json"),
         "phase": record.phase,
         "raw_goal": record.raw_goal,
         "goal_revision": record.goal_revision,
@@ -1499,6 +1500,7 @@ def goal_plus_monitor_snapshot(
         "snapshot_at": utc_timestamp(),
         "root_dir": str(root),
         "goal_plus": _goal_payload(goal_record),
+        "reconciliation": FileGoalPlusRuntime(root).reconciliation(goal_record.goal_plus_id) if goal_record else None,
         "feature_plugins": feature_payloads,
         "selected_run_id": run_id,
         "search_tasks": search_tasks,

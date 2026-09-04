@@ -5,7 +5,7 @@
 active `goal_plus_id` 时才继续。
 
 加载 `/skill:goal-plus`，以 runtime 注入的当前 Goal、revision、`raw_goal`、`command_config`
-和 `next_action` 为权威状态：
+为权威状态，每轮读取 `goal_plus_status` 的 `control`、`next_action` 与 `reconciliation`：
 
 $ARGUMENTS
 

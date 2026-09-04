@@ -5,6 +5,9 @@ Codex 或 Pi host 负责实际启动、等待、续跑和停止 worker。Host Ad
 把 runtime 的统一请求转换为 host 原生操作；它不改变 Search 的结算语义。
 
 系统整体边界见[共享平面](shared-plane.md)。本文只说明 Host Adapter 的统一契约、Codex/Pi 差异和恢复要求。
+Main Goal 的命令、状态和宿主原生 session 恢复设计统一记录在[运行逻辑](runtime-logic.md)，
+其中区分当前实现与目标行为；本文的
+continuation 主要指 Search candidate worker 的续跑。
 
 普通 Goal Mode 不使用这套 Search Adapter，而是遵循 [`goal-plus-ultra-v1`](ultra.md) 的
 轻量 dispatch 合同。Ultra 可以由 Pi、Codex 或外部 harness 实现，不受 `AgentHostKind`
@@ -146,18 +149,22 @@ handler 和 pool supervisor 累计执行。lease 必须在外层软收尾前释�
 
 ## 恢复与 Handoff
 
-正常续跑优先复用 host 的 native session。worker 已丢失或确实需要 fresh
-context 时，使用可移植的 state redispatch：
+正常续跑优先复用 host 的 native session。工作区保持完整、仅需要 fresh context 时，使用
+可移植的 state redispatch：
 
 1. 对原 candidate 调用 `search_redispatch_candidate`；
 2. 在同一 workspace 创建新的 `agent_session_id`；
 3. worker 调用 `search_get_agent_context`；
-4. 根据 candidate-local Git、verifier iterations、`research_summary`、Global Evidence 和
+4. 根据 candidate-local artifact、verifier iterations、`research_summary`、Global Evidence 和
    `.tmp/handoff.json` 恢复。
 
 Pi 支持跨进程的 native session 续轮：PID 会变化，但 native session、runtime
 `agent_session_id`、candidate 和 workspace 保持不变。只有 native
-session 无法恢复时，才退回上述 state redispatch。
+session 无法恢复但工作区完整时，才退回上述 state redispatch。
+
+Worker 丢失且留下半次修改或结算时，使用 [Search 一致性恢复](search-recovery.md)：共享
+runtime 固定 checkpoint 并 fence 旧 generation；host 提供停止事实；provider 恢复
+`ArtifactRef`；随后启动 fresh worker。普通 redispatch 不回滚工作区，不能代替这个流程。
 
 每份 handoff 应包含关键工作、verifier-backed feature entries、blockers、next
 steps，以及最多五条带适用范围和条件的 pitfalls。`candidate_local`

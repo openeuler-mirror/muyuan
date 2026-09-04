@@ -81,18 +81,28 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 
 ## 授权边界
 
-只有以下精确 host command 可以创建、编辑或恢复 Goal Plus：
+只有以下精确 host command 可以创建或编辑 Goal Plus：
 
-- Codex：`$goal-plus ...`、`$goal-plus edit ...`、`$goal-plus resume`
-- Pi：`/goal-plus ...`、`/goal-plus edit ...`、`/goal-plus resume`
+- Codex：`$goal-plus ...`、`$goal-plus edit ...`
+- Pi：`/goal-plus ...`、`/goal-plus edit ...`
 - 独立最终检查：`$goal-plus-with-final-check ...` 或 `/goal-plus-with-final-check ...`
 
-自然语言提及、skill 自动发现、SessionStart、普通 child、candidate worker、直接 MCP 调用和
-generic CLI 都不构成授权。Search bootstrap、Main 后续操作、candidate 操作和终态 report
+原生 session resume 只恢复会话与绑定，不启动任务。精确 host command 还支持
+`summary`、`pause`、`resume`、`clear`；只有显式 resume 能解除中断后的任务停止。
+共享 continuation 状态机核对 `control`、revision 和 `active_session`。自然语言提及、skill 自动发现、普通 child、
+candidate worker、直接 MCP 调用和 generic CLI 都不能创建或编辑 Goal Plus。Search bootstrap、
+Main 后续操作、candidate 操作和终态 report
 分别使用其可验证的归属依据；run 完成链接后，Main 对该 run 的操作必须与当前 Goal 的持久化
-链接一致。同一 turn 内的 Codex `SessionStart(source=compact)` 和追加 `UserPromptSubmit` 只保留
-已有绑定，不创建授权；新 turn 的普通 `UserPromptSubmit` 和其他 SessionStart source 不保留
-绑定。拒绝时不得改变领域状态。
+链接一致。同一 Codex session 的 `SessionStart` 和普通 `UserPromptSubmit` 保留已有绑定；
+是否继续执行由持久化 control 决定。拒绝时不得改变领域状态。
+
+同一原生 session 正常运行时，普通用户消息优先处理，然后继续原任务。明确中断或执行丢失将
+control 标为 paused；普通聊天、原生 session_start 均不解锁。正常 steering 不当作中断。
+pause 禁止后续续跑和新派发，不强杀当前 turn；clear 永久撤权且保留历史。
+blocked 是显式可恢复停止，旧终态 blocked 迁移为 closed，不复活历史。paused/blocked 下 edit
+不激活；有效编辑 complete 可产生新 revision。不同 session、fork、detached/stale 和已结束任务
+不继承执行权。resume 保留原 deadline、累计用量及 Search 身份。
+完整控制合同、持续 Main/reconciliation 和验证边界见[运行逻辑](docs/runtime-logic.md)。
 
 ## Goal 生命周期
 
@@ -104,8 +114,8 @@ intake -> triage                            -> final_audit -> [final_check] -> t
                   \-> spec_discovery -> search /
 ```
 
-`active` 表示仍可推进；`needs_user` 只用于确实缺少用户决定；`blocked`、`complete` 和
-`abandoned` 是终态。Runtime 的 `next_action` 是当前 revision 的权威下一步，skill 不应自行
+`active` 表示仍可推进；`needs_user` 只用于确实缺少用户决定；`blocked` 是可恢复停止，
+`complete` 和 `abandoned` 是终态。Runtime 的 `next_action` 是当前 revision 的权威下一步，skill 不应自行
 维护第二套状态机。
 
 Main Agent 自主拆解普通任务并决定是否使用原生 subagent。Runtime 不要求预建执行计划或
@@ -244,6 +254,14 @@ host metadata 和最终报告。Adaptive Search 另外持久化 ScheduleTask 与
 恢复时优先使用 `goal_plus_monitor_snapshot`，再根据持久状态执行 `next_action`。底层文件可
 补充 monitor 未投影的字段，transcript 用于排查 host 行为；二者都不能取代持久领域状态。
 不得手工修改 `.gp/` 来跨过 gate。
+
+Search 一致性恢复以最后一次完整结算的 `ArtifactRef` 与 ledger 为 checkpoint；无完整结算时
+使用初始 checkpoint。准备恢复先隔离旧 execution generation，宿主确认旧执行静默后，才由
+workspace provider 恢复受管理的 candidate 工作区。恢复事务必须幂等，不重置 run/candidate
+身份、Goal revision、预算或已结算 Evidence；旧代际迟到结果不得结算。恢复后使用新 worker
+session；不假定原生 transcript 与 artifact 原子配对，不以 Git 专属 reset 作为公共合同。
+不支持恢复的 provider、未知宿主状态和不一致 checkpoint 必须显式拒绝。
+详细合同见 [Search 一致性恢复](docs/search-recovery.md)。
 
 ## 变更验收
 

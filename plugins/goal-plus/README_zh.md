@@ -68,16 +68,21 @@ $goal-plus mode=autonomous 深度优化这个 kernel。
 开头连续的 `key=value` 是强类型命令配置；第一个非配置 token 开始就是自然语言目标。
 完整 key、取值范围和作用见 [Host Command Config](docs/api.md#host-command-config)。
 
-编辑、恢复和独立最终检查使用各自宿主的相同前缀：
+编辑和独立最终检查使用各自宿主的相同前缀：
 
 ```text
 Pi:    /goal-plus edit <完整的新目标>
 Codex: $goal-plus edit <完整的新目标>
-Pi:    /goal-plus resume
-Codex: $goal-plus resume
 Pi:    /goal-plus-with-final-check <目标>
 Codex: $goal-plus-with-final-check <目标>
 ```
+
+原生会话恢复不启动任务。已中断 Main 使用
+`codex exec resume <session-id> '$goal-plus resume'` 或
+`pi -p --mode json --session <session-id> '/goal-plus resume'` 显式恢复。
+运行中收到新思考会先处理再继续；中断后的普通聊天不解锁。两端支持摘要、pause/resume/clear，
+clear 永久撤权但保留历史。完整合同与验证边界见[运行逻辑](docs/runtime-logic.md)。
+原生恢复不会创建或修改目标；修改仍使用 `$goal-plus edit` 或 `/goal-plus edit`。
 
 一次请求会启动自主运行。agent 自己判断 Goal Mode 是否足够，或冻结 verifier 后
 并行 Search 是否更有价值；进入 Search 不需要额外确认。`mode=autonomous`（默认）

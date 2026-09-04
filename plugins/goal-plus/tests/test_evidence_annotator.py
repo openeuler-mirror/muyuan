@@ -898,7 +898,6 @@ def test_expired_outer_deadline_never_starts_verifier_or_annotation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("GOAL_PLUS_OUTER_DEADLINE_AT", "2000-01-01T00:00:00Z")
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
@@ -908,6 +907,7 @@ def test_expired_outer_deadline_never_starts_verifier_or_annotation(
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
     session = runtime.start_agent_session(run_id, task.candidate_id)
+    monkeypatch.setenv("GOAL_PLUS_OUTER_DEADLINE_AT", "2000-01-01T00:00:00Z")
     with pytest.raises(RuntimeError, match="VerifierDeadlineInsufficient"):
         runtime.run_verifier(
             run_id,

@@ -28,6 +28,20 @@ def _stop_hook_events(search_root: Path) -> list[dict]:
 
 
 def _run_hook(tmp_path: Path, search_root: Path, hook_input: dict | None = None, **env):
+    # These fixtures bypass the native start hook; install their live owner.
+    from goal_plus.host_recovery import claim_main_owner, codex_owner_pid
+    owner = codex_owner_pid()
+    if owner:
+        runtime = FileGoalPlusRuntime(search_root)
+        for path in runtime.goals_dir.glob("gp_*/goal.json"):
+            try:
+                record = runtime.status(path.parent.name)
+            except (ValueError, OSError):
+                # Corrupt-state tests must exercise the hook's own failure path.
+                continue
+            binding = record.active_session
+            if binding and binding.state == "attached" and not runtime.is_terminal(record) and not (search_root / "host-recovery/mains" / f"{record.goal_plus_id}.json").exists():
+                claim_main_owner(search_root, record.goal_plus_id, binding.host, binding.session_id, owner, restoring=False)
     run_env = {
         **os.environ,
         "GOAL_PLUS_SEARCH_ROOT": str(search_root),
@@ -287,6 +301,7 @@ def test_stop_hook_can_target_explicit_goal_id(tmp_path: Path) -> None:
     runtime = FileGoalPlusRuntime(search_root)
     first = runtime.create_goal("Optimize kernel")
     second = runtime.create_goal("Tidy docs")
+    runtime.activate_session(first.goal_plus_id, {"host": "codex", "session_id": "explicit-main"})
     runtime.record_triage(
         second.goal_plus_id,
         {
@@ -297,7 +312,7 @@ def test_stop_hook_can_target_explicit_goal_id(tmp_path: Path) -> None:
         },
     )
 
-    result = _run_hook(tmp_path, search_root, GOAL_PLUS_ID=first.goal_plus_id)
+    result = _run_hook(tmp_path, search_root, {"session_id": "explicit-main"}, GOAL_PLUS_ID=first.goal_plus_id)
 
     assert result.returncode == 0
     payload = json.loads(result.stdout)

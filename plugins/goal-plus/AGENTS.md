@@ -11,6 +11,7 @@
 | 改动范围 | 文档 |
 | --- | --- |
 | 安装、快速开始和文档索引 | [README.md](README.md) |
+| 命令、状态、续跑、暂停及恢复设计 | [运行逻辑](docs/runtime-logic.md)，注意区分当前实现与目标设计 |
 | Search 架构、Evidence、selection 和 promotion | [共享平面](docs/shared-plane.md) |
 | Adaptive Search 与 Search Scheduler | [Adaptive Search](docs/adaptive-search.md) |
 | Main delegation 与轻量 dispatch 记录 | [Ultra 编排](docs/ultra.md) |

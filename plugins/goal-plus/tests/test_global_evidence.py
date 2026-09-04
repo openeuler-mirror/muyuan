@@ -344,11 +344,15 @@ def test_global_evidence_presents_open_evaluation_with_dynamic_peer_basis(
     goal_path.write_text(
         json.dumps(
             {
+                "goal_plus_id": "gp_test",
+                "created_at": "2026-09-04T00:00:00Z",
+                "updated_at": "2026-09-04T00:00:00Z",
                 "raw_goal": "Fix the public cache invalidation issue.",
                 "goal_revision": 1,
                 "goal_revisions": [
                     {
                         "revision": 1,
+                        "created_at": "2026-09-04T00:00:00Z",
                         "raw_goal": "Fix the public cache invalidation issue.",
                     }
                 ],

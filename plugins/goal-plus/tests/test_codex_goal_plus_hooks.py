@@ -33,6 +33,18 @@ def _run_hook(
     hook_input: dict,
     **env: str,
 ) -> subprocess.CompletedProcess[str]:
+    # Unit fixtures create records without a native start hook. Register the
+    # current host as their existing owner; process replacement is tested in
+    # test_goal_plus_control, not simulated by every subprocess invocation.
+    from goal_plus.host_recovery import claim_main_owner, codex_owner_pid
+    owner = codex_owner_pid()
+    if owner:
+        runtime = FileGoalPlusRuntime(search_root)
+        for path in runtime.goals_dir.glob("gp_*/goal.json"):
+            record = runtime.status(path.parent.name)
+            binding = record.active_session
+            if binding and binding.state == "attached" and not runtime.is_terminal(record) and not (search_root / "host-recovery" / "mains" / f"{record.goal_plus_id}.json").exists():
+                claim_main_owner(search_root, record.goal_plus_id, binding.host, binding.session_id, owner, restoring=False)
     return subprocess.run(
         HOOK_CLI,
         cwd=tmp_path,
@@ -270,11 +282,8 @@ def test_user_prompt_submit_precreates_and_binds_goal(tmp_path: Path) -> None:
     assert record.host_command_invocations[0].command == "$goal-plus"
     assert record.host_command_invocations[0].transport == "codex_user_prompt_submit"
     assert record.goal_plus_id in context
-    assert "skill 和 MCP 不能创建或恢复记录" in context
-    assert "不要仅因 Goal Plus 处于 active 就恢复工作" in context
-    assert "范围、交付物或成功标准" in context
-    assert "goal_plus_update_goal" in context
-    assert "$goal-plus edit <完整修订目标>" in context
+    assert record.raw_goal in context
+    assert record.control.state == "active"
     assert "当前未设置最大运行时间" in context
     assert "不要询问或等待确认" in context
     assert "告知后立即继续执行" in context
@@ -396,7 +405,7 @@ def test_user_prompt_submit_uses_nested_thread_cwd_for_default_root(
     assert not (repository / ".gp").exists()
 
 
-def test_user_prompt_submit_resume_finds_existing_parent_root(tmp_path: Path) -> None:
+def test_native_session_followup_finds_existing_parent_root(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     workspace = repository / "examples" / "circle-packing" / "workspace"
     workspace.mkdir(parents=True)
@@ -434,8 +443,9 @@ def test_user_prompt_submit_resume_finds_existing_parent_root(tmp_path: Path) ->
     context = _additional_context(result, "UserPromptSubmit")
     assert record.goal_plus_id in context
     resumed = runtime.status(record.goal_plus_id)
-    assert resumed.entrypoint_status == "host_verified"
-    assert resumed.host_command_invocations[-1].action == "resume"
+    assert resumed.active_session is not None
+    assert resumed.active_session.state == "attached"
+    assert [item.action for item in resumed.host_command_invocations] == ["resume"]
     assert not (workspace / ".gp").exists()
 
 
@@ -589,11 +599,11 @@ def test_user_prompt_submit_is_idempotent_for_bound_session(tmp_path: Path) -> N
     assert len(records) == 1
     assert "当前未设置最大运行时间" in first_context
     assert "当前未设置最大运行时间" not in second_context
-    assert "\n".join(
-        line
-        for line in first_context.splitlines()
-        if not line.startswith("这是新创建记录的首轮。")
-    ).rstrip() == second_context
+    record = FileGoalPlusRuntime(search_root).status(records[0].parent.name)
+    assert record.goal_plus_id in first_context
+    assert record.goal_plus_id in second_context
+    assert len(record.host_command_invocations) == 1
+    assert record.goal_revision == 1
 
 
 def test_with_final_check_precreates_required_policy(tmp_path: Path) -> None:
@@ -615,7 +625,7 @@ def test_with_final_check_precreates_required_policy(tmp_path: Path) -> None:
     assert record.policy["final_check"]["mode"] == "required"
     assert record.goal_revision == 1
     assert "required" in context
-    assert "加载并遵循 goal-plus skill" in context
+    assert "goal-plus" in context
 
 
 def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> None:
@@ -638,10 +648,10 @@ def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> No
         search_root,
         {"hook_event_name": "SessionStart", "session_id": "session-codex"},
     )
-    assert restored.stdout == ""
-    detached = FileGoalPlusRuntime(search_root).status(goal_id)
-    assert detached.active_session is not None
-    assert detached.active_session.state == "detached"
+    assert goal_id in _additional_context(restored, "SessionStart")
+    preserved = FileGoalPlusRuntime(search_root).status(goal_id)
+    assert preserved.active_session is not None
+    assert preserved.active_session.state == "attached"
 
     edited = _run_hook(
         tmp_path,
@@ -674,7 +684,7 @@ def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> No
     assert initial_context != edited_context
 
 
-def test_interrupted_session_explicit_resume_keeps_same_revision(tmp_path: Path) -> None:
+def test_native_codex_resume_requires_explicit_goal_plus_resume(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     _run_hook(
         tmp_path,
@@ -688,15 +698,48 @@ def test_interrupted_session_explicit_resume_keeps_same_revision(tmp_path: Path)
     record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
     goal_id = record_path.parent.name
 
+    interrupted = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "Interrupt",
+            "session_id": "session-codex",
+        },
+    )
+    assert interrupted.stdout == ""
+    paused = FileGoalPlusRuntime(search_root).status(goal_id)
+    assert paused.active_session is not None
+    assert paused.active_session.state == "attached"
+    assert paused.control.state == "paused"
+
     resumed = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "SessionStart",
+            "session_id": "session-codex",
+        },
+    )
+    assert goal_id in _additional_context(resumed, "SessionStart")
+    still_paused = FileGoalPlusRuntime(search_root).status(goal_id)
+    assert still_paused.active_session is not None
+    assert still_paused.control.state == "paused"
+
+    continued = _run_hook(
         tmp_path,
         search_root,
         {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-codex",
-            "prompt": "$goal-plus resume",
+            "prompt": "Continue from where we stopped.",
         },
     )
+    assert continued.stdout == ""
+    assert FileGoalPlusRuntime(search_root).status(goal_id).control.state == "paused"
+    resumed = _run_hook(tmp_path, search_root, {
+        "hook_event_name": "UserPromptSubmit", "session_id": "session-codex",
+        "prompt": "$goal-plus resume",
+    })
     context = _additional_context(resumed, "UserPromptSubmit")
     record = FileGoalPlusRuntime(search_root).status(goal_id)
     assert record.goal_revision == 1
@@ -705,6 +748,9 @@ def test_interrupted_session_explicit_resume_keeps_same_revision(tmp_path: Path)
         + EXPLORATION_MODE_LINES["autonomous"]
     )
     assert goal_id in context
+    assert record.active_session is not None
+    assert record.active_session.state == "attached"
+    assert [item.action for item in record.host_command_invocations] == ["start", "resume"]
 
 
 def test_codex_interrupted_final_checker_is_recorded_and_can_stop(tmp_path: Path) -> None:
@@ -874,7 +920,7 @@ def test_interrupted_codex_final_checker_must_submit_before_subagent_stop(
 @pytest.mark.parametrize(
     "source", [None, "startup", "resume", "clear", "future", "compact"]
 )
-def test_session_start_detaches_bound_goal_until_explicit_resume(
+def test_session_start_preserves_same_session_without_authorizing_new_session(
     tmp_path: Path,
     source: str | None,
 ) -> None:
@@ -894,10 +940,36 @@ def test_session_start_detaches_bound_goal_until_explicit_resume(
         hook_input["source"] = source
     result = _run_hook(tmp_path, search_root, hook_input)
 
-    assert result.stdout == ""
+    assert record.goal_plus_id in _additional_context(result, "SessionStart")
     updated = runtime.status(record.goal_plus_id)
     assert updated.active_session is not None
-    assert updated.active_session.state == "detached"
+    assert updated.active_session.state == "attached"
+    assert updated.active_session.session_id == "session-codex"
+
+    new_session = _run_hook(
+        tmp_path,
+        search_root,
+        {"hook_event_name": "SessionStart", "session_id": "session-new"},
+    )
+    assert new_session.stdout == ""
+    preserved = runtime.status(record.goal_plus_id)
+    assert preserved.active_session is not None
+    assert preserved.active_session.state == "attached"
+    assert preserved.active_session.session_id == "session-codex"
+
+    denied = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-new",
+            "tool_name": "mcp__goal-plus__goal_plus_record_triage",
+            "tool_input": {"goal_plus_id": record.goal_plus_id},
+        },
+    )
+    assert "GoalPlusEntrypointRequired" in json.loads(denied.stdout)[
+        "hookSpecificOutput"
+    ]["permissionDecisionReason"]
 
 
 def test_compaction_session_start_preserves_authorized_goal_turn(
@@ -928,7 +1000,7 @@ def test_compaction_session_start_preserves_authorized_goal_turn(
         },
     )
 
-    assert compacted.stdout == ""
+    assert record_path.parent.name in _additional_context(compacted, "SessionStart")
     active = runtime.status(record_path.parent.name).active_session
     assert active is not None
     assert active.state == "attached"
@@ -945,6 +1017,29 @@ def test_compaction_session_start_preserves_authorized_goal_turn(
         },
     )
     assert next_tool.stdout == ""
+
+
+@pytest.mark.parametrize("mode", ["plan", "default"])
+def test_stop_uses_collaboration_mode_from_exact_native_turn(tmp_path: Path, mode: str) -> None:
+    search_root = tmp_path / ".gp"
+    runtime = FileGoalPlusRuntime(search_root)
+    record = runtime.create_goal("Finish the task")
+    runtime.activate_session(record.goal_plus_id, {"host": "codex", "session_id": "session-codex"})
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text("\n".join(json.dumps({
+        "type": "turn_context",
+        "payload": {"turn_id": turn, "collaboration_mode": {"mode": value}},
+    }) for turn, value in [("older", "plan"), ("current", mode)]))
+    result = _run_hook(tmp_path, search_root, {
+        "hook_event_name": "Stop", "session_id": "session-codex",
+        "turn_id": "current", "transcript_path": str(transcript),
+    })
+    assert result.returncode == 0, result.stderr
+    if mode == "plan":
+        assert result.stdout == ""
+    else:
+        assert json.loads(result.stdout)["decision"] == "block"
+    assert runtime.status(record.goal_plus_id).control.state == "active"
 
 
 def test_child_hooks_do_not_inherit_or_rebind_main_goal_context(tmp_path: Path) -> None:
@@ -1543,6 +1638,13 @@ def test_pre_tool_use_allows_terminal_stop_gate_only_for_attached_session(
     assert "GoalPlusEntrypointRequired" in _pre_tool_denial(denied)
     assert runtime.status(goal_plus_id).hook_counters["pre_tool_use"] == 1
 
+    wrong_goal = _run_hook(tmp_path, search_root, {
+        "hook_event_name": "PreToolUse", "session_id": "session-codex",
+        "tool_name": "mcp__goal-plus__goal_plus_gate",
+        "tool_input": {**tool_input, "goal_plus_id": "gp_other"},
+    })
+    assert "GoalPlusOwnershipMismatch" in _pre_tool_denial(wrong_goal)
+
 
 @pytest.mark.parametrize("terminal", [False, True])
 def test_same_turn_user_steering_preserves_authorized_goal_turn(
@@ -1580,7 +1682,10 @@ def test_same_turn_user_steering_preserves_authorized_goal_turn(
         },
     )
 
-    assert steering.stdout == ""
+    if terminal:
+        assert steering.stdout == ""
+    else:
+        assert record_path.parent.name in _additional_context(steering, "UserPromptSubmit")
     record = runtime.status(record_path.parent.name)
     assert record.active_session is not None
     assert record.active_session.state == "attached"
@@ -1602,7 +1707,7 @@ def test_same_turn_user_steering_preserves_authorized_goal_turn(
 
 
 @pytest.mark.parametrize("ordinary_turn_id", [None, "turn-other"])
-def test_ordinary_prompt_detaches_goal_and_requires_explicit_resume(
+def test_ordinary_prompt_preserves_same_session_authorization(
     tmp_path: Path,
     ordinary_turn_id: str | None,
 ) -> None:
@@ -1628,10 +1733,62 @@ def test_ordinary_prompt_detaches_goal_and_requires_explicit_resume(
     if ordinary_turn_id is not None:
         ordinary_input["turn_id"] = ordinary_turn_id
     ordinary = _run_hook(tmp_path, search_root, ordinary_input)
-    assert ordinary.stdout == ""
+    assert goal_id in _additional_context(ordinary, "UserPromptSubmit")
     record = FileGoalPlusRuntime(search_root).status(goal_id)
     assert record.active_session is not None
-    assert record.active_session.state == "detached"
+    assert record.active_session.state == "attached"
+    assert record.active_session.session_id == "session-codex"
+
+    allowed = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-codex",
+            "tool_name": "mcp__goal-plus__goal_plus_record_triage",
+            "tool_input": {"goal_plus_id": goal_id},
+        },
+    )
+    assert allowed.stdout == ""
+    assert FileGoalPlusRuntime(search_root).status(goal_id).hook_counters[
+        "pre_tool_use"
+    ] == 1
+
+
+def test_ordinary_prompt_does_not_reactivate_detached_session(tmp_path: Path) -> None:
+    search_root = tmp_path / ".gp"
+    _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "prompt": "$goal-plus Implement requirement A",
+        },
+    )
+    record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
+    goal_id = record_path.parent.name
+    runtime = FileGoalPlusRuntime(search_root)
+    runtime.detach_session(
+        goal_id,
+        session_id="session-codex",
+        reason="test_interrupted_session",
+    )
+
+    ordinary = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "prompt": "Continue the current work.",
+        },
+    )
+    assert ordinary.stdout == ""
+    detached = runtime.status(goal_id)
+    assert detached.active_session is not None
+    assert detached.active_session.state == "detached"
+    assert detached.active_session.metadata["detach_reason"] == "test_interrupted_session"
 
     denied = _run_hook(
         tmp_path,
@@ -1646,6 +1803,21 @@ def test_ordinary_prompt_detaches_goal_and_requires_explicit_resume(
     assert "GoalPlusEntrypointRequired" in json.loads(denied.stdout)[
         "hookSpecificOutput"
     ]["permissionDecisionReason"]
+
+    rejected = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "prompt": "$goal-plus resume",
+        },
+    )
+    payload = json.loads(rejected.stdout)
+    assert "没有绑定的 Goal Plus 任务" in payload["hookSpecificOutput"]["additionalContext"]
+    still_detached = runtime.status(goal_id)
+    assert still_detached.active_session is not None
+    assert still_detached.active_session.state == "detached"
 
 
 def test_pre_tool_use_ignores_unrelated_tool(tmp_path: Path) -> None:

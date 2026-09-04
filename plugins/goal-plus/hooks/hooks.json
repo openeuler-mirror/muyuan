@@ -24,6 +24,18 @@
         ]
       }
     ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "goal-plus --goal-plus-host-hook",
+            "timeout": 3,
+            "statusMessage": "Pausing Goal Plus session"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [

@@ -108,6 +108,27 @@ def create_mcp(
         return tools.search_status(run_id)
 
     @mcp.tool()
+    def search_recovery_status(run_id: str) -> dict[str, Any]:
+        """读取各 candidate 的完整结算恢复点、generation 和 host session，不启动或回滚任何工作。"""
+        return tools.search_recovery_status(run_id)
+
+    @mcp.tool()
+    def search_prepare_recovery(run_id: str, candidate_id: str) -> dict[str, Any]:
+        """固定中断 candidate 的结算恢复点并隔离旧 generation，返回 recovery_id。
+
+        随后由 host 停止并确认旧 worker 结束，再调用 search_recover_candidate。
+        """
+        return tools.search_prepare_recovery(run_id, candidate_id)
+
+    @mcp.tool()
+    def search_recover_candidate(run_id: str, candidate_id: str, recovery_id: str) -> dict[str, Any]:
+        """恢复已结算 artifact，保留 Evidence 与中断现场备份；用同一 recovery_id 重试。
+
+        恢复后由 host 启动并绑定 fresh worker，继续验证。
+        """
+        return tools.search_recover_candidate(run_id, candidate_id, recovery_id)
+
+    @mcp.tool()
     def search_invalidate_run(
         run_id: str,
         reason: Literal[

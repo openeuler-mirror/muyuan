@@ -878,6 +878,17 @@ def _record_interrupted_final_check(
     )
 
 
+def _observe_search_worker(root: Path, agent_session_id: str, proc: subprocess.Popen) -> None:
+    from goal_plus.host_recovery import observe_worker
+    from goal_plus.runtime import FileSearchRuntime
+    try:
+        worker_session = FileSearchRuntime(root)._load_agent_session_by_id(agent_session_id)
+        observe_worker(root, worker_session, proc.pid)
+    except Exception:
+        _kill_process_group(proc)
+        raise
+
+
 def run_pi_rpc_worker(
     launch: dict[str, Any],
     *,
@@ -978,6 +989,8 @@ def run_pi_rpc_worker(
         bufsize=1,
         start_new_session=True,
     )
+    if worker_role == "worker" and launch.get("run_id"):
+        _observe_search_worker(root, agent_session_id, proc)
     rpc = _RpcClient(
         proc=proc,
         event_log=event_log,

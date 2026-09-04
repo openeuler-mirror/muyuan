@@ -907,10 +907,26 @@ GoalPlusRecommendedPhase = Literal["goal", "spec_discovery", "search"]
 GoalPlusDiscoveryOrigin = Literal["initial", "in_progress"]
 GoalPlusGateEvent = Literal["stop", "subagent_stop", "pre_tool_use", "user_prompt_submit"]
 GoalPlusGateDecision = Literal["allow", "block"]
-GoalPlusSessionState = Literal["attached", "stale", "detached"]
+GoalPlusSessionState = Literal["attached", "paused", "stale", "detached"]
 GoalPlusEntrypointStatus = Literal["host_verified", "legacy_unverified"]
 GoalPlusEntrypointHost = Literal["codex", "pi"]
-GoalPlusEntrypointAction = Literal["start", "edit", "resume"]
+GoalPlusEntrypointAction = Literal["start", "edit", "summary", "pause", "resume", "clear"]
+GoalPlusHostSessionEvent = Literal[
+    "session_start",
+    "user_turn",
+    "interrupt",
+    "execution_lost",
+    "continue_confirmed",
+]
+GoalPlusHostSessionDelivery = Literal["auto", "next_user_turn"]
+GoalPlusHostSessionInteraction = Literal["interactive", "headless"]
+GoalPlusHostSessionDecisionKind = Literal[
+    "continue_now",
+    "continue_after_user",
+    "ask_user",
+    "wait_for_user",
+    "stop",
+]
 GoalPlusWorkStatus = Literal[
     "launching",
     "active",
@@ -1144,6 +1160,33 @@ class GoalPlusActiveSession(SearchModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GoalPlusControl(SearchModel):
+    """Task continuation authority, independent of native session attachment."""
+
+    state: Literal["active", "paused", "closed"] = "active"
+    reason: str | None = None
+    version: int = Field(default=0, ge=0)
+
+
+class GoalPlusResumeExpectation(SearchModel):
+    """Conditional automatic resume, supplied by the owning host controller."""
+
+    goal_plus_id: str = Field(min_length=1)
+    goal_revision: int = Field(ge=1)
+    session_id: str = Field(min_length=1)
+    control_version: int = Field(ge=0)
+
+
+class GoalPlusHostSessionDecision(SearchModel):
+    goal_plus_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    record_status: GoalPlusStatus
+    session_state: GoalPlusSessionState | Literal["terminal", "unavailable"]
+    decision: GoalPlusHostSessionDecisionKind
+    reason: str = Field(min_length=1)
+    control: GoalPlusControl = Field(default_factory=GoalPlusControl)
+
+
 class GoalPlusHostCommandInvocation(SearchModel):
     """Immutable evidence that a supported host command authorized one action."""
 
@@ -1165,6 +1208,7 @@ class GoalPlusHostCommandInvocation(SearchModel):
     )
     raw_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     invoked_at: str = Field(min_length=1)
+    resume_expectation: GoalPlusResumeExpectation | None = None
 
     @model_validator(mode="after")
     def match_host_transport_and_command(self) -> "GoalPlusHostCommandInvocation":
@@ -1181,13 +1225,13 @@ class GoalPlusHostCommandInvocation(SearchModel):
             raise ValueError(
                 f"Goal Plus host {self.host} requires the {expected_prefix} command prefix"
             )
-        if self.action in {"edit", "resume"} and self.command not in {
+        if self.action != "start" and self.command not in {
             "$goal-plus",
             "/goal-plus",
         }:
-            raise ValueError(
-                "Goal Plus edit/resume must use the host's base goal-plus command"
-            )
+            raise ValueError("Goal Plus controls must use the host's base goal-plus command")
+        if self.resume_expectation is not None and self.action != "resume":
+            raise ValueError("resume_expectation is only valid for resume")
         return self
 
 
@@ -1200,6 +1244,7 @@ class GoalPlusRecord(SearchModel):
     source_path: str | None = None
     outer_deadline_at: str | None = None
     status: GoalPlusStatus = "active"
+    control: GoalPlusControl = Field(default_factory=GoalPlusControl)
     phase: GoalPlusPhase = "intake"
     policy: dict[str, Any] = Field(default_factory=dict)
     goal_revision: int = Field(default=1, ge=1)
@@ -1261,6 +1306,10 @@ class GoalPlusGateResult(SearchModel):
     status: GoalPlusStatus
     reason: str | None = None
     continuation_prompt: str | None = None
+    goal_plus_id: str | None = None
+    goal_revision: int | None = None
+    control_version: int | None = None
+    session_id: str | None = None
 
 
 class BootstrapVerifierResult(SearchModel):
@@ -1873,6 +1922,34 @@ class RunRecord(SearchModel):
     )
 
 
+class CandidateRecoveryPoint(SearchModel):
+    """A durable settlement boundary, never an arbitrary workspace HEAD."""
+
+    artifact_ref: ArtifactRef
+    iteration: int = Field(ge=0)
+    settlement_id: str | None = None
+    result_count: int = Field(ge=0)
+
+
+class CandidateRecovery(SearchModel):
+    recovery_id: str = Field(pattern=r"^recovery_[0-9a-f]{32}$")
+    generation: int = Field(ge=1)
+    state: Literal["prepared", "restoring", "restored"] = "prepared"
+    point: CandidateRecoveryPoint
+    fenced_session_ids: list[str]
+    created_at: str
+    restored_artifact_ref: ArtifactRef | None = None
+    restored_at: str | None = None
+
+    @model_validator(mode="after")
+    def valid_restoration(self) -> "CandidateRecovery":
+        if self.state == "restored" and (self.restored_artifact_ref is None or self.restored_at is None):
+            raise ValueError("restored recovery requires artifact and completion time")
+        if len(set(self.fenced_session_ids)) != len(self.fenced_session_ids):
+            raise ValueError("recovery session identities must be unique")
+        return self
+
+
 class CandidateRecord(SearchModel):
     candidate_id: str
     status: Literal["created", "evaluated", "failed"]
@@ -1894,12 +1971,24 @@ class CandidateRecord(SearchModel):
     results_ledger: list[ResultLedgerEntry] = Field(default_factory=list)
     results_ledger_git_head: str | None = None
     results_ledger_artifact_ref: ArtifactRef | None = None
+    execution_generation: int = Field(default=0, ge=0)
+    recovery: CandidateRecovery | None = None
+
+    @model_validator(mode="after")
+    def recovery_matches_candidate(self) -> "CandidateRecord":
+        if self.recovery is not None and (
+            self.recovery.generation != self.execution_generation
+            or self.recovery.point.artifact_ref.provider != self.task.workspace_backend
+        ):
+            raise ValueError("recovery generation/provider must match the candidate")
+        return self
 
 
 class AgentSessionRecord(SearchModel):
     agent_session_id: str
     run_id: str
     candidate_id: str
+    execution_generation: int = Field(default=0, ge=0)
     host: AgentHostKind = "codex"
     host_handle: AgentHostHandle = Field(default_factory=AgentHostHandle)
     created_at: str

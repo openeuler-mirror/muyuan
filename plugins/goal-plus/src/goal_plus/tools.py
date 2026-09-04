@@ -171,6 +171,27 @@ class SearchTools:
     def search_status(self, run_id: str) -> dict[str, Any]:
         return self.runtime.status(run_id).model_dump(mode="json")
 
+    def search_recovery_status(self, run_id: str) -> dict[str, Any]:
+        self._require_target("search_recovery_status", run_id=run_id)
+        return self.runtime.search_recovery_status(run_id)
+
+    def search_prepare_recovery(self, run_id: str, candidate_id: str) -> dict[str, Any]:
+        self._require_target("search_prepare_recovery", run_id=run_id)
+        return self.runtime.prepare_candidate_recovery(run_id, candidate_id).model_dump(mode="json")
+
+    def search_recover_candidate(
+        self, run_id: str, candidate_id: str, recovery_id: str
+    ) -> dict[str, Any]:
+        from goal_plus.host_recovery import approve_recovery
+        self._require_target("search_recover_candidate", run_id=run_id)
+        self.runtime._validate_recovery_ids(run_id, candidate_id)
+        record = self.runtime._load_candidate_record(run_id, candidate_id)
+        if record.recovery is None or record.recovery.recovery_id != recovery_id:
+            raise RuntimeError("RecoveryIdentityMismatch")
+        if record.recovery.state != "restored":
+            approve_recovery(self.runtime.root_dir, record.recovery)
+        return self.runtime.recover_candidate(run_id, candidate_id, recovery_id).model_dump(mode="json")
+
     def search_list_history(
         self,
         run_id: str,
@@ -519,6 +540,7 @@ class GoalPlusTools:
             record.linked_search.run_id if record.linked_search is not None else None
         )
         payload["evidence_log"] = self.runtime.list_events(goal_plus_id)
+        payload["reconciliation"] = self.runtime.reconciliation(goal_plus_id)
         return payload
 
     def goal_plus_update_goal(

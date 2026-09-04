@@ -29,6 +29,27 @@ def test_pi_package_exports_the_supported_user_assets() -> None:
     assert skill_files == [".pi/skills/goal-plus/SKILL.md"]
 
 
+def test_pi_search_recovery_tools_are_registered_only_for_main() -> None:
+    text = (ROOT / ".pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
+    main = text.split("const mainTools = [", 1)[1].split("];", 1)[0]
+    worker = text.split("const workerTools = [", 1)[1].split("];", 1)[0]
+    for name in ("search_recovery_status", "search_prepare_recovery", "search_recover_candidate"):
+        assert f'"{name}"' in main
+        assert f'"{name}"' not in worker
+        assert f"{name}: Type.Object" in text
+
+
+def test_pi_package_manifest_exports_only_the_user_integration() -> None:
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+
+    assert package["name"] == "goal-plus"
+    assert "pi-package" in package["keywords"]
+    assert package["pi"] == {
+        "extensions": [".pi/extensions/goal-plus.ts"],
+        "skills": [".pi/skills/goal-plus/SKILL.md"],
+    }
+
+
 def test_pyproject_exposes_pi_console_scripts() -> None:
     scripts = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"

@@ -107,7 +107,9 @@ Codex 不再提供 `goal-plus@goal-plus-local`、cachebuster staging 或 checkou
 ./install.sh --codex
 ```
 
-这会安装当前 Python runtime，并保留唯一的正常来源 `goal-plus@goal-plus`。安装或代码更新后
+这会安装当前 Python runtime，并保留唯一的正常来源 `goal-plus@goal-plus`。每次安装都会
+通过 `codex plugin add` 刷新 plugin 缓存，即使该插件已安装；不会仅因来源相同而跳过
+hooks/skills 更新。安装或代码更新后
 新建 Codex thread；hook 内容变化时，在 `/hooks` 中重新检查并信任，再新建一个 thread。
 
 若旧开发安装仍存在，先显式删除注册：

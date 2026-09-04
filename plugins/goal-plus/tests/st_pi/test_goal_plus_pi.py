@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shlex
 import shutil
 import subprocess
@@ -112,6 +113,25 @@ def _pi_base_command(session_dir: Path, session_id: str) -> list[str]:
     thinking = os.environ.get("ST_PI_THINKING")
     if thinking:
         command.extend(["--thinking", thinking])
+    return command
+
+
+def _pi_resume_command(
+    session_dir: Path,
+    session_id: str,
+    selector: str,
+) -> list[str]:
+    command = _pi_base_command(session_dir, session_id)
+    session_id_index = command.index("--session-id")
+    del command[session_id_index : session_id_index + 2]
+    if selector == "session":
+        command.extend(["--session", session_id])
+    elif selector == "continue":
+        command.append("--continue")
+    elif selector == "resume":
+        command.append("--resume")
+    else:
+        raise ValueError(f"unknown Pi resume selector: {selector}")
     return command
 
 
@@ -265,6 +285,320 @@ def test_goal_plus_exact_command_can_start_and_complete_goal_plus(
     assert record["triage"]["recommended_phase"] == "goal"
     assert record["work_items"] == []
     _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
+
+
+def _run_native_tui_resume(
+    command: list[str],
+    search_root: Path,
+    log_path: Path,
+    *,
+    select_from_picker: bool = False,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("native TUI resume ST requires a POSIX PTY")
+    import fcntl
+    import pty
+    import select
+    import struct
+    import termios
+
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 35, 120, 0, 0))
+    process = subprocess.Popen(
+        command, cwd=ROOT, env={**_run_env(search_root), "TERM": "xterm-256color"},
+        stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
+    )
+    os.close(slave)
+    picker_selected = not select_from_picker
+    output = bytearray()
+    try:
+        with log_path.open("wb") as log:
+            deadline = time.monotonic() + int(os.environ.get("ST_PI_TIMEOUT", "300"))
+            while time.monotonic() < deadline:
+                assert process.poll() is None, f"Pi TUI exited; see {log_path}"
+                if select.select([master], [], [], 0.1)[0]:
+                    chunk = os.read(master, 65536)
+                    output.extend(chunk)
+                    log.write(chunk)
+                    log.flush()
+                if (
+                    not picker_selected
+                    and b"Resume Session (Current Folder)" in output
+                    and b"goal_plus_id:" in output
+                ):
+                    os.write(master, b"\r")
+                    picker_selected = True
+                if _goal_record(search_root)["status"] == "complete":
+                    assert picker_selected
+                    return
+            pytest.fail(f"Pi TUI did not complete the resumed Goal; see {log_path}")
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=10)
+        os.close(master)
+
+
+@pytest.mark.st_pi
+@pytest.mark.parametrize(
+    "interruption,resume_mode,selector",
+    [
+        pytest.param("process_loss", "json", "session", id="session-json-process-loss"),
+        pytest.param("user_abort", "json", "session", id="session-json-user-abort"),
+        pytest.param("process_loss", "tui_prompt", "session", id="session-tui-prompt"),
+        pytest.param("process_loss", "json", "continue", id="continue-json"),
+        pytest.param("process_loss", "tui_prompt", "resume", id="resume-picker-tui"),
+    ],
+)
+def test_goal_plus_native_session_resume(
+    st_pi_run_root: Path,
+    interruption: str,
+    resume_mode: str,
+    selector: str,
+) -> None:
+    search_root = st_pi_run_root / ".gp"
+    session_dir = st_pi_run_root / "sessions"
+    session_dir.mkdir()
+    session_id = "st-pi-native-resume"
+    probe = st_pi_run_root / "resume-probe.txt"
+    log_path = st_pi_run_root / "initial.log"
+    prompt = (
+        f"/goal-plus 在 300 秒内只读验证 {probe} 的完整 trimmed content 是 native-resume-ok。"
+        "不要修改文件，不要进入 Search 或启动 worker。先记录高置信 Goal Mode triage。"
+        "测试控制器会在宿主进程重启后创建该文件；文件出现前保持 active，不要记录终态或"
+        "needs_user。原生 session 恢复后，读取文件并用具体证据完成原始目标审计，调用 "
+        "goal_plus_set_status(status=complete)。"
+    )
+    command = _pi_base_command(session_dir, session_id)
+    if interruption == "user_abort":
+        command.extend(["--mode", "rpc"])
+    else:
+        command.extend(["-p", "--mode", "json", prompt])
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=_run_env(search_root),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if interruption == "user_abort" else subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            if interruption == "user_abort":
+                process.stdin.write(json.dumps({"type": "prompt", "message": prompt}) + "\n")
+                process.stdin.flush()
+            deadline = time.monotonic() + int(os.environ.get("ST_PI_TIMEOUT", "300"))
+            while time.monotonic() < deadline:
+                assert process.poll() is None, log_path.read_text(encoding="utf-8")[-4000:]
+                goal_files = list((search_root / "goal-plus").glob("gp_*/goal.json"))
+                if goal_files:
+                    record = _goal_record(search_root)
+                    if record.get("triage") and list(session_dir.glob("*.jsonl")):
+                        break
+                time.sleep(0.1)
+            else:
+                pytest.fail(f"Pi did not persist triage before timeout; see {log_path}")
+            if interruption == "user_abort":
+                process.stdin.write(json.dumps({"type": "abort"}) + "\n")
+                process.stdin.flush()
+                pause_deadline = time.monotonic() + 30
+                while time.monotonic() < pause_deadline:
+                    if _goal_record(search_root).get("control", {}).get("state") == "paused":
+                        break
+                    assert process.poll() is None, log_path
+                    time.sleep(0.1)
+                else:
+                    pytest.fail(f"Pi abort did not pause the binding; see {log_path}")
+        finally:
+            if process.poll() is None:
+                # Stop only this test-owned process tree after durable evidence.
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=10)
+
+    before = _goal_record(search_root)
+    assert before["status"] == "active"
+    assert before["active_session"]["session_id"] == session_id
+    expected_state = "attached"
+    assert before["active_session"]["state"] == expected_state
+    resume_command = _pi_resume_command(session_dir, session_id, selector)
+    print_resume_command = [*resume_command, "-p", "--mode", "json"]
+
+    # Print mode without a user prompt restores the session but must not race
+    # a fire-and-forget model turn against CLI shutdown.
+    if selector != "resume":
+        empty = subprocess.run(
+            print_resume_command,
+            cwd=ROOT,
+            env=_run_env(search_root),
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        assert empty.returncode == 0, empty.stderr[-3000:]
+        assert '"type":"agent_start"' not in empty.stdout
+        assert _goal_record(search_root)["status"] == "active"
+        assert _goal_record(search_root)["active_session"]["state"] == expected_state
+
+    probe.write_text("native-resume-ok\n", encoding="utf-8")
+    if selector != "resume":
+        chat = subprocess.run(
+            [*print_resume_command, "Only answer this unrelated chat: what is 2 + 2? Do not resume the stopped task."],
+            cwd=ROOT, env=_run_env(search_root), text=True, capture_output=True, timeout=120,
+        )
+        (st_pi_run_root / "stopped-chat.log").write_text(chat.stdout + chat.stderr)
+        assert chat.returncode == 0
+        assert _goal_record(search_root)["control"]["state"] == "paused"
+    continuation = "/goal-plus resume"
+    if resume_mode.startswith("tui"):
+        _run_native_tui_resume(
+            [*resume_command, *([continuation] if resume_mode == "tui_prompt" else [])],
+            search_root,
+            st_pi_run_root / "resumed.log",
+            select_from_picker=selector == "resume",
+        )
+    else:
+        resumed = subprocess.run(
+            [*print_resume_command, continuation],
+            cwd=ROOT,
+            env=_run_env(search_root),
+            text=True,
+            capture_output=True,
+            timeout=int(os.environ.get("ST_PI_TIMEOUT", "300")),
+            check=False,
+        )
+        (st_pi_run_root / "resumed.log").write_text(
+            resumed.stdout + resumed.stderr, encoding="utf-8"
+        )
+        assert resumed.returncode == 0, resumed.stderr[-3000:] or resumed.stdout[-3000:]
+    after = _goal_record(search_root)
+    assert after["status"] == "complete"
+    assert after["goal_plus_id"] == before["goal_plus_id"]
+    assert after["goal_revision"] == before["goal_revision"]
+    assert [item["action"] for item in after["host_command_invocations"]] == ["start", "resume"]
+    assert after["active_session"]["session_id"] == session_id
+    decisions = [
+        event["payload"]
+        for event in _goal_events(search_root, after["goal_plus_id"])
+        if event["event_type"] == "session_continuation_decided"
+    ]
+    assert not any(item["decision"] == "continue_now" for item in decisions)
+
+
+@pytest.mark.st_pi
+@pytest.mark.st
+def test_goal_plus_active_rpc_steering_continues_without_resume(st_pi_run_root: Path) -> None:
+    search_root = st_pi_run_root / ".gp"
+    session_dir = st_pi_run_root / "sessions"
+    session_dir.mkdir()
+    probe = st_pi_run_root / "steering-probe.txt"
+    log_path = st_pi_run_root / "steering.log"
+    prompt = (
+        f"/goal-plus Within 300 seconds record high-confidence Goal Mode triage, then wait for {probe} "
+        "to appear and verify its trimmed content is native-steering-ok. Do not write files, use Search "
+        "or subagents. Keep active until the controller creates the file; then complete with concrete evidence."
+    )
+    with log_path.open("w") as log:
+        process = subprocess.Popen([*_pi_base_command(session_dir, "st-pi-steering"), "--mode", "rpc"],
+            cwd=ROOT, env=_run_env(search_root), stdin=subprocess.PIPE, stdout=log,
+            stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        try:
+            process.stdin.write(json.dumps({"type": "prompt", "message": prompt}) + "\n")
+            process.stdin.flush()
+            sent = False
+            deadline = time.monotonic() + 300
+            while time.monotonic() < deadline:
+                assert process.poll() is None, log_path
+                if list((search_root / "goal-plus").glob("gp_*/goal.json")):
+                    record = _goal_record(search_root)
+                    assert record["control"]["state"] != "paused", f"Steering paused the task; see {log_path}"
+                    if record.get("triage") and not sent:
+                        process.stdin.write(json.dumps({"type": "steer", "message": "New thought: keep the original task and include STEERING_SEEN in its completion evidence."}) + "\n")
+                        process.stdin.flush()
+                        probe.write_text("native-steering-ok\n")
+                        sent = True
+                    if record["status"] == "complete":
+                        assert sent
+                        assert [i["action"] for i in record["host_command_invocations"]] == ["start"]
+                        assert "STEERING_SEEN" in json.dumps(_goal_events(search_root, record["goal_plus_id"]))
+                        return
+                time.sleep(0.1)
+            pytest.fail(f"Active steering did not finish; see {log_path}")
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=10)
+
+
+@pytest.mark.st_pi
+def test_goal_plus_busy_pause_duplicate_resume_and_clear(st_pi_run_root: Path) -> None:
+    search_root = st_pi_run_root / ".gp"
+    session_dir = st_pi_run_root / "sessions"
+    session_dir.mkdir()
+    log_path = st_pi_run_root / "busy-controls.log"
+    with log_path.open("w") as log:
+        process = subprocess.Popen([*_pi_base_command(session_dir, "st-pi-busy-controls"), "--mode", "rpc"],
+            cwd=ROOT, env=_run_env(search_root), stdin=subprocess.PIPE, stdout=log,
+            stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        def send(message):
+            process.stdin.write(json.dumps({"type": "prompt", "message": message}) + "\n")
+            process.stdin.flush()
+        def wait_for(predicate, seconds=60):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                assert process.poll() is None, log_path
+                paths = list((search_root / "goal-plus").glob("gp_*/goal.json"))
+                if paths:
+                    record = _goal_record(search_root)
+                    if predicate(record):
+                        return record
+                time.sleep(0.1)
+            pytest.fail(f"Busy control transition timed out; see {log_path}")
+        try:
+            send(f"/goal-plus Within 300 seconds record high-confidence Goal Mode triage, then keep checking {st_pi_run_root / 'controller-probe.txt'} until it appears. Do not write files, run Search or subagents. Do not poll longer than one second per tool. Keep active; this controller will send commands during the task.")
+            wait_for(lambda r: r.get("triage"), seconds=300)
+            send("/goal-plus pause")
+            paused = wait_for(lambda r: r["control"]["reason"] == "user_pause")
+            assert process.poll() is None  # pause did not kill the current native execution.
+            send("/goal-plus resume")
+            resumed = wait_for(lambda r: r["control"]["state"] == "active")
+            send("/goal-plus resume")
+            duplicate = wait_for(lambda r: len([i for i in r["host_command_invocations"] if i["action"] == "resume"]) >= 2)
+            assert duplicate["control"]["version"] == resumed["control"]["version"] == paused["control"]["version"] + 1
+            send("/goal-plus clear")
+            cleared = wait_for(lambda r: r["control"]["state"] == "closed")
+            assert cleared["status"] == "abandoned"
+            assert cleared["goal_revision"] == 1
+            assert process.poll() is None
+            # End only the test's current turn, then prove normal chat cannot
+            # revive the cleared task or replay its queued continuation.
+            process.stdin.write(json.dumps({"type": "abort"}) + "\n")
+            process.stdin.flush()
+            abort_deadline = time.monotonic() + 60
+            while time.monotonic() < abort_deadline:
+                events = [json.loads(line) for line in log_path.read_text().splitlines() if line.startswith("{")]
+                if any(e.get("type") == "response" and e.get("command") == "abort" and e.get("success") for e in events):
+                    break
+                time.sleep(0.1)
+            else:
+                pytest.fail(f"Native abort did not settle; see {log_path}")
+            send("Reply exactly CHAT_AFTER_CLEAR. Do not call any tools.")
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                if '"text":"CHAT_AFTER_CLEAR"' in log_path.read_text().replace(': ', ':'):
+                    assert _goal_record(search_root)["control"] == cleared["control"]
+                    entries = [json.loads(line) for path in session_dir.glob("*.jsonl") for line in path.read_text().splitlines() if line.startswith("{")]
+                    main_requests = [entry for entry in entries if (entry.get("message") or {}).get("customType") == "goal-plus-command-context"]
+                    assert len(main_requests) <= 2  # initial Main plus at most one idle resume
+                    return
+                time.sleep(0.1)
+            pytest.fail(f"Chat after clear did not settle; see {log_path}")
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=10)
 
 
 @pytest.mark.st_pi
