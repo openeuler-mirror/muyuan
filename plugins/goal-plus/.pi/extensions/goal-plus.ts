@@ -13,7 +13,7 @@ import {
 	type GoalPlusCompletionView,
 	type GoalPlusProgressView,
 	type GoalPlusUsageSummary,
-} from "./goal-plus-progress.ts";
+} from "./lib/goal-plus-progress.ts";
 
 const role = process.env.GOAL_PLUS_PI_ROLE || "main";
 const runtimeRoot = process.env.GOAL_PLUS_ROOT || ".gp";
