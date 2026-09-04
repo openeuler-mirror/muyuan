@@ -266,6 +266,30 @@ def test_pi_normal_rejects_loose_goal_plus_assets(
         installer._preflight_pi_normal()
 
 
+def test_pi_normal_prints_conflicting_checkout_uninstall_command(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_dir = tmp_path / "pi-agent"
+    conflicting_checkout = tmp_path / "old checkout" / "goal-plus"
+    conflicting_checkout.mkdir(parents=True)
+    (conflicting_checkout / "uninstall.sh").write_text(
+        "#!/usr/bin/env bash\n", encoding="utf-8"
+    )
+    _write_pi_settings(agent_dir, [str(conflicting_checkout)])
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+
+    with pytest.raises(installer.InstallError) as exc_info:
+        installer._preflight_pi_normal()
+
+    assert (
+        f"(cd '{conflicting_checkout}' && ./uninstall.sh --pi)"
+        in str(exc_info.value)
+    )
+    assert "Then rerun this installer." in str(exc_info.value)
+
+
 def test_codex_preflight_rejects_development_plugin(
     installer: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
