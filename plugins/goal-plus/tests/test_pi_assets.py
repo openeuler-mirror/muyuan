@@ -22,6 +22,13 @@ def test_pi_package_exports_the_supported_user_assets() -> None:
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     assert package["pi"]["extensions"] == [".pi/extensions/goal-plus.ts"]
     assert package["pi"]["skills"] == [".pi/skills/goal-plus/SKILL.md"]
+    direct_extension_files = sorted(
+        str(path.relative_to(ROOT))
+        for path in (ROOT / ".pi" / "extensions").iterdir()
+        if path.suffix in {".js", ".ts"}
+    )
+    assert direct_extension_files == package["pi"]["extensions"]
+    assert (ROOT / ".pi/extensions/lib/goal-plus-progress.ts").is_file()
     skill_files = sorted(
         str(path.relative_to(ROOT))
         for path in (ROOT / ".pi" / "skills").glob("*/SKILL.md")
