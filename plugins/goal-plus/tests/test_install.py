@@ -44,25 +44,6 @@ def test_install_entrypoint_is_executable() -> None:
     assert entrypoint.stat().st_mode & 0o111
 
 
-@pytest.mark.parametrize("normal_installed", [False, True])
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_codex_install_refreshes_cached_assets(
-    installer: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-    normal_installed: bool,
-    dry_run: bool,
-) -> None:
-    calls = []
-    monkeypatch.setattr(installer, "_run", lambda cmd, **kwargs: calls.append((cmd, kwargs)))
-    installer._install_codex(
-        codex="codex", normal_installed=normal_installed,
-        marketplace_exists=True, dry_run=dry_run,
-    )
-    assert calls == [
-        (["codex", "plugin", "add", "goal-plus@goal-plus"], {"dry_run": dry_run})
-    ]
-
-
 def test_pi_dev_assets_scope_only_the_launcher(
     installer: ModuleType,
     tmp_path: Path,

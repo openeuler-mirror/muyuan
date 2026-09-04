@@ -7,7 +7,7 @@ candidate 恢复到最后一次完整结算的位置，再启动新的 worker �
 恢复沿用原 `run_id`、`candidate_id`、FrozenSpec、已结算 Evidence 和预算，不创建另一轮搜索。
 
 这是内部 Search 操作，不是用户命令；与主任务 `goal-plus resume` 不是同一层。
-当前版本尚不支持该主任务控制命令。Search 恢复不要求 Main 或 worker 执行 `git reset --hard`。
+Search 恢复不要求 Main 或 worker 执行 `git reset --hard`。
 恢复点采用 Goal Plus 公共 `ArtifactRef` 语义，具体工作区恢复由
 workspace provider 实现。
 

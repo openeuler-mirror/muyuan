@@ -309,8 +309,8 @@ def _turn_id(hook_input: dict[str, Any]) -> str | None:
     return None
 
 
-def _codex_turn_started_at(hook_input: dict[str, Any]) -> datetime | None:
-    """Read the start time of the exact Codex turn that emitted this hook."""
+def _codex_turn_event(hook_input: dict[str, Any]) -> dict[str, Any] | None:
+    """Read the exact Codex turn that emitted this hook."""
     transcript = _transcript_path(hook_input)
     turn_id = _turn_id(hook_input)
     if transcript is None or turn_id is None:
@@ -327,10 +327,15 @@ def _codex_turn_started_at(hook_input: dict[str, Any]) -> datetime | None:
                     continue
                 payload = event.get("payload")
                 if isinstance(payload, dict) and payload.get("turn_id") == turn_id:
-                    return _utc_datetime(event.get("timestamp"))
+                    return event
     except OSError:
         return None
     return None
+
+
+def _codex_turn_started_at(hook_input: dict[str, Any]) -> datetime | None:
+    event = _codex_turn_event(hook_input)
+    return _utc_datetime(event.get("timestamp")) if event else None
 
 
 def _compact_json(value: Any) -> str:
@@ -1401,15 +1406,6 @@ def _goal_context(
         "skill 和 MCP 不能创建或恢复记录。\n"
         f"当前目标修订版：{record.goal_revision}。\n"
         f"当前原始目标：{record.raw_goal}\n"
-        + (
-            "Main 会话恢复后，先读取关联 run 的 search_recovery_status 并核对 list_agents。"
-            "正常运行的 worker 继续接管；需要重建的 candidate 先 search_prepare_recovery，"
-            "停止旧 worker 并用 list_agents 观察终止，再 search_recover_candidate，"
-            "随后 search_start_agent_session 并按新 launch 启动同一 candidate。"
-            "不重建 run、不重复结算、不重置预算，不直接执行 Git reset。\n"
-            if record.phase == "search" else ""
-        )
-        +
         "显式命令配置："
         f"{record.command_config.model_dump(mode='json', exclude_none=True)}。"
         "这些字段是 runtime 强约束；只有未配置字段才由 Agent 判断。\n"
@@ -1418,15 +1414,7 @@ def _goal_context(
         f"最终检查 policy：{record.policy.get('final_check', {'mode': 'disabled'})}。\n"
         f"当前 phase：{record.phase}；next action：{next_action_text}\n"
         f"{start_notice}"
-        "本轮加载并遵循 goal-plus skill。主 Agent 使用 max 推理强度并主动编排普通 subagent；"
-        "实际派发时用 goal_plus_record_work_event 记录简短交互摘要，"
-        "适合可度量并行探索的工作项自动路由到 Search。\n"
-        "先处理最新用户消息；运行中的 Goal Plus 随后继续推进。明确中断或暂停的任务只允许"
-        "精确 `$goal-plus resume` 重新启动，普通聊天不能解除停止。\n"
-        "如果用户要改变实际范围、交付物或成功标准，停止本轮变更并要求用户使用精确的 "
-        "`$goal-plus edit <完整修订目标>`；不要调用 goal_plus_update_goal。否则保持"
-        "修订版不变。\n"
-        "以 goal_plus_* 工具和已链接的 Search 运行时作为权威依据。"
+        "加载 goal-plus skill；每轮读取 goal_plus_status 的 control、next_action 和 reconciliation。\n"
     )
     return f"{context}\n{role_model_context}" if role_model_context else context
 
@@ -2101,7 +2089,7 @@ def _handle_stop_event(
             _claim_codex_main(search_root, goal_id, hook_input)
         except RuntimeError as exc:
             return {"decision": "skipped", "reason": str(exc), "goal_plus_id": goal_id}
-        turn_context = _codex_turn_context(hook_input) or {}
+        turn_context = (_codex_turn_event(hook_input) or {}).get("payload", {})
         mode = turn_context.get("collaboration_mode")
         if isinstance(mode, dict) and mode.get("mode") == "plan":
             gate_context = {**gate_context, "mode": "plan"}

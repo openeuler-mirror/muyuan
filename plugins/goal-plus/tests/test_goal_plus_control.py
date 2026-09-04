@@ -263,3 +263,26 @@ def test_main_reconciliation_survives_non_search_round_and_requires_new_evidence
         runtime.set_status(goal.goal_plus_id, "complete")
     search.run_verifier(run_id, candidate.candidate_id, agent_session_id=worker.agent_session_id, hypothesis="fresh generation verification")
     assert "continue_search" in runtime.reconciliation_context(goal.goal_plus_id)
+
+
+def test_reconciliation_prompt_projects_actions_without_checkpoint_or_session_history(tmp_path):
+    from tests.test_search_recovery import make_search
+
+    search, run_id, candidate = make_search(tmp_path)
+    runtime = FileGoalPlusRuntime(search.root_dir)
+    goal = runtime.create_goal("Finish Search")
+    assert runtime.reconciliation_context(goal.goal_plus_id) == ""
+    runtime.link_search_run(goal.goal_plus_id, search._load_run(run_id).frozen_spec_id, run_id)
+    recovery = search.prepare_candidate_recovery(run_id, candidate.candidate_id)
+    context = runtime.reconciliation_context(goal.goal_plus_id)
+    agenda, _ = json.JSONDecoder().raw_decode(context.split("\n", 1)[1])
+    assert agenda == [{"run_id": run_id, "candidates": [{
+        "candidate_id": candidate.candidate_id,
+        "generation": recovery.generation,
+        "recovery_id": recovery.recovery_id,
+        "next_step": "stop_old_execution_then_restore",
+    }]}]
+    # Detailed recovery data remains available on the explicit status read.
+    details = runtime.reconciliation(goal.goal_plus_id)["runs"][0]["candidates"][0]
+    assert details["checkpoint"]
+    assert "sessions" in details

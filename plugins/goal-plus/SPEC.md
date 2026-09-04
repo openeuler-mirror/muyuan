@@ -93,9 +93,8 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 candidate worker、直接 MCP 调用和 generic CLI 都不能创建或编辑 Goal Plus。Search bootstrap、
 Main 后续操作、candidate 操作和终态 report
 分别使用其可验证的归属依据；run 完成链接后，Main 对该 run 的操作必须与当前 Goal 的持久化
-链接一致。同一 turn 内的 Codex `SessionStart(source=compact)` 和追加 `UserPromptSubmit` 只保留
-已有绑定，不创建授权；新 turn 的普通 `UserPromptSubmit` 和其他 SessionStart source 不保留
-绑定。拒绝时不得改变领域状态。
+链接一致。同一 Codex session 的 `SessionStart` 和普通 `UserPromptSubmit` 保留已有绑定；
+是否继续执行由持久化 control 决定。拒绝时不得改变领域状态。
 
 同一原生 session 正常运行时，普通用户消息优先处理，然后继续原任务。明确中断或执行丢失将
 control 标为 paused；普通聊天、原生 session_start 均不解锁。正常 steering 不当作中断。
@@ -115,8 +114,8 @@ intake -> triage                            -> final_audit -> [final_check] -> t
                   \-> spec_discovery -> search /
 ```
 
-`active` 表示仍可推进；`needs_user` 只用于确实缺少用户决定；`blocked`、`complete` 和
-`abandoned` 是终态。Runtime 的 `next_action` 是当前 revision 的权威下一步，skill 不应自行
+`active` 表示仍可推进；`needs_user` 只用于确实缺少用户决定；`blocked` 是可恢复停止，
+`complete` 和 `abandoned` 是终态。Runtime 的 `next_action` 是当前 revision 的权威下一步，skill 不应自行
 维护第二套状态机。
 
 Main Agent 自主拆解普通任务并决定是否使用原生 subagent。Runtime 不要求预建执行计划或

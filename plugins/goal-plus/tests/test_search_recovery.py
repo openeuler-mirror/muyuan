@@ -12,7 +12,7 @@ from goal_plus.host_recovery import approve_recovery, observe_worker
 from goal_plus.tools import SearchTools
 from goal_plus.models import ArtifactRef, RunState
 from goal_plus.workspaces import get_workspace_provider, UnsupportedWorkspaceCapability
-from tests._runtime_helpers import make_project, spec_for
+from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
 
 def make_search(tmp_path: Path):
@@ -23,6 +23,39 @@ def make_search(tmp_path: Path):
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
     return runtime, run_id, task
+
+
+@pytest.mark.parametrize("tool", [
+    "search_recovery_status", "search_prepare_recovery", "search_recover_candidate",
+])
+@pytest.mark.parametrize("old_revision", [False, True])
+def test_recovery_facade_requires_current_goal_run_before_side_effects(tmp_path, tool, old_revision):
+    from goal_plus.goal_plus import FileGoalPlusRuntime
+
+    runtime, run_id, task = make_search(tmp_path)
+    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    start_host_verified_goal(runtime.root_dir, tmp_path / "project")
+    goals = FileGoalPlusRuntime(runtime.root_dir)
+    goal = goals.require_host_verified_active_goal()
+    if old_revision:
+        goals.link_search_run(goal.goal_plus_id, runtime._load_run(run_id).frozen_spec_id, run_id)
+        goal = goals.update_goal(goal.goal_plus_id, "Revised task", expected_revision=1)
+    tools = SearchTools(runtime, goal_runtime=goals)
+    args = {"run_id": run_id}
+    if tool != "search_recovery_status":
+        args["candidate_id"] = task.candidate_id
+    if tool == "search_recover_candidate":
+        args["recovery_id"] = recovery.recovery_id
+    before = runtime._load_candidate_record(run_id, task.candidate_id)
+    with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
+        getattr(tools, tool)(**args)
+    assert runtime._load_candidate_record(run_id, task.candidate_id) == before
+    assert goals.status(goal.goal_plus_id) == goal
+    assert not list((runtime.root_dir / "host-recovery").rglob("*.json"))
+
+    if not old_revision:
+        goals.link_search_run(goal.goal_plus_id, runtime._load_run(run_id).frozen_spec_id, run_id)
+        assert getattr(tools, tool)(**args)
 
 
 def test_recovery_status_exposes_unsettled_workspace_without_mutation(tmp_path):
@@ -80,8 +113,13 @@ def test_finalization_can_select_existing_settlement_without_launching_worker(tm
 
 def test_recover_initial_checkpoint_without_creating_another_candidate(tmp_path):
     runtime, run_id, task = make_search(tmp_path)
+    from goal_plus.goal_plus import FileGoalPlusRuntime
     from goal_plus.pi_tool import call_pi_tool
 
+    start_host_verified_goal(runtime.root_dir, tmp_path / "project")
+    goals = FileGoalPlusRuntime(runtime.root_dir)
+    goal = goals.require_host_verified_active_goal()
+    goals.link_search_run(goal.goal_plus_id, runtime._load_run(run_id).frozen_spec_id, run_id)
     snapshot = call_pi_tool(runtime.root_dir, "search_recovery_status", {"run_id": run_id})
     assert snapshot["run_id"] == run_id
     assert snapshot["candidates"][0]["checkpoint"]["iteration"] == 0

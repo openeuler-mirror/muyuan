@@ -6,8 +6,7 @@ description: 仅供 Goal Plus Main Agent 运行带独立最终检查的 Codex Go
 # 带最终检查的 Goal Plus
 
 对 `$goal-plus-with-final-check` 使用此 skill。Codex host 会在模型轮次前创建 Goal Plus 记录并将
-`policy.final_check.mode` 设为 `required`；缺少当前 session 绑定的 active `goal_plus_id` 时，请用户使用
-准确的 host command。
+`policy.final_check.mode` 设为 `required`；从当前 session 绑定的 `goal_plus_id` 继续。
 
 遵循完整的 `goal-plus` skill。实现和原始目标审计完成后：
 
@@ -18,4 +17,5 @@ description: 仅供 Goal Plus Main Agent 运行带独立最终检查的 Codex Go
    并申请新检查。
 4. 读取 `goal_plus_status`，并遵循停止 gate。通过的 required check 会原子完成当前 revision。
 
-`$goal-plus edit` 会创建新 revision 并使旧检查失效；原生 Codex session 恢复后，用 `$goal-plus resume` 继续当前 revision。
+`$goal-plus edit` 会创建新 revision 并使旧检查失效；原生 Codex session 恢复后，用
+`$goal-plus resume` 继续当前 revision。

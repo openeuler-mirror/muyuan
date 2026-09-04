@@ -1579,7 +1579,6 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 		`goal_plus_id: ${status.goal_plus_id ?? activeGoalPlusId ?? "unknown"}`,
 		`status: ${status.status ?? "unknown"}`,
 		`control: ${JSON.stringify(status.control ?? {})}`,
-		`reconciliation: ${JSON.stringify(status.reconciliation ?? [])}`,
 		`phase: ${status.phase ?? "unknown"}`,
 		`goal_revision: ${status.goal_revision ?? 1}`,
 		`command_config: ${JSON.stringify(status.command_config ?? {})}`,
@@ -1588,13 +1587,7 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 			"原始目标：",
 		status.raw_goal ?? "",
 		"",
-			"规则：",
-			"- command_config 中的字段是 runtime 强约束；只有未配置字段才由你判断。",
-			"- 将原始目标与实现猜测分开。",
-			"- 每次 phase 变化后更新 goal-plus 状态。",
-			"- Search 是自主升级：spec draft 达到高置信度且无 open question 后，直接通过 Search Mode gate，不要请求用户批准。",
-			"- 声称完成前，对照当前证据审计原始目标，并调用 goal_plus_set_status。",
-			"- 如果 final_check.mode 为 required，必须由该目标修订版通过独立最终检查来完成。",
+		"加载 goal-plus skill；每轮读取 goal_plus_status 的 control、next_action 和 reconciliation。",
 	];
 	if (action) {
 		lines.push(
@@ -1605,19 +1598,13 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 			`- description: ${action.description ?? ""}`,
 		);
 	}
-	if (status.phase === "search") {
-		lines.push("恢复 Main 会话后先读取关联 run 的 search_recovery_status 和 pi_search_pool_snapshot。"
-			+ "仍正常运行的 pool 继续接管，不回滚。需要重建的 candidate：search_prepare_recovery，"
-			+ "关闭旧 pool 并确认进程退出，search_recover_candidate，然后用新 pool 启动同一 candidate。"
-			+ "不得重建 run、重复结算、重置预算或把旧 session 的半成品上下文当成已恢复事实。");
-	}
+
 	return lines.join("\n");
 }
 
 function buildNativeSessionContinuationPrompt(status: GoalPlusStatusPayload): string {
 	return [
 		"继续同一个原生 Pi session 中尚未终结的 Goal Plus 任务。",
-		"不要创建新 Goal Plus 记录，也不要重做已经结算的 phase。",
 		buildGoalPlusContext(status),
 	].join("\n\n");
 }
@@ -1737,21 +1724,8 @@ function buildGoalStartPrompt(
 	}
 	lines.push(
 		"",
-		"重要事项：",
-		"- command_config 中的字段必须原样落实；只有未配置字段才允许自主判断。",
-		"- 原生 Pi `/goal-plus` host command 已创建并授权此记录；skill、MCP 和模型工具不能创建或恢复 Goal Plus。",
-		"- 这是新创建记录的首轮。由你语义检查原始目标或当前对话上下文是否明确给出了整个 Goal Plus 任务的最大运行时间；如果没有，先用一句简短 commentary 告知用户：‘当前未设置最大运行时间，Goal Plus 将持续运行直至目标完成或用户手动停止。’这只是告知，不要询问或等待确认；告知后立即继续执行。",
-		"- 加载并遵循 goal-plus skill。",
-		"- 先处理最新用户消息，然后继续 active Goal；中断或暂停的任务必须由 /goal-plus resume 重新启动，普通聊天不能恢复它。",
-		"- 如果用户要改变实际范围、交付物或成功标准，停止本轮变更并要求使用精确的 `/goal-plus edit <完整修订目标>`；不要调用 goal_plus_update_goal。否则保持修订版不变。",
-		"- 除了加载 goal-plus skill 之外，在 goal_plus_record_triage 前不要读取或审计目标文件。",
-		"- 首先使用 goal_plus_record_triage 记录 triage。",
-		"- 如果原始目标明确要求 verifier 引导的 Search Mode，并提供可度量的 verifier 或 metric，不要将其降级为普通 Goal Mode。",
-		"- 对适合独立执行的普通工作，直接调用 pi_goal_plus_run_work_item 并传入完整 task；这是 Pi RPC subagent，不要调用 Codex spawn_agent，也不要预建工作 DAG。",
-		"- 如果任务已准备好进入 Search，通过 frozen-spec 和 Search Mode gate 自主进入 Search Mode；不要要求用户批准该转换。",
-		"- 绝不能编造 frozen_spec_id、run_id、plan_id、candidate_id 或 agent_session_id。只使用紧邻的前序运行时工具返回的准确 id；在 goal_plus_link_search_run 前调用 search_create。",
-		"- 如果尚未准备好进入 Search，在 Goal Mode 中继续，并在停止前更新 goal-plus 状态。",
-		"- 如果该记录要求最终检查，调用 goal_plus_prepare_final_check(checker_host=\"pi\")，然后把其 launch payload 传给 pi_goal_plus_run_final_check。",
+		"加载 goal-plus skill，并从 goal_plus_status 的 next_action 开始执行。",
+		"首次启动时，若目标和当前对话未给出最大运行时间，简短告知任务将持续至完成或用户停止，然后继续。",
 	);
 	return lines.join("\n");
 }
@@ -2135,6 +2109,9 @@ function activateWorkerContext(
 	if (persist && firstActivation) {
 		pi.appendEntry(WORKER_CONTEXT_ENTRY_TYPE, {
 			agent_session_id: agentSessionId,
+			run_id: details.run_id,
+			candidate_id: details.candidate_id,
+			execution_generation: details.execution_generation,
 			candidate_task: {
 				workspace,
 				...(candidateTask.share_out_dir

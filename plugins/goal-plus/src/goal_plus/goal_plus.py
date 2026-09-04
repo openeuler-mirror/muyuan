@@ -267,13 +267,14 @@ def _parse_command_option_value(
 _COMMAND_CONFIG_DIRECTIVE_RE = re.compile(
     r"^(?P<name>[A-Za-z][A-Za-z0-9_-]*)=(?P<value>[^\s]+)(?:\s+|$)"
 )
+SEARCH_RECOVERY_TOOL_SUFFIXES = (
+    "search_recovery_status", "search_prepare_recovery", "search_recover_candidate",
+)
 SEARCH_TOOL_SUFFIXES = (
     "search_freeze_spec",
     "search_create",
     "search_status",
-    "search_recovery_status",
-    "search_prepare_recovery",
-    "search_recover_candidate",
+    *SEARCH_RECOVERY_TOOL_SUFFIXES,
     "search_list_history",
     "search_plan_next",
     "search_start_batch",
@@ -312,6 +313,7 @@ GOAL_SCOPED_TOOL_SUFFIXES = (
 )
 LINKED_SEARCH_TOOL_SUFFIXES = (
     "search_invalidate_run",
+    *SEARCH_RECOVERY_TOOL_SUFFIXES,
     "search_plan_next",
     "search_start_batch",
     "search_start_agent_session",
@@ -2196,6 +2198,9 @@ class FileGoalPlusRuntime:
             return self._record_gate(record, event, "allow", reason="host_not_ready_for_automatic_turn")
         if record.control.state != "active":
             tool = self._tool_name(context).rsplit("__", 1)[-1]
+            if tool == "goal_plus_gate" and self._tool_input(context).get("event") == "stop":
+                error = self._tool_ownership_error(record, context)
+                return self._record_gate(record, event, "block" if error else "allow", reason=error)
             settlement_or_read = {"goal_plus_status", "goal_plus_monitor_snapshot", "goal_plus_list_models", "goal_plus_record_work_event", "goal_plus_submit_final_check", "search_status", "search_recovery_status", "search_list_history", "search_list_iterations", "search_get_agent_observability", "search_report", "search_run_verifier"}
             is_domain = tool.startswith(("goal_plus_", "search_", "pi_search_pool_", "pi_goal_plus_"))
             if event == "pre_tool_use" and is_domain and tool not in settlement_or_read:
@@ -2203,20 +2208,9 @@ class FileGoalPlusRuntime:
             return self._record_gate(record, event, "allow")
         if event == "pre_tool_use" and any(
             self._tool_matches(self._tool_name(context), name)
-            for name in ("search_recovery_status", "search_prepare_recovery", "search_recover_candidate")
+            for name in SEARCH_RECOVERY_TOOL_SUFFIXES
         ):
-            arguments = context.get("tool_input") or context.get("input") or {}
-            if isinstance(arguments, str):
-                try:
-                    arguments = json.loads(arguments)
-                except ValueError:
-                    arguments = {}
-            run_id = arguments.get("run_id") if isinstance(arguments, dict) else None
-            owns_run = any(
-                task.run_id == run_id and task.goal_revision == record.goal_revision
-                for task in record.search_tasks
-            )
-            if record.status != "active" or not owns_run:
+            if record.status != "active" or self._tool_ownership_error(record, context):
                 return self._record_gate(
                     record, event, "block",
                     reason="SearchRecoveryOwnershipRequired: recovery requires an active Goal and its current-revision linked run.",
@@ -2516,16 +2510,31 @@ class FileGoalPlusRuntime:
                 raise RuntimeError("GoalPlusResumeRequired: linked Search is stopped or belongs to an old revision")
 
     def reconciliation_context(self, goal_plus_id: str) -> str:
+        runs = self.reconciliation(goal_plus_id)["runs"]
+        if not runs:
+            return ""
+        agenda = []
+        for run in runs:
+            item: dict[str, Any] = {"run_id": run["run_id"]}
+            if "next_step" in run:
+                item["next_step"] = run["next_step"]
+            else:
+                item["candidates"] = [
+                    {
+                        "candidate_id": candidate["candidate_id"],
+                        "generation": candidate["generation"],
+                        "next_step": candidate["next_step"],
+                        **({"recovery_id": candidate["recovery"]["recovery_id"]}
+                           if candidate["recovery"] else {}),
+                    }
+                    for candidate in run["candidates"]
+                ]
+            agenda.append(item)
         return (
-            "Main continuation agenda (reload goal_plus_status each round):\n"
-            + json.dumps(self.reconciliation(goal_plus_id), ensure_ascii=False, default=str)
-            + "\nFirst process the latest user input, then do bounded work and re-read phase, next_action, work_items and this agenda. "
-            "Non-Search work may come first; pending recovery cannot be forgotten. Inspect actual host workers; never recover a healthy worker. "
-            "If a worker stopped with unsettled_workspace_changes, recover its last settled checkpoint before any fresh execution; do not native-continue that partial attempt. "
-            "Use search_recovery_status, search_prepare_recovery, stop/observe old workers through the host, then search_recover_candidate with the same recovery_id. "
-            "After restore, search_start_agent_session is idempotent for that generation. Reconcile the native task/session identity before launch/bind; never duplicate an uncertain launch. "
-            "Obtain fresh Evidence and finish required selection, promotion, report and audit. restored/active alone is not completion. "
-            "Preserve the original deadline and accumulated usage; if exploration expired, only the existing finalization contract is allowed."
+            "Search reconciliation:\n"
+            + json.dumps(agenda, ensure_ascii=False)
+            + "\n按 next_step 推进；用 search_recovery_status 按需读取 checkpoint 和 host session。"
+            "先处理最新用户消息，每轮重读 goal_plus_status；非 Search 工作后仍继续此清单。"
         )
 
     def _stop_audit_prompt(self, record: GoalPlusRecord) -> str:
@@ -2667,8 +2676,14 @@ class FileGoalPlusRuntime:
             and source_run_id
             else self._tool_input_run_id(tool_input)
         )
+        current_revision_only = any(
+            self._tool_matches(tool_name, name) for name in SEARCH_RECOVERY_TOOL_SUFFIXES
+        )
         if run_id is None or not any(
-            task.run_id == run_id for task in record.search_tasks
+            task.run_id == run_id and (
+                not current_revision_only or task.goal_revision == record.goal_revision
+            )
+            for task in record.search_tasks
         ):
             return (
                 "GoalPlusOwnershipMismatch: Search operation requires a run linked "

@@ -9,6 +9,14 @@ description: 仅供 Goal Plus Main Agent 使用 goal-plus MCP 的内部 Search M
 workspace、verifier Evidence、selection 和 promotion；Codex host 拥有原生 worker 的启动、
 等待、续跑和中断。直接调用当前 registry 中的原生 MCP tools。
 
+## 恢复已有 Run
+
+按 `goal_plus_status.reconciliation` 继续已有 run；用 `search_recovery_status` 和 `list_agents`
+核对 lane 与真实 worker。健康 worker 继续接管；停止且有未结算修改的 lane，先调用
+`search_prepare_recovery`，由 host 停止并确认旧执行结束，再用返回的 `recovery_id` 调用
+`search_recover_candidate`。随后按下方流程启动、绑定 fresh worker 并取得新 Evidence。
+launch/bind 间中断时先核对原生 task/session，再补齐下一步。
+
 ## 建立 Run
 
 1. 用相对 `source_path` 的 verifier artifact 路径调用 `search_freeze_spec`，检查返回的 source、

@@ -172,15 +172,18 @@ class SearchTools:
         return self.runtime.status(run_id).model_dump(mode="json")
 
     def search_recovery_status(self, run_id: str) -> dict[str, Any]:
+        self._require_target("search_recovery_status", run_id=run_id)
         return self.runtime.search_recovery_status(run_id)
 
     def search_prepare_recovery(self, run_id: str, candidate_id: str) -> dict[str, Any]:
+        self._require_target("search_prepare_recovery", run_id=run_id)
         return self.runtime.prepare_candidate_recovery(run_id, candidate_id).model_dump(mode="json")
 
     def search_recover_candidate(
         self, run_id: str, candidate_id: str, recovery_id: str
     ) -> dict[str, Any]:
         from goal_plus.host_recovery import approve_recovery
+        self._require_target("search_recover_candidate", run_id=run_id)
         self.runtime._validate_recovery_ids(run_id, candidate_id)
         record = self.runtime._load_candidate_record(run_id, candidate_id)
         if record.recovery is None or record.recovery.recovery_id != recovery_id:
