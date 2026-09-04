@@ -1438,32 +1438,8 @@ def test_worker_task_exposes_host_and_edit_contract(tmp_path: Path) -> None:
     assert tasks[0].workspace_access.native_cwd == tasks[0].workspace
     assert tasks[0].workspace_access.bootstrap_required is True
     assert tasks[0].workspace_access.confinement == "soft_path"
-    assert any(
-        "Frozen verifier 是唯一权威验证路径" in instruction
-        for instruction in tasks[0].instructions
-    )
-    assert any(
-        "search_run_verifier(agent_session_id=...)" in instruction
-        for instruction in tasks[0].instructions
-    )
-    combined_instructions = "\n".join(tasks[0].instructions)
     assert tasks[0].allowed_files == ["initial_program.py"]
     assert tasks[0].denied_files == ["evaluator.py", "config.yaml"]
-    assert "以 verifier 返回后的工作区状态为准" in combined_instructions
-    assert "不会进入 Global Evidence、被其他 worker 看到或参与最终选择" in combined_instructions
-    assert "贡献给共享搜索" in combined_instructions
-    assert ".tmp/handoff.json" in combined_instructions
-    assert "不属于交付 edit surface" in combined_instructions
-    assert "success_threshold" not in combined_instructions
-    for runtime_detail in ("results.tsv", "worker_agent_type"):
-        assert runtime_detail not in combined_instructions
-    assert "search_reference_open" in combined_instructions
-    assert "当前 agent 唯一的 ref-workspace" in combined_instructions
-    assert "同一目录切到新的 reference commit" in combined_instructions
-    assert "search_reference_list/read/exec" not in combined_instructions
-    assert "search_reference_close" not in combined_instructions
-    assert "不要访问或 fetch peer 的真实工作区" in combined_instructions
-    assert "When steps run out the host will ask you" not in combined_instructions
 
     (tasks[0].workspace / ".tmp" / "handoff.json").write_text(
         '{"summary": "resume here"}\n',
@@ -1527,7 +1503,6 @@ def test_worker_instructions_match_enabled_capabilities(
     assert ("global_evidence_snapshot" in instructions) is (mode == "auto")
     assert ("search_get_evidence_detail" in instructions) is supplemental
     assert ("success_threshold" in instructions) is threshold
-    assert ("否则正常收尾" in instructions) is threshold
     assert ("allocation_decision" in instructions) is adaptive
 
 

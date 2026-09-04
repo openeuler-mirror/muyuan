@@ -941,6 +941,7 @@ def test_compaction_session_start_preserves_authorized_goal_turn(
             "session_id": "session-codex",
             "turn_id": "turn-goal",
             "tool_name": "mcp__goal-plus__goal_plus_record_triage",
+            "tool_input": {"goal_plus_id": record_path.parent.name},
         },
     )
     assert next_tool.stdout == ""
@@ -1594,6 +1595,7 @@ def test_same_turn_user_steering_preserves_authorized_goal_turn(
                 "session_id": "session-codex",
                 "turn_id": "turn-goal",
                 "tool_name": "mcp__goal-plus__goal_plus_record_triage",
+                "tool_input": {"goal_plus_id": record_path.parent.name},
             },
         )
         assert next_tool.stdout == ""

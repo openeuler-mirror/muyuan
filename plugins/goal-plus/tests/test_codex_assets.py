@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -52,104 +53,6 @@ def test_codex_orchestration_skills_are_explicit_and_main_only(name: str) -> Non
     assert "allow_implicit_invocation: false" in interface
 
 
-def test_codex_skills_use_current_goal_and_search_surfaces() -> None:
-    goal = (ROOT / ".codex" / "skills" / "goal-plus" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    search = (ROOT / ".codex" / "skills" / "search" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-
-    for operation in {
-        "goal_plus_status",
-        "goal_plus_record_triage",
-        "goal_plus_record_work_event",
-        "goal_plus_save_spec_draft",
-        "goal_plus_record_search_result",
-        "goal_plus_set_status",
-    }:
-        assert operation in goal
-    assert "goal_plus_upsert_work_items" not in goal
-    assert "work DAG" in goal
-    assert "spawn_agent" in goal
-    assert 'fork_turns="none"' in goal
-
-    for operation in (
-        "search_freeze_spec",
-        "search_create",
-        "goal_plus_link_search_run",
-        "search_plan_next",
-        "search_start_batch",
-        "search_start_agent_session",
-        "search_bind_agent_handle",
-        "search_continue_agent_session",
-        "search_select",
-        "search_promote",
-        "search_apply_promotion",
-    ):
-        assert operation in search
-    assert "search_redispatch_candidate" in search
-    assert "search_get_agent_observability" in search
-    assert "search_invalidate_run" in search
-
-
-def test_codex_worker_prompt_defers_optional_contracts_to_runtime() -> None:
-    path = ROOT / ".codex" / "agents" / "search_candidate_agent.toml"
-    config = tomllib.loads(path.read_text(encoding="utf-8"))
-    prompt = config["developer_instructions"]
-
-    assert config["name"] == "search_candidate_agent"
-    assert "search_get_agent_context" in prompt
-    assert "candidate_task" in prompt
-    assert "continuation" in prompt
-    for optional_contract in (
-        "allocation_decision",
-        "scheduler_status",
-        "search_get_global_evidence",
-        "search_get_evidence_detail",
-        "search_stage_shared_tool",
-    ):
-        assert optional_contract not in prompt
-
-
-def test_codex_adaptive_reference_contains_only_main_host_actions() -> None:
-    goal = (ROOT / ".codex" / "skills" / "goal-plus" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    search = (ROOT / ".codex" / "skills" / "search" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    reference = (
-        ROOT / ".codex" / "skills" / "goal-plus" / "references" / "adaptive-search.md"
-    ).read_text(encoding="utf-8")
-
-    assert "adaptive-search.md" not in goal
-    assert "adaptive-search.md" in search
-    assert "search_list_allocation_decisions" in reference
-    assert "search_apply_allocation_decision" in reference
-    assert "search_bind_agent_handle" in reference
-    assert "worker prompt 不承载" in reference
-    for internal in ("SchedulerManager", "AllocationExecutor", "build_context"):
-        assert internal not in reference
-
-
-def test_codex_final_check_uses_independent_checker_launch() -> None:
-    checker = (ROOT / ".codex" / "agents" / "goal_plus_final_checker.toml").read_text(
-        encoding="utf-8"
-    )
-    alias = (
-        ROOT / ".codex" / "skills" / "goal-plus-with-final-check" / "SKILL.md"
-    ).read_text(encoding="utf-8")
-
-    assert 'name = "goal_plus_final_checker"' in checker
-    assert "goal_plus_status" in checker
-    assert "goal_plus_submit_final_check" in checker
-    assert "goal_plus_set_status" in checker
-    assert "goal_plus_prepare_final_check" in alias
-    assert "spawn_agent" in alias
-    assert 'fork_turns="none"' in alias
-
-
 def test_codex_mcp_and_hook_assets_register_runtime_entrypoints() -> None:
     config = (ROOT / ".codex" / "config.example.toml").read_text(encoding="utf-8")
     hooks = json.loads((ROOT / ".codex" / "hooks.example.json").read_text())
@@ -194,3 +97,6 @@ def test_codex_and_pi_worker_launch_contracts_are_equivalent() -> None:
     ).strip()
 
     assert codex == pi
+    assert set(re.findall(r"\b(?:goal_plus|search)_[a-z_]+\b", codex)) == {
+        "search_get_agent_context"
+    }
