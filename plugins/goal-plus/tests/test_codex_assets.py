@@ -177,7 +177,7 @@ def test_codex_assets_wire_goal_plus_host_hooks() -> None:
     text = (ROOT / "docs" / "codex.md").read_text(encoding="utf-8")
     assert "installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook" in text
     assert "不再存在 `PostToolUse(goal_plus_create)`" in text
-    assert "SessionStart` 只保留可恢复" in text
+    assert "`source=compact` 不构成新授权" in text
     assert "fail closed" in text
     assert "UserPromptSubmit" in text
     assert "PreToolUse" in text

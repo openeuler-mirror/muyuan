@@ -284,9 +284,11 @@ installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook；
 第一次读取自己的 agent context 前也会显示其自身权限。该信息来自 Codex transcript 的
 `turn_context`，缺失时保持 unavailable，不能从 TOML、环境变量或 parent 权限猜测。
 Main 在首条用户可见进度中、Search candidate 在最终交接中完整照抄 hook 给出的权限摘要。
-`SessionStart` 只发现可恢复状态，不授权或注入 active id；用户必须显式提交
-`$goal-plus resume`。`PreToolUse` 对未由本轮精确 host command 授权的 Goal Plus / Search
-变更 fail closed。不存在 `PostToolUse(goal_plus_create)` 兼容后备。Search 候选 subagent 的
+`SessionStart` 的 startup、resume、clear 或未知 source 只发现可恢复状态，不授权或注入
+active id；用户必须显式提交 `$goal-plus resume`。同一 turn 的追加 `UserPromptSubmit` 和
+`source=compact` 不创建授权，也不撤销已有绑定。`PreToolUse` 对未由本轮精确 host command
+授权的 Goal Plus / Search 变更 fail closed。不存在 `PostToolUse(goal_plus_create)` 兼容后备。
+Search 候选 subagent 的
 PostTool 事件还会执行一次只读 verifier 时间提示检查；它们绝不会绑定 Goal Plus 所有权，
 主 agent、最终检查员和普通 subagent 的事件会被忽略。顶层 `Stop` 会强制执行完整原始目标
 和耗时审计，直到主 agent 记录终态。
