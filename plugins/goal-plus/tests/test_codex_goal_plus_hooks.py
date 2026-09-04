@@ -33,6 +33,18 @@ def _run_hook(
     hook_input: dict,
     **env: str,
 ) -> subprocess.CompletedProcess[str]:
+    # Unit fixtures create records without a native start hook. Register the
+    # current host as their existing owner; process replacement is tested in
+    # test_goal_plus_control, not simulated by every subprocess invocation.
+    from goal_plus.host_recovery import claim_main_owner, codex_owner_pid
+    owner = codex_owner_pid()
+    if owner:
+        runtime = FileGoalPlusRuntime(search_root)
+        for path in runtime.goals_dir.glob("gp_*/goal.json"):
+            record = runtime.status(path.parent.name)
+            binding = record.active_session
+            if binding and binding.state == "attached" and not runtime.is_terminal(record) and not (search_root / "host-recovery" / "mains" / f"{record.goal_plus_id}.json").exists():
+                claim_main_owner(search_root, record.goal_plus_id, binding.host, binding.session_id, owner, restoring=False)
     return subprocess.run(
         HOOK_CLI,
         cwd=tmp_path,
@@ -271,7 +283,7 @@ def test_user_prompt_submit_precreates_and_binds_goal(tmp_path: Path) -> None:
     assert record.host_command_invocations[0].transport == "codex_user_prompt_submit"
     assert record.goal_plus_id in context
     assert "skill 和 MCP 不能创建或恢复记录" in context
-    assert "不要仅因 Goal Plus 处于 active 就恢复工作" in context
+    assert "普通聊天不能解除停止" in context
     assert "范围、交付物或成功标准" in context
     assert "goal_plus_update_goal" in context
     assert "$goal-plus edit <完整修订目标>" in context
@@ -422,7 +434,7 @@ def test_native_session_followup_finds_existing_parent_root(tmp_path: Path) -> N
             {
                 "hook_event_name": "UserPromptSubmit",
                 "session_id": "session-parent",
-                "prompt": "Continue the current Goal Plus work.",
+                "prompt": "$goal-plus resume",
             }
         ),
         text=True,
@@ -436,7 +448,7 @@ def test_native_session_followup_finds_existing_parent_root(tmp_path: Path) -> N
     resumed = runtime.status(record.goal_plus_id)
     assert resumed.active_session is not None
     assert resumed.active_session.state == "attached"
-    assert resumed.host_command_invocations == []
+    assert [item.action for item in resumed.host_command_invocations] == ["resume"]
     assert not (workspace / ".gp").exists()
 
 
@@ -675,7 +687,7 @@ def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> No
     assert initial_context != edited_context
 
 
-def test_native_codex_resume_continues_on_next_user_turn(tmp_path: Path) -> None:
+def test_native_codex_resume_requires_explicit_goal_plus_resume(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     _run_hook(
         tmp_path,
@@ -700,7 +712,8 @@ def test_native_codex_resume_continues_on_next_user_turn(tmp_path: Path) -> None
     assert interrupted.stdout == ""
     paused = FileGoalPlusRuntime(search_root).status(goal_id)
     assert paused.active_session is not None
-    assert paused.active_session.state == "paused"
+    assert paused.active_session.state == "attached"
+    assert paused.control.state == "paused"
 
     resumed = _run_hook(
         tmp_path,
@@ -713,7 +726,7 @@ def test_native_codex_resume_continues_on_next_user_turn(tmp_path: Path) -> None
     assert goal_id in _additional_context(resumed, "SessionStart")
     still_paused = FileGoalPlusRuntime(search_root).status(goal_id)
     assert still_paused.active_session is not None
-    assert still_paused.active_session.state == "paused"
+    assert still_paused.control.state == "paused"
 
     continued = _run_hook(
         tmp_path,
@@ -724,7 +737,13 @@ def test_native_codex_resume_continues_on_next_user_turn(tmp_path: Path) -> None
             "prompt": "Continue from where we stopped.",
         },
     )
-    context = _additional_context(continued, "UserPromptSubmit")
+    assert continued.stdout == ""
+    assert FileGoalPlusRuntime(search_root).status(goal_id).control.state == "paused"
+    resumed = _run_hook(tmp_path, search_root, {
+        "hook_event_name": "UserPromptSubmit", "session_id": "session-codex",
+        "prompt": "$goal-plus resume",
+    })
+    context = _additional_context(resumed, "UserPromptSubmit")
     record = FileGoalPlusRuntime(search_root).status(goal_id)
     assert record.goal_revision == 1
     assert record.raw_goal == (
@@ -734,7 +753,7 @@ def test_native_codex_resume_continues_on_next_user_turn(tmp_path: Path) -> None
     assert goal_id in context
     assert record.active_session is not None
     assert record.active_session.state == "attached"
-    assert [item.action for item in record.host_command_invocations] == ["start"]
+    assert [item.action for item in record.host_command_invocations] == ["start", "resume"]
 
 
 def test_codex_interrupted_final_checker_is_recorded_and_can_stop(tmp_path: Path) -> None:
@@ -1765,8 +1784,7 @@ def test_ordinary_prompt_does_not_reactivate_detached_session(tmp_path: Path) ->
         },
     )
     payload = json.loads(rejected.stdout)
-    assert payload["decision"] == "block"
-    assert "没有 `$goal-plus resume` 子命令" in payload["reason"]
+    assert "没有绑定的 Goal Plus 任务" in payload["hookSpecificOutput"]["additionalContext"]
     still_detached = runtime.status(goal_id)
     assert still_detached.active_session is not None
     assert still_detached.active_session.state == "detached"

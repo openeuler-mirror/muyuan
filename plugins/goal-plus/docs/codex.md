@@ -138,14 +138,14 @@ Selection、promotion 和 final audit 始终由 parent 所有。
 MCP/CLI 直调都不能创建记录。`goal_plus_create`/`goal_plus_update_goal` 是 deny-only tombstone，
 不再存在 `PostToolUse(goal_plus_create)` 所有权 fallback。
 
-Goal Plus 不提供 `$goal-plus resume`。使用 `codex resume <session-id>` 恢复交互式 session；
-`SessionStart` 只恢复上下文，不凭空创建模型 turn，下一条普通用户消息会作为权威输入并继续
-unfinished Goal。无交互的 exec 恢复必须显式发送普通 prompt，例如
-`codex exec resume <session-id> "Continue the active task."`。`Interrupt` 会把绑定标记为 paused；
-paused session 恢复后需要用户消息/确认，不会在没有输入时自动运行。不同 session、fork、detached
+使用 `codex resume <session-id>` 恢复交互式 session，`SessionStart` 只恢复上下文。
+明确中断后的任务必须用 `$goal-plus resume` 重启 Main；普通聊天不解除 control=paused。
+无交互写法为 `codex exec resume <session-id> '$goal-plus resume'`。
+`$goal-plus` 查询摘要；pause 禁止后续续跑/新派发，不强杀当前 turn；clear 撤权且保留历史。
+正常运行中收到新思考会先处理再继续，不要求 resume。不同 session、fork、detached/stale
 绑定和终态 Goal 都不会继承 continuation 权限。未授权 session 对 Goal Plus/Search 变更的
 `PreToolUse` 检查 fail closed；只有显示和只读监控故障可以 fail open。详见
-[原生 Session Resume](resume.md)。
+[运行逻辑](runtime-logic.md)。控制命令按宿主交付时机生效，不承诺原生 `/goal` 的无模型 UI。
 普通 subagent 不继承 parent 的 next action。
 
 Candidate 的初始 `UserPromptSubmit` 只注入 runtime 绑定的 role 与

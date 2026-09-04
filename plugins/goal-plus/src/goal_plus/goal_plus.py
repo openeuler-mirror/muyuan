@@ -19,6 +19,7 @@ from goal_plus.models import (
     AgentHostKind,
     GoalPlusActiveSession,
     GoalPlusCommandConfig,
+    GoalPlusControl,
     GoalPlusFinalCheck,
     GoalPlusFinalCheckerHost,
     GoalPlusExecutionPolicy,
@@ -46,7 +47,7 @@ from goal_plus.paths import DEFAULT_RUNTIME_ROOT
 from goal_plus.runtime import discover_git_tracked_task_skills, exclusive_file_lock
 
 
-TERMINAL_STATUSES: set[GoalPlusStatus] = {"blocked", "complete", "abandoned"}
+TERMINAL_STATUSES: set[GoalPlusStatus] = {"complete", "abandoned"}
 GOAL_PLUS_ENTRYPOINT_REQUIRED = (
     "GoalPlusEntrypointRequired: Goal Plus can only be started by Codex "
     "$goal-plus or Pi /goal-plus. Skill, MCP, CLI, and model-initiated creation "
@@ -347,6 +348,10 @@ def serialized_goal_mutation(method):
         **kwargs: Any,
     ) -> Any:
         with exclusive_file_lock(self._goal_dir(goal_plus_id) / "goal.lock"):
+            if method.__name__ in {"record_triage", "save_spec_draft", "link_search_run"}:
+                record = self._load_record(goal_plus_id)
+                if record.control.state != "active":
+                    raise RuntimeError("GoalPlusResumeRequired: task control does not permit new work")
             return method(self, goal_plus_id, *args, **kwargs)
 
     return wrapped
@@ -775,7 +780,7 @@ class FileGoalPlusRuntime:
             raise ValueError("Goal Plus start requires a host invocation with action=start")
         with exclusive_file_lock(self.root_dir / "goal-plus-entrypoint.lock"):
             existing = self._record_for_host_invocation(parsed.invocation_id)
-            if existing is not None and existing.status not in TERMINAL_STATUSES:
+            if existing is not None and not self.is_terminal(existing):
                 return existing
             nonterminal = self._nonterminal_records()
             if nonterminal:
@@ -800,6 +805,7 @@ class FileGoalPlusRuntime:
         if (
             len(nonterminal) != 1
             or nonterminal[0].status != "active"
+            or nonterminal[0].control.state != "active"
             or nonterminal[0].entrypoint_status != "host_verified"
             or not nonterminal[0].host_command_invocations
         ):
@@ -830,7 +836,11 @@ class FileGoalPlusRuntime:
             self._load_record(path.parent.name)
             for path in sorted(self.goals_dir.glob("gp_*/goal.json"))
         ]
-        return [record for record in records if record.status not in TERMINAL_STATUSES]
+        return [record for record in records if not self.is_terminal(record)]
+
+    @staticmethod
+    def is_terminal(record: GoalPlusRecord) -> bool:
+        return record.status in TERMINAL_STATUSES or record.control.state == "closed"
 
     @staticmethod
     def _has_host_invocation(
@@ -875,7 +885,7 @@ class FileGoalPlusRuntime:
             (
                 record
                 for record in matches
-                if record.status not in TERMINAL_STATUSES
+                if not self.is_terminal(record)
             ),
             matches[0] if matches else None,
         )
@@ -898,6 +908,9 @@ class FileGoalPlusRuntime:
                 )
             if self._has_host_invocation(record, host_invocation.invocation_id):
                 return record
+            self._require_control_session(record, host_invocation)
+        if record.status == "abandoned" or record.control.state == "closed" and record.status != "complete":
+            raise RuntimeError("A cleared or historical terminal Goal cannot be edited")
         if record.goal_revision != expected_revision:
             raise RuntimeError(
                 f"Goal Plus revision conflict: expected {expected_revision}, "
@@ -977,7 +990,12 @@ class FileGoalPlusRuntime:
                 "goal_revisions": [*record.goal_revisions, revision],
                 "final_checks": checks,
                 "work_items": work_items,
-                "status": "active",
+                "status": record.status if record.status in {"blocked", "needs_user"} else "active",
+                "control": GoalPlusControl(
+                    state="active" if record.status == "complete" else record.control.state,
+                    reason=None if record.status == "complete" else record.control.reason,
+                    version=record.control.version + 1,
+                ),
                 "phase": "intake",
                 "triage": None,
                 "spec_draft": None,
@@ -1054,6 +1072,94 @@ class FileGoalPlusRuntime:
         )
 
     @serialized_goal_mutation
+    def control_from_host_command(
+        self,
+        goal_plus_id: str,
+        *,
+        invocation: GoalPlusHostCommandInvocation | dict[str, Any],
+    ) -> GoalPlusRecord:
+        parsed = GoalPlusHostCommandInvocation.model_validate(invocation)
+        if parsed.action not in {"summary", "pause", "resume", "clear"}:
+            raise ValueError("unsupported Goal Plus control action")
+        record = self._load_record(goal_plus_id)
+        self._require_control_session(record, parsed)
+        if parsed.action == "summary":
+            return record
+        # A replay acknowledges the original request; it never re-applies it to
+        # a later pause/edit/clear state.
+        if self._has_host_invocation(record, parsed.invocation_id):
+            return record
+        if self.is_terminal(record) and parsed.action != "clear":
+            raise RuntimeError("A terminal or cleared Goal Plus task cannot resume or pause")
+        expectation = parsed.resume_expectation
+        if expectation is not None:
+            if (
+                expectation.goal_plus_id != record.goal_plus_id
+                or expectation.goal_revision != record.goal_revision
+                or expectation.session_id != parsed.session_id
+                or expectation.control_version != record.control.version
+                or record.status != "active"
+                or record.control.state != "paused"
+                or record.control.reason not in {"execution_lost", "harness_interruption"}
+            ):
+                raise RuntimeError("AutomaticResumeRejected: task identity, stop version or recovery authority changed")
+        state, reason = {
+            "pause": ("paused", "user_pause"),
+            "resume": ("active", None),
+            "clear": ("closed", "user_clear"),
+        }[parsed.action]
+        changed = (state, reason) != (record.control.state, record.control.reason)
+        control = GoalPlusControl(state=state, reason=reason, version=record.control.version + int(changed))
+        status = record.status
+        if parsed.action == "clear":
+            status = "abandoned"
+        elif parsed.action == "resume" and status == "blocked":
+            status = "active"
+        updated = self._with_host_invocation(record, parsed).model_copy(update={
+            "status": status, "control": control,
+            "next_action": None if parsed.action == "clear" else record.next_action,
+        })
+        self._write_record(updated)
+        self._append_event(goal_plus_id, "control_changed", {
+            "action": parsed.action, "control": control.model_dump(mode="json"),
+            "invocation_id": parsed.invocation_id, "automatic": expectation is not None,
+        })
+        return updated
+
+    @staticmethod
+    def _require_control_session(record: GoalPlusRecord, invocation: GoalPlusHostCommandInvocation) -> None:
+        active = record.active_session
+        host = "pi-rpc" if invocation.host == "pi" else invocation.host
+        historical_access = invocation.action == "summary" or (
+            invocation.action == "edit" and record.status == "complete"
+        )
+        if active is None or active.session_id != invocation.session_id or active.host != host or active.state == "stale" or (active.state == "detached" and not historical_access):
+            raise RuntimeError("Goal Plus control requires its attached original native session")
+
+    @serialized_goal_mutation
+    def stop_for_host_retry(self, goal_plus_id: str, expectation: dict[str, Any]) -> GoalPlusRecord:
+        """Host-only CAS before an owned timeout, never a model tool.
+
+        Recording this BEFORE the host interrupts distinguishes its timeout
+        from a user abort. A later pause/clear invalidates the admission version.
+        """
+        record = self._load_record(goal_plus_id)
+        actual = {
+            "goal_plus_id": record.goal_plus_id, "goal_revision": record.goal_revision,
+            "control_version": record.control.version,
+            "session_id": record.active_session.session_id if record.active_session else None,
+        }
+        if actual != expectation or record.status != "active" or record.control.state != "active" or record.active_session is None or record.active_session.state != "attached":
+            raise RuntimeError("HostInterruptionRejected: task changed or is already stopped")
+        updated = record.model_copy(update={
+            "control": GoalPlusControl(state="paused", reason="harness_interruption", version=record.control.version + 1),
+            "updated_at": utc_timestamp(),
+        })
+        self._write_record(updated)
+        self._append_event(goal_plus_id, "host_interruption", {"expected": expectation, "control": updated.control.model_dump(mode="json")})
+        return updated
+
+    @serialized_goal_mutation
     def handle_host_session_event(
         self,
         goal_plus_id: str,
@@ -1072,7 +1178,7 @@ class FileGoalPlusRuntime:
         reason = "session_unavailable"
         session_state: str = active.state if active is not None else "unavailable"
 
-        if record.status in TERMINAL_STATUSES:
+        if self.is_terminal(record):
             session_state = "terminal"
             reason = "goal_terminal"
         elif (
@@ -1083,21 +1189,12 @@ class FileGoalPlusRuntime:
             reason = "session_mismatch"
         elif active.state in {"stale", "detached"}:
             reason = f"session_{active.state}"
-        elif event == "interrupt":
+        elif event in {"interrupt", "execution_lost"}:
             now = utc_timestamp()
-            if active.state != "paused":
-                active = active.model_copy(
-                    update={
-                        "state": "paused",
-                        "last_seen_at": now,
-                        "metadata": {
-                            **active.metadata,
-                            "pause_reason": "host_interrupt",
-                        },
-                    }
-                )
+            stop_reason = "user_interrupt" if event == "interrupt" else "execution_lost"
+            if record.control.state == "active":
                 record = record.model_copy(
-                    update={"active_session": active, "updated_at": now}
+                    update={"control": GoalPlusControl(state="paused", reason=stop_reason, version=record.control.version + 1), "updated_at": now}
                 )
                 self._write_record(record)
                 self._append_event(
@@ -1106,64 +1203,24 @@ class FileGoalPlusRuntime:
                     {
                         "host": host,
                         "session_id": session_id,
-                        "reason": "host_interrupt",
+                        "reason": stop_reason,
                     },
                 )
-            session_state = "paused"
-            reason = "host_interrupt"
-        elif event in {"user_turn", "continue_confirmed"}:
-            if active.state == "paused":
-                now = utc_timestamp()
-                active = active.model_copy(
-                    update={
-                        "state": "attached",
-                        "last_seen_at": now,
-                        "metadata": {
-                            key: value
-                            for key, value in active.metadata.items()
-                            if key != "pause_reason"
-                        },
-                    }
-                )
-                record = record.model_copy(
-                    update={"active_session": active, "updated_at": now}
-                )
-                self._write_record(record)
-                self._append_event(
-                    goal_plus_id,
-                    "session_reactivated",
-                    {"host": host, "session_id": session_id, "event": event},
-                )
-            session_state = "attached"
-            decision = (
-                "continue_now"
-                if event == "continue_confirmed"
-                else "continue_after_user"
-            )
-            reason = event
-        elif record.status == "needs_user":
-            reason = "goal_needs_user"
-            if interaction == "interactive":
-                decision = (
-                    "ask_user" if delivery == "auto" else "wait_for_user"
-                )
-        elif active.state == "paused":
-            session_state = "paused"
-            if interaction == "interactive":
-                decision = (
-                    "ask_user" if delivery == "auto" else "wait_for_user"
-                )
-                reason = "session_paused"
-            else:
-                reason = "paused_headless"
+            reason = record.control.reason or stop_reason
+        elif record.control.state != "active" or record.status == "blocked":
+            decision = "wait_for_user"
+            reason = record.control.reason or "explicit_resume_required"
+        elif event == "user_turn":
+            decision = "continue_after_user"
+            reason = "user_turn"
+        elif event == "continue_confirmed":
+            # Compatibility of the event vocabulary is not permission to resume.
+            # Only a host-command invocation can change task control state.
+            decision = "wait_for_user"
+            reason = "explicit_resume_required"
         elif event == "session_start":
-            session_state = "attached"
-            if delivery == "auto":
-                decision = "continue_now"
-                reason = "active_native_session"
-            else:
-                decision = "wait_for_user"
-                reason = "host_requires_user_turn"
+            decision = "wait_for_user"
+            reason = "host_requires_user_turn"
 
         result = GoalPlusHostSessionDecision(
             goal_plus_id=goal_plus_id,
@@ -1172,6 +1229,7 @@ class FileGoalPlusRuntime:
             session_state=session_state,
             decision=decision,
             reason=reason,
+            control=record.control,
         )
         self._append_event(
             goal_plus_id,
@@ -1280,6 +1338,8 @@ class FileGoalPlusRuntime:
     ) -> GoalPlusRecord | None:
         """Consume one non-active Stop summary and detach its host session."""
         record = self._load_record(goal_plus_id)
+        if not self.is_terminal(record):
+            return None
         if record.status == "active":
             raise RuntimeError(
                 f"Goal Plus {goal_plus_id} is active; use gate() for its Stop event"
@@ -1417,8 +1477,10 @@ class FileGoalPlusRuntime:
             raise ValueError("work attempt generation must be positive")
 
         record = self._load_record(goal_plus_id)
-        if record.status != "active":
+        if self.is_terminal(record) or event == "dispatch" and record.status != "active":
             raise RuntimeError("work events require an active Goal Plus record")
+        if event == "dispatch" and record.control.state != "active":
+            raise RuntimeError("GoalPlusResumeRequired: stopped tasks cannot dispatch new work")
         if event not in WORK_EVENT_ALLOWED_STATUSES:
             raise ValueError(f"unknown work event: {event}")
         if event == "dispatch" and not host:
@@ -1743,6 +1805,8 @@ class FileGoalPlusRuntime:
         summary: str | None = None,
     ) -> GoalPlusRecord:
         record = self._load_record(goal_plus_id)
+        if self.is_terminal(record):
+            raise RuntimeError("Cannot settle Search into a terminal or cleared Goal Plus task")
         task_index = next(
             (index for index, task in enumerate(record.search_tasks) if task.run_id == run_id),
             None,
@@ -1866,7 +1930,7 @@ class FileGoalPlusRuntime:
         checker_host: GoalPlusFinalCheckerHost,
     ) -> dict[str, Any]:
         record = self._load_record(goal_plus_id)
-        if record.status != "active":
+        if record.status != "active" or record.control.state != "active":
             raise RuntimeError("Final check can only start for an active Goal Plus record.")
         if self._final_check_mode(record) != "required":
             raise RuntimeError("This Goal Plus record does not require a final check.")
@@ -1946,6 +2010,8 @@ class FileGoalPlusRuntime:
         checker_metadata: dict[str, Any] | None = None,
     ) -> GoalPlusRecord:
         record = self._load_record(goal_plus_id)
+        if self.is_terminal(record):
+            raise RuntimeError("Final check cannot change a terminal or cleared Goal Plus task")
         if goal_revision != record.goal_revision:
             raise RuntimeError(
                 f"Final check is stale for goal revision {goal_revision}; "
@@ -2001,6 +2067,7 @@ class FileGoalPlusRuntime:
         if verdict == "pass":
             update: dict[str, Any] = {
                 "status": "complete",
+                "control": GoalPlusControl(state="closed", reason="complete", version=record.control.version + 1),
                 "phase": "final_check",
                 "next_action": None,
                 "final_checks": checks,
@@ -2072,6 +2139,10 @@ class FileGoalPlusRuntime:
         next_action: GoalPlusNextAction | dict[str, Any] | None = None,
     ) -> GoalPlusRecord:
         record = self._load_record(goal_plus_id)
+        if self.is_terminal(record) and status != record.status:
+            raise RuntimeError("A terminal Goal requires an explicit host edit or a new task")
+        if status == "active" and record.status == "blocked":
+            raise RuntimeError("A blocked Goal requires an explicit host resume")
         if status == "complete":
             self._require_idle_execution(record, "complete Goal Plus")
         if status == "complete" and self._final_check_mode(record) == "required":
@@ -2092,7 +2163,13 @@ class FileGoalPlusRuntime:
         updated = record.model_copy(
             update={
                 "status": status,
-                "next_action": None if status in TERMINAL_STATUSES else parsed_next_action,
+                "next_action": None if status in TERMINAL_STATUSES else parsed_next_action or record.next_action,
+                "control": (
+                    GoalPlusControl(state="closed", reason=status, version=record.control.version + 1)
+                    if status in TERMINAL_STATUSES else
+                    GoalPlusControl(state="paused", reason="blocked", version=record.control.version + 1)
+                    if status == "blocked" else record.control
+                ),
                 "updated_at": utc_timestamp(),
             }
         )
@@ -2112,6 +2189,18 @@ class FileGoalPlusRuntime:
         context: dict[str, Any],
     ) -> GoalPlusGateResult:
         record = self._load_record(goal_plus_id)
+        if event == "stop" and (
+            context.get("mode") == "plan" or context.get("has_pending_user_input")
+            or context.get("main_busy")
+        ):
+            return self._record_gate(record, event, "allow", reason="host_not_ready_for_automatic_turn")
+        if record.control.state != "active":
+            tool = self._tool_name(context).rsplit("__", 1)[-1]
+            settlement_or_read = {"goal_plus_status", "goal_plus_monitor_snapshot", "goal_plus_list_models", "goal_plus_record_work_event", "goal_plus_submit_final_check", "search_status", "search_recovery_status", "search_list_history", "search_list_iterations", "search_get_agent_observability", "search_report", "search_run_verifier"}
+            is_domain = tool.startswith(("goal_plus_", "search_", "pi_search_pool_", "pi_goal_plus_"))
+            if event == "pre_tool_use" and is_domain and tool not in settlement_or_read:
+                return self._record_gate(record, event, "block", reason="GoalPlusResumeRequired: this task is stopped; only an explicit host resume can restart it.")
+            return self._record_gate(record, event, "allow")
         if event == "pre_tool_use" and any(
             self._tool_matches(self._tool_name(context), name)
             for name in ("search_recovery_status", "search_prepare_recovery", "search_recover_candidate")
@@ -2321,6 +2410,13 @@ class FileGoalPlusRuntime:
                 f"{item.work_item_id}={item.status}" for item in active_items
             )
             raise RuntimeError(f"cannot {action}; active subagent dispatches: {detail}")
+        for run in self.reconciliation(record.goal_plus_id)["runs"]:
+            for candidate in run.get("candidates", []):
+                if candidate["recovery"] and candidate["next_step"] != "continue_search":
+                    raise RuntimeError(
+                        f"cannot {action}; SearchRecoveryIncomplete: {run['run_id']}/{candidate['candidate_id']} "
+                        f"still requires {candidate['next_step']}"
+                    )
 
     def _record_gate(
         self,
@@ -2347,6 +2443,89 @@ class FileGoalPlusRuntime:
             status=record.status,
             reason=reason,
             continuation_prompt=continuation_prompt,
+            goal_plus_id=record.goal_plus_id,
+            goal_revision=record.goal_revision,
+            control_version=record.control.version,
+            session_id=record.active_session.session_id if record.active_session else None,
+        )
+
+    def reconciliation(self, goal_plus_id: str) -> dict[str, Any]:
+        """Durable Main agenda, without performing host process inspection.
+
+        A restored checkpoint is not execution. Keep the remaining launch and
+        evidence steps visible on every read, regardless of Main's current phase.
+        """
+        from goal_plus.runtime import FileSearchRuntime
+
+        record = self._load_record(goal_plus_id)
+        search = FileSearchRuntime(self.root_dir)
+        runs = []
+        for task in record.search_tasks:
+            if task.goal_revision != record.goal_revision:
+                continue
+            try:
+                state = search.search_recovery_status(task.run_id)
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                runs.append({"run_id": task.run_id, "next_step": "inspect_unavailable_state", "error": str(exc)})
+                continue
+            if state["state"] in {"promoted", "aborted", "failed"}:
+                continue
+            candidates = []
+            for candidate in state["candidates"]:
+                recovery = candidate["recovery"]
+                current = [s for s in candidate["sessions"] if s["execution_generation"] == candidate["generation"]]
+                step = "inspect_host_execution"
+                if candidate.get("unsettled_workspace_changes"):
+                    step = "inspect_worker_then_recover_unsettled_attempt_if_stopped"
+                if recovery:
+                    if recovery["state"] != "restored":
+                        step = "stop_old_execution_then_restore"
+                    elif not current:
+                        step = "start_fresh_worker"
+                    elif not any(s["host_handle"]["metadata"].get("bound_at") for s in current):
+                        step = "reconcile_launch_then_bind"
+                    elif candidate["fresh_recovery_evidence"]:
+                        step = "continue_search"
+                    else:
+                        step = "await_fresh_evidence"
+                candidates.append({**candidate, "next_step": step})
+            runs.append({"run_id": task.run_id, "state": state["state"], "candidates": candidates})
+        return {
+            "control": record.control.model_dump(mode="json"),
+            "resume_eligible": not self.is_terminal(record) and record.active_session is not None
+                and record.active_session.state not in {"detached", "stale"},
+            "outer_deadline_at": record.outer_deadline_at,
+            "runs": runs,
+        }
+
+    def require_search_execution(self, run_id: str, *, settlement: bool = False) -> None:
+        """Reject new work on a linked, stopped or superseded Search.
+
+        Standalone Search has no Goal owner. Historical records are still read
+        here so clear/edit cannot accidentally turn their runs into standalone.
+        """
+        for path in self.goals_dir.glob("gp_*/goal.json"):
+            record = self._load_record(path.parent.name)
+            linked = [task for task in record.search_tasks if task.run_id == run_id]
+            if not linked:
+                continue
+            allowed_control = {"active", "paused"} if settlement else {"active"}
+            if record.control.state not in allowed_control or self.is_terminal(record) or (not settlement and record.status != "active") or not any(
+                task.goal_revision == record.goal_revision for task in linked
+            ):
+                raise RuntimeError("GoalPlusResumeRequired: linked Search is stopped or belongs to an old revision")
+
+    def reconciliation_context(self, goal_plus_id: str) -> str:
+        return (
+            "Main continuation agenda (reload goal_plus_status each round):\n"
+            + json.dumps(self.reconciliation(goal_plus_id), ensure_ascii=False, default=str)
+            + "\nFirst process the latest user input, then do bounded work and re-read phase, next_action, work_items and this agenda. "
+            "Non-Search work may come first; pending recovery cannot be forgotten. Inspect actual host workers; never recover a healthy worker. "
+            "If a worker stopped with unsettled_workspace_changes, recover its last settled checkpoint before any fresh execution; do not native-continue that partial attempt. "
+            "Use search_recovery_status, search_prepare_recovery, stop/observe old workers through the host, then search_recover_candidate with the same recovery_id. "
+            "After restore, search_start_agent_session is idempotent for that generation. Reconcile the native task/session identity before launch/bind; never duplicate an uncertain launch. "
+            "Obtain fresh Evidence and finish required selection, promotion, report and audit. restored/active alone is not completion. "
+            "Preserve the original deadline and accumulated usage; if exploration expired, only the existing finalization contract is allowed."
         )
 
     def _stop_audit_prompt(self, record: GoalPlusRecord) -> str:
@@ -2394,7 +2573,8 @@ class FileGoalPlusRuntime:
             "而使用 blocked。blocked 只表示仍缺少外部输入、权限、资源或状态变化，导致任务确实"
             "无法继续。如果没有时间限制，继续到目标满足，或出现这种真实阻塞。worker lease 或"
             "probe 结束绝不会完成 Goal Plus 任务。停止前，使用 complete、blocked 或 abandoned"
-            "调用 goal_plus_set_status，并提供真实原因和证据。"
+            "调用 goal_plus_set_status，并提供真实原因和证据。\n\n"
+            + self.reconciliation_context(record.goal_plus_id)
         )
 
     def _continuation_prompt(self, record: GoalPlusRecord) -> str:
@@ -2719,6 +2899,16 @@ class FileGoalPlusRuntime:
 
     def _load_record(self, goal_plus_id: str) -> GoalPlusRecord:
         payload = read_json(self._goal_path(goal_plus_id))
+        if "control" not in payload:
+            # Import old terminal records as historical, never as retryable work.
+            session = payload.get("active_session") or {}
+            if payload.get("status") in {"blocked", "complete", "abandoned"}:
+                payload["control"] = {"state": "closed", "reason": "legacy_terminal"}
+            elif session.get("state") == "paused":
+                payload["control"] = {"state": "paused", "reason": "legacy_pause"}
+                payload["active_session"] = {**session, "state": "attached"}
+            else:
+                payload["control"] = {"state": "active"}
         raw_items = payload.get("work_items")
         if isinstance(raw_items, list):
             migrated_items = []

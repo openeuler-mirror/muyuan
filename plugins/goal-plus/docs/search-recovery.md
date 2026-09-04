@@ -2,12 +2,13 @@
 
 ## 功能概览
 
-Main 通过 [Codex/Pi 原生 session 恢复](resume.md)继续原任务后，可以将中断的 Search
+Main 按[运行逻辑](runtime-logic.md)恢复会话并获准继续原任务后，可以将中断的 Search
 candidate 恢复到最后一次完整结算的位置，再启动新的 worker 执行代际（generation）。
 恢复沿用原 `run_id`、`candidate_id`、FrozenSpec、已结算 Evidence 和预算，不创建另一轮搜索。
 
-这是内部 Search 操作，不是用户命令。不存在 `/goal-plus resume`，也不要求 Main 或 worker
-执行 `git reset --hard`。恢复点采用 Goal Plus 公共 `ArtifactRef` 语义，具体工作区恢复由
+这是内部 Search 操作，不是用户命令；与主任务 `goal-plus resume` 不是同一层。
+当前版本尚不支持该主任务控制命令。Search 恢复不要求 Main 或 worker 执行 `git reset --hard`。
+恢复点采用 Goal Plus 公共 `ArtifactRef` 语义，具体工作区恢复由
 workspace provider 实现。
 
 ## 何时恢复
@@ -23,6 +24,11 @@ workspace provider 实现。
 
 原生 session 恢复只是获得继续原任务的身份，不证明 Search worker 存活，也不自动触发所有
 candidate 的工作区恢复。Main 根据最新用户消息、共享平面和宿主事实选择需要恢复的 lane。
+
+[持续 Main 循环](runtime-logic.md#持续-main-与-search-reconciliation)会跨轮重读
+这些状态：一次 resume 负责重新启动 Main，Main 再反复推进必要的内部恢复步骤。
+恢复事务完成但新 worker 尚未启动，仍属于 Main 的待办；当前先做非 Search 工作时可以先做，
+之后回到关联 Search 再继续同一事务。仅完成 restore 不代表 worker 已重启或原任务已完成。
 
 ## 恢复流程
 

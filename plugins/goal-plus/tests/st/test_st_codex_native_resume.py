@@ -96,7 +96,8 @@ def _start_interrupted_codex_session(
 
     before = json.loads(goal_path.read_text(encoding="utf-8"))
     assert before["status"] == "active", log_path
-    assert before["active_session"]["state"] == "paused", log_path
+    assert before["active_session"]["state"] == "attached", log_path
+    assert before["control"]["state"] == "paused", log_path
     session_id = before["active_session"]["session_id"]
     return InterruptedCodexSession(
         workspace=workspace,
@@ -118,6 +119,8 @@ def _interrupt_interactive_codex_turn(
     env: dict[str, str],
     prompt: str,
     log_path: Path,
+    steering: bool = False,
+    control_test: bool = False,
 ) -> Path:
     if os.name != "posix":
         pytest.skip("interactive Codex interrupt ST requires a POSIX PTY")
@@ -134,6 +137,7 @@ def _interrupt_interactive_codex_turn(
         "--no-alt-screen",
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
+        "-c", 'model_reasoning_effort="medium"',
     ]
     if runner.model:
         command.extend(["-m", runner.model])
@@ -153,6 +157,9 @@ def _interrupt_interactive_codex_turn(
     os.close(slave)
     goal_path: Path | None = None
     interrupt_sent = False
+    steering_written_at: float | None = None
+    steering_submitted = False
+    control_stage = 0
     try:
         with log_path.open("wb") as log:
             deadline = time.monotonic() + int(os.environ.get("ST_CODEX_TIMEOUT", "300"))
@@ -165,16 +172,48 @@ def _interrupt_interactive_codex_turn(
                     if chunk:
                         log.write(chunk)
                         log.flush()
+                if steering_written_at and not steering_submitted and time.monotonic() - steering_written_at >= 1:
+                    # Submit separately from the paste burst.
+                    os.write(master, b"\r")
+                    steering_submitted = True
+                    if steering:
+                        (workspace / "resume-probe.txt").write_text("native-resume-ok\n")
                 paths = list((search_root / "goal-plus").glob("gp_*/goal.json"))
                 if len(paths) == 1:
                     record = json.loads(paths[0].read_text(encoding="utf-8"))
                     if record.get("triage"):
                         goal_path = paths[0]
+                        if control_test:
+                            action = None
+                            if control_stage == 0:
+                                action = "pause"
+                                control_stage = 1
+                            elif control_stage == 1 and record["control"]["reason"] == "user_pause":
+                                assert process.poll() is None
+                                action = "clear"
+                                control_stage = 2
+                            elif control_stage == 2 and record["control"]["state"] == "closed":
+                                assert process.poll() is None
+                                return goal_path
+                            if action:
+                                os.write(master, f"$goal-plus {action}".encode())
+                                steering_written_at = time.monotonic()
+                                steering_submitted = False
+                            continue
                         if not interrupt_sent:
-                            # Codex 0.151's default interactive turn-interrupt key is Escape.
-                            os.write(master, b"\x1b")
+                            if steering:
+                                os.write(master, b"New thought: keep the original read-only task and include STEERING_SEEN in its completion evidence.")
+                                steering_written_at = time.monotonic()
+                            else:
+                                # The native interactive turn-interrupt key is Escape.
+                                os.write(master, b"\x1b")
                             interrupt_sent = True
-                        if record["active_session"]["state"] == "paused":
+                        if steering:
+                            assert record["control"]["state"] != "paused", f"Steering incorrectly paused Goal Plus; see {log_path}"
+                            if record["status"] == "complete":
+                                return goal_path
+                            continue
+                        if record.get("control", {}).get("state") == "paused":
                             return goal_path
                 if process.poll() is not None:
                     pytest.fail(
@@ -186,6 +225,43 @@ def _interrupt_interactive_codex_turn(
             os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=10)
         os.close(master)
+
+
+def test_codex_active_user_thought_continues_without_resume(st_project_root, st_log_dir):
+    workspace = Path(tempfile.mkdtemp(prefix="codex-steering-", dir=st_project_root))
+    link_host_assets(workspace, ROOT)
+    runner = CodexRunner(workspace, st_log_dir)
+    path = _interrupt_interactive_codex_turn(
+        workspace=workspace, search_root=workspace / ".gp", runner=runner,
+        env={**os.environ, ST_ACTIVE_ENV: "active_steering"}, steering=True,
+        prompt=("$goal-plus Within 300 seconds record high-confidence Goal Mode triage, then wait for "
+                "resume-probe.txt to appear and verify its trimmed content is native-resume-ok. "
+                "Do not write files or use subagents or Search. The controller creates the file after "
+                "sending a new thought. Keep active until the file appears, then complete with evidence."),
+        log_path=st_log_dir / "codex-active-steering.log",
+    )
+    record = json.loads(path.read_text())
+    assert record["status"] == "complete"
+    assert [i["action"] for i in record["host_command_invocations"]] == ["start"]
+    assert "STEERING_SEEN" in (path.parent / "events.jsonl").read_text()
+
+
+def test_codex_busy_pause_then_clear_preserves_native_process(st_project_root, st_log_dir):
+    workspace = Path(tempfile.mkdtemp(prefix="codex-busy-control-", dir=st_project_root))
+    link_host_assets(workspace, ROOT)
+    runner = CodexRunner(workspace, st_log_dir)
+    goal_path = _interrupt_interactive_codex_turn(
+        workspace=workspace, search_root=workspace / ".gp", runner=runner,
+        env={**os.environ, ST_ACTIVE_ENV: "busy_controls"}, control_test=True,
+        prompt=("$goal-plus Within 300 seconds record high-confidence Goal Mode triage, then keep "
+                "checking controller-probe.txt until it appears. No file writes, Search or subagents. "
+                "Do not wait more than one second per tool. Keep active until the controller sends commands."),
+        log_path=st_log_dir / "codex-busy-controls.log",
+    )
+    record = json.loads(goal_path.read_text())
+    assert record["control"] == {"state": "closed", "reason": "user_clear", "version": 2}
+    assert record["status"] == "abandoned"
+    assert [entry["action"] for entry in record["host_command_invocations"]] == ["start", "pause", "clear"]
 
 
 def _codex_interactive_command(
@@ -274,7 +350,7 @@ def _run_codex_tui(
 def _assert_same_goal(before: dict, after: dict) -> None:
     assert after["goal_plus_id"] == before["goal_plus_id"]
     assert after["goal_revision"] == before["goal_revision"]
-    assert after["host_command_invocations"] == before["host_command_invocations"]
+    assert after["outer_deadline_at"] == before["outer_deadline_at"]
 
 
 def _codex_rollout_paths(env: dict[str, str]) -> set[Path]:
@@ -316,11 +392,19 @@ def test_codex_exec_native_resume_after_interrupt(
         scenario="codex_exec_native_resume",
     )
     session.probe.write_text("native-resume-ok\n", encoding="utf-8")
+    chatted = subprocess.run(
+        [*session.runner._build_base_cmd(), "--json", "resume", session.session_id,
+         "Only answer this unrelated chat: what is 2 + 2? Do not resume the stopped task."],
+        cwd=session.workspace, env=session.env, capture_output=True, text=True, timeout=120,
+    )
+    (st_log_dir / "stopped-chat.log").write_text(chatted.stdout + chatted.stderr)
+    assert chatted.returncode == 0
+    assert json.loads(session.goal_path.read_text())["control"]["state"] == "paused"
     resumed = subprocess.run(
         [
             *session.runner._build_base_cmd(),
             "--json", "resume", session.session_id,
-            "Continue the active Goal Plus task in this same native session.",
+            "$goal-plus resume",
         ],
         cwd=session.workspace,
         env=session.env,
@@ -346,7 +430,7 @@ def test_codex_exec_native_resume_after_interrupt(
         .splitlines()
     ]
     assert any(event["event_type"] == "session_paused" for event in events)
-    assert any(event["event_type"] == "session_reactivated" for event in events)
+    assert any(event["event_type"] == "control_changed" and event["payload"]["action"] == "resume" for event in events)
 
 
 def test_codex_interactive_native_resume_after_interrupt(
@@ -365,7 +449,7 @@ def test_codex_interactive_native_resume_after_interrupt(
         _codex_interactive_command(session, "resume"),
         session=session,
         log_path=log_path,
-        prompt="Continue the active Goal Plus task in this same native session.",
+        prompt="$goal-plus resume",
         done=lambda: json.loads(session.goal_path.read_text(encoding="utf-8"))[
             "status"
         ]
@@ -417,4 +501,5 @@ def test_codex_interactive_fork_does_not_inherit_goal_plus_binding(
     assert after["status"] == "active"
     _assert_same_goal(session.before, after)
     assert after["active_session"]["session_id"] == session.session_id
-    assert after["active_session"]["state"] == "paused"
+    assert after["active_session"]["state"] == "attached"
+    assert after["control"]["state"] == "paused"

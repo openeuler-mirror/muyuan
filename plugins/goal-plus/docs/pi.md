@@ -94,20 +94,22 @@ capability；只有 `--host-entrypoint` 标志而没有该 capability 仍会被�
 只保护单次 host-control 调用，不是模型 turn 或 Goal 的授权期限。`goal_plus_create` 和
 `goal_plus_update_goal` 只保留为 deny-only tombstone。host-control 调用成功后，精确 slash command
 会把当前原生 Pi session 绑定到 active Goal Plus 记录。同一 session 内的普通 follow-up、临时
-provider error 和自动重试会沿用该绑定；用户 abort 会把它标记为 paused。
+provider error 和自动重试会沿用该绑定；最终异常或用户 abort 会将任务 control 标为 paused。
 
-Goal Plus 不提供 `/goal-plus resume`。恢复使用 Pi 原生 `--session <id>`、`--continue` 或交互式
-`--resume`。只有与持久化 `active_session.session_id` 精确相同的 native session 才能继续；不同
-session 或 `--fork` 不继承。完整语义见[原生 Session Resume](resume.md)。
+恢复会话使用 Pi 原生 `--session <id>`、`--continue` 或交互式 `--resume`，不会自动点火。
+重启原 Main 使用 `/goal-plus resume`，交互命令与 print/JSON 共用控制入口：
+`pi -p --mode json --session <id> '/goal-plus resume'`。原 session 身份必须精确匹配；
+不同 session、fork、detached/stale 不继承执行权。摘要、pause、clear 及完整合同见
+[运行逻辑](runtime-logic.md)。开发安装的 `pi-goal-plus` 支持相同参数。
 
 ## Pi 与 Codex 的差异
 
 Pi 使用 extension event，而不是项目 hook 文件。extension 只会在 interactive、RPC、print 和 JSON
 模式解析到精确 slash command 后，在模型运行前创建或编辑 Goal Plus，保存 active ID，并绑定当前
 原生 session；后续每个 agent turn 都会注入隐藏 context。普通 input 不会自行创建或编辑记录，但在
-精确同一 native session 中会作为权威用户输入继续 unfinished Goal。`session_start` 会核对持久化
-绑定：attached 的交互式 promptless resume 可直接续跑，paused/needs-user 会询问。headless
-恢复必须提供普通用户 prompt；没有 prompt 时不发起模型 turn。
+精确同一 native session 且 control=active 时先处理用户输入再继续任务。中断后的普通消息只聊天，
+不恢复任务。`session_start` 核对绑定但不启动 turn，交互和 headless 均须显式恢复已停止 Main。
+后续 continuation 在 awaited `agent_end` 中排队；旧 revision/control version 的请求失效。
 未绑定 session 的 Goal Plus/Search 变更会被 tool gate 拒绝。它提供原生 turn-level stop gate，
 但不是 host process 级 Stop hook。
 

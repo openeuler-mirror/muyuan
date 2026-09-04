@@ -18,4 +18,4 @@ description: 仅供 Goal Plus Main Agent 运行带独立最终检查的 Codex Go
    并申请新检查。
 4. 读取 `goal_plus_status`，并遵循停止 gate。通过的 required check 会原子完成当前 revision。
 
-`$goal-plus edit` 会创建新 revision 并使旧检查失效；原生 Codex session 恢复后继续当前 revision。
+`$goal-plus edit` 会创建新 revision 并使旧检查失效；原生 Codex session 恢复后，用 `$goal-plus resume` 继续当前 revision。

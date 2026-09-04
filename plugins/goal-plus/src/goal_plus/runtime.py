@@ -1651,11 +1651,19 @@ class FileSearchRuntime:
                 f"{run.invalidation_reason}"
             )
 
+    def _assert_goal_execution_allowed(self, run_id: str) -> None:
+        from goal_plus.goal_plus import FileGoalPlusRuntime
+        FileGoalPlusRuntime(self.root_dir).require_search_execution(run_id)
+
     def _assert_worker_iteration_allowed(
         self,
         run: RunRecord,
         operation: str,
     ) -> None:
+        from goal_plus.goal_plus import FileGoalPlusRuntime
+        FileGoalPlusRuntime(self.root_dir).require_search_execution(
+            run.run_id, settlement=operation == "record verifier result",
+        )
         self._assert_run_not_invalidated(run, operation)
         if run.state not in WORKER_ITERATION_RUN_STATES:
             raise RuntimeError(
@@ -1786,6 +1794,7 @@ class FileSearchRuntime:
             return self._plan_next_locked(run_id, requested_k)
 
     def _plan_next_locked(self, run_id: str, requested_k: int) -> SearchPlan:
+        self._assert_goal_execution_allowed(run_id)
         if requested_k <= 0:
             raise ValueError("requested_k must be > 0")
 
@@ -1800,6 +1809,7 @@ class FileSearchRuntime:
 
         frozen = self._load_frozen_spec(run.frozen_spec_id)
         spec = frozen.spec
+        self._worker_budget_with_outer_deadline(run_id, frozen, None)
         if self._load_plans(run_id):
             raise RuntimeError(
                 "Search permits one initial SearchPlan; resume or "
@@ -1855,6 +1865,7 @@ class FileSearchRuntime:
         plan_id: str,
         proposals: list[CandidateProposal] | None,
     ) -> list[CandidateTask]:
+        self._assert_goal_execution_allowed(run_id)
         run = self._load_run(run_id)
         if run.state not in {
             RunState.RUNNING,
@@ -1866,6 +1877,7 @@ class FileSearchRuntime:
 
         frozen = self._load_frozen_spec(run.frozen_spec_id)
         self._acquire_device_pool_leases(run, frozen)
+        self._worker_budget_with_outer_deadline(run_id, frozen, None)
         plan = self._load_plan(run_id, plan_id)
         all_records = self._load_candidate_records(run_id)
         plan_records = sorted(
@@ -2195,12 +2207,39 @@ class FileSearchRuntime:
         if record.recovery is not None and record.recovery.state != "restored":
             raise RuntimeError("CandidateRecoveryRequired: finish the prepared recovery first")
 
+    def _has_fresh_recovery_evidence(self, run_id: str, record: CandidateRecord) -> bool:
+        if record.recovery is None:
+            return False
+        fresh = {
+            session.agent_session_id for session in self._load_agent_sessions(run_id)
+            if session.candidate_id == record.candidate_id
+            and session.execution_generation == record.execution_generation
+            and session.host_handle.metadata.get("bound_at")
+        }
+        return any(
+            iteration.iteration > record.recovery.point.iteration
+            and iteration.agent_session_id in fresh
+            for iteration in record.iterations
+        )
+
+    def _assert_recovery_can_close_out(self, run_id: str, record: CandidateRecord) -> None:
+        self._assert_candidate_not_recovering(record)
+        if record.recovery is None or self._has_fresh_recovery_evidence(run_id, record):
+            return
+        deadline = self._outer_deadline_epoch(self._outer_deadline_value(run_id))
+        if deadline is not None and deadline <= time.time():
+            # Finalization may select already settled evidence, but cannot
+            # restart optimization merely to satisfy a recovery launch step.
+            return
+        raise RuntimeError("SearchRecoveryIncomplete: obtain fresh bound-worker Evidence before selection or promotion")
+
     def prepare_candidate_recovery(self, run_id: str, candidate_id: str) -> CandidateRecovery:
         """Fence old execution before a host attempts to stop/reconcile workers.
 
         No process control or workspace mutation occurs here. A repeat before a
         fresh generation is dispatched returns the same recovery identity.
         """
+        self._assert_goal_execution_allowed(run_id)
         self._validate_recovery_ids(run_id, candidate_id)
         with self._run_transaction(run_id):
             run = self._load_run(run_id)
@@ -2242,6 +2281,7 @@ class FileSearchRuntime:
         The host adapter supplies the durable approval; the model cannot assert
         quiescence with a boolean. Lock ordering matches verifier settlement.
         """
+        self._assert_goal_execution_allowed(run_id)
         self._validate_recovery_ids(run_id, candidate_id)
         with exclusive_file_lock(self._candidate_dir(run_id, candidate_id) / "verifier.lock"):
             with self._run_transaction(run_id):
@@ -2347,11 +2387,29 @@ class FileSearchRuntime:
                 error = None
             except RuntimeError as exc:
                 point, error = None, str(exc)
+            unsettled = None
+            workspace_error = None
+            if point is not None:
+                try:
+                    provider = get_workspace_provider(record.task.workspace_backend)
+                    managed = record.task.workspace_managed_root or record.task.workspace
+                    current = provider.current_artifact(managed)
+                    expected = ArtifactRef.model_validate(point["artifact_ref"])
+                    unsettled = bool(
+                        provider.status(managed, ignore_runtime_noise=True)
+                        or current is None
+                        or provider.changed_files(managed, expected, current, ["."])
+                    )
+                except (RuntimeError, ValueError, OSError) as exc:
+                    workspace_error = str(exc)
             candidates.append({
                 "candidate_id": record.candidate_id,
                 "generation": record.execution_generation,
                 "checkpoint": point,
                 "checkpoint_error": error,
+                "unsettled_workspace_changes": unsettled,
+                "workspace_inspection_error": workspace_error,
+                "fresh_recovery_evidence": self._has_fresh_recovery_evidence(run_id, record),
                 "recovery": record.recovery.model_dump(mode="json") if record.recovery else None,
                 "sessions": [s.model_dump(mode="json", include={
                     "agent_session_id", "host", "host_handle", "execution_generation"
@@ -2441,6 +2499,7 @@ class FileSearchRuntime:
                 RunState.SELECTION_BLOCKED,
             }:
                 raise RuntimeError(f"cannot start agent session from state {run.state}")
+            self._assert_goal_execution_allowed(run_id)
             frozen = self._load_frozen_spec(run.frozen_spec_id)
 
             candidate_record = self._load_candidate_record(run_id, candidate_id)
@@ -2619,6 +2678,7 @@ class FileSearchRuntime:
             metadata["progress_handoff"] = progress
         if handoff_error:
             metadata["progress_handoff_error"] = handoff_error
+        metadata["bound_at"] = utc_timestamp()
         updated_handle = session.host_handle.model_copy(
             update={
                 "host": session.host,
@@ -4151,9 +4211,10 @@ class FileSearchRuntime:
             return report
 
     def select(self, run_id: str) -> dict[str, Any]:
+        self._assert_goal_execution_allowed(run_id)
         with self._run_transaction(run_id):
             for candidate in self._load_candidate_records(run_id):
-                self._assert_candidate_not_recovering(candidate)
+                self._assert_recovery_can_close_out(run_id, candidate)
             run = self._load_run(run_id)
             self._assert_run_not_invalidated(run, "select")
             if run.state not in {
@@ -4369,7 +4430,9 @@ class FileSearchRuntime:
             ):
                 continue
             status = str(payload.get("status") or "active")
-            if status not in {"blocked", "complete", "abandoned"}:
+            control = payload.get("control")
+            historical_terminal = control is None and status == "blocked"
+            if status not in {"complete", "abandoned"} and not historical_terminal and (control or {}).get("state") != "closed":
                 blocking.append(
                     (str(payload.get("goal_plus_id") or path.parent.name), status)
                 )
@@ -4383,7 +4446,7 @@ class FileSearchRuntime:
             )
             raise RuntimeError(
                 "cannot generate a report before every linked Goal Plus record "
-                "reaches a terminal status (complete, blocked, or abandoned); "
+                "reaches a terminal status (complete or abandoned); "
                 f"current: {details}"
             )
         run = self._load_run(run_id)
@@ -4641,6 +4704,7 @@ class FileSearchRuntime:
         return report_path
 
     def promote(self, run_id: str, candidate_id: str) -> Path:
+        self._assert_goal_execution_allowed(run_id)
         run = self._load_run(run_id)
         self._assert_run_not_invalidated(run, "promote")
         if run.selected_candidate_id != candidate_id:
@@ -4657,6 +4721,7 @@ class FileSearchRuntime:
 
         record = self._load_candidate_record(run_id, candidate_id)
         selected_artifact_ref = run.selected_artifact_ref
+        self._assert_recovery_can_close_out(run_id, record)
         if selected_artifact_ref is None and run.selected_git_head is not None:
             selected_artifact_ref = ArtifactRef(
                 kind="git_commit",
@@ -4850,6 +4915,7 @@ class FileSearchRuntime:
         return patch_path
 
     def apply_promotion(self, run_id: str) -> PromotionRecord:
+        self._assert_goal_execution_allowed(run_id)
         """Apply one prepared provider-native publication to its source root."""
 
         with self._run_transaction(run_id):
@@ -5219,8 +5285,6 @@ class FileSearchRuntime:
         frozen: FrozenSpec,
         worker_budget: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
-        if worker_budget is None or worker_budget.get("max_runtime_seconds") is None:
-            return worker_budget
         deadline_value = self._outer_deadline_value(run_id)
         if deadline_value is None:
             return worker_budget
@@ -5238,6 +5302,8 @@ class FileSearchRuntime:
                 "OuterDeadlineExceeded: no candidate worker can start after the "
                 "Goal Plus closeout boundary"
             )
+        if worker_budget is None or worker_budget.get("max_runtime_seconds") is None:
+            return worker_budget
         effective = dict(worker_budget)
         effective["max_runtime_seconds"] = min(
             int(worker_budget["max_runtime_seconds"]),
@@ -8564,7 +8630,7 @@ class FileSearchRuntime:
                 payload = load_json(path)
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
-            if payload.get("status") in {"blocked", "complete", "abandoned"}:
+            if payload.get("status") in {"complete", "abandoned"} or (payload.get("control") or {}).get("state") == "closed":
                 continue
             search_tasks = payload.get("search_tasks")
             linked_search = payload.get("linked_search")

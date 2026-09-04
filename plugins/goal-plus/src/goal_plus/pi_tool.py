@@ -78,6 +78,7 @@ GOAL_PLUS_TOOL_NAMES = {
 PI_HOST_COMMAND_NAMES = {
     "goal_plus_host_start",
     "goal_plus_host_edit",
+    "goal_plus_host_control",
     "goal_plus_host_session_event",
 }
 
@@ -171,7 +172,7 @@ def _pi_goal_plus_finalize_reports_tool(
     ) -> dict[str, Any]:
         goals = FileGoalPlusRuntime(root_dir)
         record = goals.status(goal_plus_id)
-        if record.status not in {"blocked", "complete", "abandoned"}:
+        if not goals.is_terminal(record):
             raise RuntimeError("cannot finalize reports before Goal Plus is terminal")
         goals.record_orchestrator_usage(
             goal_plus_id,
@@ -256,6 +257,15 @@ def call_pi_host_command(
         raise ValueError(f"unsupported Pi host command: {command_name}")
     _consume_pi_host_capability(root_dir, capability_token)
     runtime = FileGoalPlusRuntime(root_dir)
+    owner_pid = args.get("owner_pid")
+    if command_name != "goal_plus_host_start" and isinstance(owner_pid, int) and not runtime.is_terminal(runtime.status(args["goal_plus_id"])):
+        from goal_plus.host_recovery import claim_main_owner
+        host_invocation = args.get("invocation") or {}
+        claim_main_owner(
+            Path(root_dir).resolve(), str(args.get("goal_plus_id") or ""), "pi-rpc",
+            str(args.get("session_id") or host_invocation.get("session_id") or ""),
+            owner_pid, restoring=True,
+        )
     if command_name == "goal_plus_host_session_event":
         event = args.get("event")
         delivery = args.get("delivery")
@@ -264,6 +274,7 @@ def call_pi_host_command(
             "session_start",
             "user_turn",
             "interrupt",
+            "execution_lost",
             "continue_confirmed",
         }:
             raise ValueError("unsupported Pi host session event")
@@ -303,6 +314,10 @@ def call_pi_host_command(
             reason=(str(args["reason"]) if args.get("reason") is not None else None),
             invocation=invocation,
         )
+    elif command_name == "goal_plus_host_control":
+        return runtime.control_from_host_command(
+            str(args.get("goal_plus_id") or ""), invocation=invocation,
+        ).model_dump(mode="json")
     record = runtime.activate_session(
         record.goal_plus_id,
         {
@@ -315,6 +330,9 @@ def call_pi_host_command(
             },
         },
     )
+    if isinstance(owner_pid, int):
+        from goal_plus.host_recovery import claim_main_owner
+        claim_main_owner(Path(root_dir).resolve(), record.goal_plus_id, "pi-rpc", str(invocation["session_id"]), owner_pid, restoring=False)
     return record.model_dump(mode="json")
 
 

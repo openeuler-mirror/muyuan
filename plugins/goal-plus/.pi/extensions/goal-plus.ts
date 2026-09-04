@@ -52,6 +52,8 @@ let activeGoalStartEntryCount = 0;
 let goalPlusSessionAuthorized = false;
 let lastMainStopReason: string | undefined;
 let mainTurnSignal: AbortSignal | undefined;
+let suppressedContinuationAbort = false;
+let mainStartPending = false;
 
 const INSTALL_HINT =
 	'Install this project into the Python environment that launches Pi: python -m pip install -e ".[dev]".';
@@ -857,6 +859,7 @@ interface GoalPlusNextActionPayload {
 
 interface GoalPlusStatusPayload {
 	goal_plus_id?: string;
+	active_session?: { session_id?: string };
 	raw_goal?: string;
 	command_config?: Record<string, unknown>;
 	goal_revision?: number;
@@ -864,6 +867,8 @@ interface GoalPlusStatusPayload {
 	policy?: Record<string, unknown>;
 	final_checks?: unknown[];
 	status?: string;
+	control?: { state: "active" | "paused" | "closed"; reason?: string | null; version: number };
+	reconciliation?: unknown;
 	phase?: string;
 	next_action?: GoalPlusNextActionPayload | null;
 	triage?: unknown;
@@ -882,6 +887,10 @@ interface GoalPlusGatePayload {
 	continuation_prompt?: string;
 	status?: string;
 	phase?: string;
+	goal_plus_id?: string;
+	goal_revision?: number;
+	control_version?: number;
+	session_id?: string;
 }
 
 interface GoalPlusHostSessionDecisionPayload {
@@ -1125,9 +1134,10 @@ async function runJsonCli(pi: ExtensionAPI, ctx: CommandRuntimeContext, tool: st
 async function runHostCommandCli(
 	pi: ExtensionAPI,
 	ctx: CommandRuntimeContext,
-	tool: "goal_plus_host_start" | "goal_plus_host_edit" | "goal_plus_host_session_event",
+	tool: "goal_plus_host_start" | "goal_plus_host_edit" | "goal_plus_host_control" | "goal_plus_host_session_event",
 	args: Record<string, unknown>,
 ) {
+	args = { ...args, owner_pid: process.pid };
 	const invocation = projectModuleInvocation(ctx, "goal-plus-pi-tool", "goal_plus.pi_tool");
 	const capabilityToken = randomUUID();
 	const capabilityRoot = isAbsolute(runtimeRoot) ? runtimeRoot : join(ctx.cwd, runtimeRoot);
@@ -1173,7 +1183,7 @@ async function runHostCommandCli(
 async function runPiHostSessionEvent(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	event: "session_start" | "user_turn" | "interrupt" | "continue_confirmed",
+	event: "session_start" | "user_turn" | "interrupt" | "execution_lost" | "continue_confirmed",
 	delivery: "auto" | "next_user_turn",
 	interaction: "interactive" | "headless",
 ): Promise<GoalPlusHostSessionDecisionPayload | undefined> {
@@ -1196,7 +1206,7 @@ async function runPiHostSessionEvent(
 function piHostInvocation(
 	ctx: ExtensionContext,
 	command: "/goal-plus" | "/goal-plus-with-final-check",
-	action: "start" | "edit",
+	action: "start" | "edit" | "summary" | "pause" | "resume" | "clear",
 	rawInput: string,
 	nativeEntryId: string,
 ) {
@@ -1280,7 +1290,7 @@ async function refreshActiveGoal(
 }
 
 function isTerminalStatus(status: string | undefined): boolean {
-	return status === "blocked" || status === "complete" || status === "abandoned";
+	return status === "complete" || status === "abandoned";
 }
 
 function countToolCalls(content: unknown): number {
@@ -1568,6 +1578,8 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 		"[GOAL PLUS ACTIVE]",
 		`goal_plus_id: ${status.goal_plus_id ?? activeGoalPlusId ?? "unknown"}`,
 		`status: ${status.status ?? "unknown"}`,
+		`control: ${JSON.stringify(status.control ?? {})}`,
+		`reconciliation: ${JSON.stringify(status.reconciliation ?? [])}`,
 		`phase: ${status.phase ?? "unknown"}`,
 		`goal_revision: ${status.goal_revision ?? 1}`,
 		`command_config: ${JSON.stringify(status.command_config ?? {})}`,
@@ -1730,7 +1742,7 @@ function buildGoalStartPrompt(
 		"- 原生 Pi `/goal-plus` host command 已创建并授权此记录；skill、MCP 和模型工具不能创建或恢复 Goal Plus。",
 		"- 这是新创建记录的首轮。由你语义检查原始目标或当前对话上下文是否明确给出了整个 Goal Plus 任务的最大运行时间；如果没有，先用一句简短 commentary 告知用户：‘当前未设置最大运行时间，Goal Plus 将持续运行直至目标完成或用户手动停止。’这只是告知，不要询问或等待确认；告知后立即继续执行。",
 		"- 加载并遵循 goal-plus skill。",
-		"- 以最新用户消息作为判断继续、修订或讨论无关内容的权威依据；不要仅因 Goal Plus 处于 active 就恢复工作。",
+		"- 先处理最新用户消息，然后继续 active Goal；中断或暂停的任务必须由 /goal-plus resume 重新启动，普通聊天不能恢复它。",
 		"- 如果用户要改变实际范围、交付物或成功标准，停止本轮变更并要求使用精确的 `/goal-plus edit <完整修订目标>`；不要调用 goal_plus_update_goal。否则保持修订版不变。",
 		"- 除了加载 goal-plus skill 之外，在 goal_plus_record_triage 前不要读取或审计目标文件。",
 		"- 首先使用 goal_plus_record_triage 记录 triage。",
@@ -1745,7 +1757,7 @@ function buildGoalStartPrompt(
 }
 
 interface GoalPlusSlashRequest {
-	action: "start" | "edit" | "invalid";
+	action: "start" | "edit" | "summary" | "pause" | "resume" | "clear" | "invalid";
 	rawGoal: string;
 	withFinalCheck: boolean;
 	invalidReason?: string;
@@ -1756,13 +1768,20 @@ function goalPlusRequestFromSlashInput(text: string): GoalPlusSlashRequest | und
 	if (!match) return undefined;
 	const command = match[1];
 	const body = (match[2] ?? "").trim();
-	if (command === "goal-plus" && body.toLowerCase() === "resume") {
+	if (command === "goal-plus" && !body) {
+		return { action: "summary", rawGoal: "", withFinalCheck: false };
+	}
+	const word = body.split(/\s+/, 1)[0];
+	if (command === "goal-plus" && ["summary", "pause", "resume", "clear"].includes(word.toLowerCase())) {
+		if (word === body && ["summary", "pause", "resume", "clear"].includes(word)) {
+			return { action: word as "summary" | "pause" | "resume" | "clear", rawGoal: "", withFinalCheck: false };
+		}
 		return {
 			action: "invalid",
 			rawGoal: "",
 			withFinalCheck: false,
 			invalidReason:
-				"Goal Plus has no /goal-plus resume subcommand. Resume the native Pi session with --session or --continue.",
+				"Goal Plus controls require exact lowercase summary/pause/resume/clear without an objective.",
 		};
 	}
 	if (command === "goal-plus" && (body === "edit" || body.startsWith("edit "))) {
@@ -1937,6 +1956,11 @@ async function updateGoalPlusStart(
 	if (!status?.goal_plus_id) return undefined;
 	goalPlusSessionAuthorized = true;
 	activateGoal(pi, status, undefined, canPersistGoalState(ctx));
+	if (status.control?.state !== "active" || status.status === "blocked") {
+		goalPlusSessionAuthorized = false;
+		pi.sendMessage({ customType: "goal-plus-control", content: "Goal Plus edited; it remains stopped until /goal-plus resume.", display: true });
+		return undefined;
+	}
 	return [
 			"用户已编辑 Goal Plus 目标。",
 		`goal_plus_id: ${status.goal_plus_id}`,
@@ -1946,11 +1970,47 @@ async function updateGoalPlusStart(
 	].join("\n");
 }
 
+async function controlGoalPlus(
+	pi: ExtensionAPI, ctx: ExtensionContext,
+	action: "summary" | "pause" | "resume" | "clear",
+): Promise<string | undefined> {
+	if (!activeGoalPlusId) {
+		pi.sendMessage({ customType: "goal-plus-control", content: "No Goal Plus task is bound to this native session.", display: true });
+		return undefined;
+	}
+	const current = await refreshActiveGoal(pi, commandContextFrom(ctx), false);
+	if (!current) return undefined;
+	const invocation = {
+		...piHostInvocation(ctx, "/goal-plus", action, `/goal-plus ${action}`, `pi-entry-${ctx.sessionManager.getEntries().length}`),
+		...(action === "resume" && process.env.GOAL_PLUS_RESUME_EXPECTATION
+			? { resume_expectation: JSON.parse(process.env.GOAL_PLUS_RESUME_EXPECTATION) } : {}),
+	};
+	const result = await runHostCommandCli(pi, commandContextFrom(ctx), "goal_plus_host_control", {
+		goal_plus_id: activeGoalPlusId, invocation,
+	});
+	const status = statusFrom(result.details);
+	if (!status?.goal_plus_id) {
+		pi.sendMessage({ customType: "goal-plus-error", content: JSON.stringify(result.details), display: true });
+		return undefined;
+	}
+	if (action !== "summary") {
+		goalPlusSessionAuthorized = status.control?.state === "active";
+		activateGoal(pi, status, undefined, canPersistGoalState(ctx));
+	}
+	pi.sendMessage({ customType: "goal-plus-control", content: `Goal Plus ${action}: ${status.goal_plus_id}, status=${status.status}, control=${status.control?.state}, reason=${status.control?.reason ?? "none"}`, display: true });
+	if (action !== "resume") return undefined;
+	// An already running native turn will reach agent_end with the new control
+	// state. Do not create a second queued Main for repeated/busy resume.
+	if (!ctx.isIdle() || mainStartPending) return undefined;
+	return buildNativeSessionContinuationPrompt(status);
+}
+
 function startGoalPlusMainTurn(
 	pi: ExtensionAPI,
 	context: string,
 	deliverAsFollowUp: boolean,
 ) {
+	mainStartPending = true;
 	pi.sendMessage(
 		{
 			customType: GOAL_PLUS_COMMAND_CONTEXT_TYPE,
@@ -1959,6 +2019,10 @@ function startGoalPlusMainTurn(
 			details: {
 				goal_plus_id: activeGoalPlusId,
 				entrypoint_status: "host_verified",
+				goal_revision: cachedGoalStatus?.goal_revision,
+				control_version: cachedGoalStatus?.control?.version,
+				session_id: cachedGoalStatus?.active_session?.session_id,
+				request_id: randomUUID(),
 			},
 		},
 		deliverAsFollowUp
@@ -2408,7 +2472,9 @@ async function queueMainGoalContinuation(pi: ExtensionAPI, ctx: ExtensionContext
 				customType: "goal-plus-stop-continuation",
 				content: details.continuation_prompt || details.reason || "Goal Plus 仍处于 active。继续下一项必需 action。",
 				display: true,
-				details: { goal_plus_id: activeGoalPlusId, continuationCount },
+				details: { goal_plus_id: activeGoalPlusId, continuationCount,
+					goal_revision: details.goal_revision, control_version: details.control_version,
+					session_id: details.session_id, request_id: randomUUID() },
 			},
 			{ triggerTurn: true, deliverAs: "followUp" },
 		);
@@ -2416,12 +2482,23 @@ async function queueMainGoalContinuation(pi: ExtensionAPI, ctx: ExtensionContext
 }
 
 async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
+	if (suppressedContinuationAbort) {
+		suppressedContinuationAbort = false;
+		lastMainStopReason = undefined;
+		mainTurnSignal = undefined;
+		return;
+	}
 	if (role !== "main" || !activeGoalPlusId || !goalPlusSessionAuthorized) return;
 	const stopReason = lastMainStopReason;
 	lastMainStopReason = undefined;
 	mainTurnSignal = undefined;
 	const persist = canPersistGoalState(ctx);
-	if (stopReason === "error") return;
+	if (stopReason === "error") {
+		await runPiHostSessionEvent(pi, ctx, "execution_lost", "next_user_turn", piHostInteraction(ctx));
+		goalPlusSessionAuthorized = false;
+		if (persist) persistGoalState(pi);
+		return;
+	}
 	if (stopReason === "aborted") {
 		await runPiHostSessionEvent(
 			pi, ctx, "interrupt", "next_user_turn", piHostInteraction(ctx),
@@ -2455,11 +2532,7 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 		if (isRecord(finalized.details) && finalized.details.ok === false) {
 			ctx.ui.notify(`Goal Plus report finalization failed: ${String(finalized.details.error)}`, "warning");
 		}
-		activeGoalPlusId = undefined;
-		activeGoalStartedAt = undefined;
-		activeGoalStartEntryCount = 0;
-		continuationCount = 0;
-		cachedGoalStatus = undefined;
+		// Retain history binding for summary and an explicit edit of complete.
 		goalPlusSessionAuthorized = false;
 		if (persist) persistGoalState(pi);
 	}
@@ -2517,6 +2590,11 @@ export default function (pi: ExtensionAPI) {
 				const request = goalPlusRequestFromSlashInput(`/goal-plus ${args}`);
 				if (request?.action === "invalid") {
 					ctx.ui.notify(request.invalidReason ?? "Invalid Goal Plus command", "error");
+					return;
+				}
+				if (request && ["summary", "pause", "resume", "clear"].includes(request.action)) {
+					const prompt = await controlGoalPlus(pi, ctx, request.action as "summary" | "pause" | "resume" | "clear");
+					if (prompt) startGoalPlusMainTurn(pi, prompt, false);
 					return;
 				}
 				if (!request || !request.rawGoal) {
@@ -2649,6 +2727,10 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(request.invalidReason ?? "Invalid Goal Plus command", "error");
 			return { action: "handled" };
 		}
+		if (["summary", "pause", "resume", "clear"].includes(request.action)) {
+			const prompt = await controlGoalPlus(pi, ctx, request.action as "summary" | "pause" | "resume" | "clear");
+			return prompt ? { action: "transform", text: prompt, images: event.images } : { action: "handled" };
+		}
 		if (!request.rawGoal) {
 			ctx.ui.notify("Goal Plus command requires a goal", "error");
 			return { action: "handled" };
@@ -2667,6 +2749,7 @@ export default function (pi: ExtensionAPI) {
 		goalPlusSessionAuthorized = false;
 		lastMainStopReason = undefined;
 		mainTurnSignal = undefined;
+		mainStartPending = false;
 		activeGoalPlusId = process.env.GOAL_PLUS_ID;
 		cachedGoalStatus = undefined;
 		if (role !== "main" && event.reason !== "reload") {
@@ -2691,61 +2774,51 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const status = await refreshActiveGoal(pi, commandCtx, persist);
 			if (isTerminalStatus(status?.status)) {
-				activeGoalPlusId = undefined;
-				activeGoalStartedAt = undefined;
-				activeGoalStartEntryCount = 0;
-				continuationCount = 0;
 				if (persist) persistGoalState(pi);
 				return;
 			}
 			if (!status?.goal_plus_id) return;
 			const interaction = piHostInteraction(ctx);
-			const pendingUserInput = ctx.hasPendingMessages()
-				|| (event.reason === "startup" && hasPiStartupInput());
-			const delivery =
-				event.reason !== "reload" && interaction === "interactive" && !pendingUserInput
-					? "auto"
-					: "next_user_turn";
-			let decision = await runPiHostSessionEvent(
+			await runPiHostSessionEvent(
 				pi,
 				ctx,
 				"session_start",
-				delivery,
+				"next_user_turn",
 				interaction,
 			);
-			if (decision?.decision === "ask_user" && interaction === "interactive") {
-				const confirmed = await ctx.ui.confirm(
-					"Continue Goal Plus?",
-					`Goal Plus ${status.goal_plus_id} is not terminal. Continue it in this Pi session?`,
-				);
-				if (confirmed) {
-					decision = await runPiHostSessionEvent(
-						pi,
-						ctx,
-						"continue_confirmed",
-						"auto",
-						"interactive",
-					);
-				}
-			}
-			if (decision?.decision === "continue_now") {
-				goalPlusSessionAuthorized = true;
-				activateGoal(pi, status, undefined, persist);
-				startGoalPlusMainTurn(
-					pi,
-					buildNativeSessionContinuationPrompt(status),
-					false,
-				);
-			}
 		} catch {
 			// Keep startup non-fatal; the next explicit tool call will surface runtime errors.
 		}
 	});
+	pi.on("context", async (event, ctx) => {
+		if (role !== "main" || !activeGoalPlusId) return;
+		const status = await refreshActiveGoal(pi, commandContextFrom(ctx), false);
+		const messages = event.messages;
+		const isRequest = (message: unknown) => isRecord(message) && message.role === "custom"
+			&& [GOAL_PLUS_COMMAND_CONTEXT_TYPE, "goal-plus-stop-continuation"].includes(String(message.customType));
+		const stale = (message: unknown) => {
+			if (!isRequest(message) || !isRecord(message) || !isRecord(message.details)) return false;
+			const d = message.details;
+			return !status || status.control?.state !== "active" || isTerminalStatus(status.status)
+				|| d.goal_plus_id !== status.goal_plus_id || d.goal_revision !== status.goal_revision
+				|| d.control_version !== status.control?.version
+				|| (d.session_id !== undefined && d.session_id !== ctx.sessionManager.getSessionId());
+		};
+		// Only cancel a stale, not-yet-run automatic request. Historical requests
+		// must never abort an ordinary user turn or an already running Main turn.
+		const lastInput = [...messages].reverse().find((message) => message.role === "user" || message.role === "assistant" || isRequest(message));
+		if (lastInput && stale(lastInput)) {
+			suppressedContinuationAbort = true;
+			ctx.abort();
+		}
+		return { messages: messages.filter((message) => !stale(message)) };
+	});
 	pi.on("before_agent_start", async (_event, ctx) => {
+		mainStartPending = false;
 		if (role !== "main" || !activeGoalPlusId || !goalPlusSessionAuthorized) return;
 		const commandCtx = commandContextFrom(ctx);
 		const status = await refreshActiveGoal(pi, commandCtx, canPersistGoalState(ctx));
-		if (!status || isTerminalStatus(status.status)) return;
+		if (!status || isTerminalStatus(status.status) || status.control?.state !== "active") return;
 		return {
 			message: {
 				customType: "goal-plus-native-context",

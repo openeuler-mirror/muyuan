@@ -25,6 +25,59 @@ def make_search(tmp_path: Path):
     return runtime, run_id, task
 
 
+def test_recovery_status_exposes_unsettled_workspace_without_mutation(tmp_path):
+    runtime, run_id, task = make_search(tmp_path)
+    before = runtime.search_recovery_status(run_id)["candidates"][0]
+    assert before["unsettled_workspace_changes"] is False
+    (task.workspace / "initial_program.py").write_text("VALUE = 9 # unsettled\n")
+    changed = runtime.search_recovery_status(run_id)["candidates"][0]
+    assert changed["unsettled_workspace_changes"] is True
+    assert changed["checkpoint"] == before["checkpoint"]
+    assert changed["recovery"] is None
+
+
+def test_recovery_cannot_launch_worker_after_original_deadline(tmp_path, monkeypatch):
+    runtime, run_id, task = make_search(tmp_path)
+    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    monkeypatch.setattr(runtime, "_outer_deadline_value", lambda _: "2000-01-01T00:00:00Z")
+    with pytest.raises(RuntimeError, match="OuterDeadlineExceeded"):
+        runtime.start_agent_session(run_id, task.candidate_id)
+    assert not runtime._load_agent_sessions(run_id)
+
+
+def test_restored_or_main_only_evidence_cannot_bypass_fresh_worker_closeout(tmp_path, monkeypatch):
+    runtime, run_id, task = make_search(tmp_path)
+    runtime.run_verifier(run_id, task.candidate_id)
+    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    with pytest.raises(RuntimeError, match="SearchRecoveryIncomplete"):
+        runtime.select(run_id)
+    runtime.run_verifier(run_id, task.candidate_id)  # Main is not a recovered worker.
+    assert runtime.search_recovery_status(run_id)["candidates"][0]["fresh_recovery_evidence"] is False
+    with pytest.raises(RuntimeError, match="SearchRecoveryIncomplete"):
+        runtime.select(run_id)
+    worker = runtime.start_agent_session(run_id, task.candidate_id)
+    runtime.bind_agent_handle(worker.agent_session_id, {"external_id": "fresh"})
+    runtime.run_verifier(run_id, task.candidate_id, agent_session_id=worker.agent_session_id, hypothesis="fresh worker proof")
+    assert runtime.search_recovery_status(run_id)["candidates"][0]["fresh_recovery_evidence"] is True
+    runtime.select(run_id)
+
+
+def test_finalization_can_select_existing_settlement_without_launching_worker(tmp_path, monkeypatch):
+    runtime, run_id, task = make_search(tmp_path)
+    original = runtime.start_agent_session(run_id, task.candidate_id)
+    runtime.bind_agent_handle(original.agent_session_id, {"external_id": "original"})
+    observe_worker(runtime.root_dir, original, os.getpid())
+    runtime.run_verifier(run_id, task.candidate_id, agent_session_id=original.agent_session_id, hypothesis="original worker evidence")
+    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    monkeypatch.setattr("goal_plus.host_recovery.process_identity", lambda _: None)
+    SearchTools(runtime).search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    monkeypatch.setattr(runtime, "_outer_deadline_value", lambda _: "2000-01-01T00:00:00Z")
+    runtime.select(run_id)
+    assert len(runtime._load_agent_sessions(run_id)) == 1  # No new worker after cutoff.
+
+
 def test_recover_initial_checkpoint_without_creating_another_candidate(tmp_path):
     runtime, run_id, task = make_search(tmp_path)
     from goal_plus.pi_tool import call_pi_tool

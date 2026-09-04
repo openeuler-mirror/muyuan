@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -45,8 +46,5 @@ def st_pi_run_root(request: pytest.FixtureRequest) -> Path:
     base = ROOT / ".tmp" / "st-pi-runs"
     base.mkdir(parents=True, exist_ok=True)
     node = request.node.name.replace("::", "_").replace("[", "_").replace("]", "")
-    run_root = base / node
-    if run_root.exists():
-        shutil.rmtree(run_root)
-    run_root.mkdir(parents=True, exist_ok=True)
+    run_root = Path(tempfile.mkdtemp(prefix=f"{node}-", dir=base))
     return run_root

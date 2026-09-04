@@ -5,7 +5,8 @@ Codex 或 Pi host 负责实际启动、等待、续跑和停止 worker。Host Ad
 把 runtime 的统一请求转换为 host 原生操作；它不改变 Search 的结算语义。
 
 系统整体边界见[共享平面](shared-plane.md)。本文只说明 Host Adapter 的统一契约、Codex/Pi 差异和恢复要求。
-Main Goal 的宿主原生 session 恢复语义独立记录在[原生 Session Resume](resume.md)；本文的
+Main Goal 的命令、状态和宿主原生 session 恢复设计统一记录在[运行逻辑](runtime-logic.md)，
+其中区分当前实现与目标行为；本文的
 continuation 主要指 Search candidate worker 的续跑。
 
 普通 Goal Mode 不使用这套 Search Adapter，而是遵循 [`goal-plus-ultra-v1`](ultra.md) 的

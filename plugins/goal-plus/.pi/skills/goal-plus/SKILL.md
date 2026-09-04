@@ -12,12 +12,13 @@ workspace、verifier、promotion 和 feature gate 由 runtime 强制执行；以
 当前 Pi session 必须已由精确 slash command 绑定 active `goal_plus_id`；skill 和兼容 prompt 不
 创建、编辑或恢复记录。入口保留当前 Pi model 与 thinking 档位，并持久化 typed
 `command_config`。显式配置必须落实，只有缺省项由 Main 决定。
-中断后通过 Pi 原生 `--session`、`--continue` 或 `--resume` 恢复 session，再发送消息继续。
+中断后通过 Pi 原生 `--session`、`--continue` 或 `--resume` 恢复 session；paused/blocked 状态再用精确 `/goal-plus resume` 恢复执行。
+`/goal-plus summary/pause/clear` 只查询、暂停或永久关闭当前任务。
 
 ## 主流程
 
 1. 调用 `goal_plus_status`，读取当前 revision、完整 `raw_goal`、`command_config`、已有 dispatch、
-   Search history、final-check policy 和 `next_action`。恢复时若用户改变范围、交付物或成功标准，
+   Search history、final-check policy、`control`、`reconciliation` 和 `next_action`。恢复时若用户改变范围、交付物或成功标准，
    请其改用 `/goal-plus edit`。
 2. 调用 `goal_plus_record_triage`。普通交付进入 Goal Mode；需要补齐可执行评价合同的优化进入
    Spec Discovery；合同已明确时进入 Search Mode。高置信度且无 open question 的 Search 不等待

@@ -82,10 +82,12 @@ Pi:    /goal-plus-with-final-check <goal>
 Codex: $goal-plus-with-final-check <goal>
 ```
 
-There is no Goal Plus resume command. Resume the original native host session
-with `codex resume <session-id>` / `codex exec resume <session-id> <prompt>` or
-Pi `--session` / `--continue`; Goal Plus then reconciles the persisted task with
-that exact session. See [Native Session Resume](docs/resume.md).
+Native session resume restores the conversation, not task execution. Restart an
+interrupted Main with `codex exec resume <session-id> '$goal-plus resume'` or
+`pi -p --mode json --session <session-id> '/goal-plus resume'`. Ordinary input
+steers a running task but never unlocks a stopped one. Both hosts support
+summary/pause/resume/clear; clear retains history but permanently revokes execution.
+See [Runtime Logic](docs/runtime-logic.md) for the contract and validation boundaries.
 
 The exact Goal Plus host commands above are the only create/edit authority
 boundary. Natural-language requests, automatic skill loading, direct MCP calls,

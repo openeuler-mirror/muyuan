@@ -910,11 +910,12 @@ GoalPlusGateDecision = Literal["allow", "block"]
 GoalPlusSessionState = Literal["attached", "paused", "stale", "detached"]
 GoalPlusEntrypointStatus = Literal["host_verified", "legacy_unverified"]
 GoalPlusEntrypointHost = Literal["codex", "pi"]
-GoalPlusEntrypointAction = Literal["start", "edit"]
+GoalPlusEntrypointAction = Literal["start", "edit", "summary", "pause", "resume", "clear"]
 GoalPlusHostSessionEvent = Literal[
     "session_start",
     "user_turn",
     "interrupt",
+    "execution_lost",
     "continue_confirmed",
 ]
 GoalPlusHostSessionDelivery = Literal["auto", "next_user_turn"]
@@ -1159,6 +1160,23 @@ class GoalPlusActiveSession(SearchModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GoalPlusControl(SearchModel):
+    """Task continuation authority, independent of native session attachment."""
+
+    state: Literal["active", "paused", "closed"] = "active"
+    reason: str | None = None
+    version: int = Field(default=0, ge=0)
+
+
+class GoalPlusResumeExpectation(SearchModel):
+    """Conditional automatic resume, supplied by the owning host controller."""
+
+    goal_plus_id: str = Field(min_length=1)
+    goal_revision: int = Field(ge=1)
+    session_id: str = Field(min_length=1)
+    control_version: int = Field(ge=0)
+
+
 class GoalPlusHostSessionDecision(SearchModel):
     goal_plus_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
@@ -1166,6 +1184,7 @@ class GoalPlusHostSessionDecision(SearchModel):
     session_state: GoalPlusSessionState | Literal["terminal", "unavailable"]
     decision: GoalPlusHostSessionDecisionKind
     reason: str = Field(min_length=1)
+    control: GoalPlusControl = Field(default_factory=GoalPlusControl)
 
 
 class GoalPlusHostCommandInvocation(SearchModel):
@@ -1189,6 +1208,7 @@ class GoalPlusHostCommandInvocation(SearchModel):
     )
     raw_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     invoked_at: str = Field(min_length=1)
+    resume_expectation: GoalPlusResumeExpectation | None = None
 
     @model_validator(mode="after")
     def match_host_transport_and_command(self) -> "GoalPlusHostCommandInvocation":
@@ -1205,11 +1225,13 @@ class GoalPlusHostCommandInvocation(SearchModel):
             raise ValueError(
                 f"Goal Plus host {self.host} requires the {expected_prefix} command prefix"
             )
-        if self.action == "edit" and self.command not in {
+        if self.action != "start" and self.command not in {
             "$goal-plus",
             "/goal-plus",
         }:
-            raise ValueError("Goal Plus edit must use the host's base goal-plus command")
+            raise ValueError("Goal Plus controls must use the host's base goal-plus command")
+        if self.resume_expectation is not None and self.action != "resume":
+            raise ValueError("resume_expectation is only valid for resume")
         return self
 
 
@@ -1222,6 +1244,7 @@ class GoalPlusRecord(SearchModel):
     source_path: str | None = None
     outer_deadline_at: str | None = None
     status: GoalPlusStatus = "active"
+    control: GoalPlusControl = Field(default_factory=GoalPlusControl)
     phase: GoalPlusPhase = "intake"
     policy: dict[str, Any] = Field(default_factory=dict)
     goal_revision: int = Field(default=1, ge=1)
@@ -1283,6 +1306,10 @@ class GoalPlusGateResult(SearchModel):
     status: GoalPlusStatus
     reason: str | None = None
     continuation_prompt: str | None = None
+    goal_plus_id: str | None = None
+    goal_revision: int | None = None
+    control_version: int | None = None
+    session_id: str | None = None
 
 
 class BootstrapVerifierResult(SearchModel):

@@ -62,7 +62,7 @@ ST_CODEX_MODEL=gpt-5.6-luna \
 # Codex native child hook isolation and main-session binding
 pytest -m "st and st_codex" -k codex_native_child_hooks -v -s -rs
 
-# Real Codex Interrupt hook, then exec resume with an ordinary user prompt
+# Real Codex Interrupt: ordinary chat stays stopped, explicit Goal Plus resume completes
 pytest -n 0 -m "st and st_codex" -k exec_native_resume_after_interrupt -v -s -rs
 
 # Native Main resume -> active Search checkpoint recovery -> fresh worker Evidence
@@ -90,8 +90,8 @@ pytest -m st_pi -v -s -rs
 # Native Pi ends a turn early, then the Stop gate triggers a follow-up turn
 pytest -m st_pi -k stop_gate_intercepts -v -s -rs
 
-# Process loss / RPC abort, JSON no-op and ordinary resume, plus native PTY resume
-# PTY cases cover promptless TUI continuation, the --resume picker, and startup
+# Process loss / RPC abort, JSON no-op/chat, then explicit Goal Plus resume
+# PTY cases cover the --resume picker and command-bearing native session restore
 # user-message priority; JSON cases cover exact --session and --continue.
 ST_PI_BINARY="$PWD/.goal-plus-dev/bin/pi-goal-plus" \
   pytest -n 0 -m st_pi -k native_session_resume -v -s -rs

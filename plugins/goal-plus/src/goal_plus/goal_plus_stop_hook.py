@@ -147,15 +147,18 @@ def _goal_plus_request(hook_input: dict[str, Any]) -> dict[str, Any] | None:
         return None
     command = match.group("command").lower()
     body = (match.group("body") or "").strip()
-    if command == "goal-plus" and body.casefold() == "resume":
+    if command == "goal-plus" and not body:
+        return {"action": "summary", "raw_goal": None, "command": "$goal-plus"}
+    word = body.split(maxsplit=1)[0] if body else ""
+    if command == "goal-plus" and word.casefold() in {"summary", "pause", "resume", "clear"}:
+        if body == word and word in {"summary", "pause", "resume", "clear"}:
+            return {"action": word, "raw_goal": None, "command": "$goal-plus"}
         return {
             "action": "invalid",
             "raw_goal": None,
             "command": "$goal-plus",
             "invalid_reason": (
-                "Goal Plus 没有 `$goal-plus resume` 子命令。请使用 Codex 原生 "
-                "`codex resume <session-id>`；恢复同一 session 后，下一条普通用户消息会"
-                "继续或调整当前 Goal Plus。"
+                "`$goal-plus` 控制命令必须精确使用小写 summary/pause/resume/clear，且不接受目标正文。"
             ),
         }
     if command == "goal-plus" and (body == "edit" or body.startswith("edit ")):
@@ -1213,11 +1216,10 @@ def _host_kind(hook_input: dict[str, Any]) -> str:
 
 
 def _load_record(path: Path):
-    from goal_plus.goal_plus import read_json
-    from goal_plus.models import GoalPlusRecord
+    from goal_plus.goal_plus import FileGoalPlusRuntime
 
     try:
-        return GoalPlusRecord.model_validate(read_json(path))
+        return FileGoalPlusRuntime(path.parents[2]).status(path.parent.name)
     except Exception:
         return None
 
@@ -1243,7 +1245,7 @@ def _resumable_records(search_root: Path) -> list[Any]:
     records = []
     for path in goals_dir.glob("gp_*/goal.json"):
         record = _load_record(path)
-        if record is not None and record.status in {"active", "needs_user"}:
+        if record is not None and record.status in {"active", "needs_user", "blocked"} and record.control.state != "closed":
             records.append(record)
     records.sort(
         key=lambda record: (record.updated_at, record.goal_plus_id),
@@ -1268,6 +1270,7 @@ def _select_session_goal_id(
     *,
     include_terminal: bool = False,
     include_paused: bool = False,
+    include_detached: bool = False,
 ) -> str | None:
     if not session_id:
         return None
@@ -1297,7 +1300,9 @@ def _select_session_goal_id(
     )
     if records:
         latest = records[0]
-        if latest.status != "active" and latest.active_session.state == "attached":
+        if latest.status != "active" and (
+            latest.active_session.state == "attached" or include_detached and latest.active_session.state == "detached"
+        ):
             return latest.goal_plus_id
     return None
 
@@ -1319,12 +1324,12 @@ def _select_terminal_report_goal_id(
 ) -> str | None:
     if not run_id:
         return None
-    from goal_plus.goal_plus import TERMINAL_STATUSES
+    from goal_plus.goal_plus import FileGoalPlusRuntime
 
     records = []
     for path in sorted((search_root / "goal-plus").glob("gp_*/goal.json")):
         record = _load_record(path)
-        if record is not None and record.status in TERMINAL_STATUSES:
+        if record is not None and FileGoalPlusRuntime.is_terminal(record):
             records.append(record)
     records.sort(
         key=lambda record: (record.updated_at, record.goal_plus_id),
@@ -1391,7 +1396,7 @@ def _goal_context(
         else ""
     )
     context = (
-        f"此 Codex session 的 Goal Plus 处于 active：goal_plus_id={record.goal_plus_id}。\n"
+        f"此 Codex session 的 Goal Plus：goal_plus_id={record.goal_plus_id}; status={record.status}; control={record.control.state}; stop_reason={record.control.reason}。\n"
         "该记录已经由当前 session 的精确 `$goal-plus` host command 创建或授权；"
         "skill 和 MCP 不能创建或恢复记录。\n"
         f"当前目标修订版：{record.goal_revision}。\n"
@@ -1416,8 +1421,8 @@ def _goal_context(
         "本轮加载并遵循 goal-plus skill。主 Agent 使用 max 推理强度并主动编排普通 subagent；"
         "实际派发时用 goal_plus_record_work_event 记录简短交互摘要，"
         "适合可度量并行探索的工作项自动路由到 Search。\n"
-        "以最新用户消息作为判断继续、修订或讨论无关内容的权威依据；不要仅因 Goal Plus "
-        "处于 active 就恢复工作。\n"
+        "先处理最新用户消息；运行中的 Goal Plus 随后继续推进。明确中断或暂停的任务只允许"
+        "精确 `$goal-plus resume` 重新启动，普通聊天不能解除停止。\n"
         "如果用户要改变实际范围、交付物或成功标准，停止本轮变更并要求用户使用精确的 "
         "`$goal-plus edit <完整修订目标>`；不要调用 goal_plus_update_goal。否则保持"
         "修订版不变。\n"
@@ -1628,6 +1633,17 @@ def _emit_terminal_stats(record: Any) -> None:
     print(json.dumps({"systemMessage": message}, ensure_ascii=False))
 
 
+def _claim_codex_main(search_root: Path, goal_id: str, hook_input: dict[str, Any], *, restoring: bool = True) -> None:
+    from goal_plus.goal_plus import FileGoalPlusRuntime
+    from goal_plus.host_recovery import claim_main_owner, codex_owner_pid
+    runtime = FileGoalPlusRuntime(search_root)
+    if runtime.is_terminal(runtime.status(goal_id)):
+        return
+    pid = codex_owner_pid()
+    if pid is not None:
+        claim_main_owner(search_root, goal_id, "codex", _session_id(hook_input) or "", pid, restoring=restoring)
+
+
 def _handle_user_prompt_submit(
     runtime: Any,
     search_root: Path,
@@ -1661,6 +1677,12 @@ def _handle_user_prompt_submit(
         include_paused=True,
     )
     request = _goal_plus_request(hook_input)
+    if goal_id is not None:
+        try:
+            _claim_codex_main(search_root, goal_id, hook_input)
+        except RuntimeError as exc:
+            _emit_user_prompt_block(str(exc))
+            return
     if request is None:
         if _looks_like_goal_plus_command(hook_input):
             _emit_user_prompt_block(
@@ -1712,6 +1734,35 @@ def _handle_user_prompt_submit(
     if session_id is None:
         _emit_user_prompt_block("Codex $goal-plus 缺少 host session_id，已拒绝启动。")
         return
+    if request["action"] in {"summary", "pause", "resume", "clear"}:
+        if goal_id is None:
+            goal_id = _select_session_goal_id(search_root, session_id, include_terminal=True, include_paused=True, include_detached=True)
+        if goal_id is None:
+            _emit_additional_context("UserPromptSubmit", "此原生 session 没有绑定的 Goal Plus 任务。仅回答此查询，不启动或继承其他任务。")
+            return
+        invocation = _codex_host_invocation(hook_input, request)
+        current = runtime.status(goal_id)
+        if invocation.get("native_entry_id") is None:
+            invocation["invocation_id"] += f":control-{current.control.version}"
+        expectation = os.environ.get("GOAL_PLUS_RESUME_EXPECTATION")
+        if expectation and request["action"] == "resume":
+            invocation["resume_expectation"] = json.loads(expectation)
+        try:
+            record = runtime.control_from_host_command(goal_id, invocation=invocation)
+        except (ValueError, RuntimeError) as exc:
+            _emit_user_prompt_block(str(exc))
+            return
+        if request["action"] == "resume":
+            _emit_additional_context("UserPromptSubmit", _goal_context(record) + "\n" + runtime.reconciliation_context(goal_id))
+        else:
+            # continue=false would terminate an already running Codex turn.
+            # Acknowledge controls through the normal input path instead.
+            _emit_additional_context("UserPromptSubmit", (
+                f"Goal Plus 控制已由宿主完成：{request['action']}; goal_plus_id={goal_id}; "
+                f"status={record.status}; control={record.control.state}; reason={record.control.reason}。"
+                "简短确认结果，不把命令当新目标，不恢复已停止任务。"
+            ))
+        return
     if not request.get("raw_goal"):
         _emit_user_prompt_block(
             "Codex $goal-plus 需要完整目标；edit 也必须提供完整修订目标。"
@@ -1733,7 +1784,7 @@ def _handle_user_prompt_submit(
             return
     action = request["action"]
     if action == "edit" and goal_id is None:
-        goal_id = _select_resumable_goal_id(search_root)
+        goal_id = _select_session_goal_id(search_root, session_id, include_terminal=True, include_detached=True)
     if action == "edit" and goal_id is not None and isinstance(raw_goal, str):
         current = runtime.status(goal_id)
         runtime.edit_from_host_command(
@@ -1804,6 +1855,7 @@ def _handle_user_prompt_submit(
         },
     )
     runtime.gate(goal_id, event="user_prompt_submit", context=hook_input)
+    _claim_codex_main(search_root, goal_id, hook_input, restoring=False)
     goal_context = _goal_context(
         record,
         role_model_context=_role_model_context(role_models),
@@ -1826,6 +1878,11 @@ def _handle_session_start(
         include_paused=True,
     )
     if goal_id is None or session_id is None:
+        return
+    try:
+        _claim_codex_main(search_root, goal_id, hook_input)
+    except RuntimeError as exc:
+        _emit_additional_context("SessionStart", str(exc))
         return
     decision = runtime.handle_host_session_event(
         goal_id,
@@ -1909,6 +1966,11 @@ def _handle_pre_tool_use(
                 "GoalPlusEntrypointRequired: 当前 Codex session 未由精确的 `$goal-plus` 或 "
                 "`$goal-plus edit` 授权，且不是其原生恢复 session，已拒绝 Goal Plus/Search 变更。"
             )
+        return
+    try:
+        _claim_codex_main(search_root, goal_id, hook_input)
+    except RuntimeError as exc:
+        _emit_pre_tool_block(str(exc))
         return
     gate = runtime.gate(goal_id, event="pre_tool_use", context=hook_input)
     if gate.decision == "block":
@@ -2035,6 +2097,14 @@ def _handle_stop_event(
                     "goal_plus_subagent_role": "ordinary",
                 }
     if event == "stop":
+        try:
+            _claim_codex_main(search_root, goal_id, hook_input)
+        except RuntimeError as exc:
+            return {"decision": "skipped", "reason": str(exc), "goal_plus_id": goal_id}
+        turn_context = _codex_turn_context(hook_input) or {}
+        mode = turn_context.get("collaboration_mode")
+        if isinstance(mode, dict) and mode.get("mode") == "plan":
+            gate_context = {**gate_context, "mode": "plan"}
         record = runtime.status(goal_id)
         if record.status != "active":
             session_id = _session_id(hook_input)

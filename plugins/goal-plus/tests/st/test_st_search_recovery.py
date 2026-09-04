@@ -103,7 +103,10 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
         "or candidate. Start its one worker and let it follow the frozen objective. "
         + launch_instruction + " Keep Main active while waiting; the controller will interrupt "
         "and resume this native session after the worker writes its partial attempt. "
-        "Do not select/promote, modify candidate files yourself, run pytest or nested host CLIs. "
+        "After recovery has produced fresh verified Evidence from a fresh worker generation, "
+        "finish selection, artifact-only promotion, record the Search result and generate its report, "
+        "then mark Goal Plus complete with concrete evidence. Before recovery, keep waiting. "
+        "Do not modify candidate files yourself, run pytest or nested host CLIs. "
         "Never modify the plugin implementation, host configuration, or anything outside this "
         "temporary workspace. If a runtime/tool fails, report the failure and wait for the controller; "
         "do not patch code, write runtime state, or bypass missing tools with Python/shell scripts."
@@ -133,22 +136,19 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
             _wait_for(process, partial_ready, initial_log)
         finally:
             _stop(process)
+    if host == "pi-rpc":
+        # A native Main interrupt alone leaves healthy Pi workers running.
+        # This fixture explicitly owns and interrupts the sole pool as well.
+        from goal_plus.pi_pool import close_pi_search_pool
+        for pool in (runtime.root_dir / "host-pools/pi").glob("*/pool.json"):
+            snapshot = close_pi_search_pool(root_dir=runtime.root_dir, pool_id=pool.parent.name,
+                                            mode="interrupt", timeout_seconds=10, _allow_early_close=True)
+            assert snapshot["active_count"] == 0
     goal_path, = (runtime.root_dir / "goal-plus").glob("gp_*/goal.json")
     before = json.loads(goal_path.read_text())
     session_id = before["active_session"]["session_id"]
     before_candidate = runtime._load_candidate_record(run_id, task.candidate_id)
-    resume_prompt = (
-        "Continue this same Goal Plus task and its existing Search. Recover the interrupted "
-        f"candidate {task.candidate_id} in run {run_id}: inspect search_recovery_status, "
-        "search_prepare_recovery, stop/observe the old native worker (Codex list_agents; "
-        "Pi close the old pool), then search_recover_candidate. Start a fresh worker generation "
-        "on the same candidate (Codex search_start_agent_session and spawn; Pi a new pool). "
-        "It must verify the restored baseline. Never create a new run or candidate, reset "
-        "Git manually, or count the partial attempt as Evidence. Keep Main active until "
-        "the controller observes the recovered worker's new verifier settlement. "
-        "Use registered tools only for recovery. Never modify the plugin implementation or "
-        "write runtime state manually. If a tool fails, report and wait for the controller."
-    )
+    resume_prompt = "$goal-plus resume" if host == "codex" else "/goal-plus resume"
     if host == "codex":
         command = ["codex", "exec", "resume", "--skip-git-repo-check",
                    "--dangerously-bypass-hook-trust", "--dangerously-bypass-approvals-and-sandbox",
@@ -162,9 +162,16 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
         try:
             def recovered():
                 candidate = runtime._load_candidate_record(run_id, task.candidate_id)
+                goal = json.loads(goal_path.read_text())
+                reports_ready = bool(goal["search_tasks"]) and all(
+                    Path(item.get(key) or "missing-report").is_file()
+                    for item in goal["search_tasks"] for key in ("report_path", "html_report_path")
+                )
                 return candidate if (
                     candidate.recovery and candidate.recovery.state == "restored"
                     and len(candidate.iterations) >= 2
+                    and candidate.iterations[-1].agent_session_id != before_candidate.iterations[0].agent_session_id
+                    and goal["status"] == "complete" and reports_ready
                 ) else None
             after_candidate = _wait_for(process, recovered, resumed_log)
         finally:
@@ -172,9 +179,13 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
     after = json.loads(goal_path.read_text())
     assert after["goal_plus_id"] == before["goal_plus_id"]
     assert after["goal_revision"] == before["goal_revision"]
-    assert after["host_command_invocations"] == before["host_command_invocations"]
+    assert after["outer_deadline_at"] == before["outer_deadline_at"]
+    assert runtime.status(run_id).state == "promoted"
+    assert after["host_command_invocations"][:-1] == before["host_command_invocations"]
+    assert after["host_command_invocations"][-1]["action"] == "resume"
     assert after["active_session"]["session_id"] == session_id
     assert runtime.status(run_id).candidates_total == 1
+    assert len(runtime._load_agent_sessions(run_id)) == 2  # One old worker, one replacement.
     assert after_candidate.iterations[0] == before_candidate.iterations[0]
     assert after_candidate.execution_generation == 1
     assert after_candidate.iterations[-1].agent_session_id != before_candidate.iterations[0].agent_session_id

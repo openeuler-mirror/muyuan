@@ -537,6 +537,7 @@ class GoalPlusTools:
             record.linked_search.run_id if record.linked_search is not None else None
         )
         payload["evidence_log"] = self.runtime.list_events(goal_plus_id)
+        payload["reconciliation"] = self.runtime.reconciliation(goal_plus_id)
         return payload
 
     def goal_plus_update_goal(

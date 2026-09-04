@@ -77,11 +77,12 @@ Pi:    /goal-plus-with-final-check <目标>
 Codex: $goal-plus-with-final-check <目标>
 ```
 
-Goal Plus 不提供 resume 命令。恢复时使用原生宿主 session：Codex 使用
-`codex resume <session-id>` 或 `codex exec resume <session-id> <prompt>`，Pi 使用
-`--session` 或 `--continue`；随后 Goal Plus 只根据这个精确 session identity 决定是否继续
-持久化任务。完整语义见[原生 Session Resume](docs/resume.md)。原生恢复不会创建或修改目标；
-修改仍必须使用 `$goal-plus edit` 或 `/goal-plus edit`。
+原生会话恢复不启动任务。已中断 Main 使用
+`codex exec resume <session-id> '$goal-plus resume'` 或
+`pi -p --mode json --session <session-id> '/goal-plus resume'` 显式恢复。
+运行中收到新思考会先处理再继续；中断后的普通聊天不解锁。两端支持摘要、pause/resume/clear，
+clear 永久撤权但保留历史。完整合同与验证边界见[运行逻辑](docs/runtime-logic.md)。
+原生恢复不会创建或修改目标；修改仍使用 `$goal-plus edit` 或 `/goal-plus edit`。
 
 一次请求会启动自主运行。agent 自己判断 Goal Mode 是否足够，或冻结 verifier 后
 并行 Search 是否更有价值；进入 Search 不需要额外确认。`mode=autonomous`（默认）

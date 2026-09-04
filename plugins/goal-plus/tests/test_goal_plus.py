@@ -185,9 +185,8 @@ def test_host_command_invocation_rejects_wrong_host_prefix() -> None:
         )
 
 
-def test_host_command_invocation_rejects_removed_resume_action() -> None:
-    with pytest.raises(ValidationError):
-        GoalPlusHostCommandInvocation(
+def test_host_command_invocation_accepts_explicit_resume_action() -> None:
+    assert GoalPlusHostCommandInvocation(
             host="codex",
             transport="codex_user_prompt_submit",
             command="$goal-plus",
@@ -196,7 +195,7 @@ def test_host_command_invocation_rejects_removed_resume_action() -> None:
             invocation_id="codex:test:resume",
             raw_input_sha256="0" * 64,
             invoked_at="2026-08-28T00:00:00Z",
-        )
+        ).action == "resume"
 
 
 def test_native_session_continuation_state_machine(tmp_path) -> None:
@@ -229,9 +228,9 @@ def test_native_session_continuation_state_machine(tmp_path) -> None:
         delivery="next_user_turn",
         interaction="interactive",
     )
-    assert interrupted.session_state == "paused"
+    assert interrupted.session_state == "attached"
     assert interrupted.decision == "stop"
-    assert runtime.status(record.goal_plus_id).active_session.state == "paused"
+    assert runtime.status(record.goal_plus_id).control.state == "paused"
 
     resumed_by_user = runtime.handle_host_session_event(
         record.goal_plus_id,
@@ -241,7 +240,7 @@ def test_native_session_continuation_state_machine(tmp_path) -> None:
         delivery="next_user_turn",
         interaction="interactive",
     )
-    assert resumed_by_user.decision == "continue_after_user"
+    assert resumed_by_user.decision == "wait_for_user"
     assert resumed_by_user.session_state == "attached"
     assert runtime.status(record.goal_plus_id).active_session.state == "attached"
 
@@ -253,7 +252,7 @@ def test_native_session_continuation_state_machine(tmp_path) -> None:
         delivery="auto",
         interaction="headless",
     )
-    assert pi_auto.decision == "continue_now"
+    assert pi_auto.decision == "wait_for_user"
 
     mismatch = runtime.handle_host_session_event(
         record.goal_plus_id,
@@ -287,25 +286,24 @@ def test_paused_headless_session_fails_closed(tmp_path) -> None:
         interaction="headless",
     )
 
-    assert decision.decision == "stop"
-    assert decision.reason == "paused_headless"
+    assert decision.decision == "wait_for_user"
 
 
 @pytest.mark.parametrize("host", ["codex", "pi-rpc"])
 @pytest.mark.parametrize(
     "state,status,event,interaction,decision",
     [
-        ("attached", "active", "session_start", "interactive", "continue_now"),
-        ("paused", "active", "session_start", "interactive", "ask_user"),
-        ("paused", "active", "session_start", "headless", "stop"),
-        ("attached", "needs_user", "session_start", "interactive", "ask_user"),
-        ("attached", "needs_user", "session_start", "headless", "stop"),
-        ("paused", "active", "user_turn", "headless", "continue_after_user"),
-        ("paused", "active", "continue_confirmed", "interactive", "continue_now"),
+        ("attached", "active", "session_start", "interactive", "wait_for_user"),
+        ("paused", "active", "session_start", "interactive", "wait_for_user"),
+        ("paused", "active", "session_start", "headless", "wait_for_user"),
+        ("attached", "needs_user", "session_start", "interactive", "wait_for_user"),
+        ("attached", "needs_user", "session_start", "headless", "wait_for_user"),
+        ("paused", "active", "user_turn", "headless", "wait_for_user"),
+        ("paused", "active", "continue_confirmed", "interactive", "wait_for_user"),
         ("detached", "active", "user_turn", "interactive", "stop"),
         ("stale", "active", "continue_confirmed", "interactive", "stop"),
         ("attached", "complete", "user_turn", "interactive", "stop"),
-        ("attached", "blocked", "session_start", "interactive", "stop"),
+        ("attached", "blocked", "session_start", "interactive", "wait_for_user"),
         ("attached", "abandoned", "continue_confirmed", "interactive", "stop"),
     ],
 )
@@ -319,6 +317,9 @@ def test_native_continuation_host_parity(
     )
     # Seed domain preconditions, independent of status-transition prerequisites.
     record = record.model_copy(update={"status": status})
+    if state == "paused":
+        from goal_plus.models import GoalPlusControl
+        record = record.model_copy(update={"control": GoalPlusControl(state="paused", reason="legacy_pause")})
     runtime._write_record(record)
     for _ in range(2):
         outcome = runtime.handle_host_session_event(
@@ -427,6 +428,7 @@ def test_edit_preserves_goal_deadline_from_original_creation(tmp_path) -> None:
         "max_duration_seconds=300 Optimize latency",
         invocation=_codex_invocation("codex:test:deadline-start"),
     )
+    runtime.activate_session(record.goal_plus_id, {"host": "codex", "session_id": "session-test"})
     deadline = record.outer_deadline_at
 
     edited = runtime.edit_from_host_command(

@@ -12,12 +12,13 @@ candidate 边界、workspace、verifier、promotion 和 feature gate 由 runtime
 从 Codex host 已绑定的 session 读取 active `goal_plus_id`。通过当前 registry 中的原生
 `goal_plus_*` 和 `search_*` MCP tools 操作状态；不要通过 shell 或手写 client 调用 server，
 也不要用 MCP resource discovery 判断 tool 是否存在。新建或修订目标使用 `$goal-plus` 或
-`$goal-plus edit`；中断后通过 `codex resume <session-id>` 恢复原生 session，再发送消息继续。
+`$goal-plus edit`；中断后通过 `codex resume <session-id>` 恢复原生 session；paused/blocked 状态再用精确 `$goal-plus resume` 恢复执行。
+`$goal-plus summary/pause/clear` 只查询、暂停或永久关闭当前任务。
 
 ## 主流程
 
 1. 调用 `goal_plus_status`，读取当前 revision、完整 `raw_goal`、`command_config`、已有 dispatch、
-   Search history、final-check policy 和 `next_action`。显式 command config 是强约束，只有缺省项
+   Search history、final-check policy、`control`、`reconciliation` 和 `next_action`。显式 command config 是强约束，只有缺省项
    才由 Main 决定。恢复时若用户改变范围、交付物或成功标准，请其改用 `$goal-plus edit`。
 2. 调用 `goal_plus_record_triage`。普通交付进入 Goal Mode；需要补齐可执行评价合同的优化进入
    Spec Discovery；合同已明确时进入 Search Mode。高置信度且无 open question 的 Search 不等待

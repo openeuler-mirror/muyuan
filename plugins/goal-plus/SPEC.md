@@ -87,8 +87,9 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 - Pi：`/goal-plus ...`、`/goal-plus edit ...`
 - 独立最终检查：`$goal-plus-with-final-check ...` 或 `/goal-plus-with-final-check ...`
 
-Goal Plus 不定义 `resume` command。恢复由 Codex/Pi 原生 session 命令完成，再由共享
-continuation 状态机核对持久化 `active_session`。自然语言提及、skill 自动发现、普通 child、
+原生 session resume 只恢复会话与绑定，不启动任务。精确 host command 还支持
+`summary`、`pause`、`resume`、`clear`；只有显式 resume 能解除中断后的任务停止。
+共享 continuation 状态机核对 `control`、revision 和 `active_session`。自然语言提及、skill 自动发现、普通 child、
 candidate worker、直接 MCP 调用和 generic CLI 都不能创建或编辑 Goal Plus。Search bootstrap、
 Main 后续操作、candidate 操作和终态 report
 分别使用其可验证的归属依据；run 完成链接后，Main 对该 run 的操作必须与当前 Goal 的持久化
@@ -96,10 +97,13 @@ Main 后续操作、candidate 操作和终态 report
 已有绑定，不创建授权；新 turn 的普通 `UserPromptSubmit` 和其他 SessionStart source 不保留
 绑定。拒绝时不得改变领域状态。
 
-同一原生 session 中，普通用户消息优先作为下一轮输入，并继续 unfinished Goal。用户中断会把
-绑定标记为 paused；交互式恢复必须由用户确认或提交下一条普通消息，headless promptless 恢复则
-fail closed。不同 session、fork、detached 绑定或终态 Goal 都不会继承 continuation 权限。
-完整状态转换见 [`docs/resume.md`](docs/resume.md)。
+同一原生 session 正常运行时，普通用户消息优先处理，然后继续原任务。明确中断或执行丢失将
+control 标为 paused；普通聊天、原生 session_start 均不解锁。正常 steering 不当作中断。
+pause 禁止后续续跑和新派发，不强杀当前 turn；clear 永久撤权且保留历史。
+blocked 是显式可恢复停止，旧终态 blocked 迁移为 closed，不复活历史。paused/blocked 下 edit
+不激活；有效编辑 complete 可产生新 revision。不同 session、fork、detached/stale 和已结束任务
+不继承执行权。resume 保留原 deadline、累计用量及 Search 身份。
+完整控制合同、持续 Main/reconciliation 和验证边界见[运行逻辑](docs/runtime-logic.md)。
 
 ## Goal 生命周期
 

@@ -5181,7 +5181,7 @@ def _render_codex_goal_plus_finalization(observation: dict[str, Any]) -> str:
         '<div class="kpi-grid">'
         f'{_metric_card("Goal Plus finalization", overall_label, f"{len(records)} persisted record(s)", tone)}'
         f'{_metric_card("Active records", _number(goal_plus.get("active_records")), "must be zero for a final Goal Plus report", "failure" if goal_plus.get("active_records") else "success")}'
-        f'{_metric_card("Terminal records", _number(goal_plus.get("terminal_records")), "complete / blocked / abandoned")}'
+        f'{_metric_card("Terminal records", _number(goal_plus.get("terminal_records")), "complete / abandoned / closed legacy records")}'
         f'{_metric_card("Persisted reports", _number(goal_plus.get("reports_generated")), "terminal Goal Plus report paths")}'
         "</div>"
         '<div class="panel panel-body">'
@@ -5544,11 +5544,11 @@ def _require_terminal_goal_plus_report(data: dict[str, Any]) -> None:
     goal = snapshot.get("goal_plus")
     goal = goal if isinstance(goal, dict) else {}
     status = str(goal.get("status") or "active")
-    if status in {"complete", "blocked", "abandoned"}:
+    if status in {"complete", "abandoned"} or (goal.get("control") or {}).get("state") == "closed" or ("control" not in goal and status == "blocked"):
         return
     raise RuntimeError(
         "cannot generate a Goal Plus HTML report before the linked record "
-        "reaches a terminal status (complete, blocked, or abandoned); "
+        "reaches a terminal status (complete or abandoned); "
         f"current: {goal_plus_id}={status}"
     )
 

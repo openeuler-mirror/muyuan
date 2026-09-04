@@ -118,7 +118,7 @@ def test_pi_host_session_event_uses_native_session_identity(tmp_path: Path) -> N
         },
         capability_token=token,
     )
-    assert continued["decision"] == "continue_now"
+    assert continued["decision"] == "wait_for_user"
     assert continued["session_state"] == "attached"
 
     mismatch_token = "00000000-0000-4000-8000-000000000004"
