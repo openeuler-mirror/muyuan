@@ -9,6 +9,7 @@ import pytest
 
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import SearchTools
+from tests._runtime_helpers import start_host_verified_goal
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,9 +47,14 @@ def test_circle_packing_promotion_exports_report_without_changing_template(
         / "circle_packing_score.py"
     )
     monkeypatch.chdir(EXAMPLE)
-    tools = SearchTools(FileSearchRuntime(tmp_path / ".gp"))
+    root = tmp_path / ".gp"
+    start_host_verified_goal(root, EXAMPLE)
+    tools = SearchTools(FileSearchRuntime(root))
 
-    frozen = tools.search_freeze_spec(spec, [str(verifier.relative_to(EXAMPLE))])
+    frozen = tools.search_freeze_spec(
+        spec,
+        [str(verifier.relative_to(WORKSPACE_TEMPLATE))],
+    )
     run_id = tools.search_create(frozen["frozen_spec_id"])["run_id"]
     plan = tools.search_plan_next(run_id, 2)
     tasks = tools.search_start_batch(

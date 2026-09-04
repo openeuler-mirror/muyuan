@@ -8,6 +8,7 @@ import pytest
 from goal_plus.models import RunState
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import SearchTools
+from tests._runtime_helpers import start_host_verified_goal
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "k_module_problem"
@@ -39,8 +40,10 @@ def project_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def tools(tmp_path: Path) -> SearchTools:
-    return SearchTools(FileSearchRuntime(tmp_path / ".search"))
+def tools(tmp_path: Path, project_dir: Path) -> SearchTools:
+    root = tmp_path / ".search"
+    start_host_verified_goal(root, project_dir)
+    return SearchTools(FileSearchRuntime(root))
 
 
 def spec_for(project: Path) -> dict:
@@ -91,7 +94,7 @@ def spec_for(project: Path) -> dict:
 
 
 def create_run(tools: SearchTools, project: Path) -> tuple[str, list[dict]]:
-    frozen = tools.search_freeze_spec(spec_for(project), [str(project / "evaluator.py")])
+    frozen = tools.search_freeze_spec(spec_for(project), ["evaluator.py"])
     created = tools.search_create(frozen["frozen_spec_id"])
     run_id = created["run_id"]
     plan = tools.search_plan_next(run_id, 5)
@@ -110,7 +113,7 @@ def create_parallel_codex_run(
         "name": "random",
         "worker_host": "codex",
     }
-    frozen = tools.search_freeze_spec(spec, [str(project / "evaluator.py")])
+    frozen = tools.search_freeze_spec(spec, ["evaluator.py"])
     run_id = tools.search_create(frozen["frozen_spec_id"])["run_id"]
 
     plan = tools.search_plan_next(run_id, 2)
@@ -151,6 +154,7 @@ def create_parallel_codex_run(
             run_id,
             task["candidate_id"],
             agent_session_id=session["agent_session_id"],
+            hypothesis=f"Evaluate the implementation prepared by lane {lane_index}.",
         )
         tools.search_run_verifier(run_id, task["candidate_id"])
 
@@ -292,7 +296,7 @@ def test_frozen_verifier_hash_catches_source_mutation_after_freeze(
     tools: SearchTools,
     project_dir: Path,
 ) -> None:
-    frozen = tools.search_freeze_spec(spec_for(project_dir), [str(project_dir / "evaluator.py")])
+    frozen = tools.search_freeze_spec(spec_for(project_dir), ["evaluator.py"])
     (project_dir / "evaluator.py").write_text(
         "def evaluate(program_path):\n"
         "    return {'combined_score': 1.0, 'valid': True, 'mutated': True}\n",

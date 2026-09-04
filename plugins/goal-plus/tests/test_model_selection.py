@@ -80,7 +80,6 @@ def test_explicit_a1b3_models_bind_each_candidate_and_session(tmp_path: Path) ->
     continued = runtime.continue_agent_session(session.agent_session_id)
     assert continued.selected_model == session.selected_model
     assert "model" not in continued.launch
-    assert runtime.get_agent_context(session.agent_session_id)["selected_model"] == expected[0]
 
 
 def test_models_without_counts_balance_across_max_parallel(tmp_path: Path) -> None:

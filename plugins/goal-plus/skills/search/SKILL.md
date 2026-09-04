@@ -3,320 +3,58 @@ name: search
 description: 仅供 Goal Plus Main Agent 使用 goal-plus MCP 的内部 Search Mode 编排引擎；不适用于 Search candidate worker。
 ---
 
-# Codex 的 Search Mode 运行时
+# Codex Search Mode
 
-只在本轮精确 `$goal-plus` host command 已授权 active `goal_plus_id`，且该 Goal Plus
-记录已把工作项升级到 Search Mode 后使用此 skill。没有 host 授权 id 时立即停止；此 skill
-不能创建 Goal Plus、冻结 standalone spec、创建 standalone run，或把自然语言请求升级为
-Goal Plus。普通用户入口只有 `$goal-plus`。
+只在当前 Goal 已准备好高置信度 SearchSpec 时使用。Search runtime 拥有 FrozenSpec、candidate
+workspace、verifier Evidence、selection 和 promotion；Codex host 拥有原生 worker 的启动、
+等待、续跑和中断。直接调用当前 registry 中的原生 MCP tools。
 
-使用 `goal-plus` MCP server 暴露的逻辑 `search_*` 工具。Codex 可能显示带客户端特定
-前缀的 MCP 工具；按最后的逻辑工具名匹配。
-Codex 把这些能力暴露为原生 MCP tools；直接调用当前 tool registry 中与逻辑名匹配的
-工具，例如 `search_freeze_spec`。成功调用会留下 `mcp_tool_call` 事件。
-`list_mcp_resources` 和 `list_mcp_resource_templates` 不会列出 MCP tool，空结果也不是
-Search tool 缺失证据；不得用它们探测工具。不得通过 `exec_command`、shell、Python
-或手写 stdio client 调用 Goal Plus server，也不得以这种旁路代替上述原生 MCP tool call。
+## 建立 Run
 
-## Verifier 冻结契约
+1. 用相对 `source_path` 的 verifier artifact 路径调用 `search_freeze_spec`，检查返回的 source、
+   task skill 和 workspace capacity 结果；失败时修正合同，不绕过 gate。
+2. 调用 `search_create`，并立即用准确的 `frozen_spec_id`、`run_id` 执行
+   `goal_plus_link_search_run`。
+3. 调用一次 `search_plan_next(requested_k=budget.max_parallel)` 和一次 `search_start_batch`，
+   创建初始 candidate。只有 plan 返回 `requires_agent_proposals=true` 时才向
+   `search_start_batch` 传 `proposals`。普通 `parallel_loops` 不补 lane 或重新规划。
 
-不要在 `source_path` 手工预跑拟定的 verifier。将命令和 verifier 产物直接传给
-`search_freeze_spec`；Git backend 会在 origin 运行一次 process-verifier suite，固定验证过的
-clean HEAD，并确认 ranking signal 的最后一个非空 stdout 行是 JSON，其中包含有限
-数值类型的 `spec.metric_name`，例如
-`{"combined_score": 123.0}`。只在必要时创建自定义 verifier 文件，并在冻结前的 Spec
-Discovery 阶段将其写入源码拥有的路径，例如 `.goal-plus-verifiers/`，绝不能放在 `.gp/`
-或 `.search/` 中。freeze 工具会暴露完整的嵌套 `SearchSpec` schema。
-`expected_outputs` 只接受产物路径或 glob，不解析 stdout。
+新 Codex run 使用 `worker_host="codex"`，通常使用 `git_worktree` 和 manual Global Evidence；
+显式 command config 优先。只有目标明确要求 runtime reward/allocation，或恢复的 FrozenSpec 已
+使用 `adaptive_search` 时，才完整读取
+`../goal-plus/references/adaptive-search.md` 并执行其中的额外 host 流程。
 
-origin verifier 可以按自身构建逻辑生成 Git-ignored cache；Runtime 不清理或猜测这些产物。
-它会在验证后复检 clean 状态、HEAD 和 verifier hash。任何 staged、unstaged 或 non-ignored
-untracked 变化都会阻止冻结。verifier 仍应优先把编译器产物和临时输出放入唯一的
-`GOAL_PLUS_VERIFIER_TMPDIR`/`TMPDIR` 或 `tempfile.TemporaryDirectory()`。绝不能使用
-固定 `/tmp` 路径：并行 candidate verification 会发生冲突。
+## 驱动 Worker
 
-`search_create` 后，Git 的第一次 `search_start_batch` 会先创建 `c001` 并在真实 worktree
-重复同一 suite；只有通过后才创建其余 lane。`WorkspaceRelocationVerifierFailed` 表示
-origin 能运行但 candidate 路径合同不成立。该 run 已以 `verifier_target_mismatch` abort，
-`c001` 被保留供诊断，且不能为它启动 worker。修复 MainAgent 提供的 `source_path`、verifier
-`cwd` 或 artifact 合同后重新 freeze/create；不要手工复制文件或绕过 gate。
+对每个 candidate：
 
-`copy` 保留 disposable-copy ranking preflight。未来 ThinkThread backend 在 origin 验证并固定
-snapshot 后不需要 relocation；当前 Codex host 仍会在 freeze 前拒绝 TT，不得 fallback。
+1. 调用 `search_start_agent_session`，把同一次响应中的 launch payload 映射到当前
+   `spawn_agent` schema；使用返回的 `task_name`、`message` 和 `fork_turns`，不合成字段。
+2. `spawn_agent` 成功并返回真实 handle 后，调用
+   `search_bind_agent_handle(host="codex", ...)`。启动并绑定全部初始 worker 后再等待。
+3. 使用无 target 的 `wait_agent` 等待事件，并用 `list_agents` 核对真实终态。按 launch 返回的
+   budget control 执行 wait、soft closeout 和必要的 `interrupt_agent`；没有 live worker 时不等待。
+4. worker 结束后优先复用与当前 artifact 精确匹配的 worker Evidence；仅在缺失时由 Main 调用
+   `search_run_verifier`。需要诊断 host 行为时调用 `search_get_agent_observability`。
+5. 全局停止条件未满足时，调用 `search_continue_agent_session`，再用 `followup_task` 恢复同一
+   native worker，不附加 Main 偏好的技术方向。continuation lease 使用冻结上限与“外层剩余时间
+   减收尾预留”的较小值；只有 native worker 无法继续时才用 `search_redispatch_candidate` 恢复
+   同一 candidate/workspace。
 
-如果运行时验证返回 `VerifierWorkspaceSideEffect`、
-`metrics.infrastructure_failure=true` 或 `metrics.candidate_action=stop_and_report`，
-受影响的 worker 必须立即停止。它不能删除生成文件、修改冻结的 verifier 产物、绕过失败
-进行 reset 或重试。父 agent 使 run 失效，停止每个 live worker，修复源码拥有的 verifier，
-冻结新 spec，并创建后继 run。绝不能选择或提升已失效的 run。
-在 `interrupt_agent` 前使用 `search_invalidate_run`，防止执行中的 verifier 结果进入旧 run。
-使用 `source_run_id` 创建后继项，在重新验证每个继承产物的同时保留持久研究 lineage。
+worker 首次启动或 fresh session 恢复时会调用 `search_get_agent_context`，并以 runtime 返回的
+`candidate_task` 为完整合同。Main 不复制 workspace、Evidence、shared_dir、supplemental、
+Adaptive、回滚或 verifier 规则。普通低分、一次退化或 peer 领先都不是替换 worker 的理由。
 
-## 并行循环契约
+## 收尾
 
-新的 Codex Search run 使用：
+达到原始目标的全局停止条件或时间收尾点后：
 
-```yaml
-strategy:
-  orchestration_mode: parallel_loops
-  worker_host: codex
-```
+1. drain 或中断所有 live worker，确认全部终态。
+2. 调用 `search_select` 和 `search_promote`。任务授权写回且 promotion 要求 apply 时，调用
+   `search_apply_promotion`；artifact-only 结果保持 prepared。
+3. 将结果交回 Goal Plus 主流程，由其调用 `goal_plus_record_search_result`。链接到 active Goal
+   的 run 此时不调用 `search_report`。
 
-`parallel_loops` 表示：
-
-- 只创建一次初始候选集合；
-- 一个候选工作区就是一条自主搜索循环；
-- 候选 subagent 负责该工作区中后续所有假设、转向、rebase 和 AutoResearch 决策；
-- worker 终态事件触发验证并继续同一 worker，而不是开始另一轮规划；
-- 正常执行绝不创建替代候选或补充 slot；
-- 运行时拒绝对该 run 的第二次 `search_plan_next` 调用；
-- `search_select`、`search_promote` 和 `search_apply_promotion` 仍是父级拥有的最终 Search action；
-  对 Goal Plus，`search_report` 要延迟到父级 Goal Plus 记录达到终态。
-
-父 agent 是完成验证器和继续触发器，不是搜索指挥者。低分、一次没有改进的迭代或其他候选
-领先，都不是停止或替换 worker 的理由。
-
-## 条件式 Adaptive Search 路由
-
-默认执行上述 `parallel_loops` 契约。只有目标或 benchmark 明确要求 runtime reward/allocation，
-或恢复的 FrozenSpec 已设置 `strategy.orchestration_mode="adaptive_search"` 时，才读取并完整遵循
-`../goal-plus/references/adaptive-search.md`。冻结 adaptive spec 前必须先读取该文件；
-未开启该模式时不要读取它。
-
-## Search Run 预算规划
-
-在 `search_freeze_spec` 前选择整个 run 的预算；预算一旦冻结，不能在该 run 内增长。
-
-1. 为最终 drain、选择、父级验证、报告和提升预留时间。
-2. 使用 `max_parallel` 选择初始自主循环数量。如果没有更好的资源信号，建议使用 4。
-3. 为每个初始 worker 提供足够的不间断运行时间，以创建真实产物和 verifier 证据。
-4. `success_threshold` 只判定最终结果是否满足目标，不单独触发 drain。若原始目标明确要求在
-   给定时间内持续或尽可能优化，则计算 `可用 continuation 时间 = 外层剩余时间 - 最终收尾预留`；
-   只要它足以完成至少一次“假设、修改、process verifier”闭环，就用缩短的 lease 继续，而不要求
-   原始完整 worker lease 能放入剩余时间。仅要求达到目标、没有持续优化时间要求的任务，达到阈值后
-   可以正常收尾。
-
-不同 candidate id 本身不能提供搜索多样性。适用时使用不同初始 proposal 或 seed，
-然后让每个 subagent 自行选择下一个有证据支持的假设。大量相近尝试仍无进展后，
-由 subagent 而不是父 agent 重新评估理论或结构限制，并在其候选循环内转向。
-
-## 主工作流
-
-1. 为 Goal Plus spec draft 调用 `search_freeze_spec`；如果已有合适的冻结 spec，
-   则调用 `search_create`。新 spec 必须设置
-   `strategy.orchestration_mode="parallel_loops"`、`worker_host="codex"` 和唯一的
-   `budget.max_parallel`；同时必须显式设置 `workspace.backend="git_worktree"`。
-   `workspace.promotion_mode` 默认是 `apply`；只有受保护 source、只读 template 或测试 fixture
-   才显式设置 `artifact_only`。只有用户明确要求兼容隔离时才能设置 `copy`。
-   `git_worktree` 以及未来的 ThinkThread backend 只接受 clean Git `HEAD`；遇到
-   `DirtySourceWorkspace` 时展示路径和修复提示并停止启动，不得自动 stash、clean 或 commit。
-   确实需要当前 filesystem 状态时显式使用 `copy + artifact_only`。
-   任务本地 Skill 不需要 spec 配置。只识别 source Git 已跟踪的
-   `.agents/skills/<name>/SKILL.md`，且同一 Skill 目录内所有资源都必须由 Git 跟踪；
-   `search_freeze_spec.task_skill_notice` 会列出发现结果，必须把该提示明确展示出来。
-   同时展示 `workspace_capacity_notice`；它按 `budget.max_parallel` 计算完整 repository
-   checkout 和共享 object store，若 `fits_available_space=false` 则不得调用 `search_create`。
-   candidate materialization 会把对应 worktree 绝对路径放入
-   `candidate_task.task_skill_paths`。不要扫描或复制 parent/global/plugin Skill。
-   除非用户明确要求自动注入，或已有运行 Evidence 证明当前 worker 无法可靠遵守
-   manual 刷新契约，否则 `strategy.config.global_evidence_mode` 必须使用 `"manual"`；
-   不得仅为便利或保险选择 `"auto"`。
-   `GoalPlusRecord.command_config` 是显式强约束：先应用其中的 `max_parallel`、
-   `workspace_backend`、`promotion_mode` 和 `strategy`，只有缺省字段才由 Main 判断。
-   `command_config.annotator=B` 时，先调用
-   `goal_plus_list_models(host="codex")` 并将唯一匹配冻结到
-   `strategy.evidence_annotator.model`。`command_config.workers=A,B` 时，用同一目录解析并
-   冻结到 `strategy.models`。无 count 时按 `max_parallel` 轮转；
-   `workers=A*1,B*3` 使用显式数量，数量之和必须等于 `max_parallel`。运行时据此生成有序
-   `selected_models`，每个候选的 selected model 在原生 session 继续期间不可变；
-   所有模型仍读取同一个 run 的 `search_get_global_evidence`，模型身份只作为
-   candidate/session provenance，不改变候选准入或选择逻辑。`search_create` 不接收
-   第二套模型分配参数。Codex 当前 session 就是 main，不能由 Search 切换；`main=` 不是
-   受支持的 Goal Plus 命令配置。省略的角色保持 host 默认或继承语义。ready spec draft 与 command config
-   不一致时，runtime 会拒绝保存。
-2. 调用且只调用一次 `search_plan_next(requested_k=budget.max_parallel)`，然后调用且只调用
-   一次 `search_start_batch`，创建初始候选。启动 worker 前，把每个返回项的
-   `task_skill_notice` 逐条展示给用户；它列出该 subagent worktree 中已获得的全部仓内 Skill，
-   仓外 Skill 继续由 host 管理。
-3. 对每个候选调用且只调用一次 `search_start_agent_session`，直接解析同一次响应中的
-   launch payload，不要为了重新读取响应而再次调用。可选的 `worker_budget` 是一次派发的
-   host 限制；它不会改变候选的技术方向。真正重派使用 `search_redispatch_candidate`。
-4. 使用返回的 launch payload 启动 Codex subagent：
-   - 将其映射到当前 `spawn_agent` 工具 schema；
-   - 字段可用时始终传入 `task_name`、`message` 和 `fork_turns`；
-   - 只有 launch payload 与当前工具 schema 都暴露相应字段时，才传入 `agent_type`、
-     `model`、`reasoning_effort` 或 `service_tier`；
-   - 绝不能合成可选 launch metadata；
-   - 无法传递 model override 时，worker 继承父 Codex model。
-   - 当前 `spawn_agent` schema 没有 `cwd`。worker 先调用
-     `search_get_agent_context`，再把 `context.workspace` 显式传给每次文件和 shell 操作；
-     parent cwd 不是 candidate workspace。
-   - launch message 和 context 会列出 `task_local_skills_visible`/
-     `candidate_task.task_skill_paths`；没有 Skill 时明确显示 `none`。worker 逐一完整读取并
-     遵循列出的 `SKILL.md`，只按需读取同目录资源；不要扫描 parent/global/plugin 或 peer Skill。
-   `search_start_agent_session` 只分配持久 session 并返回 launch payload，绝不代表
-   worker 已经启动。必须对每个 payload 真实调用一次 `spawn_agent`，并确认调用成功返回
-   非空 receiver thread id；不得用 shell/Python 直接写 runtime state 来代替 host 操作。
-5. 只有对应 `spawn_agent` 成功后，才使用 `host="codex"` 调用
-   `search_bind_agent_handle`。把真实返回的 thread id 绑定为 `external_id`，并保留返回的
-   task name/nickname；绝不能把 launch payload 中预分配的 task name、candidate id 或
-   agent session id 冒充已启动的 handle。全部 `budget.max_parallel` 个真实 worker 启动并
-   绑定之前不得进入等待。
-6. 跟踪每个 live worker 及其自身 watchdog deadline。使用无 target 的 `wait_agent`，
-   然后使用 `list_agents`，处理每个已达终态的 worker。调用 wait 时必须已有非空 live
-   receiver 集合；没有实际 worker 时不得调用空 `wait`/`wait_agent`，应回到 launch
-   失败处理。仅有进度的唤醒不是完成事件。
-7. 对每个终态 worker：
-   - 从 `search_list_history` 或 `goal_plus_monitor_snapshot` 读取当前 run 的最佳结果；
-   - 使用 `search_bind_agent_handle` 绑定终态 handle 和摘要；终态绑定会自动采集有界的
-     `.tmp/handoff.json` 数据；
-   - 需要原生 model、token、时长、上下文或终态证据时，使用
-     `search_get_agent_observability(agent_session_id)`；它只读，不能替代
-     `list_agents` 判断存活状态；
-   - 当前产物已有准确 worker Evidence 时直接复用；仅在没有匹配 Evidence 时，才不传
-     `agent_session_id`，使用准确 `run_id` 和 `candidate_id` 补一次父级
-     `search_run_verifier`；
-   - 刷新 history/monitor，记录 verifier 支持的全局最佳候选/分数是否变化；
-   - 只有出现具体评估契约或基础设施失败时才检查 `verifier_assessment`。诊断稀疏、
-     分数低或没有改进不代表 verifier 不充分，也不会阻止继续。
-8. 验证后先检查报告。FrozenSpec 使用 `adaptive_search` 时，转入并遵循
-   `../goal-plus/references/adaptive-search.md`；不要同时执行下述 `parallel_loops`
-   continuation policy。普通模式执行以下全局停止 policy：
-   - run 失效或用户停止时停止；
-   - 仅要求达到目标、没有持续优化时间要求时，达到成功标准可以成功收尾；
-   - 明确限时持续优化时，达到成功标准、分数、排名或近期没有改善都不改变调度；只有
-     `外层剩余时间 - 最终收尾预留` 不足以完成至少一次 process verifier 闭环时才停止；
-   - 否则在同一候选上恢复同一个原生 Codex subagent。
-9. 要恢复时，先调用不含新技术指令的
-   `search_continue_agent_session(agent_session_id, worker_budget=...)`，再把返回的 continuation
-   payload 映射到现有 task 的 `followup_task`。明确限时持续优化时，override 的
-   `max_runtime_seconds` 取冻结上限与“外层剩余时间减最终收尾预留”的较小值；若冻结的
-   `min_runtime_seconds` 或 `min_verifier_runs` 不再适合这次短 lease，则不要在 override 中继承。
-   严格使用以下中性消息：
-
-   ```text
-   沿用已加载的运行时上下文和 Evidence 继续同一条自主搜索循环，
-   探索下一个有证据支持的方向，并验证每项实质变更。
-   ```
-
-   不要提及父级偏好的方向、特性迁移、宏观重启或基于排名的判断。恢复后的 worker
-   自行负责该决策。
-10. 初始候选创建后，不要再调用 `search_plan_next` 或 `search_start_batch`。
-    不要因为候选较弱而让 slot 闲置；要么依据全局停止 policy 恢复同一 worker，
-    要么出于全局原因停止整个 Search。
-11. 每次等待前，比较最近的 worker deadline 与当前时间。soft closeout 时，使用配置的
-    closeout message 调用且只调用一次 `send_message`；到达 hard deadline 时调用
-    `interrupt_agent`，观察终态，并像其他完成事件一样验证。一个 worker 超时不会停止
-    其他 worker。
-12. 全局停止 policy 为 true 时，drain 或中断每个 live worker，然后按要求调用
-    `search_select` 和 `search_promote`。选择使用 verifier 支持的 immutable artifact。
-    当 frozen `workspace.promotion_mode="apply"` 且 promotion 返回
-    `strategy=squash_commit` 或 `strategy=fs_apply` 时，必须调用
-    `search_apply_promotion`；Git 会把保留的 running history
-    作为一个 publication commit cherry-pick 回原仓，ThinkThread 会应用 publish snapshot。
-    只有显式 `promotion_mode="artifact_only"` 的任务保留 prepared publication，不调用
-    apply。仅旧的
-    `strategy=legacy_patch` 在任务授权写回时从返回的 `apply_cwd` 执行
-    `git apply --directory=<apply_directory> <artifact_path>`。
-    不要只为记录临时最佳而提升。该 Search 属于 Goal Plus 时，不调用 `search_report`
-    就交还控制；Goal Plus skill 会在父记录达到终态后生成且只生成一次报告。
-    对独立 Search，只在提升后调用 `search_report`。
-    最终最佳分数满足 `success_threshold` 时才能将其报告为成功；未满足时保留最佳产物，
-    但不得把预算耗尽描述为验收通过。
-
-## 当前最佳契约
-
-`search_run_verifier` 感知 metric 方向，并在通过的结果更好时更新持久化的
-`run.best_score` 和 `run.best_candidate_id`。父 agent 必须在每次完成验证后观察它，
-但不能把比较结果变为是否继续的决策。
-
-每个 process verifier 结果还包含 candidate-local `disposition`。严格改善为
-`keep`；同分为 `retain` 并成为最新工作基线；退化为 `discard`，无有效排名证据为
-`failure`。runtime 保留本轮实际被测 commit，并只在 `discard`/`failure` 后自动恢复
-该 candidate 的 best 代码。worker
-不得自行 reset verifier-backed 状态；下一轮直接使用返回后的 settled workspace。
-
-- 更好结果：将其保留为最新 verifier 支持的答案；全局停止 policy 为 false 时，
-  恢复同一 worker。
-- 更差或相同结果：保留早期最佳；全局停止 policy 为 false 时，仍恢复同一 worker。
-- 最终选择：只能在所有 worker drain 后运行。
-
-## Worker 预算控制
-
-`budget_control.mode == "parent_watchdog"` 表示父 Codex agent 强制执行 worker 已用时间。
-`spawn_agent` 没有 timeout 参数，因此应结合 `wait_agent`、closeout 和
-`interrupt_agent`。
-
-`worker_budget.max_runtime_seconds` 是一次派发可强制执行的上限。明确限时持续优化时，
-continuation 必须收到根据外层剩余时间推导的单次派发限制：冻结上限与
-“外层剩余时间减最终收尾预留”的较小值。不得仅因剩余时间装不下原始完整 lease 而停止。
-
-只把 `budget_control.max_turns_hint` 当作 prompt 指引。hard limit 是
-`initial_wait_timeout_ms` 与 `final_wait_timeout_ms` 之和，随后执行中断。
-`soft_closeout_seconds` 是收尾窗口。对该次派发发送且只发送一次配置的
-`closeout_message`。continuation 只重置同一个 worker 的派发 deadline。
-
-存在 `worker_budget.min_runtime_seconds` 或 `min_verifier_runs` 时，
-`budget_control.autoresearch_lease.mode == "subagent_stop"` 是由候选
-`SubagentStop` hook 强制执行的下限 lease。过早的最终回复会被阻止，并在不把控制权交还
-主流程的情况下继续同一个 Codex worker。该 lease active 时，绝不能发送父级 closeout
-消息。不要轮询或休眠；继续“假设 -> 产物 -> verifier”循环。基础设施
-`stop_and_report` 会释放 lease；Adaptive Search 的额外释放条件只定义在条件引用文件中。
-
-项目 `PostToolUse` hook 也可能向绑定的候选 worker 提供仅供参考的时间提示。
-可用时它可能使用 `GOAL_PLUS_OUTER_DEADLINE_AT`。它绝不会停止 worker，也不能为主 agent、
-普通 subagent 或最终检查员触发。
-
-主 agent、普通 subagent 和最终检查员的 PostTool 事件绝不能触发此候选提示。
-
-continuation 预算根据外层剩余时间和最终收尾预留推导，而不是根据父级是否喜欢该候选。
-不要故意给弱候选不可用的预算，也不要给强候选新的技术指令。
-
-## 运行时历史与状态级恢复
-
-candidate-local history 由运行时拥有，不是 `plan.md` 文件。worker 通过
-`search_get_agent_context` 恢复自己的 `context.latest_result`、`context.best_iteration`、
-`context.recent_iterations`、`context.results_tsv`、工作区 Git 状态和有界 handoff metadata。
-只有紧凑上下文、results.tsv 和 Git 无法回答旧轮次的准确 verifier 事实时，worker 才为
-自己的 candidate 调用可能很大的 `search_list_iterations`。其他 candidate 的尝试
-只通过窄 `search_get_global_evidence` 视图披露。首次修改前读取，之后每完成 3 次 verifier
-iteration、连续两轮没有提升或准备切换路线时刷新；`view=null` 只表示 annotator 尚未更新，
-worker 可先依据 commit、score、disposition 和自己的推理独立探索，不等待或轮询。
-`context.supplemental_evaluation_enabled=false` 时不要等待或
-尝试读取补充评价；启用时仅以 `supplemental_available` 标记可展开的行。worker 仅在
-路线停滞、结构性分数跃升、hidden 泛化风险或
-官方/本地结果背离时，通过 `search_get_evidence_detail` 按需读取完整评价，且不重复读取同一
-不可变行。完整内容由 annotator 根据当前累计 diff 和 annotation task 创建时其他已结算候选
-快照生成。其中维度由 annotator
-根据实际 Evidence 后验提出，不来自 FrozenSpec；动态比较、置信度与 limitations 只是第三方
-观察，不是分数、推荐或 promotion gate；它不改变硬分结算规则。worker 可以据此
-形成自己的下一轮假设，但应独立核对。窄、单文件代码证据可在当前 workspace 使用
-`git diff HEAD <commit> -- <allowed-file>` 做只读比较；改动较大或需要浏览完整实现时，
-对目标 Evidence 调用 `search_reference_open`，把它 checkout 到当前 worker 唯一的
-ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的
-reference commit；所有实现修改仍留在 candidate workspace。不访问其他 candidate 的真实
-workspace。修改完成后，worker 在 `search_run_verifier` 中用一句话
-`hypothesis` 客观概括实际尝试。
-
-host transcript 是有用上下文，但不是权威 Search 状态。
-
-Codex 的同 worker continuation 使用 `search_continue_agent_session`，随后对现有 task
-调用 `followup_task`。worker 沿用已加载的运行时上下文和 Evidence，继续自主探索。
-
-只有原始 native worker 无法继续时才使用 `search_redispatch_candidate`。
-重新派发必须保留相同 candidate/workspace。它是恢复手段，不是引入另一搜索方向的常规方式。
-
-## 污染恢复
-
-普通低性能绝不会创建新候选。只有存在客观恢复证据时才允许替代/fork，例如无法恢复的
-Git 或账本损坏、原生 session 不可用且同候选重新派发失败，或 verifier/spec 失效而需要
-后继 run。
-
-恢复顺序：
-
-1. 继续同一个 native worker；
-2. 同候选状态级重新派发；
-3. 从最新 verifier 支持的 Git revision 恢复同一候选；
-4. 只能通过未来显式恢复契约，fork 带持久 lineage 的替代项。
-
-在 `parallel_loops` 模式下，不要把普通 `search_plan_next` 用作该恢复契约。
+如果 Evidence 证明 verifier 的覆盖、确定性、目标对齐或基础设施合同失效，调用
+`search_invalidate_run`，停止 worker，修复合同并创建后继 run。新的技术假设、停滞或性能差异
+仍属于当前 run。

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+from mcp.types import TextContent
 from pydantic import Field
 
 from goal_plus._version import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import (
     AgentHostKind,
+    CandidateProposal,
     GoalPlusSpecDraftInput,
+    GoalPlusTriage,
     GoalPlusWorkEventKind,
     SearchSpec,
     ToolizationDecision,
@@ -20,6 +24,13 @@ from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import GoalPlusTools, SearchTools
 
 
+def _json_text(value: Any) -> TextContent:
+    return TextContent(
+        type="text",
+        text=json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
 def create_mcp(
     root_dir: str | Path = DEFAULT_RUNTIME_ROOT,
 ) -> FastMCP:
@@ -27,7 +38,7 @@ def create_mcp(
 
     runtime = FileSearchRuntime(root_dir)
     goal_runtime = FileGoalPlusRuntime(root_dir)
-    tools = SearchTools(runtime)
+    tools = SearchTools(runtime, goal_runtime)
     goal_tools = GoalPlusTools(goal_runtime)
     mcp = FastMCP("goal-plus", version=__version__)
 
@@ -45,6 +56,7 @@ def create_mcp(
         `search_create` 前调用。后两者分别列出 source Git index 中
         `.agents/skills/*/SKILL.md` 的自动发现结果，以及按 `budget.max_parallel` 计算的
         source/worktree/object-store 容量预检。verifier 文件按 hash 固定；
+        `verifier_artifact_paths` 必须使用相对 `source_path` 的路径，不能越界；
         候选执行期间修改它们会强制分数为 0.0。冻结会预检每个 `ranking_signal`：
         它必须以 0 退出，并输出一个最终 JSON 对象，其中包含有限数值类型的
         `spec.metric_name`，例如 `{"score": 123.0}`。verifier 命令在一次性源码副本中
@@ -58,7 +70,6 @@ def create_mcp(
         共用同一可见变量。需要 worker 遵守的公开条件写入 `candidate_acceptance`；
         `constraints` 保持 runtime 私有。
         """
-        goal_runtime.require_host_verified_active_goal()
         return tools.search_freeze_spec(spec, verifier_artifact_paths)
 
     @mcp.tool()
@@ -89,7 +100,6 @@ def create_mcp(
         时才传入 `source_run_id`。新 run 会收到来源 frontier、
         限定范围的问题和特性账本的有界 snapshot。来源分数只是历史，必须在新契约下重新验证。
         """
-        goal_runtime.require_host_verified_active_goal()
         return tools.search_create(frozen_spec_id, source_run_id)
 
     @mcp.tool()
@@ -172,7 +182,7 @@ def create_mcp(
     def search_start_batch(
         run_id: str,
         plan_id: str,
-        proposals: list[dict[str, Any]] | None = None,
+        proposals: list[CandidateProposal] | None = None,
     ) -> list[dict[str, Any]]:
         """materialize 已规划的候选工作区（`source_path` 的副本）。
 
@@ -254,19 +264,18 @@ def create_mcp(
         )
 
     @mcp.tool()
-    def search_get_agent_context(agent_session_id: str) -> dict[str, Any]:
-        """Subagent 的首次调用，返回权威 id 和工作区。
+    def search_get_agent_context(agent_session_id: str) -> TextContent:
+        """Subagent 的首次调用，返回紧凑的权威工作合同。
 
-        返回 run_id、candidate_id、workspace、candidate_task（含冻结验收合同与 candidate
-        进程环境）、最佳/最近 iteration 摘要和 results.tsv 路径。由 subagent 调用，不由主
-        agent 调用。subagent 必须把 prompt 提供的 id 只当作标签，并将此响应作为事实来源。
+        返回 id、candidate_task、最佳/最近 iteration 摘要和恢复所需证据。由 subagent
+        调用，不由主 agent 调用。prompt 提供的 id 只是标签，以此响应为事实来源。
         """
-        return tools.search_get_agent_context(agent_session_id)
+        return _json_text(tools.search_get_agent_context(agent_session_id))
 
     @mcp.tool()
     def search_get_global_evidence(
         agent_session_id: str,
-    ) -> list[dict[str, Any]]:
+    ) -> TextContent:
         """返回当前 run 的窄 Global Evidence 视图。
 
         每项只包含 candidate_id、iteration、score、keep/retain/discard/failure disposition、
@@ -274,7 +283,7 @@ def create_mcp(
         的可用标记。任何 View 为 null 都不影响 verifier Evidence；worker 不需要等待，
         可先依据 Evidence 独立探索。
         """
-        return tools.search_get_global_evidence(agent_session_id)
+        return _json_text(tools.search_get_global_evidence(agent_session_id))
 
     @mcp.tool()
     def search_reference_open(
@@ -342,17 +351,19 @@ def create_mcp(
         agent_session_id: str,
         candidate_id: str,
         iteration: Annotated[int, Field(ge=1)],
-    ) -> dict[str, Any]:
+    ) -> TextContent:
         """按需展开一条已结算 Evidence 的 supplemental evaluation。
 
         仅当 agent context 声明该能力已开启，且 Global Evidence 对目标行返回
         `supplemental_available=true` 时调用。目标必须属于同一 run；`independent` 模式只
         允许读取调用方自己的 candidate。返回内容不含 peer workspace、transcript 或推理。
         """
-        return tools.search_get_evidence_detail(
-            agent_session_id,
-            candidate_id,
-            iteration,
+        return _json_text(
+            tools.search_get_evidence_detail(
+                agent_session_id,
+                candidate_id,
+                iteration,
+            )
         )
 
     @mcp.tool()
@@ -385,15 +396,13 @@ def create_mcp(
 
     @mcp.tool()
     def search_list_iterations(
-        run_id: str,
-        candidate_id: str,
-    ) -> list[dict[str, Any]]:
-        """返回一个候选可能很大的完整 iteration 历史。
+        agent_session_id: str,
+    ) -> TextContent:
+        """返回当前 agent session 所属候选可能很大的完整 iteration 历史。
 
-        candidate worker 只应查询 agent context 中自己的 run/candidate，并且仅在紧凑
-        context、results.tsv 和 Git 无法回答旧轮次的准确 verifier 事实时调用。
+        仅在紧凑 context、results.tsv 和 Git 无法回答旧轮次的准确 verifier 事实时调用。
         """
-        return tools.search_list_iterations(run_id, candidate_id)
+        return _json_text(tools.search_list_iterations(agent_session_id))
 
     @mcp.tool()
     def search_list_allocation_decisions(
@@ -478,7 +487,7 @@ def create_mcp(
     @mcp.tool()
     def goal_plus_record_triage(
         goal_plus_id: str,
-        triage: dict[str, Any],
+        triage: GoalPlusTriage,
     ) -> dict[str, Any]:
         """记录目标应保留 goal 形态，还是向 Search 升级。"""
         return goal_tools.goal_plus_record_triage(goal_plus_id, triage)

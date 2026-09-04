@@ -585,8 +585,7 @@ class AllocationExecutor:
                     intent=replacement.exploration_direction,
                     instructions=[
                         "这是 scheduler 从已验证父 Evidence 派生的新 candidate。",
-                        "把 expansion_source 视为初始 incumbent；刷新 Global Evidence 后独立执行 scheduler 指定的探索方向，不依赖父 worker transcript。",
-                        "若 verifier 返回 allocation_decision，立即完成 handoff 并返回主流程，不再启动新的 iteration。",
+                        "把 expansion_source 视为初始 incumbent，独立执行 scheduler 指定的探索方向，不依赖父 worker transcript。",
                     ],
                     metadata={
                         "allocation_decision_id": decision_id,

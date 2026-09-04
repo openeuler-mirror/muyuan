@@ -292,6 +292,24 @@ def test_codex_adapter_builds_watchdog_budget_payload() -> None:
 
 
 @pytest.mark.codex
+def test_codex_adapter_rejects_budget_too_short_for_native_waits() -> None:
+    adapter = get_agent_host_adapter("codex")
+
+    with pytest.raises(ValueError, match="two native wait intervals"):
+        adapter.build_launch_payload(
+            worker_agent_type=None,
+            candidate_id="cand-0001",
+            agent_session_id="agent-0001",
+            short_intent="try",
+            one_paragraph_idea="try",
+            worker_budget={
+                "max_runtime_seconds": 19,
+                "on_exceed": "interrupt",
+            },
+        )
+
+
+@pytest.mark.codex
 def test_codex_adapter_separates_autoresearch_lease_from_parent_watchdog() -> None:
     adapter = get_agent_host_adapter("codex")
 

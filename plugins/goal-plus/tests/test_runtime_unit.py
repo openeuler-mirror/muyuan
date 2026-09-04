@@ -51,6 +51,26 @@ from tests._runtime_helpers import (
 )
 
 
+def _guarded_runtime_state(
+    runtime: FileSearchRuntime,
+    run_id: str,
+    candidate_id: str | None = None,
+    agent_session_id: str | None = None,
+) -> dict[str, object]:
+    state: dict[str, object] = {
+        "run": runtime._load_run(run_id).model_dump(mode="json"),
+    }
+    if candidate_id is not None:
+        state["candidate"] = runtime._load_candidate_record(
+            run_id, candidate_id
+        ).model_dump(mode="json")
+    if agent_session_id is not None:
+        state["agent_session"] = runtime._load_agent_session_by_id(
+            agent_session_id, run_id=run_id
+        ).model_dump(mode="json")
+    return state
+
+
 def test_hash_json_and_path_helpers(tmp_path: Path) -> None:
     file_path = tmp_path / "a.txt"
     file_path.write_text("hello\n", encoding="utf-8")
@@ -1176,7 +1196,7 @@ def test_git_tracked_task_skills_are_discovered_in_each_candidate_worktree(
 
         session = runtime.start_agent_session(run_id, task.candidate_id)
         context = runtime.get_agent_context(session.agent_session_id)
-        assert context["workspace"] == str(task.workspace)
+        assert context["candidate_task"]["workspace"] == str(task.workspace)
         assert context["candidate_task"]["task_skill_paths"] == [str(expected_skill)]
         assert any(
             "host launch 不保证切换 cwd" in instruction
@@ -1418,32 +1438,8 @@ def test_worker_task_exposes_host_and_edit_contract(tmp_path: Path) -> None:
     assert tasks[0].workspace_access.native_cwd == tasks[0].workspace
     assert tasks[0].workspace_access.bootstrap_required is True
     assert tasks[0].workspace_access.confinement == "soft_path"
-    assert any(
-        "Frozen verifier 是唯一权威验证路径" in instruction
-        for instruction in tasks[0].instructions
-    )
-    assert any(
-        "search_run_verifier(agent_session_id=...)" in instruction
-        for instruction in tasks[0].instructions
-    )
-    combined_instructions = "\n".join(tasks[0].instructions)
     assert tasks[0].allowed_files == ["initial_program.py"]
     assert tasks[0].denied_files == ["evaluator.py", "config.yaml"]
-    assert "以 verifier 返回后的工作区状态为准" in combined_instructions
-    assert "不会进入 Global Evidence、被其他 worker 看到或参与最终选择" in combined_instructions
-    assert "贡献给共享搜索" in combined_instructions
-    assert ".tmp/handoff.json" in combined_instructions
-    assert "不属于交付 edit surface" in combined_instructions
-    assert "success_threshold" not in combined_instructions
-    for runtime_detail in ("results.tsv", "worker_agent_type"):
-        assert runtime_detail not in combined_instructions
-    assert "search_reference_open" in combined_instructions
-    assert "当前 agent 唯一的 ref-workspace" in combined_instructions
-    assert "同一目录切到新的 reference commit" in combined_instructions
-    assert "search_reference_list/read/exec" not in combined_instructions
-    assert "search_reference_close" not in combined_instructions
-    assert "不要访问或 fetch peer 的真实工作区" in combined_instructions
-    assert "When steps run out the host will ask you" not in combined_instructions
 
     (tasks[0].workspace / ".tmp" / "handoff.json").write_text(
         '{"summary": "resume here"}\n',
@@ -1453,11 +1449,11 @@ def test_worker_task_exposes_host_and_edit_contract(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("mode", "supplemental", "threshold"),
+    ("mode", "supplemental", "threshold", "adaptive"),
     [
-        ("manual", True, True),
-        ("auto", False, False),
-        ("independent", False, False),
+        ("manual", True, True, False),
+        ("auto", False, False, True),
+        ("independent", False, False, False),
     ],
 )
 def test_worker_instructions_match_enabled_capabilities(
@@ -1466,17 +1462,32 @@ def test_worker_instructions_match_enabled_capabilities(
     mode: str,
     supplemental: bool,
     threshold: bool,
+    adaptive: bool,
 ) -> None:
     monkeypatch.setenv(
         "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED",
         "1" if supplemental else "0",
     )
     project = make_project(tmp_path)
-    data = spec_with_strategy(
-        project,
-        {"name": "random", "config": {"global_evidence_mode": mode}},
-        max_parallel=1,
-    ).model_dump(mode="json")
+    strategy = {"name": "random", "config": {"global_evidence_mode": mode}}
+    if adaptive:
+        strategy.update(
+            {
+                "orchestration_mode": "adaptive_search",
+                "search_scheduler": {
+                    "host": "pi-rpc",
+                    "model": "scheduler-model",
+                    "reasoning_effort": "low",
+                    "timeout_seconds": 60,
+                    "reward": "evidence_llm_value/v3",
+                    "allocation": "value_guided_replace/v2",
+                },
+            }
+        )
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["strategy"] = strategy
+    if adaptive:
+        data["workspace"]["backend"] = "git_worktree"
     data["constraints"] = {"success_threshold": 1.0} if threshold else {}
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
@@ -1492,7 +1503,7 @@ def test_worker_instructions_match_enabled_capabilities(
     assert ("global_evidence_snapshot" in instructions) is (mode == "auto")
     assert ("search_get_evidence_detail" in instructions) is supplemental
     assert ("success_threshold" in instructions) is threshold
-    assert ("否则正常收尾" in instructions) is threshold
+    assert ("allocation_decision" in instructions) is adaptive
 
 
 def test_promote_requires_search_runtime_selection(tmp_path: Path) -> None:
@@ -1502,13 +1513,35 @@ def test_promote_requires_search_runtime_selection(tmp_path: Path) -> None:
     (workspace / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
     report = runtime.run_verifier(run_id, candidate_id)
     assert report.process_passed is True
+    unselected = _guarded_runtime_state(runtime, run_id, candidate_id)
 
     with pytest.raises(RuntimeError, match="search_select"):
         runtime.promote(run_id, candidate_id)
+    assert _guarded_runtime_state(runtime, run_id, candidate_id) == unselected
 
     selected = runtime.select(run_id)
     assert selected["selected_candidate_id"] == candidate_id
+    ready_to_promote = _guarded_runtime_state(runtime, run_id, candidate_id)
+
+    with pytest.raises(RuntimeError, match="ready_to_promote"):
+        runtime.plan_next(run_id, requested_k=1)
+    with pytest.raises(RuntimeError, match="ready_to_promote"):
+        runtime.start_agent_session(run_id, candidate_id)
+    with pytest.raises(RuntimeError, match="ready_to_promote"):
+        runtime.run_verifier(run_id, candidate_id)
+    assert _guarded_runtime_state(runtime, run_id, candidate_id) == ready_to_promote
+
     assert runtime.promote(run_id, candidate_id).exists()
+    promoted = _guarded_runtime_state(runtime, run_id, candidate_id)
+    with pytest.raises(RuntimeError, match="promoted"):
+        runtime.plan_next(run_id, requested_k=1)
+    with pytest.raises(RuntimeError, match="promoted"):
+        runtime.start_agent_session(run_id, candidate_id)
+    with pytest.raises(RuntimeError, match="promoted"):
+        runtime.run_verifier(run_id, candidate_id)
+    with pytest.raises(RuntimeError, match="promoted"):
+        runtime.select(run_id)
+    assert _guarded_runtime_state(runtime, run_id, candidate_id) == promoted
 
 
 def test_promotion_verifier_is_selected_parent_only(tmp_path: Path) -> None:
@@ -2606,15 +2639,15 @@ def test_redispatch_candidate_overrides_codex_worker_budget(tmp_path: Path) -> N
     assert redispatched.launch["budget_control"] == {
         "mode": "parent_watchdog",
         "max_runtime_seconds": 30,
-        "initial_wait_timeout_ms": 24000,
-        "soft_closeout_seconds": 6,
+        "initial_wait_timeout_ms": 20000,
+        "soft_closeout_seconds": 10,
         "closeout_tool": "send_message",
         "closeout_target": redispatched.launch["task_name"],
         "closeout_message": (
             "Worker 的截止时间临近。停止启动新工作；如有需要，最后运行一次 "
             "search_run_verifier，更新 .tmp/handoff.json，并返回简洁摘要。"
         ),
-        "final_wait_timeout_ms": 6000,
+        "final_wait_timeout_ms": 10000,
         "on_exceed": "interrupt",
         "interrupt_tool": "interrupt_agent",
         "interrupt_target": redispatched.launch["task_name"],
@@ -3269,13 +3302,30 @@ def test_get_agent_context_has_only_authoritative_worker_fields(tmp_path: Path) 
         "budget",
         "peer_status",
         "observations",
+        "selected_model",
+        "model_provenance",
+        "host",
+        "host_handle",
+        "directive",
+        "workspace",
+        "workspace_access",
+        "orchestration_mode",
+        "search_scheduler_enabled",
+        "run_budget",
     ):
         assert forbidden not in context, f"get_agent_context must not return {forbidden}"
-    assert context["candidate_task"]["candidate_id"] == tasks[0].candidate_id
-    assert context["orchestration_mode"] == "parallel_loops"
-    assert context["search_scheduler_enabled"] is False
-    instructions = " ".join(context["candidate_task"]["instructions"])
-    assert "Adaptive Search scheduler 已启用" not in instructions
+    assert context["candidate_id"] == tasks[0].candidate_id
+    assert set(context["candidate_task"]) == {
+        "hypothesis",
+        "workspace",
+        "allowed_files",
+        "denied_files",
+        "instructions",
+    }
+    assert context["candidate_task"]["workspace"] == str(tasks[0].workspace)
+    assert "expected_artifacts" not in context["candidate_task"]
+    assert "proposal" not in context["candidate_task"]
+    assert "strategy_metadata" not in context["candidate_task"]
     assert "expansion_action_context" not in context
     assert "history" not in context
     assert "iterations" not in context
@@ -3903,6 +3953,44 @@ def test_run_verifier_parses_subprocess_metrics_with_mock(
     assert report.aggregate_score == 0.75
     assert calls[0][1]["cwd"] == workspace.resolve()
     assert "PYTHONPATH" in calls[0][1]["env"]
+
+
+@pytest.mark.parametrize(
+    ("metric_name", "metric_value"),
+    [("elapsed_seconds", 123.0), ("returncode", 17.0)],
+)
+def test_run_verifier_preserves_ranking_metric_named_like_runtime_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metric_name: str,
+    metric_value: float,
+) -> None:
+    project = make_project(tmp_path)
+    spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    spec_data["metric_name"] = metric_name
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    candidate_id = runtime.start_batch(run_id, plan.plan_id)[0].candidate_id
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=json.dumps({metric_name: metric_value}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+
+    report = runtime.run_verifier(run_id, candidate_id)
+
+    assert report.aggregate_score == metric_value
+    assert report.verifier_results[0].metrics[metric_name] == metric_value
 
 
 def test_process_verifier_overrides_verifier_phase_environment(
@@ -4923,6 +5011,18 @@ def test_run_verifier_rejects_mismatched_agent_session(tmp_path: Path) -> None:
     other_session = runtime.start_agent_session(
         run_id, tasks[1].candidate_id, {"goal": "c1"}
     )
+    state_before = {
+        "target": _guarded_runtime_state(
+            runtime,
+            run_id,
+            tasks[0].candidate_id,
+            session_for_c0.agent_session_id,
+        ),
+        "other_session": runtime._load_agent_session_by_id(
+            other_session.agent_session_id,
+            run_id=run_id,
+        ).model_dump(mode="json"),
+    }
 
     with pytest.raises(ValueError, match="agent_session_id does not belong"):
         runtime.run_verifier(
@@ -4930,6 +5030,19 @@ def test_run_verifier_rejects_mismatched_agent_session(tmp_path: Path) -> None:
             tasks[0].candidate_id,
             agent_session_id=other_session.agent_session_id,
         )
+
+    assert {
+        "target": _guarded_runtime_state(
+            runtime,
+            run_id,
+            tasks[0].candidate_id,
+            session_for_c0.agent_session_id,
+        ),
+        "other_session": runtime._load_agent_session_by_id(
+            other_session.agent_session_id,
+            run_id=run_id,
+        ).model_dump(mode="json"),
+    } == state_before
 
 
 def test_concurrent_run_verifiers_preserve_best_score(
@@ -5190,9 +5303,14 @@ def test_report_rejects_linked_nonterminal_goal(
             "search_tasks": [{"run_id": run_id}],
         },
     )
+    run_before = runtime._load_run(run_id)
 
     with pytest.raises(RuntimeError, match="reaches a terminal status"):
         runtime.report(run_id)
+
+    assert runtime._load_run(run_id) == run_before
+    assert not (runtime._run_dir(run_id) / "report.md").exists()
+    assert not (runtime._run_dir(run_id) / "report.html").exists()
 
 
 @pytest.mark.parametrize("goal_status", ["complete", "blocked", "abandoned"])
@@ -5465,14 +5583,41 @@ def test_invalidate_run_fences_work_and_successor_inherits_research(
 
     assert invalidated.state == RunState.ABORTED
     assert invalidated.invalidation_reason == "verifier_coverage_inadequate"
+    fenced_state = _guarded_runtime_state(
+        runtime,
+        run_id,
+        task.candidate_id,
+        session.agent_session_id,
+    )
     with pytest.raises(RuntimeError, match="invalidated"):
         runtime.run_verifier(run_id, task.candidate_id)
     with pytest.raises(RuntimeError):
         runtime.plan_next(run_id, requested_k=1)
     with pytest.raises(RuntimeError):
         runtime.start_agent_session(run_id, task.candidate_id)
+    with pytest.raises(RuntimeError):
+        runtime.continue_agent_session(session.agent_session_id)
     with pytest.raises(RuntimeError, match="invalidated"):
         runtime.select(run_id)
+    with pytest.raises(RuntimeError, match="invalidated"):
+        runtime.promote(run_id, task.candidate_id)
+    with pytest.raises(RuntimeError, match="invalidated"):
+        runtime.stage_shared_tool(
+            session.agent_session_id,
+            name="late-tool",
+            summary="must not be staged after invalidation",
+            entrypoint="late.py",
+            candidate_relative_source_paths=["initial_program.py"],
+        )
+    assert (
+        _guarded_runtime_state(
+            runtime,
+            run_id,
+            task.candidate_id,
+            session.agent_session_id,
+        )
+        == fenced_state
+    )
 
     successor_id = runtime.create_run(
         frozen.frozen_spec_id,

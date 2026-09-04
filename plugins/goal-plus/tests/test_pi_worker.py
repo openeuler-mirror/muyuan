@@ -14,6 +14,35 @@ from goal_plus.goal_plus import FileGoalPlusRuntime
 pytestmark = pytest.mark.pi
 
 
+def test_pi_runner_records_pending_final_check_as_interrupted(tmp_path: Path) -> None:
+    root = tmp_path / ".gp"
+    runtime = FileGoalPlusRuntime(root)
+    goal = runtime.create_goal(
+        "Review the result",
+        policy={"final_check": {"mode": "required"}},
+    )
+    runtime.record_triage(
+        goal.goal_plus_id,
+        {
+            "is_optimization": False,
+            "confidence": "high",
+            "recommended_phase": "goal",
+        },
+    )
+    request = runtime.prepare_final_check(goal.goal_plus_id, "pi")
+
+    pi_worker._record_interrupted_final_check(
+        request["launch"],
+        root=root,
+        timed_out=True,
+        exit_code=-15,
+    )
+
+    check = runtime.status(goal.goal_plus_id).final_checks[-1]
+    assert check.status == "interrupted"
+    assert check.checker_metadata == {"exit_code": -15, "timed_out": True}
+
+
 def test_pi_worker_binds_claimed_work_item_after_host_launch(tmp_path: Path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".gp")
     goal = runtime.create_goal(
@@ -819,6 +848,7 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
     assert popen_cmd[0:3] == ["pi", "--model", "gpt-5.4-mini"]
     assert "--no-session" not in popen_cmd
     assert "--no-extensions" in popen_cmd
+    assert "--no-context-files" in popen_cmd
     assert popen_cmd.index("--no-extensions") < popen_cmd.index("-e")
     assert popen_cmd.count("-e") == 1
     assert popen_cmd[popen_cmd.index("--session-dir") + 1] == str(
@@ -826,6 +856,7 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
     )
     assert popen_env["GOAL_PLUS_SOURCE_PATH"] == str(pi_worker.default_extension_path().parents[2])
     assert popen_env["GOAL_PLUS_PI_ROLE"] == "worker"
+    assert popen_env["GOAL_PLUS_AGENT_SESSION_ID"] == "agent_1"
     assert popen_env["ASCEND_RT_VISIBLE_DEVICES"] == "5"
     assert int(popen_env["GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS"]) > 0
     assert handle["metadata"]["raw_logging"] is False
@@ -852,6 +883,7 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
         extension_path=extension,
     )
     assert popen_env["GOAL_PLUS_PI_ROLE"] == "final-checker"
+    assert popen_env["GOAL_PLUS_AGENT_SESSION_ID"] == "fc_1"
 
 
 def test_workspace_progress_handoff_preserves_model_and_git_progress(

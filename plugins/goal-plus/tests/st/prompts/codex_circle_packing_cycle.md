@@ -43,8 +43,9 @@ Freeze {{PROJECT_ROOT}}/tests/st/fixtures/circle_packing/evaluator.py, then call
 6. Run a main-agent `search_run_verifier(..., phase="process")` for both
    candidates after the workers return or are interrupted.
 
-After the initial batch, call `search_list_iterations`, `search_list_history`,
-`search_status`, `search_select`, and `search_report`. Do not report success
+After the initial batch, call `search_list_iterations` with each candidate's
+`agent_session_id`, then call `search_list_history`, `search_status`,
+`search_select`, and `search_report`. Do not report success
 unless there are exactly two evaluated candidates, each with at least one
 verifier iteration, and two distinct `agent_session_id` values.
 

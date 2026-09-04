@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from goal_plus.models import SearchSpec
+import goal_plus.runtime as runtime_module
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.time_advisory import (
     build_search_time_advisory,
@@ -50,6 +51,7 @@ def test_codex_candidate_identity_accepts_canonical_agent_path(tmp_path: Path) -
 
 def test_time_advisory_uses_subagent_iterations_and_lists_candidate_timing(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime, run_id, candidate_id, agent_session_id = _codex_candidate(tmp_path)
     session = runtime._load_agent_session_by_id(agent_session_id, run_id=run_id)
@@ -63,6 +65,9 @@ def test_time_advisory_uses_subagent_iterations_and_lists_candidate_timing(
             }
         )
     )
+
+    ticks = iter([0.0, 40.0, 40.0, 100.0, 100.0, 200.0])
+    monkeypatch.setattr(runtime_module.time, "perf_counter", lambda: next(ticks))
 
     runtime.run_verifier(
         run_id,
@@ -86,7 +91,7 @@ def test_time_advisory_uses_subagent_iterations_and_lists_candidate_timing(
 
     assert advisory is not None
     assert advisory["total_verifier_count"] == 2
-    assert advisory["average_submission_seconds"] == pytest.approx(60, abs=2)
+    assert advisory["average_submission_seconds"] == 50
     assert advisory["remaining_seconds"] == 30
     assert advisory["deadline_source"] == "host_worker_deadline"
     assert advisory["low_sample"] is False
@@ -99,6 +104,7 @@ def test_time_advisory_uses_subagent_iterations_and_lists_candidate_timing(
 
 def test_time_advisory_does_not_fire_when_one_average_submission_still_fits(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime, run_id, candidate_id, agent_session_id = _codex_candidate(tmp_path)
     session = runtime._load_agent_session_by_id(agent_session_id, run_id=run_id)
@@ -112,6 +118,8 @@ def test_time_advisory_does_not_fire_when_one_average_submission_still_fits(
             }
         )
     )
+    ticks = iter([0.0, 90.0])
+    monkeypatch.setattr(runtime_module.time, "perf_counter", lambda: next(ticks))
     runtime.run_verifier(
         run_id,
         candidate_id,
@@ -131,6 +139,7 @@ def test_time_advisory_does_not_fire_when_one_average_submission_still_fits(
 
 def test_time_advisory_uses_outer_deadline_and_marks_one_sample_low_confidence(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime, run_id, candidate_id, agent_session_id = _codex_candidate(tmp_path)
     session = runtime._load_agent_session_by_id(agent_session_id, run_id=run_id)
@@ -144,6 +153,8 @@ def test_time_advisory_uses_outer_deadline_and_marks_one_sample_low_confidence(
             }
         )
     )
+    ticks = iter([0.0, 20.0])
+    monkeypatch.setattr(runtime_module.time, "perf_counter", lambda: next(ticks))
     runtime.run_verifier(
         run_id,
         candidate_id,
@@ -163,3 +174,15 @@ def test_time_advisory_uses_outer_deadline_and_marks_one_sample_low_confidence(
     assert advisory["remaining_seconds"] == 5
     assert advisory["low_sample"] is True
     assert "低置信度" in advisory["message"]
+
+
+def test_time_advisory_requires_a_current_deadline(tmp_path: Path) -> None:
+    runtime, run_id, candidate_id, agent_session_id = _codex_candidate(tmp_path)
+    runtime.run_verifier(
+        run_id,
+        candidate_id,
+        agent_session_id=agent_session_id,
+        hypothesis="Time advisory sample",
+    )
+
+    assert build_search_time_advisory(runtime.root_dir, agent_session_id) is None

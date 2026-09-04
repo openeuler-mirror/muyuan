@@ -12,12 +12,33 @@ wrap the most common zero-arg patterns for new tests that prefer injection.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 from pathlib import Path
 
-from goal_plus.models import SearchSpec
+from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.models import GoalPlusHostCommandInvocation, SearchSpec
 from goal_plus.runtime import FileSearchRuntime
+
+
+def start_host_verified_goal(root: Path, source_path: Path) -> None:
+    raw_input = "$goal-plus Test"
+    FileGoalPlusRuntime(root).start_from_host_command(
+        "Test Goal Plus search",
+        source_path=str(source_path),
+        invocation=GoalPlusHostCommandInvocation(
+            host="codex",
+            transport="codex_user_prompt_submit",
+            command="$goal-plus",
+            action="start",
+            session_id="session-test",
+            native_entry_id="turn-test",
+            invocation_id="codex:test:start",
+            raw_input_sha256=hashlib.sha256(raw_input.encode()).hexdigest(),
+            invoked_at="2026-08-28T00:00:00Z",
+        ),
+    )
 
 
 def make_project(tmp_path: Path) -> Path:

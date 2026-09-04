@@ -39,8 +39,8 @@ run this exact control-flow:
 8. Launch the redispatched Codex foreground worker with the returned launch
    payload, bind any returned handle, and wait the same way as above.
 9. Run `search_run_verifier(run_id, candidate_id, "process")` again.
-10. Call `search_list_iterations`, `search_list_history`, `search_select`, and
-    `search_report`.
+10. Call `search_list_iterations` with the current `agent_session_id`, then
+    call `search_list_history`, `search_select`, and `search_report`.
 
 The important behavior under test is state-level resume for Codex: there must
 be two different agent_session_id values for the same candidate, and the second

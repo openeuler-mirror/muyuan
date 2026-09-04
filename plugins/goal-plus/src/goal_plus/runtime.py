@@ -1759,6 +1759,10 @@ class FileSearchRuntime:
         record = self._load_candidate_record(run_id, candidate_id)
         return [it.model_dump(mode="json") for it in record.iterations]
 
+    def list_agent_iterations(self, agent_session_id: str) -> list[dict[str, Any]]:
+        session = self._load_agent_session_by_id(agent_session_id)
+        return self.list_iterations(session.run_id, session.candidate_id)
+
     def list_allocation_decisions(
         self,
         run_id: str,
@@ -2620,40 +2624,31 @@ class FileSearchRuntime:
         recent_iterations = candidate_record.iterations[
             -AGENT_CONTEXT_RECENT_ITERATIONS:
         ]
-        return {
+        task = candidate_record.task
+        candidate_task: dict[str, Any] = {
+            "hypothesis": task.hypothesis,
+            "workspace": str(task.workspace),
+            "allowed_files": list(task.allowed_files),
+            "denied_files": list(task.denied_files),
+            "instructions": list(task.instructions),
+        }
+        optional_task_fields = {
+            "acceptance": list(task.acceptance),
+            "process_environment": dict(task.process_environment),
+            "task_skill_paths": [str(path) for path in task.task_skill_paths],
+            "share_out_dir": str(task.share_out_dir) if task.share_out_dir else None,
+        }
+        candidate_task.update(
+            {key: value for key, value in optional_task_fields.items() if value}
+        )
+        context: dict[str, Any] = {
             "agent_session_id": session.agent_session_id,
             "run_id": session.run_id,
             "candidate_id": session.candidate_id,
-            "supplemental_evaluation_enabled": supplemental_enabled,
-            "selected_model": (
-                session.selected_model.model if session.selected_model else None
-            ),
-            "model_provenance": session.model_provenance,
-            "host": session.host,
-            "host_handle": session.host_handle.model_dump(
-                mode="json", exclude={"metadata"}
-            ),
-            "directive": session.directive,
-            "workspace": str(session.workspace),
-            "workspace_access": candidate_record.task.workspace_access.model_dump(
-                mode="json"
-            ),
-            "reference_workspaces": [
-                reference.model_dump(mode="json")
-                for reference in self._load_reference_workspaces(
-                    session.run_id,
-                    requester_agent_session_id=session.agent_session_id,
-                    open_only=True,
-                )
-            ],
             "objective": frozen.spec.objective,
             "metric_name": frozen.spec.metric_name,
             "metric_direction": frozen.spec.metric_direction,
-            "orchestration_mode": frozen.spec.strategy.orchestration_mode,
-            "search_scheduler_enabled": self._adaptive_search_is_enabled(frozen),
-            "run_budget": frozen.spec.budget.model_dump(mode="json"),
-            "candidate_task": candidate_record.task.model_dump(mode="json"),
-            "tool_family_catalog": self._tool_family_catalog(session.run_id),
+            "candidate_task": candidate_task,
             "results_tsv": str(results_tsv),
             "result_count": len(candidate_record.results_ledger),
             "latest_result": (
@@ -2691,6 +2686,21 @@ class FileSearchRuntime:
                 },
             },
         }
+        if supplemental_enabled:
+            context["supplemental_evaluation_enabled"] = True
+        reference_workspaces = [
+            reference.model_dump(mode="json")
+            for reference in self._load_reference_workspaces(
+                session.run_id,
+                requester_agent_session_id=session.agent_session_id,
+                open_only=True,
+            )
+        ]
+        if reference_workspaces:
+            context["reference_workspaces"] = reference_workspaces
+        if task.share_out_dir is not None:
+            context["tool_family_catalog"] = self._tool_family_catalog(session.run_id)
+        return context
 
     def get_global_evidence(
         self,
@@ -5399,6 +5409,10 @@ class FileSearchRuntime:
             instructions.append(
                 "Global Evidence 使用 auto 模式：每次 search_run_verifier 返回的 global_evidence_snapshot 已自动注入最新共享 View，直接使用该快照继续。"
             )
+        if self._adaptive_search_is_enabled(frozen):
+            instructions.append(
+                "Adaptive Search 已启用：只有 search_run_verifier 返回非空 allocation_decision 才停止编辑并向 Main 交接；scheduler_status=pending 或空 decision 时继续当前循环。不要自行计算 reward、应用 decision 或启动派生 worker。"
+            )
         if frozen.supplemental_evaluation_enabled:
             instructions.append(
                 "开放式补充评价已启用；仅对 Evidence 中 supplemental_available=true 且确需深挖的条目调用 search_get_evidence_detail。补充评价不是硬分或 promotion gate。"
@@ -6358,7 +6372,12 @@ class FileSearchRuntime:
         verifier_phase: Literal["candidate", "promotion"],
     ) -> VerifierResult:
         if command.command[0] == "goal-plus-internal":
-            return self._run_internal_command(frozen, record, command)
+            start = time.perf_counter()
+            result = self._run_internal_command(frozen, record, command)
+            result.metrics["elapsed_seconds"] = max(
+                0.0, time.perf_counter() - start
+            )
+            return result
 
         log_scope = "process" if verifier_phase == "candidate" else "promotion"
         logs_dir = (
@@ -6527,6 +6546,7 @@ class FileSearchRuntime:
                 ),
             )
         except subprocess.TimeoutExpired as exc:
+            elapsed = max(0.0, time.perf_counter() - start)
             side_effects = self._hash_changes(
                 workspace_before,
                 self._hash_verifier_workspace(record.task.workspace),
@@ -6558,6 +6578,7 @@ class FileSearchRuntime:
             )
             metrics: dict[str, Any] = {
                 "timeout_seconds": command.timeout_seconds,
+                "elapsed_seconds": elapsed,
                 "verifier_workspace_side_effects": side_effects,
                 "cleanup_failures": cleanup_failures,
                 "infrastructure_failure": bool(side_effects),
@@ -6584,8 +6605,12 @@ class FileSearchRuntime:
                 ),
             )
         except OSError as exc:
+            elapsed = max(0.0, time.perf_counter() - start)
             log_path.write_text(_bounded_log(str(exc)), encoding="utf-8")
-            metrics: dict[str, Any] = {"error": str(exc)}
+            metrics: dict[str, Any] = {
+                "error": str(exc),
+                "elapsed_seconds": elapsed,
+            }
             metrics.update(self._verifier_diagnostics(diagnostics_dir))
             return VerifierResult(
                 name=command.name,

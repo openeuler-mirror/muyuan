@@ -33,6 +33,7 @@ const isPrintLikeInvocation =
 	process.argv.includes("--mode=json") ||
 	(modeArgIndex >= 0 && process.argv[modeArgIndex + 1] === "json");
 const STATE_ENTRY_TYPE = "goal-plus-native-state";
+const WORKER_CONTEXT_ENTRY_TYPE = "goal-plus-worker-context";
 const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
 const GOAL_PLUS_RUNTIME_ENTRY_TYPE = "goal-plus-runtime-start";
 const GOAL_PLUS_COMMAND_CONTEXT_TYPE = "goal-plus-command-context";
@@ -652,8 +653,7 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 	),
 	search_list_iterations: Type.Object(
 		{
-			run_id: Type.String(),
-			candidate_id: Type.String(),
+			agent_session_id: Type.String(),
 		},
 		{ additionalProperties: false },
 	),
@@ -769,7 +769,7 @@ const RuntimeToolDescriptions: Record<string, string> = {
 	search_run_verifier:
 		"为候选运行 process verifier。必须提供一句话 hypothesis 并遵守 candidate_task.instructions。报告在 workspace/results.tsv 中追加且只追加一条已验证记录，并返回 keep/retain/discard/failure 结算；VerifierWorkspaceSideEffect 要求停止并上报。",
 	search_list_iterations:
-		"返回指定 candidate 可能很大的全量 iteration 历史。worker 仅可使用当前 agent context 中自己的 run_id/candidate_id，并且只在紧凑 context、results.tsv 和 Git 无法回答旧轮次的准确 metrics、failure 或 provenance 时调用；不用于常规刷新。",
+		"返回当前 agent session 所属 candidate 可能很大的全量 iteration 历史；只在紧凑 context、results.tsv 和 Git 无法回答旧轮次的准确 metrics、failure 或 provenance 时调用。",
 	search_list_allocation_decisions:
 		"仅当当前 FrozenSpec 使用 orchestration_mode=adaptive_search 时，只读列出其持久化 allocation decisions；不启动、停止或继续 host worker。",
 	search_apply_allocation_decision:
@@ -1089,7 +1089,7 @@ async function runJsonCli(pi: ExtensionAPI, ctx: CommandRuntimeContext, tool: st
 	}
 	const parsed = JSON.parse(result.stdout || "null");
 	return {
-		content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
+		content: [{ type: "text" as const, text: JSON.stringify(parsed) }],
 		details: parsed,
 	};
 }
@@ -1931,7 +1931,9 @@ function startGoalPlusMainTurn(
 	);
 }
 
-function registerRuntimeTool(pi: ExtensionAPI, name: string) {
+function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<string>) {
+	if (registered.has(name)) return;
+	registered.add(name);
 	pi.registerTool({
 		name,
 		label: name,
@@ -1947,9 +1949,7 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string) {
 				activateGoal(pi, result.details, startEntryCount, canPersistPiState);
 			}
 			if (name === "search_get_agent_context") {
-				const details = result.details as { workspace?: string } | undefined;
-				workspaceRoot = details?.workspace;
-				sawContext = true;
+				activateWorkerContext(pi, result.details, registered, true);
 			}
 			if (role === "worker" && name === "search_run_verifier" && isRecord(result.details)) {
 				const decision = result.details.allocation_decision;
@@ -1991,6 +1991,56 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string) {
 	});
 }
 
+function activateWorkerContext(
+	pi: ExtensionAPI,
+	details: unknown,
+	registered: Set<string>,
+	persist: boolean,
+) {
+	if (!isRecord(details) || !isRecord(details.candidate_task)) return;
+	const agentSessionId = details.agent_session_id;
+	const candidateTask = details.candidate_task;
+	const workspace = candidateTask.workspace;
+	if (
+		typeof agentSessionId !== "string" ||
+		typeof workspace !== "string" ||
+		(process.env.GOAL_PLUS_AGENT_SESSION_ID &&
+			process.env.GOAL_PLUS_AGENT_SESSION_ID !== agentSessionId)
+	) return;
+	const firstActivation = !sawContext;
+	workspaceRoot = workspace;
+	sawContext = true;
+	for (const tool of [
+		"search_get_global_evidence",
+		"search_reference_open",
+		"search_run_verifier",
+		"search_list_iterations",
+	]) {
+		registerRuntimeTool(pi, tool, registered);
+	}
+	if (candidateTask.share_out_dir) {
+		registerRuntimeTool(pi, "search_stage_shared_tool", registered);
+		registerRuntimeTool(pi, "search_copy_shared_tool", registered);
+	}
+	if (details.supplemental_evaluation_enabled === true) {
+		registerRuntimeTool(pi, "search_get_evidence_detail", registered);
+	}
+	if (persist && firstActivation) {
+		pi.appendEntry(WORKER_CONTEXT_ENTRY_TYPE, {
+			agent_session_id: agentSessionId,
+			candidate_task: {
+				workspace,
+				...(candidateTask.share_out_dir
+					? { share_out_dir: candidateTask.share_out_dir }
+					: {}),
+			},
+			...(details.supplemental_evaluation_enabled === true
+				? { supplemental_evaluation_enabled: true }
+				: {}),
+		});
+	}
+}
+
 function registerPiFinalCheckTool(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "pi_goal_plus_run_final_check",
@@ -2009,33 +2059,10 @@ function registerPiFinalCheckTool(pi: ExtensionAPI) {
 				JSON.stringify(launch),
 			]);
 			const goalPlusId = typeof launch.goal_plus_id === "string" ? launch.goal_plus_id : activeGoalPlusId;
-			const checkId = typeof launch.check_id === "string" ? launch.check_id : undefined;
-			const goalRevision = typeof launch.goal_revision === "number" ? launch.goal_revision : undefined;
 			const handle = result.code === 0 ? JSON.parse(result.stdout || "{}") : undefined;
-			let statusResult = goalPlusId
+			const statusResult = goalPlusId
 				? await runJsonCli(pi, commandCtx, "goal_plus_status", { goal_plus_id: goalPlusId })
 				: undefined;
-			const status = statusFrom(statusResult?.details);
-			const latestCheck = Array.isArray(status?.final_checks) ? status.final_checks.at(-1) : undefined;
-			const checkerTimedOut = isRecord(handle) && isRecord(handle.metadata) && handle.metadata.timed_out === true;
-			if (
-				goalPlusId && checkId && goalRevision !== undefined &&
-				isRecord(latestCheck) && latestCheck.check_id === checkId && latestCheck.status === "pending"
-			) {
-				await runJsonCli(pi, commandCtx, "goal_plus_submit_final_check", {
-					goal_plus_id: goalPlusId,
-					check_id: checkId,
-					goal_revision: goalRevision,
-					verdict: "interrupted",
-					summary: result.code !== 0
-						? "Pi final checker process failed before submitting a verdict."
-						: checkerTimedOut
-							? "Pi final checker timed out before submitting a verdict."
-							: "Pi final checker exited before submitting a verdict.",
-					checker_metadata: { exit_code: result.code, timed_out: checkerTimedOut },
-				});
-				statusResult = await runJsonCli(pi, commandCtx, "goal_plus_status", { goal_plus_id: goalPlusId });
-			}
 			if (result.code !== 0) {
 				const failure = commandFailure("pi_goal_plus_run_final_check", invocation, result);
 				const details = { ...failure.details, status: statusResult?.details };
@@ -2414,7 +2441,6 @@ export default function (pi: ExtensionAPI) {
 		"goal_plus_link_search_run",
 		"goal_plus_record_search_result",
 		"goal_plus_prepare_final_check",
-		"goal_plus_submit_final_check",
 		"goal_plus_set_status",
 		"goal_plus_gate",
 		"pi_goal_plus_run_work_item",
@@ -2439,16 +2465,7 @@ export default function (pi: ExtensionAPI) {
 		"pi_search_pool_continue",
 		"pi_search_pool_close",
 	];
-	const workerTools = [
-		"search_get_agent_context",
-		"search_get_global_evidence",
-		"search_reference_open",
-		"search_stage_shared_tool",
-		"search_copy_shared_tool",
-		"search_get_evidence_detail",
-		"search_run_verifier",
-		"search_list_iterations",
-	];
+	const workerTools = ["search_get_agent_context"];
 	const finalCheckerTools = ["goal_plus_status", "goal_plus_submit_final_check"];
 	const roleTools = role === "worker"
 		? workerTools
@@ -2457,8 +2474,9 @@ export default function (pi: ExtensionAPI) {
 			: role === "ordinary"
 				? []
 				: mainTools;
+	const registeredRuntimeTools = new Set<string>();
 	for (const tool of roleTools) {
-		registerRuntimeTool(pi, tool);
+		registerRuntimeTool(pi, tool, registeredRuntimeTools);
 	}
 	if (role === "main") {
 		registerPiFinalCheckTool(pi);
@@ -2497,6 +2515,14 @@ export default function (pi: ExtensionAPI) {
 		goalPlusSessionAuthorized = false;
 		if (role !== "main" && event.reason !== "reload") {
 			appendPiRuntimeStartEntry(pi, ctx);
+		}
+		if (role === "worker") {
+			const entry = ctx.sessionManager.getEntries()
+				.filter((item: { type: string; customType?: string }) =>
+					item.type === "custom" && item.customType === WORKER_CONTEXT_ENTRY_TYPE)
+				.pop() as { data?: unknown } | undefined;
+			activateWorkerContext(pi, entry?.data, registeredRuntimeTools, false);
+			return;
 		}
 		if (role === "main" && progressPreviewMode) {
 			showPiProgress(ctx, PI_PROGRESS_PREVIEWS[progressPreviewMode]);

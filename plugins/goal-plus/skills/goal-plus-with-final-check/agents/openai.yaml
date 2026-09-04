@@ -1,2 +1,6 @@
+interface:
+  display_name: "Goal Plus with Final Check"
+  short_description: "Run Goal Plus with an independent final check"
+  default_prompt: "Use $goal-plus-with-final-check to complete and audit this task."
 policy:
   allow_implicit_invocation: false

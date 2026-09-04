@@ -362,9 +362,8 @@ def _codex_marketplaces(codex: str) -> dict[str, Path]:
     return marketplaces
 
 
-def _preflight_codex(codex: str) -> tuple[bool, bool]:
+def _preflight_codex(codex: str) -> bool:
     root = ROOT.resolve()
-    normal_installed = False
     conflicts: list[str] = []
     legacy_plugin_installed = False
     for item in _codex_inventory(codex):
@@ -390,8 +389,6 @@ def _preflight_codex(codex: str) -> tuple[bool, bool]:
             conflicts.append(
                 f"{NORMAL_CODEX_PLUGIN_ID!r} points to {resolved_source}, expected {root}"
             )
-        else:
-            normal_installed = True
 
     marketplaces = _codex_marketplaces(codex)
     marketplace_root = marketplaces.get(NORMAL_CODEX_MARKETPLACE)
@@ -419,7 +416,7 @@ def _preflight_codex(codex: str) -> tuple[bool, bool]:
             f"{cleanup}"
             "Remove the conflicting plugin/marketplace explicitly, then rerun the installer."
         )
-    return normal_installed, marketplace_root is not None
+    return marketplace_root is not None
 
 
 def _pi_agent_dir() -> Path:
@@ -853,18 +850,13 @@ def _install_normal_runtime(*, scripts_dir: Path, dry_run: bool) -> None:
         _verify_normal_runtime(scripts_dir)
 
 
-def _install_codex(
-    *, codex: str, normal_installed: bool, marketplace_exists: bool, dry_run: bool
-) -> None:
+def _install_codex(*, codex: str, marketplace_exists: bool, dry_run: bool) -> None:
     if not marketplace_exists:
         _run(
             [codex, "plugin", "marketplace", "add", str(ROOT.resolve())],
             dry_run=dry_run,
         )
-    if normal_installed:
-        print(f"Codex plugin already installed: {NORMAL_CODEX_PLUGIN_ID}")
-    else:
-        _run([codex, "plugin", "add", NORMAL_CODEX_PLUGIN_ID], dry_run=dry_run)
+    _run([codex, "plugin", "add", NORMAL_CODEX_PLUGIN_ID], dry_run=dry_run)
     print(
         "Codex installation is ready. Start a new thread, trust /hooks, then start another thread."
     )
@@ -935,7 +927,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         codex = _require_executable("codex") if args.codex else None
         pi = _require_executable("pi") if args.pi or args.pi_dev else None
-        codex_state = _preflight_codex(codex) if codex is not None else None
+        codex_marketplace_exists = (
+            _preflight_codex(codex) if codex is not None else None
+        )
         pi_installed = _preflight_pi_normal() if args.pi else False
         runtime_scripts = _preflight_normal_runtime() if args.codex or args.pi else None
         if args.pi_dev:
@@ -947,11 +941,14 @@ def main(argv: list[str] | None = None) -> int:
                 scripts_dir=runtime_scripts,
                 dry_run=args.dry_run,
             )
-        if args.codex and codex is not None and codex_state is not None:
+        if (
+            args.codex
+            and codex is not None
+            and codex_marketplace_exists is not None
+        ):
             _install_codex(
                 codex=codex,
-                normal_installed=codex_state[0],
-                marketplace_exists=codex_state[1],
+                marketplace_exists=codex_marketplace_exists,
                 dry_run=args.dry_run,
             )
         if args.pi and pi is not None:
