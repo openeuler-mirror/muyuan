@@ -116,7 +116,7 @@ of `raw_goal`, not as scheduler state.
 | Host | Integration assets | Entry | Search worker path |
 | --- | --- | --- | --- |
 | Pi | installed Pi package | `/goal-plus` or `pi -p "/goal-plus ..."` | durable Pi RPC pool; see [Pi](docs/pi.md) |
-| Codex | installed plugin | `$goal-plus` skill prompt | fixed parallel loops with native same-worker continuation; Codex 0.151.0+ hooks include `UserPromptSubmit`, `Interrupt`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
+| Codex | installed plugin | `$goal-plus` skill prompt | fixed parallel loops with native same-worker continuation; hooks include `UserPromptSubmit`, `Interrupt`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
 
 Start an installed Codex plugin from the workspace you want to change:
 

@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from goal_plus import codex_doctor
 
 
@@ -171,9 +173,11 @@ def test_project_hooks_require_interrupt_for_native_pause(tmp_path: Path) -> Non
     assert {"event": "Interrupt", "reason": "missing event"} in result.details["failures"]
 
 
+@pytest.mark.parametrize("codex_version", ["0.148.0", "0.151.0", "dev-build"])
 def test_collect_report_accepts_complete_project_local_setup(
     tmp_path: Path,
     monkeypatch,
+    codex_version: str,
 ) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -192,7 +196,7 @@ def test_collect_report_accepts_complete_project_local_setup(
     ) -> subprocess.CompletedProcess[str]:
         del codex_home, timeout
         if argv[-1] == "--version" and argv[0].endswith("codex"):
-            stdout = "codex-cli 0.151.0\n"
+            stdout = f"codex-cli {codex_version}\n"
         elif argv[-1] == "--version" and argv[0].endswith("goal-plus"):
             stdout = "goal-plus 0.1.0\n"
         elif argv[-2:] == ["plugin", "list"]:

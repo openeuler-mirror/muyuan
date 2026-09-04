@@ -28,8 +28,6 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     import tomli as tomllib
 
 
-# Validated native Interrupt + session resume contract.
-MIN_CODEX_VERSION = (0, 151, 0)
 REQUIRED_SKILLS = (
     "goal-plus",
     "goal-plus-with-final-check",
@@ -134,7 +132,7 @@ def _check_codex_version(codex_home: Path) -> CheckResult:
             "codex.version",
             "fail",
             "The `codex` executable is not on PATH.",
-            {"minimum": ".".join(map(str, MIN_CODEX_VERSION))},
+            {},
         )
     try:
         result = _run([executable, "--version"], codex_home=codex_home)
@@ -146,27 +144,17 @@ def _check_codex_version(codex_home: Path) -> CheckResult:
             {"executable": executable},
         )
     output = (result.stdout or result.stderr).strip()
-    version = _version_tuple(output)
-    if result.returncode != 0 or version is None:
+    if result.returncode != 0:
         return CheckResult(
             "codex.version",
             "fail",
-            "Could not parse the Codex version.",
+            "Could not query the Codex version.",
             {"executable": executable, "output": output},
         )
-    status: Status = "pass" if version >= MIN_CODEX_VERSION else "fail"
-    summary = (
-        f"Codex {'.'.join(map(str, version))} satisfies the minimum version."
-        if status == "pass"
-        else (
-            f"Codex {'.'.join(map(str, version))} is too old; Goal Plus requires "
-            f"{'.'.join(map(str, MIN_CODEX_VERSION))} or newer."
-        )
-    )
     return CheckResult(
         "codex.version",
-        status,
-        summary,
+        "pass",
+        "Codex executable is available.",
         {"executable": executable, "version_output": output},
     )
 

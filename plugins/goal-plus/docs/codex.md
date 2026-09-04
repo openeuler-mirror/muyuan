@@ -88,8 +88,8 @@ args = ["--root", ".gp"]
 goal-plus-codex-doctor --project-root .
 ```
 
-doctor 会检查 Codex 0.151.0+（本次原生 Interrupt/resume 合同的验证基线）、`goal-plus`
-executable 及 Python source provenance、plugin/skill
+doctor 会记录 Codex 版本供诊断，不按版本号设置最低门槛。它检查 Codex 与 `goal-plus`
+executable、Python source provenance、plugin/skill
 加载、MCP 启用状态、hook path 与 trust hash、内置/custom agent role 覆盖范围，以及只读 Codex model
 catalog。required check 失败时命令返回非零，支持 `--json`；安装、更新或修改 trust 后都应使用新
 thread。`--skip-model-check` 只适合离线排障，正式 multi-model preflight 不应跳过该项。
