@@ -237,6 +237,14 @@ session 在 continuation 中保持选定模型。模型 identity 只用于 prove
 | `search_continue_agent_session`  | main             | host 支持时返回原生同 worker continuation 字段                               |
 | `search_get_agent_context`       | candidate worker | 加载精简的权威 candidate contract 与恢复数据                                 |
 | `search_get_agent_observability` | main/monitor     | 读取单个 session 的归一化 model、timing、usage、artifact 和 handoff Evidence |
+| `search_recovery_status`         | main             | 只读列出 run 各 lane 的完整 checkpoint、generation、恢复事务与旧 session     |
+| `search_prepare_recovery`        | main             | 固定 checkpoint、隔离旧 generation，返回幂等 recovery ID；不改工作区         |
+| `search_recover_candidate`       | main             | 宿主静默核验后，通过 provider 恢复 checkpoint；不 spawn 或重置预算           |
+
+准备和执行恢复须匹配当前 Goal revision 的关联 run；只读查询不授予执行权。
+`search_recovery_status` 接收 `run_id`；
+`search_prepare_recovery` 增加 `candidate_id`；`search_recover_candidate` 再增加原样传回的
+`recovery_id`。详细流程、数据保留与 provider 边界见 [Search 一致性恢复](search-recovery.md)。
 
 `search_start_agent_session` 只创建 runtime handle，不启动 worker。调用方必须使用返回的 `launch`
 对象。初始启动、continuation 或 redispatch 都可以提供 dispatch-scoped

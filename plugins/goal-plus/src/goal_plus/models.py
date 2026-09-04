@@ -1895,6 +1895,34 @@ class RunRecord(SearchModel):
     )
 
 
+class CandidateRecoveryPoint(SearchModel):
+    """A durable settlement boundary, never an arbitrary workspace HEAD."""
+
+    artifact_ref: ArtifactRef
+    iteration: int = Field(ge=0)
+    settlement_id: str | None = None
+    result_count: int = Field(ge=0)
+
+
+class CandidateRecovery(SearchModel):
+    recovery_id: str = Field(pattern=r"^recovery_[0-9a-f]{32}$")
+    generation: int = Field(ge=1)
+    state: Literal["prepared", "restoring", "restored"] = "prepared"
+    point: CandidateRecoveryPoint
+    fenced_session_ids: list[str]
+    created_at: str
+    restored_artifact_ref: ArtifactRef | None = None
+    restored_at: str | None = None
+
+    @model_validator(mode="after")
+    def valid_restoration(self) -> "CandidateRecovery":
+        if self.state == "restored" and (self.restored_artifact_ref is None or self.restored_at is None):
+            raise ValueError("restored recovery requires artifact and completion time")
+        if len(set(self.fenced_session_ids)) != len(self.fenced_session_ids):
+            raise ValueError("recovery session identities must be unique")
+        return self
+
+
 class CandidateRecord(SearchModel):
     candidate_id: str
     status: Literal["created", "evaluated", "failed"]
@@ -1916,12 +1944,24 @@ class CandidateRecord(SearchModel):
     results_ledger: list[ResultLedgerEntry] = Field(default_factory=list)
     results_ledger_git_head: str | None = None
     results_ledger_artifact_ref: ArtifactRef | None = None
+    execution_generation: int = Field(default=0, ge=0)
+    recovery: CandidateRecovery | None = None
+
+    @model_validator(mode="after")
+    def recovery_matches_candidate(self) -> "CandidateRecord":
+        if self.recovery is not None and (
+            self.recovery.generation != self.execution_generation
+            or self.recovery.point.artifact_ref.provider != self.task.workspace_backend
+        ):
+            raise ValueError("recovery generation/provider must match the candidate")
+        return self
 
 
 class AgentSessionRecord(SearchModel):
     agent_session_id: str
     run_id: str
     candidate_id: str
+    execution_generation: int = Field(default=0, ge=0)
     host: AgentHostKind = "codex"
     host_handle: AgentHostHandle = Field(default_factory=AgentHostHandle)
     created_at: str

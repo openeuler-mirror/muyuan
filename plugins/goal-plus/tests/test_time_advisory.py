@@ -55,7 +55,13 @@ def test_time_advisory_uses_subagent_iterations_and_lists_candidate_timing(
 ) -> None:
     runtime, run_id, candidate_id, agent_session_id = _codex_candidate(tmp_path)
     session = runtime._load_agent_session_by_id(agent_session_id, run_id=run_id)
-    started = datetime.now(timezone.utc) - timedelta(seconds=120)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    started = now - timedelta(seconds=120)
+    # Measure the advisory's arithmetic, not time spent running Git/verifiers
+    # on a busy parallel test host.
+    monkeypatch.setattr(
+        "goal_plus.runtime.utc_timestamp", lambda: now.isoformat().replace("+00:00", "Z")
+    )
     runtime._write_agent_session(
         session.model_copy(
             update={

@@ -148,18 +148,22 @@ handler 和 pool supervisor 累计执行。lease 必须在外层软收尾前释�
 
 ## 恢复与 Handoff
 
-正常续跑优先复用 host 的 native session。worker 已丢失或确实需要 fresh
-context 时，使用可移植的 state redispatch：
+正常续跑优先复用 host 的 native session。工作区保持完整、仅需要 fresh context 时，使用
+可移植的 state redispatch：
 
 1. 对原 candidate 调用 `search_redispatch_candidate`；
 2. 在同一 workspace 创建新的 `agent_session_id`；
 3. worker 调用 `search_get_agent_context`；
-4. 根据 candidate-local Git、verifier iterations、`research_summary`、Global Evidence 和
+4. 根据 candidate-local artifact、verifier iterations、`research_summary`、Global Evidence 和
    `.tmp/handoff.json` 恢复。
 
 Pi 支持跨进程的 native session 续轮：PID 会变化，但 native session、runtime
 `agent_session_id`、candidate 和 workspace 保持不变。只有 native
-session 无法恢复时，才退回上述 state redispatch。
+session 无法恢复但工作区完整时，才退回上述 state redispatch。
+
+Worker 丢失且留下半次修改或结算时，使用 [Search 一致性恢复](search-recovery.md)：共享
+runtime 固定 checkpoint 并 fence 旧 generation；host 提供停止事实；provider 恢复
+`ArtifactRef`；随后启动 fresh worker。普通 redispatch 不回滚工作区，不能代替这个流程。
 
 每份 handoff 应包含关键工作、verifier-backed feature entries、blockers、next
 steps，以及最多五条带适用范围和条件的 pitfalls。`candidate_local`

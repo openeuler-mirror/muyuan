@@ -1,7 +1,7 @@
 import { parseArgs, type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { type TSchema, Type } from "typebox";
 import {
@@ -41,6 +41,7 @@ const GOAL_PLUS_PROGRESS_STATUS_KEY = "goal-plus-progress";
 const GOAL_PLUS_PROGRESS_WIDGET_KEY = "goal-plus-progress";
 let workspaceRoot: string | undefined;
 let sawContext = false;
+let workerGeneration: { runId: string; candidateId: string; generation: number } | undefined;
 let activeGoalPlusId = process.env.GOAL_PLUS_ID;
 let cachedGoalStatus: GoalPlusStatusPayload | undefined;
 let continuationCount = 0;
@@ -557,6 +558,13 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 		},
 		{ additionalProperties: false },
 	),
+	search_recovery_status: Type.Object({ run_id: Type.String() }, { additionalProperties: false }),
+	search_prepare_recovery: Type.Object({
+		run_id: Type.String(), candidate_id: Type.String(),
+	}, { additionalProperties: false }),
+	search_recover_candidate: Type.Object({
+		run_id: Type.String(), candidate_id: Type.String(), recovery_id: Type.String(),
+	}, { additionalProperties: false }),
 		search_redispatch_candidate: Type.Object(
 			{
 				run_id: Type.String(),
@@ -748,6 +756,9 @@ const RuntimeToolSchemas: Record<string, TSchema> = {
 	),
 };
 const RuntimeToolDescriptions: Record<string, string> = {
+	search_recovery_status: "读取 Search 各 candidate 的结算检查点和旧 worker 绑定，不修改运行状态。",
+	search_prepare_recovery: "固定中断 candidate 的恢复点并 fence 旧 worker。随后关闭旧 pool，再调用 search_recover_candidate。",
+	search_recover_candidate: "核对真实 host 静默后，通过 workspace provider 恢复结算点；幂等保留 Evidence。随后用新 pool/fresh worker 继续原 candidate。",
 	goal_plus_record_work_event:
 		"按实际发生记录带 attempt/generation fencing 的 subagent 派发、绑定、消息、结果和主 Agent 决定；首次 dispatch 自动创建记录。",
 	goal_plus_save_spec_draft:
@@ -806,6 +817,7 @@ const MAIN_GATED_TOOLS = new Set([
 	"pi_goal_plus_run_work_item",
 ]);
 const MAIN_READ_ONLY_RUNTIME_TOOLS = new Set([
+	"search_recovery_status",
 	"goal_plus_status",
 	"goal_plus_monitor_snapshot",
 	"goal_plus_list_models",
@@ -1581,6 +1593,12 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 			`- description: ${action.description ?? ""}`,
 		);
 	}
+	if (status.phase === "search") {
+		lines.push("恢复 Main 会话后先读取关联 run 的 search_recovery_status 和 pi_search_pool_snapshot。"
+			+ "仍正常运行的 pool 继续接管，不回滚。需要重建的 candidate：search_prepare_recovery，"
+			+ "关闭旧 pool 并确认进程退出，search_recover_candidate，然后用新 pool 启动同一 candidate。"
+			+ "不得重建 run、重复结算、重置预算或把旧 session 的半成品上下文当成已恢复事实。");
+	}
 	return lines.join("\n");
 }
 
@@ -2028,6 +2046,13 @@ function activateWorkerContext(
 	const firstActivation = !sawContext;
 	workspaceRoot = workspace;
 	sawContext = true;
+	if (typeof details.run_id === "string" && typeof details.candidate_id === "string"
+		&& typeof details.execution_generation === "number") {
+		workerGeneration = {
+			runId: details.run_id, candidateId: details.candidate_id,
+			generation: details.execution_generation,
+		};
+	}
 	for (const tool of [
 		"search_get_global_evidence",
 		"search_reference_open",
@@ -2292,6 +2317,20 @@ function extractCandidatePath(event: ToolCallEvent): string | undefined {
 }
 
 function workspaceGuard(event: ToolCallEvent) {
+	if (role !== "main" && ["search_recovery_status", "search_prepare_recovery", "search_recover_candidate"].includes(event.toolName)) {
+		return { block: true, reason: "Search recovery is Main-owned." };
+	}
+	if (role === "worker" && workerGeneration) {
+		try {
+			const record = JSON.parse(readFileSync(join(runtimeRoot, "runs", workerGeneration.runId,
+				"candidates", workerGeneration.candidateId, "candidate.json"), "utf8"));
+			if (record.execution_generation !== workerGeneration.generation) {
+				return { block: true, reason: "StaleAgentSession: Search recovery fenced this worker." };
+			}
+		} catch {
+			return { block: true, reason: "Search worker generation could not be verified." };
+		}
+	}
 	if (role === "final-checker" && ["edit", "write"].includes(event.toolName)) {
 		return { block: true, reason: "最终检查审查员只能进行只读操作。" };
 	}
@@ -2544,6 +2583,9 @@ export default function (pi: ExtensionAPI) {
 		"search_freeze_spec",
 		"search_create",
 		"search_status",
+		"search_recovery_status",
+		"search_prepare_recovery",
+		"search_recover_candidate",
 		"search_invalidate_run",
 		"search_list_history",
 		"search_plan_next",

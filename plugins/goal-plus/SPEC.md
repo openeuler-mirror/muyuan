@@ -252,6 +252,14 @@ host metadata 和最终报告。Adaptive Search 另外持久化 ScheduleTask 与
 补充 monitor 未投影的字段，transcript 用于排查 host 行为；二者都不能取代持久领域状态。
 不得手工修改 `.gp/` 来跨过 gate。
 
+Search 一致性恢复以最后一次完整结算的 `ArtifactRef` 与 ledger 为 checkpoint；无完整结算时
+使用初始 checkpoint。准备恢复先隔离旧 execution generation，宿主确认旧执行静默后，才由
+workspace provider 恢复受管理的 candidate 工作区。恢复事务必须幂等，不重置 run/candidate
+身份、Goal revision、预算或已结算 Evidence；旧代际迟到结果不得结算。恢复后使用新 worker
+session；不假定原生 transcript 与 artifact 原子配对，不以 Git 专属 reset 作为公共合同。
+不支持恢复的 provider、未知宿主状态和不一致 checkpoint 必须显式拒绝。
+详细合同见 [Search 一致性恢复](docs/search-recovery.md)。
+
 ## 变更验收
 
 涉及不变量或状态转换的变更，应在实现或评审材料中回答：

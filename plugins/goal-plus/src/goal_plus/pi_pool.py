@@ -204,6 +204,17 @@ def _assert_active_pool_close_allowed(
     if active_count == 0:
         return
     runtime = FileSearchRuntime(root_dir)
+    # Recovery fences remove the old execution lease. Do not let a pool's
+    # minimum runtime force those obsolete jobs to remain alive; unrelated
+    # active lanes still retain the normal close protection.
+    recovering = {
+        candidate.candidate_id
+        for candidate in runtime._load_candidate_records(str(pool["run_id"]))
+        if candidate.recovery is not None and candidate.recovery.state != "restored"
+    }
+    if all(job.get("candidate_id") in recovering for job in jobs
+           if job["status"] in ACTIVE_JOB_STATES):
+        return
     outer_deadline = runtime._outer_deadline_epoch(
         runtime._outer_deadline_value(str(pool["run_id"]))
     )

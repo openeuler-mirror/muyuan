@@ -1157,6 +1157,8 @@ def test_run_pi_rpc_worker_checks_time_advisory_after_worker_tool_only(
     role: str,
     expected_sent: bool,
 ) -> None:
+    # This RPC transport test uses a fake process, not a persisted Search lane.
+    monkeypatch.setattr(pi_worker, "_observe_search_worker", lambda *_args: None)
     extension = tmp_path / "goal-plus.ts"
     extension.write_text("// fake extension\n", encoding="utf-8")
     cwd = tmp_path / "workspace"

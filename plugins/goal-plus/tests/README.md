@@ -65,6 +65,11 @@ pytest -m "st and st_codex" -k codex_native_child_hooks -v -s -rs
 # Real Codex Interrupt hook, then exec resume with an ordinary user prompt
 pytest -n 0 -m "st and st_codex" -k exec_native_resume_after_interrupt -v -s -rs
 
+# Native Main resume -> active Search checkpoint recovery -> fresh worker Evidence
+pytest -n 0 -m "st and st_codex" tests/st/test_st_search_recovery.py -v -s -rs
+ST_PI_BINARY="$PWD/.goal-plus-dev/bin/pi-goal-plus" \
+  pytest -n 0 -m "st and st_pi_rpc" tests/st/test_st_search_recovery.py -v -s -rs
+
 # Codex one-worker AutoResearch lease: 5 minute lower bound, 7 minute watchdog
 ST_CODEX_TIMEOUT=1200 \
   pytest -m "st and st_codex" -k codex_autoresearch_lease -v -s -rs

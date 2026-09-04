@@ -1702,6 +1702,37 @@ class SharedDirManager:
     def load_families(self) -> list[SharedToolFamily]:
         return list(self._load_families().values())
 
+    def recover_candidate_publications(
+        self, candidate_id: str, settled_tool_ids: set[str], recovery_dir: Path
+    ) -> None:
+        """Archive index entries published before an interrupted settlement.
+
+        The caller holds the run lock. Immutable snapshots remain on disk, but
+        uncommitted publications must not consume family slots or become input
+        to a fresh generation. Other candidates and settled tools are untouched.
+        """
+        existing, families = self._load_index_state()
+        abandoned = [item for item in existing
+                     if item.get("candidate_id") == candidate_id
+                     and item.get("tool_id") not in settled_tool_ids]
+        if not abandoned:
+            return
+        abandoned_ids = {item["tool_id"] for item in abandoned}
+        if any(family.discoverable_head in abandoned_ids for family in families.values()):
+            raise RuntimeError("RecoverySharedEvidenceMismatch: uncommitted tool is discoverable")
+        from goal_plus.runtime import write_json
+
+        archive = recovery_dir / "unsettled-shared-tools.json"
+        if not archive.exists():
+            write_json(archive, {"tools": abandoned})
+        retained = [item for item in existing if item.get("tool_id") not in abandoned_ids]
+        retained_families = {item.get("family_id") for item in retained}
+        self._write_index(retained, families=[
+            family.model_copy(update={"pending_head": None})
+            if family.pending_head in abandoned_ids else family
+            for family in families.values() if family.family_id in retained_families
+        ])
+
     def _load_families(self) -> dict[str, SharedToolFamily]:
         _tools, families = self._load_index_state()
         return families

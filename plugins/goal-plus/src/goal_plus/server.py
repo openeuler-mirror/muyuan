@@ -108,6 +108,30 @@ def create_mcp(
         return tools.search_status(run_id)
 
     @mcp.tool()
+    def search_recovery_status(run_id: str) -> dict[str, Any]:
+        """读取各 candidate 的完整结算恢复点、generation 和 host session，不启动或回滚任何工作。"""
+        return tools.search_recovery_status(run_id)
+
+    @mcp.tool()
+    def search_prepare_recovery(run_id: str, candidate_id: str) -> dict[str, Any]:
+        """为中断的 candidate 固定恢复点并 fence 旧 session；不改工作区。
+
+        同一 Main 原生 session 获准继续后，对需要重建的 lane 调用。随后停止旧 host
+        worker；Codex 用 list_agents 确认终止，Pi 等待旧进程退出。返回 recovery_id。
+        """
+        return tools.search_prepare_recovery(run_id, candidate_id)
+
+    @mcp.tool()
+    def search_recover_candidate(run_id: str, candidate_id: str, recovery_id: str) -> dict[str, Any]:
+        """通过 workspace provider 恢复已结算 artifact，保留 Evidence 与中断现场备份。
+
+        必须有可信 host 静默观测；未知或仍运行的 worker 会拒绝恢复。操作幂等，不创建
+        新 candidate、不重置预算、不直接 spawn。恢复后 search_start_agent_session 获取
+        fresh generation 的 launch/context，再交给宿主启动。没有用户级 resume 命令。
+        """
+        return tools.search_recover_candidate(run_id, candidate_id, recovery_id)
+
+    @mcp.tool()
     def search_invalidate_run(
         run_id: str,
         reason: Literal[

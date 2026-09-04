@@ -1396,6 +1396,15 @@ def _goal_context(
         "skill 和 MCP 不能创建或恢复记录。\n"
         f"当前目标修订版：{record.goal_revision}。\n"
         f"当前原始目标：{record.raw_goal}\n"
+        + (
+            "Main 会话恢复后，先读取关联 run 的 search_recovery_status 并核对 list_agents。"
+            "正常运行的 worker 继续接管；需要重建的 candidate 先 search_prepare_recovery，"
+            "停止旧 worker 并用 list_agents 观察终止，再 search_recover_candidate，"
+            "随后 search_start_agent_session 并按新 launch 启动同一 candidate。"
+            "不重建 run、不重复结算、不重置预算，不直接执行 Git reset。\n"
+            if record.phase == "search" else ""
+        )
+        +
         "显式命令配置："
         f"{record.command_config.model_dump(mode='json', exclude_none=True)}。"
         "这些字段是 runtime 强约束；只有未配置字段才由 Agent 判断。\n"
@@ -1925,6 +1934,22 @@ def _handle_stop_event(
     candidate_context = None
     if event == "subagent_stop" and not _is_final_checker_context(hook_input):
         candidate_context = _search_candidate_stop_context(search_root, hook_input)
+        if candidate_context is not None:
+            session_id = candidate_context.get("search_candidate_agent_session_id")
+            if session_id:
+                from goal_plus.runtime import FileSearchRuntime
+
+                search = FileSearchRuntime(search_root)
+                session = search._load_agent_session_by_id(session_id, allow_stale=True)
+                candidate = search._load_candidate_record(session.run_id, session.candidate_id)
+                if session.execution_generation != candidate.execution_generation:
+                    # A fenced worker must be allowed to stop, even before its
+                    # old lease or first verifier completed. Do not bind it again.
+                    return {
+                        "decision": "skipped", "reason": "stale_search_generation",
+                        "goal_plus_id": None, "agent_session_id": session_id,
+                        "run_id": session.run_id, "candidate_id": session.candidate_id,
+                    }
     goal_id = _select_hook_goal_id(search_root, hook_input)
     if goal_id is None and candidate_context is not None:
         goal_id = _select_search_goal_id(
@@ -2124,6 +2149,32 @@ def main() -> int:
 
     try:
         event_name = _hook_event_name(hook_input)
+        if event_name == "PreToolUse" and _is_subagent_context(hook_input):
+            if _logical_tool_name(_tool_name(hook_input)) in {
+                "search_recovery_status", "search_prepare_recovery", "search_recover_candidate"
+            }:
+                _emit_pre_tool_block("Search recovery is Main-owned; a worker cannot recover or fence a candidate.")
+                return 0
+            # Candidate cwd may itself be a Git worktree. Find its owning .gp
+            # before the normal permission notice returns early.
+            recovery_root = search_root
+            if not recovery_root.exists():
+                for parent in Path.cwd().resolve().parents:
+                    if parent.name in {DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT} and (parent / "runs").is_dir():
+                        recovery_root = parent
+                        break
+            session_id = _search_candidate_agent_session_id(recovery_root, hook_input)
+            if session_id:
+                from goal_plus.runtime import FileSearchRuntime
+                from goal_plus.host_recovery import codex_owner_pid, observe_worker
+                try:
+                    worker = FileSearchRuntime(recovery_root)._load_agent_session_by_id(session_id)
+                except Exception as exc:
+                    _emit_pre_tool_block(str(exc))
+                    return 0
+                owner = codex_owner_pid()
+                if owner is not None:
+                    observe_worker(recovery_root, worker, owner)
         if event_name == "PreToolUse":
             # Candidate identity comes from the transcript even though its
             # worktree has no local runtime root.
@@ -2164,6 +2215,22 @@ def main() -> int:
             return 0
 
         if event_name == "PostToolUse":
+            if _tool_name(hook_input).rsplit("__", 1)[-1].rsplit(".", 1)[-1] == "list_agents":
+                from goal_plus.runtime import FileSearchRuntime
+                from goal_plus.goal_plus import FileGoalPlusRuntime
+                from goal_plus.host_recovery import observe_codex_registry
+                goal_id = _select_session_goal_id(search_root, _session_id(hook_input))
+                payload = hook_input.get("tool_response")
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except ValueError:
+                        payload = None
+                if goal_id is not None and isinstance(payload, dict):
+                    goal = FileGoalPlusRuntime(search_root).status(goal_id)
+                    runtime = FileSearchRuntime(search_root)
+                    for task in goal.search_tasks:
+                        observe_codex_registry(search_root, runtime._load_agent_sessions(task.run_id), payload)
             time_advisory = _search_candidate_time_advisory(search_root, hook_input)
             if time_advisory is not None:
                 _emit_additional_context("PostToolUse", time_advisory)

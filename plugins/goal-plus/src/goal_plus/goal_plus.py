@@ -270,6 +270,9 @@ SEARCH_TOOL_SUFFIXES = (
     "search_freeze_spec",
     "search_create",
     "search_status",
+    "search_recovery_status",
+    "search_prepare_recovery",
+    "search_recover_candidate",
     "search_list_history",
     "search_plan_next",
     "search_start_batch",
@@ -2109,6 +2112,26 @@ class FileGoalPlusRuntime:
         context: dict[str, Any],
     ) -> GoalPlusGateResult:
         record = self._load_record(goal_plus_id)
+        if event == "pre_tool_use" and any(
+            self._tool_matches(self._tool_name(context), name)
+            for name in ("search_recovery_status", "search_prepare_recovery", "search_recover_candidate")
+        ):
+            arguments = context.get("tool_input") or context.get("input") or {}
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except ValueError:
+                    arguments = {}
+            run_id = arguments.get("run_id") if isinstance(arguments, dict) else None
+            owns_run = any(
+                task.run_id == run_id and task.goal_revision == record.goal_revision
+                for task in record.search_tasks
+            )
+            if record.status != "active" or not owns_run:
+                return self._record_gate(
+                    record, event, "block",
+                    reason="SearchRecoveryOwnershipRequired: recovery requires an active Goal and its current-revision linked run.",
+                )
         if record.status != "active":
             return self._record_gate(record, event, "allow")
 

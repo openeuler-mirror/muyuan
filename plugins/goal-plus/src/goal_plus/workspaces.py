@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 from typing import Literal, Mapping, Protocol
@@ -59,6 +60,7 @@ class WorkspaceProviderCapabilities:
     requires_relocation_verification: bool = False
     prepare_promotion: bool = False
     apply_promotion: bool = False
+    recover: bool = False
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,19 @@ class WorkspaceProvider(Protocol):
         artifact_ref: ArtifactRef,
         preserved_files: Mapping[str, str],
         message: str,
+    ) -> ArtifactRef: ...
+
+    def recover(
+        self,
+        workspace: Path,
+        artifact_ref: ArtifactRef,
+        *,
+        managed_root: Path,
+        recovery_dir: Path,
+        preserved_files: Mapping[str, str],
+        run_dir: Path,
+        candidate_id: str,
+        provider_handle: Mapping[str, object],
     ) -> ArtifactRef: ...
 
     def current_artifact(self, workspace: Path) -> ArtifactRef | None: ...
@@ -707,6 +722,7 @@ class GitWorkspaceProvider:
         restore=True,
         reference_workspace=True,
         protected_execution=False,
+        recover=True,
     )
 
     def __init__(self, backend: LiteralGitBackend) -> None:
@@ -816,6 +832,58 @@ class GitWorkspaceProvider:
         if restored is None:
             raise RuntimeError("candidate restoration produced no artifact")
         return restored
+
+    def recover(
+        self,
+        workspace: Path,
+        artifact_ref: ArtifactRef,
+        *,
+        managed_root: Path,
+        recovery_dir: Path,
+        preserved_files: Mapping[str, str],
+        run_dir: Path,
+        candidate_id: str,
+        provider_handle: Mapping[str, object],
+    ) -> ArtifactRef:
+        """Restore a settled tree, archiving uncommitted and scratch state first.
+
+        Only a runtime-owned checkout may be passed here. Unlike normal verifier
+        rollback, crash recovery also removes untracked/ignored attempt residue.
+        The original archive is never overwritten on a retry. Git history stays
+        reachable; restoring the tree does not rewind the branch ref.
+        """
+        self._require_git_artifact(artifact_ref)
+        root = managed_root.resolve()
+        expected = (run_dir / "workspace" / candidate_id).resolve()
+        if managed_root.is_symlink() or root != expected:
+            raise RuntimeError("RecoveryWorkspaceMismatch: not a runtime-owned checkout")
+        actual = Path(_git_output(workspace, "rev-parse", "--show-toplevel")).resolve()
+        if actual != root or not workspace.resolve().is_relative_to(root):
+            raise RuntimeError("RecoveryWorkspaceMismatch: not the managed checkout")
+        if recovery_dir.resolve().is_relative_to(root):
+            raise RuntimeError("RecoveryArchiveInsideWorkspace")
+        _git_run(root, "cat-file", "-e", f"{artifact_ref.id}^{{commit}}")
+        recovery_dir.mkdir(parents=True, exist_ok=True)
+        archive = recovery_dir / "interrupted-workspace.tar"
+        if not archive.exists():
+            temporary = recovery_dir / "interrupted-workspace.tar.tmp"
+            with tarfile.open(temporary, "w", dereference=False) as output:
+                for path in sorted(root.iterdir()):
+                    if path.name != ".git":
+                        output.add(path, arcname=path.name)
+            temporary.replace(archive)
+        for path in root.iterdir():
+            if path.name == ".git":
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        relative = workspace.resolve().relative_to(root)
+        preserved = {str(relative / key): value for key, value in preserved_files.items()}
+        return self.restore(
+            root, artifact_ref, preserved, f"goal-plus recover {recovery_dir.name}"
+        )
 
     def current_artifact(self, workspace: Path) -> ArtifactRef | None:
         try:
@@ -1208,6 +1276,7 @@ class GitWorktreeProvider(GitWorkspaceProvider):
         requires_relocation_verification=True,
         prepare_promotion=True,
         apply_promotion=True,
+        recover=True,
     )
 
     def __init__(self) -> None:
@@ -1237,6 +1306,9 @@ class ThinkThreadWorkspaceProvider:
 
     def restore(self, *_: object, **__: object) -> ArtifactRef:
         self._unsupported("restore")
+
+    def recover(self, *_: object, **__: object) -> ArtifactRef:
+        self._unsupported("recover")
 
     def current_artifact(self, *_: object, **__: object) -> ArtifactRef | None:
         self._unsupported("current_artifact")

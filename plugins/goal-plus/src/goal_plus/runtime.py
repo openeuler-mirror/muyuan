@@ -41,6 +41,8 @@ from goal_plus.models import (
     BootstrapVerification,
     BootstrapVerifierResult,
     CandidateRecord,
+    CandidateRecovery,
+    CandidateRecoveryPoint,
     CandidateProposal,
     CandidateTask,
     CandidateWorkOrder,
@@ -2166,6 +2168,197 @@ class FileSearchRuntime:
             reuse_initial=True,
         )
 
+    def _candidate_recovery_point(self, record: CandidateRecord) -> CandidateRecoveryPoint:
+        last = record.iterations[-1] if record.iterations else None
+        artifact = (
+            last.workspace_artifact_after_settlement if last is not None
+            else record.results_ledger_artifact_ref
+        )
+        if artifact is None or artifact.provider != record.task.workspace_backend:
+            raise RuntimeError("RecoveryCheckpointUnavailable: no settled artifact")
+        if last is not None and (
+            last.ledger_artifact_ref != artifact
+            or record.results_ledger_artifact_ref != artifact
+            or record.score_report is None
+            or record.score_report.workspace_artifact_after_settlement != artifact
+        ):
+            raise RuntimeError("RecoveryCheckpointInconsistent: settlement/ledger mismatch")
+        return CandidateRecoveryPoint(
+            artifact_ref=artifact,
+            iteration=last.iteration if last else 0,
+            settlement_id=last.settlement_id if last else None,
+            result_count=len(record.results_ledger),
+        )
+
+    @staticmethod
+    def _assert_candidate_not_recovering(record: CandidateRecord) -> None:
+        if record.recovery is not None and record.recovery.state != "restored":
+            raise RuntimeError("CandidateRecoveryRequired: finish the prepared recovery first")
+
+    def prepare_candidate_recovery(self, run_id: str, candidate_id: str) -> CandidateRecovery:
+        """Fence old execution before a host attempts to stop/reconcile workers.
+
+        No process control or workspace mutation occurs here. A repeat before a
+        fresh generation is dispatched returns the same recovery identity.
+        """
+        self._validate_recovery_ids(run_id, candidate_id)
+        with self._run_transaction(run_id):
+            run = self._load_run(run_id)
+            self._assert_worker_iteration_allowed(run, "prepare recovery")
+            record = self._load_candidate_record(run_id, candidate_id)
+            frozen = self._load_frozen_spec(run.frozen_spec_id)
+            if record.status not in {"created", "evaluated"}:
+                raise RuntimeError("RecoveryCandidateUnavailable")
+            if self._adaptive_search_is_enabled(frozen):
+                self._adaptive_search.assert_candidate_execution_allowed(record, "recover")
+            sessions = [s for s in self._load_agent_sessions(run_id) if s.candidate_id == candidate_id]
+            current = [s for s in sessions if s.execution_generation == record.execution_generation]
+            if record.recovery is not None and (
+                record.recovery.state != "restored"
+                or (not current and self._candidate_recovery_point(record) == record.recovery.point)
+            ):
+                return record.recovery
+            provider = get_workspace_provider(record.task.workspace_backend)
+            if not provider.capabilities.recover:
+                from goal_plus.workspaces import UnsupportedWorkspaceCapability
+                raise UnsupportedWorkspaceCapability(record.task.workspace_backend, "recover")
+            point = self._candidate_recovery_point(record)
+            record.execution_generation += 1
+            record.recovery = CandidateRecovery(
+                recovery_id=f"recovery_{uuid.uuid4().hex}",
+                generation=record.execution_generation,
+                point=point,
+                fenced_session_ids=[s.agent_session_id for s in sessions],
+                created_at=utc_timestamp(),
+            )
+            self._write_candidate_record(run_id, record)
+            return record.recovery
+
+    def recover_candidate(
+        self, run_id: str, candidate_id: str, recovery_id: str
+    ) -> CandidateRecovery:
+        """Restore the prepared provider-native checkpoint after host quiescence.
+
+        The host adapter supplies the durable approval; the model cannot assert
+        quiescence with a boolean. Lock ordering matches verifier settlement.
+        """
+        self._validate_recovery_ids(run_id, candidate_id)
+        with exclusive_file_lock(self._candidate_dir(run_id, candidate_id) / "verifier.lock"):
+            with self._run_transaction(run_id):
+                run = self._load_run(run_id)
+                self._assert_worker_iteration_allowed(run, "recover candidate")
+                record = self._load_candidate_record(run_id, candidate_id)
+                recovery = record.recovery
+                if recovery is None or recovery.recovery_id != recovery_id:
+                    raise RuntimeError("RecoveryIdentityMismatch")
+                if recovery.state == "restored":
+                    return recovery
+                if self._candidate_recovery_point(record) != recovery.point:
+                    raise RuntimeError("RecoveryCheckpointChanged")
+                if recovery.fenced_session_ids:
+                    proof_path = self.root_dir / "host-recovery" / "approvals" / f"{recovery_id}.json"
+                    proof = load_json(proof_path) if proof_path.exists() else {}
+                    if proof.get("recovery") != recovery.model_dump(mode="json", exclude={"state"}):
+                        raise RuntimeError("RecoveryHostQuiescenceRequired")
+                provider = get_workspace_provider(record.task.workspace_backend)
+                if not provider.capabilities.recover:
+                    from goal_plus.workspaces import UnsupportedWorkspaceCapability
+                    raise UnsupportedWorkspaceCapability(record.task.workspace_backend, "recover")
+                managed = record.task.workspace_managed_root or record.task.workspace
+                frozen = self._load_frozen_spec(run.frozen_spec_id)
+                recovery.state = "restoring"
+                self._write_candidate_record(run_id, record)
+                restored = provider.recover(
+                    record.task.workspace,
+                    recovery.point.artifact_ref,
+                    managed_root=managed,
+                    recovery_dir=self._candidate_dir(run_id, candidate_id) / "recoveries" / recovery_id,
+                    run_dir=self._run_dir(run_id),
+                    candidate_id=candidate_id,
+                    provider_handle=record.task.workspace_provider_handle,
+                    preserved_files={RESULTS_TSV_RELATIVE_PATH: self._render_results_tsv(
+                        record.results_ledger, frozen.spec.metric_name
+                    )},
+                )
+                if restored.provider != recovery.point.artifact_ref.provider:
+                    raise RuntimeError("RecoveryArtifactProviderMismatch")
+                if provider.changed_files(
+                    managed, recovery.point.artifact_ref, restored, ["."]
+                ) or provider.status(managed, ignore_runtime_noise=False):
+                    raise RuntimeError("RecoveryArtifactMismatch: restored tree is not the checkpoint")
+                self._assert_results_tsv_unchanged(record, frozen.spec.metric_name)
+                # Tool-copy staging belonged to the interrupted, uncommitted attempt.
+                record.pending_tool_copies = []
+                self._reconcile_recovered_settlements(run, frozen, record)
+                recovery.state = "restored"
+                recovery.restored_artifact_ref = restored
+                recovery.restored_at = utc_timestamp()
+                self._write_candidate_record(run_id, record)
+                return recovery
+
+    @staticmethod
+    def _validate_recovery_ids(run_id: str, candidate_id: str) -> None:
+        if any(not value or Path(value).name != value or value in {".", ".."}
+               for value in (run_id, candidate_id)):
+            raise ValueError("invalid recovery identity")
+
+    def _reconcile_recovered_settlements(
+        self, run: RunRecord, frozen: FrozenSpec, record: CandidateRecord
+    ) -> None:
+        """Repair derived state from committed Evidence, never rerun a verifier."""
+        if frozen.spec.shared_dir.enabled:
+            assert record.recovery is not None
+            SharedDirManager(self._run_dir(run.run_id)).recover_candidate_publications(
+                record.candidate_id,
+                {tool.tool_id for iteration in record.iterations for tool in iteration.shared_tools},
+                self._candidate_dir(run.run_id, record.candidate_id) / "recoveries" / record.recovery.recovery_id,
+            )
+        records = self._load_candidate_records(run.run_id)
+        for candidate in records:
+            best = self._best_artifact_iteration_record(candidate, frozen.spec.metric_direction)
+            if best is not None and candidate.score_report is not None:
+                report = candidate.score_report.model_copy(update={
+                    "aggregate_score": best.score, "disposition": best.disposition,
+                })
+                if self._update_best_seen(run, frozen.spec, report):
+                    self._write_best_artifact(run, frozen.spec, candidate, best)
+        run.candidates_evaluated = sum(c.status == "evaluated" for c in records)
+        self._write_run(run)
+        for session in self._load_agent_sessions(run.run_id):
+            if session.candidate_id != record.candidate_id:
+                continue
+            count = sum(i.agent_session_id == session.agent_session_id for i in record.iterations)
+            session.counters["verifier_runs"] = count
+            self._write_agent_session(session)
+        for iteration in record.iterations:
+            if iteration.agent_session_id is not None or self._adaptive_search_is_enabled(frozen):
+                self._create_evidence_annotation_task(run.run_id, frozen, record.candidate_id, iteration)
+            if self._adaptive_search_is_enabled(frozen):
+                self._adaptive_search.settle_iteration(run, frozen, record, iteration)
+        self._write_candidate_record(run.run_id, record)
+
+    def search_recovery_status(self, run_id: str) -> dict[str, Any]:
+        self._validate_recovery_ids(run_id, "status")
+        run = self._load_run(run_id)
+        candidates = []
+        for record in self._load_candidate_records(run_id):
+            try:
+                point = self._candidate_recovery_point(record).model_dump(mode="json")
+                error = None
+            except RuntimeError as exc:
+                point, error = None, str(exc)
+            candidates.append({
+                "candidate_id": record.candidate_id,
+                "generation": record.execution_generation,
+                "checkpoint": point,
+                "checkpoint_error": error,
+                "recovery": record.recovery.model_dump(mode="json") if record.recovery else None,
+                "sessions": [s.model_dump(mode="json", include={
+                    "agent_session_id", "host", "host_handle", "execution_generation"
+                }) for s in self._load_agent_sessions(run_id) if s.candidate_id == record.candidate_id],
+            })
+        return {"run_id": run_id, "state": run.state, "candidates": candidates}
+
     def redispatch_candidate(
         self,
         run_id: str,
@@ -2251,6 +2444,7 @@ class FileSearchRuntime:
             frozen = self._load_frozen_spec(run.frozen_spec_id)
 
             candidate_record = self._load_candidate_record(run_id, candidate_id)
+            self._assert_candidate_not_recovering(candidate_record)
             workspace = candidate_record.task.workspace
             if self._adaptive_search_is_enabled(frozen):
                 self._adaptive_search.assert_candidate_execution_allowed(
@@ -2265,12 +2459,16 @@ class FileSearchRuntime:
                 )
 
             normalized_directive = self._normalize_main_directive(directive)
+            if candidate_record.recovery is not None:
+                normalized_directive["recovery_checkpoint"] = candidate_record.recovery.point.model_dump(mode="json")
+                normalized_directive["recovery_id"] = candidate_record.recovery.recovery_id
             if reuse_initial:
                 session = next(
                     (
                         item
                         for item in self._load_agent_sessions(run_id)
                         if item.candidate_id == candidate_id
+                        and item.execution_generation == candidate_record.execution_generation
                     ),
                     None,
                 )
@@ -2330,6 +2528,7 @@ class FileSearchRuntime:
                     }
                 )
             session = AgentSessionRecord(
+                execution_generation=candidate_record.execution_generation,
                 agent_session_id=agent_session_id,
                 run_id=run_id,
                 candidate_id=candidate_id,
@@ -2522,7 +2721,7 @@ class FileSearchRuntime:
 
     def get_agent_observability(self, agent_session_id: str) -> dict[str, Any]:
         """Return normalized, read-only host evidence for one worker session."""
-        session = self._load_agent_session_by_id(agent_session_id)
+        session = self._load_agent_session_by_id(agent_session_id, allow_stale=True)
         adapter = get_agent_host_adapter(session.host)
         return adapter.collect_observability(session)
 
@@ -2574,10 +2773,11 @@ class FileSearchRuntime:
             ):
                 continue
             metadata = previous.host_handle.metadata
-            progress_handoff = metadata.get("progress_handoff")
+            same_generation = previous.execution_generation == session.execution_generation
+            progress_handoff = metadata.get("progress_handoff") if same_generation else None
             if isinstance(progress_handoff, dict):
                 latest_handoff = progress_handoff
-            assistant_text = metadata.get("assistant_text")
+            assistant_text = metadata.get("assistant_text") if same_generation else None
             error = metadata.get("error")
             previous_sessions.append(
                 {
@@ -2643,6 +2843,7 @@ class FileSearchRuntime:
         )
         context: dict[str, Any] = {
             "agent_session_id": session.agent_session_id,
+            "execution_generation": session.execution_generation,
             "run_id": session.run_id,
             "candidate_id": session.candidate_id,
             "objective": frozen.spec.objective,
@@ -2667,6 +2868,7 @@ class FileSearchRuntime:
                 else None
             ),
             "resume": {
+                "recovery": candidate_record.recovery.model_dump(mode="json") if candidate_record.recovery else None,
                 "is_redispatch": bool(session.directive.get("state_level_resume")),
                 "is_native_session_resume": is_native_session_resume,
                 "mode": continuation_mode if is_native_session_resume else None,
@@ -3024,6 +3226,7 @@ class FileSearchRuntime:
         lock_path = self._candidate_dir(session.run_id, session.candidate_id) / "verifier.lock"
         with exclusive_file_lock(lock_path):
             with self._run_transaction(session.run_id):
+                self._validate_session_generation(session)
                 run = self._load_run(session.run_id)
                 self._assert_worker_iteration_allowed(run, "stage shared tool")
                 frozen = self._load_frozen_spec(run.frozen_spec_id)
@@ -3062,6 +3265,7 @@ class FileSearchRuntime:
         lock_path = self._candidate_dir(session.run_id, session.candidate_id) / "verifier.lock"
         with exclusive_file_lock(lock_path):
             with self._run_transaction(session.run_id):
+                self._validate_session_generation(session)
                 run = self._load_run(session.run_id)
                 self._assert_worker_iteration_allowed(run, "copy shared tool")
                 frozen = self._load_frozen_spec(run.frozen_spec_id)
@@ -3116,6 +3320,7 @@ class FileSearchRuntime:
             raise ValueError("verifier scope must be 'process' or 'promotion'")
         lock_path = self._candidate_dir(run_id, candidate_id) / "verifier.lock"
         with exclusive_file_lock(lock_path):
+            self._assert_candidate_not_recovering(self._load_candidate_record(run_id, candidate_id))
             if scope == "process" and agent_session_id is None:
                 with self._run_transaction(run_id):
                     record = self._load_candidate_record(run_id, candidate_id)
@@ -3408,9 +3613,14 @@ class FileSearchRuntime:
             if scope == "process":
                 with self._run_transaction(run_id):
                     run = self._load_run(run_id)
+                    candidate = self._load_candidate_record(run_id, candidate_id)
                     if (
                         not run.invalidated_at
                         and run.state in WORKER_ITERATION_RUN_STATES
+                        and not (
+                            candidate.recovery is not None
+                            and candidate.recovery.state != "restored"
+                        )
                     ):
                         run.state = RunState.FAILED
                         self._write_run(run)
@@ -3586,6 +3796,9 @@ class FileSearchRuntime:
             run = self._load_run(run_id)
             self._assert_worker_iteration_allowed(run, "record verifier result")
             record = self._load_candidate_record(run_id, candidate_id)
+            self._assert_candidate_not_recovering(record)
+            if agent_session_id is not None:
+                self._load_agent_session_by_id(agent_session_id, run_id=run_id)
             if agent_session_id is None and record.pending_tool_copies:
                 raise RuntimeError(
                     "parent process verifier cannot settle a candidate with pending tool copies"
@@ -3832,35 +4045,6 @@ class FileSearchRuntime:
                 iteration.workspace_artifact_after_settlement = ledger_artifact_ref
                 record.results_ledger_artifact_ref = ledger_artifact_ref
             record.iterations.append(iteration)
-            # Persist the settlement before writing its derived projections.
-            self._write_candidate_record(run_id, record)
-            if agent_session_id is not None or self._adaptive_search_is_enabled(frozen):
-                try:
-                    self._create_evidence_annotation_task(
-                        run_id,
-                        frozen,
-                        candidate_id,
-                        iteration,
-                    )
-                    self._reconcile_tool_family_heads(run_id)
-                except Exception:
-                    # Annotation registration never invalidates settled Evidence.
-                    pass
-            if self._adaptive_search_is_enabled(frozen):
-                self._adaptive_search.settle_iteration(
-                    run,
-                    frozen,
-                    record,
-                    iteration,
-                )
-            if pending_tool_copies:
-                consumed = {item.receipt_id for item in pending_tool_copies}
-                record.pending_tool_copies = [
-                    item for item in record.pending_tool_copies
-                    if item.receipt_id not in consumed
-                ]
-                for item in pending_tool_copies:
-                    shutil.rmtree(item.inbox_path, ignore_errors=True)
             report = report.model_copy(
                 update={
                     "disposition": disposition,
@@ -3900,6 +4084,40 @@ class FileSearchRuntime:
             ):
                 record.promotion_report = None
                 record.promotion_evidence = None
+            # Commit the complete settlement before any derived projection.
+            self._write_candidate_record(run_id, record)
+            if agent_session_id is not None or self._adaptive_search_is_enabled(frozen):
+                try:
+                    self._create_evidence_annotation_task(
+                        run_id,
+                        frozen,
+                        candidate_id,
+                        iteration,
+                    )
+                    self._reconcile_tool_family_heads(run_id)
+                except Exception:
+                    # Annotation registration never invalidates settled Evidence.
+                    pass
+            if self._adaptive_search_is_enabled(frozen):
+                self._adaptive_search.settle_iteration(
+                    run,
+                    frozen,
+                    record,
+                    iteration,
+                )
+            if pending_tool_copies:
+                consumed = {item.receipt_id for item in pending_tool_copies}
+                record.pending_tool_copies = [
+                    item for item in record.pending_tool_copies
+                    if item.receipt_id not in consumed
+                ]
+                for item in pending_tool_copies:
+                    shutil.rmtree(item.inbox_path, ignore_errors=True)
+            report = report.model_copy(update={
+                "scheduler_status": iteration.scheduler_status,
+                "schedule_task_id": iteration.schedule_task_id,
+            })
+            record.score_report = report
             self._write_candidate_record(run_id, record)
 
             if self._update_best_seen(run, frozen.spec, report):
@@ -3934,6 +4152,8 @@ class FileSearchRuntime:
 
     def select(self, run_id: str) -> dict[str, Any]:
         with self._run_transaction(run_id):
+            for candidate in self._load_candidate_records(run_id):
+                self._assert_candidate_not_recovering(candidate)
             run = self._load_run(run_id)
             self._assert_run_not_invalidated(run, "select")
             if run.state not in {
@@ -9269,18 +9489,22 @@ class FileSearchRuntime:
         self,
         agent_session_id: str,
         run_id: str | None = None,
+        *,
+        allow_stale: bool = False,
     ) -> AgentSessionRecord:
         if run_id is not None:
             path = self._agent_session_dir(run_id) / f"{agent_session_id}.json"
             if path.exists():
-                return AgentSessionRecord.model_validate(load_json(path))
+                session = AgentSessionRecord.model_validate(load_json(path))
+                return self._validate_session_generation(session, allow_stale=allow_stale)
             raise FileNotFoundError(
                 f"agent session not found: {agent_session_id} in run {run_id}"
             )
 
         matches = sorted(self.runs_dir.glob(f"*/agent_sessions/{agent_session_id}.json"))
         if len(matches) == 1:
-            return AgentSessionRecord.model_validate(load_json(matches[0]))
+            session = AgentSessionRecord.model_validate(load_json(matches[0]))
+            return self._validate_session_generation(session, allow_stale=allow_stale)
         if len(matches) > 1:
             match_runs = ", ".join(path.parents[1].name for path in matches)
             raise RuntimeError(
@@ -9288,6 +9512,16 @@ class FileSearchRuntime:
                 "Use a globally unique agent_session_id from search_start_agent_session."
             )
         raise FileNotFoundError(f"agent session not found: {agent_session_id}")
+
+    def _validate_session_generation(
+        self, session: AgentSessionRecord, *, allow_stale: bool = False
+    ) -> AgentSessionRecord:
+        if not allow_stale:
+            record = self._load_candidate_record(session.run_id, session.candidate_id)
+            if session.execution_generation != record.execution_generation:
+                raise RuntimeError("StaleAgentSession: candidate execution generation was fenced")
+            self._assert_candidate_not_recovering(record)
+        return session
 
     def _write_agent_session(self, session: AgentSessionRecord) -> None:
         write_json(
