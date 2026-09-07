@@ -4,7 +4,7 @@ from pathlib import Path
 
 from goal_plus.models import WorkspaceOperationTiming
 from goal_plus.runtime import FileSearchRuntime
-from goal_plus.statistics import build_run_statistics
+from goal_plus.projections.statistics import build_run_statistics
 
 from tests._runtime_helpers import make_project, spec_for
 
@@ -70,7 +70,7 @@ def test_run_statistics_split_worker_parent_usage_and_stable_terminal_time(
     runtime.select(run_id)
     runtime.promote(run_id, task.candidate_id)
 
-    run = runtime._load_run(run_id)
+    run = runtime.search_run.state.read_run(run_id)
     assert run.promotion is not None
     run.promotion = run.promotion.model_copy(
         update={
@@ -82,8 +82,8 @@ def test_run_statistics_split_worker_parent_usage_and_stable_terminal_time(
             )
         }
     )
-    candidates = runtime._load_candidate_records(run_id)
-    sessions = runtime._load_agent_sessions(run_id)
+    candidates = runtime.candidate_creation.state.read_candidates(run_id)
+    sessions = runtime.candidate_sessions.state.read_agent_sessions(run_id)
     observations = {
         first.agent_session_id: _observation(
             provider="glm-proxy",

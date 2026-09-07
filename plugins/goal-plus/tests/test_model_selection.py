@@ -26,7 +26,7 @@ def _available_models() -> list[dict[str, object]]:
 
 
 def _stub_model_discovery(runtime: FileSearchRuntime) -> None:
-    runtime.list_available_models = lambda host, query=None: {  # type: ignore[method-assign]
+    runtime.models.list_available_models = lambda host, query=None: {  # type: ignore[method-assign]
         "host": host,
         "adapter_version": f"{host}-adapter-v1",
         "models": _available_models(),

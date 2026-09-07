@@ -53,7 +53,8 @@ Main 负责把原始目标和公开任务合同中的正确性、性能、适用
 使用 `GOAL_PLUS_VERIFIER_TMPDIR` 或等价的唯一目录。通常使用
 `workspace.backend="git_worktree"`。标准共享 Evidence 使用 manual 模式；auto、shared_dir、
 supplemental evaluation、device pool 和角色模型路由只在目标或显式配置需要时启用，其 worker
-合同由 runtime 动态投影。
+合同由 runtime 动态投影。显式 `command_config.inner_agent` 必须写入
+`strategy.inner_agent`，不能由 Main 改成其他 adapter。
 
 若评价合同本身有缺陷，调用 `search_invalidate_run`，再修复、重新冻结并创建后继 run；不要直接
 比较不同合同的分数。

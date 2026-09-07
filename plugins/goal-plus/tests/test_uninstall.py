@@ -120,6 +120,12 @@ def test_component_selection_keeps_only_explicit_flags(
     assert uninstaller._selected_components(args) == frozenset({"codex", "pi"})
 
 
+def test_component_selection_supports_thinkthread(uninstaller: ModuleType) -> None:
+    args = uninstaller.build_parser().parse_args(["--thinkthread"])
+
+    assert uninstaller._selected_components(args) == frozenset({"thinkthread"})
+
+
 def test_codex_plan_removes_only_current_checkout(
     uninstaller: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -241,6 +247,78 @@ def test_pi_dev_plan_requires_owned_receipt(
 
     assert remove_dir == dev_dir.resolve()
     assert remove_registry == registry_path
+    assert notes == []
+
+
+def test_goal_plus_thinkthread_profile_plan_removes_only_current_checkout(
+    uninstaller: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "goal-plus-pi.toml"
+    path.write_text("managed\n", encoding="utf-8")
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_thinkthread_profile_path",
+        lambda: path,
+    )
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_managed_thinkthread_profile_source",
+        lambda _path: ROOT.resolve(),
+    )
+
+    owned, notes = uninstaller._goal_plus_thinkthread_profile_plan(
+        require_owned=True
+    )
+
+    assert owned == path
+    assert notes == []
+
+
+def test_goal_plus_thinkthread_profile_plan_refuses_another_checkout(
+    uninstaller: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "goal-plus-pi.toml"
+    path.write_text("managed\n", encoding="utf-8")
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_thinkthread_profile_path",
+        lambda: path,
+    )
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_managed_thinkthread_profile_source",
+        lambda _path: tmp_path / "other-checkout",
+    )
+
+    with pytest.raises(uninstaller.UninstallError, match="refusing to remove"):
+        uninstaller._goal_plus_thinkthread_profile_plan(require_owned=True)
+
+
+def test_goal_plus_thinkthread_sdk_plan_removes_only_current_checkout(
+    uninstaller: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "sdk"
+    path.mkdir()
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_thinkthread_sdk_root",
+        lambda: path,
+    )
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_managed_thinkthread_sdk_source",
+        lambda _path: ROOT.resolve(),
+    )
+
+    owned, notes = uninstaller._goal_plus_thinkthread_sdk_plan(require_owned=True)
+
+    assert owned == path
     assert notes == []
 
 
@@ -405,6 +483,11 @@ def test_runtime_removal_allows_selected_host_registration(
     )
     monkeypatch.setattr(uninstaller, "_pi_sources", lambda *_args, **_kwargs: ((), []))
     monkeypatch.setattr(uninstaller, "_runtime_plan", lambda: (True, []))
+    monkeypatch.setattr(
+        uninstaller,
+        "_goal_plus_thinkthread_profile_plan",
+        lambda **_kwargs: (None, []),
+    )
 
     plan = uninstaller._build_plan(
         tmp_path / "dev",
@@ -485,3 +568,64 @@ def test_dry_run_preserves_managed_pi_dev_directory(
 
     assert dev_dir.is_dir()
     assert "+ remove managed directory" in capsys.readouterr().out
+
+
+def test_execute_removes_only_owned_goal_plus_thinkthread_profile(
+    uninstaller: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = tmp_path / "goal-plus-pi.toml"
+    profile.write_text("managed\n", encoding="utf-8")
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_managed_thinkthread_profile_source",
+        lambda _path: ROOT.resolve(),
+    )
+    plan = uninstaller.UninstallPlan(
+        codex_executable=None,
+        remove_codex_plugin=False,
+        remove_codex_marketplace=False,
+        pi_executable=None,
+        pi_sources=(),
+        pi_dev_dir=None,
+        pi_dev_registry_path=None,
+        remove_runtime=False,
+        notes=(),
+        goal_plus_thinkthread_profile_path=profile,
+    )
+
+    uninstaller._execute(plan, dry_run=False)
+
+    assert not profile.exists()
+
+
+def test_execute_removes_only_owned_agent_posix_sdk(
+    uninstaller: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sdk = tmp_path / "sdk"
+    sdk.mkdir()
+    (sdk / "owned.txt").write_text("owned\n", encoding="utf-8")
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_managed_thinkthread_sdk_source",
+        lambda _path: ROOT.resolve(),
+    )
+    plan = uninstaller.UninstallPlan(
+        codex_executable=None,
+        remove_codex_plugin=False,
+        remove_codex_marketplace=False,
+        pi_executable=None,
+        pi_sources=(),
+        pi_dev_dir=None,
+        pi_dev_registry_path=None,
+        remove_runtime=False,
+        notes=(),
+        goal_plus_thinkthread_sdk_path=sdk,
+    )
+
+    uninstaller._execute(plan, dry_run=False)
+
+    assert not sdk.exists()

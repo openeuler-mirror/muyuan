@@ -826,6 +826,163 @@ def test_goal_plus_print_autonomously_enters_search(
 
 
 @pytest.mark.st_pi
+def test_circle_packing_git_common_agent_apply(
+    st_pi_run_root: Path,
+) -> None:
+    examples_root = st_pi_run_root / "examples"
+    source_examples = ROOT / "examples"
+    shutil.copytree(
+        source_examples / "circle-packing",
+        examples_root / "circle-packing",
+        ignore=shutil.ignore_patterns(
+            ".gp", "workspace", "__pycache__", "*.pyc"
+        ),
+    )
+    example = examples_root / "circle-packing-git-apply"
+    shutil.copytree(
+        source_examples / "circle-packing-git-apply",
+        example,
+        ignore=shutil.ignore_patterns(
+            ".gp", "workspace", "__pycache__", "*.pyc"
+        ),
+    )
+    prepared = subprocess.run(
+        ["python", "prepare_workspace.py"],
+        cwd=example,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert prepared.returncode == 0, prepared.stderr or prepared.stdout
+
+    search_root = example / ".gp"
+    session_dir = st_pi_run_root / "sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    prompt = Path(__file__).with_name("circle-common-prompt.txt").read_text(encoding="utf-8")
+    command = [
+        *_pi_base_command(session_dir, "st-pi-circle-git-common"),
+        "--skill",
+        str(ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md"),
+        "-p",
+        prompt,
+    ]
+    env = _run_env(search_root)
+    env["GOAL_PLUS_SOURCE_PATH"] = str(example)
+    result = subprocess.run(
+        command,
+        cwd=example,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=int(os.environ.get("ST_PI_SEARCH_TIMEOUT", "1200")),
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr[-4000:] or result.stdout[-4000:]
+    record = _goal_record(search_root)
+    assert record["status"] == "complete"
+    linked = record["linked_search"]
+    run_id = linked["run_id"]
+    run_dir = search_root / "runs" / run_id
+    run_record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert run_record["state"] == "promoted"
+    assert run_record["promotion"]["state"] == "applied"
+    assert run_record["promotion"]["apply_result"]["status"] == "applied"
+
+    frozen = json.loads(
+        (
+            search_root
+            / "specs"
+            / linked["frozen_spec_id"]
+            / "frozen_spec.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert frozen["spec"]["workspace"] == {
+        "backend": "git_worktree",
+        "promotion_mode": "apply",
+    }
+    assert frozen["spec"]["strategy"]["inner_agent"] == "common"
+    assert frozen["spec"]["strategy"].get("worker_agent_type") is None
+
+    candidates = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((run_dir / "candidates").glob("*/candidate.json"))
+    ]
+    assert len(candidates) == 2
+    assert all(candidate["iterations"] for candidate in candidates)
+    assert all(
+        iteration["artifact_ref"]["kind"] == "git_commit"
+        for candidate in candidates
+        for iteration in candidate["iterations"]
+    )
+    assert all(
+        candidate["task"]["strategy_metadata"]["worker_policy"][
+            "inner_agent_binding"
+        ]["workspace_ledger_projection"]
+        == "none"
+        for candidate in candidates
+    )
+    assert all(candidate["results_ledger"] for candidate in candidates)
+    assert all(candidate.get("results_ledger_git_head") is None for candidate in candidates)
+    assert all(
+        iteration.get("ledger_git_head") is None
+        for candidate in candidates
+        for iteration in candidate["iterations"]
+    )
+    assert all(
+        not (Path(candidate["task"]["workspace"]) / "results.tsv").exists()
+        for candidate in candidates
+    )
+
+    sessions = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((run_dir / "agent_sessions").glob("agent_*.json"))
+    ]
+    assert len(sessions) == 2
+    for session in sessions:
+        launch = session["launch"]
+        assert "普通 Search 候选 agent" in launch["prompt"]
+        assert "worker_agent_type" not in launch
+        metadata = session["host_handle"]["metadata"]
+        assert metadata["runtime_start"]["active_non_builtin_tools"] == ["search_get_agent_context"]
+        successful_tools = [
+            entry["message"]["toolName"]
+            for entry in _read_jsonl(Path(metadata["session_file"]))
+            if entry.get("type") == "message"
+            and entry["message"].get("role") == "toolResult"
+            and entry["message"].get("isError") is False
+        ]
+        assert "search_run_verifier" in successful_tools
+        assert successful_tools.index("search_get_agent_context") < successful_tools.index("search_run_verifier")
+        assert session["counters"]["verifier_runs"] == metadata["dispatch_count"]
+
+    workspace = example / "workspace"
+    verified = subprocess.run(
+        ["python", ".goal-plus-verifiers/circle_packing_score.py"],
+        cwd=workspace,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert verified.returncode == 0, verified.stderr or verified.stdout
+    metrics = json.loads(verified.stdout.strip().splitlines()[-1])
+    assert metrics["valid"] is True
+    assert metrics["sum_radii"] == pytest.approx(run_record["selected_score"])
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=workspace,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert status == ""
+    assert Path(linked["report_path"]).is_file()
+    assert Path(linked["html_report_path"]).is_file()
+    assert Path(linked["promotion_artifact_path"]).is_file()
+    _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
+
+
+@pytest.mark.st_pi
 def test_goal_plus_print_supports_two_search_tasks_in_one_goal(
     st_pi_run_root: Path,
 ) -> None:

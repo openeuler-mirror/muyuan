@@ -82,14 +82,42 @@ def _pi_rpc_spec_with_budget(
 
 def test_run_pi_search_candidate_binds_worker_handle_and_final_verifies(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    from goal_plus import evidence_annotator
+    from goal_plus.adaptive_search import scheduler
+    from goal_plus.bootstrap import build_annotation_services
+
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    payload = _pi_rpc_spec(project).model_dump(mode="json")
+    payload["strategy"].update(
+        orchestration_mode="adaptive_search",
+        search_scheduler={
+            "host": "pi-rpc", "model": "test-model", "reasoning_effort": "low",
+            "timeout_seconds": 30, "reward": "evidence_llm_value/v3",
+            "allocation": "value_guided_replace/v2",
+        },
+    )
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"])
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
     observed_launches: list[dict[str, Any]] = []
+
+    def claim_annotation(root, target_run_id, *, host):
+        assert Path(root) == runtime.root_dir
+        assert target_run_id == run_id and host == "pi-rpc"
+        _, admission, _, context = build_annotation_services(root)
+        _, task = admission.claim_next(target_run_id)
+        assert task is not None
+        assert task.candidate_id == candidate.candidate_id and task.iteration == 1
+        assert context.build(target_run_id, task.candidate_id, task.iteration)["verifier_result"]["score"] == 7.0
+        return True
+
+    monkeypatch.setattr(evidence_annotator, "kick_evidence_annotator", claim_annotation)
+    monkeypatch.setattr(scheduler, "kick_scheduler", lambda *args, **kwargs: False)
 
     def fake_worker(launch: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         observed_launches.append({"launch": launch, "kwargs": kwargs})
@@ -135,21 +163,76 @@ def test_run_pi_search_candidate_binds_worker_handle_and_final_verifies(
     assert launch_call["kwargs"]["model_pattern"] == "gpt-test"
 
     agent_session_id = result["agent_session_id"]
-    stored_session = runtime._load_agent_session_by_id(agent_session_id, run_id=run_id)
+    stored_session = runtime.candidate_sessions.session(agent_session_id, run_id=run_id)
     assert stored_session.host_handle.external_id == agent_session_id
     assert stored_session.host_handle.metadata["event_log"] == "/tmp/pi-rpc-agent.jsonl"
     assert stored_session.host_handle.metadata["pi_metrics"]["duration_seconds"] == 1.25
 
-    record = runtime._load_candidate_record(run_id, candidate.candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate.candidate_id)
     assert record.score_report is not None
     assert record.score_report.aggregate_score == 7.0
     assert record.iterations[-1].agent_session_id is None
     assert record.iterations[-1].score == 7.0
+    workflow, _, _, _ = build_annotation_services(runtime.root_dir)
+    task = workflow.task(run_id, candidate.candidate_id, 1)
+    assert task.state == "retry_wait" and task.attempts == 1
+    assert "Pi settlement pump failed" not in caplog.text
+
+
+def test_explicit_worker_launch_overrides_parent_native_defaults(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec_data = _pi_rpc_spec(project).model_dump(mode="json")
+    spec_data["strategy"]["worker_launch"] = {
+        "model": "explicit/model",
+        "reasoning_effort": "high",
+    }
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data), [project / "evaluator.py"]
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    candidate = runtime.start_batch(run_id, plan.plan_id)[0]
+    observed: dict[str, Any] = {}
+
+    def fake_worker(launch: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        observed.update(kwargs)
+        Path(launch["cwd"], "initial_program.py").write_text(
+            "VALUE = 3\n", encoding="utf-8"
+        )
+        return {
+            "host": "pi-rpc",
+            "external_id": launch["session_id"],
+            "metadata": {"pi_metrics": {}, "assistant_text": "done"},
+        }
+
+    result = run_pi_search_candidate(
+        root_dir=runtime.root_dir,
+        run_id=run_id,
+        candidate_id=candidate.candidate_id,
+        worker_runner=fake_worker,
+        model_pattern="parent/model",
+        thinking_level="low",
+    )
+
+    assert result["ok"] is True
+    assert observed["model_pattern"] == "explicit/model"
+    assert observed["thinking_level"] == "high"
 
 
 def test_run_pi_search_candidate_reuses_current_worker_evidence(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    from goal_plus import internal_agents
+
+    def failed_pump(root, run_id):
+        raise RuntimeError("pump unavailable")
+
+    monkeypatch.setattr(internal_agents, "kick_pi_internal_agents", failed_pump)
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
@@ -184,6 +267,8 @@ def test_run_pi_search_candidate_reuses_current_worker_evidence(
     assert result["final_score_report"]["aggregate_score"] == 7.0
     assert result["steps"][-1]["status"] == "reused_durable_evidence"
     assert result["final_score_report"]["process_passed"] is True
+    assert result["ok"] is True
+    assert "Pi settlement pump failed" in caplog.text
 
 
 def test_run_pi_search_candidate_does_not_verify_unchanged_workspace(
@@ -273,7 +358,7 @@ def test_run_pi_search_candidate_skips_duplicate_final_verify_for_infrastructure
     assert result["steps"][-1]["status"] == (
         "skipped_duplicate_infrastructure_failure"
     )
-    record = runtime._load_candidate_record(run_id, candidate.candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate.candidate_id)
     assert len(record.iterations) == 1
     assert record.iterations[0].agent_session_id == result["agent_session_id"]
 
@@ -339,8 +424,8 @@ def test_run_pi_search_candidate_resumes_same_native_session_across_processes(
     assert resumed["launch"]["metrics_baseline"]["last_entry_id"] == "entry_1"
     assert resumed["launch"]["budget_control"]["max_runtime_seconds"] == 900
     assert resumed["steps"][0]["worker_budget_override"]["max_runtime_seconds"] == 900
-    assert len(runtime._load_agent_sessions(run_id)) == 1
-    stored = runtime._load_agent_session_by_id(first["agent_session_id"], run_id=run_id)
+    assert len(runtime.candidate_sessions.state.read_agent_sessions(run_id)) == 1
+    stored = runtime.candidate_sessions.session(first["agent_session_id"], run_id=run_id)
     assert stored.host_handle.metadata["dispatch_count"] == 2
     assert [
         dispatch["process_pid"]
@@ -388,7 +473,7 @@ def test_run_pi_search_candidate_refreshes_with_new_native_session(
     assert refreshed["steps"][0]["session_refresh"] is True
     assert refreshed["launch"]["session_id"] == refreshed["agent_session_id"]
     assert refreshed["launch"]["cwd"] == first["launch"]["cwd"]
-    assert len(runtime._load_agent_sessions(run_id)) == 2
+    assert len(runtime.candidate_sessions.state.read_agent_sessions(run_id)) == 2
     context = runtime.get_agent_context(refreshed["agent_session_id"])
     assert context["resume"]["is_redispatch"] is True
     assert context["resume"]["previous_session_count"] == 1
@@ -476,7 +561,7 @@ def test_run_pi_search_candidate_binds_runner_failure_handle(tmp_path: Path) -> 
     assert result["agent_session_id"]
     assert result["final_score_report"] is None
 
-    stored = runtime._load_agent_session_by_id(result["agent_session_id"], run_id=run_id)
+    stored = runtime.candidate_sessions.session(result["agent_session_id"], run_id=run_id)
     assert stored.host_handle.external_id == result["agent_session_id"]
     assert stored.host_handle.metadata["runner_failed"] is True
     assert stored.host_handle.metadata["failure_stage"] == "worker_runner"

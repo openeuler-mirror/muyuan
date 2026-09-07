@@ -25,7 +25,11 @@ def _make_project_assets(root: Path) -> dict[str, object]:
         skill_path.write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
     agent_root = root / ".codex" / "agents"
     agent_root.mkdir(parents=True)
-    for name in ("search_candidate_agent.toml", "goal_plus_final_checker.toml"):
+    for name in (
+        "search_candidate_agent.toml",
+        "search_candidate_common_agent.toml",
+        "goal_plus_final_checker.toml",
+    ):
         (agent_root / name).write_text(f'name = "{name[:-5]}"\n', encoding="utf-8")
     return hooks_payload
 
@@ -121,7 +125,7 @@ def test_enabled_plugin_uses_installable_top_level_skills(tmp_path: Path) -> Non
     )
     assert roles.status == "pass"
     assert roles.details["search_worker"] == "default"
-    assert roles.details["final_checker_fallback"] == "default"
+    assert roles.details["final_checker"] == "default"
     assert roles.details["custom_agents_packaged"] is False
 
 
@@ -220,9 +224,8 @@ def test_collect_report_accepts_complete_project_local_setup(
         },
     )
     monkeypatch.setattr(
-        codex_doctor,
-        "_list_codex_models",
-        lambda: [{"model": "gpt-5.6-luna"}],
+        "goal_plus.agent_hosts.CodexModelCatalog.list_available_models",
+        lambda self, query=None: [{"model": "gpt-5.6-luna"}],
     )
 
     report = codex_doctor.collect_report(
@@ -268,6 +271,10 @@ def test_plugin_assets_keep_project_hook_contract() -> None:
     assert mcp["mcpServers"]["goal-plus"]["command"] == "goal-plus"
     assert mcp["mcpServers"]["goal-plus"]["args"] == ["--root", ".gp"]
     assert "PI_CODING_AGENT_DIR" in mcp["mcpServers"]["goal-plus"]["env_vars"]
+    assert (
+        "GOAL_PLUS_EVIDENCE_ANNOTATOR_MODEL"
+        not in mcp["mcpServers"]["goal-plus"]["env_vars"]
+    )
 
 
 def test_enabled_plugin_rejects_duplicate_ancestor_goal_plus_hooks(

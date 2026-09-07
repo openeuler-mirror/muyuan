@@ -27,10 +27,23 @@ def _stop_hook_events(search_root: Path) -> list[dict]:
     ]
 
 
+_OWNER_PID_CACHE: int | None = False
+
+
+def _codex_owner_pid_cached() -> int | None:
+    """Walk the parent chain once per test process; the pytest parent tree
+    never changes and each uncached walk costs a ``ps`` subprocess per hop."""
+    global _OWNER_PID_CACHE
+    if _OWNER_PID_CACHE is False:
+        from goal_plus.host_recovery import codex_owner_pid
+        _OWNER_PID_CACHE = codex_owner_pid()
+    return _OWNER_PID_CACHE
+
+
 def _run_hook(tmp_path: Path, search_root: Path, hook_input: dict | None = None, **env):
     # These fixtures bypass the native start hook; install their live owner.
-    from goal_plus.host_recovery import claim_main_owner, codex_owner_pid
-    owner = codex_owner_pid()
+    from goal_plus.host_recovery import claim_main_owner
+    owner = _codex_owner_pid_cached()
     if owner:
         runtime = FileGoalPlusRuntime(search_root)
         for path in runtime.goals_dir.glob("gp_*/goal.json"):
@@ -48,15 +61,8 @@ def _run_hook(tmp_path: Path, search_root: Path, hook_input: dict | None = None,
         "GOAL_PLUS_PROJECT_ROOT": str(tmp_path),
         **{key: str(value) for key, value in env.items()},
     }
-    return subprocess.run(
-        HOOK_CLI,
-        cwd=tmp_path,
-        input=json.dumps(hook_input or {}),
-        text=True,
-        capture_output=True,
-        check=False,
-        env=run_env,
-    )
+    from tests._runtime_helpers import run_host_hook_inprocess
+    return run_host_hook_inprocess(hook_input, cwd=tmp_path, env=run_env)
 
 
 def test_legacy_stop_hook_script_still_runs(tmp_path: Path) -> None:
@@ -73,6 +79,7 @@ def test_legacy_stop_hook_script_still_runs(tmp_path: Path) -> None:
             **os.environ,
             "GOAL_PLUS_SEARCH_ROOT": str(search_root),
             "GOAL_PLUS_PROJECT_ROOT": str(tmp_path),
+            "PYTHONPATH": str(ROOT / "src"),
         },
     )
 

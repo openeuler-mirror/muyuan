@@ -5,13 +5,13 @@ any `tests/st` command. If the required MCP or foreground-worker tools are
 unavailable, emit the final `st_report` with `extra.error`.
 
 Build a SearchSpec from
-{{PROJECT_ROOT}}/tests/st/fixtures/k_module_problem/spec.json with these edits:
+{{PROJECT_ROOT}}/tests/st/fixtures/circle_packing/spec.json with these edits:
 
 - Set `source_path` to the absolute fixture path.
 - Set `budget.max_parallel=1`.
 - Set `strategy.name="random"`.
 - Set `strategy.worker_host="codex"`.
-- Set `strategy.worker_agent_type="search_candidate_agent"`.
+- Set `strategy.inner_agent="autoresearch"`.
 - Set `strategy.worker_budget={"max_runtime_seconds": 120, "max_turns": 6, "on_exceed": "interrupt"}`.
 
 Freeze the fixture evaluator and run:

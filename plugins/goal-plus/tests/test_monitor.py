@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
 
 from goal_plus import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.host_scope import close_execution_scope, ensure_execution_scope
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.pi_tool import call_pi_tool
-from goal_plus.runtime import FileSearchRuntime, write_json
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.infrastructure.state.files import write_json
 from goal_plus.server import create_mcp
 from goal_plus.tools import SearchTools
-
 from tests._fastmcp_helpers import tools_by_name
 from tests._runtime_helpers import make_project, spec_with_strategy
 
@@ -31,6 +33,21 @@ def _pi_rpc_spec(project: Path):
         },
         max_parallel=2,
     )
+
+
+def test_goal_monitor_scope_prefers_current_goal_over_historical_run(tmp_path: Path) -> None:
+    from goal_plus.bootstrap import build_scope_state
+    from goal_plus.infrastructure.monitor_inputs import _monitor_scope
+
+    goal = FileGoalPlusRuntime(tmp_path).create_goal("Inspect current scope")
+    state = build_scope_state(tmp_path)
+    state.write({"scope_id": "scope_old", "run_ids": ["run_old"],
+                 "state": "closed", "created_at": "2026-01-01T00:00:00Z"})
+    state.write({"scope_id": "scope_current", "run_ids": [goal.goal_plus_id],
+                 "state": "open", "created_at": "2026-01-02T00:00:00Z"})
+    assert _monitor_scope(tmp_path, goal, "run_old")["scope_id"] == "scope_current"
+    assert _monitor_scope(tmp_path, goal, None)["scope_id"] == "scope_current"
+    assert _monitor_scope(tmp_path, None, "run_old")["scope_id"] == "scope_old"
 
 
 def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
@@ -151,6 +168,7 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
 
     assert snapshot["run"]["run_id"] == run_id
     assert snapshot["run"]["state"] == "waiting_for_workers"
+    assert snapshot["run"]["host_cleanup"]["state"] == "not_applicable"
     assert snapshot["run"]["candidates_total"] == 2
     assert snapshot["run"]["candidates_evaluated"] == 1
     annotation = snapshot["run"]["evidence_annotations"]
@@ -172,7 +190,8 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
         "name": "random",
         "orchestration_mode": "parallel_loops",
         "worker_host": "pi-rpc",
-        "worker_agent_type": None,
+        "inner_agent": "autoresearch",
+        "legacy_worker_agent_type": None,
         "latest_plan": {
             "plan_id": plan.plan_id,
             "status": "started",
@@ -187,6 +206,12 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     assert snapshot["main_agent"]["verifier_count"] == 1
     assert snapshot["main_agent"]["estimated_cost_total"] == 0.18
     results_tsv = snapshot["candidates"][first.candidate_id]["results_tsv"]
+    assert snapshot["candidates"][first.candidate_id]["result_ledger_source"] == "gp"
+    assert snapshot["candidates"][first.candidate_id]["result_count"] == 1
+    assert (
+        snapshot["candidates"][first.candidate_id]["workspace_ledger_projection"]
+        == "results_tsv"
+    )
     assert results_tsv["path"].endswith(f"/{first.candidate_id}/results.tsv")
     assert results_tsv["exists"] is True
     assert results_tsv["row_count"] == 1
@@ -274,11 +299,11 @@ def test_pi_terminal_finalize_reports_combines_worker_annotator_and_main_usage(
         agent_session_id=session.agent_session_id,
         hypothesis="Produce annotator usage",
     )
-    annotation = search._load_evidence_annotation_task(
+    annotation = search.annotation.task(
         run_id, candidate.candidate_id, 1
     )
     assert annotation is not None
-    search._write_evidence_annotation_task(
+    search.annotation.tasks.write_task(
         annotation.model_copy(
             update={
                 "attempts": 1,
@@ -296,7 +321,11 @@ def test_pi_terminal_finalize_reports_combines_worker_annotator_and_main_usage(
     goals = FileGoalPlusRuntime(runtime_root)
     goal = goals.create_goal("Report complete Goal Plus model usage")
     goals.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
-    goals.set_status(goal.goal_plus_id, status="complete", reason="fixture complete")
+    goals.set_status(
+        goal.goal_plus_id,
+        status="abandoned",
+        reason="synthetic run intentionally omits promotion",
+    )
     search.report(run_id)
     preliminary_html = (runtime_root / "runs" / run_id / "report.html").read_text(
         encoding="utf-8"
@@ -416,7 +445,10 @@ def test_goal_plus_monitor_snapshot_aggregates_multiple_search_tasks(
     second_plan = search_runtime.plan_next(second_run_id, requested_k=2)
     search_runtime.start_batch(second_run_id, second_plan.plan_id)
     goal_runtime.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, second_run_id)
-    goal_runtime.set_status(goal.goal_plus_id, status="complete", reason="simulate stale state")
+    stale = goal_runtime.status(goal.goal_plus_id)
+    goal_runtime.state.write_goal(
+        stale.model_copy(update={"status": "complete", "next_action": None})
+    )
 
     snapshot = goal_plus_monitor_snapshot(
         root_dir=runtime_root,
@@ -509,6 +541,42 @@ def test_goal_plus_monitor_snapshot_is_exposed_to_mcp_and_pi_facade(tmp_path: Pa
     assert result["run"]["run_id"] == run_id
     assert result["strategy"]["name"] == "random"
     assert result["strategy"]["latest_plan"] is None
+
+
+def test_goal_plus_monitor_snapshot_projects_host_execution_scope(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    runtime_root = tmp_path / ".search"
+    runtime = FileSearchRuntime(runtime_root)
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    scope = ensure_execution_scope(
+        root_dir=runtime_root,
+        host="pi",
+        owner_session_id="monitor-owner",
+        owner_pid=os.getpid(),
+        run_id=run_id,
+        start_guardian=False,
+    )
+    close_execution_scope(
+        root_dir=runtime_root,
+        scope_id=scope["scope_id"],
+        reason="monitor-test",
+    )
+
+    snapshot = goal_plus_monitor_snapshot(root_dir=runtime_root, run_id=run_id)
+
+    assert snapshot["execution_scope"] == {
+        "scope_id": scope["scope_id"],
+        "host": "pi",
+        "owner_session_id": "monitor-owner",
+        "state": "closed",
+        "active_count": 0,
+        "close_reason": "monitor-test",
+        "cleanup_errors": [],
+        "updated_at": snapshot["execution_scope"]["updated_at"],
+    }
 
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]

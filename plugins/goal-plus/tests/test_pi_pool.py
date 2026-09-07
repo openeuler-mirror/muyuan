@@ -2,29 +2,47 @@ from __future__ import annotations
 
 import calendar
 import os
-from pathlib import Path
 import threading
 import time
+from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
 import goal_plus.pi_pool as pi_pool
 from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.host_scope import close_run_candidates, ensure_execution_scope
+from goal_plus.models import SearchSpec
 from goal_plus.pi_pool import (
     close_pi_search_pool,
     continue_pi_search_pool,
     open_pi_search_pool,
-    snapshot_pi_search_pool,
     run_pool_worker,
+    snapshot_pi_search_pool,
     wait_any_pi_search_pool,
 )
-from goal_plus.models import SearchSpec
-from goal_plus.runtime import FileSearchRuntime, exclusive_file_lock, load_json, utc_timestamp, write_json
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json, write_json
+from goal_plus.infrastructure.clock import utc_timestamp
 from tests.test_pi_driver import _make_project, _pi_rpc_spec_with_budget
 
-
 pytestmark = pytest.mark.pi
+
+
+@pytest.fixture(autouse=True)
+def scripted_pool_processes(monkeypatch):
+    """Existing pool policy tests execute jobs in threads or in the test process."""
+    inspect = pi_pool._job_process
+
+    def process(root, pool_id, job):
+        if job.get("pid") == os.getpid():
+            if job["status"] in pi_pool.ACTIVE_JOB_STATES:
+                return SimpleNamespace(running=lambda: True)
+            return None
+        return inspect(root, pool_id, job)
+
+    monkeypatch.setattr(pi_pool, "_job_process", process)
 
 
 def _planned_candidates(
@@ -237,6 +255,148 @@ def test_pi_pool_enforces_frozen_parallel_limit(tmp_path: Path) -> None:
             run_id=run_id,
             max_parallel=2,
         )
+
+
+def test_pi_pool_continuation_is_rejected_after_scope_run_fence(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        _pi_rpc_spec_with_budget(project, max_parallel=1),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    candidate_id = _planned_candidates(runtime, run_id, 1)[0]
+    scope = ensure_execution_scope(
+        root_dir=runtime.root_dir,
+        host="pi",
+        owner_session_id="pi-pool-owner",
+        owner_pid=os.getpid(),
+        run_id=run_id,
+        start_guardian=False,
+    )
+    opened = open_pi_search_pool(
+        root_dir=runtime.root_dir,
+        run_id=run_id,
+        execution_scope_id=scope["scope_id"],
+    )
+    close_run_candidates(
+        root_dir=runtime.root_dir,
+        scope_id=scope["scope_id"],
+        run_id=run_id,
+    )
+
+    with pytest.raises(RuntimeError, match="fenced against new host work"):
+        continue_pi_search_pool(
+            root_dir=runtime.root_dir,
+            pool_id=opened["pool_id"],
+            candidate_id=candidate_id,
+        )
+
+
+def test_pi_pool_inherits_main_native_config_from_execution_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        _pi_rpc_spec_with_budget(project, max_parallel=1),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    candidate_id = _planned_candidates(runtime, run_id, 1)[0]
+    scope = ensure_execution_scope(
+        root_dir=runtime.root_dir,
+        host="pi",
+        owner_session_id="pi-native-parent",
+        owner_pid=os.getpid(),
+        run_id=run_id,
+        native_agent_config={
+            "model_pattern": "native-main/example-model",
+            "thinking_level": "low",
+        },
+        start_guardian=False,
+    )
+    monkeypatch.setattr(pi_pool, "_launch_pool_job", lambda **_kwargs: os.getpid())
+
+    opened = open_pi_search_pool(
+        root_dir=runtime.root_dir,
+        run_id=run_id,
+        candidate_ids=[candidate_id],
+        execution_scope_id=scope["scope_id"],
+    )
+    request = load_json(
+        pi_pool._job_dir(
+            runtime.root_dir,
+            opened["pool_id"],
+            opened["submitted"][0]["job_id"],
+        )
+        / "request.json"
+    )
+
+    assert request["model_pattern"] == "native-main/example-model"
+    assert request["thinking_level"] == "low"
+
+
+def test_pi_pool_open_cannot_publish_after_scope_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        _pi_rpc_spec_with_budget(project, max_parallel=1),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    scope = ensure_execution_scope(
+        root_dir=runtime.root_dir,
+        host="pi",
+        owner_session_id="pi-open-race-owner",
+        owner_pid=os.getpid(),
+        run_id=run_id,
+        start_guardian=False,
+    )
+    validated = threading.Event()
+    release = threading.Event()
+    original = pi_pool._validate_pool_run
+
+    def blocking_validate(*args: object, **kwargs: object) -> int:
+        result = original(*args, **kwargs)
+        validated.set()
+        assert release.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(pi_pool, "_validate_pool_run", blocking_validate)
+    outcome: dict[str, object] = {}
+
+    def open_pool() -> None:
+        try:
+            outcome["result"] = open_pi_search_pool(
+                root_dir=runtime.root_dir,
+                run_id=run_id,
+                execution_scope_id=scope["scope_id"],
+            )
+        except RuntimeError as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=open_pool)
+    thread.start()
+    assert validated.wait(timeout=5)
+    close_run_candidates(
+        root_dir=runtime.root_dir,
+        scope_id=scope["scope_id"],
+        run_id=run_id,
+    )
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert isinstance(outcome.get("error"), RuntimeError)
+    assert "fenced against new host work" in str(outcome["error"])
+    assert list((runtime.root_dir / "host-pools" / "pi").glob("*/pool.json")) == []
 
 
 def test_pi_pool_continue_pins_existing_native_session(
@@ -783,7 +943,7 @@ def test_pi_pool_continuation_counts_only_new_job_verifier_runs(
     run_id = runtime.create_run(frozen.frozen_spec_id)
     candidate_id = _planned_candidates(runtime, run_id, 1)[0]
     session = runtime.start_agent_session(run_id, candidate_id)
-    runtime._write_agent_session(
+    runtime.candidate_sessions.state.write_agent_session(
         session.model_copy(update={"counters": {"verifier_runs": 3}})
     )
     opened = open_pi_search_pool(root_dir=runtime.root_dir, run_id=run_id)

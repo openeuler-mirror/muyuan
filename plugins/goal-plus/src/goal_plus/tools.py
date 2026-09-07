@@ -3,25 +3,26 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from goal_plus.goal_plus import (
-    GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED,
-    GOAL_PLUS_ENTRYPOINT_REQUIRED,
-    FileGoalPlusRuntime,
-)
-from goal_plus.models import (
-    AgentHostKind,
+from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.domain.goal_commands import GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED
+from goal_plus.domain.goal_authorization import GOAL_PLUS_ENTRYPOINT_REQUIRED
+from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.search import (
     CandidateProposal,
+    SearchSpec,
+    VerifierInvalidationReason,
+)
+from goal_plus.domain.goal import (
     GoalPlusNextAction,
     GoalPlusSpecDraft,
     GoalPlusSpecDraftInput,
     GoalPlusTriage,
     GoalPlusWorkEventKind,
-    SearchSpec,
-    ToolizationDecision,
-    VerifierInvalidationReason,
 )
+from goal_plus.domain.shared_tools import ToolizationDecision
 from goal_plus.monitor import goal_plus_monitor_snapshot
-from goal_plus.runtime import FileSearchRuntime, format_task_skill_listing
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.application.candidate_creation import format_task_skill_listing
 from goal_plus.workspaces import format_workspace_capacity_notice
 
 
@@ -84,20 +85,29 @@ class SearchTools:
         self.runtime = runtime
         self.goal_runtime = goal_runtime
 
-    def _require_search_bootstrap(self) -> None:
-        goals = self.goal_runtime or FileGoalPlusRuntime(self.runtime.root_dir)
-        goals.require_host_verified_active_goal()
-
     def _require_target(self, tool_name: str, **tool_input: Any) -> None:
         if self.goal_runtime is not None:
             self.goal_runtime.require_active_tool_target(tool_name, tool_input)
 
+    def _require_search_bootstrap(
+        self,
+        tool_name: str,
+        goal_plus_id: str,
+        **tool_input: Any,
+    ) -> None:
+        goals = self.goal_runtime or FileGoalPlusRuntime(self.runtime.root_dir)
+        goals.require_active_tool_target(
+            tool_name,
+            {"goal_plus_id": goal_plus_id, **tool_input},
+        )
+
     def search_freeze_spec(
         self,
+        goal_plus_id: str,
         spec: dict[str, Any] | SearchSpec,
         verifier_artifact_paths: list[str],
     ) -> dict[str, Any]:
-        self._require_search_bootstrap()
+        self._require_search_bootstrap("search_freeze_spec", goal_plus_id)
         parsed_spec = spec if isinstance(spec, SearchSpec) else SearchSpec.model_validate(spec)
         source_path = Path(parsed_spec.source_path).expanduser().resolve()
         artifact_paths: list[Path] = []
@@ -116,6 +126,7 @@ class SearchTools:
         frozen = self.runtime.freeze_spec(
             parsed_spec,
             artifact_paths,
+            goal_plus_id=goal_plus_id,
         )
         payload = frozen.model_dump(mode="json")
         visible = format_task_skill_listing(frozen.task_skill_paths)
@@ -133,12 +144,16 @@ class SearchTools:
 
     def search_create(
         self,
+        goal_plus_id: str,
         frozen_spec_id: str,
         source_run_id: str | None = None,
     ) -> dict[str, str]:
-        self._require_search_bootstrap()
-        if source_run_id is not None:
-            self._require_target("search_create", source_run_id=source_run_id)
+        self._require_search_bootstrap(
+            "search_create",
+            goal_plus_id,
+            source_run_id=source_run_id,
+        )
+        self.runtime.require_frozen_spec_owner(frozen_spec_id, goal_plus_id)
         return {
             "run_id": self.runtime.create_run(
                 frozen_spec_id,
@@ -184,12 +199,9 @@ class SearchTools:
     ) -> dict[str, Any]:
         from goal_plus.host_recovery import approve_recovery
         self._require_target("search_recover_candidate", run_id=run_id)
-        self.runtime._validate_recovery_ids(run_id, candidate_id)
-        record = self.runtime._load_candidate_record(run_id, candidate_id)
-        if record.recovery is None or record.recovery.recovery_id != recovery_id:
-            raise RuntimeError("RecoveryIdentityMismatch")
-        if record.recovery.state != "restored":
-            approve_recovery(self.runtime.root_dir, record.recovery)
+        recovery = self.runtime.recovery.request(run_id, candidate_id, recovery_id)
+        if recovery.state != "restored":
+            approve_recovery(self.runtime.root_dir, recovery)
         return self.runtime.recover_candidate(run_id, candidate_id, recovery_id).model_dump(mode="json")
 
     def search_list_history(
@@ -251,14 +263,12 @@ class SearchTools:
         self,
         run_id: str,
         candidate_id: str,
-        worker_agent_type: str | None = None,
         worker_budget: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._require_target("search_redispatch_candidate", run_id=run_id)
         return self.runtime.redispatch_candidate(
             run_id=run_id,
             candidate_id=candidate_id,
-            worker_agent_type=worker_agent_type,
             worker_budget=worker_budget,
         ).model_dump(mode="json")
 
@@ -295,7 +305,28 @@ class SearchTools:
             "search_get_agent_context",
             agent_session_id=agent_session_id,
         )
-        return self.runtime.get_agent_context(agent_session_id)
+        result = self.runtime.get_agent_context(agent_session_id)
+        if result.get("host") != "thinkthread" or not result.get("iteration_count"):
+            return result
+        try:
+            if not self.runtime.should_inject_global_evidence_after_verifier(
+                str(result["run_id"])
+            ):
+                return result
+            snapshot = self.runtime.get_global_evidence(
+                agent_session_id,
+                source="verifier_injected",
+            )
+        except Exception as exc:
+            result["global_evidence_injected"] = False
+            result["global_evidence_warning"] = (
+                f"Global Evidence injection failed: {type(exc).__name__}: {exc}"
+            )
+            return result
+        result["global_evidence_snapshot"] = snapshot
+        result["global_evidence_injected"] = True
+        result["global_evidence_entry_count"] = len(snapshot)
+        return result
 
     def search_get_global_evidence(
         self,
@@ -494,6 +525,25 @@ class SearchTools:
         self._require_target("search_apply_promotion", run_id=run_id)
         promotion = self.runtime.apply_promotion(run_id)
         return promotion.model_dump(mode="json")
+
+    def search_main_agent_notifications(self, run_id: str) -> dict[str, Any]:
+        return {
+            "run_id": run_id,
+            "notifications": [
+                item.model_dump(mode="json")
+                for item in self.runtime.main_agent_notifications(run_id)
+            ],
+        }
+
+    def search_ack_main_agent_notification(
+        self,
+        run_id: str,
+        notification_id: str,
+    ) -> dict[str, Any]:
+        return self.runtime.acknowledge_main_agent_notification(
+            run_id,
+            notification_id,
+        ).model_dump(mode="json")
 
     def goal_plus_monitor_snapshot(
         self,

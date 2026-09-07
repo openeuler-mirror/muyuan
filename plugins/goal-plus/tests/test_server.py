@@ -96,7 +96,13 @@ def test_invalidate_run_and_successor_expose_contract_fields(tmp_path: Path) -> 
     invalidation = tools["search_invalidate_run"].parameters
 
     assert "source_run_id" in create_properties
-    assert set(create_properties) == {"frozen_spec_id", "source_run_id"}
+    assert set(create_properties) == {
+        "goal_plus_id",
+        "frozen_spec_id",
+        "source_run_id",
+    }
+    assert "goal_plus_id" in tools["search_freeze_spec"].parameters["required"]
+    assert "goal_plus_id" in tools["search_create"].parameters["required"]
     assert "goal_plus_list_models" in tools
     assert set(invalidation["required"]) == {
         "run_id",
@@ -202,7 +208,7 @@ def test_mcp_returns_large_worker_context_once_as_compact_text(
     )
 
 
-def test_redispatch_candidate_exposes_worker_overrides(tmp_path: Path) -> None:
+def test_redispatch_candidate_preserves_frozen_binding(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
     tools = asyncio.run(tools_by_name(mcp))
@@ -212,7 +218,8 @@ def test_redispatch_candidate_exposes_worker_overrides(tmp_path: Path) -> None:
     assert "run_id" in properties
     assert "candidate_id" in properties
     assert "directive" not in properties
-    assert "worker_agent_type" in properties
+    assert "worker_agent_type" not in properties
+    assert "inner_agent" not in properties
     assert "worker_budget" in properties
 
 

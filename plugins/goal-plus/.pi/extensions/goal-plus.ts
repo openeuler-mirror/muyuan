@@ -1,8 +1,12 @@
+import { LooseObject, RuntimeToolSchemas, RuntimeToolDescriptions } from "./lib/goal-plus-schemas.ts";
+import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, projectModuleInvocation, parseJsonObject, commandFailure, runJsonCli, runHostCommandCli } from "./lib/goal-plus-transport.ts";
+import { THINKTHREAD_GOAL_PLUS_PROTOCOL, requestWorkerTool } from "./lib/goal-plus-thinkthread-rpc.ts";
 import { parseArgs, type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { type TSchema, Type } from "typebox";
 import {
 	buildPiCompletionPresentation,
@@ -16,8 +20,11 @@ import {
 } from "./lib/goal-plus-progress.ts";
 
 const role = process.env.GOAL_PLUS_PI_ROLE || "main";
-const runtimeRoot = process.env.GOAL_PLUS_ROOT || ".gp";
-const sourcePath = process.env.GOAL_PLUS_SOURCE_PATH;
+const isThinkThreadProfile = Boolean(process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY);
+const isThinkThreadWorker = role === "worker" && isThinkThreadProfile;
+
+
+
 const workerContinueUntilMs = Number(process.env.GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS || "0");
 const progressPreviewMode = (() => {
 	const value = process.env.GOAL_PLUS_UI_PREVIEW?.trim().toLowerCase();
@@ -47,6 +54,18 @@ let cachedGoalStatus: GoalPlusStatusPayload | undefined;
 let continuationCount = 0;
 let workerContinuationCount = 0;
 let workerAllocationDecisionId: string | undefined;
+let workerRegistrationSent = false;
+let workerSdkModulePromise: Promise<any> | undefined;
+let workerSdkClientPromise: Promise<any> | undefined;
+const workerAcknowledgedDispatches = new Set<string>();
+let workerRpcTail: Promise<void> = Promise.resolve();
+let workerActiveDispatchNonce: string | undefined;
+let workerVerifierSubmitted = false;
+let workerMissingAttemptContinuationSent = false;
+let workerInnerGitBinding: ThinkThreadInnerGitBinding | undefined;
+let workerInnerGitInitializedDispatch: string | undefined;
+const stagedPublicationNotifications: Array<{ runId: string; notificationId: string }> = [];
+const presentedPublicationNotifications = new Set<string>();
 let activeGoalStartedAt: string | undefined;
 let activeGoalStartEntryCount = 0;
 let goalPlusSessionAuthorized = false;
@@ -54,758 +73,70 @@ let lastMainStopReason: string | undefined;
 let mainTurnSignal: AbortSignal | undefined;
 let suppressedContinuationAbort = false;
 let mainStartPending = false;
+let executionScopeId: string | undefined;
 
-const INSTALL_HINT =
-	'Install this project into the Python environment that launches Pi: python -m pip install -e ".[dev]".';
-const LooseObject = Type.Object({}, { additionalProperties: true });
-const GoalPlusConfidence = Type.Union([Type.Literal("high"), Type.Literal("medium"), Type.Literal("low")]);
-const GoalPlusRecommendedPhase = Type.Union([
-	Type.Literal("goal"),
-	Type.Literal("spec_discovery"),
-	Type.Literal("search"),
-]);
-const GoalPlusDiscoveryOrigin = Type.Union([Type.Literal("initial"), Type.Literal("in_progress")]);
-const GoalPlusFinalCheckerHost = Type.Union([Type.Literal("codex"), Type.Literal("pi")]);
-const GoalPlusTriage = Type.Object(
-	{
-		is_optimization: Type.Boolean(),
-		confidence: GoalPlusConfidence,
-		recommended_phase: GoalPlusRecommendedPhase,
-		identified_at: Type.Optional(GoalPlusDiscoveryOrigin),
-		scenario: Type.Optional(Type.String()),
-		reasons: Type.Optional(Type.Array(Type.String())),
-		missing: Type.Optional(Type.Array(Type.String())),
-	},
-	{ additionalProperties: false },
-);
-const GoalPlusNextAction = Type.Object(
-	{
-		kind: Type.String(),
-		description: Type.String(),
-		required: Type.Optional(Type.Boolean()),
-		metadata: Type.Optional(LooseObject),
-	},
-	{ additionalProperties: false },
-);
-const GoalPlusWorkEvent = Type.Union([
-	Type.Literal("dispatch"),
-	Type.Literal("bind"),
-	Type.Literal("message"),
-	Type.Literal("result"),
-	Type.Literal("rework"),
-	Type.Literal("accepted"),
-	Type.Literal("failed"),
-	Type.Literal("cancelled"),
-]);
-const PositiveInteger = Type.Integer({ exclusiveMinimum: 0 });
-const NullableString = Type.Union([Type.String(), Type.Null()]);
-const NullablePositiveInteger = Type.Union([PositiveInteger, Type.Null()]);
-const VerifierRole = Type.Union([
-	Type.Literal("validity_gate"),
-	Type.Literal("process_gate"),
-	Type.Literal("ranking_signal"),
-	Type.Literal("diagnostic_signal"),
-	Type.Literal("promotion_gate"),
-	Type.Literal("anti_cheat_gate"),
-]);
-const FeedbackPolicy = Type.Union([
-	Type.Literal("visible_to_workers"),
-	Type.Literal("summary_only"),
-	Type.Literal("final_only"),
-]);
-const VerifierCommand = Type.Object(
-	{
-		name: Type.String({ minLength: 1 }),
-		role: VerifierRole,
-		command: Type.Array(Type.String(), { minItems: 1 }),
-		cwd: Type.Optional(Type.String()),
-		timeout_seconds: Type.Optional(PositiveInteger),
-		feedback_policy: Type.Optional(FeedbackPolicy),
-		expected_outputs: Type.Optional(Type.Array(Type.String())),
-		resource_lock: Type.Optional(Type.String({ minLength: 1 })),
-	},
-	{ additionalProperties: false },
-);
-const EditSurface = Type.Object(
-	{
-		allow: Type.Array(Type.String(), { minItems: 1 }),
-		deny: Type.Optional(Type.Array(Type.String())),
-		max_file_changes: Type.Optional(NullablePositiveInteger),
-	},
-	{ additionalProperties: false },
-);
-const DevicePoolSpec = Type.Object(
-	{
-		pool_id: Type.String({
-			minLength: 1,
-			pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
-		}),
-	},
-	{ additionalProperties: false },
-);
-const SearchBudget = Type.Object(
-	{
-		max_parallel: Type.Integer({
-			exclusiveMinimum: 0,
-			description:
-				"一个 Search run 的初始 candidate 数和实时活跃 candidate 上限 K。",
-		}),
-		max_candidates: Type.Optional(
-			Type.Union([PositiveInteger, Type.Null()], {
-				description:
-					"累计唯一 candidate 上限；null 表示不限制，有界值必须大于等于 max_parallel。",
-			}),
-		),
-		max_tokens: Type.Optional(NullablePositiveInteger),
-	},
-	{ additionalProperties: false },
-);
-const WorkerBudget = Type.Object(
-	{
-		max_runtime_seconds: Type.Optional(NullablePositiveInteger),
-		max_turns: Type.Optional(NullablePositiveInteger),
-		on_exceed: Type.Optional(Type.Literal("interrupt")),
-		min_runtime_seconds: Type.Optional(NullablePositiveInteger),
-		min_verifier_runs: Type.Optional(NullablePositiveInteger),
-	},
-	{ additionalProperties: false },
-);
-const SearchSchedulerSpec = Type.Object(
-	{
-		host: Type.Union([
-			Type.Literal("codex"),
-			Type.Literal("pi-rpc"),
-		]),
-		model: Type.String({ minLength: 1 }),
-		reasoning_effort: Type.String({ minLength: 1 }),
-		timeout_seconds: PositiveInteger,
-		reward: Type.String({ minLength: 1 }),
-		allocation: Type.String({ minLength: 1 }),
-	},
-	{ additionalProperties: false },
-);
-const CandidateProposal = Type.Object(
-	{
-		intent: Type.String({ minLength: 1 }),
-		hypothesis: Type.Optional(NullableString),
-		expected_tradeoff: Type.Optional(Type.String()),
-		instructions: Type.Optional(Type.Array(Type.String())),
-		metadata: Type.Optional(LooseObject),
-	},
-	{ additionalProperties: false },
-);
-const WorkerLaunch = Type.Object(
-	{
-		model: Type.Optional(NullableString),
-		reasoning_effort: Type.Optional(NullableString),
-		service_tier: Type.Optional(NullableString),
-	},
-	{ additionalProperties: false },
-);
-const EvidenceAnnotatorProvider = Type.Object(
-	{
-		provider_id: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9_-]+$" })),
-		name: Type.Optional(Type.String({ minLength: 1 })),
-		base_url: Type.String({ minLength: 1 }),
-		api_key_env: Type.Optional(Type.String({ minLength: 1 })),
-		wire_api: Type.Optional(Type.String({ minLength: 1 })),
-	},
-	{ additionalProperties: false },
-);
-const EvidenceAnnotator = Type.Object(
-	{
-		model: Type.Optional(NullableString),
-		pi_provider: Type.Optional(NullableString),
-		reasoning_effort: Type.Optional(NullableString),
-		timeout_seconds: Type.Optional(PositiveInteger),
-		provider: Type.Optional(Type.Union([EvidenceAnnotatorProvider, Type.Null()])),
-	},
-	{ additionalProperties: false },
-);
-const ModelSpec = Type.Object(
-	{
-		model: Type.String({ minLength: 1 }),
-		count: Type.Optional(PositiveInteger),
-		provider: Type.Optional(NullableString),
-		adapter_version: Type.Optional(NullableString),
-		reasoning_effort: Type.Optional(NullableString),
-		service_tier: Type.Optional(NullableString),
-		context_policy: Type.Optional(LooseObject),
-	},
-	{ additionalProperties: false },
-);
-const StrategySpec = Type.Object(
-	{
-		name: Type.Optional(Type.String({ minLength: 1 })),
-		orchestration_mode: Type.Optional(
-			Type.Union([
-				Type.Literal("parallel_loops"),
-				Type.Literal("adaptive_search"),
-			]),
-		),
-		worker_host: Type.Optional(Type.Literal("pi-rpc")),
-		worker_agent_type: Type.Optional(NullableString),
-		worker_budget: Type.Optional(Type.Union([WorkerBudget, Type.Null()])),
-		worker_launch: Type.Optional(Type.Union([WorkerLaunch, Type.Null()])),
-		evidence_annotator: Type.Optional(EvidenceAnnotator),
-		models: Type.Optional(Type.Array(ModelSpec)),
-		search_scheduler: Type.Optional(Type.Union([SearchSchedulerSpec, Type.Null()])),
-		config: Type.Optional(LooseObject),
-	},
-	{ additionalProperties: false },
-);
-const WorkspaceSpec = Type.Object(
-	{
-		backend: Type.Optional(Type.Union([Type.Literal("copy"), Type.Literal("git_worktree")])),
-		promotion_mode: Type.Optional(Type.Union([Type.Literal("apply"), Type.Literal("artifact_only")])),
-	},
-	{ additionalProperties: false },
-);
-const SharedDirSpec = Type.Object(
-	{
-		enabled: Type.Boolean(),
-		max_tools_per_iteration: Type.Optional(PositiveInteger),
-		max_pending_revisions_per_family: Type.Optional(Type.Literal(1)),
-		max_published_versions_per_family: Type.Optional(Type.Integer({ minimum: 1, maximum: 32 })),
-		max_files_per_iteration: Type.Optional(PositiveInteger),
-		max_path_entries_per_iteration: Type.Optional(PositiveInteger),
-		max_depth: Type.Optional(PositiveInteger),
-		max_bytes_per_iteration: Type.Optional(PositiveInteger),
-	},
-	{ additionalProperties: false },
-);
-const ToolizationSignal = Type.Union([
-	Type.Literal("repeated_workflow"),
-	Type.Literal("domain_construction_or_probe"),
-	Type.Literal("behavior_or_invariant_checker"),
-	Type.Literal("reproducer_fixture_or_case_generator"),
-	Type.Literal("parser_trace_or_comparator"),
-	Type.Literal("peer_setup_or_feedback_reduction"),
-]);
-const ToolizationExclusion = Type.Union([
-	Type.Literal("single_common_command"),
-	Type.Literal("logic_free_wrapper"),
-	Type.Literal("restricted_artifact"),
-	Type.Literal("candidate_private_state"),
-	Type.Literal("duplicate_snapshot"),
-	Type.Literal("no_toolizable_material"),
-	Type.Literal("existing_family_sufficient"),
-	Type.Literal("no_material_tool_delta"),
-	Type.Literal("draft_not_ready"),
-	Type.Literal("max_published_versions_reached"),
-]);
-const ToolizationDecision = Type.Object(
-	{
-		outcome: Type.Union([Type.Literal("staged"), Type.Literal("not_applicable")]),
-		signals: Type.Array(ToolizationSignal, {
-			maxItems: 6,
-			description: "使用六个 capability-oriented toolization signal。",
-		}),
-		exclusion: Type.Optional(Type.Union([ToolizationExclusion, Type.Null()])),
-		rationale: Type.String({ minLength: 1, maxLength: 1000 }),
-		tool_names: Type.Array(Type.String({ minLength: 1, maxLength: 120 }), { maxItems: 16 }),
-	},
-	{ additionalProperties: false },
-);
-const SearchSpecSchema = Type.Object(
-	{
-		objective: Type.String({ minLength: 1 }),
-		metric_name: Type.String({ minLength: 1 }),
-		metric_direction: Type.Union([Type.Literal("minimize"), Type.Literal("maximize")]),
-		source_path: Type.String({ minLength: 1 }),
-		edit_surface: EditSurface,
-		budget: SearchBudget,
-		process_verifiers: Type.Array(VerifierCommand, { minItems: 1 }),
-		promotion_verifiers: Type.Optional(Type.Array(VerifierCommand)),
-		device_pools: Type.Optional(Type.Array(DevicePoolSpec)),
-		candidate_acceptance: Type.Optional(
-			Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { maxItems: 32 }),
-		),
-		constraints: Type.Optional(LooseObject),
-		root_hypotheses: Type.Optional(Type.Array(Type.String())),
-		strategy: Type.Optional(StrategySpec),
-		workspace: Type.Optional(WorkspaceSpec),
-		shared_dir: Type.Optional(SharedDirSpec),
-	},
-	{ additionalProperties: false },
-);
-const SearchSpecDraftSchema = Type.Partial(SearchSpecSchema);
-const GoalPlusSpecDraft = Type.Object(
-	{
-		baseline: LooseObject,
-		metric: LooseObject,
-		correctness_gate: LooseObject,
-		edit_surface: LooseObject,
-		verifier_artifacts: Type.Optional(Type.Array(Type.String())),
-		search_spec: SearchSpecDraftSchema,
-		promotion_rule: Type.String(),
-		confidence: GoalPlusConfidence,
-		origin: Type.Optional(GoalPlusDiscoveryOrigin),
-		open_questions: Type.Optional(Type.Array(Type.String())),
-	},
-	{ additionalProperties: false },
-);
-const RuntimeToolSchemas: Record<string, TSchema> = {
-	goal_plus_create: Type.Object(
-		{
-			raw_goal: Type.String(),
-			source_path: Type.Optional(NullableString),
-			policy: Type.Optional(LooseObject),
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_status: Type.Object({ goal_plus_id: Type.String() }, { additionalProperties: false }),
-	goal_plus_update_goal: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			raw_goal: Type.String(),
-			expected_revision: Type.Integer(),
-			reason: Type.Optional(NullableString),
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_monitor_snapshot: Type.Object(
-		{
-			goal_plus_id: Type.Optional(Type.String()),
-			run_id: Type.Optional(Type.String()),
-			stale_after_seconds: Type.Optional(Type.Number()),
-			feature_plugins: Type.Optional(Type.Array(Type.String())),
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_list_models: Type.Object(
-		{
-			host: Type.Union([Type.Literal("codex"), Type.Literal("pi-rpc")]),
-			query: Type.Optional(Type.String()),
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_record_triage: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			triage: GoalPlusTriage,
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_record_work_event: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			work_item_id: Type.String(),
-			event: GoalPlusWorkEvent,
-			summary: Type.String({ minLength: 1, maxLength: 4000 }),
-			host: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
-			task_name: Type.Optional(Type.String()),
-			agent_id: Type.Optional(Type.String()),
-			attempt_id: Type.Optional(Type.String()),
-			generation: Type.Optional(PositiveInteger),
-			launch_ttl_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 3600 })),
-			transcript_path: Type.Optional(Type.String()),
-			evidence: Type.Optional(Type.Array(LooseObject)),
-			metadata: Type.Optional(LooseObject),
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_save_spec_draft: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			spec_draft: GoalPlusSpecDraft,
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_link_search_run: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			frozen_spec_id: Type.String(),
-			run_id: Type.String(),
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_record_search_result: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			run_id: Type.String(),
-			selected_candidate_id: Type.Optional(Type.String()),
-			report_path: Type.Optional(Type.String()),
-			promotion_artifact_path: Type.Optional(Type.String()),
-			summary: Type.Optional(Type.String()),
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_prepare_final_check: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			checker_host: GoalPlusFinalCheckerHost,
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_submit_final_check: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			check_id: Type.String(),
-			goal_revision: Type.Number(),
-			verdict: Type.Union([
-				Type.Literal("pass"),
-				Type.Literal("fail"),
-				Type.Literal("interrupted"),
-			]),
-			summary: Type.String(),
-			findings: Type.Optional(Type.Array(LooseObject)),
-			evidence: Type.Optional(Type.Array(LooseObject)),
-			checker_metadata: Type.Optional(LooseObject),
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_set_status: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			status: Type.Union([
-				Type.Literal("active"),
-				Type.Literal("needs_user"),
-				Type.Literal("blocked"),
-				Type.Literal("complete"),
-				Type.Literal("abandoned"),
-			]),
-			reason: Type.Optional(Type.String()),
-			evidence: Type.Optional(Type.Array(LooseObject)),
-			next_action: Type.Optional(GoalPlusNextAction),
-		},
-		{ additionalProperties: false },
-	),
-	goal_plus_gate: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			event: Type.Union([
-				Type.Literal("stop"),
-				Type.Literal("subagent_stop"),
-				Type.Literal("pre_tool_use"),
-				Type.Literal("user_prompt_submit"),
-			]),
-			context: LooseObject,
-		},
-		{ additionalProperties: false },
-	),
-	search_freeze_spec: Type.Object(
-		{
-			spec: SearchSpecSchema,
-			verifier_artifact_paths: Type.Array(Type.String()),
-		},
-		{ additionalProperties: false },
-	),
-	search_create: Type.Object(
-		{
-			frozen_spec_id: Type.String(),
-			source_run_id: Type.Optional(
-				Type.Union(
-					[Type.String({ pattern: "^run_" }), Type.Null()],
-					{
-						description:
-							"初始 run 必须省略 source_run_id，或在 strict schema 下传 null；仅后继 run 传入真实已存在的 run_* ID。",
-					},
-				),
-			),
-		},
-		{ additionalProperties: false },
-	),
-	search_status: Type.Object({ run_id: Type.String() }, { additionalProperties: false }),
-	search_invalidate_run: Type.Object(
-		{
-			run_id: Type.String(),
-			reason: Type.Union([
-				Type.Literal("verifier_contract_invalid"),
-				Type.Literal("verifier_coverage_inadequate"),
-				Type.Literal("verifier_nondeterministic"),
-				Type.Literal("verifier_target_mismatch"),
-				Type.Literal("verifier_infrastructure_failure"),
-			]),
-			summary: Type.String({ minLength: 1 }),
-			evidence: Type.Array(LooseObject, { minItems: 1 }),
-		},
-		{ additionalProperties: false },
-	),
-	search_list_history: Type.Object(
-		{
-			run_id: Type.String(),
-			top_n: Type.Optional(Type.Number()),
-			sort_by: Type.Optional(Type.String()),
-		},
-		{ additionalProperties: false },
-	),
-	search_plan_next: Type.Object(
-		{
-			run_id: Type.String(),
-			requested_k: Type.Optional(
-				Type.Integer({
-					exclusiveMinimum: 0,
-					description:
-						"仅为本规划轮次请求的候选数。运行时按 min(requested_k, 剩余候选总预算, budget.max_parallel) 进行规划。默认值 4 是 batch size 请求，不是整个 run 的预算。",
-				}),
-			),
-		},
-		{ additionalProperties: false },
-	),
-	search_start_batch: Type.Object(
-		{
-			run_id: Type.String(),
-			plan_id: Type.String(),
-			proposals: Type.Optional(Type.Array(CandidateProposal)),
-		},
-		{ additionalProperties: false },
-	),
-	search_start_agent_session: Type.Object(
-		{
-			run_id: Type.String(),
-			candidate_id: Type.String(),
-			directive: Type.Optional(Type.Union([Type.String(), LooseObject])),
-			worker_budget: Type.Optional(WorkerBudget),
-		},
-		{ additionalProperties: false },
-	),
-	search_recovery_status: Type.Object({ run_id: Type.String() }, { additionalProperties: false }),
-	search_prepare_recovery: Type.Object({
-		run_id: Type.String(), candidate_id: Type.String(),
-	}, { additionalProperties: false }),
-	search_recover_candidate: Type.Object({
-		run_id: Type.String(), candidate_id: Type.String(), recovery_id: Type.String(),
-	}, { additionalProperties: false }),
-		search_redispatch_candidate: Type.Object(
-			{
-				run_id: Type.String(),
-				candidate_id: Type.String(),
-				worker_agent_type: Type.Optional(Type.String()),
-			worker_budget: Type.Optional(LooseObject),
-		},
-		{ additionalProperties: false },
-	),
-	search_bind_agent_handle: Type.Object(
-		{
-			agent_session_id: Type.String(),
-			handle: LooseObject,
-		},
-		{ additionalProperties: false },
-	),
-		search_continue_agent_session: Type.Object(
-			{
-				agent_session_id: Type.String(),
-				worker_budget: Type.Optional(WorkerBudget),
-		},
-		{ additionalProperties: false },
-	),
-	search_get_agent_context: Type.Object({ agent_session_id: Type.String() }, { additionalProperties: false }),
-	search_get_global_evidence: Type.Object(
-		{ agent_session_id: Type.String() },
-		{ additionalProperties: false },
-	),
-	search_reference_open: Type.Object(
-		{
-			agent_session_id: Type.String(),
-			source_candidate_id: Type.String(),
-			source_iteration: PositiveInteger,
-		},
-		{ additionalProperties: false },
-	),
-	search_copy_shared_tool: Type.Object(
-		{
-			agent_session_id: Type.String(),
-			tool_id: Type.String(),
-			snapshot_hash: Type.String(),
-		},
-		{ additionalProperties: false },
-	),
-	search_get_evidence_detail: Type.Object(
-		{
-			agent_session_id: Type.String(),
-			candidate_id: Type.String(),
-			iteration: PositiveInteger,
-		},
-		{ additionalProperties: false },
-	),
-	search_stage_shared_tool: Type.Object(
-		{
-			agent_session_id: Type.String(),
-			name: Type.String({ minLength: 1, maxLength: 120 }),
-			summary: Type.String({ minLength: 1, maxLength: 500 }),
-			entrypoint: Type.String({ minLength: 1, maxLength: 300 }),
-			candidate_relative_source_paths: Type.Array(Type.String({ minLength: 1 }), {
-				minItems: 1,
-			}),
-			publication_intent: Type.Optional(
-				Type.Union([
-					Type.Literal("new"),
-					Type.Literal("capability_extension"),
-					Type.Literal("adoption_fix"),
-					Type.Literal("contract_change"),
-				]),
-			),
-			supersedes_tool_id: Type.Optional(Type.String({ minLength: 1 })),
-			capability_ids: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 160 }), {
-				maxItems: 32,
-				uniqueItems: true,
-			})),
-			coverage_keys: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 160 }), {
-				maxItems: 64,
-				uniqueItems: true,
-			})),
-		},
-		{ additionalProperties: false },
-	),
-	search_get_agent_observability: Type.Object(
-		{ agent_session_id: Type.String() },
-		{ additionalProperties: false },
-	),
-	search_run_verifier: Type.Object(
-		{
-			run_id: Type.String(),
-			candidate_id: Type.String(),
-			scope: Type.Optional(Type.Union([Type.Literal("process"), Type.Literal("promotion")])),
-			agent_session_id: Type.Optional(Type.String()),
-			hypothesis: Type.Optional(Type.String()),
-			toolization_decision: Type.Optional(ToolizationDecision),
-		},
-		{ additionalProperties: false },
-	),
-	search_list_iterations: Type.Object(
-		{
-			agent_session_id: Type.String(),
-		},
-		{ additionalProperties: false },
-	),
-	search_list_allocation_decisions: Type.Object(
-		{
-			run_id: Type.String(),
-			status: Type.Optional(Type.Union([
-				Type.Literal("pending"),
-				Type.Literal("applied"),
-			])),
-		},
-		{ additionalProperties: false },
-	),
-	search_apply_allocation_decision: Type.Object(
-		{
-			run_id: Type.String(),
-			decision_id: Type.String(),
-		},
-		{ additionalProperties: false },
-	),
-	search_select: Type.Object(
-		{ run_id: Type.String() },
-		{ additionalProperties: false },
-	),
-	search_report: Type.Object({ run_id: Type.String() }, { additionalProperties: false }),
-	search_promote: Type.Object(
-		{
-			run_id: Type.String(),
-			candidate_id: Type.String(),
-		},
-		{ additionalProperties: false },
-	),
-	search_apply_promotion: Type.Object(
-		{ run_id: Type.String() },
-		{ additionalProperties: false },
-	),
-		pi_search_pool_open: Type.Object(
-			{
-				run_id: Type.String(),
-				candidate_ids: Type.Optional(Type.Array(Type.String())),
-				worker_budgets: Type.Optional(Type.Record(Type.String(), WorkerBudget)),
-			final_verify: Type.Optional(Type.Boolean()),
-			max_parallel: Type.Optional(PositiveInteger),
-		},
-		{ additionalProperties: false },
-	),
-	pi_search_pool_wait_any: Type.Object(
-		{
-			pool_id: Type.String(),
-			timeout_seconds: Type.Optional(Type.Number({ minimum: 0 })),
-		},
-		{ additionalProperties: false },
-	),
-	pi_search_pool_snapshot: Type.Object(
-		{
-			pool_id: Type.Optional(Type.String()),
-			run_id: Type.Optional(Type.String()),
-		},
-		{ additionalProperties: false },
-	),
-		pi_search_pool_continue: Type.Object(
-			{
-				pool_id: Type.String(),
-				candidate_id: Type.String(),
-				worker_budget: Type.Optional(WorkerBudget),
-				final_verify: Type.Optional(Type.Boolean()),
-		},
-		{ additionalProperties: false },
-	),
-	pi_search_pool_close: Type.Object(
-		{
-			pool_id: Type.String(),
-			mode: Type.Optional(Type.Union([Type.Literal("drain"), Type.Literal("interrupt")])),
-			timeout_seconds: Type.Optional(Type.Number({ minimum: 0 })),
-		},
-		{ additionalProperties: false },
-	),
-	pi_goal_plus_run_final_check: Type.Object(
-		{ launch: LooseObject },
-		{ additionalProperties: false },
-	),
-	pi_goal_plus_run_work_item: Type.Object(
-		{
-			goal_plus_id: Type.String(),
-			work_item_id: Type.String(),
-			task: Type.String({ minLength: 1, maxLength: 4000 }),
-			max_runtime_seconds: Type.Optional(Type.Integer({ minimum: 30, maximum: 3600 })),
-		},
-		{ additionalProperties: false },
-	),
-};
-const RuntimeToolDescriptions: Record<string, string> = {
-	search_recovery_status: "读取 Search 各 candidate 的结算检查点和旧 worker 绑定，不修改运行状态。",
-	search_prepare_recovery: "固定中断 candidate 的恢复点并 fence 旧 worker。随后关闭旧 pool，再调用 search_recover_candidate。",
-	search_recover_candidate: "核对真实 host 静默后，通过 workspace provider 恢复结算点；幂等保留 Evidence。随后用新 pool/fresh worker 继续原 candidate。",
-	goal_plus_record_work_event:
-		"按实际发生记录带 attempt/generation fencing 的 subagent 派发、绑定、消息、结果和主 Agent 决定；首次 dispatch 自动创建记录。",
-	goal_plus_save_spec_draft:
-		"保存发现的 SearchSpec draft。固定候选使用 orchestration_mode=parallel_loops；明确需要 runtime reward/allocation 时改用 orchestration_mode=adaptive_search 并设置非 null 的 search_scheduler。max_parallel 是实时并发上限；可选 max_candidates 是累计唯一 candidate 上限，null 表示不限制。",
-	search_freeze_spec:
-		"冻结不可变的 SearchSpec、verifier bundle 和 source artifact。Git backend 先在 clean origin 运行 process verifier；第一次 search_start_batch 再在 c001 worktree 验证 relocation，通过后才创建其余 lane。bootstrap 结果不是 candidate iteration。并发 Search 下 verifier 临时文件必须放入唯一的 GOAL_PLUS_VERIFIER_TMPDIR/TMPDIR，绝不能使用固定 /tmp 路径。",
-	search_create:
-		"从 frozen_spec_id 创建 Search run。初始 run 必须省略 source_run_id，或在 strict schema 下传 null；仅在已有真实前驱时传入准确的 run_* ID，绝不能传 initial 或 in_progress。",
-	search_get_agent_context:
-		"读取当前 worker 的紧凑权威 candidate 上下文，包括 candidate_task.instructions、冻结验收合同、进程环境、近期与最佳 iteration、results.tsv 路径和条件能力。",
-	search_get_global_evidence:
-		"读取当前 run 的窄 Global Evidence 视图；任一 View 为 null 时都无需等待。",
-	search_reference_open:
-		"把一条已结算 Evidence checkout 到当前 worker 唯一的 ref-workspace。再次调用会把同一目录切到新的精确 commit；直接用普通文件和命令工具查看返回的 root，所有实现修改仍留在 candidate workspace。",
-	search_copy_shared_tool:
-		"按 Global Evidence 中的 tool_id 和 snapshot_hash 复制精确 shared-dir 快照到 candidate 临时 inbox；receipt 由下一次 worker verifier 消费。",
-	search_stage_shared_tool:
-		"把当前 candidate 的 .tmp/tool-drafts/ 中显式选择的文件安全复制到 .tmp/share-out；该工具只负责 staging，发布仍由 passing process verifier 结算。",
-	search_get_evidence_detail:
-		"按需展开一条已结算 Evidence 的 supplemental evaluation。仅当 agent context 声明该能力开启且目标行 supplemental_available=true 时调用；independent 模式只允许读取自己的 candidate。",
-	search_run_verifier:
-		"为候选运行 process verifier。必须提供一句话 hypothesis 并遵守 candidate_task.instructions。报告在 workspace/results.tsv 中追加且只追加一条已验证记录，并返回 keep/retain/discard/failure 结算；VerifierWorkspaceSideEffect 要求停止并上报。",
-	search_list_iterations:
-		"返回当前 agent session 所属 candidate 可能很大的全量 iteration 历史；只在紧凑 context、results.tsv 和 Git 无法回答旧轮次的准确 metrics、failure 或 provenance 时调用。",
-	search_list_allocation_decisions:
-		"仅当当前 FrozenSpec 使用 orchestration_mode=adaptive_search 时，只读列出其持久化 allocation decisions；不启动、停止或继续 host worker。",
-	search_apply_allocation_decision:
-		"仅当当前 FrozenSpec 使用 orchestration_mode=adaptive_search 且 runtime 已返回准确 decision 时，整批幂等应用其剪枝与派生：预检全部 action，保留 Evidence，物化所有派生 workspace，并创建 native session provenance。Pi 主 agent 只在足够执行配额内原样启动全部返回 candidate。",
-	search_invalidate_run:
-		"主 agent 确认 verifier 契约、覆盖范围、确定性、目标对齐或基础设施失败后，原子地隔离该 run。随后中断每个 host worker，等待 active worker 数归零，修复并重新冻结，再使用 source_run_id 创建后继项。",
-	search_report:
-		"生成最终 report.md 和 report.html。对已链接的 Goal Plus run，只能在 Goal Plus 记录达到终态后调用且只调用一次；独立 Search 在提升后调用。active 的已链接 Goal Plus 记录会被拒绝。",
-	search_plan_next:
-		"规划初始候选。parallel_loops 模式下只能调用一次；后续工作恢复现有候选。标准流程令 requested_k 等于 max_parallel。",
-	pi_search_pool_open:
-		"打开持久化 Pi 候选 pool，并启动完整初始候选集合。启动后立即返回，并强制执行冻结的 max_parallel 限制。",
-	pi_search_pool_wait_any:
-		"等待任一 Pi pool worker 的终态事件。candidate_ready 要求 handle 已绑定、最低累计 lease 已满足且存在持久化验证证据；最低 lease 到硬上限仍未满足时返回 timed_out。已有当前产物的 durable Evidence 时不会重复运行父级 process verifier；只对 candidate_ready 应用后续继续策略。",
-	pi_search_pool_snapshot:
-		"无需等待即可检查持久化 Pi pool 状态、active worker、终态结果和空闲 slot。主 session 中断后传入 run_id 重新发现 pool，或传入 pool_id 指定准确 pool。",
-	pi_search_pool_continue:
-		"通过显式状态重新派发，在现有工作区恢复同一条自主 Pi 候选循环；可选传入另一份单次派发预算。",
-	pi_search_pool_close:
-		"通过 drain 或中断 active worker 来关闭 Pi pool。select/promote 前必须关闭 pool。",
-};
+
+const AGENT_POSIX_CONTROL_PROTOCOL_VERSION = 2;
+const AGENT_POSIX_CONTRACT_FINGERPRINT =
+	"fcc80b665cd990f9d1e3681a9d384cb99994f2b739cd4fbddc97bdda01391131";
+const THINKTHREAD_ANNOTATION_TOOL_NAMES = [
+	"thinkthread_annotation_next",
+	"thinkthread_artifact_view_list",
+	"thinkthread_artifact_view_stat",
+	"thinkthread_artifact_view_pread",
+	"thinkthread_artifact_view_diff",
+	"thinkthread_annotation_submit",
+] as const;
+const THINKTHREAD_ANNOTATION_TOOLS = new Set<string>(THINKTHREAD_ANNOTATION_TOOL_NAMES);
+
+interface ThinkThreadInnerGitBinding {
+	protocol: "goal-plus.inner-git.v1";
+	adapter: "autoresearch-git";
+	inner_agent_id: string;
+	source_subdir: string;
+	metric_name: string;
+	initial_results_base64: string;
+	initial_result_count: number;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const MAIN_GATED_TOOLS = new Set([
 		"bash",
 		"edit",
@@ -835,6 +166,7 @@ function requiresGoalPlusAuthorization(toolName: string): boolean {
 		toolName.startsWith("goal_plus_") ||
 		toolName.startsWith("search_") ||
 		toolName.startsWith("pi_search_pool_") ||
+		toolName.startsWith("thinkthread_search_pool_") ||
 		toolName === "pi_goal_plus_run_final_check" ||
 		toolName === "pi_goal_plus_run_work_item"
 	);
@@ -845,6 +177,7 @@ interface GoalPlusNativeState {
 	continuationCount?: number;
 	startedAt?: string;
 	startEntryCount?: number;
+	stagedPublicationNotifications?: Array<{ runId: string; notificationId: string }>;
 	status?: string;
 	phase?: string;
 	updatedAt?: string;
@@ -939,19 +272,11 @@ interface PiRuntimeStartEntry {
 	captured_at: string;
 }
 
-interface CommandInvocation {
-	command: string;
-	argsPrefix: string[];
-	label: string;
-}
 
-interface CommandRuntimeContext {
-	cwd: string;
-}
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
+
+
+
 
 function numberFrom(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -1019,68 +344,15 @@ function renderPiRuntimeStartEntry(entry: PiRuntimeStartEntry, expanded: boolean
 	return lines;
 }
 
-function sourceRoot(ctx: CommandRuntimeContext): string {
-	return sourcePath || ctx.cwd;
-}
 
-function projectModuleInvocation(ctx: CommandRuntimeContext, command: string, moduleName: string): CommandInvocation {
-	const root = sourceRoot(ctx);
-	const src = join(root, "src");
-	const packageDir = join(src, "goal_plus");
-	if (existsSync(packageDir)) {
-		const code = [
-			"import sys",
-			`sys.path.insert(0, ${JSON.stringify(src)})`,
-			`from ${moduleName} import main`,
-			"raise SystemExit(main())",
-		].join("; ");
-		return { command: "python", argsPrefix: ["-c", code], label: `python -c ${moduleName}` };
-	}
-	return { command, argsPrefix: [], label: command };
-}
 
-function parseJsonObject(text: string): Record<string, unknown> | undefined {
-	const trimmed = text.trim();
-	if (!trimmed) return undefined;
-	try {
-		const parsed = JSON.parse(trimmed);
-		return isRecord(parsed) ? parsed : undefined;
-	} catch {
-		return undefined;
-	}
-}
 
-function isEnvironmentFailure(text: string): boolean {
-	const normalized = text.toLowerCase();
-	return (
-		text.includes("ModuleNotFoundError") ||
-		normalized.includes("no module named") ||
-		normalized.includes("cannot find module") ||
-		normalized.includes("command not found") ||
-		normalized.includes("enoent") ||
-		normalized.includes("not found:")
-	);
-}
 
-function commandFailure(
-	tool: string,
-	invocation: CommandInvocation,
-	result: { stdout: string; stderr: string; code: number },
-): { text: string; details: Record<string, unknown> } {
-	const output = (result.stderr || result.stdout || `${invocation.label} failed with exit code ${result.code}`).trim();
-	const parsed = parseJsonObject(output);
-	const baseError = typeof parsed?.error === "string" ? parsed.error : output;
-	const text = isEnvironmentFailure(baseError) ? `${baseError}\n\n${INSTALL_HINT}` : baseError;
-	return {
-		text,
-		details: {
-			...(parsed ?? {}),
-			tool: typeof parsed?.tool === "string" ? parsed.tool : tool,
-			ok: false,
-			error: text,
-		},
-	};
-}
+
+
+
+
+
 
 function toolParameters(name: string): TSchema {
 	return RuntimeToolSchemas[name] ?? LooseObject;
@@ -1107,78 +379,524 @@ function hostSessionDecisionFrom(value: unknown): GoalPlusHostSessionDecisionPay
 	return value as GoalPlusHostSessionDecisionPayload;
 }
 
-async function runJsonCli(pi: ExtensionAPI, ctx: CommandRuntimeContext, tool: string, args: Record<string, unknown>) {
-	const invocation = projectModuleInvocation(ctx, "goal-plus-pi-tool", "goal_plus.pi_tool");
-	const result = await pi.exec(invocation.command, [
-		...invocation.argsPrefix,
-		"--root",
-		runtimeRoot,
-		"--args-json",
-		JSON.stringify(args),
-		tool,
-	]);
-	if (result.code !== 0) {
-		const failure = commandFailure(tool, invocation, result);
-		return {
-			content: [{ type: "text" as const, text: failure.text }],
-			details: failure.details,
-		};
+
+
+async function ensureExecutionScope(
+	pi: ExtensionAPI,
+	ctx: CommandRuntimeContext,
+	runId: string,
+	nativeAgentConfig: PiNativeAgentConfig,
+): Promise<string> {
+	if (!activeGoalPlusId || !cachedGoalStatus?.active_session?.session_id) {
+		throw new Error("Execution scope requires the active Goal Plus native session");
 	}
-	const parsed = JSON.parse(result.stdout || "null");
+	const result = await runJsonCli(pi, ctx, "host_execution_scope_open", {
+		host: "pi",
+		goal_plus_id: activeGoalPlusId,
+		native_session_id: cachedGoalStatus.active_session.session_id,
+		owner_session_id: `${activeGoalPlusId}:${ctx.cwd}`,
+		owner_pid: process.pid,
+		run_id: runId,
+		native_agent_config: nativeAgentConfig,
+	});
+	if (!isRecord(result.details) || result.details.ok === false || typeof result.details.scope_id !== "string") {
+		throw new Error(String((isRecord(result.details) && result.details.error) || "Pi execution scope could not be opened"));
+	}
+	executionScopeId = result.details.scope_id;
+	return executionScopeId;
+}
+
+async function closeExecutionScope(
+	pi: ExtensionAPI,
+	ctx: CommandRuntimeContext,
+	reason: string,
+): Promise<void> {
+	if (!executionScopeId) return;
+	const closingId = executionScopeId;
+	const result = await runJsonCli(pi, ctx, "host_execution_scope_close", {
+		scope_id: closingId,
+		reason,
+	});
+	if (!isRecord(result.details) || result.details.ok === false || result.details.state !== "closed") {
+		throw new Error(String((isRecord(result.details) && result.details.error) || `Execution scope ${closingId} cleanup did not complete`));
+	}
+	executionScopeId = undefined;
+}
+
+interface PublicationNotificationPoll {
+	ok: boolean;
+	content?: string;
+	notificationIds: string[];
+}
+
+function publicationNotificationKey(runId: string, notificationId: string): string {
+	return `${runId}:${notificationId}`;
+}
+
+async function publicationNotificationContext(
+	pi: ExtensionAPI,
+	ctx: CommandRuntimeContext,
+	runId: string,
+	presentedInCurrentTurn = false,
+): Promise<PublicationNotificationPoll> {
+	const result = await runJsonCli(pi, ctx, "search_main_agent_notifications", { run_id: runId });
+	if (!isRecord(result.details) || result.details.ok === false) {
+		return { ok: false, notificationIds: [] };
+	}
+	const notifications = Array.isArray(result.details.notifications)
+		? result.details.notifications.filter(isRecord)
+		: [];
+	const lines: string[] = [];
+	const notificationIds: string[] = [];
+	for (const notification of notifications) {
+		const notificationId = stringFrom(notification.notification_id);
+		const payload = isRecord(notification.payload) ? notification.payload : {};
+		if (!notificationId || notification.state !== "pending") continue;
+		notificationIds.push(notificationId);
+		if (!stagedPublicationNotifications.some(
+			(item) => item.runId === runId && item.notificationId === notificationId,
+		)) {
+			stagedPublicationNotifications.push({ runId, notificationId });
+		}
+		if (presentedInCurrentTurn) {
+			presentedPublicationNotifications.add(publicationNotificationKey(runId, notificationId));
+		}
+		lines.push(
+			stringFrom(payload.message) ?? "Goal Plus publication state changed.",
+			`run_id: ${runId}`,
+			`notification_id: ${notificationId}`,
+			`publication_result: ${stringFrom(payload.publication_state) ?? "unknown"}`,
+		);
+		const pendingPath = stringFrom(payload.pending_artifact_path);
+		if (pendingPath) lines.push(`pending_integration: ${pendingPath}`);
+		const reportPath = stringFrom(payload.report_path);
+		if (reportPath) lines.push(`report: ${reportPath}`);
+	}
+	const pendingIds = new Set(notificationIds);
+	for (let index = stagedPublicationNotifications.length - 1; index >= 0; index -= 1) {
+		const item = stagedPublicationNotifications[index];
+		if (item.runId === runId && !pendingIds.has(item.notificationId)) {
+			stagedPublicationNotifications.splice(index, 1);
+		}
+	}
 	return {
-		content: [{ type: "text" as const, text: JSON.stringify(parsed) }],
-		details: parsed,
+		ok: true,
+		content: lines.length > 0 ? lines.join("\n") : undefined,
+		notificationIds,
 	};
 }
 
-async function runHostCommandCli(
+async function acknowledgeStagedPublicationNotifications(
 	pi: ExtensionAPI,
 	ctx: CommandRuntimeContext,
-	tool: "goal_plus_host_start" | "goal_plus_host_edit" | "goal_plus_host_control" | "goal_plus_host_session_event",
-	args: Record<string, unknown>,
-) {
-	args = { ...args, owner_pid: process.pid };
-	const invocation = projectModuleInvocation(ctx, "goal-plus-pi-tool", "goal_plus.pi_tool");
-	const capabilityToken = randomUUID();
-	const capabilityRoot = isAbsolute(runtimeRoot) ? runtimeRoot : join(ctx.cwd, runtimeRoot);
-	const capabilityDir = join(capabilityRoot, "host-entrypoint", "pi");
-	const capabilityPath = join(capabilityDir, `${capabilityToken}.json`);
-	mkdirSync(capabilityDir, { recursive: true });
-	writeFileSync(
-		capabilityPath,
-		JSON.stringify({ token: capabilityToken, issued_at_ms: Date.now() }),
-		{ encoding: "utf8", flag: "wx", mode: 0o600 },
-	);
-	const result = await (async () => {
-		try {
-			return await pi.exec(invocation.command, [
-				...invocation.argsPrefix,
-				"--root",
-				runtimeRoot,
-				"--host-entrypoint",
-				"--host-capability",
-				capabilityToken,
-				"--args-json",
-				JSON.stringify(args),
-				tool,
-			]);
-		} finally {
-			rmSync(capabilityPath, { force: true });
+	persist: boolean,
+): Promise<boolean> {
+	const presented = new Set(presentedPublicationNotifications);
+	presentedPublicationNotifications.clear();
+	let acknowledged = false;
+	for (let index = stagedPublicationNotifications.length - 1; index >= 0; index -= 1) {
+		const item = stagedPublicationNotifications[index];
+		if (!presented.has(publicationNotificationKey(item.runId, item.notificationId))) continue;
+		const result = await runJsonCli(pi, ctx, "search_ack_main_agent_notification", {
+			run_id: item.runId,
+			notification_id: item.notificationId,
+		});
+		if (isRecord(result.details) && result.details.ok !== false) {
+			stagedPublicationNotifications.splice(index, 1);
+			acknowledged = true;
 		}
-	})();
-	if (result.code !== 0) {
-		const failure = commandFailure(tool, invocation, result);
-		return {
-			content: [{ type: "text" as const, text: failure.text }],
-			details: failure.details,
-		};
 	}
-	const parsed = JSON.parse(result.stdout || "null");
+	if (persist && (acknowledged || presented.size > 0)) persistGoalState(pi);
+	return acknowledged;
+}
+
+async function workerAgentPosixClient(): Promise<any> {
+	if (!workerSdkModulePromise) {
+		const configured = process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY;
+		if (!configured) {
+			throw new Error("GOAL_PLUS_AGENT_POSIX_SDK_ENTRY is required in the worker Profile");
+		}
+		workerSdkModulePromise = import(
+			configured.startsWith("file:") ? configured : pathToFileURL(configured).href
+		);
+	}
+	const sdk = await workerSdkModulePromise;
+	if (
+		sdk.CONTROL_PROTOCOL_VERSION !== AGENT_POSIX_CONTROL_PROTOCOL_VERSION ||
+		sdk.CONTRACT_FINGERPRINT !== AGENT_POSIX_CONTRACT_FINGERPRINT
+	) {
+		throw new Error(
+			`unsupported ThinkThread Agent POSIX SDK contract: protocol=${String(sdk.CONTROL_PROTOCOL_VERSION)}, fingerprint=${String(sdk.CONTRACT_FINGERPRINT)}`,
+		);
+	}
+	if (!workerSdkClientPromise) {
+		workerSdkClientPromise = Promise.resolve(sdk.AgentPosixClient.fromEnv());
+	}
+	return workerSdkClientPromise;
+}
+
+function latestDispatchMetadata(ctx: ExtensionContext, dispatchText?: string): {
+	registrationNonce?: string;
+	dispatchNonce?: string;
+	agentSessionId?: string;
+	thinkthreadRole?: string;
+} {
+	const serialized = JSON.stringify(ctx.sessionManager.getEntries());
+	const registration = /registration_nonce=([0-9a-f-]{36})/i.exec(serialized)?.[1];
+	const currentDispatches = [
+		...(dispatchText ?? "").matchAll(/dispatch_nonce=([0-9a-f-]{36})/gi),
+	];
+	const sessionDispatches = [...serialized.matchAll(/dispatch_nonce=([0-9a-f-]{36})/gi)];
 	return {
-		content: [{ type: "text" as const, text: JSON.stringify(parsed, null, 2) }],
-		details: parsed,
+		registrationNonce: registration,
+		dispatchNonce: currentDispatches.at(-1)?.[1] ?? sessionDispatches.at(-1)?.[1],
+		agentSessionId: /agent_session_id=([A-Za-z0-9._-]+)/.exec(serialized)?.[1],
+		thinkthreadRole: /goal_plus_thinkthread_role=([A-Za-z0-9._-]+)/.exec(serialized)?.[1],
 	};
 }
+
+function innerGitBindingFromContext(
+	ctx: ExtensionContext,
+	dispatchText: string | undefined,
+): ThinkThreadInnerGitBinding | undefined {
+	const source = `${JSON.stringify(ctx.sessionManager.getEntries())}\n${dispatchText ?? ""}`;
+	const matches = [
+		...source.matchAll(/goal_plus_inner_git_binding=([A-Za-z0-9_-]+)/g),
+	];
+	const encoded = matches.at(-1)?.[1];
+	if (!encoded) return undefined;
+	let decoded: unknown;
+	try {
+		const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+		const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+		decoded = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+	} catch {
+		throw new Error("ThinkThread AutoResearch-Git binding is not valid base64url JSON");
+	}
+	if (
+		!isRecord(decoded)
+		|| decoded.protocol !== "goal-plus.inner-git.v1"
+		|| decoded.adapter !== "autoresearch-git"
+		|| typeof decoded.inner_agent_id !== "string"
+		|| decoded.inner_agent_id !== "autoresearch"
+		|| typeof decoded.source_subdir !== "string"
+		|| decoded.source_subdir.length === 0
+		|| isAbsolute(decoded.source_subdir)
+		|| decoded.source_subdir.includes("\\")
+		|| decoded.source_subdir.split("/").includes("..")
+		|| typeof decoded.metric_name !== "string"
+		|| decoded.metric_name.length === 0
+		|| typeof decoded.initial_results_base64 !== "string"
+		|| !Number.isInteger(decoded.initial_result_count)
+		|| Number(decoded.initial_result_count) < 0
+	) {
+		throw new Error("ThinkThread AutoResearch-Git binding is invalid");
+	}
+	return decoded as unknown as ThinkThreadInnerGitBinding;
+}
+
+async function runThinkThreadInnerGit(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	binding: ThinkThreadInnerGitBinding,
+	action: "initialize" | "prepare-attempt",
+	dispatchNonce?: string,
+): Promise<Record<string, unknown>> {
+	const root = sourceRoot(commandContextFrom(ctx));
+	const src = join(root, "src");
+	const packageDir = join(src, "goal_plus");
+	const argsPrefix = existsSync(join(packageDir, "inner_git.py"))
+		? ["-I", join(packageDir, "inner_git.py")]
+		: ["-I", "-m", "goal_plus.inner_git"];
+	const actionArgs = action === "initialize"
+		? [
+			"initialize",
+			"--metric-name",
+			binding.metric_name,
+			"--initial-results-base64",
+			binding.initial_results_base64,
+		]
+		: ["prepare-attempt", "--dispatch-nonce", dispatchNonce ?? ""];
+	const result = await pi.exec(
+		pythonExecutable,
+		[...argsPrefix, "--workspace", binding.source_subdir, ...actionArgs],
+		{ cwd: ctx.cwd, timeout: 60_000 },
+	);
+	const payload = parseJsonObject(result.stdout.trim().split("\n").at(-1) ?? "");
+	if (result.code !== 0 || payload?.ok !== true || payload.adapter !== "autoresearch-git") {
+		const detail = String(payload?.error || result.stderr || result.stdout || "inner Git helper failed").trim();
+		throw new Error(`ThinkThread AutoResearch-Git ${action} failed: ${detail}`);
+	}
+	return payload;
+}
+
+async function initializeThinkThreadInnerGit(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): Promise<void> {
+	if (!workerInnerGitBinding || !workerActiveDispatchNonce) return;
+	if (workerInnerGitInitializedDispatch === workerActiveDispatchNonce) return;
+	const result = await runThinkThreadInnerGit(
+		pi,
+		ctx,
+		workerInnerGitBinding,
+		"initialize",
+	);
+	if (!Number.isInteger(result.result_count)) {
+		throw new Error("ThinkThread AutoResearch-Git initialize omitted its result count");
+	}
+	workerInnerGitInitializedDispatch = workerActiveDispatchNonce;
+}
+
+async function waitForWorkerRpcTurn(prior: Promise<void>, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) throw new Error("ThinkThread worker RPC was aborted");
+	let abort!: () => void;
+	const aborted = new Promise<never>((_resolve, reject) => {
+		abort = () => reject(new Error("ThinkThread worker RPC was aborted"));
+		signal.addEventListener("abort", abort, { once: true });
+	});
+	try {
+		await Promise.race([prior, aborted]);
+	} finally {
+		signal.removeEventListener("abort", abort);
+	}
+}
+
+async function runThinkThreadWorkerTool(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	name: string,
+	params: Record<string, unknown>,
+	signal: AbortSignal,
+) {
+	const priorRpc = workerRpcTail;
+	let releaseRpc!: () => void;
+	workerRpcTail = new Promise<void>((resolve) => {
+		releaseRpc = resolve;
+	});
+	let acquired = false;
+	try {
+		await waitForWorkerRpcTurn(priorRpc, signal);
+		acquired = true;
+		if (signal.aborted) throw new Error("ThinkThread worker RPC was aborted");
+		return await runThinkThreadWorkerToolSerial(pi, ctx, name, params, signal);
+	} finally {
+		if (acquired) releaseRpc();
+		else void priorRpc.then(releaseRpc);
+	}
+}
+
+async function runThinkThreadWorkerToolSerial(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	name: string,
+	params: Record<string, unknown>,
+	signal: AbortSignal,
+) {
+	const allowed = new Set([
+		"search_get_agent_context",
+		"search_get_global_evidence",
+		"search_get_evidence_detail",
+		"search_run_verifier",
+		"search_list_iterations",
+		"thinkthread_annotation_next",
+		"thinkthread_artifact_view_list",
+		"thinkthread_artifact_view_stat",
+		"thinkthread_artifact_view_pread",
+		"thinkthread_artifact_view_diff",
+		"thinkthread_annotation_submit",
+	]);
+	if (!allowed.has(name)) {
+		throw new Error(`ThinkThread Candidate Child tool is not allowed: ${name}`);
+	}
+	try {
+		await acknowledgeThinkThreadDispatch(pi, ctx);
+	} catch (error) {
+		try {
+			await reportThinkThreadDispatchError(ctx, undefined, error);
+		} catch {
+			// Preserve the original startup error when diagnostic delivery also fails.
+		}
+		throw error;
+	}
+	const metadata = latestDispatchMetadata(ctx);
+	if (metadata.thinkthreadRole === "annotator" && !THINKTHREAD_ANNOTATION_TOOLS.has(name)) {
+		throw new Error(`ThinkThread Annotation Child tool is not allowed: ${name}`);
+	}
+	if (metadata.thinkthreadRole !== "annotator" && THINKTHREAD_ANNOTATION_TOOLS.has(name)) {
+		throw new Error(`ThinkThread Candidate Child annotation tool is not allowed: ${name}`);
+	}
+	const client = await workerAgentPosixClient();
+	const self = await client.invoke("self", {});
+	const parentId = typeof self.parentThinkthreadId === "string" ? self.parentThinkthreadId : undefined;
+	if (!parentId || parentId !== process.env.THINKTHREAD_PARENT_ID) {
+		throw new Error("ThinkThread worker RPC parent binding mismatch");
+	}
+	if (!metadata.agentSessionId) {
+		throw new Error("ThinkThread worker RPC agent_session_id is missing from the dispatch");
+	}
+	await ensureThinkThreadWorkerRegistration(client, parentId, metadata.registrationNonce);
+	const requestParams = { ...params };
+	if ("_inner_git_attempt" in requestParams) {
+		throw new Error("ThinkThread private inner Git metadata is extension-owned");
+	}
+	if (name === "search_run_verifier" && workerInnerGitBinding) {
+		if (!metadata.dispatchNonce) {
+			throw new Error("ThinkThread AutoResearch-Git attempt has no dispatch nonce");
+		}
+		requestParams._inner_git_attempt = await runThinkThreadInnerGit(
+			pi,
+			ctx,
+			workerInnerGitBinding,
+			"prepare-attempt",
+			metadata.dispatchNonce,
+		);
+	}
+	const result = await requestWorkerTool(
+		client, parentId, metadata.agentSessionId, name, requestParams, signal,
+	);
+	if (name === "search_run_verifier") workerVerifierSubmitted = true;
+	return {
+		content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+		details: result,
+	};
+}
+
+async function ensureThinkThreadWorkerRegistration(
+	client: any,
+	parentId: string,
+	registrationNonce: string | undefined,
+) {
+	if (workerRegistrationSent) return;
+	if (!registrationNonce) {
+		throw new Error("ThinkThread worker registration nonce is missing from the dispatch");
+	}
+	await client.invoke("message.send", {
+		recipientThinkthreadId: parentId,
+		text: JSON.stringify({
+			protocol: THINKTHREAD_GOAL_PLUS_PROTOCOL,
+			type: "registration",
+			registration_nonce: registrationNonce,
+		}),
+		wake: false,
+	});
+	workerRegistrationSent = true;
+}
+
+async function validateThinkThreadWorker(ctx: ExtensionContext): Promise<void> {
+	if (!isThinkThreadWorker) return;
+	const client = await workerAgentPosixClient();
+	const self = await client.invoke("self", {});
+	const parentId = typeof self.parentThinkthreadId === "string"
+		? self.parentThinkthreadId
+		: undefined;
+	if (!parentId || parentId !== process.env.THINKTHREAD_PARENT_ID) {
+		throw new Error("Goal Plus worker role does not match the authenticated ThinkThread Child");
+	}
+	const capabilities = Array.isArray(self.capabilities)
+		? self.capabilities
+			.filter((item: unknown) => isRecord(item) && typeof item.id === "string")
+			.map((item: { id: string }) => item.id)
+			.sort()
+		: [];
+	if (capabilities.length !== 1 || capabilities[0] !== "thinkthread.message") {
+		throw new Error("Goal Plus Candidate Child must have a Message-only Capability grant");
+	}
+	const metadata = latestDispatchMetadata(ctx);
+	await ensureThinkThreadWorkerRegistration(
+		client,
+		parentId,
+		metadata.registrationNonce,
+	);
+}
+
+function scopeThinkThreadWorkerTools(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	dispatchText?: string,
+): void {
+	if (!isThinkThreadWorker) return;
+	const metadata = latestDispatchMetadata(ctx);
+	const dispatchRole = /goal_plus_thinkthread_role=([A-Za-z0-9._-]+)/.exec(
+		dispatchText ?? "",
+	)?.[1] ?? metadata.thinkthreadRole;
+	if (dispatchRole === "annotator") {
+		pi.setActiveTools([...THINKTHREAD_ANNOTATION_TOOL_NAMES]);
+		return;
+	}
+	pi.setActiveTools(
+		pi.getActiveTools().filter((name) => !THINKTHREAD_ANNOTATION_TOOLS.has(name)),
+	);
+}
+
+async function acknowledgeThinkThreadDispatch(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	dispatchText?: string,
+): Promise<void> {
+	if (!isThinkThreadWorker) return;
+	const metadata = latestDispatchMetadata(ctx, dispatchText);
+	if (metadata.dispatchNonce && metadata.dispatchNonce !== workerActiveDispatchNonce) {
+		workerActiveDispatchNonce = metadata.dispatchNonce;
+		workerVerifierSubmitted = false;
+		workerMissingAttemptContinuationSent = false;
+		workerInnerGitBinding = innerGitBindingFromContext(ctx, dispatchText);
+		workerInnerGitInitializedDispatch = undefined;
+	}
+	if (metadata.dispatchNonce && !workerAcknowledgedDispatches.has(metadata.dispatchNonce)) {
+		const client = await workerAgentPosixClient();
+		const self = await client.invoke("self", {});
+		const parentId = self.parentThinkthreadId;
+		if (typeof parentId !== "string") {
+			throw new Error("Goal Plus dispatch acknowledgement requires a ThinkThread Child");
+		}
+		await ensureThinkThreadWorkerRegistration(
+			client,
+			parentId,
+			metadata.registrationNonce,
+		);
+		await client.invoke("message.send", {
+			recipientThinkthreadId: parentId,
+			text: JSON.stringify({
+				protocol: THINKTHREAD_GOAL_PLUS_PROTOCOL,
+				type: "dispatch_ack",
+				dispatch_nonce: metadata.dispatchNonce,
+			}),
+			wake: false,
+		});
+		workerAcknowledgedDispatches.add(metadata.dispatchNonce);
+	}
+	await initializeThinkThreadInnerGit(pi, ctx);
+}
+
+async function reportThinkThreadDispatchError(
+	ctx: ExtensionContext,
+	dispatchText: string | undefined,
+	error: unknown,
+): Promise<void> {
+	if (!isThinkThreadWorker) return;
+	const metadata = latestDispatchMetadata(ctx, dispatchText);
+	if (!metadata.dispatchNonce) return;
+	const client = await workerAgentPosixClient();
+	const self = await client.invoke("self", {});
+	const parentId = self.parentThinkthreadId;
+	if (typeof parentId !== "string" || parentId !== process.env.THINKTHREAD_PARENT_ID) return;
+	await ensureThinkThreadWorkerRegistration(client, parentId, metadata.registrationNonce);
+	const message = error instanceof Error ? error.message : String(error);
+	await client.invoke("message.send", {
+		recipientThinkthreadId: parentId,
+		text: JSON.stringify({
+			protocol: THINKTHREAD_GOAL_PLUS_PROTOCOL,
+			type: "dispatch_error",
+			dispatch_nonce: metadata.dispatchNonce,
+			error_type: error instanceof Error ? error.name : "Error",
+			message: message.slice(0, 2_000),
+		}),
+		wake: false,
+	});
+}
+
+
 
 async function runPiHostSessionEvent(
 	pi: ExtensionAPI,
@@ -1229,6 +947,7 @@ function persistGoalState(pi: ExtensionAPI) {
 		continuationCount,
 		startedAt: activeGoalStartedAt,
 		startEntryCount: activeGoalStartEntryCount,
+		stagedPublicationNotifications: stagedPublicationNotifications.map((item) => ({ ...item })),
 		status: cachedGoalStatus?.status,
 		phase: cachedGoalStatus?.phase,
 		updatedAt: new Date().toISOString(),
@@ -1255,11 +974,30 @@ function restoreGoalState(ctx: ExtensionContext) {
 	const stateEntry = entries
 		.filter((entry: { type: string; customType?: string }) => entry.type === "custom" && entry.customType === STATE_ENTRY_TYPE)
 		.pop() as { data?: GoalPlusNativeState } | undefined;
+	stagedPublicationNotifications.splice(0);
+	presentedPublicationNotifications.clear();
 	if (!stateEntry?.data) return;
-	activeGoalPlusId = stateEntry.data.activeGoalPlusId ?? activeGoalPlusId;
-	continuationCount = stateEntry.data.continuationCount ?? continuationCount;
-	activeGoalStartedAt = stateEntry.data.startedAt ?? activeGoalStartedAt;
-	activeGoalStartEntryCount = stateEntry.data.startEntryCount ?? activeGoalStartEntryCount;
+	activeGoalPlusId = stateEntry.data.activeGoalPlusId;
+	continuationCount = stateEntry.data.continuationCount ?? 0;
+	activeGoalStartedAt = stateEntry.data.startedAt;
+	activeGoalStartEntryCount = stateEntry.data.startEntryCount ?? 0;
+	for (const item of stateEntry.data.stagedPublicationNotifications ?? []) {
+		if (
+			!isRecord(item)
+			|| typeof item.runId !== "string"
+			|| item.runId.length === 0
+			|| typeof item.notificationId !== "string"
+			|| item.notificationId.length === 0
+		) continue;
+		if (!stagedPublicationNotifications.some(
+			(existing) => existing.runId === item.runId && existing.notificationId === item.notificationId,
+		)) {
+			stagedPublicationNotifications.push({
+				runId: item.runId,
+				notificationId: item.notificationId,
+			});
+		}
+	}
 }
 
 function activateGoal(pi: ExtensionAPI, details: unknown, startEntryCount?: number, persist = true) {
@@ -1291,6 +1029,38 @@ async function refreshActiveGoal(
 
 function isTerminalStatus(status: string | undefined): boolean {
 	return status === "complete" || status === "abandoned";
+}
+
+function clearActiveGoalState(pi: ExtensionAPI, persist: boolean): void {
+	activeGoalPlusId = undefined;
+	activeGoalStartedAt = undefined;
+	activeGoalStartEntryCount = 0;
+	continuationCount = 0;
+	stagedPublicationNotifications.splice(0);
+	presentedPublicationNotifications.clear();
+	cachedGoalStatus = undefined;
+	goalPlusSessionAuthorized = false;
+	if (persist) persistGoalState(pi);
+}
+
+function queuePublicationNotificationTurn(
+	pi: ExtensionAPI,
+	runId: string,
+	notificationIds: string[],
+): void {
+	pi.sendMessage(
+		{
+			customType: "goal-plus-publication-notification-delivery",
+			content: "处理本轮 native context 中的 Goal Plus publication 终态通知。不要恢复 Goal Plus，也不要调用 mutation tool。",
+			display: false,
+			details: {
+				run_id: runId,
+				notification_ids: notificationIds,
+				delivery: "durable_turn_boundary",
+			},
+		},
+		{ triggerTurn: true, deliverAs: "followUp" },
+	);
 }
 
 function countToolCalls(content: unknown): number {
@@ -1432,6 +1202,7 @@ function buildGoalCompletionView(
 	const statistics = task && isRecord(task.statistics) ? task.statistics : undefined;
 	const scores = statistics && isRecord(statistics.scores) ? statistics.scores : undefined;
 	const selection = statistics && isRecord(statistics.selection) ? statistics.selection : undefined;
+	const hostCleanup = task && isRecord(task.host_cleanup) ? task.host_cleanup : undefined;
 	const workerUsage = usageSummaryFromMonitor(statistics?.usage);
 	const linked = goal && isRecord(goal.linked_search)
 		? goal.linked_search
@@ -1465,6 +1236,7 @@ function buildGoalCompletionView(
 		baselineScore: optionalNumberFrom(scores?.baseline),
 		selectedScore: optionalNumberFrom(scores?.selected) ?? optionalNumberFrom(scores?.best),
 		promotionPassed: promotionVerified,
+		hostCleanupState: stringFrom(hostCleanup?.state),
 		reportPath: stringFrom(linked?.report_path) ?? stringFrom(task?.report_path),
 		htmlReportPath: stringFrom(linked?.html_report_path) ?? stringFrom(task?.html_report_path),
 		mainUsage: {
@@ -1611,7 +1383,15 @@ function buildNativeSessionContinuationPrompt(status: GoalPlusStatusPayload): st
 
 interface GoalPlusRoleModels {
 	annotator?: string;
+	workers?: string[];
 	workerDirective?: "workers" | "models";
+}
+
+type PiModel = NonNullable<ExtensionContext["model"]>;
+
+interface ResolvedGoalPlusRoleModels {
+	roleModels: GoalPlusRoleModels;
+	models: PiModel[];
 }
 
 function leadingCommandDirectives(rawGoal: string): Map<string, string> {
@@ -1656,15 +1436,36 @@ function parseGoalPlusRoleModels(rawGoal: string): GoalPlusRoleModels | undefine
 	if (!annotator && !workerModels) return undefined;
 	return {
 		annotator,
+		workers: workerModels
+			? workerModels.split(",").map((value) =>
+				value.trim().replace(/\*\d+$/, ""),
+			)
+			: undefined,
 		workerDirective: workers ? "workers" : models ? "models" : undefined,
 	};
 }
 
-function resolvePiModelReference(ctx: ExtensionContext, requested: string) {
+function piModelKey(model: PiModel): string {
+	return `${model.provider}/${model.id}`.toLowerCase();
+}
+
+function piModelMatchesReference(model: PiModel, requested: string): boolean {
 	const needle = requested.toLowerCase();
-	const available = ctx.modelRegistry.getAvailable();
+	return piModelKey(model) === needle
+		|| model.id.toLowerCase() === needle
+		|| model.name.toLowerCase() === needle;
+}
+
+function resolvePiModelReference(ctx: ExtensionContext, requested: string): PiModel {
+	const needle = requested.toLowerCase();
+	if (ctx.model && piModelMatchesReference(ctx.model, needle)) return ctx.model;
+	const availableByCanonical = new Map<string, PiModel>();
+	for (const model of ctx.modelRegistry.getAvailable()) {
+		availableByCanonical.set(piModelKey(model), model);
+	}
+	const available = [...availableByCanonical.values()];
 	const canonical = available.filter(
-		(model) => `${model.provider}/${model.id}`.toLowerCase() === needle,
+		(model) => piModelKey(model) === needle,
 	);
 	const exactIds = available.filter((model) => model.id.toLowerCase() === needle);
 	const exactNames = available.filter((model) => model.name.toLowerCase() === needle);
@@ -1681,16 +1482,108 @@ function resolvePiModelReference(ctx: ExtensionContext, requested: string) {
 function resolveGoalPlusRoleModels(
 	ctx: ExtensionContext,
 	rawGoal: string,
-): GoalPlusRoleModels | undefined {
+): ResolvedGoalPlusRoleModels | undefined {
 	const requested = parseGoalPlusRoleModels(rawGoal);
 	if (!requested) return undefined;
 	const annotator = requested.annotator
 		? resolvePiModelReference(ctx, requested.annotator)
 		: undefined;
+	const workers = requested.workers?.map((reference) =>
+		resolvePiModelReference(ctx, reference)
+	);
 	return {
-		annotator: annotator ? `${annotator.provider}/${annotator.id}` : undefined,
-		workerDirective: requested.workerDirective,
+		roleModels: {
+			annotator: annotator ? `${annotator.provider}/${annotator.id}` : undefined,
+			workers: workers?.map((model) => `${model.provider}/${model.id}`),
+			workerDirective: requested.workerDirective,
+		},
+		models: [annotator, ...(workers ?? [])].filter(
+			(model): model is PiModel => Boolean(model),
+		),
 	};
+}
+
+async function probePiModels(
+	ctx: ExtensionContext,
+	models: PiModel[],
+): Promise<void> {
+	const unique = new Map<string, PiModel>();
+	for (const model of models) {
+		unique.set(piModelKey(model), model);
+	}
+	if (unique.size === 0) return;
+	const failures = await Promise.all([...unique.values()].map(async (model) => {
+		const reference = `${model.provider}/${model.id}`;
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 25_000);
+		try {
+			const response = await ctx.modelRegistry.complete(
+				model,
+				{
+					systemPrompt: "Reply briefly. This is a connectivity preflight.",
+					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+				},
+				{
+					signal: controller.signal,
+					maxTokens: 16,
+					maxRetries: 0,
+					timeoutMs: 25_000,
+				},
+			);
+			if (response.stopReason === "error" || response.stopReason === "aborted") {
+				return `${reference}: ${response.stopReason}`;
+			}
+			return undefined;
+		} catch (error) {
+			return `${reference}: ${error instanceof Error ? error.name : "request failed"}`;
+		} finally {
+			clearTimeout(timeout);
+		}
+	}));
+	const failed = failures.filter((failure): failure is string => Boolean(failure));
+	if (failed.length > 0) {
+		throw new Error(
+			`Pi model preflight failed before agent launch: ${failed.join("; ")}`,
+		);
+	}
+}
+
+async function probePiModelReferences(
+	ctx: ExtensionContext,
+	references: Array<string | undefined>,
+): Promise<void> {
+	await probePiModels(
+		ctx,
+		references
+			.filter((reference): reference is string => Boolean(reference))
+			.map((reference) => resolvePiModelReference(ctx, reference)),
+	);
+}
+
+async function probePiSearchSpecModels(
+	ctx: ExtensionContext,
+	params: Record<string, unknown>,
+): Promise<void> {
+	const spec = isRecord(params.spec) ? params.spec : undefined;
+	const strategy = spec && isRecord(spec.strategy) ? spec.strategy : undefined;
+	const references: Array<string | undefined> = [];
+	if (strategy) {
+		if (Array.isArray(strategy.models)) {
+			for (const item of strategy.models) {
+				if (isRecord(item)) references.push(stringFrom(item.model));
+			}
+		}
+		if (isRecord(strategy.worker_launch)) {
+			references.push(stringFrom(strategy.worker_launch.model));
+		}
+		if (isRecord(strategy.evidence_annotator)) {
+			references.push(stringFrom(strategy.evidence_annotator.model));
+		}
+		if (isRecord(strategy.search_scheduler)) {
+			references.push(stringFrom(strategy.search_scheduler.model));
+		}
+	}
+	await probePiModelReferences(ctx, references);
 }
 
 function buildGoalStartPrompt(
@@ -1719,7 +1612,7 @@ function buildGoalStartPrompt(
 			lines.push(`- workers: 使用 command_config.workers（入口别名 ${roleModels.workerDirective}=）。`);
 		}
 		lines.push(
-			"- 冻结 SearchSpec 时，只写入显式角色：annotator 写入 strategy.evidence_annotator.model；workers=/models= 按原有分配规则写入 strategy.models。未指定的角色保持现有 host 默认或继承语义。",
+			"- 冻结 SearchSpec 时，只写入显式角色：annotator 写入 strategy.evidence_annotator.model；workers=/models= 按原有分配规则写入 strategy.models。未指定的角色保持 Pi host native default。",
 		);
 	}
 	lines.push(
@@ -1789,6 +1682,36 @@ function selectedGoalPlusThinking(pi: ExtensionAPI, ctx: ExtensionContext): stri
 	}
 }
 
+interface PiNativeAgentConfig {
+	model_pattern: string;
+	thinking_level?: string;
+}
+
+function currentPiNativeAgentConfig(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): PiNativeAgentConfig {
+	if (!ctx.model) {
+		throw new Error("Goal Plus could not observe the current Pi model before child launch");
+	}
+	const thinking = selectedGoalPlusThinking(pi, ctx);
+	return {
+		model_pattern: `${ctx.model.provider}/${ctx.model.id}`,
+		thinking_level: thinking === "unavailable" ? undefined : thinking,
+	};
+}
+
+function inheritPiNativeAgentConfig(
+	launch: Record<string, unknown>,
+	nativeAgentConfig: PiNativeAgentConfig,
+): Record<string, unknown> {
+	return {
+		...launch,
+		model_pattern: stringFrom(launch.model_pattern) ?? nativeAgentConfig.model_pattern,
+		thinking_level: stringFrom(launch.thinking_level) ?? nativeAgentConfig.thinking_level,
+	};
+}
+
 function piExecutionPolicy(nativeReasoningEffort: string) {
 	return {
 		execution: {
@@ -1830,7 +1753,9 @@ async function createGoalPlusStart(
 	}
 	let roleModels: GoalPlusRoleModels | undefined;
 	try {
-		roleModels = resolveGoalPlusRoleModels(ctx, rawGoal);
+		const resolved = resolveGoalPlusRoleModels(ctx, rawGoal);
+		roleModels = resolved?.roleModels;
+		await probePiModels(ctx, resolved?.models ?? []);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		ctx.ui.notify(message, "error");
@@ -1897,7 +1822,8 @@ async function updateGoalPlusStart(
 		return undefined;
 	}
 	try {
-		parseGoalPlusRoleModels(rawGoal);
+		const resolved = resolveGoalPlusRoleModels(ctx, rawGoal);
+		await probePiModels(ctx, resolved?.models ?? []);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		ctx.ui.notify(message, "error");
@@ -2014,11 +1940,55 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 		description: RuntimeToolDescriptions[name] ?? `调用 goal-plus facade 工具 ${name}。`,
 		parameters: toolParameters(name),
 		executionMode: "sequential",
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const commandCtx = commandContextFrom(ctx);
 			const startEntryCount = ctx.sessionManager.getEntries().length;
 			const canPersistPiState = canPersistGoalState(ctx);
-			const result = await runJsonCli(pi, commandCtx, name, params as Record<string, unknown>);
+			let forwardedParams = params as Record<string, unknown>;
+			if (role === "main" && name === "search_freeze_spec") {
+				await probePiSearchSpecModels(ctx, forwardedParams);
+			}
+			if (role === "main") {
+				const runId = stringFrom(forwardedParams.run_id);
+				if (runId && ["search_start_agent_session", "pi_search_pool_open", "thinkthread_search_pool_open", "search_select"].includes(name)) {
+					const scopeId = await ensureExecutionScope(
+						pi,
+						commandCtx,
+						runId,
+						currentPiNativeAgentConfig(pi, ctx),
+					);
+					if (name === "pi_search_pool_open" || name === "thinkthread_search_pool_open") {
+						forwardedParams = { ...forwardedParams, execution_scope_id: scopeId };
+					}
+					if (name === "search_select") {
+						const quiet = await runJsonCli(pi, commandCtx, "host_execution_scope_close_run", {
+							scope_id: scopeId,
+							run_id: runId,
+						});
+						if (!isRecord(quiet.details) || quiet.details.ok === false || quiet.details.active_count !== 0) {
+							throw new Error(String((isRecord(quiet.details) && quiet.details.error) || `Search run ${runId} still has active workers`));
+						}
+					}
+				}
+			}
+			const result = isThinkThreadWorker
+						? await runThinkThreadWorkerTool(pi, ctx, name, forwardedParams, signal)
+					: await runJsonCli(pi, commandCtx, name, forwardedParams);
+			if (!isThinkThreadWorker && ["search_run_verifier", "search_get_global_evidence", "search_get_agent_context", "search_select", "search_status", "search_invalidate_run", "search_report"].includes(name)) {
+				const runId = stringFrom(forwardedParams.run_id)
+					?? (isRecord(result.details) ? stringFrom(result.details.run_id) : undefined);
+				if (runId) {
+					const kicked = await runHostCommandCli(
+						pi,
+						commandCtx,
+						"goal_plus_host_kick_internal_agents",
+						{ run_id: runId },
+					);
+					if (isRecord(kicked.details) && kicked.details.ok === false) {
+						throw new Error(String(kicked.details.error || "Pi internal-agent launch failed"));
+					}
+				}
+			}
 			if (name === "goal_plus_submit_final_check") {
 				activateGoal(pi, result.details, startEntryCount, canPersistPiState);
 			}
@@ -2074,7 +2044,12 @@ function activateWorkerContext(
 	if (!isRecord(details) || !isRecord(details.candidate_task)) return;
 	const agentSessionId = details.agent_session_id;
 	const candidateTask = details.candidate_task;
-	const workspace = candidateTask.workspace;
+	const workspaceAccess = details.workspace_access;
+	const workspace = typeof candidateTask.workspace === "string"
+		? candidateTask.workspace
+		: isThinkThreadWorker && isRecord(workspaceAccess)
+			? workspaceAccess.logical_root
+			: undefined;
 	if (
 		typeof agentSessionId !== "string" ||
 		typeof workspace !== "string" ||
@@ -2135,7 +2110,19 @@ function registerPiFinalCheckTool(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const commandCtx = commandContextFrom(ctx);
 			const invocation = projectModuleInvocation(commandCtx, "goal-plus-pi-worker", "goal_plus.pi_worker");
-			const launch = (params as { launch: Record<string, unknown> }).launch;
+			let launch = (params as { launch: Record<string, unknown> }).launch;
+			const nativeAgentConfig = currentPiNativeAgentConfig(pi, ctx);
+			const goalIdentity = stringFrom(launch.goal_plus_id) ?? activeGoalPlusId;
+			if (goalIdentity) {
+				const scopeId = await ensureExecutionScope(
+					pi,
+					commandCtx,
+					goalIdentity,
+					nativeAgentConfig,
+				);
+				launch = { ...launch, execution_scope_id: scopeId };
+			}
+			launch = inheritPiNativeAgentConfig(launch, nativeAgentConfig);
 			const result = await pi.exec(invocation.command, [
 				...invocation.argsPrefix,
 				"run",
@@ -2177,6 +2164,13 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 				max_runtime_seconds?: number;
 			};
 			const commandCtx = commandContextFrom(ctx);
+			const nativeAgentConfig = currentPiNativeAgentConfig(pi, ctx);
+			const executionScopeId = await ensureExecutionScope(
+				pi,
+				commandCtx,
+				input.goal_plus_id,
+				nativeAgentConfig,
+			);
 			const statusResult = await runJsonCli(pi, commandCtx, "goal_plus_status", {
 				goal_plus_id: input.goal_plus_id,
 			});
@@ -2250,14 +2244,12 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 			if (typeof attemptId !== "string" || typeof generation !== "number") {
 				throw new Error(`Pi work item ${input.work_item_id} did not return an attempt identity`);
 			}
-			const selectedThinking = selectedGoalPlusThinking(pi, ctx);
-			const launch = {
+			const launch = inheritPiNativeAgentConfig({
 				role: "ordinary",
 				root: runtimeRoot,
 				cwd: status?.source_path || ctx.cwd,
 				agent_session_id: sessionId,
 				session_id: sessionId,
-				thinking_level: selectedThinking === "unavailable" ? undefined : selectedThinking,
 				prompt: [
 					"You are an implementation subagent. Work only on the assigned item.",
 					`Task: ${input.task}`,
@@ -2267,6 +2259,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 					max_runtime_seconds: input.max_runtime_seconds ?? 600,
 					soft_closeout_seconds: 30,
 				},
+				execution_scope_id: executionScopeId,
 				goal_plus_work_item: resumable
 					? undefined
 					: {
@@ -2277,7 +2270,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 						host: "pi",
 						task_name: input.work_item_id,
 					},
-			};
+			}, nativeAgentConfig);
 			const invocation = projectModuleInvocation(commandCtx, "goal-plus-pi-worker", "goal_plus.pi_worker");
 			const result = await pi.exec(invocation.command, [
 				...invocation.argsPrefix,
@@ -2329,7 +2322,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 				generation,
 				transcript_path: typeof metadata.session_file === "string" ? metadata.session_file : undefined,
 				metadata: {
-					requested_reasoning_effort: selectedThinking,
+					requested_reasoning_effort: nativeAgentConfig.thinking_level ?? "unavailable",
 					native_reasoning_effort: observedThinking,
 					orchestration_monitor: {
 						native_operation: "goal-plus-pi-worker",
@@ -2357,11 +2350,11 @@ function extractCandidatePath(event: ToolCallEvent): string | undefined {
 	return undefined;
 }
 
-function workspaceGuard(event: ToolCallEvent) {
+function workspaceGuard(event: ToolCallEvent, ctx: ExtensionContext) {
 	if (role !== "main" && ["search_recovery_status", "search_prepare_recovery", "search_recover_candidate"].includes(event.toolName)) {
 		return { block: true, reason: "Search recovery is Main-owned." };
 	}
-	if (role === "worker" && workerGeneration) {
+	if (role === "worker" && workerGeneration && !isThinkThreadWorker) {
 		try {
 			const record = JSON.parse(readFileSync(join(runtimeRoot, "runs", workerGeneration.runId,
 				"candidates", workerGeneration.candidateId, "candidate.json"), "utf8"));
@@ -2376,6 +2369,13 @@ function workspaceGuard(event: ToolCallEvent) {
 		return { block: true, reason: "最终检查审查员只能进行只读操作。" };
 	}
 	if (role !== "worker") return undefined;
+	if (latestDispatchMetadata(ctx).thinkthreadRole === "annotator") {
+		if (THINKTHREAD_ANNOTATION_TOOLS.has(event.toolName)) return undefined;
+		return {
+			block: true,
+			reason: `ThinkThread Annotation Child tool is not allowed: ${event.toolName}`,
+		};
+	}
 	if (event.toolName === "search_get_agent_context") return undefined;
 	if (!sawContext) {
 		const readOnly = new Set(["read", "grep", "find", "ls"]);
@@ -2471,12 +2471,14 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 	mainTurnSignal = undefined;
 	const persist = canPersistGoalState(ctx);
 	if (stopReason === "error") {
+		await closeExecutionScope(pi, commandContextFrom(ctx), "pi_execution_lost");
 		await runPiHostSessionEvent(pi, ctx, "execution_lost", "next_user_turn", piHostInteraction(ctx));
 		goalPlusSessionAuthorized = false;
 		if (persist) persistGoalState(pi);
 		return;
 	}
 	if (stopReason === "aborted") {
+		await closeExecutionScope(pi, commandContextFrom(ctx), "pi_agent_aborted");
 		await runPiHostSessionEvent(
 			pi, ctx, "interrupt", "next_user_turn", piHostInteraction(ctx),
 		);
@@ -2489,6 +2491,7 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 	const usage = collectGoalUsageFromEntries(ctx.sessionManager.getEntries() as unknown[]);
 	const status = await refreshActiveGoal(pi, commandCtx, persist);
 	if (isTerminalStatus(status?.status)) {
+		await closeExecutionScope(pi, commandCtx, "goal_plus_terminal");
 		let snapshot: Record<string, unknown> | undefined;
 		try {
 			const monitor = await runJsonCli(pi, commandCtx, "goal_plus_monitor_snapshot", {
@@ -2508,6 +2511,25 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 		});
 		if (isRecord(finalized.details) && finalized.details.ok === false) {
 			ctx.ui.notify(`Goal Plus report finalization failed: ${String(finalized.details.error)}`, "warning");
+		}
+		const runId = stringFrom(status.current_search_run_id);
+		if (runId) {
+			const publication = await publicationNotificationContext(pi, commandCtx, runId);
+			if (!publication.ok) {
+				goalPlusSessionAuthorized = false;
+				if (persist) persistGoalState(pi);
+				ctx.ui.notify(
+					"Goal Plus publication notification delivery remains pending and will retry after restart.",
+					"warning",
+				);
+				return;
+			}
+			if (publication.content) {
+				goalPlusSessionAuthorized = false;
+				if (persist) persistGoalState(pi);
+				queuePublicationNotificationTurn(pi, runId, publication.notificationIds);
+				return;
+			}
 		}
 		// Retain history binding for summary and an explicit edit of complete.
 		goalPlusSessionAuthorized = false;
@@ -2558,7 +2580,7 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 	// BEGIN GENERATED GOAL PLUS COMMAND CONFIG
-	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_backend=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
+	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_backend=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [inner_agent=ADAPTER_ID] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
 	// END GENERATED GOAL PLUS COMMAND CONFIG
 	if (!isPrintLikeInvocation) {
 		pi.registerCommand("goal-plus", {
@@ -2658,11 +2680,36 @@ export default function (pi: ExtensionAPI) {
 		"pi_search_pool_snapshot",
 		"pi_search_pool_continue",
 		"pi_search_pool_close",
+		"thinkthread_search_pool_open",
+		"thinkthread_search_pool_wait_any",
+		"thinkthread_search_pool_snapshot",
+		"thinkthread_search_pool_continue",
+		"thinkthread_search_pool_close",
 	];
 	const workerTools = ["search_get_agent_context"];
+	const thinkThreadWorkerTools = [
+		"search_get_agent_context",
+		"search_get_global_evidence",
+		"search_reference_open",
+		"search_stage_shared_tool",
+		"search_copy_shared_tool",
+		"search_get_evidence_detail",
+		"search_run_verifier",
+		"search_list_iterations",
+	];
+	const thinkThreadAnnotationTools = [...THINKTHREAD_ANNOTATION_TOOL_NAMES];
 	const finalCheckerTools = ["goal_plus_status", "goal_plus_submit_final_check"];
 	const roleTools = role === "worker"
-		? workerTools
+		? isThinkThreadWorker
+			? [
+				...thinkThreadWorkerTools.filter((tool) => ![
+					"search_reference_open",
+					"search_stage_shared_tool",
+					"search_copy_shared_tool",
+				].includes(tool)),
+				...thinkThreadAnnotationTools,
+			]
+			: workerTools
 		: role === "final-checker"
 			? finalCheckerTools
 			: role === "ordinary"
@@ -2677,6 +2724,7 @@ export default function (pi: ExtensionAPI) {
 		registerPiWorkItemTool(pi);
 	}
 	pi.on("input", async (event, ctx) => {
+		scopeThinkThreadWorkerTools(pi, ctx, event.text);
 		if (role !== "main") {
 			return { action: "continue" };
 		}
@@ -2720,9 +2768,10 @@ export default function (pi: ExtensionAPI) {
 			: { action: "handled" };
 	});
 	pi.on("tool_call", async (event, ctx) => {
-		return workspaceGuard(event) || (await mainGate(event, ctx));
+		return workspaceGuard(event, ctx) || (await mainGate(event, ctx));
 	});
 	pi.on("session_start", async (event, ctx) => {
+		await validateThinkThreadWorker(ctx);
 		goalPlusSessionAuthorized = false;
 		lastMainStopReason = undefined;
 		mainTurnSignal = undefined;
@@ -2748,12 +2797,25 @@ export default function (pi: ExtensionAPI) {
 		if (role !== "main" || !activeGoalPlusId) return;
 		const commandCtx = commandContextFrom(ctx);
 		const persist = canPersistGoalState(ctx);
-		try {
-			const status = await refreshActiveGoal(pi, commandCtx, persist);
-			if (isTerminalStatus(status?.status)) {
-				if (persist) persistGoalState(pi);
-				return;
-			}
+			try {
+				const status = await refreshActiveGoal(pi, commandCtx, persist);
+				if (isTerminalStatus(status?.status)) {
+					const runId = stringFrom(status?.current_search_run_id);
+				if (runId) {
+					const publication = await publicationNotificationContext(pi, commandCtx, runId);
+					if (!publication.ok) {
+						ctx.ui.notify("Goal Plus publication notification recovery will retry at the next turn boundary.", "warning");
+						return;
+					}
+					if (publication.content) {
+						if (persist) persistGoalState(pi);
+						queuePublicationNotificationTurn(pi, runId, publication.notificationIds);
+						return;
+						}
+					}
+					if (persist) persistGoalState(pi);
+					return;
+				}
 			if (!status?.goal_plus_id) return;
 			const interaction = piHostInteraction(ctx);
 			await runPiHostSessionEvent(
@@ -2790,18 +2852,45 @@ export default function (pi: ExtensionAPI) {
 		}
 		return { messages: messages.filter((message) => !stale(message)) };
 	});
-	pi.on("before_agent_start", async (_event, ctx) => {
-		mainStartPending = false;
-		if (role !== "main" || !activeGoalPlusId || !goalPlusSessionAuthorized) return;
+	pi.on("before_agent_start", async (event, ctx) => {
+		try {
+			scopeThinkThreadWorkerTools(pi, ctx, event.prompt);
+			await acknowledgeThinkThreadDispatch(pi, ctx, event.prompt);
+		} catch (error) {
+			try {
+				await reportThinkThreadDispatchError(ctx, event.prompt, error);
+			} catch {
+				// Preserve the original startup error when diagnostic delivery also fails.
+			}
+			throw error;
+		}
+		if (role === "main") mainStartPending = false;
+		if (role !== "main" || !activeGoalPlusId) return;
 		const commandCtx = commandContextFrom(ctx);
-		const status = await refreshActiveGoal(pi, commandCtx, canPersistGoalState(ctx));
-		if (!status || isTerminalStatus(status.status) || status.control?.state !== "active") return;
+		const persist = canPersistGoalState(ctx);
+		const status = await refreshActiveGoal(pi, commandCtx, persist);
+		const runId = stringFrom(status?.current_search_run_id);
+		const publication: PublicationNotificationPoll = runId
+			? await publicationNotificationContext(pi, commandCtx, runId, true)
+			: { ok: true, notificationIds: [] };
+		if (publication.content && persist) persistGoalState(pi);
+		const goalContext = goalPlusSessionAuthorized && status && !isTerminalStatus(status.status)
+			&& status.control?.state === "active"
+			? buildGoalPlusContext(status)
+			: undefined;
+		const content = [publication.content, goalContext].filter((item): item is string => Boolean(item));
+		if (content.length === 0) return;
 		return {
 			message: {
 				customType: "goal-plus-native-context",
-				content: buildGoalPlusContext(status),
+				content: content.join("\n\n"),
 				display: false,
-				details: { goal_plus_id: status.goal_plus_id, phase: status.phase, status: status.status },
+				details: {
+					goal_plus_id: status?.goal_plus_id,
+					phase: status?.phase,
+					status: status?.status,
+					publication_notification: Boolean(publication.content),
+				},
 			},
 		};
 	});
@@ -2810,6 +2899,23 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("agent_end", async (event, ctx) => {
 		const lastMessage = event.messages.at(-1);
+		const persist = canPersistGoalState(ctx);
+		if (role === "main" && presentedPublicationNotifications.size > 0) {
+			const acknowledged = await acknowledgeStagedPublicationNotifications(
+				pi,
+				commandContextFrom(ctx),
+				persist,
+			);
+			if (
+				acknowledged
+				&& stagedPublicationNotifications.length === 0
+				&& isTerminalStatus(cachedGoalStatus?.status)
+			) {
+				goalPlusSessionAuthorized = false;
+				if (persist) persistGoalState(pi);
+				return;
+			}
+		}
 		const lengthWithoutToolCall =
 			lastMessage?.role === "assistant" &&
 			lastMessage.stopReason === "length" &&
@@ -2829,12 +2935,33 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		if (lastMessage?.role === "assistant" && lastMessage.stopReason === "aborted") {
+			if (role === "main") {
+				await closeExecutionScope(pi, commandContextFrom(ctx), "pi_agent_aborted");
+			}
 			return;
 		}
 		if (ctx.hasPendingMessages()) return;
 		if (role === "worker") {
 			if (lengthWithoutToolCall) return;
 			if (workerAllocationDecisionId) return;
+			if (
+				isThinkThreadWorker
+				&& latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"
+				&& !workerVerifierSubmitted
+				&& !workerMissingAttemptContinuationSent
+			) {
+				workerMissingAttemptContinuationSent = true;
+				pi.sendMessage(
+					{
+						customType: "goal-plus-thinkthread-missing-attempt",
+						content: "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 search_get_agent_context；随后完成本轮修改，并使用当前 agent_session_id 恰好调用一次 search_run_verifier。不得只读取或总结后再次结束。",
+						display: false,
+						details: { dispatchNonce: workerActiveDispatchNonce },
+					},
+					{ triggerTurn: true, deliverAs: "followUp" },
+				);
+				return;
+			}
 			if (
 				!Number.isFinite(workerContinueUntilMs) ||
 				workerContinueUntilMs <= 0 ||
@@ -2857,5 +2984,9 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("agent_settled", async (_event, ctx) => {
 		await settleMainGoal(pi, ctx);
+	});
+	pi.on("session_shutdown", async (event, ctx) => {
+		if (role !== "main") return;
+		await closeExecutionScope(pi, commandContextFrom(ctx), `pi_session_shutdown:${event.reason}`);
 	});
 }

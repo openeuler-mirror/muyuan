@@ -65,7 +65,7 @@ def test_codex_goal_plus_revises_goal_and_frozen_spec_after_first_result(
             "workspace.backend=copy, process verifier "
             ".goal-plus-verifiers/simple_score.py, no promotion verifiers, and allow only "
             "candidate.txt. Use strategy.name=random, worker_host=codex, "
-            "worker_agent_type=search_candidate_agent, "
+            "inner_agent=autoresearch, "
             "max_parallel=1 and worker_budget with "
             "max_runtime_seconds=90, max_turns=4, on_exceed=interrupt. Freeze the exact "
             "verifier artifact and complete the Search flow through selection, "

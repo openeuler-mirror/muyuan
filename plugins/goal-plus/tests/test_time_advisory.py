@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from goal_plus.models import SearchSpec
-import goal_plus.runtime as runtime_module
+import goal_plus.infrastructure.verifiers.local as local_verifiers
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.time_advisory import (
     build_search_time_advisory,
@@ -39,7 +39,7 @@ def _codex_candidate(tmp_path: Path) -> tuple[FileSearchRuntime, str, str, str]:
 
 def test_codex_candidate_identity_accepts_canonical_agent_path(tmp_path: Path) -> None:
     runtime, run_id, _, agent_session_id = _codex_candidate(tmp_path)
-    session = runtime._load_agent_session_by_id(agent_session_id, run_id=run_id)
+    session = runtime.candidate_sessions.session(agent_session_id, run_id=run_id)
     task_name = str(session.host_handle.task_name)
     rebound = runtime.bind_agent_handle(
         agent_session_id,
@@ -54,15 +54,12 @@ def test_time_advisory_uses_subagent_iterations_and_lists_candidate_timing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime, run_id, candidate_id, agent_session_id = _codex_candidate(tmp_path)
-    session = runtime._load_agent_session_by_id(agent_session_id, run_id=run_id)
+    session = runtime.candidate_sessions.session(agent_session_id, run_id=run_id)
     now = datetime.now(timezone.utc).replace(microsecond=0)
     started = now - timedelta(seconds=120)
     # Measure the advisory's arithmetic, not time spent running Git/verifiers
     # on a busy parallel test host.
-    monkeypatch.setattr(
-        "goal_plus.runtime.utc_timestamp", lambda: now.isoformat().replace("+00:00", "Z")
-    )
-    runtime._write_agent_session(
+    runtime.candidate_sessions.state.write_agent_session(
         session.model_copy(
             update={
                 "created_at": started.replace(microsecond=0)
@@ -73,7 +70,7 @@ def test_time_advisory_uses_subagent_iterations_and_lists_candidate_timing(
     )
 
     ticks = iter([0.0, 40.0, 40.0, 100.0, 100.0, 200.0])
-    monkeypatch.setattr(runtime_module.time, "perf_counter", lambda: next(ticks))
+    monkeypatch.setattr(local_verifiers.time, "perf_counter", lambda: next(ticks))
 
     runtime.run_verifier(
         run_id,
@@ -93,6 +90,7 @@ def test_time_advisory_uses_subagent_iterations_and_lists_candidate_timing(
         runtime.root_dir,
         agent_session_id,
         remaining_seconds=30,
+        now_epoch=now.timestamp(),
     )
 
     assert advisory is not None
@@ -113,9 +111,9 @@ def test_time_advisory_does_not_fire_when_one_average_submission_still_fits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime, run_id, candidate_id, agent_session_id = _codex_candidate(tmp_path)
-    session = runtime._load_agent_session_by_id(agent_session_id, run_id=run_id)
+    session = runtime.candidate_sessions.session(agent_session_id, run_id=run_id)
     started = datetime.now(timezone.utc) - timedelta(seconds=90)
-    runtime._write_agent_session(
+    runtime.candidate_sessions.state.write_agent_session(
         session.model_copy(
             update={
                 "created_at": started.replace(microsecond=0)
@@ -125,7 +123,7 @@ def test_time_advisory_does_not_fire_when_one_average_submission_still_fits(
         )
     )
     ticks = iter([0.0, 90.0])
-    monkeypatch.setattr(runtime_module.time, "perf_counter", lambda: next(ticks))
+    monkeypatch.setattr(local_verifiers.time, "perf_counter", lambda: next(ticks))
     runtime.run_verifier(
         run_id,
         candidate_id,
@@ -148,9 +146,9 @@ def test_time_advisory_uses_outer_deadline_and_marks_one_sample_low_confidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime, run_id, candidate_id, agent_session_id = _codex_candidate(tmp_path)
-    session = runtime._load_agent_session_by_id(agent_session_id, run_id=run_id)
+    session = runtime.candidate_sessions.session(agent_session_id, run_id=run_id)
     now = datetime.now(timezone.utc).replace(microsecond=0)
-    runtime._write_agent_session(
+    runtime.candidate_sessions.state.write_agent_session(
         session.model_copy(
             update={
                 "created_at": (now - timedelta(seconds=75))
@@ -160,7 +158,7 @@ def test_time_advisory_uses_outer_deadline_and_marks_one_sample_low_confidence(
         )
     )
     ticks = iter([0.0, 20.0])
-    monkeypatch.setattr(runtime_module.time, "perf_counter", lambda: next(ticks))
+    monkeypatch.setattr(local_verifiers.time, "perf_counter", lambda: next(ticks))
     runtime.run_verifier(
         run_id,
         candidate_id,

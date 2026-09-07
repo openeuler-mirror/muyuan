@@ -59,6 +59,7 @@ export interface GoalPlusCompletionView {
 	baselineScore?: number;
 	selectedScore?: number;
 	promotionPassed?: boolean;
+	hostCleanupState?: string;
 	reportPath?: string;
 	htmlReportPath?: string;
 	mainUsage: GoalPlusUsageSummary;
@@ -122,7 +123,12 @@ function displayArtifactPath(path: string | undefined): string | undefined {
 	if (path.startsWith(".gp/")) return path;
 	const marker = "/.gp/";
 	const markerIndex = path.indexOf(marker);
-	return markerIndex >= 0 ? `.gp/${path.slice(markerIndex + marker.length)}` : path;
+	if (markerIndex >= 0) return `.gp/${path.slice(markerIndex + marker.length)}`;
+	const sessionMarker = "/session/goal-plus/";
+	const sessionMarkerIndex = path.indexOf(sessionMarker);
+	return sessionMarkerIndex >= 0
+		? `goal-plus-session/${path.slice(sessionMarkerIndex + sessionMarker.length)}`
+		: path;
 }
 
 function completionResultLine(view: GoalPlusCompletionView): string | undefined {
@@ -173,6 +179,9 @@ export function buildPiCompletionPresentation(view: GoalPlusCompletionView): PiC
 	if (view.promotionPassed === true) searchParts.push("promoted");
 	if (view.promotionPassed === false) searchParts.push("promotion failed");
 	if (searchParts.length > 0) lines.push(`Search  ${searchParts.join(" · ")}`);
+	if (view.hostCleanupState && view.hostCleanupState !== "not_applicable") {
+		lines.push(`Cleanup ${view.hostCleanupState}`);
+	}
 
 	const workerUsage = view.workerUsage ?? {
 		assistantMessages: 0,
@@ -334,6 +343,7 @@ export const PI_COMPLETION_PREVIEW: GoalPlusCompletionView = {
 	baselineScore: 1.798_348_554_770_476_5,
 	selectedScore: 1.884_679_985_631_205_8,
 	promotionPassed: true,
+	hostCleanupState: "complete",
 	reportPath: ".gp/runs/run_20260824_160752_22d09be6/report.md",
 	htmlReportPath: ".gp/runs/run_20260824_160752_22d09be6/report.html",
 	mainUsage: {

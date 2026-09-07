@@ -9,6 +9,7 @@ import pytest
 
 from goal_plus import pi_worker
 from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.infrastructure.worker_handoff import workspace_progress_handoff
 
 
 pytestmark = pytest.mark.pi
@@ -147,12 +148,13 @@ def test_pi_worker_does_not_bind_before_rpc_handshake(
     def fake_popen(*_args: Any, **_kwargs: Any) -> FakeProc:
         return FakeProc()
 
-    def fake_kill_process_group(proc: FakeProc) -> None:
-        proc.returncode = 1
+    def fake_terminate(managed: pi_worker.ManagedProcess) -> None:
+        managed.process.returncode = 1
 
     monkeypatch.setattr(pi_worker.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(pi_worker, "_RpcClient", FakeRpcClient)
-    monkeypatch.setattr(pi_worker, "_kill_process_group", fake_kill_process_group)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "own_process_group", lambda self, **kwargs: None)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "terminate", fake_terminate)
 
     with pytest.raises(pi_worker.PiRpcError, match="startup failed"):
         pi_worker.run_pi_rpc_worker(
@@ -225,12 +227,13 @@ def test_pi_worker_polls_fresh_state_after_prompt(monkeypatch, tmp_path: Path) -
     def fake_popen(*_args: Any, **_kwargs: Any) -> FakeProc:
         return FakeProc()
 
-    def fake_kill_process_group(proc: FakeProc) -> None:
-        proc.returncode = 0
+    def fake_terminate(managed: pi_worker.ManagedProcess) -> None:
+        managed.process.returncode = 0
 
     monkeypatch.setattr(pi_worker.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(pi_worker, "_RpcClient", FakeRpcClient)
-    monkeypatch.setattr(pi_worker, "_kill_process_group", fake_kill_process_group)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "own_process_group", lambda self, **kwargs: None)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "terminate", fake_terminate)
     monkeypatch.setattr(pi_worker.time, "sleep", lambda _seconds: None)
 
     handle = pi_worker.run_pi_rpc_worker(
@@ -597,15 +600,16 @@ def test_run_pi_rpc_worker_retries_flagged_prompt_once(
     def fake_popen(*_args: Any, **_kwargs: Any) -> FakeProc:
         return FakeProc()
 
-    def fake_kill_process_group(proc: FakeProc) -> None:
-        proc.returncode = 0
+    def fake_terminate(managed: pi_worker.ManagedProcess) -> None:
+        managed.process.returncode = 0
 
     def fail_sleep(seconds: float) -> None:
         raise AssertionError(f"unexpected RPC poll sleep {seconds}; prompts={prompts!r}")
 
     monkeypatch.setattr(pi_worker.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(pi_worker, "_RpcClient", FakeRpcClient)
-    monkeypatch.setattr(pi_worker, "_kill_process_group", fake_kill_process_group)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "own_process_group", lambda self, **kwargs: None)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "terminate", fake_terminate)
     monkeypatch.setattr(pi_worker.time, "sleep", fail_sleep)
 
     handle = pi_worker.run_pi_rpc_worker(
@@ -679,12 +683,13 @@ def test_run_pi_rpc_worker_retries_stream_read_error_once(
     def fake_popen(*_args: Any, **_kwargs: Any) -> FakeProc:
         return FakeProc()
 
-    def fake_kill_process_group(proc: FakeProc) -> None:
-        proc.returncode = 0
+    def fake_terminate(managed: pi_worker.ManagedProcess) -> None:
+        managed.process.returncode = 0
 
     monkeypatch.setattr(pi_worker.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(pi_worker, "_RpcClient", FakeRpcClient)
-    monkeypatch.setattr(pi_worker, "_kill_process_group", fake_kill_process_group)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "own_process_group", lambda self, **kwargs: None)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "terminate", fake_terminate)
 
     handle = pi_worker.run_pi_rpc_worker(
         {
@@ -770,12 +775,13 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
         popen_env.update(kwargs.get("env") or {})
         return FakeProc()
 
-    def fake_kill_process_group(proc: FakeProc) -> None:
-        proc.returncode = 0
+    def fake_terminate(managed: pi_worker.ManagedProcess) -> None:
+        managed.process.returncode = 0
 
     monkeypatch.setattr(pi_worker.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(pi_worker, "_RpcClient", FakeRpcClient)
-    monkeypatch.setattr(pi_worker, "_kill_process_group", fake_kill_process_group)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "own_process_group", lambda self, **kwargs: None)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "terminate", fake_terminate)
 
     handle = pi_worker.run_pi_rpc_worker(
         {
@@ -795,7 +801,7 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
             },
             "model_pattern": "gpt-5.4-mini",
             "thinking_level": "high",
-            "environment": {"ASCEND_RT_VISIBLE_DEVICES": "5"},
+            "environment": {"TEST_VISIBLE_DEVICES": "5"},
             "continuation": "native_session",
             "metrics_baseline": {
                 "last_entry_id": "entry_1",
@@ -845,7 +851,7 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
         {"type": "get_entries", "since": "entry_1"},
     ]
     assert "set_thinking_level" in commands
-    assert popen_cmd[0:3] == ["pi", "--model", "gpt-5.4-mini"]
+    assert popen_cmd[popen_cmd.index("pi"):][:3] == ["pi", "--model", "gpt-5.4-mini"]
     assert "--no-session" not in popen_cmd
     assert "--no-extensions" in popen_cmd
     assert "--no-context-files" in popen_cmd
@@ -857,7 +863,7 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
     assert popen_env["GOAL_PLUS_SOURCE_PATH"] == str(pi_worker.default_extension_path().parents[2])
     assert popen_env["GOAL_PLUS_PI_ROLE"] == "worker"
     assert popen_env["GOAL_PLUS_AGENT_SESSION_ID"] == "agent_1"
-    assert popen_env["ASCEND_RT_VISIBLE_DEVICES"] == "5"
+    assert popen_env["TEST_VISIBLE_DEVICES"] == "5"
     assert int(popen_env["GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS"]) > 0
     assert handle["metadata"]["raw_logging"] is False
     assert handle["metadata"]["text_log"] is None
@@ -868,6 +874,29 @@ def test_run_pi_rpc_worker_returns_run_delta_metrics(
     assert handle["metadata"]["process_pid"] == 4321
     assert handle["metadata"]["progress_handoff"]["status"] == "completed"
     assert handle["metadata"]["progress_handoff"]["summary"] == "done"
+
+    popen_env.clear()
+    verifier_only_handle = pi_worker.run_pi_rpc_worker(
+        {
+            "agent_session_id": "agent_verifier_only",
+            "session_id": "agent_verifier_only",
+            "root": str(tmp_path / ".search"),
+            "cwd": str(cwd),
+            "prompt": "produce one verifier attempt",
+            "budget_control": {
+                "max_runtime_seconds": 30,
+                "soft_closeout_seconds": 10,
+                "autoresearch_lease": {
+                    "mode": "pool_supervisor",
+                    "min_runtime_seconds": 0,
+                    "min_verifier_runs": 1,
+                },
+            },
+        },
+        extension_path=extension,
+    )
+    assert "GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS" not in popen_env
+    assert verifier_only_handle["metadata"]["worker_continue_until_ms"] is None
 
     popen_env.clear()
     pi_worker.run_pi_rpc_worker(
@@ -924,7 +953,7 @@ def test_workspace_progress_handoff_preserves_model_and_git_progress(
         encoding="utf-8",
     )
 
-    handoff = pi_worker._workspace_progress_handoff(
+    handoff = workspace_progress_handoff(
         workspace,
         root=tmp_path / ".search",
         run_id="run_missing",
@@ -944,31 +973,24 @@ def test_workspace_progress_handoff_preserves_model_and_git_progress(
 
 
 def test_verifier_snapshot_respects_minimize_direction(tmp_path: Path) -> None:
-    root = tmp_path / ".search"
-    candidate_dir = root / "runs" / "run_1" / "candidates" / "c001"
-    candidate_dir.mkdir(parents=True)
-    (root / "runs" / "run_1" / "run.json").write_text(
-        json.dumps({"frozen_spec_id": "spec_1"}), encoding="utf-8"
-    )
-    spec_dir = root / "specs" / "spec_1"
-    spec_dir.mkdir(parents=True)
-    (spec_dir / "frozen_spec.json").write_text(
-        json.dumps({"spec": {"metric_direction": "minimize"}}), encoding="utf-8"
-    )
-    (candidate_dir / "candidate.json").write_text(
-        json.dumps(
-            {
-                "iterations": [
-                    {"iteration": 1, "score": 1.0, "process_passed": True},
-                    {"iteration": 2, "score": 5.0, "process_passed": True},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
+    from goal_plus.candidate_host import candidate_host_queries
+    from goal_plus.domain.evidence import IterationRecord
+    from goal_plus.runtime import FileSearchRuntime
+    from tests._runtime_helpers import make_project, spec_for
 
-    snapshot = pi_worker._verifier_snapshot(root, "run_1", "c001")
-
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(spec_for(project, direction="minimize"), [project / "evaluator.py"])
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    record.iterations = [
+        IterationRecord(iteration=1, score=1.0, process_passed=True, created_at="2026-09-05T00:00:00Z"),
+        IterationRecord(iteration=2, score=5.0, process_passed=True, created_at="2026-09-05T00:00:00Z"),
+    ]
+    runtime.candidate_creation.state.write_candidate(run_id, record)
+    snapshot = candidate_host_queries(runtime.root_dir).verifier_snapshot(run_id, task.candidate_id)
     assert snapshot["best_iteration"] == 1
     assert snapshot["best_score"] == 1.0
 
@@ -1028,12 +1050,13 @@ def test_run_pi_rpc_worker_waits_for_pi_auto_retry(
     def fake_popen(*_args: Any, **_kwargs: Any) -> FakeProc:
         return FakeProc()
 
-    def fake_kill_process_group(proc: FakeProc) -> None:
-        proc.returncode = 0
+    def fake_terminate(managed: pi_worker.ManagedProcess) -> None:
+        managed.process.returncode = 0
 
     monkeypatch.setattr(pi_worker.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(pi_worker, "_RpcClient", FakeRpcClient)
-    monkeypatch.setattr(pi_worker, "_kill_process_group", fake_kill_process_group)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "own_process_group", lambda self, **kwargs: None)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "terminate", fake_terminate)
     monkeypatch.setattr(pi_worker.time, "sleep", lambda _seconds: None)
 
     handle = pi_worker.run_pi_rpc_worker(
@@ -1110,15 +1133,16 @@ def test_run_pi_rpc_worker_steers_once_before_hard_deadline(
     def fake_popen(*_args: Any, **_kwargs: Any) -> FakeProc:
         return FakeProc()
 
-    def fake_kill_process_group(proc: FakeProc) -> None:
-        proc.returncode = 0
+    def fake_terminate(managed: pi_worker.ManagedProcess) -> None:
+        managed.process.returncode = 0
 
     def fake_sleep(seconds: float) -> None:
         clock["value"] += seconds
 
     monkeypatch.setattr(pi_worker.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(pi_worker, "_RpcClient", FakeRpcClient)
-    monkeypatch.setattr(pi_worker, "_kill_process_group", fake_kill_process_group)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "own_process_group", lambda self, **kwargs: None)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "terminate", fake_terminate)
     monkeypatch.setattr(pi_worker.time, "monotonic", lambda: clock["value"])
     monkeypatch.setattr(pi_worker.time, "sleep", fake_sleep)
 
@@ -1231,12 +1255,13 @@ def test_run_pi_rpc_worker_checks_time_advisory_after_worker_tool_only(
     def fake_popen(*_args: Any, **_kwargs: Any) -> FakeProc:
         return FakeProc()
 
-    def fake_kill_process_group(proc: FakeProc) -> None:
-        proc.returncode = 0
+    def fake_terminate(managed: pi_worker.ManagedProcess) -> None:
+        managed.process.returncode = 0
 
     monkeypatch.setattr(pi_worker.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(pi_worker, "_RpcClient", FakeRpcClient)
-    monkeypatch.setattr(pi_worker, "_kill_process_group", fake_kill_process_group)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "own_process_group", lambda self, **kwargs: None)
+    monkeypatch.setattr(pi_worker.ManagedProcess, "terminate", fake_terminate)
     monkeypatch.setattr(pi_worker, "build_search_time_advisory", fake_advisory)
     monkeypatch.setattr(pi_worker.time, "sleep", lambda _seconds: None)
 

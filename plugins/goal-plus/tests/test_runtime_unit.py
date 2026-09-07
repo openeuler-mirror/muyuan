@@ -14,6 +14,8 @@ import pytest
 from pydantic import ValidationError
 
 from goal_plus.agent_hosts import UnsupportedHostCapability
+import goal_plus.adaptive_search.scheduler as scheduler_module
+from goal_plus.internal_agents import wake_scheduler_after_annotation
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.models import (
     CandidateProposal,
@@ -24,21 +26,20 @@ from goal_plus.models import (
     SearchSpec,
 )
 from goal_plus.reporting import build_html_report_data, render_html_report
-from goal_plus.runtime import (
-    DEVICE_POOLS_ENV,
-    FileSearchRuntime,
-    VERIFIER_OUTPUT_LIMIT_BYTES,
-    VERIFIER_RESOURCE_LOCK_DIR_ENV,
-    canonical_json,
+from goal_plus.infrastructure.process_output import OUTPUT_LIMIT_BYTES as VERIFIER_OUTPUT_LIMIT_BYTES
+from goal_plus.infrastructure.verifiers.local import safe_verifier_name
+from goal_plus.infrastructure.state.resource_locks import VERIFIER_RESOURCE_LOCK_DIR_ENV
+from goal_plus.infrastructure.search_configuration import DEVICE_POOLS_ENV, SearchConfiguration
+from goal_plus.infrastructure.state.files import sha256_file
+from goal_plus.workspaces import (
+    list_files,
     copy_source_tree,
     initialize_workspace_git_baseline,
-    list_files,
-    load_json,
-    path_matches,
-    safe_verifier_name,
-    sha256_file,
-    write_json,
 )
+from goal_plus.domain.edit_surface import path_matches
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.domain.serialization import canonical_json
+from goal_plus.infrastructure.state.files import load_json, write_json
 from goal_plus.tools import SearchTools
 from tests._runtime_helpers import (
     create_candidate,
@@ -58,14 +59,14 @@ def _guarded_runtime_state(
     agent_session_id: str | None = None,
 ) -> dict[str, object]:
     state: dict[str, object] = {
-        "run": runtime._load_run(run_id).model_dump(mode="json"),
+        "run": runtime.search_run.state.read_run(run_id).model_dump(mode="json"),
     }
     if candidate_id is not None:
-        state["candidate"] = runtime._load_candidate_record(
+        state["candidate"] = runtime.candidate_creation.state.read_candidate(
             run_id, candidate_id
         ).model_dump(mode="json")
     if agent_session_id is not None:
-        state["agent_session"] = runtime._load_agent_session_by_id(
+        state["agent_session"] = runtime.candidate_sessions.session(
             agent_session_id, run_id=run_id
         ).model_dump(mode="json")
     return state
@@ -172,10 +173,10 @@ def test_source_snapshot_excludes_untracked_gitignored_build_artifacts(
     assert not any(path.startswith(("build/", "dist/")) for path in tracked)
 
     runtime = FileSearchRuntime(tmp_path / ".search")
-    assert runtime._detect_changed_files(source, destination) == []
+    assert runtime.artifacts.workspace.detect_changed_files(source, destination) == []
     (destination / "build").mkdir()
     (destination / "build" / "object.o").write_text("side effect\n", encoding="utf-8")
-    assert runtime._detect_changed_files(source, destination) == ["build/object.o"]
+    assert runtime.artifacts.workspace.detect_changed_files(source, destination) == ["build/object.o"]
 
 
 def test_file_search_runtime_defaults_to_gp_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,8 +205,24 @@ def test_freeze_spec_is_stable_and_copies_verifier(tmp_path: Path) -> None:
     second = runtime.freeze_spec(spec, [project / "evaluator.py"])
 
     assert first.frozen_spec_id == second.frozen_spec_id
+    assert first.spec.strategy.inner_agent == "autoresearch"
     assert first.verifier_hashes["evaluator.py"] == sha256_file(project / "evaluator.py")
     assert Path(first.frozen_verifier_paths["evaluator.py"]).exists()
+
+
+def test_freeze_spec_rejects_unknown_inner_agent_before_workspace_creation(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    payload = spec_for(project).model_dump(mode="json")
+    payload["strategy"]["inner_agent"] = "unregistered-agent"
+
+    with pytest.raises(UnsupportedHostCapability, match="unregistered-agent"):
+        runtime.freeze_spec(
+            SearchSpec.model_validate(payload),
+            [project / "evaluator.py"],
+        )
 
 
 def _spec_with_workspace_backend(project: Path, backend: str) -> SearchSpec:
@@ -299,7 +316,7 @@ def test_git_freeze_verifies_origin_and_first_candidate_before_search(
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
-    run = runtime._load_run(run_id)
+    run = runtime.search_run.state.read_run(run_id)
 
     assert [task.candidate_id for task in tasks] == ["c001", "c002"]
     assert all(
@@ -312,7 +329,7 @@ def test_git_freeze_verifies_origin_and_first_candidate_before_search(
     assert run.workspace_bootstrap_verification.candidate_id == "c001"
     assert run.workspace_bootstrap_verification.passed is True
     assert run.workspace_bootstrap_verification.aggregate_score == 3.5
-    assert all(not record.iterations for record in runtime._load_candidate_records(run_id))
+    assert all(not record.iterations for record in runtime.candidate_creation.state.read_candidates(run_id))
     monitor = goal_plus_monitor_snapshot(runtime.root_dir, run_id=run_id)
     assert monitor["run"]["source_artifact_ref"] == frozen.source_artifact_ref.model_dump(
         mode="json"
@@ -519,7 +536,7 @@ def test_git_relocation_rejects_nonignored_verifier_side_effect(
     with pytest.raises(RuntimeError, match="WorkspaceRelocationVerifierFailed"):
         runtime.start_batch(run_id, plan.plan_id)
 
-    run = runtime._load_run(run_id)
+    run = runtime.search_run.state.read_run(run_id)
     assert run.workspace_bootstrap_verification is not None
     failures = [
         result.failure_class
@@ -586,6 +603,31 @@ def test_create_run_rechecks_existing_thinkthread_frozen_spec(tmp_path: Path) ->
     ):
         runtime.create_run(frozen.frozen_spec_id)
 
+    assert not runtime.runs_dir.exists()
+
+
+def test_freeze_spec_accepts_enabled_thinkthread_host_without_creating_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec_data = spec_for(project).model_dump(mode="json")
+    spec_data["strategy"]["worker_host"] = "thinkthread"
+    spec_data["strategy"]["worker_launch"] = {"agent_profile": "pi"}
+    spec_data["workspace"] = {"backend": "thinkthread"}
+
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data),
+        [project / "evaluator.py"],
+    )
+
+    assert frozen.spec.strategy.worker_host == "thinkthread"
+    assert frozen.spec.workspace.backend == "thinkthread"
+    assert frozen.spec.strategy.worker_launch is not None
+    assert frozen.spec.strategy.worker_launch.agent_profile == "pi"
+    assert runtime.specs_dir.exists()
     assert not runtime.runs_dir.exists()
 
 
@@ -806,8 +848,15 @@ def test_runtime_rejects_non_null_verifier_error_after_clean_preflight(
 
     assert report.process_passed is False
     assert report.aggregate_score == 0.0
+    assert report.attempt_id is not None
+    assert report.attempt_id.startswith("attempt_")
+    assert report.attempt_iteration == 1
+    assert report.attempt_artifact_ref is not None
     assert report.verifier_results[0].failure_class == "VerifierCommandFailed"
     assert report.verifier_results[0].metrics["error"] == "candidate evaluation failed"
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    assert len(record.iterations) == 1
+    assert record.iterations[0].metrics["_candidate_attempt"]["id"] == report.attempt_id
 
 
 def test_visible_verifier_failure_returns_diagnostics_and_preserves_logs(
@@ -1091,7 +1140,7 @@ def test_select_records_recoverable_selection_blocked_state(tmp_path: Path) -> N
     with pytest.raises(RuntimeError, match="no verified candidates"):
         runtime.select(run_id)
 
-    blocked = runtime._load_run(run_id)
+    blocked = runtime.search_run.state.read_run(run_id)
     assert blocked.state == "selection_blocked"
     assert blocked.budget_used["selection_blocked_reason"] == (
         "no verifier-backed candidate iteration is eligible for selection"
@@ -1106,12 +1155,12 @@ def test_load_legacy_frozen_spec_without_workspace_uses_copy_backend(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
-    frozen_path = runtime._spec_dir(frozen.frozen_spec_id) / "frozen_spec.json"
+    frozen_path = runtime.root_dir / "specs" / frozen.frozen_spec_id / "frozen_spec.json"
     frozen_data = load_json(frozen_path)
     frozen_data["spec"].pop("workspace")
     write_json(frozen_path, frozen_data)
 
-    loaded = runtime._load_frozen_spec(frozen.frozen_spec_id)
+    loaded = runtime.search_run.state.read_frozen_spec(frozen.frozen_spec_id)
 
     assert loaded.spec.workspace.backend == "copy"
 
@@ -1136,7 +1185,7 @@ def test_runtime_defaults_to_git_worktree_workspace(tmp_path: Path) -> None:
         text=True,
     ).strip()
     assert (task.workspace / common_dir).resolve() == (
-        runtime._run_dir(run_id) / "workspace-repository" / ".git"
+        runtime.search_run.state.run_dir(run_id) / "workspace-repository" / ".git"
     ).resolve()
 
 
@@ -1315,7 +1364,7 @@ def test_freeze_spec_normalizes_verifier_cwd_equal_to_source_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "repo"
-    project = repo / "examples" / "model-optimize" / "workspace-template"
+    project = repo / "examples" / "nested-project" / "workspace-template"
     project.mkdir(parents=True)
     (project / "initial_program.py").write_text("VALUE = 0\n", encoding="utf-8")
     (project / "evaluator.py").write_text(
@@ -1325,16 +1374,16 @@ def test_freeze_spec_normalizes_verifier_cwd_equal_to_source_path(
     monkeypatch.chdir(repo)
 
     spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
-    spec_data["source_path"] = "examples/model-optimize/workspace-template"
+    spec_data["source_path"] = "examples/nested-project/workspace-template"
     spec_data["process_verifiers"][0]["cwd"] = (
-        "examples/model-optimize/workspace-template"
+        "examples/nested-project/workspace-template"
     )
     spec_data["promotion_verifiers"] = [
         {
             "name": "promotion",
             "role": "promotion_gate",
             "command": ["python", "evaluator.py"],
-            "cwd": "examples/model-optimize/workspace-template",
+            "cwd": "examples/nested-project/workspace-template",
         }
     ]
     runtime = FileSearchRuntime(tmp_path / ".search")
@@ -1365,7 +1414,7 @@ def test_plan_next_and_start_batch_record_plan_metadata(tmp_path: Path) -> None:
     assert tasks[0].proposal.intent == "独立候选 c001"  # type: ignore[union-attr]
     assert (tasks[0].workspace / ".tmp").is_dir()
 
-    saved_plan = runtime._load_plan(run_id, "plan_001")
+    saved_plan = runtime.search_run.state.read_plan(run_id, "plan_001")
     assert saved_plan.status == "started"
     assert saved_plan.started_candidate_ids == ["c001", "c002"]
 
@@ -1413,7 +1462,7 @@ def test_candidate_workspace_has_isolated_git_baseline_under_ignored_parent(
 
     assert status.startswith("M ")
     assert "VALUE = 1" in diff
-    assert runtime._detect_changed_files(project, task.workspace) == ["initial_program.py"]
+    assert runtime.artifacts.workspace.detect_changed_files(project, task.workspace) == ["initial_program.py"]
 
 
 def test_worker_task_exposes_host_and_edit_contract(tmp_path: Path) -> None:
@@ -1433,7 +1482,13 @@ def test_worker_task_exposes_host_and_edit_contract(tmp_path: Path) -> None:
     tasks = runtime.start_batch(run_id, plan.plan_id)
 
     assert plan.worker_policy["host"] == "codex"
-    assert plan.worker_policy["worker_agent_type"] == "search_candidate_agent"
+    assert plan.worker_policy["inner_agent"] == "autoresearch"
+    assert plan.worker_policy["inner_agent_binding"]["inner_agent_id"] == (
+        "autoresearch"
+    )
+    assert plan.worker_policy["legacy_worker_agent_type"] == (
+        "search_candidate_agent"
+    )
     assert "worker_mode" not in tasks[0].strategy_metadata
     assert tasks[0].workspace_access.native_cwd == tasks[0].workspace
     assert tasks[0].workspace_access.bootstrap_required is True
@@ -1445,7 +1500,171 @@ def test_worker_task_exposes_host_and_edit_contract(tmp_path: Path) -> None:
         '{"summary": "resume here"}\n',
         encoding="utf-8",
     )
-    assert runtime._detect_changed_files(project, tasks[0].workspace) == []
+    assert runtime.artifacts.workspace.detect_changed_files(project, tasks[0].workspace) == []
+
+
+def test_git_common_inner_agent_uses_one_attempt_per_dispatch_contract(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec = spec_with_strategy(
+        project,
+        {
+            "name": "random",
+            "worker_host": "pi-rpc",
+            "inner_agent": "common",
+            "worker_budget": {
+                "max_runtime_seconds": 60,
+                "max_turns": 8,
+            },
+        },
+        max_parallel=1,
+    )
+
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    assert frozen.spec.strategy.inner_agent == "common"
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+
+    instructions = "\n".join(task.instructions)
+    assert plan.worker_policy["inner_agent"] == "common"
+    assert (
+        plan.worker_policy["inner_agent_binding"]["workspace_ledger_projection"]
+        == "none"
+    )
+    assert not task.workspace.joinpath("results.tsv").exists()
+    assert "本次 host dispatch 只完成一个有界 attempt" in instructions
+    assert "调用一次 search_run_verifier" in instructions
+    assert "不要自行开始下一轮" in instructions
+    assert "不要仅因一次失败或同分而停止" not in instructions
+    assert "普通 Search 候选 agent" in session.launch["prompt"]
+    assert "调用一次\n`search_run_verifier`" in session.launch["prompt"]
+    assert "worker_agent_type" not in session.launch
+
+    context = runtime.get_agent_context(session.agent_session_id)
+    assert context["inner_agent"] == "common"
+    assert context["result_ledger_source"] == "gp"
+    assert context["workspace_ledger_projection"] == "none"
+    assert context["results_tsv"] is None
+
+    program = task.workspace / "initial_program.py"
+    program.write_text(
+        program.read_text(encoding="utf-8") + "\n# common agent attempt\n",
+        encoding="utf-8",
+    )
+    report = runtime.run_verifier(
+        run_id,
+        task.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="common agent checkpoint",
+    )
+    assert report.process_passed is True
+    assert not task.workspace.joinpath("results.tsv").exists()
+
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    assert len(record.results_ledger) == 1
+    assert record.results_ledger_git_head is None
+    assert record.iterations[0].ledger_git_head is None
+    assert record.iterations[0].workspace_artifact_after_settlement is not None
+    assert (
+        record.iterations[0].workspace_git_head_after_settlement
+        == record.iterations[0].workspace_artifact_after_settlement.id
+    )
+    assert subprocess.check_output(
+        ["git", "log", "-1", "--format=%s"],
+        cwd=task.workspace,
+        text=True,
+    ).strip() == f"search verifier iteration {task.candidate_id}:1"
+
+    monitor = goal_plus_monitor_snapshot(runtime.root_dir, run_id=run_id)
+    candidate_monitor = monitor["candidates"][task.candidate_id]
+    assert candidate_monitor["result_ledger_source"] == "gp"
+    assert candidate_monitor["result_count"] == 1
+    assert candidate_monitor["workspace_ledger_projection"] == "none"
+    assert candidate_monitor["results_tsv"]["path"] is None
+    assert candidate_monitor["results_tsv"]["exists"] is False
+    assert candidate_monitor["results_tsv"]["row_count"] is None
+
+    generated_report = runtime.report(run_id).read_text(encoding="utf-8")
+    assert ".gp canonical (1 rows)" in generated_report
+    assert "missing results.tsv projection" not in generated_report
+    runtime.bind_agent_handle(
+        session.agent_session_id,
+        {
+            "host": "pi-rpc",
+            "external_id": session.agent_session_id,
+            "metadata": {"event_log": "/tmp/pi-rpc-common.jsonl"},
+        },
+    )
+
+    continued = runtime.continue_agent_session(session.agent_session_id)
+
+    assert continued.agent_session_id == session.agent_session_id
+    assert "完成一个新的有界尝试" in continued.launch["prompt"]
+    assert "调用一次 search_run_verifier 后返回" in continued.launch["prompt"]
+    assert "不要自行开始下一轮" in continued.launch["prompt"]
+
+    original_config = task.workspace.joinpath("config.yaml").read_text(
+        encoding="utf-8"
+    )
+    task.workspace.joinpath("config.yaml").write_text(
+        "name: forbidden common change\n",
+        encoding="utf-8",
+    )
+    failed = runtime.run_verifier(
+        run_id,
+        task.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="common regression is restored",
+    )
+    assert failed.process_passed is False
+    assert failed.disposition == "failure"
+    assert task.workspace.joinpath("config.yaml").read_text(
+        encoding="utf-8"
+    ) == original_config
+    assert not task.workspace.joinpath("results.tsv").exists()
+
+    restored = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    assert len(restored.results_ledger) == 2
+    assert restored.results_ledger_git_head is None
+    assert restored.iterations[-1].ledger_git_head is None
+    assert restored.iterations[-1].restored_to_artifact_ref is not None
+    assert (
+        restored.iterations[-1].workspace_artifact_after_settlement
+        == restored.results_ledger_artifact_ref
+    )
+
+
+def test_inner_agent_binding_fails_closed_when_prompt_asset_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec = spec_with_strategy(
+        project,
+        {
+            "name": "random",
+            "worker_host": "pi-rpc",
+            "inner_agent": "common",
+            "worker_budget": {
+                "max_runtime_seconds": 60,
+                "max_turns": 8,
+            },
+        },
+        max_parallel=1,
+    )
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    monkeypatch.setattr("goal_plus.infrastructure.artifacts.candidate_launch.host_assets_root", lambda: tmp_path / "missing")
+
+    with pytest.raises(RuntimeError, match="InnerAgentAssetUnavailable"):
+        runtime.start_agent_session(run_id, task.candidate_id)
 
 
 @pytest.mark.parametrize(
@@ -1472,9 +1691,11 @@ def test_worker_instructions_match_enabled_capabilities(
     strategy = {"name": "random", "config": {"global_evidence_mode": mode}}
     if adaptive:
         strategy.update(
-            {
-                "orchestration_mode": "adaptive_search",
-                "search_scheduler": {
+                {
+                    "orchestration_mode": "adaptive_search",
+                    "worker_host": "pi-rpc",
+                    "worker_budget": {"max_runtime_seconds": 60},
+                    "search_scheduler": {
                     "host": "pi-rpc",
                     "model": "scheduler-model",
                     "reasoning_effort": "low",
@@ -1572,7 +1793,7 @@ def test_promotion_verifier_is_selected_parent_only(tmp_path: Path) -> None:
             scope="fused vector recurrence",  # type: ignore[arg-type]
             agent_session_id=session.agent_session_id,
         )
-    untouched = runtime._load_candidate_record(run_id, task.candidate_id)
+    untouched = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     assert untouched.iterations == []
     assert untouched.promotion_report is None
 
@@ -1695,15 +1916,15 @@ def test_promote_runs_promotion_verifiers_and_keeps_failed_run_ready(
     )
     runtime.run_verifier(run_id, task.candidate_id)
     runtime.select(run_id)
-    before = runtime._load_candidate_record(run_id, task.candidate_id)
+    before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     process_score = before.score_report.aggregate_score  # type: ignore[union-attr]
     process_iterations = len(before.iterations)
 
     with pytest.raises(RuntimeError, match="fresh passing promotion evidence"):
         runtime.promote(run_id, task.candidate_id)
 
-    run = runtime._load_run(run_id)
-    record = runtime._load_candidate_record(run_id, task.candidate_id)
+    run = runtime.search_run.state.read_run(run_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     assert run.state == "ready_to_promote"
     assert record.score_report is not None
     assert record.score_report.aggregate_score == process_score
@@ -1712,7 +1933,7 @@ def test_promote_runs_promotion_verifiers_and_keeps_failed_run_ready(
     assert record.promotion_report.promotion_passed is False
     assert record.promotion_evidence is not None
     assert record.promotion_evidence.passed is False
-    assert not runtime._run_dir(run_id).joinpath(
+    assert not runtime.search_run.state.run_dir(run_id).joinpath(
         "promotion", f"{task.candidate_id}.patch"
     ).exists()
 
@@ -1755,12 +1976,12 @@ def test_promote_reruns_and_binds_fresh_promotion_evidence(
     )
     runtime.run_verifier(run_id, task.candidate_id)
     runtime.select(run_id)
-    run_path = runtime._run_dir(run_id) / "run.json"
+    run_path = runtime.search_run.state.run_dir(run_id) / "run.json"
     legacy_run = load_json(run_path)
     legacy_run.pop("selected_artifact_hash")
     write_json(run_path, legacy_run)
     candidate_path = (
-        runtime._run_dir(run_id)
+        runtime.search_run.state.run_dir(run_id)
         / "candidates"
         / task.candidate_id
         / "candidate.json"
@@ -1769,7 +1990,7 @@ def test_promote_reruns_and_binds_fresh_promotion_evidence(
     legacy_candidate.pop("promotion_report")
     legacy_candidate.pop("promotion_evidence")
     write_json(candidate_path, legacy_candidate)
-    before = runtime._load_candidate_record(run_id, task.candidate_id)
+    before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     process_score = before.score_report.aggregate_score  # type: ignore[union-attr]
     process_iterations = len(before.iterations)
 
@@ -1783,8 +2004,8 @@ def test_promote_reruns_and_binds_fresh_promotion_evidence(
 
     assert patch_path.exists()
     assert counter_path.read_text(encoding="utf-8") == "2"
-    run = runtime._load_run(run_id)
-    record = runtime._load_candidate_record(run_id, task.candidate_id)
+    run = runtime.search_run.state.read_run(run_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     assert run.state == "promoted"
     assert record.score_report is not None
     assert record.score_report.aggregate_score == process_score
@@ -1844,8 +2065,8 @@ def test_promote_rejects_changed_selected_artifact_before_acceptance(
         runtime.promote(run_id, task.candidate_id)
 
     assert not counter_path.exists()
-    assert runtime._load_run(run_id).state == "ready_to_promote"
-    record = runtime._load_candidate_record(run_id, task.candidate_id)
+    assert runtime.search_run.state.read_run(run_id).state == "ready_to_promote"
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     assert record.promotion_report is None
     assert record.promotion_evidence is None
 
@@ -1906,9 +2127,9 @@ def test_promote_rejects_concurrent_allowed_file_change_during_acceptance(
         with pytest.raises(RuntimeError, match="fresh passing promotion evidence"):
             future.result(timeout=10)
 
-    patch_path = runtime._run_dir(run_id) / "promotion" / f"{task.candidate_id}.patch"
+    patch_path = runtime.search_run.state.run_dir(run_id) / "promotion" / f"{task.candidate_id}.patch"
     assert not patch_path.exists()
-    assert runtime._load_run(run_id).state == "ready_to_promote"
+    assert runtime.search_run.state.read_run(run_id).state == "ready_to_promote"
 
 
 @pytest.mark.parametrize("workspace_backend", ["copy", "git_worktree"])
@@ -1919,8 +2140,7 @@ def test_promote_patch_uses_selected_commit_after_evidence_check(
 ) -> None:
     project = make_project(tmp_path)
     (project / "promotion.py").write_text(
-        "import json\n"
-        "print(json.dumps({'accepted': True}))\n",
+        "import json\nprint(json.dumps({'accepted': True}))\n",
         encoding="utf-8",
     )
     spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
@@ -1947,7 +2167,7 @@ def test_promote_patch_uses_selected_commit_after_evidence_check(
     runtime.run_verifier(run_id, task.candidate_id)
     runtime.select(run_id)
 
-    real_write_patch = runtime._write_patch
+    real_write_patch = runtime.promotion.io.write_patch
 
     def mutate_live_workspace_then_export(*args, **kwargs) -> None:
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1959,19 +2179,23 @@ def test_promote_patch_uses_selected_commit_after_evidence_check(
             mutation.result(timeout=5)
         real_write_patch(*args, **kwargs)
 
-    monkeypatch.setattr(runtime, "_write_patch", mutate_live_workspace_then_export)
+    monkeypatch.setattr(
+        runtime.promotion.io, "write_patch", mutate_live_workspace_then_export
+    )
 
     patch_path = runtime.promote(run_id, task.candidate_id)
     apply_target = tmp_path / "apply-target"
     copy_source_tree(project, apply_target)
     subprocess.run(["git", "apply", str(patch_path)], cwd=apply_target, check=True)
 
-    assert task.workspace.joinpath("initial_program.py").read_text(
-        encoding="utf-8"
-    ) == "VALUE = 999\n"
-    assert apply_target.joinpath("initial_program.py").read_text(
-        encoding="utf-8"
-    ) == "VALUE = 1\n"
+    assert (
+        task.workspace.joinpath("initial_program.py").read_text(encoding="utf-8")
+        == "VALUE = 999\n"
+    )
+    assert (
+        apply_target.joinpath("initial_program.py").read_text(encoding="utf-8")
+        == "VALUE = 1\n"
+    )
 
 
 def test_git_promotion_preserves_running_history_and_applies_one_squash_commit(
@@ -2040,7 +2264,7 @@ def test_git_promotion_preserves_running_history_and_applies_one_squash_commit(
     ) == "VALUE = 1\n"
     assert not project.joinpath("results.tsv").exists()
 
-    persisted = runtime._load_run(run_id)
+    persisted = runtime.search_run.state.read_run(run_id)
     assert persisted.promotion is not None
     persisted.promotion = persisted.promotion.model_copy(
         update={
@@ -2050,7 +2274,7 @@ def test_git_promotion_preserves_running_history_and_applies_one_squash_commit(
             "applied_at": None,
         }
     )
-    runtime._write_run(persisted)
+    runtime.search_run.persist(persisted)
     recovered = runtime.apply_promotion(run_id)
 
     assert recovered.apply_result["method"] == "git_existing_cherry_pick"
@@ -2078,7 +2302,7 @@ def test_create_rejects_failed_workspace_capacity_preflight(tmp_path: Path) -> N
     failed_frozen = frozen.model_copy(
         update={"workspace_capacity_estimate": failed_estimate}
     )
-    (runtime._spec_dir(frozen.frozen_spec_id) / "frozen_spec.json").write_text(
+    (runtime.root_dir / "specs" / frozen.frozen_spec_id / "frozen_spec.json").write_text(
         json.dumps(failed_frozen.model_dump(mode="json")),
         encoding="utf-8",
     )
@@ -2222,7 +2446,7 @@ def test_nested_git_workspace_rejects_committed_changes_outside_source_subdir(
     )
     git_commit_all(task.workspace_managed_root, "outside logical source")
     report = runtime.run_verifier(run_id, task.candidate_id)
-    record = runtime._load_candidate_record(run_id, task.candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
 
     assert report.process_passed is False
     assert "../README.md" in record.detected_changed_files
@@ -2334,7 +2558,7 @@ def test_start_agent_session_creates_context_handle_and_launch_payload(tmp_path:
         project,
         {
             "name": "random",
-            "worker_agent_type": "search_candidate_agent",
+            "inner_agent": "autoresearch",
         },
         max_parallel=1,
     )
@@ -2362,21 +2586,24 @@ def test_start_agent_session_creates_context_handle_and_launch_payload(tmp_path:
         run_id, tasks[0].candidate_id, {"goal": "try one concrete variant"},
     )
     assert repeated == session
-    assert runtime._load_agent_sessions(run_id) == [session]
+    assert runtime.candidate_sessions.state.read_agent_sessions(run_id) == [session]
     with pytest.raises(RuntimeError, match="different launch options"):
         runtime.start_agent_session(
             run_id, tasks[0].candidate_id, {"goal": "try a different variant"},
         )
 
 
-def test_redispatch_candidate_creates_new_session_with_tier_override(tmp_path: Path) -> None:
+def test_redispatch_candidate_preserves_frozen_legacy_native_role(
+    tmp_path: Path,
+) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec = spec_with_strategy(
         project,
         {
             "name": "random",
-            "worker_agent_type": "search_candidate_agent",
+            "inner_agent": "autoresearch",
+            "worker_agent_type": "search_candidate_agent_deep",
         },
         max_parallel=1,
     )
@@ -2389,7 +2616,6 @@ def test_redispatch_candidate_creates_new_session_with_tier_override(tmp_path: P
     redispatched = runtime.redispatch_candidate(
         run_id,
         task.candidate_id,
-        worker_agent_type="search_candidate_agent_deep",
     )
 
     assert redispatched.agent_session_id != first.agent_session_id
@@ -2399,9 +2625,12 @@ def test_redispatch_candidate_creates_new_session_with_tier_override(tmp_path: P
     assert redispatched.agent_session_id in redispatched.launch["message"]
     assert "state_level_resume" in redispatched.launch["message"]
 
-    refreshed_candidate = runtime._load_candidate_record(run_id, task.candidate_id)
+    refreshed_candidate = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     worker_policy = refreshed_candidate.task.strategy_metadata["worker_policy"]
-    assert worker_policy["worker_agent_type"] == "search_candidate_agent"
+    assert worker_policy["inner_agent"] == "autoresearch"
+    assert worker_policy["legacy_worker_agent_type"] == (
+        "search_candidate_agent_deep"
+    )
 
 
 def test_redispatch_context_includes_previous_progress_handoff(tmp_path: Path) -> None:
@@ -2571,7 +2800,7 @@ def test_start_agent_session_accepts_one_dispatch_worker_budget(tmp_path: Path) 
         "prompt"
     ]
     assert default_session.launch["budget_control"]["max_runtime_seconds"] == 600
-    reloaded = runtime._load_frozen_spec(frozen.frozen_spec_id)
+    reloaded = runtime.search_run.state.read_frozen_spec(frozen.frozen_spec_id)
     assert reloaded.spec.strategy.worker_budget is not None
     assert reloaded.spec.strategy.worker_budget.max_runtime_seconds == 600
 
@@ -2630,12 +2859,11 @@ def test_redispatch_candidate_overrides_codex_worker_budget(tmp_path: Path) -> N
     redispatched = runtime.redispatch_candidate(
         run_id,
         task.candidate_id,
-        worker_agent_type="search_candidate_agent_deep",
         worker_budget={"max_runtime_seconds": 30, "max_turns": 12, "on_exceed": "interrupt"},
     )
 
     assert redispatched.agent_session_id != first.agent_session_id
-    assert redispatched.launch["agent_type"] == "search_candidate_agent_deep"
+    assert redispatched.launch["agent_type"] == "default"
     assert redispatched.launch["budget_control"] == {
         "mode": "parent_watchdog",
         "max_runtime_seconds": 30,
@@ -2869,7 +3097,7 @@ def test_pi_rpc_rejects_unsupported_worker_service_tier(tmp_path: Path) -> None:
 def test_pi_rpc_rejects_unsupported_selected_model_service_tier(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    runtime.list_available_models = lambda host, query=None: {  # type: ignore[method-assign]
+    runtime.models.list_available_models = lambda host, query=None: {  # type: ignore[method-assign]
         "host": host,
         "adapter_version": "pi-rpc-v1",
         "models": [
@@ -2937,6 +3165,7 @@ def test_host_worker_budget_rejects_unenforceable_limits(tmp_path: Path) -> None
     with pytest.raises(ValueError, match="pi-rpc worker_budget requires max_runtime_seconds"):
         pi_runtime.plan_next(run_id, requested_k=1)
 
+
 @pytest.mark.codex
 def test_bind_agent_handle_records_codex_task_name(tmp_path: Path) -> None:
     project = make_project(tmp_path)
@@ -2956,6 +3185,8 @@ def test_bind_agent_handle_records_codex_task_name(tmp_path: Path) -> None:
     assert updated.host == "codex"
     assert updated.host_handle.task_name == "search_agent_0001"
     assert updated.host_handle.nickname == "search worker"
+
+
 @pytest.mark.codex
 def test_bind_agent_handle_harvests_workspace_handoff_into_history(tmp_path: Path) -> None:
     project = make_project(tmp_path)
@@ -3130,13 +3361,13 @@ def test_rolling_candidates_remains_scheduler_independent(
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     monkeypatch.setattr(
-        runtime._adaptive_search,
-        "kick_schedule_tasks",
-        lambda _run_id: pytest.fail("rolling_candidates entered Search Scheduler"),
+        scheduler_module,
+        "kick_scheduler",
+        lambda *args, **kwargs: pytest.fail("rolling_candidates entered Search Scheduler"),
     )
 
     assert runtime.search_scheduler_enabled(run_id) is False
-    runtime.on_evidence_annotation_terminal(run_id)
+    wake_scheduler_after_annotation(runtime.root_dir, run_id)
 
 
 def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
@@ -3170,21 +3401,20 @@ def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
     def reject_scheduler_call(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("default Search entered Search Scheduler execution")
 
-    for method_name in (
-        "assert_candidate_execution_allowed",
-        "resolve_previous_best_score",
-        "resolve_scheduler_barrier",
-        "settle_iteration",
-        "kick_schedule_tasks",
+    for owner, method_name in (
+        (runtime.candidate_sessions.admission, "assert_candidate_execution_allowed"),
+        (runtime._adaptive_search, "resolve_scheduler_barrier"),
+        (runtime.settlement.lanes, "ensure_tasks_locked"),
     ):
         monkeypatch.setattr(
-            runtime._adaptive_search,
+            owner,
             method_name,
             reject_scheduler_call,
         )
 
     assert runtime.search_scheduler_enabled(run_id) is False
-    runtime.on_evidence_annotation_terminal(run_id)
+    monkeypatch.setattr(scheduler_module, "kick_scheduler", reject_scheduler_call)
+    wake_scheduler_after_annotation(runtime.root_dir, run_id)
 
     with pytest.raises(RuntimeError, match="requires.*adaptive_search"):
         runtime.list_allocation_decisions(run_id)
@@ -3201,7 +3431,7 @@ def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
         agent_session_id=session.agent_session_id,
         hypothesis="verify the ordinary parallel loop path",
     )
-    record = runtime._load_candidate_record(run_id, tasks[0].candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, tasks[0].candidate_id)
 
     assert report.allocation_decision is None
     assert record.iterations[-1].schedule_task_id is None
@@ -3224,7 +3454,6 @@ def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
     assert continued.candidate_id == tasks[0].candidate_id
 
 
-
 def test_start_agent_session_allocates_unique_ids_under_parallel_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3238,7 +3467,7 @@ def test_start_agent_session_allocates_unique_ids_under_parallel_calls(
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
 
-    original_load_run = runtime._load_run
+    original_load_run = runtime.candidate_sessions.state.read_run
     loaded_count = 0
     loaded_lock = threading.Lock()
     second_loaded = threading.Event()
@@ -3256,7 +3485,7 @@ def test_start_agent_session_allocates_unique_ids_under_parallel_calls(
                 second_loaded.wait(timeout=0.25)
         return run
 
-    monkeypatch.setattr(runtime, "_load_run", load_run_with_overlap)
+    monkeypatch.setattr(runtime.candidate_sessions.state, "read_run", load_run_with_overlap)
     start_barrier = threading.Barrier(2)
 
     def start(candidate_id: str):
@@ -3267,13 +3496,13 @@ def test_start_agent_session_allocates_unique_ids_under_parallel_calls(
         sessions = list(pool.map(start, [task.candidate_id for task in tasks]))
 
     assert sorted(session.agent_session_id for session in sessions) == [
-        FileSearchRuntime._make_agent_session_id(run_id, 1),
-        FileSearchRuntime._make_agent_session_id(run_id, 2),
+        runtime.candidate_sessions._make_agent_session_id(run_id, 1),
+        runtime.candidate_sessions._make_agent_session_id(run_id, 2),
     ]
     assert sorted(session.candidate_id for session in sessions) == ["c001", "c002"]
-    assert sorted(session.agent_session_id for session in runtime._load_agent_sessions(run_id)) == [
-        FileSearchRuntime._make_agent_session_id(run_id, 1),
-        FileSearchRuntime._make_agent_session_id(run_id, 2),
+    assert sorted(session.agent_session_id for session in runtime.candidate_sessions.state.read_agent_sessions(run_id)) == [
+        runtime.candidate_sessions._make_agent_session_id(run_id, 1),
+        runtime.candidate_sessions._make_agent_session_id(run_id, 2),
     ]
     assert original_load_run(run_id).next_agent_session_index == 3
 
@@ -3372,8 +3601,8 @@ def test_legacy_agent_session_id_collision_is_not_silent(tmp_path: Path) -> None
 
     legacy_first = first.model_copy(update={"agent_session_id": "agent_001"})
     legacy_second = second.model_copy(update={"agent_session_id": "agent_001"})
-    runtime._write_agent_session(legacy_first)
-    runtime._write_agent_session(legacy_second)
+    runtime.candidate_sessions.state.write_agent_session(legacy_first)
+    runtime.candidate_sessions.state.write_agent_session(legacy_second)
 
     with pytest.raises(RuntimeError, match="ambiguous agent_session_id"):
         runtime.get_agent_context("agent_001")
@@ -3405,8 +3634,6 @@ def test_agent_guided_strategy_requires_and_validates_proposals(tmp_path: Path) 
         runtime.plan_next(run_id, requested_k=1)
 
 
-
-
 def test_git_worktree_start_batch_recovers_after_materialization_before_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3423,7 +3650,7 @@ def test_git_worktree_start_batch_recovers_after_materialization_before_record(
     frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, 1)
-    original_write = runtime._write_candidate_record
+    original_write = runtime.candidate_creation.state.write_candidate
     failed = False
 
     def fail_once(run_id_arg: str, record: CandidateRecord) -> None:
@@ -3431,14 +3658,14 @@ def test_git_worktree_start_batch_recovers_after_materialization_before_record(
         if not failed:
             failed = True
             write_json(
-                runtime._candidate_dir(run_id_arg, record.candidate_id)
+                runtime.candidate_creation.state.candidate_dir(run_id_arg, record.candidate_id)
                 / "candidate.json",
                 record.model_dump(mode="json"),
             )
             raise RuntimeError("simulated state write failure")
         original_write(run_id_arg, record)
 
-    monkeypatch.setattr(runtime, "_write_candidate_record", fail_once)
+    monkeypatch.setattr(runtime.candidate_creation.state, "write_candidate", fail_once)
 
     with pytest.raises(RuntimeError, match="simulated state write failure"):
         runtime.start_batch(run_id, plan.plan_id)
@@ -3447,7 +3674,7 @@ def test_git_worktree_start_batch_recovers_after_materialization_before_record(
     assert [task.candidate_id for task in tasks] == ["c001"]
     assert runtime.status(run_id).candidates_total == 1
     assert (
-        runtime._candidate_dir(run_id, "c001") / "task.json"
+        runtime.candidate_creation.state.candidate_dir(run_id, "c001") / "task.json"
     ).is_file()
 
 
@@ -3481,10 +3708,6 @@ def test_start_batch_is_serialized_and_idempotent_for_same_plan(
     assert runtime.status(run_id).candidates_total == 2
 
 
-
-
-
-
 def test_random_strategy_gen1_independent_bootstrap(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
@@ -3502,8 +3725,6 @@ def test_random_strategy_gen1_independent_bootstrap(tmp_path: Path) -> None:
 
     tasks = runtime.start_batch(run_id, plan.plan_id)
     assert all(t.base_candidate_id is None for t in tasks)
-
-
 
 
 def test_random_strategy_name_normalizes_case_and_dash(
@@ -3616,9 +3837,6 @@ def test_removed_strategy_driver_fields_are_rejected(tmp_path: Path) -> None:
         SearchSpec.model_validate(data)
 
 
-
-
-
 def test_run_verifier_records_edit_surface_violation_in_iteration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3649,7 +3867,7 @@ def test_run_verifier_records_edit_surface_violation_in_iteration(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     runtime.run_verifier(
         run_id,
         candidate_id,
@@ -3657,7 +3875,7 @@ def test_run_verifier_records_edit_surface_violation_in_iteration(
         hypothesis="Probe a denied edit",
     )
 
-    record = runtime._load_candidate_record(run_id, candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
     it = record.iterations[-1]
     assert it.touched_denied_files is True
     assert "config.yaml" in it.changed_files
@@ -3721,7 +3939,7 @@ def test_run_verifier_classifies_legacy_generated_verifier_file_as_infrastructur
     assert result.metrics["infrastructure_failure"] is True
     assert result.metrics["candidate_action"] == "stop_and_report"
     assert report.disposition == "failure"
-    assert runtime._git_status(workspace) == []
+    assert runtime.search_bootstrap.repository.git_status(workspace) == []
     attempt = runtime.list_iterations(run_id, candidate_id)[0]["git_head"]
     assert subprocess.check_output(
         ["git", "show", f"{attempt}:.goal-plus-verifiers/generated.bin"],
@@ -3752,7 +3970,7 @@ def test_run_verifier_records_failure_class_on_timeout(
     def fake_run(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     report = runtime.run_verifier(
         run_id,
         candidate_id,
@@ -3761,10 +3979,99 @@ def test_run_verifier_records_failure_class_on_timeout(
     )
 
     assert report.aggregate_score == 0.0
-    record = runtime._load_candidate_record(run_id, candidate_id)
+    assert report.attempt_id is not None
+    assert report.attempt_iteration == 1
+    assert report.attempt_artifact_ref is not None
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
+    assert len(record.iterations) == 1
     it = record.iterations[-1]
     assert it.failure_class == "Timeout"
     assert it.score == 0.0
+    assert it.metrics["_candidate_attempt"]["id"] == report.attempt_id
+    assert it.artifact_ref == report.attempt_artifact_ref
+
+
+def test_git_worktree_verifier_start_failure_records_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    task.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+
+    def fail_to_start(*args, **kwargs):
+        raise OSError("verifier executable unavailable")
+
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fail_to_start)
+
+    report = runtime.run_verifier(run_id, task.candidate_id)
+
+    assert report.process_passed is False
+    assert report.aggregate_score == 0.0
+    assert report.attempt_id is not None
+    assert report.attempt_iteration == 1
+    assert report.attempt_artifact_ref is not None
+    assert report.verifier_results[0].failure_class == "VerifierStartFailed"
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    assert len(record.iterations) == 1
+    iteration = record.iterations[0]
+    assert iteration.failure_class == "VerifierStartFailed"
+    assert iteration.metrics["_candidate_attempt"]["id"] == report.attempt_id
+    assert iteration.artifact_ref == report.attempt_artifact_ref
+
+
+def test_git_worktree_verifier_command_failure_records_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    task.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+
+    def fail_verifier(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=2,
+            stdout="",
+            stderr="candidate verifier failed",
+        )
+
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fail_verifier)
+
+    report = runtime.run_verifier(run_id, task.candidate_id)
+
+    assert report.process_passed is False
+    assert report.aggregate_score == 0.0
+    assert report.attempt_id is not None
+    assert report.attempt_iteration == 1
+    assert report.attempt_artifact_ref is not None
+    assert report.verifier_results[0].failure_class == "VerifierCommandFailed"
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    assert len(record.iterations) == 1
+    iteration = record.iterations[0]
+    assert iteration.failure_class == "VerifierCommandFailed"
+    assert iteration.metrics["_candidate_attempt"]["id"] == report.attempt_id
+    assert iteration.artifact_ref == report.attempt_artifact_ref
 
 
 def test_process_verifier_requires_time_for_suite_and_closeout(
@@ -3796,7 +4103,7 @@ def test_process_verifier_requires_time_for_suite_and_closeout(
         )
 
     assert runtime.list_iterations(run_id, candidate.candidate_id) == []
-    assert runtime._load_run(run_id).state == RunState.WAITING_FOR_WORKERS
+    assert runtime.search_run.state.read_run(run_id).state == RunState.WAITING_FOR_WORKERS
 
 
 def test_list_iterations_empty_for_fresh_candidate(tmp_path: Path) -> None:
@@ -3827,7 +4134,7 @@ def test_run_verifier_records_iteration_with_agent_session_id(
         project,
         {
             "name": "random",
-            "worker_agent_type": "search_candidate_agent",
+            "inner_agent": "autoresearch",
         },
         max_parallel=1,
     )
@@ -3846,7 +4153,7 @@ def test_run_verifier_records_iteration_with_agent_session_id(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     runtime.run_verifier(
         run_id,
         candidate_id,
@@ -3854,11 +4161,11 @@ def test_run_verifier_records_iteration_with_agent_session_id(
         hypothesis="Record session provenance",
     )
 
-    record = runtime._load_candidate_record(run_id, candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
     it = record.iterations[-1]
     assert it.agent_session_id == session.agent_session_id
 
-    refreshed = runtime._load_agent_session_by_id(session.agent_session_id, run_id=run_id)
+    refreshed = runtime.candidate_sessions.session(session.agent_session_id, run_id=run_id)
     assert refreshed.counters.get("verifier_runs") == 1
 
 
@@ -3871,7 +4178,7 @@ def test_run_verifier_without_agent_session_id_is_main_final_verify(
         project,
         {
             "name": "random",
-            "worker_agent_type": "search_candidate_agent",
+            "inner_agent": "autoresearch",
         },
         max_parallel=1,
     )
@@ -3890,12 +4197,12 @@ def test_run_verifier_without_agent_session_id_is_main_final_verify(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     # Main final verify call - no agent_session_id, no auto-attribution.
     report = runtime.run_verifier(run_id, candidate_id)
     assert report.aggregate_score == 0.6
 
-    record = runtime._load_candidate_record(run_id, candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
     it = record.iterations[-1]
     assert it.agent_session_id is None
 
@@ -3945,7 +4252,7 @@ def test_run_verifier_parses_subprocess_metrics_with_mock(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     report = runtime.run_verifier(run_id, candidate_id)
 
@@ -3985,7 +4292,7 @@ def test_run_verifier_preserves_ranking_metric_named_like_runtime_metadata(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     report = runtime.run_verifier(run_id, candidate_id)
 
@@ -4012,7 +4319,7 @@ def test_process_verifier_overrides_verifier_phase_environment(
         )
 
     monkeypatch.setenv("GOAL_PLUS_VERIFIER_PHASE", "caller_value")
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     report = runtime.run_verifier(run_id, candidate_id, scope="process")
 
@@ -4035,14 +4342,14 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
         "target_median_latency_ms": 5.2,
         "private_runtime_note": "must-not-reach-candidate",
     }
-    spec_data["process_verifiers"][0]["resource_lock"] = "ascend-npu:0"
-    spec_data["device_pools"] = [{"pool_id": "ascend-npu"}]
+    spec_data["process_verifiers"][0]["resource_lock"] = "device:0"
+    spec_data["device_pools"] = [{"pool_id": "device"}]
     monkeypatch.setenv(
         DEVICE_POOLS_ENV,
         canonical_json(
             {
-                "ascend-npu": {
-                    "visibility_env": "ASCEND_RT_VISIBLE_DEVICES",
+                "device": {
+                    "visibility_env": "TEST_VISIBLE_DEVICES",
                     "devices": ["4", "5"],
                 }
             }
@@ -4065,7 +4372,7 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
         [project / "evaluator.py"],
@@ -4074,8 +4381,8 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
         DEVICE_POOLS_ENV,
         canonical_json(
             {
-                "ascend-npu": {
-                    "visibility_env": "ASCEND_RT_VISIBLE_DEVICES",
+                "device": {
+                    "visibility_env": "TEST_VISIBLE_DEVICES",
                     "devices": ["8", "9"],
                 }
             }
@@ -4086,25 +4393,25 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
     tasks = runtime.start_batch(run_id, plan.plan_id)
 
     assert [task.process_environment for task in tasks] == [
-        {"ASCEND_RT_VISIBLE_DEVICES": device} for device in ("4", "5")
+        {"TEST_VISIBLE_DEVICES": device} for device in ("4", "5")
     ]
-    assert frozen.device_inventory["ascend-npu"].model_dump(mode="json") == {
-        "visibility_env": "ASCEND_RT_VISIBLE_DEVICES",
+    assert frozen.device_inventory["device"].model_dump(mode="json") == {
+        "visibility_env": "TEST_VISIBLE_DEVICES",
         "devices": ["4", "5"],
     }
     assert tasks[0].acceptance == spec_data["candidate_acceptance"]
     for task in tasks:
         runtime.run_verifier(run_id, task.candidate_id)
 
-    assert calls[0]["GOAL_PLUS_VERIFIER_RESOURCE"] == "ascend-npu:4"
-    assert calls[0]["ASCEND_RT_VISIBLE_DEVICES"] == "4"
-    assert [env["ASCEND_RT_VISIBLE_DEVICES"] for env in calls[1:]] == [
+    assert calls[0]["GOAL_PLUS_VERIFIER_RESOURCE"] == "device:4"
+    assert calls[0]["TEST_VISIBLE_DEVICES"] == "4"
+    assert [env["TEST_VISIBLE_DEVICES"] for env in calls[1:]] == [
         "4",
         "5",
     ]
     assert [env["GOAL_PLUS_VERIFIER_RESOURCE"] for env in calls[1:]] == [
-        "ascend-npu:4",
-        "ascend-npu:5",
+        "device:4",
+        "device:5",
     ]
 
     session = runtime.start_agent_session(run_id, tasks[1].candidate_id)
@@ -4123,7 +4430,7 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
     assert context["metric_name"] == "combined_score"
     assert "must-not-reach-candidate" not in canonical_json(context)
     assert context["candidate_task"]["process_environment"] == {
-        "ASCEND_RT_VISIBLE_DEVICES": "5"
+        "TEST_VISIBLE_DEVICES": "5"
     }
 
 
@@ -4163,7 +4470,7 @@ def test_device_inventory_rejects_oversubscription_and_ambiguous_environment(
     monkeypatch.setenv(DEVICE_POOLS_ENV, canonical_json(inventory))
 
     with pytest.raises(ValueError, match=message):
-        FileSearchRuntime(tmp_path / ".search")._resolve_device_inventory(
+        SearchConfiguration.resolve_device_inventory(
             pools,
             max_parallel,
         )
@@ -4207,7 +4514,7 @@ def test_device_pool_lease_releases_after_terminal_or_create_failure(
         )
 
     for runtime in runtimes:
-        monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+        monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     frozen_specs = [
         runtime.freeze_spec(
             SearchSpec.model_validate(spec_data),
@@ -4233,7 +4540,7 @@ def test_device_pool_lease_releases_after_terminal_or_create_failure(
             raise RuntimeError("source update failed")
         yield
 
-    monkeypatch.setattr(runtimes[0], "_run_transaction", fail_source_update)
+    monkeypatch.setattr(runtimes[0].search_run.state, "lock_run", fail_source_update)
     with pytest.raises(RuntimeError, match="source update failed"):
         runtimes[0].create_run(
             frozen_specs[0].frozen_spec_id,
@@ -4254,11 +4561,11 @@ def test_device_pool_ref_does_not_read_an_unregistered_environment_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(DEVICE_POOLS_ENV, raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-exposed")
+    monkeypatch.setenv("HOST_SECRET", "must-not-be-exposed")
 
     with pytest.raises(ValueError, match=DEVICE_POOLS_ENV) as error:
-        FileSearchRuntime(tmp_path / ".search")._resolve_device_inventory(
-            [DevicePoolSpec(pool_id="OPENAI_API_KEY")],
+        SearchConfiguration.resolve_device_inventory(
+            [DevicePoolSpec(pool_id="HOST_SECRET")],
             1,
         )
 
@@ -4269,8 +4576,8 @@ def test_verifier_resource_lock_serializes_candidates_and_persists_diagnostics(
     tmp_path: Path,
 ) -> None:
     project = make_project(tmp_path)
-    marker = tmp_path / "npu-active"
-    resource = f"test-npu:{tmp_path.name}"
+    marker = tmp_path / "device-active"
+    resource = f"test-device:{tmp_path.name}"
     (project / "evaluator.py").write_text(
         "import json\n"
         "import os\n"
@@ -4353,7 +4660,7 @@ def test_promotion_verifier_overrides_verifier_phase_environment(
         )
 
     monkeypatch.setenv("GOAL_PLUS_VERIFIER_PHASE", "caller_value")
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     report = runtime.run_verifier(
         run_id,
@@ -4376,7 +4683,7 @@ def test_run_verifier_handles_subprocess_timeout_with_mock(
     def fake_run(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     report = runtime.run_verifier(run_id, candidate_id)
 
@@ -4492,7 +4799,7 @@ def test_select_uses_metric_direction_for_minimize(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     runtime.run_verifier(run_id, "c001")
     runtime.run_verifier(run_id, "c002")
 
@@ -4534,7 +4841,7 @@ def test_select_does_not_reverify_duplicate_latest_artifact_option(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     runtime.run_verifier(run_id, "c001")
     runtime.run_verifier(run_id, "c002")
 
@@ -4566,7 +4873,7 @@ def test_select_reuses_exact_worker_evidence_without_parent_verifier(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     runtime.run_verifier(
         run_id,
         task.candidate_id,
@@ -4619,7 +4926,7 @@ def test_select_uses_best_iteration_when_artifact_is_current(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     runtime.run_verifier(run_id, "c001")
     runtime.run_verifier(run_id, "c001")
@@ -4664,7 +4971,7 @@ def test_select_can_recover_best_iteration_after_artifact_changed(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     c001_workspace = tasks[0].workspace
     c001_workspace.joinpath("initial_program.py").write_text(
@@ -4694,7 +5001,9 @@ def test_select_can_recover_best_iteration_after_artifact_changed(
 def test_run_verifier_rejects_missing_results_ledger_git_history(
     tmp_path: Path,
 ) -> None:
+    (tmp_path / ".gitignore").write_text(".search/\n", encoding="utf-8")
     project = make_project(tmp_path)
+    _initialize_source_repository(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
     run_id = runtime.create_run(frozen.frozen_spec_id)
@@ -4703,6 +5012,9 @@ def test_run_verifier_rejects_missing_results_ledger_git_history(
     results_before = tasks[0].workspace.joinpath("results.tsv").read_text(
         encoding="utf-8"
     )
+    source_head_before = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
     shutil.rmtree(tasks[0].workspace / ".git")
 
     with pytest.raises(RuntimeError, match="ResultsLedgerMutation"):
@@ -4712,6 +5024,12 @@ def test_run_verifier_rejects_missing_results_ledger_git_history(
         encoding="utf-8"
     ) == results_before
     assert runtime.list_iterations(run_id, tasks[0].candidate_id) == []
+    assert subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip() == source_head_before
+    assert subprocess.check_output(
+        ["git", "status", "--porcelain=v1"], cwd=tmp_path, text=True
+    ) == ""
 
 
 def test_run_verifier_records_real_git_commit_for_iteration(
@@ -4737,7 +5055,7 @@ def test_run_verifier_records_real_git_commit_for_iteration(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     runtime.run_verifier(run_id, candidate_id)
 
@@ -4802,7 +5120,7 @@ def test_results_tsv_is_committed_and_runtime_enforces_one_row_per_report(
         "\tfail\tprobe denied configuration change"
     )
 
-    record = runtime._load_candidate_record(run_id, candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
     assert len(record.iterations) == 2
     assert len(record.results_ledger) == 2
     assert record.iterations[-1].ledger_git_head == record.results_ledger_git_head
@@ -4831,7 +5149,7 @@ def test_results_tsv_is_committed_and_runtime_enforces_one_row_per_report(
     )
     with pytest.raises(RuntimeError, match="ResultsLedgerMutation"):
         runtime.run_verifier(run_id, candidate_id, hypothesis="must not run")
-    assert len(runtime._load_candidate_record(run_id, candidate_id).results_ledger) == 2
+    assert len(runtime.candidate_creation.state.read_candidate(run_id, candidate_id).results_ledger) == 2
 
 
 def test_results_tsv_inherits_across_successor_run(
@@ -4863,7 +5181,7 @@ def test_results_tsv_inherits_across_successor_run(
     assert successor.workspace.joinpath("results.tsv").read_text(
         encoding="utf-8"
     ) == parent_results
-    successor_record = runtime._load_candidate_record(
+    successor_record = runtime.candidate_creation.state.read_candidate(
         successor_run_id,
         successor.candidate_id,
     )
@@ -4893,7 +5211,7 @@ def test_legacy_tmp_results_tsv_migrates_and_backfills_missing_iterations(
     legacy_path.write_text("\n".join(current_lines[:2]) + "\n", encoding="utf-8")
     workspace.joinpath("results.tsv").unlink()
 
-    candidate_path = runtime._candidate_dir(run_id, candidate_id) / "candidate.json"
+    candidate_path = runtime.candidate_creation.state.candidate_dir(run_id, candidate_id) / "candidate.json"
     legacy_record = load_json(candidate_path)
     legacy_record.pop("results_ledger", None)
     legacy_record.pop("results_ledger_git_head", None)
@@ -4917,7 +5235,7 @@ def test_legacy_tmp_results_tsv_migrates_and_backfills_missing_iterations(
     assert migrated_lines[2].endswith("\tpass\trecovered iteration 2")
     assert context["result_count"] == 2
     assert context["latest_result"]["hypothesis"] == "recovered iteration 2"
-    migrated_record = runtime._load_candidate_record(run_id, candidate_id)
+    migrated_record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
     assert migrated_record.results_ledger_git_head is not None
     assert len(migrated_record.results_ledger) == 2
 
@@ -4954,7 +5272,7 @@ def test_select_restores_best_git_commit_before_final_verify(
             )
         return real_run(*args, **kwargs)
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     c001_workspace.joinpath("initial_program.py").write_text(
         "VALUE = 'fast'\n", encoding="utf-8"
@@ -4986,7 +5304,7 @@ def test_select_restores_best_git_commit_before_final_verify(
     final_head = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=c001_workspace, text=True
     ).strip()
-    selected_record = runtime._load_candidate_record(run_id, "c001")
+    selected_record = runtime.candidate_creation.state.read_candidate(run_id, "c001")
     assert final_head == selected_record.results_ledger_git_head
     assert final_head != fast_commit
 
@@ -5018,7 +5336,7 @@ def test_run_verifier_rejects_mismatched_agent_session(tmp_path: Path) -> None:
             tasks[0].candidate_id,
             session_for_c0.agent_session_id,
         ),
-        "other_session": runtime._load_agent_session_by_id(
+        "other_session": runtime.candidate_sessions.session(
             other_session.agent_session_id,
             run_id=run_id,
         ).model_dump(mode="json"),
@@ -5038,7 +5356,7 @@ def test_run_verifier_rejects_mismatched_agent_session(tmp_path: Path) -> None:
             tasks[0].candidate_id,
             session_for_c0.agent_session_id,
         ),
-        "other_session": runtime._load_agent_session_by_id(
+        "other_session": runtime.candidate_sessions.session(
             other_session.agent_session_id,
             run_id=run_id,
         ).model_dump(mode="json"),
@@ -5089,7 +5407,7 @@ def test_concurrent_run_verifiers_preserve_best_score(
         except BaseException as exc:  # pragma: no cover - surfaced after join
             errors.append(exc)
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     high = threading.Thread(target=verify, args=(tasks[0].candidate_id,))
     low = threading.Thread(target=verify, args=(tasks[1].candidate_id,))
@@ -5102,7 +5420,7 @@ def test_concurrent_run_verifiers_preserve_best_score(
     assert not low.is_alive()
     assert errors == []
 
-    run = runtime._load_run(run_id)
+    run = runtime.search_run.state.read_run(run_id)
     assert run.best_candidate_id == "c001"
     assert run.best_score == 0.9
     assert run.candidates_evaluated == 2
@@ -5117,7 +5435,7 @@ def test_run_verifier_works_without_session_and_records_iterations(
         project,
         {
             "name": "random",
-            "worker_agent_type": "search_candidate_agent",
+            "inner_agent": "autoresearch",
         },
         max_parallel=1,
     )
@@ -5139,7 +5457,7 @@ def test_run_verifier_works_without_session_and_records_iterations(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
 
     for iteration_number, expected_score in enumerate([0.4, 0.7, 0.9], start=1):
         report = runtime.run_verifier(
@@ -5150,7 +5468,7 @@ def test_run_verifier_works_without_session_and_records_iterations(
         )
         assert report.aggregate_score == expected_score
 
-    record = runtime._load_candidate_record(run_id, candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
     assert len(record.iterations) == 3
     assert [it.score for it in record.iterations] == [0.4, 0.7, 0.9]
     assert [it.iteration for it in record.iterations] == [1, 2, 3]
@@ -5184,7 +5502,7 @@ def test_list_iterations_returns_all_records(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     runtime.run_verifier(
         run_id,
         candidate_id,
@@ -5232,7 +5550,7 @@ def test_get_agent_context_returns_bounded_iteration_summary(
             stderr="",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_run)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     runtime.run_verifier(
         run_id,
         candidate_id,
@@ -5264,7 +5582,7 @@ def test_history_and_report_include_agent_sessions(tmp_path: Path) -> None:
         project,
         {
             "name": "random",
-            "worker_agent_type": "search_candidate_agent",
+            "inner_agent": "autoresearch",
         },
         max_parallel=1,
     )
@@ -5303,14 +5621,14 @@ def test_report_rejects_linked_nonterminal_goal(
             "search_tasks": [{"run_id": run_id}],
         },
     )
-    run_before = runtime._load_run(run_id)
+    run_before = runtime.search_run.state.read_run(run_id)
 
     with pytest.raises(RuntimeError, match="reaches a terminal status"):
         runtime.report(run_id)
 
-    assert runtime._load_run(run_id) == run_before
-    assert not (runtime._run_dir(run_id) / "report.md").exists()
-    assert not (runtime._run_dir(run_id) / "report.html").exists()
+    assert runtime.search_run.state.read_run(run_id) == run_before
+    assert not (runtime.search_run.state.run_dir(run_id) / "report.md").exists()
+    assert not (runtime.search_run.state.run_dir(run_id) / "report.html").exists()
 
 
 @pytest.mark.parametrize("goal_status", ["complete", "blocked", "abandoned"])
@@ -5636,7 +5954,6 @@ def test_invalidate_run_fences_work_and_successor_inherits_research(
     assert runtime.status(run_id).replacement_run_id == successor_id
 
 
-
 def test_invalidation_rejects_in_flight_verifier_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5647,7 +5964,7 @@ def test_invalidation_rejects_in_flight_verifier_result(
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
-    original_run_commands = runtime._run_commands
+    original_run_commands = runtime.verifiers.run_commands
 
     def invalidate_after_execution(*args: object, **kwargs: object) -> ScoreReport:
         report = original_run_commands(*args, **kwargs)  # type: ignore[arg-type]
@@ -5659,7 +5976,7 @@ def test_invalidation_rejects_in_flight_verifier_result(
         )
         return report
 
-    monkeypatch.setattr(runtime, "_run_commands", invalidate_after_execution)
+    monkeypatch.setattr(runtime.verifiers, "run_commands", invalidate_after_execution)
 
     with pytest.raises(RuntimeError, match="record verifier result"):
         runtime.run_verifier(run_id, task.candidate_id)
@@ -5677,6 +5994,6 @@ def test_runtime_does_not_create_event_or_observation_dirs(tmp_path: Path) -> No
     tasks = runtime.start_batch(run_id, plan.plan_id)
     runtime.start_agent_session(run_id, tasks[0].candidate_id, {"goal": "iterate"})
 
-    run_dir = runtime._run_dir(run_id)
+    run_dir = runtime.search_run.state.run_dir(run_id)
     assert not (run_dir / "agent_events").exists()
     assert not (run_dir / "observations").exists()

@@ -58,7 +58,7 @@
 | 命令 | 行为 |
 | --- | --- |
 | GP / GP summary | 查询当前 session 的任务摘要，不创建或更改目标 |
-| GP <目标> | 创建并启动；已有未结束任务时拒绝静默替换 |
+| GP <目标> | 为当前 native session 创建并启动；本 session 已有未结束任务时拒绝静默替换 |
 | GP edit <完整目标> | 有效变更产生新 revision，重新 triage，隔离旧 work/Search/final check |
 | GP pause | 停止后续自主续跑及新派发，不主动强杀当前 turn |
 | GP resume | 显式重启原 Main；busy/重复交付不得创建第二个 Main |
@@ -94,6 +94,10 @@ Pi 交互 command 与 print/JSON input 共用同一 host-only 控制入口。
 | abandoned / clear | 普通聊天 | 拒绝 | 拒绝；须创建新任务 |
 | fork / 新 session / detached / stale | 不继承执行权 | 拒绝接管 | 不借 edit 接管其他任务 |
 
+fork 或新 session 可以用带完整新目标的精确 GP start 创建独立 Goal。其他 session 的未终态 Goal
+不会被读取为本 session 的 resume/edit 目标，也不会阻止该 start；同一 session 的新 start 仍拒绝。
+并行 Goal 的 Main/Search 工具分别通过显式 `goal_plus_id` 或已链接 `run_id` 校验归属。
+
 原 session 已完成任务的历史绑定仅可摘要查询及有效 edit；这不等于 detached 未完成任务可恢复。
 blocked 不是新版本的结算终态，不能沿用旧的自动解绑/最终报告行为。
 
@@ -105,6 +109,12 @@ blocked 不是新版本的结算终态，不能沿用旧的自动解绑/最终�
 原生 session_start 只恢复状态。相同进程 reload/compact 不改变控制；新进程接手原 session 时，
 宿主检查旧 Main PID 与开始身份，仍存活则拒绝双 Main，已丢失则记录 execution_lost。
 未知旧执行不按正常 steering 处理。
+
+Host 恢复入口还会复核所属 execution scope 的 guardian 身份，缺失时恢复 cleanup 责任，
+不改变 Goal control。显式恢复后的 scope 激活标识取自已授权 Goal/control version；开放
+scope 保留当前工作，关闭后的同一激活不可重开，新激活须等旧资源清理完成后创建新 scope。
+Scope 查询使用不可变创建顺序，不把旧 cleanup 的更新时间当作新的执行归属。
+Guardian 与 Main 同时丢失时，后续恢复依赖下一次对应 host 入口；没有新增外部常驻服务。
 
 每次 continuation 必须针对当前 Goal、revision、session 和 control version。
 pause/clear/edit/complete 使旧排队请求失效；重复同一 invocation 不重新应用旧恢复授权。
@@ -229,39 +239,20 @@ VLIW smoke 的完整验收必须有同 container 的受控中断、新 Evidence�
 | Search checkpoint/generation | runtime.py / shared facade | native worker observation | RPC pool/process observation |
 | 工作区恢复 | workspace provider | 与宿主无关 | 与宿主无关 |
 
-## 实现差距与验收
+## 验证边界
 
-验收记录须区分实现与证据，不沿用旧“普通消息自动恢复”测试的结果。
+验收须区分实现与证据，不沿用旧“普通消息自动恢复”测试的结果。
 共享回归覆盖控制转换、旧记录、同 session/fork、重复命令、预算保持及 Main 跨轮恢复清单；
 provider 测试覆盖 prepare/restore 再次中断、旧 generation fencing 和新 Evidence。
 
-真实宿主必须另测：运行中 steering 继续、明确中断后聊天不恢复、原生仅恢复不点火、
-显式命令启动 Main、pause/clear 无新派发、重复/busy resume、排队请求失效、
-Codex TUI/exec/fork、Pi --session/--continue/--resume 及 print/JSON。
-恢复仅到 restored 不算通过。完整 Pi EdgeBench 和 ThinkThread 实际接入不能由单元测试替代。
-
-### 2026-09-04 工作区验证记录
-
-以下来自 `resume` 开发工作区，不等于已发布版本或正式 benchmark campaign。
-默认回归为 864 passed、64 skipped；EdgeBench 上游 136 passed，控制面相关 139 passed。
-最终通过 install.sh --codex --pi-dev 更新安装，Codex doctor 为 ready，7 个 hook 已信任。
-
-| 范围 | 已有证据 | 尚未覆盖的边界 |
-| --- | --- | --- |
-| 共享控制与迁移 | 默认回归；停止/普通输入/显式恢复、CAS、旧记录、deadline、终态与 stale generation | 不用共享单测替代每种宿主调度竞态 |
-| Codex 原生宿主 | 真实 exec resume、交互 resume、真实 fork 隔离；active steering；中断后聊天不恢复；忙时 pause/clear | 忙时重复 resume、Plan 与排队 edit 组合尚无完整真实宿主矩阵 |
-| Pi 原生宿主 | 字面的 --session、--continue、--resume；交互/print/JSON；abort 后聊天隔离；active steering | 所有排队 edit 组合尚未穷举 |
-| Pi 忙时控制 | pause、重复 resume、clear、clear 后普通聊天；同一进程与无重复 Main | 不以该 Main 测试代替每个 worker 生命周期竞态 |
-| Search 持续恢复 | 两端仅发送精确 resume 命令；原 Search、唯一 replacement worker、新 Evidence、selection/promotion、complete、Markdown/HTML 报告落盘 | 每个恢复阶段再次故障主要由故障注入单测覆盖 |
-| EdgeBench | 适配器/协议测试；原生显式命令与固定恢复 ticket；generation/并行计数；VLIW 本地资产检查 | 真实同 Work container 中断恢复与官方 Judge 尚未验证；干净源码及启动确认门禁未完成 |
-| ThinkThread | 公共 ArtifactRef 与能力拒绝测试 | 没有宣称真实 backend 已接入 |
+Steering、中断后的普通聊天隔离、显式 resume、pause/clear 和宿主原生 session 恢复，
+按改动涉及的实际风险选择模块测试；已有适用证据直接复用。真实宿主 ST 仍需显式授权，
+不要求穷举 TUI/exec/fork 或所有排队命令组合。具体规范见
+[测试指南](../tests/README.md#module-boundaries)。
 
 Search 的选优/提升还会检查 fresh generation 的已绑定 worker Evidence，不能用 Main
 自行补一次 verifier 来绕过恢复验收。原 deadline 已到时，收尾只能使用先前完整 worker
-Evidence；不得为了补齐恢复步骤重启优化。集成/example 的干净源码门禁和其他缺失 fixture
-单独记录，不把它们算作通过。
-
-本说明不声明整个矩阵已通过；本次执行结果及未验证项由交付记录逐项列出。
+Evidence；不得为了补齐恢复步骤重启优化。
 
 ## Codex 对齐依据
 

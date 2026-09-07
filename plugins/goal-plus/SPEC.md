@@ -89,6 +89,9 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 
 原生 session resume 只恢复会话与绑定，不启动任务。精确 host command 还支持
 `summary`、`pause`、`resume`、`clear`；只有显式 resume 能解除中断后的任务停止。
+新的原生 session 使用精确 start 命令会创建独立 Goal；其他 session 的 nonterminal、paused 或
+blocked Goal 不得阻止创建，也不得被隐式接管。同一 host session 已有未终态 Goal 时，新的 start
+必须拒绝，并要求使用 edit 或 resume。
 共享 continuation 状态机核对 `control`、revision 和 `active_session`。自然语言提及、skill 自动发现、普通 child、
 candidate worker、直接 MCP 调用和 generic CLI 都不能创建或编辑 Goal Plus。Search bootstrap、
 Main 后续操作、candidate 操作和终态 report
@@ -156,8 +159,8 @@ successor run；不同合同的分数不得直接比较。
 
 一次标准 run 按以下顺序执行：
 
-1. `search_freeze_spec`
-2. `search_create` 并链接当前 Goal revision
+1. 使用当前 `goal_plus_id` 调用 `search_freeze_spec`
+2. 使用同一 `goal_plus_id` 调用 `search_create` 并链接当前 Goal revision
 3. 创建一个 SearchPlan，一次性物化初始 candidate lanes
 4. Host 为每个 candidate 启动并绑定 native session
 5. Candidate 循环修改并调用权威 verifier
@@ -177,6 +180,22 @@ barrier、Scheduler 与 Allocation，`scheduler.py` 管理 ScheduleTask 和调�
 `allocation.py` 管理 Decision 与派生 workspace/session，`policies.py` 管理版本化策略及其
 context builder。`budget.max_parallel` 是实时活跃 candidate 上限；可选 `max_candidates` 是
 累计物化上限。
+
+Annotation 与 Scheduler 的 host 必须和 `strategy.worker_host` 相同。Codex hook 或 Pi extension
+从当前 native host 进程启动这些内部 agent，子进程完整继承宿主外部配置并携带非敏感 host
+provenance；Goal Plus schema、FrozenSpec 和 task profile 不接受或持久化服务认证、endpoint 或
+host 配置目录。Pi extension 还把当前 Main 的 exact model 和 thinking 固定为 execution scope 的
+非敏感 native launch snapshot；未显式覆盖的 Pi child 必须使用该 snapshot，不能重新读取机器级
+default。shared runtime 不启动模型，也不等待模型进程。Adaptive confirmation task 未进入
+终态前，runtime 拒绝该 lane 的 continuation、redispatch 和 verifier；required supplemental
+Annotation 未全部成功时，selection 保持 blocked。
+
+模型目录只用于解析显式 model 引用，不构成推理连通性证明。现有 Codex hook/Pi extension
+入口必须在 Goal 创建和 SearchSpec freeze 前，收集本次新增的显式 worker、Annotation 与
+Scheduler model override，按模型去重并并发执行最小推理请求；任一失败时不得创建 Goal 或冻结
+SearchSpec。没有显式 override 时不发送 probe：正在运行的 Main 已经证明当前模型可用，内部
+agent 保持 host 原生继承语义。该检查只使用 native host model 接口，不读取或传递 API
+key、endpoint 或独立 provider 配置。
 
 Scheduler 输出是不可信提案。Model 校验其结构；Allocation/state owner 在持久化或执行前校验
 settled source、artifact、candidate 状态、容量、预留 identity 和幂等前态。Prompt 只承担价值与
@@ -225,6 +244,11 @@ Evidence 模式：
 Supplemental evaluation 和 shared_dir 都是可选能力。启用时由 runtime 把必要入口动态写入
 candidate contract；关闭时不出现相关说明。它们不改变 verifier 硬分、selection 或 promotion
 gate。
+
+Evidence annotator 只能读取授权的 immutable Artifact View 和已结算 Evidence，不得运行项目
+代码、测试、verifier 或执行只读查看之外的命令。Host 必须只向 annotator 激活领取任务、只读
+Artifact View 和提交结果所需的精确工具集合；snapshot 保持原样，不为 annotation 创建、patch
+或删除派生副本。
 
 Runtime 根据 `metric_direction` 从有效 Evidence 中维护 candidate-local best 和 global best。
 Selection 必须固定某条已验证 Evidence 的精确 artifact。Promotion 恢复该 artifact，并独立

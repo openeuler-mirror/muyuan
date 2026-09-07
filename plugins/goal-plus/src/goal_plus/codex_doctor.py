@@ -360,16 +360,19 @@ def _check_agent_roles(
         return CheckResult(
             "codex.agent_roles",
             "pass",
-            "The installable plugin uses self-contained built-in-role fallbacks.",
+            "The installable plugin uses self-contained built-in roles.",
             {
                 "search_worker": "default",
-                "final_checker_primary": "goal_plus_final_checker",
-                "final_checker_fallback": "default",
+                "final_checker": "default",
                 "custom_agents_packaged": False,
             },
         )
     agent_root = project_root / ".codex" / "agents"
-    required = ("search_candidate_agent.toml", "goal_plus_final_checker.toml")
+    required = (
+        "search_candidate_agent.toml",
+        "search_candidate_common_agent.toml",
+        "goal_plus_final_checker.toml",
+    )
     missing = [name for name in required if not (agent_root / name).is_file()]
     if missing:
         return CheckResult(
@@ -381,7 +384,7 @@ def _check_agent_roles(
     return CheckResult(
         "codex.agent_roles",
         "pass",
-        "Project-local custom roles are present; built-in fallbacks remain available.",
+        "Project-local role templates are present; runtime launches use built-in roles.",
         {"agent_root": str(agent_root), "roles": list(required)},
     )
 
@@ -666,9 +669,9 @@ def _check_hooks(
 
 
 def _list_codex_models() -> list[dict[str, Any]]:
-    from .agent_hosts import CodexAdapter
+    from .agent_hosts import host_model_catalog
 
-    return CodexAdapter().list_available_models()
+    return host_model_catalog("codex").list_available_models()
 
 
 def _check_models(*, skip: bool) -> CheckResult:

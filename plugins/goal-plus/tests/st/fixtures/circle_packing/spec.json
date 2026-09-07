@@ -39,7 +39,7 @@
   },
   "strategy": {
     "name": "random",
-    "worker_agent_type": "search_candidate_agent"
+    "inner_agent": "autoresearch"
   },
   "constraints": {
     "suggested_batch_size": 4,

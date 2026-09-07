@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from goal_plus.domain.goal_commands import (parse_goal_plus_command_config)
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import SearchTools
 from tests._runtime_helpers import start_host_verified_goal
@@ -16,6 +17,36 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "circle-packing-git-apply"
 ORIGINAL_TEMPLATE = ROOT / "examples" / "circle-packing" / "workspace-template"
 pytestmark = pytest.mark.example
+
+
+def test_circle_packing_git_apply_prompts_bind_inner_agents() -> None:
+    spec = json.loads((EXAMPLE / "search-spec.json").read_text(encoding="utf-8"))
+    assert spec["strategy"]["inner_agent"] == "autoresearch"
+
+    prompt_names = (
+        "pi-goal-prompt.md",
+        "pi-goal-prompt-common.md",
+        "codex-goal-prompt.md",
+        "pi-goal-prompt-untimed.md",
+        "codex-goal-prompt-untimed.md",
+    )
+    for name in prompt_names:
+        text = (EXAMPLE / name).read_text(encoding="utf-8")
+        first_line, body = text.split("\n", 1)
+        objective, config = parse_goal_plus_command_config(
+            first_line.split(" ", 1)[1]
+        )
+        expected_inner_agent = "common" if "common" in name else "autoresearch"
+
+        assert objective
+        assert config.inner_agent == expected_inner_agent
+        assert config.workspace_backend == "git_worktree"
+        assert config.promotion_mode == "apply"
+        assert '`source_path="workspace"' in body
+        assert "回写到 `workspace/`" in body
+        if name == "pi-goal-prompt-common.md":
+            assert '`strategy.inner_agent` 设置为 `"common"`' in body
+            assert "调用一次 `search_run_verifier` 后返回" in body
 
 
 def _git(workspace: Path, *arguments: str) -> str:
@@ -75,10 +106,11 @@ def test_circle_packing_git_workspace_applies_selected_commit(
     tools = SearchTools(FileSearchRuntime(root))
 
     frozen = tools.search_freeze_spec(
+        "gp_0001",
         spec,
         [str(verifier.relative_to(source))],
     )
-    run_id = tools.search_create(frozen["frozen_spec_id"])["run_id"]
+    run_id = tools.search_create("gp_0001", frozen["frozen_spec_id"])["run_id"]
     plan = tools.search_plan_next(run_id, 2)
     tasks = tools.search_start_batch(
         run_id,
@@ -126,6 +158,14 @@ def test_circle_packing_git_workspace_applies_selected_commit(
     applied = tools.search_apply_promotion(run_id)
 
     assert applied["state"] == "applied"
+    from goal_plus.reporting import build_html_report_data
+
+    data = build_html_report_data(root, run_id)
+    projected = data["search_tasks"][0]["run"]
+    assert projected["search_result"] == "passed"
+    assert projected["publication_outcome"]["state"] == "applied"
+    assert projected["publication_outcome"]["publication_artifact_ref"] == applied["publication_artifact_ref"]
+    assert data["snapshot"]["run"]["publication_outcome"] == projected["publication_outcome"]
     assert applied["apply_result"]["method"] == "git_cherry_pick"
     assert _git(source, "rev-list", "--count", f"{source_head}..HEAD") == "1"
     assert not (source / "results.tsv").exists()

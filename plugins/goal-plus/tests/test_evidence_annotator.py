@@ -1,36 +1,44 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import json
-from pathlib import Path
+import os
 import re
 import subprocess
-import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
-import goal_plus.evidence_annotator as annotator_module
 import pytest
+
+import goal_plus.evidence_annotator as annotator_module
+from goal_plus.infrastructure import inference_bindings
+from goal_plus.domain.annotation import MAX_ANNOTATION_ATTEMPTS, validate_supplemental_output
 from goal_plus.evidence_annotator import (
     ANNOTATOR_INSTRUCTIONS,
-    MAX_ANNOTATION_ATTEMPTS,
     MAX_ANNOTATION_DIFF_BYTES,
+    AnnotationOutputError,
     CodexEvidenceAnnotator,
     EvidenceAnnotationOutput,
     EvidenceAnnotationResult,
     HostEvidenceAnnotator,
-    AnnotationOutputError,
     PermanentAnnotationError,
     PiEvidenceAnnotator,
     TransientAnnotationError,
+    close_evidence_annotator,
     drain_evidence_annotations,
     kick_evidence_annotator,
 )
-from goal_plus.models import SearchSpec
+from goal_plus.host_scope import ensure_execution_scope
+from goal_plus.models import SearchSpec, SupplementalEvaluation
+from goal_plus.domain.time import outer_deadline_epoch
 from goal_plus.runtime import FileSearchRuntime
+from goal_plus.infrastructure.search_configuration import (
+    SUPPLEMENTAL_EVALUATION_ENABLED_ENV,
+    SUPPLEMENTAL_EVALUATION_REQUIRED_ENV,
+)
 from tests._runtime_helpers import make_project, spec_for
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -107,6 +115,12 @@ class RecordingAnnotator:
             self.dispositions.append(context["verifier_result"]["disposition"])
         assert context["agent_summary"]
         assert "initial_program.py" in context["actual_diff"]
+        assert len(context["artifact_views"]) == 1
+        artifact_view = context["artifact_views"][0]
+        assert artifact_view["role"] == "target"
+        assert artifact_view["access"]["kind"] == "filesystem_path"
+        artifact_root = Path(artifact_view["access"]["root"])
+        assert (artifact_root / "initial_program.py").is_file()
         time.sleep(0.02)
         with self.lock:
             self.active -= 1
@@ -155,7 +169,7 @@ def test_supplemental_output_must_match_dynamic_comparison_basis() -> None:
         }
     )
 
-    CodexEvidenceAnnotator._validate_supplemental_output(
+    validate_supplemental_output(
         output,
         enabled=True,
         comparison_basis=comparison_basis,
@@ -172,7 +186,7 @@ def test_supplemental_output_must_match_dynamic_comparison_basis() -> None:
         }
     )
     with pytest.raises(AnnotationOutputError, match="do not match"):
-        CodexEvidenceAnnotator._validate_supplemental_output(
+        validate_supplemental_output(
             reversed_output,
             enabled=True,
             comparison_basis=comparison_basis,
@@ -180,7 +194,7 @@ def test_supplemental_output_must_match_dynamic_comparison_basis() -> None:
 
 
 def test_outer_deadline_accepts_unix_epoch() -> None:
-    assert FileSearchRuntime._outer_deadline_epoch("1785491629") == 1785491629.0
+    assert outer_deadline_epoch("1785491629") == 1785491629.0
 
 
 def test_drainer_serially_describes_pending_evidence(tmp_path: Path) -> None:
@@ -229,7 +243,7 @@ def test_drainer_serially_describes_pending_evidence(tmp_path: Path) -> None:
         "Changed the candidate value stored in initial_program.py.",
     ]
     assert [
-        runtime._load_evidence_annotation_task(run_id, task.candidate_id, iteration).usage
+        runtime.annotation.task(run_id, task.candidate_id, iteration).usage
         for iteration in (1, 2)
     ] == [
         {"input_tokens": 7, "output_tokens": 3},
@@ -244,24 +258,207 @@ def test_drainer_serially_describes_pending_evidence(tmp_path: Path) -> None:
         "coverage": "persisted host-native Evidence annotator turn usage",
     }
     annotation_tasks = [
-        runtime._load_evidence_annotation_task(
+        runtime.annotation.task(
             run_id, task.candidate_id, iteration
         )
         for iteration in (1, 2)
     ]
     assert all(item is not None and item.view is not None for item in annotation_tasks)
+    assert [
+        item.queue_revision for item in annotation_tasks if item is not None
+    ] == [1, 2]
+    queue = runtime.annotation.queue(run_id)
+    assert queue.state == "open"
+    assert queue.generation == 1
+    assert queue.revision == 2
+    assert queue.accepted_tasks == 2
     assert [item.view.description for item in annotation_tasks if item is not None] == [
         "Changed the candidate value stored in initial_program.py.",
         "Changed the candidate value stored in initial_program.py.",
     ]
     assert not (
-        runtime._candidate_dir(run_id, task.candidate_id) / "evidence-views"
+        runtime.candidate_creation.state.candidate_dir(run_id, task.candidate_id) / "evidence-views"
     ).exists()
+
+
+@pytest.mark.parametrize("failed_write", ["task", "queue"])
+def test_annotation_admission_reconciles_settlement_write_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_write: str,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    candidate = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, candidate.candidate_id)
+    monkeypatch.setattr(runtime.evidence_reads, "register_annotations", lambda _run_id: None)
+
+    method_name = f"write_{failed_write}"
+    original_write = getattr(runtime.annotation.tasks, method_name)
+    calls = 0
+
+    def fail_once(value) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(f"injected {failed_write} write failure")
+        original_write(value)
+
+    monkeypatch.setattr(runtime.annotation.tasks, method_name, fail_once)
+    (candidate.workspace / "initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    report = runtime.run_verifier(
+        run_id,
+        candidate.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="Create Evidence across an admission write failure",
+    )
+
+    assert report.process_passed is True
+    evidence = runtime.evidence_reads.view(run_id)
+    assert [(item["candidate_id"], item["iteration"]) for item in evidence] == [
+        (candidate.candidate_id, 1)
+    ]
+    task_before = runtime.annotation.task(
+        run_id, candidate.candidate_id, 1
+    )
+    assert (task_before is None) is (failed_write == "task")
+    assert runtime.annotation.queue(run_id).revision == 0
+
+    recovered = FileSearchRuntime(runtime.root_dir)
+    first = recovered.annotation_admission.reconcile(run_id)
+    task = recovered.annotation.task(
+        run_id, candidate.candidate_id, 1
+    )
+    queue = recovered.annotation.queue(run_id)
+    assert task is not None
+    assert task.state == "pending"
+    assert task.queue_generation == queue.generation == 1
+    assert task.queue_revision == queue.revision == 1
+    assert queue.accepted_tasks == 1
+    assert first.errors == []
+    assert len(first.created) == (1 if failed_write == "task" else 0)
+
+    second = recovered.annotation_admission.reconcile(run_id)
+    assert second.created == []
+    assert second.errors == []
+    assert recovered.annotation.queue(run_id) == queue
+    assert recovered.annotation_admission.eligible(run_id) == [
+        (candidate.candidate_id, 1)
+    ]
+
+
+def test_annotation_admission_repairs_legacy_queue_first_crash_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    candidate = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, candidate.candidate_id)
+    monkeypatch.setattr(runtime.evidence_reads, "register_annotations", lambda _run_id: None)
+
+    def fail_task_write(_task) -> None:
+        raise OSError("injected task write failure")
+
+    monkeypatch.setattr(runtime.annotation.tasks, "write_task", fail_task_write)
+    (candidate.workspace / "initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    runtime.run_verifier(
+        run_id,
+        candidate.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="Create Evidence before a legacy queue-first crash",
+    )
+    assert runtime.annotation.task(
+        run_id, candidate.candidate_id, 1
+    ) is None
+
+    queue = runtime.annotation.queue(run_id)
+    runtime.annotation.tasks.write_queue(
+        queue.model_copy(update={"revision": 1, "accepted_tasks": 1})
+    )
+    recovered = FileSearchRuntime(runtime.root_dir)
+    result = recovered.annotation_admission.reconcile(run_id)
+
+    task = recovered.annotation.task(
+        run_id, candidate.candidate_id, 1
+    )
+    repaired = recovered.annotation.queue(run_id)
+    assert task is not None
+    assert task.queue_revision == repaired.revision == 2
+    assert repaired.accepted_tasks == 1
+    assert result.model_dump(mode="json")["created"] == [
+        {"candidate_id": candidate.candidate_id, "iteration": 1}
+    ]
+    assert result.errors == []
+    assert recovered.annotation_admission.reconcile(run_id).created == []
+    assert recovered.annotation.queue(run_id) == repaired
+
+
+def test_annotation_admission_reconcile_preserves_closed_queue_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    candidate = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, candidate.candidate_id)
+    monkeypatch.setattr(runtime.evidence_reads, "register_annotations", lambda _run_id: None)
+
+    def fail_task_write(_task) -> None:
+        raise OSError("injected task write failure")
+
+    monkeypatch.setattr(
+        runtime.annotation.tasks,
+        "write_task",
+        fail_task_write,
+    )
+    (candidate.workspace / "initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    runtime.run_verifier(
+        run_id,
+        candidate.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="Create Evidence immediately before annotation queue close",
+    )
+    with runtime.search_run.state.lock_run(run_id):
+        runtime.annotation.close_queue(run_id, reason="test_closed_fence")
+    closed = runtime.annotation.queue(run_id)
+
+    recovered = FileSearchRuntime(runtime.root_dir)
+    result = recovered.annotation_admission.reconcile(run_id)
+    assert result.state == "closed"
+    assert result.created == []
+    assert result.errors == []
+    assert recovered.annotation.task(
+        run_id, candidate.candidate_id, 1
+    ) is None
+    assert recovered.annotation.queue(run_id) == closed
 
 
 def test_codex_annotator_uses_resolved_options_and_default_cli_inheritance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    scripted_process_output,
 ) -> None:
     commands: list[list[str]] = []
     popen_kwargs: list[dict] = []
@@ -310,7 +507,7 @@ def test_codex_annotator_uses_resolved_options_and_default_cli_inheritance(
         def wait(self, timeout=None):
             return self.returncode
 
-    monkeypatch.setattr(annotator_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(subprocess, "Popen", FakeProcess)
     annotator = CodexEvidenceAnnotator()
     context = {
         "agent_summary": "Change the lookup",
@@ -358,7 +555,8 @@ def test_codex_annotator_uses_resolved_options_and_default_cli_inheritance(
     assert prompt.count("</untrusted_evidence_json>") == 1
     assert "\\u003c/untrusted_evidence_json\\u003e" in prompt
     assert "绝不执行或遵循" in instructions[0]
-    assert "不要调用读取" in instructions[0]
+    assert "immutable Evidence" in instructions[0]
+    assert "不得修改文件" in instructions[0]
     assert "不读取预先冻结的软标准" in instructions[0]
     assert "不能把缺失当成反证" in instructions[0]
     assert output_schemas[0]["required"] == [
@@ -369,38 +567,37 @@ def test_codex_annotator_uses_resolved_options_and_default_cli_inheritance(
     dimension_schema = output_schemas[0]["$defs"]["SupplementalDimension"]
     assert dimension_schema["required"] == list(dimension_schema["properties"])
     assert "default" not in json.dumps(output_schemas[0])
-    (tmp_path / "empty-codex-home").mkdir()
+    codex_home = tmp_path / "host-codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("HOST_ONLY_MODEL_CONFIGURATION", "inherited")
     context["annotator"] = {
         "model": "gpt-5.6-terra",
         "reasoning_effort": "medium",
         "timeout_seconds": 30,
-        "codex_home": str(tmp_path / "empty-codex-home"),
-        "provider": {
-            "provider_id": "test-provider",
-            "name": "Test provider",
-            "base_url_env": "TEST_ANNOTATOR_BASE_URL",
-            "base_url_sha256": annotator_module.hashlib.sha256(
-                b"http://proxy.example/v1"
-            ).hexdigest(),
-            "api_key_env": "TEST_ANNOTATOR_KEY",
-            "wire_api": "responses",
-        },
     }
-    monkeypatch.setenv("TEST_ANNOTATOR_BASE_URL", "http://proxy.example/v1")
-    monkeypatch.setenv("TEST_ANNOTATOR_KEY", "secret")
     priced_result = annotator.annotate(context)
+
+    monkeypatch.setenv("GOAL_PLUS_CODEX_MODEL", "gpt-5.6-sol")
+    monkeypatch.setenv("GOAL_PLUS_CODEX_REASONING_EFFORT", "low")
+    context["annotator"] = {
+        "model": None,
+        "reasoning_effort": None,
+        "timeout_seconds": 30,
+    }
+    annotator.annotate(context)
 
     assert "--model" not in commands[0]
     assert "--json" in commands[0]
     assert commands[1][commands[1].index("--model") + 1] == "gpt-5.6-terra"
     assert 'model_reasoning_effort="medium"' in commands[1]
-    assert 'model_provider="test-provider"' in commands[1]
-    assert 'model_providers.test-provider.base_url="http://proxy.example/v1"' in (
-        commands[1]
-    )
-    assert popen_kwargs[1]["env"]["CODEX_HOME"] == str(
-        tmp_path / "empty-codex-home"
-    )
+    assert commands[1].count("--config") == 1
+    assert commands[2][commands[2].index("--model") + 1] == "gpt-5.6-sol"
+    assert 'model_reasoning_effort="low"' in commands[2]
+    assert commands[2].count("--config") == 1
+    assert not any("model_provider" in value for value in commands[2])
+    assert popen_kwargs[1]["env"]["CODEX_HOME"] == str(codex_home)
+    assert popen_kwargs[1]["env"]["HOST_ONLY_MODEL_CONFIGURATION"] == "inherited"
     assert "start_new_session" not in popen_kwargs[1]
     assert priced_result.usage["cost_usd"] == pytest.approx(0.000085)
 
@@ -408,6 +605,7 @@ def test_codex_annotator_uses_resolved_options_and_default_cli_inheritance(
 def test_pi_annotator_uses_host_native_ephemeral_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    scripted_process_output,
 ) -> None:
     commands: list[list[str]] = []
     popen_kwargs: list[dict] = []
@@ -451,7 +649,7 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
             assert input is None
             self.returncode = 0
             Path(
-                self.environment[annotator_module.PI_ANNOTATION_OUTPUT_ENV]
+                self.environment[inference_bindings.PI_ANNOTATION_OUTPUT_ENV]
             ).write_text(
                 json.dumps(
                     {
@@ -480,7 +678,7 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
                 "content": [
                     {
                         "type": "toolCall",
-                        "name": annotator_module.PI_ANNOTATION_TOOL_NAME,
+                        "name": inference_bindings.PI_ANNOTATION_TOOL_NAME,
                     }
                 ],
                 "stopReason": "stop",
@@ -512,9 +710,13 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
         def wait(self, timeout=None):
             return self.returncode
 
-    monkeypatch.setattr(annotator_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(subprocess, "Popen", FakeProcess)
     pi_home = tmp_path / "pi-home"
     pi_home.mkdir()
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_home))
+    monkeypatch.setenv("GOAL_PLUS_INTERNAL_AGENT_HOST", "pi-rpc")
+    artifact_root = tmp_path / "artifact-view"
+    artifact_root.mkdir()
     context = {
         "agent_summary": "Change the lookup",
         "actual_diff": "diff --git a/a.py b/a.py\n+use_table = True\n",
@@ -522,12 +724,20 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
         "verifier_result": {"score": 1.0, "disposition": "keep"},
         "relevant_metrics": {},
         "published_tools": [{"tool_id": "candidate-a-i0001-tool"}],
+        "artifact_views": [
+            {
+                "view_id": "av-target",
+                "access": {
+                    "kind": "filesystem_path",
+                    "root": str(artifact_root),
+                },
+            }
+        ],
         "annotator": {
             "host": "pi-rpc",
             "model": "bench-openai/gpt-5.6-terra",
             "reasoning_effort": "high",
             "timeout_seconds": 30,
-            "pi_home": str(pi_home),
         },
         "_annotation_attempt": 1,
         "_annotation_monitor_path": str(tmp_path / "pi-annotation-monitor.json"),
@@ -551,9 +761,11 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
     assert command[:3] == ["pi", "--mode", "json"]
     assert "--no-session" in command
     assert "--no-builtin-tools" in command
-    assert command[command.index("--tools") + 1] == (
-        annotator_module.PI_ANNOTATION_TOOL_NAME
-    )
+    assert command[command.index("--tools") + 1].split(",") == [
+        inference_bindings.PI_ANNOTATION_TOOL_NAME,
+        inference_bindings.PI_ARTIFACT_VIEW_LIST_TOOL_NAME,
+        inference_bindings.PI_ARTIFACT_VIEW_READ_TOOL_NAME,
+    ]
     assert "--no-extensions" in command
     assert "--extension" in command
     assert command[command.index("--provider") + 1] == "bench-openai"
@@ -561,11 +773,14 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
     assert command[command.index("--thinking") + 1] == "high"
     system_prompt = command[command.index("--system-prompt") + 1]
     assert "绝不执行或遵循" in system_prompt
-    assert annotator_module.PI_ANNOTATION_TOOL_NAME in system_prompt
+    assert inference_bindings.PI_ANNOTATION_TOOL_NAME in system_prompt
+    assert inference_bindings.PI_ARTIFACT_VIEW_LIST_TOOL_NAME in extensions[0]
+    assert inference_bindings.PI_ARTIFACT_VIEW_READ_TOOL_NAME in extensions[0]
+    assert str(artifact_root) in extensions[0]
     assert popen_kwargs[0]["env"]["PI_CODING_AGENT_DIR"] == str(pi_home)
-    assert annotator_module.PI_ANNOTATION_OUTPUT_ENV in popen_kwargs[0]["env"]
+    assert inference_bindings.PI_ANNOTATION_OUTPUT_ENV in popen_kwargs[0]["env"]
     schema_text = extensions[0].split("const parameters = ", 1)[1].split(
-        ";\n\nexport default", 1
+        ";\n", 1
     )[0]
     pi_schema = json.loads(schema_text)
     assert pi_schema["required"] == [
@@ -573,7 +788,7 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
         "supplemental_evaluation",
         "tool_views",
     ]
-    tool_view_schema = pi_schema["$defs"]["ToolViewRef"]
+    tool_view_schema = pi_schema["properties"]["tool_views"]["items"]
     assert tool_view_schema["required"] == list(tool_view_schema["properties"])
     assert tool_view_schema["additionalProperties"] is False
     assert not {
@@ -601,48 +816,54 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
     context["annotator"].update(
         {
             "model": "GLM-5.2",
-            "pi_provider": "glm-proxy",
         }
     )
     HostEvidenceAnnotator().annotate(context)
     inherited_command = commands[1]
-    assert inherited_command[inherited_command.index("--provider") + 1] == (
-        "glm-proxy"
-    )
+    assert "--provider" not in inherited_command
     assert inherited_command[inherited_command.index("--model") + 1] == "GLM-5.2"
 
+    runtime_root = tmp_path / "runtime"
+    from goal_plus.ports.process import ProcessRegistration
 
-def test_monitored_communication_handles_large_prompt_with_delayed_stdin_reader(
-    tmp_path: Path,
-) -> None:
-    prompt = "x" * (128 * 1024)
-    prompt_path = tmp_path / "prompt.txt"
-    prompt_path.write_text(prompt, encoding="utf-8")
-    script = (
-        "import sys, time; "
-        "time.sleep(1); "
-        "data = sys.stdin.read(); "
-        "print(len(data), flush=True)"
+    monkeypatch.setattr(
+        "goal_plus.bootstrap.build_inference_registration",
+        lambda *args, **kwargs: ProcessRegistration(lambda pid: "test-process", lambda token: None),
     )
-
-    with prompt_path.open("r", encoding="utf-8") as prompt_input:
-        process = subprocess.Popen(
-            [sys.executable, "-c", script],
-            text=True,
-            stdin=prompt_input,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        stdout, stderr, _monitor = annotator_module._communicate_with_monitor(
-            process,
-            5,
-            {},
-            process.terminate,
-        )
-
-    assert process.returncode == 0
-    assert stdout.strip() == str(len(prompt))
-    assert stderr == ""
+    ensure_execution_scope(
+        root_dir=runtime_root,
+        host="pi",
+        owner_session_id="annotation-main",
+        owner_pid=os.getpid(),
+        run_id="run_annotation",
+        native_agent_config={
+            "model_pattern": "native-main/example-model",
+            "thinking_level": "low",
+        },
+        start_guardian=False,
+    )
+    context.update(
+        {
+            "run_id": "run_annotation",
+            "runtime_root": str(runtime_root),
+            "annotator": {
+                "host": "pi-rpc",
+                "model": None,
+                "reasoning_effort": None,
+                "timeout_seconds": 30,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        CodexEvidenceAnnotator,
+        "_still_active",
+        staticmethod(lambda _context: True),
+    )
+    HostEvidenceAnnotator().annotate(context)
+    default_command = commands[2]
+    assert default_command[default_command.index("--provider") + 1] == "native-main"
+    assert default_command[default_command.index("--model") + 1] == "example-model"
+    assert default_command[default_command.index("--thinking") + 1] == "low"
 
 
 def test_kick_is_single_flight_and_non_blocking(
@@ -675,18 +896,85 @@ def test_kick_is_single_flight_and_non_blocking(
         return SimpleNamespace(pid=43210)
 
     monkeypatch.delenv("GOAL_PLUS_EVIDENCE_ANNOTATOR_DISABLED")
-    monkeypatch.setattr(annotator_module.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(annotator_module, "_process_matches_worker", lambda *_: True)
+    monkeypatch.setenv("HOST_ONLY_MODEL_CONFIGURATION", "inherited")
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    from goal_plus.ports.process_identity import ProcessSnapshot
 
-    assert kick_evidence_annotator(runtime.root_dir, run_id) is True
-    assert kick_evidence_annotator(runtime.root_dir, run_id) is False
+    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_worker", lambda pid, *_, **__: ProcessSnapshot(pid, "current", pid, "S"))
+    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process", lambda pid: ProcessSnapshot(pid, "current", pid, "S"))
+    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process_group", lambda pid: (ProcessSnapshot(pid, "current", pid, "S"),))
+
+    assert kick_evidence_annotator(runtime.root_dir, run_id, host="codex") is True
+    assert kick_evidence_annotator(runtime.root_dir, run_id, host="codex") is False
     assert len(launches) == 1
     assert launch_options[0]["start_new_session"] is True
+    assert launch_options[0]["env"]["GOAL_PLUS_INTERNAL_AGENT_HOST"] == "codex"
+    assert launch_options[0]["env"]["HOST_ONLY_MODEL_CONFIGURATION"] == "inherited"
 
 
-def test_permanent_failure_is_not_retried_and_selection_does_not_cancel_view(
+def test_required_annotations_block_selection_until_every_view_is_complete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_ENABLED_ENV, "1")
+    monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_REQUIRED_ENV, "1")
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+    (task.workspace / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
+    runtime.run_verifier(
+        run_id,
+        task.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="Create required supplemental Evidence",
+    )
+
+    with pytest.raises(RuntimeError, match="required supplemental Evidence annotations"):
+        runtime.select(run_id)
+    assert runtime.search_run.state.read_run(run_id).state == "selection_blocked"
+    assert runtime.annotation.queue(run_id).state == "open"
+
+    class SupplementalAnnotator:
+        def annotate(self, context: dict) -> EvidenceAnnotationResult:
+            return EvidenceAnnotationResult(
+                description="Changed the candidate value.",
+                usage={},
+                supplemental_evaluation=SupplementalEvaluation(
+                    summary="The settled change is relevant and verifier-backed.",
+                    dimensions=[
+                        {
+                            "name": "Task relevance",
+                            "finding": "The change directly updates the scored value.",
+                            "confidence": "high",
+                            "evidence": ["initial_program.py", "hard verifier score"],
+                        }
+                    ],
+                    comparisons=[],
+                    limitations=["No hidden evaluator evidence is available."],
+                ),
+                comparison_basis=[],
+            )
+
+    assert drain_evidence_annotations(
+        runtime.root_dir,
+        run_id,
+        annotator=SupplementalAnnotator(),
+    ) == 1
+    selected = runtime.select(run_id)
+    assert selected["selected_candidate_id"] == task.candidate_id
+    assert runtime.annotation.queue(run_id).state == "closed"
+
+
+def test_permanent_failure_is_not_retried_and_selection_cancels_late_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scripted_process_output,
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
@@ -719,7 +1007,7 @@ def test_permanent_failure_is_not_retried_and_selection_does_not_cancel_view(
     assert drain_evidence_annotations(
         runtime.root_dir, run_id, annotator=failed
     ) == 0
-    annotation_task = runtime._load_evidence_annotation_task(
+    annotation_task = runtime.annotation.task(
         run_id, task.candidate_id, 1
     )
     assert failed.calls == 1
@@ -739,7 +1027,7 @@ def test_permanent_failure_is_not_retried_and_selection_does_not_cancel_view(
     assert drain_evidence_annotations(
         runtime.root_dir, run_id, annotator=recovered_annotator
     ) == 1
-    recovered_task = runtime._load_evidence_annotation_task(
+    recovered_task = runtime.annotation.task(
         run_id, task.candidate_id, 2
     )
     assert recovered_task is not None
@@ -804,38 +1092,41 @@ def test_permanent_failure_is_not_retried_and_selection_does_not_cancel_view(
             return CompleteAfterSelection(command, **kwargs)
         return real_popen(command, **kwargs)
 
-    monkeypatch.setattr(annotator_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
     assert drain_evidence_annotations(
         runtime.root_dir, run_id, annotator=CodexEvidenceAnnotator()
-    ) == 1
-    assert processes[0].terminated is False
-    assert runtime.get_global_evidence(session.agent_session_id)[-1]["view"] == (
-        "Described Evidence after Search selection."
-    )
-    assert kick_evidence_annotator(runtime.root_dir, run_id) is False
-    closed_task = runtime._load_evidence_annotation_task(
+    ) == 0
+    assert processes[0].terminated is True
+    assert runtime.get_global_evidence(session.agent_session_id)[-1]["view"] is None
+    assert kick_evidence_annotator(runtime.root_dir, run_id, host="codex") is False
+    closed_task = runtime.annotation.task(
         run_id, task.candidate_id, 3
     )
     assert closed_task is not None
+    assert closed_task.state == "cancelled"
+    queue = runtime.annotation.queue(run_id)
+    assert queue.state == "closed"
+    assert queue.generation == 2
+    assert queue.closed_reason == "search_selected"
     monitor_path = runtime.root_dir / closed_task.attempt_history[-1]["monitor_path"]
     monitor = json.loads(monitor_path.read_text())
-    assert monitor["state"] == "completed"
-    assert monitor["detail"] is None
+    assert monitor["state"] == "terminated"
+    assert monitor["detail"] == "annotation run closed during inference"
 
 
 def test_process_failure_detail_reports_stdout_and_stderr() -> None:
     detail = annotator_module._process_failure_detail(
-        "Missing environment variable: SUB2API_API_KEY\n",
+        "Missing host configuration\n",
         "remote MCP request failed with HTTP 403\n",
     )
 
     assert detail == (
-        "[stdout]\nMissing environment variable: SUB2API_API_KEY\n"
+        "[stdout]\nMissing host configuration\n"
         "[stderr]\nremote MCP request failed with HTTP 403"
     )
 
 
-def test_wait_for_retries_settles_transient_view_after_promotion(
+def test_selection_cancels_pending_retry_before_promotion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -872,26 +1163,21 @@ def test_wait_for_retries_settles_transient_view_after_promotion(
                 usage={},
             )
 
-    monkeypatch.setattr(
-        annotator_module,
-        "ANNOTATION_RETRY_BACKOFF_SECONDS",
-        (0, 0),
-    )
     annotator = TransientThenSuccess()
     assert drain_evidence_annotations(
         runtime.root_dir,
         run_id,
         annotator=annotator,
         wait_for_retries=True,
-    ) == 1
+    ) == 0
 
-    annotation_task = runtime._load_evidence_annotation_task(
+    annotation_task = runtime.annotation.task(
         run_id, task.candidate_id, 1
     )
-    assert annotator.calls == 2
+    assert annotator.calls == 0
     assert annotation_task is not None
-    assert annotation_task.state == "completed"
-    assert annotation_task.view is not None
+    assert annotation_task.state == "cancelled"
+    assert annotation_task.view is None
 
 
 def test_expired_outer_deadline_never_starts_verifier_or_annotation(
@@ -916,12 +1202,12 @@ def test_expired_outer_deadline_never_starts_verifier_or_annotation(
             hypothesis="Verify at the expired outer deadline",
         )
 
-    annotation_task = runtime._load_evidence_annotation_task(
+    annotation_task = runtime.annotation.task(
         run_id, task.candidate_id, 1
     )
     assert annotation_task is None
     assert runtime.list_iterations(run_id, task.candidate_id) == []
-    assert kick_evidence_annotator(runtime.root_dir, run_id) is False
+    assert kick_evidence_annotator(runtime.root_dir, run_id, host="codex") is False
 
 
 def test_unix_outer_deadline_allows_annotation_task(
@@ -946,7 +1232,7 @@ def test_unix_outer_deadline_allows_annotation_task(
         hypothesis="Accept the harness-provided Unix deadline",
     )
 
-    annotation_task = runtime._load_evidence_annotation_task(
+    annotation_task = runtime.annotation.task(
         run_id, task.candidate_id, 1
     )
     assert annotation_task is not None
@@ -984,14 +1270,14 @@ def test_transient_annotation_failure_has_bounded_persistent_retries(
     failing = TransientFailure()
     for attempt in range(1, 4):
         drain_evidence_annotations(runtime.root_dir, run_id, annotator=failing)
-        annotation_task = runtime._load_evidence_annotation_task(
+        annotation_task = runtime.annotation.task(
             run_id, task.candidate_id, 1
         )
         assert annotation_task is not None
         assert annotation_task.attempts == attempt
         if attempt < 3:
             assert annotation_task.state == "retry_wait"
-            runtime._write_evidence_annotation_task(
+            runtime.annotation.tasks.write_task(
                 annotation_task.model_copy(
                     update={"next_attempt_at": "2000-01-01T00:00:00Z"}
                 )
@@ -1002,7 +1288,7 @@ def test_transient_annotation_failure_has_bounded_persistent_retries(
     drain_evidence_annotations(runtime.root_dir, run_id, annotator=failing)
     assert failing.calls == 3
 
-    runtime._write_evidence_annotation_task(
+    runtime.annotation.tasks.write_task(
         annotation_task.model_copy(
             update={
                 "state": "retry_wait",
@@ -1012,7 +1298,7 @@ def test_transient_annotation_failure_has_bounded_persistent_retries(
         )
     )
     drain_evidence_annotations(runtime.root_dir, run_id, annotator=failing)
-    recovered = runtime._load_evidence_annotation_task(
+    recovered = runtime.annotation.task(
         run_id, task.candidate_id, 1
     )
     assert failing.calls == 3
@@ -1021,7 +1307,7 @@ def test_transient_annotation_failure_has_bounded_persistent_retries(
     assert recovered.state == "terminal_error"
 
 
-def test_oversized_diff_is_rejected_before_annotator_input(tmp_path: Path) -> None:
+def test_oversized_diff_uses_full_artifact_view(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
@@ -1042,21 +1328,74 @@ def test_oversized_diff_is_rejected_before_annotator_input(tmp_path: Path) -> No
         hypothesis="Create an oversized candidate diff",
     )
 
-    class UnexpectedAnnotator:
+    class ArtifactViewAnnotator:
         calls = 0
+        observed_context: dict | None = None
 
-        def annotate(self, _context):
+        def annotate(self, context):
             self.calls += 1
-            return "This should not be called."
+            self.observed_context = context
+            [target] = context["artifact_views"]
+            root = Path(target["access"]["root"])
+            assert len((root / "initial_program.py").read_bytes()) > (
+                MAX_ANNOTATION_DIFF_BYTES
+            )
+            return "Inspected the complete immutable candidate workspace."
 
-    annotator = UnexpectedAnnotator()
+    annotator = ArtifactViewAnnotator()
     assert drain_evidence_annotations(
         runtime.root_dir, run_id, annotator=annotator
-    ) == 0
-    annotation_task = runtime._load_evidence_annotation_task(
+    ) == 1
+    annotation_task = runtime.annotation.task(
         run_id, task.candidate_id, 1
     )
-    assert annotator.calls == 0
+    assert annotator.calls == 1
+    assert annotator.observed_context is not None
+    assert annotator.observed_context["actual_diff"] == ""
+    assert "exceeds" in annotator.observed_context["actual_diff_omitted"]
     assert annotation_task is not None
-    assert annotation_task.state == "terminal_error"
-    assert "exceeds" in (annotation_task.last_error or "")
+    assert annotation_task.state == "completed"
+    assert annotation_task.view is not None
+
+
+def test_close_evidence_annotator_stops_owned_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / ".gp"
+    run_id = "run_close_annotation"
+    generation = "generation-one"
+    from goal_plus.infrastructure.state.drainer import FileDrainerState
+    from goal_plus.ports.drainer import DrainerRecord
+
+    directory = root / "runs" / run_id / "evidence-annotator"
+    state = FileDrainerState(directory, "annotator.log")
+    state.write_worker(DrainerRecord(pid=4242, generation=generation, started_at="now"))
+    alive = True
+    signals: list[tuple[int, int]] = []
+
+    from goal_plus.ports.process_identity import ProcessSnapshot
+
+    def matches(pid: int, observed_run: str, observed_generation: str, **_kwargs):
+        assert (pid, observed_run, observed_generation) == (
+            4242,
+            run_id,
+            generation,
+        )
+        return ProcessSnapshot(pid, generation, pid, "S") if alive else None
+
+    def killpg(pid: int, signum: int) -> None:
+        nonlocal alive
+        signals.append((pid, signum))
+        alive = False
+
+    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_worker", matches)
+    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process", lambda pid: matches(pid, run_id, generation))
+    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process_group", lambda pid: (matches(pid, run_id, generation),) if alive else ())
+    monkeypatch.setattr(annotator_module.os, "killpg", killpg)
+
+    result = close_evidence_annotator(root_dir=root, run_id=run_id)
+
+    assert result is not None and result["status"] == "stopped"
+    assert signals and signals[0][0] == 4242
+    assert not (directory / "worker.json").exists()

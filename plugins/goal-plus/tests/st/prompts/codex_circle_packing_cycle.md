@@ -1,76 +1,37 @@
-You are the Codex main agent for the `codex_circle_packing_cycle` ST. Use the
-project-local Codex `search` skill and drive the Search MCP runtime directly.
-Do not run pytest, any host CLI, or any `tests/st` command; doing so
-would recursively launch this same ST. If a required MCP or collaboration tool
-is unavailable, emit the final `st_report` with `extra.error`.
+$goal-plus mode=probe max_parallel=2 max_duration_seconds=1200 workspace_backend=git_worktree promotion_mode=artifact_only strategy=agent_guided inner_agent=common Run the bounded native Codex Circle two-candidate and same-session continuation test.
+<!-- markdownlint-disable-file MD013 MD041 -->
 
-Load {{PROJECT_ROOT}}/tests/st/fixtures/circle_packing/spec.json and make these
-exact changes before freezing it:
+Use the installed goal-plus/search skills and current MCP schemas. This is an
+authorized system test: do not run pytest, another host CLI or tests/st scripts.
+Use native collaboration to launch the candidates from runtime launch payloads.
 
-- Set `source_path` to the absolute path
-  `{{PROJECT_ROOT}}/tests/st/fixtures/circle_packing`.
-- Set `budget` to `{"max_parallel": 2}`.
-- Set `strategy.name="random"`.
-- Set `strategy.worker_host="codex"`.
-- Set `strategy.worker_agent_type="search_candidate_agent"`.
-- Set `strategy.worker_budget={"max_runtime_seconds": 180, "max_turns": 8, "on_exceed": "interrupt"}`.
-- Set `strategy.config.seed=42`.
+Read source/spec.json and adopt the complete SearchSpec, including model and
+Annotation settings. Save the draft, freeze evaluator.py relative to source_path,
+create and link exactly one run to the current Goal, then make exactly one K=2
+plan with search_plan_next(requested_k=2) and start its batch.
 
-The parent ST runner uses `gpt-5.6-terra`; each spawned worker inherits the parent Codex model.
-The current Codex collaboration schema intentionally hides
-optional launch metadata. For this run, project every runtime launch payload
-onto that schema: pass only `task_name`, `message`, and `fork_turns` to
-`spawn_agent`. Do not pass `agent_type`, `model`, `reasoning_effort`, or
-`service_tier`, and do not treat their omission as an error.
+The model work is deliberately bounded. Supply these candidate directives:
 
-Freeze {{PROJECT_ROOT}}/tests/st/fixtures/circle_packing/evaluator.py, then call
-`search_create`. Execute exactly one initial batch with size two.
+- c001: On the first turn copy candidate-hints/rectangular.py to initial_program.py.
+  Submit one search_run_verifier with scope="process", your bound agent_session_id,
+  and a concise hypothesis, then end the turn. On the next turn in this same native
+  session, copy candidate-hints/staggered.py instead and submit one more verifier.
+- c002: Copy candidate-hints/staggered.py to initial_program.py, submit one process
+  verifier with your bound agent_session_id, and end the turn.
 
-## Initial batch
+Only initial_program.py may change. Do not perform numerical optimization or add
+candidate work beyond these edits. Launch both initial candidates using the exact
+runtime payload and supported native schema, bind their handles, and wait for
+terminal completion. Apply the returned host watchdog if a turn does not finish.
 
-1. Call `search_plan_next(k=2)` and `search_start_batch`; require exactly
-   candidates `c001` and `c002`.
-2. Start one agent session for each candidate with distinct directives:
-   - `c001`: implement a hexagonal lattice for 26 circles.
-   - `c002`: implement a square-grid shrink-to-fit packing for 26 circles.
-3. Launch both returned Codex payloads with `spawn_agent` before waiting for
-   either worker, using the schema projection described above.
-4. Immediately bind each returned task name/nickname with
-   `search_bind_agent_handle`.
-5. For each live task, apply its `parent_watchdog`: wait for
-   `initial_wait_timeout_ms`; on timeout send exactly one `closeout_message`,
-   wait for `final_wait_timeout_ms`, then interrupt only after a second timeout.
-6. Run a main-agent `search_run_verifier(..., phase="process")` for both
-   candidates after the workers return or are interrupted.
+After c001's first verified turn, call search_continue_agent_session for its
+existing agent_session_id, then followup_task on the SAME native agent using the
+returned continuation message. Do not spawn a replacement. Wait for its second
+verified turn and c002's first turn. No additional plan, candidate or run.
 
-After the initial batch, call `search_list_iterations` with each candidate's
-`agent_session_id`, then call `search_list_history`, `search_status`,
-`search_select`, and `search_report`. Do not report success
-unless there are exactly two evaluated candidates, each with at least one
-verifier iteration, and two distinct `agent_session_id` values.
-
-## ST Output Contract
-
-Output a fenced JSON block tagged `st_report` as the LAST thing in the final
-message, with no prose after it. The JSON MUST conform to this schema:
-
-- scenario: "codex_circle_packing_cycle"
-- run_id: string
-- candidates: array of exactly two
-  `{ candidate_id, score: number|null, iterations: integer, status: string }`
-  objects ordered `c001`, `c002`
-- selected_candidate_id: string
-- best_score: number
-- report_path: string
-- extra: {
-    host: "codex",
-    model: "gpt-5.6-terra",
-    rounds: 1,
-    batch_sizes: [2],
-    agent_session_ids: array of two distinct strings,
-    task_names: array of strings
-  }
-
-If the run fails before producing a complete report, keep known identifiers,
-leave candidates as the actual partial evidence, and put the precise failure
-reason in `extra.error`.
+Wait for all required Annotation tasks to complete. Select the highest valid
+exact artifact, promote it as artifact_only, record the Search result, complete
+the original Goal review and set Goal complete, then generate search_report.
+Drain/close native workers through the normal host lifecycle. Keep the Root source
+unchanged. The test reads persistent state, native model observations and scope
+cleanup itself; report actual identifiers and any failure briefly in the final.

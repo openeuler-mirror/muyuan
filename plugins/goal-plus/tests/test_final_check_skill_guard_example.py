@@ -10,7 +10,8 @@ import pytest
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import SearchSpec
-from goal_plus.runtime import FileSearchRuntime, discover_git_tracked_task_skills
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.infrastructure.artifacts.search_source import discover_git_tracked_task_skills
 
 
 ROOT = Path(__file__).resolve().parents[1]

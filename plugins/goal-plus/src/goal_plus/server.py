@@ -3,25 +3,30 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TYPE_CHECKING
 
 from mcp.types import TextContent
 from pydantic import Field
 
 from goal_plus._version import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
-from goal_plus.models import (
-    AgentHostKind,
+from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.search import (
     CandidateProposal,
+    SearchSpec,
+)
+from goal_plus.domain.goal import (
     GoalPlusSpecDraftInput,
     GoalPlusTriage,
     GoalPlusWorkEventKind,
-    SearchSpec,
-    ToolizationDecision,
 )
+from goal_plus.domain.shared_tools import ToolizationDecision
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import GoalPlusTools, SearchTools
+
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
 
 
 def _json_text(value: Any) -> TextContent:
@@ -44,14 +49,17 @@ def create_mcp(
 
     @mcp.tool()
     def search_freeze_spec(
+        goal_plus_id: str,
         spec: SearchSpec,
         verifier_artifact_paths: list[str],
     ) -> dict[str, Any]:
         """将 SearchSpec 及其 verifier 文件冻结为不可变 bundle。
 
-        冻结前校验 worker host、workspace backend 和 source Git 状态；`git_worktree`
-        及未来的 ThinkThread backend 要求整个 source repository 对应 clean HEAD，dirty
-        source 会在 verifier preflight 前失败。当前 Codex/Pi RPC 请求 ThinkThread 也会失败。
+        `goal_plus_id` 必须是当前 host session 绑定的 active Goal。冻结前校验 worker host、
+        workspace backend 和 source 状态；`git_worktree`
+        要求整个 source repository 对应 clean HEAD，dirty source 会在 verifier preflight
+        前失败。ThinkThread 仅接受匹配的 Pi ThinkThread host/Profile，并在 create 时通过
+        exact Agent POSIX preflight 固定 Root-owned snapshot；Codex/Pi RPC 不能混用该 backend。
         返回 `frozen_spec_id`、`task_skill_notice` 和 `workspace_capacity_notice`，应在
         `search_create` 前调用。后两者分别列出 source Git index 中
         `.agents/skills/*/SKILL.md` 的自动发现结果，以及按 `budget.max_parallel` 计算的
@@ -70,7 +78,7 @@ def create_mcp(
         共用同一可见变量。需要 worker 遵守的公开条件写入 `candidate_acceptance`；
         `constraints` 保持 runtime 私有。
         """
-        return tools.search_freeze_spec(spec, verifier_artifact_paths)
+        return tools.search_freeze_spec(goal_plus_id, spec, verifier_artifact_paths)
 
     @mcp.tool()
     def goal_plus_list_models(
@@ -87,12 +95,14 @@ def create_mcp(
 
     @mcp.tool()
     def search_create(
+        goal_plus_id: str,
         frozen_spec_id: str,
         source_run_id: str | None = None,
     ) -> dict[str, str]:
         """从冻结 spec 启动 Search run，并返回 `run_id`。
 
-        启动前复检 worker host、workspace backend 和 source Git 状态；当前 Codex/Pi RPC
+        `goal_plus_id` 必须与 freeze 使用的当前 active Goal 相同。启动前复检 worker host、
+        workspace backend 和 source Git 状态；当前 Codex/Pi RPC
         请求 ThinkThread，或 Git-backed source 在 freeze 后变 dirty，都会在创建 run 或
         candidate checkout 前失败。
         创建时会在 `GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR` 下独占冻结 spec 引用的 device pool。
@@ -100,7 +110,7 @@ def create_mcp(
         时才传入 `source_run_id`。新 run 会收到来源 frontier、
         限定范围的问题和特性账本的有界 snapshot。来源分数只是历史，必须在新契约下重新验证。
         """
-        return tools.search_create(frozen_spec_id, source_run_id)
+        return tools.search_create(goal_plus_id, frozen_spec_id, source_run_id)
 
     @mcp.tool()
     def search_status(run_id: str) -> dict[str, Any]:
@@ -233,19 +243,17 @@ def create_mcp(
     def search_redispatch_candidate(
         run_id: str,
         candidate_id: str,
-        worker_agent_type: str | None = None,
         worker_budget: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """为现有候选工作区创建新的 worker launch。
 
         这是状态级恢复，不是同 worker continuation。它为相同 candidate/workspace 返回新的
-        `agent_session_id` 和 host launch payload。可选 `worker_agent_type` 和
-        `worker_budget` 只覆盖本次派发；候选任务 policy 不变。
+        `agent_session_id` 和 host launch payload。`worker_budget` 只覆盖本次派发；frozen
+        `inner_agent` 和 resolved binding 均保持不变。候选任务 policy 不变。
         """
         return tools.search_redispatch_candidate(
             run_id,
             candidate_id,
-            worker_agent_type,
             worker_budget,
         )
 
@@ -288,8 +296,10 @@ def create_mcp(
     def search_get_agent_context(agent_session_id: str) -> TextContent:
         """Subagent 的首次调用，返回紧凑的权威工作合同。
 
-        返回 id、candidate_task、最佳/最近 iteration 摘要和恢复所需证据。由 subagent
-        调用，不由主 agent 调用。prompt 提供的 id 只是标签，以此响应为事实来源。
+        返回 run_id、candidate_id、workspace、candidate_task（含冻结验收合同与 candidate
+        进程环境）、最佳/最近 iteration 摘要、canonical .gp ledger 来源和可选 results.tsv
+        projection。由 subagent 调用，不由主
+        agent 调用。subagent 必须把 prompt 提供的 id 只当作标签，并将此响应作为事实来源。
         """
         return _json_text(tools.search_get_agent_context(agent_session_id))
 
@@ -399,10 +409,14 @@ def create_mcp(
         """Subagent 带 `agent_session_id` 自评分；主流程最终验证不带它。
 
         subagent 传入准确 `run_id`、`candidate_id`、自己的 `agent_session_id`、一句话
-        `hypothesis` 并省略 `scope`，同时遵守 candidate instructions。
-        hypothesis 应客观概括本轮实际尝试。运行时随后在继承的 `workspace/results.tsv`
-        中追加且只追加一条已验证记录并提交账本。主 agent 不带 `agent_session_id` 的
-        内部复验不要求 hypothesis；`promotion` 只属于主流程。带
+        `hypothesis` 并省略 `scope`，同时遵守 candidate instructions；启用 shared-dir 时
+        还可提交结构化
+        `toolization_decision`。缺失或与实际 staging 不匹配只记录 advisory，不改变评分、
+        结算、选择或 promotion；决策保存在 iteration 中但不进入 Global Evidence。
+        hypothesis 应客观概括本轮实际尝试。运行时随后向 canonical `.gp` ledger 追加且只
+        追加一条已验证记录；只有 inner binding 声明 results_tsv projection 时才同步并提交
+        该 workspace 文件。主 agent 不带 `agent_session_id` 的内部复验不要求 hypothesis；
+        `promotion` 只属于主流程。带
         `candidate_action="stop_and_report"` 的 `VerifierWorkspaceSideEffect` 是冻结
         verifier 的基础设施失败：worker 不能清理 verifier 输出或重试。
         """
@@ -421,7 +435,8 @@ def create_mcp(
     ) -> TextContent:
         """返回当前 agent session 所属候选可能很大的完整 iteration 历史。
 
-        仅在紧凑 context、results.tsv 和 Git 无法回答旧轮次的准确 verifier 事实时调用。
+        candidate worker 只应查询 agent context 中自己的 run/candidate，并且仅在紧凑
+        context、可选 ledger projection 和 Git 无法回答旧轮次的准确 verifier 事实时调用。
         """
         return _json_text(tools.search_list_iterations(agent_session_id))
 
@@ -625,7 +640,7 @@ def create_mcp(
         evidence: list[dict[str, Any]] | None = None,
         next_action: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """根据证据设置终态；耗时超出预设不等于 blocked。"""
+        """根据证据设置终态；Search 未记录提升结果时不能 complete。"""
         return goal_tools.goal_plus_set_status(
             goal_plus_id,
             status,

@@ -68,7 +68,7 @@ def test_process_verifier_settles_workspace_to_candidate_best(
             "",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_verify)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_verify)
 
     reports = []
     expected_best = {
@@ -100,7 +100,7 @@ def test_process_verifier_settles_workspace_to_candidate_best(
     ]
     assert [report.best_iteration for report in reports] == [1, 2, 2, 4, 4]
 
-    record = runtime._load_candidate_record(run_id, candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
     assert [iteration.disposition for iteration in record.iterations] == [
         "keep",
         "keep",
@@ -186,8 +186,8 @@ def test_latest_run_level_equal_score_becomes_best(
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
     monkeypatch.setattr(
-        runtime,
-        "_execute_verifier_process",
+        runtime.verifiers,
+        "execute_verifier_process",
         lambda command, **kwargs: subprocess.CompletedProcess(
             command, 0, '{"combined_score": 1}\n', ""
         ),
@@ -235,8 +235,8 @@ def test_first_failed_iteration_restores_pre_attempt_workspace(
     program = workspace / "initial_program.py"
 
     monkeypatch.setattr(
-        runtime,
-        "_execute_verifier_process",
+        runtime.verifiers,
+        "execute_verifier_process",
         lambda command, **kwargs: subprocess.CompletedProcess(
             command, 1, "", "invalid candidate"
         ),
@@ -248,7 +248,7 @@ def test_first_failed_iteration_restores_pre_attempt_workspace(
     assert report.disposition == "failure"
     assert report.best_iteration is None
     assert program.read_text(encoding="utf-8") == "VALUE = 0\n"
-    iteration = runtime._load_candidate_record(run_id, candidate_id).iterations[0]
+    iteration = runtime.candidate_creation.state.read_candidate(run_id, candidate_id).iterations[0]
     assert _git(workspace, "show", f"{iteration.git_head}:initial_program.py") == (
         "VALUE = 'broken'"
     )
@@ -277,7 +277,7 @@ def test_select_and_promote_keep_all_iteration_commits_reachable(
             "",
         )
 
-    monkeypatch.setattr(runtime, "_execute_verifier_process", fake_verify)
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_verify)
     for value in ("seed", "best", "equal"):
         program.write_text(f"VALUE = {value!r}\n", encoding="utf-8")
         runtime.run_verifier(run_id, candidate_id, hypothesis=f"try {value}")
@@ -295,7 +295,7 @@ def test_select_and_promote_keep_all_iteration_commits_reachable(
     assert selected_best["commit"] == selected["selected_git_head"]
     runtime.promote(run_id, candidate_id)
 
-    record = runtime._load_candidate_record(run_id, candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
     assert [iteration.disposition for iteration in record.iterations] == [
         "keep",
         "keep",

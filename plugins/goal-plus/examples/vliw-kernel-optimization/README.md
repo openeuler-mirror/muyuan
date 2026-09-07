@@ -73,6 +73,8 @@ Goal Plus 默认值。任务预算为 8 分钟，第 6 分钟开始收尾，单�
 
 ## 工作区合同
 
+下文为默认 Pi RPC/Git 入口；TT 的独立配置见本文末尾。
+
 当前目录中的 [`search-spec.json`](search-spec.json) 是权威 SearchSpec。它固定：
 
 - `source_path="workspace-template"`；
@@ -111,3 +113,26 @@ git status --short -- workspace-template
 这是可运行的本地公开示例，不是 EdgeBench 官方成绩。仓库不包含隐藏 controller
 案例，因此它证明的是 Goal Plus 编排、候选优化和公开正确性门禁，而不是隐藏评测上的
 可比性。上游来源和许可证见 [`PROVENANCE.md`](PROVENANCE.md)。
+
+## ThinkThread 15 分钟多轮验证
+
+使用 [TT SearchSpec](thinkthread-search-spec.json) 和
+[TT Pi prompt](pi-thinkthread-goal-prompt.md)。该变体保留只读模板与 artifact_only，
+采用两个 TT + AutoResearch candidate、150 秒 lease、15 分钟 Goal 预算和 4 分钟收尾预留。
+目标是同一 candidate/Child 多轮结算，同时观察 Annotation、exact artifact、publication 和清理。
+它不运行 Adaptive Scheduler/Allocation，不能作为这些组件的真实覆盖。
+
+从本示例目录启动受支持的 Profile，state root 必须在 checkout 读取授权范围之外：
+
+```bash
+tt_vliw_state=$(mktemp -d /tmp/goal-plus-vliw-tt.XXXXXX)
+GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED=1 \
+GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED=1 \
+tt run --profile goal-plus-pi --fs "$PWD" --state-root "$tt_vliw_state" \
+  -- --model zai/glm-5.3-flash --thinking low
+```
+
+在 TUI 中完整粘贴 TT prompt，不通过 `-p` 传入。运行记录位于 Pi Session-private root，
+不使用本目录 `.gp/`；模板不回写。验收需要核对同一 session/Child 的 dispatch 和 iteration
+增长、正确性与 cycles、完整 Annotation、promotion/report 及 Cleanup complete；不足两轮
+须明确记录为续跑覆盖缺口。最后精确停止测试 Root，保留所需诊断后再按 TT 生命周期清理。

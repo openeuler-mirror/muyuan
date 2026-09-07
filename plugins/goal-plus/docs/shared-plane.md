@@ -25,7 +25,7 @@ main agent
        |                         |                         |
  candidate c001             candidate c002             candidate c003
  隔离工作区                 隔离工作区                 隔离工作区
- 自主长期循环               自主长期循环               自主长期循环
+ 持久 lane                  持久 lane                  持久 lane
 
 宿主平面：启动、wait-any、continuation、deadline、interrupt、原生日志
 ```
@@ -43,6 +43,28 @@ main agent
 Search runtime 不是 worker supervisor。`AgentSessionRecord` 只记录上下文、来源和
 宿主 launch payload，不表示进程是否存活。Pi 的 pool 状态因此单独保存在
 `.gp/host-pools/pi/`；Codex 生命周期由原生 agent registry 管理。
+
+宿主为当前 main-agent owner 建立独立的 Execution Scope，状态位于
+`.gp/host-scopes/`。它只绑定活跃进程、pool、hook 已观察到的 Codex native task target 和
+ThinkThread Child：
+
+```text
+main native session
+  +-- host Execution Scope guardian
+        +-- candidate / ordinary / final-check workers
+        +-- Evidence Annotation
+        +-- ThinkThread candidate and Annotation Children
+```
+
+正常 selection 前，host 先停止 candidate 并确认静默；runtime 随后关闭 Annotation admission、
+递增 publication generation 并终止 annotator。main 被 abort、shutdown 或进程退出时，guardian
+立即 fence 新 launch 并清理 scope-owned 活计算。该操作不修改 Goal 或 Search 的 durable 状态，
+也不提供 scope 接管、Annotation 重开或 resume 语义。
+
+Codex 的正常 closeout 由 main 使用原生 `list_agents`/`interrupt_agent` 完成，hook 只记账并强制
+静默门禁；另行启动的 app-server 不控制当前 TUI turn。Pi/ThinkThread 的 pool 和 provider mutation
+在 scope admission 下先变为可发现；无法确认完成的 ThinkThread request 或 Child spawn 保持
+`needs_recovery`，不能被报告为已清理。
 
 Goal Plus intake 将 host command 开头连续的 typed `key=value` 与自然语言目标分离。
 `GoalPlusRecord.command_config` 保存显式配置，`raw_goal` 只保存目标和探索模式指导；
@@ -70,9 +92,9 @@ host-command invocation 继续保存原始输入 hash。ready SearchSpec draft �
 - 在 run 的首个 Git worktree 中重复一次相同 suite，证明 relocation 后的路径合同有效；
 - 检查退出码、数值 metric、超时、verifier hash 和 source identity。
 
-`copy` 仍保留旧的 disposable-copy ranking preflight。未来的 ThinkThread backend 在 origin
-验证后固定 provider-native snapshot，不重复 relocation；当前 Codex/Pi 对 TT candidate 路径
-仍会 fail closed。
+`copy` 仍保留旧的 disposable-copy ranking preflight。ThinkThread backend 在 origin 验证后
+固定 Root-owned provider snapshot，不重复 Git relocation；受支持的 Pi Profile 从该 snapshot
+派生 private Children。Codex 对 TT candidate 路径仍会 fail closed。
 
 Runtime 不理解具体 benchmark 的语义，也不会自动证明本地 verifier 与官方 Judge
 等价。公开评分公式、有效性条件、每例资源限制和聚合方式是否完整进入 verifier，仍由
@@ -85,16 +107,16 @@ SearchSpec 不包含预设软 rubric。这样 Spec Discovery 阶段不会因为 
 Benchmark 机制消融由 controller 设置
 `GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED` 和
 `GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED`。它们只决定 annotation task 是否要求开放式
-补充评价，不向 FrozenSpec 注入 criterion。ON/OFF 都不改变硬分结算、selection、
-promotion gate 或最终验收。
+补充评价，不向 FrozenSpec 注入 criterion。ON/OFF 都不改变硬分结算或评价内容；required 模式
+会在所有 task 成功发布补充评价前阻止 selection，不能把缺失或失败的 Annotation 当成通过。
 
-Evidence annotator 默认继承 Search 的 `worker_host`。需要把 annotator 作为独立机制控制
-变量时，可以冻结 `strategy.evidence_annotator.host=codex` 或 `pi-rpc`；模型、provider、
-home 和调用进程都按该 host 解析，不改变候选 worker 的 host。未设置该字段时继续使用
-host-native 默认路径。
+Evidence annotator 继承 Search 的 `worker_host`。`strategy.evidence_annotator.host` 可以显式写出，
+但必须与 worker host 相同；跨 host 配置在 freeze 前失败。模型和 reasoning 可以作为实验变量独立
+冻结，外部连接与认证配置始终来自启动它的 native host 进程，不进入 Goal Plus 配置或状态。
 
-每条 Global Evidence View 同时保留本轮 `actual_diff` 与从候选初始基线到当前提交的
-累计 `candidate_diff`。description 只描述本轮增量；开放式补充评价使用累计候选证据。
+每个 annotation context 同时提供本轮有界 `actual_diff`、从候选初始基线到当前提交的有界
+`candidate_diff`，以及 target/peer 的完整 immutable Artifact View。description 只描述本轮增量；
+开放式补充评价直接核对完整候选 workspace，diff 只用于定位，超限时记录 omitted 原因。
 annotation task 创建时还会快照最多 8 个其他 candidate 的当前硬分最佳结算版本，每个
 candidate 最多一个，固定其 candidate、iteration 和 commit，后续推理基于这份可审计
 比较基线。
@@ -116,7 +138,8 @@ worker，再冻结修正后的 spec，创建 successor run。旧分数不能跨�
 1. main agent 提交 SearchSpec；runtime 在 origin 验证 verifier 并冻结 source artifact。
 2. `search_create` 确认 source identity 未变化，一次初始 `SearchPlan` 分配固定 lane。
 3. Git backend 先物化 `c001` 并执行 relocation gate；通过后才物化其余 candidate。
-4. 每个 candidate 获得独立工作区并开始自主循环。
+4. 每个 candidate 获得独立工作区，并按 frozen `strategy.inner_agent` 启动
+   `autoresearch` 或 `common` worker。
 5. 宿主以 wait-any 方式返回完成事件；较慢 lane 不阻塞其他 lane 发布 Evidence。
 6. 只要全局停止条件未满足，宿主续跑同一个 candidate、原生 session 和工作区。
 7. 收尾时先让所有 live worker 静止，再选择精确 commit，执行 promotion gate 并生成报告。
@@ -149,8 +172,9 @@ Adaptive Search 要求 `workspace.backend="git_worktree"`、`budget.max_parallel
 host/model/reasoning/timeout 模型调用参数和 `reward`/`allocation` 策略引用。策略使用
 `name/vN [@prompt 补充说明]` 格式，runtime 在 search 开始前解析已注册的准确版本并把策略快照
 写入 FrozenSpec；runtime 根据冻结版本调用注册的 context builder，异步 agent 不查询注册表。四项
-模型调用参数均为必填项且不继承 worker
-profile。配置不接受函数名或脚本路径。并发由
+模型调用参数均为必填项；其中 host 必须等于 `strategy.worker_host`，其余字段不继承 worker
+profile。resolved profile 标记 `configuration_source="host_process"`，不保存外部连接或认证配置。
+配置不接受函数名或脚本路径。并发由
 `budget.max_parallel` 推导，重试采用内部策略。
 backup 和 expansion 分别归入 reward 与 allocation，不再暴露独立参数。
 
@@ -165,13 +189,14 @@ flag。`scheduler.py` 构造当前结算事实的 `scheduler_context`，再通�
 candidate 可并发，失效进程留下的 pending、running 或 retry_wait task 可以恢复。
 `ScheduleTask.output` 是 reward/flag 的唯一权威记录；runtime 只在读取时从 completed task 索引生成
 reward 列表，不保存 value tree 或 candidate/report reward 副本。reward 只读取当前 candidate 历史；
-screen allocation 读取精简 peer frontier，确认 allocation 才读取全 candidate 节点。reward 记录通过 settlement id、ScheduleTask id 和 node id
-显式绑定到 settled node。系统不维护 run-root tree、graph、transition、backup event、
-action edge 或 hindsight。
+screen allocation 读取精简 peer frontier，确认 allocation 才读取全 candidate 节点。reward 记录通过
+settlement id、ScheduleTask id 和 node id 显式绑定到 settled node。系统不维护 run-root tree、
+graph、transition、backup event、action edge 或 hindsight。
 
 lazy allocation 读取上一已完成节点的布尔 flag。上一 flag 为 `false` 时，当前 settlement 不等待
-annotation/scheduler 链；上一 flag 为 `true` 时，runtime 直接把当前 task 视为确认任务并等待当前
-AnnotationTask 和 scheduler。只有当前 flag 再次
+annotation/scheduler 链；上一 flag 为 `true` 时，runtime 直接把当前 task 视为确认任务。native host
+异步完成 AnnotationTask 和 scheduler；runtime 本身不启动或等待模型，并在确认任务终态前拒绝该
+lane 的下一次 continuation、redispatch 和 verifier。只有当前 flag 再次
 为 `true` 且独立 Decision 草案通过 candidate 容量、retiree 和精确 settled source 校验，
 runtime 才在
 `.gp/runs/<run_id>/allocation-decisions/*.json` 持久化 `AllocationDecision`。Decision 固定退休
@@ -192,6 +217,14 @@ correctness、score 或其派生决策；这类任务继续使用公开格式 ve
 
 ## Candidate 循环
 
+Outer workspace 与 inner-agent 行为是两个独立选择。Git outer provider 使用 worktree 和
+commit Evidence，ThinkThread 使用 private Child 和 snapshot Evidence；两者都支持
+`strategy.inner_agent="autoresearch"` 和 `strategy.inner_agent="common"`。兼容 ID
+`autoresearch` 明确解析为内置 AutoResearch-Git：它自主执行多轮，并维护 candidate-private Git
+attempt history 与物理 `results.tsv`；TT 中该 repository 位于 Child 内。`common` 每次 dispatch
+只完成一个有界 attempt，不维护 inner-agent Git history 或 `results.tsv`。两者都必须调用同一 Goal
+Plus MCP，并由 runtime 在 `search_run_verifier` 边界形成 authoritative outer artifact。
+
 每条 candidate lane 使用以下协议：
 
 1. 首次启动或 fresh session 恢复时调用 `search_get_agent_context`，读取自己的权威状态和
@@ -204,7 +237,10 @@ correctness、score 或其派生决策；这类任务继续使用公开格式 ve
    `search_stage_shared_tool`；否则记录具体排除项。
 5. 调用 `search_run_verifier`，用一句 `hypothesis` 描述实际完成的尝试，并在启用
    `shared_dir` 时传入 `toolization_decision`。
-6. 从 verifier settlement 返回后的工作区继续。
+6. Git/Pi RPC 同步收到 `ScoreReport`；ThinkThread 先收到 accepted receipt，并在同一 retained
+   Child 的下一次 wake 中收到 authoritative feedback。收到 feedback 后，`autoresearch` 从已结算
+   工作区继续下一轮；`common` 返回 handoff，由 main 决定是否 continuation 同一
+   candidate/session。
 
 工作区内的文件都对 worker 可读，可用于导入、profile 和本地诊断；交付修改限于
 `candidate_task.allowed_files`，`denied_files` 与冻结 verifier 资产保持只读。Runtime 提供的
@@ -296,6 +332,8 @@ redispatch 只用于恢复，并继续使用同一个 candidate 工作区、Git 
   },
   "commit": "<exact-attempt-commit>",
   "reference_available": true,
+  "artifact_availability": "available",
+  "annotation_result_available": true,
   "score": 13350,
   "disposition": "keep",
   "view": "将调度逻辑改为按依赖深度分组。",
@@ -303,6 +341,17 @@ redispatch 只用于恢复，并继续使用同一个 candidate 工作区、Git 
   "supplemental_available": true
 }
 ```
+
+`artifact_availability` 区分 durable identity 与 provider 内容可访问性：`available`、
+`removal_pending`、`removed` 或 `unknown`。ThinkThread terminal cleanup 后仍保留 `artifact_ref` 和
+已发布 annotation，但 `reference_available=false`、`artifact_availability=removed`，不再承诺重开
+完整 Artifact View。
+
+cleanup 只释放 provider 临时资源：candidate/annotation Child、private branch 和不再被 pin 的
+snapshot。score、diff、annotation、provider journal、selection、promotion 和最终 report 属于
+durable shared plane，不会随 cleanup 删除。面向 main 的 monitor 通过 `host_cleanup` 投影 pool、
+annotation、snapshot 和 final artifact 状态，不暴露 session-private 物理路径；原始 host-pool
+文件只用于 provider lifecycle 调试和真实 ThinkThread 系统验收。
 
 冻结 spec 显式启用 `shared_dir` 时，已发布工具还会以 `shared_tools` 出现在同一条
 Global Evidence 中。每项包含 runtime 绑定的 `tool_view`、`tool_id`、`snapshot_hash` 与
@@ -358,25 +407,31 @@ process-verifier Evidence 完全一致时，将记录附加到该条目的 `exte
 ## 客观 View 与开放式补充评价
 
 `view` 是绑定到准确 Evidence identity 的异步、不可变、best-effort annotation。后台
-drainer 按 SearchSpec 的 `worker_host` 选择 Codex 的一次性只读执行或 Pi 的一次性无工具
-执行；不会为了 annotation 跨用另一个 host。Annotator 可读取：
+Codex hook 或 Pi extension 在 verifier post-tool callback 中按 SearchSpec 的 `worker_host` 启动
+drainer，再选择 Codex 的一次性只读执行或 Pi 的一次性受限工具执行；不会为了 annotation 跨用
+另一个 host。共享 MCP 只管理 task，不启动模型进程。Annotator 可读取：
 
 完整的角色边界、host 路由、配置继承、重试状态和排障流程见
 [Evidence Annotator](evidence-annotator.md)。
 
 - candidate 的一句 `hypothesis`；
-- 从本轮 settled base 到 attempt commit 的完整 diff；
+- 从本轮 settled base 到 attempt commit 的有界 diff；
+- target 与 comparison basis peer 的完整 immutable Artifact View；
 - 精确 attempt commit；
 - 本轮 changed files；
 - 冻结的 process verifier 合同；
 - verifier 结果与相关 metrics。
 
+Annotator 只通过授权入口读取这些内容，不运行项目代码、测试、verifier 或执行只读查看之外的
+命令。Host 只激活领取任务、读取 Artifact View 和提交 annotation 所需的精确工具集合；不为
+annotation 派生或修改 snapshot。
+
 View 只用一句中文客观描述实际做了什么，不评价好坏、不推断动机、不排名，也不推荐下一
-步。事实来源是 actual diff，而不是 candidate 的自述。Changed files、verifier command
+步。事实来源是 immutable target Artifact View 与 actual diff，而不是 candidate 的自述。Changed files、verifier command
 和 metrics 只提供验证上下文；命令名称本身或失败的测试不能证明目标行为已经实现。
 
-`supplemental_evaluation` 不读取 FrozenSpec 软标准。annotator 只依据当前候选累计 diff、
-公开 verifier Evidence 和 annotation task 创建时固定的 peer 快照，自行提出 1–8 个与当前
+`supplemental_evaluation` 不读取 FrozenSpec 软标准。annotator 只依据当前候选和 peer 的完整
+Artifact View、公开 verifier Evidence 和 annotation task 创建时固定的 peer identity，自行提出 1–8 个与当前
 任务实际相关的观察维度。它逐项给出 finding、证据与置信度，并对比较基线中的每个 peer
 返回非定向的 `similar`、`different`、`tradeoff`、`complementary` 或 `unknown`，不能借此
 选择赢家。没有 peer 时 comparisons 为空。limitations 明确列出公开 Evidence 无法判断的
@@ -396,13 +451,11 @@ annotator 收到的累计 diff 使用 Git 函数级上下文和至少 10 行普�
 `view=null` 只表示 annotation 尚未发布，Evidence 本身已经有效。candidate 可以先按
 自己的方向继续，不应等待、sleep 或轮询 View。
 
-verifier settlement 和 Evidence 读取都可以触发 run-scoped annotator。一个 drainer
-串行处理 backlog，但 verifier、selection 和 promotion 都不等待它。重试状态、解析后的
-模型/provider、deadline、usage 和 View 都持久化保存。`ready_to_promote` 和 `promoted`
-run 的 Evidence 已经不可变，因此 annotator 仍可在 outer deadline 内发布迟到 View；
-invalidated、aborted 或 failed run 的发布 fence 继续拒绝修改。需要在销毁宿主环境前得到
-完整 View 的 controller，可以显式同步 drain 已登记的有界重试，而不改变 SearchTools 的
-选择或 promotion 语义。
+verifier settlement 是 task admission 的唯一权威来源；Evidence 读取只执行非阻塞 wake，不创建
+新 task。持久 queue revision 对每个新 settlement 单调递增，一个 drainer 串行处理 backlog，
+但 verifier、selection 和 promotion 都不等待它。`search_select` 在进入 `ready_to_promote` 前关闭
+queue 并递增 generation，pending/retry task 变为 `cancelled`，正在推理的旧 generation 结果也会被
+publication fence 拒绝。模型、host provenance、deadline、usage、task 和已完成 View 都持久化保存。
 
 ## Git 与 Candidate-Local Best
 
@@ -434,10 +487,10 @@ Runtime 会在验证前提交所有 candidate-controlled 修改，并要求 arti
 干净。candidate 可以包含多个手工 commit；annotation 使用完整
 `settled-base..attempt` 范围，而不是只查看最后一个 commit。
 
-每次 process-verifier 尝试都会永久保留。严格改善和同分分别以 `keep`、`retain` 更新
-candidate-local 最新最佳。只有 `discard` 或 `failure` 时，Runtime 才把代码恢复到此前
-最佳版本，再追加不可变的
-`results.tsv` ledger：
+每次 process-verifier 尝试都会永久记录在 canonical `.gp` ledger。严格改善和同分分别以
+`keep`、`retain` 更新 candidate-local 最新最佳。只有 `discard` 或 `failure` 时，Runtime 才把
+代码恢复到此前最佳版本。内置 `autoresearch` binding 还请求 trusted adapter 管理的
+`results.tsv` 兼容投影，因此它的物理历史为：
 
 ```text
 keep:     settled -> attempt -> ledger
@@ -445,9 +498,18 @@ retain:   settled -> equal-score attempt -> ledger
 discard:  settled -> attempt -> restore-best -> ledger
 ```
 
-attempt、恢复和 ledger commit 都保持可达。因此下一轮始终从 candidate-local best
-规划，而 Global Evidence 仍保留好、差和失败的全部尝试。一个 candidate 的回滚不会
-改变 peer 工作区，也不会修改 peer 的判断。
+attempt、恢复和 ledger commit 都保持在 candidate-private Git 历史中。因此下一轮始终从
+candidate-local best
+规划，而 Global Evidence 仍保留好、差和失败的全部尝试。`common` binding 不请求该投影：
+keep/retain 后直接以 attempt commit 继续，discard/failure 后以 restore commit 继续，不创建
+`results.tsv` 或额外 ledger commit。一个 candidate 的回滚不会改变 peer 工作区，也不会修改
+peer 的判断。
+
+在 ThinkThread 中，public `IterationRecord.artifact_ref` 仍是 verifier 实际读取的 quiescent
+attempt snapshot，public Git compatibility fields 保持 `null`。private attempt commit 和
+post-settlement ledger commit 只保存在 Child snapshot 与 `inner_agent_state` 中；settled Child
+branch 指向 post-settlement snapshot。Annotation Artifact View、changed-file validation 和
+publication 一律过滤 `.git`、`.gp`、`.search`、`.tmp` 与任意层级的 `results.tsv`。
 
 最终 promotion 不改写或压缩 candidate branch。Runtime 以 run baseline 为 parent、以 selected
 artifact 的允许产品文件为 tree，另行创建一个 squash publication commit；`results.tsv`、`.gp`、
@@ -486,9 +548,9 @@ ref-workspace/             # 当前 worker 的参考 checkout
 
 worker 直接使用普通文件和命令工具查看返回路径。再次调用会丢弃 ref-workspace 的本地变化，
 并把同一目录切到新的 Evidence commit；不会创建第二个 reference 目录，也不要求 worker
-close。candidate 的实现修改始终留在自己的 workspace，不访问 peer 活动 workspace。未来
-ThinkThread provider 应把同一个 checkout API 映射到每个 worker 唯一的 snapshot-derived
-reference child。
+close。candidate 的实现修改始终留在自己的 workspace，不访问 peer 活动 workspace。
+ThinkThread 的完整 target/peer 阅读由独立 retained Annotation Child 的 immutable Artifact View
+工具提供；candidate 不获得 sibling live branch 或 Annotation 工具。
 
 最终 promotion artifact 虽然是
 相对于 source 生成的 patch，但这不会改变 Evidence commit 代表完整代码树的语义。
@@ -522,6 +584,9 @@ run。可以继承有界研究上下文，但不能继承旧分数或把旧 Evid
     candidates/<candidate_id>/
       candidate.json
       evidence-annotations/iteration-<n>.json
+    evidence-annotator/
+      queue.json
+      artifact-views/<task>/<view>/workspace/
     agent_sessions/<agent_session_id>.json
     workspace/<candidate_id>/
     report.md

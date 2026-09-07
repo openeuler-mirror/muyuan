@@ -14,7 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize(
     "relative_path",
     (
-        "tests/fixtures/k_module_problem/search-spec.json",
         "tests/fixtures/signal_processing/search-spec.json",
         "tests/fixtures/signal_processing/multi-model-search-spec.json",
         "tests/fixtures/swe_bench_20212/search-spec.json",

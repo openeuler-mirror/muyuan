@@ -89,21 +89,6 @@ write compact retained evidence to `GOAL_PLUS_VERIFIER_DIAGNOSTICS_DIR`. Search
 and Promotion commands use the same target-NPU `resource_lock` and the same
 frozen Baseline/scoring inputs.
 
-## Real NPU Smoke
-
-Run the opt-in CANNBench Level1 GELU flow with:
-
-```bash
-scripts/run_ascendc_cannbench_e2e.sh
-```
-
-The script installs the current Goal Plus checkout, loads the NPU environment,
-and invokes Pi's native `/goal-plus` command. The main Pi host opens one fixed
-pool to run two Pi RPC candidates concurrently (`max_parallel=2`). The test requires full selection,
-promotion evidence, immutable-revision patch generation, and a completed Goal
-Plus record. It is gated by `GOAL_PLUS_RUN_ASCENDC_NPU_ST=1` and is not part of
-ordinary unit or ST runs.
-
 ## Included Assets
 
 ```text

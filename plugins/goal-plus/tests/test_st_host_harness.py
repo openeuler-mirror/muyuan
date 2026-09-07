@@ -96,7 +96,13 @@ def test_codex_redispatch_prompt_names_required_runtime_evidence() -> None:
 
 
 @pytest.mark.codex
-def test_codex_circle_packing_cycle_is_one_fixed_parallel_batch() -> None:
+def test_codex_circle_packing_cycle_has_isolated_source_and_valid_layouts(tmp_path: Path) -> None:
+    import json
+    import subprocess
+    import sys
+
+    from goal_plus.models import SearchSpec
+    from tests.st.helpers.circle_cycle import prepare_circle
     from tests.st.test_st_scenarios import SCENARIO_CASES
 
     case = next(
@@ -104,77 +110,22 @@ def test_codex_circle_packing_cycle_is_one_fixed_parallel_batch() -> None:
     )
     assert {mark.name for mark in case.marks} == {"st", "st_codex"}
 
-    prompt = Path("tests/st/prompts/codex_circle_packing_cycle.md").read_text(
-        encoding="utf-8"
-    )
-    for required in (
-        'worker_host="codex"',
-        'worker_agent_type="search_candidate_agent"',
-        "inherits the parent Codex model",
-        "only `task_name`, `message`, and `fork_turns`",
-        '"max_parallel": 2',
-        "batch_sizes: [2]",
-        "rounds: 1",
-    ):
-        assert required in prompt
-
-
-@pytest.mark.codex
-def test_codex_circle_packing_cycle_assertion_requires_complete_cycle() -> None:
-    from tests.st import test_st_scenarios
-    from tests.st.helpers.report_parser import StReport
-
-    assert hasattr(test_st_scenarios, "_assert_codex_circle_packing_cycle")
-    assertion = test_st_scenarios._assert_codex_circle_packing_cycle
-    candidates = [
-        {
-            "candidate_id": f"c{index:03d}",
-            "score": float(index),
-            "iterations": 1,
-            "status": "evaluated",
-        }
-        for index in range(1, 3)
-    ]
-    report = StReport(
-        scenario="codex_circle_packing_cycle",
-        run_id="run_cycle",
-        candidates=candidates,
-        selected_candidate_id="c002",
-        best_score=2.0,
-        report_path="/tmp/report.md",
-        extra={
-            "host": "codex",
-            "model": "gpt-5.6-terra",
-            "rounds": 1,
-            "batch_sizes": [2],
-            "agent_session_ids": ["agent_1", "agent_2"],
-        },
-        raw="{}",
-    )
-
-    assertion(report)
-
-    incomplete = StReport(**{**report.__dict__, "candidates": candidates[:1]})
-    with pytest.raises(AssertionError):
-        assertion(incomplete)
-
-    duplicate_sessions = StReport(
-        **{
-            **report.__dict__,
-            "extra": {
-                **report.extra,
-                "agent_session_ids": ["agent_1", "agent_1"],
-            },
-        }
-    )
-    with pytest.raises(AssertionError):
-        assertion(duplicate_sessions)
-
-    wrong_batches = StReport(
-        **{**report.__dict__, "extra": {**report.extra, "batch_sizes": [1]}}
-    )
-    with pytest.raises(AssertionError):
-        assertion(wrong_batches)
+    hashes = prepare_circle(tmp_path, "gpt-5.6-sol", "low")
+    assert set(hashes) == {"initial_program.py", "evaluator.py"}
+    source = tmp_path / "source"
+    spec = SearchSpec.model_validate_json((source / "spec.json").read_text())
+    assert spec.strategy.worker_host == "codex"
+    assert spec.strategy.worker_launch.model == "gpt-5.6-sol"
+    assert spec.strategy.evidence_annotator.reasoning_effort == "low"
+    assert (source / ".git").is_dir() and (tmp_path / ".git").is_dir()
+    for layout, expected in (("rectangular", 2.166664066666667), ("staggered", 2.4389636673796344)):
+        result = subprocess.run(
+            [sys.executable, "evaluator.py", f"candidate-hints/{layout}.py"],
+            cwd=source, capture_output=True, text=True, check=True,
+        )
+        output = json.loads(result.stdout)
+        assert output["validity"] == 1
+        assert output["sum_radii"] == pytest.approx(expected)
 
 
 @pytest.mark.codex

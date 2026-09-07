@@ -5,13 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from goal_plus.host_observability import (
-    collect_codex_observability,
-    collect_codex_transcript_observability,
-    collect_pi_observability,
-    discover_codex_session_file,
-    normalize_pi_usage,
-)
+from goal_plus.host_observability import collect_codex_observability, collect_codex_transcript_observability, collect_pi_observability, discover_codex_session_file
+from goal_plus.projections.usage import normalize_pi_usage
 from goal_plus.models import AgentHostHandle, AgentSessionRecord
 
 

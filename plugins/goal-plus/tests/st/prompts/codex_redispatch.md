@@ -6,18 +6,18 @@ runtime. If the required MCP or foreground-worker tools are unavailable, emit
 the final `st_report` with `extra.error` instead of launching another test.
 Use `gpt-5.6-terra` as the model value in `extra.model`.
 
-Build a SearchSpec from {{PROJECT_ROOT}}/tests/st/fixtures/k_module_problem/spec.json
+Build a SearchSpec from {{PROJECT_ROOT}}/tests/st/fixtures/circle_packing/spec.json
 with these required edits before freezing:
 
 - Set `source_path` to the absolute path
-  `{{PROJECT_ROOT}}/tests/st/fixtures/k_module_problem`.
+  `{{PROJECT_ROOT}}/tests/st/fixtures/circle_packing`.
 - Set `budget.max_parallel=1`.
 - Set `strategy.name="random"`.
 - Set `strategy.worker_host="codex"`.
-- Set `strategy.worker_agent_type="search_candidate_agent"`.
+- Set `strategy.inner_agent="autoresearch"`.
 - Set `strategy.worker_budget={"max_runtime_seconds": 90, "max_turns": 4, "on_exceed": "interrupt"}`.
 
-Freeze {{PROJECT_ROOT}}/tests/st/fixtures/k_module_problem/evaluator.py, then
+Freeze {{PROJECT_ROOT}}/tests/st/fixtures/circle_packing/evaluator.py, then
 run this exact control-flow:
 
 1. `search_freeze_spec` -> `search_create` -> `search_plan_next(k=1)` -> `search_start_batch`.
@@ -32,7 +32,7 @@ run this exact control-flow:
 4. Bind any returned Codex task name or nickname with `search_bind_agent_handle`.
 5. Run `search_run_verifier(run_id, candidate_id, "process")` from the main agent.
 6. Call `search_redispatch_candidate` for the same `candidate_id` with:
-   `worker_agent_type="search_candidate_agent"` and
+   no inner-agent override and
    `worker_budget={"max_runtime_seconds": 180, "max_turns": 8, "on_exceed": "interrupt"}`.
 7. Confirm the redispatch response has a second, different `agent_session_id`,
    the same `candidate_id`, and `launch.budget_control.mode == "parent_watchdog"`.

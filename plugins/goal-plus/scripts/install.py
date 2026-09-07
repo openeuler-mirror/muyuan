@@ -6,16 +6,24 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import sysconfig
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    import tomli as tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,10 +38,45 @@ NORMAL_RUNTIME_COMMANDS = (
     "goal-plus-pi-worker",
     "goal-plus-pi-pool",
 )
+THINKTHREAD_PROFILE_NAME = "goal-plus-pi"
+THINKTHREAD_PROFILE_MARKER = "# Managed by Goal Plus: thinkthread-profile-v1"
+THINKTHREAD_RUNTIME_VERSION = "thinkthread 0.1.0"
+THINKTHREAD_PROFILE_SCHEMA = 4
+THINKTHREAD_EXTENSION_PROTOCOL = 5
+AGENT_POSIX_CONTRACT_FINGERPRINT = (
+    "fcc80b665cd990f9d1e3681a9d384cb99994f2b739cd4fbddc97bdda01391131"
+)
+AGENT_POSIX_CONTROL_PROTOCOL = 2
+AGENT_POSIX_REPOSITORY = "https://gitcode.com/aideveloper/capsule_public.git"
+AGENT_POSIX_REF = "v0.1.0-alpha2"
+THINKTHREAD_SDK_RECEIPT_SCHEMA = "goal-plus.thinkthread-agent-posix.v1"
 
 
 class InstallError(RuntimeError):
     """A safe, actionable installation failure."""
+
+
+@dataclass(frozen=True)
+class ThinkThreadProfilePlan:
+    executable: str
+    runtime_version: str
+    path: Path
+    content: str
+    installed: bool
+
+
+@dataclass(frozen=True)
+class ThinkThreadSdkPlan:
+    node_executable: str
+    npm_executable: str
+    git_executable: str | None
+    install_root: Path
+    entry: Path
+    source: Path | None
+    package: Path | None
+    repository: str
+    ref: str
+    installed: bool
 
 
 def _run(
@@ -42,6 +85,7 @@ def _run(
     capture: bool = False,
     dry_run: bool = False,
     env: dict[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if not capture:
         print("+", shlex.join(argv))
@@ -53,6 +97,7 @@ def _run(
         capture_output=capture,
         text=True,
         env=env,
+        cwd=cwd,
     )
 
 
@@ -82,6 +127,565 @@ def _atomic_write(path: Path, content: str, *, mode: int = 0o644) -> None:
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _thinkthread_profile_path() -> Path:
+    configured = os.environ.get("XDG_CONFIG_HOME")
+    config_root = (
+        Path(configured).expanduser() if configured else Path.home() / ".config"
+    )
+    return config_root.resolve() / "thinkthread" / "profiles" / (
+        f"{THINKTHREAD_PROFILE_NAME}.toml"
+    )
+
+
+def _thinkthread_sdk_entry() -> Path:
+    data_home = os.environ.get("XDG_DATA_HOME")
+    data_root = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
+    return (
+        data_root.resolve()
+        / "goal-plus"
+        / "thinkthread-agent-posix"
+        / AGENT_POSIX_CONTRACT_FINGERPRINT
+        / "node_modules"
+        / "@thinkthread"
+        / "agent-posix"
+        / "dist"
+        / "index.js"
+    )
+
+
+def _thinkthread_sdk_root() -> Path:
+    return _thinkthread_sdk_entry().parents[4]
+
+
+def _thinkthread_sdk_receipt(root: Path | None = None) -> Path:
+    return (root or _thinkthread_sdk_root()) / "installation.json"
+
+
+def _managed_thinkthread_sdk_source(root: Path) -> Path | None:
+    receipt = _thinkthread_sdk_receipt(root)
+    if not receipt.is_file():
+        return None
+    payload = _read_json(receipt)
+    if not isinstance(payload, dict) or payload.get("schema") != THINKTHREAD_SDK_RECEIPT_SCHEMA:
+        return None
+    source = payload.get("source_path")
+    return Path(source).expanduser().resolve() if isinstance(source, str) else None
+
+
+def _validate_agent_posix_sdk(node_executable: str, entry: Path) -> None:
+    script = """
+import { pathToFileURL } from "node:url";
+const sdk = await import(pathToFileURL(process.argv[1]).href);
+process.stdout.write(JSON.stringify({
+  protocol: sdk.CONTROL_PROTOCOL_VERSION,
+  fingerprint: sdk.CONTRACT_FINGERPRINT,
+}));
+""".strip()
+    try:
+        completed = _run(
+            [node_executable, "--input-type=module", "-e", script, str(entry)],
+            capture=True,
+        )
+        payload = json.loads(completed.stdout)
+    except (json.JSONDecodeError, subprocess.CalledProcessError, OSError) as exc:
+        raise InstallError(f"could not validate Agent POSIX SDK at {entry}: {exc}") from exc
+    if not isinstance(payload, dict) or (
+        payload.get("protocol") != AGENT_POSIX_CONTROL_PROTOCOL
+        or payload.get("fingerprint") != AGENT_POSIX_CONTRACT_FINGERPRINT
+    ):
+        raise InstallError(
+            "unsupported Agent POSIX SDK: "
+            f"protocol={payload.get('protocol')!r}, "
+            f"fingerprint={payload.get('fingerprint')!r}"
+        )
+
+
+def _preflight_thinkthread_sdk(
+    *,
+    node_executable: str,
+    npm_executable: str,
+    git_executable: str | None,
+    source: Path | None = None,
+    package: Path | None = None,
+    install_root: Path | None = None,
+) -> ThinkThreadSdkPlan:
+    if source is not None and package is not None:
+        raise InstallError("choose either --agent-posix-source or --agent-posix-package")
+    resolved_source = source.expanduser().resolve() if source is not None else None
+    resolved_package = package.expanduser().resolve() if package is not None else None
+    if resolved_source is not None and not (resolved_source / "package.json").is_file():
+        raise InstallError(f"Agent POSIX source has no package.json: {resolved_source}")
+    if resolved_package is not None and not resolved_package.is_file():
+        raise InstallError(f"Agent POSIX package is unavailable: {resolved_package}")
+    if resolved_source is None and resolved_package is None and git_executable is None:
+        raise InstallError("git is required to fetch the supported Agent POSIX SDK")
+
+    root = (install_root or _thinkthread_sdk_root()).expanduser().resolve()
+    entry = (
+        root
+        / "node_modules"
+        / "@thinkthread"
+        / "agent-posix"
+        / "dist"
+        / "index.js"
+    )
+    installed = False
+    if root.exists():
+        owner = _managed_thinkthread_sdk_source(root)
+        if owner != ROOT.resolve():
+            detail = f"managed by {owner}" if owner is not None else "not Goal Plus-managed"
+            raise InstallError(
+                f"Agent POSIX SDK directory is {detail}: {root}\n"
+                "Remove or relocate it explicitly, then rerun the installer."
+            )
+        if entry.is_file():
+            _validate_agent_posix_sdk(node_executable, entry)
+            installed = True
+    return ThinkThreadSdkPlan(
+        node_executable=node_executable,
+        npm_executable=npm_executable,
+        git_executable=git_executable,
+        install_root=root,
+        entry=entry,
+        source=resolved_source,
+        package=resolved_package,
+        repository=AGENT_POSIX_REPOSITORY,
+        ref=AGENT_POSIX_REF,
+        installed=installed,
+    )
+
+
+def _install_thinkthread_sdk(plan: ThinkThreadSdkPlan, *, dry_run: bool) -> None:
+    if plan.installed:
+        print(f"Agent POSIX SDK already matches the supported contract: {plan.entry}")
+        return
+    if dry_run:
+        print(f"Would install the supported Agent POSIX SDK: {plan.install_root}")
+        return
+
+    plan.install_root.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=".thinkthread-agent-posix.", dir=plan.install_root.parent)
+    )
+    payload = temporary / "payload"
+    backup = temporary / "previous"
+    try:
+        payload.mkdir()
+        package = plan.package
+        if package is None:
+            if plan.source is None:
+                assert plan.git_executable is not None
+                checkout = temporary / "checkout"
+                _run(
+                    [
+                        plan.git_executable,
+                        "clone",
+                        "--quiet",
+                        "--depth",
+                        "1",
+                        "--branch",
+                        plan.ref,
+                        plan.repository,
+                        str(checkout),
+                    ]
+                )
+                source = checkout / "sdk" / "agent-posix" / "ts"
+            else:
+                source = plan.source
+            if not (source / "package-lock.json").is_file():
+                raise InstallError(
+                    f"Agent POSIX source has no package-lock.json: {source}"
+                )
+            build_source = temporary / "sdk-source"
+            shutil.copytree(source, build_source)
+            _run([plan.npm_executable, "ci"], cwd=build_source)
+            package_dir = temporary / "packages"
+            package_dir.mkdir()
+            _run(
+                [
+                    plan.npm_executable,
+                    "pack",
+                    "--pack-destination",
+                    str(package_dir),
+                ],
+                cwd=build_source,
+            )
+            packages = sorted(package_dir.glob("*.tgz"))
+            if len(packages) != 1:
+                raise InstallError("npm pack did not create one Agent POSIX package")
+            package = packages[0]
+
+        _atomic_write(
+            payload / "package.json",
+            json.dumps({"private": True}, indent=2) + "\n",
+        )
+        _run(
+            [
+                plan.npm_executable,
+                "install",
+                "--prefix",
+                str(payload),
+                "--omit=dev",
+                "--no-audit",
+                "--no-fund",
+                str(package),
+            ]
+        )
+        payload_entry = payload / plan.entry.relative_to(plan.install_root)
+        _validate_agent_posix_sdk(plan.node_executable, payload_entry)
+        _atomic_write(
+            _thinkthread_sdk_receipt(payload),
+            json.dumps(
+                {
+                    "schema": THINKTHREAD_SDK_RECEIPT_SCHEMA,
+                    "source_path": str(ROOT.resolve()),
+                    "repository": plan.repository,
+                    "ref": plan.ref,
+                    "control_protocol": AGENT_POSIX_CONTROL_PROTOCOL,
+                    "contract_fingerprint": AGENT_POSIX_CONTRACT_FINGERPRINT,
+                },
+                indent=2,
+            )
+            + "\n",
+        )
+        if plan.install_root.exists():
+            plan.install_root.replace(backup)
+        payload.replace(plan.install_root)
+        if backup.exists():
+            shutil.rmtree(backup)
+    except Exception:
+        if backup.exists() and not plan.install_root.exists():
+            backup.replace(plan.install_root)
+        raise
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    print(f"Installed supported Agent POSIX SDK: {plan.entry}")
+
+
+def _toml_key(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise InstallError("ThinkThread Profile contains a non-finite number")
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        if any(isinstance(item, (dict, list)) for item in value):
+            raise InstallError(
+                "ThinkThread Profile contains an unsupported nested array"
+            )
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    raise InstallError(
+        f"ThinkThread Profile contains an unsupported value: {type(value).__name__}"
+    )
+
+
+def _render_toml_table(
+    values: dict[str, Any],
+    *,
+    prefix: tuple[str, ...] = (),
+) -> list[str]:
+    lines: list[str] = []
+    scalars = [
+        (key, value) for key, value in values.items() if not isinstance(value, dict)
+    ]
+    tables = [
+        (key, value) for key, value in values.items() if isinstance(value, dict)
+    ]
+    if prefix:
+        lines.append("[" + ".".join(_toml_key(item) for item in prefix) + "]")
+    for key, value in scalars:
+        lines.append(f"{_toml_key(key)} = {_toml_value(value)}")
+    for key, table in tables:
+        if lines:
+            lines.append("")
+        lines.extend(_render_toml_table(table, prefix=(*prefix, key)))
+    return lines
+
+
+def _render_thinkthread_profile(profile: dict[str, Any]) -> str:
+    body = "\n".join(_render_toml_table(profile)).rstrip()
+    return (
+        f"{THINKTHREAD_PROFILE_MARKER}\n"
+        f"# Source checkout: {ROOT.resolve()}\n\n"
+        f"{body}\n"
+    )
+
+
+def _parse_thinkthread_profile(text: str, *, source: str) -> dict[str, Any]:
+    try:
+        payload = tomllib.loads(text)
+    except (TypeError, ValueError) as exc:
+        raise InstallError(
+            f"could not parse ThinkThread Profile from {source}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise InstallError(f"ThinkThread Profile is not an object: {source}")
+    return payload
+
+
+def _validate_base_thinkthread_profile(profile: dict[str, Any]) -> None:
+    agent = profile.get("agent")
+    extension = agent.get("extension") if isinstance(agent, dict) else None
+    loader = extension.get("loader") if isinstance(extension, dict) else None
+    environment = profile.get("environment")
+    if profile.get("schemaVersion") != THINKTHREAD_PROFILE_SCHEMA:
+        raise InstallError(
+            "ThinkThread Pi Profile must use schemaVersion "
+            f"{THINKTHREAD_PROFILE_SCHEMA}"
+        )
+    if not isinstance(agent, dict) or agent.get("name") != "pi":
+        raise InstallError("ThinkThread Profile 'pi' does not describe the Pi Agent")
+    if (
+        not isinstance(loader, dict)
+        or loader.get("protocolVersion") != THINKTHREAD_EXTENSION_PROTOCOL
+    ):
+        raise InstallError(
+            "ThinkThread Pi Agent Extension protocol does not match the supported "
+            f"version {THINKTHREAD_EXTENSION_PROTOCOL}"
+        )
+    if not isinstance(environment, dict) or (
+        environment.get("rootFsMode") != "direct"
+        or environment.get("childFsMode") != "copy_on_write"
+    ):
+        raise InstallError(
+            "ThinkThread Pi Profile must use rootFsMode=direct and "
+            "childFsMode=copy_on_write"
+        )
+
+
+def _append_agent_argument(arguments: list[str], flag: str, value: Path) -> None:
+    rendered = str(value.resolve())
+    for index, item in enumerate(arguments[:-1]):
+        if (
+            item == flag
+            and Path(arguments[index + 1]).expanduser().resolve() == value.resolve()
+        ):
+            return
+    arguments.extend([flag, rendered])
+
+
+def _symlink_chain_parent_roots(path: Path) -> tuple[Path, ...]:
+    """Return real parent directories needed to traverse a symlink chain."""
+    pending = path.expanduser().absolute()
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for _ in range(64):
+        candidate = Path(pending.anchor)
+        link: Path | None = None
+        remainder: tuple[str, ...] = ()
+        for index, part in enumerate(pending.parts[1:], start=1):
+            candidate /= part
+            if candidate.is_symlink():
+                link = candidate
+                remainder = pending.parts[index + 1 :]
+                break
+        if link is None:
+            return tuple(roots)
+        if link in seen:
+            raise InstallError(f"cyclic Python executable symlink chain: {path}")
+        seen.add(link)
+        parent = link.parent.resolve()
+        if parent not in roots:
+            roots.append(parent)
+        target = Path(os.readlink(link))
+        pending = (
+            target if target.is_absolute() else link.parent / target
+        ).joinpath(*remainder)
+    raise InstallError(f"Python executable symlink chain is too deep: {path}")
+
+
+def _build_thinkthread_profile(
+    base: dict[str, Any],
+    *,
+    node_executable: str | None = None,
+    sdk_entry: Path | None = None,
+    bridge_path: Path | None = None,
+) -> dict[str, Any]:
+    # JSON provides a strict deep copy for the Profile's JSON-compatible TOML values.
+    profile = json.loads(json.dumps(base))
+    agent = profile.setdefault("agent", {})
+    arguments = list(agent.get("args") or [])
+    _append_agent_argument(
+        arguments,
+        "--extension",
+        ROOT / ".pi" / "extensions" / "goal-plus.ts",
+    )
+    _append_agent_argument(
+        arguments,
+        "--skill",
+        ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md",
+    )
+    agent["args"] = arguments
+
+    python_prefix = Path(sys.prefix).expanduser().resolve()
+    python_executable = Path(sys.executable).expanduser().absolute()
+    resolved_python_prefix = python_executable.resolve().parent.parent
+    resolved_node = node_executable or shutil.which("node")
+    if resolved_node is None:
+        raise InstallError("Node.js is required for the ThinkThread Pi Profile")
+    node_prefix = Path(resolved_node).expanduser().resolve().parent.parent
+    runtime_roots: list[Path] = []
+    for path in (
+        python_prefix,
+        *_symlink_chain_parent_roots(python_executable),
+        resolved_python_prefix,
+        node_prefix,
+    ):
+        if any(path == root or path.is_relative_to(root) for root in runtime_roots):
+            continue
+        runtime_roots.append(path)
+    if any(path == Path("/") for path in runtime_roots):
+        raise InstallError(
+            "refusing to expose the filesystem root for Goal Plus runtimes"
+        )
+    environment = profile.setdefault("environment", {})
+    resolved_sdk_entry = (sdk_entry or _thinkthread_sdk_entry()).expanduser().resolve()
+    resolved_bridge = (
+        bridge_path
+        or ROOT / "src" / "goal_plus" / "assets" / "thinkthread-agent-posix-bridge.mjs"
+    ).expanduser().resolve()
+    readable = [
+        str(Path(item).expanduser().resolve())
+        for item in environment.get("read", [])
+    ]
+    for path in (
+        ROOT.resolve(),
+        resolved_sdk_entry.parent.parent.parent.parent,
+        *runtime_roots,
+    ):
+        if str(path) not in readable:
+            readable.append(str(path))
+    environment["read"] = readable
+
+    session_runtime_root = "${PI_CODING_AGENT_SESSION_DIR}/goal-plus"
+    for role in ("root", "child"):
+        role_environment = dict(environment.get(role) or {})
+        role_environment.update(
+            {
+                "GOAL_PLUS_PYTHON": str(python_executable),
+                "GOAL_PLUS_NODE": str(Path(resolved_node).expanduser().resolve()),
+                "GOAL_PLUS_ROOT": session_runtime_root,
+                "GOAL_PLUS_SOURCE_PATH": str(ROOT.resolve()),
+                "GOAL_PLUS_PI_ROLE": "main" if role == "root" else "worker",
+                "GOAL_PLUS_AGENT_POSIX_SDK_ENTRY": str(resolved_sdk_entry),
+            }
+        )
+        if role == "root":
+            role_environment["GOAL_PLUS_AGENT_POSIX_BRIDGE"] = str(resolved_bridge)
+        environment[role] = role_environment
+    return profile
+
+
+def _managed_thinkthread_profile_source(path: Path) -> Path | None:
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith(THINKTHREAD_PROFILE_MARKER + "\n"):
+        return None
+    payload = _parse_thinkthread_profile(text, source=str(path))
+    environment = payload.get("environment")
+    root_environment = (
+        environment.get("root") if isinstance(environment, dict) else None
+    )
+    source = (
+        root_environment.get("GOAL_PLUS_SOURCE_PATH")
+        if isinstance(root_environment, dict)
+        else None
+    )
+    return Path(source).expanduser().resolve() if isinstance(source, str) else None
+
+
+def _preflight_thinkthread_profile(
+    executable: str,
+    *,
+    profile_path: Path | None = None,
+    node_executable: str | None = None,
+    sdk_entry: Path | None = None,
+) -> ThinkThreadProfilePlan:
+    runtime_version = _run([executable, "--version"], capture=True).stdout.strip()
+    if runtime_version != THINKTHREAD_RUNTIME_VERSION:
+        raise InstallError(
+            "unsupported ThinkThread Runtime: "
+            f"reported={runtime_version!r}, expected={THINKTHREAD_RUNTIME_VERSION!r}"
+        )
+    raw_profile = _run(
+        [executable, "profile", "show", "pi"],
+        capture=True,
+    ).stdout
+    base = _parse_thinkthread_profile(raw_profile, source="tt profile show pi")
+    _validate_base_thinkthread_profile(base)
+    content = _render_thinkthread_profile(
+        _build_thinkthread_profile(
+            base,
+            node_executable=node_executable,
+            sdk_entry=sdk_entry,
+        )
+    )
+    path = (profile_path or _thinkthread_profile_path()).expanduser().resolve()
+    installed = False
+    if path.exists():
+        existing = path.read_text(encoding="utf-8")
+        if existing == content:
+            installed = True
+        else:
+            owner = _managed_thinkthread_profile_source(path)
+            if owner != ROOT.resolve():
+                detail = (
+                    f"managed by {owner}"
+                    if owner is not None
+                    else "not managed by this installer"
+                )
+                raise InstallError(
+                    f"ThinkThread Profile already exists and is {detail}: {path}\n"
+                    "Resolve that Profile outside Goal Plus, then rerun the installer."
+                )
+    return ThinkThreadProfilePlan(
+        executable=executable,
+        runtime_version=runtime_version,
+        path=path,
+        content=content,
+        installed=installed,
+    )
+
+
+def _install_thinkthread_profile(
+    plan: ThinkThreadProfilePlan,
+    *,
+    dry_run: bool,
+) -> None:
+    if plan.installed:
+        print(f"ThinkThread Profile already points to this checkout: {plan.path}")
+    elif dry_run:
+        action = "update" if plan.path.exists() else "write"
+        print(f"Would {action}: {plan.path}")
+    else:
+        _atomic_write(plan.path, plan.content)
+        rendered = _run(
+            [plan.executable, "profile", "show", THINKTHREAD_PROFILE_NAME],
+            capture=True,
+        ).stdout
+        installed = _parse_thinkthread_profile(
+            rendered,
+            source=f"tt profile show {THINKTHREAD_PROFILE_NAME}",
+        )
+        _validate_base_thinkthread_profile(installed)
+    print(
+        "ThinkThread integration is ready. Start a Root with: "
+        f"tt run --profile {THINKTHREAD_PROFILE_NAME} --fs <target-workspace>"
+    )
 
 
 def _pi_dev_registry_dir() -> Path:
@@ -586,6 +1190,10 @@ def _render_pi_conflict_remediation(entries: list[dict[str, Any]]) -> str:
 def _preflight_pi_normal() -> bool:
     entries = _pi_goal_plus_entries()
     root = ROOT.resolve()
+    allowed_loose_paths = {
+        (root / ".pi" / "extensions" / "goal-plus.ts").resolve(),
+        (root / ".pi" / "skills" / "goal-plus").resolve(),
+    }
     same_root = False
     conflicts: list[dict[str, Any]] = []
     for entry in entries:
@@ -593,6 +1201,9 @@ def _preflight_pi_normal() -> bool:
         settings_path = entry.get("settings_path")
         if settings_path is not None and resolved == root:
             same_root = True
+        elif settings_path is None and resolved in allowed_loose_paths:
+            # Pi deduplicates the package and explicit resource by absolute path.
+            continue
         else:
             conflicts.append(entry)
     if conflicts:
@@ -915,6 +1526,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--pi", action="store_true", help="Install the normal user-scoped Pi package."
     )
     parser.add_argument(
+        "--thinkthread",
+        action="store_true",
+        help=(
+            "Install the managed goal-plus-pi ThinkThread Profile; requires --pi."
+        ),
+    )
+    parser.add_argument(
+        "--agent-posix-source",
+        type=Path,
+        help=(
+            "Build the supported Agent POSIX SDK from a local sdk/agent-posix/ts "
+            "source directory; requires --thinkthread."
+        ),
+    )
+    parser.add_argument(
+        "--agent-posix-package",
+        type=Path,
+        help="Install an offline Agent POSIX .tgz package; requires --thinkthread.",
+    )
+    parser.add_argument(
         "--pi-dev",
         action="store_true",
         help="Prepare an isolated editable runtime and pi-goal-plus launcher.",
@@ -949,23 +1580,65 @@ def main(argv: list[str] | None = None) -> int:
         _preflight_pi_dev(cwd=args.check_cwd)
         return 0
     if args.env_show:
-        if args.codex or args.pi or args.pi_dev or args.dry_run:
+        if args.codex or args.pi or args.pi_dev or args.thinkthread or args.dry_run:
             parser.error("--env-show cannot be combined with install or dry-run options")
         _show_pi_dev_environments(current_dev_dir=args.pi_dev_dir)
         return 0
-    if not (args.codex or args.pi or args.pi_dev):
-        parser.error("choose --codex, --pi, --pi-dev, or --env-show")
+    if not (args.codex or args.pi or args.pi_dev or args.thinkthread):
+        parser.error(
+            "choose --codex, --pi, --pi-dev, --thinkthread, or --env-show"
+        )
     if args.pi and args.pi_dev:
         parser.error("--pi and --pi-dev are mutually exclusive")
+    if args.thinkthread and not args.pi:
+        parser.error("--thinkthread requires --pi")
+    if (args.agent_posix_source or args.agent_posix_package) and not args.thinkthread:
+        parser.error("Agent POSIX source/package options require --thinkthread")
+    if args.agent_posix_source and args.agent_posix_package:
+        parser.error("choose either --agent-posix-source or --agent-posix-package")
 
     try:
         codex = _require_executable("codex") if args.codex else None
         pi = _require_executable("pi") if args.pi or args.pi_dev else None
+        thinkthread = _require_executable("tt") if args.thinkthread else None
+        node = _require_executable("node") if args.thinkthread else None
+        npm = _require_executable("npm") if args.thinkthread else None
+        git = (
+            _require_executable("git")
+            if args.thinkthread
+            and args.agent_posix_source is None
+            and args.agent_posix_package is None
+            else None
+        )
         codex_marketplace_exists = (
             _preflight_codex(codex) if codex is not None else None
         )
         pi_installed = _preflight_pi_normal() if args.pi else False
         runtime_scripts = _preflight_normal_runtime() if args.codex or args.pi else None
+        thinkthread_sdk_plan = (
+            _preflight_thinkthread_sdk(
+                node_executable=node,
+                npm_executable=npm,
+                git_executable=git,
+                source=args.agent_posix_source,
+                package=args.agent_posix_package,
+            )
+            if thinkthread is not None and node is not None and npm is not None
+            else None
+        )
+        thinkthread_plan = (
+            _preflight_thinkthread_profile(
+                thinkthread,
+                node_executable=node,
+                sdk_entry=(
+                    thinkthread_sdk_plan.entry
+                    if thinkthread_sdk_plan is not None
+                    else None
+                ),
+            )
+            if thinkthread is not None
+            else None
+        )
         if args.pi_dev:
             _preflight_pi_dev()
             _validate_dev_dir(args.pi_dev_dir.expanduser().resolve())
@@ -987,6 +1660,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.pi and pi is not None:
             _install_pi(pi=pi, already_installed=pi_installed, dry_run=args.dry_run)
+        if thinkthread_sdk_plan is not None:
+            _install_thinkthread_sdk(
+                thinkthread_sdk_plan,
+                dry_run=args.dry_run,
+            )
+        if thinkthread_plan is not None:
+            _install_thinkthread_profile(
+                thinkthread_plan,
+                dry_run=args.dry_run,
+            )
         if args.pi_dev and pi is not None:
             _prepare_pi_dev(
                 dev_dir=args.pi_dev_dir,

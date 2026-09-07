@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 workspace_backend=git_worktree promotion_mode=apply strategy=agent_guided 优化 `workspace/initial_program.py` 的 Circle Packing 解。
+/goal-plus max_parallel=2 workspace_backend=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=autoresearch 优化 `workspace/initial_program.py` 的 Circle Packing 解。
 
 问题：当前程序需要在单位正方形内放置恰好 26 个互不重叠的圆，并尽可能增大
 所有圆的半径之和。

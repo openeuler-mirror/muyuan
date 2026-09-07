@@ -246,7 +246,7 @@ def test_main_reconciliation_survives_non_search_round_and_requires_new_evidence
     search, run_id, candidate = make_search(tmp_path)
     runtime = FileGoalPlusRuntime(search.root_dir)
     goal = runtime.create_goal("Do ordinary work, then finish Search")
-    runtime.link_search_run(goal.goal_plus_id, search._load_run(run_id).frozen_spec_id, run_id)
+    runtime.link_search_run(goal.goal_plus_id, search.search_run.state.read_run(run_id).frozen_spec_id, run_id)
     recovery = search.prepare_candidate_recovery(run_id, candidate.candidate_id)
     search.recover_candidate(run_id, candidate.candidate_id, recovery.recovery_id)
     runtime.record_triage(goal.goal_plus_id, {"is_optimization": False, "confidence": "high", "recommended_phase": "goal"})
@@ -272,7 +272,7 @@ def test_reconciliation_prompt_projects_actions_without_checkpoint_or_session_hi
     runtime = FileGoalPlusRuntime(search.root_dir)
     goal = runtime.create_goal("Finish Search")
     assert runtime.reconciliation_context(goal.goal_plus_id) == ""
-    runtime.link_search_run(goal.goal_plus_id, search._load_run(run_id).frozen_spec_id, run_id)
+    runtime.link_search_run(goal.goal_plus_id, search.search_run.state.read_run(run_id).frozen_spec_id, run_id)
     recovery = search.prepare_candidate_recovery(run_id, candidate.candidate_id)
     context = runtime.reconciliation_context(goal.goal_plus_id)
     agenda, _ = json.JSONDecoder().raw_decode(context.split("\n", 1)[1])

@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1665" viewBox="0 0 1400 1665" role="img" aria-labelledby="title desc">
+  <title id="title">Goal Plus 业务流程：Goal、Search、异步研究与最终交付</title>
+  <desc id="desc">Goal 授权后选择普通工作或 Search。Search 冻结合同、准备候选、由 host 执行、确定性 verifier 验证并硬结算。Annotation 与 Adaptive 后处理不改硬分。静默后选择和发布，Goal 审查终态后报告及清理。</desc>
+  <defs>
+    <style>
+      text{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#202b33;font-size:18px;letter-spacing:0}.title{font-size:32px;font-weight:700}.sub{font-size:17px;fill:#596873}.heading{font-size:22px;font-weight:700}.label{font-size:17px;font-weight:700}.box{rx:6;stroke-width:1.5}.business{fill:#edf8f5;stroke:#70aea2}.host{fill:#f9eff3;stroke:#bd899e}.state{fill:#fff8e8;stroke:#c4a866}.pure{fill:#f1f5fd;stroke:#8ca6cd}.neutral{fill:#f5f7f8;stroke:#b0bdc4}.flow{fill:none;stroke:#087b70;stroke-width:2.5;marker-end:url(#arrow)}.async{fill:none;stroke:#8b5670;stroke-width:2;stroke-dasharray:7 5;marker-end:url(#async)}
+    </style>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#087b70"/></marker>
+    <marker id="async" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#8b5670"/></marker>
+  </defs>
+  <rect width="1400" height="1665" fill="#fff"/>
+  <text x="40" y="52" class="title">02 / 从用户目标到可审计的交付</text>
+  <text x="40" y="85" class="sub">正常执行路径；实线为业务推进，虚线为异步后处理 / 下一轮控制。模型判断和确定性规则各有 owner。</text>
+  <text x="40" y="131" class="label">GOAL / 用户目标与 Main</text>
+  <text x="430" y="131" class="label">SEARCH / 精确 artifact 与唯一硬结算</text>
+  <text x="1040" y="131" class="label">异步研究 / 启用时才装配</text>
+
+  <rect x="40" y="155" width="320" height="112" class="box business"/>
+  <text x="61" y="190" class="heading">F1 · 可信命令与 Goal 授权</text>
+  <text x="61" y="223">host/session → Goal/control</text>
+  <text x="61" y="251">Main 判断工作方式与验收合同</text>
+  <path d="M360 211H430" class="flow"/>
+
+  <rect x="430" y="155" width="550" height="112" class="box business"/>
+  <text x="454" y="190" class="heading">F2 · Freeze → Run → 初始 lanes</text>
+  <text x="454" y="223">显式 Goal owner · clean source · verifier baseline</text>
+  <text x="454" y="251">冻结合同 / artifact；容量、设备租约与支持组合 gate</text>
+  <path d="M705 267V319" class="flow"/>
+
+  <rect x="430" y="319" width="550" height="112" class="box business"/>
+  <text x="454" y="354" class="heading">F3 · Candidate / Session 准备</text>
+  <text x="454" y="387">物化真能力 · 独立 workspace · 预算与 generation</text>
+  <text x="454" y="415">返回精确 launch 输入；Session 记录不等于进程存活</text>
+  <path d="M705 431V475" class="flow"/>
+
+  <rect x="430" y="475" width="550" height="112" class="box host"/>
+  <text x="454" y="510" class="heading">F4 · Host 启动 / 续跑 Candidate</text>
+  <text x="454" y="543">执行时重核 admission；登记资源并绑定真实 handle</text>
+  <text x="454" y="571">Candidate 在最小可见合同内工作，提交验证请求</text>
+  <path d="M705 587V631" class="flow"/>
+
+  <rect x="430" y="631" width="550" height="112" class="box business"/>
+  <text x="454" y="666" class="heading">F5 · Exact Artifact → Verifier</text>
+  <text x="454" y="699">入口保留 verifier 锁 / lane gate；adapter 执行冻结命令</text>
+  <text x="454" y="727">结果绑定 commit / snapshot；不是模型自报完成</text>
+  <path d="M705 743V787" class="flow"/>
+
+  <rect x="430" y="787" width="550" height="112" class="box state"/>
+  <text x="454" y="822" class="heading">F6 · 唯一硬结算提交点</text>
+  <text x="454" y="855">完整 Candidate / Evidence → ledger / best / session 投影</text>
+  <text x="454" y="883">异步失败、重试、迟到结果均不能撤销已结算硬分</text>
+
+  <rect x="1040" y="475" width="320" height="132" class="box pure"/>
+  <text x="1060" y="510" class="heading">F7 · Annotation owner</text>
+  <text x="1060" y="543">只读精确 immutable View</text>
+  <text x="1060" y="573">completed / terminal_error</text>
+  <text x="1060" y="596" class="sub">不执行项目代码或 verifier</text>
+  <path d="M980 843H1010V542H1040" class="async"/>
+  <text x="1042" y="440" class="sub">硬结算先提交，再 admission</text>
+  <path d="M1200 607V657" class="async"/>
+
+  <rect x="1040" y="657" width="320" height="132" class="box pure"/>
+  <text x="1060" y="692" class="heading">Scheduler owner</text>
+  <text x="1060" y="725">reward / flag / 可选 Decision 草案</text>
+  <text x="1060" y="755">按序消费 / confirmation gate</text>
+  <text x="1060" y="778" class="sub">终态才建任务；失败仍可调度</text>
+  <path d="M1200 789V839" class="async"/>
+
+  <rect x="1040" y="839" width="320" height="142" class="box business"/>
+  <text x="1060" y="874" class="heading">Allocation owner</text>
+  <text x="1060" y="907">校验 / 记录 Decision；重放幂等</text>
+  <text x="1060" y="937">整批预检 → retirement / apply</text>
+  <text x="1060" y="966" class="sub">只准备候选；启动仍归 Host</text>
+
+  <path d="M430 844H397V375H430" class="flow"/>
+  <text x="42" y="627" class="heading">下一轮的两种来源</text>
+  <text x="42" y="666">固定 lanes：继续原候选</text>
+  <text x="42" y="702">Adaptive：继续或按 Decision 替换</text>
+  <text x="42" y="746" class="sub">预算 / Goal / generation / lane gate</text>
+  <text x="42" y="775" class="sub">在准备与执行入口再次核验。</text>
+  <text x="1042" y="1016" class="sub">Decision 返回 F3；不另建 worker supervisor</text>
+
+  <path d="M200 267V319" class="flow"/>
+  <rect x="40" y="319" width="320" height="146" class="box host"/>
+  <text x="61" y="354" class="heading">普通 Goal / Ultra</text>
+  <text x="61" y="387">Main 自己完成或原生 delegation</text>
+  <text x="61" y="419">只记录真实 dispatch / attempt</text>
+  <text x="61" y="447" class="sub">不预建 DAG；Search 不伪装 dispatch</text>
+  <path d="M200 465V545H20V1093H40" class="flow"/>
+
+  <path d="M705 899V1041" class="flow"/>
+  <text x="42" y="876" class="label">F8 · 收尾 gate</text>
+  <text x="42" y="912">Host 提供可信静默事实</text>
+  <text x="42" y="944">用例重核后 select / promote</text>
+  <text x="42" y="978" class="sub">普通迭代不等待模型；confirmation</text>
+  <text x="42" y="1007" class="sub">会封住该 lane 的后续执行。</text>
+
+  <rect x="430" y="1041" width="550" height="112" class="box business"/>
+  <text x="454" y="1076" class="heading">精确 Selection → 独立 Promotion 验证</text>
+  <text x="454" y="1109">artifact-only：导出；授权 apply：应用或 pending integration</text>
+  <text x="454" y="1137">publication 有独立结果；apply 冲突不撤销 Search Evidence</text>
+  <path d="M430 1093H360" class="flow"/>
+
+  <rect x="40" y="1041" width="320" height="112" class="box business"/>
+  <text x="61" y="1076" class="heading">F9 · Goal 最终审查</text>
+  <text x="61" y="1109">final audit / 可选独立 final-check</text>
+  <text x="61" y="1137">不合格返回工作；满足合同才终态</text>
+  <path d="M200 1153V1190H430" class="flow"/>
+  <text x="447" y="1197" class="heading">终态 Report / 持久通知 / 有 pins 的可重试清理</text>
+  <text x="40" y="1236" class="sub">支持组合保持现有边界：图中异步 Scheduler/Allocation 仅适用于已启用的 Adaptive + Git worktree，不扩展 TT/Copy 组合。</text>
+  <style>.glossary text{font-size:17px}.glossary .term{font-size:19px;font-weight:700}.glossary .glossary-title{font-size:21px;font-weight:700}</style>
+  <g class="glossary" transform="translate(0 1260)">
+    <rect width="1400" height="405" fill="#f5f7f8"/>
+    <path d="M40 0H1360" stroke="#cbd6dc"/>
+    <text x="40" y="40" class="glossary-title">名词速查 / 本图中的职责含义</text>
+    <text x="40" y="82" class="term">Settlement · 正式结算 / 验证记账</text>
+    <text x="40" y="110">把本次验证与精确代码版本一起记入正式结果；失败也记。</text>
+    <text x="40" y="147" class="term">Scheduler · 搜索策略调度</text>
+    <text x="40" y="175">依据已结算结果计算探索价值，提出是否替换候选的建议。</text>
+    <text x="40" y="212" class="term">Allocation · 候选分配与替换</text>
+    <text x="40" y="240">校验建议、安排候选替换并准备新工作区；不启动模型。</text>
+    <text x="40" y="277" class="term">Publication · 结果交付</text>
+    <text x="40" y="305">把选定结果做成可交付产物；按合同验证后导出或授权应用。</text>
+    <text x="730" y="82" class="term">DTO · Data Transfer Object / 数据传递对象</text>
+    <text x="730" y="110">跨模块传递的具名数据，如请求身份、代码版本和验证结果。</text>
+    <text x="730" y="147" class="term">Ports · 能力接口（不是网络端口）</text>
+    <text x="730" y="175">声明业务能调用的有限操作；具体实现由 adapter 提供。</text>
+    <text x="730" y="212" class="term">Drainer · 后台队列驱动器</text>
+    <text x="730" y="240">后台驱动队列任务；业务 owner 决定领取、重试和完成规则。</text>
+    <text x="730" y="277" class="term">Binding · 角色与具体实现的绑定</text>
+    <text x="730" y="305">为角色选定执行驱动、模型配置与能力实现；不是永久授权。</text>
+    <text x="730" y="342" class="term">Capability · 角色获准使用的能力</text>
+    <text x="730" y="370">该角色允许使用的有限操作，如只读版本差异或提交验证。</text>
+    <text x="40" y="370" fill="#596873">R1 定义合同 → R2 装配能力 → R3 与业务 owner 核验每次执行。</text>
+  </g>
+</svg>

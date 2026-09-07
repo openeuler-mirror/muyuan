@@ -3,7 +3,7 @@ import re
 
 import pytest
 
-from goal_plus.agent_hosts import get_agent_host_adapter
+from goal_plus.agent_hosts import host_binding
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,8 +44,8 @@ def test_mixed_adapter_tests_mark_host_specific_cases(host: str) -> None:
 
 
 def test_codex_and_pi_publish_native_parity_capabilities() -> None:
-    codex = get_agent_host_adapter("codex").capabilities
-    pi = get_agent_host_adapter("pi-rpc").capabilities
+    codex = host_binding("codex").capabilities
+    pi = host_binding("pi-rpc").capabilities
 
     assert codex.supports_soft_closeout is True
     assert codex.supports_model_override is True

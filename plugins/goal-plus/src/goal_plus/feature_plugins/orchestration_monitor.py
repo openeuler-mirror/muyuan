@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from goal_plus.feature_plugins.base import GoalMonitorContext
-from goal_plus.models import GoalPlusWorkItem
+from goal_plus.domain.goal import GoalPlusWorkItem
 
 PLUGIN_NAME = "orchestration"
 METADATA_NAMESPACE = "orchestration_monitor"

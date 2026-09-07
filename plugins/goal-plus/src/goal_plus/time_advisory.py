@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from goal_plus.models import AgentSessionRecord, CandidateRecord
+from goal_plus.candidate_host import candidate_host_queries
+from goal_plus.domain.search import AgentSessionRecord
+from goal_plus.ports.state import CandidateRecord
 
 
 OUTER_DEADLINE_ENV = "GOAL_PLUS_OUTER_DEADLINE_AT"
@@ -54,19 +56,7 @@ def find_agent_session(
     root_dir: Path | str,
     agent_session_id: str,
 ) -> AgentSessionRecord | None:
-    root = Path(root_dir).resolve()
-    matches = sorted(
-        (root / "runs").glob(f"*/agent_sessions/{agent_session_id}.json")
-    )
-    if len(matches) != 1:
-        return None
-    payload = _load_json(matches[0])
-    if payload is None:
-        return None
-    try:
-        return AgentSessionRecord.model_validate(payload)
-    except ValueError:
-        return None
+    return candidate_host_queries(root_dir).find_session(agent_session_id)
 
 
 def is_search_candidate_session(session: AgentSessionRecord) -> bool:

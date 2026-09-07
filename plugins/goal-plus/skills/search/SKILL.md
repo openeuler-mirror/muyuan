@@ -19,9 +19,10 @@ launch/bind 间中断时先核对原生 task/session，再补齐下一步。
 
 ## 建立 Run
 
-1. 用相对 `source_path` 的 verifier artifact 路径调用 `search_freeze_spec`，检查返回的 source、
-   task skill 和 workspace capacity 结果；失败时修正合同，不绕过 gate。
-2. 调用 `search_create`，并立即用准确的 `frozen_spec_id`、`run_id` 执行
+1. 使用当前 `goal_plus_id` 和相对 `source_path` 的 verifier artifact 路径调用
+   `search_freeze_spec`，检查返回的 source、task skill 和 workspace capacity 结果；失败时修正
+   合同，不绕过 gate。
+2. 使用同一 `goal_plus_id` 调用 `search_create`，并立即用准确的 `frozen_spec_id`、`run_id` 执行
    `goal_plus_link_search_run`。
 3. 调用一次 `search_plan_next(requested_k=budget.max_parallel)` 和一次 `search_start_batch`，
    创建初始 candidate。只有 plan 返回 `requires_agent_proposals=true` 时才向

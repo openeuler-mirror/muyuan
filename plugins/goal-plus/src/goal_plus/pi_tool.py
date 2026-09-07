@@ -18,14 +18,25 @@ from goal_plus.pi_pool import (
     snapshot_pi_search_pool,
     wait_any_pi_search_pool,
 )
-from goal_plus.runtime import FileSearchRuntime, exclusive_file_lock
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.infrastructure.state.files import exclusive_file_lock
+from goal_plus.thinkthread_pool import (
+    close_pool as close_thinkthread_search_pool,
+)
+from goal_plus.thinkthread_pool import (
+    continue_thinkthread_search_pool,
+    open_thinkthread_search_pool,
+    snapshot_thinkthread_search_pool,
+)
+from goal_plus.thinkthread_pool import (
+    wait_any as wait_any_thinkthread_search_pool,
+)
 from goal_plus.tools import (
     GoalPlusTools,
     SearchTools,
     ToolCallerRole,
     require_tool_role,
 )
-
 
 SEARCH_TOOL_NAMES = {
     "goal_plus_list_models",
@@ -80,6 +91,7 @@ PI_HOST_COMMAND_NAMES = {
     "goal_plus_host_edit",
     "goal_plus_host_control",
     "goal_plus_host_session_event",
+    "goal_plus_host_kick_internal_agents",
 }
 
 
@@ -90,7 +102,13 @@ def _pi_search_pool_open_tool(root_dir: Path | str) -> Callable[..., dict[str, A
         worker_budgets: dict[str, dict[str, Any]] | None = None,
         final_verify: bool = True,
         max_parallel: int | None = None,
+        execution_scope_id: str | None = None,
     ) -> dict[str, Any]:
+        scope_args = (
+            {"execution_scope_id": execution_scope_id}
+            if execution_scope_id is not None
+            else {}
+        )
         return open_pi_search_pool(
             root_dir=root_dir,
             run_id=run_id,
@@ -98,6 +116,7 @@ def _pi_search_pool_open_tool(root_dir: Path | str) -> Callable[..., dict[str, A
             worker_budgets=worker_budgets,
             final_verify=final_verify,
             max_parallel=max_parallel,
+            **scope_args,
         )
 
     return call
@@ -162,6 +181,98 @@ def _pi_search_pool_close_tool(root_dir: Path | str) -> Callable[..., dict[str, 
     return call
 
 
+def _thinkthread_search_pool_open_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(
+        run_id: str,
+        candidate_ids: list[str] | None = None,
+        worker_budgets: dict[str, dict[str, Any]] | None = None,
+        max_parallel: int | None = None,
+        execution_scope_id: str | None = None,
+    ) -> dict[str, Any]:
+        scope_args = (
+            {"execution_scope_id": execution_scope_id}
+            if execution_scope_id is not None
+            else {}
+        )
+        return open_thinkthread_search_pool(
+            root_dir=root_dir,
+            run_id=run_id,
+            candidate_ids=candidate_ids,
+            worker_budgets=worker_budgets,
+            max_parallel=max_parallel,
+            **scope_args,
+        )
+
+    return call
+
+
+def _thinkthread_search_pool_wait_any_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(pool_id: str, timeout_seconds: float = 30) -> dict[str, Any]:
+        return wait_any_thinkthread_search_pool(
+            root_dir=root_dir,
+            pool_id=pool_id,
+            timeout_seconds=timeout_seconds,
+        )
+
+    return call
+
+
+def _thinkthread_search_pool_snapshot_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(
+        pool_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        return snapshot_thinkthread_search_pool(
+            root_dir=root_dir,
+            pool_id=pool_id,
+            run_id=run_id,
+        )
+
+    return call
+
+
+def _thinkthread_search_pool_continue_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(
+        pool_id: str,
+        candidate_id: str,
+        worker_budget: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return continue_thinkthread_search_pool(
+            root_dir=root_dir,
+            pool_id=pool_id,
+            candidate_id=candidate_id,
+            worker_budget=worker_budget,
+        )
+
+    return call
+
+
+def _thinkthread_search_pool_close_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(
+        pool_id: str,
+        mode: str = "drain",
+        timeout_seconds: float = 30,
+    ) -> dict[str, Any]:
+        return close_thinkthread_search_pool(
+            root_dir=root_dir,
+            pool_id=pool_id,
+            mode=mode,  # type: ignore[arg-type]
+            timeout_seconds=timeout_seconds,
+        )
+
+    return call
+
+
 def _pi_goal_plus_finalize_reports_tool(
     root_dir: Path | str,
 ) -> Callable[..., dict[str, Any]]:
@@ -192,6 +303,97 @@ def _pi_goal_plus_finalize_reports_tool(
     return call
 
 
+def _host_execution_scope_open_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(
+        host: str,
+        owner_session_id: str,
+        owner_pid: int,
+        run_id: str | None = None,
+        native_agent_config: dict[str, Any] | None = None,
+        goal_plus_id: str | None = None,
+        native_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        from goal_plus.host_scope import ensure_execution_scope
+        from goal_plus.ports.scope import ScopeAttachment
+
+        if host not in {"codex", "pi"}:
+            raise ValueError("execution scope host must be codex or pi")
+        activation_id = None
+        if goal_plus_id is not None:
+            attachment = ScopeAttachment.from_id(run_id) if run_id is not None else None
+            record = FileGoalPlusRuntime(root_dir).authorization.require_scope_attachment(goal_plus_id, attachment)
+            binding = record.active_session
+            if binding is None or binding.host != ("pi-rpc" if host == "pi" else "codex") or (
+                binding.session_id != native_session_id or binding.state in {"detached", "stale"}
+            ):
+                raise RuntimeError("MainSessionMismatch: execution scope requires the active native session")
+            activation_id = f"{record.goal_plus_id}:{record.control.version}"
+        return ensure_execution_scope(
+            root_dir=root_dir,
+            host=host,  # type: ignore[arg-type]
+            owner_session_id=owner_session_id,
+            owner_pid=owner_pid,
+            run_id=run_id,
+            native_agent_config=native_agent_config,
+            activation_id=activation_id,
+        )
+
+    return call
+
+
+def _host_execution_scope_close_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(
+        scope_id: str,
+        reason: str,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        from goal_plus.host_scope import close_execution_scope
+
+        return close_execution_scope(
+            root_dir=root_dir,
+            scope_id=scope_id,
+            reason=reason,
+            timeout_seconds=timeout_seconds,
+        )
+
+    return call
+
+
+def _host_execution_scope_close_run_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(
+        scope_id: str,
+        run_id: str,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        from goal_plus.host_scope import close_run_candidates
+
+        return close_run_candidates(
+            root_dir=root_dir,
+            scope_id=scope_id,
+            run_id=run_id,
+            timeout_seconds=timeout_seconds,
+        )
+
+    return call
+
+
+def _host_execution_scope_snapshot_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(scope_id: str) -> dict[str, Any]:
+        from goal_plus.host_scope import execution_scope_snapshot
+
+        return execution_scope_snapshot(root_dir=root_dir, scope_id=scope_id)
+
+    return call
+
+
 def _registry(root_dir: Path | str) -> dict[str, Callable[..., Any]]:
     goal_runtime = FileGoalPlusRuntime(root_dir)
     search_tools = SearchTools(FileSearchRuntime(root_dir), goal_runtime)
@@ -199,6 +401,12 @@ def _registry(root_dir: Path | str) -> dict[str, Callable[..., Any]]:
     tools: dict[str, Callable[..., Any]] = {}
     for name in SEARCH_TOOL_NAMES:
         tools[name] = getattr(search_tools, name)
+    tools["search_main_agent_notifications"] = (
+        search_tools.search_main_agent_notifications
+    )
+    tools["search_ack_main_agent_notification"] = (
+        search_tools.search_ack_main_agent_notification
+    )
     for name in GOAL_PLUS_TOOL_NAMES:
         tools[name] = getattr(goal_tools, name)
     tools["pi_search_pool_open"] = _pi_search_pool_open_tool(root_dir)
@@ -206,8 +414,31 @@ def _registry(root_dir: Path | str) -> dict[str, Callable[..., Any]]:
     tools["pi_search_pool_snapshot"] = _pi_search_pool_snapshot_tool(root_dir)
     tools["pi_search_pool_continue"] = _pi_search_pool_continue_tool(root_dir)
     tools["pi_search_pool_close"] = _pi_search_pool_close_tool(root_dir)
+    tools["thinkthread_search_pool_open"] = _thinkthread_search_pool_open_tool(
+        root_dir
+    )
+    tools["thinkthread_search_pool_wait_any"] = (
+        _thinkthread_search_pool_wait_any_tool(root_dir)
+    )
+    tools["thinkthread_search_pool_snapshot"] = (
+        _thinkthread_search_pool_snapshot_tool(root_dir)
+    )
+    tools["thinkthread_search_pool_continue"] = (
+        _thinkthread_search_pool_continue_tool(root_dir)
+    )
+    tools["thinkthread_search_pool_close"] = _thinkthread_search_pool_close_tool(
+        root_dir
+    )
     tools["pi_goal_plus_finalize_reports"] = _pi_goal_plus_finalize_reports_tool(
         root_dir
+    )
+    tools["host_execution_scope_open"] = _host_execution_scope_open_tool(root_dir)
+    tools["host_execution_scope_close"] = _host_execution_scope_close_tool(root_dir)
+    tools["host_execution_scope_close_run"] = (
+        _host_execution_scope_close_run_tool(root_dir)
+    )
+    tools["host_execution_scope_snapshot"] = (
+        _host_execution_scope_snapshot_tool(root_dir)
     )
     tools["goal_plus_monitor_snapshot"] = search_tools.goal_plus_monitor_snapshot
     return tools
@@ -256,6 +487,17 @@ def call_pi_host_command(
     if command_name not in PI_HOST_COMMAND_NAMES:
         raise ValueError(f"unsupported Pi host command: {command_name}")
     _consume_pi_host_capability(root_dir, capability_token)
+    if command_name == "goal_plus_host_kick_internal_agents":
+        run_id = str(args.get("run_id") or "")
+        if not run_id:
+            raise ValueError("Pi internal-agent kick requires run_id")
+        from goal_plus.internal_agents import kick_pi_internal_agents
+
+        return {
+            "ok": True,
+            "run_id": run_id,
+            **kick_pi_internal_agents(root_dir, run_id),
+        }
     runtime = FileGoalPlusRuntime(root_dir)
     owner_pid = args.get("owner_pid")
     if command_name != "goal_plus_host_start" and isinstance(owner_pid, int) and not runtime.is_terminal(runtime.status(args["goal_plus_id"])):
@@ -266,6 +508,11 @@ def call_pi_host_command(
             str(args.get("session_id") or host_invocation.get("session_id") or ""),
             owner_pid, restoring=True,
         )
+    scope_owner_session_id = args.get("execution_scope_owner_session_id")
+    if isinstance(scope_owner_session_id, str) and scope_owner_session_id:
+        from goal_plus.host_scope import restore_execution_scope_guardians
+
+        restore_execution_scope_guardians(root_dir=root_dir, host="pi", owner_session_id=scope_owner_session_id)
     if command_name == "goal_plus_host_session_event":
         event = args.get("event")
         delivery = args.get("delivery")

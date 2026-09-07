@@ -27,11 +27,13 @@ class CodexRunner:
         log_dir: Path,
         default_timeout: int = 1800,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self.project_root = project_root
         self.log_dir = log_dir
         self.default_timeout = default_timeout
         self.model = model or st_model_for_host("codex")
+        self.reasoning_effort = reasoning_effort or os.environ.get("ST_CODEX_REASONING_EFFORT")
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_cmd(self, prompt: str, *, final_path: Path | None = None) -> list[str]:
@@ -83,6 +85,10 @@ class CodexRunner:
         ]
         if self.model:
             cmd += ["-m", self.model]
+        if self.reasoning_effort:
+            import json
+
+            cmd += ["-c", f"model_reasoning_effort={json.dumps(self.reasoning_effort)}"]
         if final_path is not None:
             cmd += ["-o", str(final_path)]
         return cmd

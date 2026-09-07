@@ -16,9 +16,10 @@ from goal_plus.models import (
     GoalPlusGateResult,
     GoalPlusNextAction,
     GoalPlusRecord,
+    MainAgentNotification,
     PromotionRecord,
-    RunState,
     RunRecord,
+    RunState,
     RunSummary,
     ScoreReport,
     SearchPlan,
@@ -125,18 +126,40 @@ def test_search_bootstrap_requires_active_host_verified_goal(tmp_path: Path) -> 
     spec = spec_for(project, max_parallel=1)
 
     with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
-        tools.search_freeze_spec(spec, [str(project / "evaluator.py")])
+        tools.search_freeze_spec(
+            "gp_missing", spec, [str(project / "evaluator.py")]
+        )
     assert not (root / "specs").exists()
 
     frozen_without_facade = runtime.freeze_spec(spec, [project / "evaluator.py"])
     with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
-        tools.search_create(frozen_without_facade.frozen_spec_id)
+        tools.search_create("gp_missing", frozen_without_facade.frozen_spec_id)
     assert not (root / "runs").exists()
 
-    start_host_verified_goal(root, project)
+    first = start_host_verified_goal(root, project)
+    second = start_host_verified_goal(
+        root,
+        project,
+        session_id="session-other",
+        invocation_id="codex:other:start",
+    )
 
-    frozen = tools.search_freeze_spec(spec, ["evaluator.py"])
-    created = tools.search_create(frozen["frozen_spec_id"])
+    frozen = tools.search_freeze_spec(
+        first.goal_plus_id,
+        spec,
+        ["evaluator.py"],
+    )
+    second_frozen = tools.search_freeze_spec(
+        second.goal_plus_id,
+        spec,
+        ["evaluator.py"],
+    )
+    assert frozen["goal_plus_id"] == first.goal_plus_id
+    assert second_frozen["goal_plus_id"] == second.goal_plus_id
+    assert frozen["frozen_spec_id"] != second_frozen["frozen_spec_id"]
+    with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
+        tools.search_create(second.goal_plus_id, frozen["frozen_spec_id"])
+    created = tools.search_create(first.goal_plus_id, frozen["frozen_spec_id"])
     assert created["run_id"].startswith("run_")
 
 
@@ -156,6 +179,7 @@ def test_tool_facades_reject_targets_outside_active_goal(tmp_path: Path) -> None
         )
     with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
         SearchTools(FileSearchRuntime(root), goal_runtime).search_create(
+            record.goal_plus_id,
             "spec_missing",
             source_run_id="run_unlinked",
         )
@@ -173,11 +197,12 @@ def test_search_freeze_spec_resolves_source_relative_artifacts(
     spec = spec_dict()
     spec["source_path"] = str(tmp_path)
 
-    result = tools.search_freeze_spec(spec, ["evaluator.py"])
+    result = tools.search_freeze_spec("gp_0001", spec, ["evaluator.py"])
 
     spec_arg, paths_arg = runtime.freeze_spec.call_args.args
     assert isinstance(spec_arg, SearchSpec)
     assert paths_arg == [tmp_path / "evaluator.py"]
+    assert runtime.freeze_spec.call_args.kwargs == {"goal_plus_id": "gp_0001"}
     assert result["frozen_spec_id"] == "spec_123"
     assert result["spec"]["process_verifiers"][0]["role"] == "ranking_signal"
     assert result["task_skill_paths"] == []
@@ -200,7 +225,9 @@ def test_search_freeze_spec_rejects_non_source_relative_artifacts(
     spec["source_path"] = str(tmp_path / "source")
 
     with pytest.raises(ValueError, match="source_path-relative"):
-        SearchTools(Mock(), Mock()).search_freeze_spec(spec, [artifact])
+        SearchTools(Mock(), Mock()).search_freeze_spec(
+            "gp_0001", spec, [artifact]
+        )
 
 
 def test_search_freeze_spec_lists_task_local_skills() -> None:
@@ -210,7 +237,7 @@ def test_search_freeze_spec_lists_task_local_skills() -> None:
     )
 
     result = SearchTools(runtime, Mock()).search_freeze_spec(
-        spec_dict(), ["evaluator.py"]
+        "gp_0001", spec_dict(), ["evaluator.py"]
     )
 
     assert result["task_skill_notice"] == (
@@ -386,6 +413,23 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
             }
         )
     )
+    notification = MainAgentNotification(
+        notification_id="notification-1",
+        run_id="run_1",
+        publication_revision=1,
+        kind="publication_applied",
+        payload={"publication_state": "applied"},
+        created_at="2026-06-24T00:01:00Z",
+    )
+    runtime.main_agent_notifications.return_value = [notification]
+    runtime.acknowledge_main_agent_notification.return_value = (
+        notification.model_copy(
+            update={
+                "state": "delivered",
+                "delivered_at": "2026-06-24T00:02:00Z",
+            }
+        )
+    )
     runtime.promotion_apply_coordinates.return_value = (
         Path("/tmp/source/repository/task"),
         Path("/tmp/source/repository"),
@@ -393,7 +437,7 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     )
     tools = SearchTools(runtime, Mock())
 
-    assert tools.search_create("spec_123") == {"run_id": "run_1"}
+    assert tools.search_create("gp_0001", "spec_123") == {"run_id": "run_1"}
     invalidated = tools.search_invalidate_run(
         "run_1",
         "verifier_coverage_inadequate",
@@ -426,7 +470,6 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     redispatched = tools.search_redispatch_candidate(
         "run_1",
         "c001",
-        worker_agent_type="search_candidate_agent_deep",
         worker_budget={"max_turns": 16},
     )
     assert redispatched["agent_session_id"] == "agent_002"
@@ -521,6 +564,14 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         },
     }
     assert tools.search_apply_promotion("run_1")["state"] == "applied"
+    assert tools.search_main_agent_notifications("run_1") == {
+        "run_id": "run_1",
+        "notifications": [notification.model_dump(mode="json")],
+    }
+    assert tools.search_ack_main_agent_notification(
+        "run_1",
+        "notification-1",
+    )["state"] == "delivered"
 
     proposal_arg = runtime.start_batch.call_args.args[2][0]
     assert isinstance(proposal_arg, CandidateProposal)
@@ -542,7 +593,6 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     runtime.redispatch_candidate.assert_called_once_with(
         run_id="run_1",
         candidate_id="c001",
-        worker_agent_type="search_candidate_agent_deep",
         worker_budget={"max_turns": 16},
     )
     runtime.bind_agent_handle.assert_called_once_with(
@@ -602,6 +652,33 @@ def test_worker_verifier_injects_global_evidence_when_enabled() -> None:
     )
 
 
+def test_thinkthread_context_injects_deferred_global_evidence_when_enabled() -> None:
+    runtime = Mock()
+    runtime.get_agent_context.return_value = {
+        "agent_session_id": "agent_001",
+        "run_id": "run_1",
+        "candidate_id": "c001",
+        "host": "thinkthread",
+        "iteration_count": 1,
+    }
+    snapshot = [{"candidate_id": "c001", "iteration": 1, "score": 2.0}]
+    runtime.should_inject_global_evidence_after_verifier.return_value = True
+    runtime.get_global_evidence.return_value = snapshot
+
+    result = SearchTools(runtime).search_get_agent_context("agent_001")
+
+    assert result["global_evidence_snapshot"] == snapshot
+    assert result["global_evidence_injected"] is True
+    assert result["global_evidence_entry_count"] == 1
+    runtime.should_inject_global_evidence_after_verifier.assert_called_once_with(
+        "run_1"
+    )
+    runtime.get_global_evidence.assert_called_once_with(
+        "agent_001",
+        source="verifier_injected",
+    )
+
+
 def test_worker_verifier_keeps_success_when_evidence_injection_fails() -> None:
     runtime = Mock()
     runtime.run_verifier.return_value = _successful_score_report()
@@ -640,7 +717,7 @@ def test_search_create_uses_models_frozen_in_the_spec() -> None:
     runtime.create_run.return_value = "run_1"
     tools = SearchTools(runtime, Mock())
 
-    assert tools.search_create("spec_123") == {"run_id": "run_1"}
+    assert tools.search_create("gp_0001", "spec_123") == {"run_id": "run_1"}
     runtime.create_run.assert_called_once_with(
         "spec_123",
         source_run_id=None,

@@ -29,13 +29,15 @@ PACKAGE_NAME = "goal-plus"
 COMPONENT_CODEX = "codex"
 COMPONENT_PI = "pi"
 COMPONENT_PI_DEV = "pi-dev"
-COMPONENT_RUNTIME = "runtime"
+COMPONENT_THINKTHREAD = "thinkthread"
+COMPONENT_PYTHON_RUNTIME = "runtime"
 ALL_COMPONENTS = frozenset(
     {
         COMPONENT_CODEX,
         COMPONENT_PI,
         COMPONENT_PI_DEV,
-        COMPONENT_RUNTIME,
+        COMPONENT_THINKTHREAD,
+        COMPONENT_PYTHON_RUNTIME,
     }
 )
 
@@ -55,6 +57,8 @@ class UninstallPlan:
     pi_dev_registry_path: Path | None
     remove_runtime: bool
     notes: tuple[str, ...]
+    goal_plus_thinkthread_profile_path: Path | None = None
+    goal_plus_thinkthread_sdk_path: Path | None = None
 
     @property
     def has_changes(self) -> bool:
@@ -65,6 +69,8 @@ class UninstallPlan:
                 bool(self.pi_sources),
                 self.pi_dev_dir is not None,
                 self.pi_dev_registry_path is not None,
+                self.goal_plus_thinkthread_profile_path is not None,
+                self.goal_plus_thinkthread_sdk_path is not None,
                 self.remove_runtime,
             )
         )
@@ -186,6 +192,44 @@ def _pi_dev_plan(dev_dir: Path) -> tuple[Path | None, Path | None, list[str]]:
     return remove_dev_dir, remove_registry, notes
 
 
+def _goal_plus_thinkthread_profile_plan(
+    *,
+    require_owned: bool,
+) -> tuple[Path | None, list[str]]:
+    path = install_support._thinkthread_profile_path()
+    if not path.exists():
+        return None, [f"Goal Plus ThinkThread Profile is not installed: {path}"]
+    source = install_support._managed_thinkthread_profile_source(path)
+    if source == ROOT.resolve():
+        return path, []
+    detail = f"managed by {source}" if source is not None else "not Goal Plus-managed"
+    if require_owned:
+        raise UninstallError(
+            "refusing to remove Goal Plus ThinkThread Profile because it is "
+            f"{detail}: {path}"
+        )
+    return None, [f"Preserved ThinkThread Profile ({detail}): {path}"]
+
+
+def _goal_plus_thinkthread_sdk_plan(
+    *,
+    require_owned: bool,
+) -> tuple[Path | None, list[str]]:
+    path = install_support._thinkthread_sdk_root()
+    if not path.exists():
+        return None, [f"Goal Plus Agent POSIX SDK is not installed: {path}"]
+    source = install_support._managed_thinkthread_sdk_source(path)
+    if source == ROOT.resolve():
+        return path, []
+    detail = f"managed by {source}" if source is not None else "not Goal Plus-managed"
+    if require_owned:
+        raise UninstallError(
+            "refusing to remove Agent POSIX SDK because it is "
+            f"{detail}: {path}"
+        )
+    return None, [f"Preserved Agent POSIX SDK ({detail}): {path}"]
+
+
 def _distribution_source(distribution: importlib.metadata.Distribution) -> Path | None:
     raw = distribution.read_text("direct_url.json")
     if not raw:
@@ -224,7 +268,8 @@ def _build_plan(
     remove_codex = COMPONENT_CODEX in selected
     remove_pi = COMPONENT_PI in selected
     remove_pi_dev = COMPONENT_PI_DEV in selected
-    remove_python = COMPONENT_RUNTIME in selected
+    remove_thinkthread = COMPONENT_THINKTHREAD in selected
+    remove_python = COMPONENT_PYTHON_RUNTIME in selected
 
     inspect_codex = remove_codex or remove_python
     inspect_pi = remove_pi or remove_python
@@ -251,6 +296,21 @@ def _build_plan(
     if remove_pi_dev:
         remove_dev_dir, remove_registry, dev_notes = _pi_dev_plan(dev_dir)
 
+    inspect_thinkthread = remove_thinkthread or remove_python
+    owned_thinkthread_profile: Path | None = None
+    owned_thinkthread_sdk: Path | None = None
+    thinkthread_notes: list[str] = []
+    if inspect_thinkthread:
+        owned_thinkthread_profile, thinkthread_notes = (
+            _goal_plus_thinkthread_profile_plan(
+                require_owned=remove_thinkthread,
+            )
+        )
+        owned_thinkthread_sdk, sdk_notes = _goal_plus_thinkthread_sdk_plan(
+            require_owned=remove_thinkthread,
+        )
+        thinkthread_notes.extend(sdk_notes)
+
     remove_runtime = False
     runtime_notes: list[str] = []
     if remove_python:
@@ -260,6 +320,12 @@ def _build_plan(
             remaining_hosts.append("Codex")
         if remove_runtime and not remove_pi and owned_pi_sources:
             remaining_hosts.append("Pi")
+        if (
+            remove_runtime
+            and not remove_thinkthread
+            and owned_thinkthread_profile is not None
+        ):
+            remaining_hosts.append("Goal Plus ThinkThread Profile")
         if remaining_hosts:
             rendered = " and ".join(remaining_hosts)
             raise UninstallError(
@@ -277,7 +343,15 @@ def _build_plan(
         pi_dev_dir=remove_dev_dir,
         pi_dev_registry_path=remove_registry,
         remove_runtime=remove_runtime,
-        notes=tuple((*codex_notes, *pi_notes, *dev_notes, *runtime_notes)),
+        notes=tuple(
+            (*codex_notes, *pi_notes, *dev_notes, *thinkthread_notes, *runtime_notes)
+        ),
+        goal_plus_thinkthread_profile_path=(
+            owned_thinkthread_profile if remove_thinkthread else None
+        ),
+        goal_plus_thinkthread_sdk_path=(
+            owned_thinkthread_sdk if remove_thinkthread else None
+        ),
     )
 
 
@@ -294,8 +368,15 @@ def _print_plan(plan: UninstallPlan, *, dry_run: bool) -> None:
         print(f"- Pi development environment: {plan.pi_dev_dir}")
     if plan.pi_dev_registry_path is not None:
         print(f"- Pi development registry: {plan.pi_dev_registry_path}")
+    if plan.goal_plus_thinkthread_profile_path is not None:
+        print(
+            "- Goal Plus ThinkThread Profile: "
+            f"{plan.goal_plus_thinkthread_profile_path}"
+        )
+    if plan.goal_plus_thinkthread_sdk_path is not None:
+        print(f"- Goal Plus Agent POSIX SDK: {plan.goal_plus_thinkthread_sdk_path}")
     if plan.remove_runtime:
-        print(f"- Python runtime: {PACKAGE_NAME} in {sys.executable}")
+        print(f"- Python package: {PACKAGE_NAME} in {sys.executable}")
     for note in plan.notes:
         print(f"- {note}")
     print("- Preserved: target workspace .gp records and promoted source changes")
@@ -328,6 +409,37 @@ def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
     for source in plan.pi_sources:
         assert plan.pi_executable is not None
         _run([plan.pi_executable, "remove", source], dry_run=dry_run)
+
+    if plan.goal_plus_thinkthread_profile_path is not None:
+        if dry_run:
+            print(
+                "+ remove Goal Plus ThinkThread Profile",
+                plan.goal_plus_thinkthread_profile_path,
+            )
+        else:
+            source = install_support._managed_thinkthread_profile_source(
+                plan.goal_plus_thinkthread_profile_path
+            )
+            if source != ROOT.resolve():
+                raise UninstallError(
+                    "Goal Plus ThinkThread Profile ownership changed before removal: "
+                    f"{plan.goal_plus_thinkthread_profile_path}"
+                )
+            plan.goal_plus_thinkthread_profile_path.unlink()
+
+    if plan.goal_plus_thinkthread_sdk_path is not None:
+        if dry_run:
+            print("+ remove managed Agent POSIX SDK", plan.goal_plus_thinkthread_sdk_path)
+        else:
+            source = install_support._managed_thinkthread_sdk_source(
+                plan.goal_plus_thinkthread_sdk_path
+            )
+            if source != ROOT.resolve():
+                raise UninstallError(
+                    "Agent POSIX SDK ownership changed before removal: "
+                    f"{plan.goal_plus_thinkthread_sdk_path}"
+                )
+            shutil.rmtree(plan.goal_plus_thinkthread_sdk_path)
 
     if plan.pi_dev_dir is not None:
         if dry_run:
@@ -375,9 +487,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Remove this checkout's managed Pi development environment.",
     )
     parser.add_argument(
+        "--thinkthread",
+        action="store_true",
+        help=(
+            "Remove only this checkout's goal-plus-pi Profile; never remove "
+            "ThinkThread Runtime, Roots, or state."
+        ),
+    )
+    parser.add_argument(
         "--runtime",
         action="store_true",
-        help="Remove the matching normal Python runtime.",
+        help="Remove the matching Goal Plus Python package (never ThinkThread).",
     )
     parser.add_argument(
         "--pi-dev-dir",
@@ -403,7 +523,8 @@ def _selected_components(args: argparse.Namespace) -> frozenset[str]:
             (COMPONENT_CODEX, args.codex),
             (COMPONENT_PI, args.pi),
             (COMPONENT_PI_DEV, args.pi_dev),
-            (COMPONENT_RUNTIME, args.runtime),
+            (COMPONENT_THINKTHREAD, args.thinkthread),
+            (COMPONENT_PYTHON_RUNTIME, args.runtime),
         )
         if enabled
     )

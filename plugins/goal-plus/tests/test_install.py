@@ -10,7 +10,6 @@ from types import ModuleType
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -35,6 +34,42 @@ def _write_pi_settings(agent_dir: Path, packages: list[object]) -> None:
         json.dumps({"packages": packages}),
         encoding="utf-8",
     )
+
+
+def _thinkthread_pi_profile() -> dict[str, object]:
+    return {
+        "schemaVersion": 4,
+        "agent": {
+            "name": "pi",
+            "executable": "pi",
+            "args": [],
+            "configDirEnv": "PI_CODING_AGENT_DIR",
+            "configDirDefault": "/home/test/.pi/agent",
+            "configDirAccess": "read_write",
+            "extension": {
+                "schemaVersion": 1,
+                "name": "pi",
+                "loader": {
+                    "kind": "process",
+                    "command": ["thinkthread-extension-pi"],
+                    "protocolVersion": 5,
+                },
+            },
+        },
+        "environment": {
+            "fs": ".",
+            "rootFsMode": "direct",
+            "childFsMode": "copy_on_write",
+            "read": [],
+            "write": [],
+            "network": {"mode": "all"},
+        },
+        "delegation": {
+            "capabilities": {
+                "allow": ["thinkthread.message", "thinkthread.fs.self"]
+            }
+        },
+    }
 
 
 def test_install_entrypoint_is_executable() -> None:
@@ -250,6 +285,21 @@ def test_pi_normal_accepts_same_checkout_registration(
     assert installer._preflight_pi_normal() is True
 
 
+def test_pi_normal_accepts_same_checkout_loose_resource(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_dir = tmp_path / "pi-agent"
+    _write_pi_settings(agent_dir, [])
+    skill = agent_dir / "skills" / "goal-plus"
+    skill.parent.mkdir(parents=True)
+    skill.symlink_to(ROOT / ".pi" / "skills" / "goal-plus", target_is_directory=True)
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+
+    assert installer._preflight_pi_normal() is False
+
+
 def test_pi_normal_rejects_loose_goal_plus_assets(
     installer: ModuleType,
     tmp_path: Path,
@@ -428,3 +478,252 @@ def test_pi_install_modes_are_mutually_exclusive(installer: ModuleType) -> None:
         installer.main(["--pi", "--pi-dev"])
 
     assert raised.value.code == 2
+
+
+def test_thinkthread_install_requires_normal_pi(installer: ModuleType) -> None:
+    with pytest.raises(SystemExit) as raised:
+        installer.main(["--thinkthread"])
+
+    assert raised.value.code == 2
+
+
+def test_thinkthread_profile_explicitly_binds_goal_plus_runtime(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python_prefix = tmp_path / "venv"
+    python = python_prefix / "bin" / "python"
+    node_prefix = tmp_path / "node"
+    node = node_prefix / "bin" / "node"
+    sdk_entry = tmp_path / "sdk" / "node_modules" / "@thinkthread" / "agent-posix" / "dist" / "index.js"
+    bridge = tmp_path / "bridge.mjs"
+    monkeypatch.setattr(installer.sys, "prefix", str(python_prefix))
+    monkeypatch.setattr(installer.sys, "executable", str(python))
+
+    profile = installer._build_thinkthread_profile(
+        _thinkthread_pi_profile(),
+        node_executable=str(node),
+        sdk_entry=sdk_entry,
+        bridge_path=bridge,
+    )
+    rendered = installer._render_thinkthread_profile(profile)
+    parsed = installer._parse_thinkthread_profile(rendered, source="test")
+
+    arguments = parsed["agent"]["args"]
+    assert arguments == [
+        "--extension",
+        str(ROOT / ".pi" / "extensions" / "goal-plus.ts"),
+        "--skill",
+        str(ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md"),
+    ]
+    assert str(ROOT) in parsed["environment"]["read"]
+    assert str(python_prefix) in parsed["environment"]["read"]
+    assert str(node_prefix) in parsed["environment"]["read"]
+    for role in ("root", "child"):
+        role_environment = parsed["environment"][role]
+        assert role_environment["GOAL_PLUS_PYTHON"] == str(python)
+        assert role_environment["GOAL_PLUS_SOURCE_PATH"] == str(ROOT)
+        assert role_environment["GOAL_PLUS_ROOT"] == (
+            "${PI_CODING_AGENT_SESSION_DIR}/goal-plus"
+        )
+        assert role_environment["GOAL_PLUS_PI_ROLE"] == (
+            "main" if role == "root" else "worker"
+        )
+        assert role_environment["GOAL_PLUS_AGENT_POSIX_SDK_ENTRY"] == str(
+            sdk_entry.resolve()
+        )
+        assert role_environment["GOAL_PLUS_NODE"] == str(node.resolve())
+    assert parsed["environment"]["root"]["GOAL_PLUS_AGENT_POSIX_BRIDGE"] == str(
+        bridge.resolve()
+    )
+    assert "GOAL_PLUS_AGENT_POSIX_BRIDGE" not in parsed["environment"]["child"]
+
+
+def test_thinkthread_profile_exposes_python_symlink_chain(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python_store = tmp_path / "python"
+    actual_prefix = python_store / "cpython-3.11.15"
+    actual_python = actual_prefix / "bin" / "python3.11"
+    actual_python.parent.mkdir(parents=True)
+    actual_python.touch()
+    alias_prefix = python_store / "cpython-3.11"
+    alias_prefix.symlink_to(actual_prefix, target_is_directory=True)
+    python_prefix = tmp_path / "venv"
+    python = python_prefix / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(alias_prefix / "bin" / "python3.11")
+    node = tmp_path / "node" / "bin" / "node"
+    monkeypatch.setattr(installer.sys, "prefix", str(python_prefix))
+    monkeypatch.setattr(installer.sys, "executable", str(python))
+
+    profile = installer._build_thinkthread_profile(
+        _thinkthread_pi_profile(),
+        node_executable=str(node),
+    )
+
+    readable = profile["environment"]["read"]
+    assert str(python_prefix) in readable
+    assert str(python_store) in readable
+    assert str(actual_prefix) not in readable
+
+
+def test_thinkthread_profile_preflight_is_idempotent(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_path = tmp_path / "goal-plus-pi.toml"
+    base = installer._render_thinkthread_profile(_thinkthread_pi_profile())
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        stdout = "thinkthread 0.1.0\n" if "--version" in argv else base
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(installer, "_run", run)
+    first = installer._preflight_thinkthread_profile(
+        "/opt/bin/tt",
+        profile_path=profile_path,
+    )
+    assert first.installed is False
+    profile_path.write_text(first.content, encoding="utf-8")
+
+    second = installer._preflight_thinkthread_profile(
+        "/opt/bin/tt",
+        profile_path=profile_path,
+    )
+    assert second.installed is True
+
+
+def test_thinkthread_profile_preflight_refuses_unmanaged_file(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_path = tmp_path / "goal-plus-pi.toml"
+    profile_path.write_text("schemaVersion = 4\n", encoding="utf-8")
+    base = installer._render_thinkthread_profile(_thinkthread_pi_profile())
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        stdout = "thinkthread 0.1.0\n" if "--version" in argv else base
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(installer, "_run", run)
+
+    with pytest.raises(installer.InstallError, match="not managed"):
+        installer._preflight_thinkthread_profile(
+            "/opt/bin/tt",
+            profile_path=profile_path,
+        )
+
+
+def test_thinkthread_profile_preflight_updates_profile_owned_by_checkout(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_path = tmp_path / "goal-plus-pi.toml"
+    profile_path.write_text(
+        f"{installer.THINKTHREAD_PROFILE_MARKER}\n"
+        f"# Source checkout: {ROOT}\n\n"
+        "schemaVersion = 4\n\n"
+        "[environment.root]\n"
+        f"GOAL_PLUS_SOURCE_PATH = {json.dumps(str(ROOT))}\n",
+        encoding="utf-8",
+    )
+    base = installer._render_thinkthread_profile(_thinkthread_pi_profile())
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        stdout = "thinkthread 0.1.0\n" if "--version" in argv else base
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(installer, "_run", run)
+
+    plan = installer._preflight_thinkthread_profile(
+        "/opt/bin/tt",
+        profile_path=profile_path,
+    )
+
+    assert plan.installed is False
+    assert plan.content != profile_path.read_text(encoding="utf-8")
+
+
+def test_thinkthread_profile_dry_run_does_not_write(
+    installer: ModuleType,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "goal-plus-pi.toml"
+    plan = installer.ThinkThreadProfilePlan(
+        executable="/opt/bin/tt",
+        runtime_version="thinkthread 0.1.0",
+        path=path,
+        content="profile\n",
+        installed=False,
+    )
+
+    installer._install_thinkthread_profile(plan, dry_run=True)
+
+    assert not path.exists()
+
+
+def test_thinkthread_sdk_preflight_reuses_only_owned_valid_install(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sdk"
+    entry = (
+        root
+        / "node_modules"
+        / "@thinkthread"
+        / "agent-posix"
+        / "dist"
+        / "index.js"
+    )
+    entry.parent.mkdir(parents=True)
+    entry.write_text("export {};\n", encoding="utf-8")
+    (root / "installation.json").write_text(
+        json.dumps(
+            {
+                "schema": installer.THINKTHREAD_SDK_RECEIPT_SCHEMA,
+                "source_path": str(ROOT),
+            }
+        ),
+        encoding="utf-8",
+    )
+    validated: list[Path] = []
+    monkeypatch.setattr(
+        installer,
+        "_validate_agent_posix_sdk",
+        lambda _node, path: validated.append(path),
+    )
+
+    plan = installer._preflight_thinkthread_sdk(
+        node_executable="/opt/node",
+        npm_executable="/opt/npm",
+        git_executable="/opt/git",
+        install_root=root,
+    )
+
+    assert plan.installed is True
+    assert plan.entry == entry
+    assert validated == [entry]
+
+
+def test_thinkthread_sdk_preflight_refuses_unmanaged_directory(
+    installer: ModuleType,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sdk"
+    root.mkdir()
+
+    with pytest.raises(installer.InstallError, match="not Goal Plus-managed"):
+        installer._preflight_thinkthread_sdk(
+            node_executable="/opt/node",
+            npm_executable="/opt/npm",
+            git_executable="/opt/git",
+            install_root=root,
+        )

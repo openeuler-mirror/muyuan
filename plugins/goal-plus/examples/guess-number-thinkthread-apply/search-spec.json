@@ -1,0 +1,70 @@
+{
+  "objective": "Change guess.py so it prints exactly one integer as close as possible to the public target 1. This is an orchestration smoke test: execute the two assigned candidate implementations exactly, request one process-verifier run per candidate, and stop each candidate after that Evidence is durable.",
+  "metric_name": "guess_score",
+  "metric_direction": "maximize",
+  "source_path": ".",
+  "edit_surface": {
+    "allow": [
+      "guess.py"
+    ],
+    "deny": [
+      "verify.py",
+      "search-spec.json",
+      ".guess-number-thinkthread-example"
+    ]
+  },
+  "budget": {
+    "max_parallel": 2
+  },
+  "process_verifiers": [
+    {
+      "name": "guess_score",
+      "role": "ranking_signal",
+      "command": [
+        "python",
+        "verify.py"
+      ],
+      "timeout_seconds": 10
+    }
+  ],
+  "promotion_verifiers": [
+    {
+      "name": "verifier_hash_check",
+      "role": "anti_cheat_gate",
+      "command": [
+        "goal-plus-internal",
+        "check-frozen-hashes"
+      ]
+    }
+  ],
+  "root_hypotheses": [
+    "c001 is the baseline route: replace guess.py with print(0), producing score 0.",
+    "c002 is the immediate exact route: replace guess.py with print(1), producing score 1."
+  ],
+  "strategy": {
+    "name": "agent_guided",
+    "orchestration_mode": "parallel_loops",
+    "worker_host": "thinkthread",
+    "worker_budget": {
+      "max_runtime_seconds": 120,
+      "max_turns": 4,
+      "on_exceed": "interrupt"
+    },
+    "worker_launch": {
+      "agent_profile": "pi"
+    },
+    "config": {
+      "closeout_reserve_seconds": 180,
+      "global_evidence_mode": "manual"
+    }
+  },
+  "workspace": {
+    "backend": "thinkthread",
+    "promotion_mode": "apply"
+  },
+  "constraints": {
+    "success_threshold": 1,
+    "suggested_batch_size": 2,
+    "task_summary": "Run the predeclared 0 and 1 guesses and immediately publish the exact target 1 through ThinkThread fs.apply."
+  }
+}

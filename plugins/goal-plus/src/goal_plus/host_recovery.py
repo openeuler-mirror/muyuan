@@ -10,12 +10,14 @@ from pathlib import Path
 import subprocess
 from typing import Literal
 
-from goal_plus.models import AgentSessionRecord, CandidateRecovery, SearchModel
-
-
-class ProcessIdentity(SearchModel):
-    pid: int
-    started: str
+from goal_plus.domain.search import (
+    AgentSessionRecord,
+    CandidateRecovery,
+)
+from goal_plus.domain.base import SearchModel
+from goal_plus.execution.process_identity import process_identity
+from goal_plus.ports.process_identity import ProcessIdentity
+from goal_plus.ports.scope import ScopeRecord
 
 
 class WorkerObservation(SearchModel):
@@ -25,23 +27,6 @@ class WorkerObservation(SearchModel):
     state: Literal["running", "quiescent"] = "running"
     observed_at: str
     quiescent_recovery_id: str | None = None
-
-
-def process_identity(pid: int) -> ProcessIdentity | None:
-    result = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "stat=", "-o", "lstart="],
-        capture_output=True, text=True, check=False, timeout=3,
-    )
-    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
-        return None
-    if result.returncode or not result.stdout.strip():
-        raise RuntimeError("RecoveryProcessInspectionUnavailable")
-    parts = result.stdout.strip().split(maxsplit=1)
-    if parts[0].startswith("Z"):
-        return None  # Exited, even if its parent has not reaped it yet.
-    if len(parts) != 2:
-        raise RuntimeError("RecoveryProcessInspectionUnavailable")
-    return ProcessIdentity(pid=pid, started=parts[1].strip())
 
 
 def codex_owner_pid() -> int | None:
@@ -70,7 +55,7 @@ def claim_main_owner(root: Path, goal_id: str, host: str, session_id: str, pid: 
     input can accidentally reauthorize the task.
     """
     from goal_plus.goal_plus import FileGoalPlusRuntime
-    from goal_plus.runtime import exclusive_file_lock, load_json, write_json
+    from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json, write_json
 
     if Path(goal_id).name != goal_id:
         raise ValueError("invalid Goal Plus identity")
@@ -114,7 +99,7 @@ def interrupt_main_for_retry(root: Path, goal_id: str, expectation: dict, timeou
     import signal
     import time
     from goal_plus.goal_plus import FileGoalPlusRuntime
-    from goal_plus.runtime import exclusive_file_lock, load_json
+    from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json
 
     if Path(goal_id).name != goal_id or not 0 < timeout_seconds <= 30:
         raise ValueError("invalid host interruption identity or timeout")
@@ -140,7 +125,8 @@ def interrupt_main_for_retry(root: Path, goal_id: str, expectation: dict, timeou
 
 
 def observe_worker(root: Path, session: AgentSessionRecord, pid: int) -> None:
-    from goal_plus.runtime import utc_timestamp, write_json
+    from goal_plus.infrastructure.clock import utc_timestamp
+    from goal_plus.infrastructure.state.files import write_json
     identity = process_identity(pid)
     if identity is None:
         raise RuntimeError("RecoveryWorkerProcessUnavailable")
@@ -153,12 +139,25 @@ def observe_worker(root: Path, session: AgentSessionRecord, pid: int) -> None:
     write_json(_observation_path(root, session.agent_session_id), observation.model_dump(mode="json"))
 
 
-def observe_codex_registry(root: Path, sessions: list[AgentSessionRecord], payload: dict) -> None:
-    """Accept only the native list_agents response delivered to PostToolUse."""
-    from goal_plus.runtime import FileSearchRuntime, load_json, utc_timestamp, write_json
+def observe_codex_registry(
+    root: Path, sessions: list[AgentSessionRecord], payload: dict, *, scope: ScopeRecord,
+) -> None:
+    """Consume fresh native observations with the delivering scope's exact identities."""
+    from goal_plus.candidate_host import candidate_host_queries
+    from goal_plus.infrastructure.state.files import load_json, write_json
+    from goal_plus.infrastructure.clock import utc_timestamp
+    from goal_plus.execution.codex_scope import codex_agent_for_target, codex_agent_is_terminal
     agents = payload.get("agents")
-    if not isinstance(agents, list):
+    if not isinstance(agents, list) or scope.get("host") != "codex":
         return
+    owner = process_identity(scope["owner_pid"])
+    if owner is None:
+        return
+    observed_agents = [
+        (agent, codex_agent_for_target(scope, agent["agent_name"]))
+        for agent in agents
+        if isinstance(agent, dict) and isinstance(agent.get("agent_name"), str)
+    ]
     for session in sessions:
         if session.host != "codex":
             continue
@@ -166,29 +165,30 @@ def observe_codex_registry(root: Path, sessions: list[AgentSessionRecord], paylo
         if not path.exists():
             continue
         observation = WorkerObservation.model_validate(load_json(path))
-        for agent in agents:
-            if not isinstance(agent, dict) or agent.get("agent_name") not in {
-                session.host_handle.task_name, session.host_handle.external_id
-            }:
+        if observation.owner != owner:
+            continue
+        for agent, tracked in observed_agents:
+            if (
+                tracked.get("run_id") != session.run_id
+                or tracked.get("label") != session.launch.get("task_name")
+            ):
                 continue
             status = agent.get("agent_status")
-            terminal = status in ("shutdown", "interrupted") or (
-                isinstance(status, dict) and ("completed" in status or "errored" in status)
-            )
+            terminal = codex_agent_is_terminal(status)
             observation.state = "quiescent" if terminal else "running"
             observation.observed_at = utc_timestamp()
-            record = FileSearchRuntime(root)._load_candidate_record(session.run_id, session.candidate_id)
+            recovery = candidate_host_queries(root).recovery(session.run_id, session.candidate_id)
             observation.quiescent_recovery_id = (
-                record.recovery.recovery_id
-                if terminal and record.recovery is not None
-                and session.agent_session_id in record.recovery.fenced_session_ids
+                recovery.recovery_id
+                if terminal and recovery is not None
+                and session.agent_session_id in recovery.fenced_session_ids
                 else None
             )
             write_json(path, observation.model_dump(mode="json"))
 
 
 def approve_recovery(root: Path, recovery: CandidateRecovery) -> None:
-    from goal_plus.runtime import load_json, write_json
+    from goal_plus.infrastructure.state.files import load_json, write_json
     for session_id in recovery.fenced_session_ids:
         path = _observation_path(root, session_id)
         if not path.exists():

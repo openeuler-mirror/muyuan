@@ -49,9 +49,13 @@ Main 负责把原始目标和公开任务合同中的正确性、性能、适用
 按工具 schema 定义 source、数值 metric、correctness gate、edit surface、预算和 promotion。
 自定义 verifier 放在 source 拥有且 Git 跟踪的路径，例如 `.goal-plus-verifiers/`；并发临时输出
 使用 `GOAL_PLUS_VERIFIER_TMPDIR` 或等价的唯一目录。Pi Search 使用
-`worker_host="pi-rpc"`，通常使用 `workspace.backend="git_worktree"`。标准共享 Evidence 使用
-manual 模式；auto、shared_dir、supplemental evaluation、device pool 和角色模型路由只在目标或
-显式配置需要时启用，其 worker 合同由 runtime 动态投影。
+`worker_host="pi-rpc"`，通常使用 `workspace.backend="git_worktree"`。安装的 `goal-plus-pi`
+ThinkThread Root 在显式选择 `workspace.backend="thinkthread"` 时使用
+`worker_host="thinkthread"` 和 `worker_launch.agent_profile="pi"`；两条 host/backend 路径不能
+混用，preflight 失败时不能 fallback。标准共享 Evidence 使用 manual 模式；auto、shared_dir、
+supplemental evaluation、device pool 和角色模型路由只在目标或显式配置需要时启用，其 worker
+合同由 runtime 动态投影。显式 `command_config.inner_agent` 必须写入
+`strategy.inner_agent`。
 
 若评价合同本身有缺陷，调用 `search_invalidate_run`，停止 pool，再修复、重新冻结并创建后继
 run；不要直接比较不同合同的分数。
@@ -66,24 +70,30 @@ revision 的知识材料，不调用外部 AscendC Agent、plugin 或编排工�
 
 ## Pi Search
 
-已有 run 按 `goal_plus_status.reconciliation` 继续；用 `search_recovery_status` 和
-`pi_search_pool_snapshot` 核对 lane 与真实 worker。健康 worker 继续接管；停止且有未结算修改的
-lane，先调用 `search_prepare_recovery`，关闭旧 pool 并确认退出，再用返回的 `recovery_id` 调用
-`search_recover_candidate`。随后用新 pool 启动同一 candidate 并取得新 Evidence。
-launch/bind 间中断时先核对原生 task/session，再补齐下一步。
+已有 run 按 `goal_plus_status.reconciliation` 继续。Git/Pi RPC lane 用
+`search_recovery_status` 和 `pi_search_pool_snapshot` 核对 checkpoint 与真实 worker；停止且有未
+结算修改时，先调用 `search_prepare_recovery`，关闭旧 pool 并确认退出，再用返回的
+`recovery_id` 调用 `search_recover_candidate`。ThinkThread lane 使用
+`thinkthread_search_pool_snapshot` 和 provider journal 恢复同一 Child/session identity。任何 host
+preflight 或恢复失败都 fail closed，不切换 backend。launch/bind 间中断时先核对原生
+task/session，再补齐下一步。
 
-1. 用相对 `source_path` 的 verifier artifact 路径调用 `search_freeze_spec`，再调用
-   `search_create` 和 `goal_plus_link_search_run`。
+1. 使用当前 `goal_plus_id` 和相对 `source_path` 的 verifier artifact 路径调用
+   `search_freeze_spec`，再使用同一 `goal_plus_id` 调用 `search_create`，然后调用
+   `goal_plus_link_search_run`。
 2. 调用一次 `search_plan_next(requested_k=budget.max_parallel)` 和一次 `search_start_batch`，创建
    初始 candidate。只有 plan 返回 `requires_agent_proposals=true` 时才向
    `search_start_batch` 传 `proposals`。普通 `parallel_loops` 不补 lane 或重新规划。
-3. 用全部 candidate ids 调用 `pi_search_pool_open(..., max_parallel=budget.max_parallel,
-   final_verify=true)`；pool 负责 session 启动、绑定、watchdog 和 durable verifier Evidence。
-4. 用 `pi_search_pool_wait_any` 等待事件，以 `pi_search_pool_snapshot` 核对状态。全局停止条件未
-   满足时，用 `pi_search_pool_continue` 恢复同一 candidate/native session；continuation lease
-   使用冻结上限与“外层剩余时间减收尾预留”的较小值。
-5. 全局停止后用 `pi_search_pool_close` drain 或 interrupt，并确认 `active_count=0`。随后调用
-   `search_select`、`search_promote`，以及任务授权时需要的 `search_apply_promotion`。
+3. 普通 Pi 用全部 candidate ids 调用
+   `pi_search_pool_open(..., max_parallel=budget.max_parallel, final_verify=true)`；ThinkThread Root
+   调用 `thinkthread_search_pool_open(..., max_parallel=budget.max_parallel)`。pool 负责 session
+   启动、绑定、watchdog 和 durable verifier Evidence。
+4. 用所选 host 的 `*_wait_any` 等待事件，以对应 `*_snapshot` 核对状态。全局停止条件未满足时，
+   用对应 `*_continue` 恢复同一 candidate/native session；continuation lease 使用冻结上限与
+   “外层剩余时间减收尾预留”的较小值。
+5. 全局停止后用对应 `*_close` drain 或 interrupt，并确认 `active_count=0`。随后调用
+   `search_select`、`search_promote`，以及任务授权时需要的 `search_apply_promotion`。报告持久化后
+   runtime 自动回收不再被引用的 ThinkThread snapshots。
 
 Pi worker 首次启动或 fresh session 恢复时调用 `search_get_agent_context`，并以 runtime 返回的
 `candidate_task` 为完整合同。Main 不复制 workspace、Evidence、shared_dir、supplemental、
