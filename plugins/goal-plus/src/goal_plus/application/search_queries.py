@@ -117,8 +117,9 @@ class SearchQueries:
             "metric_name": frozen.spec.metric_name,
             "metric_direction": frozen.spec.metric_direction,
             "strategy": frozen.spec.strategy.model_dump(mode="json"),
+            "native_host": frozen.native_host,
             "worker_policy": self.inspection.normalize_worker_policy(
-                frozen.spec.strategy
+                frozen
             ),
             "best_candidate_id": run.best_candidate_id,
             "best_score": run.best_score,

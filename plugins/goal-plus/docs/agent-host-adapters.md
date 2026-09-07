@@ -33,8 +33,9 @@ Adapter 返回的 launch payload 是权威启动说明。main agent 只传递当
 Search runtime 不承担 worker supervisor 职责。`search_start_agent_session`
 创建的是 context/provenance handle，不代表 worker 已经启动或仍然存活。
 
-同一边界也适用于 Evidence Annotation 和 Adaptive Scheduler。两者的冻结 host 必须等于
-`strategy.worker_host`；Codex hook 或 Pi extension 从当前 native host 进程唤醒 run-scoped queue，
+同一边界也适用于 Evidence Annotation 和 Adaptive Scheduler。两者继承
+`FrozenSpec.native_host` 记录的 Main Agent 身份，不接受独立 host 选择；
+Codex hook 或 Pi extension 从当前 native host 进程唤醒 run-scoped queue，
 内部子进程完整继承该进程配置。持久 profile 只记录 host/model/reasoning/timeout 和
 `configuration_source="host_process"`，不复制外部连接或认证配置。执行器在调用模型前校验
 launcher 写入的 host provenance，shared runtime/MCP 不提供备用启动路径。

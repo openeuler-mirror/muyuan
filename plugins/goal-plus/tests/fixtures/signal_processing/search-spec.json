@@ -40,7 +40,6 @@
   "strategy": {
     "name": "random",
     "orchestration_mode": "parallel_loops",
-    "worker_host": "codex",
     "inner_agent": "autoresearch",
     "worker_budget": {
       "max_runtime_seconds": 300,

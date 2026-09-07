@@ -316,7 +316,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     project = make_project(tmp_path)
     root = tmp_path / ".search"
     search = FileSearchRuntime(root)
-    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
     first_run = search.create_run(frozen.frozen_spec_id)
     search.plan_next(first_run, requested_k=1)
@@ -1183,7 +1183,7 @@ def test_html_report_data_keeps_search_tasks_and_rounds_separate(
     project = make_project(tmp_path)
     root = tmp_path / ".search"
     search = FileSearchRuntime(root)
-    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
     runs = [search.create_run(frozen.frozen_spec_id) for _ in range(2)]
     for run_id in runs:
         search.plan_next(run_id, requested_k=1)
@@ -1217,7 +1217,6 @@ def test_pi_native_session_resume_renders_distinct_process_dispatches(
     spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
     spec_data["strategy"] = {
         "name": "random",
-        "worker_host": "pi-rpc",
         "worker_budget": {
             "max_runtime_seconds": 60,
             "on_exceed": "interrupt",
@@ -1225,7 +1224,7 @@ def test_pi_native_session_resume_renders_distinct_process_dispatches(
     }
     frozen = search.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi",
     )
     run_id = search.create_run(frozen.frozen_spec_id)
     plan = search.plan_next(run_id, requested_k=1)
@@ -1478,7 +1477,7 @@ def test_report_candidate_final_score_uses_settled_best_after_failure(
     root = tmp_path / ".search"
     search = FileSearchRuntime(root)
     frozen = search.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = search.create_run(frozen.frozen_spec_id)
     plan = search.plan_next(run_id, requested_k=1)

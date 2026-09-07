@@ -126,9 +126,10 @@ class SchedulerLanes:
     def _resolve_profile(
         self,
         configured: SearchSchedulerSpec,
+        frozen: FrozenSpec,
     ) -> ResolvedSchedulerProfile:
         return ResolvedSchedulerProfile(
-            host=configured.host,
+            host=frozen.worker_host,
             model=configured.model,
             reasoning_effort=configured.reasoning_effort,
             timeout_seconds=configured.timeout_seconds,
@@ -242,7 +243,7 @@ class SchedulerLanes:
             return existing
 
         try:
-            profile = self._resolve_profile(configured)
+            profile = self._resolve_profile(configured, frozen)
             profile_error = None
         except Exception as exc:
             profile = None

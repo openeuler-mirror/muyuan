@@ -69,7 +69,6 @@ budget:
 strategy:
   orchestration_mode: adaptive_search
   search_scheduler:
-    host: pi-rpc
     model: bench-openai/gpt-5.6-sol
     reasoning_effort: low
     timeout_seconds: 180
@@ -83,9 +82,10 @@ workspace:
 `strategy.search_scheduler` 非 `null`。`parallel_loops` 是隔离的固定候选流程，不允许配置
 Search Scheduler。主 runtime 只按 orchestration mode 调用 `AdaptiveSearch` 门面；进入门面后，
 Scheduler、Allocation 和 policy 内部只校验非空 `search_scheduler`，不传播模式判断。启用时要求
-`workspace.backend="git_worktree"`。`host`、`model`、`reasoning_effort` 和 `timeout_seconds`
-均为必填项。`host` 必须与 `strategy.worker_host` 相同；model/reasoning/timeout 可以独立于
-candidate profile。ScheduleTask 的 resolved profile 只保存这些字段和
+`workspace.backend="git_worktree"`。`model`、`reasoning_effort` 和 `timeout_seconds`
+均为必填项，可以独立于 candidate profile。Scheduler 不接受 `host` 配置；
+驱动从 `FrozenSpec.native_host` 和工作区后端解析。ScheduleTask 的 resolved profile
+保存解析后的 host、上述模型参数和
 `configuration_source="host_process"`，不接受服务连接、认证变量名或 host 配置目录。
 并发和重试由 runtime 内部决定。
 

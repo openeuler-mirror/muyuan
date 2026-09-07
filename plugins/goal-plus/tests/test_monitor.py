@@ -24,7 +24,6 @@ def _pi_rpc_spec(project: Path):
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {
                 "max_runtime_seconds": 600,
                 "max_turns": 8,
@@ -56,7 +55,7 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     first, second = runtime.start_batch(run_id, plan.plan_id)
@@ -188,6 +187,7 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     assert evidence_reads["latest_detail_read_at"] is None
     assert snapshot["strategy"] == {
         "name": "random",
+        "native_host": "pi",
         "orchestration_mode": "parallel_loops",
         "worker_host": "pi-rpc",
         "inner_agent": "autoresearch",
@@ -269,7 +269,7 @@ def test_pi_terminal_finalize_reports_combines_worker_annotator_and_main_usage(
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     search = FileSearchRuntime(runtime_root)
-    frozen = search.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = search.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = search.create_run(frozen.frozen_spec_id)
     plan = search.plan_next(run_id, requested_k=1)
     [candidate] = search.start_batch(run_id, plan.plan_id)
@@ -376,7 +376,7 @@ def test_goal_plus_monitor_snapshot_does_not_attach_unlinked_latest_run(
     goal = goal_runtime.create_goal("Analyze a model optimization target")
 
     search_runtime = FileSearchRuntime(runtime_root)
-    frozen = search_runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = search_runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     unrelated_run_id = search_runtime.create_run(frozen.frozen_spec_id)
 
     snapshot = goal_plus_monitor_snapshot(
@@ -403,7 +403,7 @@ def test_goal_plus_monitor_snapshot_keeps_session_and_candidate_verifier_counts_
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -435,7 +435,7 @@ def test_goal_plus_monitor_snapshot_aggregates_multiple_search_tasks(
     goal_runtime = FileGoalPlusRuntime(runtime_root)
     goal = goal_runtime.create_goal("Run two verifier-backed searches")
     search_runtime = FileSearchRuntime(runtime_root)
-    frozen = search_runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = search_runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
 
     first_run_id = search_runtime.create_run(frozen.frozen_spec_id)
     search_runtime.plan_next(first_run_id, requested_k=1)
@@ -520,7 +520,7 @@ def test_goal_plus_monitor_snapshot_is_exposed_to_mcp_and_pi_facade(tmp_path: Pa
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     mcp = create_mcp(tmp_path / ".search")
     tools = asyncio.run(tools_by_name(mcp))
@@ -549,7 +549,7 @@ def test_goal_plus_monitor_snapshot_projects_host_execution_scope(
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     scope = ensure_execution_scope(
         root_dir=runtime_root,

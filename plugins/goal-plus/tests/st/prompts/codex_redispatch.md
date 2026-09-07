@@ -13,7 +13,6 @@ with these required edits before freezing:
   `{{PROJECT_ROOT}}/tests/st/fixtures/circle_packing`.
 - Set `budget.max_parallel=1`.
 - Set `strategy.name="random"`.
-- Set `strategy.worker_host="codex"`.
 - Set `strategy.inner_agent="autoresearch"`.
 - Set `strategy.worker_budget={"max_runtime_seconds": 90, "max_turns": 4, "on_exceed": "interrupt"}`.
 

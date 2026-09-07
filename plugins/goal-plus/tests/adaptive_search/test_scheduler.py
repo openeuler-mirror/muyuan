@@ -134,7 +134,6 @@ def search_scheduler_spec(
             "name": "random",
             "orchestration_mode": "adaptive_search",
             "search_scheduler": {
-                "host": "codex",
                 "model": "gpt-5.2",
                 "reasoning_effort": "low",
                 "timeout_seconds": 90,
@@ -260,7 +259,7 @@ def _start_runtime(
             max_candidates=max_candidates,
             max_parallel=max_parallel,
         ),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=max_parallel)

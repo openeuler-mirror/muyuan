@@ -28,7 +28,7 @@ launch/bind 间中断时先核对原生 task/session，再补齐下一步。
    创建初始 candidate。只有 plan 返回 `requires_agent_proposals=true` 时才向
    `search_start_batch` 传 `proposals`。普通 `parallel_loops` 不补 lane 或重新规划。
 
-新 Codex run 使用 `worker_host="codex"`，通常使用 `git_worktree` 和 manual Global Evidence；
+新 Codex run 通常使用 `git_worktree` 和 manual Global Evidence；
 显式 command config 优先。只有目标明确要求 runtime reward/allocation，或恢复的 FrozenSpec 已
 使用 `adaptive_search` 时，才完整读取
 `../goal-plus/references/adaptive-search.md` 并执行其中的额外 host 流程。

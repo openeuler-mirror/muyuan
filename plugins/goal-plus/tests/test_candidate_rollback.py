@@ -23,7 +23,7 @@ def _candidate(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -181,7 +181,7 @@ def test_latest_run_level_equal_score_becomes_best(
     project = make_project(tmp_path)
     spec = spec_for(project, max_parallel=2)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)

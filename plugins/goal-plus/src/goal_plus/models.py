@@ -3,6 +3,7 @@
 from goal_plus.domain.agents import (
     AgentHostHandle as AgentHostHandle,
     AgentHostKind as AgentHostKind,
+    NativeAgentKind as NativeAgentKind,
     ModelSpec as ModelSpec,
     SelectedModel as SelectedModel,
     WorkerBudget as WorkerBudget,

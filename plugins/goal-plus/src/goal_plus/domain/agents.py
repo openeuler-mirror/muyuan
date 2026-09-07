@@ -16,6 +16,17 @@ from pydantic import (
 from goal_plus.domain.base import SearchModel
 
 AgentHostKind = Literal["codex", "pi-rpc", "thinkthread"]
+NativeAgentKind = Literal["codex", "pi"]
+
+
+def search_worker_host(native_host: NativeAgentKind, workspace_backend: str) -> AgentHostKind:
+    if native_host not in {"codex", "pi"}:
+        raise ValueError("Search requires a trusted native host: codex or pi")
+    if workspace_backend == "thinkthread":
+        if native_host != "pi":
+            raise ValueError("Codex does not support ThinkThread Search")
+        return "thinkthread"
+    return "codex" if native_host == "codex" else "pi-rpc"
 
 
 class AgentHostHandle(SearchModel):
@@ -62,10 +73,6 @@ class WorkerLaunchOptions(SearchModel):
     model: str | None = None
     reasoning_effort: str | None = None
     service_tier: str | None = None
-    agent_profile: Literal["pi"] | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
 
     @field_validator("model", "reasoning_effort", "service_tier")
     @classmethod

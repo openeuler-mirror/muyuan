@@ -45,10 +45,10 @@ def prepare_circle(project: Path, model: str, reasoning_effort: str) -> dict[str
     spec["workspace"] = {"backend": "git_worktree", "promotion_mode": "artifact_only"}
     spec["strategy"] = {
         "name": "agent_guided", "orchestration_mode": "parallel_loops",
-        "worker_host": "codex", "inner_agent": "common",
+         "inner_agent": "common",
         "worker_budget": {"max_runtime_seconds": 180, "max_turns": 6, "on_exceed": "interrupt"},
         "worker_launch": {"model": model, "reasoning_effort": reasoning_effort},
-        "evidence_annotator": {"host": "codex", "model": model,
+        "evidence_annotator": { "model": model,
                                "reasoning_effort": reasoning_effort, "timeout_seconds": 300},
         "config": {"global_evidence_mode": "manual", "closeout_reserve_seconds": 240},
     }

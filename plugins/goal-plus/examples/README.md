@@ -83,8 +83,9 @@ ThinkThread Apply 示例同样先生成一次性 `workspace/`，但它作为 pro
 
 ## 调度与预算
 
-Maintained host-backed SearchSpecs declare `orchestration_mode`, `worker_host`, and a finite
-`worker_budget`. `worker_budget` limits one worker dispatch or
+Maintained host-backed SearchSpecs declare `orchestration_mode` and a finite
+`worker_budget`. The native Main session determines the Agent family.
+`worker_budget` limits one worker dispatch or
 renewable lease; it is not the maximum duration of a whole Goal Plus task.
 Paste-ready goal scenarios state their whole-goal limit separately in natural
 language and reserve explicit closeout time.

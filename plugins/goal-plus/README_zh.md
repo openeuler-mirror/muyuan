@@ -129,6 +129,21 @@ Goal Plus 不能切换它，`main=` 也不是受支持的命令配置。[Torch C
 
 宿主差异和策略覆盖见 [Agent Host Adapters](docs/agent-host-adapters.md)。
 
+下面按原生 Main Agent 类型列出当前支持的 Search 路径。ThinkThread 提供工作区和
+Child 执行基础设施；当前受支持的 ThinkThread 路径内运行的 Agent 仍是 Pi。
+
+| Main Agent | 工作区后端 | Candidate 驱动 | Annotation 驱动 | Adaptive Scheduler |
+| --- | --- | --- | --- | --- |
+| Codex | `git_worktree` / `copy` | 原生 subagent | Codex CLI | Codex CLI；仅 Git worktree 支持 |
+| Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI；仅 Git worktree 支持 |
+| Pi | `thinkthread` | TT Pi Child | TT Pi Child | 当前不支持 |
+| Codex | `thinkthread` | 当前不支持 | 当前不支持 | 当前不支持 |
+
+`workspace.backend` 表示工作区 provider。Agent 身份来自已授权的 Main 会话，记录为
+`FrozenSpec.native_host`，不属于 SearchSpec 可选配置；runtime 根据该身份和工作区后端
+确定各角色的执行驱动。
+Scheduler 的 reward 和 allocation 共用一次推理，不存在单独的 reward Agent。
+
 ## 心智模型
 
 - 一条 **Goal Plus 记录**对应完整的用户任务。

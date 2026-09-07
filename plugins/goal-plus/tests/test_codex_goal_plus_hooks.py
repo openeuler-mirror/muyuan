@@ -29,7 +29,7 @@ from goal_plus.tools import SearchTools
 from tests._runtime_helpers import (
     make_project,
     run_host_hook_inprocess,
-    spec_with_host,
+    spec_with_strategy,
     start_host_verified_goal,
 )
 
@@ -309,12 +309,7 @@ def _codex_search_worker(
     search_scheduler: bool = False,
 ) -> tuple[FileSearchRuntime, str, str, str]:
     project = make_project(tmp_path)
-    payload = spec_with_host(
-        project,
-        "codex",
-        strategy_name="random",
-        max_parallel=1,
-    ).model_dump(mode="json")
+    payload = spec_with_strategy(project, {"name": "random"}, max_parallel=1).model_dump(mode="json")
     payload["strategy"]["worker_budget"] = worker_budget or {
         "max_runtime_seconds": 600,
         "max_turns": 8,
@@ -327,7 +322,6 @@ def _codex_search_worker(
             {
                 "orchestration_mode": "adaptive_search",
                 "search_scheduler": {
-                    "host": "codex",
                     "model": "gpt-5.2",
                     "reasoning_effort": "low",
                     "timeout_seconds": 180,
@@ -337,7 +331,7 @@ def _codex_search_worker(
             }
         )
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -691,9 +685,8 @@ def test_codex_model_preflight_skips_native_defaults() -> None:
             "tool_input": {
                 "spec": {
                     "strategy": {
-                        "worker_host": "codex",
                         "models": [],
-                        "evidence_annotator": {"host": "codex"},
+                        "evidence_annotator": {},
                     }
                 }
             },
@@ -758,18 +751,15 @@ def test_codex_search_freeze_preflight_covers_every_agent_role() -> None:
             "tool_input": {
                 "spec": {
                     "strategy": {
-                        "worker_host": "codex",
                         "models": [
                             {"model": "gpt-worker", "reasoning_effort": "medium"},
                             {"model": "gpt-main"},
                         ],
                         "worker_launch": {"model": "gpt-worker"},
                         "evidence_annotator": {
-                            "host": "codex",
                             "model": "gpt-annotator",
                         },
                         "search_scheduler": {
-                            "host": "codex",
                             "model": "gpt-scheduler",
                             "reasoning_effort": "high",
                         },

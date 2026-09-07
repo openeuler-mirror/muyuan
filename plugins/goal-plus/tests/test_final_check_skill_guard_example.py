@@ -83,7 +83,7 @@ def test_materialized_guard_separates_ranking_from_semantic_acceptance(
     spec_data["source_path"] = str(workspace)
     frozen = FileSearchRuntime(tmp_path / ".gp").freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [workspace / ".goal-plus-verifiers" / "score_throughput.py"],
+        [workspace / ".goal-plus-verifiers" / "score_throughput.py"], native_host="codex",
     )
     assert frozen.task_skill_paths == [TASK_SKILL]
     with pytest.raises(FileExistsError, match="choose a new --output path"):

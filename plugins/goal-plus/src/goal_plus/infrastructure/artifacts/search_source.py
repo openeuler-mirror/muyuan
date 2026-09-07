@@ -4,6 +4,7 @@ from __future__ import annotations
 import subprocess
 import uuid
 from pathlib import Path
+from goal_plus.domain.agents import AgentHostKind
 from goal_plus.domain.search import SearchSpec, VerifierCommand
 from goal_plus.ports.search_bootstrap import FreezeInputs
 from goal_plus.infrastructure.artifacts.source_repository import SourceRepository
@@ -132,7 +133,7 @@ class FileFreezeSource:
         self.root_dir = Path(root_dir)
         self.configuration, self.repository = configuration, repository
 
-    def prepare(self, spec: SearchSpec, verifier_artifacts: list[Path]) -> FreezeInputs:
+    def prepare(self, spec: SearchSpec, verifier_artifacts: list[Path], *, worker_host: AgentHostKind) -> FreezeInputs:
         supplemental_enabled = supplemental_evaluation_enabled()
         supplemental_required = supplemental_evaluation_required()
         if supplemental_required and not supplemental_enabled:
@@ -140,12 +141,12 @@ class FileFreezeSource:
                 f"{SUPPLEMENTAL_EVALUATION_REQUIRED_ENV}=1 requires "
                 f"{SUPPLEMENTAL_EVALUATION_ENABLED_ENV}=1"
             )
-        spec = self.configuration.normalize_inner_agent_spec(spec)
-        self.configuration.validate_host_workspace_backend(spec)
-        self.configuration.validate_inner_agent_binding(spec.strategy)
+        spec = self.configuration.normalize_inner_agent_spec(spec, worker_host)
+        self.configuration.validate_host_workspace_backend(spec, worker_host)
+        self.configuration.validate_inner_agent_binding(spec.strategy, worker_host)
         spec = _normalize_verifier_cwds_for_candidate_workspace(spec)
         spec = self.configuration.apply_global_evidence_mode_from_environment(spec)
-        spec = self.configuration.normalize_strategy_models(spec)
+        spec = self.configuration.normalize_strategy_models(spec, worker_host)
         self.configuration.validate_strategy_config(spec.strategy)
         device_inventory = self.configuration.resolve_device_inventory(
             spec.device_pools,

@@ -177,9 +177,10 @@ def project_strategy(
     return {
         "name": strategy.name,
         "orchestration_mode": strategy.orchestration_mode,
-        "worker_host": strategy.worker_host,
+        "native_host": frozen.native_host,
+        "worker_host": frozen.worker_host,
         "inner_agent": strategy.inner_agent
-        or ("common" if strategy.worker_host == "thinkthread" else "autoresearch"),
+        or ("common" if frozen.worker_host == "thinkthread" else "autoresearch"),
         "legacy_worker_agent_type": strategy.worker_agent_type,
         "latest_plan": latest_plan_payload,
     }

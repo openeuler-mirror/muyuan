@@ -41,7 +41,7 @@ def json_state(pump):
 
 
 def kick(pump, host=None):
-    return internal_agents.kick_internal_agents(pump.store.root_dir, "run_test", host=host or pump.frozen.spec.strategy.worker_host)
+    return internal_agents.kick_internal_agents(pump.store.root_dir, "run_test", host=host or pump.frozen.worker_host)
 
 
 @pytest.mark.parametrize("state", list(RunState))
@@ -51,7 +51,7 @@ def test_internal_work_query_is_read_only_and_not_a_liveness_claim(pump, state):
     before = json_state(pump)
     work = pump.work.inspect("run_test")
     assert work.accepts_work is (state in {RunState.RUNNING, RunState.WAITING_FOR_WORKERS, RunState.SELECTING, RunState.SELECTION_BLOCKED})
-    assert work.host == pump.frozen.spec.strategy.worker_host
+    assert work.host == pump.frozen.worker_host
     assert work.scheduler_enabled is True
     assert json_state(pump) == before
     assert pump.calls == []
@@ -103,7 +103,7 @@ def test_terminal_or_invalidated_run_only_retries_cleanup_without_reopening(pump
 
 
 def test_annotation_completion_only_wakes_scheduler_under_native_inheritance(pump, monkeypatch):
-    monkeypatch.setenv(internal_agents.INTERNAL_AGENT_HOST_ENV, pump.frozen.spec.strategy.worker_host)
+    monkeypatch.setenv(internal_agents.INTERNAL_AGENT_HOST_ENV, pump.frozen.worker_host)
     internal_agents.wake_scheduler_after_annotation(pump.store.root_dir, "run_test")
     assert [item[0] for item in pump.calls] == ["scheduler"]
     pump.calls.clear()
@@ -116,9 +116,9 @@ def test_annotation_completion_only_wakes_scheduler_under_native_inheritance(pum
 @pytest.mark.parametrize("host", ["codex", "pi-rpc", "thinkthread"])
 def test_trusted_pi_pump_selects_only_a_supported_frozen_driver(pump, monkeypatch, host):
     payload = frozen_spec(Clock()).model_dump(mode="json")
-    payload["spec"]["strategy"]["worker_host"] = host
+    payload["native_host"] = "codex" if host == "codex" else "pi"
     if host == "thinkthread":
-        payload["spec"]["strategy"]["worker_launch"] = {"agent_profile": "pi"}
+        payload["spec"]["strategy"]["worker_launch"] = {}
         payload["spec"]["workspace"]["backend"] = "thinkthread"
     frozen = FrozenSpec.model_validate(payload)
     write_json(pump.store.root_dir / "specs/frozen_test/frozen_spec.json", frozen.model_dump(mode="json"))

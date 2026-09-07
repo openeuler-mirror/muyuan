@@ -1,7 +1,7 @@
 /goal-plus max_parallel=2 max_duration_seconds=900 workspace_backend=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=common Complete one bounded Circle Packing search and apply the best valid result.
 
 Use `search-spec.json` as the evaluation contract, with `source_path="workspace"`,
-Pi `worker_host="pi-rpc"`, and `strategy.inner_agent="common"`. The source is the
+and `strategy.inner_agent="common"`. The source is the
 standalone Git repository at `workspace/`. Only `initial_program.py` may change.
 Keep the frozen verifier unchanged and do not use the network.
 

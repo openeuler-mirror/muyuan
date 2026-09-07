@@ -59,7 +59,7 @@ def spec_dict() -> dict:
 
 def frozen_spec(*, task_skill_paths: list[str] | None = None) -> FrozenSpec:
     spec = SearchSpec.model_validate(spec_dict())
-    return FrozenSpec(
+    return FrozenSpec(native_host="codex",
         frozen_spec_id="spec_123",
         spec_hash="hash",
         spec=spec,
@@ -131,7 +131,7 @@ def test_search_bootstrap_requires_active_host_verified_goal(tmp_path: Path) -> 
         )
     assert not (root / "specs").exists()
 
-    frozen_without_facade = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen_without_facade = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
         tools.search_create("gp_missing", frozen_without_facade.frozen_spec_id)
     assert not (root / "runs").exists()

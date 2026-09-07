@@ -85,9 +85,8 @@ Root 内只有精确 Pi host command 能启动 Goal Plus。显式选择 ThinkThr
 /goal-plus workspace_backend=thinkthread max_parallel=2 <可度量目标>
 ```
 
-对应 SearchSpec 必须使用 `strategy.worker_host="thinkthread"`、
-`strategy.worker_launch.agent_profile="pi"`、
-`orchestration_mode="parallel_loops"` 和 `workspace.backend="thinkthread"`。
+对应 SearchSpec 使用 `orchestration_mode="parallel_loops"` 和
+`workspace.backend="thinkthread"`；Pi 身份从 Main 会话解析，不另填 host/profile。
 普通 Pi 进程继续使用 `pi-rpc + git_worktree`；两条路径不能混用，也不能在 preflight
 失败时 fallback。Codex 尚不支持 ThinkThread worker host。
 
@@ -298,14 +297,13 @@ worker Evidence 时，parent 才补做 final verifier；未改变的 workspace �
 
 ## 模型与 Worker Spec
 
-Pi 使用 `worker_host="pi-rpc"` 和 wall-clock budget：
+本地 Pi Search 自动绑定 Pi RPC 驱动，并使用 wall-clock budget：
 
 ```json
 {
   "strategy": {
     "name": "random",
     "orchestration_mode": "parallel_loops",
-    "worker_host": "pi-rpc",
     "worker_budget": {
       "min_runtime_seconds": 500,
       "min_verifier_runs": 1,

@@ -110,8 +110,8 @@ Benchmark 机制消融由 controller 设置
 补充评价，不向 FrozenSpec 注入 criterion。ON/OFF 都不改变硬分结算或评价内容；required 模式
 会在所有 task 成功发布补充评价前阻止 selection，不能把缺失或失败的 Annotation 当成通过。
 
-Evidence annotator 继承 Search 的 `worker_host`。`strategy.evidence_annotator.host` 可以显式写出，
-但必须与 worker host 相同；跨 host 配置在 freeze 前失败。模型和 reasoning 可以作为实验变量独立
+Evidence annotator 继承 `FrozenSpec.native_host` 记录的 Main Agent 身份，不接受 `host` 配置。
+角色执行驱动由该身份和工作区后端确定。模型和 reasoning 可以作为实验变量独立
 冻结，外部连接与认证配置始终来自启动它的 native host 进程，不进入 Goal Plus 配置或状态。
 
 每个 annotation context 同时提供本轮有界 `actual_diff`、从候选初始基线到当前提交的有界
@@ -169,11 +169,11 @@ Decision 分别由所属模块持久化，不共享 Store。
 Adaptive Search 要求 `workspace.backend="git_worktree"`、`budget.max_parallel` 和非空
 `search_scheduler`。可选的 `budget.max_candidates` 限制累计唯一 candidate；`null` 表示不限制，
 有界值必须大于等于 `max_parallel`。`search_scheduler` 直接包含
-host/model/reasoning/timeout 模型调用参数和 `reward`/`allocation` 策略引用。策略使用
+model/reasoning/timeout 模型调用参数和 `reward`/`allocation` 策略引用。策略使用
 `name/vN [@prompt 补充说明]` 格式，runtime 在 search 开始前解析已注册的准确版本并把策略快照
-写入 FrozenSpec；runtime 根据冻结版本调用注册的 context builder，异步 agent 不查询注册表。四项
-模型调用参数均为必填项；其中 host 必须等于 `strategy.worker_host`，其余字段不继承 worker
-profile。resolved profile 标记 `configuration_source="host_process"`，不保存外部连接或认证配置。
+写入 FrozenSpec；runtime 根据冻结版本调用注册的 context builder，异步 agent 不查询注册表。三项
+模型调用参数均为必填项，不继承 worker profile；host 从冻结的 Main 身份解析。
+resolved profile 标记 `configuration_source="host_process"`，不保存外部连接或认证配置。
 配置不接受函数名或脚本路径。并发由
 `budget.max_parallel` 推导，重试采用内部策略。
 backup 和 expansion 分别归入 reward 与 allocation，不再暴露独立参数。
@@ -407,7 +407,7 @@ process-verifier Evidence 完全一致时，将记录附加到该条目的 `exte
 ## 客观 View 与开放式补充评价
 
 `view` 是绑定到准确 Evidence identity 的异步、不可变、best-effort annotation。后台
-Codex hook 或 Pi extension 在 verifier post-tool callback 中按 SearchSpec 的 `worker_host` 启动
+Codex hook 或 Pi extension 在 verifier post-tool callback 中按冻结的 Main 宿主身份启动
 drainer，再选择 Codex 的一次性只读执行或 Pi 的一次性受限工具执行；不会为了 annotation 跨用
 另一个 host。共享 MCP 只管理 task，不启动模型进程。Annotator 可读取：
 

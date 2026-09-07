@@ -59,7 +59,6 @@ def _pi_rpc_spec(project: Path) -> SearchSpec:
             ],
             "strategy": {
                 "name": "random",
-                "worker_host": "pi-rpc",
                 "worker_budget": {
                     "max_runtime_seconds": 600,
                     "max_turns": 8,
@@ -95,12 +94,12 @@ def test_run_pi_search_candidate_binds_worker_handle_and_final_verifies(
     payload["strategy"].update(
         orchestration_mode="adaptive_search",
         search_scheduler={
-            "host": "pi-rpc", "model": "test-model", "reasoning_effort": "low",
+             "model": "test-model", "reasoning_effort": "low",
             "timeout_seconds": 30, "reward": "evidence_llm_value/v3",
             "allocation": "value_guided_replace/v2",
         },
     )
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -190,7 +189,7 @@ def test_explicit_worker_launch_overrides_parent_native_defaults(
         "reasoning_effort": "high",
     }
     frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(spec_data), [project / "evaluator.py"]
+        SearchSpec.model_validate(spec_data), [project / "evaluator.py"], native_host="pi"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -235,7 +234,7 @@ def test_run_pi_search_candidate_reuses_current_worker_evidence(
     monkeypatch.setattr(internal_agents, "kick_pi_internal_agents", failed_pump)
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -276,7 +275,7 @@ def test_run_pi_search_candidate_does_not_verify_unchanged_workspace(
 ) -> None:
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -316,7 +315,7 @@ def test_run_pi_search_candidate_skips_duplicate_final_verify_for_infrastructure
         encoding="utf-8",
     )
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -368,7 +367,7 @@ def test_run_pi_search_candidate_resumes_same_native_session_across_processes(
 ) -> None:
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -438,7 +437,7 @@ def test_run_pi_search_candidate_refreshes_with_new_native_session(
 ) -> None:
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -487,7 +486,7 @@ def test_run_pi_search_candidate_accepts_explicit_long_worker_budget(
 ) -> None:
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -519,12 +518,12 @@ def test_run_pi_search_candidate_accepts_explicit_long_worker_budget(
 def test_run_pi_search_candidate_rejects_non_pi_rpc_search_spec(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
 
-    with pytest.raises(ValueError, match="worker_host.*pi-rpc"):
+    with pytest.raises(ValueError, match="Pi Main"):
         run_pi_search_candidate(
             root_dir=runtime.root_dir,
             run_id=run_id,
@@ -539,7 +538,7 @@ def test_run_pi_search_candidate_rejects_non_pi_rpc_search_spec(tmp_path: Path) 
 def test_run_pi_search_candidate_binds_runner_failure_handle(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -586,7 +585,7 @@ def test_run_pi_search_candidate_returns_both_failures_when_synthetic_bind_fails
 ) -> None:
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]

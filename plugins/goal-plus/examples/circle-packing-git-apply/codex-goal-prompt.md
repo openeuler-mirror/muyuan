@@ -7,8 +7,7 @@ $goal-plus max_parallel=2 max_duration_seconds=300 workspace_backend=git_worktre
 不要访问网络。
 
 工作区合同：`workspace/` 是本任务可写的独立源码 Git 仓库。把当前目录中的
-`search-spec.json` 作为权威 SearchSpec，保持 `source_path="workspace"`，仅把 Host
-launch 字段改为 `worker_host="codex"`，并保持
+`search-spec.json` 作为权威 SearchSpec，保持 `source_path="workspace"` 和
 `inner_agent="autoresearch"`；不要把当前示例目录或其外层仓库当作 source。
 
 验收：运行 `python workspace/.goal-plus-verifiers/circle_packing_score.py`。结果必须

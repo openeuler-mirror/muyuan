@@ -245,9 +245,10 @@ class FileSearchRuntime:
         verifier_artifacts: list[Path],
         *,
         goal_plus_id: str | None = None,
+        native_host: Literal["codex", "pi"] | None = None,
     ) -> FrozenSpec:
         return self.search_bootstrap.freeze(
-            spec, verifier_artifacts, goal_plus_id=goal_plus_id
+            spec, verifier_artifacts, goal_plus_id=goal_plus_id, native_host=native_host
         )
 
     def materialize_candidate(

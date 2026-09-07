@@ -593,9 +593,8 @@ def thinkthread_spec(project: Path) -> SearchSpec:
     payload = spec_for(project, max_parallel=2).model_dump(mode="json")
     payload["strategy"].update(
         {
-            "worker_host": "thinkthread",
             "worker_budget": {"max_runtime_seconds": 60},
-            "worker_launch": {"agent_profile": "pi"},
+            "worker_launch": {},
         }
     )
     payload["workspace"] = {"backend": "thinkthread", "promotion_mode": "apply"}
@@ -617,7 +616,7 @@ def test_thinkthread_autoresearch_launch_uses_pi_prompt_and_private_git_projecti
 
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(payload),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -663,7 +662,7 @@ def test_thinkthread_autoresearch_settles_private_git_around_outer_snapshots(
     payload["strategy"]["inner_agent"] = "autoresearch"
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(payload),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     [task] = runtime.start_batch(
@@ -812,7 +811,7 @@ def test_thinkthread_autoresearch_recovers_inner_git_settlement_exactly_once(
     payload["strategy"]["inner_agent"] = "autoresearch"
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(payload),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=1).plan_id)
@@ -877,7 +876,7 @@ def test_attempt_rejects_mismatched_typed_provider_facts_before_settlement(
     payload = thinkthread_spec(project).model_dump(mode="json")
     payload["budget"]["max_parallel"] = 1
     payload["strategy"]["inner_agent"] = "autoresearch"
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     [task] = runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=1).plan_id)
     opened = open_thinkthread_search_pool(root_dir=runtime.root_dir, run_id=run_id, client=client)
@@ -1075,7 +1074,7 @@ def test_completed_accepted_attempt_settles_before_expired_deadline_interrupt(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=1).plan_id)
     opened = open_thinkthread_search_pool(
@@ -1129,7 +1128,7 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     spec_payload = thinkthread_spec(project).model_dump(mode="json")
     spec_payload["budget"]["max_parallel"] = 1
     spec_payload["strategy"]["config"]["global_evidence_mode"] = "auto"
-    start_host_verified_goal(root_dir, project)
+    start_host_verified_goal(root_dir, project, native_host="pi")
     goal = FileGoalPlusRuntime(root_dir).require_host_verified_active_goal()
 
     frozen = call_pi_tool(
@@ -1436,7 +1435,7 @@ def test_completed_runtime_turn_without_attempt_fails_closed(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -1489,7 +1488,7 @@ def test_completed_wake_waits_for_quiescence_after_provider_retry_window(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -1531,7 +1530,7 @@ def test_child_dispatch_error_is_preserved_in_failed_event(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -1724,7 +1723,7 @@ def test_annotation_service_reclaims_expired_turn_and_response(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -1859,7 +1858,7 @@ def test_annotation_service_handles_rpc_after_model_pause_without_main_poll(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -1993,7 +1992,7 @@ def test_runtime_owned_s0_k2_exact_snapshot_settlement_and_selection(
     )
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -2264,7 +2263,7 @@ def test_settlement_recovers_provider_journal_without_duplicate_iteration(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -2351,7 +2350,7 @@ def test_candidate_request_close_recovery_does_not_repeat_verifier(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -2418,7 +2417,7 @@ def test_definitive_thinkthread_verifier_error_records_attempt(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -2460,7 +2459,7 @@ def test_unresolved_settlement_does_not_block_another_ready_lane(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -2533,7 +2532,7 @@ def test_settlement_recovery_definitive_failure_becomes_terminal(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -2594,7 +2593,7 @@ def test_discard_reset_recovers_before_and_after_provider_mutation(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
     opened = open_thinkthread_search_pool(
@@ -2695,7 +2694,7 @@ def test_annotation_spawn_wake_and_close_recover_without_duplicate_dispatch(
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     tasks = runtime.start_batch(
         run_id,
@@ -2856,7 +2855,7 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     runtime.start_batch(run_id, plan.plan_id)

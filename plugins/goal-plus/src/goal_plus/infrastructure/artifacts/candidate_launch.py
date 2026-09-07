@@ -100,7 +100,7 @@ class HostCandidateLaunch:
         )
         one_paragraph_idea = "; ".join(idea_lines)
 
-        adapter = candidate_launch_adapter(frozen.spec.strategy.worker_host)
+        adapter = candidate_launch_adapter(frozen.worker_host)
         worker_budget = worker_budget_override
         return adapter.build_launch_payload(
             native_agent_type=binding.native_agent_type,
@@ -115,7 +115,7 @@ class HostCandidateLaunch:
             worker_prompt=self._worker_prompt_for_binding(binding),
             process_environment=(
                 candidate_record.task.process_environment
-                if host_binding(frozen.spec.strategy.worker_host).capabilities.supports_process_environment
+                if host_binding(frozen.worker_host).capabilities.supports_process_environment
                 else None
             ),
         )

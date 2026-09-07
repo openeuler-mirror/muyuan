@@ -203,7 +203,7 @@ def test_drainer_serially_describes_pending_evidence(tmp_path: Path) -> None:
     spec_data["workspace"] = {"backend": "git_worktree"}
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(spec_data), [project / "evaluator.py"]
+        SearchSpec.model_validate(spec_data), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -290,7 +290,7 @@ def test_annotation_admission_reconciles_settlement_write_failures(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -361,7 +361,7 @@ def test_annotation_admission_repairs_legacy_queue_first_crash_window(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -415,7 +415,7 @@ def test_annotation_admission_reconcile_preserves_closed_queue_fence(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -873,7 +873,7 @@ def test_kick_is_single_flight_and_non_blocking(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -921,7 +921,7 @@ def test_required_annotations_block_selection_until_every_view_is_complete(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -979,7 +979,7 @@ def test_permanent_failure_is_not_retried_and_selection_cancels_late_view(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1133,7 +1133,7 @@ def test_selection_cancels_pending_retry_before_promotion(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1187,7 +1187,7 @@ def test_expired_outer_deadline_never_starts_verifier_or_annotation(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1219,7 +1219,7 @@ def test_unix_outer_deadline_allows_annotation_task(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1247,7 +1247,7 @@ def test_transient_annotation_failure_has_bounded_persistent_retries(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1311,7 +1311,7 @@ def test_oversized_diff_uses_full_artifact_view(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)

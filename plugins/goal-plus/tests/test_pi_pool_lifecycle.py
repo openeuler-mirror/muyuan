@@ -29,7 +29,7 @@ def pool_job(tmp_path):
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
-        _pi_rpc_spec_with_budget(project, max_parallel=1), [project / "evaluator.py"],
+        _pi_rpc_spec_with_budget(project, max_parallel=1), [project / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     candidate_id = _planned_candidates(runtime, run_id, 1)[0]

@@ -89,7 +89,7 @@ class SearchRun:
         source_run_id: str | None = None,
     ) -> str:
         frozen = self.state.read_frozen_spec(frozen_spec_id)
-        self.bindings.validate_host_workspace_backend(frozen.spec)
+        self.bindings.validate_host_workspace_backend(frozen.spec, frozen.worker_host)
         self.source.validate_clean_source_repository(frozen.spec)
         if frozen.source_artifact_ref is not None:
             current_source_artifact = self.source.current_artifact(frozen.spec)
@@ -245,7 +245,7 @@ class SearchRun:
                     "selected_models size exceeds the remaining parallel budget"
                 )
         strategy = spec.strategy
-        self.bindings.validate_host_strategy(strategy)
+        self.bindings.validate_host_strategy(strategy, frozen.worker_host)
         mode = self.bindings.strategy_mode(strategy)
 
         if mode in {"agent", "agent_guided", "default"}:
@@ -263,7 +263,7 @@ class SearchRun:
             )
 
         plan.worker_policy = self.bindings.normalize_worker_policy(
-            plan.strategy, plan.worker_policy
+            plan.strategy, plan.worker_policy, host=frozen.worker_host
         )
         plan.selected_models = selected_models
         plan.strategy_trace.setdefault("worker_policy", plan.worker_policy)

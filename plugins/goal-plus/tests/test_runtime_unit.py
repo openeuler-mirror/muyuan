@@ -47,7 +47,6 @@ from tests._runtime_helpers import (
     make_project,
     process_is_running,
     spec_for,
-    spec_with_host,
     spec_with_strategy,
 )
 
@@ -201,8 +200,8 @@ def test_freeze_spec_is_stable_and_copies_verifier(tmp_path: Path) -> None:
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec = spec_for(project)
 
-    first = runtime.freeze_spec(spec, [project / "evaluator.py"])
-    second = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    first = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
+    second = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
 
     assert first.frozen_spec_id == second.frozen_spec_id
     assert first.spec.strategy.inner_agent == "autoresearch"
@@ -221,7 +220,7 @@ def test_freeze_spec_rejects_unknown_inner_agent_before_workspace_creation(
     with pytest.raises(UnsupportedHostCapability, match="unregistered-agent"):
         runtime.freeze_spec(
             SearchSpec.model_validate(payload),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
 
 
@@ -258,7 +257,7 @@ def test_freeze_spec_rejects_dirty_git_source_before_preflight(
     with pytest.raises(ValueError, match="DirtySourceWorkspace") as exc_info:
         runtime.freeze_spec(
             _spec_with_workspace_backend(project, "git_worktree"),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
 
     expected_path = "scratch.txt" if dirty_kind == "untracked" else "initial_program.py"
@@ -276,7 +275,7 @@ def test_freeze_spec_allows_ignored_untracked_git_source(tmp_path: Path) -> None
 
     frozen = runtime.freeze_spec(
         _spec_with_workspace_backend(project, "git_worktree"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
 
     assert frozen.spec.workspace.backend == "git_worktree"
@@ -303,7 +302,7 @@ def test_git_freeze_verifies_origin_and_first_candidate_before_search(
 
     frozen = runtime.freeze_spec(
         _spec_with_workspace_backend(project, "git_worktree"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
 
     assert counter.read_text(encoding="utf-8") == "1"
@@ -363,7 +362,7 @@ def test_git_freeze_rejects_failing_origin_verifier_before_spec_creation(
     with pytest.raises(ValueError, match="OriginVerifierFailed"):
         runtime.freeze_spec(
             _spec_with_workspace_backend(project, "git_worktree"),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
 
     assert not runtime.specs_dir.exists()
@@ -386,7 +385,7 @@ def test_git_origin_verifier_may_write_ignored_cache(tmp_path: Path) -> None:
 
     frozen = runtime.freeze_spec(
         _spec_with_workspace_backend(project, "git_worktree"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
 
     assert frozen.origin_verification is not None
@@ -406,7 +405,7 @@ def test_freeze_spec_copy_backend_allows_dirty_git_source(tmp_path: Path) -> Non
     (project / "scratch.txt").write_text("temporary\n", encoding="utf-8")
     runtime = FileSearchRuntime(tmp_path / ".search")
 
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
     assert frozen.spec.workspace.backend == "copy"
     assert frozen.spec.workspace.promotion_mode == "artifact_only"
@@ -418,7 +417,7 @@ def test_freeze_spec_git_worktree_keeps_plain_directory_support(tmp_path: Path) 
 
     frozen = runtime.freeze_spec(
         _spec_with_workspace_backend(project, "git_worktree"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
 
     assert frozen.spec.workspace.backend == "git_worktree"
@@ -438,7 +437,7 @@ def test_freeze_spec_checks_the_whole_repository_for_nested_source(
     with pytest.raises(ValueError, match="README.md"):
         runtime.freeze_spec(
             _spec_with_workspace_backend(project, "git_worktree"),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
 
 
@@ -448,7 +447,7 @@ def test_create_run_rechecks_clean_git_source(tmp_path: Path) -> None:
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         _spec_with_workspace_backend(project, "git_worktree"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     (project / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
 
@@ -464,7 +463,7 @@ def test_create_run_rejects_clean_git_source_at_new_head(tmp_path: Path) -> None
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         _spec_with_workspace_backend(project, "git_worktree"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     (project / "initial_program.py").write_text("VALUE = 2\n", encoding="utf-8")
     git_commit_all(project, "new clean source head")
@@ -505,7 +504,7 @@ def test_git_freeze_rejects_verifier_ignored_by_outer_repository(
     with pytest.raises(ValueError, match="VerifierArtifactNotMaterialized"):
         runtime.freeze_spec(
             SearchSpec.model_validate(spec_data),
-            [nested / "evaluator.py"],
+            [nested / "evaluator.py"], native_host="codex",
         )
 
     assert not runtime.specs_dir.exists()
@@ -528,7 +527,7 @@ def test_git_relocation_rejects_nonignored_verifier_side_effect(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         _spec_with_workspace_backend(project, "git_worktree"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -555,7 +554,7 @@ def test_create_run_ignores_runtime_state_inside_source_repository(
     runtime = FileSearchRuntime(project / ".gp")
     frozen = runtime.freeze_spec(
         _spec_with_workspace_backend(project, "git_worktree"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
 
     run_id = runtime.create_run(frozen.frozen_spec_id)
@@ -563,27 +562,22 @@ def test_create_run_ignores_runtime_state_inside_source_repository(
     assert runtime.status(run_id).run_id == run_id
 
 
-@pytest.mark.parametrize("worker_host", ["codex", "pi-rpc"])
 def test_freeze_spec_rejects_thinkthread_before_verifier_preflight(
     tmp_path: Path,
-    worker_host: str,
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec_data = spec_for(project).model_dump(mode="json")
-    spec_data["strategy"]["worker_host"] = worker_host
     spec_data["workspace"] = {"backend": "thinkthread"}
     with pytest.raises(
-        UnsupportedHostCapability,
-        match=rf"{worker_host} worker_host does not support workspace backend 'thinkthread'",
-    ) as exc_info:
+        ValueError,
+        match="Codex does not support ThinkThread",
+    ):
         runtime.freeze_spec(
             SearchSpec.model_validate(spec_data),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
 
-    assert "supported backends: copy, git_worktree" in str(exc_info.value)
-    assert "before Search run creation" in str(exc_info.value)
     assert not runtime.specs_dir.exists()
     assert not runtime.runs_dir.exists()
 
@@ -591,15 +585,15 @@ def test_freeze_spec_rejects_thinkthread_before_verifier_preflight(
 def test_create_run_rechecks_existing_thinkthread_frozen_spec(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
     frozen_path = runtime.specs_dir / frozen.frozen_spec_id / "frozen_spec.json"
     payload = load_json(frozen_path)
     payload["spec"]["workspace"] = {"backend": "thinkthread"}
     write_json(frozen_path, payload)
 
     with pytest.raises(
-        UnsupportedHostCapability,
-        match="codex worker_host does not support workspace backend 'thinkthread'",
+        ValueError,
+        match="Codex does not support ThinkThread",
     ):
         runtime.create_run(frozen.frozen_spec_id)
 
@@ -614,19 +608,17 @@ def test_freeze_spec_accepts_enabled_thinkthread_host_without_creating_run(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec_data = spec_for(project).model_dump(mode="json")
-    spec_data["strategy"]["worker_host"] = "thinkthread"
-    spec_data["strategy"]["worker_launch"] = {"agent_profile": "pi"}
     spec_data["workspace"] = {"backend": "thinkthread"}
 
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi",
     )
 
-    assert frozen.spec.strategy.worker_host == "thinkthread"
+    assert frozen.worker_host == "thinkthread"
     assert frozen.spec.workspace.backend == "thinkthread"
-    assert frozen.spec.strategy.worker_launch is not None
-    assert frozen.spec.strategy.worker_launch.agent_profile == "pi"
+    assert frozen.native_host == "pi"
+    assert frozen.spec.strategy.worker_launch is None
     assert runtime.specs_dir.exists()
     assert not runtime.runs_dir.exists()
 
@@ -647,7 +639,7 @@ def test_freeze_spec_rejects_verifier_workspace_side_effect_without_mutating_sou
     runtime = FileSearchRuntime(tmp_path / ".search")
 
     with pytest.raises(ValueError, match="VerifierWorkspaceSideEffect") as exc_info:
-        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
     assert ".goal-plus-verifiers/generated.bin" in str(exc_info.value)
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in str(exc_info.value)
@@ -675,7 +667,7 @@ def test_freeze_spec_provides_per_invocation_verifier_temp_directory(
     )
     runtime = FileSearchRuntime(tmp_path / ".search")
 
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
     assert frozen.frozen_spec_id.startswith("spec_")
     assert not (project / "compiled.bin").exists()
@@ -697,7 +689,7 @@ def test_freeze_spec_rejects_verifier_outputs_in_workspace_tmp(
     runtime = FileSearchRuntime(tmp_path / ".search")
 
     with pytest.raises(ValueError, match="VerifierWorkspaceSideEffect") as exc_info:
-        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
     assert ".tmp/verifier-output.txt" in str(exc_info.value)
     assert not (project / ".tmp").exists()
@@ -719,7 +711,7 @@ def test_freeze_preflight_overrides_verifier_phase_environment(
     monkeypatch.setenv("GOAL_PLUS_VERIFIER_PHASE", "caller_value")
     runtime = FileSearchRuntime(tmp_path / ".search")
 
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
     assert frozen.frozen_spec_id
 
@@ -737,7 +729,7 @@ def test_freeze_preflight_failure_includes_bounded_output_tails(tmp_path: Path) 
     runtime = FileSearchRuntime(tmp_path / ".search")
 
     with pytest.raises(ValueError, match="failed during freeze preflight") as exc_info:
-        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
     message = str(exc_info.value)
     assert "Stdout tail:" in message
@@ -754,7 +746,7 @@ def test_freeze_spec_rejects_plain_text_ranking_score(tmp_path: Path) -> None:
     runtime = FileSearchRuntime(tmp_path / ".search")
 
     with pytest.raises(ValueError, match="emitted no finite numeric metric") as exc_info:
-        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
     assert '{"combined_score":123.0}' in str(exc_info.value)
     assert "expected_outputs lists artifact paths only" in str(exc_info.value)
@@ -778,7 +770,7 @@ def test_freeze_spec_rejects_non_numeric_or_non_finite_ranking_score(
     runtime = FileSearchRuntime(tmp_path / ".search")
 
     with pytest.raises(ValueError, match="emitted no finite numeric metric"):
-        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
 
 def test_null_verifier_error_is_accepted_by_preflight_and_runtime(tmp_path: Path) -> None:
@@ -792,7 +784,7 @@ def test_null_verifier_error_is_accepted_by_preflight_and_runtime(tmp_path: Path
 
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=1),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -815,7 +807,7 @@ def test_freeze_spec_rejects_non_null_verifier_error(tmp_path: Path) -> None:
     runtime = FileSearchRuntime(tmp_path / ".search")
 
     with pytest.raises(ValueError, match="reported an error.*broken evaluator"):
-        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
     assert not runtime.specs_dir.exists()
 
@@ -834,7 +826,7 @@ def test_runtime_rejects_non_null_verifier_error_after_clean_preflight(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=1),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -877,7 +869,7 @@ def test_visible_verifier_failure_returns_diagnostics_and_preserves_logs(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=1),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -946,7 +938,7 @@ def test_non_visible_feedback_policy_keeps_diagnostics_in_runtime_log(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -990,7 +982,7 @@ def test_freeze_spec_rejects_verifier_artifact_under_runtime_root(
         ValueError,
         match=f"ignored Goal Plus runtime directory '{runtime_dir}'",
     ):
-        runtime.freeze_spec(SearchSpec.model_validate(spec_data), [verifier])
+        runtime.freeze_spec(SearchSpec.model_validate(spec_data), [verifier], native_host="codex")
 
 
 def test_freeze_spec_rejects_verifier_artifact_outside_source_path(
@@ -1005,7 +997,7 @@ def test_freeze_spec_rejects_verifier_artifact_outside_source_path(
     runtime = FileSearchRuntime(tmp_path / ".search")
 
     with pytest.raises(ValueError, match="outside source_path"):
-        runtime.freeze_spec(spec_for(project), [verifier])
+        runtime.freeze_spec(spec_for(project), [verifier], native_host="codex")
 
 
 def test_source_owned_verifier_is_present_in_git_worktree_candidate(
@@ -1027,7 +1019,7 @@ def test_source_owned_verifier_is_present_in_git_worktree_candidate(
     spec_data["edit_surface"]["deny"].append(".goal-plus-verifiers/")
     runtime = FileSearchRuntime(tmp_path / ".search")
 
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(spec_data), [verifier])
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(spec_data), [verifier], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -1046,7 +1038,7 @@ def test_create_run_reuses_frozen_verifier_with_current_source_baseline(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=1),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     first_run_id = runtime.create_run(frozen.frozen_spec_id)
     project.joinpath("initial_program.py").write_text(
@@ -1079,7 +1071,7 @@ def test_runtime_marks_missing_ranking_metric_as_failure(tmp_path: Path) -> None
         encoding="utf-8",
     )
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -1107,7 +1099,7 @@ def test_select_chooses_highest_json_ranking_metric(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=3), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=3), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=3)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -1131,7 +1123,7 @@ def test_select_records_recoverable_selection_blocked_state(tmp_path: Path) -> N
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=2),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     first_plan = runtime.plan_next(run_id, requested_k=1)
@@ -1154,7 +1146,7 @@ def test_load_legacy_frozen_spec_without_workspace_uses_copy_backend(
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
     frozen_path = runtime.root_dir / "specs" / frozen.frozen_spec_id / "frozen_spec.json"
     frozen_data = load_json(frozen_path)
     frozen_data["spec"].pop("workspace")
@@ -1172,7 +1164,7 @@ def test_runtime_defaults_to_git_worktree_workspace(tmp_path: Path) -> None:
     spec_data.pop("workspace")
     spec = SearchSpec.model_validate(spec_data)
 
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -1216,17 +1208,12 @@ def test_git_tracked_task_skills_are_discovered_in_each_candidate_worktree(
     untracked_skill.parent.mkdir(parents=True)
     untracked_skill.write_text("# Untracked\n", encoding="utf-8")
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec_data = spec_with_host(
-        project,
-        "codex",
-        strategy_name="random",
-        max_parallel=2,
-    ).model_dump(mode="json")
+    spec_data = spec_with_strategy(project, {"name": "random"}, max_parallel=2).model_dump(mode="json")
     spec_data["workspace"] = {"backend": "git_worktree"}
     spec = SearchSpec.model_validate(spec_data)
     frozen = runtime.freeze_spec(
         spec,
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
 
     assert frozen.task_skill_paths == [".agents/skills/review/SKILL.md"]
@@ -1263,7 +1250,7 @@ def test_no_git_tracked_task_skills_is_reported_explicitly(tmp_path: Path) -> No
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=1),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     assert frozen.task_skill_paths == []
     run_id = runtime.create_run(frozen.frozen_spec_id)
@@ -1292,7 +1279,7 @@ def test_freeze_rejects_git_tracked_symlink_skill_entrypoint(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="cannot be a symlink"):
         runtime.freeze_spec(
             spec_for(project, max_parallel=1),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
 
 
@@ -1314,7 +1301,7 @@ def test_freeze_rejects_symlink_inside_git_tracked_skill(tmp_path: Path) -> None
     with pytest.raises(ValueError, match="bundle cannot contain a symlink"):
         runtime.freeze_spec(
             spec_for(project, max_parallel=1),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
 
 
@@ -1338,7 +1325,7 @@ def test_freeze_rejects_untracked_file_in_git_tracked_skill(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="files not tracked by Git.*checks.md"):
         runtime.freeze_spec(
             spec_for(project, max_parallel=1),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
 
 
@@ -1355,7 +1342,7 @@ def test_freeze_reports_git_discovery_failure_when_skill_directory_exists(
     with pytest.raises(RuntimeError, match="Cannot inspect task-local Skills.*git ls-files"):
         runtime.freeze_spec(
             spec_for(project, max_parallel=1),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
 
 
@@ -1390,7 +1377,7 @@ def test_freeze_spec_normalizes_verifier_cwd_equal_to_source_path(
 
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
 
     assert frozen.spec.process_verifiers[0].cwd == "."
@@ -1400,7 +1387,7 @@ def test_freeze_spec_normalizes_verifier_cwd_equal_to_source_path(
 def test_plan_next_and_start_batch_record_plan_metadata(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=2), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=2), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -1429,7 +1416,7 @@ def test_candidate_workspace_has_isolated_git_baseline_under_ignored_parent(
 
     project = make_project(parent)
     runtime = FileSearchRuntime(parent / ".tmp" / ".search")
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -1476,7 +1463,7 @@ def test_worker_task_exposes_host_and_edit_contract(tmp_path: Path) -> None:
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -1512,7 +1499,6 @@ def test_git_common_inner_agent_uses_one_attempt_per_dispatch_contract(
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "inner_agent": "common",
             "worker_budget": {
                 "max_runtime_seconds": 60,
@@ -1522,7 +1508,7 @@ def test_git_common_inner_agent_uses_one_attempt_per_dispatch_contract(
         max_parallel=1,
     )
 
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     assert frozen.spec.strategy.inner_agent == "common"
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1648,7 +1634,6 @@ def test_inner_agent_binding_fails_closed_when_prompt_asset_is_missing(
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "inner_agent": "common",
             "worker_budget": {
                 "max_runtime_seconds": 60,
@@ -1657,7 +1642,7 @@ def test_inner_agent_binding_fails_closed_when_prompt_asset_is_missing(
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -1693,10 +1678,8 @@ def test_worker_instructions_match_enabled_capabilities(
         strategy.update(
                 {
                     "orchestration_mode": "adaptive_search",
-                    "worker_host": "pi-rpc",
                     "worker_budget": {"max_runtime_seconds": 60},
                     "search_scheduler": {
-                    "host": "pi-rpc",
                     "model": "scheduler-model",
                     "reasoning_effort": "low",
                     "timeout_seconds": 60,
@@ -1713,7 +1696,7 @@ def test_worker_instructions_match_enabled_capabilities(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi" if adaptive else "codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1779,7 +1762,7 @@ def test_promotion_verifier_is_selected_parent_only(tmp_path: Path) -> None:
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1906,7 +1889,7 @@ def test_promote_runs_promotion_verifiers_and_keeps_failed_run_ready(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py", project / "promotion.py"],
+        [project / "evaluator.py", project / "promotion.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1966,7 +1949,7 @@ def test_promote_reruns_and_binds_fresh_promotion_evidence(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py", project / "promotion.py"],
+        [project / "evaluator.py", project / "promotion.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2047,7 +2030,7 @@ def test_promote_rejects_changed_selected_artifact_before_acceptance(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py", project / "promotion.py"],
+        [project / "evaluator.py", project / "promotion.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2101,7 +2084,7 @@ def test_promote_rejects_concurrent_allowed_file_change_during_acceptance(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py", project / "promotion.py"],
+        [project / "evaluator.py", project / "promotion.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2156,7 +2139,7 @@ def test_promote_patch_uses_selected_commit_after_evidence_check(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py", project / "promotion.py"],
+        [project / "evaluator.py", project / "promotion.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2209,7 +2192,7 @@ def test_git_promotion_preserves_running_history_and_applies_one_squash_commit(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2290,7 +2273,7 @@ def test_create_rejects_failed_workspace_capacity_preflight(tmp_path: Path) -> N
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=4),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     assert frozen.workspace_capacity_estimate is not None
     failed_estimate = frozen.workspace_capacity_estimate.model_copy(
@@ -2323,7 +2306,7 @@ def test_git_run_local_worktree_and_apply_work_inside_source_gp(
     runtime = FileSearchRuntime(project / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2363,7 +2346,7 @@ def test_git_promotion_apply_is_noop_when_product_tree_is_unchanged(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2392,7 +2375,7 @@ def test_git_promotion_applies_nested_source_subdir_only(tmp_path: Path) -> None
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2434,7 +2417,7 @@ def test_nested_git_workspace_rejects_committed_changes_outside_source_subdir(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2463,7 +2446,7 @@ def test_git_promotion_conflict_aborts_without_cherry_pick_state(
     data["workspace"] = {"backend": "git_worktree"}
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(data), [project / "evaluator.py"]
+        SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2507,8 +2490,8 @@ def test_git_promotion_conflict_aborts_without_cherry_pick_state(
 def test_worker_policy_includes_host_capabilities_for_codex(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = spec_with_host(project, "codex", strategy_name="random", max_parallel=1)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    spec = spec_with_strategy(project, {"name": "random"}, max_parallel=1)
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2529,7 +2512,6 @@ def test_worker_policy_uses_pi_rpc_native_session_resume(tmp_path: Path) -> None
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {
                 "max_runtime_seconds": 600,
                 "max_turns": 8,
@@ -2538,7 +2520,7 @@ def test_worker_policy_uses_pi_rpc_native_session_resume(tmp_path: Path) -> None
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2564,7 +2546,7 @@ def test_start_agent_session_creates_context_handle_and_launch_payload(tmp_path:
     )
     spec_data = spec.model_dump(mode="json")
     spec_data["budget"]["max_parallel"] = 1
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(spec_data), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(spec_data), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -2607,7 +2589,7 @@ def test_redispatch_candidate_preserves_frozen_legacy_native_role(
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -2636,16 +2618,14 @@ def test_redispatch_candidate_preserves_frozen_legacy_native_role(
 def test_redispatch_context_includes_previous_progress_handoff(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec_data = spec_with_host(
-        project, "pi-rpc", strategy_name="random", max_parallel=1
-    ).model_dump(mode="json")
+    spec_data = spec_with_strategy(project, {"name": "random"}, max_parallel=1).model_dump(mode="json")
     spec_data["strategy"]["worker_budget"] = {
         "max_runtime_seconds": 60,
         "max_turns": 8,
     }
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -2700,8 +2680,8 @@ def test_redispatch_context_includes_previous_progress_handoff(tmp_path: Path) -
 def test_start_agent_session_returns_codex_launch_payload(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = spec_with_host(project, "codex", strategy_name="random", max_parallel=1)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    spec = spec_with_strategy(project, {"name": "random"}, max_parallel=1)
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -2728,7 +2708,6 @@ def test_start_agent_session_returns_pi_rpc_launch_payload(tmp_path: Path) -> No
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {
                 "max_runtime_seconds": 600,
                 "max_turns": 8,
@@ -2737,7 +2716,7 @@ def test_start_agent_session_returns_pi_rpc_launch_payload(tmp_path: Path) -> No
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -2770,7 +2749,6 @@ def test_start_agent_session_accepts_one_dispatch_worker_budget(tmp_path: Path) 
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {
                 "max_runtime_seconds": 600,
                 "max_turns": 8,
@@ -2779,7 +2757,7 @@ def test_start_agent_session_accepts_one_dispatch_worker_budget(tmp_path: Path) 
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -2811,13 +2789,8 @@ def test_launch_keeps_candidate_proposal_when_main_directive_is_shared(
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = spec_with_host(
-        project,
-        "codex",
-        strategy_name="agent_guided",
-        max_parallel=1,
-    )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    spec = spec_with_strategy(project, {"name": "agent_guided"}, max_parallel=1)
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(
@@ -2849,8 +2822,8 @@ def test_launch_keeps_candidate_proposal_when_main_directive_is_shared(
 def test_redispatch_candidate_overrides_codex_worker_budget(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = spec_with_host(project, "codex", strategy_name="random", max_parallel=1)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    spec = spec_with_strategy(project, {"name": "random"}, max_parallel=1)
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -2891,7 +2864,6 @@ def test_codex_worker_budget_flows_to_watchdog_launch_payload(tmp_path: Path) ->
         project,
         {
             "name": "random",
-            "worker_host": "codex",
             "worker_budget": {
                 "max_runtime_seconds": 600,
                 "max_turns": 8,
@@ -2900,7 +2872,7 @@ def test_codex_worker_budget_flows_to_watchdog_launch_payload(tmp_path: Path) ->
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -2941,7 +2913,6 @@ def test_pi_worker_budget_accepts_autoresearch_lease_fields(tmp_path: Path) -> N
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {
                 "min_runtime_seconds": 300,
                 "min_verifier_runs": 1,
@@ -2952,7 +2923,7 @@ def test_pi_worker_budget_accepts_autoresearch_lease_fields(tmp_path: Path) -> N
         max_parallel=1,
     )
 
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -2976,7 +2947,6 @@ def test_freeze_rejects_worker_lease_fields_in_strategy_config(
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {
                 "max_runtime_seconds": 420,
                 "on_exceed": "interrupt",
@@ -2990,7 +2960,7 @@ def test_freeze_rejects_worker_lease_fields_in_strategy_config(
     )
 
     with pytest.raises(ValueError, match="strategy.worker_budget"):
-        runtime.freeze_spec(spec, [project / "evaluator.py"])
+        runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
 
 
 def test_freeze_rejects_unknown_global_evidence_mode(tmp_path: Path) -> None:
@@ -3000,7 +2970,7 @@ def test_freeze_rejects_unknown_global_evidence_mode(tmp_path: Path) -> None:
     spec.strategy.config["global_evidence_mode"] = "sometimes"
 
     with pytest.raises(ValueError, match="global_evidence_mode"):
-        runtime.freeze_spec(spec, [project / "evaluator.py"])
+        runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
 
 
 def test_freeze_persists_global_evidence_mode_from_environment(
@@ -3012,7 +2982,7 @@ def test_freeze_persists_global_evidence_mode_from_environment(
     spec = spec_for(project)
     monkeypatch.setenv("GOAL_PLUS_GLOBAL_EVIDENCE_MODE", "independent")
 
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
 
     assert "global_evidence_mode" not in spec.strategy.config
     assert frozen.spec.strategy.config["global_evidence_mode"] == "independent"
@@ -3035,7 +3005,7 @@ def test_freeze_rejects_conflicting_global_evidence_mode_environment(
     monkeypatch.setenv("GOAL_PLUS_GLOBAL_EVIDENCE_MODE", "independent")
 
     with pytest.raises(ValueError, match="conflicts"):
-        runtime.freeze_spec(spec, [project / "evaluator.py"])
+        runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
 
 
 @pytest.mark.codex
@@ -3046,7 +3016,6 @@ def test_codex_worker_launch_options_flow_to_spawn_payload(tmp_path: Path) -> No
         project,
         {
             "name": "random",
-            "worker_host": "codex",
             "worker_launch": {
                 "model": "gpt-5.6-terra",
                 "reasoning_effort": "high",
@@ -3055,7 +3024,7 @@ def test_codex_worker_launch_options_flow_to_spawn_payload(tmp_path: Path) -> No
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -3080,13 +3049,12 @@ def test_pi_rpc_rejects_unsupported_worker_service_tier(tmp_path: Path) -> None:
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_runtime_seconds": 60},
             "worker_launch": {"service_tier": "priority"},
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     with pytest.raises(ValueError, match="service_tier"):
@@ -3113,7 +3081,6 @@ def test_pi_rpc_rejects_unsupported_selected_model_service_tier(tmp_path: Path) 
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_runtime_seconds": 60},
             "models": [
                 {
@@ -3125,7 +3092,7 @@ def test_pi_rpc_rejects_unsupported_selected_model_service_tier(tmp_path: Path) 
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     with pytest.raises(ValueError, match="service_tier"):
@@ -3140,12 +3107,11 @@ def test_host_worker_budget_rejects_unenforceable_limits(tmp_path: Path) -> None
         project,
         {
             "name": "random",
-            "worker_host": "codex",
             "worker_budget": {"max_turns": 8},
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(codex_spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(codex_spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     with pytest.raises(ValueError, match="codex worker_budget requires max_runtime_seconds"):
         runtime.plan_next(run_id, requested_k=1)
@@ -3155,12 +3121,11 @@ def test_host_worker_budget_rejects_unenforceable_limits(tmp_path: Path) -> None
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_turns": 8},
         },
         max_parallel=1,
     )
-    frozen = pi_runtime.freeze_spec(pi_spec, [project / "evaluator.py"])
+    frozen = pi_runtime.freeze_spec(pi_spec, [project / "evaluator.py"], native_host="pi")
     run_id = pi_runtime.create_run(frozen.frozen_spec_id)
     with pytest.raises(ValueError, match="pi-rpc worker_budget requires max_runtime_seconds"):
         pi_runtime.plan_next(run_id, requested_k=1)
@@ -3170,8 +3135,8 @@ def test_host_worker_budget_rejects_unenforceable_limits(tmp_path: Path) -> None
 def test_bind_agent_handle_records_codex_task_name(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = spec_with_host(project, "codex", strategy_name="random", max_parallel=1)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    spec = spec_with_strategy(project, {"name": "random"}, max_parallel=1)
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -3191,8 +3156,8 @@ def test_bind_agent_handle_records_codex_task_name(tmp_path: Path) -> None:
 def test_bind_agent_handle_harvests_workspace_handoff_into_history(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = spec_with_host(project, "codex", strategy_name="random", max_parallel=1)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    spec = spec_with_strategy(project, {"name": "random"}, max_parallel=1)
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -3245,8 +3210,8 @@ def test_bind_agent_handle_harvests_workspace_handoff_into_history(tmp_path: Pat
 def test_codex_continue_agent_session_uses_bound_worker_and_budget(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = spec_with_host(project, "codex", strategy_name="random", max_parallel=1)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    spec = spec_with_strategy(project, {"name": "random"}, max_parallel=1)
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -3279,7 +3244,6 @@ def test_pi_rpc_continue_agent_session_reuses_native_session(tmp_path: Path) -> 
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {
                 "max_runtime_seconds": 600,
                 "on_exceed": "interrupt",
@@ -3287,7 +3251,7 @@ def test_pi_rpc_continue_agent_session_reuses_native_session(tmp_path: Path) -> 
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -3334,7 +3298,7 @@ def test_plan_next_caps_batch_size_to_max_parallel(tmp_path: Path) -> None:
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec_data = spec_for(project, max_parallel=4).model_dump(mode="json")
     spec_data["budget"]["max_parallel"] = 2
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(spec_data), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(spec_data), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=4)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -3357,7 +3321,7 @@ def test_rolling_candidates_remains_scheduler_independent(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     monkeypatch.setattr(
@@ -3381,13 +3345,12 @@ def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
     spec_data["strategy"].update(
         {
             "name": "random",
-            "worker_host": "codex",
             "orchestration_mode": "parallel_loops",
         }
     )
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
@@ -3462,7 +3425,7 @@ def test_start_agent_session_allocates_unique_ids_under_parallel_calls(
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec_data = spec_for(project, max_parallel=2).model_dump(mode="json")
     spec_data["budget"]["max_parallel"] = 2
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(spec_data), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(spec_data), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -3517,7 +3480,7 @@ def test_get_agent_context_has_only_authoritative_worker_fields(tmp_path: Path) 
         },
         max_parallel=2,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -3566,7 +3529,7 @@ def test_get_agent_context_has_only_authoritative_worker_fields(tmp_path: Path) 
 def test_agent_session_ids_are_unique_across_runs(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex")
 
     first_run_id = runtime.create_run(frozen.frozen_spec_id)
     second_run_id = runtime.create_run(frozen.frozen_spec_id)
@@ -3588,7 +3551,7 @@ def test_agent_session_ids_are_unique_across_runs(tmp_path: Path) -> None:
 def test_legacy_agent_session_id_collision_is_not_silent(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex")
 
     first_run_id = runtime.create_run(frozen.frozen_spec_id)
     second_run_id = runtime.create_run(frozen.frozen_spec_id)
@@ -3616,7 +3579,7 @@ def test_agent_guided_strategy_requires_and_validates_proposals(tmp_path: Path) 
         {"name": "agent_guided"},
         max_parallel=3,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     plan1 = runtime.plan_next(run_id, requested_k=1)
@@ -3647,7 +3610,7 @@ def test_git_worktree_start_batch_recovers_after_materialization_before_record(
     ).model_dump(mode="json")
     spec_data["workspace"] = {"backend": "git_worktree"}
     spec = SearchSpec.model_validate(spec_data)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, 1)
     original_write = runtime.candidate_creation.state.write_candidate
@@ -3690,7 +3653,7 @@ def test_start_batch_is_serialized_and_idempotent_for_same_plan(
     ).model_dump(mode="json")
     spec_data["workspace"] = {"backend": "git_worktree"}
     spec = SearchSpec.model_validate(spec_data)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, 2)
 
@@ -3712,7 +3675,7 @@ def test_random_strategy_gen1_independent_bootstrap(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec = spec_with_strategy(project, {"name": "random"}, max_parallel=4)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     plan = runtime.plan_next(run_id, 2)
@@ -3735,7 +3698,7 @@ def test_random_strategy_name_normalizes_case_and_dash(
 
     for name in ("Random", "random-mode", "RANDOM_MODE"):
         spec = spec_with_strategy(project, {"name": name}, max_parallel=4)
-        frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+        frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
         run_id = runtime.create_run(frozen.frozen_spec_id)
 
         plan = runtime.plan_next(run_id, 2)
@@ -3771,8 +3734,8 @@ def test_codex_creates_sessions_for_portable_strategy_modes(
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = spec_with_host(project, host, strategy_name=strategy_name, max_parallel=1)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    spec = spec_with_strategy(project, {"name": strategy_name}, max_parallel=1)
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -3810,13 +3773,8 @@ def test_codex_rejects_non_portable_strategies(
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = spec_with_host(
-        project,
-        "codex",
-        strategy_name=strategy_name,
-        max_parallel=1,
-    )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    spec = spec_with_strategy(project, {"name": strategy_name}, max_parallel=1)
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     with pytest.raises(ValueError, match=f"codex.*{strategy_name}"):
@@ -3849,7 +3807,7 @@ def test_run_verifier_records_edit_surface_violation_in_iteration(
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -3960,7 +3918,7 @@ def test_run_verifier_records_failure_class_on_timeout(
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -3999,7 +3957,7 @@ def test_git_worktree_verifier_start_failure_records_attempt(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         _spec_with_workspace_backend(project, "git_worktree"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -4038,7 +3996,7 @@ def test_git_worktree_verifier_command_failure_records_attempt(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         _spec_with_workspace_backend(project, "git_worktree"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -4087,7 +4045,7 @@ def test_process_verifier_requires_time_for_suite_and_closeout(
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     candidate = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -4116,7 +4074,7 @@ def test_list_iterations_empty_for_fresh_candidate(tmp_path: Path) -> None:
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -4138,7 +4096,7 @@ def test_run_verifier_records_iteration_with_agent_session_id(
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -4182,7 +4140,7 @@ def test_run_verifier_without_agent_session_id_is_main_final_verify(
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -4278,7 +4236,7 @@ def test_run_verifier_preserves_ranking_metric_named_like_runtime_metadata(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -4375,7 +4333,7 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
     monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     monkeypatch.setenv(
         DEVICE_POOLS_ENV,
@@ -4518,7 +4476,7 @@ def test_device_pool_lease_releases_after_terminal_or_create_failure(
     frozen_specs = [
         runtime.freeze_spec(
             SearchSpec.model_validate(spec_data),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
         for runtime in runtimes
     ]
@@ -4602,7 +4560,7 @@ def test_verifier_resource_lock_serializes_candidates_and_persists_diagnostics(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -4641,7 +4599,7 @@ def test_promotion_verifier_overrides_verifier_phase_environment(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -4731,7 +4689,7 @@ def test_verifier_timeout_terminates_entire_process_group(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -4781,7 +4739,7 @@ def test_select_uses_metric_direction_for_minimize(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=2, direction="minimize"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -4816,7 +4774,7 @@ def test_select_does_not_reverify_duplicate_latest_artifact_option(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=2),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -4856,7 +4814,7 @@ def test_select_reuses_exact_worker_evidence_without_parent_verifier(
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -4897,7 +4855,7 @@ def test_select_uses_best_iteration_when_artifact_is_current(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=2),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -4946,7 +4904,7 @@ def test_select_can_recover_best_iteration_after_artifact_changed(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=2),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -5005,7 +4963,7 @@ def test_run_verifier_rejects_missing_results_ledger_git_history(
     project = make_project(tmp_path)
     _initialize_source_repository(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -5158,7 +5116,7 @@ def test_results_tsv_inherits_across_successor_run(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec = spec_with_strategy(project, {"name": "random"}, max_parallel=1)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     first_run_id = runtime.create_run(frozen.frozen_spec_id)
 
     first_plan = runtime.plan_next(first_run_id, requested_k=1)
@@ -5247,7 +5205,7 @@ def test_select_restores_best_git_commit_before_final_verify(
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=2),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -5319,7 +5277,7 @@ def test_run_verifier_rejects_mismatched_agent_session(tmp_path: Path) -> None:
         },
         max_parallel=2,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -5375,7 +5333,7 @@ def test_concurrent_run_verifiers_preserve_best_score(
         },
         max_parallel=2,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -5439,7 +5397,7 @@ def test_run_verifier_works_without_session_and_records_iterations(
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -5487,7 +5445,7 @@ def test_list_iterations_returns_all_records(
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -5535,7 +5493,7 @@ def test_get_agent_context_returns_bounded_iteration_summary(
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -5586,7 +5544,7 @@ def test_history_and_report_include_agent_sessions(tmp_path: Path) -> None:
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -5609,7 +5567,7 @@ def test_report_rejects_linked_nonterminal_goal(
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     goal_dir = runtime.root_dir / "goal-plus" / "gp_report"
     goal_dir.mkdir(parents=True)
@@ -5638,7 +5596,7 @@ def test_report_allows_linked_terminal_goal(
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     goal_dir = runtime.root_dir / "goal-plus" / "gp_report"
     goal_dir.mkdir(parents=True)
@@ -5665,12 +5623,11 @@ def test_history_projects_latest_structured_research_handoff(tmp_path: Path) -> 
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_runtime_seconds": 600},
         },
         max_parallel=1,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -5757,12 +5714,11 @@ def test_history_feature_ledger_retains_non_frontier_candidate(tmp_path: Path) -
         project,
         {
             "name": "random",
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_runtime_seconds": 600},
         },
         max_parallel=2,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -5829,7 +5785,7 @@ def test_invalidate_run_fences_work_and_successor_inherits_research(
         {"name": "agent_guided"},
         max_parallel=2,
     )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(
@@ -5960,7 +5916,7 @@ def test_invalidation_rejects_in_flight_verifier_result(
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -5988,7 +5944,7 @@ def test_invalidation_rejects_in_flight_verifier_result(
 def test_runtime_does_not_create_event_or_observation_dirs(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     tasks = runtime.start_batch(run_id, plan.plan_id)

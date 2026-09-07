@@ -105,7 +105,7 @@ def test_worker_proxy_accepts_only_one_stable_attempt_per_turn(tmp_path: Path) -
 
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     job = {
         "agent_session_id": "agent-1",
@@ -176,7 +176,7 @@ def test_worker_proxy_checks_toolization_before_accepting_attempt(tmp_path, shar
     runtime = FileSearchRuntime(tmp_path / ".gp")
     data = spec_for(project).model_dump(mode="json")
     data["shared_dir"] = {"enabled": shared_enabled}
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     job = {
         "agent_session_id": "agent-1", "run_id": run_id, "candidate_id": "c001",

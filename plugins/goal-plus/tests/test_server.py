@@ -337,7 +337,6 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     )
     scheduler = scheduler_schema["properties"]
     assert set(scheduler) == {
-        "host",
         "model",
         "reasoning_effort",
         "timeout_seconds",
@@ -345,7 +344,6 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
         "allocation",
     }
     assert set(scheduler_schema["required"]) == {
-        "host",
         "model",
         "reasoning_effort",
         "timeout_seconds",

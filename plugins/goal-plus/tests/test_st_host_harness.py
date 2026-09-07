@@ -89,7 +89,7 @@ def test_codex_redispatch_prompt_names_required_runtime_evidence() -> None:
     prompt = Path("tests/st/prompts/codex_redispatch.md").read_text(encoding="utf-8")
 
     assert "gpt-5.6-terra" in prompt
-    assert 'worker_host="codex"' in prompt
+    assert "worker_host" not in prompt
     assert "search_redispatch_candidate" in prompt
     assert "two different agent_session_id" in prompt
     assert "parent_watchdog" in prompt
@@ -114,7 +114,7 @@ def test_codex_circle_packing_cycle_has_isolated_source_and_valid_layouts(tmp_pa
     assert set(hashes) == {"initial_program.py", "evaluator.py"}
     source = tmp_path / "source"
     spec = SearchSpec.model_validate_json((source / "spec.json").read_text())
-    assert spec.strategy.worker_host == "codex"
+    assert "worker_host" not in spec.strategy.model_dump()
     assert spec.strategy.worker_launch.model == "gpt-5.6-sol"
     assert spec.strategy.evidence_annotator.reasoning_effort == "low"
     assert (source / ".git").is_dir() and (tmp_path / ".git").is_dir()

@@ -29,7 +29,6 @@ ANNOTATION_RETRY_BACKOFF_SECONDS = (30, 120)
 
 
 class EvidenceAnnotatorSpec(SearchModel):
-    host: AgentHostKind | None = None
     model: str | None = None
     reasoning_effort: str | None = None
     timeout_seconds: int = Field(default=1800, gt=0, le=1800)

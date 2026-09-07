@@ -23,7 +23,7 @@ def candidate_host(tmp_path, monkeypatch):
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)

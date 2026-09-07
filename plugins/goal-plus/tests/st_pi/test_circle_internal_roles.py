@@ -45,7 +45,7 @@ def test_circle_annotation_scheduler(
     data["source_path"] = str(source)
     data["budget"] = {"max_parallel": 1, "max_candidates": 1}
     profile = {
-        "host": "pi-rpc", "model": model, "reasoning_effort": thinking,
+        "model": model, "reasoning_effort": thinking,
         "timeout_seconds": timeout,
     }
     data["strategy"].update({
@@ -60,7 +60,7 @@ def test_circle_annotation_scheduler(
     runtime = FileSearchRuntime(st_pi_run_root / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [source / ".goal-plus-verifiers" / "circle_packing_score.py"],
+        [source / ".goal-plus-verifiers" / "circle_packing_score.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)

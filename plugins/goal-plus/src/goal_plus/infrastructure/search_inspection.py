@@ -28,8 +28,8 @@ class HostSearchInspection:
     def inner_agent(self, frozen, task):
         return candidate_inner_agent_binding(frozen, task).inner_agent_id
 
-    def normalize_worker_policy(self, strategy):
-        return self.bindings.normalize_worker_policy(strategy)
+    def normalize_worker_policy(self, frozen):
+        return self.bindings.normalize_worker_policy(frozen.spec.strategy, host=frozen.worker_host)
 
     def observability(self, session):
         return collect_host_observability(session)

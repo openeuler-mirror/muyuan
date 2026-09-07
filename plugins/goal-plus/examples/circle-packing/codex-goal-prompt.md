@@ -9,8 +9,7 @@ $goal-plus max_parallel=2 max_duration_seconds=600 workspace_backend=git_worktre
 
 工作区合同：`workspace-template/` 是受版本控制的只读 baseline。把当前目录中的
 `search-spec.json` 作为权威 SearchSpec，保持
-`source_path="workspace-template"` 和 `promotion_mode="artifact_only"`，仅把 Host
-launch 字段改为 `worker_host="codex"` 和
+`source_path="workspace-template"`、`promotion_mode="artifact_only"` 和
 `inner_agent="autoresearch"`。不要创建临时 `workspace/`，不要把
 publication 回写到 `workspace-template/`；候选、Evidence、publication 和报告只保存在
 `.gp/`。

@@ -36,7 +36,7 @@ class CandidateHostQueries:
         run = self.source.read_run(run_id)
         return self.source.read_frozen_spec(
             run.frozen_spec_id
-        ).spec.strategy.worker_host
+        ).worker_host
 
     def uses_adaptive_search(self, run_id: str) -> bool:
         try:
@@ -77,10 +77,10 @@ class CandidateHostQueries:
         run = self.source.read_run(run_id)
         require_run_not_invalidated(run, "open or submit Pi pool work")
         frozen = self.source.read_frozen_spec(run.frozen_spec_id)
-        if frozen.spec.strategy.worker_host != "pi-rpc":
+        if frozen.worker_host != "pi-rpc":
             raise ValueError(
-                "Pi worker pools require SearchSpec strategy.worker_host='pi-rpc'; "
-                f"got {frozen.spec.strategy.worker_host!r}"
+                "Pi worker pools require a Pi Main with a local workspace backend; "
+                f"got {frozen.worker_host!r}"
             )
         frozen_limit = int(frozen.spec.budget.max_parallel)
         selected = frozen_limit if max_parallel is None else int(max_parallel)

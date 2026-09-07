@@ -158,6 +158,23 @@ complete Codex and Pi commands with ready-to-paste prompts.
 Host differences and strategy coverage are summarized in
 [Agent Host Adapters](docs/agent-host-adapters.md).
 
+The following table groups supported Search paths by the native Main Agent.
+ThinkThread provides workspace and Child execution infrastructure; the Agent
+inside the supported ThinkThread path is Pi.
+
+| Main Agent | Workspace backend | Candidate driver | Annotation driver | Adaptive Scheduler |
+| --- | --- | --- | --- | --- |
+| Codex | `git_worktree` / `copy` | Native subagent | Codex CLI | Codex CLI; Git worktree only |
+| Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI; Git worktree only |
+| Pi | `thinkthread` | TT Pi Child | TT Pi Child | Not supported |
+| Codex | `thinkthread` | Not supported | Not supported | Not supported |
+
+`workspace.backend` identifies the workspace provider. Agent identity comes from
+the authorized Main session and is recorded as `FrozenSpec.native_host`; it is
+not a SearchSpec option. Runtime derives each role's driver from this identity
+and the workspace backend. Scheduler reward and
+allocation share one inference call, with no separate reward Agent.
+
 ## Mental Model
 
 - A **Goal Plus record** is the complete user task.

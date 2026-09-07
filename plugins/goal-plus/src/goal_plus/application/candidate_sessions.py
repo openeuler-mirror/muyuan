@@ -215,7 +215,7 @@ class CandidateSessions:
 
             if worker_budget_override is not None:
                 worker_budget_override = normalize_worker_budget_override(
-                    worker_host=frozen.spec.strategy.worker_host,
+                    worker_host=frozen.worker_host,
                     worker_budget=worker_budget_override,
                 )
 
@@ -275,7 +275,7 @@ class CandidateSessions:
                 candidate_record=candidate_record,
                 worker_budget_override=worker_budget_override,
             )
-            host = frozen.spec.strategy.worker_host
+            host = frozen.worker_host
             if host == "pi-rpc":
                 launch["run_id"] = run_id
             host_handle = AgentHostHandle(host=host)
@@ -480,7 +480,7 @@ class CandidateSessions:
             else candidate_worker_budget(frozen, candidate_record.task)
         )
         return normalize_worker_budget_override(
-            worker_host=frozen.spec.strategy.worker_host,
+            worker_host=frozen.worker_host,
             worker_budget=worker_budget,
         )
 

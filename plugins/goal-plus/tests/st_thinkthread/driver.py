@@ -407,10 +407,9 @@ def _runtime_spec(
         ],
         "strategy": {
             "name": "agent_guided",
-            "worker_host": "thinkthread",
             "worker_budget": {"max_runtime_seconds": 240},
-            "worker_launch": {"agent_profile": "pi"},
-            "evidence_annotator": {"host": annotation_host},
+            "worker_launch": {},
+            "evidence_annotator": {},
         },
         "workspace": {
             "backend": "thinkthread",
@@ -545,7 +544,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
     )
     frozen = runtime.freeze_spec(
         _runtime_spec(project, inner_agent=inner_agent),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi",
     )
     assert frozen.spec.strategy.inner_agent == inner_agent
     run_id = runtime.create_run(frozen.frozen_spec_id)
@@ -943,7 +942,7 @@ def run_annotation_views(config: dict[str, Any]) -> dict[str, Any]:
     project = _annotation_project(workspace)
     runtime_root = workspace / ".gp-tt-annotation"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(_annotation_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_annotation_spec(project), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     runtime.start_batch(
@@ -1078,7 +1077,7 @@ def run_annotation_cancel(config: dict[str, Any]) -> dict[str, Any]:
     runtime = FileSearchRuntime(runtime_root)
     frozen = runtime.freeze_spec(
         _runtime_spec(project, annotation_host="thinkthread"),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1254,7 +1253,7 @@ def _prepare_publication_case(
     runtime = FileSearchRuntime(runtime_root)
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(payload),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)

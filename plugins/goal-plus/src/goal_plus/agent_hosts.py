@@ -51,7 +51,6 @@ class HostCapabilities:
     supports_model_override: bool = False
     supports_reasoning_effort: bool = False
     supports_service_tier: bool = False
-    supports_agent_profile: bool = False
     supports_usage_metadata: bool = False
     supports_process_kill: bool = False
     supported_workspace_backends: frozenset[WorkspaceBackend] = frozenset()
@@ -1015,7 +1014,6 @@ _HOST_BINDINGS: dict[AgentHostKind, HostBinding] = {
     )),
     "thinkthread": HostBinding("thinkthread", "thinkthread-v3-pi", HostCapabilities(
         search_enabled=True,
-        supports_agent_profile=True,
         supported_workspace_backends=frozenset({"thinkthread"}),
         supported_inner_agents=frozenset(
             {INNER_AGENT_AUTORESEARCH, INNER_AGENT_COMMON}
@@ -1184,13 +1182,13 @@ def candidate_inner_agent_binding(
     worker_policy = candidate_task.strategy_metadata.get("worker_policy", {})
     inner_agent = str(
         worker_policy.get("inner_agent")
-        or resolved_inner_agent_id(frozen.spec.strategy)
+        or resolved_inner_agent_id(frozen.spec.strategy, frozen.worker_host)
     )
     legacy_native_agent_type = worker_policy.get("legacy_worker_agent_type")
     if legacy_native_agent_type is None:
         legacy_native_agent_type = worker_policy.get("worker_agent_type")
     return resolve_inner_agent_binding(
-        frozen.spec.strategy.worker_host,
+        frozen.worker_host,
         inner_agent,
         legacy_native_agent_type=(
             str(legacy_native_agent_type)

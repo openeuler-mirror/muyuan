@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -84,7 +86,6 @@ def _circle_packing_pi_spec(*, max_runtime_seconds: int = 300) -> SearchSpec:
     data["strategy"] = {
         "name": "random",
         "orchestration_mode": "parallel_loops",
-        "worker_host": "pi-rpc",
         "worker_budget": {
             "max_runtime_seconds": max_runtime_seconds,
             "max_turns": 8,
@@ -145,7 +146,7 @@ def test_pi_rpc_edgebench_time_advisory_after_post_tool(
             EDGE_BENCH / ".goal-plus-verifiers" / "ad_local_score.py",
             EDGE_BENCH / "tools" / "bin" / "gen",
             EDGE_BENCH / "tools" / "bin" / "tester",
-        ],
+        ], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -199,6 +200,61 @@ def test_pi_rpc_edgebench_time_advisory_after_post_tool(
 
 @pytest.mark.st
 @pytest.mark.st_pi_rpc
+def test_pi_rpc_frozen_native_host_candidate(st_project_root: Path) -> None:
+    from goal_plus.goal_plus import FileGoalPlusRuntime
+    from tests._runtime_helpers import git_commit_all, start_host_verified_goal
+
+    source = st_project_root / "source"
+    shutil.copytree(EDGE_BENCH, source, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    git_commit_all(source, "isolated Pi candidate baseline")
+    runtime = FileSearchRuntime(st_project_root / ".search")
+    goal = start_host_verified_goal(runtime.root_dir, source, native_host="pi")
+    spec = _edgebench_pi_spec().model_copy(update={"source_path": str(source)})
+    spec = spec.model_copy(update={
+        "strategy": spec.strategy.model_copy(update={"inner_agent": "common"}),
+    })
+    frozen = runtime.freeze_spec(
+        spec,
+        [source / name for name in (
+            ".goal-plus-verifiers/ad_local_score.py", "tools/bin/gen", "tools/bin/tester"
+        )],
+        goal_plus_id=goal.goal_plus_id,
+    )
+    assert frozen.native_host == "pi"
+    assert frozen.worker_host == "pi-rpc"
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    FileGoalPlusRuntime(runtime.root_dir).link_search_run(
+        goal.goal_plus_id, frozen.frozen_spec_id, run_id,
+    )
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(
+        run_id, plan.plan_id,
+        proposals=[CandidateProposal(
+            intent="Validate the Pi candidate edit and verifier path with a bounded change.",
+            hypothesis="Checking each input row preserves the score on valid inputs.",
+            instructions=[
+                "In solution.cpp replace std::cin >> x >> y >> target_area; with "
+                "if (!(std::cin >> x >> y >> target_area)) { return 1; }.",
+                "Make this single edit, call search_run_verifier, and return its result.",
+            ],
+        )],
+    )[0]
+    result = run_pi_search_candidate(
+        root_dir=runtime.root_dir, run_id=run_id, candidate_id=task.candidate_id,
+        final_verify=False, pi_binary=os.environ.get("ST_PI_BINARY", "pi"),
+        model_pattern=os.environ.get("ST_PI_MODEL"),
+        thinking_level=os.environ.get("ST_PI_THINKING"),
+    )
+    assert result["handle"]["host"] == "pi-rpc"
+    _assert_gp_worker_artifacts(
+        runtime, run_id, task.candidate_id, result["handle"],
+        expected_changed_file="solution.cpp",
+    )
+
+
+@pytest.mark.st
+@pytest.mark.st_pi_rpc
 def test_pi_rpc_managed_pool_wait_any(st_project_root: Path) -> None:
     runtime = FileSearchRuntime(st_project_root / ".search")
     spec_data = _circle_packing_pi_spec(
@@ -215,7 +271,7 @@ def test_pi_rpc_managed_pool_wait_any(st_project_root: Path) -> None:
     if worker_launch:
         spec_data["strategy"]["worker_launch"] = worker_launch
     spec = SearchSpec.model_validate(spec_data)
-    frozen = runtime.freeze_spec(spec, [CIRCLE_PACKING / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [CIRCLE_PACKING / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -308,7 +364,7 @@ def test_pi_rpc_parallel_loop_cycle(
     if worker_launch:
         spec_data["strategy"]["worker_launch"] = worker_launch
     spec = SearchSpec.model_validate(spec_data)
-    frozen = runtime.freeze_spec(spec, [CIRCLE_PACKING / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [CIRCLE_PACKING / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -452,7 +508,7 @@ def test_pi_rpc_pool_minimum_lease(st_project_root: Path) -> None:
     }
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [CIRCLE_PACKING / "evaluator.py"],
+        [CIRCLE_PACKING / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -501,7 +557,7 @@ def test_pi_rpc_redispatch_after_timeout(st_project_root: Path) -> None:
     runtime = FileSearchRuntime(st_project_root / ".search")
     frozen = runtime.freeze_spec(
         _circle_packing_pi_spec(max_runtime_seconds=150),
-        [CIRCLE_PACKING / "evaluator.py"],
+        [CIRCLE_PACKING / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)

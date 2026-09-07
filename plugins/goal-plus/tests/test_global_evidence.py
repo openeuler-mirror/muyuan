@@ -33,6 +33,7 @@ def _search_with_candidates(
     *,
     strategy_updates: dict | None = None,
     metric_direction: str = "maximize",
+    native_host: str = "codex",
 ) -> tuple[FileSearchRuntime, str, list[tuple[str, str, Path]]]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     project = make_project(tmp_path)
@@ -50,7 +51,7 @@ def _search_with_candidates(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host=native_host,
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     search_plan = runtime.plan_next(run_id, requested_k=count)
@@ -593,7 +594,7 @@ def test_supplemental_policy_is_frozen_and_legacy_specs_default_disabled(
     ] is True
     disabled_frozen = runtime.freeze_spec(
         frozen.spec,
-        [Path(frozen.spec.source_path) / "evaluator.py"],
+        [Path(frozen.spec.source_path) / "evaluator.py"], native_host="codex",
     )
     assert disabled_frozen.frozen_spec_id != frozen.frozen_spec_id
     assert disabled_frozen.supplemental_evaluation_enabled is False
@@ -760,8 +761,8 @@ def test_pi_annotator_uses_native_default_without_explicit_model(
     runtime, run_id, [candidate] = _search_with_candidates(
         tmp_path,
         1,
+        native_host="pi",
         strategy_updates={
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_runtime_seconds": 60},
             "worker_launch": {
                 "model": "gpt-test",
@@ -799,12 +800,11 @@ def test_pi_annotator_uses_native_default_without_explicit_model(
 def test_internal_annotator_cannot_cross_worker_hosts(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="must match strategy.worker_host"):
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         _search_with_candidates(
             tmp_path,
             1,
             strategy_updates={
-                "worker_host": "pi-rpc",
                 "worker_budget": {"max_runtime_seconds": 60},
                 "evidence_annotator": {"host": "codex"},
             },
@@ -823,8 +823,8 @@ def test_pi_annotator_leaves_unspecified_model_to_host_configuration(
     runtime, run_id, [candidate] = _search_with_candidates(
         tmp_path,
         1,
+        native_host="pi",
         strategy_updates={
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_runtime_seconds": 60},
         },
     )
@@ -853,8 +853,8 @@ def test_pi_annotator_accepts_provider_qualified_model_without_provider_config(
     runtime, run_id, [candidate] = _search_with_candidates(
         tmp_path,
         1,
+        native_host="pi",
         strategy_updates={
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_runtime_seconds": 60},
             "worker_launch": {
                 "model": "GLM-5.2",
@@ -938,7 +938,7 @@ def test_evidence_diff_includes_bounded_function_context(tmp_path: Path) -> None
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=1),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1010,7 +1010,7 @@ def test_evidence_diff_omits_binary_payload(tmp_path: Path) -> None:
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)

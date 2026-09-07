@@ -181,7 +181,15 @@ barrier、Scheduler 与 Allocation，`scheduler.py` 管理 ScheduleTask 和调�
 context builder。`budget.max_parallel` 是实时活跃 candidate 上限；可选 `max_candidates` 是
 累计物化上限。
 
-Annotation 与 Scheduler 的 host 必须和 `strategy.worker_host` 相同。Codex hook 或 Pi extension
+Agent 类型由 Goal 当前已授权、已绑定的 Main 原生会话确定，不属于 SearchSpec 可选配置。
+SearchSpec 不接受 `strategy.worker_host`、`strategy.worker_launch.agent_profile` 或内部角色的
+`host`。Freeze 在执行 verifier 或保存 FrozenSpec 前读取可信 Main 身份，记录
+`FrozenSpec.native_host=codex|pi`，并将其纳入 spec hash；执行驱动由该身份和工作区后端推导。
+Codex 仅支持本地 Copy/Git，Pi 支持本地 Copy/Git 或经 preflight 的 ThinkThread。
+无 Goal 的可信底层调用必须显式提供 native host，公开 MCP/Pi 工具不暴露该参数。
+
+Annotation 与 Scheduler 继承冻结的 Main Agent 类型，角色驱动按支持矩阵装配。
+Codex hook 或 Pi extension
 从当前 native host 进程启动这些内部 agent，子进程完整继承宿主外部配置并携带非敏感 host
 provenance；Goal Plus schema、FrozenSpec 和 task profile 不接受或持久化服务认证、endpoint 或
 host 配置目录。Pi extension 还把当前 Main 的 exact model 和 thinking 固定为 execution scope 的

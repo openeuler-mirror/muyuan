@@ -288,7 +288,6 @@ def scheduler_reward_records(
 
 
 class SearchSchedulerSpec(SearchModel):
-    host: AgentHostKind
     model: str = Field(min_length=1)
     reasoning_effort: str = Field(min_length=1)
     timeout_seconds: int = Field(gt=0, le=1800)

@@ -7,8 +7,8 @@
 不要访问网络。
 
 工作区合同：`workspace/` 是本任务可写的独立源码 Git 仓库。把当前目录中的
-`search-spec.json` 作为权威 SearchSpec，保持 `source_path="workspace"` 和 Pi
-`worker_host="pi-rpc"`；不要把当前示例目录或其外层仓库当作 source。
+`search-spec.json` 作为权威 SearchSpec，保持 `source_path="workspace"`；
+不要把当前示例目录或其外层仓库当作 source。
 
 验收：运行 `python workspace/.goal-plus-verifiers/circle_packing_score.py`。结果必须
 满足 `valid=true`，圆的数量必须为 26，并最大化 `sum_radii`。

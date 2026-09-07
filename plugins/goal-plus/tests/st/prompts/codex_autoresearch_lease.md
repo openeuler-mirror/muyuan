@@ -11,7 +11,6 @@ changes before freezing it:
 - Set `source_path` to the absolute fixture path.
 - Set `budget={"max_parallel": 1}`.
 - Set `strategy.name="random"`.
-- Set `strategy.worker_host="codex"`.
 - Set `strategy.inner_agent="autoresearch"`.
 - Set `strategy.worker_budget={"min_runtime_seconds": 300,
   "min_verifier_runs": 1, "max_runtime_seconds": 420,

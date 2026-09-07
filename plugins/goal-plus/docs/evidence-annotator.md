@@ -39,7 +39,7 @@ candidate 调用 search_run_verifier
   -> Codex hook / Pi extension 的 verifier post-tool callback 唤醒 run-scoped drainer
   -> single-flight drainer 串行领取 task
   -> 打开 immutable full-workspace Artifact Views；构造 bounded diff 索引
-  -> 按 worker_host 启动一次性 Codex 或 Pi annotator
+  -> 按冻结的 Main 宿主身份启动一次性 Codex 或 Pi annotator
   -> 校验单行 JSON 输出
   -> queue generation 仍匹配且 open 时写入不可变 EvidenceViewRecord
   -> search_get_global_evidence 投影 view 字段
@@ -131,7 +131,7 @@ annotation diff 投影最大为 1 MiB。超过上限时该字段为空并记录 
 
 ## Host 路由与隔离
 
-Annotator 始终跟随冻结 SearchSpec 的 `strategy.worker_host`，不会为了 annotation
+Annotator 始终跟随 `FrozenSpec.native_host` 记录的 Main Agent 身份，不会为了 annotation
 跨用另一个 host。
 
 ### Codex
@@ -184,7 +184,6 @@ Annotation、publication/recovery、pool 和 owner pin 全部收敛后，runtime
 ```json
 {
   "strategy": {
-    "worker_host": "codex",
     "evidence_annotator": {
       "model": "gpt-5.6-terra",
       "reasoning_effort": "low",
@@ -198,7 +197,6 @@ Annotation、publication/recovery、pool 和 owner pin 全部收敛后，runtime
 
 | 字段 | 含义 |
 | --- | --- |
-| `host` | 可省略；显式值必须与 `strategy.worker_host` 相同 |
 | `model` | annotator 模型；Pi 可使用 host-native 限定模型名 |
 | `reasoning_effort` | host-native reasoning/thinking 配置 |
 | `timeout_seconds` | 单次调用上限，默认且最大为 1800 秒 |

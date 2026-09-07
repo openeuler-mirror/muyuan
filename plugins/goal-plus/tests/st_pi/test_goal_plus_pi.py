@@ -49,7 +49,7 @@ MULTI_SEARCH_PROMPT = (
     "examples/edgebench-ad-placement/search-spec.json，并冻结其中的 "
     ".goal-plus-verifiers/ad_local_score.py、tools/bin/gen、tools/bin/tester。"
     "第一个 SearchSpec 使用 strategy.name=random，第二个使用 strategy.name=agent_guided；"
-    "两次都设置 worker_host=pi-rpc、orchestration_mode=parallel_loops、"
+    "两次都设置 orchestration_mode=parallel_loops、"
     "max_parallel=1 且不设置已弃用的 max_parallel，worker budget 为 "
     "max_runtime_seconds=60、max_turns=4、"
     "on_exceed=interrupt，只允许候选修改 solution.cpp。每次都必须分别完成 "
@@ -61,7 +61,7 @@ MULTI_SEARCH_PROMPT = (
 SPEC_REVISION_FIRST_PROMPT = (
     "在同一个 Goal Plus 记录中验证一次真实的两版 frozen spec 流程。工作区是 {workspace}。"
     "第一轮只使用 .goal-plus-verifiers/simple_score.py，metric_name=score、maximize，"
-    "只允许修改 candidate.txt；使用 random、worker_host=pi-rpc、"
+    "只允许修改 candidate.txt；使用 random、"
     "orchestration_mode=parallel_loops、max_parallel=1 且不设置已弃用的 max_parallel，worker budget "
     "为 max_runtime_seconds=60、max_turns=4、on_exceed=interrupt。完成 freeze、create、"
     "link、candidate verify、select、promote 和 record_search_result，但不要生成 report。"
@@ -753,24 +753,52 @@ def test_goal_plus_with_final_check_runs_pi_reviewer(
 def test_goal_plus_print_autonomously_enters_search(
     st_pi_run_root: Path,
 ) -> None:
+    from goal_plus.host_scope import close_execution_scope, execution_scope_for_run
+    from tests._runtime_helpers import git_commit_all
+
+    source = st_pi_run_root / "source"
+    shutil.copytree(
+        ROOT / "examples" / "edgebench-ad-placement" / "workspace-template",
+        source,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    git_commit_all(source, "isolated native Search baseline")
     search_root = st_pi_run_root / ".gp"
     session_dir = st_pi_run_root / "sessions"
     session_dir.mkdir(parents=True, exist_ok=True)
     command = [
         *_pi_base_command(session_dir, "st-pi-goal-plus-autonomous-search"),
+        "--skill",
+        str(ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md"),
         "-p",
-        f"/goal-plus {AUTONOMOUS_OPTIMIZATION_PROMPT}",
+        "/goal-plus " + AUTONOMOUS_OPTIMIZATION_PROMPT.replace(
+            "examples/edgebench-ad-placement/workspace-template", str(source)
+        ),
     ]
-
-    result = subprocess.run(
-        command,
-        cwd=ROOT,
-        env=_run_env(search_root),
-        text=True,
-        capture_output=True,
-        timeout=int(os.environ.get("ST_PI_SEARCH_TIMEOUT", "600")),
-        check=False,
-    )
+    env = _run_env(search_root)
+    env["GOAL_PLUS_SOURCE_PATH"] = str(source)
+    env["PYTHONPATH"] = str(ROOT / "src")
+    print(f"Native Search ST: {st_pi_run_root}", flush=True)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=source,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=int(os.environ.get("ST_PI_SEARCH_TIMEOUT", "600")),
+            check=False,
+        )
+    finally:
+        for run_path in (search_root / "runs").glob("*/run.json"):
+            scope = execution_scope_for_run(root_dir=search_root, run_id=run_path.parent.name)
+            if scope is not None:
+                closed = close_execution_scope(
+                    root_dir=search_root, scope_id=scope["scope_id"],
+                    reason="native_search_st_cleanup", timeout_seconds=15,
+                )
+                assert closed["state"] == "closed", closed
 
     assert result.returncode == 0, result.stderr[-2000:] or result.stdout[-2000:]
     record = _goal_record(search_root)
@@ -807,12 +835,18 @@ def test_goal_plus_print_autonomously_enters_search(
         (search_root / "runs" / linked["run_id"] / "run.json").read_text(encoding="utf-8")
     )
     assert run_record["state"] == "promoted"
+    frozen = json.loads(
+        (search_root / "specs" / run_record["frozen_spec_id"] / "frozen_spec.json").read_text()
+    )
+    assert frozen["native_host"] == "pi"
+    assert "worker_host" not in frozen["spec"]["strategy"]
     worker_sessions = sorted(
         (search_root / "runs" / linked["run_id"] / "agent_sessions").glob("agent_*.json")
     )
     assert worker_sessions
     for session_path in worker_sessions:
         session = json.loads(session_path.read_text(encoding="utf-8"))
+        assert session["host"] == "pi-rpc"
         metadata = session["host_handle"]["metadata"]
         assert metadata["continuation"] == "native_session"
         assert metadata.get("runner_failed") is not True

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from goal_plus.application.goal_authorization import GoalAuthorization
+from goal_plus.domain.agents import NativeAgentKind, search_worker_host
 from goal_plus.domain.adaptive.policies import resolve_search_scheduler_policies
 from goal_plus.domain.search import BootstrapVerification, FrozenSpec, SearchSpec
 from goal_plus.domain.serialization import canonical_json, sha256_text
@@ -22,6 +24,7 @@ class SearchBootstrap:
         verifiers: BootstrapVerifiers,
         clock: Clock,
         repository: SourceInspection,
+        authorization: GoalAuthorization,
     ) -> None:
         self.source, self.state, self.verifiers, self.clock = (
             source,
@@ -30,6 +33,7 @@ class SearchBootstrap:
             clock,
         )
         self.repository = repository
+        self.authorization = authorization
 
     def freeze(
         self,
@@ -37,8 +41,17 @@ class SearchBootstrap:
         verifier_artifacts: list[Path],
         *,
         goal_plus_id: str | None = None,
+        native_host: NativeAgentKind | None = None,
     ) -> FrozenSpec:
-        inputs = self.source.prepare(spec, verifier_artifacts)
+        if goal_plus_id is not None:
+            goal_host = self.authorization.search_native_host(goal_plus_id)
+            if native_host is not None and native_host != goal_host:
+                raise ValueError("Search native host must match its Main Goal session")
+            native_host = goal_host
+        if native_host is None:
+            raise ValueError("Search freeze requires a trusted native host")
+        worker_host = search_worker_host(native_host, spec.workspace.backend)
+        inputs = self.source.prepare(spec, verifier_artifacts, worker_host=worker_host)
         spec, source_root = inputs.spec, inputs.source_root
         supplemental_enabled, supplemental_required = (
             inputs.supplemental_enabled,
@@ -117,6 +130,7 @@ class SearchBootstrap:
             canonical_json(
                 {
                     "goal_plus_id": goal_plus_id,
+                    "native_host": native_host,
                     "spec": spec_payload,
                     "search_scheduler_policies": (
                         scheduler_policies.model_dump(mode="json")
@@ -145,6 +159,7 @@ class SearchBootstrap:
             frozen_spec_id=frozen_spec_id,
             spec_hash=spec_hash,
             goal_plus_id=goal_plus_id,
+            native_host=native_host,
             spec=spec,
             search_scheduler_policies=scheduler_policies,
             supplemental_evaluation_enabled=supplemental_enabled,

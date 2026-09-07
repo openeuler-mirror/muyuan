@@ -182,14 +182,13 @@ class AnnotationAdmission:
     ) -> tuple[ResolvedEvidenceAnnotatorProfile | None, str | None]:
         strategy = frozen.spec.strategy
         configured = strategy.evidence_annotator
-        annotation_host = configured.host or strategy.worker_host
+        annotation_host = frozen.worker_host
         worker_launch = strategy.worker_launch
         model = configured.model
 
         reasoning_effort = configured.reasoning_effort
         if (
             reasoning_effort is None
-            and annotation_host == strategy.worker_host
             and worker_launch is not None
         ):
             reasoning_effort = worker_launch.reasoning_effort

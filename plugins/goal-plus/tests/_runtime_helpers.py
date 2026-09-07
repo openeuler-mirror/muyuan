@@ -83,15 +83,18 @@ def start_host_verified_goal(
     *,
     session_id: str = "session-test",
     invocation_id: str = "codex:test:start",
+    native_host: str = "codex",
 ) -> GoalPlusRecord:
-    raw_input = "$goal-plus Test"
-    return FileGoalPlusRuntime(root).start_from_host_command(
+    command = "$goal-plus" if native_host == "codex" else "/goal-plus"
+    raw_input = f"{command} Test"
+    runtime = FileGoalPlusRuntime(root)
+    record = runtime.start_from_host_command(
         "Test Goal Plus search",
         source_path=str(source_path),
         invocation=GoalPlusHostCommandInvocation(
-            host="codex",
-            transport="codex_user_prompt_submit",
-            command="$goal-plus",
+            host=native_host,
+            transport="codex_user_prompt_submit" if native_host == "codex" else "pi_extension_command",
+            command=command,
             action="start",
             session_id=session_id,
             native_entry_id="turn-test",
@@ -99,6 +102,13 @@ def start_host_verified_goal(
             raw_input_sha256=hashlib.sha256(raw_input.encode()).hexdigest(),
             invoked_at="2026-08-28T00:00:00Z",
         ),
+    )
+    return runtime.activate_session(
+        record.goal_plus_id,
+        {
+            "host": "codex" if native_host == "codex" else "pi-rpc", "session_id": session_id,
+            "attached_at": record.created_at, "last_seen_at": record.updated_at,
+        },
     )
 
 
@@ -157,30 +167,13 @@ def spec_with_strategy(
     return SearchSpec.model_validate(data)
 
 
-def spec_with_host(
-    project: Path,
-    worker_host: str,
-    *,
-    strategy_name: str = "agent_guided",
-    max_parallel: int = 4,
-) -> SearchSpec:
-    return spec_with_strategy(
-        project,
-        {
-            "name": strategy_name,
-            "worker_host": worker_host,
-        },
-        max_parallel=max_parallel,
-    )
-
-
 def create_candidate(
     runtime: FileSearchRuntime,
     project: Path,
     *,
     direction: str = "maximize",
 ) -> tuple[str, str, Path]:
-    frozen = runtime.freeze_spec(spec_for(project, direction=direction), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, direction=direction), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]

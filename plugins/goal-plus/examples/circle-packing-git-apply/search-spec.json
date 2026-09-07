@@ -38,7 +38,6 @@
   "strategy": {
     "name": "agent_guided",
     "orchestration_mode": "parallel_loops",
-    "worker_host": "pi-rpc",
     "inner_agent": "autoresearch",
     "config": {
       "closeout_reserve_seconds": 60

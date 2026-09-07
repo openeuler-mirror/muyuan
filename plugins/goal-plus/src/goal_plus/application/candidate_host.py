@@ -79,11 +79,11 @@ class ThinkThreadCandidatePreparation:
         require_run_not_invalidated(run, "open ThinkThread pool")
         frozen = self.source.read_frozen_spec(run.frozen_spec_id)
         if (
-            frozen.spec.strategy.worker_host != "thinkthread"
+            frozen.worker_host != "thinkthread"
             or frozen.spec.workspace.backend != "thinkthread"
         ):
             raise ValueError(
-                "ThinkThread pools require worker_host='thinkthread' and "
+                "ThinkThread pools require a Pi Main and "
                 "workspace.backend='thinkthread'"
             )
         baseline = run.source_artifact_ref

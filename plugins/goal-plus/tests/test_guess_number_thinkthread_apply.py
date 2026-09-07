@@ -33,10 +33,9 @@ def test_guess_number_thinkthread_apply_example_is_deterministic(
     assert spec.source_path == "."
     assert spec.budget.max_parallel == 2
     assert spec.strategy.orchestration_mode == "parallel_loops"
-    assert spec.strategy.worker_host == "thinkthread"
-    assert spec.strategy.worker_launch is not None
-    assert spec.strategy.worker_launch.agent_profile == "pi"
-    assert spec.strategy.evidence_annotator.host is None
+    assert "worker_host" not in spec.strategy.model_dump()
+    assert spec.strategy.worker_launch is None
+    assert "host" not in spec.strategy.evidence_annotator.model_dump()
     assert spec.workspace.backend == "thinkthread"
     assert spec.workspace.promotion_mode == "apply"
     assert spec.edit_surface.allow == ["guess.py"]

@@ -64,7 +64,7 @@ def test_codex_goal_plus_revises_goal_and_frozen_spec_after_first_result(
             "For the first SearchSpec, use metric_name=score, direction=maximize, "
             "workspace.backend=copy, process verifier "
             ".goal-plus-verifiers/simple_score.py, no promotion verifiers, and allow only "
-            "candidate.txt. Use strategy.name=random, worker_host=codex, "
+            "candidate.txt. Use strategy.name=random, "
             "inner_agent=autoresearch, "
             "max_parallel=1 and worker_budget with "
             "max_runtime_seconds=90, max_turns=4, on_exceed=interrupt. Freeze the exact "

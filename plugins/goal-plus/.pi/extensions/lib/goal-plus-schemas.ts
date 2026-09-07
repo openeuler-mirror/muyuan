@@ -200,10 +200,6 @@ export const WorkerBudget = Type.Object(
 
 export const SearchSchedulerSpec = Type.Object(
 	{
-		host: Type.Union([
-			Type.Literal("codex"),
-			Type.Literal("pi-rpc"),
-		]),
 		model: Type.String({ minLength: 1 }),
 		reasoning_effort: Type.String({ minLength: 1 }),
 		timeout_seconds: PositiveInteger,
@@ -229,19 +225,12 @@ export const WorkerLaunch = Type.Object(
 		model: Type.Optional(NullableString),
 		reasoning_effort: Type.Optional(NullableString),
 		service_tier: Type.Optional(NullableString),
-		agent_profile: Type.Optional(Type.Literal("pi")),
 	},
 	{ additionalProperties: false },
 );
 
 export const EvidenceAnnotator = Type.Object(
 	{
-		host: Type.Optional(Type.Union([
-			Type.Literal("codex"),
-			Type.Literal("pi-rpc"),
-			Type.Literal("thinkthread"),
-			Type.Null(),
-		])),
 		model: Type.Optional(NullableString),
 		reasoning_effort: Type.Optional(NullableString),
 		timeout_seconds: Type.Optional(PositiveInteger),
@@ -271,7 +260,6 @@ export const StrategySpec = Type.Object(
 				Type.Literal("adaptive_search"),
 			]),
 		),
-		worker_host: Type.Optional(Type.Union([Type.Literal("pi-rpc"), Type.Literal("thinkthread")])),
 		inner_agent: Type.Optional(Type.String({ minLength: 1 })),
 		worker_budget: Type.Optional(Type.Union([WorkerBudget, Type.Null()])),
 		worker_launch: Type.Optional(Type.Union([WorkerLaunch, Type.Null()])),

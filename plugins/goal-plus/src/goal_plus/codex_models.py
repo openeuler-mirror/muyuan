@@ -145,7 +145,7 @@ def search_spec_codex_model_targets(
             )
         )
     annotator = strategy.get("evidence_annotator")
-    if isinstance(annotator, dict) and annotator.get("host") in {None, "codex"}:
+    if isinstance(annotator, dict):
         targets.append(
             codex_model_target(
                 annotator.get("model"),
@@ -153,7 +153,7 @@ def search_spec_codex_model_targets(
             )
         )
     scheduler = strategy.get("search_scheduler")
-    if isinstance(scheduler, dict) and scheduler.get("host") == "codex":
+    if isinstance(scheduler, dict):
         targets.append(
             codex_model_target(
                 scheduler.get("model"),

@@ -841,7 +841,7 @@ def kick_scheduler(
         run = manager.lanes.source.read_run(run_id)
         frozen = manager.lanes.source.read_frozen_spec(run.frozen_spec_id)
         scheduler = frozen.spec.strategy.search_scheduler
-        if scheduler is None or scheduler.host != host:
+        if scheduler is None or frozen.worker_host != host:
             return False
         manager.ensure_tasks(run_id)
         if not manager.run_active(run_id) or not manager.unsettled_tasks(run_id):

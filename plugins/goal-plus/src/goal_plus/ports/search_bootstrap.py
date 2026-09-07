@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
+from goal_plus.domain.agents import AgentHostKind
 
 from goal_plus.domain.artifacts import (
     ArtifactRef,
@@ -34,7 +35,7 @@ class FreezeInputs:
 
 class FreezeSource(Protocol):
     def prepare(
-        self, spec: SearchSpec, verifier_artifacts: list[Path]
+        self, spec: SearchSpec, verifier_artifacts: list[Path], *, worker_host: AgentHostKind
     ) -> FreezeInputs: ...
 
 

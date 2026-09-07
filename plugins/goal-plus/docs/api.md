@@ -153,11 +153,20 @@ A new Codex/Pi spec uses `strategy.orchestration_mode="parallel_loops"` for fixe
 candidates or `"adaptive_search"` for Scheduler-driven replacement.
 `search_plan_next(requested_k)` can be called only once for either run.
 
-`strategy.evidence_annotator.host` and `strategy.search_scheduler.host` must match
-`strategy.worker_host`. Their persisted profiles contain only host/model/reasoning/timeout plus
+SearchSpec cannot select an Agent family or execution driver. Freeze derives
+`FrozenSpec.native_host` (`codex` or `pi`) from the authorized Main session and
+binds it into the spec hash. `strategy.worker_host`, `worker_launch.agent_profile`,
+`evidence_annotator.host`, and `search_scheduler.host` are rejected as extra fields.
+Internal role drivers follow the frozen identity and workspace backend.
+Their persisted profiles contain only resolved host/model/reasoning/timeout plus
 `configuration_source="host_process"`; service authentication, endpoints, and host configuration
 paths are not SearchSpec fields. Codex hooks and the Pi extension launch internal agents from the
 active native host process, while the shared runtime only registers and validates their tasks.
+
+Frozen records now require `native_host`. Records from the previous format, with
+host selection inside `spec.strategy`, are not silently converted or repaired.
+Finish those runs with their original plugin version, or start a new Goal and
+freeze a new contract through the native host. Do not edit `.gp` to supply identity.
 
 An `adaptive_search` run requires a non-null `search_scheduler` and still has one initial plan, but
 may replace a retired lane through persisted runtime decisions. It requires a
@@ -558,14 +567,13 @@ Annotation Child 不激活命令执行或 verifier 工具，也不为读取 Arti
 | `budget.max_parallel` | 初始 candidate 和活跃 worker 数 |
 | `candidate_acceptance` | 受界且显式下发给 worker 的验收条件 |
 | `constraints` | runtime 私有的结构化控制数据，不下发给 worker |
-| `strategy.worker_host` | 执行 host：`pi-rpc`、`codex` 或 Pi-only `thinkthread` |
 | `strategy.worker_budget` | host deadline 和可选 minimum lease |
 | `workspace.backend` | `git_worktree`（默认）、`copy` 或 `thinkthread` |
 | `workspace.promotion_mode` | `apply`（默认）或显式 `artifact_only` |
 | `device_pools` | 可选的受信任 host pool ID；由 host 环境注册 |
 
-`thinkthread` 只在 Pi `goal-plus-pi` Profile 中启用，并要求
-`strategy.worker_launch.agent_profile="pi"`。freeze/create 会校验 host/backend 配对；Root
+`thinkthread` 只在 Pi `goal-plus-pi` Profile 中启用；Agent 身份由 Main 宿主确定。
+freeze/create 会校验宿主身份与 workspace backend 的配对；Root
 preflight 会精确校验 release、Control protocol、contract fingerprint、direct filesystem 和
 delegated capability，任何不匹配都 fail closed。它不会静默退回 Git。每个 candidate 使用
 独立 Child/Session/private branch；worker context 不暴露本地 workspace 路径。verifier、

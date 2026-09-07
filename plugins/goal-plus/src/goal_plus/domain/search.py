@@ -25,6 +25,8 @@ from goal_plus.domain.adaptive.policies import ResolvedSearchSchedulerPolicies
 from goal_plus.domain.agents import (
     AgentHostHandle,
     AgentHostKind,
+    NativeAgentKind,
+    search_worker_host,
     ModelSpec,
     SelectedModel,
     WorkerBudget,
@@ -129,7 +131,6 @@ class StrategySpec(SearchModel):
         "parallel_loops",
         "adaptive_search",
     ] = "parallel_loops"
-    worker_host: AgentHostKind = "codex"
     inner_agent: str | None = Field(
         default=None,
         description=(
@@ -189,42 +190,6 @@ class StrategySpec(SearchModel):
             raise ValueError(
                 "strategy.search_scheduler requires "
                 "strategy.orchestration_mode=adaptive_search"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def internal_agents_use_worker_host(self) -> "StrategySpec":
-        annotator_host = self.evidence_annotator.host
-        if annotator_host is not None and annotator_host != self.worker_host:
-            raise ValueError(
-                "strategy.evidence_annotator.host must match strategy.worker_host "
-                "so internal agents inherit the native host configuration"
-            )
-        scheduler = self.search_scheduler
-        if scheduler is not None and scheduler.host != self.worker_host:
-            raise ValueError(
-                "strategy.search_scheduler.host must match strategy.worker_host "
-                "so internal agents inherit the native host configuration"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def agent_profile_matches_worker_host(self) -> "StrategySpec":
-        profile = (
-            self.worker_launch.agent_profile
-            if self.worker_launch is not None
-            else None
-        )
-        if self.worker_host == "thinkthread":
-            if profile != "pi":
-                raise ValueError(
-                    "thinkthread worker_host requires "
-                    "worker_launch.agent_profile='pi'"
-                )
-            return self
-        if profile is not None:
-            raise ValueError(
-                "worker_launch.agent_profile is only valid for thinkthread worker_host"
             )
         return self
 
@@ -402,6 +367,7 @@ class FrozenSpec(SearchModel):
     frozen_spec_id: str
     spec_hash: str
     goal_plus_id: str | None = None
+    native_host: NativeAgentKind
     spec: SearchSpec
     search_scheduler_policies: ResolvedSearchSchedulerPolicies | None = Field(
         default=None,
@@ -417,6 +383,15 @@ class FrozenSpec(SearchModel):
     origin_verification: BootstrapVerification | None = None
     device_inventory: dict[str, DevicePoolInventory] = Field(default_factory=dict)
     created_at: str
+
+    @property
+    def worker_host(self) -> AgentHostKind:
+        return search_worker_host(self.native_host, self.spec.workspace.backend)
+
+    @model_validator(mode="after")
+    def native_host_supports_workspace(self) -> "FrozenSpec":
+        search_worker_host(self.native_host, self.spec.workspace.backend)
+        return self
 
     @model_validator(mode="after")
     def scheduler_configuration_has_frozen_policies(self) -> "FrozenSpec":

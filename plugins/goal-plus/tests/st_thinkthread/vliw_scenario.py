@@ -49,7 +49,7 @@ def run_vliw_retained_turns(config: dict[str, Any]) -> dict[str, Any]:
     runtime = FileSearchRuntime(runtime_root)
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(payload),
-        [path for path in project.rglob("*") if path.is_file() and path.name != "solution.py"],
+        [path for path in project.rglob("*") if path.is_file() and path.name != "solution.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)

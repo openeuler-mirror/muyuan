@@ -38,7 +38,7 @@ def test_host_binding_returns_all_supported_hosts() -> None:
     assert thinkthread.capabilities.supported_workspace_backends == frozenset(
         {"thinkthread"}
     )
-    assert thinkthread.capabilities.supports_agent_profile is True
+    assert thinkthread.capabilities.supported_workspace_backends == {"thinkthread"}
     assert thinkthread.adapter_version == "thinkthread-v3-pi"
     assert thinkthread.capabilities.search_enabled is True
     assert thinkthread.capabilities.disabled_reason is None
@@ -119,7 +119,7 @@ def test_thinkthread_adapter_payload_is_complete_for_pi_profile() -> None:
         short_intent="try",
         one_paragraph_idea="test an isolated branch",
         worker_budget={"max_runtime_seconds": 60},
-        worker_launch={"agent_profile": "pi", "model": "provider/model"},
+        worker_launch={ "model": "provider/model"},
     )
     assert launch["tool"] == "thinkthread_child"
     assert launch["profile"] == "self"
@@ -137,7 +137,7 @@ def test_thinkthread_adapter_payload_is_complete_for_pi_profile() -> None:
         short_intent="continue",
         one_paragraph_idea="next attempt",
         worker_budget={"max_runtime_seconds": 60},
-        worker_launch={"agent_profile": "pi"},
+        worker_launch={},
         worker_prompt="# initial worker prompt",
     )
     assert continued["thinkthread_id"] == "tt-child-1"

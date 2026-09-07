@@ -5,6 +5,7 @@ proof that its caller owns the original native session.
 """
 
 from goal_plus.domain.goal import GoalPlusHostCommandInvocation, GoalPlusRecord
+from goal_plus.domain.agents import NativeAgentKind
 from goal_plus.domain.goal_authorization import (
     GOAL_PLUS_ENTRYPOINT_REQUIRED,
     GOAL_SCOPED_TOOL_SUFFIXES,
@@ -21,6 +22,26 @@ from goal_plus.ports.scope import ScopeAttachment
 class GoalAuthorization:
     def __init__(self, source: GoalAuthorizationSource) -> None:
         self._source = source
+
+    def search_native_host(self, goal_plus_id: str) -> NativeAgentKind:
+        record = self.require_active_target(
+            GoalToolTarget("search_freeze_spec", goal_plus_id=goal_plus_id)
+        )
+        session = record.active_session
+        if session is None or session.state != "attached":
+            raise ValueError("Search requires an attached Main native host session")
+        if session.host == "codex":
+            native_host = "codex"
+        elif session.host == "pi-rpc":
+            native_host = "pi"
+        else:
+            raise ValueError("Search Main native host must be codex or pi")
+        if not any(
+            item.host == native_host and item.session_id == session.session_id
+            for item in record.host_command_invocations
+        ):
+            raise ValueError("Search native host must match its verified Main invocation")
+        return native_host
 
     def nonterminal_records(self) -> list[GoalPlusRecord]:
         records = [

@@ -537,8 +537,10 @@ def build_search_bootstrap(root_dir: Path | str, verifiers):
     repository, models = SourceRepository(), HostModelDiscovery()
     configuration = SearchConfiguration(models)
     source = FileFreezeSource(root_dir, configuration, repository)
+    authorization, _ = build_goal_authorization(root_dir)
     return SearchBootstrap(
-        source, FileFrozenSpecState(root_dir), verifiers, SystemClock(), repository
+        source, FileFrozenSpecState(root_dir), verifiers, SystemClock(), repository,
+        authorization,
     ), repository, configuration, models
 
 

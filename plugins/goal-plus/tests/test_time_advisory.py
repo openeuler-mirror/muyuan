@@ -12,24 +12,19 @@ from goal_plus.time_advisory import (
     build_search_time_advisory,
     is_search_candidate_session,
 )
-from tests._runtime_helpers import make_project, spec_with_host
+from tests._runtime_helpers import make_project, spec_with_strategy
 
 
 def _codex_candidate(tmp_path: Path) -> tuple[FileSearchRuntime, str, str, str]:
     project = make_project(tmp_path)
-    payload = spec_with_host(
-        project,
-        "codex",
-        strategy_name="random",
-        max_parallel=1,
-    ).model_dump(mode="json")
+    payload = spec_with_strategy(project, {"name": "random"}, max_parallel=1).model_dump(mode="json")
     payload["strategy"]["worker_budget"] = {
         "max_runtime_seconds": 600,
         "max_turns": 8,
         "on_exceed": "interrupt",
     }
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]

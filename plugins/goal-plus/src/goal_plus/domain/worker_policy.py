@@ -3,7 +3,7 @@
 import re
 from typing import Any
 from goal_plus.domain.agents import (
-    WorkerBudget, SelectedModel,
+    WorkerBudget, SelectedModel, AgentHostKind,
     INNER_AGENT_COMMON,
     INNER_AGENT_AUTORESEARCH,
 )
@@ -63,10 +63,10 @@ def normalize_worker_budget_override(
     return parsed.model_dump(mode="json")
 
 
-def resolved_inner_agent_id(strategy: StrategySpec) -> str:
+def resolved_inner_agent_id(strategy: StrategySpec, host: AgentHostKind) -> str:
     if strategy.inner_agent is not None:
         return strategy.inner_agent
-    if strategy.worker_host == "thinkthread":
+    if host == "thinkthread":
         return INNER_AGENT_COMMON
     return INNER_AGENT_AUTORESEARCH
 

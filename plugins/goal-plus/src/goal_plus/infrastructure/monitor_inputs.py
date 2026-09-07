@@ -389,7 +389,7 @@ def _host_cleanup_payload(
 
     if (
         frozen.spec.workspace.backend != "thinkthread"
-        and frozen.spec.strategy.worker_host != "thinkthread"
+        and frozen.worker_host != "thinkthread"
     ):
         return {
             "schema_version": 1,
@@ -436,9 +436,7 @@ def _host_cleanup_payload(
         "complete": pool_complete,
     }
 
-    annotation_host = (
-        frozen.spec.strategy.evidence_annotator.host or frozen.spec.strategy.worker_host
-    )
+    annotation_host = frozen.worker_host
     annotation_applicable = annotation_host == "thinkthread"
     annotation_state = "not_applicable"
     annotation_service_state = "not_applicable"
@@ -679,7 +677,7 @@ def _search_task_payload(
             "strategy": (
                 {
                     "name": frozen.spec.strategy.name,
-                    "worker_host": frozen.spec.strategy.worker_host,
+                    "worker_host": frozen.worker_host,
                 }
                 if frozen is not None
                 else None
@@ -1068,12 +1066,12 @@ def goal_plus_monitor_snapshot(
                         or frozen.spec.strategy.inner_agent
                         or (
                             INNER_AGENT_COMMON
-                            if frozen.spec.strategy.worker_host == "thinkthread"
+                            if frozen.worker_host == "thinkthread"
                             else INNER_AGENT_AUTORESEARCH
                         )
                     )
                     workspace_ledger_projection = resolve_inner_agent_binding(
-                        frozen.spec.strategy.worker_host,
+                        frozen.worker_host,
                         inner_agent,
                         legacy_native_agent_type=frozen.spec.strategy.worker_agent_type,
                     ).workspace_ledger_projection

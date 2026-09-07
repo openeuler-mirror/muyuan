@@ -17,7 +17,7 @@ from tests._runtime_helpers import make_project, spec_for, start_host_verified_g
 def make_search(tmp_path: Path):
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -307,7 +307,7 @@ def test_provider_neutral_recovery_accepts_snapshot_identity(tmp_path, monkeypat
 def test_recovery_does_not_rollback_other_lanes_or_budget(tmp_path):
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     first, peer = runtime.start_batch(run_id, plan.plan_id)
@@ -430,7 +430,7 @@ def test_git_worktree_recovery_preserves_source_and_external_symlink_target(tmp_
     runtime = FileSearchRuntime(tmp_path / ".gp")
     data = spec_for(project).model_dump(mode="json")
     data["workspace"] = {"backend": "git_worktree", "promotion_mode": "artifact_only"}
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]

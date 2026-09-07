@@ -980,7 +980,7 @@ def test_verifier_snapshot_respects_minimize_direction(tmp_path: Path) -> None:
 
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    frozen = runtime.freeze_spec(spec_for(project, direction="minimize"), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, direction="minimize"), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]

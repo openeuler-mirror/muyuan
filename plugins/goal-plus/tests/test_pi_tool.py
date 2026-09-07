@@ -299,7 +299,7 @@ def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -351,7 +351,7 @@ def test_pi_worker_tools_are_scoped_to_their_agent_session(
     runtime = FileSearchRuntime(runtime_root)
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=2),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -406,7 +406,7 @@ def test_pi_tool_stages_explicit_candidate_drafts(tmp_path: Path) -> None:
     data["shared_dir"] = {"enabled": True}
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)

@@ -253,7 +253,7 @@ class CandidateCreation:
             workspace_access=WorkspaceAccess(
                 logical_root="workspace",
                 native_cwd=workspace,
-                bootstrap_required=frozen.spec.strategy.worker_host == "codex",
+                bootstrap_required=frozen.worker_host == "codex",
                 confinement="soft_path",
                 writable_surfaces=list(frozen.spec.edit_surface.allow),
                 managed_root=materialization.managed_root,

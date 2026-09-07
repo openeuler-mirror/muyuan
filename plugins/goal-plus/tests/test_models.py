@@ -367,7 +367,7 @@ def test_search_spec_parses_nested_models_and_serializes_enums() -> None:
     assert dumped["metric_direction"] == "maximize"
     assert dumped["strategy"]["name"] == "agent_guided"
     assert dumped["strategy"]["orchestration_mode"] == "parallel_loops"
-    assert dumped["strategy"]["worker_host"] == "codex"
+    assert "worker_host" not in dumped["strategy"]
     assert "models" not in dumped["strategy"]
 
 
@@ -385,7 +385,7 @@ def test_required_supplemental_evaluation_rejects_disabled_mode(
         match="requires GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED=1",
     ):
         FileSearchRuntime(tmp_path / ".gp-missing").freeze_spec(
-            SearchSpec.model_validate(data), [project / "evaluator.py"]
+            SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex"
         )
 
 
@@ -399,7 +399,7 @@ def test_supplemental_evaluation_does_not_change_frozen_spec(
     monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_REQUIRED_ENV, "1")
 
     frozen = FileSearchRuntime(tmp_path / ".gp").freeze_spec(
-        SearchSpec.model_validate(data), [project / "evaluator.py"]
+        SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex"
     )
 
     frozen_spec = frozen.spec.model_dump(mode="json")
@@ -593,19 +593,17 @@ def test_search_spec_requires_structured_strategy() -> None:
     data = valid_spec_dict()
     data["strategy"] = {
         "name": "agent_guided",
-        "worker_host": "codex",
         "inner_agent": "common",
     }
     spec = SearchSpec.model_validate(data)
     assert spec.strategy.name == "agent_guided"
-    assert spec.strategy.worker_host == "codex"
+    assert "worker_host" not in type(spec.strategy).model_fields
     assert spec.strategy.inner_agent == "common"
     assert "worker_agent_type" not in spec.strategy.model_dump(mode="json")
 
     legacy = valid_spec_dict()
     legacy["strategy"] = {
         "name": "agent_guided",
-        "worker_host": "codex",
         "worker_agent_type": "search_candidate_agent",
     }
     legacy_spec = SearchSpec.model_validate(legacy)
@@ -629,40 +627,16 @@ def test_search_spec_requires_structured_strategy() -> None:
             SearchSpec.model_validate(data)
 
 
-def test_strategy_spec_accepts_supported_worker_hosts() -> None:
-    assert StrategySpec(worker_host="codex").worker_host == "codex"
-    assert StrategySpec(worker_host="pi-rpc").worker_host == "pi-rpc"
-    thinkthread = StrategySpec(
-        worker_host="thinkthread",
-        worker_launch={"agent_profile": "pi"},
-    )
-    assert thinkthread.worker_host == "thinkthread"
-    assert thinkthread.worker_launch is not None
-    assert thinkthread.worker_launch.agent_profile == "pi"
-
-    with pytest.raises(ValidationError):
-        StrategySpec(worker_host="unsupported")  # type: ignore[arg-type]
+@pytest.mark.parametrize("host", ["codex", "pi-rpc", "thinkthread"])
+def test_strategy_spec_cannot_select_worker_host(host) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        StrategySpec.model_validate({"worker_host": host})
 
 
-def test_strategy_spec_rejects_invalid_agent_profile_binding() -> None:
-    with pytest.raises(
-        ValidationError,
-        match="thinkthread worker_host requires worker_launch.agent_profile='pi'",
-    ):
-        StrategySpec(worker_host="thinkthread")
-    with pytest.raises(
-        ValidationError,
-        match="worker_launch.agent_profile is only valid for thinkthread",
-    ):
-        StrategySpec(
-            worker_host="pi-rpc",
-            worker_launch={"agent_profile": "pi"},
-        )
-    with pytest.raises(ValidationError):
-        StrategySpec(
-            worker_host="thinkthread",
-            worker_launch={"agent_profile": "codex"},
-        )
+@pytest.mark.parametrize("agent", ["pi", "codex"])
+def test_strategy_spec_cannot_select_agent_profile(agent) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        StrategySpec.model_validate({"worker_launch": {"agent_profile": agent}})
 
 
 def test_thinkthread_execution_and_publication_models_round_trip() -> None:
@@ -812,9 +786,7 @@ def test_strategy_spec_accepts_supported_orchestration_modes() -> None:
 def test_strategy_spec_uses_optional_search_scheduler() -> None:
     configured = StrategySpec(
         orchestration_mode="adaptive_search",
-        worker_host="pi-rpc",
         search_scheduler={
-            "host": "pi-rpc",
             "model": "bench-openai/gpt-5.6-sol",
             "reasoning_effort": "low",
             "timeout_seconds": 180,
@@ -839,7 +811,6 @@ def test_strategy_spec_uses_optional_search_scheduler() -> None:
 def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
     configured = SearchSchedulerSpec.model_validate(
         {
-            "host": "pi-rpc",
             "model": "bench-openai/gpt-5.6-sol",
             "reasoning_effort": "low",
             "timeout_seconds": 180,
@@ -850,7 +821,7 @@ def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
             "allocation": "value_guided_replace/v2",
         }
     )
-    assert configured.host == "pi-rpc"
+    assert "host" not in configured.model_dump()
     assert configured.model == "bench-openai/gpt-5.6-sol"
     assert configured.reasoning_effort == "low"
     assert configured.timeout_seconds == 180
@@ -858,14 +829,13 @@ def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
     assert reward.reference == "evidence_llm_value/v3"
     assert reward.supplemental_prompt == "rubric要关注修改代码量"
     configured_payload = configured.model_dump(mode="json")
-    for field in ("host", "model", "reasoning_effort", "timeout_seconds"):
+    for field in ("model", "reasoning_effort", "timeout_seconds"):
         incomplete = dict(configured_payload)
         incomplete.pop(field)
         with pytest.raises(ValidationError):
             SearchSchedulerSpec.model_validate(incomplete)
 
     projected = SearchSchedulerSpec(
-        host="pi-rpc",
         model="bench-openai/gpt-5.6-sol",
         reasoning_effort="low",
         timeout_seconds=180,
@@ -897,7 +867,6 @@ def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
 
     unregistered = SearchSchedulerSpec.model_validate(
         {
-            "host": "pi-rpc",
             "model": "bench-openai/gpt-5.6-sol",
             "reasoning_effort": "low",
             "timeout_seconds": 180,
@@ -910,7 +879,6 @@ def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
     spec_data["workspace"] = {"backend": "git_worktree"}
     spec_data["budget"]["max_candidates"] = spec_data["budget"]["max_parallel"]
     spec_data["strategy"]["orchestration_mode"] = "adaptive_search"
-    spec_data["strategy"]["worker_host"] = "pi-rpc"
     spec_data["strategy"]["worker_budget"] = {"max_runtime_seconds": 60}
     spec_data["strategy"]["search_scheduler"] = unregistered.model_dump(
         mode="json"
@@ -918,12 +886,11 @@ def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unknown reward scheduler policy"):
         FileSearchRuntime(tmp_path / ".gp").freeze_spec(
             SearchSpec.model_validate(spec_data),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
     with pytest.raises(ValidationError, match="@prompt requires non-empty"):
         SearchSchedulerSpec.model_validate(
             {
-                "host": "pi-rpc",
                 "model": "bench-openai/gpt-5.6-sol",
                 "reasoning_effort": "low",
                 "timeout_seconds": 180,
@@ -941,10 +908,8 @@ def test_scheduler_frozen_spec_requires_resolved_policy_snapshot(
     spec_data["workspace"] = {"backend": "git_worktree"}
     spec_data["budget"]["max_candidates"] = spec_data["budget"]["max_parallel"]
     spec_data["strategy"]["orchestration_mode"] = "adaptive_search"
-    spec_data["strategy"]["worker_host"] = "pi-rpc"
     spec_data["strategy"]["worker_budget"] = {"max_runtime_seconds": 60}
     spec_data["strategy"]["search_scheduler"] = {
-        "host": "pi-rpc",
         "model": "bench-openai/gpt-5.6-sol",
         "reasoning_effort": "low",
         "timeout_seconds": 180,
@@ -954,7 +919,7 @@ def test_scheduler_frozen_spec_requires_resolved_policy_snapshot(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     payload = frozen.model_dump(mode="json")
     payload.pop("search_scheduler_policies")
@@ -968,7 +933,6 @@ def test_scheduler_frozen_spec_requires_resolved_policy_snapshot(
 
 def test_strategy_spec_accepts_worker_budget() -> None:
     spec = StrategySpec(
-        worker_host="codex",
         worker_budget={
             "min_runtime_seconds": 300,
             "min_verifier_runs": 2,
@@ -996,7 +960,6 @@ def test_strategy_spec_accepts_worker_budget() -> None:
 @pytest.mark.codex
 def test_strategy_spec_accepts_codex_worker_launch_options() -> None:
     spec = StrategySpec(
-        worker_host="codex",
         worker_launch={
             "model": "gpt-5.6-terra",
             "reasoning_effort": "high",
@@ -1024,14 +987,12 @@ def test_evidence_annotator_config_is_optional_and_overridable() -> None:
         }
     )
     pi_explicit = StrategySpec(
-        worker_host="pi-rpc",
         evidence_annotator={
             "model": "deepseek/deepseek-chat",
         },
     )
 
     assert inherited.model_dump(mode="json")["evidence_annotator"] == {
-        "host": None,
         "model": None,
         "reasoning_effort": None,
         "timeout_seconds": 1800,
@@ -1040,22 +1001,19 @@ def test_evidence_annotator_config_is_optional_and_overridable() -> None:
     with pytest.raises(ValidationError):
         StrategySpec(evidence_annotator={"timeout_seconds": 1801})
     assert explicit.model_dump(mode="json")["evidence_annotator"] == {
-        "host": None,
         "model": "gpt-5.6-sol",
         "reasoning_effort": "medium",
         "timeout_seconds": 90,
     }
     assert pi_explicit.model_dump(mode="json")["evidence_annotator"] == {
-        "host": None,
         "model": "deepseek/deepseek-chat",
         "reasoning_effort": None,
         "timeout_seconds": 1800,
     }
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         StrategySpec(evidence_annotator={"unsupported": "value"})
-    with pytest.raises(ValidationError, match="must match strategy.worker_host"):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         StrategySpec(
-            worker_host="pi-rpc",
             evidence_annotator={"host": "codex"},
         )
 

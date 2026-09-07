@@ -46,7 +46,6 @@ def frozen_spec(clock: Clock, *, adaptive: bool = False) -> FrozenSpec:
             {
                 "orchestration_mode": "adaptive_search",
                 "search_scheduler": {
-                    "host": "codex",
                     "model": "gpt-5.2",
                     "reasoning_effort": "low",
                     "timeout_seconds": 90,
@@ -58,7 +57,7 @@ def frozen_spec(clock: Clock, *, adaptive: bool = False) -> FrozenSpec:
         policies = resolve_search_scheduler_policies(
             reward=reward, allocation=allocation
         )
-    return FrozenSpec(
+    return FrozenSpec(native_host="codex",
         frozen_spec_id="frozen_test",
         spec_hash="hash",
         spec=SearchSpec.model_validate(data),

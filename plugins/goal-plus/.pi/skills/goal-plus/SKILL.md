@@ -48,11 +48,9 @@ Main 负责把原始目标和公开任务合同中的正确性、性能、适用
 
 按工具 schema 定义 source、数值 metric、correctness gate、edit surface、预算和 promotion。
 自定义 verifier 放在 source 拥有且 Git 跟踪的路径，例如 `.goal-plus-verifiers/`；并发临时输出
-使用 `GOAL_PLUS_VERIFIER_TMPDIR` 或等价的唯一目录。Pi Search 使用
-`worker_host="pi-rpc"`，通常使用 `workspace.backend="git_worktree"`。安装的 `goal-plus-pi`
-ThinkThread Root 在显式选择 `workspace.backend="thinkthread"` 时使用
-`worker_host="thinkthread"` 和 `worker_launch.agent_profile="pi"`；两条 host/backend 路径不能
-混用，preflight 失败时不能 fallback。标准共享 Evidence 使用 manual 模式；auto、shared_dir、
+使用 `GOAL_PLUS_VERIFIER_TMPDIR` 或等价的唯一目录。Pi Search 通常使用
+`workspace.backend="git_worktree"`；安装的 `goal-plus-pi` ThinkThread Root 可使用
+`workspace.backend="thinkthread"`。标准共享 Evidence 使用 manual 模式；auto、shared_dir、
 supplemental evaluation、device pool 和角色模型路由只在目标或显式配置需要时启用，其 worker
 合同由 runtime 动态投影。显式 `command_config.inner_agent` 必须写入
 `strategy.inner_agent`。

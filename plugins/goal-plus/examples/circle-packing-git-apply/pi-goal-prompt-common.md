@@ -7,8 +7,8 @@
 不要访问网络。
 
 工作区合同：`workspace/` 是本任务可写的独立源码 Git 仓库。把当前目录中的
-`search-spec.json` 作为权威 SearchSpec，保持 `source_path="workspace"` 和 Pi
-`worker_host="pi-rpc"`，并把 `strategy.inner_agent` 设置为 `"common"`；不要把当前
+`search-spec.json` 作为权威 SearchSpec，保持 `source_path="workspace"`，
+并把 `strategy.inner_agent` 设置为 `"common"`；不要把当前
 示例目录或其外层仓库当作 source。
 
 Inner agent 合同：每个 common candidate dispatch 读取 Goal Plus MCP context，完成一个

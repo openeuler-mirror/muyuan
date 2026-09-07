@@ -77,10 +77,10 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
         "VALUE = 0 without RECOVERY_PARTIAL, then run the process verifier once "
         "with hypothesis 'recovered settled baseline' and finish. Never create another candidate."
     )
-    data["strategy"].update({"worker_host": host, "worker_budget": {"max_runtime_seconds": 180}})
+    data["strategy"].update({ "worker_budget": {"max_runtime_seconds": 180}})
     data["workspace"]["promotion_mode"] = "artifact_only"
     spec = SearchSpec.model_validate(data)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi" if host in {"pi-rpc", "thinkthread", "pi"} else "codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]

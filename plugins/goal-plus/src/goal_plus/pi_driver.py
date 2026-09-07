@@ -19,7 +19,7 @@ def _search_tools_for_pi_rpc_run(root_dir: Path | str, run_id: str) -> SearchToo
     worker_host = candidate_host_queries(root_dir).worker_host(run_id)
     if worker_host != "pi-rpc":
         raise ValueError(
-            "Pi search drivers require SearchSpec strategy.worker_host='pi-rpc'; "
+            "Pi search drivers require a Pi Main with a local workspace backend; "
             f"got {worker_host!r}. Freeze a Pi SearchSpec before opening a Pi pool."
         )
     return SearchTools(runtime)
