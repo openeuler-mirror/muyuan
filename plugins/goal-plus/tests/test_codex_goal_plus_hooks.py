@@ -1255,14 +1255,14 @@ def test_interrupted_codex_final_checker_must_submit_before_subagent_stop(
 
 @pytest.mark.linux_procfs
 @pytest.mark.parametrize(
-    "tool_name",
-    ["spawn_agent", "collaborationspawn_agent"],
+    "prefix",
+    ["", "collaboration", "functions.", "collaboration.", "functions.collaboration."],
 )
 def test_post_tool_tracks_and_interrupts_codex_native_agent(
     tmp_path: Path,
-    tool_name: str,
+    prefix: str,
 ) -> None:
-    prefix = "collaboration" if tool_name == "collaborationspawn_agent" else ""
+    tool_name = prefix + "spawn_agent"
     search_root = tmp_path / ".gp"
     runtime = FileGoalPlusRuntime(search_root)
     record = start_host_verified_goal(search_root, tmp_path, session_id="session-codex")
@@ -2381,6 +2381,10 @@ def test_foreign_tool_identity_does_not_require_goal_plus(tmp_path, tool_name, c
 @pytest.mark.parametrize("tool_name", [
     "mcp__foreign__search_run_verifier", "mcp__foreign__search_status",
     "mcp__foreign__search_get_agent_context", "mcp__foreign__spawn_agent",
+    "functions.foreign.interrupt_agent",
+    "functions.collaboration.foreign.interrupt_agent",
+    "mcp__foreign__functions.collaboration.interrupt_agent",
+    "foreign.functions.collaboration.interrupt_agent",
 ])
 def test_foreign_post_tool_does_not_pump_or_bind_goal_plus(tmp_path, monkeypatch, tool_name):
     def unexpected(*args, **kwargs):

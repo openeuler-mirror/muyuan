@@ -17,7 +17,7 @@ def goal_plus_tool_name(value: str) -> str | None:
 def native_tool_name(value: str) -> str:
     """Decode only native host namespaces, preserving foreign tool identity."""
     if value.startswith("functions."):
-        return value[len("functions."):]
+        value = value[len("functions."):]
     if value.startswith("collaboration."):
         return value[len("collaboration."):]
     return value
