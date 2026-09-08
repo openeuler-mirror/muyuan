@@ -581,6 +581,7 @@ def test_scheduler_kick_inherits_native_host_environment(
     from goal_plus.ports.process_identity import ProcessSnapshot
 
     monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process", lambda pid: ProcessSnapshot(pid, "current", pid, "S"))
+    monkeypatch.setattr("goal_plus.execution.process_identity.boot_identity", lambda: "test-boot")
     monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process_group", lambda pid: (ProcessSnapshot(pid, "current", pid, "S"),))
 
     assert kick_scheduler(runtime.root_dir, run_id, host="pi-rpc") is False

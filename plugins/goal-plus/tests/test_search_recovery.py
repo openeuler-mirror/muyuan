@@ -160,6 +160,7 @@ def test_settled_point_restores_code_and_ledger_archiving_partial_files(tmp_path
         assert backup.extractfile("untracked.tmp").read() == b"save me"
 
 
+@pytest.mark.linux_procfs
 def test_prepare_fences_old_sessions_and_requires_host_quiescence(tmp_path, monkeypatch):
     from goal_plus.candidate_host import candidate_host_queries
     from goal_plus.host_scope import (
@@ -368,6 +369,7 @@ def test_terminal_run_cannot_be_recovered(tmp_path, state):
     assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
 
 
+@pytest.mark.linux_procfs
 def test_codex_quiescence_observation_must_follow_this_recovery(tmp_path):
     from goal_plus.host_recovery import observe_codex_registry
     from goal_plus.host_scope import ensure_execution_scope, execution_scope_snapshot, register_codex_agent

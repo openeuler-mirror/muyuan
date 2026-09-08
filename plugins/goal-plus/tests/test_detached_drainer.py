@@ -44,6 +44,7 @@ def harness(tmp_path, monkeypatch):
 
     monkeypatch.setattr(inspection, "inspect_process", inspect_process)
     monkeypatch.setattr(inspection, "inspect_process_group", inspect_group)
+    monkeypatch.setattr(inspection, "boot_identity", lambda: "test-boot")
 
     def popen(command, **kwargs):
         pid = 10000 + len(calls)
@@ -227,6 +228,7 @@ def test_stale_or_invalid_registration_does_not_signal_an_unowned_process(harnes
     assert path.read_text() == "not-json"
 
 
+@pytest.mark.linux_procfs
 def test_local_process_is_registered_stopped_and_reaped(harness, monkeypatch):
     from goal_plus.host_scope import (
         close_execution_scope, close_run_candidates, ensure_execution_scope,

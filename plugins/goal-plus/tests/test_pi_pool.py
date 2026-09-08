@@ -257,6 +257,7 @@ def test_pi_pool_enforces_frozen_parallel_limit(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.linux_procfs
 def test_pi_pool_continuation_is_rejected_after_scope_run_fence(
     tmp_path: Path,
 ) -> None:
@@ -295,6 +296,7 @@ def test_pi_pool_continuation_is_rejected_after_scope_run_fence(
         )
 
 
+@pytest.mark.linux_procfs
 def test_pi_pool_inherits_main_native_config_from_execution_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -340,6 +342,7 @@ def test_pi_pool_inherits_main_native_config_from_execution_scope(
     assert request["thinking_level"] == "low"
 
 
+@pytest.mark.linux_procfs
 def test_pi_pool_open_cannot_publish_after_scope_fence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -436,6 +439,7 @@ def test_pi_pool_continue_pins_existing_native_session(
     assert request["resume_agent_session_id"] == session.agent_session_id
 
 
+@pytest.mark.linux_procfs
 def test_pi_pool_continue_honors_pending_session_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

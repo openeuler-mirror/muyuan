@@ -685,6 +685,7 @@ def test_k2_candidates_spawn_from_one_durable_baseline(tmp_path: Path) -> None:
     assert pool["baseline_intent"]["snapshot_id"] == "fsnap-S0"
 
 
+@pytest.mark.linux_procfs
 def test_thinkthread_continuation_is_rejected_after_scope_run_fence(
     tmp_path: Path,
 ) -> None:
@@ -729,6 +730,7 @@ def test_thinkthread_continuation_is_rejected_after_scope_run_fence(
     assert closed["state"] == "closed"
 
 
+@pytest.mark.linux_procfs
 def test_thinkthread_pool_open_cannot_publish_after_scope_fence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

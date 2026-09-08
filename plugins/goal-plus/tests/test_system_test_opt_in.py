@@ -23,6 +23,7 @@ def gated_suite(pytester: pytest.Pytester) -> pytest.Pytester:
             st_pi_thinkthread: ThinkThread
             st_future: future system test
             fast: host-free test
+            linux_procfs: Linux process observation
         """
     )
     pytester.makeconftest(
@@ -151,3 +152,35 @@ def test_new_system_marker_is_gated_outside_host_directories(
     result = gated_suite.runpytest_subprocess("-q", "test_future.py")
     result.assert_outcomes(skipped=1)
     assert not (gated_suite.path / "preflight.txt").exists()
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_linux_procfs_marker_gates_fixtures_only_on_other_platforms(
+    gated_suite: pytest.Pytester, platform: str,
+) -> None:
+    conftest = gated_suite.path / "conftest.py"
+    with conftest.open("a") as stream:
+        stream.write(
+            "\ndef pytest_configure(config):\n"
+            "    from types import SimpleNamespace\n"
+            "    import tests.conftest as gates\n"
+            f"    gates.sys = SimpleNamespace(platform={platform!r})\n"
+        )
+    gated_suite.makepyfile(
+        test_platform="""
+        from pathlib import Path
+        import pytest
+
+        @pytest.fixture
+        def observed_process():
+            Path("process-observed.txt").touch()
+
+        @pytest.mark.linux_procfs
+        def test_process(observed_process): pass
+
+        def test_pure(): pass
+        """
+    )
+    result = gated_suite.runpytest_subprocess("-q", "test_platform.py")
+    result.assert_outcomes(passed=2 if platform == "linux" else 1, skipped=0 if platform == "linux" else 1)
+    assert (gated_suite.path / "process-observed.txt").exists() == (platform == "linux")

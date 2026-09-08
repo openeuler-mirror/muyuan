@@ -1263,6 +1263,7 @@ def test_interrupted_codex_final_checker_must_submit_before_subagent_stop(
     assert released.stdout == ""
 
 
+@pytest.mark.linux_procfs
 @pytest.mark.parametrize(
     "tool_name",
     ["spawn_agent", "collaborationspawn_agent"],
@@ -1401,6 +1402,7 @@ def test_post_tool_tracks_and_interrupts_codex_native_agent(
     assert "not open" in _pre_tool_denial(native("followup_task", "PreToolUse", "wake-2"))
 
 
+@pytest.mark.linux_procfs
 def test_subagent_stop_uses_agent_transcript_to_finish_canonical_task(
     tmp_path: Path,
 ) -> None:
@@ -1467,6 +1469,7 @@ def test_subagent_stop_uses_agent_transcript_to_finish_canonical_task(
     assert nested["wake_pending"] is True
 
 
+@pytest.mark.linux_procfs
 def test_aborted_stop_blocks_until_codex_children_are_interrupted(
     tmp_path: Path,
 ) -> None:
@@ -1540,6 +1543,7 @@ def test_aborted_stop_blocks_until_codex_children_are_interrupted(
     assert runtime.status(record.goal_plus_id).active_session.state == "attached"
 
 
+@pytest.mark.linux_procfs
 @pytest.mark.parametrize("stop_reason", ["aborted", None])
 def test_stop_closes_scope_for_detached_goal_without_durable_mutation(
     tmp_path: Path,
@@ -1588,6 +1592,7 @@ def test_stop_closes_scope_for_detached_goal_without_durable_mutation(
     assert runtime.status(record.goal_plus_id).model_dump(mode="json") == before
 
 
+@pytest.mark.linux_procfs
 def test_terminal_goal_stop_waits_for_codex_scope_quiescence(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     runtime = FileGoalPlusRuntime(search_root)
@@ -1858,6 +1863,7 @@ def test_child_hooks_do_not_inherit_or_rebind_main_goal_context(tmp_path: Path) 
     assert runtime.status(record.goal_plus_id).hook_counters == {}
 
 
+@pytest.mark.linux_procfs
 def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
     tmp_path: Path,
 ) -> None:

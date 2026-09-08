@@ -29,6 +29,7 @@ from goal_plus.host_scope import (
 )
 
 
+@pytest.mark.linux_procfs
 def test_scope_fences_new_work_and_stops_registered_process(tmp_path: Path) -> None:
     root = tmp_path / ".gp"
     scope = ensure_execution_scope(
@@ -69,7 +70,7 @@ def test_scope_fences_new_work_and_stops_registered_process(tmp_path: Path) -> N
     finish_execution_process(root_dir=root, scope_id=scope["scope_id"], token=token)
 
 
-def test_pi_scope_freezes_non_secret_native_agent_config(tmp_path: Path) -> None:
+def test_pi_scope_freezes_non_secret_native_agent_config(tmp_path: Path, scope_owner) -> None:
     root = tmp_path / ".gp"
     config = {
         "model_pattern": "native-main/example-model",
@@ -121,6 +122,7 @@ def test_pi_scope_freezes_non_secret_native_agent_config(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.linux_procfs
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX owner signaling")
 def test_guardian_closes_scope_when_owner_process_exits(tmp_path: Path) -> None:
     root = tmp_path / ".gp"
@@ -162,6 +164,7 @@ def test_guardian_closes_scope_when_owner_process_exits(tmp_path: Path) -> None:
 def test_guardian_retries_when_new_session_is_denied(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    scope_owner,
 ) -> None:
     launches: list[dict[str, object]] = []
 
@@ -198,7 +201,7 @@ def test_guardian_retries_when_new_session_is_denied(
     assert scope["guardian_start_token"] == "123"
 
 
-def test_closed_scope_cannot_be_reopened_implicitly(tmp_path: Path) -> None:
+def test_closed_scope_cannot_be_reopened_implicitly(tmp_path: Path, scope_owner) -> None:
     root = tmp_path / ".gp"
     scope = ensure_execution_scope(
         root_dir=root,
@@ -248,6 +251,7 @@ def test_closed_scope_cannot_be_reopened_implicitly(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.linux_procfs
 def test_selection_fences_only_the_attached_run(tmp_path: Path) -> None:
     root = tmp_path / ".gp"
     scope = ensure_execution_scope(
@@ -292,7 +296,7 @@ def test_selection_fences_only_the_attached_run(tmp_path: Path) -> None:
         process.wait(timeout=5)
 
 
-def test_fenced_run_rejects_late_process_registration(tmp_path: Path) -> None:
+def test_fenced_run_rejects_late_process_registration(tmp_path: Path, scope_owner) -> None:
     root = tmp_path / ".gp"
     scope = ensure_execution_scope(
         root_dir=root,
@@ -322,6 +326,7 @@ def test_fenced_run_rejects_late_process_registration(tmp_path: Path) -> None:
 def test_thinkthread_cleanup_unknown_fails_scope_and_can_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    scope_owner,
 ) -> None:
     from goal_plus import thinkthread_annotation
 
@@ -368,7 +373,7 @@ def test_thinkthread_cleanup_unknown_fails_scope_and_can_retry(
     }
 
 
-def test_codex_scope_close_requires_native_agents_to_be_terminal(tmp_path: Path) -> None:
+def test_codex_scope_close_requires_native_agents_to_be_terminal(tmp_path: Path, scope_owner) -> None:
     root = tmp_path / ".gp"
     scope = ensure_execution_scope(
         root_dir=root,
@@ -439,7 +444,7 @@ def test_codex_scope_close_requires_native_agents_to_be_terminal(tmp_path: Path)
     assert execution_scope_snapshot(root_dir=root, scope_id=newer["scope_id"])["codex_agents"][0]["status"] == "active"
 
 
-def test_codex_owner_exit_marks_native_agents_terminal(tmp_path: Path, monkeypatch) -> None:
+def test_codex_owner_exit_marks_native_agents_terminal(tmp_path: Path, monkeypatch, scope_owner) -> None:
     root = tmp_path / ".gp"
     monkeypatch.setattr("goal_plus.host_scope._close_run_internal_drainers", lambda **_: pytest.fail("Goal routed to Search cleanup"))
     scope = ensure_execution_scope(
@@ -469,6 +474,7 @@ def test_codex_owner_exit_marks_native_agents_terminal(tmp_path: Path, monkeypat
     assert closed["codex_agents"][0]["status"] == "owner_process_exited"
 
 
+@pytest.mark.linux_procfs
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX owner signaling")
 def test_guardian_marks_codex_agents_terminal_after_owner_death(
     tmp_path: Path,
@@ -504,7 +510,7 @@ def test_guardian_marks_codex_agents_terminal_after_owner_death(
     assert observed["codex_agents"][0]["status"] == "owner_process_exited"
 
 
-def test_codex_run_cleanup_can_retry_after_its_fence(tmp_path: Path) -> None:
+def test_codex_run_cleanup_can_retry_after_its_fence(tmp_path: Path, scope_owner) -> None:
     root = tmp_path / ".gp"
     scope = ensure_execution_scope(
         root_dir=root,

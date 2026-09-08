@@ -26,7 +26,7 @@ def scope_for(root, *, host="pi", owner_pid=None, run_id=None):
 @pytest.mark.parametrize("initial_state", ["closing", "cleanup_failed"])
 @pytest.mark.parametrize("owner_unknown", [False, True])
 def test_guardian_retries_requested_cleanup_until_native_stop_is_observed(
-    tmp_path, monkeypatch, initial_state, owner_unknown,
+    tmp_path, monkeypatch, initial_state, owner_unknown, scope_owner,
 ):
     scope = scope_for(tmp_path, host="codex")
     scope_id = scope["scope_id"]
@@ -72,6 +72,7 @@ def test_guardian_retries_requested_cleanup_until_native_stop_is_observed(
         scope_for(tmp_path, host="codex")
 
 
+@pytest.mark.linux_procfs
 def test_guardian_retries_cleanup_after_confirmed_owner_death(tmp_path, monkeypatch):
     owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -102,7 +103,7 @@ def test_guardian_retries_cleanup_after_confirmed_owner_death(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("error", [OSError("read unavailable"), ValueError("invalid scope JSON")])
-def test_guardian_retries_transient_scope_read_errors(tmp_path, monkeypatch, error):
+def test_guardian_retries_transient_scope_read_errors(tmp_path, monkeypatch, error, scope_owner):
     scope_id = scope_for(tmp_path)["scope_id"]
     host_scope.close_execution_scope(root_dir=tmp_path, scope_id=scope_id, reason="test")
     snapshot = host_scope.execution_scope_snapshot
@@ -120,7 +121,7 @@ def test_guardian_retries_transient_scope_read_errors(tmp_path, monkeypatch, err
 
 
 @pytest.mark.parametrize("candidate_only", [False, True])
-def test_scope_and_candidate_cleanup_do_not_overlap(tmp_path, monkeypatch, candidate_only):
+def test_scope_and_candidate_cleanup_do_not_overlap(tmp_path, monkeypatch, candidate_only, scope_owner):
     scope_id = scope_for(tmp_path, run_id="run_test")["scope_id"]
     first_entered = Event()
     release = Event()
@@ -163,7 +164,7 @@ def test_scope_and_candidate_cleanup_do_not_overlap(tmp_path, monkeypatch, candi
 
 
 @pytest.mark.parametrize("candidate_only", [False, True])
-def test_waiting_for_cleanup_does_not_delay_launch_fencing(tmp_path, monkeypatch, candidate_only):
+def test_waiting_for_cleanup_does_not_delay_launch_fencing(tmp_path, monkeypatch, candidate_only, scope_owner):
     scope_id = scope_for(tmp_path, run_id="run_first")["scope_id"]
     scope_for(tmp_path, run_id="run_later")
     first_entered = Event()
@@ -266,7 +267,7 @@ def test_closed_or_removed_scope_does_not_touch_any_resource(missing):
     assert ScopeGuardian(read=read, close=unexpected, owner_alive=unexpected, pause=unexpected).run() == 0
 
 
-def test_guardian_observation_is_read_only_and_excludes_other_scope_data(tmp_path):
+def test_guardian_observation_is_read_only_and_excludes_other_scope_data(tmp_path, scope_owner):
     scope = scope_for(tmp_path, run_id="run_test")
     path = tmp_path / "host-scopes" / scope["scope_id"] / "scope.json"
     before = path.read_bytes()
@@ -278,7 +279,7 @@ def test_guardian_observation_is_read_only_and_excludes_other_scope_data(tmp_pat
     assert path.read_bytes() == before
 
 
-def test_manual_cleanup_retry_cannot_erase_confirmed_owner_exit(tmp_path, monkeypatch):
+def test_manual_cleanup_retry_cannot_erase_confirmed_owner_exit(tmp_path, monkeypatch, scope_owner):
     scope_id = scope_for(tmp_path)["scope_id"]
     attempts = []
 

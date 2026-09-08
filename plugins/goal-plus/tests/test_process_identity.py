@@ -3,7 +3,6 @@
 import importlib
 import os
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -35,6 +34,7 @@ def process_files(monkeypatch):
     monkeypatch.setattr(Path, "read_bytes", lambda path: read(path, read_bytes))
     monkeypatch.setattr(Path, "exists", lambda path: True if path.parent == Path(f"/proc/{pid}") else exists(path))
     monkeypatch.setattr(os, "kill", lambda target, sig: None if (target, sig) == (pid, 0) else kill(target, sig))
+    monkeypatch.setattr(inspection, "boot_identity", lambda: "test-boot")
     return pid, files
 
 
@@ -177,7 +177,7 @@ def test_recovery_keeps_its_existing_ps_identity_format(monkeypatch, returncode,
         )
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux procfs observation")
+@pytest.mark.linux_procfs
 def test_current_local_process_is_observable_without_launching_a_host():
     snapshot = inspection.inspect_process(os.getpid())
     assert snapshot.pid == os.getpid()
@@ -192,7 +192,7 @@ def test_scope_unknown_cleanup_keeps_the_handle_and_retry_does_not_signal_a_reus
 
     pid, files = process_files
     scope = host_scope.ensure_execution_scope(
-        root_dir=tmp_path, host="pi", owner_session_id="owner", owner_pid=os.getpid(), start_guardian=False,
+        root_dir=tmp_path, host="pi", owner_session_id="owner", owner_pid=pid, start_guardian=False,
     )
     token = host_scope.register_execution_process(
         root_dir=tmp_path, scope_id=scope["scope_id"], pid=pid, process_group_id=None, label="worker",
@@ -222,7 +222,7 @@ def test_scope_rejects_registration_for_a_different_process_group_without_state_
 
     pid, _files = process_files
     scope = host_scope.ensure_execution_scope(
-        root_dir=tmp_path, host="pi", owner_session_id="owner", owner_pid=os.getpid(), start_guardian=False,
+        root_dir=tmp_path, host="pi", owner_session_id="owner", owner_pid=pid, start_guardian=False,
     )
     with pytest.raises(ValueError, match="own its registered process group"):
         host_scope.register_execution_process(

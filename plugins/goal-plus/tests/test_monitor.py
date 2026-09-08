@@ -545,6 +545,7 @@ def test_goal_plus_monitor_snapshot_is_exposed_to_mcp_and_pi_facade(tmp_path: Pa
 
 def test_goal_plus_monitor_snapshot_projects_host_execution_scope(
     tmp_path: Path,
+    scope_owner,
 ) -> None:
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
