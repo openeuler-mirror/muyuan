@@ -24,7 +24,8 @@ def _load_installer() -> ModuleType:
 
 
 @pytest.fixture
-def installer() -> ModuleType:
+def installer(tmp_path, monkeypatch) -> ModuleType:
+    monkeypatch.setenv("GOAL_PLUS_INSTALL_HOME", str(tmp_path / "managed"))
     return _load_installer()
 
 
@@ -285,7 +286,7 @@ def test_pi_normal_accepts_same_checkout_registration(
     assert installer._preflight_pi_normal() is True
 
 
-def test_pi_normal_accepts_same_checkout_loose_resource(
+def test_pi_normal_rejects_same_checkout_loose_resource(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -297,7 +298,8 @@ def test_pi_normal_accepts_same_checkout_loose_resource(
     skill.symlink_to(ROOT / ".pi" / "skills" / "goal-plus", target_is_directory=True)
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
-    assert installer._preflight_pi_normal() is False
+    with pytest.raises(installer.InstallError, match="conflicting Goal Plus"):
+        installer._preflight_pi_normal()
 
 
 def test_pi_normal_rejects_loose_goal_plus_assets(
@@ -375,52 +377,15 @@ def test_codex_install_refreshes_existing_plugin(
         lambda argv, **_kwargs: commands.append(argv),
     )
 
+    monkeypatch.setattr(installer, "_codex_marketplaces", lambda _codex: {"goal-plus": ROOT})
+    monkeypatch.setattr(installer.managed_runtime, "bind", lambda *args, **kwargs: None)
     installer._install_codex(
         codex="codex",
-        marketplace_exists=True,
+        package=ROOT,
         dry_run=False,
     )
 
     assert commands == [["codex", "plugin", "add", "goal-plus@goal-plus"]]
-
-
-def test_normal_runtime_rejects_commands_from_another_environment(
-    installer: ModuleType,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    selected_bin = tmp_path / "selected" / "bin"
-    other_bin = tmp_path / "other" / "bin"
-    selected_bin.mkdir(parents=True)
-    other_bin.mkdir(parents=True)
-    monkeypatch.setenv("PATH", str(selected_bin))
-    monkeypatch.setattr(
-        installer.sysconfig, "get_path", lambda _name: str(selected_bin)
-    )
-    monkeypatch.setattr(
-        installer.shutil,
-        "which",
-        lambda name: str(other_bin / name) if name == "goal-plus" else None,
-    )
-
-    with pytest.raises(installer.InstallError, match="another Python environment"):
-        installer._preflight_normal_runtime()
-
-
-def test_normal_runtime_accepts_selected_scripts_directory(
-    installer: ModuleType,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    selected_bin = tmp_path / "selected" / "bin"
-    selected_bin.mkdir(parents=True)
-    monkeypatch.setenv("PATH", str(selected_bin))
-    monkeypatch.setattr(
-        installer.sysconfig, "get_path", lambda _name: str(selected_bin)
-    )
-    monkeypatch.setattr(installer.shutil, "which", lambda _name: None)
-
-    assert installer._preflight_normal_runtime() == selected_bin.resolve()
 
 
 def test_pi_dev_dry_run_does_not_create_managed_directory(
@@ -587,6 +552,7 @@ def test_thinkthread_profile_preflight_is_idempotent(
     first = installer._preflight_thinkthread_profile(
         "/opt/bin/tt",
         profile_path=profile_path,
+            runtime_python=tmp_path / "venv/bin/python",
     )
     assert first.installed is False
     profile_path.write_text(first.content, encoding="utf-8")
@@ -594,6 +560,7 @@ def test_thinkthread_profile_preflight_is_idempotent(
     second = installer._preflight_thinkthread_profile(
         "/opt/bin/tt",
         profile_path=profile_path,
+            runtime_python=tmp_path / "venv/bin/python",
     )
     assert second.installed is True
 
@@ -617,6 +584,7 @@ def test_thinkthread_profile_preflight_refuses_unmanaged_file(
         installer._preflight_thinkthread_profile(
             "/opt/bin/tt",
             profile_path=profile_path,
+            runtime_python=tmp_path / "venv/bin/python",
         )
 
 
@@ -645,6 +613,7 @@ def test_thinkthread_profile_preflight_updates_profile_owned_by_checkout(
     plan = installer._preflight_thinkthread_profile(
         "/opt/bin/tt",
         profile_path=profile_path,
+            runtime_python=tmp_path / "venv/bin/python",
     )
 
     assert plan.installed is False
@@ -727,3 +696,91 @@ def test_thinkthread_sdk_preflight_refuses_unmanaged_directory(
             git_executable="/opt/git",
             install_root=root,
         )
+
+
+def test_codex_update_failure_restores_previous_source_and_binding(installer, tmp_path, monkeypatch):
+    old, new = tmp_path / "old", tmp_path / "new"
+    current = {"goal-plus": old}
+    installer.managed_runtime.bind("codex", installer._codex_config(), old)
+    installer.managed_runtime.bind("pi", installer._pi_agent_dir(), old)
+    monkeypatch.setattr(installer, "_codex_marketplaces", lambda _: dict(current))
+    def run(argv, **kwargs):
+        if argv[1:4] == ["plugin", "marketplace", "remove"]:
+            current.clear()
+        elif argv[1:4] == ["plugin", "marketplace", "add"]:
+            current["goal-plus"] = Path(argv[4])
+        elif current.get("goal-plus") == new:
+            raise subprocess.CalledProcessError(1, argv)
+    monkeypatch.setattr(installer, "_run", run)
+    with pytest.raises(subprocess.CalledProcessError):
+        installer._install_codex(codex="codex", package=new, dry_run=False)
+    assert current == {"goal-plus": old}
+    for host, config in [("codex", installer._codex_config()), ("pi", installer._pi_agent_dir())]:
+        assert json.loads(installer.managed_runtime.binding_path(host, config).read_text())["package"] == str(old)
+    assert not installer.managed_runtime.binding_path("codex-pending", installer._codex_config()).exists()
+
+
+@pytest.mark.parametrize("fail", [True, False])
+def test_pi_update_preserves_filters_and_recovers_settings(installer, tmp_path, monkeypatch, fail):
+    agent = tmp_path / "pi"
+    old, new = tmp_path / "old", tmp_path / "new"
+    original = {"packages": [{"source": "../old", "extensions": ["*.ts"]}, "npm:unrelated"], "theme": "dark"}
+    _write_pi_settings(agent, original["packages"])
+    (agent / "settings.json").write_text(json.dumps(original))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent))
+    monkeypatch.setattr(installer, "_pi_goal_plus_entries", lambda: [{"source": "../old", "resolved_path": old, "settings_path": agent / "settings.json"}])
+    installer.managed_runtime.bind("pi", agent, old)
+    def run(argv, **kwargs):
+        if argv[1] == "remove":
+            assert argv[2] == str(old)
+            (agent / "settings.json").write_text(json.dumps({"packages": ["npm:unrelated"], "theme": "dark"}))
+        elif fail:
+            raise subprocess.CalledProcessError(1, argv)
+        else:
+            (agent / "settings.json").write_text(json.dumps({"packages": ["npm:unrelated", str(new)], "theme": "dark"}))
+    monkeypatch.setattr(installer, "_run", run)
+    if fail:
+        with pytest.raises(subprocess.CalledProcessError):
+            installer._install_pi(pi="pi", package=new, dry_run=False)
+        assert json.loads((agent / "settings.json").read_text()) == original
+    else:
+        installer._install_pi(pi="pi", package=new, dry_run=False)
+        result = json.loads((agent / "settings.json").read_text())
+        assert result == {**original, "packages": [{"source": str(new), "extensions": ["*.ts"]}, "npm:unrelated"]}
+    assert json.loads(installer.managed_runtime.binding_path("pi", agent).read_text())["package"] == str(old if fail else new)
+
+
+def test_python_symlink_chain_can_revisit_directory_with_different_suffix(installer, tmp_path):
+    real = tmp_path / "real"
+    (real / "env/bin").mkdir(parents=True)
+    (real / "bin").mkdir()
+    (real / "bin/python3").touch()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    (real / "env/bin/python").symlink_to(alias / "bin/python3")
+    roots = installer._symlink_chain_parent_roots(alias / "env/bin/python")
+    assert real / "env/bin" in roots
+
+
+def test_thinkthread_profile_uses_managed_package_python_and_retains_source_owner(installer, tmp_path):
+    package = tmp_path / "release/package"
+    package.mkdir(parents=True)
+    (package / ".goal-plus-runtime.json").write_text(json.dumps({"schema": installer.managed_runtime.SCHEMA, "source": str(ROOT)}))
+    python = tmp_path / "release/venv/bin/python"
+    profile = installer._build_thinkthread_profile(_thinkthread_pi_profile(), package_root=package,
+                                                  runtime_python=python, node_executable="/opt/node/bin/node")
+    assert str(package / ".pi/extensions/goal-plus.ts") in profile["agent"]["args"]
+    assert profile["environment"]["root"]["GOAL_PLUS_PYTHON"] == str(python)
+    assert str(python.parent.parent) in profile["environment"]["read"]
+    path = tmp_path / "profile.toml"
+    path.write_text(installer._render_thinkthread_profile(profile))
+    assert installer._managed_thinkthread_profile_source(path) == ROOT
+
+
+def test_pi_cli_removal_keeps_lexical_alias(installer, tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    entry = {"source": "../package", "resolved_path": real / "package", "settings_path": alias / "agent/settings.json"}
+    assert installer._pi_cli_source(entry) == str(alias / "package")

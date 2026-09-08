@@ -8,17 +8,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.metadata
 import json
 import os
 import re
 import shutil
+import shlex
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import unquote, urlparse
 
 from goal_plus.paths import host_assets_root
 
@@ -159,83 +158,31 @@ def _check_codex_version(codex_home: Path) -> CheckResult:
     )
 
 
-def _distribution_provenance() -> dict[str, Any]:
-    distribution = importlib.metadata.distribution("goal-plus")
-    direct_url_path = next(
-        (
-            distribution.locate_file(item)
-            for item in distribution.files or ()
-            if item.name == "direct_url.json"
-        ),
-        None,
-    )
-    source: str | None = None
-    editable = False
-    if direct_url_path is not None and Path(direct_url_path).is_file():
-        direct_url = json.loads(Path(direct_url_path).read_text(encoding="utf-8"))
-        editable = bool(direct_url.get("dir_info", {}).get("editable"))
-        url = direct_url.get("url")
-        if isinstance(url, str) and urlparse(url).scheme == "file":
-            source = unquote(urlparse(url).path)
-    return {
-        "distribution_version": distribution.version,
-        "editable": editable,
-        "distribution_source": source,
-        "module_source": str(Path(__file__).resolve()),
-    }
-
-
 def _check_goal_plus_cli(codex_home: Path, source_root: Path) -> CheckResult:
-    executable = shutil.which("goal-plus")
-    if executable is None:
+    receipt_path = source_root / ".goal-plus-runtime.json"
+    if not receipt_path.is_file():
         return CheckResult(
-            "goal_plus.executable",
-            "fail",
-            "The `goal-plus` executable is not on PATH.",
-            {
-                "fix": f'{sys.executable} -m pip install -e "{source_root}[dev]"',
-            },
+            "goal_plus.executable", "warn", "No managed runtime receipt was found for this source.",
+            {"source": str(source_root), "fix": "Run ./install.sh --codex from the source checkout."},
         )
     try:
-        result = _run([executable, "--version"], codex_home=codex_home)
-        provenance = _distribution_provenance()
-    except (OSError, ValueError, json.JSONDecodeError, importlib.metadata.PackageNotFoundError) as exc:
-        return CheckResult(
-            "goal_plus.executable",
-            "fail",
-            f"Could not inspect the Goal Plus executable: {exc}",
-            {"executable": executable},
+        receipt = json.loads(receipt_path.read_text())
+        result = _run([receipt["python"], "-I", "-m", "goal_plus.installation"], codex_home=codex_home)
+        actual = json.loads(result.stdout)
+        manifest = json.loads((source_root / ".codex-plugin/plugin.json").read_text())
+        matches = (
+            result.returncode == 0
+            and receipt.get("schema") == "goal-plus.managed-runtime.v1"
+            and all(actual.get(key) == receipt.get(key) for key in ("build", "python", "package"))
+            and bool(receipt.get("build"))
+            and manifest["version"].endswith("+" + receipt["build"])
         )
-    output = (result.stdout or result.stderr).strip()
-    version = _version_tuple(output)
-    manifest_path = source_root / ".codex-plugin" / "plugin.json"
-    manifest_version: str | None = None
-    if manifest_path.is_file():
-        manifest_version = str(
-            json.loads(manifest_path.read_text(encoding="utf-8")).get("version") or ""
-        )
-    distribution_version = str(provenance["distribution_version"])
-    versions_match = not manifest_version or manifest_version == distribution_version
-    status: Status = (
-        "pass"
-        if result.returncode == 0 and version is not None and versions_match
-        else "fail"
-    )
-    summary = (
-        f"Goal Plus {distribution_version} is executable; package provenance is available."
-        if status == "pass"
-        else "The Goal Plus executable or plugin/package version is inconsistent."
-    )
+    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
+        return CheckResult("goal_plus.executable", "fail", f"Could not verify managed runtime: {exc}", {"receipt": str(receipt_path)})
     return CheckResult(
-        "goal_plus.executable",
-        status,
-        summary,
-        {
-            "executable": executable,
-            "version_output": output,
-            "plugin_version": manifest_version,
-            **provenance,
-        },
+        "goal_plus.executable", "pass" if matches else "fail",
+        "The host package and managed Python have the same build." if matches else "Managed runtime build mismatch.",
+        {"receipt": str(receipt_path), "expected": receipt, "actual": actual},
     )
 
 
@@ -520,7 +467,10 @@ def _ancestor_goal_plus_hooks(project_root: Path, codex_home: Path) -> list[Path
             if isinstance(handler, dict)
         )
         if any(
-            handler.get("command") == "goal-plus --goal-plus-host-hook"
+            isinstance(handler.get("command"), str) and (
+                handler["command"] == "goal-plus --goal-plus-host-hook"
+                or "/scripts/run-runtime.sh" in handler["command"]
+            )
             for handler in handlers
         ):
             matches.append(candidate.resolve())
@@ -603,6 +553,12 @@ def _check_hooks(
     events = hooks_payload.get("hooks", {})
     failures: list[dict[str, Any]] = []
     verified: list[str] = []
+    expected_command = 'bash "${PLUGIN_ROOT}/scripts/run-runtime.sh" --goal-plus-host-hook'
+    if installation and installation.path:
+        receipt_path = installation.path / ".goal-plus-runtime.json"
+        if receipt_path.is_file():
+            receipt = json.loads(receipt_path.read_text())
+            expected_command = "bash " + shlex.quote(str(Path(receipt["package"]) / "scripts/run-runtime.sh")) + " --goal-plus-host-hook"
     for event_name, event_label in HOOK_EVENT_LABELS.items():
         groups = events.get(event_name)
         if not isinstance(groups, list) or not groups:
@@ -614,9 +570,7 @@ def _check_hooks(
             failures.append({"event": event_name, "reason": "missing command handler"})
             continue
         handler = handlers[0]
-        if handler.get("type") != "command" or handler.get("command") != (
-            "goal-plus --goal-plus-host-hook"
-        ):
+        if handler.get("type") != "command" or handler.get("command") != expected_command:
             failures.append({"event": event_name, "reason": "unexpected command"})
             continue
         current_hash = _canonical_hook_hash(event_name, group, handler)
@@ -747,7 +701,7 @@ def collect_report(
     )
     checks = (
         _check_codex_version(codex_home),
-        _check_goal_plus_cli(codex_home, source_root),
+        _check_goal_plus_cli(codex_home, installation.path if installation and installation.path else source_root),
         _check_packaged_assets(source_root),
         plugin_check,
         _check_skills(installation=installation, project_root=project_root),

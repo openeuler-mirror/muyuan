@@ -12,8 +12,7 @@ Pi and Codex are the supported host paths.
 
 ## Installation
 
-Run the installer from the Goal Plus source directory with the intended Python
-environment already active:
+Run the installer from the Goal Plus source directory:
 
 ```bash
 git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-plus
@@ -27,10 +26,12 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | Pi development | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | Show Pi development environments | `./install.sh --env-show` |
 
-Normal installation uses the active `python3`; its scripts directory must be
-on `PATH`. `--pi` and `--pi-dev` are mutually exclusive. Keep the checkout at
-the same path while a host is installed. Add `--dry-run` to an installation
-command to inspect its plan without making changes.
+Normal installation provisions managed Python 3.12 with uv and locked dependencies.
+Each host binds to an immutable code build, independently of Conda, `PATH`, and
+the target workspace. `--pi` and `--pi-dev` are mutually exclusive. Inspect installed
+builds with `./install.sh --runtime-info`; see [development](docs/development.md)
+for update, diagnostics, and cleanup. `--dry-run` does not change host registrations
+or releases; its shell bootstrap may download the installer Python/uv.
 
 `--thinkthread` requires a separately installed supported ThinkThread Runtime.
 It validates the built-in Pi Profile and generates the `goal-plus-pi` Profile;
@@ -53,7 +54,7 @@ does not modify Pi authentication or global configuration.
 | Pi registration | `./uninstall.sh --pi` |
 | Pi development environment | `./uninstall.sh --pi-dev` |
 | Goal Plus ThinkThread Profile | `./uninstall.sh --thinkthread` |
-| Goal Plus Python package | `./uninstall.sh --runtime` |
+| Unused managed releases | `./uninstall.sh --runtime` |
 | Inspect the full plan | `./uninstall.sh --dry-run` |
 
 With a selector, the uninstaller removes only that component. Codex and normal Pi

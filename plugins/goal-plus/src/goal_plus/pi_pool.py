@@ -18,6 +18,7 @@ from goal_plus.application.internal_agents import InternalAgentWork
 from goal_plus.execution import process_identity as inspection
 from goal_plus.execution.managed_process import ManagedProcess
 from goal_plus.execution.launch_gate import ProcessLaunchGate
+from goal_plus.execution.python_command import module_arguments
 from goal_plus.execution.process_resources import OwnedProcess, stop_processes
 from goal_plus.ports.process_identity import ProcessWitness
 from goal_plus.infrastructure.state.candidate_queries import FileCandidateQueries
@@ -110,10 +111,10 @@ def _write_job(root_dir: Path | str, pool_id: str, job: dict[str, Any]) -> None:
 
 
 def _pool_worker_arguments(root_dir: Path | str, pool_id: str, job_id: str) -> list[str]:
-    return [
-        "-m", "goal_plus.pi_pool", "worker", "--root",
+    return module_arguments("goal_plus.pi_pool", [
+        "worker", "--root",
         str(Path(root_dir).expanduser().resolve()), "--pool-id", pool_id, "--job-id", job_id,
-    ]
+    ])
 
 
 def _job_process(root_dir: Path | str, pool_id: str, job: dict[str, Any]) -> OwnedProcess | None:

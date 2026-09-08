@@ -1,6 +1,6 @@
 [mcp_servers.goal-plus]
-command = "goal-plus"
-args = ["--root", ".gp"]
+command = "bash"
+args = ["/absolute/managed/package/scripts/run-runtime.sh", "--root", ".gp"]
 env_vars = [
   "CODEX_HOME",
   "PI_CODING_AGENT_DIR",

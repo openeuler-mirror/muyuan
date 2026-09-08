@@ -11,7 +11,7 @@ Pi 和 Codex 是当前支持的宿主路径。
 
 ## 安装
 
-先激活目标 Python 环境，再从 Goal Plus 源码目录运行安装器：
+从 Goal Plus 源码目录运行安装器：
 
 ```bash
 git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-plus
@@ -25,9 +25,10 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | Pi 开发态 | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | 查看 Pi 开发环境及空间占用 | `./install.sh --env-show` |
 
-正常安装使用当前 `python3`，它的 scripts 目录必须位于 `PATH`。`--pi` 与 `--pi-dev`
-互斥；任一宿主仍在使用 Goal Plus 时，都要保留 checkout 的原路径。给安装命令追加
-`--dry-run` 可以只检查计划而不执行修改。
+正常安装通过 uv 准备独立 Python 3.12 和锁定依赖，各宿主绑定不可变代码 build，
+不受 Conda、`PATH` 或目标 workspace 影响。`--pi` 与 `--pi-dev` 互斥。
+用 `./install.sh --runtime-info` 检查实际版本；更新及清理方式见[开发指南](docs/development.md)。
+`--dry-run` 不修改宿主注册或 release；shell bootstrap 可能先下载运行检查所需的 uv/Python。
 
 `--thinkthread` 要求机器上已经独立安装受支持的 ThinkThread Runtime。它会验证内置 Pi Profile
 并生成 `goal-plus-pi` Profile，但绝不安装、升级或删除 ThinkThread 本身。使用
@@ -47,7 +48,7 @@ Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus
 | Pi 注册 | `./uninstall.sh --pi` |
 | Pi 开发环境 | `./uninstall.sh --pi-dev` |
 | Goal Plus ThinkThread Profile | `./uninstall.sh --thinkthread` |
-| Goal Plus Python package | `./uninstall.sh --runtime` |
+| 未引用的受管版本 | `./uninstall.sh --runtime` |
 | 检查完整卸载计划 | `./uninstall.sh --dry-run` |
 
 指定选择器时，卸载器只移除对应组件。Codex 和普通 Pi 注册不要求来自当前 checkout；来源

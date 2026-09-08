@@ -58,8 +58,8 @@ def test_codex_mcp_and_hook_assets_register_runtime_entrypoints() -> None:
     packaged_hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())
 
     assert "[mcp_servers.goal-plus]" in config
-    assert 'command = "goal-plus"' in config
-    assert 'args = ["--root", ".gp"]' in config
+    assert 'command = "bash"' in config
+    assert 'scripts/run-runtime.sh", "--root", ".gp"]' in config
     assert hooks == packaged_hooks
     assert set(hooks["hooks"]) == {
         "UserPromptSubmit",
@@ -73,7 +73,7 @@ def test_codex_mcp_and_hook_assets_register_runtime_entrypoints() -> None:
     for event, handlers in hooks["hooks"].items():
         handler = handlers[0]["hooks"][0]
         assert handler["type"] == "command"
-        assert handler["command"] == "goal-plus --goal-plus-host-hook"
+        assert handler["command"] == 'bash "${PLUGIN_ROOT}/scripts/run-runtime.sh" --goal-plus-host-hook'
         assert handler["timeout"] == (3 if event == "Interrupt" else 30)
 
 def test_codex_plugin_default_prompts_use_goal_plus_skill() -> None:

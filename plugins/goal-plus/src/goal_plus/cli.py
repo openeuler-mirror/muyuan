@@ -33,7 +33,13 @@ def main() -> None:
         action="store_true",
         help="Run the Goal Plus host hook instead of starting the MCP server",
     )
+    parser.add_argument("--installation-info", action="store_true", help="Print exact build and Python identity")
     args = parser.parse_args()
+
+    if args.installation_info:
+        from goal_plus.installation import main as installation_main
+        installation_main()
+        return
 
     if args.version:
         from goal_plus._version import __version__

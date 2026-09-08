@@ -33,12 +33,10 @@ cd <Muyuan checkout>/plugins/goal-plus
 ./install.sh --pi
 ```
 
-安装器使用当前 `python3` 安装 runtime，并通过 Pi 注册这个 checkout。先激活目标 Python
-环境；`PYTHON=/absolute/path/to/python` 可以指定其解释器，但该环境的 scripts 目录必须已在
-`PATH`。Goal Plus 命令若来自另一个 Python 环境，安装会在写入前停止。安装器也会检查 Pi
-用户配置；若已经存在其他 Goal Plus package 或散落的同名 extension/skill，会报出来源并停止，
-不会覆盖。精确指向当前 checkout 的 loose extension/skill 按绝对路径去重，可幂等迁移到正常 package
-注册。Pi 直接加载 local package，因此安装期间需要保留 source directory。
+安装器通过 uv 准备受管 Python 3.12 和锁定依赖，验证 build 后注册不可变 Pi package 副本。
+Extension 从自己的包目录读取解释器与 build，不从 Conda、`PATH` 或目标 workspace 加载代码。
+同一来源的更新创建新版本；其他来源或散落的同名 extension/skill 会报出冲突并停止。
+`./install.sh --runtime-info` 可检查安装身份；正常安装后不依赖原 checkout 持续存在。
 
 正常安装后可以从目标 workspace 启动交互会话，或直接提交一次 prompt：
 
@@ -52,8 +50,8 @@ pi -p "/goal-plus inspect this repository"
 ./uninstall.sh --pi
 ```
 
-只有在其他 Pi 或 Codex 安装都不再使用该 Python 环境中的 Goal Plus 命令时，才运行
-`./uninstall.sh --runtime`。
+关闭旧会话且其他宿主不再引用运行时后，运行 `./uninstall.sh --runtime` 清理未引用的受管版本。
+旧 pip/Conda 安装不被自动修改。
 
 ### ThinkThread protected Search Root
 
@@ -68,7 +66,7 @@ tt profile show goal-plus-pi
 
 安装器校验当前支持的 Runtime 版本、Profile schema、Pi Agent Extension protocol、Root direct
 filesystem 和 Child COW filesystem，然后生成用户级 `goal-plus-pi` Profile。Profile 显式加载本
-checkout 的 Goal Plus extension/skill，以只读方式开放 checkout 和当前 Python environment，并将
+次安装副本的 Goal Plus extension/skill，以只读方式开放该副本及其受管 Python environment，并将
 Node/Python runtime prefix 一并加入只读路径，再将 `GOAL_PLUS_ROOT` 延迟解析到每个 Pi native
 Session 的 private directory。本 checkout 生成的旧 Profile 会原子更新；已有内容不同且不归本
 checkout 所有的同名 Profile 会让安装 fail closed，不会被覆盖。

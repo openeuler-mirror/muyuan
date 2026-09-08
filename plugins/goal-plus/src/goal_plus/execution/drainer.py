@@ -16,6 +16,7 @@ from goal_plus.execution.process_identity import ProcessInspectionUnavailable
 from goal_plus.execution.process_resources import OwnedProcess, stop_processes
 from goal_plus.execution.managed_process import ManagedProcess
 from goal_plus.execution.launch_gate import ProcessLaunchGate
+from goal_plus.execution.python_command import module_arguments
 
 # Preserve the existing detached Annotation/Scheduler stop bounds.
 KILL_GRACE_SECONDS = 1.0
@@ -87,8 +88,8 @@ class DetachedDrainer:
             pythonpath = env.get("PYTHONPATH")
             env["PYTHONPATH"] = str(self.source_root) + (os.pathsep + pythonpath if pythonpath else "")
             command = [
-                sys.executable, "-m", self.module, "drain", "--root", str(self.root_dir),
-                "--run-id", self.run_id, "--generation", generation,
+                sys.executable, *module_arguments(self.module, ["drain", "--root", str(self.root_dir),
+                "--run-id", self.run_id, "--generation", generation]),
             ]
             with ProcessLaunchGate() as gate, ExitStack() as startup:
                 with self.state.open_log() as log:

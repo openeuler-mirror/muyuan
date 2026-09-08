@@ -10,6 +10,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from goal_plus.execution.launch_gate import ProcessLaunchGate
+from goal_plus.execution.python_command import module_arguments
 from goal_plus.execution.process_identity import (
     EXITED_PROCESS_STATES, ProcessInspectionUnavailable, inspect_command, inspect_process, process_alive,
 )
@@ -28,7 +29,7 @@ class ScopeGuardianLauncher:
         self.source_root = source_root
 
     def _arguments(self, scope_id: str) -> list[str]:
-        return ["-m", "goal_plus.host_scope", "guard", "--root", str(self.root_dir), "--scope-id", scope_id]
+        return module_arguments("goal_plus.host_scope", ["guard", "--root", str(self.root_dir), "--scope-id", scope_id])
 
     def write_guarded(self, scope: ScopeRecord, *, start_guardian: bool) -> None:
         """Caller holds the scope lock through durable registration and exec release."""

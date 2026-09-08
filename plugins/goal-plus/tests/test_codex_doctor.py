@@ -81,7 +81,7 @@ def test_canonical_hook_hash_matches_codex_0148_identity() -> None:
     handler = group["hooks"][0]
 
     assert codex_doctor._canonical_hook_hash("PreToolUse", group, handler) == (
-        "sha256:3416fbd10cc86ae6d50d412bbe6e4b349c5bb4a9f6fd0a93b691e46fa67bae59"
+        "sha256:3c9d43cf29a492b054f997a86b4955a82f15b73468eea3e3dc8cde9affafef66"
     )
 
 
@@ -214,16 +214,6 @@ def test_collect_report_accepts_complete_project_local_setup(
     monkeypatch.setattr(shutil, "which", fake_which)
     monkeypatch.setattr(codex_doctor, "_run", fake_run)
     monkeypatch.setattr(
-        codex_doctor,
-        "_distribution_provenance",
-        lambda: {
-            "distribution_version": "0.1.0",
-            "editable": True,
-            "distribution_source": str(codex_doctor._package_root()),
-            "module_source": str(Path(codex_doctor.__file__).resolve()),
-        },
-    )
-    monkeypatch.setattr(
         "goal_plus.agent_hosts.CodexModelCatalog.list_available_models",
         lambda self, query=None: [{"model": "gpt-5.6-luna"}],
     )
@@ -242,7 +232,7 @@ def test_collect_report_accepts_complete_project_local_setup(
     assert report.ok
     assert {check.name: check.status for check in report.checks} == {
         "codex.version": "pass",
-        "goal_plus.executable": "pass",
+        "goal_plus.executable": "warn",
         "goal_plus.package_assets": "pass",
         "codex.plugin": "warn",
         "codex.skills": "pass",
@@ -268,8 +258,8 @@ def test_plugin_assets_keep_project_hook_contract() -> None:
     assert packaged == project
     assert "hooks" not in manifest
     assert manifest["mcpServers"] == "./.mcp.json"
-    assert mcp["mcpServers"]["goal-plus"]["command"] == "goal-plus"
-    assert mcp["mcpServers"]["goal-plus"]["args"] == ["--root", ".gp"]
+    assert mcp["mcpServers"]["goal-plus"]["command"] == "bash"
+    assert mcp["mcpServers"]["goal-plus"]["args"] == ["${PLUGIN_ROOT}/scripts/run-runtime.sh", "--root", ".gp"]
     assert "PI_CODING_AGENT_DIR" in mcp["mcpServers"]["goal-plus"]["env_vars"]
     assert (
         "GOAL_PLUS_EVIDENCE_ANNOTATOR_MODEL"
@@ -331,3 +321,18 @@ def test_distribution_marketplace_points_at_plugin_root() -> None:
             "category": "Developer Tools",
         }
     ]
+
+
+@pytest.mark.parametrize("actual_build", ["same-build", "wrong-build"])
+def test_doctor_checks_managed_build_instead_of_path(tmp_path, monkeypatch, actual_build):
+    receipt = {"schema": "goal-plus.managed-runtime.v1", "build": "same-build",
+               "python": "/managed/bin/python", "package": str(tmp_path)}
+    (tmp_path / ".goal-plus-runtime.json").write_text(json.dumps(receipt))
+    (tmp_path / ".codex-plugin").mkdir()
+    (tmp_path / ".codex-plugin/plugin.json").write_text(json.dumps({"version": "0.1.0+same-build"}))
+    def run(argv, **kwargs):
+        assert argv == ["/managed/bin/python", "-I", "-m", "goal_plus.installation"]
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({**receipt, "build": actual_build}))
+    monkeypatch.setattr(codex_doctor, "_run", run)
+    result = codex_doctor._check_goal_plus_cli(tmp_path, tmp_path)
+    assert result.status == ("pass" if actual_build == "same-build" else "fail")

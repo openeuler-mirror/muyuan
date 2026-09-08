@@ -60,11 +60,10 @@ cd <Muyuan checkout>/plugins/goal-plus
 ./install.sh --codex
 ```
 
-安装器使用当前 shell 的 `python3`。先激活 Codex 启动时要继承的 Python 环境；也可以通过
-`PYTHON=/absolute/path/to/python` 指定其中的解释器，但该环境的 scripts 目录必须已经位于
-`PATH`。如果 `goal-plus` 或 Pi runtime 命令解析到另一 Python 环境，安装器会在写入前停止。
-检查通过后，它安装 runtime、注册当前 checkout 作为 `goal-plus` marketplace，并安装
-`goal-plus@goal-plus`。安装期间需要保留 source directory。
+安装器通过 uv 准备受管 Python 3.12 和锁定依赖，验证代码 build 后，将不可变副本注册为
+`goal-plus` marketplace 并安装 `goal-plus@goal-plus`。hook 和 MCP 使用包内固定的 Python，
+不受 Conda、`PATH` 或当前工作目录影响。`./install.sh --runtime-info` 显示实际 build、来源和
+解释器路径。正常安装不依赖原 checkout 持续存在。
 
 安装前会读取 Codex plugin 和 marketplace inventory。来自其他 checkout 的同名安装，或已退休的
 `goal-plus@goal-plus-local` staging 安装都会被视为冲突并停止；安装器不会静默覆盖。
@@ -74,18 +73,17 @@ thread，使全部 handler 从 `SessionStart` 起生效。进入目标 workspace
 
 ```bash
 codex plugin list
-goal-plus-codex-doctor --project-root .
+./install.sh --runtime-info
 ```
 
 卸载 Codex 集成：
 
 ```bash
-codex plugin remove goal-plus@goal-plus
-codex plugin marketplace remove goal-plus
+./uninstall.sh --codex
 ```
 
-只有在其他 Pi 或 Codex 安装都不再使用该 Python 环境中的 Goal Plus 命令时，才运行
-`python -m pip uninstall -y goal-plus`。
+卸载宿主后保留旧 release，供仍在运行的旧会话使用。关闭这些会话，并确认其他宿主不再使用
+运行时后，可运行 `./uninstall.sh --runtime` 清理未引用的受管版本。旧 pip 环境不被自动修改。
 
 ### Checkout 更新
 
@@ -131,7 +129,7 @@ args = ["--root", ".gp"]
 从准备运行任务的 workspace 执行只读 preflight：
 
 ```bash
-goal-plus-codex-doctor --project-root .
+./install.sh --runtime-info
 ```
 
 doctor 会记录 Codex 版本供诊断，不按版本号设置最低门槛。它检查 Codex 与 `goal-plus`

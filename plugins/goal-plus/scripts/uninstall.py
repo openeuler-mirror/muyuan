@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.metadata
 import json
 import shlex
 import shutil
@@ -13,14 +12,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
-from urllib.request import url2pathname
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+import managed_runtime
 import install as install_support  # noqa: E402
 
 
@@ -140,7 +138,7 @@ def _pi_sources(
             notes.append(f"Preserved loose Pi resource: {entry['source']}")
             continue
         resolved = entry.get("resolved_path")
-        sources.append(str(resolved) if resolved is not None else entry["source"])
+        sources.append(install_support._pi_cli_source(entry))
         if resolved != root:
             notes.append(
                 f"Warning: Pi registration comes from {resolved or entry['source']}, "
@@ -230,32 +228,9 @@ def _goal_plus_thinkthread_sdk_plan(
     return None, [f"Preserved Agent POSIX SDK ({detail}): {path}"]
 
 
-def _distribution_source(distribution: importlib.metadata.Distribution) -> Path | None:
-    raw = distribution.read_text("direct_url.json")
-    if not raw:
-        return None
-    try:
-        payload = json.loads(raw)
-        parsed = urlparse(str(payload.get("url") or ""))
-    except (ValueError, json.JSONDecodeError):
-        return None
-    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
-        return None
-    return Path(url2pathname(unquote(parsed.path))).resolve()
-
-
 def _runtime_plan() -> tuple[bool, list[str]]:
-    try:
-        distribution = importlib.metadata.distribution(PACKAGE_NAME)
-    except importlib.metadata.PackageNotFoundError:
-        return False, [f"Python runtime is not installed in {sys.executable}."]
-    source = _distribution_source(distribution)
-    if source != ROOT.resolve():
-        rendered = str(source) if source is not None else "unknown source"
-        return False, [
-            f"Preserved Python runtime in {sys.executable}: installed from {rendered}."
-        ]
-    return True, []
+    exists = (managed_runtime.home() / "releases").is_dir()
+    return exists, ["Legacy pip environments are not modified; only unreferenced managed releases are removed."]
 
 
 def _build_plan(
@@ -376,7 +351,7 @@ def _print_plan(plan: UninstallPlan, *, dry_run: bool) -> None:
     if plan.goal_plus_thinkthread_sdk_path is not None:
         print(f"- Goal Plus Agent POSIX SDK: {plan.goal_plus_thinkthread_sdk_path}")
     if plan.remove_runtime:
-        print(f"- Python package: {PACKAGE_NAME} in {sys.executable}")
+        print(f"- Unreferenced managed releases: {managed_runtime.home()}")
     for note in plan.notes:
         print(f"- {note}")
     print("- Preserved: target workspace .gp records and promoted source changes", flush=True)
@@ -457,11 +432,14 @@ def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
             print("+ remove registry", plan.pi_dev_registry_path)
         else:
             plan.pi_dev_registry_path.unlink(missing_ok=True)
+    if plan.remove_codex_marketplace or plan.remove_codex_plugin:
+        managed_runtime.unbind("codex", install_support._codex_config(), dry_run=dry_run)
+    if plan.pi_sources:
+        managed_runtime.unbind("pi", install_support._pi_agent_dir(), dry_run=dry_run)
+    if plan.goal_plus_thinkthread_profile_path is not None:
+        managed_runtime.unbind("thinkthread", plan.goal_plus_thinkthread_profile_path, dry_run=dry_run)
     if plan.remove_runtime:
-        _run(
-            [sys.executable, "-m", "pip", "uninstall", "-y", PACKAGE_NAME],
-            dry_run=dry_run,
-        )
+        managed_runtime.cleanup(dry_run=dry_run)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -497,7 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--runtime",
         action="store_true",
-        help="Remove the matching Goal Plus Python package (never ThinkThread).",
+        help="Remove unreferenced managed releases (never pip environments or ThinkThread).",
     )
     parser.add_argument(
         "--pi-dev-dir",

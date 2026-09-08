@@ -140,6 +140,8 @@ def _run_env(search_root: Path) -> dict[str, str]:
         **os.environ,
         "GOAL_PLUS_ROOT": str(search_root),
         "GOAL_PLUS_SOURCE_PATH": str(ROOT),
+        "GOAL_PLUS_PI_DEV_ROOT": str(ROOT),
+        "GOAL_PLUS_PYTHON": sys.executable,
     }
 
 

@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-PYTHON_BIN="${PYTHON:-python3}"
-
-exec "$PYTHON_BIN" "$SCRIPT_DIR/scripts/install.py" "$@"
+goal_plus_script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+exec /bin/bash "$goal_plus_script_dir/scripts/bootstrap-python.sh" "$goal_plus_script_dir/scripts/install.py" "$@"

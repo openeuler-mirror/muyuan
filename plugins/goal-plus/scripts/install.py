@@ -13,7 +13,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import sysconfig
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,18 +25,16 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10
     import tomli as tomllib
 
 
-ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+import managed_runtime
+
+ROOT = SCRIPT_DIR.parent
 DEV_SCHEMA = "goal-plus.pi-dev-installation.v1"
 DEV_REGISTRY_SCHEMA = "goal-plus.pi-dev-registry-entry.v1"
 NORMAL_CODEX_PLUGIN_ID = "goal-plus@goal-plus"
 NORMAL_CODEX_MARKETPLACE = "goal-plus"
-NORMAL_RUNTIME_COMMANDS = (
-    "goal-plus",
-    "goal-plus-codex-doctor",
-    "goal-plus-pi-tool",
-    "goal-plus-pi-worker",
-    "goal-plus-pi-pool",
-)
 THINKTHREAD_PROFILE_NAME = "goal-plus-pi"
 THINKTHREAD_PROFILE_MARKER = "# Managed by Goal Plus: thinkthread-profile-v1"
 THINKTHREAD_RUNTIME_VERSION = "thinkthread 0.1.0"
@@ -481,7 +478,7 @@ def _symlink_chain_parent_roots(path: Path) -> tuple[Path, ...]:
     """Return real parent directories needed to traverse a symlink chain."""
     pending = path.expanduser().absolute()
     roots: list[Path] = []
-    seen: set[Path] = set()
+    seen: set[tuple[Path, tuple[str, ...]]] = set()
     for _ in range(64):
         candidate = Path(pending.anchor)
         link: Path | None = None
@@ -494,9 +491,10 @@ def _symlink_chain_parent_roots(path: Path) -> tuple[Path, ...]:
                 break
         if link is None:
             return tuple(roots)
-        if link in seen:
+        identity = (link, remainder)
+        if identity in seen:
             raise InstallError(f"cyclic Python executable symlink chain: {path}")
-        seen.add(link)
+        seen.add(identity)
         parent = link.parent.resolve()
         if parent not in roots:
             roots.append(parent)
@@ -513,7 +511,10 @@ def _build_thinkthread_profile(
     node_executable: str | None = None,
     sdk_entry: Path | None = None,
     bridge_path: Path | None = None,
+    package_root: Path | None = None,
+    runtime_python: Path | None = None,
 ) -> dict[str, Any]:
+    package_root = package_root or ROOT
     # JSON provides a strict deep copy for the Profile's JSON-compatible TOML values.
     profile = json.loads(json.dumps(base))
     agent = profile.setdefault("agent", {})
@@ -521,17 +522,17 @@ def _build_thinkthread_profile(
     _append_agent_argument(
         arguments,
         "--extension",
-        ROOT / ".pi" / "extensions" / "goal-plus.ts",
+        package_root / ".pi" / "extensions" / "goal-plus.ts",
     )
     _append_agent_argument(
         arguments,
         "--skill",
-        ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md",
+        package_root / ".pi" / "skills" / "goal-plus" / "SKILL.md",
     )
     agent["args"] = arguments
 
-    python_prefix = Path(sys.prefix).expanduser().resolve()
-    python_executable = Path(sys.executable).expanduser().absolute()
+    python_prefix = runtime_python.parent.parent if runtime_python else Path(sys.prefix).expanduser().resolve()
+    python_executable = runtime_python or Path(sys.executable).expanduser().absolute()
     resolved_python_prefix = python_executable.resolve().parent.parent
     resolved_node = node_executable or shutil.which("node")
     if resolved_node is None:
@@ -555,14 +556,14 @@ def _build_thinkthread_profile(
     resolved_sdk_entry = (sdk_entry or _thinkthread_sdk_entry()).expanduser().resolve()
     resolved_bridge = (
         bridge_path
-        or ROOT / "src" / "goal_plus" / "assets" / "thinkthread-agent-posix-bridge.mjs"
+        or package_root / "src" / "goal_plus" / "assets" / "thinkthread-agent-posix-bridge.mjs"
     ).expanduser().resolve()
     readable = [
         str(Path(item).expanduser().resolve())
         for item in environment.get("read", [])
     ]
     for path in (
-        ROOT.resolve(),
+        package_root.resolve(),
         resolved_sdk_entry.parent.parent.parent.parent,
         *runtime_roots,
     ):
@@ -578,7 +579,7 @@ def _build_thinkthread_profile(
                 "GOAL_PLUS_PYTHON": str(python_executable),
                 "GOAL_PLUS_NODE": str(Path(resolved_node).expanduser().resolve()),
                 "GOAL_PLUS_ROOT": session_runtime_root,
-                "GOAL_PLUS_SOURCE_PATH": str(ROOT.resolve()),
+                "GOAL_PLUS_SOURCE_PATH": str(package_root.resolve()),
                 "GOAL_PLUS_PI_ROLE": "main" if role == "root" else "worker",
                 "GOAL_PLUS_AGENT_POSIX_SDK_ENTRY": str(resolved_sdk_entry),
             }
@@ -605,7 +606,7 @@ def _managed_thinkthread_profile_source(path: Path) -> Path | None:
         if isinstance(root_environment, dict)
         else None
     )
-    return Path(source).expanduser().resolve() if isinstance(source, str) else None
+    return managed_runtime.source_owner(Path(source).expanduser()) if isinstance(source, str) else None
 
 
 def _preflight_thinkthread_profile(
@@ -614,6 +615,8 @@ def _preflight_thinkthread_profile(
     profile_path: Path | None = None,
     node_executable: str | None = None,
     sdk_entry: Path | None = None,
+    package_root: Path | None = None,
+    runtime_python: Path | None = None,
 ) -> ThinkThreadProfilePlan:
     runtime_version = _run([executable, "--version"], capture=True).stdout.strip()
     if runtime_version != THINKTHREAD_RUNTIME_VERSION:
@@ -632,6 +635,8 @@ def _preflight_thinkthread_profile(
             base,
             node_executable=node_executable,
             sdk_entry=sdk_entry,
+            package_root=package_root,
+            runtime_python=runtime_python,
         )
     )
     path = (profile_path or _thinkthread_profile_path()).expanduser().resolve()
@@ -989,14 +994,14 @@ def _preflight_codex(codex: str) -> bool:
             legacy_plugin_installed = legacy_plugin_installed or (
                 plugin_id == "goal-plus@goal-plus-local"
             )
-        elif resolved_source is not None and resolved_source != root:
+        elif resolved_source is not None and managed_runtime.source_owner(resolved_source) != root:
             conflicts.append(
                 f"{NORMAL_CODEX_PLUGIN_ID!r} points to {resolved_source}, expected {root}"
             )
 
     marketplaces = _codex_marketplaces(codex)
     marketplace_root = marketplaces.get(NORMAL_CODEX_MARKETPLACE)
-    if marketplace_root is not None and marketplace_root != root:
+    if marketplace_root is not None and managed_runtime.source_owner(marketplace_root) != root:
         conflicts.append(
             f"Codex marketplace {NORMAL_CODEX_MARKETPLACE!r} points to "
             f"{marketplace_root}, expected {root}"
@@ -1054,6 +1059,17 @@ def _local_source_path(source: str, settings_path: Path) -> Path | None:
         # can otherwise turn a valid relative source into /private/Users/....
         candidate = Path(os.path.abspath(settings_path.parent / candidate))
     return candidate.resolve()
+
+
+def _pi_cli_source(entry: dict[str, Any]) -> str:
+    """Match Pi's lexical local-path identity, including symlinked config roots."""
+    source = entry["source"]
+    if entry.get("resolved_path") is None:
+        return source
+    path = Path(source).expanduser()
+    if not path.is_absolute():
+        path = Path(entry["settings_path"]).parent / path
+    return os.path.abspath(path)
 
 
 def _source_is_goal_plus(source: str, settings_path: Path) -> tuple[bool, Path | None]:
@@ -1190,20 +1206,13 @@ def _render_pi_conflict_remediation(entries: list[dict[str, Any]]) -> str:
 def _preflight_pi_normal() -> bool:
     entries = _pi_goal_plus_entries()
     root = ROOT.resolve()
-    allowed_loose_paths = {
-        (root / ".pi" / "extensions" / "goal-plus.ts").resolve(),
-        (root / ".pi" / "skills" / "goal-plus").resolve(),
-    }
     same_root = False
     conflicts: list[dict[str, Any]] = []
     for entry in entries:
         resolved = entry.get("resolved_path")
         settings_path = entry.get("settings_path")
-        if settings_path is not None and resolved == root:
+        if settings_path is not None and resolved is not None and managed_runtime.source_owner(resolved) == root:
             same_root = True
-        elif settings_path is None and resolved in allowed_loose_paths:
-            # Pi deduplicates the package and explicit resource by absolute path.
-            continue
         else:
             conflicts.append(entry)
     if conflicts:
@@ -1253,56 +1262,6 @@ def _git_source_state() -> dict[str, Any]:
     except (OSError, subprocess.CalledProcessError):
         return {"source_commit": None, "source_dirty": None}
     return {"source_commit": commit or None, "source_dirty": dirty}
-
-
-def _preflight_normal_runtime() -> Path:
-    scripts_dir = Path(sysconfig.get_path("scripts")).expanduser().resolve()
-    path_dirs = {
-        Path(item).expanduser().resolve()
-        for item in os.environ.get("PATH", "").split(os.pathsep)
-        if item
-    }
-    if scripts_dir not in path_dirs:
-        raise InstallError(
-            f"the selected Python scripts directory is not on PATH: {scripts_dir}\n"
-            f"Activate the environment for {sys.executable}, then rerun install.sh."
-        )
-
-    conflicts: list[str] = []
-    for command in NORMAL_RUNTIME_COMMANDS:
-        executable = shutil.which(command)
-        if executable is None:
-            continue
-        resolved = Path(executable).resolve()
-        if resolved.parent != scripts_dir:
-            conflicts.append(f"{command}: {resolved}")
-    if conflicts:
-        rendered = "\n  - ".join(conflicts)
-        raise InstallError(
-            "PATH already resolves Goal Plus commands from another Python environment:\n"
-            f"  - {rendered}\n"
-            f"Selected Python: {sys.executable}\n"
-            "Activate the intended environment so its bin directory wins on PATH, then rerun."
-        )
-    return scripts_dir
-
-
-def _verify_normal_runtime(scripts_dir: Path) -> None:
-    failures: list[str] = []
-    for command in NORMAL_RUNTIME_COMMANDS:
-        expected = (scripts_dir / command).resolve()
-        executable = shutil.which(command)
-        resolved = Path(executable).resolve() if executable is not None else None
-        if not expected.is_file() or resolved != expected:
-            failures.append(
-                f"{command}: resolved={resolved or 'missing'}, expected={expected}"
-            )
-    if failures:
-        rendered = "\n  - ".join(failures)
-        raise InstallError(
-            "the installed Goal Plus commands are not active on PATH:\n"
-            f"  - {rendered}"
-        )
 
 
 def _validate_dev_dir(dev_dir: Path) -> dict[str, Any] | None:
@@ -1388,6 +1347,7 @@ esac
 "$goal_plus_venv/bin/python" {installer} --check-pi-dev-runtime --check-cwd "$PWD"
 
 export GOAL_PLUS_PI_DEV_ROOT="$goal_plus_root"
+export GOAL_PLUS_PYTHON="$goal_plus_venv/bin/python"
 export PATH="$goal_plus_venv/bin:$PATH"
 exec "$goal_plus_pi" --no-extensions --no-prompt-templates \
   --extension {extension} --skill {skill} "$@"
@@ -1489,29 +1449,76 @@ def _prepare_pi_dev(*, dev_dir: Path, pi_executable: str, dry_run: bool) -> None
     _print_pi_dev_usage(dev_dir, dry_run=dry_run)
 
 
-def _install_normal_runtime(*, scripts_dir: Path, dry_run: bool) -> None:
-    _run([sys.executable, "-m", "pip", "install", str(ROOT)], dry_run=dry_run)
-    if not dry_run:
-        _verify_normal_runtime(scripts_dir)
+def _codex_config() -> Path:
+    return Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
 
 
-def _install_codex(*, codex: str, marketplace_exists: bool, dry_run: bool) -> None:
-    if not marketplace_exists:
-        _run(
-            [codex, "plugin", "marketplace", "add", str(ROOT.resolve())],
-            dry_run=dry_run,
-        )
-    _run([codex, "plugin", "add", NORMAL_CODEX_PLUGIN_ID], dry_run=dry_run)
-    print(
-        "Codex installation is ready. Start a new thread, trust /hooks, then start another thread."
-    )
+def _install_codex(*, codex: str, package: Path, dry_run: bool) -> None:
+    previous = _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE)
+    changed = previous is not None and previous != package
+    managed_runtime.bind("codex-pending", _codex_config(), package, dry_run=dry_run)
+    try:
+        if changed:
+            _run([codex, "plugin", "marketplace", "remove", NORMAL_CODEX_MARKETPLACE], dry_run=dry_run)
+        if previous != package:
+            _run([codex, "plugin", "marketplace", "add", str(package)], dry_run=dry_run)
+        _run([codex, "plugin", "add", NORMAL_CODEX_PLUGIN_ID], dry_run=dry_run)
+    except (OSError, subprocess.CalledProcessError):
+        # Restore the exact prior source if registration failed after preparation.
+        if changed:
+            current = _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE)
+            if current is not None:
+                _run([codex, "plugin", "marketplace", "remove", NORMAL_CODEX_MARKETPLACE], dry_run=False)
+            _run([codex, "plugin", "marketplace", "add", str(previous)], dry_run=False)
+            _run([codex, "plugin", "add", NORMAL_CODEX_PLUGIN_ID], dry_run=False)
+        elif previous is None:
+            current = _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE)
+            if current == package:
+                _run([codex, "plugin", "marketplace", "remove", NORMAL_CODEX_MARKETPLACE], dry_run=False)
+        managed_runtime.unbind("codex-pending", _codex_config())
+        raise
+    managed_runtime.bind("codex", _codex_config(), package, dry_run=dry_run)
+    managed_runtime.unbind("codex-pending", _codex_config(), dry_run=dry_run)
+    print("Codex installation is ready. Start a new thread, trust /hooks, then start another thread.")
 
 
-def _install_pi(*, pi: str, already_installed: bool, dry_run: bool) -> None:
-    if already_installed:
-        print(f"Pi package already points to: {ROOT.resolve()}")
-    else:
-        _run([pi, "install", str(ROOT.resolve())], dry_run=dry_run)
+def _install_pi(*, pi: str, package: Path, dry_run: bool) -> None:
+    entries = [entry for entry in _pi_goal_plus_entries() if entry.get("settings_path") is not None]
+    settings = _pi_agent_dir() / "settings.json"
+    original = settings.read_text() if settings.is_file() else None
+    removed: set[str] = set()
+    managed_runtime.bind("pi-pending", _pi_agent_dir(), package, dry_run=dry_run)
+    try:
+        for entry in entries:
+            if entry.get("resolved_path") == package:
+                continue
+            # Pi stores relative paths relative to settings.json, whereas its CLI
+            # resolves local arguments against CWD.
+            source = _pi_cli_source(entry)
+            _run([pi, "remove", source], dry_run=dry_run)
+            removed.add(entry["source"])
+        if not any(entry.get("resolved_path") == package for entry in entries):
+            _run([pi, "install", str(package)], dry_run=dry_run)
+        if not dry_run and original and removed:
+            # Preserve package-level extension/skill filters during a local-path update.
+            old_packages = json.loads(original).get("packages", [])
+            current = _read_json(settings)
+            current["packages"] = [
+                ({**entry, "source": str(package)} if isinstance(entry, dict) else str(package))
+                if _package_source(entry) in removed else entry
+                for entry in old_packages
+            ]
+            _atomic_write(settings, json.dumps(current, indent=2) + "\n")
+    except (OSError, subprocess.CalledProcessError):
+        if not dry_run:
+            if original is None:
+                settings.unlink(missing_ok=True)
+            else:
+                _atomic_write(settings, original)
+            managed_runtime.unbind("pi-pending", _pi_agent_dir())
+        raise
+    managed_runtime.bind("pi", _pi_agent_dir(), package, dry_run=dry_run)
+    managed_runtime.unbind("pi-pending", _pi_agent_dir(), dry_run=dry_run)
     print("Pi installation is ready. Restart Pi before using /goal-plus.")
 
 
@@ -1550,6 +1557,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Prepare an isolated editable runtime and pi-goal-plus launcher.",
     )
+    parser.add_argument("--runtime-info", action="store_true", help="Show installed host build and Python identities")
     parser.add_argument(
         "--env-show",
         action="store_true",
@@ -1576,6 +1584,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.runtime_info:
+        for host, config in (("codex", _codex_config()), ("pi", _pi_agent_dir()), ("thinkthread", _thinkthread_profile_path())):
+            binding = managed_runtime.binding_path(host, config)
+            if binding.is_file():
+                package = Path(json.loads(binding.read_text())["package"])
+                print(json.dumps({"host": host, **managed_runtime.verify(package)}, indent=2))
+        return 0
     if args.check_pi_dev_runtime:
         _preflight_pi_dev(cwd=args.check_cwd)
         return 0
@@ -1613,8 +1628,9 @@ def main(argv: list[str] | None = None) -> int:
         codex_marketplace_exists = (
             _preflight_codex(codex) if codex is not None else None
         )
-        pi_installed = _preflight_pi_normal() if args.pi else False
-        runtime_scripts = _preflight_normal_runtime() if args.codex or args.pi else None
+        if args.pi:
+            _preflight_pi_normal()
+        package = managed_runtime.prepare(ROOT, dry_run=args.dry_run) if args.codex or args.pi else None
         thinkthread_sdk_plan = (
             _preflight_thinkthread_sdk(
                 node_executable=node,
@@ -1629,6 +1645,8 @@ def main(argv: list[str] | None = None) -> int:
         thinkthread_plan = (
             _preflight_thinkthread_profile(
                 thinkthread,
+                package_root=package,
+                runtime_python=package.parent / "venv/bin/python",
                 node_executable=node,
                 sdk_entry=(
                     thinkthread_sdk_plan.entry
@@ -1643,11 +1661,6 @@ def main(argv: list[str] | None = None) -> int:
             _preflight_pi_dev()
             _validate_dev_dir(args.pi_dev_dir.expanduser().resolve())
 
-        if runtime_scripts is not None:
-            _install_normal_runtime(
-                scripts_dir=runtime_scripts,
-                dry_run=args.dry_run,
-            )
         if (
             args.codex
             and codex is not None
@@ -1655,11 +1668,11 @@ def main(argv: list[str] | None = None) -> int:
         ):
             _install_codex(
                 codex=codex,
-                marketplace_exists=codex_marketplace_exists,
+                package=package,
                 dry_run=args.dry_run,
             )
         if args.pi and pi is not None:
-            _install_pi(pi=pi, already_installed=pi_installed, dry_run=args.dry_run)
+            _install_pi(pi=pi, package=package, dry_run=args.dry_run)
         if thinkthread_sdk_plan is not None:
             _install_thinkthread_sdk(
                 thinkthread_sdk_plan,
@@ -1670,13 +1683,14 @@ def main(argv: list[str] | None = None) -> int:
                 thinkthread_plan,
                 dry_run=args.dry_run,
             )
+            managed_runtime.bind("thinkthread", thinkthread_plan.path, package, dry_run=args.dry_run)
         if args.pi_dev and pi is not None:
             _prepare_pi_dev(
                 dev_dir=args.pi_dev_dir,
                 pi_executable=pi,
                 dry_run=args.dry_run,
             )
-    except (InstallError, subprocess.CalledProcessError, OSError) as exc:
+    except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0

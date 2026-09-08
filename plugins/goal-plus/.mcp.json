@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "goal-plus": {
-      "command": "goal-plus",
+      "command": "bash",
       "args": [
+        "${PLUGIN_ROOT}/scripts/run-runtime.sh",
         "--root",
         ".gp"
       ],

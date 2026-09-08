@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from goal_plus.execution.python_command import module_arguments
 from goal_plus.domain.annotation import (
     EvidenceAnnotationOutput,
     EvidenceAnnotationTask,
@@ -846,8 +847,7 @@ def kick_thinkthread_annotation_service(
         )
         command = [
             sys.executable,
-            "-m",
-            "goal_plus.thinkthread_annotation",
+            *module_arguments("goal_plus.thinkthread_annotation", []),
             "serve",
             "--root",
             str(Path(root_dir).expanduser().resolve()),

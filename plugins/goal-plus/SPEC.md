@@ -21,6 +21,14 @@ Goal Mode 完成；具备明确 metric 和 verifier 的优化任务进入 Search
 系统不负责理解 benchmark 的隐藏语义，也不保证公开 verifier 等价于外部官方评测。它也
 不是通用 worker supervisor；进程启动、等待、续跑和中断由 host 管理。
 
+## 宿主安装身份
+
+正常 Codex/Pi 安装绑定经过验证的不可变代码 build、锁定依赖和受管 Python 解释器。
+Hook、MCP、Pi tool 和内部 Python worker 不得因 shell 环境或目标 workspace 改变而加载另一份
+Goal Plus。安装副本与 runtime 必须核验同一 build；开发源码加载仅由显式 Pi 开发入口启用。
+更新一个宿主不得隐式替换其他宿主或仍被保留的旧版本。新 runtime 准备失败不改变已有宿主
+注册；卸载单个宿主保留 runtime，运行时清理只删除通过归属检查且没有宿主引用的版本。
+
 ## 核心对象
 
 | 对象 | 含义 |

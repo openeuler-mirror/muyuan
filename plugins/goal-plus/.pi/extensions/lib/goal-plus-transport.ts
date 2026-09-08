@@ -1,16 +1,22 @@
-import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
-export const sourcePath = process.env.GOAL_PLUS_SOURCE_PATH;
-
-export const pythonExecutable = process.env.GOAL_PLUS_PYTHON || "python";
+// Identity belongs to this installed package, never to the target workspace.
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const receiptPath = join(packageRoot, ".goal-plus-runtime.json");
+const receipt = existsSync(receiptPath) ? JSON.parse(readFileSync(receiptPath, "utf8")) : undefined;
+const devRoot = !receipt && process.env.GOAL_PLUS_PI_DEV_ROOT === packageRoot ? packageRoot : undefined;
+export const pythonExecutable = devRoot
+	? process.env.GOAL_PLUS_PYTHON || ""
+	: receipt?.python || "";
 
 export const runtimeRoot = process.env.GOAL_PLUS_ROOT || ".gp";
 
 export const INSTALL_HINT =
-	'Install this project into the Python environment that launches Pi: python -m pip install -e ".[dev]".';
+	'Run ./install.sh --pi from the Goal Plus source checkout, then restart Pi.';
 
 export interface CommandInvocation {
 	command: string;
@@ -27,27 +33,23 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function sourceRoot(ctx: CommandRuntimeContext): string {
-	return sourcePath || ctx.cwd;
+	return devRoot || packageRoot;
 }
 
 export function projectModuleInvocation(ctx: CommandRuntimeContext, command: string, moduleName: string): CommandInvocation {
-	const root = sourceRoot(ctx);
-	const src = join(root, "src");
-	const packageDir = join(src, "goal_plus");
-	if (existsSync(packageDir)) {
-		const code = [
-			"import sys",
-			`sys.path.insert(0, ${JSON.stringify(src)})`,
-			`from ${moduleName} import main`,
-			"raise SystemExit(main())",
-		].join("; ");
-		return {
-			command: pythonExecutable,
-			argsPrefix: ["-c", code],
-			label: `${pythonExecutable} -c ${moduleName}`,
-		};
+	if (devRoot) {
+		if (!isAbsolute(pythonExecutable)) throw new Error("Pi development launcher must supply an absolute Python path");
+		const src = join(devRoot, "src");
+		const code = ["import sys", `sys.path.insert(0, ${JSON.stringify(src)})`,
+			`from ${moduleName} import main`, "raise SystemExit(main())"].join("; ");
+		return { command: pythonExecutable, argsPrefix: ["-I", "-c", code], label: moduleName };
 	}
-	return { command, argsPrefix: [], label: command };
+	if (receipt?.schema !== "goal-plus.managed-runtime.v1" || !isAbsolute(pythonExecutable) || !receipt?.build) {
+		throw new Error(INSTALL_HINT);
+	}
+	return { command: pythonExecutable,
+		argsPrefix: ["-I", "-m", "goal_plus.installation", "--expected-build", receipt.build, "--module", moduleName],
+		label: `${moduleName} (${receipt.build})` };
 }
 
 export function parseJsonObject(text: string): Record<string, unknown> | undefined {

@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from goal_plus.ports.process_identity import ProcessIdentity, ProcessSnapshot
+from goal_plus.execution.python_command import module_arguments
 
 EXITED_PROCESS_STATES = frozenset({"Z", "X", "x"})
 RECOVERY_INSPECTION_TIMEOUT_SECONDS = 3
@@ -64,10 +65,10 @@ def inspect_worker(
 ) -> ProcessSnapshot | None:
     if pid <= 0 or not generation:
         return None
-    return inspect_command(pid, [
-        "-m", module, "drain", "--root", str(root_dir),
+    return inspect_command(pid, module_arguments(module, [
+        "drain", "--root", str(root_dir),
         "--run-id", run_id, "--generation", generation,
-    ])
+    ]))
 
 
 def inspect_command(pid: int, arguments: Sequence[str]) -> ProcessSnapshot | None:

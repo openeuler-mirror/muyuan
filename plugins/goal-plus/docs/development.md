@@ -11,17 +11,34 @@ Goal Plus 由共享 Python runtime、Pi package 和 Codex plugin 组成。仓库
 
 | 命令 | Python runtime | 宿主资产 | 宿主配置 |
 | --- | --- | --- | --- |
-| `./install.sh --codex` | 非 editable，安装到所选 Python | 注册当前 checkout 的正常 Codex plugin | 写正常 Codex marketplace/plugin 注册 |
-| `./install.sh --pi` | 非 editable，安装到所选 Python | 注册当前 checkout 的 Pi package | 写 Pi 用户 package 注册 |
+| `./install.sh --codex` | 非 editable，受管 Python 3.12 独立 venv | 注册已验证的不可变 Codex plugin 副本 | 写正常 Codex marketplace/plugin 注册 |
+| `./install.sh --pi` | 非 editable，受管 Python 3.12 独立 venv | 注册已验证的不可变 Pi package 副本 | 写 Pi 用户 package 注册 |
 | `./install.sh --pi-dev` | editable，安装到 `.goal-plus-dev/venv` | launcher 显式加载当前 Pi extension 和 skill | 不修改 Pi 用户配置 |
 
-`--pi` 和 `--pi-dev` 互斥；`--codex --pi` 与 `--codex --pi-dev` 都有效。正常安装使用
-当前 shell 的 `python3`。先激活目标环境；也可以显式选择该环境的解释器，但它的 scripts
-目录仍须位于 `PATH`：
+`--pi` 和 `--pi-dev` 互斥；`--codex --pi` 与 `--codex --pi-dev` 都有效。
+安装入口通过 uv 自动取得受管 Python 3.12；没有 uv 时将固定版本的 uv 安装到专属
+bootstrap 目录。无需激活 Conda/venv，`PYTHON` 不再选择安装目标。
 
 ```bash
-PYTHON=/absolute/path/to/python ./install.sh --codex --pi
+./install.sh --codex --pi
+./install.sh --runtime-info
 ```
+
+正常安装保存在 `${GOAL_PLUS_INSTALL_HOME:-~/.local/share/goal-plus}/releases/<build>/`：
+`package/` 保存源码及宿主资产快照，`venv/` 使用提交的 `uv.lock` 安装依赖。
+代码、资产、锁文件或来源路径变化会生成新的 build；固定的项目版本号不能代替 build。
+Codex 缓存版本带有 build，安装后的 hook/MCP 使用 release 内 launcher 的绝对路径，
+因此已加载的启动命令不依赖会被 Codex 刷新清理的旧缓存；Pi extension 从自身包目录读取
+安装收据。两端都使用绝对 Python 路径、隔离模式及预期 build 校验，正常运行不从 `PATH`、
+`PYTHONPATH`、`GOAL_PLUS_SOURCE_PATH` 或目标 workspace 寻找 Goal Plus。
+内部 Python 进程沿用该解释器与受控模块路径。只有 `pi-goal-plus` 显式开发入口加载 editable 源码。
+
+准备及身份验证成功后才修改宿主注册；更新已有宿主注册失败时恢复原来源。
+Codex、Pi 和 ThinkThread Profile 分别持有版本引用，更新其中一个不会更新另一个。
+安装不会删除旧 release，旧会话可继续使用原版本；正常安装成功后源码 checkout 可以移动，
+后续从新位置安装仍须显式移除旧来源注册。可用 `GOAL_PLUS_UV` 指定 uv 的绝对路径。
+首次安装需要下载 Python 和依赖；`--dry-run` 不写 release 或宿主注册，但 shell 入口可能先准备
+执行检查所需的 uv/Python。
 
 安装器会先检查同名宿主资源。来源不同、旧版 staging 安装或散落的同名 Pi asset 都会
 使安装失败，并显示冲突来源；不要通过复制、覆盖或修改宿主账号目录绕过检查。
@@ -107,7 +124,7 @@ Codex 不再提供 `goal-plus@goal-plus-local`、cachebuster staging 或 checkou
 ./install.sh --codex
 ```
 
-这会安装当前 Python runtime，并保留唯一的正常来源 `goal-plus@goal-plus`。每次安装都会
+这会准备新的受管 runtime，并保留唯一的正常 plugin ID `goal-plus@goal-plus`。每次安装都会
 通过 `codex plugin add` 刷新 plugin 缓存，即使该插件已安装；不会仅因来源相同而跳过
 hooks/skills 更新。安装或代码更新后
 新建 Codex thread；hook 内容变化时，在 `/hooks` 中重新检查并信任，再新建一个 thread。
@@ -140,7 +157,7 @@ python scripts/sync_codex_plugin_assets.py --check
 ```bash
 python -m pytest -q tests/test_install.py tests/test_codex_assets.py \
   tests/test_codex_doctor.py
-goal-plus-codex-doctor --project-root .
+./install.sh --runtime-info
 ```
 
 统一安装器不通过修改 `CODEX_HOME` 为多个 checkout 创建隔离配置。同一 Codex 配置只能注册
@@ -150,8 +167,11 @@ goal-plus-codex-doctor --project-root .
 切换正常 Codex 或 Pi 安装来源时，可以直接在新 checkout 运行 `./uninstall.sh --codex`
 或 `./uninstall.sh --pi`，再运行对应安装命令。卸载器按宿主注册识别 Goal Plus，来源不同只
 打印警告并继续移除，不询问确认；不需要回到旧 checkout。`--dry-run` 只展示计划。
-`--pi-dev`、`--thinkthread` 和 `--runtime` 涉及本地目录、Profile 或 Python package，
-仍使用各自的归属检查。
+`--pi-dev`、`--thinkthread` 和 `--runtime` 仍使用各自的归属检查。
+宿主卸载仅移除对应注册与版本引用。结束旧会话后，使用 `./uninstall.sh --runtime` 清理
+不再被任何已登记宿主引用的 release；仍存在未选择的宿主注册时拒绝清理。
+旧的 pip/Conda 安装不会自动删除，也不再被正常宿主入口使用。bootstrap 的 uv/Python 保留供
+后续安装使用，目标 workspace 的 `.gp/` 不受影响。
 
 ## 同时开发 Pi 并使用 Codex
 
@@ -162,7 +182,7 @@ goal-plus-codex-doctor --project-root .
 source .goal-plus-dev/set_env.sh
 ```
 
-Codex 使用所选 Python 环境中的正常 runtime；`pi-goal-plus` 使用自己的开发 venv。两条路径
+Codex 使用受管的不可变 runtime；`pi-goal-plus` 使用自己的开发 venv。两条路径
 不会共享 Python executable，也不会通过环境脚本切换宿主账号或认证。
 
 ## 改动后的更新动作
