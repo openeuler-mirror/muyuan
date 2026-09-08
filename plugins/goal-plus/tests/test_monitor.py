@@ -543,11 +543,11 @@ def test_goal_plus_monitor_snapshot_is_exposed_to_mcp_and_pi_facade(tmp_path: Pa
     )
 
     assert result["schema_version"] == 1
-    assert result["goal_plus_version"] == __version__
     assert result["run"]["run_id"] == run_id
-    assert result["strategy"]["name"] == "random"
-    assert "latest_plan" not in result["strategy"]
-    full = call_pi_tool(runtime_root, "goal_plus_monitor_snapshot", {"run_id": run_id, "view": "full"})
+    assert "strategy" not in result
+    full = call_pi_tool(runtime_root, "goal_plus_monitor_snapshot", {"run_id": run_id, "detail": True})
+    assert full["goal_plus_version"] == __version__
+    assert full["strategy"]["name"] == "random"
     assert full["strategy"]["latest_plan"] is None
     assert "statistics" in full and "statistics" not in result
 

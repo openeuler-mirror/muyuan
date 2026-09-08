@@ -35,6 +35,9 @@ Codex 缓存版本带有 build，安装后的 hook/MCP 使用 release 内 launch
 
 准备及身份验证成功后才修改宿主注册；更新已有宿主注册失败时恢复原来源。
 Codex、Pi 和 ThinkThread Profile 分别持有版本引用，更新其中一个不会更新另一个。
+因此 `./install.sh --codex --pi` 不刷新已有 `goal-plus-pi` TT Profile；还使用 TT 时执行
+`./install.sh --pi --thinkthread`。同样，`./uninstall.sh --pi` 只移除普通 Pi 注册；
+要移除本 checkout 管理的 TT Profile，显式加 `--thinkthread`。无参数卸载默认选择全部组件。
 安装不会删除旧 release，旧会话可继续使用原版本；正常安装成功后源码 checkout 可以移动，
 后续从新位置安装仍须显式移除旧来源注册。可用 `GOAL_PLUS_UV` 指定 uv 的绝对路径。
 首次安装需要下载 Python 和依赖；`--dry-run` 不写 release 或宿主注册，但 shell 入口可能先准备

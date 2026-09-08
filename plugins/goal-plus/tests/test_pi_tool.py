@@ -489,7 +489,10 @@ def test_pi_tool_dispatches_managed_pool_tools(
         "require_active_tool_target",
         lambda *_args, **_kwargs: None,
     )
-    assert call_pi_tool(tmp_path / ".search", tool_name, arguments) == {"ok": True}
+    result = call_pi_tool(tmp_path / ".search", tool_name, arguments)
+    assert result["ok"] is True
+    if tool_name == "pi_search_pool_close":
+        assert result["details"] == {"tool": "pi_search_pool_snapshot", "detail": True}
     assert calls == [{"root_dir": tmp_path / ".search", **expected}]
 
 

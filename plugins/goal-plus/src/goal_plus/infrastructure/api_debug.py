@@ -27,6 +27,7 @@ def log_api_response_size(
                 "tool": tool,
                 "format": format,
                 "bytes": len(payload.encode("utf-8")),
+                "characters": len(payload),
             }),
             file=sys.stderr,
             flush=True,

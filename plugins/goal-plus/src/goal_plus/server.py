@@ -201,20 +201,20 @@ def create_mcp(
         run_id: str | None = None,
         stale_after_seconds: int = 600,
         feature_plugins: list[str] | None = None,
-        view: Literal["summary", "full"] = "summary",
+        detail: bool = False,
     ) -> dict[str, Any]:
         """返回供轮询 agent 使用的只读 Goal Plus/Search 监控 snapshot。
 
         从持久化 `.gp` 状态返回 run、candidate、agent-session、verifier、host-log 和 Pi
         usage 证据。默认只返回当前进度、错误和恢复待办；详细统计、历史与宿主诊断
-        使用 view="full"。它不会启动、等待或中断 worker。
+        使用 detail=true。它不会启动、等待或中断 worker。
         """
         return tools.goal_plus_monitor_snapshot(
             goal_plus_id=goal_plus_id,
             run_id=run_id,
             stale_after_seconds=stale_after_seconds,
             feature_plugins=feature_plugins,
-            view=view,
+            detail=detail,
         )
 
     @mcp.tool()
@@ -562,15 +562,15 @@ def create_mcp(
     @mcp.tool()
     @_debug_tool_response
     def goal_plus_status(
-        goal_plus_id: str, view: Literal["summary", "context"] = "summary",
+        goal_plus_id: str, detail: bool = False,
     ) -> dict[str, Any]:
-        """读取当前 revision、control、phase、显式配置、待办和 next_action。
+        """读取当前 revision、control、phase、待办和 next_action。
 
         默认不返回完整目标、草案、历史或审计日志。初始化、恢复会话或 revision 变化时
-        使用 view="context" 读取完整 raw_goal、policy、triage 和 spec_draft。
+        使用 detail=true 读取完整 raw_goal、配置、policy、triage 和 spec_draft。
         历史详情用 goal_plus_history；恢复详情用 search_recovery_status。
         """
-        return goal_tools.goal_plus_status(goal_plus_id, view=view)
+        return goal_tools.goal_plus_status(goal_plus_id, detail=detail)
 
     @mcp.tool()
     @_debug_tool_response

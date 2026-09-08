@@ -397,7 +397,7 @@ export const RuntimeToolSchemas: Record<string, TSchema> = {
 	),
 	goal_plus_status: Type.Object({
 		goal_plus_id: Type.String(),
-		view: Type.Optional(Type.Union([Type.Literal("summary"), Type.Literal("context")])),
+		detail: Type.Optional(Type.Boolean({ default: false })),
 	}, { additionalProperties: false }),
 	goal_plus_history: Type.Object({
 		goal_plus_id: Type.String(),
@@ -421,7 +421,7 @@ export const RuntimeToolSchemas: Record<string, TSchema> = {
 			run_id: Type.Optional(Type.String()),
 			stale_after_seconds: Type.Optional(Type.Number()),
 			feature_plugins: Type.Optional(Type.Array(Type.String())),
-			view: Type.Optional(Type.Union([Type.Literal("summary"), Type.Literal("full")])),
+			detail: Type.Optional(Type.Boolean({ default: false })),
 		},
 		{ additionalProperties: false },
 	),
@@ -776,7 +776,7 @@ export const RuntimeToolSchemas: Record<string, TSchema> = {
 		{
 			pool_id: Type.Optional(Type.String()),
 			run_id: Type.Optional(Type.String()),
-			view: Type.Optional(Type.Union([Type.Literal("summary"), Type.Literal("full")])),
+			detail: Type.Optional(Type.Boolean({ default: false })),
 		},
 		{ additionalProperties: false },
 	),
@@ -896,9 +896,9 @@ export const RuntimeToolSchemas: Record<string, TSchema> = {
 };
 
 export const RuntimeToolDescriptions: Record<string, string> = {
-	goal_plus_status: "默认读取当前 revision、显式 command_config、control、待办和 next_action。初始化、恢复或 revision 变化时用 view=context 读取完整 raw_goal、policy、triage 和 spec_draft；历史详情用 goal_plus_history，恢复详情用 search_recovery_status。",
+	goal_plus_status: "默认读取当前 revision、control、待办和 next_action。初始化、恢复或 revision 变化时用 detail=true 读取完整 raw_goal、command_config、policy、triage 和 spec_draft；历史详情用 goal_plus_history。",
 	goal_plus_history: "按 collection 分页读取 Goal revision、dispatch 完整证据、Search 结果、final check 或审计事件。默认每页 20 条，最多 100 条；按 next_offset 继续，null 表示读完。",
-	goal_plus_monitor_snapshot: "默认返回当前进度、错误和恢复待办；详细统计、历史与 host 诊断用 view=full。只读，不执行 worker lifecycle 操作。",
+	goal_plus_monitor_snapshot: "默认返回当前进度、错误和恢复待办；配置、逐 candidate/session 状态和详细诊断用 detail=true。只读，不执行 worker lifecycle 操作。",
 	search_recovery_status: "读取 Search 各 candidate 的结算检查点和旧 worker 绑定，不修改运行状态。",
 	search_prepare_recovery: "固定中断 candidate 的恢复点并 fence 旧 worker。随后关闭旧 pool，再调用 search_recover_candidate。",
 	search_recover_candidate: "核对真实 host 静默后，通过 workspace provider 恢复结算点；幂等保留 Evidence。随后用新 pool/fresh worker 继续原 candidate。",

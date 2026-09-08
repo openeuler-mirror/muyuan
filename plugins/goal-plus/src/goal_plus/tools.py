@@ -25,7 +25,7 @@ from goal_plus.runtime import FileSearchRuntime
 from goal_plus.application.candidate_creation import format_task_skill_listing
 from goal_plus.workspaces import format_workspace_capacity_notice
 from goal_plus.projections.goal_tools import (
-    goal_receipt, goal_status, reconciliation_summary, work_item_summary,
+    goal_receipt, goal_status, reconciliation_summary, search_task_receipt, work_item_summary,
     GOAL_HISTORY_DEFAULT_LIMIT, GOAL_HISTORY_MAX_LIMIT,
 )
 from goal_plus.projections.monitor_tools import monitor_tool_summary
@@ -556,10 +556,10 @@ class SearchTools:
         run_id: str | None = None,
         stale_after_seconds: int = 600,
         feature_plugins: list[str] | None = None,
-        view: Literal["summary", "full"] = "summary",
+        detail: bool = False,
     ) -> dict[str, Any]:
-        if view not in {"summary", "full"}:
-            raise ValueError("view must be summary or full")
+        if type(detail) is not bool:
+            raise ValueError("detail must be a boolean")
         snapshot = goal_plus_monitor_snapshot(
             root_dir=self.runtime.root_dir,
             goal_plus_id=goal_plus_id,
@@ -567,7 +567,7 @@ class SearchTools:
             stale_after_seconds=stale_after_seconds,
             feature_plugins=feature_plugins,
         )
-        return snapshot if view == "full" else monitor_tool_summary(snapshot)
+        return snapshot if detail else monitor_tool_summary(snapshot)
 
 
 class GoalPlusTools:
@@ -592,13 +592,14 @@ class GoalPlusTools:
         raise RuntimeError(GOAL_PLUS_ENTRYPOINT_REQUIRED)
 
     def goal_plus_status(
-        self, goal_plus_id: str, view: Literal["summary", "context"] = "summary",
+        self, goal_plus_id: str, detail: bool = False,
     ) -> dict[str, Any]:
-        if view not in {"summary", "context"}:
-            raise ValueError("view must be summary or context")
+        if type(detail) is not bool:
+            raise ValueError("detail must be a boolean")
         record = self.runtime.status(goal_plus_id)
-        payload = goal_status(record, context=view == "context")
-        payload["reconciliation"] = reconciliation_summary(self.runtime.reconciliation(goal_plus_id))
+        payload = goal_status(record, detail=detail)
+        reconciliation = self.runtime.reconciliation(goal_plus_id)
+        payload["reconciliation"] = reconciliation if detail else reconciliation_summary(reconciliation)
         return payload
 
     def goal_plus_history(
@@ -711,7 +712,8 @@ class GoalPlusTools:
             run_id,
         )
         task = next(task for task in record.search_tasks if task.run_id == run_id)
-        return {**goal_receipt(record), "search_task": task.model_dump(mode="json", exclude_none=True)}
+        return {**goal_receipt(record), "search_task": search_task_receipt(task),
+                "details": {"tool": "goal_plus_status", "detail": True}}
 
     def goal_plus_record_search_result(
         self,
@@ -732,7 +734,8 @@ class GoalPlusTools:
             summary=summary,
         )
         task = next(task for task in record.search_tasks if task.run_id == run_id)
-        return {**goal_receipt(record), "search_task": task.model_dump(mode="json", exclude_none=True)}
+        return {**goal_receipt(record), "search_task": search_task_receipt(task),
+                "details": {"tool": "goal_plus_status", "detail": True}}
 
     def goal_plus_prepare_final_check(
         self,

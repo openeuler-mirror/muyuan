@@ -7,10 +7,11 @@ from fastmcp import Client
 import pytest
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.domain.goal import GoalPlusLinkedSearch
 from goal_plus.pi_tool import call_pi_tool
-from goal_plus.projections.goal_tools import reconciliation_summary
+from goal_plus.projections.goal_tools import goal_status, reconciliation_summary, search_task_receipt
 from goal_plus.projections.monitor_tools import monitor_tool_summary
-from goal_plus.projections.pool_tools import pool_tool_summary
+from goal_plus.projections.pool_tools import pool_close_receipt, pool_tool_summary
 from goal_plus.server import create_mcp
 from goal_plus.tools import GoalPlusTools
 from tests._runtime_helpers import start_host_verified_goal
@@ -25,7 +26,7 @@ def test_goal_status_does_not_grow_with_gate_audit_and_context_is_explicit(tmp_p
         runtime.gate(record.goal_plus_id, "pre_tool_use", {"tool_name": "read"})
     assert tools.goal_plus_status(record.goal_plus_id) == before
     assert "raw_goal" not in before and "evidence_log" not in before
-    assert tools.goal_plus_status(record.goal_plus_id, "context")["raw_goal"] == record.raw_goal
+    assert tools.goal_plus_status(record.goal_plus_id, detail=True)["raw_goal"] == record.raw_goal
     events = runtime.list_events(record.goal_plus_id)
     page = tools.goal_plus_history(record.goal_plus_id, "events", limit=20)
     assert page["items"] == events[:20]
@@ -35,6 +36,29 @@ def test_goal_status_does_not_grow_with_gate_audit_and_context_is_explicit(tmp_p
     assert tools.goal_plus_history(record.goal_plus_id, "goal_revisions")["items"][0]["raw_goal"] == record.raw_goal
     with pytest.raises(ValueError):
         tools.goal_plus_history(record.goal_plus_id, "events", limit=101)
+
+
+def test_status_and_search_receipt_do_not_echo_result_paths_or_summary(tmp_path):
+    record = FileGoalPlusRuntime(tmp_path).create_goal("authoritative objective")
+    task = GoalPlusLinkedSearch(goal_revision=record.goal_revision, run_id="run_1",
+                               selected_candidate_id="c001", result_recorded_at="2026-09-08T10:00:00Z")
+    record = type(record).model_validate({**record.model_dump(), "search_tasks": [task]})
+    before = goal_status(record)
+    verbose = task.model_copy(update={"summary": "long result " * 1000,
+        "report_path": "/long/path/" * 1000, "html_report_path": "/report.html",
+        "promotion_artifact_path": "/publication.patch"})
+    record = type(record).model_validate({**record.model_dump(), "search_tasks": [verbose]})
+    assert goal_status(record) == before
+    assert search_task_receipt(task) == search_task_receipt(verbose)
+    assert before["current_search_run_id"] == "run_1"
+    assert before["details"] == {"tool": "goal_plus_status", "detail": True}
+    for key in ("command_config", "active_session", "source_path", "current_search", "raw_goal"):
+        assert key not in before
+    detail = goal_status(record, detail=True)
+    assert detail["current_search"]["report_path"] == verbose.report_path
+    assert detail["current_search"]["summary"] == verbose.summary
+    assert detail["raw_goal"] == record.raw_goal
+    assert "command_config" in detail and "details" not in detail
 
 
 def test_work_receipt_preserves_attempt_and_ready_result_until_accepted(tmp_path):
@@ -87,7 +111,8 @@ def test_pool_replies_keep_outcomes_and_pending_jobs_without_launch_history():
              "delivered_at": "now", "result": result} for n in range(50)]
     jobs[0]["delivered_at"] = None
     snapshot = pool_tool_summary({"pool_id": "pool_1", "state": "closed", "jobs": jobs})
-    assert [j["job_id"] for j in snapshot["jobs"]] == ["job_0", "job_49"]
+    assert [j["job_id"] for j in snapshot["jobs"]] == ["job_0"]
+    assert "result" not in snapshot["jobs"][0]
     assert snapshot["jobs_total"] == 50
     reply = pool_tool_summary({"events": [{"event_id": "event_1", "result": result}]})
     event = reply["events"][0]
@@ -95,6 +120,28 @@ def test_pool_replies_keep_outcomes_and_pending_jobs_without_launch_history():
     assert event["result"]["lease"] == result["lease"]
     assert "launch" not in event["result"] and "steps" not in event["result"]
     assert "launch" in result
+
+
+def test_pool_close_receipt_is_constant_after_delivery_but_exposes_unresolved_jobs():
+    closed = {"pool_id": "pool_1", "state": "closed", "active_count": 0,
+              "undelivered_count": 0, "jobs": []}
+    before = pool_close_receipt(closed)
+    jobs = [{"job_id": f"job_{n}", "candidate_id": "c001", "status": "completed",
+             "delivered_at": "now", "result": {"ok": True, "final_score_report": {"large": "x" * 5000}}}
+            for n in range(100)]
+    assert pool_close_receipt({**closed, "jobs": jobs}) == before
+    assert len(json.dumps(before, separators=(",", ":"))) < 200
+    jobs[-1].update(status="failed", error={"message": "worker exited"})
+    jobs[-1]["result"] = {"ok": False, "failure": {"stage": "verification", "message": "unavailable"}}
+    jobs[0]["delivered_at"] = None
+    jobs.append({"job_id": "active", "candidate_id": "c002", "status": "running"})
+    pending = pool_close_receipt({**closed, "state": "draining", "active_count": 1,
+                                 "undelivered_count": 1, "jobs": jobs})
+    assert pending["state"] == "draining" and pending["active_count"] == 1
+    assert pending["undelivered_count"] == 1
+    assert [item["job_id"] for item in pending["jobs"]] == ["job_0", "job_99", "active"]
+    assert pending["jobs"][1]["error"] == {"message": "worker exited"}
+    assert pending["jobs"][1]["failure"]["failure"]["message"] == "unavailable"
 
 
 def test_monitor_keeps_annotation_barrier_and_cleanup_errors():
@@ -111,6 +158,28 @@ def test_monitor_keeps_annotation_barrier_and_cleanup_errors():
     assert "statistics" not in reply
 
 
+def test_monitor_hides_success_details_but_preserves_failures_and_unknown_liveness():
+    snapshot = {"ok": True, "run": {"run_id": "run_1", "state": "promoted",
+        "promotion": {"state": "prepared", "artifact_path": "/long/path" * 1000}},
+        "execution_scope": {"state": "open", "active_count": None},
+        "strategy": {"models": ["large"]}, "candidates": {}, "subagents": []}
+    before = monitor_tool_summary(snapshot)
+    snapshot["candidates"] = {f"c{n}": {"candidate_id": f"c{n}", "status": "evaluated",
+        "last_score": 2.0, "verifier_count": 10} for n in range(100)}
+    snapshot["subagents"] = [{"candidate_id": f"c{n}", "timed_out": False,
+        "runner_failed": False, "error": None, "last_score": 2.0} for n in range(100)]
+    assert monitor_tool_summary(snapshot) == before
+    assert before["execution_scope"]["active_count"] is None
+    assert "artifact_path" not in before["run"]["promotion"]
+    snapshot["candidates"]["c1"]["changed_outside_allowed"] = True
+    snapshot["subagents"][0].update(timed_out=True, error="lease expired")
+    snapshot["run"]["promotion"]["error"] = "publication blocked"
+    summary = monitor_tool_summary(snapshot)
+    assert summary["candidates"]["c1"]["changed_outside_allowed"] is True
+    assert summary["subagents"][0]["error"] == "lease expired"
+    assert summary["run"]["promotion"]["error"] == "publication blocked"
+
+
 def test_mcp_and_pi_expose_same_summary_context_and_paged_history(tmp_path):
     runtime = FileGoalPlusRuntime(tmp_path)
     goal = runtime.create_goal("exact user objective")
@@ -119,7 +188,7 @@ def test_mcp_and_pi_expose_same_summary_context_and_paged_history(tmp_path):
         async with Client(create_mcp(tmp_path)) as client:
             for tool, arguments in [
                 ("goal_plus_status", {"goal_plus_id": goal.goal_plus_id}),
-                ("goal_plus_status", {"goal_plus_id": goal.goal_plus_id, "view": "context"}),
+                ("goal_plus_status", {"goal_plus_id": goal.goal_plus_id, "detail": True}),
                 ("goal_plus_history", {"goal_plus_id": goal.goal_plus_id, "collection": "goal_revisions", "limit": 1}),
             ]:
                 result = await client.call_tool(tool, arguments)

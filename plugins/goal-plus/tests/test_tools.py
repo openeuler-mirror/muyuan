@@ -806,7 +806,7 @@ def test_goal_plus_tools_delegate_runtime_calls_with_models() -> None:
     status = tools.goal_plus_status("gp_0001")
     assert "evidence_log" not in status
     runtime.list_events.assert_not_called()
-    assert status["search_tasks_total"] == 0
+    assert "search_tasks_total" not in status
     assert status["current_search_run_id"] is None
     with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
         tools.goal_plus_update_goal(

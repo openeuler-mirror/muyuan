@@ -38,6 +38,7 @@ def test_mcp_response_size_is_opt_in_and_counts_utf8(
         "tool": tool,
         "format": "json" if tool == "goal_plus_status" else "text",
         "bytes": len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
+        "characters": len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
     }
     assert "private_text" not in captured.err
 
@@ -66,6 +67,7 @@ def test_pi_cli_measures_serialized_response_without_changing_stdout(
         "tool": "goal_plus_status",
         "format": "json",
         "bytes": len(encoded.encode("utf-8")),
+        "characters": len(encoded),
     }
     assert "private_text" not in captured.err
 

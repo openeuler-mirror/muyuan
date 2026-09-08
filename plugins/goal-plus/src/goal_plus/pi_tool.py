@@ -21,7 +21,7 @@ from goal_plus.pi_pool import (
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.infrastructure.state.files import exclusive_file_lock
 from goal_plus.infrastructure.api_debug import log_api_response_size
-from goal_plus.projections.pool_tools import pool_tool_summary
+from goal_plus.projections.pool_tools import pool_close_receipt, pool_tool_summary
 from goal_plus.thinkthread_pool import (
     close_pool as close_thinkthread_search_pool,
 )
@@ -140,16 +140,16 @@ def _pi_search_pool_snapshot_tool(root_dir: Path | str) -> Callable[..., dict[st
     def call(
         pool_id: str | None = None,
         run_id: str | None = None,
-        view: Literal["summary", "full"] = "summary",
+        detail: bool = False,
     ) -> dict[str, Any]:
-        if view not in {"summary", "full"}:
-            raise ValueError("view must be summary or full")
+        if type(detail) is not bool:
+            raise ValueError("detail must be a boolean")
         snapshot = snapshot_pi_search_pool(
             root_dir=root_dir,
             pool_id=pool_id,
             run_id=run_id,
         )
-        return snapshot if view == "full" else pool_tool_summary(snapshot)
+        return snapshot if detail else pool_tool_summary(snapshot)
 
     return call
 
@@ -178,7 +178,7 @@ def _pi_search_pool_close_tool(root_dir: Path | str) -> Callable[..., dict[str, 
         mode: str = "drain",
         timeout_seconds: float = 30,
     ) -> dict[str, Any]:
-        return pool_tool_summary(close_pi_search_pool(
+        return pool_close_receipt(close_pi_search_pool(
             root_dir=root_dir,
             pool_id=pool_id,
             mode=mode,  # type: ignore[arg-type]

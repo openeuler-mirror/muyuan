@@ -53,7 +53,9 @@ def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug):
             "tool": "search_get_agent_context" if role == "worker" else "goal_plus_status",
             "format": "json",
             "bytes": len(json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode()),
+            "characters": len(json.dumps(response, ensure_ascii=False, separators=(",", ":"))),
             "text_bytes": len(text.encode()), "details_bytes": len(text.encode()),
+            "text_characters": len(text), "details_characters": len(text),
         }
         assert "raw_goal" not in result.stderr
     else:
@@ -168,6 +170,12 @@ if (process.env.GOAL_PLUS_PI_WORK_RECEIPT_TEST === "1") {
     }}), stderr: ""};
   };
   await commands.get("goal-plus").handler("fixture", ctx);
+  globalThis.status = {...globalThis.status, active_session: undefined};
+  await events.get("context")({messages: []}, ctx);
+  await tools.get("pi_search_pool_open").execute("pool", {run_id: "run_1"}, undefined, undefined, ctx);
+  const scope = calls.find(c => c.name === "host_execution_scope_open");
+  assert.equal(scope.args.native_session_id, "pi-test");
+  assert.equal(scope.args.run_id, "run_1");
   const invoke = () => tools.get("pi_goal_plus_run_work_item").execute("call", {
     goal_plus_id: "gp_0001", work_item_id: "work", task: "implement",
   }, undefined, undefined, ctx);

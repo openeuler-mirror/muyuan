@@ -373,17 +373,18 @@ function hostSessionDecisionFrom(value: unknown): GoalPlusHostSessionDecisionPay
 
 async function ensureExecutionScope(
 	pi: ExtensionAPI,
-	ctx: CommandRuntimeContext,
+	ctx: ExtensionContext,
 	runId: string,
 	nativeAgentConfig: PiNativeAgentConfig,
 ): Promise<string> {
-	if (!activeGoalPlusId || !cachedGoalStatus?.active_session?.session_id) {
+	const nativeSessionId = ctx.sessionManager.getSessionId();
+	if (!activeGoalPlusId || !nativeSessionId) {
 		throw new Error("Execution scope requires the active Goal Plus native session");
 	}
-	const result = await runJsonCli(pi, ctx, "host_execution_scope_open", {
+	const result = await runJsonCli(pi, commandContextFrom(ctx), "host_execution_scope_open", {
 		host: "pi",
 		goal_plus_id: activeGoalPlusId,
-		native_session_id: cachedGoalStatus.active_session.session_id,
+		native_session_id: nativeSessionId,
 		owner_session_id: `${activeGoalPlusId}:${ctx.cwd}`,
 		owner_pid: process.pid,
 		run_id: runId,
@@ -1348,7 +1349,7 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 		`final_check_policy: ${JSON.stringify(status.final_check_policy ?? status.policy?.final_check ?? { mode: "disabled" })}`,
 		"",
 		...(status.raw_goal ? ["原始目标：", status.raw_goal]
-			: ["初始化、恢复或 revision 变化时，用 goal_plus_status(view=\"context\") 读取完整目标。"]),
+			: ["初始化、恢复或 revision 变化时，用 goal_plus_status(detail=true) 读取完整目标和配置。"]),
 		"",
 		"加载 goal-plus skill；每轮读取 goal_plus_status 的 control、next_action 和 reconciliation。",
 	];
@@ -1941,10 +1942,15 @@ function registerGoalPlusTool<TParams extends TSchema>(pi: ExtensionAPI, definit
 						tool: definition.name,
 						format: "json",
 						bytes: Buffer.byteLength(JSON.stringify(result), "utf8"),
+						characters: Array.from(JSON.stringify(result)).length,
 						text_bytes: result.content.filter(item => item.type === "text")
 							.reduce((sum, item) => sum + Buffer.byteLength(item.text, "utf8"), 0),
+						text_characters: result.content.filter(item => item.type === "text")
+							.reduce((sum, item) => sum + Array.from(item.text).length, 0),
 						details_bytes: result.details === undefined ? 0
 							: Buffer.byteLength(JSON.stringify(result.details), "utf8"),
+						details_characters: result.details === undefined ? 0
+							: Array.from(JSON.stringify(result.details)).length,
 					}));
 				} catch {
 					// Diagnostics cannot change a completed tool's result.
@@ -1977,7 +1983,7 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 				if (runId && ["search_start_agent_session", "pi_search_pool_open", "thinkthread_search_pool_open", "search_select"].includes(name)) {
 					const scopeId = await ensureExecutionScope(
 						pi,
-						commandCtx,
+						ctx,
 						runId,
 						currentPiNativeAgentConfig(pi, ctx),
 					);
@@ -2140,7 +2146,7 @@ function registerPiFinalCheckTool(pi: ExtensionAPI) {
 			if (goalIdentity) {
 				const scopeId = await ensureExecutionScope(
 					pi,
-					commandCtx,
+					ctx,
 					goalIdentity,
 					nativeAgentConfig,
 				);
@@ -2191,7 +2197,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 			const nativeAgentConfig = currentPiNativeAgentConfig(pi, ctx);
 			const executionScopeId = await ensureExecutionScope(
 				pi,
-				commandCtx,
+				ctx,
 				input.goal_plus_id,
 				nativeAgentConfig,
 			);
@@ -2518,7 +2524,7 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 			const monitor = await runJsonCli(pi, commandCtx, "goal_plus_monitor_snapshot", {
 				goal_plus_id: status.goal_plus_id ?? activeGoalPlusId,
 				run_id: status.current_search_run_id ?? undefined,
-				view: "full",
+				detail: true,
 			});
 			if (isRecord(monitor.details) && monitor.details.ok !== false) snapshot = monitor.details;
 		} catch {

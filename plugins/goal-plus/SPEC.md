@@ -139,6 +139,9 @@ Spec Discovery。
 模型可见的状态和变更回执必须使用显式投影，不能默认回放整个持久记录与审计历史。
 当前 control、revision、下一步动作、待审查结果和恢复身份保持可见；完整目标与草案按需
 读取，历史详情分页读取。变更回执保留本次操作的准确 attempt、Search 或 final-check identity。
+状态、Monitor 与 Pi pool snapshot 默认 `detail=false`；配置、成功结果明细和报告路径经
+`detail=true` 只读查询。写操作回执指向只读详情入口，不要求重复执行写操作。成功 pool close
+不回放已交付 job；错误、未交付结果、未完成清理与未知资源数始终保持可见。
 Codex/Pi 共用这些返回合同；持久化、授权、Evidence 和恢复不因展示裁剪而改变。
 
 ## SearchSpec 与冻结
