@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safely uninstall Goal Plus components owned by this checkout."""
+"""Uninstall Goal Plus host registrations and checkout-owned local components."""
 
 from __future__ import annotations
 
@@ -97,16 +97,16 @@ def _codex_plan(codex: str | None) -> tuple[bool, bool, list[str]]:
     inventory = install_support._codex_inventory(codex)
     marketplaces = install_support._codex_marketplaces(codex)
     root = ROOT.resolve()
+    notes: list[str] = []
     marketplace_source = marketplaces.get(install_support.NORMAL_CODEX_MARKETPLACE)
-    remove_marketplace = marketplace_source == root
+    remove_marketplace = marketplace_source is not None
     if marketplace_source is not None and marketplace_source != root:
-        raise UninstallError(
-            "refusing to remove Codex marketplace 'goal-plus': it belongs to "
-            f"{marketplace_source}, not {root}"
+        notes.append(
+            "Warning: Codex marketplace 'goal-plus' comes from "
+            f"{marketplace_source}, not the current checkout {root}."
         )
 
     remove_plugin = False
-    notes: list[str] = []
     for item in inventory:
         plugin_id = str(item.get("pluginId") or "")
         if plugin_id != install_support.NORMAL_CODEX_PLUGIN_ID:
@@ -117,13 +117,13 @@ def _codex_plan(codex: str | None) -> tuple[bool, bool, list[str]]:
         source_path = source.get("path") if isinstance(source, dict) else None
         resolved = _resolved_source(source_path)
         if resolved is not None and resolved != root:
-            raise UninstallError(
-                f"refusing to remove {plugin_id}: it belongs to {resolved}, not {root}"
+            notes.append(
+                f"Warning: Codex plugin {plugin_id} comes from {resolved}, "
+                f"not the current checkout {root}."
             )
         if resolved is None and not remove_marketplace:
-            raise UninstallError(
-                f"refusing to remove {plugin_id}: Codex did not report its source and "
-                "the matching marketplace is not owned by this checkout"
+            notes.append(
+                f"Warning: Codex did not report the source of {plugin_id}."
             )
         remove_plugin = True
     return remove_plugin, remove_marketplace, notes
@@ -139,17 +139,17 @@ def _pi_sources(
         if entry.get("settings_path") is None:
             notes.append(f"Preserved loose Pi resource: {entry['source']}")
             continue
-        if entry.get("resolved_path") == root:
-            sources.append(str(root))
-        else:
+        resolved = entry.get("resolved_path")
+        sources.append(str(resolved) if resolved is not None else entry["source"])
+        if resolved != root:
             notes.append(
-                f"Preserved Pi registration from another source: {entry['source']}"
+                f"Warning: Pi registration comes from {resolved or entry['source']}, "
+                f"not the current checkout {root}."
             )
     unique_sources = tuple(dict.fromkeys(sources))
     if unique_sources and pi is None and require_executable:
         raise UninstallError(
-            "Pi registration points to this checkout, but the pi executable is not "
-            "on PATH"
+            "Goal Plus is registered in Pi, but the pi executable is not on PATH"
         )
     return unique_sources, notes
 
@@ -276,16 +276,16 @@ def _build_plan(
     codex = shutil.which("codex") if inspect_codex else None
     pi = shutil.which("pi") if inspect_pi else None
 
-    owned_plugin = False
-    owned_marketplace = False
+    codex_plugin = False
+    codex_marketplace = False
     codex_notes: list[str] = []
     if inspect_codex:
-        owned_plugin, owned_marketplace, codex_notes = _codex_plan(codex)
+        codex_plugin, codex_marketplace, codex_notes = _codex_plan(codex)
 
-    owned_pi_sources: tuple[str, ...] = ()
+    pi_sources: tuple[str, ...] = ()
     pi_notes: list[str] = []
     if inspect_pi:
-        owned_pi_sources, pi_notes = _pi_sources(
+        pi_sources, pi_notes = _pi_sources(
             pi,
             require_executable=remove_pi,
         )
@@ -316,9 +316,9 @@ def _build_plan(
     if remove_python:
         remove_runtime, runtime_notes = _runtime_plan()
         remaining_hosts: list[str] = []
-        if remove_runtime and not remove_codex and (owned_plugin or owned_marketplace):
+        if remove_runtime and not remove_codex and (codex_plugin or codex_marketplace):
             remaining_hosts.append("Codex")
-        if remove_runtime and not remove_pi and owned_pi_sources:
+        if remove_runtime and not remove_pi and pi_sources:
             remaining_hosts.append("Pi")
         if (
             remove_runtime
@@ -329,17 +329,17 @@ def _build_plan(
         if remaining_hosts:
             rendered = " and ".join(remaining_hosts)
             raise UninstallError(
-                "refusing to remove the Python runtime while this checkout's "
+                "refusing to remove the Python runtime while an unselected "
                 f"{rendered} registration remains; remove that host first or omit "
                 "--runtime"
             )
 
     return UninstallPlan(
         codex_executable=codex if remove_codex else None,
-        remove_codex_plugin=remove_codex and owned_plugin,
-        remove_codex_marketplace=remove_codex and owned_marketplace,
+        remove_codex_plugin=remove_codex and codex_plugin,
+        remove_codex_marketplace=remove_codex and codex_marketplace,
         pi_executable=pi if remove_pi else None,
-        pi_sources=owned_pi_sources if remove_pi else (),
+        pi_sources=pi_sources if remove_pi else (),
         pi_dev_dir=remove_dev_dir,
         pi_dev_registry_path=remove_registry,
         remove_runtime=remove_runtime,
@@ -379,7 +379,7 @@ def _print_plan(plan: UninstallPlan, *, dry_run: bool) -> None:
         print(f"- Python package: {PACKAGE_NAME} in {sys.executable}")
     for note in plan.notes:
         print(f"- {note}")
-    print("- Preserved: target workspace .gp records and promoted source changes")
+    print("- Preserved: target workspace .gp records and promoted source changes", flush=True)
 
 
 def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
@@ -467,19 +467,19 @@ def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Uninstall Goal Plus components owned by this checkout. With no "
-            "component selector, remove all owned components."
+            "Uninstall Goal Plus host registrations and checkout-owned local "
+            "components. With no component selector, remove all removable components."
         )
     )
     parser.add_argument(
         "--codex",
         action="store_true",
-        help="Remove this checkout's Codex registration.",
+        help="Remove the normal Goal Plus Codex registration regardless of source.",
     )
     parser.add_argument(
         "--pi",
         action="store_true",
-        help="Remove this checkout's normal Pi registration.",
+        help="Remove normal Goal Plus Pi registrations regardless of source.",
     )
     parser.add_argument(
         "--pi-dev",
@@ -542,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
         if plan.has_changes:
             _execute(plan, dry_run=args.dry_run)
         else:
-            print("No components owned by this checkout were found.")
+            print("No removable Goal Plus components were found.")
     except (
         UninstallError,
         install_support.InstallError,

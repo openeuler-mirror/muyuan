@@ -147,6 +147,12 @@ goal-plus-codex-doctor --project-root .
 一个正常 Goal Plus source；并行 checkout 开发需要在宿主之外提供完整隔离边界，不能让后一次
 安装静默替换前一次来源。
 
+切换正常 Codex 或 Pi 安装来源时，可以直接在新 checkout 运行 `./uninstall.sh --codex`
+或 `./uninstall.sh --pi`，再运行对应安装命令。卸载器按宿主注册识别 Goal Plus，来源不同只
+打印警告并继续移除，不询问确认；不需要回到旧 checkout。`--dry-run` 只展示计划。
+`--pi-dev`、`--thinkthread` 和 `--runtime` 涉及本地目录、Profile 或 Python package，
+仍使用各自的归属检查。
+
 ## 同时开发 Pi 并使用 Codex
 
 若 Codex 只需正常安装，而 Pi 要跟踪当前 checkout 的 editable 代码，可以一次准备：
