@@ -187,6 +187,12 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     assert evidence_reads["latest_detail_read_at"] is None
     assert snapshot["strategy"] == {
         "name": "random",
+        "max_parallel": frozen.spec.budget.max_parallel,
+        "workspace_backend": frozen.spec.workspace.backend,
+        "promotion_mode": frozen.spec.workspace.promotion_mode,
+        "worker_budget": frozen.spec.strategy.worker_budget.model_dump(mode="json"),
+        "worker_launch": None,
+        "models": [],
         "native_host": "pi",
         "orchestration_mode": "parallel_loops",
         "worker_host": "pi-rpc",
@@ -540,7 +546,10 @@ def test_goal_plus_monitor_snapshot_is_exposed_to_mcp_and_pi_facade(tmp_path: Pa
     assert result["goal_plus_version"] == __version__
     assert result["run"]["run_id"] == run_id
     assert result["strategy"]["name"] == "random"
-    assert result["strategy"]["latest_plan"] is None
+    assert "latest_plan" not in result["strategy"]
+    full = call_pi_tool(runtime_root, "goal_plus_monitor_snapshot", {"run_id": run_id, "view": "full"})
+    assert full["strategy"]["latest_plan"] is None
+    assert "statistics" in full and "statistics" not in result
 
 
 def test_goal_plus_monitor_snapshot_projects_host_execution_scope(

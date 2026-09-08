@@ -86,6 +86,7 @@ class GoalGate:
                     )
                 settlement_or_read = {
                     "goal_plus_status",
+                    "goal_plus_history",
                     "goal_plus_monitor_snapshot",
                     "goal_plus_list_models",
                     "goal_plus_record_work_event",

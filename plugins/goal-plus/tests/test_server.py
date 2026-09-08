@@ -73,6 +73,7 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
         "search_apply_promotion",
         "goal_plus_create",
         "goal_plus_status",
+        "goal_plus_history",
         "goal_plus_update_goal",
         "goal_plus_monitor_snapshot",
         "goal_plus_list_models",

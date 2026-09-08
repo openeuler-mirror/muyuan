@@ -136,6 +136,11 @@ work DAG，只记录实际发生的 dispatch。Main 在调用 host 原生 spawn 
 可执行 verifier、隔离 edit surface，且并行探索有价值的任务适合 Search；合同不完整时先进入
 Spec Discovery。
 
+模型可见的状态和变更回执必须使用显式投影，不能默认回放整个持久记录与审计历史。
+当前 control、revision、下一步动作、待审查结果和恢复身份保持可见；完整目标与草案按需
+读取，历史详情分页读取。变更回执保留本次操作的准确 attempt、Search 或 final-check identity。
+Codex/Pi 共用这些返回合同；持久化、授权、Evidence 和恢复不因展示裁剪而改变。
+
 ## SearchSpec 与冻结
 
 SearchSpec 合同覆盖：

@@ -147,6 +147,7 @@ const MAIN_GATED_TOOLS = new Set([
 const MAIN_READ_ONLY_RUNTIME_TOOLS = new Set([
 	"search_recovery_status",
 	"goal_plus_status",
+	"goal_plus_history",
 	"goal_plus_monitor_snapshot",
 	"goal_plus_list_models",
 	"search_status",
@@ -185,6 +186,7 @@ interface GoalPlusStatusPayload {
 	goal_revision?: number;
 	goal_revisions?: unknown[];
 	policy?: Record<string, unknown>;
+	final_check_policy?: Record<string, unknown>;
 	final_checks?: unknown[];
 	status?: string;
 	control?: { state: "active" | "paused" | "closed"; reason?: string | null; version: number };
@@ -197,6 +199,7 @@ interface GoalPlusStatusPayload {
 	search_tasks_total?: number;
 	current_search_run_id?: string | null;
 	linked_search?: unknown;
+	current_search?: unknown;
 	source_path?: string | null;
 	work_items?: unknown[];
 }
@@ -1191,10 +1194,11 @@ function buildGoalCompletionView(
 	const selection = statistics && isRecord(statistics.selection) ? statistics.selection : undefined;
 	const hostCleanup = task && isRecord(task.host_cleanup) ? task.host_cleanup : undefined;
 	const workerUsage = usageSummaryFromMonitor(statistics?.usage);
+	const statusLinked = status.current_search ?? status.linked_search;
 	const linked = goal && isRecord(goal.linked_search)
 		? goal.linked_search
-		: isRecord(status.linked_search)
-			? status.linked_search
+		: isRecord(statusLinked)
+			? statusLinked
 			: undefined;
 	const rawGoal = stringFrom(goal?.raw_goal) ?? status.raw_goal;
 	const commandConfig = isRecord(goal?.command_config)
@@ -1341,10 +1345,10 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 		`phase: ${status.phase ?? "unknown"}`,
 		`goal_revision: ${status.goal_revision ?? 1}`,
 		`command_config: ${JSON.stringify(status.command_config ?? {})}`,
-		`final_check_policy: ${JSON.stringify(status.policy?.final_check ?? { mode: "disabled" })}`,
+		`final_check_policy: ${JSON.stringify(status.final_check_policy ?? status.policy?.final_check ?? { mode: "disabled" })}`,
 		"",
-			"原始目标：",
-		status.raw_goal ?? "",
+		...(status.raw_goal ? ["原始目标：", status.raw_goal]
+			: ["初始化、恢复或 revision 变化时，用 goal_plus_status(view=\"context\") 读取完整目标。"]),
 		"",
 		"加载 goal-plus skill；每轮读取 goal_plus_status 的 control、next_action 和 reconciliation。",
 	];
@@ -1928,7 +1932,25 @@ function registerGoalPlusTool<TParams extends TSchema>(pi: ExtensionAPI, definit
 			const event: ToolCallEvent = { type: "tool_call", toolCallId, toolName: definition.name, input: params };
 			const denied = workspaceGuard(event, ctx, "goal-plus") || await mainGate(event, ctx, "goal-plus");
 			if (denied?.block) throw new Error(denied.reason);
-			return definition.execute(toolCallId, params, signal, onUpdate, ctx);
+			const result = await definition.execute(toolCallId, params, signal, onUpdate, ctx);
+			if (process.env.GOAL_PLUS_DEBUG === "1") {
+				try {
+					console.error(JSON.stringify({
+						event: "goal_plus_api_response_size",
+						transport: "pi-tool",
+						tool: definition.name,
+						format: "json",
+						bytes: Buffer.byteLength(JSON.stringify(result), "utf8"),
+						text_bytes: result.content.filter(item => item.type === "text")
+							.reduce((sum, item) => sum + Buffer.byteLength(item.text, "utf8"), 0),
+						details_bytes: result.details === undefined ? 0
+							: Buffer.byteLength(JSON.stringify(result.details), "utf8"),
+					}));
+				} catch {
+					// Diagnostics cannot change a completed tool's result.
+				}
+			}
+			return result;
 		},
 	});
 }
@@ -2207,10 +2229,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 				if (isRecord(resumed.details) && resumed.details.ok === false) {
 					throw new Error(String(resumed.details.error || "Pi work item resume was rejected"));
 				}
-				const resumedStatus = statusFrom(resumed.details);
-				const resumedItem = resumedStatus?.work_items?.find(
-					(item) => isRecord(item) && item.work_item_id === input.work_item_id,
-				);
+				const resumedItem = isRecord(resumed.details) ? resumed.details.work_item : undefined;
 				attemptId = isRecord(resumedItem) ? resumedItem.attempt_id : undefined;
 				generation = isRecord(resumedItem) ? resumedItem.generation : undefined;
 			} else {
@@ -2236,10 +2255,7 @@ function registerPiWorkItemTool(pi: ExtensionAPI) {
 				if (isRecord(dispatchResult.details) && dispatchResult.details.ok === false) {
 					throw new Error(String(dispatchResult.details.error || "Pi work item dispatch was rejected"));
 				}
-				const dispatched = statusFrom(dispatchResult.details);
-				const dispatchedItem = dispatched?.work_items?.find(
-					(item) => isRecord(item) && item.work_item_id === input.work_item_id,
-				);
+				const dispatchedItem = isRecord(dispatchResult.details) ? dispatchResult.details.work_item : undefined;
 				attemptId = isRecord(dispatchedItem) ? dispatchedItem.attempt_id : undefined;
 				generation = isRecord(dispatchedItem) ? dispatchedItem.generation : undefined;
 			}
@@ -2502,6 +2518,7 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 			const monitor = await runJsonCli(pi, commandCtx, "goal_plus_monitor_snapshot", {
 				goal_plus_id: status.goal_plus_id ?? activeGoalPlusId,
 				run_id: status.current_search_run_id ?? undefined,
+				view: "full",
 			});
 			if (isRecord(monitor.details) && monitor.details.ok !== false) snapshot = monitor.details;
 		} catch {
@@ -2651,6 +2668,7 @@ export default function (pi: ExtensionAPI) {
 
 	const mainTools = [
 		"goal_plus_status",
+		"goal_plus_history",
 		"goal_plus_monitor_snapshot",
 		"goal_plus_list_models",
 		"goal_plus_record_triage",

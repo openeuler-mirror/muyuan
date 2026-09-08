@@ -17,8 +17,10 @@ candidate 边界、workspace、verifier、promotion 和 feature gate 由 runtime
 
 ## 主流程
 
-1. 调用 `goal_plus_status`，读取当前 revision、完整 `raw_goal`、`command_config`、已有 dispatch、
-   Search history、final-check policy、`control`、`reconciliation` 和 `next_action`。显式配置优先，
+1. 每轮调用默认 `goal_plus_status` 读取当前 revision、显式配置、待处理 dispatch、
+   final-check policy、`control`、`reconciliation` 和 `next_action`。初始化、会话恢复或 revision
+   变化时用 `view="context"` 读取完整 `raw_goal`、policy 和 spec draft；需要历史证据时通过
+   `goal_plus_history` 分页读取。显式配置优先，
    只有缺省项才由 Main 决定。先处理最新用户消息，再继续 active 任务；范围、交付物或成功标准
    变化时请其改用 `$goal-plus edit`。每轮重读状态，非 Search 工作后仍推进 reconciliation。
 2. 尚未分类时调用 `goal_plus_record_triage`。普通交付进入 Goal Mode；需要补齐可执行评价合同的优化进入

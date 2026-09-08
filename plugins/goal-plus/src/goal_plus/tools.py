@@ -24,6 +24,11 @@ from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.application.candidate_creation import format_task_skill_listing
 from goal_plus.workspaces import format_workspace_capacity_notice
+from goal_plus.projections.goal_tools import (
+    goal_receipt, goal_status, reconciliation_summary, work_item_summary,
+    GOAL_HISTORY_DEFAULT_LIMIT, GOAL_HISTORY_MAX_LIMIT,
+)
+from goal_plus.projections.monitor_tools import monitor_tool_summary
 
 
 ToolCallerRole = Literal["main", "candidate", "final_checker", "ordinary"]
@@ -551,14 +556,18 @@ class SearchTools:
         run_id: str | None = None,
         stale_after_seconds: int = 600,
         feature_plugins: list[str] | None = None,
+        view: Literal["summary", "full"] = "summary",
     ) -> dict[str, Any]:
-        return goal_plus_monitor_snapshot(
+        if view not in {"summary", "full"}:
+            raise ValueError("view must be summary or full")
+        snapshot = goal_plus_monitor_snapshot(
             root_dir=self.runtime.root_dir,
             goal_plus_id=goal_plus_id,
             run_id=run_id,
             stale_after_seconds=stale_after_seconds,
             feature_plugins=feature_plugins,
         )
+        return snapshot if view == "full" else monitor_tool_summary(snapshot)
 
 
 class GoalPlusTools:
@@ -582,16 +591,36 @@ class GoalPlusTools:
         del raw_goal, source_path, policy
         raise RuntimeError(GOAL_PLUS_ENTRYPOINT_REQUIRED)
 
-    def goal_plus_status(self, goal_plus_id: str) -> dict[str, Any]:
+    def goal_plus_status(
+        self, goal_plus_id: str, view: Literal["summary", "context"] = "summary",
+    ) -> dict[str, Any]:
+        if view not in {"summary", "context"}:
+            raise ValueError("view must be summary or context")
         record = self.runtime.status(goal_plus_id)
-        payload = record.model_dump(mode="json")
-        payload["search_tasks_total"] = len(record.search_tasks)
-        payload["current_search_run_id"] = (
-            record.linked_search.run_id if record.linked_search is not None else None
-        )
-        payload["evidence_log"] = self.runtime.list_events(goal_plus_id)
-        payload["reconciliation"] = self.runtime.reconciliation(goal_plus_id)
+        payload = goal_status(record, context=view == "context")
+        payload["reconciliation"] = reconciliation_summary(self.runtime.reconciliation(goal_plus_id))
         return payload
+
+    def goal_plus_history(
+        self, goal_plus_id: str,
+        collection: Literal["goal_revisions", "work_items", "search_tasks", "final_checks", "events"],
+        offset: int = 0, limit: int = GOAL_HISTORY_DEFAULT_LIMIT,
+    ) -> dict[str, Any]:
+        # Explicit detail reads are paged; operational polling never reads this payload.
+        if offset < 0 or not 1 <= limit <= GOAL_HISTORY_MAX_LIMIT:
+            raise ValueError("offset must be >= 0 and limit must be between 1 and 100")
+        if collection not in {"goal_revisions", "work_items", "search_tasks", "final_checks", "events"}:
+            raise ValueError("unknown Goal history collection")
+        record = self.runtime.status(goal_plus_id)
+        items = (self.runtime.list_events(goal_plus_id) if collection == "events"
+                 else getattr(record, collection))
+        page = items[offset:offset + limit]
+        return {
+            "goal_plus_id": goal_plus_id, "goal_revision": record.goal_revision,
+            "collection": collection, "offset": offset, "total": len(items),
+            "next_offset": offset + len(page) if offset + len(page) < len(items) else None,
+            "items": [item if isinstance(item, dict) else item.model_dump(mode="json") for item in page],
+        }
 
     def goal_plus_update_goal(
         self,
@@ -609,12 +638,13 @@ class GoalPlusTools:
         triage: GoalPlusTriage | dict[str, Any],
     ) -> dict[str, Any]:
         self._require_target("goal_plus_record_triage", goal_plus_id)
-        return self.runtime.record_triage(
+        record = self.runtime.record_triage(
             goal_plus_id,
             triage
             if isinstance(triage, GoalPlusTriage)
             else GoalPlusTriage.model_validate(triage),
-        ).model_dump(mode="json")
+        )
+        return goal_receipt(record)
 
     def goal_plus_record_work_event(
         self,
@@ -633,7 +663,7 @@ class GoalPlusTools:
         launch_ttl_seconds: int = 120,
     ) -> dict[str, Any]:
         self._require_target("goal_plus_record_work_event", goal_plus_id)
-        return self.runtime.record_work_event(
+        record = self.runtime.record_work_event(
             goal_plus_id,
             work_item_id,
             event,
@@ -647,7 +677,9 @@ class GoalPlusTools:
             attempt_id=attempt_id,
             generation=generation,
             launch_ttl_seconds=launch_ttl_seconds,
-        ).model_dump(mode="json")
+        )
+        item = next(item for item in record.work_items if item.work_item_id == work_item_id)
+        return {**goal_receipt(record), "work_item": work_item_summary(item)}
 
     def goal_plus_save_spec_draft(
         self,
@@ -660,10 +692,11 @@ class GoalPlusTools:
             if isinstance(spec_draft, GoalPlusSpecDraft)
             else GoalPlusSpecDraftInput.model_validate(spec_draft)
         )
-        return self.runtime.save_spec_draft(
+        record = self.runtime.save_spec_draft(
             goal_plus_id,
             parsed_draft,
-        ).model_dump(mode="json")
+        )
+        return {**goal_receipt(record), "spec_draft_saved": True}
 
     def goal_plus_link_search_run(
         self,
@@ -672,11 +705,13 @@ class GoalPlusTools:
         run_id: str,
     ) -> dict[str, Any]:
         self._require_target("goal_plus_link_search_run", goal_plus_id)
-        return self.runtime.link_search_run(
+        record = self.runtime.link_search_run(
             goal_plus_id,
             frozen_spec_id,
             run_id,
-        ).model_dump(mode="json")
+        )
+        task = next(task for task in record.search_tasks if task.run_id == run_id)
+        return {**goal_receipt(record), "search_task": task.model_dump(mode="json", exclude_none=True)}
 
     def goal_plus_record_search_result(
         self,
@@ -688,14 +723,16 @@ class GoalPlusTools:
         summary: str | None = None,
     ) -> dict[str, Any]:
         self._require_target("goal_plus_record_search_result", goal_plus_id)
-        return self.runtime.record_search_result(
+        record = self.runtime.record_search_result(
             goal_plus_id,
             run_id=run_id,
             selected_candidate_id=selected_candidate_id,
             report_path=report_path,
             promotion_artifact_path=promotion_artifact_path,
             summary=summary,
-        ).model_dump(mode="json")
+        )
+        task = next(task for task in record.search_tasks if task.run_id == run_id)
+        return {**goal_receipt(record), "search_task": task.model_dump(mode="json", exclude_none=True)}
 
     def goal_plus_prepare_final_check(
         self,
@@ -720,7 +757,7 @@ class GoalPlusTools:
         checker_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._require_target("goal_plus_submit_final_check", goal_plus_id)
-        return self.runtime.submit_final_check(
+        record = self.runtime.submit_final_check(
             goal_plus_id,
             check_id=check_id,
             goal_revision=goal_revision,
@@ -729,7 +766,11 @@ class GoalPlusTools:
             findings=findings,
             evidence=evidence,
             checker_metadata=checker_metadata,
-        ).model_dump(mode="json")
+        )
+        check = next(check for check in record.final_checks if check.check_id == check_id)
+        return {**goal_receipt(record), "final_check": check.model_dump(mode="json", include={
+            "check_id", "goal_revision", "status", "summary",
+        })}
 
     def goal_plus_set_status(
         self,
@@ -745,13 +786,14 @@ class GoalPlusTools:
             if next_action is not None
             else None
         )
-        return self.runtime.set_status(
+        record = self.runtime.set_status(
             goal_plus_id,
             status=status,  # type: ignore[arg-type]
             reason=reason,
             evidence=evidence,
             next_action=parsed_next_action,
-        ).model_dump(mode="json")
+        )
+        return goal_receipt(record)
 
     def goal_plus_gate(
         self,

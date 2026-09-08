@@ -179,6 +179,13 @@ def project_strategy(
         "orchestration_mode": strategy.orchestration_mode,
         "native_host": frozen.native_host,
         "worker_host": frozen.worker_host,
+        "max_parallel": frozen.spec.budget.max_parallel,
+        "workspace_backend": frozen.spec.workspace.backend,
+        "promotion_mode": frozen.spec.workspace.promotion_mode,
+        "worker_budget": strategy.worker_budget.model_dump(mode="json") if strategy.worker_budget else None,
+        "worker_launch": strategy.worker_launch.model_dump(mode="json", exclude_none=True)
+        if strategy.worker_launch else None,
+        "models": [model.model_dump(mode="json", exclude_none=True) for model in strategy.models],
         "inner_agent": strategy.inner_agent
         or ("common" if frozen.worker_host == "thinkthread" else "autoresearch"),
         "legacy_worker_agent_type": strategy.worker_agent_type,

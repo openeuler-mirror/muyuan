@@ -76,6 +76,14 @@ def test_codex_mcp_and_hook_assets_register_runtime_entrypoints() -> None:
         assert handler["command"] == 'bash "${PLUGIN_ROOT}/scripts/run-runtime.sh" --goal-plus-host-hook'
         assert handler["timeout"] == (3 if event == "Interrupt" else 30)
 
+
+def test_codex_main_and_candidate_mcp_inherit_debug_switch() -> None:
+    plugin = json.loads((ROOT / ".mcp.json").read_text())
+    assert "GOAL_PLUS_DEBUG" in plugin["mcpServers"]["goal-plus"]["env_vars"]
+    for path in (".codex/config.example.toml", ".codex/agents/search_candidate_common_agent.toml"):
+        config = tomllib.loads((ROOT / path).read_text())
+        assert "GOAL_PLUS_DEBUG" in config["mcp_servers"]["goal-plus"]["env_vars"]
+
 def test_codex_plugin_default_prompts_use_goal_plus_skill() -> None:
     manifest = json.loads(
         (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")

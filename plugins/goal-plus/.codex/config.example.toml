@@ -3,6 +3,7 @@ command = "bash"
 args = ["/absolute/managed/package/scripts/run-runtime.sh", "--root", ".gp"]
 env_vars = [
   "CODEX_HOME",
+  "GOAL_PLUS_DEBUG",
   "PI_CODING_AGENT_DIR",
   "GOAL_PLUS_OUTER_DEADLINE_AT",
   "GOAL_PLUS_DEVICE_POOLS",

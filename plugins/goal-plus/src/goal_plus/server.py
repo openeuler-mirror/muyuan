@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from functools import wraps
 from pathlib import Path
 from typing import Annotated, Any, Literal, TYPE_CHECKING
 
@@ -24,6 +25,8 @@ from goal_plus.domain.shared_tools import ToolizationDecision
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import GoalPlusTools, SearchTools
+from goal_plus.infrastructure.api_debug import api_debug_enabled, log_api_response_size
+from goal_plus.projections.goal_tools import GOAL_HISTORY_DEFAULT_LIMIT, GOAL_HISTORY_MAX_LIMIT
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -34,6 +37,28 @@ def _json_text(value: Any) -> TextContent:
         type="text",
         text=json.dumps(value, ensure_ascii=False, separators=(",", ":")),
     )
+
+
+def _debug_tool_response(function):
+    @wraps(function)
+    def measured(*args, **kwargs):
+        result = function(*args, **kwargs)
+        if api_debug_enabled():
+            try:
+                text = result.text if isinstance(result, TextContent) else result
+                log_api_response_size(
+                    function.__name__,
+                    text if isinstance(text, str) else json.dumps(
+                        text, ensure_ascii=False, separators=(",", ":")
+                    ),
+                    transport="mcp",
+                    format="text" if isinstance(text, str) else "json",
+                )
+            except (TypeError, ValueError):
+                pass
+        return result
+
+    return measured
 
 
 def create_mcp(
@@ -48,6 +73,7 @@ def create_mcp(
     mcp = FastMCP("goal-plus", version=__version__)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_freeze_spec(
         goal_plus_id: str,
         spec: SearchSpec,
@@ -83,6 +109,7 @@ def create_mcp(
         return tools.search_freeze_spec(goal_plus_id, spec, verifier_artifact_paths)
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_list_models(
         host: AgentHostKind,
         query: str | None = None,
@@ -96,6 +123,7 @@ def create_mcp(
         return tools.goal_plus_list_models(host, query)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_create(
         goal_plus_id: str,
         frozen_spec_id: str,
@@ -115,16 +143,19 @@ def create_mcp(
         return tools.search_create(goal_plus_id, frozen_spec_id, source_run_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_status(run_id: str) -> dict[str, Any]:
         """返回 run 状态、预算使用和最佳分数的只读 snapshot。"""
         return tools.search_status(run_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_recovery_status(run_id: str) -> dict[str, Any]:
         """读取各 candidate 的完整结算恢复点、generation 和 host session，不启动或回滚任何工作。"""
         return tools.search_recovery_status(run_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_prepare_recovery(run_id: str, candidate_id: str) -> dict[str, Any]:
         """固定中断 candidate 的结算恢复点并隔离旧 generation，返回 recovery_id。
 
@@ -133,6 +164,7 @@ def create_mcp(
         return tools.search_prepare_recovery(run_id, candidate_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_recover_candidate(run_id: str, candidate_id: str, recovery_id: str) -> dict[str, Any]:
         """恢复已结算 artifact，保留 Evidence 与中断现场备份；用同一 recovery_id 重试。
 
@@ -141,6 +173,7 @@ def create_mcp(
         return tools.search_recover_candidate(run_id, candidate_id, recovery_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_invalidate_run(
         run_id: str,
         reason: Literal[
@@ -162,25 +195,30 @@ def create_mcp(
         return tools.search_invalidate_run(run_id, reason, summary, evidence)
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_monitor_snapshot(
         goal_plus_id: str | None = None,
         run_id: str | None = None,
         stale_after_seconds: int = 600,
         feature_plugins: list[str] | None = None,
+        view: Literal["summary", "full"] = "summary",
     ) -> dict[str, Any]:
         """返回供轮询 agent 使用的只读 Goal Plus/Search 监控 snapshot。
 
         从持久化 `.gp` 状态返回 run、candidate、agent-session、verifier、host-log 和 Pi
-        usage 证据。它不会启动、等待或中断 worker。
+        usage 证据。默认只返回当前进度、错误和恢复待办；详细统计、历史与宿主诊断
+        使用 view="full"。它不会启动、等待或中断 worker。
         """
         return tools.goal_plus_monitor_snapshot(
             goal_plus_id=goal_plus_id,
             run_id=run_id,
             stale_after_seconds=stale_after_seconds,
             feature_plugins=feature_plugins,
+            view=view,
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def search_list_history(
         run_id: str,
         top_n: int = 5,
@@ -190,6 +228,7 @@ def create_mcp(
         return tools.search_list_history(run_id, top_n, sort_by)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_plan_next(
         run_id: str,
         requested_k: Annotated[
@@ -212,6 +251,7 @@ def create_mcp(
         return tools.search_plan_next(run_id, requested_k)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_start_batch(
         run_id: str,
         plan_id: str,
@@ -225,6 +265,7 @@ def create_mcp(
         return tools.search_start_batch(run_id, plan_id, proposals)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_start_agent_session(
         run_id: str,
         candidate_id: str,
@@ -242,6 +283,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def search_redispatch_candidate(
         run_id: str,
         candidate_id: str,
@@ -260,6 +302,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def search_bind_agent_handle(
         agent_session_id: str,
         handle: dict[str, Any],
@@ -268,6 +311,7 @@ def create_mcp(
         return tools.search_bind_agent_handle(agent_session_id, handle)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_get_agent_observability(
         agent_session_id: str,
     ) -> dict[str, Any]:
@@ -280,6 +324,7 @@ def create_mcp(
         return tools.search_get_agent_observability(agent_session_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_continue_agent_session(
         agent_session_id: str,
         worker_budget: dict[str, Any] | None = None,
@@ -295,6 +340,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def search_get_agent_context(agent_session_id: str) -> TextContent:
         """Subagent 的首次调用，返回紧凑的权威工作合同。
 
@@ -306,6 +352,7 @@ def create_mcp(
         return _json_text(tools.search_get_agent_context(agent_session_id))
 
     @mcp.tool()
+    @_debug_tool_response
     def search_get_global_evidence(
         agent_session_id: str,
     ) -> TextContent:
@@ -319,6 +366,7 @@ def create_mcp(
         return _json_text(tools.search_get_global_evidence(agent_session_id))
 
     @mcp.tool()
+    @_debug_tool_response
     def search_reference_open(
         agent_session_id: str,
         source_candidate_id: str,
@@ -337,6 +385,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def search_copy_shared_tool(
         agent_session_id: str,
         tool_id: str,
@@ -349,6 +398,7 @@ def create_mcp(
         return tools.search_copy_shared_tool(agent_session_id, tool_id, snapshot_hash)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_stage_shared_tool(
         agent_session_id: str,
         name: str,
@@ -380,6 +430,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def search_get_evidence_detail(
         agent_session_id: str,
         candidate_id: str,
@@ -400,6 +451,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def search_run_verifier(
         run_id: str,
         candidate_id: str,
@@ -432,6 +484,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def search_list_iterations(
         agent_session_id: str,
     ) -> TextContent:
@@ -443,6 +496,7 @@ def create_mcp(
         return _json_text(tools.search_list_iterations(agent_session_id))
 
     @mcp.tool()
+    @_debug_tool_response
     def search_list_allocation_decisions(
         run_id: str,
         status: Literal["pending", "applied"] | None = None,
@@ -454,6 +508,7 @@ def create_mcp(
         return tools.search_list_allocation_decisions(run_id, status)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_apply_allocation_decision(
         run_id: str,
         decision_id: str,
@@ -468,26 +523,31 @@ def create_mcp(
         return tools.search_apply_allocation_decision(run_id, decision_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_select(run_id: str) -> dict[str, Any]:
         """按分数选择最佳已评估候选。在验证候选后调用。"""
         return tools.search_select(run_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_report(run_id: str) -> dict[str, str]:
         """生成最终 Markdown/HTML 报告；已链接的 Goal Plus 必须处于终态。"""
         return tools.search_report(run_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_promote(run_id: str, candidate_id: str) -> dict[str, Any]:
         """准备 provider-native publication，不改变主源码工作区。"""
         return tools.search_promote(run_id, candidate_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def search_apply_promotion(run_id: str) -> dict[str, Any]:
         """按 frozen promotion mode 将 publication 写回 Git repo 或 ThinkThread Root。"""
         return tools.search_apply_promotion(run_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_create(
         raw_goal: str,
         source_path: str | None = None,
@@ -500,11 +560,35 @@ def create_mcp(
         return goal_tools.goal_plus_create(raw_goal, source_path, policy)
 
     @mcp.tool()
-    def goal_plus_status(goal_plus_id: str) -> dict[str, Any]:
-        """读取 goal-plus phase、status、已链接 Search 状态和证据日志。"""
-        return goal_tools.goal_plus_status(goal_plus_id)
+    @_debug_tool_response
+    def goal_plus_status(
+        goal_plus_id: str, view: Literal["summary", "context"] = "summary",
+    ) -> dict[str, Any]:
+        """读取当前 revision、control、phase、显式配置、待办和 next_action。
+
+        默认不返回完整目标、草案、历史或审计日志。初始化、恢复会话或 revision 变化时
+        使用 view="context" 读取完整 raw_goal、policy、triage 和 spec_draft。
+        历史详情用 goal_plus_history；恢复详情用 search_recovery_status。
+        """
+        return goal_tools.goal_plus_status(goal_plus_id, view=view)
 
     @mcp.tool()
+    @_debug_tool_response
+    def goal_plus_history(
+        goal_plus_id: str,
+        collection: Literal["goal_revisions", "work_items", "search_tasks", "final_checks", "events"],
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=GOAL_HISTORY_MAX_LIMIT)] = GOAL_HISTORY_DEFAULT_LIMIT,
+    ) -> dict[str, Any]:
+        """按持久顺序分页读取 Goal 历史详情；next_offset 为 null 表示当前已读完。
+
+        collection 指定 revision、dispatch（含完整证据）、Search 结果、final check
+        或审计事件。每页默认 20 条、最多 100 条；不用于每轮状态轮询。
+        """
+        return goal_tools.goal_plus_history(goal_plus_id, collection, offset, limit)
+
+    @mcp.tool()
+    @_debug_tool_response
     def goal_plus_update_goal(
         goal_plus_id: str,
         raw_goal: str,
@@ -523,6 +607,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_record_triage(
         goal_plus_id: str,
         triage: GoalPlusTriage,
@@ -531,6 +616,7 @@ def create_mcp(
         return goal_tools.goal_plus_record_triage(goal_plus_id, triage)
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_record_work_event(
         goal_plus_id: str,
         work_item_id: str,
@@ -568,6 +654,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_save_spec_draft(
         goal_plus_id: str,
         spec_draft: GoalPlusSpecDraftInput,
@@ -576,6 +663,7 @@ def create_mcp(
         return goal_tools.goal_plus_save_spec_draft(goal_plus_id, spec_draft)
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_link_search_run(
         goal_plus_id: str,
         frozen_spec_id: str,
@@ -585,6 +673,7 @@ def create_mcp(
         return goal_tools.goal_plus_link_search_run(goal_plus_id, frozen_spec_id, run_id)
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_record_search_result(
         goal_plus_id: str,
         run_id: str,
@@ -604,6 +693,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_prepare_final_check(
         goal_plus_id: str,
         checker_host: Literal["codex", "pi"],
@@ -612,6 +702,7 @@ def create_mcp(
         return goal_tools.goal_plus_prepare_final_check(goal_plus_id, checker_host)
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_submit_final_check(
         goal_plus_id: str,
         check_id: str,
@@ -635,6 +726,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_set_status(
         goal_plus_id: str,
         status: str,
@@ -652,6 +744,7 @@ def create_mcp(
         )
 
     @mcp.tool()
+    @_debug_tool_response
     def goal_plus_gate(
         goal_plus_id: str,
         event: str,

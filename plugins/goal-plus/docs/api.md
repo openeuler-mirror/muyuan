@@ -31,7 +31,8 @@ host 负责，详见
 | 工具                             | 用途                                                                         |
 | -------------------------------- | ---------------------------------------------------------------------------- |
 | `goal_plus_create`               | deny-only 兼容 tombstone；始终报错，不创建记录                               |
-| `goal_plus_status`               | 读取 goal phase、revision、关联 task 和 Evidence                             |
+| `goal_plus_status`               | 默认读取当前状态和待办；`view="context"` 按需读取完整目标与草案               |
+| `goal_plus_history`              | 分页读取 revision、dispatch、Search 结果、final check 或审计事件             |
 | `goal_plus_update_goal`          | deny-only 兼容 tombstone；始终报错，不修改记录                               |
 | `goal_plus_record_triage`        | 选择普通 goal 工作或 verifier/spec discovery                                 |
 | `goal_plus_record_work_event`    | 按实际派发懒创建 subagent 记录，并管理 generation、结果和 Main 决策          |
@@ -52,6 +53,37 @@ native entry、输入 hash、时间和 invocation id；重复 invocation id 幂�
 session。普通消息不会撤销精确 host command 已建立、仍处于 active 的同一原生 session 绑定；
 SessionStart 是否仍属同一原生 session 由 host adapter 根据可信 lifecycle identity 判定，不能仅凭
 持久化 active ID 自动授权新 session。
+
+### 返回视图
+
+`goal_plus_status` 默认返回 `goal_plus_id`、`goal_revision`、`status`、`control`、`phase`、
+`next_action`、source/deadline、显式 `command_config`、精简 session identity、当前
+`current_search`、待处理 `work_items`、历史数量、当前 revision 的 final-check 摘要和恢复待办。
+`command_config` 只表示用户显式约束，不把草案或宿主默认值伪装成已生效配置。
+Search 运行状态和分数使用 `search_status`；冻结后的 worker budget、host/model 配置、并发数、
+workspace backend 和 promotion mode 可在 Monitor 的 `strategy` 中读取。
+
+初始化、恢复会话或 revision 变化时调用 `goal_plus_status(view="context")`，额外读取完整
+`raw_goal`、`policy`、`triage` 和 `spec_draft`。两个视图都不回放 revision/事件历史。
+恢复待办保留 run/candidate/generation/recovery identity、`next_step` 和诊断错误；checkpoint
+和历史 session 通过 `search_recovery_status` 按需读取。未完成或待审查工作不因数量限制被隐藏。
+
+`goal_plus_history` 的 `collection` 支持 `goal_revisions`、`work_items`、`search_tasks`、
+`final_checks`、`events`，按持久顺序返回完整条目。每页默认 20 条、最多 100 条，返回
+`total` 与 `next_offset`；`next_offset=null` 表示当前读完。它不是跨状态变更的快照游标。
+条目正文不截断，读取成本仍取决于现有持久文件大小。
+
+Goal 变更工具返回核心状态回执，不再序列化整个 Goal：work event 附带单个 `work_item`
+（含 attempt/generation、host handle identity 与结果摘要），link/result 附带本次 `search_task`，
+save draft 返回 `spec_draft_saved=true`，submit final check 附带本次 `final_check` 摘要。
+完整证据仍保存在持久状态，通过 history 读取。恢复消费者应使用当前状态/context，不能把变更
+回执当作完整 Goal record。
+
+`goal_plus_monitor_snapshot` 默认返回紧凑的进度、配置、审查队列状态、恢复动作、scope 和错误。
+详细统计、历史、原生 session 观测使用 `view="full"`；直接 Python Monitor/dashboard 接口仍保留
+完整 snapshot。Pi pool 的 open/wait/close 默认只返回结果摘要，不重复 launch prompt、绑定 session
+和 steps；snapshot 保留每个 candidate 最新 job 及全部活跃/未交付 job，完整诊断使用
+`pi_search_pool_snapshot(view="full")`。这些视图不改变事件交付、lease 或 lifecycle 语义。
 
 ### Host Command Config
 

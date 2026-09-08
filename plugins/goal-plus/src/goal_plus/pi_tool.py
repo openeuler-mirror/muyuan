@@ -7,7 +7,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT
@@ -20,6 +20,8 @@ from goal_plus.pi_pool import (
 )
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.infrastructure.state.files import exclusive_file_lock
+from goal_plus.infrastructure.api_debug import log_api_response_size
+from goal_plus.projections.pool_tools import pool_tool_summary
 from goal_plus.thinkthread_pool import (
     close_pool as close_thinkthread_search_pool,
 )
@@ -74,6 +76,7 @@ SEARCH_TOOL_NAMES = {
 GOAL_PLUS_TOOL_NAMES = {
     "goal_plus_create",
     "goal_plus_status",
+    "goal_plus_history",
     "goal_plus_update_goal",
     "goal_plus_record_triage",
     "goal_plus_record_work_event",
@@ -109,7 +112,7 @@ def _pi_search_pool_open_tool(root_dir: Path | str) -> Callable[..., dict[str, A
             if execution_scope_id is not None
             else {}
         )
-        return open_pi_search_pool(
+        return pool_tool_summary(open_pi_search_pool(
             root_dir=root_dir,
             run_id=run_id,
             candidate_ids=candidate_ids,
@@ -117,18 +120,18 @@ def _pi_search_pool_open_tool(root_dir: Path | str) -> Callable[..., dict[str, A
             final_verify=final_verify,
             max_parallel=max_parallel,
             **scope_args,
-        )
+        ))
 
     return call
 
 
 def _pi_search_pool_wait_any_tool(root_dir: Path | str) -> Callable[..., dict[str, Any]]:
     def call(pool_id: str, timeout_seconds: float = 30) -> dict[str, Any]:
-        return wait_any_pi_search_pool(
+        return pool_tool_summary(wait_any_pi_search_pool(
             root_dir=root_dir,
             pool_id=pool_id,
             timeout_seconds=timeout_seconds,
-        )
+        ))
 
     return call
 
@@ -137,12 +140,16 @@ def _pi_search_pool_snapshot_tool(root_dir: Path | str) -> Callable[..., dict[st
     def call(
         pool_id: str | None = None,
         run_id: str | None = None,
+        view: Literal["summary", "full"] = "summary",
     ) -> dict[str, Any]:
-        return snapshot_pi_search_pool(
+        if view not in {"summary", "full"}:
+            raise ValueError("view must be summary or full")
+        snapshot = snapshot_pi_search_pool(
             root_dir=root_dir,
             pool_id=pool_id,
             run_id=run_id,
         )
+        return snapshot if view == "full" else pool_tool_summary(snapshot)
 
     return call
 
@@ -171,12 +178,12 @@ def _pi_search_pool_close_tool(root_dir: Path | str) -> Callable[..., dict[str, 
         mode: str = "drain",
         timeout_seconds: float = 30,
     ) -> dict[str, Any]:
-        return close_pi_search_pool(
+        return pool_tool_summary(close_pi_search_pool(
             root_dir=root_dir,
             pool_id=pool_id,
             mode=mode,  # type: ignore[arg-type]
             timeout_seconds=timeout_seconds,
-        )
+        ))
 
     return call
 
@@ -675,13 +682,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    print(
-        json.dumps(
-            result,
-            ensure_ascii=False,
-            indent=2 if parsed.pretty else None,
-        )
+    payload = json.dumps(
+        result,
+        ensure_ascii=False,
+        indent=2 if parsed.pretty else None,
     )
+    log_api_response_size(parsed.tool, payload, transport="pi-cli", format="json")
+    print(payload)
     return 0
 
 

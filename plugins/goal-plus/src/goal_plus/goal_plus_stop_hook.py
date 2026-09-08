@@ -1582,6 +1582,7 @@ def _handle_role_pre_tool_use(
 
 GOAL_PLUS_READ_ONLY_TOOLS = {
     "goal_plus_status",
+    "goal_plus_history",
     "goal_plus_monitor_snapshot",
     "goal_plus_list_models",
     "search_status",

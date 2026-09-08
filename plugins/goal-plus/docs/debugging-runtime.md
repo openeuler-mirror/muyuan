@@ -16,6 +16,43 @@ active count、close reason 和 cleanup errors。仅当该投影不足时查看
 `.gp/host-scopes/<scope_id>/scope.json`。Scope 是 host-local 活计算证据，不是 Search run 状态；
 不要通过手改 scope 文件尝试 resume。
 
+## API 返回大小 Debug
+
+在启动宿主前设置 `GOAL_PLUS_DEBUG=1`，逐次输出接口返回大小：
+
+```bash
+GOAL_PLUS_DEBUG=1 codex
+GOAL_PLUS_DEBUG=1 pi 2>goal-plus-api-debug.log
+GOAL_PLUS_DEBUG=1 goal-plus-pi-tool goal_plus_status \
+  --root .gp --args-json '{"goal_plus_id":"gp_..."}'
+```
+
+Codex 的 MCP server 进程也需要继承该环境变量；已启动的 server 需重启。统计写到各自
+进程的 stderr，MCP stderr 是否直接显示由 Codex 决定。Pi 扩展在最终工具返回处直接写入
+宿主 stderr；Python CLI 的 stderr 被 Pi 捕获时仍可通过 `pi-tool` 记录查看最终响应。
+Pi RPC worker 的统计保存在 `.gp/host-logs/pi-rpc-<agent_session_id>.jsonl` 的
+`stderr` 事件中，JSON 统计行位于该事件的 `error` 字段。
+不要把本地 debug 日志提交到仓库。
+
+示例统计行（字节数仅作示意）：
+
+```json
+{"event":"goal_plus_api_response_size","transport":"mcp","tool":"goal_plus_record_search_result","format":"json","bytes":14320}
+```
+
+- `mcp`：全部公开工具的返回值。JSON 按紧凑 UTF-8 序列化计数；字符串和
+  `TextContent` 按原文本计数，不包含 MCP envelope 或额外的 structured-content 副本。
+- `pi-cli`：全部 CLI 工具与 host-command 成功返回的实际 JSON 字节数，包含 `--pretty`
+  格式化，不包含 stdout 的最后一个换行。
+- `pi-tool`：Pi 注册的 Goal Plus 工具最终结果按 JSON 序列化的字节数，覆盖 Pi 专有工具
+  和 ThinkThread 工具。另列 `text_bytes`（所有 text content 的 UTF-8 字节数）及
+  `details_bytes`（details 的 JSON 字节数）。这两项与整体 `bytes` 不是可相加的独立开销。
+
+这些是不同返回边界的大小，不是 token 数或模型计费，也不能跨 `transport` 累加为模型
+输入量。统计只含工具名、格式与大小，不打印参数或返回正文，不修改 API payload 或领域
+状态。默认关闭；开启时额外序列化可能增加少量开销。抛出的异常没有返回值，因此不计数；
+以正常结果返回的错误对象仍计数。
+
 ## Monitor Snapshot
 
 `goal_plus_monitor_snapshot` 是首选的只读入口。它不会启动、等待、继续或停止 worker。MCP 不便直接调用时，可以使用 Pi facade：
@@ -23,9 +60,14 @@ active count、close reason 和 cleanup errors。仅当该投影不足时查看
 ```bash
 goal-plus-pi-tool goal_plus_monitor_snapshot \
   --root .gp \
-  --args-json '{"goal_plus_id":"gp_...","stale_after_seconds":600}' \
+  --args-json '{"goal_plus_id":"gp_...","stale_after_seconds":600,"view":"full"}' \
   --pretty
 ```
+
+模型轮询默认使用紧凑视图；本节以下列出的详细统计、session 和历史字段需要 `view="full"`。
+Goal 的完整目标/草案用 `goal_plus_status(view="context")`，事件和历史记录用
+`goal_plus_history` 分页读取，完整 Pi pool 诊断用 `pi_search_pool_snapshot(view="full")`。
+裁剪只改变工具返回；持久审计文件、Monitor/dashboard 和报告数据保持完整。
 
 只知道 `run_id` 时也可以直接查询该 run。需要关闭可选投影时传入 `feature_plugins=[]`；默认的 `orchestration` plugin 会显示普通 subagent dispatch 的 assignment summary、不透明 worker handle、host 原生操作、attempt generation、`launching`/`bound` 状态、stale-result 数量，以及 assignment/result/decision 流程。它不包含 transcript 路径或内容。
 

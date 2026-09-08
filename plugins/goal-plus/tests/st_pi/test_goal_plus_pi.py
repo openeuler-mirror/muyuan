@@ -914,6 +914,8 @@ def test_circle_packing_git_common_agent_apply(
         check=False,
     )
 
+    (st_pi_run_root / "circle.stdout.log").write_text(result.stdout, encoding="utf-8")
+    (st_pi_run_root / "circle.stderr.log").write_text(result.stderr, encoding="utf-8")
     assert result.returncode == 0, result.stderr[-4000:] or result.stdout[-4000:]
     record = _goal_record(search_root)
     assert record["status"] == "complete"

@@ -16,6 +16,9 @@ from goal_plus.models import (
     GoalPlusGateResult,
     GoalPlusNextAction,
     GoalPlusRecord,
+    GoalPlusWorkItem,
+    GoalPlusLinkedSearch,
+    GoalPlusFinalCheck,
     MainAgentNotification,
     PromotionRecord,
     RunRecord,
@@ -765,17 +768,25 @@ def test_goal_plus_tools_delegate_runtime_calls_with_models() -> None:
     runtime.status.return_value = record
     runtime.update_goal.return_value = record.model_copy(update={"goal_revision": 2})
     runtime.list_events.return_value = [{"event_type": "created"}]
+    runtime.reconciliation.return_value = {"resume_eligible": True, "runs": []}
     runtime.record_triage.return_value = record
-    runtime.record_work_event.return_value = record
+    runtime.record_work_event.return_value = record.model_copy(update={"work_items": [
+        GoalPlusWorkItem(work_item_id="inspect", objective="inspect", goal_revision=1,
+                         status="launching", created_at=record.created_at, updated_at=record.updated_at),
+    ]})
     runtime.save_spec_draft.return_value = record
-    runtime.link_search_run.return_value = record
-    runtime.record_search_result.return_value = record
+    linked = record.model_copy(update={"search_tasks": [GoalPlusLinkedSearch(run_id="run_1")]})
+    runtime.link_search_run.return_value = linked
+    runtime.record_search_result.return_value = linked
     runtime.prepare_final_check.return_value = {
         "goal_plus_id": "gp_0001",
         "check": {"check_id": "fc_0001_r1_001"},
         "launch": {"tool": "spawn_agent"},
     }
-    runtime.submit_final_check.return_value = record.model_copy(update={"status": "complete"})
+    runtime.submit_final_check.return_value = record.model_copy(update={"status": "complete", "final_checks": [
+        GoalPlusFinalCheck(check_id="fc_0001_r1_001", goal_revision=1, checker_host="codex",
+                           requested_phase="final_check", requested_at=record.created_at),
+    ]})
     runtime.set_status.return_value = record.model_copy(update={"status": "complete"})
     runtime.gate.return_value = GoalPlusGateResult(
         decision="block",
@@ -793,7 +804,8 @@ def test_goal_plus_tools_delegate_runtime_calls_with_models() -> None:
             policy={"max_discovery_turns": 1},
         )
     status = tools.goal_plus_status("gp_0001")
-    assert status["evidence_log"][0]["event_type"] == "created"
+    assert "evidence_log" not in status
+    runtime.list_events.assert_not_called()
     assert status["search_tasks_total"] == 0
     assert status["current_search_run_id"] is None
     with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
