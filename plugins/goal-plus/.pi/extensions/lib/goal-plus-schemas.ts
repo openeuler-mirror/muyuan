@@ -894,7 +894,7 @@ export const RuntimeToolDescriptions: Record<string, string> = {
 	goal_plus_set_status:
 		"根据真实证据设置 Goal Plus 状态。当前优化/Search revision 必须先通过 goal_plus_record_search_result 记录已提升且已按需 apply 的结果，才能设置 complete；没有 verified candidate 且固定 deadline 已阻止继续工作时应记录 blocked，不得声称完成。",
 	search_freeze_spec:
-		"使用当前 session 的 goal_plus_id 冻结不可变的 SearchSpec、verifier bundle 和 source artifact。Git backend 先在 clean origin 运行 process verifier；第一次 search_start_batch 再在 c001 worktree 验证 relocation，通过后才创建其余 lane。bootstrap 结果不是 candidate iteration。并发 Search 下 verifier 临时文件必须放入唯一的 GOAL_PLUS_VERIFIER_TMPDIR/TMPDIR，绝不能使用固定 /tmp 路径。",
+		"使用当前 session 的 goal_plus_id 冻结不可变的 SearchSpec、verifier bundle 和 source artifact。本地 process verifier suite 必须实际输出有限数值分数；分数从 stdout 的单行 JSON 对象读取，例如 {\"score\":123.0}，字段与 spec.metric_name 对应。文本分数或写入文件的 JSON 不会被解析。Git backend 先在 clean origin 运行 process verifier；第一次 search_start_batch 再在 c001 worktree 验证 relocation，通过后才创建其余 lane。bootstrap 结果不是 candidate iteration。并发 Search 下 verifier 临时文件必须放入唯一的 GOAL_PLUS_VERIFIER_TMPDIR/TMPDIR，绝不能使用固定 /tmp 路径。",
 	search_create:
 		"使用与 freeze 相同的当前 goal_plus_id 从 frozen_spec_id 创建 Search run。初始 run 必须省略 source_run_id，或在 strict schema 下传 null；仅在已有真实前驱时传入准确的 run_* ID，绝不能传 initial 或 in_progress。",
 	search_get_agent_context:

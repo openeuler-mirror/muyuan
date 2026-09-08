@@ -506,6 +506,24 @@ class LocalVerifiers:
             copy_source_tree(source_workspace, workspace)
             initialize_workspace_git_baseline(workspace)
 
+            if not any(
+                command.role == VerifierRole.RANKING_SIGNAL
+                for command in spec.process_verifiers
+            ):
+                baseline = self.run_bootstrap_verifiers(
+                    spec=spec,
+                    workspace=workspace,
+                    backend=spec.workspace.backend,
+                    phase="origin",
+                    verifier_hashes={},
+                    log_dir=self.runs_dir.parent / "bootstrap" / f"origin-{uuid.uuid4().hex[:12]}",
+                    source_artifact_ref=None,
+                    device_inventory=device_inventory,
+                )
+                if not baseline.passed:
+                    raise ValueError("OriginVerifierFailed: process verifier preflight did not pass")
+                baseline.require_numeric_metric(spec.metric_name)
+
             for command in ranking_verifiers:
                 cwd = (workspace / command.cwd).resolve()
                 if not cwd.is_dir():

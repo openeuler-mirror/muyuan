@@ -147,6 +147,8 @@ class CandidateSettlement:
                 ),
                 None,
             )
+            if failure_class is None and report.aggregate_score is None:
+                failure_class = "MissingNumericMetric"
             hypothesis_text = iteration_hypothesis(
                 hypothesis,
                 record,
@@ -468,6 +470,7 @@ class CandidateSettlement:
             report = report.model_copy(
                 update={
                     "disposition": disposition,
+                    "failure_class": failure_class,
                     "attempt_id": exact_attempt_id,
                     "attempt_iteration": iteration_number,
                     "attempt_artifact_ref": iteration.artifact_ref,

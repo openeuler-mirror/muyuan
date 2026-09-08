@@ -360,8 +360,6 @@ def _search_trajectory_payload(task: dict[str, Any]) -> dict[str, Any] | None:
         )
         for iteration_index, iteration in enumerate(candidate.get("iterations") or []):
             score = finite_float(iteration.get("score"))
-            if score is None:
-                continue
             created_at = iteration.get("created_at")
             created_epoch = parse_epoch(created_at)
             session_id = iteration.get("agent_session_id")
@@ -373,6 +371,12 @@ def _search_trajectory_payload(task: dict[str, Any]) -> dict[str, Any] | None:
                     "iteration": iteration.get("iteration") or iteration_index + 1,
                     "score": score,
                     "process_passed": iteration.get("process_passed") is True,
+                    "eligible": (
+                        iteration.get("process_passed") is True
+                        and score is not None
+                        and iteration.get("disposition") != "failure"
+                    ),
+                    "failure_class": iteration.get("failure_class"),
                     "created_at": created_at,
                     "created_epoch": created_epoch,
                     "source": (
@@ -409,8 +413,8 @@ def _search_trajectory_payload(task: dict[str, Any]) -> dict[str, Any] | None:
         ]
         if not points:
             continue
-        passing_points = [point for point in points if point["process_passed"]]
-        failed_points = [point for point in points if not point["process_passed"]]
+        passing_points = [point for point in points if point["eligible"]]
+        failed_points = [point for point in points if not point["eligible"]]
         trajectories.append(
             {
                 "candidate_id": candidate_id,
@@ -432,6 +436,7 @@ def _search_trajectory_payload(task: dict[str, Any]) -> dict[str, Any] | None:
                         point["iteration"],
                         point["source"],
                         str(point.get("created_at") or "timestamp unavailable"),
+                        point.get("failure_class") or "unusable attempt",
                     ]
                     for point in failed_points
                 ],
@@ -442,9 +447,9 @@ def _search_trajectory_payload(task: dict[str, Any]) -> dict[str, Any] | None:
     global_scores: list[float] = [baseline] if baseline is not None else []
     current = baseline
     for evaluation in evaluations:
-        score = float(evaluation["score"])
-        if evaluation["process_passed"] and (
-            current is None or is_better_score(score, current, direction)
+        score = evaluation["score"]
+        if evaluation["eligible"] and (
+            current is None or is_better_score(float(score), current, direction)
         ):
             current = score
         if current is not None:
@@ -452,7 +457,7 @@ def _search_trajectory_payload(task: dict[str, Any]) -> dict[str, Any] | None:
             global_scores.append(float(current))
 
     selected_evaluations = [
-        item for item in evaluations if item["selected"] and item["process_passed"]
+        item for item in evaluations if item["selected"] and item["eligible"]
     ]
     selected_point = None
     if selected_evaluations:
@@ -479,11 +484,11 @@ def _search_trajectory_payload(task: dict[str, Any]) -> dict[str, Any] | None:
     passing_scores = [
         float(evaluation["score"])
         for evaluation in evaluations
-        if evaluation["process_passed"]
+        if evaluation["eligible"]
     ]
     if baseline is not None:
         passing_scores.append(float(baseline))
-    passing_count = sum(1 for evaluation in evaluations if evaluation["process_passed"])
+    passing_count = sum(1 for evaluation in evaluations if evaluation["eligible"])
     return {
         "metric_name": metric_name,
         "metric_direction": direction,

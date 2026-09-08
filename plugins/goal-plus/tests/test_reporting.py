@@ -597,7 +597,6 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     assert "data-search-trajectory=" in html
     assert "window.Plotly={newPlot" in html
     assert "payload.call_window" in html
-    assert "Failed verifier · not scored" in html
     assert "linear score axis" in html
     assert 'class="score-step"' not in html
     assert "&lt;script&gt;alert(&#x27;unsafe&#x27;)&lt;/script&gt;" in html
@@ -1123,6 +1122,30 @@ def test_ineligible_iterations_do_not_enter_report_best_score_paths() -> None:
         "calls": [0, 1, 2, 3],
         "scores": [100.0, 100.0, 90.0, 90.0],
     }
+
+
+def test_search_trajectory_preserves_unscored_attempts() -> None:
+    candidate = {
+        "candidate_id": "c001", "selected": True,
+        "iterations": [{"iteration": 1, "score": None, "process_passed": True,
+                        "disposition": "failure", "failure_class": "MissingNumericMetric"}],
+    }
+    task = {"candidates": [candidate]}
+    payload = _search_trajectory_payload(task)
+    assert payload is not None
+    assert payload["evaluations"] == 1
+    assert payload["passing_evaluations"] == 0
+    assert payload["failed_evaluations"] == 1
+    assert payload["trajectories"][0]["failed_calls"] == [1]
+    assert payload["trajectories"][0]["failed_scores"] == [None]
+    assert payload["trajectories"][0]["failed_details"][0][3] == "MissingNumericMetric"
+    assert payload["global_best"]["scores"] == []
+    assert payload["selected_point"] is None
+    candidate["iterations"].append({"iteration": 2, "score": 9.0, "process_passed": True, "disposition": "keep"})
+    payload = _search_trajectory_payload(task)
+    assert payload["evaluations"] == 2
+    assert payload["trajectories"][0]["calls"] == [2]
+    assert payload["global_best"] == {"calls": [2], "scores": [9.0]}
 
 
 def test_search_trajectory_payload_adapts_axes_and_excludes_failed_scores() -> None:

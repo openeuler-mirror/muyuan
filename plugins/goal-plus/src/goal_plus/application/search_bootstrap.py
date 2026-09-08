@@ -97,6 +97,7 @@ class SearchBootstrap:
                     "OriginVerifierFailed: process verifier suite did not pass "
                     f"in source_path '{source_root}'.{detail}"
                 )
+            origin_verification.require_numeric_metric(spec.metric_name)
             self.repository.validate_clean_source_repository(spec)
             source_artifact_after = self.repository.current_artifact(spec)
             if source_artifact_after != source_artifact_ref:

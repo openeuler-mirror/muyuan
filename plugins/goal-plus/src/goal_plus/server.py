@@ -67,7 +67,9 @@ def create_mcp(
         `verifier_artifact_paths` 必须使用相对 `source_path` 的路径，不能越界；
         候选执行期间修改它们会强制分数为 0.0。冻结会预检每个 `ranking_signal`：
         它必须以 0 退出，并输出一个最终 JSON 对象，其中包含有限数值类型的
-        `spec.metric_name`，例如 `{"score": 123.0}`。verifier 命令在一次性源码副本中
+        `spec.metric_name`，例如 `{"score": 123.0}`。本地 process suite 即使未声明
+        ranking_signal，也必须在冻结前实际产出有限数值分数。分数从 stdout 的单行
+        JSON 对象读取，不解析文本分数或输出文件。verifier 命令在一次性源码副本中
         运行，不能改变该工作区。编译器产物和临时输出应放入每次调用唯一的
         `GOAL_PLUS_VERIFIER_TMPDIR`、`TMPDIR`、`TMP` 或 `TEMP`；并发验证候选时固定
         `/tmp` 路径不安全。可选自定义 verifier 必须在 Spec Discovery 期间写入源码拥有

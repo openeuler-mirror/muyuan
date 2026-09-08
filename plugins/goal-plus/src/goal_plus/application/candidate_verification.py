@@ -3,7 +3,6 @@
 from typing import Any, Callable, Literal
 from goal_plus.domain.edit_surface import path_matches
 from goal_plus.application.candidate_execution import (
-    WORKER_ITERATION_RUN_STATES,
     require_run_not_invalidated,
     require_worker_iteration_state,
 )
@@ -39,7 +38,6 @@ from goal_plus.application.candidate_sessions import CandidateSessions
 from goal_plus.application.candidate_artifacts import CandidateArtifacts
 from goal_plus.application.candidate_ledger import CandidateLedger
 from goal_plus.application.shared_tools import SharedTools
-from goal_plus.application.annotation import AnnotationWorkflow
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.application.search_context import SearchContext
 from goal_plus.ports.candidate_settlement import CandidateSettlementState
@@ -59,7 +57,6 @@ class CandidateVerification:
         artifacts: CandidateArtifacts,
         candidate_ledger: CandidateLedger,
         shared_tools: SharedTools,
-        annotation: AnnotationWorkflow,
         settlement: CandidateSettlement,
         verifiers: CandidateVerifiers,
         persist_run: Callable[[RunRecord], None],
@@ -75,9 +72,8 @@ class CandidateVerification:
             artifacts,
             candidate_ledger,
         )
-        self.shared_tools, self.annotation, self.settlement = (
+        self.shared_tools, self.settlement = (
             shared_tools,
-            annotation,
             settlement,
         )
         self.verifiers, self.persist_run = verifiers, persist_run
@@ -197,123 +193,102 @@ class CandidateVerification:
         ):
             pre_attempt_settled_head = pre_attempt_artifact_ref.id
 
-        try:
+        state = self.artifacts.candidate_artifact_state(run, frozen, record)
+        self.artifacts.apply_candidate_artifact_state(record, state)
+        if scope == "process":
+            attempt_artifact_ref = (
+                self.artifacts.workspace.commit_workspace_iteration(
+                    record,
+                    (
+                        f"search verifier iteration "
+                        f"{candidate_id}:{len(record.iterations) + 1}"
+                    ),
+                )
+            )
+            if attempt_artifact_ref is None or pre_attempt_artifact_ref is None:
+                raise RuntimeError(
+                    "candidate verifier requires immutable attempt and settled artifacts"
+                )
+            if not self.artifacts.workspace.is_descendant(
+                record.task,
+                pre_attempt_artifact_ref,
+                attempt_artifact_ref,
+            ):
+                raise RuntimeError(
+                    "candidate artifact history diverged from the settled results ledger"
+                )
+            attempt_changed_files = self.artifacts.workspace.changed_between(
+                record.task,
+                pre_attempt_artifact_ref,
+                attempt_artifact_ref,
+            )
             state = self.artifacts.candidate_artifact_state(run, frozen, record)
             self.artifacts.apply_candidate_artifact_state(record, state)
-            if scope == "process":
-                attempt_artifact_ref = (
-                    self.artifacts.workspace.commit_workspace_iteration(
-                        record,
-                        (
-                            f"search verifier iteration "
-                            f"{candidate_id}:{len(record.iterations) + 1}"
-                        ),
-                    )
-                )
-                if attempt_artifact_ref is None or pre_attempt_artifact_ref is None:
-                    raise RuntimeError(
-                        "candidate verifier requires immutable attempt and settled artifacts"
-                    )
-                if not self.artifacts.workspace.is_descendant(
-                    record.task,
-                    pre_attempt_artifact_ref,
-                    attempt_artifact_ref,
-                ):
-                    raise RuntimeError(
-                        "candidate artifact history diverged from the settled results ledger"
-                    )
-                attempt_changed_files = self.artifacts.workspace.changed_between(
-                    record.task,
-                    pre_attempt_artifact_ref,
-                    attempt_artifact_ref,
-                )
-                state = self.artifacts.candidate_artifact_state(run, frozen, record)
-                self.artifacts.apply_candidate_artifact_state(record, state)
-                if (
-                    state.artifact_ref != attempt_artifact_ref
-                    or not state.artifact_clean
-                ):
-                    raise RuntimeError(
-                        "candidate attempt is not fully captured by its artifact"
-                    )
-
-            precheck = self._precheck_candidate(frozen, record)
-            if precheck is not None:
-                report = precheck
-            else:
-                commands = (
-                    frozen.spec.process_verifiers
-                    if scope == "process"
-                    else frozen.spec.promotion_verifiers
-                )
-                if not commands:
-                    commands = frozen.spec.process_verifiers
-                report = self.verifiers.run_commands(
-                    run, frozen, record, commands, scope
+            if (
+                state.artifact_ref != attempt_artifact_ref
+                or not state.artifact_clean
+            ):
+                raise RuntimeError(
+                    "candidate attempt is not fully captured by its artifact"
                 )
 
-            if scope == "process":
-                return self.settlement.record(
-                    run_id=run_id,
-                    candidate_id=candidate_id,
-                    frozen=frozen,
-                    report=report,
-                    attempt=state,
-                    pre_attempt_settled_head=pre_attempt_settled_head,
-                    pre_attempt_settled_artifact_ref=pre_attempt_artifact_ref,
-                    attempt_changed_files=attempt_changed_files,
-                    hypothesis=hypothesis,
-                    agent_session_id=agent_session_id,
-                    session=session,
-                    toolization_decision=normalized_toolization_decision,
-                )
+        precheck = self._precheck_candidate(frozen, record)
+        if precheck is not None:
+            report = precheck
+        else:
+            commands = (
+                frozen.spec.process_verifiers
+                if scope == "process"
+                else frozen.spec.promotion_verifiers
+            )
+            if not commands:
+                commands = frozen.spec.process_verifiers
+            report = self.verifiers.run_commands(
+                run, frozen, record, commands, scope
+            )
 
-            if report.promotion_passed is None:
-                report = report.model_copy(
-                    update={"promotion_passed": report.process_passed}
-                )
-            state = self.artifacts.candidate_artifact_state(run, frozen, record)
+        if scope == "process":
+            return self.settlement.record(
+                run_id=run_id,
+                candidate_id=candidate_id,
+                frozen=frozen,
+                report=report,
+                attempt=state,
+                pre_attempt_settled_head=pre_attempt_settled_head,
+                pre_attempt_settled_artifact_ref=pre_attempt_artifact_ref,
+                attempt_changed_files=attempt_changed_files,
+                hypothesis=hypothesis,
+                agent_session_id=agent_session_id,
+                session=session,
+                toolization_decision=normalized_toolization_decision,
+            )
 
-            with self.state.lock_run(run_id):
-                run = self.state.read_run(run_id)
-                require_run_not_invalidated(run, "record verifier result")
-                record = self.state.read_candidate(run_id, candidate_id)
-                self.artifacts.apply_candidate_artifact_state(record, state)
-                record.promotion_report = report
-                record.promotion_evidence = PromotionEvidence(
-                    candidate_id=candidate_id,
-                    selected_git_head=run.selected_git_head,
-                    git_head=run.selected_git_head,
-                    selected_artifact_ref=run.selected_artifact_ref,
-                    artifact_ref=state.artifact_ref,
-                    artifact_hash=state.artifact_hash,
-                    passed=bool(report.promotion_passed),
-                    created_at=self.clock.timestamp(),
-                )
-                self.state.write_candidate(run_id, record)
-                self.persist_run(run)
+        if report.promotion_passed is None:
+            report = report.model_copy(
+                update={"promotion_passed": report.process_passed}
+            )
+        state = self.artifacts.candidate_artifact_state(run, frozen, record)
 
-            return report
-        except Exception:
-            if scope == "process":
-                with self.state.lock_run(run_id):
-                    run = self.state.read_run(run_id)
-                    candidate = self.state.read_candidate(run_id, candidate_id)
-                    if (
-                        not run.invalidated_at
-                        and run.state in WORKER_ITERATION_RUN_STATES
-                        and not (
-                            candidate.recovery is not None
-                            and candidate.recovery.state != "restored"
-                        )
-                    ):
-                        self.annotation.close_queue(
-                            run_id,
-                            reason="process_verifier_failed",
-                        )
-                        run.state = RunState.FAILED
-                        self.persist_run(run)
-            raise
+        with self.state.lock_run(run_id):
+            run = self.state.read_run(run_id)
+            require_run_not_invalidated(run, "record verifier result")
+            record = self.state.read_candidate(run_id, candidate_id)
+            self.artifacts.apply_candidate_artifact_state(record, state)
+            record.promotion_report = report
+            record.promotion_evidence = PromotionEvidence(
+                candidate_id=candidate_id,
+                selected_git_head=run.selected_git_head,
+                git_head=run.selected_git_head,
+                selected_artifact_ref=run.selected_artifact_ref,
+                artifact_ref=state.artifact_ref,
+                artifact_hash=state.artifact_hash,
+                passed=bool(report.promotion_passed),
+                created_at=self.clock.timestamp(),
+            )
+            self.state.write_candidate(run_id, record)
+            self.persist_run(run)
+
+        return report
 
     def _precheck_candidate(
         self,

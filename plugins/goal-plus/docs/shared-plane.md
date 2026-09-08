@@ -390,7 +390,8 @@ verifier 会同步发布 `candidate_id`、`iteration`、`commit`、`score` 和
 - `keep`：尝试有效，并且严格改善该 candidate 的历史最佳；
 - `retain`：尝试有效、硬分同分，并成为该 candidate 的最新工作基线；
 - `discard`：尝试有效，但分数更差；
-- `failure`：尝试未产生可用于排名的 verifier Evidence。
+- `failure`：本次尝试验证未通过、缺少有效分数或 artifact 不符合约束。尝试记录和 Evidence
+  仍然保留，不更新 best，也不表示整个 Goal/Search 失败；缺分数时原因是 `MissingNumericMetric`。
 
 Global Evidence 只包含 worker 的 process-verifier 尝试。parent fallback verification
 与 promotion verification 不会成为 peer Evidence。视图也不会暴露 peer transcript、

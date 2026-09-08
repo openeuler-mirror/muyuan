@@ -369,6 +369,37 @@ def test_git_freeze_rejects_failing_origin_verifier_before_spec_creation(
     assert list((runtime.root_dir / "bootstrap").glob("origin-*/*score*.log"))
 
 
+@pytest.mark.parametrize("backend", ["git_worktree", "copy"])
+@pytest.mark.parametrize("output", ["all_correct=True; combined_score=2140", '{"combined_score": null}', '{"combined_score": "2140"}'])
+def test_freeze_rejects_unscored_process_suite_before_spec_creation(tmp_path, backend, output):
+    project = make_project(tmp_path)
+    (project / "evaluator.py").write_text(f"print({output!r})\n")
+    _initialize_source_repository(project)
+    data = _spec_with_workspace_backend(project, backend).model_dump(mode="json")
+    data["process_verifiers"][0]["role"] = "validity_gate"
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    with pytest.raises(ValueError, match="MissingNumericMetric"):
+        runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex")
+
+    assert not runtime.specs_dir.exists()
+    assert not runtime.runs_dir.exists()
+    assert (project / "evaluator.py").read_text() == f"print({output!r})\n"
+
+
+@pytest.mark.parametrize("backend", ["git_worktree", "copy"])
+def test_freeze_accepts_numeric_metric_from_process_gate(tmp_path, backend):
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    data = _spec_with_workspace_backend(project, backend).model_dump(mode="json")
+    data["process_verifiers"][0]["role"] = "process_gate"
+    runtime = FileSearchRuntime(tmp_path / ".search")
+
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex")
+
+    assert frozen.frozen_spec_id
+
+
 def test_git_origin_verifier_may_write_ignored_cache(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     (project / ".gitignore").write_text("cache/\n", encoding="utf-8")
@@ -4030,6 +4061,107 @@ def test_git_worktree_verifier_command_failure_records_attempt(
     assert iteration.failure_class == "VerifierCommandFailed"
     assert iteration.metrics["_candidate_attempt"]["id"] == report.attempt_id
     assert iteration.artifact_ref == report.attempt_artifact_ref
+
+
+def test_missing_score_is_recorded_without_stopping_candidate_or_peer(tmp_path):
+    from goal_plus.projections.statistics import build_run_statistics
+
+    project = make_project(tmp_path)
+    (project / "evaluator.py").write_text(
+        "import json\nfrom initial_program import VALUE\n"
+        "print('4/4 PASS; Score: 4397.00' if VALUE == 1 "
+        "else json.dumps({'combined_score': VALUE}))\n"
+    )
+    data = spec_for(project, max_parallel=2).model_dump(mode="json")
+    data["process_verifiers"][0]["role"] = "process_gate"
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+    task, peer = runtime.start_batch(run_id, plan.plan_id)
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+    (task.workspace / "initial_program.py").write_text("VALUE = 1\n")
+    report = runtime.run_verifier(run_id, task.candidate_id, agent_session_id=session.agent_session_id, hypothesis="Test text-only score output")
+    candidate = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    assert report.process_passed is True
+    assert report.aggregate_score is None
+    assert report.disposition == "failure"
+    assert report.failure_class == "MissingNumericMetric"
+    assert candidate.iterations[0].failure_class == "MissingNumericMetric"
+    assert candidate.iterations[0].artifact_ref == report.attempt_artifact_ref
+    assert len(candidate.results_ledger) == 1
+    assert candidate.results_ledger[0].failure_class == "MissingNumericMetric"
+    assert candidate.results_ledger[0].score is None
+    assert candidate.status == "evaluated"
+    assert runtime.status(run_id).state == RunState.WAITING_FOR_WORKERS
+    for target in (None, 100.0):
+        statistics = build_run_statistics(
+            runtime.search_run.state.read_run(run_id), frozen, [candidate], [session], {},
+            target_score=target, now_epoch=time.time(),
+        )
+        assert statistics["activity"]["results_total"] == 1
+        assert statistics["scores"]["successful_candidates"] == 0
+        assert statistics["workers"]["successful_sessions"] == 0
+    assert runtime.run_verifier(run_id, peer.candidate_id).disposition == "keep"
+    (task.workspace / "initial_program.py").write_text("VALUE = 2\n")
+    assert runtime.run_verifier(run_id, task.candidate_id).disposition == "keep"
+    iterations = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id).iterations
+    assert [item.disposition for item in iterations] == ["failure", "keep"]
+    assert iterations[0] == candidate.iterations[0]
+    ledger = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id).results_ledger
+    assert len(ledger) == 2
+    assert ledger[0] == candidate.results_ledger[0]
+
+
+@pytest.mark.parametrize("backend", ["copy", "git_worktree"])
+def test_checkpoint_write_error_preserves_settlement_and_peer_execution(tmp_path, monkeypatch, backend):
+    project = make_project(tmp_path)
+    (project / "evaluator.py").write_text(
+        "import json\nfrom initial_program import VALUE\n"
+        "print(json.dumps({'combined_score': VALUE}))\n"
+    )
+    _initialize_source_repository(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(_spec_with_workspace_backend(project, backend), [project / "evaluator.py"], native_host="codex")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+    task, peer = runtime.start_batch(run_id, plan.plan_id)
+    (task.workspace / "initial_program.py").write_text("VALUE = 9\n")
+    with monkeypatch.context() as patch:
+        def fail_checkpoint(*args, **kwargs):
+            raise OSError("checkpoint storage unavailable")
+        patch.setattr(runtime.settlement.checkpoints, "write_best", fail_checkpoint)
+        with pytest.raises(OSError, match="checkpoint storage unavailable"):
+            runtime.run_verifier(run_id, task.candidate_id)
+    candidate = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    assert candidate.iterations[0].disposition == "keep"
+    assert candidate.iterations[0].score == 9.0
+    assert runtime.status(run_id).state == RunState.WAITING_FOR_WORKERS
+    assert runtime.run_verifier(run_id, peer.candidate_id).disposition == "keep"
+    selected = runtime.select(run_id)
+    assert selected["selected_candidate_id"] == task.candidate_id
+    assert selected["selected_score"] == 9.0
+    assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id).iterations[0] == candidate.iterations[0]
+
+
+def test_artifact_read_error_does_not_fail_search_or_peer(tmp_path, monkeypatch):
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=2), [project / "evaluator.py"], native_host="codex")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+    task, peer = runtime.start_batch(run_id, plan.plan_id)
+    before = runtime.search_run.state.read_run(run_id)
+    with monkeypatch.context() as patch:
+        def fail_read(*args, **kwargs):
+            raise OSError("artifact storage unavailable")
+        patch.setattr(runtime.settlement.artifacts, "candidate_artifact_state", fail_read)
+        with pytest.raises(OSError, match="artifact storage unavailable"):
+            runtime.run_verifier(run_id, task.candidate_id)
+    assert runtime.search_run.state.read_run(run_id) == before
+    assert not runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id).iterations
+    assert runtime.run_verifier(run_id, peer.candidate_id).disposition == "keep"
+    assert runtime.run_verifier(run_id, task.candidate_id).disposition == "keep"
 
 
 def test_process_verifier_requires_time_for_suite_and_closeout(

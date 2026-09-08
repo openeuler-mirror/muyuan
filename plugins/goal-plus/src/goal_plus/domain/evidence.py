@@ -72,6 +72,7 @@ class ScoreReport(SearchModel):
     attempt_iteration: int | None = Field(default=None, ge=1)
     attempt_artifact_ref: ArtifactRef | None = None
     disposition: IterationDisposition | None = None
+    failure_class: str | None = None
     best_iteration: int | None = Field(default=None, ge=1)
     best_git_head: str | None = None
     workspace_git_head_after_settlement: str | None = None

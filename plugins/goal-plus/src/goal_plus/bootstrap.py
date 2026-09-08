@@ -284,7 +284,6 @@ def build_candidate_verification(*, settlement, context, verifiers):
         artifacts=settlement.artifacts,
         candidate_ledger=settlement.candidate_ledger,
         shared_tools=settlement.shared_tools,
-        annotation=settlement.annotation,
         settlement=settlement,
         verifiers=verifiers,
         persist_run=settlement.persist_run,

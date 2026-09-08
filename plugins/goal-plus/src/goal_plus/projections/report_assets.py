@@ -530,8 +530,8 @@ REPORT_SCRIPT = """
     var callLabel = payload.call_label || 'Verifier call';
     var bestLabel = payload.best_label || 'Global best';
     var pointLabel = payload.point_label || 'Iteration';
-    var failureLabel = payload.failure_label || 'verifier failed';
-    var failureLegend = payload.failure_legend || 'Failed verifier · not scored';
+    var failureLabel = payload.failure_label || 'attempt failed';
+    var failureLegend = payload.failure_legend || 'Failed attempt';
     var axisSpec = payload.score_axis || {type: 'linear', range: null};
     var palette = [
       reportColor('--accent'),
@@ -661,7 +661,8 @@ REPORT_SCRIPT = """
             (trajectory.failed_details[failureIndex] || [])[0],
             (trajectory.failed_details[failureIndex] || [])[1],
             (trajectory.failed_details[failureIndex] || [])[2],
-            (trajectory.failed_scores || [])[failureIndex]
+            (trajectory.failed_scores || [])[failureIndex],
+            (trajectory.failed_details[failureIndex] || [])[3] || failureLabel
           ]);
         });
       });
@@ -736,7 +737,7 @@ REPORT_SCRIPT = """
           hovertemplate:
             '<b>%{customdata[0]} · ' + failureLabel + '</b><br>' +
             callLabel + ' %{x}<br>' + pointLabel + ' %{customdata[1]} · %{customdata[2]}<br>' +
-            '%{customdata[3]}<br>Raw score %{customdata[4]} · excluded from ranking<extra></extra>'
+            '%{customdata[3]}<br>%{customdata[5]}<br>Raw score %{customdata[4]}<extra></extra>'
         });
         failureLegendSeen = true;
       }

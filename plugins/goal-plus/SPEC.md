@@ -152,10 +152,21 @@ Freeze 与 run bootstrap 必须：
 5. 首次物化 Git worktree 时执行 workspace relocation gate；
 6. 全程校验 metric、退出码、timeout、edit surface 和可选 device pool。
 
+本地 Git/Copy 冻结必须确认 process verifier baseline 实际产出有限数值分数；没有声明
+`ranking_signal` 也不能跳过此检查。正常退出但只有文本分数、缺少数值 JSON metric 的
+合同以 `MissingNumericMetric` 拒绝，不创建 FrozenSpec 或候选。分数从 stdout 的单行
+JSON 对象读取，不能用 promotion verifier 的分数替代 process suite 的评分合同。
+
 FrozenSpec 创建后不可原地改写。评价合同有误时，使旧 run invalid，冻结新合同并创建
 successor run；不同合同的分数不得直接比较。
 
 ## Search 生命周期
+
+单次尝试的 `failure` 是结算结果，不是 Goal 或 Search 的终态；它和其他 disposition 一样
+保留 Evidence。缺少有效分数的尝试不得计入成功统计，缺分数时记录 `MissingNumericMetric`。
+Candidate verifier 或结算派生投影的操作异常向调用方报错，不得仅凭异常把整个 Search
+置为 `failed`、关闭其他 candidate 的执行或撤销已结算 Evidence。恢复仍遵守既有 artifact、
+session 和 generation gate，selection 从已结算 Evidence 重建 best。
 
 一次标准 run 按以下顺序执行：
 

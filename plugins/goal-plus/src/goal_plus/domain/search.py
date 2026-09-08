@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+import math
 from pathlib import Path
 from typing import (
     Annotated,
@@ -361,6 +362,15 @@ class BootstrapVerification(SearchModel):
     candidate_id: str | None = None
     started_at: str
     completed_at: str
+
+    def require_numeric_metric(self, metric_name: str) -> None:
+        if self.aggregate_score is None or not math.isfinite(self.aggregate_score):
+            raise ValueError(
+                "MissingNumericMetric: process verifier baseline must emit a finite "
+                f"numeric metric for {metric_name!r} in a single-line JSON object "
+                "on stdout before Search can start. Text scores and output files "
+                "are not parsed as metrics."
+            )
 
 
 class FrozenSpec(SearchModel):

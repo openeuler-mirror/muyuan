@@ -144,6 +144,11 @@ Git backend 的 freeze 会直接在 `SearchSpec.source_path` 执行一次完整 
 的 `source_path`、verifier `cwd` 和 artifact 路径；runtime 不扫描目录来猜另一个 task root。
 `search_create` 要求 origin 仍是同一个 clean commit。
 
+本地 Git/Copy 的 process suite 在冻结前必须实际输出有限数值分数，即使没有显式
+`ranking_signal`。只有正常退出或文本分数不足以冻结；缺失数值时返回
+`MissingNumericMetric`，不创建 FrozenSpec。指标从 stdout 的单行 JSON 对象读取，
+不读取任意结果文件，也不能用 promotion verifier 补足缺失的 process metric。
+
 `search_start_batch` 对 Git run 先只物化 `c001`，在真实 worktree 中重跑同一 suite，并把结果
 记录为 `RunRecord.workspace_bootstrap_verification`。通过后才物化其余 candidate。失败会自动以
 `verifier_target_mismatch` abort run，保留 `c001`，不创建后续 candidate 或 agent session。

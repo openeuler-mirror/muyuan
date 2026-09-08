@@ -13,6 +13,7 @@ from goal_plus.ports.state import (
     RunRecord,
 )
 from goal_plus.domain.evidence import IterationRecord
+from goal_plus.domain.evidence_policy import artifact_iteration_eligible
 
 
 STATISTICS_SCHEMA_VERSION = 2
@@ -241,7 +242,7 @@ def build_run_statistics(
     productive_sessions = sum(bool(values) for values in session_iterations.values())
     successful_sessions = sum(
         any(
-            iteration.process_passed is True
+            artifact_iteration_eligible(iteration)
             and _reaches_target(iteration.score, target_score, direction) is not False
             for iteration in values
         )
@@ -249,7 +250,7 @@ def build_run_statistics(
     )
     successful_candidates = sum(
         any(
-            iteration.process_passed is True
+            artifact_iteration_eligible(iteration)
             and _reaches_target(iteration.score, target_score, direction) is not False
             for iteration in candidate.iterations
         )
