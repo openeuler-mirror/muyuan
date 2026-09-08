@@ -47,6 +47,13 @@ def test_codex_candidate_identity_accepts_canonical_agent_path(tmp_path: Path) -
     )
 
     assert is_search_candidate_session(rebound) is True
+    # Candidate ownership is persisted by the runtime, not inferred from a
+    # display name or the optional native custom-agent type.
+    renamed = rebound.model_copy(update={
+        "launch": {"agent_type": "default", "task_name": "renamed"},
+        "host_handle": rebound.host_handle.model_copy(update={"task_name": "renamed"}),
+    })
+    assert is_search_candidate_session(renamed) is True
 
 
 def test_time_advisory_uses_subagent_iterations_and_lists_candidate_timing(

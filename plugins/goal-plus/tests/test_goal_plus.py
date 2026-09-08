@@ -25,6 +25,37 @@ from goal_plus.models import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("paused", [False, True])
+def test_gate_does_not_apply_goal_policy_to_foreign_tool_names(tmp_path, paused):
+    runtime = FileGoalPlusRuntime(tmp_path / ".gp")
+    record = runtime.start_from_host_command(
+        "Identity fixture", invocation=_codex_invocation("identity-start"),
+    )
+    runtime.activate_session(record.goal_plus_id, {"host": "codex", "session_id": "session-test"})
+    if paused:
+        runtime.control_from_host_command(record.goal_plus_id, invocation=_codex_invocation(
+            "identity-pause", action="pause",
+        ))
+    for action in ("search_create", "search_prepare_recovery", "goal_plus_set_status", "bash"):
+        gate = runtime.gate(record.goal_plus_id, event="pre_tool_use", context={
+            "tool_name": f"mcp__foreign__{action}", "input": {"run_id": "run_external"},
+        })
+        assert gate.decision == "allow", gate.reason
+    owned = runtime.gate(record.goal_plus_id, event="pre_tool_use", context={
+        "tool_name": "mcp__goal_plus__search_create", "input": {"goal_plus_id": record.goal_plus_id},
+    })
+    assert owned.decision == "block"
+
+
+def test_checker_task_name_does_not_bypass_goal_gate(tmp_path):
+    runtime = FileGoalPlusRuntime(tmp_path / ".gp")
+    record = runtime.create_goal("Complete intake before editing")
+    result = runtime.gate(record.goal_plus_id, event="pre_tool_use", context={
+        "tool_name": "write", "task_name": "goal_plus_final_check_external",
+    })
+    assert result.decision == "block"
+
+
 def _codex_invocation(
     invocation_id: str,
     *,

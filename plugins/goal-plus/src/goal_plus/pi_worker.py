@@ -948,12 +948,10 @@ def run_pi_rpc_worker(
                 and not time_advisory_sent
                 and completed_tools
             ):
-                force_check = any(
-                    tool_name.replace("-", "_").endswith("search_run_verifier")
-                    for tool_name in completed_tools
-                )
                 now_monotonic = time.monotonic()
-                if force_check or now_monotonic - last_time_advisory_check >= 10:
+                # RPC completion names carry no registration provenance. Use
+                # the existing polling interval and persisted verifier facts.
+                if now_monotonic - last_time_advisory_check >= 10:
                     last_time_advisory_check = now_monotonic
                     try:
                         advisory = build_search_time_advisory(

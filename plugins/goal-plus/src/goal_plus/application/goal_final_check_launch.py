@@ -6,6 +6,10 @@ from goal_plus.domain.goal import GoalPlusRecord, GoalPlusFinalCheck
 from goal_plus.ports.goal_search import FinalCheckInputs
 
 
+def codex_final_check_task_name(check_id: str) -> str:
+    return f"goal_plus_final_check_{check_id}"
+
+
 def final_check_launch(
     record: GoalPlusRecord,
     check: GoalPlusFinalCheck,
@@ -59,7 +63,7 @@ def final_check_launch(
     if check.checker_host == "codex":
         return {
             "tool": "spawn_agent",
-            "task_name": f"goal_plus_final_check_{check.check_id}",
+            "task_name": codex_final_check_task_name(check.check_id),
             "agent_type": "default",
             "message": prompt,
             "fork_turns": "none",

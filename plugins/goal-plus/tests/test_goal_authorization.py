@@ -13,10 +13,21 @@ from goal_plus.domain.goal import (
     GoalPlusRecord,
 )
 from goal_plus.domain.goal_authorization import require_control_session
+from goal_plus.domain.goal_authorization import tool_matches
 from goal_plus.ports.goal_authorization import GoalToolTarget
 
 
 STAMP = "2026-09-05T00:00:00Z"
+
+
+@pytest.mark.parametrize("action", ["search_create", "search_prepare_recovery", "goal_plus_gate", "bash"])
+def test_tool_matching_preserves_foreign_registration(action):
+    assert tool_matches(action, action)  # Dedicated internal dispatcher.
+    assert tool_matches(f"mcp__goal_plus__{action}", action)
+    assert tool_matches(f"mcp__goal-plus__{action}", action)
+    assert not tool_matches(f"mcp__foreign__{action}", action)
+    assert not tool_matches(f"foreign.{action}", action)
+    assert not tool_matches(f"mcp__goal_plus_extra__{action}", action)
 
 
 def invocation(nonce="start-a", *, host="codex", session="main-a", action="start"):
@@ -127,7 +138,7 @@ def test_unknown_ambiguous_and_foreign_targets_are_rejected(authorization, input
 
 
 @pytest.mark.parametrize("tool", ["search_freeze_spec", "search_create"])
-@pytest.mark.parametrize("prefix", ["", "mcp__goal_plus__", "goal_plus."])
+@pytest.mark.parametrize("prefix", ["", "mcp__goal_plus__", "mcp__goal-plus__"])
 def test_bootstrap_requires_explicit_goal_even_with_a_unique_owner(tool, prefix):
     service = GoalAuthorization(MemoryGoals(records={"gp_0001": goal()}))
     assert service.require_unique_active().goal_plus_id == "gp_0001"

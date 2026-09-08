@@ -1,12 +1,13 @@
 import { LooseObject, RuntimeToolSchemas, RuntimeToolDescriptions } from "./lib/goal-plus-schemas.ts";
 import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, projectModuleInvocation, parseJsonObject, commandFailure, runJsonCli, runHostCommandCli } from "./lib/goal-plus-transport.ts";
 import { THINKTHREAD_GOAL_PLUS_PROTOCOL, requestWorkerTool } from "./lib/goal-plus-thinkthread-rpc.ts";
-import { parseArgs, type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { toolOwner, type ToolOwner } from "./lib/goal-plus-tool-identity.ts";
+import { parseArgs, type ExtensionAPI, type ExtensionContext, type ToolCallEvent, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { type TSchema, Type } from "typebox";
 import {
 	buildPiCompletionPresentation,
@@ -20,6 +21,7 @@ import {
 } from "./lib/goal-plus-progress.ts";
 
 const role = process.env.GOAL_PLUS_PI_ROLE || "main";
+const extensionPath = fileURLToPath(import.meta.url);
 const isThinkThreadProfile = Boolean(process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY);
 const isThinkThreadWorker = role === "worker" && isThinkThreadProfile;
 
@@ -138,16 +140,9 @@ interface ThinkThreadInnerGitBinding {
 
 
 const MAIN_GATED_TOOLS = new Set([
-		"bash",
-		"edit",
-		"write",
-		"pi_search_pool_open",
-	"pi_search_pool_wait_any",
-	"pi_search_pool_snapshot",
-	"pi_search_pool_continue",
-	"pi_search_pool_close",
-	"pi_goal_plus_run_final_check",
-	"pi_goal_plus_run_work_item",
+	"bash",
+	"edit",
+	"write",
 ]);
 const MAIN_READ_ONLY_RUNTIME_TOOLS = new Set([
 	"search_recovery_status",
@@ -160,16 +155,8 @@ const MAIN_READ_ONLY_RUNTIME_TOOLS = new Set([
 	"search_get_agent_observability",
 ]);
 
-function requiresGoalPlusAuthorization(toolName: string): boolean {
-	if (MAIN_READ_ONLY_RUNTIME_TOOLS.has(toolName)) return false;
-	return (
-		toolName.startsWith("goal_plus_") ||
-		toolName.startsWith("search_") ||
-		toolName.startsWith("pi_search_pool_") ||
-		toolName.startsWith("thinkthread_search_pool_") ||
-		toolName === "pi_goal_plus_run_final_check" ||
-		toolName === "pi_goal_plus_run_work_item"
-	);
+function requiresGoalPlusAuthorization(toolName: string, owner: ToolOwner): boolean {
+	return owner === "goal-plus" && !MAIN_READ_ONLY_RUNTIME_TOOLS.has(toolName);
 }
 
 interface GoalPlusNativeState {
@@ -1931,10 +1918,25 @@ function startGoalPlusMainTurn(
 	);
 }
 
+function registerGoalPlusTool<TParams extends TSchema>(pi: ExtensionAPI, definition: ToolDefinition<TParams>) {
+	// The registration closure is the ownership capability. This still gates our
+	// own execute callback if host source metadata is absent; an overridden tool
+	// from another extension never inherits this closure merely by sharing a name.
+	pi.registerTool({
+		...definition,
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const event: ToolCallEvent = { type: "tool_call", toolCallId, toolName: definition.name, input: params };
+			const denied = workspaceGuard(event, ctx, "goal-plus") || await mainGate(event, ctx, "goal-plus");
+			if (denied?.block) throw new Error(denied.reason);
+			return definition.execute(toolCallId, params, signal, onUpdate, ctx);
+		},
+	});
+}
+
 function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<string>) {
 	if (registered.has(name)) return;
 	registered.add(name);
-	pi.registerTool({
+	registerGoalPlusTool(pi, {
 		name,
 		label: name,
 		description: RuntimeToolDescriptions[name] ?? `调用 goal-plus facade 工具 ${name}。`,
@@ -2101,7 +2103,7 @@ function activateWorkerContext(
 }
 
 function registerPiFinalCheckTool(pi: ExtensionAPI) {
-	pi.registerTool({
+	registerGoalPlusTool(pi, {
 		name: "pi_goal_plus_run_final_check",
 		label: "Pi Goal Plus Final Check",
 		description: "根据 goal_plus_prepare_final_check.launch 启动前台 Pi RPC 最终检查审查员。",
@@ -2150,7 +2152,7 @@ function registerPiFinalCheckTool(pi: ExtensionAPI) {
 }
 
 function registerPiWorkItemTool(pi: ExtensionAPI) {
-	pi.registerTool({
+	registerGoalPlusTool(pi, {
 		name: "pi_goal_plus_run_work_item",
 		label: "Pi Goal Plus Work Item",
 		description: "在隔离的 Pi RPC 子进程中直接执行一个普通 subagent 任务。",
@@ -2350,8 +2352,8 @@ function extractCandidatePath(event: ToolCallEvent): string | undefined {
 	return undefined;
 }
 
-function workspaceGuard(event: ToolCallEvent, ctx: ExtensionContext) {
-	if (role !== "main" && ["search_recovery_status", "search_prepare_recovery", "search_recover_candidate"].includes(event.toolName)) {
+function workspaceGuard(event: ToolCallEvent, ctx: ExtensionContext, owner: ToolOwner) {
+	if (owner === "goal-plus" && role !== "main" && ["search_recovery_status", "search_prepare_recovery", "search_recover_candidate"].includes(event.toolName)) {
 		return { block: true, reason: "Search recovery is Main-owned." };
 	}
 	if (role === "worker" && workerGeneration && !isThinkThreadWorker) {
@@ -2365,25 +2367,25 @@ function workspaceGuard(event: ToolCallEvent, ctx: ExtensionContext) {
 			return { block: true, reason: "Search worker generation could not be verified." };
 		}
 	}
-	if (role === "final-checker" && ["edit", "write"].includes(event.toolName)) {
+	if (owner === "native" && role === "final-checker" && ["edit", "write"].includes(event.toolName)) {
 		return { block: true, reason: "最终检查审查员只能进行只读操作。" };
 	}
 	if (role !== "worker") return undefined;
 	if (latestDispatchMetadata(ctx).thinkthreadRole === "annotator") {
-		if (THINKTHREAD_ANNOTATION_TOOLS.has(event.toolName)) return undefined;
+		if (owner === "goal-plus" && THINKTHREAD_ANNOTATION_TOOLS.has(event.toolName)) return undefined;
 		return {
 			block: true,
 			reason: `ThinkThread Annotation Child tool is not allowed: ${event.toolName}`,
 		};
 	}
-	if (event.toolName === "search_get_agent_context") return undefined;
+	if (owner === "goal-plus" && event.toolName === "search_get_agent_context") return undefined;
 	if (!sawContext) {
 		const readOnly = new Set(["read", "grep", "find", "ls"]);
-		if (readOnly.has(event.toolName)) return undefined;
+		if (owner === "native" && readOnly.has(event.toolName)) return undefined;
 		return { block: true, reason: "使用变更类工具前调用 search_get_agent_context。" };
 	}
 	if (!workspaceRoot) return undefined;
-	if (!["edit", "write", "bash"].includes(event.toolName)) return undefined;
+	if (owner !== "native" || !["edit", "write", "bash"].includes(event.toolName)) return undefined;
 	const target = extractCandidatePath(event);
 	if (target && target.includes("..")) {
 		return { block: true, reason: "workspaceGuard blocked parent-directory path." };
@@ -2394,16 +2396,16 @@ function workspaceGuard(event: ToolCallEvent, ctx: ExtensionContext) {
 	return undefined;
 }
 
-async function mainGate(event: ToolCallEvent, ctx: ExtensionContext) {
+async function mainGate(event: ToolCallEvent, ctx: ExtensionContext, owner: ToolOwner) {
 	if (role !== "main") return undefined;
-	const requiresAuthorization = requiresGoalPlusAuthorization(event.toolName);
+	const requiresAuthorization = requiresGoalPlusAuthorization(event.toolName, owner);
 	if (requiresAuthorization && !goalPlusSessionAuthorized) {
 		return {
 			block: true,
 			reason: "GoalPlusEntrypointRequired: this Pi session was not authorized by exact /goal-plus or /goal-plus edit input and is not the resumed native session.",
 		};
 	}
-	if (!requiresAuthorization && !MAIN_GATED_TOOLS.has(event.toolName)) return undefined;
+	if (!requiresAuthorization && !(owner === "native" && MAIN_GATED_TOOLS.has(event.toolName))) return undefined;
 	if (!goalPlusSessionAuthorized) return undefined;
 	const goalPlusId = activeGoalPlusId;
 	if (!goalPlusId) {
@@ -2416,7 +2418,10 @@ async function mainGate(event: ToolCallEvent, ctx: ExtensionContext) {
 	const gate = await runJsonCli(piForGate, commandCtx, "goal_plus_gate", {
 		goal_plus_id: goalPlusId,
 		event: "pre_tool_use",
-		context: { tool_name: event.toolName, input: event.input },
+		context: {
+			tool_name: owner === "goal-plus" ? `mcp__goal_plus__${event.toolName}` : event.toolName,
+			input: event.input,
+		},
 	});
 	const details = gateFrom(gate.details);
 	if (details?.decision === "block") {
@@ -2768,7 +2773,9 @@ export default function (pi: ExtensionAPI) {
 			: { action: "handled" };
 	});
 	pi.on("tool_call", async (event, ctx) => {
-		return workspaceGuard(event, ctx) || (await mainGate(event, ctx));
+		const owner = toolOwner(pi.getAllTools(), event.toolName, extensionPath);
+		if (owner === "goal-plus") return undefined; // Gated by its registration closure.
+		return workspaceGuard(event, ctx, owner) || (await mainGate(event, ctx, owner));
 	});
 	pi.on("session_start", async (event, ctx) => {
 		await validateThinkThreadWorker(ctx);
