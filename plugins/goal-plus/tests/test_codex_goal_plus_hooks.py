@@ -1253,6 +1253,7 @@ def test_interrupted_codex_final_checker_must_submit_before_subagent_stop(
     assert released.stdout == ""
 
 
+@pytest.mark.linux_procfs
 @pytest.mark.parametrize(
     "tool_name",
     ["spawn_agent", "collaborationspawn_agent"],
@@ -1391,6 +1392,7 @@ def test_post_tool_tracks_and_interrupts_codex_native_agent(
     assert "not open" in _pre_tool_denial(native("followup_task", "PreToolUse", "wake-2"))
 
 
+@pytest.mark.linux_procfs
 def test_subagent_stop_uses_agent_transcript_to_finish_canonical_task(
     tmp_path: Path,
 ) -> None:
@@ -1457,6 +1459,7 @@ def test_subagent_stop_uses_agent_transcript_to_finish_canonical_task(
     assert nested["wake_pending"] is True
 
 
+@pytest.mark.linux_procfs
 def test_aborted_stop_blocks_until_codex_children_are_interrupted(
     tmp_path: Path,
 ) -> None:
@@ -1530,6 +1533,7 @@ def test_aborted_stop_blocks_until_codex_children_are_interrupted(
     assert runtime.status(record.goal_plus_id).active_session.state == "attached"
 
 
+@pytest.mark.linux_procfs
 @pytest.mark.parametrize("stop_reason", ["aborted", None])
 def test_stop_closes_scope_for_detached_goal_without_durable_mutation(
     tmp_path: Path,
@@ -1578,6 +1582,7 @@ def test_stop_closes_scope_for_detached_goal_without_durable_mutation(
     assert runtime.status(record.goal_plus_id).model_dump(mode="json") == before
 
 
+@pytest.mark.linux_procfs
 def test_terminal_goal_stop_waits_for_codex_scope_quiescence(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     runtime = FileGoalPlusRuntime(search_root)
@@ -1848,6 +1853,7 @@ def test_child_hooks_do_not_inherit_or_rebind_main_goal_context(tmp_path: Path) 
     assert runtime.status(record.goal_plus_id).hook_counters == {}
 
 
+@pytest.mark.linux_procfs
 def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
     tmp_path: Path,
 ) -> None:
@@ -2281,6 +2287,7 @@ def test_pre_tool_use_blocks_search_before_spec_is_ready(tmp_path: Path) -> None
         "mcp__goal-plus__goal_plus_create",
         "mcp__goal-plus__goal_plus_record_triage",
         "mcp__goal-plus__search_create",
+        "mcp__goal_plus__future_action_without_prefix",
     ],
 )
 def test_pre_tool_use_denies_goal_mutation_without_exact_host_command(
@@ -2307,7 +2314,7 @@ def test_pre_tool_use_denies_goal_mutation_without_exact_host_command(
     assert not search_root.exists()
 
 
-def test_pre_tool_use_gates_only_actual_nested_goal_plus_calls(tmp_path: Path) -> None:
+def test_pre_tool_use_gates_nested_invocation_not_code_text(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     nested_mutation = _run_hook(
         tmp_path,
@@ -2333,8 +2340,104 @@ def test_pre_tool_use_gates_only_actual_nested_goal_plus_calls(tmp_path: Path) -
         },
     )
 
-    assert "GoalPlusEntrypointRequired" in _pre_tool_denial(nested_mutation)
+    # The outer script is not proof of invocation (it may be a string/comment).
+    assert nested_mutation.stdout == ""
     assert ordinary_child_command.stdout == ""
+    actual_invocation = _run_hook(
+        tmp_path, search_root, {
+            "hook_event_name": "PreToolUse", "session_id": "ordinary-session",
+            "tool_name": "mcp__goal_plus__goal_plus_set_status",
+            "tool_input": {"goal_plus_id": "gp_9999", "status": "complete"},
+        },
+    )
+    assert "GoalPlusEntrypointRequired" in _pre_tool_denial(actual_invocation)
+    assert not search_root.exists()
+
+
+@pytest.mark.parametrize("tool_name", [
+    "mcp__codex_apps__gmail__search_emails",
+    "mcp__foreign__search_create", "mcp__foreign__goal_plus_create",
+    "mcp__foreign__search_prepare_recovery", "mcp__foreign__apply_patch",
+    "mcp__foreign__spawn_agent", "foreign.search_create",
+    "search_create", "goal_plus_create", "pi_search_pool_open",
+    "mcp__goal_plus_extra__search_create",
+    "mcp__foreign__mcp__goal_plus__search_create",
+])
+@pytest.mark.parametrize("child", [False, True])
+def test_foreign_tool_identity_does_not_require_goal_plus(tmp_path, tool_name, child):
+    search_root = tmp_path / ".gp"
+    result = _run_hook(tmp_path, search_root, {
+        "hook_event_name": "PreToolUse", "session_id": "ordinary-session",
+        "tool_name": tool_name,
+        # Arguments cannot supply ownership, even with a convincing name/tag.
+        "tool_input": {"tool_source": "goal-plus", "run_id": "run_external"},
+        **({"agent_id": "ordinary-child"} if child else {}),
+    })
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert not search_root.exists()
+
+
+@pytest.mark.parametrize("tool_name", [
+    "mcp__foreign__search_run_verifier", "mcp__foreign__search_status",
+    "mcp__foreign__search_get_agent_context", "mcp__foreign__spawn_agent",
+])
+def test_foreign_post_tool_does_not_pump_or_bind_goal_plus(tmp_path, monkeypatch, tool_name):
+    def unexpected(*args, **kwargs):
+        pytest.fail("foreign tool entered Goal Plus lifecycle")
+
+    monkeypatch.setattr(internal_agents, "kick_internal_agents", unexpected)
+    monkeypatch.setattr(hook_module, "_codex_scope_for_hook", unexpected)
+    hook_module._handle_post_tool_lifecycle(tmp_path / ".gp", {
+        "tool_name": tool_name, "tool_input": {"run_id": "run_foreign"},
+        "tool_response": {"run_id": "run_foreign", "agent_id": "foreign"},
+    })
+    assert not (tmp_path / ".gp").exists()
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_foreign_tools_leave_attached_goal_unchanged(tmp_path, paused):
+    search_root = tmp_path / ".gp"
+    record = start_host_verified_goal(search_root, tmp_path, session_id="session-codex")
+    runtime = FileGoalPlusRuntime(search_root)
+    goal_id = record.goal_plus_id
+    runtime.activate_session(goal_id, {"host": "codex", "session_id": "session-codex"})
+    if paused:
+        record = runtime.status(goal_id)
+        runtime.control_from_host_command(goal_id, invocation=record.host_command_invocations[0].model_copy(
+            update={"action": "pause", "invocation_id": "identity-pause"},
+        ))
+    before = runtime.status(goal_id).model_dump_json()
+    for tool in ("search_create", "goal_plus_set_status", "search_run_verifier", "apply_patch", "spawn_agent"):
+        result = _run_hook(tmp_path, search_root, {
+            "hook_event_name": "PreToolUse", "session_id": "session-codex",
+            "tool_name": f"mcp__foreign__{tool}",
+            "tool_input": {"goal_plus_id": goal_id, "run_id": "run_foreign"},
+        })
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+    assert runtime.status(goal_id).model_dump_json() == before
+
+
+@pytest.mark.parametrize("identity", [
+    {"agent_type": "search_candidate_external"},
+    {"task_name": "search_candidate_agent"},
+    {"task_name": "goal_plus_final_check_external"},
+    {"role": "final-checker"},
+])
+def test_task_name_alone_does_not_confer_goal_plus_role(tmp_path, identity):
+    search_root = tmp_path / ".gp"
+    event = {"hook_event_name": "PreToolUse", "agent_id": "ordinary-child", **identity}
+    ordinary_patch = _run_hook(tmp_path, search_root, {
+        **event, "tool_name": "apply_patch", "cwd": str(tmp_path),
+        "tool_input": {"command": "*** Begin Patch\n*** Add File: note.txt\n+hello\n*** End Patch"},
+    })
+    assert ordinary_patch.stdout == ""
+    submission = _run_hook(tmp_path, search_root, {
+        **event, "tool_name": "mcp__goal_plus__goal_plus_submit_final_check",
+        "tool_input": {"goal_plus_id": "gp_0001"},
+    })
+    assert "GoalPlusRoleDenied" in _pre_tool_denial(submission)
     assert not search_root.exists()
 
 

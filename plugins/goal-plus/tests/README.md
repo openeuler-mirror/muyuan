@@ -36,6 +36,25 @@ interfere with one another.
 `tests/conftest.py`. Add a marker name to `-m` only when intentionally auditing
 that slice.
 
+## Platform Coverage
+
+Tests marked `linux_procfs` use real Linux `/proc` process identities, command
+vectors, boot IDs, or process-group cleanup. They run in the default suite on
+Linux and are skipped on macOS and other platforms before fixtures launch any
+processes. POSIX signals alone do not satisfy this requirement. Inspect the
+slice with `python -m pytest -m linux_procfs -q -rs`.
+
+Keep the marker on the smallest test that needs real process observation;
+do not mark an entire mixed module or skip pure state tests. Process doubles
+must provide the boot identity as well as process/group snapshots. The
+`scope_owner` fixture supplies only the current owner for scope-state tests;
+it deliberately does not model child processes. Parser, retry, admission,
+serialization, and other controlled-observation tests still run on macOS.
+
+This is test-platform coverage, not a macOS process-inspection backend. The
+production Scope/drainer/Pi pool identity contract still requires Linux `/proc`;
+see [Agent Host Adapters](../docs/agent-host-adapters.md#main-owner-生命周期).
+
 ## Hook Tests
 
 Default hook tests drive `goal_plus.goal_plus_stop_hook.main()` in-process via

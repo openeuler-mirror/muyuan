@@ -62,17 +62,9 @@ def find_agent_session(
 def is_search_candidate_session(session: AgentSessionRecord) -> bool:
     if session.host == "pi-rpc":
         return str(session.launch.get("role") or "worker") == "worker"
-    if session.host != "codex":
-        return False
-    task_name = str(
-        session.host_handle.task_name or session.launch.get("task_name") or ""
-    )
-    if Path(task_name).name.startswith("search_agent_"):
-        return True
-    # Compatibility for sessions persisted before task_name became part of
-    # the Codex host handle.
-    agent_type = str(session.launch.get("agent_type") or "").replace("-", "_")
-    return agent_type.startswith("search_candidate")
+    # This typed record is created only by candidate_sessions and already binds
+    # run/candidate identity. A host task's display name does not confer a role.
+    return session.host == "codex"
 
 
 def _candidate_records(root: Path, run_id: str) -> list[CandidateRecord]:

@@ -56,11 +56,14 @@ does not modify Pi authentication or global configuration.
 | Goal Plus Python package | `./uninstall.sh --runtime` |
 | Inspect the full plan | `./uninstall.sh --dry-run` |
 
-With a selector, the uninstaller removes only that component. Normal host
-installations use the shared Python runtime, so removing one host preserves
+With a selector, the uninstaller removes only that component. Codex and normal Pi
+registrations are removed regardless of their source checkout. A different source
+produces a warning and removal continues without confirmation; `--dry-run` only
+prints the plan. Local development directories retain their ownership checks.
+Normal host installations use the shared Python runtime, so removing one host preserves
 the runtime. Runtime removal fails closed while an unselected registration
-owned by this checkout still needs it. Pi development uses its own managed
-environment. Uninstallation never deletes target workspace `.gp/` records or
+still needs it. Pi development uses its own managed environment.
+Uninstallation never deletes target workspace `.gp/` records or
 reverts promoted changes. `--thinkthread` removes only this checkout's generated
 `goal-plus-pi` Profile; it never deletes a ThinkThread Runtime, Root, or state.
 

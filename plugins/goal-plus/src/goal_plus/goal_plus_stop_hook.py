@@ -30,6 +30,7 @@ from goal_plus.time_advisory import (
 from goal_plus.tools import ToolCallerRole, require_tool_role
 
 from goal_plus.domain.goal_authorization import GOAL_ID_RE
+from goal_plus.domain.tool_identity import goal_plus_tool_name, native_tool_name
 from goal_plus.ports.scope import ScopeAttachment
 GOAL_PLUS_PROMPT_RE = re.compile(
     r"^\s*\$(?P<command>goal-plus(?:-with-final-check)?)"
@@ -478,21 +479,24 @@ def _is_child_context(hook_input: dict[str, Any]) -> bool:
     )
 
 
-def _is_final_checker_context(hook_input: dict[str, Any]) -> bool:
-    transcript_task = _codex_subagent_task_name(hook_input)
-    if transcript_task is not None and Path(transcript_task).name.startswith(
-        "goal_plus_final_check_"
-    ):
-        return True
-    for key in ("agent_type", "agentType", "task_name", "taskName", "role"):
-        value = hook_input.get(key)
-        if isinstance(value, str) and (
-            value == "goal_plus_final_checker"
-            or value == "final-checker"
-            or value.startswith("goal_plus_final_check_")
-        ):
-            return True
-    return False
+def _is_final_checker_context(search_root: Path, hook_input: dict[str, Any]) -> bool:
+    from goal_plus.application.goal_final_check_launch import codex_final_check_task_name
+
+    if any(hook_input.get(key) == "goal_plus_final_checker" for key in ("agent_type", "agentType")):
+        return True  # Exact custom-agent identity registered by this plugin.
+    tasks = {
+        Path(value).name
+        for value in (_codex_subagent_task_name(hook_input), hook_input.get("task_name"), hook_input.get("taskName"))
+        if isinstance(value, str) and value
+    }
+    if not tasks:
+        return False
+    return any(
+        codex_final_check_task_name(check.check_id) in tasks
+        for record in _resumable_records(search_root)
+        for check in record.final_checks
+        if check.checker_host == "codex" and check.goal_revision == record.goal_revision
+    )
 
 
 def _subagent_identity(hook_input: dict[str, Any]) -> str | None:
@@ -970,7 +974,7 @@ def _search_candidate_agent_session_id(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> str | None:
-    if not _is_child_context(hook_input) or _is_final_checker_context(hook_input):
+    if not _is_child_context(hook_input) or _is_final_checker_context(search_root, hook_input):
         return None
     identity = _subagent_identity(hook_input)
     mapped_session = None
@@ -1020,14 +1024,12 @@ def _search_candidate_agent_session_id(
 
 
 def _declares_search_candidate(hook_input: dict[str, Any]) -> bool:
-    for key in ("agent_type", "agentType", "task_name", "taskName", "role"):
-        value = hook_input.get(key)
-        if not isinstance(value, str):
-            continue
-        normalized = value.strip().lower().replace("-", "_")
-        if normalized.startswith("search_candidate"):
-            return True
-    return False
+    # Generic task names are user-selected text, not custom-agent registrations.
+    return any(
+        hook_input.get(key) in {"search_candidate_agent", "search_candidate_common_agent"}
+        for key in ("agent_type", "agentType")
+        if isinstance(hook_input.get(key), str)
+    )
 
 
 def _search_candidate_stop_context(
@@ -1418,15 +1420,8 @@ def _emit_pre_tool_block(
 def _should_gate_tool(tool_name: str) -> bool:
     logical_name = _logical_tool_name(tool_name)
     return (
-        logical_name.startswith("search_")
-        or logical_name.startswith("goal_plus_")
+        goal_plus_tool_name(tool_name) is not None
         or logical_name in {
-            "pi_rpc_run_worker",
-            "pi_search_pool_open",
-            "pi_search_pool_wait_any",
-            "pi_search_pool_snapshot",
-            "pi_search_pool_continue",
-            "pi_search_pool_close",
             "bash",
             "edit",
             "write",
@@ -1440,8 +1435,7 @@ def _should_gate_tool(tool_name: str) -> bool:
 
 
 def _logical_tool_name(tool_name: str) -> str:
-    normalized = tool_name.strip().lower().replace("-", "_")
-    name = normalized.rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+    name = goal_plus_tool_name(tool_name) or native_tool_name(tool_name)
     return CODEX_COLLABORATION_HOOK_TOOLS.get(name, name)
 
 
@@ -1521,22 +1515,10 @@ def _codex_scope_for_hook(
 
 
 def _goal_plus_tool_names(hook_input: dict[str, Any]) -> list[str]:
-    direct = _logical_tool_name(_tool_name(hook_input))
-    if direct.startswith(
-        ("goal_plus_", "search_", "pi_search_pool_", "pi_goal_plus_")
-    ):
-        return [direct]
-    raw = hook_input_codec.raw_tool_input(hook_input)
-    text = raw if isinstance(raw, str) else _compact_json(raw)
-    return list(
-        dict.fromkeys(
-            re.findall(
-                r"\btools\.mcp__goal_plus__"
-                r"((?:goal_plus|search|pi_search_pool|pi_goal_plus)_[A-Za-z0-9_]+)\s*\(",
-                text,
-            )
-        )
-    )
+    # Code-mode emits a native hook for each actual nested MCP invocation.
+    # JavaScript text, comments and tool arguments are not registration facts.
+    direct = goal_plus_tool_name(_tool_name(hook_input))
+    return [direct] if direct is not None else []
 
 
 def _handle_role_pre_tool_use(
@@ -1547,7 +1529,7 @@ def _handle_role_pre_tool_use(
     if not child:
         role: ToolCallerRole = "main"
         agent_session_id = None
-    elif _is_final_checker_context(hook_input):
+    elif _is_final_checker_context(search_root, hook_input):
         role = "final_checker"
         agent_session_id = None
     else:
@@ -1610,19 +1592,12 @@ GOAL_PLUS_READ_ONLY_TOOLS = {
 
 
 def _requires_goal_plus_authorization(tool_name: str) -> bool:
-    logical_name = _logical_tool_name(tool_name)
-    return (
-        logical_name.startswith(("goal_plus_", "search_"))
-        and logical_name not in GOAL_PLUS_READ_ONLY_TOOLS
-    ) or logical_name.startswith("pi_search_pool_")
+    logical_name = goal_plus_tool_name(tool_name)
+    return logical_name is not None and logical_name not in GOAL_PLUS_READ_ONLY_TOOLS
 
 
 def _requires_hook_authorization(hook_input: dict[str, Any]) -> bool:
-    return any(
-        _requires_goal_plus_authorization(name)
-        for name in _goal_plus_tool_names(hook_input)
-        or [_tool_name(hook_input)]
-    )
+    return _requires_goal_plus_authorization(_tool_name(hook_input))
 
 
 def _record_session_gate_skipped(
@@ -2353,7 +2328,7 @@ def _handle_stop_event(
             "candidate_id": None,
         }
     candidate_context = None
-    if event == "subagent_stop" and not _is_final_checker_context(hook_input):
+    if event == "subagent_stop" and not _is_final_checker_context(search_root, hook_input):
         candidate_context = _search_candidate_stop_context(search_root, hook_input)
         if candidate_context is not None:
             session_id = candidate_context.get("search_candidate_agent_session_id")
@@ -2478,7 +2453,8 @@ def _handle_stop_event(
             "candidate_id": None,
         }
     gate_context = hook_input
-    if event == "subagent_stop" and _is_final_checker_context(hook_input):
+    if event == "subagent_stop" and _is_final_checker_context(search_root, hook_input):
+        gate_context = {**hook_input, "goal_plus_subagent_role": "final_checker"}
         record = runtime.status(goal_id)
         latest = record.final_checks[-1] if record.final_checks else None
         if (
@@ -2677,7 +2653,7 @@ def main() -> int:
     try:
         event_name = _hook_event_name(hook_input)
         if event_name == "PreToolUse" and _is_subagent_context(hook_input):
-            if _logical_tool_name(_tool_name(hook_input)) in {
+            if goal_plus_tool_name(_tool_name(hook_input)) in {
                 "search_recovery_status", "search_prepare_recovery", "search_recover_candidate"
             }:
                 _emit_pre_tool_block("Search recovery is Main-owned; a worker cannot recover or fence a candidate.")

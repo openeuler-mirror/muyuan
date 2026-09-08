@@ -606,11 +606,13 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     scripted_process_output,
+    scope_owner,
 ) -> None:
     commands: list[list[str]] = []
     popen_kwargs: list[dict] = []
     prompts: list[str] = []
     extensions: list[str] = []
+    processes = []
 
     class FakeProcess:
         def __init__(self, command: list[str], **kwargs) -> None:
@@ -625,6 +627,7 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
             self.returncode = None
             self.pid = 24680
             self.communicate_calls = 0
+            processes.append(self)
 
         def communicate(self, input=None, timeout=None):
             self.communicate_calls += 1
@@ -711,6 +714,20 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
             return self.returncode
 
     monkeypatch.setattr(subprocess, "Popen", FakeProcess)
+    from goal_plus.execution import process_identity
+    from goal_plus.ports.process_identity import ProcessSnapshot
+
+    def inspect(pid):
+        if pid == scope_owner.pid:
+            return scope_owner
+        assert pid == 24680
+        return ProcessSnapshot(pid, "test-child", pid, "S") if processes[-1].poll() is None else None
+
+    monkeypatch.setattr(process_identity, "inspect_process", inspect)
+    monkeypatch.setattr("goal_plus.execution.managed_process.inspect_process", inspect)
+    monkeypatch.setattr(process_identity, "inspect_process_group", lambda pid: (item,) if (item := inspect(pid)) else ())
+    monkeypatch.setattr(process_identity, "boot_identity", lambda: "test-boot")
+    monkeypatch.setattr(os, "killpg", lambda *_: pytest.fail("fake inference should finish cleanly"))
     pi_home = tmp_path / "pi-home"
     pi_home.mkdir()
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_home))
@@ -901,6 +918,7 @@ def test_kick_is_single_flight_and_non_blocking(
     from goal_plus.ports.process_identity import ProcessSnapshot
 
     monkeypatch.setattr("goal_plus.execution.process_identity.inspect_worker", lambda pid, *_, **__: ProcessSnapshot(pid, "current", pid, "S"))
+    monkeypatch.setattr("goal_plus.execution.process_identity.boot_identity", lambda: "test-boot")
     monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process", lambda pid: ProcessSnapshot(pid, "current", pid, "S"))
     monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process_group", lambda pid: (ProcessSnapshot(pid, "current", pid, "S"),))
 
@@ -1390,6 +1408,7 @@ def test_close_evidence_annotator_stops_owned_process_group(
         alive = False
 
     monkeypatch.setattr("goal_plus.execution.process_identity.inspect_worker", matches)
+    monkeypatch.setattr("goal_plus.execution.process_identity.boot_identity", lambda: "test-boot")
     monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process", lambda pid: matches(pid, run_id, generation))
     monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process_group", lambda pid: (matches(pid, run_id, generation),) if alive else ())
     monkeypatch.setattr(annotator_module.os, "killpg", killpg)

@@ -1,6 +1,7 @@
 """Existing Goal authorization categories and pure session checks."""
 
 import re
+from goal_plus.domain.tool_identity import goal_plus_tool_name, native_tool_name
 from goal_plus.domain.goal import GoalPlusCommandConfig
 from goal_plus.domain.search import SearchSpec
 from goal_plus.domain.worker_policy import parse_worker_model_counts
@@ -78,10 +79,11 @@ def has_host_invocation(record: GoalPlusRecord, invocation_id: str) -> bool:
 
 
 def tool_matches(tool_name: str, suffix: str) -> bool:
-    return (
-        tool_name == suffix
-        or tool_name.endswith(f"__{suffix}")
-        or tool_name.endswith(f".{suffix}")
+    # Bare actions originate inside the dedicated runtime/Pi dispatcher. Host
+    # adapters must establish ownership before forwarding a bare action here.
+    return tool_name == suffix or goal_plus_tool_name(tool_name) == suffix or (
+        suffix in {"bash", "edit", "write", "shell", "exec_command", "apply_patch"}
+        and native_tool_name(tool_name) == suffix
     )
 
 

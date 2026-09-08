@@ -10,12 +10,30 @@ Real-host system tests additionally require ``--run-system-tests``.
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
 from tests.st.hosts import ST_ACTIVE_ENV
 
 _OPT_IN_MARKERS = ("integration", "example")
+
+
+@pytest.fixture
+def scope_owner(monkeypatch):
+    """Model only the current owner for scope-state tests with no real children."""
+    from goal_plus.execution import process_identity, scope_activation
+    from goal_plus.ports.process_identity import ProcessSnapshot
+
+    owner = ProcessSnapshot(os.getpid(), "test-owner", os.getpgrp(), "S")
+
+    def inspect(pid):
+        assert pid == owner.pid, "scope_owner does not model child processes"
+        return owner
+
+    monkeypatch.setattr(process_identity, "inspect_process", inspect)
+    monkeypatch.setattr(scope_activation, "inspect_process", inspect)
+    return owner
 
 
 @pytest.fixture
@@ -62,6 +80,10 @@ def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
     """Gate selected tests before any fixture can start a real host."""
+    if sys.platform != "linux":
+        for item in items:
+            if item.get_closest_marker("linux_procfs") is not None:
+                item.add_marker(pytest.mark.skip(reason="requires Linux /proc process identity and lifecycle"))
     system_items = [
         item
         for item in items

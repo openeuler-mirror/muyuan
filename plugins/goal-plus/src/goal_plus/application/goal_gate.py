@@ -14,9 +14,12 @@ from goal_plus.domain.goal import (
 )
 
 from goal_plus.domain.goal_authorization import (
+    GOAL_SCOPED_TOOL_SUFFIXES,
+    LINKED_SEARCH_TOOL_SUFFIXES,
     SEARCH_RECOVERY_TOOL_SUFFIXES,
     tool_matches,
 )
+from goal_plus.domain.tool_identity import goal_plus_tool_name
 
 
 from goal_plus.ports.goal_state import GoalState
@@ -71,7 +74,8 @@ class GoalGate:
                     record, event, "allow", reason="host_not_ready_for_automatic_turn"
                 )
             if record.control.state != "active":
-                tool = tool_name(context).rsplit("__", 1)[-1]
+                owned_tool = goal_plus_tool_name(tool_name(context))
+                tool = owned_tool or tool_name(context)
                 if (
                     tool == "goal_plus_gate"
                     and tool_input(context).get("event") == "stop"
@@ -94,9 +98,10 @@ class GoalGate:
                     "search_report",
                     "search_run_verifier",
                 }
-                is_domain = tool.startswith(
-                    ("goal_plus_", "search_", "pi_search_pool_", "pi_goal_plus_")
-                )
+                is_domain = owned_tool is not None or tool in {
+                    *GOAL_SCOPED_TOOL_SUFFIXES, *LINKED_SEARCH_TOOL_SUFFIXES,
+                    "pi_goal_plus_run_final_check", "pi_goal_plus_run_work_item",
+                }
                 if (
                     event == "pre_tool_use"
                     and is_domain

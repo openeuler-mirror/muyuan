@@ -41,6 +41,7 @@ def pool_job(tmp_path):
     return runtime.root_dir, pool["pool_id"], submitted["job_id"]
 
 
+@pytest.mark.linux_procfs
 def test_pool_rejects_a_live_unrelated_pid_without_signalling(pool_job, monkeypatch):
     root, pool_id, job_id = pool_job
     kill = os.kill
@@ -129,6 +130,7 @@ def test_pool_observation_unknown_preserves_job_and_fences_close(pool_job, monke
     assert pi_pool._job_path(root, pool_id, job_id).read_bytes() == before
 
 
+@pytest.mark.linux_procfs
 @pytest.mark.parametrize("mode", ["drain", "interrupt"])
 def test_terminal_job_does_not_prove_resource_exit(pool_job, monkeypatch, mode):
     root, pool_id, job_id = pool_job
@@ -201,6 +203,7 @@ def test_worker_rejects_a_request_outside_its_job_binding(pool_job, monkeypatch,
     assert pi_pool._job_path(root, pool_id, job_id).read_bytes() == before
 
 
+@pytest.mark.linux_procfs
 @pytest.mark.parametrize("after_write", [False, True])
 @pytest.mark.parametrize("error", [OSError, KeyboardInterrupt])
 def test_launch_publication_failure_cannot_start_candidate(pool_job, monkeypatch, tmp_path, after_write, error):
@@ -286,6 +289,7 @@ def test_pool_launch_stream_close_failure_reaps_its_child(pool_job, monkeypatch,
             process.wait(timeout=5)
 
 
+@pytest.mark.linux_procfs
 def test_dead_job_does_not_keep_its_minimum_lease(pool_job, monkeypatch):
     root, pool_id, _ = pool_job
     monkeypatch.setenv("GOAL_PLUS_OUTER_DEADLINE_AT", str(time.time() + 1000))
@@ -314,6 +318,7 @@ def test_pool_rejects_unbounded_close_before_writing_a_fence(pool_job, timeout):
     assert pi_pool._pool_path(root, pool_id).read_bytes() == before
 
 
+@pytest.mark.linux_procfs
 def test_unknown_job_does_not_prevent_stopping_other_owned_resources(pool_job, monkeypatch):
     root, pool_id, job_id = pool_job
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
@@ -362,6 +367,7 @@ def test_initial_pool_open_cleans_up_after_launch_interrupt(pool_job, monkeypatc
     assert pi_pool._load_pool(root, launched[0])["state"] == "closed"
 
 
+@pytest.mark.linux_procfs
 def test_actual_pool_command_is_identifiable_before_claim(pool_job, monkeypatch):
     root, pool_id, _ = pool_job
     job_id = "job_unregistered"
@@ -396,6 +402,7 @@ def test_actual_pool_command_is_identifiable_before_claim(pool_job, monkeypatch)
             process.wait(timeout=5)
 
 
+@pytest.mark.linux_procfs
 def test_orphaned_pool_group_is_unknown_until_its_members_exit(pool_job):
     root, pool_id, job_id = pool_job
     leader = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], process_group=0)
