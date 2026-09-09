@@ -643,6 +643,17 @@ def test_search_command_config_may_remain_unused_when_main_finishes_in_goal_mode
     assert completed.search_tasks == []
 
 
+def test_set_status_rejects_unknown_value_without_mutating_goal(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    record = runtime.create_goal("Keep state valid")
+    before = record.model_dump(mode="json")
+
+    with pytest.raises(ValidationError):
+        runtime.set_status(record.goal_plus_id, "completed")  # type: ignore[arg-type]
+
+    assert runtime.status(record.goal_plus_id).model_dump(mode="json") == before
+
+
 @pytest.mark.parametrize(
     "raw_goal",
     [

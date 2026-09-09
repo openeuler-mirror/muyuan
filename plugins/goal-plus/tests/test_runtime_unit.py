@@ -2325,13 +2325,17 @@ def test_create_rejects_failed_workspace_capacity_preflight(tmp_path: Path) -> N
         runtime.create_run(frozen.frozen_spec_id)
 
 
+@pytest.mark.parametrize("ignore_runtime", [False, True])
 def test_git_run_local_worktree_and_apply_work_inside_source_gp(
     tmp_path: Path,
+    ignore_runtime: bool,
 ) -> None:
     project = make_project(tmp_path)
-    project.joinpath(".gitignore").write_text(".gp/\n", encoding="utf-8")
+    if ignore_runtime:
+        project.joinpath(".gitignore").write_text(".gp/\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=project, check=True)
     source_head = git_commit_all(project, "source baseline")
+    exclude_before = project.joinpath(".git/info/exclude").read_bytes()
     data = spec_for(project, max_parallel=1).model_dump(mode="json")
     data["workspace"] = {"backend": "git_worktree"}
     runtime = FileSearchRuntime(project / ".gp")
@@ -2363,7 +2367,59 @@ def test_git_run_local_worktree_and_apply_work_inside_source_gp(
     ).strip() == "1"
     assert subprocess.check_output(
         ["git", "status", "--porcelain"], cwd=project, text=True
-    ).strip() == ""
+    ).strip() == ("" if ignore_runtime else "?? .gp/")
+    assert project.joinpath(".gitignore").exists() == ignore_runtime
+    assert project.joinpath(".git/info/exclude").read_bytes() == exclude_before
+
+
+@pytest.mark.parametrize("source_problem", ["staged", "unstaged", "untracked", "git_error"])
+def test_git_promotion_rejects_unsafe_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_problem: str,
+) -> None:
+    project = make_project(tmp_path)
+    _initialize_source_repository(project)
+    source_head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True
+    )
+    runtime = FileSearchRuntime(project / ".gp")
+    frozen = runtime.freeze_spec(
+        _spec_with_workspace_backend(project, "git_worktree"),
+        [project / "evaluator.py"],
+        native_host="codex",
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    task.workspace.joinpath("initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
+    runtime.run_verifier(run_id, task.candidate_id)
+    runtime.select(run_id)
+    runtime.promote(run_id, task.candidate_id)
+    publication = runtime.promotion_record(run_id).publication_artifact_ref
+    assert publication is not None
+
+    source_file = project / ("scratch.txt" if source_problem == "untracked" else "initial_program.py")
+    if source_problem == "git_error":
+        monkeypatch.setenv("GIT_INDEX_FILE", str(project / "config.yaml"))
+    else:
+        source_file.write_text("VALUE = 2\n", encoding="utf-8")
+        if source_problem == "staged":
+            subprocess.run(["git", "add", source_file.name], cwd=project, check=True)
+    source_before = source_file.read_bytes()
+    index_before = project.joinpath(".git/index").read_bytes()
+    reason = "git workspace command failed" if source_problem == "git_error" else "dirty source repository"
+    with pytest.raises(RuntimeError, match=reason):
+        runtime.apply_promotion(run_id)
+
+    assert source_file.read_bytes() == source_before
+    assert project.joinpath(".git/index").read_bytes() == index_before
+    assert subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, text=True
+    ) == source_head
+    assert subprocess.run(
+        ["git", "cat-file", "-e", publication.id], cwd=project, capture_output=True
+    ).returncode != 0
 
 
 def test_git_promotion_apply_is_noop_when_product_tree_is_unchanged(
@@ -2403,7 +2459,7 @@ def test_git_promotion_applies_nested_source_subdir_only(tmp_path: Path) -> None
     source_head = git_commit_all(repository, "source baseline")
     data = spec_for(project, max_parallel=1).model_dump(mode="json")
     data["workspace"] = {"backend": "git_worktree"}
-    runtime = FileSearchRuntime(tmp_path / ".gp")
+    runtime = FileSearchRuntime(project / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
         [project / "evaluator.py"], native_host="codex",

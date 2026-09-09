@@ -1,6 +1,6 @@
 ---
 name: goal-plus-with-final-check
-description: 仅供 Goal Plus Main Agent 运行带独立最终检查的 Codex Goal Plus；不适用于 Search candidate worker。
+description: Internal Goal Plus plugin skill for an already-bound Goal Plus Main Agent to run an independent final check. Not for Search candidate workers; do not invoke manually.
 ---
 
 # 带最终检查的 Goal Plus

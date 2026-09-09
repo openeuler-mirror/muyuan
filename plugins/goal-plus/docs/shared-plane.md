@@ -467,10 +467,13 @@ baseline ref 与各 candidate worktree。`source_path` 位于 repository 子目�
 
 Git-backed source 的规范输入是 clean `HEAD`。`search_freeze_spec` 在 origin verifier 前检查
 整个 repository，验证后再次检查并把 HEAD 固定为 `source_artifact_ref`；`search_create` 在写入
-run 前复检 clean 状态和准确 commit。staged、unstaged 或 non-ignored untracked 任一存在都会
-以 `DirtySourceWorkspace` 失败，clean 但 HEAD 已变化则以 `FrozenSourceChanged` 失败。Runtime
-不自动 stash、clean 或提交 source。`.gp`、`.search`、`.tmp` 等既有 runtime-noise 排除项不参与
-判脏。确实要把当前目录状态作为输入时，显式使用 `copy + artifact_only`。
+run 前复检 clean 状态和准确 commit。
+
+Freeze、create 和 apply 共用 Git 状态检查，范围为整个 source repository，排除 `.gp`、
+`.search`、`.tmp` 等 runtime-noise。其余 staged、unstaged 或 non-ignored untracked 变更，
+以及 Git 状态读取错误，均阻止当前操作。过滤只作用于状态读取，源码和 Git ignore 配置保持原样。
+Freeze/create 对源码变更返回 `DirtySourceWorkspace`；创建 run 时若 clean HEAD 与冻结 commit
+不一致，则返回 `FrozenSourceChanged`。需要以当前目录状态作为输入时，使用 `copy + artifact_only`。
 
 run-local mirror 以 frozen commit 建立 baseline。`search_start_batch` 先物化 `c001`，确认其 HEAD
 与 frozen artifact 一致，并在该 logical workspace 重跑 process verifier；只有通过后才创建

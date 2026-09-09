@@ -12,7 +12,7 @@ from goal_plus.application.candidate_host import ThinkThreadCandidatePreparation
 from goal_plus.application.candidate_queries import CandidateHostQueries
 from goal_plus.domain.evidence import IterationRecord, ResultLedgerEntry
 from goal_plus.domain.worker_policy import normalize_worker_budget_override
-from tests._runtime_helpers import make_project
+from tests._runtime_helpers import make_project, spec_for
 from tests.test_thinkthread_integration import IntegratedAgentPosix, thinkthread_spec
 
 
@@ -39,6 +39,40 @@ def domain_files(root: Path):
     return {
         str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*.json")
     }
+
+
+@pytest.mark.parametrize(
+    "recorded_role,requested_role",
+    [("default", None), ("default", "default"), ("default", "explorer"),
+     ("explorer", None), ("explorer", "explorer")],
+)
+def test_codex_launch_default_role_semantics(tmp_path, recorded_role, requested_role):
+    project = make_project(tmp_path)
+    spec = spec_for(project, max_parallel=1)
+    spec.strategy.worker_agent_type = recorded_role
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+    queries = SearchHostService(runtime.root_dir, runtime=runtime).queries
+    spawn_input = dict(session.launch)
+    if requested_role is None:
+        spawn_input.pop("agent_type")
+    else:
+        spawn_input["agent_type"] = requested_role
+    before = domain_files(runtime.root_dir)
+    if (requested_role or "default") == recorded_role:
+        assert queries.require_native_execution(
+            session.agent_session_id, now=0.0, spawn_input=spawn_input,
+        ) == session
+    else:
+        with pytest.raises(RuntimeError, match="native launch contract mismatch: agent_type"):
+            queries.require_native_execution(
+                session.agent_session_id, now=0.0, spawn_input=spawn_input,
+            )
+    assert domain_files(runtime.root_dir) == before
 
 
 @pytest.mark.parametrize("invalidated", [False, True])

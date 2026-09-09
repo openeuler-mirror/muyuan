@@ -5,7 +5,7 @@ from pathlib import Path
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.search import SearchSpec
 from goal_plus.infrastructure.artifacts.git import git_output
-from goal_plus.workspaces import LocalGitWorkspace, IGNORED_NAMES, IGNORED_SUFFIXES
+from goal_plus.workspaces import LocalGitWorkspace, git_status
 
 
 class SourceRepository:
@@ -21,31 +21,15 @@ class SourceRepository:
         ignore_runtime_noise: bool = False,
         strict: bool = False,
     ) -> list[str]:
-        command = ["git", "status", "--porcelain=v1", "--untracked-files=all"]
-        if ignore_runtime_noise:
-            exclusions = [
-                pattern
-                for name in sorted(IGNORED_NAMES - {".git"})
-                for pattern in (
-                    f":(exclude){name}/**",
-                    f":(exclude)**/{name}/**",
-                )
-            ]
-            exclusions.extend(
-                f":(exclude)**/*{suffix}" for suffix in sorted(IGNORED_SUFFIXES)
-            )
-            command.extend(["--", ".", *exclusions])
         try:
-            value = git_output(workspace, command)
-        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            return git_status(workspace, ignore_runtime_noise=ignore_runtime_noise)
+        except RuntimeError as exc:
             if strict:
-                detail = getattr(exc, "stderr", "") or str(exc)
                 raise RuntimeError(
                     "SourceGitPreflightFailed: could not inspect the source Git "
-                    f"repository at {workspace}: {detail.strip()}"
+                    f"repository at {workspace}: {exc}"
                 ) from exc
             return []
-        return [line for line in value.splitlines() if line.strip()]
 
     def validate_clean_source_repository(self, spec: SearchSpec) -> None:
         if spec.workspace.backend != "git_worktree":
