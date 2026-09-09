@@ -1,6 +1,0 @@
-interface:
-  display_name: "Goal Plus Search"
-  short_description: "Internal Search workflow; do not invoke manually"
-  default_prompt: "Use $search to run the linked Goal Plus Search task."
-policy:
-  allow_implicit_invocation: false

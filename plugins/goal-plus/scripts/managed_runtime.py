@@ -18,9 +18,7 @@ import subprocess
 SCHEMA = "goal-plus.managed-runtime.v1"
 PYTHON_VERSION = "3.12"
 PACKAGE_PATHS = (
-    "src", "scripts", "hooks", "skills", ".codex/skills", ".codex/agents",
-    ".codex/hooks.example.json", ".codex/config.example.toml", ".codex-plugin",
-    ".pi/extensions", ".pi/skills", ".pi/prompts", ".mcp.json", "package.json", "pyproject.toml",
+    "src", "scripts", "assets", "pyproject.toml",
     "uv.lock", "README.md", "README_zh.md", "SPEC.md", "AGENTS.md", "docs", "examples",
     "LICENSE", "install.sh", "uninstall.sh",
 )
@@ -113,31 +111,38 @@ def prepare(source: Path, *, dry_run: bool = False) -> Path:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(content)
                 target.chmod((source / relative).stat().st_mode & 0o777)
-            manifest_path = package / ".codex-plugin/plugin.json"
-            if manifest_path.is_file():
-                manifest = json.loads(manifest_path.read_text())
+            codex_assets = package / "assets/codex"
+            if (codex_assets / "plugin.json").is_file():
+                manifest_path = package / ".codex-plugin/plugin.json"
+                manifest_path.parent.mkdir(parents=True)
+                manifest = json.loads((codex_assets / "plugin.json").read_text())
                 manifest["version"] = manifest["version"].split("+")[0] + "+" + build
                 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
                 # Only prepared releases may participate in Codex discovery.
-                marketplace = json.loads((package / "scripts/templates/codex-marketplace.json").read_text())
+                marketplace = json.loads((codex_assets / "marketplace.json").read_text())
                 marketplace_path = package / ".agents/plugins/marketplace.json"
                 marketplace_path.parent.mkdir(parents=True, exist_ok=True)
                 marketplace_path.write_text(json.dumps(marketplace, indent=2) + "\n")
+                shutil.copytree(codex_assets / "skills", package / "skills")
+            pi_manifest = package / "assets/pi/package.json"
+            if pi_manifest.is_file():
+                shutil.copyfile(pi_manifest, package / "package.json")
             # Codex removes old cache directories on refresh. Commands already
             # loaded by an older session must keep working from its release.
             launcher = package / "scripts/run-runtime.sh"
-            for name in ("hooks/hooks.json", ".codex/hooks.example.json"):
-                path = package / name
-                if path.is_file():
-                    hooks = json.loads(path.read_text())
-                    for groups in hooks["hooks"].values():
-                        for group in groups:
-                            for handler in group["hooks"]:
-                                handler["command"] = "bash " + shlex.quote(str(launcher)) + " --goal-plus-host-hook"
-                    path.write_text(json.dumps(hooks, indent=2) + "\n")
+            hook_template = codex_assets / "hooks.json"
+            if hook_template.is_file():
+                hooks = json.loads(hook_template.read_text())
+                for groups in hooks["hooks"].values():
+                    for group in groups:
+                        for handler in group["hooks"]:
+                            handler["command"] = "bash " + shlex.quote(str(launcher)) + " --goal-plus-host-hook"
+                path = package / "hooks/hooks.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(hooks, indent=2) + "\n")
             mcp_path = package / ".mcp.json"
-            if mcp_path.is_file():
-                mcp = json.loads(mcp_path.read_text())
+            if (codex_assets / "mcp.json").is_file():
+                mcp = json.loads((codex_assets / "mcp.json").read_text())
                 mcp["mcpServers"]["goal-plus"]["args"][0] = str(launcher)
                 mcp_path.write_text(json.dumps(mcp, indent=2) + "\n")
             info = {"schema": SCHEMA, "build": build, "source": str(source),

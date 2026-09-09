@@ -9,10 +9,10 @@
   ],
   "pi": {
     "extensions": [
-      ".pi/extensions/goal-plus.ts"
+      "assets/pi/extensions/goal-plus.ts"
     ],
     "skills": [
-      ".pi/skills/goal-plus/SKILL.md"
+      "assets/pi/skills/goal-plus/SKILL.md"
     ]
   }
 }

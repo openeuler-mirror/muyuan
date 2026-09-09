@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import json
 import math
@@ -522,12 +523,12 @@ def _build_thinkthread_profile(
     _append_agent_argument(
         arguments,
         "--extension",
-        package_root / ".pi" / "extensions" / "goal-plus.ts",
+        package_root / "assets/pi/extensions/goal-plus.ts",
     )
     _append_agent_argument(
         arguments,
         "--skill",
-        package_root / ".pi" / "skills" / "goal-plus" / "SKILL.md",
+        package_root / "assets/pi/skills/goal-plus/SKILL.md",
     )
     agent["args"] = arguments
 
@@ -971,7 +972,7 @@ def _codex_marketplaces(codex: str) -> dict[str, Path]:
     return marketplaces
 
 
-def _preflight_codex(codex: str) -> bool:
+def _preflight_codex(codex: str, *, allow_replacement: bool = False) -> bool:
     root = ROOT.resolve()
     conflicts: list[str] = []
     legacy_plugin_installed = False
@@ -994,14 +995,14 @@ def _preflight_codex(codex: str) -> bool:
             legacy_plugin_installed = legacy_plugin_installed or (
                 plugin_id == "goal-plus@goal-plus-local"
             )
-        elif resolved_source is not None and managed_runtime.source_owner(resolved_source) != root:
+        elif not allow_replacement and resolved_source is not None and managed_runtime.source_owner(resolved_source) != root:
             conflicts.append(
                 f"{NORMAL_CODEX_PLUGIN_ID!r} points to {resolved_source}, expected {root}"
             )
 
     marketplaces = _codex_marketplaces(codex)
     marketplace_root = marketplaces.get(NORMAL_CODEX_MARKETPLACE)
-    if marketplace_root is not None and managed_runtime.source_owner(marketplace_root) != root:
+    if not allow_replacement and marketplace_root is not None and managed_runtime.source_owner(marketplace_root) != root:
         conflicts.append(
             f"Codex marketplace {NORMAL_CODEX_MARKETPLACE!r} points to "
             f"{marketplace_root}, expected {root}"
@@ -1076,6 +1077,8 @@ def _source_is_goal_plus(source: str, settings_path: Path) -> tuple[bool, Path |
     local_path = _local_source_path(source, settings_path)
     if local_path is not None:
         manifest = local_path / "package.json"
+        if not manifest.is_file():
+            manifest = local_path / "assets/pi/package.json"
         if manifest.is_file():
             try:
                 payload = json.loads(manifest.read_text(encoding="utf-8"))
@@ -1105,7 +1108,9 @@ def _settings_goal_plus_entries(
     if not settings_path.is_file():
         return []
     payload = _read_json(settings_path)
-    packages = payload.get("packages", []) if isinstance(payload, dict) else []
+    if not isinstance(payload, dict):
+        raise InstallError(f"Pi settings must be an object: {settings_path}")
+    packages = payload.get("packages", [])
     if not isinstance(packages, list):
         raise InstallError(f"Pi settings packages must be a list: {settings_path}")
     matches: list[dict[str, Any]] = []
@@ -1126,9 +1131,48 @@ def _settings_goal_plus_entries(
     return matches
 
 
+def _pi_resource_is_goal_plus(path: Path) -> bool:
+    return path.name in {"goal-plus.ts", "goal-plus.js", "goal-plus"} or (
+        path.name == "SKILL.md" and path.parent.name == "goal-plus"
+    )
+
+
+def _pi_configured_resources(settings_path: Path, *, scope: str) -> list[dict[str, Any]]:
+    if not settings_path.is_file():
+        return []
+    payload = _read_json(settings_path)
+    matches = []
+    for field in ("extensions", "skills"):
+        entries = payload.get(field, [])
+        if not isinstance(entries, list):
+            raise InstallError(f"Pi settings {field} must be a list: {settings_path}")
+        for source in entries:
+            if not isinstance(source, str) or source.startswith(("!", "-")):
+                continue
+            local = _local_source_path(source.removeprefix("+"), settings_path)
+            if local is None:
+                continue
+            paths = [Path(p) for p in glob.glob(str(local), recursive=True)]
+            for path in paths or [local]:
+                candidates = [path]
+                if path.is_dir() and not _pi_resource_is_goal_plus(path):
+                    candidates.extend(
+                        (p for p in path.iterdir() if p.suffix in {".ts", ".js"})
+                        if field == "extensions" else path.rglob("SKILL.md")
+                    )
+                for candidate in candidates:
+                    if _pi_resource_is_goal_plus(candidate):
+                        matches.append({"scope": scope, "source": source,
+                                        "resolved_path": candidate.resolve(),
+                                        "settings_path": settings_path, "field": field,
+                                        "removable": local == candidate and not glob.has_magic(source)})
+    return matches
+
+
 def _pi_goal_plus_entries(*, cwd: Path | None = None) -> list[dict[str, Any]]:
     agent_dir = _pi_agent_dir()
     matches = _settings_goal_plus_entries(agent_dir / "settings.json", scope="user")
+    matches.extend(_pi_configured_resources(agent_dir / "settings.json", scope="user"))
     loose_paths = [
         ("user", agent_dir / "extensions" / "goal-plus.ts"),
         ("user", agent_dir / "skills" / "goal-plus"),
@@ -1157,6 +1201,7 @@ def _pi_goal_plus_entries(*, cwd: Path | None = None) -> list[dict[str, Any]]:
     if cwd is not None:
         project_settings = cwd.resolve() / ".pi" / "settings.json"
         matches.extend(_settings_goal_plus_entries(project_settings, scope="project"))
+        matches.extend(_pi_configured_resources(project_settings, scope="project"))
     return matches
 
 
@@ -1165,8 +1210,24 @@ def _render_pi_entries(entries: list[dict[str, Any]]) -> str:
     for entry in entries:
         resolved = entry.get("resolved_path")
         suffix = f" -> {resolved}" if resolved else ""
-        lines.append(f"[{entry['scope']}] {entry['source']}{suffix}")
+        field = entry.get("field", "packages")
+        lines.append(f"[{entry['scope']}] {field}: {entry['source']}{suffix}")
     return "\n  - ".join(lines)
+
+
+def _remove_pi_resource_registrations(entries: list[dict[str, Any]], *, dry_run: bool) -> None:
+    for settings in {entry["settings_path"] for entry in entries}:
+        if dry_run:
+            print("Would remove explicit Goal Plus resource registrations from", settings)
+            continue
+        payload = _read_json(settings)
+        for entry in entries:
+            if entry["settings_path"] == settings:
+                if not entry.get("removable"):
+                    raise InstallError(f"Cannot remove a shared Pi resource path: {entry['source']}")
+                field = entry["field"]
+                payload[field] = [source for source in payload.get(field, []) if source != entry["source"]]
+        _atomic_write(settings, json.dumps(payload, indent=2) + "\n")
 
 
 def _pi_conflict_uninstall_commands(entries: list[dict[str, Any]]) -> list[str]:
@@ -1176,6 +1237,8 @@ def _pi_conflict_uninstall_commands(entries: list[dict[str, Any]]) -> list[str]:
         resolved = entry.get("resolved_path")
         settings_path = entry.get("settings_path")
         source = entry.get("source")
+        if entry.get("field") in {"extensions", "skills"}:
+            continue
         if (
             settings_path is not None
             and isinstance(resolved, Path)
@@ -1203,7 +1266,7 @@ def _render_pi_conflict_remediation(entries: list[dict[str, Any]]) -> str:
     )
 
 
-def _preflight_pi_normal() -> bool:
+def _preflight_pi_normal(*, allow_replacement: bool = False) -> bool:
     entries = _pi_goal_plus_entries()
     root = ROOT.resolve()
     same_root = False
@@ -1211,7 +1274,10 @@ def _preflight_pi_normal() -> bool:
     for entry in entries:
         resolved = entry.get("resolved_path")
         settings_path = entry.get("settings_path")
-        if settings_path is not None and resolved is not None and managed_runtime.source_owner(resolved) == root:
+        if allow_replacement and entry.get("removable"):
+            same_root = True
+        elif (entry.get("field", "packages") == "packages" and settings_path is not None
+                and (allow_replacement or resolved is not None and managed_runtime.source_owner(resolved) == root)):
             same_root = True
         else:
             conflicts.append(entry)
@@ -1228,9 +1294,9 @@ def _preflight_pi_dev(*, cwd: Path | None = None) -> None:
     entries = _pi_goal_plus_entries(cwd=cwd)
     root = ROOT.resolve()
     allowed_paths = {
-        root,
-        (root / ".pi" / "extensions" / "goal-plus.ts").resolve(),
-        (root / ".pi" / "skills" / "goal-plus").resolve(),
+        (root / "assets/pi/extensions/goal-plus.ts").resolve(),
+        (root / "assets/pi/skills/goal-plus").resolve(),
+        (root / "assets/pi/skills/goal-plus/SKILL.md").resolve(),
     }
     conflicts = [
         entry
@@ -1315,10 +1381,10 @@ def _render_pi_launcher(*, dev_dir: Path, pi_executable: str) -> str:
     venv = shlex.quote(str((dev_dir / "venv").resolve()))
     pi = shlex.quote(pi_executable)
     extension = shlex.quote(
-        str((ROOT / ".pi" / "extensions" / "goal-plus.ts").resolve())
+        str((ROOT / "assets/pi/extensions/goal-plus.ts").resolve())
     )
     skill = shlex.quote(
-        str((ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md").resolve())
+        str((ROOT / "assets/pi/skills/goal-plus/SKILL.md").resolve())
     )
     installer = shlex.quote(str(Path(__file__).resolve()))
     return f"""#!/usr/bin/env bash
@@ -1494,7 +1560,7 @@ def _verify_codex_installation(codex: str, package: Path) -> None:
             raise InstallError(f"Codex cache mismatch: {cache / name} does not match {package / name}")
 
 
-def _install_codex(*, codex: str, package: Path, dry_run: bool) -> None:
+def _install_codex(*, codex: str, package: Path, dry_run: bool, reinstall: bool = False) -> None:
     previous = _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE)
     previously_installed = previous is not None or (not dry_run and any(
         item.get("pluginId") == NORMAL_CODEX_PLUGIN_ID for item in _codex_inventory(codex)
@@ -1502,6 +1568,8 @@ def _install_codex(*, codex: str, package: Path, dry_run: bool) -> None:
     changed = previous is not None and previous != package
     managed_runtime.bind("codex-pending", _codex_config(), package, dry_run=dry_run)
     try:
+        if reinstall and any(item.get("pluginId") == NORMAL_CODEX_PLUGIN_ID for item in _codex_inventory(codex)):
+            _run([codex, "plugin", "remove", NORMAL_CODEX_PLUGIN_ID], dry_run=dry_run)
         if changed:
             _run([codex, "plugin", "marketplace", "remove", NORMAL_CODEX_MARKETPLACE], dry_run=dry_run)
         if previous != package:
@@ -1509,7 +1577,7 @@ def _install_codex(*, codex: str, package: Path, dry_run: bool) -> None:
         _run([codex, "plugin", "add", NORMAL_CODEX_PLUGIN_ID], dry_run=dry_run)
         if not dry_run:
             _verify_codex_installation(codex, package)
-    except (OSError, subprocess.CalledProcessError, InstallError):
+    except (OSError, subprocess.CalledProcessError, RuntimeError, KeyboardInterrupt):
         # Restore the exact prior source if registration failed after preparation.
         if changed:
             current = _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE)
@@ -1525,6 +1593,8 @@ def _install_codex(*, codex: str, package: Path, dry_run: bool) -> None:
             current = _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE)
             if current == package:
                 _run([codex, "plugin", "marketplace", "remove", NORMAL_CODEX_MARKETPLACE], dry_run=False)
+        elif reinstall:
+            _run([codex, "plugin", "add", NORMAL_CODEX_PLUGIN_ID], dry_run=False)
         managed_runtime.unbind("codex-pending", _codex_config())
         raise
     managed_runtime.bind("codex", _codex_config(), package, dry_run=dry_run)
@@ -1532,34 +1602,64 @@ def _install_codex(*, codex: str, package: Path, dry_run: bool) -> None:
     print("Codex installation is ready. Start a new thread, trust /hooks, then start another thread.")
 
 
-def _install_pi(*, pi: str, package: Path, dry_run: bool) -> None:
-    entries = [entry for entry in _pi_goal_plus_entries() if entry.get("settings_path") is not None]
+def _verify_pi_installation(pi: str, package: Path) -> None:
+    entries = _pi_goal_plus_entries()
+    if (len(entries) != 1 or entries[0].get("field", "packages") != "packages"
+            or entries[0].get("resolved_path") != package.resolve()):
+        raise InstallError(f"Pi registration mismatch: expected exactly one package from {package}")
+    result = _run([_require_executable("node"), str(SCRIPT_DIR / "inspect-pi.mjs"),
+                   pi, str(_pi_agent_dir()), str(Path.cwd())], capture=True)
+    try:
+        resources = json.loads(result.stdout)
+        for field, suffix in (("extensions", "extensions/goal-plus.ts"),
+                              ("skills", "skills/goal-plus/SKILL.md")):
+            expected = (package / "assets/pi" / suffix).resolve()
+            actual = {Path(item["path"]).resolve() for item in resources[field]
+                      if item["enabled"] and _pi_resource_is_goal_plus(Path(item["path"]))}
+            actual = {p / "SKILL.md" if p.is_dir() else p for p in actual}
+            if actual != {expected}:
+                raise InstallError(f"Pi {field} mismatch: expected {expected}; got {sorted(map(str, actual))}")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise InstallError(f"Could not decode Pi resource inventory: {exc}") from exc
+    managed_runtime.verify(package)
+
+
+def _install_pi(*, pi: str, package: Path, dry_run: bool, reinstall: bool = False) -> None:
+    registrations = _pi_goal_plus_entries()
+    entries = [entry for entry in registrations if entry.get("settings_path") is not None
+               and entry.get("field", "packages") == "packages"]
+    resources = [entry for entry in registrations if entry.get("field") in {"extensions", "skills"}]
     settings = _pi_agent_dir() / "settings.json"
     original = settings.read_text() if settings.is_file() else None
     removed: set[str] = set()
     managed_runtime.bind("pi-pending", _pi_agent_dir(), package, dry_run=dry_run)
     try:
+        _remove_pi_resource_registrations(resources, dry_run=dry_run)
         for entry in entries:
-            if entry.get("resolved_path") == package:
+            if not reinstall and entry.get("resolved_path") == package:
                 continue
             # Pi stores relative paths relative to settings.json, whereas its CLI
             # resolves local arguments against CWD.
             source = _pi_cli_source(entry)
             _run([pi, "remove", source], dry_run=dry_run)
             removed.add(entry["source"])
-        if not any(entry.get("resolved_path") == package for entry in entries):
+        if reinstall or not any(entry.get("resolved_path") == package for entry in entries):
             _run([pi, "install", str(package)], dry_run=dry_run)
         if not dry_run and original and removed:
             # Preserve package-level extension/skill filters during a local-path update.
             old_packages = json.loads(original).get("packages", [])
             current = _read_json(settings)
+            if not isinstance(current, dict):
+                raise InstallError(f"Pi settings must be an object after installation: {settings}")
             current["packages"] = [
                 ({**entry, "source": str(package)} if isinstance(entry, dict) else str(package))
                 if _package_source(entry) in removed else entry
                 for entry in old_packages
             ]
             _atomic_write(settings, json.dumps(current, indent=2) + "\n")
-    except (OSError, subprocess.CalledProcessError):
+        if not dry_run:
+            _verify_pi_installation(pi, package)
+    except (OSError, subprocess.CalledProcessError, RuntimeError, KeyboardInterrupt):
         if not dry_run:
             if original is None:
                 settings.unlink(missing_ok=True)
@@ -1572,6 +1672,28 @@ def _install_pi(*, pi: str, package: Path, dry_run: bool) -> None:
     print("Pi installation is ready. Restart Pi before using /goal-plus.")
 
 
+def _confirm_reinstall(installed: list[str], *, assume_yes: bool, dry_run: bool) -> bool:
+    if not installed:
+        return True
+    print("Goal Plus is already installed:\n  - " + "\n  - ".join(installed))
+    if dry_run:
+        print("Would ask to uninstall and reinstall the selected host registrations.")
+        return True
+    if assume_yes:
+        return True
+    while True:
+        try:
+            answer = input("Uninstall and reinstall these registrations? [y/N] ").strip().lower()
+        except EOFError:
+            answer = "n"
+        if answer in {"", "n", "no"}:
+            print("Installation cancelled; existing registrations are unchanged.")
+            return False
+        if answer in {"y", "yes"}:
+            return True
+        print("Please enter y or n.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Install Goal Plus for Codex, Pi, or a checkout-local Pi development launcher."
@@ -1582,6 +1704,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pi", action="store_true", help="Install the normal user-scoped Pi package."
     )
+    parser.add_argument("-y", "--yes", action="store_true", help="Confirm replacement of existing selected host registrations.")
     parser.add_argument(
         "--thinkthread",
         action="store_true",
@@ -1676,10 +1799,20 @@ def main(argv: list[str] | None = None) -> int:
             else None
         )
         codex_marketplace_exists = (
-            _preflight_codex(codex) if codex is not None else None
+            _preflight_codex(codex, allow_replacement=True) if codex is not None else None
         )
         if args.pi:
-            _preflight_pi_normal()
+            _preflight_pi_normal(allow_replacement=True)
+        installed = []
+        if codex is not None:
+            installed.extend(f"Codex: {item.get('pluginId')} from {item.get('source')}"
+                             for item in _codex_inventory(codex) if item.get("pluginId") == NORMAL_CODEX_PLUGIN_ID)
+            if codex_marketplace_exists and not installed:
+                installed.append(f"Codex marketplace: {_codex_marketplaces(codex)[NORMAL_CODEX_MARKETPLACE]}")
+        if args.pi:
+            installed.extend(f"Pi: {entry['source']}" for entry in _pi_goal_plus_entries())
+        if not _confirm_reinstall(installed, assume_yes=args.yes, dry_run=args.dry_run):
+            return 0
         package = managed_runtime.prepare(ROOT, dry_run=args.dry_run) if args.codex or args.pi else None
         thinkthread_sdk_plan = (
             _preflight_thinkthread_sdk(
@@ -1720,9 +1853,10 @@ def main(argv: list[str] | None = None) -> int:
                 codex=codex,
                 package=package,
                 dry_run=args.dry_run,
+                reinstall=True,
             )
         if args.pi and pi is not None:
-            _install_pi(pi=pi, package=package, dry_run=args.dry_run)
+            _install_pi(pi=pi, package=package, dry_run=args.dry_run, reinstall=True)
         if thinkthread_sdk_plan is not None:
             _install_thinkthread_sdk(
                 thinkthread_sdk_plan,
@@ -1740,7 +1874,7 @@ def main(argv: list[str] | None = None) -> int:
                 pi_executable=pi,
                 dry_run=args.dry_run,
             )
-    except (RuntimeError, subprocess.CalledProcessError, OSError) as exc:
+    except (RuntimeError, subprocess.CalledProcessError, OSError, KeyboardInterrupt) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0

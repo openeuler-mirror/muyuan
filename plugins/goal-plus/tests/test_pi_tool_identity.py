@@ -26,7 +26,7 @@ def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug):
         pytest.skip("Node with synchronous module hooks is required")
     result = subprocess.run(
         [node, "--experimental-strip-types", "--input-type=module", "-e", SCRIPT,
-         str(ROOT / ".pi/extensions/goal-plus.ts"), str(tmp_path)],
+         str(ROOT / "assets/pi/extensions/goal-plus.ts"), str(tmp_path)],
         env={**{key: value for key, value in os.environ.items()
                 if not key.startswith(("GOAL_PLUS_", "THINKTHREAD_"))},
              "GOAL_PLUS_PI_ROLE": role,
@@ -74,7 +74,7 @@ def test_pi_work_item_uses_compact_dispatch_and_rework_receipts(tmp_path):
         pytest.skip("Node with synchronous module hooks is required")
     result = subprocess.run(
         [node, "--experimental-strip-types", "--input-type=module", "-e", SCRIPT,
-         str(ROOT / ".pi/extensions/goal-plus.ts"), str(tmp_path)],
+         str(ROOT / "assets/pi/extensions/goal-plus.ts"), str(tmp_path)],
         env={**{key: value for key, value in os.environ.items()
                 if not key.startswith(("GOAL_PLUS_", "THINKTHREAD_"))},
              "GOAL_PLUS_PI_ROLE": "main", "GOAL_PLUS_PI_WORK_RECEIPT_TEST": "1"},

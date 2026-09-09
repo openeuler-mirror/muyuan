@@ -628,7 +628,7 @@ def test_thinkthread_autoresearch_launch_uses_pi_prompt_and_private_git_projecti
     assert binding["inner_agent_id"] == "autoresearch"
     assert binding["adapter_version"] == "builtin-autoresearch-git-v1"
     assert binding["worker_host"] == "thinkthread"
-    assert binding["prompt_asset"] == ".pi/prompts/search-candidate-worker.md"
+    assert binding["prompt_asset"] == "assets/pi/prompts/search-candidate-worker.md"
     assert binding["workspace_ledger_projection"] == "results_tsv"
     assert "# Search Candidate Worker" in session.launch["message"]
     assert "ThinkThread Child" in session.launch["message"]

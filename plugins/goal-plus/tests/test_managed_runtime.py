@@ -109,11 +109,12 @@ def test_shell_bootstrap_ignores_shell_python(entrypoint, tmp_path):
 
 def test_prepared_build_has_matching_manifest_receipt_and_interpreter(managed, tmp_path, monkeypatch):
     root = source(tmp_path)
-    (root / ".codex-plugin").mkdir()
-    (root / ".codex-plugin/plugin.json").write_text('{"version":"0.1.0"}')
-    template = root / "scripts/templates/codex-marketplace.json"
-    template.parent.mkdir(parents=True)
-    template.write_bytes((Path(__file__).parents[1] / "scripts/templates/codex-marketplace.json").read_bytes())
+    (root / "assets/codex/skills").mkdir(parents=True)
+    (root / "assets/codex/plugin.json").write_text('{"version":"0.1.0"}')
+    template = root / "assets/codex/marketplace.json"
+    template.parent.mkdir(parents=True, exist_ok=True)
+    (root / "assets/codex/skills/SKILL.md").write_text("fixture")
+    template.write_bytes((Path(__file__).parents[1] / "assets/codex/marketplace.json").read_bytes())
     before = managed.fingerprint(root)
     marketplace = json.loads(template.read_text())
     marketplace["interface"]["displayName"] = "Updated Goal Plus"
@@ -157,9 +158,9 @@ def test_prepared_host_commands_survive_removal_of_codex_cache(managed, tmp_path
     import shutil
     import sys
     root = source(tmp_path)
-    (root / "hooks").mkdir()
-    (root / "hooks/hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [{"command": "placeholder"}]}]}}))
-    (root / ".mcp.json").write_text(json.dumps({"mcpServers": {"goal-plus": {"args": ["placeholder", "--root", ".gp"]}}}))
+    (root / "assets/codex").mkdir(parents=True)
+    (root / "assets/codex/hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [{"command": "placeholder"}]}]}}))
+    (root / "assets/codex/mcp.json").write_text(json.dumps({"mcpServers": {"goal-plus": {"args": ["placeholder", "--root", ".gp"]}}}))
     (root / "scripts").mkdir()
     (root / "scripts/run-runtime.sh").write_text('#!/bin/sh\nprintf "release-launcher\\n"\n')
     original_run = subprocess.run

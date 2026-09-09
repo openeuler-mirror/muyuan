@@ -57,6 +57,7 @@ class UninstallPlan:
     notes: tuple[str, ...]
     goal_plus_thinkthread_profile_path: Path | None = None
     goal_plus_thinkthread_sdk_path: Path | None = None
+    pi_resources: tuple[dict[str, Any], ...] = ()
 
     @property
     def has_changes(self) -> bool:
@@ -65,6 +66,7 @@ class UninstallPlan:
                 self.remove_codex_plugin,
                 self.remove_codex_marketplace,
                 bool(self.pi_sources),
+                bool(self.pi_resources),
                 self.pi_dev_dir is not None,
                 self.pi_dev_registry_path is not None,
                 self.goal_plus_thinkthread_profile_path is not None,
@@ -134,6 +136,10 @@ def _pi_sources(
     sources: list[str] = []
     notes: list[str] = []
     for entry in install_support._pi_goal_plus_entries():
+        if entry.get("field") in {"extensions", "skills"}:
+            if not entry.get("removable"):
+                notes.append(f"Preserved shared Pi {entry['field']} path: {entry['source']}")
+            continue
         if entry.get("settings_path") is None:
             notes.append(f"Preserved loose Pi resource: {entry['source']}")
             continue
@@ -264,6 +270,11 @@ def _build_plan(
             pi,
             require_executable=remove_pi,
         )
+    pi_entries = install_support._pi_goal_plus_entries() if inspect_pi else []
+    pi_resources = tuple(entry for entry in pi_entries if entry.get("removable"))
+    retained_pi_resources = [entry for entry in pi_entries
+                            if (entry.get("settings_path") is None or entry.get("field"))
+                            and not entry.get("removable")]
 
     remove_dev_dir: Path | None = None
     remove_registry: Path | None = None
@@ -293,8 +304,10 @@ def _build_plan(
         remaining_hosts: list[str] = []
         if remove_runtime and not remove_codex and (codex_plugin or codex_marketplace):
             remaining_hosts.append("Codex")
-        if remove_runtime and not remove_pi and pi_sources:
+        if remove_runtime and not remove_pi and (pi_sources or pi_resources):
             remaining_hosts.append("Pi")
+        if remove_runtime and retained_pi_resources:
+            remaining_hosts.append("Pi resources requiring explicit removal")
         if (
             remove_runtime
             and not remove_thinkthread
@@ -315,6 +328,7 @@ def _build_plan(
         remove_codex_marketplace=remove_codex and codex_marketplace,
         pi_executable=pi if remove_pi else None,
         pi_sources=pi_sources if remove_pi else (),
+        pi_resources=pi_resources if remove_pi else (),
         pi_dev_dir=remove_dev_dir,
         pi_dev_registry_path=remove_registry,
         remove_runtime=remove_runtime,
@@ -339,6 +353,8 @@ def _print_plan(plan: UninstallPlan, *, dry_run: bool) -> None:
         print(f"- Codex marketplace: {install_support.NORMAL_CODEX_MARKETPLACE}")
     for source in plan.pi_sources:
         print(f"- Pi registration: {source}")
+    for entry in plan.pi_resources:
+        print(f"- Pi {entry['field']} registration: {entry['source']}")
     if plan.pi_dev_dir is not None:
         print(f"- Pi development environment: {plan.pi_dev_dir}")
     if plan.pi_dev_registry_path is not None:
@@ -384,6 +400,7 @@ def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
     for source in plan.pi_sources:
         assert plan.pi_executable is not None
         _run([plan.pi_executable, "remove", source], dry_run=dry_run)
+    install_support._remove_pi_resource_registrations(list(plan.pi_resources), dry_run=dry_run)
 
     if plan.goal_plus_thinkthread_profile_path is not None:
         if dry_run:
@@ -434,8 +451,12 @@ def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
             plan.pi_dev_registry_path.unlink(missing_ok=True)
     if plan.remove_codex_marketplace or plan.remove_codex_plugin:
         managed_runtime.unbind("codex", install_support._codex_config(), dry_run=dry_run)
-    if plan.pi_sources:
-        managed_runtime.unbind("pi", install_support._pi_agent_dir(), dry_run=dry_run)
+    if plan.pi_sources or plan.pi_resources:
+        remaining = install_support._pi_goal_plus_entries() if not dry_run else []
+        if any(entry.get("field") or entry.get("settings_path") is None for entry in remaining):
+            print("Preserved Pi runtime binding: loose or shared Goal Plus resources remain.")
+        else:
+            managed_runtime.unbind("pi", install_support._pi_agent_dir(), dry_run=dry_run)
     if plan.goal_plus_thinkthread_profile_path is not None:
         managed_runtime.unbind("thinkthread", plan.goal_plus_thinkthread_profile_path, dry_run=dry_run)
     if plan.remove_runtime:

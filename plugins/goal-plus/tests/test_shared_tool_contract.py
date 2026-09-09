@@ -11,7 +11,7 @@ from tests._fastmcp_helpers import tools_by_name
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PI_EXTENSION = ROOT / ".pi" / "extensions" / "goal-plus.ts"
+PI_EXTENSION = ROOT / "assets" / "pi" / "extensions" / "goal-plus.ts"
 pytestmark = [pytest.mark.codex, pytest.mark.pi]
 
 

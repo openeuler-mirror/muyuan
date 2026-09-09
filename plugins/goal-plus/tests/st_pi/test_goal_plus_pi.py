@@ -22,7 +22,7 @@ INSTALL_HINT = (
 )
 AUDIT_PROMPT = (
     "请只读审计当前分支的 Pi native Goal Plus 改造是否完整。范围限定为 "
-    ".pi/extensions/goal-plus.ts、.pi/skills/goal-plus/SKILL.md、docs/pi.md、"
+    "assets/pi/extensions/goal-plus.ts、assets/pi/skills/goal-plus/SKILL.md、docs/pi.md、"
     "tests/test_pi_assets.py。重点检查：/goal-plus 命令、session_start 状态恢复、"
     "before_agent_start 上下文注入、tool_call pre-tool gate、agent_end stop gate、"
     "terminal stats 输出。不要修改文件。最后给出结论，并把 Goal Plus 状态设为 complete。"
@@ -101,7 +101,7 @@ def _pi_base_command(session_dir: Path, session_id: str) -> list[str]:
         os.environ.get("ST_PI_BINARY", "pi"),
         "--no-extensions",
         "-e",
-        str(ROOT / ".pi" / "extensions" / "goal-plus.ts"),
+        str(ROOT / "assets" / "pi" / "extensions" / "goal-plus.ts"),
         "--approve",
         "--session-dir",
         str(session_dir),
@@ -773,7 +773,7 @@ def test_goal_plus_print_autonomously_enters_search(
     command = [
         *_pi_base_command(session_dir, "st-pi-goal-plus-autonomous-search"),
         "--skill",
-        str(ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md"),
+        str(ROOT / "assets" / "pi" / "skills" / "goal-plus" / "SKILL.md"),
         "-p",
         "/goal-plus " + AUTONOMOUS_OPTIMIZATION_PROMPT.replace(
             "examples/edgebench-ad-placement/workspace-template", str(source)
@@ -899,7 +899,7 @@ def test_circle_packing_git_common_agent_apply(
     command = [
         *_pi_base_command(session_dir, "st-pi-circle-git-common"),
         "--skill",
-        str(ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md"),
+        str(ROOT / "assets" / "pi" / "skills" / "goal-plus" / "SKILL.md"),
         "-p",
         prompt,
     ]

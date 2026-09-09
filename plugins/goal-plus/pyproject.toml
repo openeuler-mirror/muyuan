@@ -34,9 +34,4 @@ goal-plus-host-guardian = "goal_plus.host_scope:main"
 path = "src/goal_plus/_version.py"
 
 [tool.hatch.build.targets.wheel.force-include]
-".codex-plugin" = "goal_plus/_plugin_root/.codex-plugin"
-".mcp.json" = "goal_plus/_plugin_root/.mcp.json"
-"hooks" = "goal_plus/_plugin_root/hooks"
-".codex/agents" = "goal_plus/_plugin_root/.codex/agents"
-".codex/skills" = "goal_plus/_plugin_root/skills"
-".pi" = "goal_plus/_plugin_root/.pi"
+"assets" = "goal_plus/_plugin_root/assets"

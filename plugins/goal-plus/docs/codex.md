@@ -162,7 +162,7 @@ $goal-plus mode=autonomous Deeply optimize the kernel.
 ## Host 集成与所有权
 
 installed plugin 通过 `hooks/hooks.json` 提供 Goal Plus host hook。开发源码中的
-`.codex/hooks.example.json` 保持同一份声明，供资产一致性测试使用，不是另一条安装路径。
+`assets/codex/hooks.json` 是唯一源码声明，安装时生成 release 内的 hook 配置。
 `UserPromptSubmit`、`SessionStart`、`Interrupt`、`PreToolUse`、`PostToolUse`、`Stop` 和
 `SubagentStop` 都调用：
 

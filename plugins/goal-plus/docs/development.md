@@ -33,7 +33,10 @@ Codex 缓存版本带有 build，安装后的 hook/MCP 使用 release 内 launch
 `PYTHONPATH`、`GOAL_PLUS_SOURCE_PATH` 或目标 workspace 寻找 Goal Plus。
 内部 Python 进程沿用该解释器与受控模块路径。只有 `pi-goal-plus` 显式开发入口加载 editable 源码。
 
-Codex marketplace 源文件是 [scripts/templates/codex-marketplace.json](../scripts/templates/codex-marketplace.json)。
+产品资产源码只在 `assets/codex/` 和 `assets/pi/` 维护。源码 checkout 不保留产品的
+`.codex/skills`、`.codex/agents`、`.pi/extensions`、`.pi/skills`、`.pi/prompts` 或根级插件声明。
+`AGENTS.md` 继续指导开发，`install.sh`、`uninstall.sh` 是显式执行入口。
+Codex marketplace 源文件是 [assets/codex/marketplace.json](../assets/codex/marketplace.json)。
 安装器只在 release 内生成 `.agents/plugins/marketplace.json`；不要在源码 checkout 恢复同名发现入口，
 否则 Codex 从该目录发现插件时可能将已安装的 release 缓存替换为未准备的源码。
 `codex plugin add` 后，安装器继续核验 inventory 中的启用状态、来源和版本，以及实际缓存中的
@@ -41,18 +44,35 @@ manifest、runtime 收据、解释器/build 标记、MCP 和 hooks；校验失�
 移除本次新增注册，保留已准备的 release。缓存仍被其他旧 checkout 或旧 Codex 进程刷新时，
 先结束相关进程并更新那些 checkout，再重跑安装器；安装器不删除任意旧 checkout。
 
+Pi 的 release `package.json` 从 `assets/pi/package.json` 生成，显式引用 `assets/pi/` 中的资源。
+安装后使用 Pi 自身的资源解析器检查实际启用的 extension、skill 和唯一 package 来源，再核验
+Python build。缺失、禁用、重复或指向旧资源时安装失败并恢复原 settings；不调用模型。
+正常安装需要 npm 安装的 Pi CLI 及 Node.js，以便使用相同版本的资源解析器。
+
+已安装所选宿主时，安装器列出来源并询问 `Uninstall and reinstall ...? [y/N]`。
+输入 `y` 才继续，`n`、空输入或 EOF 取消且不修改注册。自动化可用 `--yes`：
+
+```bash
+./install.sh --codex --pi --yes
+```
+
+确认后先准备并验证新 release，再卸载重装所选宿主注册；即使 build 相同也会重新注册。
+保留旧 release 和其他宿主引用，Pi 更新保留 package 过滤设置；过滤导致所需资源未启用时
+报告校验失败，不能静默启用。`--dry-run` 不询问、不替换注册。
+
 准备及身份验证成功后才修改宿主注册；更新已有宿主注册失败时恢复原来源。
 Codex、Pi 和 ThinkThread Profile 分别持有版本引用，更新其中一个不会更新另一个。
 因此 `./install.sh --codex --pi` 不刷新已有 `goal-plus-pi` TT Profile；还使用 TT 时执行
 `./install.sh --pi --thinkthread`。同样，`./uninstall.sh --pi` 只移除普通 Pi 注册；
 要移除本 checkout 管理的 TT Profile，显式加 `--thinkthread`。无参数卸载默认选择全部组件。
 安装不会删除旧 release，旧会话可继续使用原版本；正常安装成功后源码 checkout 可以移动，
-后续从新位置安装仍须显式移除旧来源注册。可用 `GOAL_PLUS_UV` 指定 uv 的绝对路径。
+后续从新位置安装可在提示中确认替换旧来源注册。可用 `GOAL_PLUS_UV` 指定 uv 的绝对路径。
 首次安装需要下载 Python 和依赖；`--dry-run` 不写 release 或宿主注册，但 shell 入口可能先准备
 执行检查所需的 uv/Python。
 
-安装器会先检查同名宿主资源。来源不同、旧版 staging 安装或散落的同名 Pi asset 都会
-使安装失败，并显示冲突来源；不要通过复制、覆盖或修改宿主账号目录绕过检查。
+安装器会先检查同名宿主资源。旧版 staging 安装或散落的同名 Pi asset 会使安装失败并显示
+冲突来源；普通 package 的来源不同可通过重装提示确认替换。Pi 的显式 `extensions`、`skills`
+配置也会被识别；卸载可以移除明确的 Goal Plus 资源注册，资源文件本身保留。
 
 ## 开发 Pi 集成
 
@@ -87,8 +107,8 @@ registry 记录；它不包含 Pi 配置、模型或认证信息。已删除的�
 当前 checkout，然后通过 Pi 的 `--extension` 和 `--skill` 参数显式加载：
 
 ```text
-.pi/extensions/goal-plus.ts
-.pi/skills/goal-plus/SKILL.md
+assets/pi/extensions/goal-plus.ts
+assets/pi/skills/goal-plus/SKILL.md
 ```
 
 当前 Pi package 只有这一个面向用户的 skill。Search 是 Goal Plus 内部模式，不是第二个
@@ -101,14 +121,15 @@ cd /absolute/path/to/target-workspace
 pi-goal-plus
 ```
 
-用户级或目标项目若已注册同一 checkout，Pi 会按绝对资源路径去重，开发 launcher 可以直接
-使用。安装时和 launcher 每次启动时仍会拒绝来自其他 checkout 或复制路径的 Goal Plus；若
+用户级或目标项目若已显式引用相同 `assets/pi/` extension/skill，Pi 会按绝对资源路径去重。
+旧式直接注册源码根目录的 package 已不再有效，需先移除该注册。
+安装时和 launcher 每次启动时仍会拒绝来自其他 checkout 或复制路径的 Goal Plus；若
 报错，先按报告的 source 执行 `pi remove <source>`。断链的旧式 loose-resource symlink 不会被
 Pi 加载，也不会阻塞开发态。其他 Pi package、模型设置和认证信息不会被修改。
 
 ### Pi 开发循环
 
-1. 修改 `src/goal_plus/`、`.pi/extensions/`、`.pi/skills/` 或 `package.json`；
+1. 修改 `src/goal_plus/`、`assets/pi/extensions/`、`assets/pi/skills/` 或 `assets/pi/package.json`；
 2. 依赖或 `pyproject.toml` 变化时重跑 `./install.sh --pi-dev`；
 3. 运行对应自动测试；
 4. 结束旧 Pi 进程；
@@ -152,18 +173,11 @@ codex plugin marketplace remove goal-plus-local
 
 ### 修改 Codex 资产
 
-`.codex/skills/` 是 skill 的开发源码，顶层 `skills/` 是 plugin 发布面。修改 skill 后同步：
+`assets/codex/skills/` 是唯一 skill 源码；`hooks.json`、`mcp.json` 和 `plugin.json` 是发布模板。
+安装器在 release 中生成 `skills/`、`hooks/hooks.json`、`.mcp.json` 和 `.codex-plugin/plugin.json`。
+不在源码生成同步副本，也不建立回指资产目录的自动发现 symlink。
 
-```bash
-python scripts/sync_codex_plugin_assets.py
-python scripts/sync_codex_plugin_assets.py --check
-```
-
-`.codex/hooks.example.json` 是 hook 的开发源码模板，`hooks/hooks.json` 是 plugin 发布面；修改时
-保持两者一致，但前者不是另一条安装路径。`.mcp.json` 和 `.codex-plugin/plugin.json` 直接属于
-正常 plugin。
-
-完成资产同步后重跑 `./install.sh --codex`，再使用新 thread 验证。至少运行：
+修改后重跑 `./install.sh --codex`，再使用新 thread 验证。至少运行：
 
 ```bash
 python -m pytest -q tests/test_install.py tests/test_codex_assets.py \
@@ -202,9 +216,9 @@ Codex 使用受管的不可变 runtime；`pi-goal-plus` 使用自己的开发 ve
 | --- | --- | --- |
 | `src/goal_plus/**/*.py` | 重启 `pi-goal-plus` | 重跑安装器并新建 thread |
 | Python 依赖或 `pyproject.toml` | 重跑安装器并重启 | 重跑安装器并新建 thread |
-| `.pi/extensions/**`、`.pi/skills/**`、`package.json` | 重启 `pi-goal-plus` | 无需更新 |
-| `.codex/skills/**` | 无需更新 | 同步发布副本、重跑安装器、新建 thread |
-| Codex hook 或 plugin 资产 | 无需更新 | 同步相应副本、重跑安装器、重新信任并新建 thread |
+| `assets/pi/**` | 重启 `pi-goal-plus` | 无需更新 |
+| `assets/codex/skills/**` | 无需更新 | 重跑安装器、新建 thread |
+| Codex hook 或 plugin 资产 | 无需更新 | 重跑安装器、重新信任并新建 thread |
 
 Goal Plus 运行状态保存在目标 workspace 的 `.gp/` 中。并行开发即使宿主安装已经隔离，也要
 使用不同的目标目录或 Git worktree，避免不同进程写同一份运行状态。

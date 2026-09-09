@@ -39,7 +39,7 @@ def _expected_files() -> dict[Path, str]:
         render_goal_plus_command_config_markdown(),
     )
 
-    pi_path = ROOT / ".pi" / "extensions" / "goal-plus.ts"
+    pi_path = ROOT / "assets/pi/extensions/goal-plus.ts"
     usage = render_goal_plus_command_usage()
     pi_generated = (
         "\tconst GOAL_PLUS_COMMAND_CONFIG_USAGE = "

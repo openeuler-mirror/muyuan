@@ -344,7 +344,7 @@ class _RpcClient:
 
 
 def default_extension_path() -> Path:
-    return host_assets_root() / ".pi" / "extensions" / "goal-plus.ts"
+    return host_assets_root() / "assets" / "pi" / "extensions" / "goal-plus.ts"
 
 
 PROCESS_STOP_TIMEOUT_SECONDS = 5.0

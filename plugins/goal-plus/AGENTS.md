@@ -101,7 +101,7 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `domain/worker_policy.py`、`domain/goal_authorization.py`、`application/goal_dispatch.py` | 分别拥有共用 worker model/count 解析、显式命令与 SearchSpec 匹配和 dispatch 结果摘要；不跨模块借用私有 helper |
 | `goal_plus.py`、`application/goal_observation.py` | 前者为 Goal 公共薄入口；后者保存宿主已归一化的用量观测，写入经 typed State |
 | `codex_hook_input.py`、`codex_models.py` | Codex 原生输入/turn 解码、模型事实与显式 override preflight；不拥有 Goal 状态转换 |
-| `.pi/extensions/lib/goal-plus-schemas.ts`、`goal-plus-transport.ts` | Pi tool schema 与 CLI/capability transport；主 extension 保留唯一注册入口和可信 host 事实 |
+| `assets/pi/extensions/lib/goal-plus-schemas.ts`、`goal-plus-transport.ts` | Pi tool schema 与 CLI/capability transport；主 extension 保留唯一注册入口和可信 host 事实 |
 | `runtime.py`、`bootstrap.py` | 前者保留 Search 公共入口与本地 verifier/Scheduler barrier；后者装配窄用例，`SearchServices` 仅供 facade 接线，不传入用例或充当全能 port |
 | `application/candidate_context.py`、`search_queries.py`、`evidence_reads.py` | 授权 session 的 context/ledger 初始化、只读 history/查询，以及保留 reconciliation/读取计数的 Evidence 用例；不启动模型 |
 | `ports/search_inspection.py`、`ports/monitor.py`、`projections/monitor_workers.py` | 分离只读查询与 context 初始化写入，定义候选 context/Monitor 已采集输入；候选/session 投影不读取文件或执行状态恢复 |
@@ -120,7 +120,7 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `pi_pool.py` | Pool/job 索引、lease 和结果交付；启动身份登记后放行，同锁核验已提交 PID 与 request 归属后才执行；持久 witness 不进入公开 snapshot，按真实 wrapper 资源关闭，不用 task 终态代替退出；不接管 RPC 子进程的独立 session |
 | `execution/thinkthread_child.py`、`execution/thinkthread_rpc.py`、`ports/thinkthread.py` | Candidate/Annotation 共用 TT Child 归属、retained turn 静默、spawn/wake/interrupt/destroy 与 RPC hash/chunk/发送/游标消费；角色持有授权、request intent、过期/重传政策和 provider journal，SDK bridge 实现窄 transport port |
 | `execution/thinkthread_requests.py`、`ports/thinkthread_requests.py` | Pool baseline/provider mutations 共用 exact request 观察、关闭及 unknown 后有界确认；不写 journal、不重做 mutation，RequestNotFound 不证明操作成功，各 owner 保留 intent/重试/提交责任 |
-| `.pi/extensions/lib/goal-plus-thinkthread-rpc.ts` | Pi Worker 的独立 RPC 协议端点，处理请求重传、分块复核/重组与 ack；主 extension 保留可信 parent/session、角色工具集和 inner Git 归属，仅主 extension 注册工具 |
+| `assets/pi/extensions/lib/goal-plus-thinkthread-rpc.ts` | Pi Worker 的独立 RPC 协议端点，处理请求重传、分块复核/重组与 ack；主 extension 保留可信 parent/session、角色工具集和 inner Git 归属，仅主 extension 注册工具 |
 | Codex hook、Pi extension | 可信 command transport、session identity 和 host lifecycle 事实 |
 | `monitor.py`、`reporting.py` | Monitor 公开入口与报告适配入口；renderer 的纯实现位于 `projections/` |
 | Runtime 生成的 `candidate_task` | Candidate edit surface、环境和已启用能力的可见合同 |
@@ -207,16 +207,12 @@ skill 和普通 prompt 可以解释规则，但不能成为确定性规则的唯
 
 Host asset 是可执行产品界面，不是装饰性文档。
 
-- Codex canonical skill 位于 `.codex/skills/`；发布副本位于 `skills/`。修改后运行：
-
-  ```bash
-  python scripts/sync_codex_plugin_assets.py
-  python scripts/sync_codex_plugin_assets.py --check
-  ```
-
-- Codex 合同变化时检查 `.codex/skills/`、`.codex/agents/`、hook/config 模板及
+- 产品宿主资产只在 `assets/codex/`、`assets/pi/` 维护；安装器在 release 中生成
+  Codex 发现入口及发布副本。源码不得恢复可自动发现的同名 skill、extension 或 marketplace。
+  `AGENTS.md` 保留开发约定；`install.sh`、`uninstall.sh` 保留显式执行入口。
+- Codex 合同变化时检查 `assets/codex/skills/`、`assets/codex/agents/`、hook/config 模板及
   `tests/test_codex_assets.py`。
-- Pi 合同变化时检查 `.pi/prompts/`、`.pi/skills/`、`.pi/extensions/`、worker/pool 及
+- Pi 合同变化时检查 `assets/pi/prompts/`、`assets/pi/skills/`、`assets/pi/extensions/`、worker/pool 及
   `tests/test_pi_assets.py`。
 - 不要让任一 host asset 重新引用已删除的 runtime API。共同业务合同不得只在某一端修复。
 - `install.sh` 是唯一受支持的源码安装入口。安装行为变化时同步 `scripts/install.py`、安装测试

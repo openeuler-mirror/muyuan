@@ -661,11 +661,12 @@ def _check_models(*, skip: bool) -> CheckResult:
 
 
 def _check_packaged_assets(source_root: Path) -> CheckResult:
+    assets = source_root / "assets/codex"
     required = (
-        source_root / ".codex-plugin" / "plugin.json",
-        source_root / ".mcp.json",
-        source_root / "hooks" / "hooks.json",
-        *(source_root / "skills" / name / "SKILL.md" for name in REQUIRED_SKILLS),
+        assets / "plugin.json",
+        assets / "mcp.json",
+        assets / "hooks.json",
+        *(assets / "skills" / name / "SKILL.md" for name in REQUIRED_SKILLS),
     )
     missing = [str(path) for path in required if not path.is_file()]
     if missing:

@@ -1132,23 +1132,23 @@ def resolve_inner_agent_binding(
         (
             "codex",
             INNER_AGENT_AUTORESEARCH,
-        ): ".codex/agents/search_candidate_agent.toml",
+        ): "assets/codex/agents/search_candidate_agent.toml",
         (
             "codex",
             INNER_AGENT_COMMON,
-        ): ".codex/agents/search_candidate_common_agent.toml",
+        ): "assets/codex/agents/search_candidate_common_agent.toml",
         (
             "pi-rpc",
             INNER_AGENT_AUTORESEARCH,
-        ): ".pi/prompts/search-candidate-worker.md",
+        ): "assets/pi/prompts/search-candidate-worker.md",
         (
             "pi-rpc",
             INNER_AGENT_COMMON,
-        ): ".pi/prompts/search-candidate-common.md",
+        ): "assets/pi/prompts/search-candidate-common.md",
         (
             "thinkthread",
             INNER_AGENT_AUTORESEARCH,
-        ): ".pi/prompts/search-candidate-worker.md",
+        ): "assets/pi/prompts/search-candidate-worker.md",
     }
     native_agent_type = (
         legacy_native_agent_type.strip()

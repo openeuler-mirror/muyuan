@@ -18,6 +18,6 @@ def host_assets_root() -> Path:
     if installation.get("build"):
         return Path(installation["package"])
     checkout_root = Path(__file__).resolve().parents[2]
-    if (checkout_root / ".codex-plugin" / "plugin.json").is_file():
+    if (checkout_root / "assets/codex/plugin.json").is_file():
         return checkout_root
     return Path(__file__).resolve().parent / "_plugin_root"

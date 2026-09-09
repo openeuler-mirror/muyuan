@@ -450,10 +450,10 @@ def test_ultra_concurrent_lazy_dispatches_are_serialized(
 def test_ultra_assets_use_native_hosts_without_dag_planning() -> None:
     core = (ROOT / "src" / "goal_plus" / "goal_plus.py").read_text(encoding="utf-8")
     server = (ROOT / "src" / "goal_plus" / "server.py").read_text(encoding="utf-8")
-    codex = (ROOT / ".codex" / "skills" / "goal-plus" / "SKILL.md").read_text(
+    codex = (ROOT / "assets" / "codex" / "skills" / "goal-plus" / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    pi = (ROOT / ".pi" / "extensions" / "goal-plus.ts").read_text(encoding="utf-8")
+    pi = (ROOT / "assets" / "pi" / "extensions" / "goal-plus.ts").read_text(encoding="utf-8")
     pi_worker = (ROOT / "src" / "goal_plus" / "pi_worker.py").read_text(
         encoding="utf-8"
     )
@@ -480,7 +480,7 @@ def test_ultra_assets_use_native_hosts_without_dag_planning() -> None:
     assert 'name: "pi_goal_plus_run_work_item"' in pi
     assert 'native_operation: "pi_goal_plus_run_work_item"' in pi
     assert 'native_operation: "goal-plus-pi-worker"' in pi
-    schemas = (ROOT / ".pi/extensions/lib/goal-plus-schemas.ts").read_text(encoding="utf-8")
+    schemas = (ROOT / "assets/pi/extensions/lib/goal-plus-schemas.ts").read_text(encoding="utf-8")
     assert "task: Type.String" in schemas
     assert 'executionMode: "concurrent"' in pi
     assert 'role: "ordinary"' in pi

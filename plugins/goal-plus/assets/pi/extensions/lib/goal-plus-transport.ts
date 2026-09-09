@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 // Identity belongs to this installed package, never to the target workspace.
-const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const receiptPath = join(packageRoot, ".goal-plus-runtime.json");
 const receipt = existsSync(receiptPath) ? JSON.parse(readFileSync(receiptPath, "utf8")) : undefined;
 const devRoot = !receipt && process.env.GOAL_PLUS_PI_DEV_ROOT === packageRoot ? packageRoot : undefined;

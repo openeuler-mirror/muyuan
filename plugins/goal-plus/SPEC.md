@@ -28,9 +28,14 @@ Hook、MCP、Pi tool 和内部 Python worker 不得因 shell 环境或目标 wor
 Goal Plus。安装副本与 runtime 必须核验同一 build；开发源码加载仅由显式 Pi 开发入口启用。
 更新一个宿主不得隐式替换其他宿主或仍被保留的旧版本。新 runtime 准备失败不改变已有宿主
 注册；卸载单个宿主保留 runtime，运行时清理只删除通过归属检查且没有宿主引用的版本。
-源码 checkout 不发布可发现的同名 Codex marketplace；正式入口只在受管 release 中生成。
+源码 checkout 的产品宿主资产只存放在非自动发现的 `assets/codex/`、`assets/pi/` 下；
+Codex 正式发现入口只在受管 release 中生成，Pi 通过 package 或开发 launcher 显式引用资产。
+已存在所选宿主注册时，安装器先列出来源并要求 y/n 确认（默认取消，`--yes` 显式确认），
+准备并核验新 release 后再卸载重装对应注册；取消不改变注册或版本引用。
 Codex 安装成功前必须核验实际缓存的 build、安装身份与 MCP/hook 启动配置，不能只以注册来源
 或 `plugin add` 成功作为验收。缓存校验失败不得提交新版本引用或报告安装成功。
+Pi 安装成功前必须核验实际 package 注册、宿主解析出的启用 extension/skill 和 Python build。
+校验失败恢复原设置并撤销 pending 引用；显式资源配置和项目自动发现也属于冲突检查范围。
 
 ## 核心对象
 

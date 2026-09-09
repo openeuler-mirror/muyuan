@@ -559,7 +559,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
     assert inner_agent_binding["workspace_ledger_projection"] == expected_projection
     if inner_agent == "autoresearch":
         assert inner_agent_binding["prompt_asset"] == (
-            ".pi/prompts/search-candidate-worker.md"
+            "assets/pi/prompts/search-candidate-worker.md"
         )
     first_proposal = (
         CandidateProposal(

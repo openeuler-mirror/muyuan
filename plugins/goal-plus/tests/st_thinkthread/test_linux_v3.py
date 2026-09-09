@@ -117,7 +117,7 @@ def test_runtime_k2_autoresearch_uses_private_inner_git_and_outer_snapshot_evide
     assert report["inner_agent_binding"]["inner_agent_id"] == "autoresearch"
     assert report["inner_agent_binding"]["worker_host"] == "thinkthread"
     assert report["inner_agent_binding"]["prompt_asset"] == (
-        ".pi/prompts/search-candidate-worker.md"
+        "assets/pi/prompts/search-candidate-worker.md"
     )
     assert report["inner_agent_binding"]["workspace_ledger_projection"] == (
         "results_tsv"

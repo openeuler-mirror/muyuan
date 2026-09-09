@@ -25,24 +25,18 @@ def _skill_frontmatter(path: Path) -> dict[str, str]:
 pytestmark = pytest.mark.codex
 
 
-def test_installable_plugin_skills_match_project_local_codex_skills() -> None:
+def test_source_assets_do_not_publish_host_discovery_entries() -> None:
+    for relative in (".agents/plugins/marketplace.json", ".codex-plugin/plugin.json", ".mcp.json", "package.json"):
+        assert not (ROOT / relative).exists()
+    for relative in (".codex/skills", ".codex/agents", ".pi/extensions", ".pi/skills", ".pi/prompts", "skills", "hooks"):
+        assert not any(path.is_file() for path in (ROOT / relative).rglob("*"))
     for name in ORCHESTRATION_SKILLS:
-        project = ROOT / ".codex" / "skills" / name / "SKILL.md"
-        packaged = ROOT / "skills" / name / "SKILL.md"
-        assert packaged.read_bytes() == project.read_bytes()
-
-    project_reference = (
-        ROOT / ".codex" / "skills" / "goal-plus" / "references" / "adaptive-search.md"
-    )
-    packaged_reference = (
-        ROOT / "skills" / "goal-plus" / "references" / "adaptive-search.md"
-    )
-    assert packaged_reference.read_bytes() == project_reference.read_bytes()
+        assert (ROOT / "assets/codex/skills" / name / "SKILL.md").is_file()
 
 
 @pytest.mark.parametrize("name", ORCHESTRATION_SKILLS)
 def test_codex_orchestration_skills_are_explicit_and_main_only(name: str) -> None:
-    skill_dir = ROOT / ".codex" / "skills" / name
+    skill_dir = ROOT / "assets" / "codex" / "skills" / name
     metadata = _skill_frontmatter(skill_dir / "SKILL.md")
     interface = (skill_dir / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
@@ -53,14 +47,12 @@ def test_codex_orchestration_skills_are_explicit_and_main_only(name: str) -> Non
 
 
 def test_codex_mcp_and_hook_assets_register_runtime_entrypoints() -> None:
-    config = (ROOT / ".codex" / "config.example.toml").read_text(encoding="utf-8")
-    hooks = json.loads((ROOT / ".codex" / "hooks.example.json").read_text())
-    packaged_hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())
+    config = (ROOT / "assets" / "codex" / "config.example.toml").read_text(encoding="utf-8")
+    hooks = json.loads((ROOT / "assets/codex/hooks.json").read_text())
 
     assert "[mcp_servers.goal-plus]" in config
     assert 'command = "bash"' in config
     assert 'scripts/run-runtime.sh", "--root", ".gp"]' in config
-    assert hooks == packaged_hooks
     assert set(hooks["hooks"]) == {
         "UserPromptSubmit",
         "SessionStart",
@@ -78,15 +70,15 @@ def test_codex_mcp_and_hook_assets_register_runtime_entrypoints() -> None:
 
 
 def test_codex_main_and_candidate_mcp_inherit_debug_switch() -> None:
-    plugin = json.loads((ROOT / ".mcp.json").read_text())
+    plugin = json.loads((ROOT / "assets/codex/mcp.json").read_text())
     assert "GOAL_PLUS_DEBUG" in plugin["mcpServers"]["goal-plus"]["env_vars"]
-    for path in (".codex/config.example.toml", ".codex/agents/search_candidate_common_agent.toml"):
+    for path in ("assets/codex/config.example.toml", "assets/codex/agents/search_candidate_common_agent.toml"):
         config = tomllib.loads((ROOT / path).read_text())
         assert "GOAL_PLUS_DEBUG" in config["mcp_servers"]["goal-plus"]["env_vars"]
 
 def test_codex_plugin_default_prompts_use_goal_plus_skill() -> None:
     manifest = json.loads(
-        (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        (ROOT / "assets/codex/plugin.json").read_text(encoding="utf-8")
     )
 
     prompts = manifest["interface"]["defaultPrompt"]
@@ -96,11 +88,11 @@ def test_codex_plugin_default_prompts_use_goal_plus_skill() -> None:
 
 def test_codex_and_pi_worker_launch_contracts_share_the_portable_core() -> None:
     codex_prompt = tomllib.loads(
-        (ROOT / ".codex" / "agents" / "search_candidate_agent.toml").read_text(
+        (ROOT / "assets" / "codex" / "agents" / "search_candidate_agent.toml").read_text(
             encoding="utf-8"
         )
     )["developer_instructions"].strip()
-    pi_prompt = (ROOT / ".pi" / "prompts" / "search-candidate-worker.md").read_text(
+    pi_prompt = (ROOT / "assets" / "pi" / "prompts" / "search-candidate-worker.md").read_text(
         encoding="utf-8"
     ).strip()
     codex_normalized = " ".join(codex_prompt.split())

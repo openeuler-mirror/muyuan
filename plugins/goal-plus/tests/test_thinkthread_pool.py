@@ -59,7 +59,7 @@ def test_worker_response_hash_is_stable_across_durable_json_replay(
     ] == response_hash(response)
 
     response["result"]["payload"] = "x" * 100_000
-    endpoint = Path(__file__).resolve().parents[1] / ".pi/extensions/lib/goal-plus-thinkthread-rpc.ts"
+    endpoint = Path(__file__).resolve().parents[1] / "assets/pi/extensions/lib/goal-plus-thinkthread-rpc.ts"
     checked = subprocess.run(
         ["node", "--input-type=module", "-e", '''
 import { readFileSync } from "node:fs";

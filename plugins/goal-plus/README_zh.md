@@ -28,6 +28,8 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 正常安装通过 uv 准备独立 Python 3.12 和锁定依赖，各宿主绑定不可变代码 build，
 不受 Conda、`PATH` 或目标 workspace 影响。`--pi` 与 `--pi-dev` 互斥。
 用 `./install.sh --runtime-info` 检查实际版本；更新及清理方式见[开发指南](docs/development.md)。
+已有 Codex/Pi 注册时会询问是否卸载重装（`y/N`），自动化可加 `--yes`。
+产品资产位于 `assets/codex/`、`assets/pi/`，编辑源码不会自动加载该插件的运行时资源。
 `--dry-run` 不修改宿主注册或 release；shell bootstrap 可能先下载运行检查所需的 uv/Python。
 
 `--thinkthread` 要求机器上已经独立安装受支持的 ThinkThread Runtime。它会验证内置 Pi Profile

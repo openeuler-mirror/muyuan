@@ -142,7 +142,7 @@ From this checkout, show the running fixture without starting a Goal Plus run:
 ```bash
 GOAL_PLUS_UI_PREVIEW=active \
   pi --offline --no-session --no-extensions \
-  -e .pi/extensions/goal-plus.ts
+  -e assets/pi/extensions/goal-plus.ts
 ```
 
 Inside Pi, switch between fixtures or clear the preview:

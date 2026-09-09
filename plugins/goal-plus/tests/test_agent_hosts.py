@@ -65,7 +65,7 @@ def test_host_binding_returns_all_supported_hosts() -> None:
 def test_inner_agent_binding_separates_logical_adapter_from_native_role() -> None:
     common = resolve_inner_agent_binding("pi-rpc", INNER_AGENT_COMMON)
     assert common.inner_agent_id == "common"
-    assert common.prompt_asset == ".pi/prompts/search-candidate-common.md"
+    assert common.prompt_asset == "assets/pi/prompts/search-candidate-common.md"
     assert common.adapter_version == "builtin-common-v1"
     assert common.native_agent_type is None
     assert common.workspace_ledger_projection == "none"
@@ -75,7 +75,7 @@ def test_inner_agent_binding_separates_logical_adapter_from_native_role() -> Non
         INNER_AGENT_AUTORESEARCH,
         legacy_native_agent_type="search_candidate_agent_deep",
     )
-    assert legacy_codex.prompt_asset == ".codex/agents/search_candidate_agent.toml"
+    assert legacy_codex.prompt_asset == "assets/codex/agents/search_candidate_agent.toml"
     assert legacy_codex.native_agent_type == "search_candidate_agent_deep"
     assert legacy_codex.workspace_ledger_projection == "results_tsv"
 
@@ -84,7 +84,7 @@ def test_inner_agent_binding_separates_logical_adapter_from_native_role() -> Non
     )
     assert (
         thinkthread_autoresearch.prompt_asset
-        == ".pi/prompts/search-candidate-worker.md"
+        == "assets/pi/prompts/search-candidate-worker.md"
     )
     assert thinkthread_autoresearch.native_agent_type is None
     assert thinkthread_autoresearch.adapter_version == "builtin-autoresearch-git-v1"

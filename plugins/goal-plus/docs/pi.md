@@ -135,8 +135,9 @@ pi-goal-plus
 `./install.sh --env-show` 会只读列出安装器已登记及当前 Git worktree 中的 Pi 开发环境、
 源码 commit、状态、单项与总空间占用。
 
-开发态不注册全局 Pi package。若当前用户或目标项目已经注册同一 checkout，Pi 会按绝对资源
-路径去重；来自其他 checkout 或复制路径的 Goal Plus 仍会让安装和每次启动停止并列出冲突。
+开发态不注册全局 Pi package。若当前用户或目标项目显式引用同一 `assets/pi/` extension/skill，
+Pi 会按绝对资源路径去重。旧式源码根目录 package 注册需先移除；来自其他 checkout 或复制
+路径的 Goal Plus 仍会让安装和每次启动停止并列出冲突。
 断链的旧式 loose-resource symlink 不会被 Pi 加载，也不会阻塞开发态。遇到真实冲突时先显式
 `pi remove <reported-source>`，再运行 `pi-goal-plus`。`--pi` 和 `--pi-dev` 不能同时使用。
 
@@ -150,7 +151,7 @@ fixture-backed Search progress。这只是开发预览，不是 benchmark Eviden
 ```bash
 GOAL_PLUS_UI_PREVIEW=active \
   pi --offline --no-session --no-extensions \
-  -e .pi/extensions/goal-plus.ts
+  -e assets/pi/extensions/goal-plus.ts
 ```
 
 在该 session 中使用 `/goal-plus-ui-preview active`、`/goal-plus-ui-preview complete`、

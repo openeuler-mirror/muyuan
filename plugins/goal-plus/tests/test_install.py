@@ -102,9 +102,9 @@ def test_pi_dev_assets_scope_only_the_launcher(
     assert "--no-extensions" in launcher
     assert "--no-prompt-templates" in launcher
     assert launcher.index("--no-extensions") < launcher.index("--extension")
-    assert str(ROOT / ".pi" / "extensions" / "goal-plus.ts") in launcher
+    assert str(ROOT / "assets" / "pi" / "extensions" / "goal-plus.ts") in launcher
     assert "--skill" in launcher
-    assert str(ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md") in launcher
+    assert str(ROOT / "assets" / "pi" / "skills" / "goal-plus" / "SKILL.md") in launcher
     assert 'export PATH="$goal_plus_venv/bin:$PATH"' in launcher
     assert "--check-pi-dev-runtime" in launcher
     subprocess.run(["bash", "-n", str(launcher_path)], check=True)
@@ -127,7 +127,7 @@ def test_pi_dev_usage_output_explains_same_shell_and_target_workspace(
     assert "打开新的 shell 后，需要重新执行上面的 source 命令。" in output
 
 
-def test_pi_dev_accepts_same_checkout_user_registration(
+def test_pi_dev_rejects_retired_source_package_registration(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -136,7 +136,8 @@ def test_pi_dev_accepts_same_checkout_user_registration(
     _write_pi_settings(agent_dir, [str(ROOT)])
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
-    installer._preflight_pi_dev()
+    with pytest.raises(installer.InstallError, match="another active Goal Plus source"):
+        installer._preflight_pi_dev()
 
 
 def test_pi_registration_resolves_relative_source_from_symlinked_agent_path(
@@ -165,7 +166,7 @@ def test_pi_dev_ignores_broken_loose_resource_symlinks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_dir = tmp_path / "pi-agent"
-    _write_pi_settings(agent_dir, [str(ROOT)])
+    _write_pi_settings(agent_dir, [])
     extension = agent_dir / "extensions" / "goal-plus.ts"
     skill = agent_dir / "skills" / "goal-plus"
     extension.parent.mkdir(parents=True)
@@ -295,7 +296,7 @@ def test_pi_normal_rejects_same_checkout_loose_resource(
     _write_pi_settings(agent_dir, [])
     skill = agent_dir / "skills" / "goal-plus"
     skill.parent.mkdir(parents=True)
-    skill.symlink_to(ROOT / ".pi" / "skills" / "goal-plus", target_is_directory=True)
+    skill.symlink_to(ROOT / "assets" / "pi" / "skills" / "goal-plus", target_is_directory=True)
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
     with pytest.raises(installer.InstallError, match="conflicting Goal Plus"):
@@ -481,9 +482,9 @@ def test_thinkthread_profile_explicitly_binds_goal_plus_runtime(
     arguments = parsed["agent"]["args"]
     assert arguments == [
         "--extension",
-        str(ROOT / ".pi" / "extensions" / "goal-plus.ts"),
+        str(ROOT / "assets" / "pi" / "extensions" / "goal-plus.ts"),
         "--skill",
-        str(ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md"),
+        str(ROOT / "assets" / "pi" / "skills" / "goal-plus" / "SKILL.md"),
     ]
     assert str(ROOT) in parsed["environment"]["read"]
     assert str(python_prefix) in parsed["environment"]["read"]
@@ -769,7 +770,7 @@ def test_codex_installation_checks_actual_cache(installer, codex_release):
 def test_codex_first_install_cache_failure_removes_new_registration(installer, codex_release, monkeypatch, corruption):
     package, cache, item = codex_release
     if corruption == "mcp":
-        (cache / ".mcp.json").write_bytes((ROOT / ".mcp.json").read_bytes())
+        (cache / ".mcp.json").write_bytes((ROOT / "assets/codex/mcp.json").read_bytes())
     else:
         (cache / ".goal-plus-build").write_bytes(b"\xff")
     marketplaces = {}
@@ -811,9 +812,9 @@ def test_codex_installation_rejects_stale_or_mismatched_cache(installer, codex_r
     elif corruption == "receipt":
         (cache / ".goal-plus-runtime.json").write_text('{}')
     elif corruption == "mcp":
-        (cache / ".mcp.json").write_bytes((ROOT / ".mcp.json").read_bytes())
+        (cache / ".mcp.json").write_bytes((ROOT / "assets/codex/mcp.json").read_bytes())
     elif corruption == "hooks":
-        (cache / "hooks/hooks.json").write_bytes((ROOT / "hooks/hooks.json").read_bytes())
+        (cache / "hooks/hooks.json").write_bytes((ROOT / "assets/codex/hooks.json").read_bytes())
     elif corruption in {"build", "python"}:
         (cache / f".goal-plus-{corruption}").write_text("wrong\n")
     else:
@@ -834,6 +835,7 @@ def test_codex_dry_run_does_not_verify_unmaterialized_cache(installer, tmp_path,
 
 @pytest.mark.parametrize("fail", [True, False])
 def test_pi_update_preserves_filters_and_recovers_settings(installer, tmp_path, monkeypatch, fail):
+    monkeypatch.setattr(installer, "_verify_pi_installation", lambda *args: None)
     agent = tmp_path / "pi"
     old, new = tmp_path / "old", tmp_path / "new"
     original = {"packages": [{"source": "../old", "extensions": ["*.ts"]}, "npm:unrelated"], "theme": "dark"}
@@ -881,7 +883,7 @@ def test_thinkthread_profile_uses_managed_package_python_and_retains_source_owne
     python = tmp_path / "release/venv/bin/python"
     profile = installer._build_thinkthread_profile(_thinkthread_pi_profile(), package_root=package,
                                                   runtime_python=python, node_executable="/opt/node/bin/node")
-    assert str(package / ".pi/extensions/goal-plus.ts") in profile["agent"]["args"]
+    assert str(package / "assets/pi/extensions/goal-plus.ts") in profile["agent"]["args"]
     assert profile["environment"]["root"]["GOAL_PLUS_PYTHON"] == str(python)
     assert str(python.parent.parent) in profile["environment"]["read"]
     path = tmp_path / "profile.toml"
@@ -896,3 +898,126 @@ def test_pi_cli_removal_keeps_lexical_alias(installer, tmp_path):
     alias.symlink_to(real, target_is_directory=True)
     entry = {"source": "../package", "resolved_path": real / "package", "settings_path": alias / "agent/settings.json"}
     assert installer._pi_cli_source(entry) == str(alias / "package")
+
+
+@pytest.mark.parametrize("answer, expected", [("y", True), ("YES", True), ("n", False), ("", False), (None, False)])
+def test_reinstall_confirmation_defaults_to_cancel(installer, monkeypatch, answer, expected):
+    def respond(_prompt):
+        if answer is None:
+            raise EOFError
+        return answer
+    monkeypatch.setattr("builtins.input", respond)
+    assert installer._confirm_reinstall(["Pi: old"], assume_yes=False, dry_run=False) is expected
+
+
+@pytest.mark.parametrize("option", ["--yes", "--dry-run"])
+def test_reinstall_automation_never_reads_stdin(installer, monkeypatch, option):
+    monkeypatch.setattr("builtins.input", lambda _: pytest.fail("unexpected prompt"))
+    assert installer._confirm_reinstall(["Pi: old"], assume_yes=option == "--yes", dry_run=option == "--dry-run")
+
+
+def test_cancel_reinstall_does_not_prepare_or_mutate(installer, monkeypatch):
+    monkeypatch.setattr(installer, "_require_executable", lambda _: "pi")
+    monkeypatch.setattr(installer, "_preflight_pi_normal", lambda **kwargs: True)
+    monkeypatch.setattr(installer, "_pi_goal_plus_entries", lambda: [{"source": "old"}])
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    monkeypatch.setattr(installer.managed_runtime, "prepare", lambda *a, **k: pytest.fail("prepared after cancellation"))
+    assert installer.main(["--pi"]) == 0
+    assert not installer.managed_runtime.home().exists()
+
+
+@pytest.mark.parametrize("failure", ["invalid_json", "invalid_shape", "runtime", "missing_registration"])
+def test_pi_post_install_failure_restores_settings_and_binding(installer, tmp_path, monkeypatch, failure):
+    agent = tmp_path / "agent"
+    old = tmp_path / "goal-plus"
+    new = tmp_path / "release/package"
+    original = json.dumps({"packages": [str(old)], "theme": "dark"})
+    _write_pi_settings(agent, [])
+    settings = agent / "settings.json"
+    settings.write_text(original)
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent))
+    installer.managed_runtime.bind("pi", agent, old)
+    def run(argv, **kwargs):
+        value = {"invalid_json": "{", "invalid_shape": "[]"}.get(failure, '{"packages": []}')
+        settings.write_text(value if argv[1] == "install" else '{"packages": []}')
+    monkeypatch.setattr(installer, "_run", run)
+    if failure == "runtime":
+        def reject(*_args):
+            raise RuntimeError("runtime identity mismatch")
+        monkeypatch.setattr(installer, "_verify_pi_installation", reject)
+    with pytest.raises(RuntimeError):
+        installer._install_pi(pi="pi", package=new, dry_run=False, reinstall=True)
+    assert settings.read_text() == original
+    assert json.loads(installer.managed_runtime.binding_path("pi", agent).read_text())["package"] == str(old)
+    assert not installer.managed_runtime.binding_path("pi-pending", agent).exists()
+
+
+def test_pi_direct_skill_directory_has_one_removable_registration(installer, tmp_path, monkeypatch):
+    agent = tmp_path / "agent"
+    _write_pi_settings(agent, [])
+    skill = tmp_path / "skills/goal-plus"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("fixture")
+    (agent / "settings.json").write_text(json.dumps({"skills": [str(skill)]}))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent))
+    entries = installer._pi_goal_plus_entries()
+    assert len(entries) == 1
+    assert entries[0]["removable"] is True
+
+
+def test_pi_reinstall_removes_direct_resource_registration(installer, tmp_path, monkeypatch):
+    agent = tmp_path / "agent"
+    _write_pi_settings(agent, [])
+    settings = agent / "settings.json"
+    extension = tmp_path / "goal-plus.ts"
+    extension.write_text("// old")
+    settings.write_text(json.dumps({"extensions": [str(extension), "unrelated.ts"]}))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent))
+    assert installer._preflight_pi_normal(allow_replacement=True)
+    monkeypatch.setattr(installer, "_verify_pi_installation", lambda *args: None)
+    monkeypatch.setattr(installer, "_run", lambda *args, **kwargs: None)
+    installer._install_pi(pi="pi", package=tmp_path / "release/package", dry_run=False, reinstall=True)
+    assert json.loads(settings.read_text())["extensions"] == ["unrelated.ts"]
+    assert extension.exists()
+
+
+@pytest.mark.parametrize("drift", [None, "duplicate", "disabled", "wrong_source"])
+def test_pi_verification_uses_enabled_host_resources(installer, tmp_path, monkeypatch, drift):
+    agent = tmp_path / "agent"
+    package = tmp_path / "goal-plus"
+    _write_pi_settings(agent, [str(package)])
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent))
+    monkeypatch.setattr(installer, "_require_executable", lambda _: "node")
+    monkeypatch.setattr(installer.managed_runtime, "verify", lambda _: {})
+    resources = {
+        "extensions": [{"path": str(package / "assets/pi/extensions/goal-plus.ts"), "enabled": drift != "disabled"}],
+        "skills": [{"path": str(package / "assets/pi/skills/goal-plus/SKILL.md"), "enabled": True}],
+    }
+    if drift == "duplicate":
+        resources["extensions"].append({"path": str(ROOT / ".pi/extensions/goal-plus.ts"), "enabled": True})
+    elif drift == "wrong_source":
+        resources["extensions"][0]["path"] = str(ROOT / ".pi/extensions/goal-plus.ts")
+    monkeypatch.setattr(installer, "_run", lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps(resources)))
+    if drift:
+        with pytest.raises(installer.InstallError, match="mismatch"):
+            installer._verify_pi_installation("pi", package)
+    else:
+        installer._verify_pi_installation("pi", package)
+
+
+def test_pi_shared_resource_registration_is_not_removed(installer, tmp_path, monkeypatch):
+    agent = tmp_path / "agent"
+    resources = tmp_path / "extensions"
+    resources.mkdir()
+    (resources / "goal-plus.ts").write_text("// goal plus")
+    (resources / "other.ts").write_text("// unrelated")
+    _write_pi_settings(agent, [])
+    settings = agent / "settings.json"
+    original = json.dumps({"extensions": [str(resources)]})
+    settings.write_text(original)
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent))
+    with pytest.raises(installer.InstallError, match="conflicting"):
+        installer._preflight_pi_normal(allow_replacement=True)
+    with pytest.raises(installer.InstallError, match="shared"):
+        installer._remove_pi_resource_registrations(installer._pi_goal_plus_entries(), dry_run=False)
+    assert settings.read_text() == original

@@ -7,6 +7,15 @@ a code change or phase boundary is not an automatic ST trigger.
 
 ## Test Layers
 
+安装/卸载实测使用独立 Codex、Pi、runtime 和 XDG 配置目录，不读取认证或调用模型。
+它覆盖首次安装、MCP 握手、Pi 扩展加载、取消/确认重装、分宿主卸载和 runtime 清理：
+
+```bash
+python -m pytest --run-system-tests -n 0 -q tests/test_installation_system.py
+```
+
+前置条件为可执行的 Codex、npm 安装的 Pi、Node.js 和 uv；首次运行需要下载受管 Python/依赖。
+
 | Layer | Command | Proves |
 | --- | --- | --- |
 | Default fast gate | `pytest -q` | models, runtimes, workspaces, verifiers, APIs, Codex/Pi assets |

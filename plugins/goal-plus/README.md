@@ -33,6 +33,10 @@ builds with `./install.sh --runtime-info`; see [development](docs/development.md
 for update, diagnostics, and cleanup. `--dry-run` does not change host registrations
 or releases; its shell bootstrap may download the installer Python/uv.
 
+Existing Codex/Pi registrations trigger an uninstall-and-reinstall prompt (`y/N`).
+Use `--yes` for automation. Product assets live under `assets/codex` and `assets/pi`;
+editing this checkout does not automatically load its plugin resources.
+
 `--thinkthread` requires a separately installed supported ThinkThread Runtime.
 It validates the built-in Pi Profile and generates the `goal-plus-pi` Profile;
 it never installs, upgrades, or removes ThinkThread itself. Start the protected

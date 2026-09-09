@@ -17,9 +17,9 @@ def test_pi_transport_binds_package_not_workspace_or_shell(tmp_path, mode):
     if not node:
         pytest.skip("Node is required for the Pi transport test")
     package = tmp_path / "package"
-    transport = package / ".pi/extensions/lib/goal-plus-transport.ts"
+    transport = package / "assets/pi/extensions/lib/goal-plus-transport.ts"
     transport.parent.mkdir(parents=True)
-    shutil.copyfile(ROOT / ".pi/extensions/lib/goal-plus-transport.ts", transport)
+    shutil.copyfile(ROOT / "assets/pi/extensions/lib/goal-plus-transport.ts", transport)
     if mode == "managed":
         (package / ".goal-plus-runtime.json").write_text(json.dumps({
             "schema": "goal-plus.managed-runtime.v1", "python": "/managed/bin/python", "build": "fixture-build"}))

@@ -31,7 +31,7 @@ def test_operational_docs_do_not_reference_retired_checkouts() -> None:
         ROOT / "README_zh.md",
         ROOT / "docs" / "pi.md",
         ROOT / "docs" / "codex.md",
-        ROOT / ".codex-plugin" / "plugin.json",
+        ROOT / "assets/codex/plugin.json",
     )
     retired = (
         "/Users/qiaolina/Code/goal-plus",

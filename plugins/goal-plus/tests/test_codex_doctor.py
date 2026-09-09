@@ -12,7 +12,7 @@ from goal_plus import codex_doctor
 
 def _make_project_assets(root: Path) -> dict[str, object]:
     hooks_payload = json.loads(
-        (codex_doctor._package_root() / "hooks" / "hooks.json").read_text(
+        (codex_doctor._package_root() / "assets/codex/hooks.json").read_text(
             encoding="utf-8"
         )
     )
@@ -73,7 +73,7 @@ def _write_trusted_config(
 
 def test_canonical_hook_hash_matches_codex_0148_identity() -> None:
     payload = json.loads(
-        (codex_doctor._package_root() / "hooks" / "hooks.json").read_text(
+        (codex_doctor._package_root() / "assets/codex/hooks.json").read_text(
             encoding="utf-8"
         )
     )
@@ -244,18 +244,13 @@ def test_collect_report_accepts_complete_project_local_setup(
     }
 
 
-def test_plugin_assets_keep_project_hook_contract() -> None:
+def test_plugin_templates_declare_supported_mcp_entrypoint() -> None:
     root = codex_doctor._package_root()
-    packaged = json.loads((root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-    project = json.loads(
-        (root / ".codex" / "hooks.example.json").read_text(encoding="utf-8")
-    )
     manifest = json.loads(
-        (root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        (root / "assets/codex/plugin.json").read_text(encoding="utf-8")
     )
-    mcp = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))
+    mcp = json.loads((root / "assets/codex/mcp.json").read_text(encoding="utf-8"))
 
-    assert packaged == project
     assert "hooks" not in manifest
     assert manifest["mcpServers"] == "./.mcp.json"
     assert mcp["mcpServers"]["goal-plus"]["command"] == "bash"
@@ -274,10 +269,10 @@ def test_enabled_plugin_rejects_duplicate_ancestor_goal_plus_hooks(
     project_root.mkdir(parents=True)
     codex_home = tmp_path / "codex-home"
     plugin_root = tmp_path / "installed-plugin"
-    plugin_hooks = plugin_root / "hooks" / "hooks.json"
+    plugin_hooks = plugin_root / "hooks/hooks.json"
     plugin_hooks.parent.mkdir(parents=True)
     payload = json.loads(
-        (codex_doctor._package_root() / "hooks" / "hooks.json").read_text(
+        (codex_doctor._package_root() / "assets/codex/hooks.json").read_text(
             encoding="utf-8"
         )
     )
@@ -306,7 +301,7 @@ def test_marketplace_template_points_at_release_without_source_discovery() -> No
     root = codex_doctor._package_root()
     assert not (root / ".agents/plugins/marketplace.json").exists()
     marketplace = json.loads(
-        (root / "scripts/templates/codex-marketplace.json").read_text(
+        (root / "assets/codex/marketplace.json").read_text(
             encoding="utf-8"
         )
     )

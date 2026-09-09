@@ -658,3 +658,19 @@ def test_execute_removes_only_owned_agent_posix_sdk(
     uninstaller._execute(plan, dry_run=False)
 
     assert not sdk.exists()
+
+
+def test_uninstall_explicit_pi_resources_preserves_unrelated_configuration(uninstaller, tmp_path, monkeypatch):
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    extension = tmp_path / "goal-plus.ts"
+    extension.write_text("// goal plus")
+    settings = agent / "settings.json"
+    settings.write_text(json.dumps({"extensions": [str(extension), "other.ts"], "theme": "dark"}))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent))
+    plan = uninstaller._build_plan(tmp_path / "dev", components=frozenset({"pi"}))
+    assert not plan.pi_sources
+    assert len(plan.pi_resources) == 1
+    uninstaller._execute(plan, dry_run=False)
+    assert json.loads(settings.read_text()) == {"extensions": ["other.ts"], "theme": "dark"}
+    assert extension.exists()

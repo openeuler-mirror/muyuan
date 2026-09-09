@@ -300,7 +300,7 @@ runner 命令形态为：
 pi --mode rpc --approve \
   --session-dir <root>/.gp/host-sessions/pi \
   --session-id <agent_session_id> \
-  -e <repo>/.pi/extensions/goal-plus.ts
+  -e <repo>/assets/pi/extensions/goal-plus.ts
 ```
 
 `.gp/host-logs/pi-rpc-<agent_session_id>.jsonl` 默认只保存 event/tool status、usage/count 和有界 error，不保存流式 message、prompt、reasoning 或 tool payload。只有短时聚焦排障确实需要完整 RPC payload 时才设置 `GOAL_PLUS_PI_RAW_LOG=1`；raw stream 体积大且可能包含敏感内容。
