@@ -33,6 +33,14 @@ Codex 缓存版本带有 build，安装后的 hook/MCP 使用 release 内 launch
 `PYTHONPATH`、`GOAL_PLUS_SOURCE_PATH` 或目标 workspace 寻找 Goal Plus。
 内部 Python 进程沿用该解释器与受控模块路径。只有 `pi-goal-plus` 显式开发入口加载 editable 源码。
 
+Codex marketplace 源文件是 [scripts/templates/codex-marketplace.json](../scripts/templates/codex-marketplace.json)。
+安装器只在 release 内生成 `.agents/plugins/marketplace.json`；不要在源码 checkout 恢复同名发现入口，
+否则 Codex 从该目录发现插件时可能将已安装的 release 缓存替换为未准备的源码。
+`codex plugin add` 后，安装器继续核验 inventory 中的启用状态、来源和版本，以及实际缓存中的
+manifest、runtime 收据、解释器/build 标记、MCP 和 hooks；校验失败恢复已有来源，首次安装失败
+移除本次新增注册，保留已准备的 release。缓存仍被其他旧 checkout 或旧 Codex 进程刷新时，
+先结束相关进程并更新那些 checkout，再重跑安装器；安装器不删除任意旧 checkout。
+
 准备及身份验证成功后才修改宿主注册；更新已有宿主注册失败时恢复原来源。
 Codex、Pi 和 ThinkThread Profile 分别持有版本引用，更新其中一个不会更新另一个。
 因此 `./install.sh --codex --pi` 不刷新已有 `goal-plus-pi` TT Profile；还使用 TT 时执行

@@ -379,6 +379,8 @@ def test_codex_install_refreshes_existing_plugin(
 
     monkeypatch.setattr(installer, "_codex_marketplaces", lambda _codex: {"goal-plus": ROOT})
     monkeypatch.setattr(installer.managed_runtime, "bind", lambda *args, **kwargs: None)
+    verified = []
+    monkeypatch.setattr(installer, "_verify_codex_installation", lambda codex, package: verified.append(package))
     installer._install_codex(
         codex="codex",
         package=ROOT,
@@ -386,6 +388,7 @@ def test_codex_install_refreshes_existing_plugin(
     )
 
     assert commands == [["codex", "plugin", "add", "goal-plus@goal-plus"]]
+    assert verified == [ROOT]
 
 
 def test_pi_dev_dry_run_does_not_create_managed_directory(
@@ -698,7 +701,8 @@ def test_thinkthread_sdk_preflight_refuses_unmanaged_directory(
         )
 
 
-def test_codex_update_failure_restores_previous_source_and_binding(installer, tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", ["registration", "cache"])
+def test_codex_update_failure_restores_previous_source_and_binding(installer, tmp_path, monkeypatch, failure):
     old, new = tmp_path / "old", tmp_path / "new"
     current = {"goal-plus": old}
     installer.managed_runtime.bind("codex", installer._codex_config(), old)
@@ -709,15 +713,123 @@ def test_codex_update_failure_restores_previous_source_and_binding(installer, tm
             current.clear()
         elif argv[1:4] == ["plugin", "marketplace", "add"]:
             current["goal-plus"] = Path(argv[4])
-        elif current.get("goal-plus") == new:
+        elif current.get("goal-plus") == new and failure == "registration":
             raise subprocess.CalledProcessError(1, argv)
     monkeypatch.setattr(installer, "_run", run)
-    with pytest.raises(subprocess.CalledProcessError):
+    def reject_cache(codex, package):
+        raise installer.InstallError("Codex cache mismatch")
+    monkeypatch.setattr(installer, "_verify_codex_installation", reject_cache)
+    with pytest.raises(subprocess.CalledProcessError if failure == "registration" else installer.InstallError):
         installer._install_codex(codex="codex", package=new, dry_run=False)
     assert current == {"goal-plus": old}
     for host, config in [("codex", installer._codex_config()), ("pi", installer._pi_agent_dir())]:
         assert json.loads(installer.managed_runtime.binding_path(host, config).read_text())["package"] == str(old)
     assert not installer.managed_runtime.binding_path("codex-pending", installer._codex_config()).exists()
+
+
+@pytest.fixture
+def codex_release(installer, tmp_path, monkeypatch):
+    import shutil
+
+    package = tmp_path / "release/package"
+    config = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(config))
+    build = "a" * 64
+    version = "0.1.0+" + build
+    receipt = {"schema": installer.managed_runtime.SCHEMA, "build": build,
+               "package": str(package), "python": str(tmp_path / "release/venv/bin/python")}
+    launcher = package / "scripts/run-runtime.sh"
+    documents = {
+        ".codex-plugin/plugin.json": {"name": "goal-plus", "version": version},
+        ".goal-plus-runtime.json": receipt,
+        ".mcp.json": {"mcpServers": {"goal-plus": {"command": "bash", "args": [str(launcher), "--root", ".gp"]}}},
+        "hooks/hooks.json": {"hooks": {"Stop": [{"hooks": [{"command": f"bash {launcher} --goal-plus-host-hook"}]}]}},
+    }
+    for name, value in documents.items():
+        path = package / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value))
+    (package / ".goal-plus-build").write_text(build + "\n")
+    (package / ".goal-plus-python").write_text(receipt["python"] + "\n")
+    cache = config / "plugins/cache/goal-plus/goal-plus" / version
+    shutil.copytree(package, cache)
+    item = {"pluginId": "goal-plus@goal-plus", "installed": True, "enabled": True,
+            "version": version, "source": {"source": "local", "path": str(package)}}
+    monkeypatch.setattr(installer, "_codex_inventory", lambda _: [item])
+    monkeypatch.setattr(installer, "_codex_marketplaces", lambda _: {"goal-plus": package})
+    return package, cache, item
+
+
+def test_codex_installation_checks_actual_cache(installer, codex_release):
+    package, _, _ = codex_release
+    installer._verify_codex_installation("codex", package)
+
+
+@pytest.mark.parametrize("corruption", ["mcp", "build"])
+def test_codex_first_install_cache_failure_removes_new_registration(installer, codex_release, monkeypatch, corruption):
+    package, cache, item = codex_release
+    if corruption == "mcp":
+        (cache / ".mcp.json").write_bytes((ROOT / ".mcp.json").read_bytes())
+    else:
+        (cache / ".goal-plus-build").write_bytes(b"\xff")
+    marketplaces = {}
+    installed = []
+    monkeypatch.setattr(installer, "_codex_marketplaces", lambda _: dict(marketplaces))
+    monkeypatch.setattr(installer, "_codex_inventory", lambda _: list(installed))
+    def run(argv, **kwargs):
+        if argv[1:4] == ["plugin", "marketplace", "add"]:
+            marketplaces["goal-plus"] = Path(argv[4])
+        elif argv[1:4] == ["plugin", "marketplace", "remove"]:
+            marketplaces.clear()
+        elif argv[1:3] == ["plugin", "add"]:
+            installed.append(item)
+        elif argv[1:3] == ["plugin", "remove"]:
+            installed.clear()
+        else:
+            pytest.fail(f"unexpected command: {argv}")
+    monkeypatch.setattr(installer, "_run", run)
+    with pytest.raises(installer.InstallError, match="Codex cache mismatch"):
+        installer._install_codex(codex="codex", package=package, dry_run=False)
+    assert installed == []
+    assert marketplaces == {}
+    assert package.is_dir()
+    for host in ("codex", "codex-pending"):
+        assert not installer.managed_runtime.binding_path(host, installer._codex_config()).exists()
+
+
+@pytest.mark.parametrize("corruption", ["version", "source", "disabled", "manifest", "receipt", "mcp", "hooks", "build", "python", "missing"])
+def test_codex_installation_rejects_stale_or_mismatched_cache(installer, codex_release, corruption):
+    package, cache, item = codex_release
+    if corruption == "version":
+        item["version"] = "0.1.0"
+    elif corruption == "source":
+        item["source"]["path"] = str(ROOT)
+    elif corruption == "disabled":
+        item["enabled"] = False
+    elif corruption == "manifest":
+        (cache / ".codex-plugin/plugin.json").write_text('{"version":"0.1.0"}')
+    elif corruption == "receipt":
+        (cache / ".goal-plus-runtime.json").write_text('{}')
+    elif corruption == "mcp":
+        (cache / ".mcp.json").write_bytes((ROOT / ".mcp.json").read_bytes())
+    elif corruption == "hooks":
+        (cache / "hooks/hooks.json").write_bytes((ROOT / "hooks/hooks.json").read_bytes())
+    elif corruption in {"build", "python"}:
+        (cache / f".goal-plus-{corruption}").write_text("wrong\n")
+    else:
+        (cache / ".goal-plus-build").unlink()
+    with pytest.raises(installer.InstallError, match="Codex"):
+        installer._verify_codex_installation("codex", package)
+
+
+def test_codex_dry_run_does_not_verify_unmaterialized_cache(installer, tmp_path, monkeypatch):
+    monkeypatch.setattr(installer, "_codex_marketplaces", lambda _: {})
+    monkeypatch.setattr(installer, "_run", lambda *args, **kwargs: None)
+    def unexpected(*args):
+        pytest.fail("dry-run must not verify a cache that has not been installed")
+    monkeypatch.setattr(installer, "_verify_codex_installation", unexpected)
+    installer._install_codex(codex="codex", package=tmp_path / "missing", dry_run=True)
+    assert not installer.managed_runtime.home().exists()
 
 
 @pytest.mark.parametrize("fail", [True, False])

@@ -1453,8 +1453,52 @@ def _codex_config() -> Path:
     return Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
 
 
+def _verify_codex_installation(codex: str, package: Path) -> None:
+    package = package.resolve()
+    manifest = _read_json(package / ".codex-plugin/plugin.json")
+    version = manifest["version"]
+    entries = [item for item in _codex_inventory(codex)
+               if item.get("pluginId") == NORMAL_CODEX_PLUGIN_ID]
+    if len(entries) != 1:
+        raise InstallError(f"Codex installation verification failed: expected one {NORMAL_CODEX_PLUGIN_ID}")
+    item = entries[0]
+    source = item.get("source")
+    source_path = source.get("path") if isinstance(source, dict) else None
+    if (item.get("installed") is not True or item.get("enabled") is not True
+            or item.get("version") != version
+            or not isinstance(source_path, str)
+            or Path(source_path).expanduser().resolve() != package):
+        raise InstallError(
+            f"Codex installation mismatch: expected enabled {version} from {package}; "
+            f"got version={item.get('version')!r}, source={source_path!r}, "
+            f"installed={item.get('installed')!r}, enabled={item.get('enabled')!r}"
+        )
+    if _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE) != package:
+        raise InstallError(f"Codex marketplace mismatch: expected {package}")
+    # Inventory identifies the active version, but its source is not the cache.
+    cache = _codex_config().resolve() / "plugins/cache/goal-plus/goal-plus" / version
+    for name in (".codex-plugin/plugin.json", ".goal-plus-runtime.json",
+                 ".mcp.json", "hooks/hooks.json"):
+        try:
+            matches = _read_json(cache / name) == _read_json(package / name)
+        except InstallError as exc:
+            raise InstallError(f"Codex cache verification failed at {cache / name}: {exc}") from exc
+        if not matches:
+            raise InstallError(f"Codex cache mismatch: {cache / name} does not match {package / name}")
+    for name in (".goal-plus-build", ".goal-plus-python"):
+        try:
+            matches = (cache / name).read_bytes() == (package / name).read_bytes()
+        except OSError as exc:
+            raise InstallError(f"Codex cache verification failed at {cache / name}: {exc}") from exc
+        if not matches:
+            raise InstallError(f"Codex cache mismatch: {cache / name} does not match {package / name}")
+
+
 def _install_codex(*, codex: str, package: Path, dry_run: bool) -> None:
     previous = _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE)
+    previously_installed = previous is not None or (not dry_run and any(
+        item.get("pluginId") == NORMAL_CODEX_PLUGIN_ID for item in _codex_inventory(codex)
+    ))
     changed = previous is not None and previous != package
     managed_runtime.bind("codex-pending", _codex_config(), package, dry_run=dry_run)
     try:
@@ -1463,7 +1507,9 @@ def _install_codex(*, codex: str, package: Path, dry_run: bool) -> None:
         if previous != package:
             _run([codex, "plugin", "marketplace", "add", str(package)], dry_run=dry_run)
         _run([codex, "plugin", "add", NORMAL_CODEX_PLUGIN_ID], dry_run=dry_run)
-    except (OSError, subprocess.CalledProcessError):
+        if not dry_run:
+            _verify_codex_installation(codex, package)
+    except (OSError, subprocess.CalledProcessError, InstallError):
         # Restore the exact prior source if registration failed after preparation.
         if changed:
             current = _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE)
@@ -1472,6 +1518,10 @@ def _install_codex(*, codex: str, package: Path, dry_run: bool) -> None:
             _run([codex, "plugin", "marketplace", "add", str(previous)], dry_run=False)
             _run([codex, "plugin", "add", NORMAL_CODEX_PLUGIN_ID], dry_run=False)
         elif previous is None:
+            if not previously_installed and any(
+                item.get("pluginId") == NORMAL_CODEX_PLUGIN_ID for item in _codex_inventory(codex)
+            ):
+                _run([codex, "plugin", "remove", NORMAL_CODEX_PLUGIN_ID], dry_run=False)
             current = _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE)
             if current == package:
                 _run([codex, "plugin", "marketplace", "remove", NORMAL_CODEX_MARKETPLACE], dry_run=False)

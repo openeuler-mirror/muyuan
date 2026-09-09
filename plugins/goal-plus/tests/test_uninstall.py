@@ -89,6 +89,42 @@ def test_codex_plan_removes_normal_registration_only(
     assert notes == ["Preserved unrelated Codex plugin: goal-plus@goal-plus-local"]
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_codex_release_uninstall_preserves_runtime_and_other_host(uninstaller, tmp_path, monkeypatch, dry_run):
+    source = tmp_path / "source"
+    source.mkdir()
+    package = tmp_path / "release/package"
+    package.mkdir(parents=True)
+    (package / ".goal-plus-build").write_text("fixture-build\n")
+    config = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(config))
+    monkeypatch.setattr(uninstaller, "ROOT", source)
+    monkeypatch.setattr(uninstaller.install_support, "_codex_inventory", lambda _: [
+        {"pluginId": "goal-plus@goal-plus", "source": {"path": str(package)}}
+    ])
+    monkeypatch.setattr(uninstaller.install_support, "_codex_marketplaces", lambda _: {"goal-plus": package})
+    uninstaller.managed_runtime.bind("codex", config, package)
+    uninstaller.managed_runtime.bind("pi", tmp_path / "pi", package)
+    remove_plugin, remove_marketplace, notes = uninstaller._codex_plan("codex")
+    commands = []
+    monkeypatch.setattr(uninstaller, "_run", lambda argv, **kwargs: commands.append((argv, kwargs["dry_run"])))
+    plan = uninstaller.UninstallPlan(
+        codex_executable="codex", remove_codex_plugin=remove_plugin,
+        remove_codex_marketplace=remove_marketplace, pi_executable=None,
+        pi_sources=(), pi_dev_dir=None, pi_dev_registry_path=None,
+        remove_runtime=False, notes=tuple(notes),
+    )
+    uninstaller._execute(plan, dry_run=dry_run)
+    assert commands == [
+        (["codex", "plugin", "remove", "goal-plus@goal-plus"], dry_run),
+        (["codex", "plugin", "marketplace", "remove", "goal-plus"], dry_run),
+    ]
+    assert uninstaller.managed_runtime.binding_path("codex", config).exists() is dry_run
+    assert uninstaller.managed_runtime.binding_path("pi", tmp_path / "pi").exists()
+    assert (package / ".goal-plus-build").read_text() == "fixture-build\n"
+    assert not (source / ".agents/plugins/marketplace.json").exists()
+
+
 @pytest.mark.parametrize(
     ("plugin_source", "marketplace_source"),
     [

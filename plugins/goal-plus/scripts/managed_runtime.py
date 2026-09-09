@@ -20,7 +20,7 @@ PYTHON_VERSION = "3.12"
 PACKAGE_PATHS = (
     "src", "scripts", "hooks", "skills", ".codex/skills", ".codex/agents",
     ".codex/hooks.example.json", ".codex/config.example.toml", ".codex-plugin",
-    ".agents/plugins", ".pi/extensions", ".pi/skills", ".pi/prompts", ".mcp.json", "package.json", "pyproject.toml",
+    ".pi/extensions", ".pi/skills", ".pi/prompts", ".mcp.json", "package.json", "pyproject.toml",
     "uv.lock", "README.md", "README_zh.md", "SPEC.md", "AGENTS.md", "docs", "examples",
     "LICENSE", "install.sh", "uninstall.sh",
 )
@@ -118,6 +118,11 @@ def prepare(source: Path, *, dry_run: bool = False) -> Path:
                 manifest = json.loads(manifest_path.read_text())
                 manifest["version"] = manifest["version"].split("+")[0] + "+" + build
                 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+                # Only prepared releases may participate in Codex discovery.
+                marketplace = json.loads((package / "scripts/templates/codex-marketplace.json").read_text())
+                marketplace_path = package / ".agents/plugins/marketplace.json"
+                marketplace_path.parent.mkdir(parents=True, exist_ok=True)
+                marketplace_path.write_text(json.dumps(marketplace, indent=2) + "\n")
             # Codex removes old cache directories on refresh. Commands already
             # loaded by an older session must keep working from its release.
             launcher = package / "scripts/run-runtime.sh"

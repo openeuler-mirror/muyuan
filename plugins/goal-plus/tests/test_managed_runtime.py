@@ -22,6 +22,7 @@ def source(tmp_path):
     (root / "src/goal_plus").mkdir(parents=True)
     (root / "src/goal_plus/example.py").write_text("VALUE = 1\n")
     (root / "pyproject.toml").write_text('[project]\nname="goal-plus"\nversion="0.1.0"\n')
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
     return root
 
 
@@ -45,7 +46,10 @@ def test_failed_preparation_leaves_existing_host_binding_and_release(managed, tm
     old.mkdir(parents=True)
     (old / "sentinel").write_text("old release")
     monkeypatch.setenv("GOAL_PLUS_UV", "/explicit/uv")
+    original_run = subprocess.run
     def fail(argv, **kwargs):
+        if argv[0] == "git":
+            return original_run(argv, **kwargs)
         assert argv[0] == "/explicit/uv"
         assert "--managed-python" in argv and "--locked" in argv
         assert "PYTHONPATH" not in kwargs["env"]
@@ -107,9 +111,20 @@ def test_prepared_build_has_matching_manifest_receipt_and_interpreter(managed, t
     root = source(tmp_path)
     (root / ".codex-plugin").mkdir()
     (root / ".codex-plugin/plugin.json").write_text('{"version":"0.1.0"}')
+    template = root / "scripts/templates/codex-marketplace.json"
+    template.parent.mkdir(parents=True)
+    template.write_bytes((Path(__file__).parents[1] / "scripts/templates/codex-marketplace.json").read_bytes())
+    before = managed.fingerprint(root)
+    marketplace = json.loads(template.read_text())
+    marketplace["interface"]["displayName"] = "Updated Goal Plus"
+    template.write_text(json.dumps(marketplace))
+    assert managed.fingerprint(root) != before
     monkeypatch.setenv("GOAL_PLUS_UV", "/explicit/uv")
     calls = []
+    original_run = subprocess.run
     def run(argv, **kwargs):
+        if argv[0] == "git":
+            return original_run(argv, **kwargs)
         calls.append(argv)
         if argv[0] == "/explicit/uv":
             package = Path(argv[-1])
@@ -119,6 +134,8 @@ def test_prepared_build_has_matching_manifest_receipt_and_interpreter(managed, t
     monkeypatch.setattr(managed.subprocess, "run", run)
     package = managed.prepare(root)
     receipt = managed.read_receipt(package)
+    assert not (root / ".agents/plugins/marketplace.json").exists()
+    assert json.loads((package / ".agents/plugins/marketplace.json").read_text()) == marketplace
     assert json.loads((package / ".codex-plugin/plugin.json").read_text())["version"] == "0.1.0+" + receipt["build"]
     assert (package / ".goal-plus-build").read_text().strip() == receipt["build"]
     assert (package / ".goal-plus-python").read_text().strip() == receipt["python"]
@@ -145,7 +162,10 @@ def test_prepared_host_commands_survive_removal_of_codex_cache(managed, tmp_path
     (root / ".mcp.json").write_text(json.dumps({"mcpServers": {"goal-plus": {"args": ["placeholder", "--root", ".gp"]}}}))
     (root / "scripts").mkdir()
     (root / "scripts/run-runtime.sh").write_text('#!/bin/sh\nprintf "release-launcher\\n"\n')
+    original_run = subprocess.run
     def run(argv, **kwargs):
+        if argv[0] == "git":
+            return original_run(argv, **kwargs)
         if argv[0] == sys.executable:
             return subprocess.CompletedProcess(argv, 0)
         package = Path(argv[0]).parents[2] / "package"

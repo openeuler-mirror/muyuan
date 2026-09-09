@@ -28,6 +28,9 @@ Hook、MCP、Pi tool 和内部 Python worker 不得因 shell 环境或目标 wor
 Goal Plus。安装副本与 runtime 必须核验同一 build；开发源码加载仅由显式 Pi 开发入口启用。
 更新一个宿主不得隐式替换其他宿主或仍被保留的旧版本。新 runtime 准备失败不改变已有宿主
 注册；卸载单个宿主保留 runtime，运行时清理只删除通过归属检查且没有宿主引用的版本。
+源码 checkout 不发布可发现的同名 Codex marketplace；正式入口只在受管 release 中生成。
+Codex 安装成功前必须核验实际缓存的 build、安装身份与 MCP/hook 启动配置，不能只以注册来源
+或 `plugin add` 成功作为验收。缓存校验失败不得提交新版本引用或报告安装成功。
 
 ## 核心对象
 

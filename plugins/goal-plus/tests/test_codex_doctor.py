@@ -302,9 +302,11 @@ def test_enabled_plugin_rejects_duplicate_ancestor_goal_plus_hooks(
     assert result.details["project_hooks"] == [str(duplicate.resolve())]
 
 
-def test_distribution_marketplace_points_at_plugin_root() -> None:
+def test_marketplace_template_points_at_release_without_source_discovery() -> None:
+    root = codex_doctor._package_root()
+    assert not (root / ".agents/plugins/marketplace.json").exists()
     marketplace = json.loads(
-        (codex_doctor._package_root() / ".agents" / "plugins" / "marketplace.json").read_text(
+        (root / "scripts/templates/codex-marketplace.json").read_text(
             encoding="utf-8"
         )
     )
