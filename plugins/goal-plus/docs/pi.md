@@ -67,7 +67,9 @@ tt profile show goal-plus-pi
 安装器校验当前支持的 Runtime 版本、Profile schema、Pi Agent Extension protocol、Root direct
 filesystem 和 Child COW filesystem，然后生成用户级 `goal-plus-pi` Profile。Profile 显式加载本
 次安装副本的 Goal Plus extension/skill，以只读方式开放该副本及其受管 Python environment，并将
-Node/Python runtime prefix 一并加入只读路径，再将 `GOAL_PLUS_ROOT` 延迟解析到每个 Pi native
+Node/Python runtime prefix 及解释器软链接链目标一并加入 `[environment].read`，
+verifier 的裸 `python` / `python3` 直接使用该受管 venv 的绝对解释器路径。
+安装器再将 `GOAL_PLUS_ROOT` 延迟解析到每个 Pi native
 Session 的 private directory。本 checkout 生成的旧 Profile 会原子更新；已有内容不同且不归本
 checkout 所有的同名 Profile 会让安装 fail closed，不会被覆盖。
 

@@ -38,6 +38,7 @@ from goal_plus.infrastructure.clock import utc_timestamp as utc_timestamp
 from goal_plus.infrastructure.state.files import sha256_file
 from goal_plus.infrastructure.state.resource_locks import verifier_resource_lock
 from goal_plus.infrastructure.verifiers.output import bounded_verifier_log
+from goal_plus.infrastructure.verifiers.command import verifier_argv
 from goal_plus.ports.state import CandidateRecord, RunRecord
 from goal_plus.workspaces import (
     IGNORED_NAMES,
@@ -101,7 +102,7 @@ class LocalVerifiers:
             raise ValueError("verifier processes require text capture")
 
         process = subprocess.Popen(
-            command,
+            verifier_argv(command),
             cwd=cwd,
             env=env,
             stdout=subprocess.PIPE,
@@ -645,7 +646,9 @@ class LocalVerifiers:
     ) -> dict[str, str]:
         env = os.environ.copy()
         env.update(process_environment or {})
-        env["PYTHONPATH"] = str(cwd) + os.pathsep + env.get("PYTHONPATH", "")
+        env.pop("PYTHONHOME", None)
+        env["PYTHONPATH"] = str(cwd)
+        env["PYTHONNOUSERSITE"] = "1"
         for name in ("TMPDIR", "TMP", "TEMP", "GOAL_PLUS_VERIFIER_TMPDIR"):
             env[name] = str(temp_dir)
         # Keep verifier imports deterministic when a candidate rewrites a Python

@@ -48,6 +48,10 @@ SearchSpec 复制到被忽略的 `workspace/`。已有目标不会被覆盖；�
 python3 prepare_workspace.py --reset
 ```
 
+`--reset` 会删除整个已识别的 workspace 后重新复制，不保留上轮文件。请先停止使用该
+workspace 的 Root，再执行重建。公共 verifier 的本地基线执行不会写入 Python 字节码缓存；
+旧版本生成的 `__pycache__` 会随重建清除。
+
 ## 运行真实 Pi E2E
 
 从本示例目录启动 Root，并显式冻结 supplemental evaluation policy：

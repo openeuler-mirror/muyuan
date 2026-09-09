@@ -36,6 +36,11 @@ Codex 安装成功前必须核验实际缓存的 build、安装身份与 MCP/hoo
 或 `plugin add` 成功作为验收。缓存校验失败不得提交新版本引用或报告安装成功。
 Pi 安装成功前必须核验实际 package 注册、宿主解析出的启用 extension/skill 和 Python build。
 校验失败恢复原设置并撤销 pending 引用；显式资源配置和项目自动发现也属于冲突检查范围。
+本地和 ThinkThread verifier 的裸 `python` / `python3` 命令在执行时绑定当前 Goal Plus
+解释器，保留 venv 路径，不经宿主 PATH 解析；冻结命令和显式解释器路径保持原值。
+Verifier 的 Python 模块搜索仅加入其工作目录，不继承外部 `PYTHONHOME`、`PYTHONPATH`
+或用户 site-packages。ThinkThread Profile 必须只读开放安装 venv 及解释器软链接链的目标。
+Pi 开发 launcher 的预检查和工具调用使用开发 venv 的隔离 Python。
 
 ## 核心对象
 

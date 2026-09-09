@@ -1400,7 +1400,7 @@ if [[ ! -x "$goal_plus_venv/bin/python" ]]; then
   exit 1
 fi
 
-module_path="$("$goal_plus_venv/bin/python" -c 'import goal_plus; print(goal_plus.__file__)')"
+module_path="$("$goal_plus_venv/bin/python" -I -c 'import goal_plus; print(goal_plus.__file__)')"
 case "$module_path" in
   "$goal_plus_root"/src/goal_plus/*) ;;
   *)
@@ -1410,7 +1410,7 @@ case "$module_path" in
     ;;
 esac
 
-"$goal_plus_venv/bin/python" {installer} --check-pi-dev-runtime --check-cwd "$PWD"
+"$goal_plus_venv/bin/python" -I {installer} --check-pi-dev-runtime --check-cwd "$PWD"
 
 export GOAL_PLUS_PI_DEV_ROOT="$goal_plus_root"
 export GOAL_PLUS_PYTHON="$goal_plus_venv/bin/python"
@@ -1453,10 +1453,11 @@ def _prepare_pi_dev(*, dev_dir: Path, pi_executable: str, dry_run: bool) -> None
         _atomic_write(receipt_path, json.dumps(receipt, indent=2) + "\n")
 
     if not python.is_file():
-        _run([sys.executable, "-m", "venv", str(venv)], dry_run=dry_run)
+        _run([sys.executable, "-I", "-m", "venv", str(venv)], dry_run=dry_run)
     _run(
         [
             str(python),
+            "-I",
             "-m",
             "pip",
             "install",
@@ -1469,7 +1470,7 @@ def _prepare_pi_dev(*, dev_dir: Path, pi_executable: str, dry_run: bool) -> None
 
     if not dry_run:
         result = _run(
-            [str(python), "-c", "import goal_plus; print(goal_plus.__file__)"],
+            [str(python), "-I", "-c", "import goal_plus; print(goal_plus.__file__)"],
             capture=True,
         )
         module_path = Path(result.stdout.strip()).resolve()

@@ -33,6 +33,12 @@ Codex 缓存版本带有 build，安装后的 hook/MCP 使用 release 内 launch
 `PYTHONPATH`、`GOAL_PLUS_SOURCE_PATH` 或目标 workspace 寻找 Goal Plus。
 内部 Python 进程沿用该解释器与受控模块路径。只有 `pi-goal-plus` 显式开发入口加载 editable 源码。
 
+本地和 ThinkThread verifier 中的裸 `python` / `python3` 也绑定运行中的 Goal Plus
+解释器；不读取 `GOAL_PLUS_PYTHON` 或宿主 PATH 来重新选择。需要其他 Python 依赖环境的
+verifier 应显式填写解释器路径，ThinkThread 下还需由管理员授权该环境的只读路径。
+Verifier 保留自身工作目录的模块导入，但不继承外部 `PYTHONHOME`、`PYTHONPATH` 或用户
+site-packages。`--pi-dev` 的导入检查、冲突检查和工具调用同样使用独立 venv 的隔离模式。
+
 产品资产源码只在 `assets/codex/` 和 `assets/pi/` 维护。源码 checkout 不保留产品的
 `.codex/skills`、`.codex/agents`、`.pi/extensions`、`.pi/skills`、`.pi/prompts` 或根级插件声明。
 `AGENTS.md` 继续指导开发，`install.sh`、`uninstall.sh` 是显式执行入口。

@@ -40,6 +40,17 @@ def test_pi_root_preflight_is_exact_and_starts_without_search(
     }
 
 
+def test_circle_baseline_uses_managed_python_without_source_caches(
+    run_thinkthread_scenario: Callable[[str], dict[str, Any]],
+) -> None:
+    report = run_thinkthread_scenario("circle_baseline")
+    assert report["local_score"] == pytest.approx(1.7983485547704765)
+    assert report["snapshot_score"] == report["local_score"]
+    assert report["source_unchanged"]
+    assert report["runtime_python"] == report["configured_python"]
+    assert report["snapshot_id"].startswith("fsnap-")
+
+
 def test_control_abi_and_single_pi_child_smoke(
     run_thinkthread_scenario: Callable[[str], dict[str, Any]],
 ) -> None:

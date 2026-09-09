@@ -876,16 +876,31 @@ def test_python_symlink_chain_can_revisit_directory_with_different_suffix(instal
     assert real / "env/bin" in roots
 
 
-def test_thinkthread_profile_uses_managed_package_python_and_retains_source_owner(installer, tmp_path):
+def test_thinkthread_profile_uses_managed_package_python_and_retains_source_owner(installer, tmp_path, monkeypatch):
     package = tmp_path / "release/package"
     package.mkdir(parents=True)
     (package / ".goal-plus-runtime.json").write_text(json.dumps({"schema": installer.managed_runtime.SCHEMA, "source": str(ROOT)}))
     python = tmp_path / "release/venv/bin/python"
+    python.parent.mkdir(parents=True)
+    base = tmp_path / "managed-python/cpython-3.12/bin/python3.12"
+    base.parent.mkdir(parents=True)
+    base.touch()
+    alias = tmp_path / "managed-python/python-alias"
+    alias.symlink_to(base.parent.parent, target_is_directory=True)
+    python.symlink_to(alias / "bin/python3.12")
+    host = tmp_path / "foreign-venv"
+    monkeypatch.setattr(installer.sys, "executable", str(host / "bin/python"))
+    monkeypatch.setattr(installer.sys, "prefix", str(host))
     profile = installer._build_thinkthread_profile(_thinkthread_pi_profile(), package_root=package,
                                                   runtime_python=python, node_executable="/opt/node/bin/node")
     assert str(package / "assets/pi/extensions/goal-plus.ts") in profile["agent"]["args"]
     assert profile["environment"]["root"]["GOAL_PLUS_PYTHON"] == str(python)
     assert str(python.parent.parent) in profile["environment"]["read"]
+    roots = [Path(path) for path in profile["environment"]["read"]]
+    for required in (python, alias / "bin/python3.12", base, base.parent.parent / "lib"):
+        assert any(required.is_relative_to(root) for root in roots)
+    assert not any(host.is_relative_to(root) for root in roots)
+    assert profile["environment"]["child"]["GOAL_PLUS_PYTHON"] == str(python)
     path = tmp_path / "profile.toml"
     path.write_text(installer._render_thinkthread_profile(profile))
     assert installer._managed_thinkthread_profile_source(path) == ROOT

@@ -4,6 +4,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import shutil
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -599,6 +603,58 @@ def thinkthread_spec(project: Path) -> SearchSpec:
     )
     payload["workspace"] = {"backend": "thinkthread", "promotion_mode": "apply"}
     return SearchSpec.model_validate(payload)
+
+
+@pytest.mark.parametrize("executable", ["python", "python3"])
+def test_thinkthread_verifier_uses_runtime_python_before_host_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, executable: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path)
+    evaluator = project / "evaluator.py"
+    evaluator.write_text(
+        "import json, sys\nprint(json.dumps({'combined_score': 42, 'python': sys.executable, 'args': sys.argv[1:]}))\n"
+    )
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    command = foreign / executable
+    command.write_text("#!/bin/sh\nexit 86\n")
+    command.chmod(0o755)
+    monkeypatch.setenv("PATH", str(foreign) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("GOAL_PLUS_PYTHON", str(command))
+    client = IntegratedAgentPosix(project)
+    original_invoke = client.invoke
+    observed = []
+
+    def invoke(operation, params=None, **kwargs):
+        result = original_invoke(operation, params, **kwargs)
+        if operation == "fs.run":
+            invocation = params["invocation"]
+            argv = invocation["argv"]
+            # Emulate TT resolving argv[0] on the host before applying guest env.
+            completed = subprocess.run(
+                [shutil.which(argv[0]), *argv[1:]], cwd=project,
+                env=invocation["environment"], capture_output=True, timeout=10,
+            )
+            result["exit"] = {"kind": "code", "code": completed.returncode}
+            result["outputChunks"] = [{"sequence": 0, "stream": "stdout",
+                "dataBase64": base64.b64encode(completed.stdout).decode("ascii")}]
+            observed.append(completed)
+        return result
+
+    monkeypatch.setattr(client, "invoke", invoke)
+    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
+    spec = thinkthread_spec(project)
+    arguments = ["a b", "$(touch unexpected)", "X=value"]
+    spec.process_verifiers[0].command = [executable, "evaluator.py", *arguments]
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(spec, [evaluator], native_host="pi")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    run = runtime.search_run.state.read_run(run_id)
+    assert run.workspace_bootstrap_verification.aggregate_score == 42
+    assert json.loads(observed[0].stdout) == {"combined_score": 42, "python": sys.executable, "args": arguments}
+    assert not project.joinpath("unexpected").exists()
+    assert frozen.spec.process_verifiers[0].command == spec.process_verifiers[0].command
 
 
 def test_thinkthread_autoresearch_launch_uses_pi_prompt_and_private_git_projection(

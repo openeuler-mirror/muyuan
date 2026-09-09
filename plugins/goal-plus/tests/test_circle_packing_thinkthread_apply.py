@@ -46,6 +46,11 @@ def test_circle_packing_thinkthread_apply_example_is_deterministic(
     verifier = destination / ".goal-plus-verifiers/circle_packing_score.py"
 
     def score() -> dict[str, object]:
+        original_files = {
+            path.relative_to(destination): path.read_bytes()
+            for path in destination.rglob("*")
+            if path.is_file()
+        }
         result = subprocess.run(
             [sys.executable, str(verifier)],
             cwd=destination,
@@ -53,6 +58,11 @@ def test_circle_packing_thinkthread_apply_example_is_deterministic(
             capture_output=True,
             text=True,
         )
+        assert {
+            path.relative_to(destination): path.read_bytes()
+            for path in destination.rglob("*")
+            if path.is_file()
+        } == original_files
         return json.loads(result.stdout)
 
     baseline = score()
