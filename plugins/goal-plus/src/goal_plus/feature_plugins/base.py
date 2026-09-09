@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from goal_plus.models import GoalPlusRecord
+from goal_plus.domain.goal import GoalPlusRecord
 
 
 @dataclass(frozen=True)

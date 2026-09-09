@@ -8,6 +8,9 @@ settlement cannot publish the same staging contents again on the next iteration.
 
 from __future__ import annotations
 
+from goal_plus.ports.shared_tools import SharedDirSettlement
+from goal_plus.domain.shared_tools import SHARE_OUT_RELATIVE_PATH, TOOL_DRAFTS_RELATIVE_PATH
+
 import codecs
 import hashlib
 import json
@@ -15,25 +18,23 @@ import os
 import re
 import shutil
 import stat
-import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict
 
-from goal_plus.models import SharedToolFamily, SharedToolRecord, ToolPublicationIntent
+from goal_plus.domain.shared_tools import (
+    SharedToolFamily,
+    SharedToolRecord,
+    ToolPublicationIntent,
+)
+from goal_plus.infrastructure.clock import utc_timestamp as _utc_timestamp
+from goal_plus.ports.annotation_context import (
+    TOOL_VIEW_MAX_CONTENT_BYTES as TOOL_VIEW_MAX_CONTENT_BYTES,
+)
 
-
-SHARE_OUT_RELATIVE_PATH = ".tmp/share-out"
-TOOL_DRAFTS_RELATIVE_PATH = ".tmp/tool-drafts"
-TOOL_INBOX_RELATIVE_PATH = ".tmp/shared-tools"
 SHARED_INDEX_SCHEMA_VERSION = 2
-TOOL_VIEW_MAX_CONTENT_BYTES = 256 * 1024
 TOOL_VIEW_MAX_FILE_BYTES = 64 * 1024
-
-
-def _utc_timestamp() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _safe_name(value: str) -> str:
@@ -170,15 +171,6 @@ class _DraftPlan:
         return 1 + len(self.directories) + self.file_count
 
 
-@dataclass
-class SharedDirSettlement:
-    tools: list[SharedToolRecord] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-    staged_entries: list[str] = field(default_factory=list)
-    staged_file_count: int = 0
-    staged_bytes: int = 0
-    consumed_entries: list[str] = field(default_factory=list)
-    deduplicated_entries: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1720,7 +1712,7 @@ class SharedDirManager:
         abandoned_ids = {item["tool_id"] for item in abandoned}
         if any(family.discoverable_head in abandoned_ids for family in families.values()):
             raise RuntimeError("RecoverySharedEvidenceMismatch: uncommitted tool is discoverable")
-        from goal_plus.runtime import write_json
+        from goal_plus.infrastructure.state.files import write_json
 
         archive = recovery_dir / "unsettled-shared-tools.json"
         if not archive.exists():

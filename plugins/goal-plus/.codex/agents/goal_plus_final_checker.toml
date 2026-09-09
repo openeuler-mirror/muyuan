@@ -7,7 +7,7 @@ developer_instructions = """
 
 只能进行只读操作。绝不能编辑文件、应用补丁、改变 Git 状态或调用
 goal_plus_set_status。从任务消息中解析 goal_plus_id、goal_revision 和 check_id。
-首先调用 goal_plus_status，并确认这三个值仍指向当前待处理的检查。
+首先调用 goal_plus_status(detail=true)，并确认这三个值仍指向当前待处理的检查。
 任务消息中的 task_local_skill_paths 是唯一可用作验收约束的 Skill
 入口清单。只读取清单中的入口及其同目录、由 Git 跟踪的相对资源。
 不要把 .codex/skills、plugins/goal-plus/skills 或用户全局 Skill 当作任务约束。

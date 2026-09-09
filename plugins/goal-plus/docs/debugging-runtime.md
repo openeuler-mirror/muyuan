@@ -1,5 +1,7 @@
 # 调试运行时状态
 
+<!-- markdownlint-disable-file MD010 MD013 MD060 -->
+
 本文用于检查正在运行或已经结束的 Goal Plus（Codex 使用 `$goal-plus`，Pi 使用 `/goal-plus`）：main 和 worker 处于什么状态、Search 产生了哪些 verifier Evidence，以及故障发生在 runtime 还是 host。
 
 ## 推荐排查顺序
@@ -9,6 +11,67 @@
 3. 只有需要还原 worker 行为或 host lifecycle 时，才读取 Codex/Pi 原生日志；
 4. 始终通过 `goal_plus_id`、`run_id`、`candidate_id` 和 `agent_session_id` 交叉关联，不能从 prose 猜测缺失事实。
 
+`goal_plus_monitor_snapshot` 的 `execution_scope` 字段是首选生命周期诊断入口，包含 scope state、
+active count、close reason 和 cleanup errors。仅当该投影不足时查看
+`.gp/host-scopes/<scope_id>/scope.json`。Scope 是 host-local 活计算证据，不是 Search run 状态；
+不要通过手改 scope 文件尝试 resume。
+
+## API 返回大小 Debug
+
+在启动宿主前设置 `GOAL_PLUS_DEBUG=1`，逐次输出接口返回大小：
+
+```bash
+GOAL_PLUS_DEBUG=1 codex
+GOAL_PLUS_DEBUG=1 pi 2>goal-plus-api-debug.log
+GOAL_PLUS_DEBUG=1 goal-plus-pi-tool goal_plus_status \
+  --root .gp --args-json '{"goal_plus_id":"gp_..."}'
+```
+
+Codex 的 MCP server 进程也需要继承该环境变量；已启动的 server 需重启。统计写到各自
+进程的 stderr，MCP stderr 是否直接显示由 Codex 决定。Pi 扩展在最终工具返回处直接写入
+宿主 stderr；Python CLI 的 stderr 被 Pi 捕获时仍可通过 `pi-tool` 记录查看最终响应。
+Pi RPC worker 的统计保存在 `.gp/host-logs/pi-rpc-<agent_session_id>.jsonl` 的
+`stderr` 事件中，JSON 统计行位于该事件的 `error` 字段。
+不要把本地 debug 日志提交到仓库。
+
+示例统计行（字节数仅作示意）：
+
+```json
+{"event":"goal_plus_api_response_size","transport":"mcp","tool":"goal_plus_record_search_result","format":"json","bytes":430,"characters":378}
+```
+
+- `mcp`：全部公开工具的返回值。JSON 按紧凑 UTF-8 序列化计数；字符串和
+  `TextContent` 按原文本计数，不包含 MCP envelope 或额外的 structured-content 副本。
+- `pi-cli`：全部 CLI 工具与 host-command 成功返回的实际 JSON 字节数，包含 `--pretty`
+  格式化，不包含 stdout 的最后一个换行。
+- `pi-tool`：Pi 注册的 Goal Plus 工具最终结果按 JSON 序列化的字节数，覆盖 Pi 专有工具
+  和 ThinkThread 工具。另列 `text_bytes`（所有 text content 的 UTF-8 字节数）及
+  `details_bytes`（details 的 JSON 字节数）。这两项与整体 `bytes` 不是可相加的独立开销。
+- `characters`：同一序列化文本的 Unicode 码点数，含字段名、标点和路径；Pi 另列
+  `text_characters`、`details_characters`。它不是中文汉字数或 tokenizer 结果。
+
+这些是不同返回边界的大小，不是 token 数或模型计费，也不能跨 `transport` 累加为模型
+输入量。统计只含工具名、格式与大小，不打印参数或返回正文，不修改 API payload 或领域
+状态。默认关闭；开启时额外序列化可能增加少量开销。抛出的异常没有返回值，因此不计数；
+以正常结果返回的错误对象仍计数。
+
+### ThinkThread Pi
+
+先通过 `./install.sh --pi --thinkthread` 刷新 `goal-plus-pi` Profile，再启动新的 Root：
+
+```bash
+GOAL_PLUS_DEBUG=1 tt run --profile goal-plus-pi --fs /path/to/workspace
+```
+
+当前受支持的 TT Pi 基线会将启动环境中的开关传给 Root 和 Child；两者的 Goal Plus 工具
+共用 `pi-tool` 统计包装器，Child RPC 返回也经过它。统计写到各自 Pi 的 stderr，再由 TT
+接入各自的终端流。需要保存时应从运行开始记录终端输出；对已退出的实例再执行
+`tt attach` 不能作为历史日志读取方式。
+
+Main 的终端记录不等于 Child 日志汇总，`.gp/host-logs/pi-rpc-*` 只适用于 Pi RPC worker。
+目前没有自动聚合 TT Root/Child debug 的采集器。开关传递和 Root 统计输出已做真实探针
+验证，不代表每条 TT Search/Annotation 工具链都已完成真实验证。
+
 ## Monitor Snapshot
 
 `goal_plus_monitor_snapshot` 是首选的只读入口。它不会启动、等待、继续或停止 worker。MCP 不便直接调用时，可以使用 Pi facade：
@@ -16,9 +79,14 @@
 ```bash
 goal-plus-pi-tool goal_plus_monitor_snapshot \
   --root .gp \
-  --args-json '{"goal_plus_id":"gp_...","stale_after_seconds":600}' \
+  --args-json '{"goal_plus_id":"gp_...","stale_after_seconds":600,"detail":true}' \
   --pretty
 ```
+
+模型轮询默认使用 `detail=false`；本节以下列出的配置、详细统计和 session 字段需要 `detail=true`。
+Goal 的完整目标/草案用 `goal_plus_status(detail=true)`，事件和历史记录用
+`goal_plus_history` 分页读取，完整 Pi pool 诊断用 `pi_search_pool_snapshot(detail=true)`。
+裁剪只改变工具返回；持久审计文件、Monitor/dashboard 和报告数据保持完整。
 
 只知道 `run_id` 时也可以直接查询该 run。需要关闭可选投影时传入 `feature_plugins=[]`；默认的 `orchestration` plugin 会显示普通 subagent dispatch 的 assignment summary、不透明 worker handle、host 原生操作、attempt generation、`launching`/`bound` 状态、stale-result 数量，以及 assignment/result/decision 流程。它不包含 transcript 路径或内容。
 
@@ -44,6 +112,8 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 - candidate score、iteration、session、verifier count 和 current best；
 - worker duration、usage、context、artifact 和 stale/timed-out warning；
 - selection、promotion 和 report path；
+- ThinkThread 的 `host_cleanup.state` 以及 candidate pool、annotation、snapshot 和 final artifact
+  四项摘要；
 - `statistics.selected_run` 中的 baseline/target improvement、
   time-to-first-verifier/success、worker outcome、model/provider、selection survival、usage、
   efficiency、workspace 创建/apply 耗时和 `unavailable_metrics`；
@@ -67,9 +137,27 @@ INTERVAL=2 RUN_LIMIT=0 ./scripts/monitor_goal_plus.sh /path/to/project
 
 默认输出是一屏摘要；`--verbose` 展开 worker usage、identity、directive、handoff、advisory、artifact 和 orchestration event summary，`--json` 输出完整组装 payload。Pi pool 部分只读取持久 snapshot，不执行 reconciliation、wait、close 或 interrupt。
 
-`search_report(run_id)` 从同一份持久 Evidence 生成 `report.md` 和 self-contained `report.html`。关联 Goal Plus 的 run 只有在 record 已进入 `complete`、`blocked` 或 `abandoned` 后才能生成报告；正常顺序是 select、promote、record Search result、final audit、terminal status，最后为每个已记录 run 生成一次 report。
+`search_report(run_id)` 从同一份持久 Evidence 生成 `report.md` 和 self-contained `report.html`。关联 Goal Plus 的 run 只有在 record 已进入 `complete` 或 `abandoned` 后才能生成报告；`blocked` 是可恢复暂停，不满足报告 gate。正常顺序是 select、promote、record Search result、final audit、可选 final-check、terminal status，最后为每个已记录 run 生成一次 report。
+
+`goal_plus_record_search_result` 预留系统报告路径，不表示报告已经存在。独立 final-check
+的 `goal_plus_report_lifecycle` 投影列出当前 revision 已结算 run 的 canonical 报告路径和
+`linked_goals_terminal` 生成 gate；审查员先核验 Search Evidence、精确 promotion 和其他
+交付物，不要求尚未到生成阶段的系统报告。这不豁免用户要求的其他文件或报告，也不把
+预留路径当作完成证据。终态后仍须生成并核对实际报告，不能手工制造文件来绕过 gate。
 
 HTML 是生成时刻的静态视图。后续产生新的 hook event 或 observability 后，需要再次调用 `search_report` 才会更新。缺失数据保持 `Not observed` 或列入 `unavailable_metrics`，不会从 transcript prose 补造。
+
+Goal Monitor 优先投影关联该 Goal 的最新 execution scope，缺失时才回退到所选 run 的
+scope。Git 报告的 publication 状态和 artifact 由持久 Promotion 补全投影，不写回或修复
+run。报告用例先检查关联 Goal 终态，再写 MD/HTML、执行 snapshot cleanup 并刷新
+lifecycle；纯 renderer 不执行状态转换。
+
+普通终态验收到这里为止：`host_cleanup.state=complete` 表示临时 candidate/annotation Child、private
+branch 和未 pin snapshot 已按合同回收，durable `.gp` Evidence 与报告仍保留。不要遍历
+`GOAL_PLUS_ROOT`、ThinkThread `instances/` 或 `host-pools/` 来猜测内部文件名。只有 monitor 报告
+`needs_recovery`/`failed`，或正在开发 provider lifecycle 时，才进入这些目录做定向调试。底层
+Child、Artifact View 与 cleanup 强断言由
+[`tests/st_thinkthread/test_linux_v3.py`](../tests/st_thinkthread/test_linux_v3.py) 的真实系统验收负责。
 
 ## Runtime 与 Host 的边界
 

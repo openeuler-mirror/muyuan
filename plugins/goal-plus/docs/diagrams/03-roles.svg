@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1515" viewBox="0 0 1400 1515" role="img" aria-labelledby="title desc">
+  <title id="title">Goal Plus 角色接入：有限能力、可信装配与不同执行驱动</title>
+  <desc id="desc">Candidate、Annotation、Scheduler、Final-check 具有独立业务合同。可信装配端解析有限能力，分别绑定 Codex native、Pi process RPC 和 ThinkThread Child。共用机械组件，不合并任务状态或生命周期。</desc>
+  <defs>
+    <style>
+      text{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#202b33;font-size:18px;letter-spacing:0}.title{font-size:32px;font-weight:700}.sub{font-size:17px;fill:#596873}.heading{font-size:22px;font-weight:700}.label{font-size:17px;font-weight:700}.box{rx:6;stroke-width:1.5}.business{fill:#edf8f5;stroke:#70aea2}.host{fill:#f9eff3;stroke:#bd899e}.pure{fill:#f1f5fd;stroke:#8ca6cd}.state{fill:#fff8e8;stroke:#c4a866}.neutral{fill:#f5f7f8;stroke:#b0bdc4}.flow{fill:none;stroke:#087b70;stroke-width:2.5;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#087b70"/></marker>
+  </defs>
+  <rect width="1400" height="1515" fill="#fff"/>
+  <text x="40" y="52" class="title">03 / 角色各自负责业务，机械能力由真实消费者共用</text>
+  <text x="40" y="85" class="sub">角色接入 · 共用合同和有限能力装配；各业务角色与后端保留自己的生命周期。</text>
+  <text x="40" y="132" class="label">R1 · 角色声明业务输入、结果 schema、所需能力；状态由各自 owner 校验</text>
+
+  <rect x="40" y="155" width="312" height="192" class="box business"/>
+  <text x="62" y="193" class="heading">Candidate</text>
+  <text x="62" y="229">task / session / generation</text>
+  <text x="62" y="261">自己的 workspace 与 edit surface</text>
+  <text x="62" y="293">改动、验证请求、continuation</text>
+  <text x="62" y="326" class="sub">可见合同不包含 Main 私有上下文</text>
+
+  <rect x="376" y="155" width="312" height="192" class="box business"/>
+  <text x="398" y="193" class="heading">Annotation</text>
+  <text x="398" y="229">task / claim / completion</text>
+  <text x="398" y="261">授权的 immutable Artifact View</text>
+  <text x="398" y="293">只读解释已结算 Evidence</text>
+  <text x="398" y="326" class="sub">没有 shell / 项目执行 / verifier</text>
+
+  <rect x="712" y="155" width="312" height="192" class="box business"/>
+  <text x="734" y="193" class="heading">Scheduler</text>
+  <text x="734" y="229">task / claim / lane barrier</text>
+  <text x="734" y="261">已采集的紧凑研究 context</text>
+  <text x="734" y="293">reward / flag / Decision 草案</text>
+  <text x="734" y="326" class="sub">不独立持有第二份 reward 账本</text>
+
+  <rect x="1048" y="155" width="312" height="192" class="box business"/>
+  <text x="1070" y="193" class="heading">Final-check</text>
+  <text x="1070" y="229">Goal revision / 审查 attempt</text>
+  <text x="1070" y="261">目标、结果与允许的审查材料</text>
+  <text x="1070" y="293">独立结论交回 Goal owner</text>
+  <text x="1070" y="326" class="sub">不借用 Search Scheduler 状态机</text>
+
+  <path d="M196 347V416" class="flow"/><path d="M532 347V416" class="flow"/>
+  <path d="M868 347V416" class="flow"/><path d="M1204 347V416" class="flow"/>
+  <rect x="40" y="416" width="1320" height="169" class="box pure"/>
+  <text x="64" y="454" class="heading">R2 · Binding / Capability 装配（逐角色配置，不是中央调用网关）</text>
+  <text x="64" y="492">输入：冻结配置 + native model/thinking 事实 + 角色需求 + 已支持组合</text>
+  <text x="64" y="526">输出：只给该角色所需的模型配置、工具集合、artifact 访问、结果 schema 与 driver 绑定</text>
+  <text x="64" y="560" class="sub">未启用能力缺席；不传任意工具名 / extension 源码；不把完整 source、host adapter 或大 binding bundle 传遍业务用例。</text>
+
+  <path d="M245 585V671" class="flow"/><path d="M700 585V671" class="flow"/><path d="M1155 585V671" class="flow"/>
+  <rect x="40" y="606" width="1320" height="43" class="box state"/>
+  <text x="64" y="633" class="label">R3 · 每次执行重核 Goal / task claim / generation / budget / scope；冻结 binding 本身不是执行许可</text>
+
+  <rect x="40" y="671" width="410" height="174" class="box host"/>
+  <text x="64" y="711" class="heading">Codex native driver</text>
+  <text x="64" y="748">Candidate：原生 handle / 工具 lifecycle</text>
+  <text x="64" y="780">内部单次推理：结构化 CLI 执行</text>
+  <text x="64" y="819" class="sub">原生 session 继承与 host callback 保留</text>
+
+  <rect x="495" y="671" width="410" height="174" class="box host"/>
+  <text x="519" y="711" class="heading">Pi process / RPC driver</text>
+  <text x="519" y="748">Pool / Worker：进程身份与 RPC session</text>
+  <text x="519" y="780">内部单次推理：角色工具与 schema</text>
+  <text x="519" y="819" class="sub">Host asset 只装配该角色的有限能力</text>
+
+  <rect x="950" y="671" width="410" height="174" class="box host"/>
+  <text x="974" y="711" class="heading">ThinkThread Child driver</text>
+  <text x="974" y="748">Candidate / Annotation retained Child</text>
+  <text x="974" y="780">归属、turn 静默、可靠 RPC 与恢复</text>
+  <text x="974" y="819" class="sub">Pi + TT 基线；不开放 Codex / Adaptive + TT</text>
+
+  <path d="M245 845V895" class="flow"/><path d="M700 845V895" class="flow"/><path d="M1155 845V895" class="flow"/>
+  <rect x="40" y="895" width="1320" height="96" class="box neutral"/>
+  <text x="64" y="933" class="heading">R4 · 按需复用已有 Execution 组件</text>
+  <text x="64" y="967">Scope / launch gate / process cleanup · ManagedProcess / StructuredInference / Drainer · TT Child / RPC / Request</text>
+
+  <text x="40" y="1034" class="label">R5 · 输出返回角色 owner：解码 → 校验 identity / artifact / claim / 当前前态 → 提交结果；迟到输出不扩权</text>
+  <text x="40" y="1076" class="sub">新增角色必须交付：输入输出合同、状态 owner、有限能力、实际 driver 接线、consumer 与关键失败验证。没有真实重复就不新建抽象。</text>
+  <style>.glossary text{font-size:17px}.glossary .term{font-size:19px;font-weight:700}.glossary .glossary-title{font-size:21px;font-weight:700}</style>
+  <g class="glossary" transform="translate(0 1110)">
+    <rect width="1400" height="405" fill="#f5f7f8"/>
+    <path d="M40 0H1360" stroke="#cbd6dc"/>
+    <text x="40" y="40" class="glossary-title">名词速查 / 本图中的职责含义</text>
+    <text x="40" y="82" class="term">Settlement · 正式结算 / 验证记账</text>
+    <text x="40" y="110">把本次验证与精确代码版本一起记入正式结果；失败也记。</text>
+    <text x="40" y="147" class="term">Scheduler · 搜索策略调度</text>
+    <text x="40" y="175">依据已结算结果计算探索价值，提出是否替换候选的建议。</text>
+    <text x="40" y="212" class="term">Allocation · 候选分配与替换</text>
+    <text x="40" y="240">校验建议、安排候选替换并准备新工作区；不启动模型。</text>
+    <text x="40" y="277" class="term">Publication · 结果交付</text>
+    <text x="40" y="305">把选定结果做成可交付产物；按合同验证后导出或授权应用。</text>
+    <text x="730" y="82" class="term">DTO · Data Transfer Object / 数据传递对象</text>
+    <text x="730" y="110">跨模块传递的具名数据，如请求身份、代码版本和验证结果。</text>
+    <text x="730" y="147" class="term">Ports · 能力接口（不是网络端口）</text>
+    <text x="730" y="175">声明业务能调用的有限操作；具体实现由 adapter 提供。</text>
+    <text x="730" y="212" class="term">Drainer · 后台队列驱动器</text>
+    <text x="730" y="240">后台驱动队列任务；业务 owner 决定领取、重试和完成规则。</text>
+    <text x="730" y="277" class="term">Binding · 角色与具体实现的绑定</text>
+    <text x="730" y="305">为角色选定执行驱动、模型配置与能力实现；不是永久授权。</text>
+    <text x="730" y="342" class="term">Capability · 角色获准使用的能力</text>
+    <text x="730" y="370">该角色允许使用的有限操作，如只读版本差异或提交验证。</text>
+    <text x="40" y="370" fill="#596873">R1 定义合同 → R2 装配能力 → R3 与业务 owner 核验每次执行。</text>
+  </g>
+</svg>

@@ -91,7 +91,7 @@ def _shared_run(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -183,7 +183,7 @@ def _iterations(
 
 
 def _shared_index(runtime: FileSearchRuntime, run_id: str) -> dict[str, Any]:
-    index_path = runtime._run_dir(run_id) / "shared" / "index.json"
+    index_path = runtime.search_run.state.run_dir(run_id) / "shared" / "index.json"
     return json.loads(index_path.read_text(encoding="utf-8"))
 
 
@@ -194,7 +194,7 @@ def test_process_verifier_publishes_share_out_into_global_evidence(
     producer, peer = candidates
     producer_context = runtime.get_agent_context(producer.agent_session_id)
     share_out = Path(producer_context["candidate_task"]["share_out_dir"])
-    shared_dir = runtime._run_dir(run_id) / "shared"
+    shared_dir = runtime.search_run.state.run_dir(run_id) / "shared"
 
     assert share_out == producer.share_out
     assert "shared_dir" not in producer_context["candidate_task"]
@@ -508,7 +508,7 @@ def test_annotator_rejects_tool_identity_mismatch(tmp_path: Path) -> None:
         run_id,
         annotator=WrongIdentityAnnotator(),
     ) == 0
-    annotation_task = runtime._load_evidence_annotation_task(
+    annotation_task = runtime.annotation.task(
         run_id, producer.candidate_id, 1
     )
     assert annotation_task is not None
@@ -534,7 +534,7 @@ def test_annotator_rejects_tampered_tool_snapshot(tmp_path: Path) -> None:
     helper.write_text("def read_score(_text):\n    return 999.0\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="snapshot integrity mismatch"):
-        runtime._evidence_annotation_context(run_id, producer.candidate_id, 1)
+        runtime.annotation_context.build(run_id, producer.candidate_id, 1)
 
 
 def test_tool_copy_requires_exact_discoverable_snapshot(tmp_path: Path) -> None:
@@ -898,7 +898,7 @@ def test_parent_fallback_records_staging_without_publishing(tmp_path: Path) -> N
     assert runtime.get_global_evidence(peer.agent_session_id) == []
     assert _shared_index(runtime, run_id)["tools"] == []
     assert not list(
-        (runtime._run_dir(run_id) / "shared" / "tools").rglob("helper.py")
+        (runtime.search_run.state.run_dir(run_id) / "shared" / "tools").rglob("helper.py")
     )
 
 
@@ -928,7 +928,7 @@ def test_parent_fallback_cannot_bypass_pending_tool_copy_receipt(
         runtime.run_verifier(run_id, consumer.candidate_id)
 
     assert Path(receipt["inbox_path"]).is_dir()
-    consumer_record = runtime._load_candidate_record(run_id, consumer.candidate_id)
+    consumer_record = runtime.candidate_creation.state.read_candidate(run_id, consumer.candidate_id)
     assert [item.receipt_id for item in consumer_record.pending_tool_copies] == [
         receipt["receipt_id"]
     ]
@@ -1310,7 +1310,7 @@ def test_family_catalog_is_built_from_shared_index(
     _write_tool(producer.share_out)
     _run_worker_verifier(runtime, run_id, producer, "Publish family v1")
     assert _publish_pending_views(runtime, run_id) == 1
-    manager = SharedDirManager(runtime._run_dir(run_id))
+    manager = SharedDirManager(runtime.search_run.state.run_dir(run_id))
     expected = manager.tool_family_catalog(
         max_published_versions_per_family=2,
     )
@@ -1318,9 +1318,9 @@ def test_family_catalog_is_built_from_shared_index(
     def fail_history_scan(_run_id: str):
         raise AssertionError("family catalog must not scan candidate iteration history")
 
-    monkeypatch.setattr(runtime, "_load_candidate_records", fail_history_scan)
+    monkeypatch.setattr(runtime.shared_tools.source, "read_candidates", fail_history_scan)
 
-    assert runtime._tool_family_catalog(run_id) == expected
+    assert runtime.shared_tools.catalog(run_id) == expected
 
 
 def test_family_governance_rejects_implicit_and_non_material_revisions(
@@ -1424,7 +1424,7 @@ def test_newer_pending_revision_cancels_obsolete_tool_view_and_arbitrates_lanes(
     assert catalog[0]["revision_allowed"] is False
     assert catalog[0]["capability_ids"] == ["v2", "v3"]
     assert catalog[0]["coverage_keys"] == ["v2", "v3"]
-    v2_context = runtime._evidence_annotation_context(run_id, first.candidate_id, 2)
+    v2_context = runtime.annotation_context.build(run_id, first.candidate_id, 2)
     assert v2_context["published_tools"] == []
 
     stage_revision(second, v2["tool_id"], "peer-v3")
@@ -1507,7 +1507,7 @@ def test_windows_share_out_junction_is_rejected_before_claim(tmp_path: Path) -> 
     assert report.shared_tool_publish_status == "snapshot_rejected"
     assert sentinel.read_text(encoding="utf-8") == "must remain\n"
     assert share_out.exists()
-    manager = SharedDirManager(runtime._run_dir(run_id))
+    manager = SharedDirManager(runtime.search_run.state.run_dir(run_id))
     with pytest.raises(ValueError, match="must be a real directory"):
         manager._claim_staging(
             share_out,
@@ -1663,16 +1663,16 @@ def test_shared_dir_is_disabled_by_default(tmp_path: Path) -> None:
     task = context["candidate_task"]
     assert "share_out_dir" not in task
     assert "shared_dir" not in task
-    assert not (runtime._run_dir(run_id) / "shared").exists()
+    assert not (runtime.search_run.state.run_dir(run_id) / "shared").exists()
 
-    shared_dir = runtime._run_dir(run_id) / "shared"
+    shared_dir = runtime.search_run.state.run_dir(run_id) / "shared"
     shared_dir.mkdir(parents=True)
     (shared_dir / "index.json").write_text("{invalid", encoding="utf-8")
     assert "tool_family_catalog" not in runtime.get_agent_context(
         candidate.agent_session_id
     )
 
-    candidate_before = runtime._load_candidate_record(run_id, candidate.candidate_id)
+    candidate_before = runtime.candidate_creation.state.read_candidate(run_id, candidate.candidate_id)
     with pytest.raises(ValueError, match="shared_dir.enabled=true"):
         runtime.stage_shared_tool(
             candidate.agent_session_id,
@@ -1688,7 +1688,7 @@ def test_shared_dir_is_disabled_by_default(tmp_path: Path) -> None:
             snapshot_hash="0" * 64,
         )
     assert (
-        runtime._load_candidate_record(run_id, candidate.candidate_id)
+        runtime.candidate_creation.state.read_candidate(run_id, candidate.candidate_id)
         == candidate_before
     )
 

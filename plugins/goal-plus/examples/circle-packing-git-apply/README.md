@@ -79,11 +79,20 @@ pi
 然后完整粘贴 [`pi-goal-prompt.md`](pi-goal-prompt.md)。如果不希望设置顶层截止
 条件，改用 [`pi-goal-prompt-untimed.md`](pi-goal-prompt-untimed.md)。
 
+以上两个 prompt 使用 `inner_agent=autoresearch`，每个 candidate 在一次 worker
+dispatch 中自主执行多轮修改和 verifier。要验证普通 agent 接口，改用
+[`pi-goal-prompt-common.md`](pi-goal-prompt-common.md)：每个 common dispatch 完成一个
+有界 attempt、调用一次 `search_run_verifier` 后返回，后续尝试由 main continuation 同一
+candidate。common 是空白策略基线：runtime 仍为 MCP verifier 创建 outer attempt commit，
+但 candidate workspace 不生成 `results.tsv` 或额外 ledger commit；历史保存在 canonical
+`.gp` ledger。
+
 这些 prompt 的正文只描述问题、允许修改的文件和验收方法。第一行的 typed config
 负责选择运行行为：`workspace_backend=git_worktree` 创建候选 worktree，
 `max_parallel=2` 和 `strategy=agent_guided` 控制 Search，`max_duration_seconds=300`
 从 Goal 创建时建立持久的五分钟 deadline；权威 SearchSpec 另外冻结 60 秒收尾预留，
-`promotion_mode=apply` 将选中的发布提交应用回源码仓库。prompt 不需要逐步指挥
+`inner_agent` 选择 worker 行为 adapter，`promotion_mode=apply` 将选中的发布提交应用回
+源码仓库。prompt 不需要逐步指挥
 candidate 创建、selection、promotion、apply 或 report。
 
 prompt 使用当前 Host 已选择的模型和已安装的 Goal Plus 默认值。原始 Circle Packing

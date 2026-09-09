@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from goal_plus.goal_plus import (  # noqa: E402
+from goal_plus.domain.goal_commands import (  # noqa: E402
     render_goal_plus_command_config_markdown,
     render_goal_plus_command_usage,
 )

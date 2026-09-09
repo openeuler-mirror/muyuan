@@ -13,31 +13,102 @@ wrap the most common zero-arg patterns for new tests that prefer injection.
 from __future__ import annotations
 
 import hashlib
+import io
+import json
 import os
 import subprocess
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
-from goal_plus.models import GoalPlusHostCommandInvocation, SearchSpec
+from goal_plus.models import GoalPlusHostCommandInvocation, GoalPlusRecord, SearchSpec
 from goal_plus.runtime import FileSearchRuntime
 
 
-def start_host_verified_goal(root: Path, source_path: Path) -> None:
-    raw_input = "$goal-plus Test"
-    FileGoalPlusRuntime(root).start_from_host_command(
+@dataclass
+class HookResult:
+    """Duck-typed stand-in for ``subprocess.CompletedProcess[str]``.
+
+    Tests keep asserting on ``returncode`` / ``stdout`` / ``stderr`` while the
+    hook runs in-process, avoiding a ~1.4s interpreter+import cold start per
+    invocation.
+    """
+
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def run_host_hook_inprocess(
+    hook_input: dict | None,
+    *,
+    cwd: Path,
+    env: dict[str, str],
+) -> HookResult:
+    """Run ``goal_plus.goal_plus_stop_hook.main()`` inside this process.
+
+    cwd, stdin/stdout/stderr and the environment are swapped for the call.
+    This does not simulate process identity or import isolation. Hooks
+    normally terminate via ``return``; a stray ``SystemExit`` is treated as
+    the CLI exit code.
+    """
+    import goal_plus.goal_plus_stop_hook as hook_module
+
+    saved = sys.stdin, sys.stdout, sys.stderr
+    saved_cwd = Path.cwd()
+    saved_environ = os.environ.copy()
+    try:
+        os.chdir(cwd)
+        sys.stdin = io.StringIO(json.dumps(hook_input or {}))
+        sys.stdout = out = io.StringIO()
+        sys.stderr = err = io.StringIO()
+        os.environ.clear()
+        os.environ.update(env)
+        try:
+            code = hook_module.main()
+        except SystemExit as exc:  # pragma: no cover - defensive
+            code = exc.code if isinstance(exc.code, int) else 0
+        return HookResult(returncode=int(code or 0), stdout=out.getvalue(), stderr=err.getvalue())
+    finally:
+        sys.stdin, sys.stdout, sys.stderr = saved
+        os.environ.clear()
+        os.environ.update(saved_environ)
+        os.chdir(saved_cwd)
+
+
+def start_host_verified_goal(
+    root: Path,
+    source_path: Path,
+    *,
+    session_id: str = "session-test",
+    invocation_id: str = "codex:test:start",
+    native_host: str = "codex",
+) -> GoalPlusRecord:
+    command = "$goal-plus" if native_host == "codex" else "/goal-plus"
+    raw_input = f"{command} Test"
+    runtime = FileGoalPlusRuntime(root)
+    record = runtime.start_from_host_command(
         "Test Goal Plus search",
         source_path=str(source_path),
         invocation=GoalPlusHostCommandInvocation(
-            host="codex",
-            transport="codex_user_prompt_submit",
-            command="$goal-plus",
+            host=native_host,
+            transport="codex_user_prompt_submit" if native_host == "codex" else "pi_extension_command",
+            command=command,
             action="start",
-            session_id="session-test",
+            session_id=session_id,
             native_entry_id="turn-test",
-            invocation_id="codex:test:start",
+            invocation_id=invocation_id,
             raw_input_sha256=hashlib.sha256(raw_input.encode()).hexdigest(),
             invoked_at="2026-08-28T00:00:00Z",
         ),
+    )
+    return runtime.activate_session(
+        record.goal_plus_id,
+        {
+            "host": "codex" if native_host == "codex" else "pi-rpc", "session_id": session_id,
+            "attached_at": record.created_at, "last_seen_at": record.updated_at,
+        },
     )
 
 
@@ -96,30 +167,13 @@ def spec_with_strategy(
     return SearchSpec.model_validate(data)
 
 
-def spec_with_host(
-    project: Path,
-    worker_host: str,
-    *,
-    strategy_name: str = "agent_guided",
-    max_parallel: int = 4,
-) -> SearchSpec:
-    return spec_with_strategy(
-        project,
-        {
-            "name": strategy_name,
-            "worker_host": worker_host,
-        },
-        max_parallel=max_parallel,
-    )
-
-
 def create_candidate(
     runtime: FileSearchRuntime,
     project: Path,
     *,
     direction: str = "maximize",
 ) -> tuple[str, str, Path]:
-    frozen = runtime.freeze_spec(spec_for(project, direction=direction), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec_for(project, direction=direction), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]

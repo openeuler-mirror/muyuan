@@ -5,14 +5,13 @@ command. If a required MCP or collaboration tool is unavailable,
 emit the final `st_report` with `extra.error`.
 
 Build a SearchSpec from
-{{PROJECT_ROOT}}/tests/st/fixtures/k_module_problem/spec.json with these exact
+{{PROJECT_ROOT}}/tests/st/fixtures/circle_packing/spec.json with these exact
 changes before freezing it:
 
 - Set `source_path` to the absolute fixture path.
 - Set `budget={"max_parallel": 1}`.
 - Set `strategy.name="random"`.
-- Set `strategy.worker_host="codex"`.
-- Set `strategy.worker_agent_type="search_candidate_agent"`.
+- Set `strategy.inner_agent="autoresearch"`.
 - Set `strategy.worker_budget={"min_runtime_seconds": 300,
   "min_verifier_runs": 1, "max_runtime_seconds": 420,
   "on_exceed": "interrupt"}`.

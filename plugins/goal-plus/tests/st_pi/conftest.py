@@ -11,28 +11,19 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _st_pi_selected(config: pytest.Config) -> bool:
-    markexpr = config.getoption("-m") or ""
-    return "st_pi" in markexpr or "st" in markexpr
-
-
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(
     config: pytest.Config,
     items: list[pytest.Item],
 ) -> None:
+    if not config.getoption("run_system_tests") or config.getoption("collectonly"):
+        return
     st_pi_items = [
         item
         for item in items
         if "st_pi" in [marker.name for marker in item.iter_markers()]
     ]
     if not st_pi_items:
-        return
-
-    if not _st_pi_selected(config):
-        for item in st_pi_items:
-            item.add_marker(
-                pytest.mark.skip(reason="ST Pi tests not selected (use `-m st_pi`)")
-            )
         return
 
     pi_binary = os.environ.get("ST_PI_BINARY", "pi")

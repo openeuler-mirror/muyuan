@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,12 +17,12 @@ from goal_plus.pi_pool import (
     snapshot_pi_search_pool,
     wait_any_pi_search_pool,
 )
-from goal_plus.pi_worker import _workspace_progress_handoff, run_pi_rpc_worker
-from goal_plus.runtime import DEVICE_POOLS_ENV, FileSearchRuntime
+from goal_plus.infrastructure.worker_handoff import workspace_progress_handoff
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.infrastructure.search_configuration import DEVICE_POOLS_ENV
 
 
 ROOT = Path(__file__).resolve().parents[2]
-K_MODULE = ROOT / "tests" / "st" / "fixtures" / "k_module_problem"
 CIRCLE_PACKING = ROOT / "tests" / "st" / "fixtures" / "circle_packing"
 EDGE_BENCH = ROOT / "examples" / "edgebench-ad-placement" / "workspace-template"
 
@@ -59,8 +61,7 @@ def _assert_gp_worker_artifacts(
     expected_changed_file: str = "initial_program.py",
 ) -> None:
     calls = _event_log_tool_calls(handle, min_agent_starts=min_agent_starts)
-    record = runtime._load_candidate_record(run_id, candidate_id)
-    workspace = Path(record.task.workspace).resolve()
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
 
     assert calls[0][0] == "search_get_agent_context"
     assert any(name == "search_run_verifier" for name, _args in calls)
@@ -79,49 +80,12 @@ def _assert_gp_worker_artifacts(
     assert record.changed_outside_allowed is False
 
 
-def _pi_spec(*, max_runtime_seconds: int = 300) -> SearchSpec:
-    data = {
-        "objective": "maximize k-module pipeline configuration score",
-        "metric_name": "combined_score",
-        "metric_direction": "maximize",
-        "source_path": str(K_MODULE),
-        "edit_surface": {
-            "allow": ["initial_program.py"],
-            "deny": ["evaluator.py", "config.yaml"],
-        },
-        "budget": {"max_parallel": 1},
-        "process_verifiers": [
-            {
-                "name": "k_module_score",
-                "role": "ranking_signal",
-                "command": [
-                    "python",
-                    "-c",
-                    "from evaluator import evaluate; import json; print(json.dumps(evaluate('initial_program.py'), sort_keys=True))",
-                ],
-                "timeout_seconds": 30,
-            }
-        ],
-        "strategy": {
-            "name": "random",
-            "worker_host": "pi-rpc",
-            "worker_budget": {
-                "max_runtime_seconds": max_runtime_seconds,
-                "max_turns": 8,
-                "on_exceed": "interrupt",
-            },
-        },
-    }
-    return SearchSpec.model_validate(data)
-
-
 def _circle_packing_pi_spec(*, max_runtime_seconds: int = 300) -> SearchSpec:
     data = json.loads((CIRCLE_PACKING / "spec.json").read_text(encoding="utf-8"))
     data["source_path"] = str(CIRCLE_PACKING)
     data["strategy"] = {
         "name": "random",
         "orchestration_mode": "parallel_loops",
-        "worker_host": "pi-rpc",
         "worker_budget": {
             "max_runtime_seconds": max_runtime_seconds,
             "max_turns": 8,
@@ -149,28 +113,6 @@ def _edgebench_pi_spec(*, max_runtime_seconds: int = 180) -> SearchSpec:
     return SearchSpec.model_validate(data)
 
 
-def _start_pi_candidate(
-    runtime: FileSearchRuntime,
-    *,
-    max_runtime_seconds: int = 300,
-):
-    frozen = runtime.freeze_spec(_pi_spec(max_runtime_seconds=max_runtime_seconds), [K_MODULE / "evaluator.py"])
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    plan = runtime.plan_next(run_id, requested_k=1)
-    task = runtime.start_batch(run_id, plan.plan_id)[0]
-    session = runtime.start_agent_session(
-        run_id,
-        task.candidate_id,
-        {
-            "goal": (
-                "Read evaluator.py, find HIDDEN_TARGET, update initial_program.py "
-                "configure_pipeline to match it exactly, then run the verifier."
-            )
-        },
-    )
-    return run_id, task, session
-
-
 def _candidate_summary(runtime: FileSearchRuntime, run_id: str) -> list[dict]:
     return [
         {
@@ -183,7 +125,7 @@ def _candidate_summary(runtime: FileSearchRuntime, run_id: str) -> list[dict]:
             ),
             "iterations": len(record.iterations),
         }
-        for record in runtime._load_candidate_records(run_id)
+        for record in runtime.candidate_creation.state.read_candidates(run_id)
     ]
 
 
@@ -204,7 +146,7 @@ def test_pi_rpc_edgebench_time_advisory_after_post_tool(
             EDGE_BENCH / ".goal-plus-verifiers" / "ad_local_score.py",
             EDGE_BENCH / "tools" / "bin" / "gen",
             EDGE_BENCH / "tools" / "bin" / "tester",
-        ],
+        ], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -258,6 +200,61 @@ def test_pi_rpc_edgebench_time_advisory_after_post_tool(
 
 @pytest.mark.st
 @pytest.mark.st_pi_rpc
+def test_pi_rpc_frozen_native_host_candidate(st_project_root: Path) -> None:
+    from goal_plus.goal_plus import FileGoalPlusRuntime
+    from tests._runtime_helpers import git_commit_all, start_host_verified_goal
+
+    source = st_project_root / "source"
+    shutil.copytree(EDGE_BENCH, source, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    git_commit_all(source, "isolated Pi candidate baseline")
+    runtime = FileSearchRuntime(st_project_root / ".search")
+    goal = start_host_verified_goal(runtime.root_dir, source, native_host="pi")
+    spec = _edgebench_pi_spec().model_copy(update={"source_path": str(source)})
+    spec = spec.model_copy(update={
+        "strategy": spec.strategy.model_copy(update={"inner_agent": "common"}),
+    })
+    frozen = runtime.freeze_spec(
+        spec,
+        [source / name for name in (
+            ".goal-plus-verifiers/ad_local_score.py", "tools/bin/gen", "tools/bin/tester"
+        )],
+        goal_plus_id=goal.goal_plus_id,
+    )
+    assert frozen.native_host == "pi"
+    assert frozen.worker_host == "pi-rpc"
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    FileGoalPlusRuntime(runtime.root_dir).link_search_run(
+        goal.goal_plus_id, frozen.frozen_spec_id, run_id,
+    )
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(
+        run_id, plan.plan_id,
+        proposals=[CandidateProposal(
+            intent="Validate the Pi candidate edit and verifier path with a bounded change.",
+            hypothesis="Checking each input row preserves the score on valid inputs.",
+            instructions=[
+                "In solution.cpp replace std::cin >> x >> y >> target_area; with "
+                "if (!(std::cin >> x >> y >> target_area)) { return 1; }.",
+                "Make this single edit, call search_run_verifier, and return its result.",
+            ],
+        )],
+    )[0]
+    result = run_pi_search_candidate(
+        root_dir=runtime.root_dir, run_id=run_id, candidate_id=task.candidate_id,
+        final_verify=False, pi_binary=os.environ.get("ST_PI_BINARY", "pi"),
+        model_pattern=os.environ.get("ST_PI_MODEL"),
+        thinking_level=os.environ.get("ST_PI_THINKING"),
+    )
+    assert result["handle"]["host"] == "pi-rpc"
+    _assert_gp_worker_artifacts(
+        runtime, run_id, task.candidate_id, result["handle"],
+        expected_changed_file="solution.cpp",
+    )
+
+
+@pytest.mark.st
+@pytest.mark.st_pi_rpc
 def test_pi_rpc_managed_pool_wait_any(st_project_root: Path) -> None:
     runtime = FileSearchRuntime(st_project_root / ".search")
     spec_data = _circle_packing_pi_spec(
@@ -274,7 +271,7 @@ def test_pi_rpc_managed_pool_wait_any(st_project_root: Path) -> None:
     if worker_launch:
         spec_data["strategy"]["worker_launch"] = worker_launch
     spec = SearchSpec.model_validate(spec_data)
-    frozen = runtime.freeze_spec(spec, [CIRCLE_PACKING / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [CIRCLE_PACKING / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -367,7 +364,7 @@ def test_pi_rpc_parallel_loop_cycle(
     if worker_launch:
         spec_data["strategy"]["worker_launch"] = worker_launch
     spec = SearchSpec.model_validate(spec_data)
-    frozen = runtime.freeze_spec(spec, [CIRCLE_PACKING / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [CIRCLE_PACKING / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -450,9 +447,9 @@ def test_pi_rpc_parallel_loop_cycle(
         != first["result"]["handle"]["metadata"]["process_pid"]
     )
 
-    assert len(runtime._load_plans(run_id)) == 1
-    assert len(runtime._load_candidate_records(run_id)) == 2
-    sessions = runtime._load_agent_sessions(run_id)
+    assert len(runtime.search_run.state.read_plans(run_id)) == 1
+    assert len(runtime.candidate_creation.state.read_candidates(run_id)) == 2
+    sessions = runtime.candidate_sessions.state.read_agent_sessions(run_id)
     assert len(sessions) == 2
     first_candidate_sessions = [
         session for session in sessions if session.candidate_id == first_candidate_id
@@ -489,33 +486,15 @@ def test_pi_rpc_parallel_loop_cycle(
 
 @pytest.mark.st
 @pytest.mark.st_pi_rpc
-def test_pi_rpc_k_module(st_project_root: Path) -> None:
-    runtime = FileSearchRuntime(st_project_root / ".search")
-    run_id, task, session = _start_pi_candidate(runtime)
-
-    handle = run_pi_rpc_worker(
-        session.launch,
-        pi_binary=os.environ.get("ST_PI_BINARY", "pi"),
-        model_pattern=os.environ.get("ST_PI_MODEL"),
-        thinking_level=os.environ.get("ST_PI_THINKING"),
-    )
-    runtime.bind_agent_handle(session.agent_session_id, handle)
-
-    score = runtime.run_verifier(run_id, task.candidate_id)
-
-    _assert_gp_worker_artifacts(runtime, run_id, task.candidate_id, handle)
-    assert score.aggregate_score == 1.0
-
-
-@pytest.mark.st
-@pytest.mark.st_pi_rpc
 @pytest.mark.skipif(
     os.environ.get("ST_PI_RPC_LEASE") != "1",
     reason="set ST_PI_RPC_LEASE=1 to run the Pi minimum-lease smoke",
 )
 def test_pi_rpc_pool_minimum_lease(st_project_root: Path) -> None:
     runtime = FileSearchRuntime(st_project_root / ".search")
-    spec_data = _pi_spec(max_runtime_seconds=105).model_dump(mode="json")
+    spec_data = _circle_packing_pi_spec(max_runtime_seconds=105).model_dump(
+        mode="json"
+    )
     spec_data["strategy"]["worker_budget"].update(
         {"min_runtime_seconds": 75, "min_verifier_runs": 1}
     )
@@ -529,7 +508,7 @@ def test_pi_rpc_pool_minimum_lease(st_project_root: Path) -> None:
     }
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [K_MODULE / "evaluator.py"],
+        [CIRCLE_PACKING / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -561,7 +540,7 @@ def test_pi_rpc_pool_minimum_lease(st_project_root: Path) -> None:
     assert lease["elapsed_seconds"] >= 75
     assert lease["elapsed_seconds"] < 106
     assert lease["dispatch_count"] >= 2
-    session = runtime._load_agent_session_by_id(event["agent_session_id"], run_id=run_id)
+    session = runtime.candidate_sessions.session(event["agent_session_id"], run_id=run_id)
     assert session.host_handle.metadata["dispatch_count"] == lease["dispatch_count"]
     iterations = runtime.list_iterations(run_id, task.candidate_id)
     assert iterations
@@ -577,8 +556,8 @@ def test_pi_rpc_pool_minimum_lease(st_project_root: Path) -> None:
 def test_pi_rpc_redispatch_after_timeout(st_project_root: Path) -> None:
     runtime = FileSearchRuntime(st_project_root / ".search")
     frozen = runtime.freeze_spec(
-        _pi_spec(max_runtime_seconds=150),
-        [K_MODULE / "evaluator.py"],
+        _circle_packing_pi_spec(max_runtime_seconds=150),
+        [CIRCLE_PACKING / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -589,7 +568,8 @@ def test_pi_rpc_redispatch_after_timeout(st_project_root: Path) -> None:
         program = workspace / "initial_program.py"
         program.write_text(
             program.read_text(encoding="utf-8").replace(
-                '"loader": "json_reader"', '"loader": "csv_reader"'
+                "0.5 + 0.28 * math.cos(angle)",
+                "0.5 + 0.29 * math.cos(angle)",
             ),
             encoding="utf-8",
         )
@@ -598,10 +578,10 @@ def test_pi_rpc_redispatch_after_timeout(st_project_root: Path) -> None:
         handoff_path.write_text(
             json.dumps(
                 {
-                    "summary": "matched loader; three modules remain",
-                    "what_was_tried": ["updated loader to csv_reader"],
+                    "summary": "changed one ring radius; more packing work remains",
+                    "what_was_tried": ["increased one ring radius"],
                     "blockers": ["worker deadline"],
-                    "next_steps": ["inspect evaluator target and finish remaining modules"],
+                    "next_steps": ["inspect the verifier and improve the packing"],
                 }
             ),
             encoding="utf-8",
@@ -613,7 +593,7 @@ def test_pi_rpc_redispatch_after_timeout(st_project_root: Path) -> None:
                 "timed_out": True,
                 "runner_failed": False,
                 "continuation": "native_session",
-                "progress_handoff": _workspace_progress_handoff(
+                "progress_handoff": workspace_progress_handoff(
                     workspace,
                     root=Path(launch["root"]),
                     run_id=run_id,
@@ -657,9 +637,9 @@ def test_pi_rpc_redispatch_after_timeout(st_project_root: Path) -> None:
     assert resumed["launch"]["budget_control"]["max_runtime_seconds"] == 300
     assert resumed["launch"]["continuation"] == "native_session"
     assert context["resume"]["latest_handoff"]["summary"] == (
-        "matched loader; three modules remain"
+        "changed one ring radius; more packing work remains"
     )
     _assert_gp_worker_artifacts(runtime, run_id, task.candidate_id, handle)
     assert handle["metadata"]["progress_handoff"]["verifier"]["count"] >= 1
     assert handle["metadata"]["progress_handoff"]["workspace"]["dirty"] is False
-    assert resumed["final_score_report"]["aggregate_score"] == 1.0
+    assert resumed["final_score_report"]["aggregate_score"] > 0.0

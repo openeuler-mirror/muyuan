@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1675" viewBox="0 0 1400 1675" role="img" aria-labelledby="title desc">
+  <title id="title">Goal Plus 恢复边界：独立 journal 与共用 TT request 协议</title>
+  <desc id="desc">Pool baseline intent 与 provider mutation journal 保持独立。共用组件只处理 exact request 观察和关闭，不写状态、不重做 mutation。Publication 先写 durable intent 再执行，业务 owner 核对返回身份后提交；unknown 保留责任。</desc>
+  <defs>
+    <style>
+      text{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#202b33;font-size:18px;letter-spacing:0}.title{font-size:32px;font-weight:700}.sub{font-size:17px;fill:#596873}.heading{font-size:22px;font-weight:700}.label{font-size:17px;font-weight:700}.box{rx:6;stroke-width:1.5}.business{fill:#edf8f5;stroke:#70aea2}.host{fill:#f9eff3;stroke:#bd899e}.state{fill:#fff8e8;stroke:#c4a866}.pure{fill:#f1f5fd;stroke:#8ca6cd}.neutral{fill:#f5f7f8;stroke:#b0bdc4}.flow{fill:none;stroke:#087b70;stroke-width:2.5;marker-end:url(#arrow)}.return{fill:none;stroke:#677b92;stroke-width:2;stroke-dasharray:7 5;marker-end:url(#return)}.life{stroke:#c2cbd0;stroke-width:1.5;stroke-dasharray:5 6}
+    </style>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#087b70"/></marker>
+    <marker id="return" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#677b92"/></marker>
+  </defs>
+  <rect width="1400" height="1675" fill="#fff"/>
+  <text x="40" y="52" class="title">04 / 共用恢复协议，保持业务与持久状态责任独立</text>
+  <text x="40" y="85" class="sub">持久化边界 · RPC delivery、provider request、业务结算、host 资源静默分别记录与核验。</text>
+
+  <rect x="40" y="124" width="620" height="108" class="box state"/>
+  <text x="64" y="162" class="heading">D1 · Pool baseline owner</text>
+  <text x="64" y="198">pool intent / S0 / RequestId / capture 与 close 进展</text>
+  <rect x="740" y="124" width="620" height="108" class="box state"/>
+  <text x="764" y="162" class="heading">Provider mutation journal owner</text>
+  <text x="764" y="198">run/candidate intent / 参数摘要 / 同请求重放 / close 责任</text>
+  <path d="M350 232V263H565V295" class="flow"/>
+  <path d="M1050 232V263H835V295" class="flow"/>
+  <rect x="250" y="295" width="900" height="103" class="box host"/>
+  <text x="274" y="333" class="heading">D2 · 一套 TT Request 协议：observe / close / unknown 后确认</text>
+  <text x="274" y="368">校验 requestId + method；返回具名观察。无 journal 写入、无业务重试预算、无新 RequestId。</text>
+  <text x="40" y="437" class="sub">RequestNotFound：关闭时证明已不存在；恢复执行时只表示 absent，不能据此宣布原操作成功。两个 journal 的格式与提交点保持独立。</text>
+
+  <text x="40" y="491" class="heading">D3–D5 / Publication 一次写操作的责任时序</text>
+  <rect x="40" y="518" width="360" height="65" class="box business"/>
+  <rect x="465" y="518" width="420" height="65" class="box state"/>
+  <rect x="950" y="518" width="410" height="65" class="box neutral"/>
+  <text x="64" y="559" class="heading">Application / 业务 owner</text>
+  <text x="489" y="559" class="heading">操作 adapter / journal</text>
+  <text x="974" y="559" class="heading">TT SDK / provider</text>
+  <path d="M220 583V1047M675 583V1047M1155 583V1047" class="life"/>
+
+  <text x="235" y="615" class="label">① 校验授权、exact artifact，登记明确 intent</text>
+  <path d="M220 630H675" class="flow"/>
+  <text x="698" y="654" class="sub">先持久化 RequestId、identity、参数摘要</text>
+  <path d="M675 680H220" class="return"/>
+  <text x="235" y="705" class="sub">返回 intent；业务保存 manifest / applying 前态</text>
+
+  <text x="235" y="749" class="label">② 执行这个已登记的操作</text>
+  <path d="M220 764H675" class="flow"/>
+  <text x="698" y="793" class="label">③ 编码 SDK 参数；沿用同一 RequestId</text>
+  <path d="M675 808H1155" class="flow"/>
+  <path d="M1155 852H675" class="return"/>
+  <text x="698" y="879" class="sub">④ 回包解码为结果事实；响应丢失进入同请求恢复</text>
+
+  <rect x="465" y="901" width="895" height="98" class="box host"/>
+  <text x="489" y="936" class="heading">completion_unknown → 共用 Request 观察 / 关闭确认</text>
+  <text x="489" y="973">确认成功：取原结果；仍不确定：保留 journal 与恢复责任。不得换 ID 重做或把 unknown 当成功。</text>
+  <path d="M675 1029H220" class="return"/>
+  <text x="235" y="1020" class="label">⑤ 返回 request / artifact / owner 等具名事实</text>
+
+  <rect x="40" y="1056" width="620" height="108" class="box business"/>
+  <text x="64" y="1093" class="heading">D4 · 业务结果只由 Application 提交</text>
+  <text x="64" y="1126">核验身份与当前前态；publication 独立验证后才能 prepared。</text>
+  <text x="64" y="1153" class="sub">apply：applied / pending integration / recovering；不回滚硬分。</text>
+  <rect x="740" y="1056" width="620" height="108" class="box state"/>
+  <text x="764" y="1093" class="heading">D5 · Request 关闭不是资源清理完成</text>
+  <text x="764" y="1126">snapshot cleanup 还要核对 ownership、跨 run pins 与报告。</text>
+  <text x="764" y="1153" class="sub">Child / scope 的静默和关闭由 Host owner 独立确认。</text>
+
+  <text x="40" y="1213" class="label">D6 · Main 丢失 / 显式 shutdown：先 fence 新执行 → 停止并复核登记资源 → confirmed closed 或保留 cleanup 重试 owner</text>
+  <text x="40" y="1248" class="sub">pause 只禁止后续工作，不等于强杀当前 turn；cleanup 不能恢复 Goal 授权、重置预算，或把未观测资源猜成静默。</text>
+  <style>.glossary text{font-size:17px}.glossary .term{font-size:19px;font-weight:700}.glossary .glossary-title{font-size:21px;font-weight:700}</style>
+  <g class="glossary" transform="translate(0 1270)">
+    <rect width="1400" height="405" fill="#f5f7f8"/>
+    <path d="M40 0H1360" stroke="#cbd6dc"/>
+    <text x="40" y="40" class="glossary-title">名词速查 / 本图中的职责含义</text>
+    <text x="40" y="82" class="term">Settlement · 正式结算 / 验证记账</text>
+    <text x="40" y="110">把本次验证与精确代码版本一起记入正式结果；失败也记。</text>
+    <text x="40" y="147" class="term">Scheduler · 搜索策略调度</text>
+    <text x="40" y="175">依据已结算结果计算探索价值，提出是否替换候选的建议。</text>
+    <text x="40" y="212" class="term">Allocation · 候选分配与替换</text>
+    <text x="40" y="240">校验建议、安排候选替换并准备新工作区；不启动模型。</text>
+    <text x="40" y="277" class="term">Publication · 结果交付</text>
+    <text x="40" y="305">把选定结果做成可交付产物；按合同验证后导出或授权应用。</text>
+    <text x="730" y="82" class="term">DTO · Data Transfer Object / 数据传递对象</text>
+    <text x="730" y="110">跨模块传递的具名数据，如请求身份、代码版本和验证结果。</text>
+    <text x="730" y="147" class="term">Ports · 能力接口（不是网络端口）</text>
+    <text x="730" y="175">声明业务能调用的有限操作；具体实现由 adapter 提供。</text>
+    <text x="730" y="212" class="term">Drainer · 后台队列驱动器</text>
+    <text x="730" y="240">后台驱动队列任务；业务 owner 决定领取、重试和完成规则。</text>
+    <text x="730" y="277" class="term">Binding · 角色与具体实现的绑定</text>
+    <text x="730" y="305">为角色选定执行驱动、模型配置与能力实现；不是永久授权。</text>
+    <text x="730" y="342" class="term">Capability · 角色获准使用的能力</text>
+    <text x="730" y="370">该角色允许使用的有限操作，如只读版本差异或提交验证。</text>
+    <text x="40" y="370" fill="#596873">R1 定义合同 → R2 装配能力 → R3 与业务 owner 核验每次执行。</text>
+  </g>
+</svg>

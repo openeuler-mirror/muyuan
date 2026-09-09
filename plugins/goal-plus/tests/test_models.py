@@ -6,20 +6,31 @@ import pytest
 from pydantic import ValidationError
 
 from goal_plus.adaptive_search import resolve_scheduler_policy
-from goal_plus.adaptive_search.scheduler import SearchSchedulerSpec
+from goal_plus.adaptive_search.scheduler import (
+    ResolvedSchedulerProfile,
+    SearchSchedulerSpec,
+)
 from goal_plus.models import (
     AgentHostHandle,
     AgentSessionRecord,
     ArtifactRef,
     Budget,
-    CandidateRecord,
     CandidateProposal,
+    CandidateRecord,
     CandidateTask,
     DevicePoolSpec,
     EditSurface,
     FrozenSpec,
     GoalPlusSpecDraft,
     IterationRecord,
+    ModelSpec,
+    PendingIntegrationRecord,
+    ProviderResourceCleanupRecord,
+    PublicationOutcome,
+    PublicationRecoveryRecord,
+    ResolvedEvidenceAnnotatorProfile,
+    RunRecord,
+    RunState,
     SearchPlan,
     SearchSpec,
     SearchSpecDraft,
@@ -29,10 +40,10 @@ from goal_plus.models import (
     ToolizationDecision,
     VerifierCommand,
     WorkerBudget,
-    ModelSpec,
+    WorkerExecutionResult,
 )
-from goal_plus.runtime import (
-    FileSearchRuntime,
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.infrastructure.search_configuration import (
     SUPPLEMENTAL_EVALUATION_ENABLED_ENV,
     SUPPLEMENTAL_EVALUATION_REQUIRED_ENV,
 )
@@ -126,7 +137,7 @@ def test_device_pools_require_unambiguous_logical_locks(
 def test_device_pool_ref_cannot_select_a_host_environment_variable() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         DevicePoolSpec.model_validate(
-            {"pool_id": "device", "visibility_env": "OPENAI_API_KEY"}
+            {"pool_id": "device", "visibility_env": "HOST_SECRET"}
         )
 
 
@@ -356,7 +367,7 @@ def test_search_spec_parses_nested_models_and_serializes_enums() -> None:
     assert dumped["metric_direction"] == "maximize"
     assert dumped["strategy"]["name"] == "agent_guided"
     assert dumped["strategy"]["orchestration_mode"] == "parallel_loops"
-    assert dumped["strategy"]["worker_host"] == "codex"
+    assert "worker_host" not in dumped["strategy"]
     assert "models" not in dumped["strategy"]
 
 
@@ -374,7 +385,7 @@ def test_required_supplemental_evaluation_rejects_disabled_mode(
         match="requires GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED=1",
     ):
         FileSearchRuntime(tmp_path / ".gp-missing").freeze_spec(
-            SearchSpec.model_validate(data), [project / "evaluator.py"]
+            SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex"
         )
 
 
@@ -388,7 +399,7 @@ def test_supplemental_evaluation_does_not_change_frozen_spec(
     monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_REQUIRED_ENV, "1")
 
     frozen = FileSearchRuntime(tmp_path / ".gp").freeze_spec(
-        SearchSpec.model_validate(data), [project / "evaluator.py"]
+        SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex"
     )
 
     frozen_spec = frozen.spec.model_dump(mode="json")
@@ -487,11 +498,11 @@ def test_verifier_resource_lock_rejects_blank_names() -> None:
         "name": "score",
         "role": "ranking_signal",
         "command": ["python", "verify.py"],
-        "resource_lock": "ascend-npu:0",
+        "resource_lock": "device:0",
     }
-    assert VerifierCommand.model_validate(command).resource_lock == "ascend-npu:0"
-    command["resource_lock"] = "  ascend-npu:0  "
-    assert VerifierCommand.model_validate(command).resource_lock == "ascend-npu:0"
+    assert VerifierCommand.model_validate(command).resource_lock == "device:0"
+    command["resource_lock"] = "  device:0  "
+    assert VerifierCommand.model_validate(command).resource_lock == "device:0"
 
     command["resource_lock"] = " "
     with pytest.raises(ValidationError, match="resource_lock must be non-empty"):
@@ -517,6 +528,30 @@ def test_search_spec_supports_registered_workspace_backends() -> None:
     thinkthread_spec = SearchSpec.model_validate(thinkthread_data)
     assert thinkthread_spec.workspace.backend == "thinkthread"
     assert thinkthread_spec.workspace.promotion_mode == "apply"
+
+    thinkthread_data["workspace"]["dependencies"] = [
+        {"path": "pkg", "scope": "tree_content"},
+        {"path": "config.json", "scope": "content"},
+    ]
+    thinkthread_spec = SearchSpec.model_validate(thinkthread_data)
+    assert [item.path for item in thinkthread_spec.workspace.dependencies] == [
+        "config.json",
+        "pkg",
+    ]
+
+    non_thinkthread_dependencies = valid_spec_dict()
+    non_thinkthread_dependencies["workspace"] = {
+        "backend": "git_worktree",
+        "dependencies": [{"path": "config.json", "scope": "content"}],
+    }
+    with pytest.raises(ValidationError, match="require backend='thinkthread'"):
+        SearchSpec.model_validate(non_thinkthread_dependencies)
+
+    thinkthread_data["workspace"]["dependencies"] = [
+        {"path": "../escape", "scope": "content"}
+    ]
+    with pytest.raises(ValidationError, match="snapshot-relative"):
+        SearchSpec.model_validate(thinkthread_data)
 
     invalid_copy_data = valid_spec_dict()
     invalid_copy_data["workspace"] = {
@@ -558,13 +593,22 @@ def test_search_spec_requires_structured_strategy() -> None:
     data = valid_spec_dict()
     data["strategy"] = {
         "name": "agent_guided",
-        "worker_host": "codex",
-        "worker_agent_type": "search_candidate_agent",
+        "inner_agent": "common",
     }
     spec = SearchSpec.model_validate(data)
     assert spec.strategy.name == "agent_guided"
-    assert spec.strategy.worker_host == "codex"
-    assert spec.strategy.worker_agent_type == "search_candidate_agent"
+    assert "worker_host" not in type(spec.strategy).model_fields
+    assert spec.strategy.inner_agent == "common"
+    assert "worker_agent_type" not in spec.strategy.model_dump(mode="json")
+
+    legacy = valid_spec_dict()
+    legacy["strategy"] = {
+        "name": "agent_guided",
+        "worker_agent_type": "search_candidate_agent",
+    }
+    legacy_spec = SearchSpec.model_validate(legacy)
+    assert legacy_spec.strategy.inner_agent is None
+    assert legacy_spec.strategy.worker_agent_type == "search_candidate_agent"
 
     legacy_string = valid_spec_dict()
     legacy_string["strategy"] = "evolve"
@@ -583,12 +627,147 @@ def test_search_spec_requires_structured_strategy() -> None:
             SearchSpec.model_validate(data)
 
 
-def test_strategy_spec_accepts_supported_worker_hosts() -> None:
-    assert StrategySpec(worker_host="codex").worker_host == "codex"
-    assert StrategySpec(worker_host="pi-rpc").worker_host == "pi-rpc"
+@pytest.mark.parametrize("host", ["codex", "pi-rpc", "thinkthread"])
+def test_strategy_spec_cannot_select_worker_host(host) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        StrategySpec.model_validate({"worker_host": host})
 
-    with pytest.raises(ValidationError):
-        StrategySpec(worker_host="unsupported")  # type: ignore[arg-type]
+
+@pytest.mark.parametrize("agent", ["pi", "codex"])
+def test_strategy_spec_cannot_select_agent_profile(agent) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        StrategySpec.model_validate({"worker_launch": {"agent_profile": agent}})
+
+
+def test_thinkthread_execution_and_publication_models_round_trip() -> None:
+    snapshot = ArtifactRef(
+        kind="fs_snapshot",
+        id="fsnap-selected",
+        provider="thinkthread",
+    )
+    execution = WorkerExecutionResult(
+        output="done",
+        execution_scope="thinkthread_private",
+        artifact_ref=snapshot,
+        thinkthread_id="tt-child-1",
+        evidence_refs=["evidence-1"],
+    )
+    assert WorkerExecutionResult.model_validate(
+        execution.model_dump(mode="json")
+    ) == execution
+
+    recovery = PublicationRecoveryRecord(
+        request_id="req-apply-1",
+        attempts=1,
+        updated_at="2026-09-03T00:00:00Z",
+    )
+    outcome = PublicationOutcome(
+        run_id="run-1",
+        revision=1,
+        state="recovering",
+        base_artifact_ref=snapshot.model_copy(update={"id": "fsnap-base"}),
+        selected_artifact_ref=snapshot,
+        publication_artifact_ref=snapshot.model_copy(update={"id": "fsnap-publish"}),
+        apply_request_id="req-apply-1",
+        apply_outcome="needs_recovery",
+        recovery=recovery,
+        updated_at="2026-09-03T00:00:00Z",
+    )
+    assert PublicationOutcome.model_validate(
+        outcome.model_dump(mode="json")
+    ) == outcome
+
+    pending = PendingIntegrationRecord(
+        run_id="run-1",
+        base_artifact_ref=snapshot.model_copy(update={"id": "fsnap-base"}),
+        selected_artifact_ref=snapshot,
+        publication_artifact_ref=snapshot.model_copy(update={"id": "fsnap-publish"}),
+        apply_request_id="req-apply-1",
+        apply_outcome="conflict",
+        changed_paths=["src/a.py"],
+        evidence_refs=["evidence-1"],
+        created_at="2026-09-03T00:00:00Z",
+    )
+    assert PendingIntegrationRecord.model_validate(
+        pending.model_dump(mode="json")
+    ) == pending
+
+
+def test_thinkthread_execution_and_publication_models_fail_closed() -> None:
+    with pytest.raises(ValidationError, match="requires a ThinkThread identity"):
+        WorkerExecutionResult(
+            execution_scope="thinkthread_private",
+            artifact_ref={
+                "kind": "fs_snapshot",
+                "id": "fsnap-selected",
+                "provider": "thinkthread",
+            },
+        )
+    with pytest.raises(ValidationError, match="cannot carry a ThinkThread identity"):
+        WorkerExecutionResult(
+            execution_scope="native_root",
+            thinkthread_id="tt-child-1",
+        )
+    with pytest.raises(ValidationError, match="cannot queue a notification"):
+        PublicationOutcome(
+            run_id="run-1",
+            revision=1,
+            state="recovering",
+            base_artifact_ref={
+                "kind": "fs_snapshot",
+                "id": "fsnap-base",
+                "provider": "thinkthread",
+            },
+            selected_artifact_ref={
+                "kind": "fs_snapshot",
+                "id": "fsnap-selected",
+                "provider": "thinkthread",
+            },
+            publication_artifact_ref={
+                "kind": "fs_snapshot",
+                "id": "fsnap-publish",
+                "provider": "thinkthread",
+            },
+            apply_outcome="needs_recovery",
+            recovery={
+                "request_id": "req-apply-1",
+                "updated_at": "2026-09-03T00:00:00Z",
+            },
+            notification_state="pending",
+            updated_at="2026-09-03T00:00:00Z",
+        )
+
+
+def test_legacy_run_keeps_unknown_search_and_publication_state() -> None:
+    run = RunRecord.model_validate(
+        {
+            "run_id": "run-legacy",
+            "state": RunState.RUNNING,
+            "frozen_spec_id": "spec-legacy",
+            "source_path": ".",
+            "created_at": "2026-09-03T00:00:00Z",
+        }
+    )
+
+    assert run.search_result == "unknown"
+    assert run.publication_outcome is None
+
+
+def test_provider_cleanup_requires_pins_or_a_durable_request() -> None:
+    with pytest.raises(ValidationError, match="requires at least one pin"):
+        ProviderResourceCleanupRecord(
+            resource_id="fsnap-owned",
+            state="retained",
+            created_at="2026-09-03T00:00:00Z",
+            updated_at="2026-09-03T00:00:00Z",
+        )
+    with pytest.raises(ValidationError, match="requires a RequestId"):
+        ProviderResourceCleanupRecord(
+            resource_id="fsnap-owned",
+            state="removing",
+            created_at="2026-09-03T00:00:00Z",
+            updated_at="2026-09-03T00:00:00Z",
+        )
 
 
 def test_strategy_spec_accepts_supported_orchestration_modes() -> None:
@@ -608,7 +787,6 @@ def test_strategy_spec_uses_optional_search_scheduler() -> None:
     configured = StrategySpec(
         orchestration_mode="adaptive_search",
         search_scheduler={
-            "host": "pi-rpc",
             "model": "bench-openai/gpt-5.6-sol",
             "reasoning_effort": "low",
             "timeout_seconds": 180,
@@ -633,7 +811,6 @@ def test_strategy_spec_uses_optional_search_scheduler() -> None:
 def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
     configured = SearchSchedulerSpec.model_validate(
         {
-            "host": "pi-rpc",
             "model": "bench-openai/gpt-5.6-sol",
             "reasoning_effort": "low",
             "timeout_seconds": 180,
@@ -644,7 +821,7 @@ def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
             "allocation": "value_guided_replace/v2",
         }
     )
-    assert configured.host == "pi-rpc"
+    assert "host" not in configured.model_dump()
     assert configured.model == "bench-openai/gpt-5.6-sol"
     assert configured.reasoning_effort == "low"
     assert configured.timeout_seconds == 180
@@ -652,14 +829,13 @@ def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
     assert reward.reference == "evidence_llm_value/v3"
     assert reward.supplemental_prompt == "rubric要关注修改代码量"
     configured_payload = configured.model_dump(mode="json")
-    for field in ("host", "model", "reasoning_effort", "timeout_seconds"):
+    for field in ("model", "reasoning_effort", "timeout_seconds"):
         incomplete = dict(configured_payload)
         incomplete.pop(field)
         with pytest.raises(ValidationError):
             SearchSchedulerSpec.model_validate(incomplete)
 
     projected = SearchSchedulerSpec(
-        host="pi-rpc",
         model="bench-openai/gpt-5.6-sol",
         reasoning_effort="low",
         timeout_seconds=180,
@@ -691,7 +867,6 @@ def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
 
     unregistered = SearchSchedulerSpec.model_validate(
         {
-            "host": "pi-rpc",
             "model": "bench-openai/gpt-5.6-sol",
             "reasoning_effort": "low",
             "timeout_seconds": 180,
@@ -704,18 +879,18 @@ def test_search_scheduler_config_is_agent_owned(tmp_path: Path) -> None:
     spec_data["workspace"] = {"backend": "git_worktree"}
     spec_data["budget"]["max_candidates"] = spec_data["budget"]["max_parallel"]
     spec_data["strategy"]["orchestration_mode"] = "adaptive_search"
+    spec_data["strategy"]["worker_budget"] = {"max_runtime_seconds": 60}
     spec_data["strategy"]["search_scheduler"] = unregistered.model_dump(
         mode="json"
     )
     with pytest.raises(ValueError, match="unknown reward scheduler policy"):
         FileSearchRuntime(tmp_path / ".gp").freeze_spec(
             SearchSpec.model_validate(spec_data),
-            [project / "evaluator.py"],
+            [project / "evaluator.py"], native_host="codex",
         )
     with pytest.raises(ValidationError, match="@prompt requires non-empty"):
         SearchSchedulerSpec.model_validate(
             {
-                "host": "pi-rpc",
                 "model": "bench-openai/gpt-5.6-sol",
                 "reasoning_effort": "low",
                 "timeout_seconds": 180,
@@ -733,8 +908,8 @@ def test_scheduler_frozen_spec_requires_resolved_policy_snapshot(
     spec_data["workspace"] = {"backend": "git_worktree"}
     spec_data["budget"]["max_candidates"] = spec_data["budget"]["max_parallel"]
     spec_data["strategy"]["orchestration_mode"] = "adaptive_search"
+    spec_data["strategy"]["worker_budget"] = {"max_runtime_seconds": 60}
     spec_data["strategy"]["search_scheduler"] = {
-        "host": "pi-rpc",
         "model": "bench-openai/gpt-5.6-sol",
         "reasoning_effort": "low",
         "timeout_seconds": 180,
@@ -744,7 +919,7 @@ def test_scheduler_frozen_spec_requires_resolved_policy_snapshot(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     payload = frozen.model_dump(mode="json")
     payload.pop("search_scheduler_policies")
@@ -758,7 +933,6 @@ def test_scheduler_frozen_spec_requires_resolved_policy_snapshot(
 
 def test_strategy_spec_accepts_worker_budget() -> None:
     spec = StrategySpec(
-        worker_host="codex",
         worker_budget={
             "min_runtime_seconds": 300,
             "min_verifier_runs": 2,
@@ -786,7 +960,6 @@ def test_strategy_spec_accepts_worker_budget() -> None:
 @pytest.mark.codex
 def test_strategy_spec_accepts_codex_worker_launch_options() -> None:
     spec = StrategySpec(
-        worker_host="codex",
         worker_launch={
             "model": "gpt-5.6-terra",
             "reasoning_effort": "high",
@@ -811,61 +984,55 @@ def test_evidence_annotator_config_is_optional_and_overridable() -> None:
             "model": "gpt-5.6-sol",
             "reasoning_effort": "medium",
             "timeout_seconds": 90,
-            "provider": {
-                "base_url": "https://proxy.example/v1",
-                "api_key_env": "ANNOTATOR_API_KEY",
-            },
         }
     )
     pi_explicit = StrategySpec(
-        worker_host="pi-rpc",
         evidence_annotator={
-            "model": "deepseek-chat",
-            "pi_provider": "deepseek",
-        },
-    )
-    independent_codex = StrategySpec(
-        worker_host="pi-rpc",
-        evidence_annotator={
-            "host": "codex",
-            "model": "gpt-5.6-luna",
+            "model": "deepseek/deepseek-chat",
         },
     )
 
     assert inherited.model_dump(mode="json")["evidence_annotator"] == {
-        "host": None,
         "model": None,
-        "pi_provider": None,
         "reasoning_effort": None,
         "timeout_seconds": 1800,
-        "provider": None,
     }
     assert extended_timeout.evidence_annotator.timeout_seconds == 1800
     with pytest.raises(ValidationError):
         StrategySpec(evidence_annotator={"timeout_seconds": 1801})
     assert explicit.model_dump(mode="json")["evidence_annotator"] == {
-        "host": None,
         "model": "gpt-5.6-sol",
-        "pi_provider": None,
         "reasoning_effort": "medium",
         "timeout_seconds": 90,
-        "provider": {
-            "provider_id": "goal-plus-evidence",
-            "name": "Goal Plus Evidence provider",
-            "base_url": "https://proxy.example/v1",
-            "api_key_env": "ANNOTATOR_API_KEY",
-            "wire_api": "responses",
-        },
     }
     assert pi_explicit.model_dump(mode="json")["evidence_annotator"] == {
-        "host": None,
-        "model": "deepseek-chat",
-        "pi_provider": "deepseek",
+        "model": "deepseek/deepseek-chat",
         "reasoning_effort": None,
         "timeout_seconds": 1800,
-        "provider": None,
     }
-    assert independent_codex.evidence_annotator.host == "codex"
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        StrategySpec(evidence_annotator={"unsupported": "value"})
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        StrategySpec(
+            evidence_annotator={"host": "codex"},
+        )
+
+
+def test_internal_agent_profiles_have_only_host_owned_launch_fields() -> None:
+    assert set(ResolvedEvidenceAnnotatorProfile.model_fields) == {
+        "host",
+        "model",
+        "reasoning_effort",
+        "timeout_seconds",
+        "configuration_source",
+    }
+    assert set(ResolvedSchedulerProfile.model_fields) == {
+        "host",
+        "model",
+        "reasoning_effort",
+        "timeout_seconds",
+        "configuration_source",
+    }
 
 
 def test_worker_budget_requires_runtime_or_turn_limit() -> None:

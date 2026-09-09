@@ -64,13 +64,11 @@
   "strategy": {
     "name": "random",
     "orchestration_mode": "adaptive_search",
-    "worker_host": "codex",
     "worker_budget": {
       "max_runtime_seconds": 360,
       "on_exceed": "interrupt"
     },
     "search_scheduler": {
-      "host": "pi-rpc",
       "model": "bench-openai/gpt-5.6-sol",
       "reasoning_effort": "low",
       "timeout_seconds": 180,

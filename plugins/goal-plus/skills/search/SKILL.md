@@ -19,15 +19,16 @@ launch/bind 间中断时先核对原生 task/session，再补齐下一步。
 
 ## 建立 Run
 
-1. 用相对 `source_path` 的 verifier artifact 路径调用 `search_freeze_spec`，检查返回的 source、
-   task skill 和 workspace capacity 结果；失败时修正合同，不绕过 gate。
-2. 调用 `search_create`，并立即用准确的 `frozen_spec_id`、`run_id` 执行
+1. 使用当前 `goal_plus_id` 和相对 `source_path` 的 verifier artifact 路径调用
+   `search_freeze_spec`，检查返回的 source、task skill 和 workspace capacity 结果；失败时修正
+   合同，不绕过 gate。
+2. 使用同一 `goal_plus_id` 调用 `search_create`，并立即用准确的 `frozen_spec_id`、`run_id` 执行
    `goal_plus_link_search_run`。
 3. 调用一次 `search_plan_next(requested_k=budget.max_parallel)` 和一次 `search_start_batch`，
    创建初始 candidate。只有 plan 返回 `requires_agent_proposals=true` 时才向
    `search_start_batch` 传 `proposals`。普通 `parallel_loops` 不补 lane 或重新规划。
 
-新 Codex run 使用 `worker_host="codex"`，通常使用 `git_worktree` 和 manual Global Evidence；
+新 Codex run 通常使用 `git_worktree` 和 manual Global Evidence；
 显式 command config 优先。只有目标明确要求 runtime reward/allocation，或恢复的 FrozenSpec 已
 使用 `adaptive_search` 时，才完整读取
 `../goal-plus/references/adaptive-search.md` 并执行其中的额外 host 流程。

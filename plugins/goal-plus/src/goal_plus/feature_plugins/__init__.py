@@ -9,7 +9,7 @@ from goal_plus.feature_plugins.orchestration_monitor import (
     OrchestrationMonitorFeature,
     orchestration_metadata,
 )
-from goal_plus.models import GoalPlusRecord
+from goal_plus.domain.goal import GoalPlusRecord
 
 BUILTIN_GOAL_MONITOR_FEATURES: dict[str, GoalMonitorFeature] = {
     "orchestration": OrchestrationMonitorFeature(),

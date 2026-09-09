@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "fastmcp>=2.3",
+  "jsonref>=1.1.0",
   "plotly>=6.5,<7.0",
   "pydantic>=2.0,<3.0",
   "tomli>=2.0; python_version < '3.11'",
@@ -21,12 +22,13 @@ dev = [
   "pytest-xdist>=3.6,<4.0",
 ]
 [project.scripts]
-goal-plus = "goal_plus.server:main"
+goal-plus = "goal_plus.cli:main"
 goal-plus-codex-doctor = "goal_plus.codex_doctor:main"
 goal-plus-pi-tool = "goal_plus.pi_tool:main"
 goal-plus-pi-worker = "goal_plus.pi_worker:main"
 goal-plus-pi-pool = "goal_plus.pi_pool:main"
 goal-plus-evidence-annotator = "goal_plus.evidence_annotator:main"
+goal-plus-host-guardian = "goal_plus.host_scope:main"
 
 [tool.hatch.version]
 path = "src/goal_plus/_version.py"

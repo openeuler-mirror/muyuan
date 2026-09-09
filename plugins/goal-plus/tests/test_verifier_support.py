@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -10,7 +9,6 @@ import pytest
 
 from goal_plus.verifier_support import (
     isolated_verifier_workspace,
-    parse_cannbench_report,
     sanitized_evaluator_environment,
 )
 
@@ -176,96 +174,3 @@ def test_sanitized_evaluator_environment_removes_pythonpath_without_dependencies
     evaluator_env = sanitized_evaluator_environment()
 
     assert "PYTHONPATH" not in evaluator_env
-
-
-def _write_cannbench_report(path: Path) -> dict[str, object]:
-    report: dict[str, object] = {
-        "total_cases": 2,
-        "passed_cases": 2,
-        "failed_cases": 0,
-        "overall_score": 81.25,
-        "operators": [
-            {
-                "operator": "Exp",
-                "score": 81.25,
-                "cases": [
-                    {
-                        "case_id": "level1/exp_1",
-                        "status": "success",
-                        "elapsed_us": 8.5,
-                        "accuracy": {"passed": True},
-                    },
-                    {
-                        "case_id": "level1/exp_2",
-                        "status": "success",
-                        "elapsed_us": 9.25,
-                        "accuracy": {"passed": True},
-                    },
-                ],
-            }
-        ],
-    }
-    path.write_text(json.dumps(report), encoding="utf-8")
-    return report
-
-
-def test_parse_cannbench_report_returns_official_score_after_full_gate(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "cann_final_eval.json"
-    _write_cannbench_report(path)
-
-    evidence = parse_cannbench_report(
-        path,
-        expected_case_ids=("level1/exp_1", "level1/exp_2"),
-        expected_operator="Exp",
-    )
-
-    assert evidence["passed"] is True
-    assert evidence["metric_name"] == "cannbench_score"
-    assert evidence["cannbench_score"] == 81.25
-    assert evidence["passed_case_ids"] == ["level1/exp_1", "level1/exp_2"]
-
-
-def test_parse_cannbench_report_rejects_precision_case_or_performance_gaps(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "cann_final_eval.json"
-    report = _write_cannbench_report(path)
-    operators = report["operators"]
-    assert isinstance(operators, list)
-    first_operator = operators[0]
-    assert isinstance(first_operator, dict)
-    cases = first_operator["cases"]
-    assert isinstance(cases, list)
-    first_case = cases[0]
-    assert isinstance(first_case, dict)
-    first_case["accuracy"] = {"passed": False}
-    path.write_text(json.dumps(report), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="precision gate failed"):
-        parse_cannbench_report(path)
-
-    first_case["accuracy"] = {"passed": True}
-    first_case["elapsed_us"] = None
-    path.write_text(json.dumps(report), encoding="utf-8")
-    with pytest.raises(ValueError, match="no performance measurement"):
-        parse_cannbench_report(path)
-
-
-def test_parse_cannbench_report_rejects_partial_or_nonfinite_scoring(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "cann_final_eval.json"
-    report = _write_cannbench_report(path)
-
-    with pytest.raises(ValueError, match="case set mismatch"):
-        parse_cannbench_report(
-            path,
-            expected_case_ids=("level1/exp_1", "level1/exp_2", "level1/exp_3"),
-        )
-
-    report["overall_score"] = float("nan")
-    path.write_text(json.dumps(report), encoding="utf-8")
-    with pytest.raises(ValueError, match="overall_score is not finite"):
-        parse_cannbench_report(path)

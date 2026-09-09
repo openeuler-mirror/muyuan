@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Callable
 
-from goal_plus.pi_worker import _workspace_progress_handoff, run_pi_rpc_worker
+from goal_plus import internal_agents
+from goal_plus.candidate_host import candidate_host_queries
+from goal_plus.pi_worker import run_pi_rpc_worker
+from goal_plus.infrastructure.worker_handoff import workspace_progress_handoff
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import SearchTools
+
+logger = logging.getLogger(__name__)
 
 
 def _search_tools_for_pi_rpc_run(root_dir: Path | str, run_id: str) -> SearchTools:
     runtime = FileSearchRuntime(root_dir)
-    run = runtime._load_run(run_id)
-    frozen = runtime._load_frozen_spec(run.frozen_spec_id)
-    worker_host = frozen.spec.strategy.worker_host
+    worker_host = candidate_host_queries(root_dir).worker_host(run_id)
     if worker_host != "pi-rpc":
         raise ValueError(
-            "Pi search drivers require SearchSpec strategy.worker_host='pi-rpc'; "
+            "Pi search drivers require a Pi Main with a local workspace backend; "
             f"got {worker_host!r}. Freeze a Pi SearchSpec before opening a Pi pool."
         )
     return SearchTools(runtime)
@@ -81,96 +85,6 @@ def _failed_candidate_result(
     return result
 
 
-def _verifier_infrastructure_report(
-    tools: SearchTools,
-    run_id: str,
-    candidate_id: str,
-) -> dict[str, Any] | None:
-    record = tools.runtime._load_candidate_record(run_id, candidate_id)
-    report = record.score_report
-    if report is None:
-        return None
-    for result in report.verifier_results:
-        if (
-            result.failure_class == "VerifierWorkspaceSideEffect"
-            or result.metrics.get("infrastructure_failure") is True
-            or result.metrics.get("candidate_action") == "stop_and_report"
-        ):
-            return report.model_dump(mode="json")
-    return None
-
-
-def _current_process_evidence(
-    tools: SearchTools,
-    run_id: str,
-    candidate_id: str,
-) -> dict[str, Any] | None:
-    runtime = tools.runtime
-    run = runtime._load_run(run_id)
-    frozen = runtime._load_frozen_spec(run.frozen_spec_id)
-    record = runtime._load_candidate_record(run_id, candidate_id)
-    state = runtime._candidate_artifact_state(run, frozen, record)
-    if not state.artifact_clean:
-        return None
-    iteration = runtime._best_artifact_iteration_record(
-        record,
-        frozen.spec.metric_direction,
-    )
-    if iteration is None or iteration.artifact_hash != state.artifact_hash:
-        return None
-    return {
-        "run_id": run_id,
-        "candidate_id": candidate_id,
-        "aggregate_score": iteration.score,
-        "process_passed": True,
-        "disposition": iteration.disposition,
-        "best_iteration": iteration.iteration,
-        "best_git_head": iteration.git_head,
-        "workspace_git_head_after_settlement": state.git_head,
-        "best_artifact_ref": (
-            iteration.artifact_ref.model_dump(mode="json")
-            if iteration.artifact_ref is not None
-            else None
-        ),
-        "workspace_artifact_after_settlement": (
-            state.artifact_ref.model_dump(mode="json")
-            if state.artifact_ref is not None
-            else None
-        ),
-        "evidence_agent_session_id": iteration.agent_session_id,
-    }
-
-
-def _candidate_has_unverified_changes(
-    tools: SearchTools,
-    run_id: str,
-    candidate_id: str,
-) -> bool:
-    runtime = tools.runtime
-    run = runtime._load_run(run_id)
-    frozen = runtime._load_frozen_spec(run.frozen_spec_id)
-    record = runtime._load_candidate_record(run_id, candidate_id)
-    state = runtime._candidate_artifact_state(run, frozen, record)
-    meaningful_status = runtime._git_status(
-        record.task.workspace,
-        ignore_runtime_noise=True,
-    )
-    settled_head = record.results_ledger_git_head
-    if not settled_head or not state.git_head:
-        return bool(state.changed_files or meaningful_status)
-    if state.git_head != settled_head:
-        try:
-            if runtime._git_changed_files(
-                record.task.workspace,
-                settled_head,
-                state.git_head,
-            ):
-                return True
-        except Exception:
-            return True
-    return bool(meaningful_status)
-
-
 def _pi_resume_agent_session_id(
     tools: SearchTools,
     *,
@@ -178,11 +92,7 @@ def _pi_resume_agent_session_id(
     candidate_id: str,
     requested_id: str | None,
 ) -> str:
-    sessions = [
-        session
-        for session in tools.runtime._load_agent_sessions(run_id)
-        if session.candidate_id == candidate_id and session.host == "pi-rpc"
-    ]
+    sessions = candidate_host_queries(tools.runtime.root_dir).sessions(run_id, candidate_id, "pi-rpc")
     if requested_id is not None:
         matching = [
             session for session in sessions if session.agent_session_id == requested_id
@@ -211,6 +121,7 @@ def run_pi_search_candidate(
     resume_agent_session_id: str | None = None,
     worker_budget: dict[str, Any] | None = None,
     final_verify: bool = True,
+    execution_scope_id: str | None = None,
     worker_runner: Callable[..., dict[str, Any]] | None = None,
     pi_binary: str = "pi",
     extension_path: Path | str | None = None,
@@ -254,6 +165,20 @@ def run_pi_search_candidate(
         )
     agent_session_id = str(session["agent_session_id"])
     launch = dict(session["launch"])
+    if execution_scope_id is not None:
+        launch["execution_scope_id"] = execution_scope_id
+    launch_model_pattern = launch.get("model_pattern")
+    selected_model_pattern = (
+        launch_model_pattern
+        if isinstance(launch_model_pattern, str) and launch_model_pattern
+        else model_pattern
+    )
+    launch_thinking_level = launch.get("thinking_level")
+    selected_thinking_level = (
+        launch_thinking_level
+        if isinstance(launch_thinking_level, str) and launch_thinking_level
+        else thinking_level
+    )
     steps.append(
         {
             "tool": (
@@ -278,15 +203,15 @@ def run_pi_search_candidate(
             **_worker_kwargs(
                 pi_binary=pi_binary,
                 extension_path=extension_path,
-                thinking_level=thinking_level,
-                model_pattern=model_pattern,
+                thinking_level=selected_thinking_level,
+                model_pattern=selected_model_pattern,
                 provider=provider,
                 model_id=model_id,
             ),
         )
     except Exception as exc:
         failure = _failure_details("worker_runner", exc)
-        progress_handoff = _workspace_progress_handoff(
+        progress_handoff = workspace_progress_handoff(
             Path(str(launch["cwd"])),
             root=Path(str(launch.get("root") or root_dir)),
             run_id=run_id,
@@ -392,11 +317,7 @@ def run_pi_search_candidate(
         }
     )
 
-    final_score_report = _verifier_infrastructure_report(
-        tools,
-        run_id,
-        candidate_id,
-    )
+    final_score_report = candidate_host_queries(root_dir).verifier_infrastructure_report(run_id, candidate_id)
     infrastructure_failure = final_score_report is not None
     if final_verify and infrastructure_failure:
         steps.append(
@@ -409,7 +330,7 @@ def run_pi_search_candidate(
             }
         )
     elif final_verify and (
-        current_evidence := _current_process_evidence(tools, run_id, candidate_id)
+        current_evidence := tools.runtime.current_process_evidence(run_id, candidate_id)
     ) is not None:
         final_score_report = current_evidence
         steps.append(
@@ -424,11 +345,7 @@ def run_pi_search_candidate(
                 ],
             }
         )
-    elif final_verify and not _candidate_has_unverified_changes(
-        tools,
-        run_id,
-        candidate_id,
-    ):
+    elif final_verify and not tools.runtime.candidate_has_unverified_changes(run_id, candidate_id):
         steps.append(
             {
                 "tool": "search_run_verifier",
@@ -463,6 +380,13 @@ def run_pi_search_candidate(
                 "process_passed": final_score_report.get("process_passed"),
             }
         )
+
+    if final_score_report is not None:
+        try:
+            internal_agents.kick_pi_internal_agents(root_dir, run_id)
+        except Exception as exc:
+            # Settlement is durable; a failed host wake must not change its result.
+            logger.warning("Pi settlement pump failed for %s (%s)", run_id, type(exc).__name__)
 
     result = {
         "ok": not infrastructure_failure,

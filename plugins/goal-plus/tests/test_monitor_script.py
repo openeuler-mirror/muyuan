@@ -24,7 +24,7 @@ def _search_fixture(tmp_path: Path) -> tuple[Path, str, str]:
     runtime = FileSearchRuntime(project / ".gp")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=1),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)

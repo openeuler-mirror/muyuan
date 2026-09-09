@@ -3,24 +3,28 @@ from __future__ import annotations
 import argparse
 import math
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import time
-from typing import Any, Callable, Literal
 import uuid
+from contextlib import ExitStack, nullcontext
+from pathlib import Path
+from typing import Any, Callable, Literal
 
 from goal_plus.agent_pool import WorkerPoolEvent
+from goal_plus.candidate_host import candidate_host_queries
+from goal_plus.application.internal_agents import InternalAgentWork
+from goal_plus.execution import process_identity as inspection
+from goal_plus.execution.managed_process import ManagedProcess
+from goal_plus.execution.launch_gate import ProcessLaunchGate
+from goal_plus.execution.python_command import module_arguments
+from goal_plus.execution.process_resources import OwnedProcess, stop_processes
+from goal_plus.ports.process_identity import ProcessWitness
+from goal_plus.infrastructure.state.candidate_queries import FileCandidateQueries
 from goal_plus.pi_driver import run_pi_search_candidate
-from goal_plus.runtime import (
-    FileSearchRuntime,
-    exclusive_file_lock,
-    load_json,
-    utc_timestamp,
-    write_json,
-)
-
+from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json, write_json
+from goal_plus.infrastructure.clock import utc_timestamp
 
 PoolCloseMode = Literal["drain", "interrupt"]
 ACTIVE_JOB_STATES = {"starting", "running"}
@@ -28,6 +32,9 @@ TERMINAL_JOB_STATES = {"completed", "failed", "interrupted", "timed_out"}
 POOL_SCHEMA_VERSION = 1
 NO_PROGRESS_BACKOFF_BASE_SECONDS = 5.0
 NO_PROGRESS_BACKOFF_MAX_SECONDS = 60.0
+# Preserve the pool's existing post-KILL grace and drain polling interval.
+POOL_KILL_GRACE_SECONDS = 0.2
+POOL_POLL_SECONDS = 0.2
 
 
 class _PoolWorkerInterrupted(BaseException):
@@ -103,16 +110,62 @@ def _write_job(root_dir: Path | str, pool_id: str, job: dict[str, Any]) -> None:
     write_json(_job_path(root_dir, pool_id, str(job["job_id"])), job)
 
 
-def _is_process_alive(pid: int | None) -> bool:
-    if not pid or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+def _pool_worker_arguments(root_dir: Path | str, pool_id: str, job_id: str) -> list[str]:
+    return module_arguments("goal_plus.pi_pool", [
+        "worker", "--root",
+        str(Path(root_dir).expanduser().resolve()), "--pool-id", pool_id, "--job-id", job_id,
+    ])
+
+
+def _job_process(root_dir: Path | str, pool_id: str, job: dict[str, Any]) -> OwnedProcess | None:
+    """Caller holds the pool lock while reconciling or collecting close resources."""
+    pid = job.get("pid")
+    if pid is None:
+        return None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        raise inspection.ProcessInspectionUnavailable("ProcessInspectionUnavailable: invalid_pool_worker_pid")
+    if job.get("witness") is not None:
+        try:
+            witness = ProcessWitness.model_validate(job["witness"])
+        except ValueError as exc:
+            raise inspection.ProcessInspectionUnavailable("invalid pool process witness") from exc
+        token = witness.members.get(pid)
+        if token is None:
+            raise inspection.ProcessInspectionUnavailable("pool witness is missing its launch identity")
+        return OwnedProcess(
+            pid, token, pid, witness=witness,
+            remember=lambda observed: _remember_job_process_locked(root_dir, pool_id, job, observed),
+        )
+    observed = inspection.inspect_command(pid, _pool_worker_arguments(root_dir, pool_id, str(job["job_id"])))
+    if observed is None:
+        current = inspection.inspect_process(pid)
+        if current is not None and current.state not in inspection.EXITED_PROCESS_STATES:
+            return None
+        # No historical start token exists in this format. Live orphaned members remain unknown.
+        resource = OwnedProcess(pid, None, pid)
+        return resource if resource.running() else None
+    if observed.process_group_id != pid:
+        raise inspection.ProcessInspectionUnavailable("ProcessInspectionUnavailable: pool_worker_group_mismatch")
+    return OwnedProcess(
+        pid, observed.start_token, pid,
+        remember=lambda witness: _remember_job_process_locked(root_dir, pool_id, job, witness),
+    )
+
+
+def _remember_job_process_locked(root_dir: Path | str, pool_id: str, job: dict[str, Any], witness: ProcessWitness) -> None:
+    previous = ProcessWitness.model_validate(job["witness"]) if job.get("witness") else None
+    if previous is not None:
+        if previous.boot_id != witness.boot_id:
+            raise inspection.ProcessInspectionUnavailable("pool witness belongs to another boot")
+        witness = witness.model_copy(update={"members": {**previous.members, **witness.members}})
+    if witness != previous:
+        job["witness"] = witness.model_dump(mode="json")
+        _write_job(root_dir, pool_id, job)
+
+
+def _remember_job_process(root_dir: Path | str, pool_id: str, job_id: str, witness: ProcessWitness) -> None:
+    with exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
+        _remember_job_process_locked(root_dir, pool_id, _load_job(root_dir, pool_id, job_id), witness)
 
 
 def _validate_pool_run(
@@ -120,33 +173,11 @@ def _validate_pool_run(
     run_id: str,
     max_parallel: int | None,
 ) -> int:
-    runtime = FileSearchRuntime(root_dir)
-    run = runtime._load_run(run_id)
-    runtime._assert_run_not_invalidated(run, "open or submit Pi pool work")
-    frozen = runtime._load_frozen_spec(run.frozen_spec_id)
-    if frozen.spec.strategy.worker_host != "pi-rpc":
-        raise ValueError(
-            "Pi worker pools require SearchSpec strategy.worker_host='pi-rpc'; "
-            f"got {frozen.spec.strategy.worker_host!r}"
-        )
-    frozen_limit = int(frozen.spec.budget.max_parallel)
-    selected = frozen_limit if max_parallel is None else int(max_parallel)
-    if selected <= 0:
-        raise ValueError("max_parallel must be > 0")
-    if selected > frozen_limit:
-        raise ValueError(
-            f"max_parallel {selected} exceeds frozen Search limit {frozen_limit}"
-        )
-    return selected
+    return candidate_host_queries(root_dir).pi_pool_limit(run_id, max_parallel)
 
 
 def _validate_candidate(root_dir: Path | str, run_id: str, candidate_id: str) -> None:
-    runtime = FileSearchRuntime(root_dir)
-    record = runtime._load_candidate_record(run_id, candidate_id)
-    if record.status not in {"created", "evaluated"}:
-        raise RuntimeError(
-            f"cannot dispatch candidate {candidate_id} in status {record.status}"
-        )
+    candidate_host_queries(root_dir).validate_candidate(run_id, candidate_id)
 
 
 def _resolve_worker_budget(
@@ -155,18 +186,7 @@ def _resolve_worker_budget(
     candidate_id: str,
     override: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    runtime = FileSearchRuntime(root_dir)
-    run = runtime._load_run(run_id)
-    frozen = runtime._load_frozen_spec(run.frozen_spec_id)
-    record = runtime._load_candidate_record(run_id, candidate_id)
-    base = runtime._candidate_worker_budget(frozen, record) or {}
-    budget = runtime._normalize_worker_budget_override(
-        worker_host="pi-rpc",
-        worker_budget={**base, **(override or {})},
-    )
-    if budget is None or budget.get("max_runtime_seconds") is None:
-        raise ValueError("Pi pool workers require worker_budget.max_runtime_seconds")
-    return budget
+    return candidate_host_queries(root_dir).worker_budget(run_id, candidate_id, "pi-rpc", override)
 
 
 def _lease_max_runtime_seconds(
@@ -175,24 +195,10 @@ def _lease_max_runtime_seconds(
     worker_budget: dict[str, Any],
 ) -> float:
     configured = float(worker_budget["max_runtime_seconds"])
-    runtime = FileSearchRuntime(root_dir)
-    outer_deadline = runtime._outer_deadline_epoch(
-        runtime._outer_deadline_value(run_id)
-    )
-    if outer_deadline is None:
+    context = candidate_host_queries(root_dir).lease_context(run_id)
+    if context.outer_deadline is None:
         return configured
-    run = runtime._load_run(run_id)
-    frozen = runtime._load_frozen_spec(run.frozen_spec_id)
-    reserve = _closeout_reserve_seconds(frozen.spec.strategy.config)
-    return min(configured, max(0.0, outer_deadline - time.time() - reserve))
-
-
-def _closeout_reserve_seconds(config: dict[str, Any]) -> float:
-    return float(
-        config.get("closeout_reserve_seconds")
-        or config.get("reserve_closeout_seconds")
-        or 0
-    )
+    return min(configured, max(0.0, context.outer_deadline - time.time() - context.reserve_seconds))
 
 
 def _assert_active_pool_close_allowed(
@@ -203,28 +209,18 @@ def _assert_active_pool_close_allowed(
     active_count = sum(job["status"] in ACTIVE_JOB_STATES for job in jobs)
     if active_count == 0:
         return
-    runtime = FileSearchRuntime(root_dir)
+    context = candidate_host_queries(root_dir).lease_context(str(pool["run_id"]))
     # Recovery fences remove the old execution lease. Do not let a pool's
     # minimum runtime force those obsolete jobs to remain alive; unrelated
     # active lanes still retain the normal close protection.
-    recovering = {
-        candidate.candidate_id
-        for candidate in runtime._load_candidate_records(str(pool["run_id"]))
-        if candidate.recovery is not None and candidate.recovery.state != "restored"
-    }
+    recovering = context.recovering_candidates
     if all(job.get("candidate_id") in recovering for job in jobs
            if job["status"] in ACTIVE_JOB_STATES):
         return
-    outer_deadline = runtime._outer_deadline_epoch(
-        runtime._outer_deadline_value(str(pool["run_id"]))
-    )
-    if outer_deadline is None:
+    outer_deadline = context.outer_deadline
+    if outer_deadline is None or context.invalidated:
         return
-    run = runtime._load_run(str(pool["run_id"]))
-    if run.invalidated_at:
-        return
-    frozen = runtime._load_frozen_spec(run.frozen_spec_id)
-    reserve = _closeout_reserve_seconds(frozen.spec.strategy.config)
+    reserve = context.reserve_seconds
     remaining = outer_deadline - time.time()
     if remaining > reserve:
         raise RuntimeError(
@@ -292,12 +288,7 @@ def _resume_agent_session_id(
         if isinstance(agent_session_id, str) and agent_session_id:
             return agent_session_id
 
-    runtime = FileSearchRuntime(root_dir)
-    sessions = [
-        session
-        for session in runtime._load_agent_sessions(run_id)
-        if session.candidate_id == candidate_id and session.host == "pi-rpc"
-    ]
+    sessions = candidate_host_queries(root_dir).sessions(run_id, candidate_id, "pi-rpc")
     if sessions:
         return sessions[-1].agent_session_id
     raise RuntimeError(
@@ -346,33 +337,33 @@ def _launch_pool_job(
         else os.pathsep.join((str(source_root), existing_pythonpath))
     )
     pool = _load_pool(root_dir, pool_id)
-    deadline = FileSearchRuntime(root_dir)._outer_deadline_value(str(pool["run_id"]))
+    deadline = candidate_host_queries(root_dir).context.outer_deadline(str(pool["run_id"]))
     if deadline is not None:
         env["GOAL_PLUS_OUTER_DEADLINE_AT"] = deadline
-    command = [
-        sys.executable,
-        "-m",
-        "goal_plus.pi_pool",
-        "worker",
-        "--root",
-        str(Path(root_dir).expanduser().resolve()),
-        "--pool-id",
-        pool_id,
-        "--job-id",
-        job_id,
-    ]
-    with stdout_path.open("a", encoding="utf-8") as stdout_handle, stderr_path.open(
-        "a", encoding="utf-8"
-    ) as stderr_handle:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-            start_new_session=True,
-            close_fds=True,
-            env=env,
-        )
+    command = [sys.executable, *_pool_worker_arguments(root_dir, pool_id, job_id)]
+    with ProcessLaunchGate() as gate, ExitStack() as startup:
+        with stdout_path.open("a", encoding="utf-8") as stdout_handle, stderr_path.open(
+            "a", encoding="utf-8"
+        ) as stderr_handle:
+            process = subprocess.Popen(
+                gate.command(command), pass_fds=gate.pass_fds,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                start_new_session=True,
+                close_fds=True,
+                env=env,
+            )
+            startup.callback(ManagedProcess(process).close)
+        observed = inspection.inspect_process(int(process.pid))
+        resource = OwnedProcess(int(process.pid), observed.start_token if observed else None, int(process.pid))
+        if not resource.running():
+            raise RuntimeError("Pi pool worker exited before registration")
+        job = _load_job(root_dir, pool_id, job_id)
+        job.update(pid=int(process.pid), witness=resource.witness.model_dump(mode="json"))
+        _write_job(root_dir, pool_id, job)
+        gate.release()
+        startup.pop_all()
     return int(process.pid)
 
 
@@ -384,6 +375,7 @@ def open_pi_search_pool(
     worker_budgets: dict[str, dict[str, Any]] | None = None,
     final_verify: bool = True,
     max_parallel: int | None = None,
+    execution_scope_id: str | None = None,
 ) -> dict[str, Any]:
     selected_parallel = _validate_pool_run(root_dir, run_id, max_parallel)
     initial_ids = list(candidate_ids or [])
@@ -411,11 +403,21 @@ def open_pi_search_pool(
         "run_id": run_id,
         "max_parallel": selected_parallel,
         "state": "open",
+        "execution_scope_id": execution_scope_id,
         "created_at": now,
         "updated_at": now,
         "jobs": [],
     }
-    with exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
+    admission = nullcontext()
+    if execution_scope_id is not None:
+        from goal_plus.host_scope import execution_scope_admission
+
+        admission = execution_scope_admission(
+            root_dir=root_dir,
+            scope_id=execution_scope_id,
+            run_id=run_id,
+        )
+    with admission, exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
         _write_pool(root_dir, pool)
 
     submitted = []
@@ -430,7 +432,7 @@ def open_pi_search_pool(
                     final_verify=final_verify,
                 )
             )
-    except Exception:
+    except BaseException:
         try:
             close_pi_search_pool(
                 root_dir=root_dir,
@@ -458,8 +460,23 @@ def _submit_pi_search_pool(
     _launcher: Callable[..., int] | None = None,
 ) -> dict[str, Any]:
     launcher = _launcher or _launch_pool_job
-    with exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
+    pool_hint = _load_pool(root_dir, pool_id)
+    scope_id = pool_hint.get("execution_scope_id")
+    admission = nullcontext()
+    if isinstance(scope_id, str):
+        from goal_plus.host_scope import execution_scope_admission
+
+        admission = execution_scope_admission(
+            root_dir=root_dir,
+            scope_id=scope_id,
+            run_id=str(pool_hint["run_id"]),
+        )
+    with admission as admitted_scope, exclusive_file_lock(
+        _pool_lock_path(root_dir, pool_id)
+    ):
         pool = _load_pool(root_dir, pool_id)
+        if pool.get("execution_scope_id") != scope_id:
+            raise RuntimeError(f"Pi pool {pool_id} execution scope changed")
         if pool["state"] != "open":
             raise RuntimeError(f"cannot submit to Pi pool in state {pool['state']}")
         _validate_candidate(root_dir, str(pool["run_id"]), candidate_id)
@@ -550,7 +567,15 @@ def _submit_pi_search_pool(
             "resume_agent_session_id": resume_agent_session_id,
             "worker_budget": effective_worker_budget,
             "final_verify": bool(final_verify),
+            "execution_scope_id": pool.get("execution_scope_id"),
         }
+        if isinstance(admitted_scope, dict):
+            native_agent_config = admitted_scope.get("native_agent_config")
+            if isinstance(native_agent_config, dict):
+                for name in ("model_pattern", "thinking_level"):
+                    value = native_agent_config.get(name)
+                    if isinstance(value, str) and value:
+                        request[name] = value
         job_dir = _job_dir(root_dir, pool_id, job_id)
         write_json(job_dir / "request.json", request)
         _write_job(root_dir, pool_id, job)
@@ -564,7 +589,11 @@ def _submit_pi_search_pool(
                     job_id=job_id,
                 )
             )
-        except Exception as exc:
+            job = _load_job(root_dir, pool_id, job_id)
+            job.update({"status": "running", "pid": pid, "started_at": utc_timestamp()})
+            _write_job(root_dir, pool_id, job)
+        except BaseException as exc:
+            job = _load_job(root_dir, pool_id, job_id)
             job.update(
                 {
                     "status": "failed",
@@ -578,8 +607,6 @@ def _submit_pi_search_pool(
             )
             _write_job(root_dir, pool_id, job)
             raise
-        job.update({"status": "running", "pid": pid, "started_at": utc_timestamp()})
-        _write_job(root_dir, pool_id, job)
 
     return {
         "pool_id": pool_id,
@@ -625,7 +652,8 @@ def _reconcile_jobs_locked(
     jobs = []
     for job_id in pool["jobs"]:
         job = _load_job(root_dir, pool_id, job_id)
-        if job["status"] in ACTIVE_JOB_STATES and not _is_process_alive(job.get("pid")):
+        process = _job_process(root_dir, pool_id, job) if job["status"] in ACTIVE_JOB_STATES else None
+        if job["status"] in ACTIVE_JOB_STATES and (process is None or not process.running()):
             job.update(
                 {
                     "status": "failed",
@@ -682,7 +710,7 @@ def _snapshot_payload(
         ),
         "jobs": [
             {
-                **job,
+                **{key: value for key, value in job.items() if key != "witness"},
                 "result": (
                     _job_result(root_dir, pool_id, job)
                     if job["status"] in TERMINAL_JOB_STATES
@@ -834,13 +862,6 @@ def wait_any_pi_search_pool(
         time.sleep(min(poll_interval_seconds, max(0.0, deadline - time.monotonic())))
 
 
-def _signal_process(pid: int, sig: signal.Signals) -> None:
-    try:
-        os.kill(pid, sig)
-    except ProcessLookupError:
-        pass
-
-
 def close_pi_search_pool(
     *,
     root_dir: Path | str,
@@ -851,50 +872,67 @@ def close_pi_search_pool(
 ) -> dict[str, Any]:
     if mode not in {"drain", "interrupt"}:
         raise ValueError("mode must be 'drain' or 'interrupt'")
-    if timeout_seconds < 0:
-        raise ValueError("timeout_seconds must be >= 0")
+    if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
+        raise ValueError("timeout_seconds must be finite and >= 0")
     with exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
         pool = _load_pool(root_dir, pool_id)
         if pool["state"] == "closed":
             jobs = _reconcile_jobs_locked(root_dir, pool)
             return _snapshot_payload(root_dir, pool, jobs)
-        jobs = _reconcile_jobs_locked(root_dir, pool)
+        jobs = [_load_job(root_dir, pool_id, job_id) for job_id in pool["jobs"]]
         if not _allow_early_close:
+            try:
+                jobs = _reconcile_jobs_locked(root_dir, pool)
+            except inspection.ProcessInspectionUnavailable:
+                # Unknown jobs retain their lease; authorized close must still persist its fence.
+                pass
             _assert_active_pool_close_allowed(root_dir, pool, jobs)
-        pool["state"] = "draining" if mode == "drain" else "interrupting"
+        # An interrupt fence cannot be weakened by a concurrent or retried drain.
+        if pool["state"] != "interrupting":
+            pool["state"] = "draining" if mode == "drain" else "interrupting"
         _write_pool(root_dir, pool)
-        if mode == "interrupt":
-            for job in jobs:
-                if job["status"] in ACTIVE_JOB_STATES and job.get("pid"):
-                    _signal_process(int(job["pid"]), signal.SIGTERM)
+        resources = []
+        inspection_errors = []
+        for job in jobs:
+            try:
+                process = _job_process(root_dir, pool_id, job)
+            except inspection.ProcessInspectionUnavailable as exc:
+                inspection_errors.append(str(exc))
+            else:
+                if process is not None:
+                    process.remember = lambda witness, job_id=job["job_id"]: _remember_job_process(
+                        root_dir, pool_id, job_id, witness,
+                    )
+                    resources.append(process)
 
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        snapshot = snapshot_pi_search_pool(root_dir=root_dir, pool_id=pool_id)
-        if snapshot["active_count"] == 0:
-            break
-        if time.monotonic() >= deadline:
-            if mode == "interrupt":
-                for job in snapshot["jobs"]:
-                    if job["status"] in ACTIVE_JOB_STATES and job.get("pid"):
-                        _signal_process(int(job["pid"]), signal.SIGKILL)
-                time.sleep(0.2)
-                snapshot = snapshot_pi_search_pool(
-                    root_dir=root_dir,
-                    pool_id=pool_id,
-                )
-                if snapshot["active_count"] == 0:
-                    break
-            snapshot["close_timed_out"] = True
-            return snapshot
-        time.sleep(0.2)
+    if mode == "interrupt":
+        outcomes = stop_processes(resources, term_timeout=timeout_seconds, kill_timeout=POOL_KILL_GRACE_SECONDS)
+        errors = [error for outcome in outcomes for error in outcome.errors]
+        if errors:
+            raise RuntimeError("; ".join(inspection_errors + errors))
+        stopped = all(outcome.stopped for outcome in outcomes)
+    else:
+        deadline = time.monotonic() + timeout_seconds
+        while not (stopped := not any(process.running() for process in resources)):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(POOL_POLL_SECONDS, remaining))
 
+    if inspection_errors:
+        raise inspection.ProcessInspectionUnavailable("; ".join(inspection_errors))
     with exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
         pool = _load_pool(root_dir, pool_id)
-        pool["state"] = "closed"
-        _write_pool(root_dir, pool)
-        jobs = _reconcile_jobs_locked(root_dir, pool)
-        return _snapshot_payload(root_dir, pool, jobs)
+        if stopped:
+            jobs = _reconcile_jobs_locked(root_dir, pool)
+            pool["state"] = "closed"
+            _write_pool(root_dir, pool)
+        else:
+            jobs = [_load_job(root_dir, pool_id, job_id) for job_id in pool["jobs"]]
+        snapshot = _snapshot_payload(root_dir, pool, jobs)
+        if not stopped:
+            snapshot["close_timed_out"] = True
+        return snapshot
 
 
 def _worker_signal_handler(_signum: int, _frame: Any) -> None:
@@ -908,15 +946,30 @@ def run_pool_worker(
     job_id: str,
 ) -> int:
     request_path = _job_dir(root_dir, pool_id, job_id) / "request.json"
-    request = load_json(request_path)
-    search_scheduler_enabled = FileSearchRuntime(root_dir).search_scheduler_enabled(
-        str(request["run_id"])
-    )
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     previous_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGTERM, _worker_signal_handler)
     signal.signal(signal.SIGINT, _worker_signal_handler)
     try:
+        # The launcher holds this lock through PID publication; an incomplete launch cannot execute.
+        with exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
+            pool = _load_pool(root_dir, pool_id)
+            job = _load_job(root_dir, pool_id, job_id)
+            if (
+                job_id not in pool["jobs"] or job.get("pool_id") != pool_id
+                or job.get("run_id") != pool["run_id"] or job.get("pid") != os.getpid()
+                or job["status"] != "running" or pool["state"] not in {"open", "draining"}
+            ):
+                return 1
+            request = load_json(request_path)
+            if (
+                request.get("root_dir") != str(Path(root_dir).expanduser().resolve())
+                or request.get("run_id") != job["run_id"]
+                or request.get("candidate_id") != job["candidate_id"]
+                or request.get("execution_scope_id") != pool.get("execution_scope_id")
+            ):
+                return 1
+        search_scheduler_enabled = InternalAgentWork(FileCandidateQueries(root_dir)).inspect(str(request["run_id"])).scheduler_enabled
         try:
             worker_budget = dict(request["worker_budget"])
             configured_min_runtime_seconds = int(
@@ -950,7 +1003,7 @@ def run_pool_worker(
             )
             session_refreshes: list[dict[str, Any]] = []
             if agent_session_id is not None:
-                prior_session = FileSearchRuntime(root_dir)._load_agent_session_by_id(
+                prior_session = candidate_host_queries(root_dir).session(
                     str(agent_session_id),
                     run_id=str(request["run_id"]),
                 )

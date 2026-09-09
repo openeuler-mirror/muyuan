@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import hashlib
+import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from goal_plus.models import ArtifactRef
+from goal_plus.infrastructure.artifacts.candidate_workspace import FileCandidateWorkspaceCreation
+from goal_plus.infrastructure.artifacts.thinkthread_publication import ThinkThreadPublicationSnapshots
 from goal_plus.workspaces import (
+    LocalGitWorkspace,
     UnsupportedWorkspaceCapability,
     estimate_workspace_capacity,
-    get_workspace_provider,
     materialize_candidate_workspace,
 )
 
@@ -120,6 +125,39 @@ def test_copy_backend_creates_independent_git_workspaces(tmp_path: Path) -> None
     assert common_git_dir(first_path) != common_git_dir(second_path)
 
 
+def test_copy_checkpoint_refuses_parent_repository_after_git_dir_is_removed(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    source = make_source(repository)
+    (repository / ".gitignore").write_text("/run/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    git_commit(repository, "source baseline")
+    workspace = repository / "run" / "workspace" / "c001"
+    materialize_candidate_workspace(
+        backend="copy",
+        run_dir=repository / "run",
+        source=source,
+        workspace=workspace,
+        run_id="run_test",
+        candidate_id="c001",
+    )
+    shutil.rmtree(workspace / ".git")
+    (workspace / "program.py").write_text("VALUE = 1\n", encoding="utf-8")
+    source_head = git_output(repository, "rev-parse", "HEAD")
+
+    artifact = LocalGitWorkspace("copy").checkpoint(
+        workspace,
+        "search verifier iteration c001:1",
+        ["."],
+    )
+
+    assert artifact is None
+    assert git_output(repository, "rev-parse", "HEAD") == source_head
+    assert git_output(repository, "status", "--porcelain=v1") == ""
+
+
 def test_git_worktree_backend_shares_objects_but_keeps_branches_independent(
     tmp_path: Path,
 ) -> None:
@@ -161,16 +199,11 @@ def test_git_worktree_backend_shares_objects_but_keeps_branches_independent(
     assert (second_path / "program.py").read_text(encoding="utf-8") == "VALUE = 2\n"
 
 
-def test_workspace_provider_declares_relocation_verification_contract() -> None:
-    git_worktree = get_workspace_provider("git_worktree")
-    copy = get_workspace_provider("copy")
-    thinkthread = get_workspace_provider("thinkthread")
-
-    assert (
-        git_worktree.capabilities.requires_relocation_verification is True
-    )
-    assert copy.capabilities.requires_relocation_verification is False
-    assert thinkthread.capabilities.requires_relocation_verification is False
+def test_candidate_creation_requires_relocation_only_for_git_worktrees(tmp_path) -> None:
+    creation = FileCandidateWorkspaceCreation(tmp_path)
+    assert creation.requires_relocation("git_worktree") is True
+    assert creation.requires_relocation("copy") is False
+    assert creation.requires_relocation("thinkthread") is False
 
 
 def test_git_worktree_clones_full_history_and_returns_nested_logical_workspace(
@@ -318,15 +351,9 @@ def test_git_worktree_child_starts_from_explicit_parent_revision(
     assert common_git_dir(parent_path) == common_git_dir(child_path)
 
 
-def test_thinkthread_backend_declares_future_capabilities_without_fallback(
+def test_thinkthread_cannot_materialize_a_local_workspace(
     tmp_path: Path,
 ) -> None:
-    provider = get_workspace_provider("thinkthread")
-
-    assert provider.capabilities.protected_execution is False
-    assert provider.capabilities.reference_workspace is False
-    assert provider.capabilities.prepare_promotion is True
-    assert provider.capabilities.apply_promotion is True
     with pytest.raises(
         UnsupportedWorkspaceCapability,
         match="materialize_candidate",
@@ -341,51 +368,52 @@ def test_thinkthread_backend_declares_future_capabilities_without_fallback(
         )
 
 
-def test_thinkthread_promotion_filters_local_vcs_and_uses_fs_apply(
-    tmp_path: Path,
-) -> None:
-    provider = get_workspace_provider("thinkthread")
-    calls: list[tuple[str, ...]] = []
+def test_thinkthread_promotion_plan_reads_only_selected_product_changes() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    provider._snapshot_diff = lambda _base, _target: {  # type: ignore[attr-defined,method-assign]
-        "src/new": "added",
-        "src/new/app.py": "added",
-        "src/.git/index": "modified",
-        "src/results.tsv": "modified",
-    }
-    provider._snapshot_stat = lambda _snapshot, path: {  # type: ignore[attr-defined,method-assign]
-        "path": path,
-        "kind": "directory" if path == "src/new" else "file",
-        "mode": 0o755 if path == "src/new" else 0o644,
-        "len": 4,
-    }
-    provider._snapshot_read = lambda _snapshot, _path: b"new\n"  # type: ignore[attr-defined,method-assign]
+        def snapshot_diff_all(self, _base: str, _target: str) -> list[dict[str, Any]]:
+            return [
+                {"path": {"utf8": path}, "kind": "added"}
+                for path in (
+                    "src/new",
+                    "src/new/app.py",
+                    "src/.git/index",
+                    "src/results.tsv",
+                )
+            ]
 
-    def command(*args: str) -> dict[str, object]:
-        calls.append(args)
-        if args[:3] == ("fs", "snapshot", "patch"):
-            return {
-                "snapshot": {"snapshotId": "fsnap-publish"},
-                "changedPaths": 1,
-                "changedBytes": 4,
-            }
-        if args[:2] == ("fs", "apply"):
-            return {
-                "status": "applied",
-                "baseSnapshotId": "fsnap-base",
-                "targetSnapshotId": "fsnap-publish",
-                "changedPaths": 1,
-                "changedBytes": 4,
-            }
-        raise AssertionError(args)
+        def snapshot_read_file(
+            self,
+            _snapshot: str,
+            _path: str,
+            *,
+            max_bytes: int,
+        ) -> bytes:
+            assert max_bytes >= 4
+            return b"new\n"
 
-    provider._command = command  # type: ignore[attr-defined,method-assign]
-    prepared = provider.prepare_promotion(
-        run_dir=tmp_path / "run",
-        run_id="run_test",
-        candidate_id="c001",
-        source=tmp_path / "source",
-        workspace=Path("src"),
+        def invoke(
+            self,
+            operation: str,
+            params: dict[str, Any],
+            **_: Any,
+        ) -> dict[str, Any]:
+            self.calls.append((operation, dict(params)))
+            if operation == "fs.snapshot.stat":
+                path = str(params["path"])
+                return {
+                    "path": {"utf8": path},
+                    "kind": "directory" if path == "src/new" else "file",
+                    "mode": 0o755 if path == "src/new" else 0o644,
+                    "len": 4,
+                }
+            raise AssertionError(operation)
+
+    client = FakeClient()
+    provider = ThinkThreadPublicationSnapshots(lambda: client, None)
+    plan = provider.plan_thinkthread(
         source_subdir="src",
         base_artifact_ref=ArtifactRef(
             kind="fs_snapshot", id="fsnap-base", provider="thinkthread"
@@ -394,29 +422,127 @@ def test_thinkthread_promotion_filters_local_vcs_and_uses_fs_apply(
             kind="fs_snapshot", id="fsnap-selected", provider="thinkthread"
         ),
         changed_files=["new/app.py", ".git/index", "results.tsv"],
+        dependencies=[],
     )
 
-    assert prepared.strategy == "fs_apply"
-    assert prepared.changed_files == ("new/app.py",)
-    assert prepared.publication_artifact_ref == ArtifactRef(
-        kind="fs_snapshot", id="fsnap-publish", provider="thinkthread"
+    assert plan.changed_files == ("new/app.py",)
+    from goal_plus.ports.publication import PublicationChange
+    assert plan.changes == (
+        PublicationChange("make_directory", "src/new", 0o755),
+        PublicationChange("put_file", "src/new/app.py", 0o644, b"new\n"),
     )
-    patch_args = calls[0]
-    assert "src/new:755" in patch_args
-    assert "src/new/app.py" in " ".join(patch_args)
-    assert ".git" not in " ".join(patch_args)
-    assert "results.tsv" not in " ".join(patch_args)
-    request_id = prepared.provider_handle["apply_request_id"]
-    assert len(request_id) == 40
-    assert request_id.startswith("req-")
+    assert ".git" not in str(plan.changes)
+    assert "results.tsv" not in str(plan.changes)
+    assert {operation for operation, _params in client.calls} == {
+        "fs.snapshot.stat"
+    }
 
-    applied = provider.apply_promotion(prepared)
+def test_thinkthread_publication_plan_orders_complete_typed_mutations() -> None:
+    large_content = b"x" * (1024 * 1024 + 17)
+    diff = {
+        "src/gone/child.txt": "deleted",
+        "src/gone": "deleted",
+        "src/file-to-dir": "type_changed",
+        "src/dir-to-file": "type_changed",
+        "src/modified.bin": "modified",
+        "src/mode.py": "mode_changed",
+        "src/new-dir": "added",
+        "src/new-dir/app.py": "added",
+    }
+    base_kinds = {
+        "src/gone/child.txt": "file",
+        "src/gone": "directory",
+        "src/file-to-dir": "file",
+        "src/dir-to-file": "directory",
+    }
+    selected = {
+        "src/file-to-dir": ("directory", 0o750, b""),
+        "src/dir-to-file": ("file", 0o600, b"replacement\n"),
+        "src/modified.bin": ("file", 0o644, large_content),
+        "src/mode.py": ("file", 0o755, b"print('mode')\n"),
+        "src/new-dir": ("directory", 0o755, b""),
+        "src/new-dir/app.py": ("file", 0o644, b"new\n"),
+    }
 
-    assert applied.source_revision is None
-    assert applied.details["status"] == "applied"
-    assert calls[-1][:4] == (
-        "fs",
-        "apply",
-        "--base",
-        "fsnap-base",
+    class FakeClient:
+        def snapshot_diff_all(self, _base: str, _target: str) -> list[dict[str, Any]]:
+            return [
+                {"path": {"utf8": path}, "kind": kind}
+                for path, kind in diff.items()
+            ]
+
+        def snapshot_read_file(
+            self,
+            _snapshot: str,
+            path: str,
+            *,
+            max_bytes: int,
+        ) -> bytes:
+            content = selected[path][2]
+            assert len(content) <= max_bytes
+            return content
+
+        def invoke(
+            self,
+            operation: str,
+            params: dict[str, Any],
+            **_: Any,
+        ) -> dict[str, Any]:
+            assert operation == "fs.snapshot.stat"
+            path = str(params["path"])
+            if params["snapshotId"] == "fsnap-base":
+                return {"kind": base_kinds[path], "mode": 0o755}
+            kind, mode, content = selected[path]
+            return {"kind": kind, "mode": mode, "len": len(content)}
+
+    provider = ThinkThreadPublicationSnapshots(FakeClient, None)
+    plan = provider.plan_thinkthread(
+        base_artifact_ref=ArtifactRef(
+            kind="fs_snapshot", id="fsnap-base", provider="thinkthread"
+        ),
+        selected_artifact_ref=ArtifactRef(
+            kind="fs_snapshot", id="fsnap-selected", provider="thinkthread"
+        ),
+        source_subdir="src",
+        changed_files=[path.removeprefix("src/") for path in diff],
+        dependencies=[
+            {"path": "config.json", "scope": "content"},
+            {"path": "pkg", "scope": "tree_content"},
+        ],
+    )
+
+    assert [item.kind for item in plan.changes] == [
+        "remove_file",
+        "remove_directory",
+        "remove_file",
+        "remove_directory",
+        "make_directory",
+        "make_directory",
+        "put_file",
+        "put_file",
+        "put_file",
+        "put_file",
+    ]
+    assert [item.path for item in plan.changes] == [
+        "src/gone/child.txt",
+        "src/dir-to-file",
+        "src/file-to-dir",
+        "src/gone",
+        "src/file-to-dir",
+        "src/new-dir",
+        "src/dir-to-file",
+        "src/mode.py",
+        "src/modified.bin",
+        "src/new-dir/app.py",
+    ]
+    from goal_plus.infrastructure.artifacts.thinkthread_publication import publication_change_manifest
+    large_manifest = next(
+        item for item in publication_change_manifest(plan.changes) if item["path"] == "src/modified.bin"
+    )
+    assert large_manifest["bytes"] == len(large_content)
+    assert large_manifest["sha256"] == hashlib.sha256(large_content).hexdigest()
+    assert "dataBase64" not in large_manifest
+    assert plan.dependencies == (
+        {"path": "src/config.json", "scope": "content"},
+        {"path": "src/pkg", "scope": "tree_content"},
     )

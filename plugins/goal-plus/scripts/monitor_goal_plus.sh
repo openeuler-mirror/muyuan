@@ -506,7 +506,7 @@ def render_plans(plans: list[dict[str, Any]]) -> None:
             print(f"      selection: {short(trace['selection_rule'], 170)}")
         state_keys = (
             "generation", "population_size", "tree_depth", "sampling_mode",
-            "parent_candidate_id", "selected_worker_agent_type", "seed",
+            "parent_candidate_id", "seed",
         )
         state = {key: trace[key] for key in state_keys if key in trace}
         if state:

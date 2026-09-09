@@ -31,7 +31,8 @@ host 负责，详见
 | 工具                             | 用途                                                                         |
 | -------------------------------- | ---------------------------------------------------------------------------- |
 | `goal_plus_create`               | deny-only 兼容 tombstone；始终报错，不创建记录                               |
-| `goal_plus_status`               | 读取 goal phase、revision、关联 task 和 Evidence                             |
+| `goal_plus_status`               | 默认读取当前状态和待办；`detail=true` 按需读取目标、配置与草案               |
+| `goal_plus_history`              | 分页读取 revision、dispatch、Search 结果、final check 或审计事件             |
 | `goal_plus_update_goal`          | deny-only 兼容 tombstone；始终报错，不修改记录                               |
 | `goal_plus_record_triage`        | 选择普通 goal 工作或 verifier/spec discovery                                 |
 | `goal_plus_record_work_event`    | 按实际派发懒创建 subagent 记录，并管理 generation、结果和 Main 决策          |
@@ -53,6 +54,42 @@ session。普通消息不会撤销精确 host command 已建立、仍处于 acti
 SessionStart 是否仍属同一原生 session 由 host adapter 根据可信 lifecycle identity 判定，不能仅凭
 持久化 active ID 自动授权新 session。
 
+### 返回视图
+
+`goal_plus_status` 默认返回 `goal_plus_id`、`goal_revision`、`status`、`control`、`phase`、
+`next_action`、deadline、`current_search_run_id`、待处理 `work_items`、当前 revision 的
+final-check 状态和恢复待办。默认 `detail=false`；返回的 `details` 指向只读详情工具。
+初始化、恢复会话或 revision 变化时调用 `goal_plus_status(detail=true)`，读取完整
+`raw_goal`、`policy`、`triage`、`spec_draft`、`command_config`、source、session、当前
+Search 结果/报告路径、final check 和恢复诊断。
+`command_config` 只表示用户显式约束，不把草案或宿主默认值伪装成已生效配置。
+Search 运行状态和分数使用 `search_status`；冻结后的 worker budget、host/model 配置、并发数、
+workspace backend 和 promotion mode 可在 `goal_plus_monitor_snapshot(detail=true)` 的 `strategy` 中读取。
+
+两个视图都不回放 revision/事件历史。`detail` 替代旧的 `view` 参数；不同时维护两个开关。
+恢复待办保留 run/candidate/generation/recovery identity、`next_step` 和诊断错误；checkpoint
+和历史 session 通过 `search_recovery_status` 按需读取。未完成或待审查工作不因数量限制被隐藏。
+
+`goal_plus_history` 的 `collection` 支持 `goal_revisions`、`work_items`、`search_tasks`、
+`final_checks`、`events`，按持久顺序返回完整条目。每页默认 20 条、最多 100 条，返回
+`total` 与 `next_offset`；`next_offset=null` 表示当前读完。它不是跨状态变更的快照游标。
+条目正文不截断，读取成本仍取决于现有持久文件大小。
+
+Goal 变更工具返回核心状态回执，不再序列化整个 Goal：work event 附带单个 `work_item`
+（含 attempt/generation、host handle identity 与结果摘要），link/result 仅附带本次
+`search_task` 的 run/candidate identity 和结果记录时间，不回显提交的总结与路径；
+save draft 返回 `spec_draft_saved=true`，submit final check 附带本次 `final_check` 摘要。
+完整证据仍保存在持久状态，通过 history 读取。恢复消费者应使用当前状态/context，不能把变更
+回执当作完整 Goal record。
+
+`goal_plus_monitor_snapshot` 默认返回进度计数、最佳/选中结果、审查队列、恢复动作、scope 和错误。
+成功 candidate/session 的逐项结果、配置、artifact 路径和历史诊断使用 `detail=true`；直接
+Python Monitor/dashboard 接口仍保留完整 snapshot。异常、违规、清理错误与未知活跃数不被隐藏。
+Pi pool open/snapshot 默认返回计数、提交回执、活跃/未交付 job 和各 candidate 最新 job 的错误；
+wait 保留本次交付事件及精确 Evidence/lease 结果。close 仅返回 pool identity、关闭状态、
+活跃/未交付计数和未解决事项，不回放已交付的成功结果。完整诊断使用
+`pi_search_pool_snapshot(detail=true)`。详情读取不重做 close/result 等写操作，不改变交付语义。
+
 ### Host Command Config
 
 `/goal-plus` 和 `$goal-plus` 只把开头连续的 `key=value` token 解释为配置；第一个非配置
@@ -73,6 +110,7 @@ token 开始就是自然语言目标：
 | `workspace_backend` | `copy \| git_worktree \| thinkthread` | 未设置；由 Agent 根据任务和 host 能力决定。 | 约束 `SearchSpec.workspace.backend`。 |
 | `promotion_mode` | `apply \| artifact_only` | 未设置；由 Agent 根据任务授权和 workspace 决定。 | 约束 `SearchSpec.workspace.promotion_mode`。 |
 | `strategy` | `NAME` | 未设置；由 Agent 选择 maintained strategy。 | 约束 `SearchSpec.strategy.name`。 |
+| `inner_agent` | `ADAPTER_ID` | 未设置；沿用当前 host/backend 的兼容默认值。 | 约束 `SearchSpec.strategy.inner_agent`。 |
 | `annotator` | `MODEL` | 未设置；不单独指定 annotator model。 | 约束 `SearchSpec.strategy.evidence_annotator.model`。 |
 | `workers` / `models` | `MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]` | 未设置；worker 使用 host 的 parent/default model。 | 约束 `SearchSpec.strategy.models`；带 count 时每个模型都必须带 count。 |
 <!-- END GENERATED GOAL PLUS COMMAND CONFIG -->
@@ -80,6 +118,12 @@ token 开始就是自然语言目标：
 `main=` 和单数 `model=` 都不是受支持的配置。main model 必须在启动 Codex/Pi 时或
 提交 Goal Plus 命令前通过 `/model` 选择；Goal Plus 不切换它。数据模型暂时保留 legacy
 `command_config.main`，仅用于读取旧 `.gp` 记录，新建和编辑命令都会拒绝该 key。
+
+Host command 入口只对这里显式出现的 `annotator`、`workers`/`models` 执行真实推理
+preflight；未指定时不检查 Main default。后续 `search_freeze_spec` 同样只检查 spec 中显式写出的
+worker、annotator 和 scheduler model。每个边界都按模型去重并并发请求，任一失败则在 agent
+launch 前拒绝状态转换。检查使用 Codex/Pi 原生 model API，Goal Plus API 不接受 provider
+配置、API key 或 endpoint。
 
 解析后的 `GoalPlusRecord.command_config` 是显式用户约束，配置 token 不再保留在
 `raw_goal` 中。高置信度且无 open question 的 spec draft 必须匹配所有显式 Search
@@ -125,16 +169,22 @@ identity。过期 generation 的迟到结果保留为 `stale_result` Evidence，
 `aborted`，拒绝新的 planning、session、verifier record、selection 和 promotion。runtime 不拥有 host
 worker，因此调用方还必须停止完整 host pool，并确认活跃 worker 归零。
 
-MCP 的 `search_freeze_spec` 和 `search_create` 是 Goal Plus 内部 bootstrap surface：runtime
-要求当前 `.gp` 中恰好存在一条 active、host-verified Goal Plus 记录。没有精确 host command
-创建的记录，或存在歧义的多条 active 记录时，调用会以
-`GoalPlusEntrypointRequired` 失败。candidate worker 的既有 run 工具不依赖这个 bootstrap
-检查；它们继续由绑定的 candidate/session identity 限制。
+MCP 的 `search_freeze_spec` 和 `search_create` 是 Goal Plus 内部 bootstrap surface，两者都要求
+显式传入当前 `goal_plus_id`。host hook/extension 先核对该 ID 属于当前 native session，shared
+facade 再要求目标是 active、host-verified Goal，并校验 successor `source_run_id` 的归属。
+因此同一 `.gp` 可以包含多个 session 各自拥有的 active Goal，而不会靠“恰好一条 active 记录”
+猜测目标。candidate worker 的既有 run 工具不依赖 bootstrap 参数；它们继续由绑定的
+candidate/session identity 和 run owner 限制。
 
 Git backend 的 freeze 会直接在 `SearchSpec.source_path` 执行一次完整 process-verifier suite，
 并在成功后记录 `FrozenSpec.source_artifact_ref` 与 `origin_verification`。MainAgent 负责给出正确
 的 `source_path`、verifier `cwd` 和 artifact 路径；runtime 不扫描目录来猜另一个 task root。
 `search_create` 要求 origin 仍是同一个 clean commit。
+
+本地 Git/Copy 的 process suite 在冻结前必须实际输出有限数值分数，即使没有显式
+`ranking_signal`。只有正常退出或文本分数不足以冻结；缺失数值时返回
+`MissingNumericMetric`，不创建 FrozenSpec。指标从 stdout 的单行 JSON 对象读取，
+不读取任意结果文件，也不能用 promotion verifier 补足缺失的 process metric。
 
 `search_start_batch` 对 Git run 先只物化 `c001`，在真实 worktree 中重跑同一 suite，并把结果
 记录为 `RunRecord.workspace_bootstrap_verification`。通过后才物化其余 candidate。失败会自动以
@@ -144,6 +194,21 @@ Git backend 的 freeze 会直接在 `SearchSpec.source_path` 执行一次完整 
 A new Codex/Pi spec uses `strategy.orchestration_mode="parallel_loops"` for fixed
 candidates or `"adaptive_search"` for Scheduler-driven replacement.
 `search_plan_next(requested_k)` can be called only once for either run.
+
+SearchSpec cannot select an Agent family or execution driver. Freeze derives
+`FrozenSpec.native_host` (`codex` or `pi`) from the authorized Main session and
+binds it into the spec hash. `strategy.worker_host`, `worker_launch.agent_profile`,
+`evidence_annotator.host`, and `search_scheduler.host` are rejected as extra fields.
+Internal role drivers follow the frozen identity and workspace backend.
+Their persisted profiles contain only resolved host/model/reasoning/timeout plus
+`configuration_source="host_process"`; service authentication, endpoints, and host configuration
+paths are not SearchSpec fields. Codex hooks and the Pi extension launch internal agents from the
+active native host process, while the shared runtime only registers and validates their tasks.
+
+Frozen records now require `native_host`. Records from the previous format, with
+host selection inside `spec.strategy`, are not silently converted or repaired.
+Finish those runs with their original plugin version, or start a new Goal and
+freeze a new contract through the native host. Do not edit `.gp` to supply identity.
 
 An `adaptive_search` run requires a non-null `search_scheduler` and still has one initial plan, but
 may replace a retired lane through persisted runtime decisions. It requires a
@@ -168,14 +233,15 @@ applies the exact Decision and launches every returned session payload; it does
 not author a replacement. Reward never replaces the hard metric used by
 `search_select`.
 
-Lazy allocation waits only when the previous completed flag was `true`. An
+Lazy allocation gates only when the previous completed flag was `true`. An
 ordinary `true` flag contains no plan. A current confirmation `true` must
 include a separate draft; the Decision service
 validates and persists it with retirees, rationale, reserved derived ids, exact
 settled source nodes, exploration directions, and optional worker budgets. The
 scheduler chooses how many available reserved ids to use; there is no separate
-per-Decision replacement or expansion-depth setting. Otherwise the task completes
-asynchronously and the worker continues without polling it.
+per-Decision replacement or expansion-depth setting. Tasks complete asynchronously; the runtime
+does not wait or launch a model in the verifier call. While a confirmation task is unresolved,
+continuation, redispatch, and another verifier call for that lane are rejected without polling.
 Before a decision becomes visible, its triggering iteration has completed Git
 and results-ledger settlement. AnnotationTask is a weak prerequisite for
 ScheduleTask creation: it must be terminal, but `terminal_error` continues with
@@ -224,6 +290,8 @@ min(requested_k, remaining max_parallel)
 runtime 在 freeze 前通过 host catalog 解析模型名。最终有序 `selected_models` 属于 runtime
 state，每个 candidate 和 agent
 session 在 continuation 中保持选定模型。模型 identity 只用于 provenance，不影响 planning、verifier 或 selection。
+catalog discovery 不是 inference preflight；现有 host gate 会对本次 spec 中显式 agent model
+去重并并发发送最小请求。默认 model 不进入该集合。
 
 ## Worker Context
 
@@ -253,9 +321,18 @@ resume 之间累计。
 
 `search_get_agent_context` 默认返回有界结构：`latest_result`、`best_iteration` 和
 `recent_iterations`，而不是完整 `results` / `iterations`。`result_count`、`iteration_count` 和
-`results_tsv` 保留准确 provenance。持久化的完整 `CandidateTask` 只投影为工作所需字段；host、
-model、directive、workspace access、scheduler mode 和 run budget 不重复下发。只有确实需要旧
+`result_ledger_source="gp"` 保留准确 provenance。`workspace_ledger_projection` 返回 binding 的
+`none` 或 `results_tsv`；只有后者的 `results_tsv` 才是路径，否则为 `null`。`inner_agent` 返回
+frozen logical adapter ID；它不会暴露 host-native role。持久化的完整 `CandidateTask` 只投影为
+工作所需字段；model、directive、scheduler mode 和 run budget 不重复下发。ThinkThread
+candidate 只额外返回受限的 logical workspace access，不暴露 Root 本地路径。只有确实需要旧
 verifier 细节时才调用 `search_list_iterations`。
+
+Git 与 ThinkThread outer provider 都支持 `inner_agent="autoresearch"` 和
+`inner_agent="common"`。兼容 ID `autoresearch` 解析为 AutoResearch-Git：前者在一个 dispatch
+或一组 retained TT wakes 中自主执行多轮，并由 trusted adapter 维护 private attempt commits 与
+`results.tsv`；后者完成一个有界 attempt 后返回，不启用 inner Git ledger mechanics。两者都由
+runtime 在 verifier 边界创建 authoritative outer checkpoint，worker 不需要也不得主动 commit。
 
 开启 supplemental evaluation 时，context 才返回
 `supplemental_evaluation_enabled=true`，`search_get_global_evidence` 只增加
@@ -278,7 +355,9 @@ Codex MCP 对 context、Global Evidence、detail 和完整 iteration history 使
 投影到 Global Evidence。`view=null` 表示 annotation 尚未发布；worker 应继续独立工作，不等待或轮询。
 
 `artifact_ref={kind,id,provider}` 是新的跨 backend 身份；Git 下 `kind=git_commit`，旧 `commit`
-字段继续保留。窄 diff 足够时可以直接比较 commit；改动较大时用 `search_reference_open`
+字段继续保留。`artifact_availability` 为 `available`、`removal_pending`、`removed` 或 `unknown`；
+只有 `available` 时 `reference_available=true`。窄 diff 足够时可以直接比较 commit；改动较大时用
+`search_reference_open`
 把完整树 checkout 到该 worker 的稳定 `ref-workspace` 目录，然后直接使用普通文件和命令工具查看。每个
 `agent_session_id` 最多有一个 reference 目录；再次调用会丢弃该目录的本地变化，
 并切到新的精确 artifact。reference 不是 peer 的活动 workspace，所有候选实现修改仍发生在自己的 candidate
@@ -313,9 +392,21 @@ View。receipt 只用于报告“某个 View 是否在后续尝试前可见”�
 | `search_copy_shared_tool`  | candidate worker                   | 将 Tool View 绑定的 immutable snapshot 复制到本地 inbox，供阅读或自主复用        |
 
 worker 调用 process verifier 时必须提供一行客观
-`hypothesis`，说明实际实施的尝试。`search_run_verifier` 返回 candidate-local
-`keep`、`retain`、`discard` 或 `failure`，并向继承的 `workspace/results.tsv` 追加准确记录。parent
-fallback 省略 `agent_session_id`，也不要求 `hypothesis`。
+`hypothesis`，说明实际实施的尝试。Git/Pi RPC 的 `search_run_verifier` 同步返回包含
+candidate-local `keep`、`retain`、`discard` 或 `failure` 的 `ScoreReport`。ThinkThread Message
+proxy 因 quiescent snapshot 约束先返回 `CandidateAttemptAccepted`，完整
+`CandidateAttemptFeedback` 随 `candidate_ready` 产生，并强制注入同一 retained Child 的下一次
+wake。两条路径都向 canonical `.gp` ledger 追加准确记录；只有 inner binding 声明
+`workspace_ledger_projection="results_tsv"` 时才另写并提交 `workspace/results.tsv` 兼容投影，
+`common` 不生成该文件。ThinkThread AutoResearch-Git 的 context 返回逻辑路径 `results.tsv`，
+但文件实际位于 Child-private workspace，Root 不会物化本地 candidate 路径。它的 public
+`git_head` 仍为 `null`，因为外层 Evidence identity 是 attempt `fs_snapshot`。parent fallback
+省略 `agent_session_id`，也不要求 `hypothesis`。
+
+确定性的 verifier 失败也是 attempt 结果，不是缺失结果。Git backend 的 non-zero exit、timeout 和
+process start failure 都返回失败 `ScoreReport` 并写入带 `attempt_id` 的 iteration；TT 已确认的
+verifier/provider execution error 同样写失败 iteration。只有 provider completion outcome unknown
+才进入 `needs_recovery`，此时不能伪造成功或失败记录。
 
 启用 `shared_dir` 后，worker 可以同时提交 `toolization_decision`。`staged`
 需要工具名和至少一个正向 signal，`not_applicable`
@@ -383,6 +474,13 @@ provider-neutral 口径展示 Git/ThinkThread 的冻结时容量预估、candida
 transcript 后，`statistics.orchestrator` 记录 Goal Plus 创建以来不含内容的 usage
 delta，`statistics.total_usage` 与 worker usage 合并；每个 Search task 仍保留自己的 statistics。
 
+ThinkThread run 的 `run.host_cleanup` 和 `search_tasks[].host_cleanup` 是不暴露物理路径的结构化
+cleanup 投影。顶层 `state` 为 `pending`、`complete`、`retained`、`needs_recovery`、`failed` 或
+`not_applicable`；`candidate_pools`、`annotation`、`snapshots` 和 `final_artifacts` 分别提供状态计数
+与 `complete`，`blockers` 只包含语义原因。`retained` 表示 snapshot 仍被 publication 或 recovery
+等 durable pin 引用，不等于删除失败。普通完成流程应读取该字段，不应猜测 session-private
+`host-pools` 文件名。
+
 `goal_plus_monitor_snapshot.feature_plugins` 提供可选的只读派生视图。内置 `orchestration`
 plugin 统一展示普通 main/subagent 的 assignment summary、attempt
 generation、assignment/result/decision，同时保留 Codex/Pi 的原生 operation 名。传入
@@ -405,12 +503,13 @@ pass；失败时 run 保持可重试，且不输出 patch。
 `apply_cwd` 和 `apply_directory`，并从 `apply_cwd` 执行
 `git apply --directory=<apply_directory> <artifact_path>`。
 
-`git_worktree` 和未来的 `thinkthread` backend 对 Git source 只接受 clean `HEAD`。
+`git_worktree` 对 Git source 只接受 clean `HEAD`。
 `search_freeze_spec` 在 verifier preflight 前检查整个 repository，`search_create` 在写入 run
 前复检；staged、unstaged 或 non-ignored untracked 会返回 `DirtySourceWorkspace`。Runtime
 不会自动 stash、clean 或 commit source；有意使用当前 filesystem 状态时改用
-`workspace.backend="copy"`，其 promotion 固定为 `artifact_only`。普通非 Git 目录仍沿用现有
-synthetic Git baseline。`.gp`、`.search`、`.tmp` 等既有 runtime-noise 排除项不参与判脏。
+`copy + artifact_only`，或从受保护 ThinkThread Root 显式选择 `thinkthread`。普通非 Git 目录
+仍沿用现有 synthetic Git baseline。`.gp`、`.search`、`.tmp` 等 runtime noise 不进入 product
+delta。
 MCP/Pi facade 的 `verifier_artifact_paths` 只接受相对 `source_path` 且不含 `..` 的路径；runtime
 解析后再冻结，避免 host cwd 或绝对路径改变 artifact 归属。
 
@@ -465,36 +564,73 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
   --pretty
 ```
 
+Pi extension 还内部调用 `host_execution_scope_open`、`host_execution_scope_close_run`、
+`host_execution_scope_close` 和 `host_execution_scope_snapshot`，把 pool、worker process 与
+Annotation 绑定到 main owner。它们是 host adapter 控制面，不注册为模型可见工具；
+`execution_scope_id` 也不会出现在模型可见的 pool schema 中。
+
+同一 host control path 在 worker verifier 完成后调用一次 capability-protected internal-agent kick，
+同时唤醒 Annotation 与 Adaptive Scheduler queue。该命令不是模型可见工具，不接收外部连接配置。
+
+安装的 `goal-plus-pi` ThinkThread Profile 还暴露以下 host-local 工具。它们通过
+Agent POSIX Control 通道运行，不进入共享 MCP server：
+
+| 工具                                  | 用途                                                          |
+| ------------------------------------- | ------------------------------------------------------------- |
+| `thinkthread_search_pool_open`        | 从同一个 `S0` 启动 initial private Pi Children                |
+| `thinkthread_search_pool_wait_any`    | 返回 ready Child 的 attempt feedback 与 snapshot Evidence     |
+| `thinkthread_search_pool_snapshot`    | 读取或按 `run_id` 恢复 durable pool                           |
+| `thinkthread_search_pool_continue`    | 注入上次 feedback 并唤醒同一 Child/Session/private branch     |
+| `thinkthread_search_pool_close`       | drain 或 interrupt，并清理该 pool 拥有的 Child/branch         |
+| `thinkthread_annotation_next`         | Annotation Child 领取 fenced immutable Evidence task          |
+| `thinkthread_artifact_view_list`      | 列出授权 target/peer snapshot 目录                            |
+| `thinkthread_artifact_view_stat`      | 读取授权 snapshot 路径元数据                                  |
+| `thinkthread_artifact_view_pread`     | 分块读取授权 snapshot 文件                                    |
+| `thinkthread_artifact_view_diff`      | 比较两个授权 snapshot                                         |
+| `thinkthread_annotation_submit`       | 按 queue generation/revision fence 发布 annotation            |
+
+candidate 与 Annotation Child 的 active tool 集合互斥。`search_select` 关闭 annotation
+queue 并推进 generation 后，旧 task 的 submit 返回未发布。ThinkThread pool 状态位于
+`.gp/host-pools/thinkthread/`，Annotation Child 状态位于
+`.gp/host-pools/thinkthread-annotations/`。
+Annotation Child 不激活命令执行或 verifier 工具，也不为读取 Artifact View 创建或 patch snapshot。
+
 ## 控制执行的 SearchSpec 字段
 
-| 字段                                | 含义                                                     |
-| ----------------------------------- | -------------------------------------------------------- |
-| `objective`                         | 可度量的优化目标                                         |
-| `metric_name`, `metric_direction`   | ranking value 和方向                                     |
-| `source_path`                       | baseline source snapshot                                 |
-| `editable_globs`, `forbidden_globs` | candidate edit surface                                   |
-| `process_verifiers`                 | correctness gate                                         |
-| `ranking_signals`                   | 产生 metric 的 command                                   |
-| `promotion_verifiers`               | promotion 前必须通过的检查                               |
-| `budget.max_parallel`               | 初始 candidate 和活跃 worker 数                          |
-| `candidate_acceptance`              | 受界且显式下发给 worker 的验收条件                       |
-| `constraints`                       | runtime 私有的结构化控制数据，不下发给 worker            |
-| `strategy.worker_host`              | 执行 host：`pi-rpc` 或 `codex`                           |
-| `strategy.worker_budget`            | host deadline 和可选 minimum lease                       |
-| `workspace.backend`                 | `git_worktree`（默认）、`copy`，或接口占位 `thinkthread` |
-| `workspace.promotion_mode`          | `apply`（默认）或显式 `artifact_only`                    |
-| `device_pools`                      | 受信任的 host device pool ID                             |
+| 字段 | 含义 |
+| --- | --- |
+| `objective` | 可度量的优化目标 |
+| `metric_name`, `metric_direction` | ranking value 和方向 |
+| `source_path` | baseline source snapshot |
+| `editable_globs`, `forbidden_globs` | candidate edit surface |
+| `process_verifiers` | correctness gate |
+| `ranking_signals` | 产生 metric 的 command |
+| `promotion_verifiers` | promotion 前必须通过的检查 |
+| `budget.max_parallel` | 初始 candidate 和活跃 worker 数 |
+| `candidate_acceptance` | 受界且显式下发给 worker 的验收条件 |
+| `constraints` | runtime 私有的结构化控制数据，不下发给 worker |
+| `strategy.worker_budget` | host deadline 和可选 minimum lease |
+| `workspace.backend` | `git_worktree`（默认）、`copy` 或 `thinkthread` |
+| `workspace.promotion_mode` | `apply`（默认）或显式 `artifact_only` |
+| `device_pools` | 可选的受信任 host pool ID；由 host 环境注册 |
 
-Git source 的 clean 检查独立于 provider：`git_worktree` 现在执行，`thinkthread` 在 host
-capability 接通后复用同一契约。TT baseline 必须从 clean、自包含的 inner-Git checkout 创建
-FsSnapshot，不能直接 snapshot 用户原 cwd 和其中的 ignored 缓存。
+`thinkthread` 只在 Pi `goal-plus-pi` Profile 中启用；Agent 身份由 Main 宿主确定。
+freeze/create 会校验宿主身份与 workspace backend 的配对；Root
+preflight 会精确校验 release、Control protocol、contract fingerprint、direct filesystem 和
+delegated capability，任何不匹配都 fail closed。它不会静默退回 Git。每个 candidate 使用
+独立 Child/Session/private branch；worker context 不暴露本地 workspace 路径。verifier、
+Evidence、selection 和 promotion 都绑定 exact `fs_snapshot`。
 
-`thinkthread` 当前只注册统一 provider/capability API。Codex 和 Pi RPC 的 host capability 都只声明
-`copy` 与 `git_worktree`；`search_freeze_spec` 会在 verifier preflight 前以
-`UnsupportedHostCapability` 拒绝 ThinkThread，`search_create` 还会复检已有 frozen
-spec。底层 provider 仍会以 `UnsupportedWorkspaceCapability` fail closed，
-因此不会静默退回 Git，也不会声称已提供 protected execution、FsSnapshot
-checkpoint 或 snapshot reference。TT Child 内执行 Codex 和 FsSnapshot 接入属于后续 TODO。
+ThinkThread `workspace.dependencies[].path` 相对 `source_path`，promotion 会将其规范化为 Root
+snapshot path。`search_apply_promotion` 的终态是 `applied`、
+`awaiting_main_integration` 或 `recovering`：前两者分别排队成功或 pending-integration 通知；
+`recovering` 不发送这两类通知，也不生成 pending artifact。所有 provider mutation 使用 durable
+RequestId；response loss 后只查询或重放同一 identity。业务 mutation outcome 与 request close
+状态分别持久化；close 未确认时只重试 `fs.request.close`，不会重做已经成功的 mutation。report durable 后，cleanup 删除未被 active
+Evidence consumer、pending publication、recovery、其他 active run、外部 owner 或 active host pool
+引用的 owned snapshot。已删除 snapshot 的 identity 和派生 Evidence/Annotation 继续保存在 `.gp`，
+monitor 的 `artifact_availability` 显示 `removed`，但不支持重开完整 Artifact View。删除 Child、
+private branch 或 snapshot 不会删除 score、diff、annotation、provider journal 或最终 report。
 
 每条 ranking command 必须成功退出，并输出最后一个 JSON object，其中 `metric_name` 对应 finite
 number。临时 verifier 输出必须位于 `GOAL_PLUS_VERIFIER_TMPDIR`；verifier artifact 和 evaluation

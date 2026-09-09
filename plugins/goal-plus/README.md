@@ -12,8 +12,7 @@ Pi and Codex are the supported host paths.
 
 ## Installation
 
-Run the installer from the Goal Plus source directory with the intended Python
-environment already active:
+Run the installer from the Goal Plus source directory:
 
 ```bash
 git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-plus
@@ -23,13 +22,24 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | --- | --- |
 | Codex only | `./install.sh --codex` |
 | Pi only | `./install.sh --pi` |
+| Pi + ThinkThread Search | `./install.sh --pi --thinkthread` |
 | Pi development | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | Show Pi development environments | `./install.sh --env-show` |
 
-Normal installation uses the active `python3`; its scripts directory must be
-on `PATH`. `--pi` and `--pi-dev` are mutually exclusive. Keep the checkout at
-the same path while a host is installed. Add `--dry-run` to an installation
-command to inspect its plan without making changes.
+Normal installation provisions managed Python 3.12 with uv and locked dependencies.
+Each host binds to an immutable code build, independently of Conda, `PATH`, and
+the target workspace. `--pi` and `--pi-dev` are mutually exclusive. Inspect installed
+builds with `./install.sh --runtime-info`; see [development](docs/development.md)
+for update, diagnostics, and cleanup. `--dry-run` does not change host registrations
+or releases; its shell bootstrap may download the installer Python/uv.
+
+`--thinkthread` requires a separately installed supported ThinkThread Runtime.
+It validates the built-in Pi Profile and generates the `goal-plus-pi` Profile;
+it never installs, upgrades, or removes ThinkThread itself. Start the protected
+Root with `tt run --profile goal-plus-pi --fs <target-workspace>`. From that
+Root, `workspace_backend=thinkthread` runs Pi Search candidates in independent
+private Children, verifies exact snapshots, and publishes through optimistic
+`fs.apply`. Codex does not support the ThinkThread worker host.
 
 On first Codex use, start a new thread, review and trust Goal Plus in `/hooks`,
 then start one more fresh thread. Pi development starts with `pi-goal-plus` and
@@ -39,19 +49,24 @@ does not modify Pi authentication or global configuration.
 
 | Uninstall | Command |
 | --- | --- |
-| Everything owned by this checkout | `./uninstall.sh` |
+| All removable Goal Plus components | `./uninstall.sh` |
 | Codex registration | `./uninstall.sh --codex` |
 | Pi registration | `./uninstall.sh --pi` |
 | Pi development environment | `./uninstall.sh --pi-dev` |
-| Normal Python runtime | `./uninstall.sh --runtime` |
+| Goal Plus ThinkThread Profile | `./uninstall.sh --thinkthread` |
+| Unused managed releases | `./uninstall.sh --runtime` |
 | Inspect the full plan | `./uninstall.sh --dry-run` |
 
-With a selector, the uninstaller removes only that component. Normal host
-installations use the shared Python runtime, so removing one host preserves
+With a selector, the uninstaller removes only that component. Codex and normal Pi
+registrations are removed regardless of their source checkout. A different source
+produces a warning and removal continues without confirmation; `--dry-run` only
+prints the plan. Local development directories retain their ownership checks.
+Normal host installations use the shared Python runtime, so removing one host preserves
 the runtime. Runtime removal fails closed while an unselected registration
-owned by this checkout still needs it. Pi development uses its own managed
-environment. Uninstallation never deletes target workspace `.gp/` records or
-reverts promoted changes.
+still needs it. Pi development uses its own managed environment.
+Uninstallation never deletes target workspace `.gp/` records or
+reverts promoted changes. `--thinkthread` removes only this checkout's generated
+`goal-plus-pi` Profile; it never deletes a ThinkThread Runtime, Root, or state.
 
 Start a goal in Pi:
 
@@ -88,6 +103,9 @@ interrupted Main with `codex exec resume <session-id> '$goal-plus resume'` or
 steers a running task but never unlocks a stopped one. Both hosts support
 summary/pause/resume/clear; clear retains history but permanently revokes execution.
 See [Runtime Logic](docs/runtime-logic.md) for the contract and validation boundaries.
+An exact start command in a fresh native session creates an independent Goal even
+when another session has a nonterminal Goal in the same workspace. Edit, resume,
+and control commands remain bound to the session that owns their Goal.
 
 The exact Goal Plus host commands above are the only create/edit authority
 boundary. Natural-language requests, automatic skill loading, direct MCP calls,
@@ -144,6 +162,23 @@ complete Codex and Pi commands with ready-to-paste prompts.
 Host differences and strategy coverage are summarized in
 [Agent Host Adapters](docs/agent-host-adapters.md).
 
+The following table groups supported Search paths by the native Main Agent.
+ThinkThread provides workspace and Child execution infrastructure; the Agent
+inside the supported ThinkThread path is Pi.
+
+| Main Agent | Workspace backend | Candidate driver | Annotation driver | Adaptive Scheduler |
+| --- | --- | --- | --- | --- |
+| Codex | `git_worktree` / `copy` | Native subagent | Codex CLI | Codex CLI; Git worktree only |
+| Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI; Git worktree only |
+| Pi | `thinkthread` | TT Pi Child | TT Pi Child | Not supported |
+| Codex | `thinkthread` | Not supported | Not supported | Not supported |
+
+`workspace.backend` identifies the workspace provider. Agent identity comes from
+the authorized Main session and is recorded as `FrozenSpec.native_host`; it is
+not a SearchSpec option. Runtime derives each role's driver from this identity
+and the workspace backend. Scheduler reward and
+allocation share one inference call, with no separate reward Agent.
+
 ## Mental Model
 
 - A **Goal Plus record** is the complete user task.
@@ -151,11 +186,12 @@ Host differences and strategy coverage are summarized in
   than one search task.
 - An initial **SearchPlan** allocates the fixed candidate lanes. It is not a
   per-iteration plan protocol.
-- A **candidate** is a long-lived autonomous loop in one isolated workspace
-  with verifier history.
+- A **candidate** is a durable lane in one isolated workspace with verifier
+  history. `strategy.inner_agent` selects either the iterative `autoresearch`
+  worker or a one-attempt-per-dispatch `common` worker.
 - A **worker session** is a host context/provenance handle. Worker lifecycle
   belongs to the host, not the Search runtime.
-- The **shared plane** contains the frozen contract, exact verifier commits,
+- The **shared plane** contains the frozen contract, exact verifier artifacts,
   Global Evidence, asynchronous objective Views, and selection state. It does
   not expose peer reasoning or peer workspaces.
 - A **verifier concern** is worker advice. Only the main agent can confirm it;
@@ -195,6 +231,7 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 | --- | --- |
 | Stable product and runtime contract | [System Specification](SPEC.md) |
 | Architecture, shared Evidence, rollback, and end-to-end flow | [Shared Plane](docs/shared-plane.md) |
+| Framework layers, ownership, role capabilities, and glossary | [Architecture Diagrams](docs/architecture.md) |
 | Adaptive Search mode and Search Scheduler behavior | [Adaptive Search](docs/adaptive-search.md) |
 | Current MCP and Pi-local tools | [API](docs/api.md) |
 | Host capability comparison | [Agent Host Adapters](docs/agent-host-adapters.md) |
@@ -205,23 +242,34 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 | Checkout development, plugin refresh, and multi-developer isolation | [Development](docs/development.md) |
 | Specs and runnable examples | [Examples](examples/README.md) |
 | Tests and real-host evidence | [Tests](tests/README.md) |
+| Git and ThinkThread workspace, artifact, and publication architecture | [ThinkThread and Git Architecture](docs/workspace-sandbox-arch.md) |
 
 Benchmark-specific tasks, evaluators, campaigns, and comparison evidence are
 not part of this isolated runtime directory.
 
 ## Workspace and Sandbox Architecture
 
-Goal Plus uses a two-layer workspace model. **Git + Git** combines an outer
-Git-worktree workspace with inner Git candidate history. **ThinkThread + Git**
-keeps the same inner Git history inside a private ThinkThread COW Child, adding
-snapshot-based artifacts and protected execution. Both modes start from a
-clean inner Git baseline with no managed untracked product files.
+Goal Plus separates the outer workspace provider from the inner-agent behavior.
+The Git outer provider creates candidate worktrees and commit Evidence;
+ThinkThread captures one Root-owned baseline, gives every Pi candidate a private
+COW Child, and settles attempts as immutable snapshot Evidence. Both outer
+providers support the AutoResearch-Git adapter and the MCP-aware
+one-attempt-per-dispatch `common` adapter. The compatibility configuration ID
+`inner_agent=autoresearch` resolves to AutoResearch-Git: Git outer workspaces use
+their candidate branch, while ThinkThread creates an independent Child-private
+Git repository with physical `results.tsv`. `common` has neither inner-agent Git
+history nor a workspace ledger projection. In every combination `.gp` remains
+canonical, and only the outer provider's `git_commit` or `fs_snapshot` is public
+Evidence.
 
-Git + Git is available in Codex and Pi. ThinkThread + Git currently has the
-filtered promotion adapter, while Child creation, Search checkpointing,
-snapshot-bound verification, references, and host execution remain fail-closed.
-Copy remains an explicit artifact-only compatibility path.
+Git outer workspaces are available in Codex and Pi. ThinkThread Search is available only
+from the installed Pi `goal-plus-pi` Profile after exact release, protocol,
+fingerprint, Root capability, and delegated Child capability preflight. It
+includes K-way private Children, exact snapshot verification, retained
+Annotation Artifact Views, filtered publication, optimistic apply, durable
+recovery, and owned-resource cleanup. Copy remains an explicit artifact-only
+compatibility path.
 
-See [Workspace and Sandbox Architecture](docs/workspace-sandbox-arch.md) for
+See [ThinkThread and Git Workspace Architecture](docs/workspace-sandbox-arch.md) for
 the `new -> search -> apply` ASCII flow, design invariants, and the Git/TT
 behavior comparison.

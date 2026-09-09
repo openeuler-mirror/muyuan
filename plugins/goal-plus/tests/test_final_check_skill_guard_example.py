@@ -10,7 +10,8 @@ import pytest
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import SearchSpec
-from goal_plus.runtime import FileSearchRuntime, discover_git_tracked_task_skills
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.infrastructure.artifacts.search_source import discover_git_tracked_task_skills
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,7 +83,7 @@ def test_materialized_guard_separates_ranking_from_semantic_acceptance(
     spec_data["source_path"] = str(workspace)
     frozen = FileSearchRuntime(tmp_path / ".gp").freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [workspace / ".goal-plus-verifiers" / "score_throughput.py"],
+        [workspace / ".goal-plus-verifiers" / "score_throughput.py"], native_host="codex",
     )
     assert frozen.task_skill_paths == [TASK_SKILL]
     with pytest.raises(FileExistsError, match="choose a new --output path"):

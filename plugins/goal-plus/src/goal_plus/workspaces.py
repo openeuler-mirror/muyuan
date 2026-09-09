@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import base64
-from dataclasses import dataclass
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -11,15 +8,20 @@ import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Literal, Mapping, Protocol
+from typing import Literal, Mapping
 
-from goal_plus.models import (
+from goal_plus.domain.artifacts import (
     ArtifactRef,
+    ReferenceWorkspaceAccess,
     WorkspaceBackend,
     WorkspaceCapacityEstimate,
 )
+from goal_plus.ports.workspace_creation import WorkspaceMaterialization
+from goal_plus.ports.publication import (
+    PreparedPromotion,
+    PromotionApplyResult,
+)
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT
-
 
 IGNORED_NAMES = {
     ".git",
@@ -39,50 +41,6 @@ GENERATED_SOURCE_FILES = {
 }
 
 
-@dataclass(frozen=True)
-class WorkspaceMaterialization:
-    backend: WorkspaceBackend
-    workspace: Path
-    branch: str | None
-    base_revision: str | None
-    managed_root: Path | None = None
-    source_subdir: str = "."
-    provider_handle: Mapping[str, str] | None = None
-
-
-@dataclass(frozen=True)
-class WorkspaceProviderCapabilities:
-    materialize_candidate: bool
-    checkpoint: bool
-    restore: bool
-    reference_workspace: bool
-    protected_execution: bool
-    requires_relocation_verification: bool = False
-    prepare_promotion: bool = False
-    apply_promotion: bool = False
-    recover: bool = False
-
-
-@dataclass(frozen=True)
-class PreparedPromotion:
-    provider: WorkspaceBackend
-    strategy: Literal["legacy_patch", "squash_commit", "fs_apply"]
-    base_artifact_ref: ArtifactRef
-    selected_artifact_ref: ArtifactRef
-    publication_artifact_ref: ArtifactRef | None
-    artifact_path: Path | None
-    source_repository: Path | None
-    source_subdir: str
-    changed_files: tuple[str, ...]
-    provider_handle: Mapping[str, str]
-
-
-@dataclass(frozen=True)
-class PromotionApplyResult:
-    source_revision: str | None
-    details: Mapping[str, object]
-
-
 class UnsupportedWorkspaceCapability(RuntimeError):
     def __init__(self, backend: WorkspaceBackend, capability: str) -> None:
         self.backend = backend
@@ -91,108 +49,6 @@ class UnsupportedWorkspaceCapability(RuntimeError):
             f"workspace backend {backend!r} does not implement capability "
             f"{capability!r}"
         )
-
-
-class WorkspaceProvider(Protocol):
-    backend: WorkspaceBackend
-    capabilities: WorkspaceProviderCapabilities
-
-    def materialize_candidate(
-        self,
-        *,
-        run_dir: Path,
-        source: Path,
-        workspace: Path,
-        run_id: str,
-        candidate_id: str,
-        base_workspace: Path | None = None,
-        base_revision: str | None = None,
-    ) -> WorkspaceMaterialization: ...
-
-    def checkpoint(
-        self,
-        workspace: Path,
-        message: str,
-        pathspecs: list[str],
-    ) -> ArtifactRef | None: ...
-
-    def restore(
-        self,
-        workspace: Path,
-        artifact_ref: ArtifactRef,
-        preserved_files: Mapping[str, str],
-        message: str,
-    ) -> ArtifactRef: ...
-
-    def recover(
-        self,
-        workspace: Path,
-        artifact_ref: ArtifactRef,
-        *,
-        managed_root: Path,
-        recovery_dir: Path,
-        preserved_files: Mapping[str, str],
-        run_dir: Path,
-        candidate_id: str,
-        provider_handle: Mapping[str, object],
-    ) -> ArtifactRef: ...
-
-    def current_artifact(self, workspace: Path) -> ArtifactRef | None: ...
-
-    def is_descendant(
-        self,
-        workspace: Path,
-        base_artifact_ref: ArtifactRef,
-        target_artifact_ref: ArtifactRef,
-    ) -> bool: ...
-
-    def changed_files(
-        self,
-        workspace: Path,
-        base_artifact_ref: ArtifactRef,
-        target_artifact_ref: ArtifactRef,
-        pathspecs: list[str],
-    ) -> list[str]: ...
-
-    def status(
-        self,
-        workspace: Path,
-        *,
-        ignore_runtime_noise: bool = False,
-    ) -> list[str]: ...
-
-    def materialize_reference(
-        self,
-        source_workspace: Path,
-        artifact_ref: ArtifactRef,
-        destination: Path,
-    ) -> Path: ...
-
-    def remove_reference(
-        self,
-        source_workspace: Path,
-        artifact_ref: ArtifactRef,
-        destination: Path,
-    ) -> bool: ...
-
-    def prepare_promotion(
-        self,
-        *,
-        run_dir: Path,
-        run_id: str,
-        candidate_id: str,
-        source: Path,
-        workspace: Path,
-        source_subdir: str,
-        base_artifact_ref: ArtifactRef,
-        selected_artifact_ref: ArtifactRef,
-        changed_files: list[str],
-    ) -> PreparedPromotion: ...
-
-    def apply_promotion(
-        self,
-        prepared: PreparedPromotion,
-    ) -> PromotionApplyResult: ...
 
 
 def should_ignore(path: Path) -> bool:
@@ -715,40 +571,39 @@ def _materialize_git_candidate_workspace(
 LiteralGitBackend = Literal["copy", "git_worktree"]
 
 
-class GitWorkspaceProvider:
-    capabilities = WorkspaceProviderCapabilities(
-        materialize_candidate=True,
-        checkpoint=True,
-        restore=True,
-        reference_workspace=True,
-        protected_execution=False,
-        recover=True,
-    )
+def require_local_backend(backend: WorkspaceBackend, capability: str) -> LiteralGitBackend:
+    if backend not in {"copy", "git_worktree"}:
+        raise UnsupportedWorkspaceCapability(backend, capability)
+    return backend
 
-    def __init__(self, backend: LiteralGitBackend) -> None:
-        self.backend = backend
 
-    def materialize_candidate(
-        self,
-        *,
-        run_dir: Path,
-        source: Path,
-        workspace: Path,
-        run_id: str,
-        candidate_id: str,
-        base_workspace: Path | None = None,
-        base_revision: str | None = None,
-    ) -> WorkspaceMaterialization:
-        return _materialize_git_candidate_workspace(
-            backend=self.backend,
-            run_dir=run_dir,
-            source=source,
-            workspace=workspace,
-            run_id=run_id,
-            candidate_id=candidate_id,
-            base_workspace=base_workspace,
-            base_revision=base_revision,
+def _require_scoped_repository(backend: LiteralGitBackend, workspace: Path) -> None:
+    if backend != "copy":
+        return
+    expected = workspace.resolve()
+    try:
+        actual = Path(
+            _git_output(workspace, "rev-parse", "--show-toplevel")
+        ).resolve()
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"copy workspace has no independent Git repository: {workspace}"
+        ) from exc
+    if actual != expected:
+        raise RuntimeError(
+            "copy workspace Git repository escaped its managed root: "
+            f"expected {expected}, found {actual}"
         )
+
+
+def _require_git_artifact(artifact_ref: ArtifactRef) -> None:
+    if artifact_ref.kind != "git_commit":
+        raise ValueError("Git workspace provider requires a git_commit artifact")
+
+
+class LocalGitWorkspace:
+    def __init__(self, backend: WorkspaceBackend) -> None:
+        self.backend = require_local_backend(backend, "local_workspace")
 
     def checkpoint(
         self,
@@ -757,6 +612,7 @@ class GitWorkspaceProvider:
         pathspecs: list[str],
     ) -> ArtifactRef | None:
         try:
+            _require_scoped_repository(self.backend, workspace)
             _git_run(workspace, "add", "-A", "-f", "--", *pathspecs)
             staged = subprocess.run(
                 ["git", "diff", "--cached", "--quiet", "--", *pathspecs],
@@ -791,7 +647,8 @@ class GitWorkspaceProvider:
         preserved_files: Mapping[str, str],
         message: str,
     ) -> ArtifactRef:
-        self._require_git_artifact(artifact_ref)
+        _require_git_artifact(artifact_ref)
+        _require_scoped_repository(self.backend, workspace)
         _git_run(
             workspace,
             "restore",
@@ -852,7 +709,7 @@ class GitWorkspaceProvider:
         The original archive is never overwritten on a retry. Git history stays
         reachable; restoring the tree does not rewind the branch ref.
         """
-        self._require_git_artifact(artifact_ref)
+        _require_git_artifact(artifact_ref)
         root = managed_root.resolve()
         expected = (run_dir / "workspace" / candidate_id).resolve()
         if managed_root.is_symlink() or root != expected:
@@ -887,6 +744,7 @@ class GitWorkspaceProvider:
 
     def current_artifact(self, workspace: Path) -> ArtifactRef | None:
         try:
+            _require_scoped_repository(self.backend, workspace)
             revision = _git_output(workspace, "rev-parse", "HEAD")
         except RuntimeError:
             return None
@@ -898,8 +756,9 @@ class GitWorkspaceProvider:
         base_artifact_ref: ArtifactRef,
         target_artifact_ref: ArtifactRef,
     ) -> bool:
-        self._require_git_artifact(base_artifact_ref)
-        self._require_git_artifact(target_artifact_ref)
+        _require_git_artifact(base_artifact_ref)
+        _require_git_artifact(target_artifact_ref)
+        _require_scoped_repository(self.backend, workspace)
         return _git_succeeds(
             workspace,
             "merge-base",
@@ -915,8 +774,9 @@ class GitWorkspaceProvider:
         target_artifact_ref: ArtifactRef,
         pathspecs: list[str],
     ) -> list[str]:
-        self._require_git_artifact(base_artifact_ref)
-        self._require_git_artifact(target_artifact_ref)
+        _require_git_artifact(base_artifact_ref)
+        _require_git_artifact(target_artifact_ref)
+        _require_scoped_repository(self.backend, workspace)
         result = subprocess.run(
             [
                 "git",
@@ -945,6 +805,7 @@ class GitWorkspaceProvider:
         *,
         ignore_runtime_noise: bool = False,
     ) -> list[str]:
+        _require_scoped_repository(self.backend, workspace)
         command = ["git", "status", "--porcelain=v1", "--untracked-files=all"]
         if ignore_runtime_noise:
             exclusions = [
@@ -965,13 +826,19 @@ class GitWorkspaceProvider:
             return []
         return [line for line in value.splitlines() if line.strip()]
 
+
+class GitReferences:
+    def __init__(self, backend: WorkspaceBackend) -> None:
+        self.backend = require_local_backend(backend, "reference_workspace")
+
     def materialize_reference(
         self,
         source_workspace: Path,
         artifact_ref: ArtifactRef,
         destination: Path,
     ) -> Path:
-        self._require_git_artifact(artifact_ref)
+        _require_git_artifact(artifact_ref)
+        _require_scoped_repository(self.backend, source_workspace)
         source_root = Path(
             _git_output(source_workspace, "rev-parse", "--show-toplevel")
         ).resolve()
@@ -1013,7 +880,8 @@ class GitWorkspaceProvider:
         artifact_ref: ArtifactRef,
         destination: Path,
     ) -> bool:
-        self._require_git_artifact(artifact_ref)
+        _require_git_artifact(artifact_ref)
+        _require_scoped_repository(self.backend, source_workspace)
         clean = False
         if destination.exists():
             try:
@@ -1037,6 +905,26 @@ class GitWorkspaceProvider:
         _git_run(source_workspace, "worktree", "prune")
         return clean
 
+    def open_artifact_view(
+        self,
+        source_workspace: Path,
+        artifact_ref: ArtifactRef,
+        destination: Path,
+    ) -> ReferenceWorkspaceAccess:
+        return ReferenceWorkspaceAccess(
+            kind="filesystem_path",
+            root=self.materialize_reference(
+                source_workspace,
+                artifact_ref,
+                destination,
+            ),
+            readonly_contract="soft_detected",
+        )
+
+
+class GitPublication:
+    backend: LiteralGitBackend = "git_worktree"
+
     def prepare_promotion(
         self,
         *,
@@ -1050,10 +938,8 @@ class GitWorkspaceProvider:
         selected_artifact_ref: ArtifactRef,
         changed_files: list[str],
     ) -> PreparedPromotion:
-        self._require_git_artifact(base_artifact_ref)
-        self._require_git_artifact(selected_artifact_ref)
-        if self.backend != "git_worktree":
-            raise UnsupportedWorkspaceCapability(self.backend, "squash_promotion")
+        _require_git_artifact(base_artifact_ref)
+        _require_git_artifact(selected_artifact_ref)
 
         repository = Path(
             _git_output(workspace, "rev-parse", "--git-common-dir")
@@ -1250,386 +1136,6 @@ class GitWorkspaceProvider:
             },
         )
 
-    def _require_git_artifact(self, artifact_ref: ArtifactRef) -> None:
-        if artifact_ref.kind != "git_commit":
-            raise ValueError("Git workspace provider requires a git_commit artifact")
-
-
-class CopyWorkspaceProvider(GitWorkspaceProvider):
-    def __init__(self) -> None:
-        super().__init__("copy")
-
-    def prepare_promotion(self, **_: object) -> PreparedPromotion:
-        raise UnsupportedWorkspaceCapability(self.backend, "prepare_promotion")
-
-    def apply_promotion(self, *_: object, **__: object) -> PromotionApplyResult:
-        raise UnsupportedWorkspaceCapability(self.backend, "apply_promotion")
-
-
-class GitWorktreeProvider(GitWorkspaceProvider):
-    capabilities = WorkspaceProviderCapabilities(
-        materialize_candidate=True,
-        checkpoint=True,
-        restore=True,
-        reference_workspace=True,
-        protected_execution=False,
-        requires_relocation_verification=True,
-        prepare_promotion=True,
-        apply_promotion=True,
-        recover=True,
-    )
-
-    def __init__(self) -> None:
-        super().__init__("git_worktree")
-
-
-class ThinkThreadWorkspaceProvider:
-    backend: WorkspaceBackend = "thinkthread"
-    capabilities = WorkspaceProviderCapabilities(
-        materialize_candidate=False,
-        checkpoint=False,
-        restore=False,
-        reference_workspace=False,
-        protected_execution=False,
-        prepare_promotion=True,
-        apply_promotion=True,
-    )
-
-    def _unsupported(self, capability: str) -> None:
-        raise UnsupportedWorkspaceCapability(self.backend, capability)
-
-    def materialize_candidate(self, **_: object) -> WorkspaceMaterialization:
-        self._unsupported("materialize_candidate")
-
-    def checkpoint(self, *_: object, **__: object) -> ArtifactRef | None:
-        self._unsupported("checkpoint")
-
-    def restore(self, *_: object, **__: object) -> ArtifactRef:
-        self._unsupported("restore")
-
-    def recover(self, *_: object, **__: object) -> ArtifactRef:
-        self._unsupported("recover")
-
-    def current_artifact(self, *_: object, **__: object) -> ArtifactRef | None:
-        self._unsupported("current_artifact")
-
-    def is_descendant(self, *_: object, **__: object) -> bool:
-        self._unsupported("is_descendant")
-
-    def changed_files(self, *_: object, **__: object) -> list[str]:
-        self._unsupported("changed_files")
-
-    def status(self, *_: object, **__: object) -> list[str]:
-        self._unsupported("status")
-
-    def materialize_reference(self, *_: object, **__: object) -> Path:
-        self._unsupported("materialize_reference")
-
-    def remove_reference(self, *_: object, **__: object) -> bool:
-        self._unsupported("remove_reference")
-
-    def prepare_promotion(
-        self,
-        *,
-        run_dir: Path,
-        run_id: str,
-        candidate_id: str,
-        source: Path,
-        workspace: Path,
-        source_subdir: str,
-        base_artifact_ref: ArtifactRef,
-        selected_artifact_ref: ArtifactRef,
-        changed_files: list[str],
-    ) -> PreparedPromotion:
-        del source, workspace
-        self._require_snapshot(base_artifact_ref)
-        self._require_snapshot(selected_artifact_ref)
-        filtered = [
-            path
-            for path in changed_files
-            if _promotion_product_path(path)
-        ]
-        request_id = _thinkthread_request_id(
-            "publish",
-            run_id,
-            candidate_id,
-            base_artifact_ref.id,
-            selected_artifact_ref.id,
-        )
-        publication_snapshot = self._build_publish_snapshot(
-            base_artifact_ref.id,
-            selected_artifact_ref.id,
-            source_subdir,
-            filtered,
-            request_id,
-        )
-        apply_request_id = _thinkthread_request_id(
-            "apply",
-            run_id,
-            candidate_id,
-            base_artifact_ref.id,
-            publication_snapshot,
-        )
-        manifest_path = run_dir / "promotion" / f"{candidate_id}.json"
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(
-            json.dumps(
-                {
-                    "provider": self.backend,
-                    "strategy": "fs_apply",
-                    "base_snapshot_id": base_artifact_ref.id,
-                    "selected_snapshot_id": selected_artifact_ref.id,
-                    "publication_snapshot_id": publication_snapshot,
-                    "changed_files": filtered,
-                    "apply_request_id": apply_request_id,
-                },
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        return PreparedPromotion(
-            provider=self.backend,
-            strategy="fs_apply",
-            base_artifact_ref=base_artifact_ref,
-            selected_artifact_ref=selected_artifact_ref,
-            publication_artifact_ref=ArtifactRef(
-                kind="fs_snapshot",
-                id=publication_snapshot,
-                provider=self.backend,
-            ),
-            artifact_path=manifest_path,
-            source_repository=None,
-            source_subdir=source_subdir,
-            changed_files=tuple(filtered),
-            provider_handle={"apply_request_id": apply_request_id},
-        )
-
-    def apply_promotion(
-        self,
-        prepared: PreparedPromotion,
-    ) -> PromotionApplyResult:
-        if prepared.strategy != "fs_apply":
-            raise ValueError("ThinkThread provider requires an fs_apply promotion")
-        publication = prepared.publication_artifact_ref
-        if publication is None:
-            raise RuntimeError("ThinkThread promotion has no publish snapshot")
-        request_id = prepared.provider_handle.get("apply_request_id")
-        if not request_id:
-            raise RuntimeError("ThinkThread promotion has no durable apply request")
-        result = self._command(
-            "fs",
-            "apply",
-            "--base",
-            prepared.base_artifact_ref.id,
-            "--target",
-            publication.id,
-            "--policy",
-            "safe_content_v1",
-            "--request",
-            request_id,
-        )
-        if result.get("status") != "applied":
-            raise RuntimeError(f"ThinkThread fs.apply did not apply: {result}")
-        return PromotionApplyResult(
-            source_revision=None,
-            details=dict(result),
-        )
-
-    def _build_publish_snapshot(
-        self,
-        base_snapshot: str,
-        selected_snapshot: str,
-        source_subdir: str,
-        changed_files: list[str],
-        request_id: str,
-    ) -> str:
-        diff = self._snapshot_diff(base_snapshot, selected_snapshot)
-        selected_paths = {
-            _join_source_path(source_subdir, path) for path in changed_files
-        }
-        selected_changes = {
-            path: kind
-            for path, kind in diff.items()
-            if path in selected_paths
-            or any(
-                selected.startswith(f"{path.rstrip('/')}/")
-                for selected in selected_paths
-            )
-        }
-        if not selected_changes:
-            return base_snapshot
-        with tempfile.TemporaryDirectory(
-            prefix="goal-plus-thinkthread-publish-"
-        ) as temporary:
-            temp_root = Path(temporary)
-            arguments: list[str] = [
-                "fs",
-                "snapshot",
-                "patch",
-                base_snapshot,
-            ]
-            removals = [
-                (path, kind)
-                for path, kind in selected_changes.items()
-                if kind in {"deleted", "type_changed"}
-            ]
-            for path, _ in sorted(
-                removals, key=lambda item: item[0].count("/"), reverse=True
-            ):
-                base_entry = self._snapshot_stat(base_snapshot, path)
-                if base_entry.get("kind") == "symlink":
-                    raise RuntimeError(
-                        f"ThinkThread safe promotion rejects symlink path: {path}"
-                    )
-                option = (
-                    "--remove-directory"
-                    if base_entry.get("kind") == "directory"
-                    else "--remove-file"
-                )
-                arguments.extend([option, path])
-            additions = [
-                path
-                for path, kind in selected_changes.items()
-                if kind != "deleted"
-            ]
-            directories: list[tuple[str, int]] = []
-            files: list[tuple[str, int, Path]] = []
-            for index, path in enumerate(sorted(additions)):
-                entry = self._snapshot_stat(selected_snapshot, path)
-                kind = entry.get("kind")
-                mode = int(entry.get("mode") or 0o755)
-                if kind == "symlink":
-                    raise RuntimeError(
-                        f"ThinkThread safe promotion rejects symlink path: {path}"
-                    )
-                if kind == "directory":
-                    if selected_changes[path] == "mode_changed":
-                        raise RuntimeError(
-                            "ThinkThread safe promotion cannot change an existing "
-                            f"directory mode: {path}"
-                        )
-                    directories.append((path, mode))
-                    continue
-                if kind != "file":
-                    raise RuntimeError(
-                        f"ThinkThread promotion found unsupported entry at {path}: {kind}"
-                    )
-                local = temp_root / f"payload-{index:06d}"
-                local.write_bytes(self._snapshot_read(selected_snapshot, path))
-                local.chmod(mode & 0o777)
-                files.append((path, mode, local))
-            for path, mode in sorted(
-                directories, key=lambda item: item[0].count("/")
-            ):
-                arguments.extend(["--make-directory", f"{path}:{mode:o}"])
-            for path, _mode, local in files:
-                arguments.extend(["--put-file", f"{path}={local}"])
-            arguments.extend(["--request", request_id])
-            result = self._command(*arguments)
-        snapshot = result.get("snapshot")
-        if not isinstance(snapshot, dict) or not snapshot.get("snapshotId"):
-            raise RuntimeError(
-                f"ThinkThread snapshot patch returned no snapshot: {result}"
-            )
-        return str(snapshot["snapshotId"])
-
-    def _snapshot_diff(self, base: str, target: str) -> dict[str, str]:
-        changes: dict[str, str] = {}
-        cursor: str | None = None
-        while True:
-            arguments = [
-                "fs", "snapshot", "diff", base, target, "-n", "256"
-            ]
-            if cursor:
-                arguments.extend(["--cursor", cursor])
-            page = self._command(*arguments)
-            for item in page.get("changes", []):
-                if isinstance(item, dict) and item.get("path") and item.get("kind"):
-                    path = item["path"]
-                    if isinstance(path, dict):
-                        path = path.get("utf8")
-                    if not path:
-                        raise RuntimeError(
-                            "ThinkThread promotion cannot address a non-UTF-8 path"
-                        )
-                    changes[str(path)] = str(item["kind"])
-            if not page.get("hasMore"):
-                return changes
-            cursor = str(page.get("nextCursor") or "")
-            if not cursor:
-                raise RuntimeError("ThinkThread snapshot diff omitted its next cursor")
-
-    def _snapshot_stat(self, snapshot: str, path: str) -> dict[str, object]:
-        return self._command("fs", "snapshot", "stat", snapshot, path)
-
-    def _snapshot_read(self, snapshot: str, path: str) -> bytes:
-        content = bytearray()
-        offset = 0
-        while True:
-            result = self._command(
-                "fs",
-                "snapshot",
-                "pread",
-                snapshot,
-                path,
-                "--offset",
-                str(offset),
-                "--length",
-                str(64 * 1024),
-            )
-            chunk = base64.b64decode(str(result.get("dataBase64") or ""))
-            content.extend(chunk)
-            offset += len(chunk)
-            if result.get("eof"):
-                return bytes(content)
-            if not chunk:
-                raise RuntimeError(
-                    f"ThinkThread snapshot pread made no progress at {path}:{offset}"
-                )
-
-    def _command(self, *args: str) -> dict[str, object]:
-        executable = os.environ.get("THINKTHREAD_AGENT_POSIX") or shutil.which(
-            "agent-posix"
-        )
-        if not executable:
-            raise UnsupportedWorkspaceCapability(
-                self.backend, "agent_posix_cli"
-            )
-        try:
-            process = subprocess.run(
-                [executable, *args],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            result = json.loads(process.stdout)
-        except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
-            detail = getattr(exc, "stderr", "") or str(exc)
-            raise RuntimeError(
-                f"ThinkThread command failed: {' '.join(args)}: {detail.strip()}"
-            ) from exc
-        if not isinstance(result, dict):
-            raise RuntimeError("ThinkThread command returned a non-object result")
-        return result
-
-    @staticmethod
-    def _require_snapshot(artifact_ref: ArtifactRef) -> None:
-        if artifact_ref.kind != "fs_snapshot" or artifact_ref.provider != "thinkthread":
-            raise ValueError("ThinkThread provider requires an fs_snapshot artifact")
-
-
-def get_workspace_provider(backend: WorkspaceBackend) -> WorkspaceProvider:
-    if backend == "copy":
-        return CopyWorkspaceProvider()
-    if backend == "git_worktree":
-        return GitWorktreeProvider()
-    if backend == "thinkthread":
-        return ThinkThreadWorkspaceProvider()
-    raise ValueError(f"unsupported workspace backend: {backend}")
-
 
 def materialize_candidate_workspace(
     *,
@@ -1642,7 +1148,8 @@ def materialize_candidate_workspace(
     base_workspace: Path | None = None,
     base_revision: str | None = None,
 ) -> WorkspaceMaterialization:
-    return get_workspace_provider(backend).materialize_candidate(
+    return _materialize_git_candidate_workspace(
+        backend=require_local_backend(backend, "materialize_candidate"),
         run_dir=run_dir,
         source=source,
         workspace=workspace,
@@ -1833,34 +1340,6 @@ def _top_level_pathspec(source_subdir: str, relative_path: str) -> str:
         else f"{source_subdir.rstrip('/')}/{relative_path}"
     )
     return f":(top,literal){value}"
-
-
-def _join_source_path(source_subdir: str, relative_path: str) -> str:
-    if source_subdir == ".":
-        return relative_path
-    return f"{source_subdir.rstrip('/')}/{relative_path}"
-
-
-def _promotion_product_path(relative_path: str) -> bool:
-    candidate = Path(relative_path)
-    parts = candidate.parts
-    return bool(
-        relative_path
-        and not candidate.is_absolute()
-        and ".." not in parts
-        and candidate.name != "results.tsv"
-        and not any(part in {".git", ".gp", ".search", ".tmp"} for part in parts)
-    )
-
-
-def _thinkthread_request_id(kind: str, *identity_parts: str) -> str:
-    digest = hashlib.sha256(
-        ":".join(("goal-plus", kind, *identity_parts)).encode("utf-8")
-    ).hexdigest()[:32]
-    return (
-        f"req-{digest[:8]}-{digest[8:12]}-{digest[12:16]}-"
-        f"{digest[16:20]}-{digest[20:]}"
-    )
 
 
 def _git_run(repository: Path, *args: str) -> None:

@@ -33,7 +33,7 @@ def _search_with_two_candidates(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -52,6 +52,14 @@ def test_reference_workspace_is_exact_browsable_and_reused(
     tmp_path: Path,
 ) -> None:
     runtime, run_id, candidates = _search_with_two_candidates(tmp_path)
+    from types import SimpleNamespace
+
+    state = runtime.references.state
+    runtime.references.state = SimpleNamespace(
+        read=state.read, write=state.write, destination=state.destination,
+        lock_run=state.lock_run, read_run=state.read_run,
+        read_frozen_spec=state.read_frozen_spec, read_candidate=state.read_candidate,
+    )
     source_id, source_session, source_workspace = candidates[0]
     _, requester_session, _ = candidates[1]
     tools = SearchTools(runtime)

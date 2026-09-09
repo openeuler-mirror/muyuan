@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,6 @@ from .helpers.codex_runner import CodexRunner, find_codex
 from .hosts import (
     HOSTS,
     HostKind,
-    ST_ACTIVE_ENV,
     link_host_assets,
     st_host_from_marker_names,
 )
@@ -88,7 +88,6 @@ def _fixtures_present() -> tuple[bool, str]:
     missing = []
     for scenario in [
         "circle_packing",
-        "k_module_problem",
     ]:
         for fname in ("spec.json", "evaluator.py", "initial_program.py", "config.yaml"):
             rel = f"tests/st/fixtures/{scenario}/{fname}"
@@ -97,22 +96,6 @@ def _fixtures_present() -> tuple[bool, str]:
     if missing:
         return False, f"missing ST fixture files under {ROOT}: {missing}"
     return True, ""
-
-
-def _st_selected(config: pytest.Config) -> bool:
-    return "st" in (config.getoption("-m") or "")
-
-
-def _requested_hosts(config: pytest.Config, st_items: list[pytest.Item]) -> set[HostKind]:
-    markexpr = config.getoption("-m") or ""
-    explicit = {
-        host.kind
-        for host in HOSTS.values()
-        if host.marker in markexpr
-    }
-    if explicit:
-        return explicit
-    return {_item_host(item) for item in st_items}
 
 
 def _item_host(item: pytest.Item) -> HostKind:
@@ -138,31 +121,20 @@ def _host_checks(host: HostKind) -> list[tuple[bool, str]]:
     return checks
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Pre-flight checks for ST tests. Skip with a concrete reason if any check fails."""
-    if not any("st" in [m.name for m in item.iter_markers()] for item in items):
+    if not config.getoption("run_system_tests") or config.getoption("collectonly"):
         return
 
-    selected = _st_selected(config)
-
-    if not selected:
-        # No need to run expensive checks if user didn't select ST
-        for item in items:
-            if "st" in [m.name for m in item.iter_markers()]:
-                item.add_marker(pytest.mark.skip(
-                    reason="ST tests not selected (use `-m st` to run)"
-                ))
-        return
-
-    nested_scenario = os.environ.get(ST_ACTIVE_ENV)
-    if nested_scenario:
-        pytest.exit(
-            f"refusing to run ST from inside active ST host agent: {nested_scenario}",
-            returncode=4,
-        )
-
-    st_items = [item for item in items if "st" in [m.name for m in item.iter_markers()]]
-    requested_hosts = _requested_hosts(config, st_items)
+    # Pytest has already applied -m/-k. Only this adapter's surviving cases
+    # may trigger preflight; TT and native Pi have their own checks.
+    host_markers = {host.marker for host in HOSTS.values()}
+    st_items = [
+        item for item in items
+        if host_markers.intersection(m.name for m in item.iter_markers())
+    ]
+    requested_hosts = {_item_host(item) for item in st_items}
     for host in requested_hosts:
         host_items = [item for item in st_items if _item_host(item) == host]
         if not host_items:
@@ -191,8 +163,7 @@ def st_project_root(request: pytest.FixtureRequest) -> Path:
     base.mkdir(parents=True, exist_ok=True)
     # Sanitize node id -> dir name (replace :: with _, strip param brackets)
     node = request.node.name.replace("::", "_").replace("[", "_").replace("]", "")
-    project_root = base / node
-    project_root.mkdir(parents=True, exist_ok=True)
+    project_root = Path(tempfile.mkdtemp(prefix=f"{node}-", dir=base))
 
     link_host_assets(project_root, ROOT)
 

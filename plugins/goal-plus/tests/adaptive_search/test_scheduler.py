@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-from pathlib import Path
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import goal_plus.adaptive_search.scheduler as scheduler_module
+import goal_plus.evidence_annotator as annotation_module
+from goal_plus.internal_agents import wake_scheduler_after_annotation
 from goal_plus.adaptive_search.allocation import (
     AllocationProposal,
     AllocationReplacementProposal,
 )
 from goal_plus.adaptive_search.scheduler import (
-    ResolvedSchedulerProfile,
     SCHEDULER_INSTRUCTIONS,
     SchedulerExecutionRequest,
     SchedulerExecutionResult,
@@ -25,11 +27,13 @@ from goal_plus.adaptive_search.scheduler import (
     SearchScheduler,
     TransientSchedulerError,
     drain_schedule_tasks,
+    kick_scheduler,
     resolve_candidate_schedules,
 )
 from goal_plus.models import EvidenceViewRecord, ScoreReport, SearchSpec
-from goal_plus.runtime import FileSearchRuntime, sha256_text, utc_timestamp
-
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.domain.serialization import sha256_text
+from goal_plus.infrastructure.clock import utc_timestamp
 from tests._runtime_helpers import make_project, spec_for
 
 
@@ -42,10 +46,19 @@ def test_scheduler_routes_to_host_without_a_session(
     host: str,
     executor_name: str,
 ) -> None:
+    monkeypatch.setenv("GOAL_PLUS_INTERNAL_AGENT_HOST", host)
     calls: list[SchedulerExecutionRequest] = []
+    components = {"public_progress": -0.5, "outcome": 0.25}
     expected = SchedulerExecutionResult(
         payload={
-            "reward": {},
+            "reward": {
+                "reward": 1.0, "rubric_score": 1.0, "exploitation": 1.0,
+                "exploration": 0.0, "uct": 1.0, "rationale": "settled progress",
+                "components": (
+                    [{"name": name, "value": value} for name, value in components.items()]
+                    if host == "codex" else components
+                ),
+            },
             "allocation_flag": False,
             "allocation_rationale": "continue",
             "allocation_confidence": 1.0,
@@ -78,21 +91,30 @@ def test_scheduler_routes_to_host_without_a_session(
         executor_name,
         StubSchedulerExecutor,
     )
-    request = SchedulerExecutionRequest(
-        profile=ResolvedSchedulerProfile(
-            host=host,  # type: ignore[arg-type]
-            model="test-model",
-            reasoning_effort="low",
-            timeout_seconds=30,
-        ),
-        instructions="Compute scheduler output.",
-        prompt="Use this settled task.",
-        output_schema={"type": "object"},
-        identity={"run_id": "run_test"},
+    context = {
+        "_execution": {"scheduler": {
+            "host": host, "model": "test-model", "reasoning_effort": "low",
+            "timeout_seconds": 30,
+        }},
+        "scheduler_context": {"identity": {"run_id": "run_test"}},
+    }
+    result = SearchScheduler(popen=object()).schedule(context)
+    assert result.output.reward.components == components
+    assert result.invocation == expected.invocation
+    assert len(calls) == 1
+    schema = calls[0].output_schema
+    reward_schema = schema["$defs"][schema["properties"]["reward"]["$ref"].rsplit("/", 1)[1]]
+    assert reward_schema["properties"]["components"]["type"] == (
+        "array" if host == "codex" else "object"
     )
-
-    assert SearchScheduler(popen=object())._execute(request) is expected
-    assert calls == [request]
+    if host == "codex":
+        for definition in [schema, *schema["$defs"].values()]:
+            if definition.get("type") == "object":
+                assert definition["additionalProperties"] is False
+                assert set(definition["required"]) == set(definition["properties"])
+        expected.payload["reward"]["components"].append({"name": "outcome", "value": 0.5})
+        with pytest.raises(TransientSchedulerError, match="duplicate component name"):
+            SearchScheduler(popen=object()).schedule(context)
 
 
 def search_scheduler_spec(
@@ -112,7 +134,6 @@ def search_scheduler_spec(
             "name": "random",
             "orchestration_mode": "adaptive_search",
             "search_scheduler": {
-                "host": "codex",
                 "model": "gpt-5.2",
                 "reasoning_effort": "low",
                 "timeout_seconds": 90,
@@ -238,7 +259,7 @@ def _start_runtime(
             max_candidates=max_candidates,
             max_parallel=max_parallel,
         ),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=max_parallel)
@@ -258,10 +279,10 @@ def test_candidate_reservations_honor_parallel_and_optional_total_limits(
         unbounded_root,
         max_candidates=None,
     )
-    with unbounded._run_transaction(unbounded_run_id):
-        run = unbounded._load_run(unbounded_run_id)
-        frozen = unbounded._load_frozen_spec(run.frozen_spec_id)
-        unbounded_ids = SchedulerManager(unbounded)._reserve_candidate_ids(
+    with unbounded.search_run.state.lock_run(unbounded_run_id):
+        run = unbounded.search_run.state.read_run(unbounded_run_id)
+        frozen = unbounded.search_run.state.read_frozen_spec(run.frozen_spec_id)
+        unbounded_ids = SchedulerManager(unbounded).lanes.reserve_candidate_ids(
             run,
             frozen,
         )
@@ -270,10 +291,10 @@ def test_candidate_reservations_honor_parallel_and_optional_total_limits(
         bounded_root,
         max_candidates=3,
     )
-    with bounded._run_transaction(bounded_run_id):
-        run = bounded._load_run(bounded_run_id)
-        frozen = bounded._load_frozen_spec(run.frozen_spec_id)
-        bounded_ids = SchedulerManager(bounded)._reserve_candidate_ids(
+    with bounded.search_run.state.lock_run(bounded_run_id):
+        run = bounded.search_run.state.read_run(bounded_run_id)
+        frozen = bounded.search_run.state.read_frozen_spec(run.frozen_spec_id)
+        bounded_ids = SchedulerManager(bounded).lanes.reserve_candidate_ids(
             run,
             frozen,
         )
@@ -290,8 +311,8 @@ def _settle_annotation(
     *,
     terminal_error: bool = False,
 ) -> None:
-    with runtime._run_transaction(run_id):
-        task = runtime._load_evidence_annotation_task(
+    with runtime.search_run.state.lock_run(run_id):
+        task = runtime.annotation.task(
             run_id,
             candidate_id,
             iteration,
@@ -322,7 +343,7 @@ def _settle_annotation(
                     "updated_at": utc_timestamp(),
                 }
             )
-        runtime._write_evidence_annotation_task(task)
+        runtime.annotation.tasks.write_task(task)
     SchedulerManager(runtime).ensure_tasks(run_id)
 
 
@@ -337,7 +358,7 @@ def _prepare_late_confirmation(
         "VALUE = 1\n",
         encoding="utf-8",
     )
-    runtime._run_verifier(
+    runtime.verification.verify(
         run_id,
         candidate.candidate_id,
         agent_session_id=session.agent_session_id,
@@ -349,7 +370,7 @@ def _prepare_late_confirmation(
         "VALUE = 0\n",
         encoding="utf-8",
     )
-    second_report = runtime._run_verifier(
+    second_report = runtime.verification.verify(
         run_id,
         candidate.candidate_id,
         agent_session_id=session.agent_session_id,
@@ -389,25 +410,24 @@ def test_barrier_promotes_a_late_completed_confirmation(tmp_path: Path) -> None:
     )
     assert task is not None
     assert task.decision_id == decision.decision_id
-    assert runtime._load_candidate_record(
+    assert runtime.candidate_creation.state.read_candidate(
         run_id,
         candidate.candidate_id,
     ).allocation_eligibility == "retired"
 
 
-def test_barrier_logs_scheduler_error_and_skips_decision(
+def test_barrier_never_launches_annotation_or_scheduler_from_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime, run_id, candidate, report = _prepare_late_confirmation(tmp_path)
 
-    def fail_annotation_drain(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("simulated scheduler barrier failure")
+    calls: list[str] = []
 
     monkeypatch.setattr(
-        runtime,
-        "_drain_evidence_annotations",
-        fail_annotation_drain,
+        annotation_module,
+        "drain_evidence_annotations",
+        lambda *_args, **_kwargs: calls.append("annotation"),
     )
     resolved = SchedulerManager(runtime).resolve_barrier(
         run_id,
@@ -416,11 +436,10 @@ def test_barrier_logs_scheduler_error_and_skips_decision(
     )
 
     assert resolved.allocation_decision is None
-    scheduler_log = (
+    assert calls == []
+    assert not (
         runtime.root_dir / "runs" / run_id / "scheduler" / "scheduler.log"
-    ).read_text(encoding="utf-8")
-    assert "barrier failed; Decision skipped" in scheduler_log
-    assert "simulated scheduler barrier failure" in scheduler_log
+    ).exists()
 
 
 def test_allocation_apply_rechecks_live_candidate_limit(tmp_path: Path) -> None:
@@ -433,8 +452,8 @@ def test_allocation_apply_rechecks_live_candidate_limit(tmp_path: Path) -> None:
     decision = resolved.allocation_decision
     assert decision is not None
 
-    retired = runtime._load_candidate_record(run_id, candidate.candidate_id)
-    runtime._write_candidate_record(
+    retired = runtime.candidate_creation.state.read_candidate(run_id, candidate.candidate_id)
+    runtime.candidate_creation.state.write_candidate(
         run_id,
         retired.model_copy(
             update={
@@ -448,12 +467,35 @@ def test_allocation_apply_rechecks_live_candidate_limit(tmp_path: Path) -> None:
         runtime.apply_allocation_decision(run_id, decision.decision_id)
 
 
+def test_allocation_replay_cannot_return_a_fenced_recovery_session(tmp_path: Path) -> None:
+    runtime, run_id, candidate, report = _prepare_late_confirmation(tmp_path)
+    resolved = runtime._adaptive_search.resolve_scheduler_barrier(
+        run_id, candidate.candidate_id, report
+    )
+    decision = resolved.allocation_decision
+    applied = runtime.apply_allocation_decision(run_id, decision.decision_id)
+    child_id = applied["candidate_tasks"][0]["candidate_id"]
+    recovery = runtime.prepare_candidate_recovery(run_id, child_id)
+    assert recovery.generation > applied["agent_sessions"][0]["execution_generation"]
+    before = {
+        str(path.relative_to(runtime.root_dir)): path.read_bytes()
+        for path in runtime.root_dir.rglob("*.json")
+    }
+    with pytest.raises(RuntimeError, match="StaleAgentSession|CandidateRecoveryRequired"):
+        runtime.apply_allocation_decision(run_id, decision.decision_id)
+    assert {
+        str(path.relative_to(runtime.root_dir)): path.read_bytes()
+        for path in runtime.root_dir.rglob("*.json")
+    } == before
+
+
 def test_existing_decision_reconciles_after_projection_write_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime, run_id, candidate, report = _prepare_late_confirmation(tmp_path)
-    original_write = runtime._write_candidate_record
+    store = runtime._adaptive_search._allocation.decisions.state
+    original_write = store.write_candidate_projection
     failed = False
 
     def fail_once(run_id: str, record: object) -> None:
@@ -463,16 +505,16 @@ def test_existing_decision_reconciles_after_projection_write_failure(
             raise OSError("simulated projection write failure")
         original_write(run_id, record)
 
-    monkeypatch.setattr(runtime, "_write_candidate_record", fail_once)
-    assert runtime._adaptive_search._record_pending_decisions(run_id) == []
+    monkeypatch.setattr(store, "write_candidate_projection", fail_once)
+    assert runtime.candidate_sessions.admission.record_pending_decisions(run_id) == []
     decisions = runtime.list_allocation_decisions(run_id)
     assert len(decisions) == 1
-    assert runtime._load_candidate_record(
+    assert runtime.candidate_creation.state.read_candidate(
         run_id,
         candidate.candidate_id,
-    ).allocation_eligibility == "eligible"
+    ).allocation_eligibility == "retired"
 
-    monkeypatch.setattr(runtime, "_write_candidate_record", original_write)
+    monkeypatch.setattr(store, "write_candidate_projection", original_write)
     resolved = runtime._adaptive_search.resolve_scheduler_barrier(
         run_id,
         candidate.candidate_id,
@@ -481,30 +523,71 @@ def test_existing_decision_reconciles_after_projection_write_failure(
 
     assert resolved.allocation_decision == decisions[0]
     assert len(runtime.list_allocation_decisions(run_id)) == 1
-    assert runtime._load_run(run_id).next_allocation_decision_index == 2
+    assert runtime.search_run.state.read_run(run_id).next_allocation_decision_index == 2
 
 
 def test_annotation_terminal_hook_uses_frozen_scheduler_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime, run_id, tasks = _start_runtime(tmp_path)
+    monkeypatch.setenv("GOAL_PLUS_INTERNAL_AGENT_HOST", "codex")
+    runtime, run_id, _tasks = _start_runtime(tmp_path)
     calls: list[str] = []
     monkeypatch.setattr(
-        runtime._adaptive_search,
-        "kick_schedule_tasks",
-        calls.append,
+        scheduler_module,
+        "kick_scheduler",
+        lambda root, run_id, *, host: calls.append(run_id),
     )
 
     assert runtime.search_scheduler_enabled(run_id) is True
-    [plan] = runtime._load_plans(run_id)
+    [plan] = runtime.search_run.state.read_plans(run_id)
     assert all(
         item.metadata["strategy"] == "adaptive_search"
         for item in plan.work_orders
     )
-    runtime.on_evidence_annotation_terminal(run_id)
+    wake_scheduler_after_annotation(runtime.root_dir, run_id)
 
     assert calls == [run_id]
+
+
+def test_scheduler_kick_inherits_native_host_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, run_id, [candidate, _peer] = _start_runtime(tmp_path)
+    session = runtime.start_agent_session(run_id, candidate.candidate_id)
+    candidate.workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+    runtime.verification.verify(
+        run_id,
+        candidate.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="create pending scheduler task",
+    )
+    _settle_annotation(runtime, run_id, candidate.candidate_id, 1)
+
+    launches: list[dict[str, Any]] = []
+
+    def fake_popen(_command: list[str], **kwargs: Any) -> SimpleNamespace:
+        launches.append(kwargs)
+        return SimpleNamespace(pid=43211)
+
+    monkeypatch.delenv("GOAL_PLUS_INTERNAL_AGENT_HOST", raising=False)
+    monkeypatch.setenv("HOST_ONLY_MODEL_CONFIGURATION", "inherited")
+    monkeypatch.setattr(scheduler_module.subprocess, "Popen", fake_popen)
+    from goal_plus.ports.process_identity import ProcessSnapshot
+
+    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process", lambda pid: ProcessSnapshot(pid, "current", pid, "S"))
+    monkeypatch.setattr("goal_plus.execution.process_identity.boot_identity", lambda: "test-boot")
+    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process_group", lambda pid: (ProcessSnapshot(pid, "current", pid, "S"),))
+
+    assert kick_scheduler(runtime.root_dir, run_id, host="pi-rpc") is False
+    assert kick_scheduler(runtime.root_dir, run_id, host="codex") is True
+    assert len(launches) == 1
+    assert launches[0]["env"]["GOAL_PLUS_INTERNAL_AGENT_HOST"] == "codex"
+    assert launches[0]["env"]["HOST_ONLY_MODEL_CONFIGURATION"] == "inherited"
 
 
 def test_scheduler_call_indexes_rewards_and_keeps_lazy_decision(tmp_path: Path) -> None:
@@ -517,7 +600,7 @@ def test_scheduler_call_indexes_rewards_and_keeps_lazy_decision(tmp_path: Path) 
         "VALUE = 1\n",
         encoding="utf-8",
     )
-    first_report = runtime._run_verifier(
+    first_report = runtime.verification.verify(
         run_id,
         candidate.candidate_id,
         agent_session_id=session.agent_session_id,
@@ -610,7 +693,7 @@ def test_scheduler_call_indexes_rewards_and_keeps_lazy_decision(tmp_path: Path) 
         "VALUE = 3\n",
         encoding="utf-8",
     )
-    runtime._run_verifier(
+    runtime.verification.verify(
         run_id,
         peer.candidate_id,
         agent_session_id=peer_session.agent_session_id,
@@ -629,7 +712,7 @@ def test_scheduler_call_indexes_rewards_and_keeps_lazy_decision(tmp_path: Path) 
         "VALUE = 0\n",
         encoding="utf-8",
     )
-    second_report = runtime._run_verifier(
+    second_report = runtime.verification.verify(
         run_id,
         candidate.candidate_id,
         agent_session_id=session.agent_session_id,
@@ -649,6 +732,8 @@ def test_scheduler_call_indexes_rewards_and_keeps_lazy_decision(tmp_path: Path) 
     )
     assert second_task is not None
     assert len(second_task.reserved_candidate_ids) == 2
+    with pytest.raises(RuntimeError, match="confirmation ScheduleTask is pending"):
+        runtime.continue_agent_session(session.agent_session_id)
     resolve_candidate_schedules(
         runtime.root_dir,
         run_id,
@@ -701,13 +786,13 @@ def test_scheduler_call_indexes_rewards_and_keeps_lazy_decision(tmp_path: Path) 
         decision.replacements[0].new_candidate_id
     ]
 
-    record = runtime._load_candidate_record(run_id, candidate.candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, candidate.candidate_id)
     assert record.allocation_eligibility == "retired"
     assert record.retired_by_decision_id == decision.decision_id
     with pytest.raises(RuntimeError, match="retired"):
         runtime.continue_agent_session(session.agent_session_id)
     with pytest.raises(RuntimeError, match="retired"):
-        runtime._run_verifier(run_id, candidate.candidate_id)
+        runtime.verification.verify(run_id, candidate.candidate_id)
 
     applied = runtime.apply_allocation_decision(run_id, decision.decision_id)
     assert applied["decision"]["status"] == "applied"
@@ -721,8 +806,8 @@ def test_scheduler_call_indexes_rewards_and_keeps_lazy_decision(tmp_path: Path) 
     assert repeated["decision"]["status"] == "applied"
     assert repeated["candidate_tasks"][0]["candidate_id"] == child["candidate_id"]
     assert repeated["agent_sessions"] == applied["agent_sessions"]
-    assert len(runtime._load_agent_sessions(run_id)) == 3
-    assert runtime._load_run(run_id).candidates_total == 3
+    assert len(runtime.candidate_sessions.state.read_agent_sessions(run_id)) == 3
+    assert runtime.search_run.state.read_run(run_id).candidates_total == 3
 
 
 def test_scheduler_retries_transient_failure_and_recovers_running_task(
@@ -736,7 +821,7 @@ def test_scheduler_retries_transient_failure_and_recovers_running_task(
         "VALUE = 7\n",
         encoding="utf-8",
     )
-    runtime._run_verifier(
+    runtime.verification.verify(
         run_id,
         candidate.candidate_id,
         agent_session_id=session.agent_session_id,
@@ -766,7 +851,7 @@ def test_scheduler_retries_transient_failure_and_recovers_running_task(
         )
     )
     monkeypatch.setattr(
-        "goal_plus.adaptive_search.scheduler.SCHEDULER_RETRY_BACKOFF_SECONDS",
+        "goal_plus.application.scheduler.SCHEDULER_RETRY_BACKOFF_SECONDS",
         (0, 0, 0),
     )
     scheduler = _FlakyScheduler()
@@ -798,7 +883,7 @@ def test_scheduler_drains_candidates_concurrently(tmp_path: Path) -> None:
             f"VALUE = {index}\n",
             encoding="utf-8",
         )
-        runtime._run_verifier(
+        runtime.verification.verify(
             run_id,
             candidate.candidate_id,
             agent_session_id=session.agent_session_id,
@@ -828,14 +913,14 @@ def test_scheduler_policy_inputs_are_frozen_and_never_executed(tmp_path: Path) -
         "VALUE = 2\n",
         encoding="utf-8",
     )
-    runtime._run_verifier(
+    runtime.verification.verify(
         run_id,
         candidate.candidate_id,
         agent_session_id=session.agent_session_id,
         hypothesis="inspect frozen scheduler context",
     )
     _settle_annotation(runtime, run_id, candidate.candidate_id, 1)
-    context = SchedulerManager(runtime).build_context(
+    context = SchedulerManager(runtime).context.build(
         run_id,
         candidate.candidate_id,
         1,
@@ -843,6 +928,9 @@ def test_scheduler_policy_inputs_are_frozen_and_never_executed(tmp_path: Path) -
     reward_context = context["reward_context"]
     allocation_context = context["allocation_context"]
     scheduler_context = context["scheduler_context"]
+    assert context == SchedulerManager(runtime).build_context(
+        run_id, candidate.candidate_id, 1
+    )
     reward = reward_context["policy"]
     allocation = allocation_context["policy"]
     assert isinstance(reward, dict)
@@ -895,7 +983,7 @@ def test_terminal_annotation_injects_missing_view_guidance(tmp_path: Path) -> No
         "VALUE = 4\n",
         encoding="utf-8",
     )
-    runtime._run_verifier(
+    runtime.verification.verify(
         run_id,
         candidate.candidate_id,
         agent_session_id=session.agent_session_id,
@@ -922,7 +1010,7 @@ def test_terminal_annotation_injects_missing_view_guidance(tmp_path: Path) -> No
     assert task is not None
     assert task.annotation_state == "terminal_error"
     assert task.evidence_view is None
-    context = SchedulerManager(runtime).build_context(
+    context = SchedulerManager(runtime).context.build(
         run_id,
         candidate.candidate_id,
         1,

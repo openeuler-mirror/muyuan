@@ -95,27 +95,6 @@ def _assert_codex_redispatch(report: StReport) -> None:
     assert len(extra.get("verifier_scores") or []) >= 1
 
 
-def _assert_codex_circle_packing_cycle(report: StReport) -> None:
-    expected_ids = ["c001", "c002"]
-    assert [candidate.get("candidate_id") for candidate in report.candidates] == expected_ids, (
-        "Codex cycle must report exactly c001 and c002 in order"
-    )
-    assert all(
-        candidate.get("status") == "evaluated"
-        and int(candidate.get("iterations") or 0) >= 1
-        for candidate in report.candidates
-    ), "both Codex cycle candidates must be evaluated with verifier iterations"
-
-    extra = report.extra
-    assert extra.get("host") == "codex"
-    assert extra.get("model") == "gpt-5.6-terra"
-    assert extra.get("rounds") == 1
-    assert extra.get("batch_sizes") == [2]
-    session_ids = extra.get("agent_session_ids") or []
-    assert len(session_ids) == 2, "cycle must report two agent_session_id values"
-    assert len(set(session_ids)) == 2, "cycle agent_session_id values must be distinct"
-
-
 def _assert_codex_rolling_followup(report: StReport) -> None:
     assert [candidate.get("candidate_id") for candidate in report.candidates] == [
         "c001",
@@ -197,7 +176,6 @@ def _assert_codex_autoresearch_lease(report: StReport) -> None:
 
 SCENARIO_ASSERTIONS = {
     "codex_redispatch": _assert_codex_redispatch,
-    "codex_circle_packing_cycle": _assert_codex_circle_packing_cycle,
     "codex_rolling_followup": _assert_codex_rolling_followup,
     "codex_parallel_loop_cycle": _assert_codex_parallel_loop_cycle,
     "codex_time_advisory": _assert_codex_time_advisory,
@@ -212,6 +190,14 @@ def test_scenario(
     st_project_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if scenario == "codex_circle_packing_cycle":
+        from .helpers.circle_cycle import run_circle_cycle
+
+        monkeypatch.setenv("GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED", "1")
+        monkeypatch.setenv("GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED", "1")
+        monkeypatch.delenv("GOAL_PLUS_EVIDENCE_ANNOTATOR_DISABLED", raising=False)
+        run_circle_cycle(st_runner, st_project_root)
+        return
     if scenario == "codex_time_advisory":
         monkeypatch.setenv(
             "GOAL_PLUS_OUTER_DEADLINE_AT",

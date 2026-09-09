@@ -26,7 +26,7 @@ def _available_models() -> list[dict[str, object]]:
 
 
 def _stub_model_discovery(runtime: FileSearchRuntime) -> None:
-    runtime.list_available_models = lambda host, query=None: {  # type: ignore[method-assign]
+    runtime.models.list_available_models = lambda host, query=None: {  # type: ignore[method-assign]
         "host": host,
         "adapter_version": f"{host}-adapter-v1",
         "models": _available_models(),
@@ -45,7 +45,6 @@ def _models_spec(project: Path, *, counts: bool = True, max_parallel: int = 4):
         project,
         {
             "name": "random",
-            "worker_host": "codex",
             "models": models,
         },
         max_parallel=max_parallel,
@@ -56,7 +55,7 @@ def test_explicit_a1b3_models_bind_each_candidate_and_session(tmp_path: Path) ->
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     _stub_model_discovery(runtime)
-    frozen = runtime.freeze_spec(_models_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_models_spec(project), [project / "evaluator.py"], native_host="codex")
 
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=4)
@@ -87,7 +86,7 @@ def test_models_without_counts_balance_across_max_parallel(tmp_path: Path) -> No
     runtime = FileSearchRuntime(tmp_path / ".gp")
     _stub_model_discovery(runtime)
     frozen = runtime.freeze_spec(
-        _models_spec(project, counts=False), [project / "evaluator.py"]
+        _models_spec(project, counts=False), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=4)
@@ -104,7 +103,7 @@ def test_selected_models_require_full_initial_deployment(tmp_path: Path) -> None
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     _stub_model_discovery(runtime)
-    frozen = runtime.freeze_spec(_models_spec(project), [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(_models_spec(project), [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     with pytest.raises(ValueError, match="requested_k must equal"):
@@ -119,14 +118,13 @@ def test_models_fail_fast_when_requested_model_is_missing(tmp_path: Path) -> Non
         project,
         {
             "name": "random",
-            "worker_host": "codex",
             "models": [{"model": "missing-model", "count": 1}],
         },
         max_parallel=1,
     )
 
     with pytest.raises(ValueError, match="requested model is not available"):
-        runtime.freeze_spec(spec, [project / "evaluator.py"])
+        runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
 
 
 def test_explicit_counts_must_equal_max_parallel(tmp_path: Path) -> None:
@@ -137,7 +135,7 @@ def test_explicit_counts_must_equal_max_parallel(tmp_path: Path) -> None:
 
     spec.strategy.models[1].count = 3
     with pytest.raises(ValueError, match="counts must sum"):
-        runtime.freeze_spec(spec, [project / "evaluator.py"])
+        runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
 
 
 def test_without_models_candidates_keep_the_strategy_default_model(
@@ -149,7 +147,7 @@ def test_without_models_candidates_keep_the_strategy_default_model(
     strategy["models"] = []
     strategy["worker_launch"] = {"model": "gpt-5.6-sol"}
     spec = spec_with_strategy(project, strategy, max_parallel=4)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=4)
     tasks = runtime.start_batch(run_id, plan.plan_id)
@@ -165,7 +163,7 @@ def test_selected_models_share_the_run_global_evidence(tmp_path: Path) -> None:
     runtime = FileSearchRuntime(tmp_path / ".gp")
     _stub_model_discovery(runtime)
     frozen = runtime.freeze_spec(
-        _models_spec(project, max_parallel=2), [project / "evaluator.py"]
+        _models_spec(project, max_parallel=2), [project / "evaluator.py"], native_host="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)

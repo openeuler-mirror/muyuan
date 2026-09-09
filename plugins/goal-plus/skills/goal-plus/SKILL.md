@@ -17,8 +17,10 @@ candidate 边界、workspace、verifier、promotion 和 feature gate 由 runtime
 
 ## 主流程
 
-1. 调用 `goal_plus_status`，读取当前 revision、完整 `raw_goal`、`command_config`、已有 dispatch、
-   Search history、final-check policy、`control`、`reconciliation` 和 `next_action`。显式配置优先，
+1. 每轮调用默认 `goal_plus_status` 读取当前 revision、待处理 dispatch、
+   final-check policy、`control`、`reconciliation` 和 `next_action`。初始化、会话恢复或 revision
+   变化时用 `detail=true` 读取完整 `raw_goal`、显式配置、policy 和 spec draft；需要历史证据时通过
+   `goal_plus_history` 分页读取。显式配置优先，
    只有缺省项才由 Main 决定。先处理最新用户消息，再继续 active 任务；范围、交付物或成功标准
    变化时请其改用 `$goal-plus edit`。每轮重读状态，非 Search 工作后仍推进 reconciliation。
 2. 尚未分类时调用 `goal_plus_record_triage`。普通交付进入 Goal Mode；需要补齐可执行评价合同的优化进入
@@ -53,7 +55,8 @@ Main 负责把原始目标和公开任务合同中的正确性、性能、适用
 使用 `GOAL_PLUS_VERIFIER_TMPDIR` 或等价的唯一目录。通常使用
 `workspace.backend="git_worktree"`。标准共享 Evidence 使用 manual 模式；auto、shared_dir、
 supplemental evaluation、device pool 和角色模型路由只在目标或显式配置需要时启用，其 worker
-合同由 runtime 动态投影。
+合同由 runtime 动态投影。显式 `command_config.inner_agent` 必须写入
+`strategy.inner_agent`，不能由 Main 改成其他 adapter。
 
 若评价合同本身有缺陷，调用 `search_invalidate_run`，再修复、重新冻结并创建后继 run；不要直接
 比较不同合同的分数。

@@ -77,10 +77,10 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
         "VALUE = 0 without RECOVERY_PARTIAL, then run the process verifier once "
         "with hypothesis 'recovered settled baseline' and finish. Never create another candidate."
     )
-    data["strategy"].update({"worker_host": host, "worker_budget": {"max_runtime_seconds": 180}})
+    data["strategy"].update({ "worker_budget": {"max_runtime_seconds": 180}})
     data["workspace"]["promotion_mode"] = "artifact_only"
     spec = SearchSpec.model_validate(data)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"])
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi" if host in {"pi-rpc", "thinkthread", "pi"} else "codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -127,7 +127,7 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
                                    stderr=subprocess.STDOUT, start_new_session=True)
         try:
             def partial_ready():
-                candidate = runtime._load_candidate_record(run_id, task.candidate_id)
+                candidate = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
                 return (
                     len(candidate.iterations) == 1
                     and "RECOVERY_PARTIAL" in (task.workspace / "initial_program.py").read_text()
@@ -147,7 +147,7 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
     goal_path, = (runtime.root_dir / "goal-plus").glob("gp_*/goal.json")
     before = json.loads(goal_path.read_text())
     session_id = before["active_session"]["session_id"]
-    before_candidate = runtime._load_candidate_record(run_id, task.candidate_id)
+    before_candidate = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     resume_prompt = "$goal-plus resume" if host == "codex" else "/goal-plus resume"
     if host == "codex":
         command = ["codex", "exec", "resume", "--skip-git-repo-check",
@@ -161,7 +161,7 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
                                    stderr=subprocess.STDOUT, start_new_session=True)
         try:
             def recovered():
-                candidate = runtime._load_candidate_record(run_id, task.candidate_id)
+                candidate = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
                 goal = json.loads(goal_path.read_text())
                 reports_ready = bool(goal["search_tasks"]) and all(
                     Path(item.get(key) or "missing-report").is_file()
@@ -185,7 +185,7 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
     assert after["host_command_invocations"][-1]["action"] == "resume"
     assert after["active_session"]["session_id"] == session_id
     assert runtime.status(run_id).candidates_total == 1
-    assert len(runtime._load_agent_sessions(run_id)) == 2  # One old worker, one replacement.
+    assert len(runtime.candidate_sessions.state.read_agent_sessions(run_id)) == 2  # One old worker, one replacement.
     assert after_candidate.iterations[0] == before_candidate.iterations[0]
     assert after_candidate.execution_generation == 1
     assert after_candidate.iterations[-1].agent_session_id != before_candidate.iterations[0].agent_session_id

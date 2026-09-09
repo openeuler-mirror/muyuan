@@ -21,6 +21,17 @@ Goal Mode 完成；具备明确 metric 和 verifier 的优化任务进入 Search
 系统不负责理解 benchmark 的隐藏语义，也不保证公开 verifier 等价于外部官方评测。它也
 不是通用 worker supervisor；进程启动、等待、续跑和中断由 host 管理。
 
+## 宿主安装身份
+
+正常 Codex/Pi 安装绑定经过验证的不可变代码 build、锁定依赖和受管 Python 解释器。
+Hook、MCP、Pi tool 和内部 Python worker 不得因 shell 环境或目标 workspace 改变而加载另一份
+Goal Plus。安装副本与 runtime 必须核验同一 build；开发源码加载仅由显式 Pi 开发入口启用。
+更新一个宿主不得隐式替换其他宿主或仍被保留的旧版本。新 runtime 准备失败不改变已有宿主
+注册；卸载单个宿主保留 runtime，运行时清理只删除通过归属检查且没有宿主引用的版本。
+源码 checkout 不发布可发现的同名 Codex marketplace；正式入口只在受管 release 中生成。
+Codex 安装成功前必须核验实际缓存的 build、安装身份与 MCP/hook 启动配置，不能只以注册来源
+或 `plugin add` 成功作为验收。缓存校验失败不得提交新版本引用或报告安装成功。
+
 ## 核心对象
 
 | 对象 | 含义 |
@@ -89,6 +100,9 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 
 原生 session resume 只恢复会话与绑定，不启动任务。精确 host command 还支持
 `summary`、`pause`、`resume`、`clear`；只有显式 resume 能解除中断后的任务停止。
+新的原生 session 使用精确 start 命令会创建独立 Goal；其他 session 的 nonterminal、paused 或
+blocked Goal 不得阻止创建，也不得被隐式接管。同一 host session 已有未终态 Goal 时，新的 start
+必须拒绝，并要求使用 edit 或 resume。
 共享 continuation 状态机核对 `control`、revision 和 `active_session`。自然语言提及、skill 自动发现、普通 child、
 candidate worker、直接 MCP 调用和 generic CLI 都不能创建或编辑 Goal Plus。Search bootstrap、
 Main 后续操作、candidate 操作和终态 report
@@ -125,6 +139,14 @@ work DAG，只记录实际发生的 dispatch。Main 在调用 host 原生 spawn 
 可执行 verifier、隔离 edit surface，且并行探索有价值的任务适合 Search；合同不完整时先进入
 Spec Discovery。
 
+模型可见的状态和变更回执必须使用显式投影，不能默认回放整个持久记录与审计历史。
+当前 control、revision、下一步动作、待审查结果和恢复身份保持可见；完整目标与草案按需
+读取，历史详情分页读取。变更回执保留本次操作的准确 attempt、Search 或 final-check identity。
+状态、Monitor 与 Pi pool snapshot 默认 `detail=false`；配置、成功结果明细和报告路径经
+`detail=true` 只读查询。写操作回执指向只读详情入口，不要求重复执行写操作。成功 pool close
+不回放已交付 job；错误、未交付结果、未完成清理与未知资源数始终保持可见。
+Codex/Pi 共用这些返回合同；持久化、授权、Evidence 和恢复不因展示裁剪而改变。
+
 ## SearchSpec 与冻结
 
 SearchSpec 合同覆盖：
@@ -149,15 +171,26 @@ Freeze 与 run bootstrap 必须：
 5. 首次物化 Git worktree 时执行 workspace relocation gate；
 6. 全程校验 metric、退出码、timeout、edit surface 和可选 device pool。
 
+本地 Git/Copy 冻结必须确认 process verifier baseline 实际产出有限数值分数；没有声明
+`ranking_signal` 也不能跳过此检查。正常退出但只有文本分数、缺少数值 JSON metric 的
+合同以 `MissingNumericMetric` 拒绝，不创建 FrozenSpec 或候选。分数从 stdout 的单行
+JSON 对象读取，不能用 promotion verifier 的分数替代 process suite 的评分合同。
+
 FrozenSpec 创建后不可原地改写。评价合同有误时，使旧 run invalid，冻结新合同并创建
 successor run；不同合同的分数不得直接比较。
 
 ## Search 生命周期
 
+单次尝试的 `failure` 是结算结果，不是 Goal 或 Search 的终态；它和其他 disposition 一样
+保留 Evidence。缺少有效分数的尝试不得计入成功统计，缺分数时记录 `MissingNumericMetric`。
+Candidate verifier 或结算派生投影的操作异常向调用方报错，不得仅凭异常把整个 Search
+置为 `failed`、关闭其他 candidate 的执行或撤销已结算 Evidence。恢复仍遵守既有 artifact、
+session 和 generation gate，selection 从已结算 Evidence 重建 best。
+
 一次标准 run 按以下顺序执行：
 
-1. `search_freeze_spec`
-2. `search_create` 并链接当前 Goal revision
+1. 使用当前 `goal_plus_id` 调用 `search_freeze_spec`
+2. 使用同一 `goal_plus_id` 调用 `search_create` 并链接当前 Goal revision
 3. 创建一个 SearchPlan，一次性物化初始 candidate lanes
 4. Host 为每个 candidate 启动并绑定 native session
 5. Candidate 循环修改并调用权威 verifier
@@ -177,6 +210,30 @@ barrier、Scheduler 与 Allocation，`scheduler.py` 管理 ScheduleTask 和调�
 `allocation.py` 管理 Decision 与派生 workspace/session，`policies.py` 管理版本化策略及其
 context builder。`budget.max_parallel` 是实时活跃 candidate 上限；可选 `max_candidates` 是
 累计物化上限。
+
+Agent 类型由 Goal 当前已授权、已绑定的 Main 原生会话确定，不属于 SearchSpec 可选配置。
+SearchSpec 不接受 `strategy.worker_host`、`strategy.worker_launch.agent_profile` 或内部角色的
+`host`。Freeze 在执行 verifier 或保存 FrozenSpec 前读取可信 Main 身份，记录
+`FrozenSpec.native_host=codex|pi`，并将其纳入 spec hash；执行驱动由该身份和工作区后端推导。
+Codex 仅支持本地 Copy/Git，Pi 支持本地 Copy/Git 或经 preflight 的 ThinkThread。
+无 Goal 的可信底层调用必须显式提供 native host，公开 MCP/Pi 工具不暴露该参数。
+
+Annotation 与 Scheduler 继承冻结的 Main Agent 类型，角色驱动按支持矩阵装配。
+Codex hook 或 Pi extension
+从当前 native host 进程启动这些内部 agent，子进程完整继承宿主外部配置并携带非敏感 host
+provenance；Goal Plus schema、FrozenSpec 和 task profile 不接受或持久化服务认证、endpoint 或
+host 配置目录。Pi extension 还把当前 Main 的 exact model 和 thinking 固定为 execution scope 的
+非敏感 native launch snapshot；未显式覆盖的 Pi child 必须使用该 snapshot，不能重新读取机器级
+default。shared runtime 不启动模型，也不等待模型进程。Adaptive confirmation task 未进入
+终态前，runtime 拒绝该 lane 的 continuation、redispatch 和 verifier；required supplemental
+Annotation 未全部成功时，selection 保持 blocked。
+
+模型目录只用于解析显式 model 引用，不构成推理连通性证明。现有 Codex hook/Pi extension
+入口必须在 Goal 创建和 SearchSpec freeze 前，收集本次新增的显式 worker、Annotation 与
+Scheduler model override，按模型去重并并发执行最小推理请求；任一失败时不得创建 Goal 或冻结
+SearchSpec。没有显式 override 时不发送 probe：正在运行的 Main 已经证明当前模型可用，内部
+agent 保持 host 原生继承语义。该检查只使用 native host model 接口，不读取或传递 API
+key、endpoint 或独立 provider 配置。
 
 Scheduler 输出是不可信提案。Model 校验其结构；Allocation/state owner 在持久化或执行前校验
 settled source、artifact、candidate 状态、容量、预留 identity 和幂等前态。Prompt 只承担价值与
@@ -225,6 +282,11 @@ Evidence 模式：
 Supplemental evaluation 和 shared_dir 都是可选能力。启用时由 runtime 把必要入口动态写入
 candidate contract；关闭时不出现相关说明。它们不改变 verifier 硬分、selection 或 promotion
 gate。
+
+Evidence annotator 只能读取授权的 immutable Artifact View 和已结算 Evidence，不得运行项目
+代码、测试、verifier 或执行只读查看之外的命令。Host 必须只向 annotator 激活领取任务、只读
+Artifact View 和提交结果所需的精确工具集合；snapshot 保持原样，不为 annotation 创建、patch
+或删除派生副本。
 
 Runtime 根据 `metric_direction` 从有效 Evidence 中维护 candidate-local best 和 global best。
 Selection 必须固定某条已验证 Evidence 的精确 artifact。Promotion 恢复该 artifact，并独立

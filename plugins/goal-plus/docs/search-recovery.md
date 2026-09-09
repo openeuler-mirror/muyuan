@@ -77,6 +77,11 @@ candidate 的工作区恢复。Main 根据最新用户消息、共享平面和�
 新 generation 启动后如果又中断，可以准备新的 recovery ID。旧 session 保留为历史 provenance，
 不能重新绑定为当前执行。恢复不重置 Goal revision、外层 deadline、累计预算或其他 lane 的结果。
 
+Codex 收尾静默检查认可已完成 recovery 明确覆盖的旧 generation session，因为 restore
+已要求其可信静默证明；不要求 Main 再给这些 fenced session 补写 terminal metadata。
+仅 prepared/restoring、仅 generation 过期或不在该事务 fenced 列表中均不足以放行；新 session
+仍需自己的宿主终态证据，当前 scope 的活跃 native agent 检查也保持。
+
 当前 Git-backed provider 在修改工作区前，将中断现场保存至：
 
 ```text
@@ -104,6 +109,10 @@ checkpoint 内容和已结算 ledger；源仓库和其他 candidate 不变，已
 
 Runtime 不成为进程 supervisor。模型没有 `quiescent=true` 开关：恢复依赖 adapter 记录的进程
 身份已退出，或 Codex 在本次 prepare 之后对确切 worker 的 terminal 观测。缺失记录会拒绝。
+Codex registry 观测先经过当前 execution scope 的 invocation/generation 检查，再按该 scope
+登记的 canonical agent 与 launch task identity 关联到 session；同时核对 Search run 和 Main
+进程身份。短 task name 与 canonical 路径不同不要求重绑旧 session；其他 scope/owner 的
+同名 agent 不能提供静默证明，prepare 之前的观察也不能复用于本次 recovery。
 这些检查覆盖宿主管理的 worker 生命周期，不是通用文件系统隔离；自行脱离宿主的后台程序、
 外部服务或其他用户进程必须另外停止，不能把它们的外部副作用当作可回滚内容。
 

@@ -15,28 +15,14 @@ from goal_plus.models import (
     ScoreReport,
     SearchSpec,
 )
-from goal_plus.reporting import (
-    _build_loop_agent_statistics,
-    _build_stop_hook_statistics,
-    _build_timeline,
-    _duration,
-    _epoch,
-    _render_loop_agent_statistics,
-    _render_shared_evidence_view,
-    _render_stop_hook_statistics,
-    _render_timeline,
-    _render_statistics,
-    _search_trajectory_payload,
-    build_html_report_data,
-    render_html_report,
-    render_report_document,
-    write_html_report,
-)
-from goal_plus.runtime import (
-    EXTERNAL_EVIDENCE_DIR_ENV,
-    FileSearchRuntime,
-    write_json,
-)
+from goal_plus.projections.report_statistics import build_loop_agent_statistics, build_timeline
+from goal_plus.infrastructure.report_inputs import _build_stop_hook_statistics
+from goal_plus.projections.report_format import format_duration, parse_epoch
+from goal_plus.projections.report_html import _render_loop_agent_statistics, _render_shared_evidence_view, _render_stop_hook_statistics, _render_timeline, _render_statistics, _search_trajectory_payload
+from goal_plus.reporting import build_html_report_data, render_html_report, render_report_document, write_html_report
+from goal_plus.infrastructure.evidence_attachments import EXTERNAL_EVIDENCE_DIR_ENV
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.infrastructure.state.files import write_json
 from goal_plus.tools import SearchTools
 
 from tests._runtime_helpers import make_project, spec_for
@@ -121,8 +107,8 @@ def test_stop_hook_statistics_tolerate_corrupt_files_and_invalid_durations(
 
 
 def test_duration_rounding_never_displays_sixty_seconds() -> None:
-    assert _duration(599.828) == "10m 0s"
-    assert _duration(3599.8) == "1h 0m"
+    assert format_duration(599.828) == "10m 0s"
+    assert format_duration(3599.8) == "1h 0m"
 
 
 def test_stop_hook_statistics_distinguish_missing_source_from_zero(
@@ -330,7 +316,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     project = make_project(tmp_path)
     root = tmp_path / ".search"
     search = FileSearchRuntime(root)
-    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
 
     first_run = search.create_run(frozen.frozen_spec_id)
     search.plan_next(first_run, requested_k=1)
@@ -345,7 +331,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
         agent_session_id=session.agent_session_id,
         hypothesis="Exercise the durable timeline",
     )
-    annotation = search._load_evidence_annotation_task(
+    annotation = search.annotation.task(
         second_run, candidate.candidate_id, 1
     )
     assert annotation is not None
@@ -378,14 +364,14 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
         description="Moved dependency scheduling into the durable shared View.",
         created_at="2026-01-01T00:00:01Z",
     )
-    search._write_evidence_annotation_task(annotation)
+    search.annotation.tasks.write_task(annotation)
     search.get_global_evidence(
         session.agent_session_id,
         source="verifier_injected",
     )
     search.get_global_evidence(session.agent_session_id)
-    persisted_session = search._load_agent_session_by_id(session.agent_session_id)
-    search._write_agent_session(
+    persisted_session = search.candidate_sessions.session(session.agent_session_id)
+    search.candidate_sessions.state.write_agent_session(
         persisted_session.model_copy(
             update={
                 "evidence_detail_reads": [
@@ -528,8 +514,8 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
 
     goals.set_status(
         goal.goal_plus_id,
-        "complete",
-        reason="synthetic reporting fixture is ready",
+        "abandoned",
+        reason="synthetic reporting fixture intentionally omits promotion",
         evidence=[{"kind": "unit_test"}],
     )
     goals.record_orchestrator_usage(
@@ -611,7 +597,6 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     assert "data-search-trajectory=" in html
     assert "window.Plotly={newPlot" in html
     assert "payload.call_window" in html
-    assert "Failed verifier · not scored" in html
     assert "linear score axis" in html
     assert 'class="score-step"' not in html
     assert "&lt;script&gt;alert(&#x27;unsafe&#x27;)&lt;/script&gt;" in html
@@ -949,7 +934,7 @@ def test_loop_agent_statistics_distinguish_productive_and_stalled_tails() -> Non
         )
     ]
 
-    statistics = _build_loop_agent_statistics(
+    statistics = build_loop_agent_statistics(
         tasks,
         {"events": stop_events, "subagents": []},
     )
@@ -1115,7 +1100,7 @@ def test_ineligible_iterations_do_not_enter_report_best_score_paths() -> None:
         ],
     }
 
-    _build_timeline(None, [], [task])
+    build_timeline(None, [], [task])
 
     [worker] = [
         event
@@ -1137,6 +1122,30 @@ def test_ineligible_iterations_do_not_enter_report_best_score_paths() -> None:
         "calls": [0, 1, 2, 3],
         "scores": [100.0, 100.0, 90.0, 90.0],
     }
+
+
+def test_search_trajectory_preserves_unscored_attempts() -> None:
+    candidate = {
+        "candidate_id": "c001", "selected": True,
+        "iterations": [{"iteration": 1, "score": None, "process_passed": True,
+                        "disposition": "failure", "failure_class": "MissingNumericMetric"}],
+    }
+    task = {"candidates": [candidate]}
+    payload = _search_trajectory_payload(task)
+    assert payload is not None
+    assert payload["evaluations"] == 1
+    assert payload["passing_evaluations"] == 0
+    assert payload["failed_evaluations"] == 1
+    assert payload["trajectories"][0]["failed_calls"] == [1]
+    assert payload["trajectories"][0]["failed_scores"] == [None]
+    assert payload["trajectories"][0]["failed_details"][0][3] == "MissingNumericMetric"
+    assert payload["global_best"]["scores"] == []
+    assert payload["selected_point"] is None
+    candidate["iterations"].append({"iteration": 2, "score": 9.0, "process_passed": True, "disposition": "keep"})
+    payload = _search_trajectory_payload(task)
+    assert payload["evaluations"] == 2
+    assert payload["trajectories"][0]["calls"] == [2]
+    assert payload["global_best"] == {"calls": [2], "scores": [9.0]}
 
 
 def test_search_trajectory_payload_adapts_axes_and_excludes_failed_scores() -> None:
@@ -1197,7 +1206,7 @@ def test_html_report_data_keeps_search_tasks_and_rounds_separate(
     project = make_project(tmp_path)
     root = tmp_path / ".search"
     search = FileSearchRuntime(root)
-    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"])
+    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
     runs = [search.create_run(frozen.frozen_spec_id) for _ in range(2)]
     for run_id in runs:
         search.plan_next(run_id, requested_k=1)
@@ -1231,7 +1240,6 @@ def test_pi_native_session_resume_renders_distinct_process_dispatches(
     spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
     spec_data["strategy"] = {
         "name": "random",
-        "worker_host": "pi-rpc",
         "worker_budget": {
             "max_runtime_seconds": 60,
             "on_exceed": "interrupt",
@@ -1239,7 +1247,7 @@ def test_pi_native_session_resume_renders_distinct_process_dispatches(
     }
     frozen = search.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="pi",
     )
     run_id = search.create_run(frozen.frozen_spec_id)
     plan = search.plan_next(run_id, requested_k=1)
@@ -1321,7 +1329,7 @@ def test_pi_native_session_resume_renders_distinct_process_dispatches(
         agent_session_id=session.agent_session_id,
         decision="block",
     )
-    record = search._load_candidate_record(run_id, candidate.candidate_id)
+    record = search.candidate_creation.state.read_candidate(run_id, candidate.candidate_id)
     record.iterations = [
         IterationRecord(
             iteration=1,
@@ -1343,7 +1351,7 @@ def test_pi_native_session_resume_renders_distinct_process_dispatches(
             created_at="2026-07-19T00:00:25Z",
         ),
     ]
-    search._write_candidate_record(run_id, record)
+    search.candidate_creation.state.write_candidate(run_id, record)
 
     data = build_html_report_data(root, run_id)
     task = data["search_tasks"][0]
@@ -1436,7 +1444,7 @@ def test_worker_duration_uses_search_scale_not_goal_record_lifecycle() -> None:
         }
     ]
 
-    goal_timeline = _build_timeline(goal, [], tasks)
+    goal_timeline = build_timeline(goal, [], tasks)
     search_timeline = tasks[0]["timeline"]
     [worker] = [
         event
@@ -1446,7 +1454,7 @@ def test_worker_duration_uses_search_scale_not_goal_record_lifecycle() -> None:
 
     assert goal_timeline["duration_seconds"] == 3600.0
     assert search_timeline["duration_seconds"] == 329.0
-    assert _epoch(worker["end_at"]) - _epoch(worker["start_at"]) == 60.0
+    assert parse_epoch(worker["end_at"]) - parse_epoch(worker["start_at"]) == 60.0
     assert goal_timeline["events"][0]["label"] == "Goal record activity window"
 
 
@@ -1492,12 +1500,12 @@ def test_report_candidate_final_score_uses_settled_best_after_failure(
     root = tmp_path / ".search"
     search = FileSearchRuntime(root)
     frozen = search.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"]
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
     )
     run_id = search.create_run(frozen.frozen_spec_id)
     plan = search.plan_next(run_id, requested_k=1)
     candidate = search.start_batch(run_id, plan.plan_id)[0]
-    record = search._load_candidate_record(run_id, candidate.candidate_id)
+    record = search.candidate_creation.state.read_candidate(run_id, candidate.candidate_id)
     record.iterations = [
         IterationRecord(
             iteration=1,
@@ -1520,7 +1528,7 @@ def test_report_candidate_final_score_uses_settled_best_after_failure(
         aggregate_score=0.0,
         verifier_results=[],
     )
-    search._write_candidate_record(run_id, record)
+    search.candidate_creation.state.write_candidate(run_id, record)
 
     [payload] = build_html_report_data(root, run_id)["search_tasks"][0]["candidates"]
 
@@ -1598,7 +1606,7 @@ def test_metric_lens_combines_score_progression_and_session_efficiency() -> None
         }
     ]
 
-    _build_timeline(None, [], tasks)
+    build_timeline(None, [], tasks)
     timeline = tasks[0]["timeline"]
     workers = [
         event for event in timeline["events"] if event["kind"] == "worker_session"

@@ -1,0 +1,40 @@
+{
+  "objective": "Optimize the public VLIW kernel through multiple settled turns of the same retained candidates, preserving correctness and minimizing cycles.",
+  "metric_name": "cycles",
+  "metric_direction": "minimize",
+  "source_path": "workspace-template",
+  "edit_surface": {
+    "allow": ["solution.py"],
+    "deny": ["problem.md", "problem.py", "runner.py", "verifier.py", "test_cases/**", "public_tests/**", ".goal-plus-verifiers/**"]
+  },
+  "budget": {"max_parallel": 2},
+  "process_verifiers": [{
+    "name": "vliw_score",
+    "role": "ranking_signal",
+    "command": ["python", ".goal-plus-verifiers/vliw_score.py"],
+    "timeout_seconds": 90
+  }],
+  "promotion_verifiers": [{
+    "name": "verifier_hash_check",
+    "role": "anti_cheat_gate",
+    "command": ["goal-plus-internal", "check-frozen-hashes"]
+  }],
+  "root_hypotheses": [
+    "Improve scalar instruction scheduling incrementally, respecting scratch read/write dependencies and engine slot limits.",
+    "Reduce redundant scalar work and memory traffic incrementally before considering broader vectorization."
+  ],
+  "strategy": {
+    "name": "agent_guided",
+    "orchestration_mode": "parallel_loops",
+    "inner_agent": "autoresearch",
+    "worker_budget": {"max_runtime_seconds": 150, "max_turns": 6, "on_exceed": "interrupt"},
+    "evidence_annotator": {"timeout_seconds": 300},
+    "config": {"closeout_reserve_seconds": 240, "global_evidence_mode": "manual"}
+  },
+  "workspace": {"backend": "thinkthread", "promotion_mode": "artifact_only"},
+  "constraints": {
+    "suggested_batch_size": 2,
+    "baseline_cycles": 147734,
+    "task_summary": "Only edit solution.py; keep public cases correct and reduce cycles through multiple verifier-backed turns of the same candidates."
+  }
+}

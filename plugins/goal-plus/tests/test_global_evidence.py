@@ -8,14 +8,18 @@ import subprocess
 import pytest
 
 from goal_plus.models import (
+    ArtifactRef,
     EvidenceViewRecord,
     FrozenSpec,
+    IterationRecord,
+    ProviderResourceCleanupRecord,
     SearchSpec,
     SupplementalEvaluation,
 )
-from goal_plus.runtime import (
-    EXTERNAL_EVIDENCE_DIR_ENV,
-    FileSearchRuntime,
+from goal_plus.application.evidence_reads import global_evidence_entry
+from goal_plus.infrastructure.evidence_attachments import EXTERNAL_EVIDENCE_DIR_ENV
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.infrastructure.search_configuration import (
     SUPPLEMENTAL_EVALUATION_ENABLED_ENV,
     SUPPLEMENTAL_EVALUATION_REQUIRED_ENV,
 )
@@ -29,6 +33,7 @@ def _search_with_candidates(
     *,
     strategy_updates: dict | None = None,
     metric_direction: str = "maximize",
+    native_host: str = "codex",
 ) -> tuple[FileSearchRuntime, str, list[tuple[str, str, Path]]]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     project = make_project(tmp_path)
@@ -46,7 +51,7 @@ def _search_with_candidates(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host=native_host,
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     search_plan = runtime.plan_next(run_id, requested_k=count)
@@ -62,6 +67,64 @@ def _search_with_candidates(
 
 def _git(workspace: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=workspace, text=True).strip()
+
+
+def test_snapshot_cleanup_preserves_annotation_but_marks_artifact_removed() -> None:
+    artifact = ArtifactRef(
+        kind="fs_snapshot",
+        id="fsnap-evidence",
+        provider="thinkthread",
+    )
+    iteration = IterationRecord(
+        iteration=1,
+        agent_session_id="agent-1",
+        artifact_ref=artifact,
+        score=3.0,
+        process_passed=True,
+        disposition="keep",
+        created_at="2026-09-03T00:00:00Z",
+    )
+    view = EvidenceViewRecord(
+        run_id="run-1",
+        candidate_id="c001",
+        iteration=1,
+        attempt_artifact_ref=artifact,
+        description="The exact snapshot passed its verifier.",
+        created_at="2026-09-03T00:01:00Z",
+    )
+
+    available = global_evidence_entry(
+        "c001",
+        iteration,
+        view,
+        workspace_backend="thinkthread",
+    )
+    assert available["artifact_availability"] == "available"
+    assert available["reference_available"] is True
+    assert available["annotation_result_available"] is True
+
+    removed = global_evidence_entry(
+        "c001",
+        iteration,
+        view,
+        workspace_backend="thinkthread",
+        provider_cleanup=[
+            ProviderResourceCleanupRecord(
+                resource_id=artifact.id,
+                purposes=["candidate:c001:branch_snapshot"],
+                ownership_request_ids=["req-create"],
+                state="removed",
+                request_id="req-remove",
+                created_at="2026-09-03T00:02:00Z",
+                updated_at="2026-09-03T00:02:00Z",
+            )
+        ],
+    )
+    assert removed["artifact_ref"] == artifact.model_dump(mode="json")
+    assert removed["artifact_availability"] == "removed"
+    assert removed["reference_available"] is False
+    assert removed["annotation_result_available"] is True
+    assert removed["view"] == "The exact snapshot passed its verifier."
 
 
 def test_global_evidence_is_immediate_and_view_is_late_bound(tmp_path: Path) -> None:
@@ -85,7 +148,7 @@ def test_global_evidence_is_immediate_and_view_is_late_bound(tmp_path: Path) -> 
         )
         report = runtime.run_verifier(
             run_id,
-            runtime._load_agent_session_by_id(session_id).candidate_id,
+            runtime.candidate_sessions.session(session_id).candidate_id,
             agent_session_id=session_id,
             hypothesis=hypothesis,
         )
@@ -116,9 +179,9 @@ def test_global_evidence_is_immediate_and_view_is_late_bound(tmp_path: Path) -> 
     assert all("supplemental_available" not in entry for entry in view)
 
     discarded_commit = view[-1]["commit"]
-    annotation_task = runtime._load_evidence_annotation_task(run_id, second[0], 2)
+    annotation_task = runtime.annotation.task(run_id, second[0], 2)
     assert annotation_task is not None
-    runtime._write_evidence_annotation_task(
+    runtime.annotation.tasks.write_task(
         annotation_task.model_copy(
             update={
                 "state": "completed",
@@ -141,7 +204,7 @@ def test_global_evidence_is_immediate_and_view_is_late_bound(tmp_path: Path) -> 
         "Changed the candidate value from two to one without altering the evaluator."
     )
     assert completed[-1]["view_created_at"] == "2026-01-01T00:00:00Z"
-    read = runtime._load_agent_session_by_id(first[1]).global_evidence_reads[-1]
+    read = runtime.candidate_sessions.session(first[1]).global_evidence_reads[-1]
     assert read.evidence_count == 3
     assert read.source == "explicit"
     assert read.candidate_verifier_iteration == 1
@@ -297,7 +360,7 @@ def test_post_verifier_injection_respects_global_evidence_mode(
     )
     assert explicit_candidates == expected_explicit
     persisted_reads = [
-        runtime._load_agent_session_by_id(session_id).global_evidence_reads
+        runtime.candidate_sessions.session(session_id).global_evidence_reads
         for _, session_id, _ in candidates
     ]
     if mode == "independent":
@@ -378,8 +441,8 @@ def test_global_evidence_presents_open_evaluation_with_dynamic_peer_basis(
         )
         assert report.disposition == "keep"
 
-    first_task = runtime._load_evidence_annotation_task(run_id, first[0], 1)
-    task = runtime._load_evidence_annotation_task(run_id, second[0], 1)
+    first_task = runtime.annotation.task(run_id, first[0], 1)
+    task = runtime.annotation.task(run_id, second[0], 1)
     assert first_task is not None and first_task.comparison_basis == []
     assert task is not None and task.supplemental_evaluation_enabled is True
     assert [item.candidate_id for item in task.comparison_basis] == [first[0]]
@@ -390,7 +453,7 @@ def test_global_evidence_presents_open_evaluation_with_dynamic_peer_basis(
     assert task.task_context_ref == "goal_plus:gp_test:revision:1"
     assert len(task.task_context_sha256 or "") == 64
 
-    context = runtime._evidence_annotation_context(run_id, second[0], 1)
+    context = runtime.annotation_context.build(run_id, second[0], 1)
     assert "acceptance_contract" not in context
     assert context["task_context"] == "Fix the public cache invalidation issue."
     assert context["task_context_source"] == "goal_plus_raw_goal"
@@ -404,7 +467,7 @@ def test_global_evidence_presents_open_evaluation_with_dynamic_peer_basis(
     assert context["peer_evidence"][0]["candidate_id"] == first[0]
 
     peer = task.comparison_basis[0]
-    runtime._write_evidence_annotation_task(
+    runtime.annotation.tasks.write_task(
         task.model_copy(
             update={
                 "state": "completed",
@@ -459,14 +522,14 @@ def test_global_evidence_presents_open_evaluation_with_dynamic_peer_basis(
     assert detail["supplemental_evaluation"]["comparisons"][0][
         "candidate_id"
     ] == first[0]
-    detail_read = runtime._load_agent_session_by_id(first[1]).evidence_detail_reads[-1]
+    detail_read = runtime.candidate_sessions.session(first[1]).evidence_detail_reads[-1]
     assert detail_read.candidate_id == second[0]
     assert detail_read.iteration == 1
     assert detail_read.commit == task.attempt_commit
 
-    completed_task = runtime._load_evidence_annotation_task(run_id, second[0], 1)
+    completed_task = runtime.annotation.task(run_id, second[0], 1)
     assert completed_task is not None and completed_task.view is not None
-    runtime._write_evidence_annotation_task(
+    runtime.annotation.tasks.write_task(
         completed_task.model_copy(
             update={
                 "state": "completed",
@@ -492,10 +555,10 @@ def test_supplemental_capability_and_detail_respect_disabled_and_independent_mod
     first, second = candidates
     disabled = runtime.get_agent_context(first[1])
     assert "supplemental_evaluation_enabled" not in disabled
-    session_before = runtime._load_agent_session_by_id(first[1])
+    session_before = runtime.candidate_sessions.session(first[1])
     with pytest.raises(RuntimeError, match="disabled"):
         runtime.get_evidence_detail(first[1], first[0], 1)
-    assert runtime._load_agent_session_by_id(first[1]) == session_before
+    assert runtime.candidate_sessions.session(first[1]) == session_before
 
     monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_ENABLED_ENV, "1")
     enabled_runtime, _, enabled_candidates = _search_with_candidates(
@@ -520,7 +583,7 @@ def test_supplemental_policy_is_frozen_and_legacy_specs_default_disabled(
     monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_ENABLED_ENV, "1")
     monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_REQUIRED_ENV, "1")
     runtime, run_id, candidates = _search_with_candidates(tmp_path, 1)
-    frozen = runtime._load_frozen_spec(runtime._load_run(run_id).frozen_spec_id)
+    frozen = runtime.search_run.state.read_frozen_spec(runtime.search_run.state.read_run(run_id).frozen_spec_id)
     assert frozen.supplemental_evaluation_enabled is True
     assert frozen.supplemental_evaluation_required is True
 
@@ -531,7 +594,7 @@ def test_supplemental_policy_is_frozen_and_legacy_specs_default_disabled(
     ] is True
     disabled_frozen = runtime.freeze_spec(
         frozen.spec,
-        [Path(frozen.spec.source_path) / "evaluator.py"],
+        [Path(frozen.spec.source_path) / "evaluator.py"], native_host="codex",
     )
     assert disabled_frozen.frozen_spec_id != frozen.frozen_spec_id
     assert disabled_frozen.supplemental_evaluation_enabled is False
@@ -575,13 +638,13 @@ def test_evidence_comparison_basis_prefers_latest_equal_score_iteration(
             hypothesis=f"Try score {score}",
         )
 
-    basis = runtime._evidence_comparison_basis(
+    basis = runtime.annotation_admission.comparison_basis(
         run_id,
         target_candidate_id=target[0],
     )
     assert len(basis) == 1
-    assert basis[0]["candidate_id"] == peer[0]
-    assert basis[0]["iteration"] == 3
+    assert basis[0].candidate_id == peer[0]
+    assert basis[0].iteration == 3
 
 
 def test_worker_hypothesis_is_required_and_parent_evidence_is_private(
@@ -628,14 +691,9 @@ def test_worker_hypothesis_is_required_and_parent_evidence_is_private(
     assert runtime.get_global_evidence(session_id) == before
 
 
-def test_annotator_config_overrides_then_inherits_worker_launch(
+def test_annotator_model_stays_native_default_while_reasoning_is_overridden(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(
-        "GOAL_PLUS_EVIDENCE_ANNOTATOR_BASE_URL",
-        "http://proxy.example/v1",
-    )
     runtime, run_id, [candidate] = _search_with_candidates(
         tmp_path,
         1,
@@ -659,25 +717,27 @@ def test_annotator_config_overrides_then_inherits_worker_launch(
         hypothesis="Set the candidate value",
     )
 
-    task = runtime._load_evidence_annotation_task(run_id, candidate_id, 1)
+    task = runtime.annotation.task(run_id, candidate_id, 1)
     assert task is not None and task.profile is not None
     assert task.profile.host == "codex"
-    assert task.profile.model == "worker-model"
+    assert task.profile.model is None
     assert task.profile.reasoning_effort == "low"
     assert task.profile.timeout_seconds == 90
-    assert task.profile.provider is not None
-    assert task.profile.provider.base_url is None
-    assert task.profile.provider.base_url_env == (
-        "GOAL_PLUS_EVIDENCE_ANNOTATOR_BASE_URL"
-    )
-    assert "proxy.example" not in task.model_dump_json()
+    assert task.profile.configuration_source == "host_process"
+    assert set(task.profile.model_dump(mode="json")) == {
+        "host",
+        "model",
+        "reasoning_effort",
+        "timeout_seconds",
+        "configuration_source",
+    }
 
-    session = runtime._load_agent_session_by_id(session_id)
-    runtime._write_agent_session(
+    session = runtime.candidate_sessions.session(session_id)
+    runtime.candidate_sessions.state.write_agent_session(
         session.model_copy(update={"launch": {"continuation": "native_session"}})
     )
-    context = runtime._evidence_annotation_context(run_id, candidate_id, 1)
-    assert context["annotator"]["model"] == "worker-model"
+    context = runtime.annotation_context.build(run_id, candidate_id, 1)
+    assert context["annotator"]["model"] is None
     assert context["annotator"]["reasoning_effort"] == "low"
 
     runtime.run_verifier(
@@ -686,28 +746,23 @@ def test_annotator_config_overrides_then_inherits_worker_launch(
         agent_session_id=session_id,
         hypothesis="Verify without changing candidate files",
     )
-    continued_context = runtime._evidence_annotation_context(
+    continued_context = runtime.annotation_context.build(
         run_id, candidate_id, 2
     )
     assert continued_context["actual_diff"] == ""
     assert "+VALUE = 1" in continued_context["candidate_diff"]
     assert continued_context["candidate_changed_files"] == ["initial_program.py"]
-    assert continued_context["annotator"]["model"] == "worker-model"
+    assert continued_context["annotator"]["model"] is None
 
 
-def test_pi_worker_model_is_inherited_by_pi_annotator(
+def test_pi_annotator_uses_native_default_without_explicit_model(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pi_home = tmp_path / "pi-home"
-    pi_home.mkdir()
-    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_home))
-    monkeypatch.setenv("PI_PROVIDER", "bench-openai")
     runtime, run_id, [candidate] = _search_with_candidates(
         tmp_path,
         1,
+        native_host="pi",
         strategy_updates={
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_runtime_seconds": 60},
             "worker_launch": {
                 "model": "gpt-test",
@@ -724,69 +779,39 @@ def test_pi_worker_model_is_inherited_by_pi_annotator(
         hypothesis="Set the Pi candidate value",
     )
 
-    task = runtime._load_evidence_annotation_task(run_id, candidate_id, 1)
+    task = runtime.annotation.task(run_id, candidate_id, 1)
     assert task is not None and task.profile is not None
     assert task.state == "pending"
     assert task.profile.host == "pi-rpc"
-    assert task.profile.model == "gpt-test"
-    assert task.profile.pi_provider == "bench-openai"
+    assert task.profile.model is None
     assert task.profile.reasoning_effort == "high"
-    assert task.profile.pi_home == str(pi_home)
-    assert task.profile.codex_home is None
-    assert task.profile.provider is None
-    context = runtime._evidence_annotation_context(run_id, candidate_id, 1)
-    assert context["annotator"]["pi_provider"] == "bench-openai"
+    assert task.profile.configuration_source == "host_process"
+    context = runtime.annotation_context.build(run_id, candidate_id, 1)
+    assert context["annotator"]["model"] is None
+    assert set(context["annotator"]) == {
+        "host",
+        "model",
+        "reasoning_effort",
+        "timeout_seconds",
+        "configuration_source",
+    }
 
 
-def test_pi_worker_can_use_an_independent_codex_annotator(
+def test_internal_annotator_cannot_cross_worker_hosts(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir()
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.setenv(
-        "GOAL_PLUS_EVIDENCE_ANNOTATOR_BASE_URL",
-        "http://proxy.example/v1",
-    )
-    runtime, run_id, [candidate] = _search_with_candidates(
-        tmp_path,
-        1,
-        strategy_updates={
-            "worker_host": "pi-rpc",
-            "worker_budget": {"max_runtime_seconds": 60},
-            "worker_launch": {
-                "model": "worker-model",
-                "reasoning_effort": "high",
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        _search_with_candidates(
+            tmp_path,
+            1,
+            strategy_updates={
+                "worker_budget": {"max_runtime_seconds": 60},
+                "evidence_annotator": {"host": "codex"},
             },
-            "evidence_annotator": {
-                "host": "codex",
-                "model": "gpt-5.6-luna",
-                "reasoning_effort": "medium",
-            },
-        },
-    )
-    candidate_id, session_id, workspace = candidate
-    (workspace / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
-    runtime.run_verifier(
-        run_id,
-        candidate_id,
-        agent_session_id=session_id,
-        hypothesis="Set the Pi candidate value",
-    )
-
-    task = runtime._load_evidence_annotation_task(run_id, candidate_id, 1)
-    assert task is not None and task.profile is not None
-    assert task.profile.host == "codex"
-    assert task.profile.model == "gpt-5.6-luna"
-    assert task.profile.reasoning_effort == "medium"
-    assert task.profile.codex_home == str(codex_home)
-    assert task.profile.pi_home is None
-    assert task.profile.pi_provider is None
-    assert task.profile.provider is not None
+        )
 
 
-def test_pi_annotator_inherits_host_provider_and_model_by_default(
+def test_pi_annotator_leaves_unspecified_model_to_host_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -798,8 +823,8 @@ def test_pi_annotator_inherits_host_provider_and_model_by_default(
     runtime, run_id, [candidate] = _search_with_candidates(
         tmp_path,
         1,
+        native_host="pi",
         strategy_updates={
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_runtime_seconds": 60},
         },
     )
@@ -812,37 +837,24 @@ def test_pi_annotator_inherits_host_provider_and_model_by_default(
         hypothesis="Set the Pi candidate value",
     )
 
-    task = runtime._load_evidence_annotation_task(run_id, candidate_id, 1)
+    task = runtime.annotation.task(run_id, candidate_id, 1)
     assert task is not None and task.profile is not None
-    assert task.profile.model == "GLM-5.2"
-    assert task.profile.pi_provider == "glm-proxy"
+    assert task.profile.model is None
+    assert task.profile.configuration_source == "host_process"
 
 
-@pytest.mark.parametrize(
-    "annotator_config",
-    [
-        {"model": "deepseek/deepseek-chat", "reasoning_effort": "low"},
-        {
-            "model": "deepseek-chat",
-            "pi_provider": "deepseek",
-            "reasoning_effort": "low",
-        },
-    ],
-)
-def test_pi_annotator_can_override_inherited_worker_provider(
+def test_pi_annotator_accepts_provider_qualified_model_without_provider_config(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    annotator_config: dict[str, str],
 ) -> None:
-    pi_home = tmp_path / "pi-home"
-    pi_home.mkdir()
-    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_home))
-    monkeypatch.setenv("PI_PROVIDER", "glm-proxy")
+    annotator_config = {
+        "model": "deepseek/deepseek-chat",
+        "reasoning_effort": "low",
+    }
     runtime, run_id, [candidate] = _search_with_candidates(
         tmp_path,
         1,
+        native_host="pi",
         strategy_updates={
-            "worker_host": "pi-rpc",
             "worker_budget": {"max_runtime_seconds": 60},
             "worker_launch": {
                 "model": "GLM-5.2",
@@ -860,12 +872,11 @@ def test_pi_annotator_can_override_inherited_worker_provider(
         hypothesis="Set the Pi candidate value",
     )
 
-    task = runtime._load_evidence_annotation_task(run_id, candidate_id, 1)
+    task = runtime.annotation.task(run_id, candidate_id, 1)
     assert task is not None and task.profile is not None
     assert task.state == "pending"
     assert task.profile.host == "pi-rpc"
     assert task.profile.model == annotator_config["model"]
-    assert task.profile.pi_provider == "deepseek"
     assert task.profile.reasoning_effort == "low"
 
 
@@ -881,7 +892,7 @@ def test_evidence_commit_captures_change_back_to_source(tmp_path: Path) -> None:
         agent_session_id=session_id,
         hypothesis="Set the candidate value to one",
     )
-    settled_head = runtime._load_candidate_record(
+    settled_head = runtime.candidate_creation.state.read_candidate(
         run_id, candidate_id
     ).results_ledger_git_head
 
@@ -893,14 +904,14 @@ def test_evidence_commit_captures_change_back_to_source(tmp_path: Path) -> None:
         hypothesis="Restore the source value",
     )
 
-    iteration = runtime._load_candidate_record(run_id, candidate_id).iterations[-1]
+    iteration = runtime.candidate_creation.state.read_candidate(run_id, candidate_id).iterations[-1]
     assert report.disposition == "discard"
     assert iteration.attempt_base_git_head == settled_head
     assert iteration.attempt_changed_files == ["initial_program.py"]
     assert _git(workspace, "show", f"{iteration.git_head}:initial_program.py") == (
         "VALUE = 0"
     )
-    context = runtime._evidence_annotation_context(run_id, candidate_id, 2)
+    context = runtime.annotation_context.build(run_id, candidate_id, 2)
     assert "-VALUE = 1" in context["actual_diff"]
     assert "+VALUE = 0" in context["actual_diff"]
     assert program.read_text(encoding="utf-8") == "VALUE = 1\n"
@@ -927,7 +938,7 @@ def test_evidence_diff_includes_bounded_function_context(tmp_path: Path) -> None
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=1),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -948,7 +959,7 @@ def test_evidence_diff_includes_bounded_function_context(tmp_path: Path) -> None
         agent_session_id=session.agent_session_id,
         hypothesis="Return the initialized result",
     )
-    context = runtime._evidence_annotation_context(run_id, task.candidate_id, 1)
+    context = runtime.annotation_context.build(run_id, task.candidate_id, 1)
 
     assert "initialized_value = 1" in context["actual_diff"]
     assert "initialized_value = 1" in context["candidate_diff"]
@@ -968,7 +979,7 @@ def test_evidence_diff_spans_all_manual_commits_in_attempt(tmp_path: Path) -> No
         agent_session_id=session_id,
         hypothesis="Establish the first candidate value",
     )
-    base = runtime._load_candidate_record(run_id, candidate_id).results_ledger_git_head
+    base = runtime.candidate_creation.state.read_candidate(run_id, candidate_id).results_ledger_git_head
 
     program.write_text("VALUE = 2\n", encoding="utf-8")
     git_commit_all(workspace, "manual intermediate attempt")
@@ -981,8 +992,8 @@ def test_evidence_diff_spans_all_manual_commits_in_attempt(tmp_path: Path) -> No
         hypothesis="Raise the value through two committed revisions",
     )
 
-    iteration = runtime._load_candidate_record(run_id, candidate_id).iterations[-1]
-    context = runtime._evidence_annotation_context(run_id, candidate_id, 2)
+    iteration = runtime.candidate_creation.state.read_candidate(run_id, candidate_id).iterations[-1]
+    context = runtime.annotation_context.build(run_id, candidate_id, 2)
     assert iteration.attempt_base_git_head == base
     assert iteration.git_head == attempt
     assert iteration.attempt_changed_files == ["initial_program.py"]
@@ -999,7 +1010,7 @@ def test_evidence_diff_omits_binary_payload(tmp_path: Path) -> None:
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"],
+        [project / "evaluator.py"], native_host="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1015,7 +1026,7 @@ def test_evidence_diff_omits_binary_payload(tmp_path: Path) -> None:
         hypothesis="Add a trained checkpoint",
     )
 
-    context = runtime._evidence_annotation_context(run_id, task.candidate_id, 1)
+    context = runtime.annotation_context.build(run_id, task.candidate_id, 1)
     assert "checkpoint.bin" in context["actual_diff"]
     assert "Binary files" in context["actual_diff"]
     assert "GIT binary patch" not in context["actual_diff"]

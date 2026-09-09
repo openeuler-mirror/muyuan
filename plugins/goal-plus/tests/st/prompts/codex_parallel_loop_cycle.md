@@ -11,8 +11,7 @@ exact changes before freezing it:
 - `budget={"max_parallel": 2}`
 - `strategy.name="random"`
 - `strategy.orchestration_mode="parallel_loops"`
-- `strategy.worker_host="codex"`
-- `strategy.worker_agent_type="search_candidate_agent"`
+- `strategy.inner_agent="autoresearch"`
 - `strategy.worker_budget={"max_runtime_seconds": 90, "max_turns": 4, "on_exceed": "interrupt"}`
 - `strategy.config.seed=42`
 

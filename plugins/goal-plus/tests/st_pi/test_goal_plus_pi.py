@@ -6,6 +6,7 @@ import signal
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -49,7 +50,7 @@ MULTI_SEARCH_PROMPT = (
     "examples/edgebench-ad-placement/search-spec.json，并冻结其中的 "
     ".goal-plus-verifiers/ad_local_score.py、tools/bin/gen、tools/bin/tester。"
     "第一个 SearchSpec 使用 strategy.name=random，第二个使用 strategy.name=agent_guided；"
-    "两次都设置 worker_host=pi-rpc、orchestration_mode=parallel_loops、"
+    "两次都设置 orchestration_mode=parallel_loops、"
     "max_parallel=1 且不设置已弃用的 max_parallel，worker budget 为 "
     "max_runtime_seconds=60、max_turns=4、"
     "on_exceed=interrupt，只允许候选修改 solution.cpp。每次都必须分别完成 "
@@ -61,7 +62,7 @@ MULTI_SEARCH_PROMPT = (
 SPEC_REVISION_FIRST_PROMPT = (
     "在同一个 Goal Plus 记录中验证一次真实的两版 frozen spec 流程。工作区是 {workspace}。"
     "第一轮只使用 .goal-plus-verifiers/simple_score.py，metric_name=score、maximize，"
-    "只允许修改 candidate.txt；使用 random、worker_host=pi-rpc、"
+    "只允许修改 candidate.txt；使用 random、"
     "orchestration_mode=parallel_loops、max_parallel=1 且不设置已弃用的 max_parallel，worker budget "
     "为 max_runtime_seconds=60、max_turns=4、on_exceed=interrupt。完成 freeze、create、"
     "link、candidate verify、select、promote 和 record_search_result，但不要生成 report。"
@@ -140,6 +141,8 @@ def _run_env(search_root: Path) -> dict[str, str]:
         **os.environ,
         "GOAL_PLUS_ROOT": str(search_root),
         "GOAL_PLUS_SOURCE_PATH": str(ROOT),
+        "GOAL_PLUS_PI_DEV_ROOT": str(ROOT),
+        "GOAL_PLUS_PYTHON": sys.executable,
     }
 
 
@@ -753,24 +756,52 @@ def test_goal_plus_with_final_check_runs_pi_reviewer(
 def test_goal_plus_print_autonomously_enters_search(
     st_pi_run_root: Path,
 ) -> None:
+    from goal_plus.host_scope import close_execution_scope, execution_scope_for_run
+    from tests._runtime_helpers import git_commit_all
+
+    source = st_pi_run_root / "source"
+    shutil.copytree(
+        ROOT / "examples" / "edgebench-ad-placement" / "workspace-template",
+        source,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    git_commit_all(source, "isolated native Search baseline")
     search_root = st_pi_run_root / ".gp"
     session_dir = st_pi_run_root / "sessions"
     session_dir.mkdir(parents=True, exist_ok=True)
     command = [
         *_pi_base_command(session_dir, "st-pi-goal-plus-autonomous-search"),
+        "--skill",
+        str(ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md"),
         "-p",
-        f"/goal-plus {AUTONOMOUS_OPTIMIZATION_PROMPT}",
+        "/goal-plus " + AUTONOMOUS_OPTIMIZATION_PROMPT.replace(
+            "examples/edgebench-ad-placement/workspace-template", str(source)
+        ),
     ]
-
-    result = subprocess.run(
-        command,
-        cwd=ROOT,
-        env=_run_env(search_root),
-        text=True,
-        capture_output=True,
-        timeout=int(os.environ.get("ST_PI_SEARCH_TIMEOUT", "600")),
-        check=False,
-    )
+    env = _run_env(search_root)
+    env["GOAL_PLUS_SOURCE_PATH"] = str(source)
+    env["PYTHONPATH"] = str(ROOT / "src")
+    print(f"Native Search ST: {st_pi_run_root}", flush=True)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=source,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=int(os.environ.get("ST_PI_SEARCH_TIMEOUT", "600")),
+            check=False,
+        )
+    finally:
+        for run_path in (search_root / "runs").glob("*/run.json"):
+            scope = execution_scope_for_run(root_dir=search_root, run_id=run_path.parent.name)
+            if scope is not None:
+                closed = close_execution_scope(
+                    root_dir=search_root, scope_id=scope["scope_id"],
+                    reason="native_search_st_cleanup", timeout_seconds=15,
+                )
+                assert closed["state"] == "closed", closed
 
     assert result.returncode == 0, result.stderr[-2000:] or result.stdout[-2000:]
     record = _goal_record(search_root)
@@ -807,12 +838,18 @@ def test_goal_plus_print_autonomously_enters_search(
         (search_root / "runs" / linked["run_id"] / "run.json").read_text(encoding="utf-8")
     )
     assert run_record["state"] == "promoted"
+    frozen = json.loads(
+        (search_root / "specs" / run_record["frozen_spec_id"] / "frozen_spec.json").read_text()
+    )
+    assert frozen["native_host"] == "pi"
+    assert "worker_host" not in frozen["spec"]["strategy"]
     worker_sessions = sorted(
         (search_root / "runs" / linked["run_id"] / "agent_sessions").glob("agent_*.json")
     )
     assert worker_sessions
     for session_path in worker_sessions:
         session = json.loads(session_path.read_text(encoding="utf-8"))
+        assert session["host"] == "pi-rpc"
         metadata = session["host_handle"]["metadata"]
         assert metadata["continuation"] == "native_session"
         assert metadata.get("runner_failed") is not True
@@ -822,6 +859,165 @@ def test_goal_plus_print_autonomously_enters_search(
         assert metadata["text_log"] is None
         assert Path(metadata["event_log"]).exists()
     assert (search_root / "host-sessions" / "pi").is_dir()
+    _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
+
+
+@pytest.mark.st_pi
+def test_circle_packing_git_common_agent_apply(
+    st_pi_run_root: Path,
+) -> None:
+    examples_root = st_pi_run_root / "examples"
+    source_examples = ROOT / "examples"
+    shutil.copytree(
+        source_examples / "circle-packing",
+        examples_root / "circle-packing",
+        ignore=shutil.ignore_patterns(
+            ".gp", "workspace", "__pycache__", "*.pyc"
+        ),
+    )
+    example = examples_root / "circle-packing-git-apply"
+    shutil.copytree(
+        source_examples / "circle-packing-git-apply",
+        example,
+        ignore=shutil.ignore_patterns(
+            ".gp", "workspace", "__pycache__", "*.pyc"
+        ),
+    )
+    prepared = subprocess.run(
+        ["python", "prepare_workspace.py"],
+        cwd=example,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert prepared.returncode == 0, prepared.stderr or prepared.stdout
+
+    search_root = example / ".gp"
+    session_dir = st_pi_run_root / "sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    prompt = Path(__file__).with_name("circle-common-prompt.txt").read_text(encoding="utf-8")
+    command = [
+        *_pi_base_command(session_dir, "st-pi-circle-git-common"),
+        "--skill",
+        str(ROOT / ".pi" / "skills" / "goal-plus" / "SKILL.md"),
+        "-p",
+        prompt,
+    ]
+    env = _run_env(search_root)
+    env["GOAL_PLUS_SOURCE_PATH"] = str(example)
+    result = subprocess.run(
+        command,
+        cwd=example,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=int(os.environ.get("ST_PI_SEARCH_TIMEOUT", "1200")),
+        check=False,
+    )
+
+    (st_pi_run_root / "circle.stdout.log").write_text(result.stdout, encoding="utf-8")
+    (st_pi_run_root / "circle.stderr.log").write_text(result.stderr, encoding="utf-8")
+    assert result.returncode == 0, result.stderr[-4000:] or result.stdout[-4000:]
+    record = _goal_record(search_root)
+    assert record["status"] == "complete"
+    linked = record["linked_search"]
+    run_id = linked["run_id"]
+    run_dir = search_root / "runs" / run_id
+    run_record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert run_record["state"] == "promoted"
+    assert run_record["promotion"]["state"] == "applied"
+    assert run_record["promotion"]["apply_result"]["status"] == "applied"
+
+    frozen = json.loads(
+        (
+            search_root
+            / "specs"
+            / linked["frozen_spec_id"]
+            / "frozen_spec.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert frozen["spec"]["workspace"] == {
+        "backend": "git_worktree",
+        "promotion_mode": "apply",
+    }
+    assert frozen["spec"]["strategy"]["inner_agent"] == "common"
+    assert frozen["spec"]["strategy"].get("worker_agent_type") is None
+
+    candidates = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((run_dir / "candidates").glob("*/candidate.json"))
+    ]
+    assert len(candidates) == 2
+    assert all(candidate["iterations"] for candidate in candidates)
+    assert all(
+        iteration["artifact_ref"]["kind"] == "git_commit"
+        for candidate in candidates
+        for iteration in candidate["iterations"]
+    )
+    assert all(
+        candidate["task"]["strategy_metadata"]["worker_policy"][
+            "inner_agent_binding"
+        ]["workspace_ledger_projection"]
+        == "none"
+        for candidate in candidates
+    )
+    assert all(candidate["results_ledger"] for candidate in candidates)
+    assert all(candidate.get("results_ledger_git_head") is None for candidate in candidates)
+    assert all(
+        iteration.get("ledger_git_head") is None
+        for candidate in candidates
+        for iteration in candidate["iterations"]
+    )
+    assert all(
+        not (Path(candidate["task"]["workspace"]) / "results.tsv").exists()
+        for candidate in candidates
+    )
+
+    sessions = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((run_dir / "agent_sessions").glob("agent_*.json"))
+    ]
+    assert len(sessions) == 2
+    for session in sessions:
+        launch = session["launch"]
+        assert "普通 Search 候选 agent" in launch["prompt"]
+        assert "worker_agent_type" not in launch
+        metadata = session["host_handle"]["metadata"]
+        assert metadata["runtime_start"]["active_non_builtin_tools"] == ["search_get_agent_context"]
+        successful_tools = [
+            entry["message"]["toolName"]
+            for entry in _read_jsonl(Path(metadata["session_file"]))
+            if entry.get("type") == "message"
+            and entry["message"].get("role") == "toolResult"
+            and entry["message"].get("isError") is False
+        ]
+        assert "search_run_verifier" in successful_tools
+        assert successful_tools.index("search_get_agent_context") < successful_tools.index("search_run_verifier")
+        assert session["counters"]["verifier_runs"] == metadata["dispatch_count"]
+
+    workspace = example / "workspace"
+    verified = subprocess.run(
+        ["python", ".goal-plus-verifiers/circle_packing_score.py"],
+        cwd=workspace,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert verified.returncode == 0, verified.stderr or verified.stdout
+    metrics = json.loads(verified.stdout.strip().splitlines()[-1])
+    assert metrics["valid"] is True
+    assert metrics["sum_radii"] == pytest.approx(run_record["selected_score"])
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=workspace,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert status == ""
+    assert Path(linked["report_path"]).is_file()
+    assert Path(linked["html_report_path"]).is_file()
+    assert Path(linked["promotion_artifact_path"]).is_file()
     _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
 
 

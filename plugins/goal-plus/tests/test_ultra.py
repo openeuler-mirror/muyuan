@@ -9,7 +9,7 @@ import time
 import pytest
 from pydantic import ValidationError
 
-from goal_plus import goal_plus as goal_plus_module
+from goal_plus import models
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import GoalPlusExecutionPolicy
 
@@ -74,7 +74,7 @@ def _dispatch_and_bind(
 
 def test_ultra_reads_legacy_dag_records_as_dispatch_history(tmp_path) -> None:
     runtime, record = _triaged_runtime(tmp_path)
-    path = runtime._goal_path(record.goal_plus_id)
+    path = runtime.state.goal_path(record.goal_plus_id)
     payload = json.loads(path.read_text(encoding="utf-8"))
     legacy_common = {
         "depends_on": [],
@@ -294,7 +294,7 @@ def test_ultra_launch_reconciliation_fences_stale_and_duplicate_results(
     runtime, record = _triaged_runtime(tmp_path)
     goal_id = record.goal_plus_id
     now = 1_000.0
-    monkeypatch.setattr(goal_plus_module.time, "time", lambda: now)
+    monkeypatch.setattr(runtime.goal_dispatch.clock, "now", lambda: now)
     first = runtime.record_work_event(
         goal_id,
         "implementation",
@@ -405,7 +405,8 @@ def test_ultra_concurrent_lazy_dispatches_are_serialized(
 ) -> None:
     runtime, record = _triaged_runtime(tmp_path)
     goal_id = record.goal_plus_id
-    original_load = FileGoalPlusRuntime._load_record
+    from goal_plus.infrastructure.state.goal_mutations import FileGoalState
+    original_load = FileGoalState.read_goal
     counter_lock = threading.Lock()
     active_loads = 0
     max_active_loads = 0
@@ -422,7 +423,7 @@ def test_ultra_concurrent_lazy_dispatches_are_serialized(
             with counter_lock:
                 active_loads -= 1
 
-    monkeypatch.setattr(FileGoalPlusRuntime, "_load_record", slow_load)
+    monkeypatch.setattr(FileGoalState, "read_goal", slow_load)
     start = threading.Barrier(2)
 
     def dispatch(work_item_id: str) -> None:
@@ -447,7 +448,6 @@ def test_ultra_concurrent_lazy_dispatches_are_serialized(
 
 
 def test_ultra_assets_use_native_hosts_without_dag_planning() -> None:
-    models = (ROOT / "src" / "goal_plus" / "models.py").read_text(encoding="utf-8")
     core = (ROOT / "src" / "goal_plus" / "goal_plus.py").read_text(encoding="utf-8")
     server = (ROOT / "src" / "goal_plus" / "server.py").read_text(encoding="utf-8")
     codex = (ROOT / ".codex" / "skills" / "goal-plus" / "SKILL.md").read_text(
@@ -459,29 +459,29 @@ def test_ultra_assets_use_native_hosts_without_dag_planning() -> None:
     )
     docs = (ROOT / "docs" / "ultra.md").read_text(encoding="utf-8")
 
-    work_item = models.split("class GoalPlusWorkItem(", 1)[1].split(
-        "class GoalPlusActiveSession", 1
-    )[0]
+    work_item = models.GoalPlusWorkItem.model_fields
     assert "depends_on" not in work_item
-    assert "route:" not in work_item
-    assert "attempt_id: str | None" in work_item
-    assert "generation: int" in work_item
-    assert "GoalPlusWorkItemInput" not in models
+    assert "route" not in work_item
+    assert work_item["attempt_id"].annotation == str | None
+    assert work_item["generation"].annotation is int
+    assert not hasattr(models, "GoalPlusWorkItemInput")
     assert "upsert_work_items" not in core
     assert "goal_plus_upsert_work_items" not in server
-    assert "goal-plus-ultra-v1" in models
+    assert "goal-plus-ultra-v1" in json.dumps(models.GoalPlusExecutionPolicy.model_json_schema())
     assert "spawn_agent" in codex
     assert 'fork_turns="none"' in codex
     assert "`bind`" in codex
     assert 'pi.setThinkingLevel("xhigh")' not in pi
     assert "pi.getThinkingLevel()" in pi
     assert 'main_reasoning_effort: "host_selected"' in pi
-    assert "thinking_level: selectedThinking" in pi
+    assert "const nativeAgentConfig = currentPiNativeAgentConfig(pi, ctx);" in pi
+    assert "inheritPiNativeAgentConfig(launch, nativeAgentConfig)" in pi
     assert 'observedThinking === "off"' not in pi
     assert 'name: "pi_goal_plus_run_work_item"' in pi
     assert 'native_operation: "pi_goal_plus_run_work_item"' in pi
     assert 'native_operation: "goal-plus-pi-worker"' in pi
-    assert "task: Type.String" in pi
+    schemas = (ROOT / ".pi/extensions/lib/goal-plus-schemas.ts").read_text(encoding="utf-8")
+    assert "task: Type.String" in schemas
     assert 'executionMode: "concurrent"' in pi
     assert 'role: "ordinary"' in pi
     assert "goal_plus_work_item" in pi

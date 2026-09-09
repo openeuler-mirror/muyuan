@@ -12,6 +12,11 @@ LEGACY_RUNTIME_ROOT = ".search"
 def host_assets_root() -> Path:
     """Return checkout assets when editable, otherwise wheel-packaged assets."""
 
+    from goal_plus.installation import snapshot
+
+    installation = snapshot()
+    if installation.get("build"):
+        return Path(installation["package"])
     checkout_root = Path(__file__).resolve().parents[2]
     if (checkout_root / ".codex-plugin" / "plugin.json").is_file():
         return checkout_root

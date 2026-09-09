@@ -3,6 +3,52 @@
 Codex 是 Goal Plus 的原生 multi-agent host。它通过共享 MCP runtime 管理 Goal/Search 状态，通过
 Codex collaboration tool 启动固定数量的并行 candidate loop。
 
+## Execution Scope
+
+Codex host hook 在第一次派发普通 subagent、final checker 或 Search candidate 时创建 host-local
+Execution Scope。`spawn_agent` 在 PreToolUse 记录 native 调用 ID、parent session 与 canonical
+task target，PostToolUse 按原调用补齐 native identity。未返回的 spawn 仍计入活跃资源，不能
+靠无关联 Stop 清除；返回丢失时，后续 `list_agents` 的明确状态可完成登记和静默确认。
+成功且关联的 `interrupt_agent` 和允许结束的 `SubagentStop` 将其标为终态。正常 `search_select` 的 PreToolUse
+checkpoint 要求对应 run 的 native target 和 durable candidate session 都已静默，否则拒绝选择。
+同一 native parent session 不复用已登记 task name；跨 session 的同名 target 按 transcript 中的
+parent identity 区分，信息不足时拒绝歧义观察，不选择最新 scope。迟到回执不重开关闭的 scope。
+
+Search spawn 按持久化 launch 的精确 task name 查询 candidate session，不要求 host message
+包含可解析的 session ID。查询不授予执行权：附加 scope 前仍核对当前 Goal 的 Search link，
+放行前继续检查 session generation、run/candidate 和预算 gate；重复或不可读身份明确拒绝。
+普通 Goal dispatch 保持自己的 Goal 归属，不能把已识别的 Search candidate 回退成普通派发。
+
+`followup_task` 在 PreToolUse 校验 scope、Goal/control、candidate recovery/retirement、deadline
+和 confirmation barrier，并在放行前记录活跃的本地 wake。关联使用现有 native `tool_use_id`，
+不是模型填写的 generation；PostToolUse 只确认该调用已经返回。再次唤醒后，无关联的
+`SubagentStop` 不解除活跃记账；使用 wake 返回后发起的 `list_agents` 或匹配当前 wake 的
+成功 interrupt 确认静默。旧查询或 interrupt 的迟到回执不能关闭新的 wake。未知结果保持
+fenced，不通过再次 followup 猜测恢复；不属于 Goal Plus 的 native target 仍由 Codex 自行管理。
+
+明确的 aborted/interrupted/cancelled Stop 和 owner 进程退出会关闭整个 scope，同时终止 Annotation。
+普通 active Goal Stop 仍由原有 continuation gate 处理，不会误触 cleanup。Scope cleanup 不更新
+durable Goal/Search 状态，也不实现 resume。正常或手动 closeout 时，main 先用 `list_agents` 找出
+仍在运行的 owned target，再逐个调用 `interrupt_agent`；Stop hook 会持续阻止 main 结束，直到 scope
+静默。当前 CLI 中另行启动的 app-server 不能加载或中断当前 TUI active turn，因此不作为 lifecycle
+controller。owner PID 消失时，native child 随同一 Codex runtime/process 退出；detached guardian
+只记录该事实并继续清理进程外的 Annotation。
+运行中的 guardian 会继续重试未完成的 scope cleanup；正常 closeout 仍需要 native
+终态观察，不以 Main 身份未知代替 native target 静默。Scope owner 使用已识别的 Codex
+祖先进程，不绑定短命 hook shell；已有 host 恢复入口可以补启动所属 scope 的 guardian。
+
+## Candidate 原生写入
+
+Search candidate 的原生 `apply_patch` 在 PreToolUse 使用持久化 session、当前执行代际与
+Goal/Search admission 获取只读写入边界。Add/Delete/Update/Move 的全部目标必须位于自己的
+workspace；命名路径和解析符号链接后的目标均检查，拒绝 shared hard link、`.git`、
+`denied_files` 和冻结 verifier。相对路径使用宿主 hook 的 `cwd`，不猜测为 candidate cwd。
+无法识别的 patch transport 拒绝执行；不解析外层 JavaScript 来推断授权。
+
+Workspace 内的 scratch 仍可写，`allowed_files` 继续由 verifier settlement 检查交付范围。
+这是原生 patch 的执行前 gate，不是 shell 或内核级文件系统沙箱；并发替换路径和任意 shell
+副作用不由该 gate 原子隔离，不能据此声称所有 candidate 文件访问已受宿主沙箱保护。
+
 ## 安装与快速开始
 
 ### 正常安装
@@ -14,11 +60,10 @@ cd <Muyuan checkout>/plugins/goal-plus
 ./install.sh --codex
 ```
 
-安装器使用当前 shell 的 `python3`。先激活 Codex 启动时要继承的 Python 环境；也可以通过
-`PYTHON=/absolute/path/to/python` 指定其中的解释器，但该环境的 scripts 目录必须已经位于
-`PATH`。如果 `goal-plus` 或 Pi runtime 命令解析到另一 Python 环境，安装器会在写入前停止。
-检查通过后，它安装 runtime、注册当前 checkout 作为 `goal-plus` marketplace，并安装
-`goal-plus@goal-plus`。安装期间需要保留 source directory。
+安装器通过 uv 准备受管 Python 3.12 和锁定依赖，验证代码 build 后，将不可变副本注册为
+`goal-plus` marketplace 并安装 `goal-plus@goal-plus`。hook 和 MCP 使用包内固定的 Python，
+不受 Conda、`PATH` 或当前工作目录影响。`./install.sh --runtime-info` 显示实际 build、来源和
+解释器路径。正常安装不依赖原 checkout 持续存在。
 
 安装前会读取 Codex plugin 和 marketplace inventory。来自其他 checkout 的同名安装，或已退休的
 `goal-plus@goal-plus-local` staging 安装都会被视为冲突并停止；安装器不会静默覆盖。
@@ -28,18 +73,17 @@ thread，使全部 handler 从 `SessionStart` 起生效。进入目标 workspace
 
 ```bash
 codex plugin list
-goal-plus-codex-doctor --project-root .
+./install.sh --runtime-info
 ```
 
 卸载 Codex 集成：
 
 ```bash
-codex plugin remove goal-plus@goal-plus
-codex plugin marketplace remove goal-plus
+./uninstall.sh --codex
 ```
 
-只有在其他 Pi 或 Codex 安装都不再使用该 Python 环境中的 Goal Plus 命令时，才运行
-`python -m pip uninstall -y goal-plus`。
+卸载宿主后保留旧 release，供仍在运行的旧会话使用。关闭这些会话，并确认其他宿主不再使用
+运行时后，可运行 `./uninstall.sh --runtime` 清理未引用的受管版本。旧 pip 环境不被自动修改。
 
 ### Checkout 更新
 
@@ -67,9 +111,9 @@ cd <Muyuan checkout>/plugins/goal-plus
 
 plugin manifest 不发布 `.codex/agents/` custom role。Search candidate 会由 `CodexAdapter` 映射到
 Codex 内置 `default` role，完整 worker contract 随 launch message 传递。required final check
-仍优先使用 project-local `goal_plus_final_checker`；当前 `spawn_agent` schema 不暴露该 role 时，
-使用 `fallback_agent_type="default"`，并携带同样独立的 prompt、`fork_turns="none"`、task identity
-和一次必需的 `goal_plus_submit_final_check` 调用。
+同样直接使用内置 `default`，携带独立 prompt、`fork_turns="none"`、task identity 和一次必需的
+`goal_plus_submit_final_check` 调用；hook 按可信 checker task identity 识别只读角色。
+不先尝试插件未发布的 custom role，也不要求启动失败后换 role 或 task name 重试。
 
 Codex 会从约定路径 `hooks/hooks.json` 发现 hook，因此 manifest 不声明 `hooks` 字段。hook trust
 绑定规范化后的当前 hash，hook 更新后必须重新检查并信任。
@@ -85,7 +129,7 @@ args = ["--root", ".gp"]
 从准备运行任务的 workspace 执行只读 preflight：
 
 ```bash
-goal-plus-codex-doctor --project-root .
+./install.sh --runtime-info
 ```
 
 doctor 会记录 Codex 版本供诊断，不按版本号设置最低门槛。它检查 Codex 与 `goal-plus`
@@ -147,6 +191,9 @@ MCP/CLI 直调都不能创建记录。`goal_plus_create`/`goal_plus_update_goal`
 `PreToolUse` 检查 fail closed；只有显示和只读监控故障可以 fail open。详见
 [运行逻辑](runtime-logic.md)。控制命令按宿主交付时机生效，不承诺原生 `/goal` 的无模型 UI。
 普通 subagent 不继承 parent 的 next action。
+新的 Codex session 可用 `$goal-plus <完整目标>` 在同一 workspace 创建独立 Goal；其他 session
+的未终态 Goal 不会阻止创建。Search bootstrap 的 `search_freeze_spec` 和 `search_create` 必须传入
+当前 session 绑定的 `goal_plus_id`，hook 会在 MCP 调用前核对该归属。
 
 Candidate 的初始 `UserPromptSubmit` 只注入 runtime 绑定的 role 与
 `agent_session_id`；完整工作说明已包含在 host launch message，并由
@@ -159,6 +206,11 @@ action 和 final-check policy，要求 main agent 继续或记录终态。candid
 candidate 自己的 verifier 提交，不会要求它执行 parent-only selection/report/promotion。只有解析到
 Goal Plus Goal、Search 或 session context 的自动 Stop/SubagentStop 调用才会把 hook event 写入
 `.gp/host-logs/codex-hook-events/`，供最终报告和排障使用。
+
+当 Goal 已终态或 Stop reason 为 aborted/interrupted/cancelled 时，hook 会先关闭 Execution Scope。
+若仍有 active task，返回的阻止消息要求 main 执行 `list_agents` 和 `interrupt_agent` 后重试；该分支
+不把异常退出改写为 Goal/Search 的 durable 终态。session 已与 Goal 分离但仍拥有旧 scope 时，普通
+顶层 Stop 也执行同样的清理。`search_select` 的 cleanup fence 可幂等重试。
 
 Goal Plus session 结束后可以调用 `search_report` 生成报告。
 
@@ -199,6 +251,15 @@ main agent 将 payload 投影到当前 tool schema。`task_name`、`message` 和
 `strategy.worker_launch` 中的可选 override 只有在 launch payload 和当前 tool schema
 都支持时才能传递。
 
+Main 初次启动 Search candidate 时，native admission 对照持久化 launch 校验 `task_name`、
+`agent_type`、`fork_turns` 及 model/reasoning/service-tier override。丢失或改写这些字段会在
+native agent 登记前拒绝；错误只列字段名，不回显工作合同。`tool` 和 `budget_control`
+不是 spawn 参数，不参与字段映射。此校验不限制普通 Goal delegation 或 candidate 后代的
+任务消息，也不把初次 spawn 合同套用于 followup。
+宿主 transport 可以把 `message` 表示为密文，hook 不解密、不猜格式，也不拿它与 runtime
+明文逐字比较。Child 的初始 context 优先由可信 native task name 与持久 launch 绑定解析，
+不依赖消息内存在明文 session ID；没有 task identity 时保留原精确 launch prompt 解析。
+
 `spawn_agent` 没有 `cwd`，所以 launch 时不会把 child 切换到 candidate worktree。child 必须先调用
 `search_get_agent_context`，然后把 `context.candidate_task.workspace` 显式用于每次文件、编辑和
 shell 操作。
@@ -221,10 +282,15 @@ shell 操作。
    worker；
 7. selection 前 drain 或 interrupt 所有活跃 agent。
 
-每个 child 只负责一条自主 candidate loop：读取自己的 context 和 Global Evidence View，选择
-hypothesis/pivot/rebase，只编辑自己的 workspace，并在每次真实尝试后调用 verifier。`view=null`
-只表示 annotator 尚未发布，不要求等待。candidate 不能创建其他 candidate，也不能 select、report、
-promote 或修改 Goal Plus 状态。main 不会因为低分或单次没有提升而替换它。
+每个 child 只负责自己的 candidate：读取 context 和 Global Evidence View，选择技术方向，只编辑
+自己的 workspace，并在真实尝试后调用 verifier。`inner_agent=autoresearch` 在一次 dispatch 内
+自主多轮；`inner_agent=common` 完成一个有界 attempt 后返回。`view=null` 只表示 annotator 尚未
+发布，不要求等待。candidate 不能创建其他 candidate，也不能 select、report、promote 或修改
+Goal Plus 状态。
+
+成功的 `search_run_verifier` 返回后，Codex PostToolUse hook 从当前 Codex host 进程同时唤醒
+Annotation 和可选 Adaptive Scheduler queue。内部 `codex exec` 完整继承当前 host 配置，并携带
+launcher 写入的 host provenance；MCP server 不启动模型，也不需要配置服务认证变量。
 
 ## 模型选择
 
@@ -235,7 +301,7 @@ Codex main 判断。完整 key 列表见 [API](api.md#host-command-config)。
 Codex 可以分别指定 annotator 和 worker 模型：
 
 ```text
-$goal-plus max_parallel=4 annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-sol optimize ...
+$goal-plus inner_agent=autoresearch max_parallel=4 annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-sol optimize ...
 ```
 
 已经运行的 Codex session 就是 main agent，`$goal-plus` 不能切换它的模型。应在启动时使用
@@ -255,8 +321,15 @@ continuation 中保持不变。省略 `workers=` 和 `models=` 时，child 继�
 model catalog 只负责发现。若当前 `spawn_agent` schema 无法接收所选 model override，
 启动会明确失败。
 
-`adaptive_search` run 要求显式配置 `search_scheduler`，保持相同初始步骤，但 verifier 结算后可能返回 runtime
-拥有的 `allocation_decision`。main 不再继续已退休 worker，而是幂等应用准确 decision，把返回的
+Goal command 和 `search_freeze_spec` hook 会收集显式 worker、annotator、scheduler model，按
+model 去重后并发执行最小 `codex exec -m MODEL` 推理请求。检查只使用 Codex 原生 model switch，
+不解析或覆盖 provider；认证、endpoint 与其他外部配置由当前 Codex 环境原样继承。任一显式模型
+失败时，Goal 创建或 freeze 在 agent 启动前被拒绝。完全没有显式 model 时不 probe，当前 Main
+已经运行即为其模型可用的证据。
+
+`adaptive_search` run 要求显式配置同为 Codex host 的 `search_scheduler`，保持相同初始步骤，但
+verifier 结算后可能返回 runtime 拥有的 `allocation_decision`。确认 ScheduleTask 尚未结算时，
+runtime 拒绝继续对应 lane；main 不等待或自行启动 scheduler。main 不再继续已退休 worker，而是幂等应用准确 decision，把返回的
 派生 session launch payload 映射到 `spawn_agent`，并确保活跃数不超过 `max_parallel`。child
 从 decision 指定的 verifier-backed Git settlement 启动，并继承 run Evidence 和模型
 provenance；reward 不改变最终 hard-score selection。
@@ -309,7 +382,8 @@ Codex worker 仍然存在时，始终优先 native continuation：
 search_continue_agent_session -> followup_task
 ```
 
-follow-up 保持中性，只要求沿用已加载的 runtime context 和 Evidence 继续自主循环，不指定技术方向。
+follow-up 保持技术方向中性，并沿用 frozen inner-agent binding：`autoresearch` 继续自主循环，
+`common` 只完成下一个有界 attempt。
 
 worker 已消失或明确需要 fresh context 时，调用 `search_redispatch_candidate`。新 session
 继续使用同一 workspace、Git state、verifier history 和 `.tmp/handoff.json`。这是一条恢复路径，
@@ -325,9 +399,10 @@ artifact path，不包含 prompt、reasoning 或 tool payload 内容。
 work item、assignment/result/decision 和 Codex 原生 operation 投影为只读视图，但不会启动、
 等待或控制任何 thread。详见 [Monitor Feature Plugins](feature-plugins.md)。
 
-Codex 优先读取 `SubagentStop.agent_transcript_path`；缺失时通过唯一 `task_name` 查找
-`${CODEX_HOME:-~/.codex}/sessions/...` JSONL。即使 interrupted worker 没有发出 `SubagentStop`，
-也可以通过 task name 发现。
+Codex 优先读取 `SubagentStop.agent_transcript_path` 中的 canonical agent path，也接受 hook 直接提供的
+`task_name`。`spawn_agent` PostToolUse 保存 canonical task target；即使 interrupted worker 没有发出
+`SubagentStop`，成功且关联当前 wake 的 `interrupt_agent(target=...)` 仍可确认同一 target
+静默。再次唤醒后的观察规则见本页 [Execution Scope](#execution-scope)。
 
 需要原始 event 时使用：
 
@@ -357,7 +432,7 @@ pytest -m codex -q
 
 ```bash
 ST_CODEX_MODEL=gpt-5.6-luna \
-  pytest -m "st and st_codex" -k codex_parallel_loop_cycle -v -s -rs
+  pytest --run-system-tests -n 0 -m "st and st_codex" -k codex_parallel_loop_cycle -v -s -rs
 ```
 
 `codex_parallel_loop_cycle` 验证单次初始 plan、wait-any、同 worker follow-up、verifier-backed

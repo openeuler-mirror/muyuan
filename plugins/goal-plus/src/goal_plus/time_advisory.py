@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from goal_plus.models import AgentSessionRecord, CandidateRecord
+from goal_plus.candidate_host import candidate_host_queries
+from goal_plus.domain.search import AgentSessionRecord
+from goal_plus.ports.state import CandidateRecord
 
 
 OUTER_DEADLINE_ENV = "GOAL_PLUS_OUTER_DEADLINE_AT"
@@ -54,35 +56,15 @@ def find_agent_session(
     root_dir: Path | str,
     agent_session_id: str,
 ) -> AgentSessionRecord | None:
-    root = Path(root_dir).resolve()
-    matches = sorted(
-        (root / "runs").glob(f"*/agent_sessions/{agent_session_id}.json")
-    )
-    if len(matches) != 1:
-        return None
-    payload = _load_json(matches[0])
-    if payload is None:
-        return None
-    try:
-        return AgentSessionRecord.model_validate(payload)
-    except ValueError:
-        return None
+    return candidate_host_queries(root_dir).find_session(agent_session_id)
 
 
 def is_search_candidate_session(session: AgentSessionRecord) -> bool:
     if session.host == "pi-rpc":
         return str(session.launch.get("role") or "worker") == "worker"
-    if session.host != "codex":
-        return False
-    task_name = str(
-        session.host_handle.task_name or session.launch.get("task_name") or ""
-    )
-    if Path(task_name).name.startswith("search_agent_"):
-        return True
-    # Compatibility for sessions persisted before task_name became part of
-    # the Codex host handle.
-    agent_type = str(session.launch.get("agent_type") or "").replace("-", "_")
-    return agent_type.startswith("search_candidate")
+    # This typed record is created only by candidate_sessions and already binds
+    # run/candidate identity. A host task's display name does not confer a role.
+    return session.host == "codex"
 
 
 def _candidate_records(root: Path, run_id: str) -> list[CandidateRecord]:

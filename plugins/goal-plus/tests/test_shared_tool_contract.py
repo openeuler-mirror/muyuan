@@ -137,7 +137,7 @@ def _named_entries(source: str) -> dict[str, str]:
 
 
 def _pi_tool_contract() -> dict[str, tuple[set[str], set[str]]]:
-    source = PI_EXTENSION.read_text(encoding="utf-8")
+    source = (PI_EXTENSION.parent / "lib/goal-plus-schemas.ts").read_text(encoding="utf-8")
     marker = "const RuntimeToolSchemas: Record<string, TSchema> ="
     object_start = source.index("{", source.index(marker))
     body, _ = _balanced_region(source, object_start)
@@ -173,10 +173,14 @@ def test_pi_typebox_schemas_cover_the_complete_shared_fastmcp_contract(
 ) -> None:
     fastmcp = _fastmcp_tool_contract(tmp_path)
     pi = _pi_tool_contract()
-    pi_shared = {name: schema for name, schema in pi.items() if not name.startswith("pi_")}
+    pi_shared = {
+        name: schema
+        for name, schema in pi.items()
+        if not name.startswith(("pi_", "thinkthread_"))
+    }
 
-    # pi_search_pool_* and the other pi_* entries are host-local supervisor tools,
-    # not logical shared-plane APIs, and are deliberately outside this comparison.
+    # Pi and ThinkThread pool/Artifact View entries are host-local tools, not
+    # logical shared-plane APIs, and are deliberately outside this comparison.
     assert set(pi_shared) == set(fastmcp)
     assert {
         name: {
@@ -200,4 +204,8 @@ def test_evidence_annotator_host_is_outside_the_logical_tool_boundary() -> None:
     """The accepted host difference is nested spec data, not a tool-call drift."""
     pi = _pi_tool_contract()
 
-    assert pi["search_freeze_spec"][0] == {"spec", "verifier_artifact_paths"}
+    assert pi["search_freeze_spec"][0] == {
+        "goal_plus_id",
+        "spec",
+        "verifier_artifact_paths",
+    }

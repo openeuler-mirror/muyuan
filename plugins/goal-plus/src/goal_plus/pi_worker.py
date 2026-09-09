@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+from goal_plus.candidate_host import candidate_host_queries
+from goal_plus.infrastructure.worker_handoff import bounded_diagnostic, workspace_progress_handoff
+
 import argparse
 import json
 import os
-import signal
 import subprocess
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from goal_plus.time_advisory import build_search_time_advisory
-
+from goal_plus.execution.managed_process import ManagedProcess
+from goal_plus.execution.launch_gate import ProcessLaunchGate
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, host_assets_root
+from goal_plus.time_advisory import build_search_time_advisory
 
 
 class PiRpcError(RuntimeError):
@@ -41,36 +45,6 @@ def _stream_error_retry(error: str | None) -> str | None:
     )
 
 
-def _bounded_error(value: Any, *, limit: int = 500) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        text = value
-    else:
-        try:
-            text = json.dumps(value, ensure_ascii=False)
-        except (TypeError, ValueError):
-            text = str(value)
-    return text if len(text) <= limit else text[:limit] + "..."
-
-
-def _bounded_json(value: Any, *, depth: int = 0) -> Any:
-    if depth >= 4:
-        return _bounded_error(value, limit=500)
-    if isinstance(value, dict):
-        return {
-            str(key)[:100]: _bounded_json(item, depth=depth + 1)
-            for key, item in list(value.items())[:20]
-        }
-    if isinstance(value, list):
-        return [_bounded_json(item, depth=depth + 1) for item in value[:20]]
-    if isinstance(value, str):
-        return value if len(value) <= 2000 else value[:2000] + "..."
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return _bounded_error(value, limit=500)
-
-
 def _count_tool_calls(message: Any) -> int:
     if not isinstance(message, dict):
         return 0
@@ -93,159 +67,6 @@ def _length_without_tool_call(message: Any) -> bool:
     )
 
 
-def _git_snapshot(workspace: Path) -> dict[str, Any]:
-    if not (workspace / ".git").exists():
-        return {
-            "git_head": None,
-            "dirty": False,
-            "git_status": [],
-            "changed_files": [],
-            "diff_stat": None,
-        }
-
-    def output(args: list[str]) -> str | None:
-        try:
-            completed = subprocess.run(
-                args,
-                cwd=workspace,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            return None
-        return completed.stdout.rstrip("\n")
-
-    head_output = output(["git", "rev-parse", "--verify", "HEAD"])
-    head = head_output.strip() if head_output else None
-    status_text = output(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"]
-    )
-    status = [line for line in (status_text or "").splitlines() if line.strip()]
-
-    def ignored(path: str) -> bool:
-        parts = Path(path).parts
-        return (
-            path.startswith(".tmp/")
-            or "__pycache__" in parts
-            or path.endswith((".pyc", ".pyo"))
-        )
-
-    changed_files: list[str] = []
-    for line in status:
-        path = line[3:] if len(line) > 3 else ""
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        if path and not ignored(path):
-            changed_files.append(path)
-    diff_stat = output(["git", "diff", "--stat", "HEAD"]) if head else None
-    return {
-        "git_head": head,
-        "dirty": bool(changed_files),
-        "git_status": [
-            line
-            for line in status
-            if not ignored(line[3:] if len(line) > 3 else "")
-        ][:100],
-        "changed_files": sorted(set(changed_files))[:100],
-        "diff_stat": _bounded_error(diff_stat, limit=4000),
-    }
-
-
-def _verifier_snapshot(root: Path, run_id: str, candidate_id: str) -> dict[str, Any]:
-    candidate_path = root / "runs" / run_id / "candidates" / candidate_id / "candidate.json"
-    try:
-        payload = json.loads(candidate_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return {
-            "count": 0,
-            "best_iteration": None,
-            "best_score": None,
-            "best_git_head": None,
-        }
-    iterations = payload.get("iterations")
-    records = iterations if isinstance(iterations, list) else []
-    valid = [
-        item
-        for item in records
-        if isinstance(item, dict)
-        and item.get("process_passed") is True
-        and not item.get("touched_denied_files")
-        and not item.get("changed_outside_allowed")
-        and isinstance(item.get("score"), (int, float))
-    ]
-    direction = "maximize"
-    try:
-        run_payload = json.loads(
-            (root / "runs" / run_id / "run.json").read_text(encoding="utf-8")
-        )
-        spec_payload = json.loads(
-            (
-                root
-                / "specs"
-                / str(run_payload["frozen_spec_id"])
-                / "frozen_spec.json"
-            ).read_text(encoding="utf-8")
-        )
-        if spec_payload.get("spec", {}).get("metric_direction") == "minimize":
-            direction = "minimize"
-    except (FileNotFoundError, KeyError, OSError, json.JSONDecodeError, TypeError):
-        pass
-    chooser = min if direction == "minimize" else max
-    best = chooser(valid, key=lambda item: float(item["score"]), default=None)
-    return {
-        "count": len(records),
-        "best_iteration": best.get("iteration") if best else None,
-        "best_score": best.get("score") if best else None,
-        "best_git_head": best.get("git_head") if best else None,
-    }
-
-
-def _workspace_progress_handoff(
-    workspace: Path,
-    *,
-    root: Path,
-    run_id: str,
-    candidate_id: str,
-    timed_out: bool,
-    runner_failed: bool,
-    assistant_text: str | None,
-) -> dict[str, Any]:
-    model_handoff: dict[str, Any] | None = None
-    handoff_path = workspace / ".tmp" / "handoff.json"
-    try:
-        parsed = json.loads(handoff_path.read_text(encoding="utf-8"))
-        if isinstance(parsed, dict):
-            model_handoff = _bounded_json(parsed)
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        pass
-
-    workspace_state = _git_snapshot(workspace)
-    verifier_state = _verifier_snapshot(root, run_id, candidate_id)
-    assistant_summary = _bounded_error(assistant_text, limit=2000)
-    summary = (
-        model_handoff.get("summary")
-        if model_handoff and isinstance(model_handoff.get("summary"), str)
-        else assistant_summary
-    )
-    if not summary:
-        changed_files = workspace_state["changed_files"]
-        summary = (
-            "工作区存在尚未验证的变更：" + ", ".join(changed_files)
-            if changed_files
-            else "尚未记录 verifier 支持的进展。"
-        )
-    return {
-        "status": "runner_failed" if runner_failed else "timed_out" if timed_out else "completed",
-        "summary": summary,
-        "model_handoff": model_handoff,
-        "assistant_summary": assistant_summary,
-        "workspace": workspace_state,
-        "verifier": verifier_state,
-    }
-
-
 def _message_summary(message: Any) -> dict[str, Any]:
     if not isinstance(message, dict):
         return {}
@@ -264,7 +85,7 @@ def _message_summary(message: Any) -> dict[str, Any]:
     if isinstance(message.get("usage"), dict):
         summary["usage"] = message["usage"]
     if message.get("errorMessage"):
-        summary["error"] = _bounded_error(message["errorMessage"])
+        summary["error"] = bounded_diagnostic(message["errorMessage"])
     return summary
 
 
@@ -276,7 +97,7 @@ def _compact_pi_event(event: dict[str, Any]) -> dict[str, Any] | None:
             "type": event_type,
             "snapshot": snapshot if isinstance(snapshot, dict) else None,
             **(
-                {"error": _bounded_error(event.get("error"))}
+                {"error": bounded_diagnostic(event.get("error"))}
                 if event.get("error")
                 else {}
             ),
@@ -310,7 +131,7 @@ def _compact_pi_event(event: dict[str, Any]) -> dict[str, Any] | None:
         if event.get("isError") is not None:
             summary["is_error"] = bool(event.get("isError"))
         if event.get("isError"):
-            summary["error"] = _bounded_error(event.get("result"))
+            summary["error"] = bounded_diagnostic(event.get("result"))
         return summary
     if event_type == "response":
         summary = {
@@ -330,10 +151,10 @@ def _compact_pi_event(event: dict[str, Any]) -> dict[str, Any] | None:
                     if key in data:
                         summary[key] = data[key]
         if event.get("error"):
-            summary["error"] = _bounded_error(event.get("error"))
+            summary["error"] = bounded_diagnostic(event.get("error"))
         return summary
     if event_type in {"stderr", "raw_stdout"}:
-        return {"type": event_type, "error": _bounded_error(event.get("text"))}
+        return {"type": event_type, "error": bounded_diagnostic(event.get("text"))}
     if event_type.startswith("auto_retry_"):
         return {
             "type": event_type,
@@ -342,7 +163,7 @@ def _compact_pi_event(event: dict[str, Any]) -> dict[str, Any] | None:
                 for key in ("attempt", "maxAttempts", "delayMs", "success")
                 if key in event
             },
-            **({"error": _bounded_error(event.get("error"))} if event.get("error") else {}),
+            **({"error": bounded_diagnostic(event.get("error"))} if event.get("error") else {}),
         }
     if event_type == "queue_update":
         return {
@@ -511,7 +332,7 @@ class _RpcClient:
             else None
         )
         if last_message.get("stopReason") == "error" or error:
-            self._terminal_error = _bounded_error(error) or "Pi agent ended with error"
+            self._terminal_error = bounded_diagnostic(error) or "Pi agent ended with error"
         else:
             self._terminal_error = None
 
@@ -526,21 +347,7 @@ def default_extension_path() -> Path:
     return host_assets_root() / ".pi" / "extensions" / "goal-plus.ts"
 
 
-def _kill_process_group(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGTERM)
-        else:
-            proc.terminate()
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
-        proc.wait(timeout=5)
+PROCESS_STOP_TIMEOUT_SECONDS = 5.0
 
 
 def _safe_session_name(value: str) -> str:
@@ -880,13 +687,9 @@ def _record_interrupted_final_check(
 
 def _observe_search_worker(root: Path, agent_session_id: str, proc: subprocess.Popen) -> None:
     from goal_plus.host_recovery import observe_worker
-    from goal_plus.runtime import FileSearchRuntime
-    try:
-        worker_session = FileSearchRuntime(root)._load_agent_session_by_id(agent_session_id)
-        observe_worker(root, worker_session, proc.pid)
-    except Exception:
-        _kill_process_group(proc)
-        raise
+
+    worker_session = candidate_host_queries(root).session(agent_session_id)
+    observe_worker(root, worker_session, proc.pid)
 
 
 def run_pi_rpc_worker(
@@ -930,9 +733,13 @@ def run_pi_rpc_worker(
     session_dir.mkdir(parents=True, exist_ok=True)
     worker_role = str(launch.get("role") or "worker")
     worker_continue_until_ms: int | None = None
-    if worker_role == "worker" and isinstance(
-        budget.get("autoresearch_lease"), dict
-    ):
+    autoresearch_lease = budget.get("autoresearch_lease")
+    minimum_runtime_seconds = (
+        int(autoresearch_lease.get("min_runtime_seconds") or 0)
+        if isinstance(autoresearch_lease, dict)
+        else 0
+    )
+    if worker_role == "worker" and minimum_runtime_seconds > 0:
         continue_seconds = max(0, timeout_seconds - soft_closeout_seconds)
         if continue_seconds:
             worker_continue_until_ms = int(
@@ -956,7 +763,6 @@ def run_pi_rpc_worker(
     selected_model_pattern = (
         model_pattern
         or launch.get("model_pattern")
-        or os.environ.get("GOAL_PLUS_PI_MODEL")
     )
     selected_thinking = thinking_level or launch.get("thinking_level")
     cmd = [pi_binary]
@@ -978,44 +784,96 @@ def run_pi_rpc_worker(
             str(extension),
         ]
     )
-    proc = subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        start_new_session=True,
-    )
-    if worker_role == "worker" and launch.get("run_id"):
-        _observe_search_worker(root, agent_session_id, proc)
-    rpc = _RpcClient(
-        proc=proc,
-        event_log=event_log,
-        text_log=text_log,
-        raw_logging=raw_logging,
-    )
-    rpc.start()
+    execution_scope_id = launch.get("execution_scope_id")
+    execution_process_token: str | None = None
+    with ProcessLaunchGate() as gate, ExitStack() as startup:
+        proc = subprocess.Popen(
+            gate.command(cmd),
+            pass_fds=gate.pass_fds,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+        managed = ManagedProcess(
+            proc, term_timeout=PROCESS_STOP_TIMEOUT_SECONDS, kill_timeout=PROCESS_STOP_TIMEOUT_SECONDS,
+        )
 
-    assistant_text: str | None = None
-    timed_out = False
-    soft_closeout_sent = False
-    flagged_prompt_retried = False
-    stream_error_retried = False
-    time_advisory_sent = False
-    time_advisory: dict[str, Any] | None = None
-    last_time_advisory_check = 0.0
-    started_at = _utc_timestamp()
-    started_monotonic = time.monotonic()
-    deadline = started_monotonic + timeout_seconds
-    metrics_baseline = dict(launch.get("metrics_baseline") or {})
-    last_state_data: dict[str, Any] = {}
-    pi_metrics: dict[str, Any] | None = None
-    refresh_reason: str | None = None
-    runtime_start: dict[str, Any] | None = None
-    runtime_start_error: str | None = None
+        def stop_process() -> None:
+            managed.terminate()
+            if execution_process_token is not None and isinstance(execution_scope_id, str):
+                from goal_plus.host_scope import finish_execution_process
+
+                try:
+                    finish_execution_process(
+                        root_dir=root, scope_id=execution_scope_id, token=execution_process_token,
+                    )
+                except (FileNotFoundError, OSError, TypeError, ValueError):
+                    pass
+
+        startup.callback(stop_process)
+
+        def remember_process(witness) -> None:
+            if execution_process_token is not None and isinstance(execution_scope_id, str):
+                from goal_plus.host_scope import remember_execution_process
+
+                remember_execution_process(
+                    root_dir=root, scope_id=execution_scope_id, token=execution_process_token, witness=witness,
+                )
+
+        def recall_process():
+            if execution_process_token is not None and isinstance(execution_scope_id, str):
+                from goal_plus.host_scope import execution_process_witness
+
+                return execution_process_witness(root_dir=root, scope_id=execution_scope_id, token=execution_process_token)
+            return None
+
+        if os.name == "posix":
+            managed.own_process_group(remember=remember_process, recall=recall_process)
+        if worker_role == "worker" and launch.get("run_id"):
+            _observe_search_worker(root, agent_session_id, proc)
+        if isinstance(execution_scope_id, str):
+            from goal_plus.host_scope import register_execution_process
+
+            execution_process_token = register_execution_process(
+                root_dir=root,
+                scope_id=execution_scope_id,
+                pid=int(proc.pid),
+                process_group_id=int(proc.pid),
+                label=f"pi-rpc:{session_id}",
+                run_id=(str(launch["run_id"]) if launch.get("run_id") else None),
+            )
+        gate.release()
+        rpc = _RpcClient(
+            proc=proc,
+            event_log=event_log,
+            text_log=text_log,
+            raw_logging=raw_logging,
+        )
+        rpc.start()
+
+        assistant_text: str | None = None
+        timed_out = False
+        soft_closeout_sent = False
+        flagged_prompt_retried = False
+        stream_error_retried = False
+        time_advisory_sent = False
+        time_advisory: dict[str, Any] | None = None
+        last_time_advisory_check = 0.0
+        started_at = _utc_timestamp()
+        started_monotonic = time.monotonic()
+        deadline = started_monotonic + timeout_seconds
+        metrics_baseline = dict(launch.get("metrics_baseline") or {})
+        last_state_data: dict[str, Any] = {}
+        pi_metrics: dict[str, Any] | None = None
+        refresh_reason: str | None = None
+        runtime_start: dict[str, Any] | None = None
+        runtime_start_error: str | None = None
+        cleanup = startup.pop_all()
 
     def _abort_for_timeout() -> None:
         nonlocal timed_out
@@ -1090,12 +948,10 @@ def run_pi_rpc_worker(
                 and not time_advisory_sent
                 and completed_tools
             ):
-                force_check = any(
-                    tool_name.replace("-", "_").endswith("search_run_verifier")
-                    for tool_name in completed_tools
-                )
                 now_monotonic = time.monotonic()
-                if force_check or now_monotonic - last_time_advisory_check >= 10:
+                # RPC completion names carry no registration provenance. Use
+                # the existing polling interval and persisted verifier facts.
+                if now_monotonic - last_time_advisory_check >= 10:
                     last_time_advisory_check = now_monotonic
                     try:
                         advisory = build_search_time_advisory(
@@ -1201,44 +1057,43 @@ def run_pi_rpc_worker(
             if terminal_error:
                 raise PiRpcError(f"Pi agent failed: {terminal_error}")
     finally:
-        ended_at = _utc_timestamp()
-        duration_seconds = time.monotonic() - started_monotonic
-        if selected_model_pattern:
-            last_state_data.setdefault("model", selected_model_pattern)
-        if selected_thinking:
-            last_state_data.setdefault("thinkingLevel", selected_thinking)
-        try:
-            pi_metrics = _collect_pi_metrics(
-                rpc,
-                session_id=session_id,
-                metrics_baseline=metrics_baseline,
-                last_state_data=last_state_data,
-                started_at=started_at,
-                ended_at=ended_at,
-                duration_seconds=duration_seconds,
-            )
-        except Exception as exc:
-            pi_metrics = {
-                "scope": "unavailable",
-                "session_id": session_id,
-                "started_at": started_at,
-                "ended_at": ended_at,
-                "duration_seconds": duration_seconds,
-                "errors": [str(exc)],
-            }
-        if pi_metrics is not None:
-            pi_metrics["runtime_start"] = runtime_start
-            if runtime_start_error is not None:
-                pi_metrics["runtime_start_error"] = runtime_start_error
-        _kill_process_group(proc)
+        with cleanup:
+            ended_at = _utc_timestamp()
+            duration_seconds = time.monotonic() - started_monotonic
+            if selected_model_pattern:
+                last_state_data.setdefault("model", selected_model_pattern)
+            if selected_thinking:
+                last_state_data.setdefault("thinkingLevel", selected_thinking)
+            try:
+                pi_metrics = _collect_pi_metrics(
+                    rpc,
+                    session_id=session_id,
+                    metrics_baseline=metrics_baseline,
+                    last_state_data=last_state_data,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    duration_seconds=duration_seconds,
+                )
+            except Exception as exc:
+                pi_metrics = {
+                    "scope": "unavailable",
+                    "session_id": session_id,
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                    "duration_seconds": duration_seconds,
+                    "errors": [str(exc)],
+                }
+            if pi_metrics is not None:
+                pi_metrics["runtime_start"] = runtime_start
+                if runtime_start_error is not None:
+                    pi_metrics["runtime_start_error"] = runtime_start_error
         _record_interrupted_final_check(
             launch,
             root=root,
             timed_out=timed_out,
             exit_code=proc.returncode,
         )
-
-    progress_handoff = _workspace_progress_handoff(
+    progress_handoff = workspace_progress_handoff(
         cwd,
         root=root,
         run_id=str(launch.get("run_id") or ""),
