@@ -24,8 +24,8 @@ def test_native_install_reinstall_uninstall(tmp_path):
            "XDG_CONFIG_HOME": str(tmp_path / "config"), "XDG_DATA_HOME": str(tmp_path / "data"),
            "GOAL_PLUS_INSTALL_STATE_DIR": str(tmp_path / "state"),
            "PI_CODING_AGENT_DIR": str(agent), "GOAL_PLUS_INSTALL_HOME": str(tmp_path / "managed")}
-    def run(args, *, input=None):
-        result = subprocess.run(args, cwd=ROOT, env=env, input=input,
+    def run(args, *, input=None, environment=None, cwd=ROOT):
+        result = subprocess.run(args, cwd=cwd, env=environment or env, input=input,
                                 capture_output=True, text=True, timeout=300)
         assert result.returncode == 0, result.stdout + result.stderr
         return result.stdout
@@ -41,8 +41,21 @@ def test_native_install_reinstall_uninstall(tmp_path):
     inventory = json.loads(run(["codex", "plugin", "list", "--json"]))
     assert len([p for p in inventory["installed"] if p["pluginId"] == "goal-plus@goal-plus"]) == 1
     python = str(package.parent / "venv/bin/python")
-    run([python, "-I", "-c", MCP_CHECK, str(package)])
-    run(["node", "--input-type=module", "-e", PI_LOAD_CHECK, str(package), str(Path(shutil.which("pi")).resolve())])
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    for name in ("python", "python3"):
+        executable = foreign / name
+        executable.write_text("#!/bin/sh\nexit 86\n")
+        executable.chmod(0o755)
+    for name in ("goal_plus", "json"):
+        (foreign / f"{name}.py").write_text("raise RuntimeError('foreign module loaded')\n")
+    poisoned = {**env, "PATH": str(foreign) + os.pathsep + env["PATH"],
+                "PYTHONHOME": str(foreign), "PYTHONPATH": str(foreign),
+                "GOAL_PLUS_PYTHON": str(foreign / "python")}
+    run([python, "-I", "-c", MCP_CHECK, str(package)], environment=poisoned, cwd=foreign)
+    pi = str(Path(shutil.which("pi")).resolve())
+    run(["node", "--input-type=module", "-e", PI_LOAD_CHECK, str(package), pi, python],
+        environment=poisoned, cwd=foreign)
 
     before = settings.read_bytes()
     declined = run([str(ROOT / "install.sh"), "--codex", "--pi"], input="n\n")
@@ -68,19 +81,25 @@ def test_native_install_reinstall_uninstall(tmp_path):
     assert not package.exists()
     dev = tmp_path / "pi-dev"
     run([str(ROOT / "install.sh"), "--pi-dev", "--pi-dev-dir", str(dev)])
-    run([str(dev / "bin/pi-goal-plus"), "--help"])
+    run([str(dev / "bin/pi-goal-plus"), "--help"], environment=poisoned, cwd=foreign)
+    dev_python = str(dev / "venv/bin/python")
+    run(["node", "--input-type=module", "-e", PI_LOAD_CHECK, str(ROOT), pi, dev_python],
+        environment={**poisoned, "GOAL_PLUS_PI_DEV_ROOT": str(ROOT), "GOAL_PLUS_PYTHON": dev_python},
+        cwd=foreign)
     run([str(ROOT / "uninstall.sh"), "--pi-dev", "--pi-dev-dir", str(dev)])
     assert not dev.exists()
 
 
 MCP_CHECK = r'''
-import asyncio, json, sys
+import asyncio, json, os, sys
 from pathlib import Path
 from fastmcp import Client
 package = Path(sys.argv[1])
 server = json.loads((package / '.mcp.json').read_text())['mcpServers']['goal-plus']
 async def check():
-    async with Client({'mcpServers': {'goal-plus': {k: server[k] for k in ('command', 'args')}}}) as client:
+    config = {k: server[k] for k in ('command', 'args')}
+    config['env'] = dict(os.environ)
+    async with Client({'mcpServers': {'goal-plus': config}}) as client:
         tools = await client.list_tools()
         assert 'goal_plus_status' in {tool.name for tool in tools}
 asyncio.run(check())
@@ -90,7 +109,8 @@ PI_LOAD_CHECK = r'''
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-const [packageRoot, pi] = process.argv.slice(1);
+import { spawnSync } from "node:child_process";
+const [packageRoot, pi, python] = process.argv.slice(1);
 const { loadExtensions } = await import(pathToFileURL(join(dirname(pi), "core/extensions/loader.js")));
 const result = await loadExtensions([join(packageRoot, "assets/pi/extensions/goal-plus.ts")], process.cwd());
 assert.deepEqual(result.errors, []);
@@ -98,5 +118,8 @@ assert.equal(result.extensions.length, 1);
 assert(result.extensions[0].tools.has("goal_plus_status"));
 const transport = await import(pathToFileURL(join(packageRoot, "assets/pi/extensions/lib/goal-plus-transport.ts")));
 const invocation = transport.projectModuleInvocation({cwd: process.cwd()}, "goal-plus-pi-tool", "goal_plus.pi_tool");
-assert.equal(invocation.command, join(dirname(packageRoot), "venv/bin/python"));
+assert.equal(invocation.command, python);
+const tool = spawnSync(invocation.command, [...invocation.argsPrefix, "--help"], {encoding: "utf8"});
+assert.equal(tool.status, 0, tool.stdout + tool.stderr);
+assert.match(tool.stdout, /usage:/);
 '''

@@ -4,14 +4,12 @@ import argparse
 import base64
 import json
 import os
+import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Any
-
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src"))
 
 from goal_plus.ports.annotation import EvidenceAnnotationResult
 from goal_plus.annotation_host import AnnotationHostService
@@ -427,10 +425,10 @@ def _runtime_project(workspace: Path) -> Path:
     project.joinpath("solution.txt").write_text("0\n", encoding="utf-8")
     project.joinpath("dependency.txt").write_text("stable\n", encoding="utf-8")
     project.joinpath("evaluator.py").write_text(
-        "import json\n"
+        "import json, sys\n"
         "from pathlib import Path\n"
         "score = float(Path('solution.txt').read_text().strip())\n"
-        "print(json.dumps({'combined_score': score}))\n",
+        "print(json.dumps({'combined_score': score, 'python': sys.executable}))\n",
         encoding="utf-8",
     )
     return project
@@ -652,6 +650,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
             assert iteration.artifact_ref.kind == "fs_snapshot"
             verifier_result = record.score_report.verifier_results[0]
             assert verifier_result.metrics["snapshot_id"] == iteration.artifact_ref.id
+            assert verifier_result.metrics["python"] == sys.executable
             snapshot_value = client.snapshot_read_file(
                 iteration.artifact_ref.id,
                 "project/solution.txt",
@@ -718,29 +717,13 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
                     pass
                 else:
                     raise AssertionError("Artifact View exposed private Git metadata")
-                artifact_view_request_id = _request_id(
-                    f"artifact-view-private:{run_id}:{candidate_id}:1"
-                )
-                sanitized = router.run(
-                    "attempt",
-                    [
-                        "/bin/sh",
-                        "-c",
-                        (
-                            "pwd; remaining=0; "
-                            "for path in .git results.tsv; do "
-                            "if test -e \"$path\"; then "
-                            "printf 'private-path-visible:%s\\n' \"$path\"; "
-                            "remaining=1; fi; done; exit \"$remaining\""
-                        ),
-                    ],
-                    cwd="project",
-                    request_id=artifact_view_request_id,
-                )
-                assert sanitized["exit"] == {"kind": "code", "code": 0}, {
-                    "result": sanitized,
-                    "output": decode_fs_run_output(sanitized),
-                }
+                for private_path in ("project/.git/HEAD", "project/results.tsv"):
+                    try:
+                        router.pread("attempt", private_path)
+                    except PermissionError:
+                        pass
+                    else:
+                        raise AssertionError(f"Artifact View exposed {private_path}")
                 inner_git_verified = True
                 artifact_view_private_paths_filtered = True
             else:
@@ -894,6 +877,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
                 client=client,
             )
     assert closed["state"] == "closed"
+    close_thinkthread_annotation(root_dir=runtime_root, run_id=run_id, client=client)
     assert client.invoke("thinkthread.list").get("children") == []
     return {
         "schema_version": 1,
@@ -909,6 +893,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
         ],
         "run_id": run_id,
         "baseline_snapshot_id": runtime.search_run.state.read_run(run_id).source_artifact_ref.id,
+        "runtime_python": sys.executable,
         "inner_agent": frozen.spec.strategy.inner_agent,
         "inner_agent_binding": inner_agent_binding,
         "autoresearch_prompt_loaded": inner_agent == "autoresearch",
@@ -1530,6 +1515,35 @@ def run_probe(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def run_circle_baseline(config: dict[str, Any]) -> dict[str, Any]:
+    workspace = Path(config["report_path"]).parent
+    package = Path(os.environ["GOAL_PLUS_SOURCE_PATH"])
+    project = workspace / "project"
+    subprocess.run(
+        [sys.executable, "-I", str(package / "examples/circle-packing-thinkthread-apply/prepare_workspace.py"),
+         "--destination", str(project)],
+        check=True, capture_output=True, timeout=30,
+    )
+    before = {p.relative_to(project): p.read_bytes() for p in project.rglob("*") if p.is_file()}
+    verifier = project / ".goal-plus-verifiers/circle_packing_score.py"
+    local = subprocess.run([sys.executable, str(verifier)], cwd=project,
+                           check=True, capture_output=True, text=True, timeout=30)
+    assert {p.relative_to(project): p.read_bytes() for p in project.rglob("*") if p.is_file()} == before
+    spec = SearchSpec.model_validate_json((project / "search-spec.json").read_text())
+    spec.source_path = str(project)
+    runtime = FileSearchRuntime(workspace / ".gp-circle-baseline")
+    frozen = runtime.freeze_spec(spec, [verifier], native_host="pi")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    run = runtime.search_run.state.read_run(run_id)
+    baseline = run.workspace_bootstrap_verification
+    assert baseline.passed
+    return {"local_score": json.loads(local.stdout)["sum_radii"],
+            "snapshot_score": baseline.aggregate_score,
+            "source_unchanged": not list(project.rglob("__pycache__")),
+            "runtime_python": sys.executable, "configured_python": os.environ["GOAL_PLUS_PYTHON"],
+            "snapshot_id": run.source_artifact_ref.id}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
@@ -1538,6 +1552,7 @@ def main() -> int:
     report_path = Path(config["report_path"])
     scenarios = {
         "root_preflight": run_probe,
+        "circle_baseline": run_circle_baseline,
         "abi_single_child": run_abi_smoke,
         "runtime_k2": run_runtime_k2,
         "runtime_k2_autoresearch": run_runtime_k2,

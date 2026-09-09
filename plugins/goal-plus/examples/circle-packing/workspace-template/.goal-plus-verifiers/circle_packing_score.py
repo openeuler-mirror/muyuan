@@ -4,6 +4,7 @@ import importlib.util
 import json
 import math
 from pathlib import Path
+import sys
 from typing import Any
 
 
@@ -16,7 +17,13 @@ def _load_program(program_path: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load program from {program_path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Scoring must not add runtime caches to the source artifact.
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
     return module
 
 

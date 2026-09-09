@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Any, Literal
+from goal_plus.infrastructure.verifiers.command import verifier_argv
 from goal_plus.infrastructure.verifiers.output import VERIFIER_LOG_LIMIT_BYTES, bounded_verifier_log
 from goal_plus.infrastructure.verifiers.local import (
     LocalVerifiers,
@@ -140,11 +141,13 @@ class ThinkThreadVerifiers:
             "snapshotId": artifact_ref.id,
             "writes": "discard",
             "invocation": {
-                "argv": list(command.command),
+                "argv": verifier_argv(command.command),
                 "cwd": cwd,
                 "environment": {
                     VERIFIER_PHASE_ENV: phase,
                     "PYTHONPATH": ".",
+                    "PYTHONHOME": "",
+                    "PYTHONNOUSERSITE": "1",
                 },
             },
             "limits": {

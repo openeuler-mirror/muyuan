@@ -6,7 +6,6 @@ import signal
 import shlex
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -17,8 +16,7 @@ from goal_plus.monitor import goal_plus_monitor_snapshot
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTALL_HINT = (
-    'Install this project into the Python environment that launches Pi: '
-    'python -m pip install -e ".[dev]".'
+    'Run ./install.sh --pi, or select a prepared pi-goal-plus launcher with ST_PI_BINARY.'
 )
 AUDIT_PROMPT = (
     "请只读审计当前分支的 Pi native Goal Plus 改造是否完整。范围限定为 "
@@ -99,9 +97,6 @@ def _write_spec_revision_workspace(workspace: Path) -> None:
 def _pi_base_command(session_dir: Path, session_id: str) -> list[str]:
     command = [
         os.environ.get("ST_PI_BINARY", "pi"),
-        "--no-extensions",
-        "-e",
-        str(ROOT / "assets" / "pi" / "extensions" / "goal-plus.ts"),
         "--approve",
         "--session-dir",
         str(session_dir),
@@ -140,9 +135,6 @@ def _run_env(search_root: Path) -> dict[str, str]:
     return {
         **os.environ,
         "GOAL_PLUS_ROOT": str(search_root),
-        "GOAL_PLUS_SOURCE_PATH": str(ROOT),
-        "GOAL_PLUS_PI_DEV_ROOT": str(ROOT),
-        "GOAL_PLUS_PYTHON": sys.executable,
     }
 
 

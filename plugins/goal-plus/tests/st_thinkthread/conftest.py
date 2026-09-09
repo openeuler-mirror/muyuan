@@ -89,6 +89,9 @@ def run_thinkthread_scenario(thinkthread_root: tuple[Path, Path]):
     workspace, state_root = thinkthread_root
 
     def run(scenario: str) -> dict[str, Any]:
+        harness = workspace / ".st-harness"
+        shutil.copytree(ROOT / "tests/st_thinkthread", harness,
+                        ignore=shutil.ignore_patterns("__pycache__"))
         report_path = workspace / ".goal-plus-thinkthread-st-report.json"
         driver_result_path = workspace / ".goal-plus-thinkthread-st-driver.json"
         report_path.unlink(missing_ok=True)
@@ -137,7 +140,7 @@ def run_thinkthread_scenario(thinkthread_root: tuple[Path, Path]):
             "--detach",
             "--",
             "--extension",
-            str(ROOT / "tests" / "st_thinkthread" / "controller-extension.ts"),
+            str(harness / "controller-extension.ts"),
         ]
         if config["model"]:
             command.extend(["--model", config["model"]])

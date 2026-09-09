@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CONFIG_NAME = ".goal-plus-thinkthread-st.json";
 const RESULT_NAME = ".goal-plus-thinkthread-st-driver.json";
@@ -19,8 +20,8 @@ export default function (pi: ExtensionAPI) {
 			);
 			return;
 		}
-		const driver = join(source, "tests", "st_thinkthread", "driver.py");
-		const result = await pi.exec(python, [driver, "--config", config], {
+		const driver = join(dirname(fileURLToPath(import.meta.url)), "driver.py");
+		const result = await pi.exec(python, ["-E", "-s", driver, "--config", config], {
 			cwd: ctx.cwd,
 			timeout: 1_200_000,
 		});

@@ -678,16 +678,35 @@ def _install_thinkthread_profile(
         action = "update" if plan.path.exists() else "write"
         print(f"Would {action}: {plan.path}")
     else:
+        original: str | None = None
+        original_mode = 0o644
+        if plan.path.exists():
+            with plan.path.open(encoding="utf-8", newline="") as handle:
+                original = handle.read()
+                original_mode = os.fstat(handle.fileno()).st_mode & 0o7777
         _atomic_write(plan.path, plan.content)
-        rendered = _run(
-            [plan.executable, "profile", "show", THINKTHREAD_PROFILE_NAME],
-            capture=True,
-        ).stdout
-        installed = _parse_thinkthread_profile(
-            rendered,
-            source=f"tt profile show {THINKTHREAD_PROFILE_NAME}",
-        )
-        _validate_base_thinkthread_profile(installed)
+        try:
+            rendered = _run(
+                [plan.executable, "profile", "show", THINKTHREAD_PROFILE_NAME],
+                capture=True,
+            ).stdout
+            installed = _parse_thinkthread_profile(
+                rendered,
+                source=f"tt profile show {THINKTHREAD_PROFILE_NAME}",
+            )
+            _validate_base_thinkthread_profile(installed)
+        except (Exception, KeyboardInterrupt) as exc:
+            try:
+                if original is None:
+                    plan.path.unlink(missing_ok=True)
+                else:
+                    _atomic_write(plan.path, original, mode=original_mode)
+            except (Exception, KeyboardInterrupt) as rollback_error:
+                raise InstallError(
+                    f"ThinkThread Profile validation failed ({exc!r}); "
+                    f"rollback failed for {plan.path}: {rollback_error!r}"
+                ) from exc
+            raise
     print(
         "ThinkThread integration is ready. Start a Root with: "
         f"tt run --profile {THINKTHREAD_PROFILE_NAME} --fs <target-workspace>"
@@ -1400,7 +1419,7 @@ if [[ ! -x "$goal_plus_venv/bin/python" ]]; then
   exit 1
 fi
 
-module_path="$("$goal_plus_venv/bin/python" -c 'import goal_plus; print(goal_plus.__file__)')"
+module_path="$("$goal_plus_venv/bin/python" -I -c 'import goal_plus; print(goal_plus.__file__)')"
 case "$module_path" in
   "$goal_plus_root"/src/goal_plus/*) ;;
   *)
@@ -1410,7 +1429,7 @@ case "$module_path" in
     ;;
 esac
 
-"$goal_plus_venv/bin/python" {installer} --check-pi-dev-runtime --check-cwd "$PWD"
+"$goal_plus_venv/bin/python" -I {installer} --check-pi-dev-runtime --check-cwd "$PWD"
 
 export GOAL_PLUS_PI_DEV_ROOT="$goal_plus_root"
 export GOAL_PLUS_PYTHON="$goal_plus_venv/bin/python"
@@ -1453,10 +1472,11 @@ def _prepare_pi_dev(*, dev_dir: Path, pi_executable: str, dry_run: bool) -> None
         _atomic_write(receipt_path, json.dumps(receipt, indent=2) + "\n")
 
     if not python.is_file():
-        _run([sys.executable, "-m", "venv", str(venv)], dry_run=dry_run)
+        _run([sys.executable, "-I", "-m", "venv", str(venv)], dry_run=dry_run)
     _run(
         [
             str(python),
+            "-I",
             "-m",
             "pip",
             "install",
@@ -1469,7 +1489,7 @@ def _prepare_pi_dev(*, dev_dir: Path, pi_executable: str, dry_run: bool) -> None
 
     if not dry_run:
         result = _run(
-            [str(python), "-c", "import goal_plus; print(goal_plus.__file__)"],
+            [str(python), "-I", "-c", "import goal_plus; print(goal_plus.__file__)"],
             capture=True,
         )
         module_path = Path(result.stdout.strip()).resolve()

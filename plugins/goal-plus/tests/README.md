@@ -29,6 +29,10 @@ python -m pytest --run-system-tests -n 0 -q tests/test_installation_system.py
 
 Default tests must never launch Codex or Pi. A host behavior claim requires
 the matching ST; if it cannot run, report that gap.
+Native Pi ST uses the installed package by default; use `ST_PI_BINARY` to select
+a prepared `pi-goal-plus` development launcher. It does not inject the checkout
+or pytest's Python into the host. ThinkThread ST copies only its test harness into
+the disposable workspace and imports the Profile's installed Python package.
 The suite excludes Torch and AscendC scenarios, including their asset and
 hardware tests.
 ST requires `--run-system-tests`; `-m`, `-k`, and direct node selection alone

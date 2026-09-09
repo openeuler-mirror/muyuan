@@ -33,6 +33,12 @@ Codex 缓存版本带有 build，安装后的 hook/MCP 使用 release 内 launch
 `PYTHONPATH`、`GOAL_PLUS_SOURCE_PATH` 或目标 workspace 寻找 Goal Plus。
 内部 Python 进程沿用该解释器与受控模块路径。只有 `pi-goal-plus` 显式开发入口加载 editable 源码。
 
+本地和 ThinkThread verifier 中的裸 `python` / `python3` 也绑定运行中的 Goal Plus
+解释器；不读取 `GOAL_PLUS_PYTHON` 或宿主 PATH 来重新选择。需要其他 Python 依赖环境的
+verifier 应显式填写解释器路径，ThinkThread 下还需由管理员授权该环境的只读路径。
+Verifier 保留自身工作目录的模块导入，但不继承外部 `PYTHONHOME`、`PYTHONPATH` 或用户
+site-packages。`--pi-dev` 的导入检查、冲突检查和工具调用同样使用独立 venv 的隔离模式。
+
 产品资产源码只在 `assets/codex/` 和 `assets/pi/` 维护。源码 checkout 不保留产品的
 `.codex/skills`、`.codex/agents`、`.pi/extensions`、`.pi/skills`、`.pi/prompts` 或根级插件声明。
 `AGENTS.md` 继续指导开发，`install.sh`、`uninstall.sh` 是显式执行入口。
@@ -65,6 +71,11 @@ Codex、Pi 和 ThinkThread Profile 分别持有版本引用，更新其中一个
 因此 `./install.sh --codex --pi` 不刷新已有 `goal-plus-pi` TT Profile；还使用 TT 时执行
 `./install.sh --pi --thinkthread`。同样，`./uninstall.sh --pi` 只移除普通 Pi 注册；
 要移除本 checkout 管理的 TT Profile，显式加 `--thinkthread`。无参数卸载默认选择全部组件。
+TT Profile 从基础 `pi` Profile 整份生成，重装会覆盖受管文件中的手工修改。写入后的
+`tt profile show goal-plus-pi` 或配置校验失败（包括 Ctrl-C）时，恢复原文件内容和权限；
+首次安装失败则删除新增文件，不提交新的 TT 版本引用。回滚失败会同时报告原错误、恢复错误
+和文件路径。这是 Profile 文件级回滚，不撤销此前已完成的普通 Pi 安装或 SDK 准备，也不提供
+断电或 SIGKILL 后的自动恢复。
 安装不会删除旧 release，旧会话可继续使用原版本；正常安装成功后源码 checkout 可以移动，
 后续从新位置安装可在提示中确认替换旧来源注册。可用 `GOAL_PLUS_UV` 指定 uv 的绝对路径。
 首次安装需要下载 Python 和依赖；`--dry-run` 不写 release 或宿主注册，但 shell 入口可能先准备
