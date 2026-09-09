@@ -40,6 +40,8 @@ Pi 安装成功前必须核验实际 package 注册、宿主解析出的启用 e
 解释器，保留 venv 路径，不经宿主 PATH 解析；冻结命令和显式解释器路径保持原值。
 Verifier 的 Python 模块搜索仅加入其工作目录，不继承外部 `PYTHONHOME`、`PYTHONPATH`
 或用户 site-packages。ThinkThread Profile 必须只读开放安装 venv 及解释器软链接链的目标。
+ThinkThread Profile 写入后的宿主或配置校验失败时，恢复原文件内容和权限；首次安装则删除
+新增文件，不提交新版本引用。回滚失败必须明确报告，不能报告安装成功。
 Pi 开发 launcher 的预检查和工具调用使用开发 venv 的隔离 Python。
 
 ## 核心对象

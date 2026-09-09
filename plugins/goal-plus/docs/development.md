@@ -71,6 +71,11 @@ Codex、Pi 和 ThinkThread Profile 分别持有版本引用，更新其中一个
 因此 `./install.sh --codex --pi` 不刷新已有 `goal-plus-pi` TT Profile；还使用 TT 时执行
 `./install.sh --pi --thinkthread`。同样，`./uninstall.sh --pi` 只移除普通 Pi 注册；
 要移除本 checkout 管理的 TT Profile，显式加 `--thinkthread`。无参数卸载默认选择全部组件。
+TT Profile 从基础 `pi` Profile 整份生成，重装会覆盖受管文件中的手工修改。写入后的
+`tt profile show goal-plus-pi` 或配置校验失败（包括 Ctrl-C）时，恢复原文件内容和权限；
+首次安装失败则删除新增文件，不提交新的 TT 版本引用。回滚失败会同时报告原错误、恢复错误
+和文件路径。这是 Profile 文件级回滚，不撤销此前已完成的普通 Pi 安装或 SDK 准备，也不提供
+断电或 SIGKILL 后的自动恢复。
 安装不会删除旧 release，旧会话可继续使用原版本；正常安装成功后源码 checkout 可以移动，
 后续从新位置安装可在提示中确认替换旧来源注册。可用 `GOAL_PLUS_UV` 指定 uv 的绝对路径。
 首次安装需要下载 Python 和依赖；`--dry-run` 不写 release 或宿主注册，但 shell 入口可能先准备

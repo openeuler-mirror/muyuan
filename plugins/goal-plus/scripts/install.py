@@ -678,16 +678,35 @@ def _install_thinkthread_profile(
         action = "update" if plan.path.exists() else "write"
         print(f"Would {action}: {plan.path}")
     else:
+        original: str | None = None
+        original_mode = 0o644
+        if plan.path.exists():
+            with plan.path.open(encoding="utf-8", newline="") as handle:
+                original = handle.read()
+                original_mode = os.fstat(handle.fileno()).st_mode & 0o7777
         _atomic_write(plan.path, plan.content)
-        rendered = _run(
-            [plan.executable, "profile", "show", THINKTHREAD_PROFILE_NAME],
-            capture=True,
-        ).stdout
-        installed = _parse_thinkthread_profile(
-            rendered,
-            source=f"tt profile show {THINKTHREAD_PROFILE_NAME}",
-        )
-        _validate_base_thinkthread_profile(installed)
+        try:
+            rendered = _run(
+                [plan.executable, "profile", "show", THINKTHREAD_PROFILE_NAME],
+                capture=True,
+            ).stdout
+            installed = _parse_thinkthread_profile(
+                rendered,
+                source=f"tt profile show {THINKTHREAD_PROFILE_NAME}",
+            )
+            _validate_base_thinkthread_profile(installed)
+        except (Exception, KeyboardInterrupt) as exc:
+            try:
+                if original is None:
+                    plan.path.unlink(missing_ok=True)
+                else:
+                    _atomic_write(plan.path, original, mode=original_mode)
+            except (Exception, KeyboardInterrupt) as rollback_error:
+                raise InstallError(
+                    f"ThinkThread Profile validation failed ({exc!r}); "
+                    f"rollback failed for {plan.path}: {rollback_error!r}"
+                ) from exc
+            raise
     print(
         "ThinkThread integration is ready. Start a Root with: "
         f"tt run --profile {THINKTHREAD_PROFILE_NAME} --fs <target-workspace>"

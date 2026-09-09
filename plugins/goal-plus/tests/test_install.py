@@ -642,6 +642,91 @@ def test_thinkthread_profile_dry_run_does_not_write(
     assert not path.exists()
 
 
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failure", ["command", "parse", "validation", "interrupt"])
+def test_thinkthread_profile_validation_failure_restores_previous_file(
+    installer, tmp_path, monkeypatch, existing, failure,
+):
+    path = tmp_path / "goal-plus-pi.toml"
+    original = b"# original profile\r\nschemaVersion = 4\r\n"
+    if existing:
+        path.write_bytes(original)
+        path.chmod(0o600)
+    content = installer._render_thinkthread_profile(_thinkthread_pi_profile())
+    plan = installer.ThinkThreadProfilePlan(
+        executable="/opt/bin/tt", runtime_version="thinkthread 0.1.0",
+        path=path, content=content, installed=False,
+    )
+
+    def run(argv, **kwargs):
+        assert path.read_text() == content
+        if failure == "command":
+            raise subprocess.CalledProcessError(1, argv)
+        if failure == "interrupt":
+            raise KeyboardInterrupt()
+        stdout = "invalid = [" if failure == "parse" else "schemaVersion = 0\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout)
+
+    monkeypatch.setattr(installer, "_run", run)
+    expected = {
+        "command": subprocess.CalledProcessError,
+        "parse": installer.InstallError,
+        "validation": installer.InstallError,
+        "interrupt": KeyboardInterrupt,
+    }[failure]
+    with pytest.raises(expected):
+        installer._install_thinkthread_profile(plan, dry_run=False)
+
+    if existing:
+        assert path.read_bytes() == original
+        assert path.stat().st_mode & 0o777 == 0o600
+    else:
+        assert not path.exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_thinkthread_profile_success_keeps_new_file(installer, tmp_path, monkeypatch, existing):
+    path = tmp_path / "goal-plus-pi.toml"
+    if existing:
+        path.write_text("# old profile\n")
+    content = installer._render_thinkthread_profile(_thinkthread_pi_profile())
+    plan = installer.ThinkThreadProfilePlan(
+        executable="/opt/bin/tt", runtime_version="thinkthread 0.1.0",
+        path=path, content=content, installed=False,
+    )
+    monkeypatch.setattr(installer, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(
+        argv, 0, stdout=path.read_text(),
+    ))
+
+    installer._install_thinkthread_profile(plan, dry_run=False)
+
+    assert path.read_text() == content
+
+
+def test_thinkthread_profile_rollback_failure_reports_both_errors(installer, tmp_path, monkeypatch):
+    path = tmp_path / "goal-plus-pi.toml"
+    path.write_text("# old profile\n")
+    plan = installer.ThinkThreadProfilePlan(
+        executable="/opt/bin/tt", runtime_version="thinkthread 0.1.0",
+        path=path, content="# new profile\n", installed=False,
+    )
+
+    def fail_restore(*args, **kwargs):
+        raise OSError("restore denied")
+
+    def run(argv, **kwargs):
+        monkeypatch.setattr(installer, "_atomic_write", fail_restore)
+        raise installer.InstallError("profile validation failed")
+
+    monkeypatch.setattr(installer, "_run", run)
+    with pytest.raises(installer.InstallError) as raised:
+        installer._install_thinkthread_profile(plan, dry_run=False)
+
+    assert str(path) in str(raised.value)
+    assert "profile validation failed" in str(raised.value)
+    assert "restore denied" in str(raised.value)
+
+
 def test_thinkthread_sdk_preflight_reuses_only_owned_valid_install(
     installer: ModuleType,
     tmp_path: Path,
