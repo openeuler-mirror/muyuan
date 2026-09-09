@@ -10,10 +10,9 @@ verifier、两个候选通道和五分钟运行约定，专门展示完整的可
 使用 `promotion_mode=apply`，而不会改动示例自身的受控文件。
 
 > [!IMPORTANT]
-> 必须在本示例目录 `circle-packing-git-apply/` 中启动 Codex 或 Pi，不要进入
-> `workspace/` 后再启动。Goal Plus 的 `.gp/` 应与 `workspace/` 并列；如果从
-> `workspace/` 内启动，`.gp/` 会污染待优化的 Git 仓库，`source_path="workspace"`
-> 也会被错误解析成嵌套路径。
+> 从本示例目录 `circle-packing-git-apply/` 启动 Codex 或 Pi。
+> `search-spec.json` 的 `source_path="workspace"` 相对该目录解析；源码仓库位于
+> `workspace/`，Goal Plus 运行状态位于并列的 `.gp/`。
 
 ## 准备可写源码仓库
 

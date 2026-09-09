@@ -1896,6 +1896,7 @@ def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
     )
     spawn_input = {key: value for key, value in session.launch.items() if key not in {"tool", "budget_control"}}
     spawn_input["message"] = "opaque host transport"
+    spawn_input.pop("agent_type")
     launch_hook = {
         "hook_event_name": "PreToolUse", "session_id": "session-main",
         "tool_name": "collaborationspawn_agent", "tool_use_id": "candidate-spawn",

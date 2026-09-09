@@ -3,6 +3,7 @@
 from __future__ import annotations
 from typing import Any
 
+from pydantic import TypeAdapter
 
 from goal_plus.domain.goal import (
     GoalPlusControl,
@@ -273,6 +274,7 @@ class GoalCompletion:
         evidence: list[dict[str, Any]] | None = None,
         next_action: GoalPlusNextAction | dict[str, Any] | None = None,
     ) -> GoalPlusRecord:
+        status = TypeAdapter(GoalPlusStatus).validate_python(status)
         with self.state.lock_goal(goal_plus_id):
             record = self.state.read_goal(goal_plus_id)
             if is_terminal_goal(record) and status != record.status:

@@ -16,6 +16,7 @@ from goal_plus.domain.goal import (
     GoalPlusNextAction,
     GoalPlusSpecDraft,
     GoalPlusSpecDraftInput,
+    GoalPlusStatus,
     GoalPlusTriage,
     GoalPlusWorkEventKind,
 )
@@ -778,7 +779,7 @@ class GoalPlusTools:
     def goal_plus_set_status(
         self,
         goal_plus_id: str,
-        status: str,
+        status: GoalPlusStatus,
         reason: str | None = None,
         evidence: list[dict[str, Any]] | None = None,
         next_action: dict[str, Any] | None = None,
@@ -791,7 +792,7 @@ class GoalPlusTools:
         )
         record = self.runtime.set_status(
             goal_plus_id,
-            status=status,  # type: ignore[arg-type]
+            status=status,
             reason=reason,
             evidence=evidence,
             next_action=parsed_next_action,

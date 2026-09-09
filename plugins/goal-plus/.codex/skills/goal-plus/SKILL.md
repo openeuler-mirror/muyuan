@@ -1,6 +1,6 @@
 ---
 name: goal-plus
-description: 仅供 Goal Plus Main Agent 运行、恢复或编辑 Codex Goal Plus（含 $goal-plus-with-final-check），并通过 goal-plus MCP 编排可验证工作；不适用于 Search candidate worker。
+description: Internal Goal Plus plugin skill for an already-bound Goal Plus Main Agent to run, resume, or edit Codex Goal Plus. Not for Search candidate workers; do not invoke manually.
 ---
 
 # Codex 的 Goal Plus

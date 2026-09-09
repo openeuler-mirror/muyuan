@@ -1,6 +1,6 @@
 ---
 name: search
-description: 仅供 Goal Plus Main Agent 使用 goal-plus MCP 的内部 Search Mode 编排引擎；不适用于 Search candidate worker。
+description: Internal Goal Plus plugin skill for an already-bound Goal Plus Main Agent to orchestrate Search Mode. Not for Search candidate workers; do not invoke manually.
 ---
 
 # Codex Search Mode

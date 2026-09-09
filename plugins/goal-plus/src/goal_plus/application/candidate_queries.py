@@ -185,6 +185,8 @@ class CandidateHostQueries:
         if spawn_input is not None:
             if session.host != "codex" or session.launch.get("tool") != "spawn_agent":
                 raise RuntimeError("native spawn requires a recorded Codex spawn launch")
+            # Codex uses its default role when agent_type is omitted.
+            spawn_input = {"agent_type": "default", **spawn_input}
             mismatches = [
                 field for field in (
                     "task_name", "agent_type", "fork_turns",

@@ -463,6 +463,7 @@ def test_goal_plus_create_has_no_mode_hint_or_verifier_confirm_tool(
     update_schema = tools["goal_plus_update_goal"].parameters
     prepare_schema = tools["goal_plus_prepare_final_check"].parameters
     submit_schema = tools["goal_plus_submit_final_check"].parameters
+    status_schema = tools["goal_plus_set_status"].parameters
     assert set(update_schema["required"]) >= {
         "goal_plus_id",
         "raw_goal",
@@ -480,6 +481,13 @@ def test_goal_plus_create_has_no_mode_hint_or_verifier_confirm_tool(
         "pass",
         "fail",
         "interrupted",
+    ]
+    assert status_schema["properties"]["status"]["enum"] == [
+        "active",
+        "needs_user",
+        "blocked",
+        "complete",
+        "abandoned",
     ]
 
 

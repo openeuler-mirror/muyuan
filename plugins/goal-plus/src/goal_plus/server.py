@@ -18,6 +18,7 @@ from goal_plus.domain.search import (
 )
 from goal_plus.domain.goal import (
     GoalPlusSpecDraftInput,
+    GoalPlusStatus,
     GoalPlusTriage,
     GoalPlusWorkEventKind,
 )
@@ -729,7 +730,7 @@ def create_mcp(
     @_debug_tool_response
     def goal_plus_set_status(
         goal_plus_id: str,
-        status: str,
+        status: GoalPlusStatus,
         reason: str | None = None,
         evidence: list[dict[str, Any]] | None = None,
         next_action: dict[str, Any] | None = None,

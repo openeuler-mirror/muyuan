@@ -806,25 +806,10 @@ class LocalGitWorkspace:
         ignore_runtime_noise: bool = False,
     ) -> list[str]:
         _require_scoped_repository(self.backend, workspace)
-        command = ["git", "status", "--porcelain=v1", "--untracked-files=all"]
-        if ignore_runtime_noise:
-            exclusions = [
-                pattern
-                for name in sorted(IGNORED_NAMES - {".git"})
-                for pattern in (
-                    f":(exclude){name}/**",
-                    f":(exclude)**/{name}/**",
-                )
-            ]
-            exclusions.extend(
-                f":(exclude)**/*{suffix}" for suffix in sorted(IGNORED_SUFFIXES)
-            )
-            command.extend(["--", ".", *exclusions])
         try:
-            value = _git_output(workspace, *command[1:])
+            return git_status(workspace, ignore_runtime_noise=ignore_runtime_noise)
         except RuntimeError:
             return []
-        return [line for line in value.splitlines() if line.strip()]
 
 
 class GitReferences:
@@ -1094,10 +1079,7 @@ class GitPublication:
                         "publication_commit": publication.id,
                     },
                 )
-        status = _git_output(
-            repository, "status", "--porcelain=v1", "--untracked-files=all"
-        )
-        if status:
+        if git_status(repository, ignore_runtime_noise=True):
             raise RuntimeError(
                 "cannot apply Git promotion to a dirty source repository"
             )
@@ -1340,6 +1322,25 @@ def _top_level_pathspec(source_subdir: str, relative_path: str) -> str:
         else f"{source_subdir.rstrip('/')}/{relative_path}"
     )
     return f":(top,literal){value}"
+
+
+def git_status(workspace: Path, *, ignore_runtime_noise: bool = False) -> list[str]:
+    command = ["status", "--porcelain=v1", "--untracked-files=all"]
+    if ignore_runtime_noise:
+        exclusions = [
+            pattern
+            for name in sorted(IGNORED_NAMES - {".git"})
+            for pattern in (
+                f":(exclude){name}/**",
+                f":(exclude)**/{name}/**",
+            )
+        ]
+        exclusions.extend(
+            f":(exclude)**/*{suffix}" for suffix in sorted(IGNORED_SUFFIXES)
+        )
+        command.extend(["--", ".", *exclusions])
+    value = _git_output(workspace, *command)
+    return [line for line in value.splitlines() if line.strip()]
 
 
 def _git_run(repository: Path, *args: str) -> None:
