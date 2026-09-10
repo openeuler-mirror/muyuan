@@ -40,6 +40,7 @@ Child、Artifact View 和 cleanup 合同由真实 ThinkThread system test 覆盖
 | [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | 带模拟器正确性门禁的程序与调度优化 | Pi，8 分钟 | Python 标准库 |
 | [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | 十个公开案例上的 C++ 编译与布局优化 | Pi，8 分钟 | C++17 编译器 |
 | [AscendC Direct Search](ascendc-direct-search/README.md) | 动态生成 NPU 优化任务 | Pi，60 分钟 | 目标 Ascend NPU 和参考资料 |
+| [PyPTO DeepSeek：CSA 与 MoE](pypto-deepseek/README.md) | 运行时拉取固定 commit 的两个独立多卡优化任务 | Pi、TT + Pi 或 Codex，2 并发，时限见 prompt | PyPTO/PTOAS/simpler、CANN、两张可用卡 |
 
 ## 工作区类型
 
