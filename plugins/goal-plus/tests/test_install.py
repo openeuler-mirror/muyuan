@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -78,6 +79,61 @@ def test_install_entrypoint_is_executable() -> None:
 
     assert entrypoint.is_file()
     assert entrypoint.stat().st_mode & 0o111
+
+
+def test_inspect_pi_resolves_public_api_from_bundled_cli(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required")
+    pi_package = tmp_path / "node_modules" / "@earendil-works" / "pi-coding-agent"
+    cli = pi_package / "dist" / "bundle" / "cli.js"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("", encoding="utf-8")
+    (pi_package / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "@earendil-works/pi-coding-agent",
+                "type": "module",
+                "exports": {".": {"import": "./dist/index.js"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (pi_package / "dist" / "index.js").write_text(
+        """
+export const SettingsManager = {
+  create(cwd, agentDir, options) { return {cwd, agentDir, options}; },
+};
+export class DefaultPackageManager {
+  constructor({settingsManager}) {
+    this.settingsManager = settingsManager;
+  }
+  async resolve() {
+    return {
+      extensions: [{path: this.settingsManager.cwd + "/goal-plus.ts", enabled: true}],
+      skills: [{path: this.settingsManager.agentDir + "/goal-plus/SKILL.md", enabled: true}],
+    };
+  }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    agent_dir = tmp_path / "agent"
+    cwd = tmp_path / "workspace"
+
+    result = subprocess.run(
+        [node, str(ROOT / "scripts" / "inspect-pi.mjs"), str(cli), str(agent_dir), str(cwd)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "extensions": [{"path": str(cwd / "goal-plus.ts"), "enabled": True}],
+        "skills": [{"path": str(agent_dir / "goal-plus/SKILL.md"), "enabled": True}],
+    }
 
 
 def test_pi_dev_assets_scope_only_the_launcher(

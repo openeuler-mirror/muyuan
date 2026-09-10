@@ -107,12 +107,23 @@ asyncio.run(check())
 
 PI_LOAD_CHECK = r'''
 import assert from "node:assert/strict";
-import { dirname, join } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { findPackageJSON } from "node:module";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 const [packageRoot, pi, python] = process.argv.slice(1);
-const { loadExtensions } = await import(pathToFileURL(join(dirname(pi), "core/extensions/loader.js")));
-const result = await loadExtensions([join(packageRoot, "assets/pi/extensions/goal-plus.ts")], process.cwd());
+const piPackageJson = findPackageJSON(pathToFileURL(realpathSync(pi)));
+assert(piPackageJson, `Could not locate Pi package.json from ${pi}`);
+const piManifest = JSON.parse(readFileSync(piPackageJson, "utf8"));
+const piEntry = piManifest.exports?.["."]?.import;
+assert.equal(typeof piEntry, "string");
+const { discoverAndLoadExtensions } = await import(new URL(piEntry, pathToFileURL(piPackageJson)));
+const result = await discoverAndLoadExtensions(
+  [join(packageRoot, "assets/pi/extensions/goal-plus.ts")],
+  process.cwd(),
+  join(packageRoot, ".empty-pi-agent"),
+);
 assert.deepEqual(result.errors, []);
 assert.equal(result.extensions.length, 1);
 assert(result.extensions[0].tools.has("goal_plus_status"));
