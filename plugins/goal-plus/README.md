@@ -267,8 +267,9 @@ canonical, and only the outer provider's `git_commit` or `fs_snapshot` is public
 Evidence.
 
 Git outer workspaces are available in Codex and Pi. ThinkThread Search is available only
-from the installed Pi `goal-plus-pi` Profile after exact release, protocol,
-fingerprint, Root capability, and delegated Child capability preflight. It
+from the installed Pi `goal-plus-pi` Profile after interface, Root capability,
+and delegated Child capability preflight. Version and fingerprint differences
+produce warnings; compatible ThinkThread upgrades do not require reinstalling Goal Plus. It
 includes K-way private Children, exact snapshot verification, retained
 Annotation Artifact Views, filtered publication, optimistic apply, durable
 recovery, and owned-resource cleanup. Copy remains an explicit artifact-only

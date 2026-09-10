@@ -217,10 +217,11 @@ Host asset 是可执行产品界面，不是装饰性文档。
 - 不要让任一 host asset 重新引用已删除的 runtime API。共同业务合同不得只在某一端修复。
 - `install.sh` 是唯一受支持的源码安装入口。安装行为变化时同步 `scripts/install.py`、安装测试
   和 [开发指南](docs/development.md)；不要静默替换另一 checkout 或删除用户管理的数据。
-- `./install.sh --pi --thinkthread` 只验证受支持的 ThinkThread Pi 基线，并为受保护的
+- `./install.sh --pi --thinkthread` 验证 ThinkThread Pi 所需配置和接口，并为受保护的
   Pi Search Root 写入 Goal Plus 管理的 Profile，不安装、升级或删除 ThinkThread。
-  ThinkThread Search 仅在 release、protocol、fingerprint 和 delegated capability 均精确通过
-  preflight 后启用；Codex ThinkThread 在具备等价真实 host 覆盖前保持不支持。卸载器只能在
+  release、protocol、Profile schema 和 fingerprint 差异只警告，不阻止兼容底座独立升级；
+  实际接口和 delegated capability 仍须通过检查。Codex ThinkThread 在具备等价真实 host
+  覆盖前保持不支持。卸载器只能在
   复核 ownership marker 后移除该 Profile，不得删除 ThinkThread Runtime、Root、状态目录或包。
 
 Pi checkout-local 开发和 Codex 正常 plugin 刷新的具体步骤见

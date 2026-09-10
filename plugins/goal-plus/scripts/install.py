@@ -189,14 +189,17 @@ process.stdout.write(JSON.stringify({
         payload = json.loads(completed.stdout)
     except (json.JSONDecodeError, subprocess.CalledProcessError, OSError) as exc:
         raise InstallError(f"could not validate Agent POSIX SDK at {entry}: {exc}") from exc
-    if not isinstance(payload, dict) or (
+    if not isinstance(payload, dict):
+        raise InstallError("Agent POSIX SDK metadata must be an object")
+    if (
         payload.get("protocol") != AGENT_POSIX_CONTROL_PROTOCOL
         or payload.get("fingerprint") != AGENT_POSIX_CONTRACT_FINGERPRINT
     ):
-        raise InstallError(
-            "unsupported Agent POSIX SDK: "
+        print(
+            "warning: Agent POSIX SDK differs from the tested baseline: "
             f"protocol={payload.get('protocol')!r}, "
-            f"fingerprint={payload.get('fingerprint')!r}"
+            f"fingerprint={payload.get('fingerprint')!r}",
+            file=sys.stderr,
         )
 
 
@@ -440,19 +443,21 @@ def _validate_base_thinkthread_profile(profile: dict[str, Any]) -> None:
     loader = extension.get("loader") if isinstance(extension, dict) else None
     environment = profile.get("environment")
     if profile.get("schemaVersion") != THINKTHREAD_PROFILE_SCHEMA:
-        raise InstallError(
-            "ThinkThread Pi Profile must use schemaVersion "
-            f"{THINKTHREAD_PROFILE_SCHEMA}"
+        print(
+            "warning: ThinkThread Pi Profile schema differs from the tested baseline: "
+            f"reported={profile.get('schemaVersion')!r}, expected={THINKTHREAD_PROFILE_SCHEMA}",
+            file=sys.stderr,
         )
     if not isinstance(agent, dict) or agent.get("name") != "pi":
         raise InstallError("ThinkThread Profile 'pi' does not describe the Pi Agent")
-    if (
-        not isinstance(loader, dict)
-        or loader.get("protocolVersion") != THINKTHREAD_EXTENSION_PROTOCOL
-    ):
-        raise InstallError(
-            "ThinkThread Pi Agent Extension protocol does not match the supported "
-            f"version {THINKTHREAD_EXTENSION_PROTOCOL}"
+    if not isinstance(loader, dict):
+        raise InstallError("ThinkThread Pi Profile has no Agent Extension loader")
+    if loader.get("protocolVersion") not in (None, THINKTHREAD_EXTENSION_PROTOCOL):
+        print(
+            "warning: ThinkThread Pi Agent Extension protocol declaration differs "
+            f"from the tested baseline: reported={loader['protocolVersion']!r}, "
+            f"expected={THINKTHREAD_EXTENSION_PROTOCOL}; Runtime validates the actual handshake",
+            file=sys.stderr,
         )
     if not isinstance(environment, dict) or (
         environment.get("rootFsMode") != "direct"
@@ -621,9 +626,10 @@ def _preflight_thinkthread_profile(
 ) -> ThinkThreadProfilePlan:
     runtime_version = _run([executable, "--version"], capture=True).stdout.strip()
     if runtime_version != THINKTHREAD_RUNTIME_VERSION:
-        raise InstallError(
-            "unsupported ThinkThread Runtime: "
-            f"reported={runtime_version!r}, expected={THINKTHREAD_RUNTIME_VERSION!r}"
+        print(
+            "warning: ThinkThread Runtime differs from the tested baseline: "
+            f"reported={runtime_version!r}, expected={THINKTHREAD_RUNTIME_VERSION!r}",
+            file=sys.stderr,
         )
     raw_profile = _run(
         [executable, "profile", "show", "pi"],

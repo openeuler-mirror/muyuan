@@ -528,6 +528,51 @@ def _wait_for_annotations(
     )
 
 
+def run_runtime_single(config: dict[str, Any]) -> dict[str, Any]:
+    client = AgentPosixSdkClient()
+    root = validate_thinkthread_root(client)
+    workspace = Path(config["report_path"]).parent
+    project = _runtime_project(workspace)
+    runtime = FileSearchRuntime(workspace / ".gp-tt-runtime-single")
+    spec = _runtime_spec(project, inner_agent="common")
+    spec.budget.max_parallel = 1
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    runtime.start_batch(run_id, plan.plan_id, proposals=[CandidateProposal(
+        intent="Set the isolated candidate score to one.",
+        hypothesis="One verified edit proves the model and ThinkThread tool path.",
+        instructions=[
+            "Edit only project/solution.txt so its complete content is exactly `1` followed by a newline.",
+            "Call search_run_verifier exactly once, then end the turn after the accepted receipt.",
+        ],
+    )])
+    opened = open_thinkthread_search_pool(root_dir=runtime.root_dir, run_id=run_id, client=client)
+    try:
+        waited = wait_any(root_dir=runtime.root_dir, pool_id=opened["pool_id"],
+                          timeout_seconds=180, client=client)
+        event = waited["event"]
+        assert event is not None and event["kind"] == "candidate_ready", waited
+        feedback = event["attempt_result"]
+        assert feedback["state"] == "verified", feedback
+        record = runtime.candidate_creation.state.read_candidate(run_id, "c001")
+        assert len(record.iterations) == 1
+        iteration = record.iterations[0]
+        assert iteration.process_passed and iteration.score == 1.0
+        snapshot_id = iteration.artifact_ref.id
+        assert client.snapshot_read_file(snapshot_id, "project/solution.txt") == b"1\n"
+        assert project.joinpath("solution.txt").read_bytes() == b"0\n"
+    finally:
+        closed = close_pool(root_dir=runtime.root_dir, pool_id=opened["pool_id"],
+                            mode="interrupt", client=client)
+        close_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
+    assert closed["state"] == "closed", closed
+    return {"scenario": config["scenario"], "model": config["model"],
+            "root_id": root["thinkthreadId"], "run_id": run_id,
+            "score": iteration.score, "snapshot_id": snapshot_id,
+            "root_unchanged": True, "cleanup_state": closed["state"]}
+
+
 def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
     client = AgentPosixSdkClient()
     validate_thinkthread_root(client)
@@ -1554,6 +1599,7 @@ def main() -> int:
         "root_preflight": run_probe,
         "circle_baseline": run_circle_baseline,
         "abi_single_child": run_abi_smoke,
+        "runtime_single": run_runtime_single,
         "runtime_k2": run_runtime_k2,
         "runtime_k2_autoresearch": run_runtime_k2,
         "annotation_views": run_annotation_views,

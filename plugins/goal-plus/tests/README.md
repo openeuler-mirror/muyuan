@@ -227,9 +227,13 @@ case does not cover peer comparison or Adaptive Scheduler/Allocation.
 
 `ST_PI_MODEL` and `ST_PI_THINKING` now also apply to the TT fixture through native
 Pi arguments, inherited by Children. `ST_THINKTHREAD_PRESERVE_ON_FAILURE=1`
-preserves Runtime state after stopping Roots (also on success); use a unique
-`--basetemp` outside the checkout to avoid pytest retention deleting diagnostics.
-Without this override teardown stops and removes only the fixture's own Roots.
+preserves Runtime state after stopping Roots (also on success). Leave it unset
+for routine checks so teardown stops and removes the fixture's own Roots.
+For diagnostics, use a unique `--basetemp` under this plugin's `.tmp/`; keep the
+Runtime state outside the workspace granted to an Agent. After inspection, remove
+the test instances with `tt rm`, retain only the needed reports under `.tmp/`, and
+delete temporary workspaces and credential copies. Do not leave test directories
+in the checkout's parent directory.
 
 ### Pi Circle Role Checks
 

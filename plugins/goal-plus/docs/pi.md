@@ -64,8 +64,9 @@ cd <Muyuan checkout>/plugins/goal-plus
 tt profile show goal-plus-pi
 ```
 
-安装器校验当前支持的 Runtime 版本、Profile schema、Pi Agent Extension protocol、Root direct
-filesystem 和 Child COW filesystem，然后生成用户级 `goal-plus-pi` Profile。Profile 显式加载本
+安装器校验 Profile 结构、Root direct filesystem 和 Child COW filesystem，然后生成用户级
+`goal-plus-pi` Profile。Runtime、Profile schema、SDK 协议版本或 fingerprint 偏离已测基线时仅
+警告；可选的 Extension 协议声明可以省略，实际握手由 ThinkThread 校验。Profile 显式加载本
 次安装副本的 Goal Plus extension/skill，以只读方式开放该副本及其受管 Python environment，并将
 Node/Python runtime prefix 及解释器软链接链目标一并加入 `[environment].read`，
 verifier 的裸 `python` / `python3` 直接使用该受管 venv 的绝对解释器路径。
@@ -90,8 +91,9 @@ Root 内只有精确 Pi host command 能启动 Goal Plus。显式选择 ThinkThr
 普通 Pi 进程继续使用 `pi-rpc + git_worktree`；两条路径不能混用，也不能在 preflight
 失败时 fallback。Codex 尚不支持 ThinkThread worker host。
 
-Runtime 在启动 candidate 前校验 ThinkThread release、Agent Control protocol、Agent POSIX
-contract fingerprint、Root direct filesystem 和 delegated Child capability。每个 initial
+ThinkThread 可独立升级，接口兼容时无需重装 Goal Plus 或 SDK。Runtime 在启动 candidate 前
+校验 Root direct filesystem 和 delegated Child capability；SDK 协议版本与 contract fingerprint
+差异只给出 warning，接口调用和结果仍须满足实际合同。每个 initial
 candidate 从同一个 Root-owned `S0` 启动独立 Pi Child/Session/private branch；Child 只拿到
 逻辑 `source_subdir`，不会得到可访问的 Root 本地路径。worker turn 结束且 Agent ready 后，
 controller 固定 private branch snapshot，并让 process verifier 对同一个 immutable snapshot
