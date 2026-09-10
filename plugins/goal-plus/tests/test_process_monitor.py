@@ -7,9 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from goal_plus.bootstrap import build_process_monitor
-from goal_plus.adaptive_search.scheduler import (
-    CodexSchedulerExecutor, PiSchedulerExecutor, ResolvedSchedulerProfile, SchedulerExecutionRequest,
-)
 from goal_plus.execution.process_monitor import ProcessMonitor
 from goal_plus.infrastructure.state.process_monitor import FileProcessMonitorSink
 from goal_plus.ports.process_monitor import ProcessMonitorIdentity
@@ -27,12 +24,12 @@ def identity(**kwargs):
     )
 
 
-@pytest.mark.parametrize("scheduler", [False, True])
-def test_role_identity_and_event_format_are_preserved(tmp_path, scheduler):
+@pytest.mark.parametrize("verifier", [False, True])
+def test_role_identity_and_event_format_are_preserved(tmp_path, verifier):
     path = tmp_path / "monitor.json"
     monitor = build_process_monitor(
-        path, identity(task_kind="search_scheduler" if scheduler else None),
-        include_event_timestamps=not scheduler,
+        path, identity(task_kind="llm_verifier" if verifier else None),
+        include_event_timestamps=not verifier,
     )
     event = {
         "type": "message_update", "timestamp": 2,
@@ -63,10 +60,10 @@ def test_role_identity_and_event_format_are_preserved(tmp_path, scheduler):
         "type": "message_update", "assistant_event_type": "text_delta",
         "content_index": 0, "delta_bytes": 3, "message_role": "assistant",
         "stop_reason": "stop", "response_id": "r1",
-        **({"timestamp": 2} if not scheduler else {}),
+        **({"timestamp": 2} if not verifier else {}),
     }]
-    assert data.get("task_kind") == ("search_scheduler" if scheduler else None)
-    if not scheduler:
+    assert data.get("task_kind") == ("llm_verifier" if verifier else None)
+    if not verifier:
         assert "task_kind" not in data
 
 
@@ -150,46 +147,3 @@ def test_monitor_sink_preserves_previous_complete_record_on_write_failure(tmp_pa
     monkeypatch.setattr(Path, "replace", fail_replace)
     monitor.observe("failed", process, stdout="second", force=True)
     assert path.read_bytes() == before
-
-
-@pytest.mark.parametrize("host", ["codex", "pi-rpc"])
-def test_scheduler_executors_persist_shared_monitor_without_a_model(tmp_path, host, scripted_process_output):
-    output = {"answer": "accepted"}
-
-    class Process:
-        pid = 123
-        returncode = 0
-
-        def __init__(self, command, **kwargs):
-            if host == "codex":
-                path = command[command.index("--output-last-message") + 1]
-            else:
-                path = kwargs["env"]["GOAL_PLUS_PI_SCHEDULER_OUTPUT"]
-            Path(path).write_text(json.dumps(output))
-
-        def communicate(self, input=None, timeout=None):
-            return json.dumps({
-                "type": "message_end", "timestamp": 2,
-                "message": {"role": "assistant", "stopReason": "stop"},
-            }), ""
-
-    request = SchedulerExecutionRequest(
-        profile=ResolvedSchedulerProfile(
-            host=host, model="test-model", reasoning_effort="low", timeout_seconds=30,
-        ),
-        instructions="Compute the result.", prompt="Settled input.",
-        output_schema={"type": "object"},
-        identity={"run_id": "run_one", "candidate_id": "c001", "iteration": 3, "attempt": 2},
-        monitor_path=tmp_path / "monitor.json",
-    )
-    executor = CodexSchedulerExecutor if host == "codex" else PiSchedulerExecutor
-    assert executor(popen=Process).execute(request).payload == output
-    monitor = json.loads(request.monitor_path.read_text())
-    assert monitor["state"] == "completed"
-    assert monitor["host"] == host
-    assert monitor["task_kind"] == "search_scheduler"
-    assert monitor["attempt"] == 2
-    assert monitor["pid"] == 123
-    assert monitor["last_events"] == [{
-        "type": "message_end", "message_role": "assistant", "stop_reason": "stop",
-    }]

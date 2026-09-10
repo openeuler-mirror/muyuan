@@ -180,11 +180,17 @@ def register_codex_agent(
     run_id: str | None = None,
     tool_use_id: str | None = None,
     parent_session_id: str | None = None,
+    candidate_id: str | None = None,
+    agent_session_id: str | None = None,
+    execution_generation: int | None = None,
 ) -> None:
     return build_codex_scope_registry(root_dir).register(
         scope_id=scope_id, agent_id=agent_id, label=label,
         attachment=ScopeAttachment.from_id(run_id) if run_id is not None else None,
         tool_use_id=tool_use_id, parent_session_id=parent_session_id,
+        candidate_id=candidate_id,
+        agent_session_id=agent_session_id,
+        execution_generation=execution_generation,
     )
 
 
@@ -380,6 +386,118 @@ def close_run_internal_agents(
     return errors
 
 
+def interrupt_run_candidate(
+    *,
+    root_dir: Path | str,
+    scope_id: str,
+    run_id: str,
+    candidate_id: str,
+) -> dict[str, Any]:
+    """Request cancellation of one Pi-owned candidate without closing its run."""
+    scope = execution_scope_snapshot(root_dir=root_dir, scope_id=scope_id)
+    if scope.get("host") != "pi":
+        raise RuntimeError(
+            "Codex candidate interruption must use the native interrupt_agent tool"
+        )
+    if scope.get("state") != "open":
+        raise RuntimeError(f"execution scope {scope_id} is not open")
+    if run_id not in scope.get("run_ids", []):
+        raise PermissionError(
+            f"execution scope {scope_id} does not own Search run {run_id}"
+        )
+
+    receipts: list[dict[str, Any]] = []
+    for path in _pool_paths(root_dir, "pi"):
+        pool = load_json(path)
+        if (
+            pool.get("run_id") != run_id
+            or pool.get("execution_scope_id") != scope_id
+        ):
+            continue
+        from goal_plus.pi_pool import interrupt_pi_search_candidate
+
+        receipts.append(
+            interrupt_pi_search_candidate(
+                root_dir=root_dir,
+                pool_id=str(pool["pool_id"]),
+                candidate_id=candidate_id,
+            )
+        )
+    for path in _pool_paths(root_dir, "thinkthread"):
+        pool = load_json(path)
+        if (
+            pool.get("run_id") != run_id
+            or pool.get("execution_scope_id") != scope_id
+        ):
+            continue
+        from goal_plus.thinkthread_pool import interrupt_candidate
+
+        receipts.append(
+            interrupt_candidate(
+                root_dir=root_dir,
+                pool_id=str(pool["pool_id"]),
+                candidate_id=candidate_id,
+            )
+        )
+    statuses = [str(item.get("status") or "rejected") for item in receipts]
+    status = (
+        "rejected"
+        if "rejected" in statuses
+        else "accepted"
+        if "accepted" in statuses
+        else "already_terminal"
+        if "already_terminal" in statuses
+        else "not_found"
+    )
+    return {
+        "run_id": run_id,
+        "candidate_id": candidate_id,
+        "status": status,
+        "resources": receipts,
+    }
+
+
+def interrupt_allocation_candidates(
+    *,
+    root_dir: Path | str,
+    scope_id: str,
+    run_id: str,
+    decision_id: str,
+) -> dict[str, Any]:
+    """Request cancellation for every retirement in one Allocation Decision."""
+    from goal_plus.infrastructure.state.allocation import FileAllocationState
+
+    decision = FileAllocationState(root_dir).load_allocation_decision(
+        run_id, decision_id
+    )
+    if decision.status not in {"pending", "applied"}:
+        raise RuntimeError(
+            f"allocation decision {decision_id} cannot interrupt candidates in "
+            f"status {decision.status}"
+        )
+    candidates = [
+        interrupt_run_candidate(
+            root_dir=root_dir,
+            scope_id=scope_id,
+            run_id=run_id,
+            candidate_id=candidate_id,
+        )
+        for candidate_id in decision.retire_candidate_ids
+    ]
+    rejected = [
+        item["candidate_id"]
+        for item in candidates
+        if item.get("status") == "rejected"
+    ]
+    return {
+        "run_id": run_id,
+        "decision_id": decision_id,
+        "status": "rejected" if rejected else "accepted",
+        "rejected_candidate_ids": rejected,
+        "candidates": candidates,
+    }
+
+
 def _close_run_internal_drainers(
     *, root_dir: Path | str, run_id: str, timeout_seconds: float,
 ) -> list[str]:
@@ -393,15 +511,15 @@ def _close_run_internal_drainers(
     except Exception as exc:  # noqa: BLE001 - cleanup must record host failures
         errors.append(f"annotation:{type(exc).__name__}:{exc}")
     try:
-        from goal_plus.adaptive_search.scheduler import close_scheduler
+        from goal_plus.llm_verifier import close_verifier
 
-        close_scheduler(
+        close_verifier(
             root_dir=root_dir,
             run_id=run_id,
             timeout_seconds=timeout_seconds,
         )
     except Exception as exc:  # noqa: BLE001 - cleanup must record host failures
-        errors.append(f"scheduler:{type(exc).__name__}:{exc}")
+        errors.append(f"verifier:{type(exc).__name__}:{exc}")
     try:
         from goal_plus.thinkthread_annotation import close_thinkthread_annotation
 

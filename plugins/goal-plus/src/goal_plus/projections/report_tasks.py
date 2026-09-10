@@ -19,18 +19,18 @@ def task_details(
     candidates = inputs.candidates
     sessions = inputs.sessions
     observations = inputs.observations
-    search_scheduler_enabled = frozen.spec.strategy.search_scheduler is not None
+    verifier_enabled = frozen.spec.strategy.requires_llm_verifier
     session_ids_by_candidate: dict[str, list[str]] = {}
     for session in sessions:
         session_ids_by_candidate.setdefault(session.candidate_id, []).append(
             session.agent_session_id
         )
 
-    scheduler_views = inputs.scheduler_views
-    rewards_by_candidate: dict[str, list[Any]] = {}
-    if scheduler_views is not None:
-        for reward in scheduler_views.reward_records:
-            rewards_by_candidate.setdefault(reward.candidate_id, []).append(reward)
+    verifier_views = inputs.verifier_views
+    records_by_candidate: dict[str, list[Any]] = {}
+    if verifier_views is not None:
+        for record in verifier_views.verifier_records:
+            records_by_candidate.setdefault(record.subject.candidate_id, []).append(record)
 
     candidate_payloads: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -46,8 +46,10 @@ def task_details(
         if scored:
             reverse = frozen.spec.metric_direction == "maximize"
             best = sorted(scored, key=lambda item: item.score, reverse=reverse)[0]
-        candidate_rewards = rewards_by_candidate.get(candidate.candidate_id, [])
-        latest_reward = candidate_rewards[-1] if candidate_rewards else None
+        candidate_verifier_records = records_by_candidate.get(candidate.candidate_id, [])
+        latest_verifier_record = (
+            candidate_verifier_records[-1] if candidate_verifier_records else None
+        )
         candidate_payload = {
             "candidate_id": candidate.candidate_id,
             "status": candidate.status,
@@ -102,7 +104,7 @@ def task_details(
                 for iteration in candidate.iterations
             ],
         }
-        if search_scheduler_enabled:
+        if verifier_enabled:
             candidate_payload.update(
                 {
                     "allocation_depth": candidate.task.allocation_depth,
@@ -113,14 +115,11 @@ def task_details(
                         if candidate.task.expansion_source is not None
                         else None
                     ),
-                    "scheduler_reward_count": len(candidate_rewards),
-                    "latest_scheduler_reward": (
-                        latest_reward.reward.model_dump(mode="json")
-                        if latest_reward is not None
+                    "verifier_record_count": len(candidate_verifier_records),
+                    "latest_verifier_record": (
+                        latest_verifier_record.model_dump(mode="json")
+                        if latest_verifier_record is not None
                         else None
-                    ),
-                    "schedule_settlement_watermark": (
-                        candidate.schedule_settlement_watermark
                     ),
                 }
             )
@@ -343,20 +342,20 @@ def task_details(
         "candidates": candidate_payloads,
         "sessions": session_payloads,
     }
-    if scheduler_views is not None:
+    if verifier_views is not None:
         task_payload.update(
             {
                 "allocation_decisions": [
                     item.model_dump(mode="json")
-                    for item in scheduler_views.allocation_decisions
+                    for item in verifier_views.allocation_decisions
                 ],
-                "schedule_tasks": [
+                "verifier_tasks": [
                     task.model_dump(mode="json")
-                    for task in scheduler_views.schedule_tasks
+                    for task in verifier_views.verifier_tasks
                 ],
-                "scheduler_rewards": [
+                "verifier_records": [
                     item.model_dump(mode="json")
-                    for item in scheduler_views.reward_records
+                    for item in verifier_views.verifier_records
                 ],
             }
         )

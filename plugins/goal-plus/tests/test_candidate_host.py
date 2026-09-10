@@ -6,6 +6,7 @@ import pytest
 
 from goal_plus.domain.evidence import CandidateAttemptFeedback, ScoreReport
 from goal_plus.host_services import SearchHostService
+from goal_plus.models import SearchSpec
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.agent_hosts import candidate_inner_agent_binding
 from goal_plus.application.candidate_host import ThinkThreadCandidatePreparation
@@ -73,6 +74,43 @@ def test_codex_launch_default_role_semantics(tmp_path, recorded_role, requested_
                 session.agent_session_id, now=0.0, spawn_input=spawn_input,
             )
     assert domain_files(runtime.root_dir) == before
+
+
+def test_native_wake_rejects_pending_allocation_retirement(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    spec_data["workspace"] = {"backend": "git_worktree"}
+    spec_data["strategy"] = {
+        "name": "random",
+        "orchestration_mode": "adaptive_search",
+        "selection": {
+            "ranking_keys": ["quality_score", "hard_score"],
+            "ranking_tolerance": [0.05, 0.0],
+        },
+        "allocation": {"policy": "priority_replace/v1"},
+    }
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data),
+        [project / "evaluator.py"],
+        native_host="codex",
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    task = runtime.start_batch(
+        run_id, runtime.plan_next(run_id, requested_k=1).plan_id
+    )[0]
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+    queries = SearchHostService(runtime.root_dir, runtime=runtime).queries
+    queries.source.load_allocation_decisions = lambda _run_id: [
+        SimpleNamespace(
+            status="pending",
+            retire_candidate_ids=[task.candidate_id],
+            decision_id="allocation_test",
+        )
+    ]
+
+    with pytest.raises(RuntimeError, match="pending allocation decision"):
+        queries.require_native_execution(session.agent_session_id, now=0.0)
 
 
 @pytest.mark.parametrize("invalidated", [False, True])

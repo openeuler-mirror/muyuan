@@ -22,7 +22,7 @@ class ProcessMonitorIdentity(SearchModel):
     model: str | None = None
     reasoning_effort: str | None = None
     timeout_seconds: int | float | None = None
-    task_kind: Literal["search_scheduler"] | None = None
+    task_kind: Literal["llm_verifier"] | None = None
 
 
 class ProcessEventSummary(SearchModel):

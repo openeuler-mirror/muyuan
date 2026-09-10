@@ -121,7 +121,7 @@ token 开始就是自然语言目标：
 
 Host command 入口只对这里显式出现的 `annotator`、`workers`/`models` 执行真实推理
 preflight；未指定时不检查 Main default。后续 `search_freeze_spec` 同样只检查 spec 中显式写出的
-worker、annotator 和 scheduler model。每个边界都按模型去重并并发请求，任一失败则在 agent
+worker 和 annotator model。每个边界都按模型去重并并发请求，任一失败则在 agent
 launch 前拒绝状态转换。检查使用 Codex/Pi 原生 model API，Goal Plus API 不接受 provider
 配置、API key 或 endpoint。
 
@@ -192,13 +192,13 @@ Git backend 的 freeze 会直接在 `SearchSpec.source_path` 执行一次完整 
 这两类 bootstrap Evidence 不属于 candidate iteration，不参与 score、ledger 或选择。
 
 A new Codex/Pi spec uses `strategy.orchestration_mode="parallel_loops"` for fixed
-candidates or `"adaptive_search"` for Scheduler-driven replacement.
+candidates or `"adaptive_search"` for deterministic replacement.
 `search_plan_next(requested_k)` can be called only once for either run.
 
 SearchSpec cannot select an Agent family or execution driver. Freeze derives
 `FrozenSpec.native_host` (`codex` or `pi`) from the authorized Main session and
 binds it into the spec hash. `strategy.worker_host`, `worker_launch.agent_profile`,
-`evidence_annotator.host`, and `search_scheduler.host` are rejected as extra fields.
+`evidence_annotator.host`, and `verifier.host` are rejected as extra fields.
 Internal role drivers follow the frozen identity and workspace backend.
 Their persisted profiles contain only resolved host/model/reasoning/timeout plus
 `configuration_source="host_process"`; service authentication, endpoints, and host configuration
@@ -210,47 +210,40 @@ host selection inside `spec.strategy`, are not silently converted or repaired.
 Finish those runs with their original plugin version, or start a new Goal and
 freeze a new contract through the native host. Do not edit `.gp` to supply identity.
 
-An `adaptive_search` run requires a non-null `search_scheduler` and still has one initial plan, but
-may replace a retired lane through persisted runtime decisions. It requires a
-Git worktree. `budget.max_parallel` is the live candidate limit; optional
+An `adaptive_search` run requires `strategy.allocation` and a Git worktree, and
+automatically runs the LLM Verifier. Outside Adaptive Search, including `quality_score`
+in `strategy.selection.ranking_keys` enables the same verifier. The allocation policy
+version owns the additional LLM scoring rules. It
+still has one initial plan, but may replace a retired lane through persisted
+runtime decisions. `budget.max_parallel` is the live candidate limit; optional
 `budget.max_candidates` limits cumulative unique candidates, while `null` is
-unbounded and any finite value must be at least `max_parallel`. After hard settlement, the runtime
-persists an `AnnotationTask`; only after it reaches `completed` or
-`terminal_error` does the runtime persist a `ScheduleTask` with its compact
-Evidence View projection. A recoverable, concurrent, one-shot scheduler call
-applies reward, pruning, and optional derivation in order. Only a lazy-confirmation
-task receives the all-candidate allocation context plus derivation instructions and may return a separate
-Decision draft. `allocation_flag` is boolean (`false=continue`,
-`true=reschedule`). `ScheduleTask.output` is authoritative; completed rewards
-are exposed as a read-time list indexed from ScheduleTasks and are not copied
-into a value-tree file or candidate/report record. Rewards retain explicit
-settlement-id, ScheduleTask-id, and node-id bindings. A failed annotation supplies
-`view=null` plus guidance to choose any compensation from historical observations;
-the runtime defines no fixed compensation. There is no run-root tree, graph, value-backup,
-action-edge, or hindsight projection. A verifier report may include
-`scheduler_status`, `schedule_task_id`, and `allocation_decision`. The main agent
-applies the exact Decision and launches every returned session payload; it does
-not author a replacement. Reward never replaces the hard metric used by
-`search_select`.
+unbounded and any finite value must be at least `max_parallel`.
 
-Lazy allocation gates only when the previous completed flag was `true`. An
-ordinary `true` flag contains no plan. A current confirmation `true` must
-include a separate draft; the Decision service
-validates and persists it with retirees, rationale, reserved derived ids, exact
-settled source nodes, exploration directions, and optional worker budgets. The
-scheduler chooses how many available reserved ids to use; there is no separate
-per-Decision replacement or expansion-depth setting. Tasks complete asynchronously; the runtime
-does not wait or launch a model in the verifier call. While a confirmation task is unresolved,
-continuation, redispatch, and another verifier call for that lane are rejected without polling.
-Before a decision becomes visible, its triggering iteration has completed Git
-and results-ledger settlement. AnnotationTask is a weak prerequisite for
-ScheduleTask creation: it must be terminal, but `terminal_error` continues with
-`view=null` and historical-compensation guidance. Missing annotation tasks are
-idempotently recovered from durable iterations on later verifier settlements or
-Global Evidence reads. Retirement
-fences only the candidate's next iteration: it neither cancels View generation
-nor removes the settled result from Global Evidence. While annotation is still
-pending, `schedule_task_id` may be absent.
+After hard settlement, the runtime idempotently persists one `VerifierTask`.
+The reliable asynchronous drainer uses one structured LLM call to produce one
+immutable `VerifierRecord` bound to the exact candidate, iteration, settlement,
+commit and artifact hash. Adaptive mode includes every metric defined by the frozen policy
+under `allocation_scores`; minimal mode requires that field to be `null`. Missing signals remain explicitly
+`pending`, `terminal_error`, or `unavailable`, never numeric zero.
+
+Adaptive reconciliation builds an immutable `SearchSnapshot`, runs the frozen
+pure FeaturePipeline and `priority_replace/v1` policy, and persists the resulting
+canonical `AllocationDecision`. The LLM does not return a winner, allocation flag,
+or executable plan. Candidate ids are assigned only when the Executor applies a
+pending Decision. Apply revalidates the Snapshot, exact settled source, retire
+eligibility, capacity and budget under the run lock, and is recoverable after a
+partial retirement, materialization or session write.
+
+Verifier tasks accumulate in the run-scoped reliable queue and are consumed one
+at a time without blocking candidate start or continuation. Final `search_select`
+resolves every configured ranking source for the exact subject and uses inclusive progressive tolerances.
+Pending required scores wait; unavailable scores exclude an option; an empty pool
+becomes `selection_blocked` without runtime fallback. Hard integrity and promotion
+gates remain mandatory even when `hard_score` is not a ranking key.
+
+The main agent lists and applies the exact pending Decision and launches every
+returned session payload; it does not author a replacement. Retirement neither
+cancels Evidence generation nor removes settled results from Global Evidence.
 Hidden-answer QA benchmarks must not use this feedback path: gold-derived
 correctness, reward, or allocation is an answer oracle. Keep only public format
 validation worker-visible and score all final answers externally.
@@ -324,7 +317,7 @@ resume 之间累计。
 `result_ledger_source="gp"` 保留准确 provenance。`workspace_ledger_projection` 返回 binding 的
 `none` 或 `results_tsv`；只有后者的 `results_tsv` 才是路径，否则为 `null`。`inner_agent` 返回
 frozen logical adapter ID；它不会暴露 host-native role。持久化的完整 `CandidateTask` 只投影为
-工作所需字段；model、directive、scheduler mode 和 run budget 不重复下发。ThinkThread
+工作所需字段；model、directive、orchestration mode 和 run budget 不重复下发。ThinkThread
 candidate 只额外返回受限的 logical workspace access，不暴露 Root 本地路径。只有确实需要旧
 verifier 细节时才调用 `search_list_iterations`。
 
@@ -485,7 +478,7 @@ cleanup 投影。顶层 `state` 为 `pending`、`complete`、`retained`、`needs
 plugin 统一展示普通 main/subagent 的 assignment summary、attempt
 generation、assignment/result/decision，同时保留 Codex/Pi 的原生 operation 名。传入
 `feature_plugins=["orchestration"]` 可显式选择，传入空数组可关闭全部投影。详见
-[Feature Plugin](feature-plugins.md)。
+[Monitor Feature Plugin](adaptive-search.md#monitor-feature-plugin)。
 
 ## Selection、Promotion 与 Report
 
@@ -570,7 +563,7 @@ Annotation 绑定到 main owner。它们是 host adapter 控制面，不注册�
 `execution_scope_id` 也不会出现在模型可见的 pool schema 中。
 
 同一 host control path 在 worker verifier 完成后调用一次 capability-protected internal-agent kick，
-同时唤醒 Annotation 与 Adaptive Scheduler queue。该命令不是模型可见工具，不接收外部连接配置。
+同时唤醒 Annotation 与 LLM Verifier queue。该命令不是模型可见工具，不接收外部连接配置。
 
 安装的 `goal-plus-pi` ThinkThread Profile 还暴露以下 host-local 工具。它们通过
 Agent POSIX Control 通道运行，不进入共享 MCP server：

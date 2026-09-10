@@ -16,9 +16,6 @@ from goal_plus.application.annotation_admission import AnnotationAdmission
 from goal_plus.application.annotation_context import AnnotationContextBuilder
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.application.internal_agents import InternalAgentWork
-from goal_plus.application.scheduler import SchedulerWorkflow
-from goal_plus.application.scheduler_context import SchedulerContextBuilder
-from goal_plus.application.scheduler_lanes import SchedulerLanes
 from goal_plus.application.search_context import SearchContext
 from goal_plus.execution.drainer import DetachedDrainer
 from goal_plus.execution.process_monitor import ProcessMonitor
@@ -35,10 +32,9 @@ from goal_plus.infrastructure.state.annotation import FileAnnotationState
 from goal_plus.infrastructure.state.drainer import FileDrainerState
 from goal_plus.infrastructure.state.scope import FileScopeState
 from goal_plus.infrastructure.state.goal import FileGoalQueries
-from goal_plus.infrastructure.state.scheduler import FileSchedulerState
+from goal_plus.infrastructure.state.verifier import FileVerifierState
 from goal_plus.infrastructure.state.search_context import FileSearchContextSource
 from goal_plus.infrastructure.state.process_monitor import FileProcessMonitorSink
-from goal_plus.ports.annotation import AnnotationTaskQuery
 from goal_plus.ports.candidate_creation import (
     MaterializeCandidate,
     PrepareInitialSession,
@@ -46,6 +42,7 @@ from goal_plus.ports.candidate_creation import (
 from goal_plus.ports.process_monitor import ProcessMonitorIdentity
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.scope import ScopeCleanupServices, ScopeState
+from goal_plus.ports.verifier import VerifierRecordConsumer
 from goal_plus.thinkthread_agent_posix import AgentPosixSdkClient
 
 
@@ -193,17 +190,6 @@ def build_internal_agent_work(root_dir: Path | str) -> InternalAgentWork:
     return InternalAgentWork(FileAnnotationState(root_dir))
 
 
-@dataclass(frozen=True)
-class SchedulerHostInput:
-    root_dir: Path
-    annotation: AnnotationTaskQuery
-
-
-def build_scheduler_host_input(root_dir: Path | str) -> SchedulerHostInput:
-    workflow, _, _, _ = build_annotation_services(root_dir)
-    return SchedulerHostInput(Path(root_dir).resolve(), workflow)
-
-
 def build_goal_authorization(
     root_dir: Path | str,
 ) -> tuple[GoalAuthorization, FileGoalQueries]:
@@ -211,7 +197,7 @@ def build_goal_authorization(
     return GoalAuthorization(source), source
 
 
-def build_candidate_sessions(root_dir: Path | str, annotation: AnnotationTaskQuery):
+def build_candidate_sessions(root_dir: Path | str):
     from goal_plus.application.adaptive_admission import AdaptiveAdmission
     from goal_plus.application.candidate_sessions import CandidateSessions
     from goal_plus.infrastructure.artifacts.candidate_launch import HostCandidateLaunch
@@ -221,12 +207,10 @@ def build_candidate_sessions(root_dir: Path | str, annotation: AnnotationTaskQue
 
     state, clock = FileCandidateSessionState(root_dir), SystemClock()
     authorization, _ = build_goal_authorization(root_dir)
-    _, _, lanes = build_scheduler_services(root_dir, annotation)
-    decisions = AllocationDecisions(state=FileAllocationState(root_dir), clock=clock)
     return CandidateSessions(
         state=state,
         launch=HostCandidateLaunch(root_dir),
-        admission=AdaptiveAdmission(state, lanes, decisions),
+        admission=AdaptiveAdmission(state),
         authorization=authorization,
         context=SearchContext(FileSearchContextSource(root_dir)),
         clock=clock,
@@ -322,6 +306,7 @@ def build_candidate_settlement(
     shared_tools,
     annotation,
     admission,
+    verifier,
     persist_run,
 ):
     from goal_plus.application.candidate_checkpoints import CandidateCheckpoints
@@ -332,7 +317,6 @@ def build_candidate_settlement(
 
     state = FileCandidateSettlementState(root_dir)
     checkpoints = CandidateCheckpoints(state)
-    _, _, lanes = build_scheduler_services(root_dir, annotation)
     settlement = CandidateSettlement(
         state=state,
         clock=SystemClock(),
@@ -343,7 +327,7 @@ def build_candidate_settlement(
         shared_tools=shared_tools,
         annotation=annotation,
         annotation_admission=admission,
-        lanes=lanes,
+        verifier=verifier,
         checkpoints=checkpoints,
         persist_run=persist_run,
     )
@@ -368,7 +352,7 @@ def build_publication_notifications(root_dir, persist_run):
     )
 
 
-def build_selection(*, settlement, recovery):
+def build_selection(*, settlement, recovery, verifier):
     from goal_plus.application.selection import Selection
 
     return Selection(
@@ -380,6 +364,7 @@ def build_selection(*, settlement, recovery):
         annotation=settlement.annotation,
         annotation_admission=settlement.annotation_admission,
         authorization=settlement.authorization,
+        verifier=verifier,
         persist_run=settlement.persist_run,
     )
 
@@ -445,15 +430,12 @@ def build_allocation_services(
     *,
     materialize: MaterializeCandidate,
     start_session: PrepareInitialSession,
-    decisions: AllocationDecisions | None = None,
 ) -> tuple[AllocationDecisions, AllocationApply]:
     state = FileAllocationState(root_dir)
     authorization, _ = build_goal_authorization(root_dir)
     clock = SystemClock()
     return (
-        decisions
-        if decisions is not None
-        else AllocationDecisions(state=state, clock=clock),
+        AllocationDecisions(state=state, clock=clock),
         AllocationApply(
             state=state,
             preparation=AllocationPreparation(state, authorization),
@@ -484,26 +466,6 @@ def build_annotation_services(
         root_dir=state.root_dir,
     )
     return workflow, admission, context, builder
-
-
-def build_scheduler_services(
-    root_dir: Path | str,
-    annotation: AnnotationTaskQuery,
-) -> tuple[SchedulerWorkflow, SchedulerContextBuilder, SchedulerLanes]:
-    state = FileSchedulerState(root_dir)
-    workflow = SchedulerWorkflow(tasks=state, runs=state, clock=SystemClock())
-    search_context = SearchContext(FileSearchContextSource(root_dir))
-    context = SchedulerContextBuilder(
-        tasks=state,
-        source=state,
-        context=search_context,
-        artifacts=ProviderArtifactReader(AgentPosixSdkClient),
-        root_dir=state.root_dir,
-    )
-    lanes = SchedulerLanes(
-        workflow=workflow, source=state, annotation=annotation, context=search_context
-    )
-    return workflow, context, lanes
 
 
 def build_candidate_creation(root_dir: Path | str):
@@ -775,6 +737,26 @@ from goal_plus.application.candidate_context import CandidateContext
 from goal_plus.application.search_queries import SearchQueries
 from goal_plus.application.evidence_reads import EvidenceReads
 from goal_plus.application.report import Report
+from goal_plus.application.verifier import VerifierWorkflow
+
+
+def build_verifier_record_consumer(
+    root_dir: Path | str,
+    *,
+    verifier: VerifierWorkflow,
+) -> VerifierRecordConsumer:
+    from goal_plus.application.adaptive_reconciliation import (
+        AdaptiveDecisionReconciliation,
+    )
+    from goal_plus.application.adaptive_snapshot import AdaptiveSnapshotBuilder
+
+    state = FileAllocationState(root_dir)
+    return AdaptiveDecisionReconciliation(
+        state=state,
+        verifier=verifier,
+        snapshots=AdaptiveSnapshotBuilder(state=state, verifier=verifier),
+        decisions=AllocationDecisions(state=state, clock=SystemClock()),
+    )
 
 
 # This assembly result is consumed only by the public facade, never by a use case.
@@ -794,6 +776,7 @@ class SearchServices:
     selection: Selection
     notifications: PublicationNotifications
     artifact_lifecycle: ArtifactLifecycle
+    verifier: VerifierWorkflow
     adaptive_search: AdaptiveSearch
     reporter: Report
     goal_authorization: GoalAuthorization
@@ -818,7 +801,6 @@ class SearchServices:
 
 def build_search_services(root_dir: Path) -> SearchServices:
     from goal_plus.adaptive_search.allocation import AllocationExecutor
-    from goal_plus.adaptive_search.scheduler import SchedulerManager
 
     goal_authorization, _ = build_goal_authorization(root_dir)
     (
@@ -828,13 +810,14 @@ def build_search_services(root_dir: Path) -> SearchServices:
         annotation_context,
     ) = build_annotation_services(root_dir)
     verifiers = LocalVerifiers(root_dir)
+    verifier = VerifierWorkflow(FileVerifierState(root_dir), SystemClock())
     provider_mutations, thinkthread_verifiers = build_thinkthread_verifiers(
         root_dir, verifiers
     )
     search_bootstrap, repository, bindings, models = build_search_bootstrap(root_dir, verifiers)
     client_factory = lambda: AgentPosixSdkClient()
     candidate_creation, candidate_ledger = build_candidate_creation(root_dir)
-    candidate_sessions = build_candidate_sessions(root_dir, annotation)
+    candidate_sessions = build_candidate_sessions(root_dir)
     research = build_search_research(root_dir)
     search_run = build_search_run(
         root_dir,
@@ -859,6 +842,7 @@ def build_search_services(root_dir: Path) -> SearchServices:
         shared_tools=shared_tools,
         annotation=annotation,
         admission=annotation_admission,
+        verifier=verifier,
         persist_run=search_run.persist,
     )
     recovery = build_candidate_recovery(
@@ -878,7 +862,9 @@ def build_search_services(root_dir: Path) -> SearchServices:
         verifiers=thinkthread_verifiers,
         mutations=provider_mutations,
     )
-    selection = build_selection(settlement=settlement, recovery=recovery)
+    selection = build_selection(
+        settlement=settlement, recovery=recovery, verifier=verifier
+    )
     notifications = build_publication_notifications(root_dir, search_run.persist)
     promotion, publication_apply = build_publication(
         root_dir,
@@ -896,17 +882,13 @@ def build_search_services(root_dir: Path) -> SearchServices:
         search_run.persist,
     )
     adaptive_search = AdaptiveSearch(
-        source=candidate_sessions.state,
-        admission=candidate_sessions.admission,
         allocation=AllocationExecutor(
             *build_allocation_services(
                 root_dir,
                 materialize=candidate_creation.materialize,
                 start_session=candidate_sessions.start_agent_session,
-                decisions=candidate_sessions.admission.decisions,
             )
         ),
-        scheduler=SchedulerManager(SchedulerHostInput(root_dir, annotation)),
     )
     context, queries, evidence_reads = build_search_queries(
         root_dir,
@@ -943,6 +925,7 @@ def build_search_services(root_dir: Path) -> SearchServices:
         selection=selection,
         notifications=notifications,
         artifact_lifecycle=artifact_lifecycle,
+        verifier=verifier,
         adaptive_search=adaptive_search,
         reporter=reporter,
         goal_authorization=goal_authorization,

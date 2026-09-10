@@ -40,7 +40,7 @@ def process_files(monkeypatch):
 
 
 @pytest.mark.parametrize("module", [
-    "goal_plus.evidence_annotator", "goal_plus.adaptive_search.scheduler",
+    "goal_plus.evidence_annotator", "goal_plus.llm_verifier",
 ])
 @pytest.mark.parametrize("run_id,generation", [
     ("run_10", "generation"), ("run_1", "generation-next"),
@@ -54,7 +54,7 @@ def test_worker_identity_rejects_substring_matches(process_files, module, run_id
 
 
 @pytest.mark.parametrize("module", [
-    "goal_plus.evidence_annotator", "goal_plus.adaptive_search.scheduler",
+    "goal_plus.evidence_annotator", "goal_plus.llm_verifier",
 ])
 def test_worker_identity_does_not_treat_unreadable_command_as_owned(process_files, module):
     pid, files = process_files
@@ -74,7 +74,7 @@ def test_scope_identity_does_not_assume_a_missing_observation_matches(process_fi
 
 
 @pytest.mark.parametrize("module", [
-    "goal_plus.evidence_annotator", "goal_plus.adaptive_search.scheduler",
+    "goal_plus.evidence_annotator", "goal_plus.llm_verifier",
 ])
 def test_worker_identity_accepts_only_its_exact_launch_vector(process_files, module):
     pid, files = process_files

@@ -1,296 +1,380 @@
-# Adaptive Search 与 Search Scheduler
+# Adaptive Search
 
-Adaptive Search 是 Goal Plus 主线接入 Search Scheduler 的 orchestration mode。它在 verifier
-结算后先等待对应 `AnnotationTask` 进入终态，再持久化一个
-`ScheduleTask`，并通过一次 scheduler 推理完成 reward、allocation flag 和可选 Decision 草案。
-scheduler 只做结构化推理；
-`ScheduleTask.output` 是推理结果的唯一权威记录，runtime 负责按需索引 reward 并执行
-已持久化的 `AllocationDecision`。scheduler 不是 candidate worker 的 session，也不参与 hard score、
-最终选择或 promotion。
+Goal Plus 在同一份 [LLM Verifier](llm-verifier.md) 局部评估记录上支持两种搜索模式：
 
-当前纯 schema 位于 `domain/adaptive/models.py`，版本化策略及纯 context builder 位于
-`domain/adaptive/policies.py`；原 Python schema/policy 入口保留 re-export。
-`application/scheduler.py` 管理 claim/completion/retry 与 confirmation output gate，
-`application/scheduler_context.py` 从 typed state 和 ArtifactReader 构造只读输入。
-`application/scheduler_lanes.py` 管理 admission/reservation、顺序消费、reward 索引和 lane gate。
-`application/allocation.py` 校验/记录 Decision 并恢复退休、trigger 和计数投影。
-`application/allocation_preparation.py` 在原 run 锁内预检全部 replacement，复核 Goal/run、
-settled artifact/ledger、容量和已物化 child/session 的 recovery/generation gate；不产生写入。
-预检结果只在该锁持续持有期间使用，不是可缓存的授权凭证。
-`application/allocation_apply.py` 管理 retirement、applied 提交、计数恢复和 session 重放，
-通过 typed candidate creation 接口物化 workspace、准备 provenance/launch，不启动 worker。
-`adaptive_search.py` 仍负责流程协调，`scheduler.py` 保留公共 facade 和调用后端，
-`adaptive_search/allocation.py` 仅委托用例并保持原结果结构。Candidate creation 的具体 provider
-和 session 分别经窄 workspace/session 接口装配；host pump 独立于 Runtime，
-进程、推理、drainer 与 scope 机制位于 Execution。职责关系见[架构图集](architecture.md)。
-runtime 通过标准化 trigger 和 reward 节点绑定把 scheduler 输出交给 Allocation；Allocation 不读取或
-改写 ScheduleTask，scheduler 也不持久化 Decision。
+- **极简模式**：`orchestration_mode: parallel_loops`。固定预算执行候选搜索，最终由确定性
+  Selection 选择 winner。
+- **Adaptive 模式**：`orchestration_mode: adaptive_search`。同一次 LLM 调用额外生成冻结的
+  `allocation_scores`，确定性 AllocationPolicy 据此退休和派生 candidate。
 
-## 运行流程
+两种模式共享 `quality_score` 和最终 Selection。Adaptive 只增加资源分配，不改变质量分数语义、
+hard gate 或 promotion 原则。旧 Search Scheduler、`ScheduleTask`、`allocation_flag`、二次确认、
+candidate id 预留及其兼容 fallback 均不属于当前方案。
 
 ```text
-settlement
-  -> persist AnnotationTask(settlement_id)
-  -> AnnotationTask completed | terminal_error
-  -> persist ScheduleTask(compact Evidence View)
-  -> native Codex/Pi host callback starts one-shot scheduler call
-       -> compute reward / rubric / UCT / exploration from reward policy
-       -> compute allocation flag from pruning policy
-       -> apply derivation policy and return Decision only when flag=true
-          and this is an allocation-confirmation task
-  -> consume task in candidate iteration order
-       -> record SchedulerOutput on ScheduleTask
-       -> persist Decision only after lazy reschedule confirmation
-  -> fence retired candidates
-  -> apply Decision
-       -> create derived workspace and native agent session
-  -> continue the current or derived candidate
+SettlementReceipt
+  -> one VerifierTask -> one LLM call -> one VerifierRecord
+  -> deterministic Selection
+  -> optional SearchSnapshot -> FeatureView -> AllocationPolicy
+  -> optional AllocationDecision -> AllocationExecutor
 ```
 
-hard settlement 总是先完成。普通 iteration 不同步等待后续 AnnotationTask/ScheduleTask；只有上一
-completed ScheduleTask 的 flag 为 `true` 时，当前 iteration 才成为 confirmation。confirmation 的
-task 未进入终态前，runtime 确定性拒绝该 lane 的下一次 continuation、redispatch 和 verifier，
-但不在调用线程中启动或等待模型。
-scheduler 或 annotation 失败不会撤销 verifier score、results ledger、Git 结算、Evidence、selection
-或 promotion。AnnotationTask 是 ScheduleTask 的弱依赖：annotation 失败仍会生成 ScheduleTask。
+## SearchSpec
 
-Adaptive 也为 parent fallback verification admission 内部 AnnotationTask。已 admission 的
-精确 immutable artifact 可以被领取并构造 Annotation context，不因缺少 worker session 而
-永久停在 pending；普通模式的 parent 补验仍不 admission。该内部任务不改变 parent Evidence
-的 provenance，也不会把它加入 peer Global Evidence。Pi wrapper 补验后的唤醒由 Pi driver
-负责，任务失败/重试仍由原 Annotation 与 Scheduler owner 处理。
-
-## 配置
+### 极简模式
 
 ```yaml
-budget:
-  max_parallel: 4
-  max_candidates: 8
 strategy:
-  orchestration_mode: adaptive_search
-  search_scheduler:
-    model: bench-openai/gpt-5.6-sol
-    reasoning_effort: low
-    timeout_seconds: 180
-    reward: evidence_llm_value/v3 @prompt rubric要关注本轮新增价值
-    allocation: value_guided_replace/v2
+  orchestration_mode: parallel_loops
+  selection:
+    ranking_keys: [quality_score, hard_score]
+    ranking_tolerance: [0.05, 0.0]
+```
+
+极简模式不配置 `allocation`，`VerifierRecord.allocation_scores` 必须为
+`null`。它只解决固定预算下的 Best-of-N 选择，不启用动态 retirement、derive、progress trend、
+AllocationPolicy 或 AllocationExecutor。
+
+`selection.ranking_keys` 包含 `quality_score` 时，runtime 自动启用 LLM-Verifier；只配置
+`hard_score` 时不会创建 VerifierTask。SearchSpec 不提供独立的 verifier 开关。
+
+### Adaptive 模式
+
+```yaml
 workspace:
   backend: git_worktree
+strategy:
+  orchestration_mode: adaptive_search
+  selection:
+    ranking_keys: [quality_score, hard_score]
+    ranking_tolerance: [0.05, 0.0]
+  allocation:
+    policy: priority_replace/v1
+    features:
+      - latest_record_values/v1
+      - progress_trend/v1
+    switch_margin: 0.15
 ```
 
-`strategy.orchestration_mode="adaptive_search"` 是 Goal Plus 主线进入该扩展的开关，并要求
-`strategy.search_scheduler` 非 `null`。`parallel_loops` 是隔离的固定候选流程，不允许配置
-Search Scheduler。主 runtime 只按 orchestration mode 调用 `AdaptiveSearch` 门面；进入门面后，
-Scheduler、Allocation 和 policy 内部只校验非空 `search_scheduler`，不传播模式判断。启用时要求
-`workspace.backend="git_worktree"`。`model`、`reasoning_effort` 和 `timeout_seconds`
-均为必填项，可以独立于 candidate profile。Scheduler 不接受 `host` 配置；
-驱动从 `FrozenSpec.native_host` 和工作区后端解析。ScheduleTask 的 resolved profile
-保存解析后的 host、上述模型参数和
-`configuration_source="host_process"`，不接受服务连接、认证变量名或 host 配置目录。
-并发和重试由 runtime 内部决定。
+Adaptive 模式必须配置 `allocation`，当前实现要求 Git worktree backend，并自动启用 LLM-Verifier。
+`allocation.policy` 同时确定资源分配算法及 LLM-Verifier 动态追加的 allocation 评分规则。
 
-Scheduler model 是显式 override，因此和 SearchSpec 中其他显式 agent model 一样，由现有
-`search_freeze_spec` host gate 在 freeze 前执行真实推理 preflight。同一模型只检查一次，不同
-模型并发检查；catalog discovery 不能替代该请求。preflight 继承当前 native host 配置，不接收
-独立 provider、API key 或 endpoint。
+Freeze 固化 Selection key/tolerance/direction 以及具体 AllocationPolicy spec。运行中的 run 不接受
+这些配置变化。相同 FrozenSpec、权威输入和 policy 版本
+必须回放出相同的 Snapshot、Selection trace、plan hash 和 Decision identity。
 
-Codex hook 和 Pi extension 是内部 scheduler 的启动 owner。它们在 verifier、Evidence/context
-读取和 Search 状态/收尾的 post-tool callback 中扫描 Annotation 与 Scheduler queue；后续
-annotation drainer 也可在相同 provenance 下继续
-唤醒 Scheduler。所有子进程完整继承 native host 进程配置，并携带非敏感
-`GOAL_PLUS_INTERNAL_AGENT_HOST` 标记。shared runtime/MCP 不启动 scheduler，执行器在模型调用前
-再次校验标记与冻结 host 一致。
+## Deterministic Selection
 
-Annotation 完成回调只唤醒 Scheduler，不重入当前 Annotation drainer。唤醒失败不撤销已提交
-task，后续 host 扫描按持久化任务恢复。Selection 先提交 closed queue 和选中状态，再由 host
-pump 清理内部 agent；清理失败保留原 host handle，后续收尾扫描可重试，不重开 queue。
-
-`budget.max_parallel` 是实时活跃 candidate 上限 `K`。`budget.max_candidates` 是累计物化过的
-唯一 candidate 上限；设为 `null` 或省略时不限制累计数量，有界值必须满足
-`max_candidates >= max_parallel`。单次 Decision 可使用的预留派生 id 数量仍受当时可用并发容量
-约束；有界模式再同时受累计剩余额度约束。
-
-`reward` 和 `allocation` 使用 `name/vN [@prompt 补充说明]` 格式引用版本化策略。runtime 在 search
-开始前解析准确版本并把完整策略快照写入 `FrozenSpec`；异步 scheduler agent 只读取该快照和已构建
-context。runtime 根据冻结的准确版本调用其注册 context builder。可选 `@prompt` 一同被冻结并加入
-scheduler 输入上下文。
-内置 reward 策略仅保留 `evidence_llm_value/v3`，内置 allocation 策略仅保留
-`value_guided_replace/v2`。删除的旧版本号不会复用；冻结配置引用旧版本时会明确报 unknown policy。
-增加策略时直接修改 `domain/adaptive/policies.py`，仿照内置策略定义 instructions 和 `build_context`，再调用
-`_register_reward_policy` 或 `_register_allocation_policy`；异步 worker 导入同一个文件，因此不提供
-运行时动态注册入口。配置不接受函数名或脚本路径，也不会执行外部策略代码。backup
-属于 reward 推理，expansion 属于 allocation/Decision，不再单独配置。
-
-`evidence_llm_value/v3` 将 reward 定义为当前 iteration 的边际价值：公开结果增量、相对
-本候选历史新增的 Evidence 信息和新的实现/覆盖方向分别形成 `outcome_gain`、
-`information_gain`、`direction_gain`。重复 pass、无 diff、重复验证或注释维护不再因为候选绝对状态
-良好而获得正 reward；恢复到已经观察过的最好结果也只获得少量分值。确认 allocation 时，它根据
-显式节点绑定构造不落盘的临时价值投影，用于比较历史来源节点且不改写 `ScheduleTask`。如果
-annotation 终态失败，View 固定为 `null`，上下文仅提示 scheduler 参考历史观测自行决定补偿方案，
-不预设固定补偿公式。
-
-每个 allocation policy 分为 `pruning_instructions` 和 `derivation_instructions`。
-`value_guided_replace/v2` 判断继续占用 lane 的机会成本：
-当前公开回退、连续两轮无正边际价值，或相对同质 peer 没有独有信息/方向时进入替换确认；历史高分
-不再抵消当前回退或长期停滞。确认阶段保留每组同质方向中证据最强的 lane，并允许一个高价值历史
-节点派生多个互不重复的探索方向，不再要求固定的来源价值差。普通调用只注入 pruning；确认调用中
-当前 pruning 结果为 `true` 时，scheduler 才在同一次调用内执行 derivation。`allocation_flag`、lazy
-confirmation、Decision 输出条件和 reserved id 校验属于 scheduler runtime 公共协议，不属于
-allocation policy。
-
-## Scheduler 调用上下文
-
-模型输入固定分为三个顶层对象。`SchedulerContextBuilder` 维护 `scheduler_context`，保存当前 settlement 的
-身份、目标、准确 commit/diff、公开 metric、disposition 和精简 Evidence View；不包含策略或历史。
-它把 reward 绑定节点、候选和容量作为中性事实传给 `policies.py` 的统一入口，再拼接该入口返回的
-`reward_context` 与 `allocation_context`。
-
-每个注册策略必须提供 `build_context`。当前 reward context 投影本候选近期历史、
-previous/best/last-positive 里程碑和 UCT；allocation context 投影当前 lane、精简 peer frontier
-和容量。`allocation_context` 使用
-`phase=screen|confirm` 表明阶段，只有 confirm 才由统一入口加入 derivation policy、全 candidate 的
-reward-bound 节点和预留派生 id。模型 profile、runtime root、deadline 和进程监控路径属于执行后端
-私有上下文，不注入模型 prompt。local reward 只依赖当前 candidate；UCT 的 `total_visits` 仍来自全局
-已完成 ScheduleTask，只用于探索项。
-
-## ScheduleTask
-
-文件路径为：
+### 极简模式流程
 
 ```text
-runs/<run_id>/candidates/<candidate_id>/schedule-tasks/iteration-<n>.json
+start fixed candidates
+  -> candidate iterations and hard settlements
+  -> enqueue Verifier tasks asynchronously
+  -> continue under original candidate budget
+  -> run stop condition
+  -> wait for required ranking tasks to reach terminal state
+  -> resolve exact candidate pool
+  -> deterministic tolerance Selection
+  -> exact artifact/evidence validation
+  -> promotion
 ```
 
-task 固定以下输入：`frozen_spec_id`、`settlement_id`、`node_id`、AnnotationTask id/终态、精简
-Evidence View、reward/allocation policy 引用、settled commit、attempt diff 文件、目标上下文 hash 和
-scheduler profile。完整 policy 只保存在 FrozenSpec，ScheduleTask 不复制动态上下文或 policy hash。
-若上一 completed ScheduleTask 的 `allocation_flag=true`，runtime 才为当前确认 task 预留 candidate
-id。状态为：
+Selection 复用 hard-settled options。Application 从 `FrozenSpec + SettlementReceipt` 生成完整
+`VerifierSubject` 摘要，并把 candidate、iteration、settlement、artifact hash 和
+`verifier_subject_hash` 组成 `SelectionSubjectKey`。Domain 只比较该身份键，不解释 settlement。
+
+启用 `quality_score` 时，ScoreSource 只接受完整权威链：
+
+1. option 的 `verifier_subject_hash` 精确匹配 task subject；
+2. task 已 `completed`，且 `task.output_record_id == record.record_id`；
+3. output id 只命中一条 record；
+4. record 的 task、allocation policy 和完整 subject 均与 task 一致。
+
+ScoreSource 的运行期状态为：
 
 ```text
-pending -> running -> completed
-                  -> retry_wait -> running
-                  -> terminal_error
+pending | unavailable | value(finite number)
 ```
 
-同一 candidate 必须按 iteration 顺序消费，不同 candidate 可在
-`budget.max_parallel` 派生的内部上限内并发。worker record 用于检测失效进程；恢复时 running task
-可以重新进入处理。每次 scheduler 调用都是一次性进程，不恢复或创建 native session。
+- 任一必要 source 为 `pending` 时，收尾进入 readiness wait；
+- source 已终态但缺失、非有限或 identity 不匹配时，排除该精确 option；
+- 必要 task 为 `terminal_error` 时，对应 source 不可用；
+- 过滤后候选池为空时进入 `selection_blocked`，不改变 FrozenSpec 降级。
 
-成功输出同时包含：
+### 逐级容差
 
-- `reward`：有限数值 reward、rubric score、exploitation、exploration、UCT、分量和依据；
-- `allocation_flag`：布尔值，`false` 表示 continue，`true` 表示 reschedule；
-- `allocation_rationale` 和 `allocation_confidence`：flag 的依据与置信度；
-- `decision`：仅当上一 completed flag 为 `true` 且当前 flag 也为 `true` 时出现，包含 retirees 和
-  replacement 草案。
+`ranking_keys` 与 `ranking_tolerance` 必须非空、等长，key 不重复，容差为有限非负数。算法按
+配置顺序执行：
 
-Codex 原生 strict output 将 `reward.components` 传输为 `{name, value}` 列表，以避免开放
-对象 schema。Scheduler 角色适配校验分量值有限且名称不重复，然后转换回领域字典；分量名称
-仍由冻结 policy 决定，不限于某个 policy 的三个字段。Pi 输出、`SchedulerOutput` 公共合同和
-`ScheduleTask` 持久化格式保持字典，不接受列表兼容格式。此转换不改变 reward 或 Allocation gate。
-
-## Reward 索引
-
-系统不保存 `value-tree.json`，也不把 reward 复制到 candidate 或 verifier report。完成态
-`ScheduleTask.output.reward` 是唯一持久化 reward；runtime 通过
-`list_scheduler_rewards(run_id, candidate_id=None)` 从 task 索引生成稳定排序的只读列表：
-
-```json
-[
-  {
-    "schedule_task_id": "schedule-...",
-    "settlement_id": "settlement-...",
-    "node_id": "candidate-001/iteration-0001",
-    "candidate_id": "candidate-001",
-    "iteration": 1,
-    "commit": "<git sha>",
-    "reward": {"reward": 15.0, "uct": 15.1},
-    "allocation_flag": false
-  }
-]
+```text
+survivors = candidate_pool - rejected_subjects
+for key, tolerance in configured_order:
+  best = directional_best(survivors, key)
+  survivors = values within inclusive tolerance of best
+winner = prefer previous hard best, then preserve original option order
 ```
 
-普通 scheduler 调用的 reward 阶段只读取当前 candidate 的历史 reward 和轻量 UCT 统计；allocation
-screen 阶段同时读取每个 candidate 的精简 frontier，以发现重复方向。上一 completed flag 为 `true`
-的 allocation 确认调用才获取所有 candidate 的完整 reward-bound 节点。系统不维护 run root、
-类化 graph、transition、action edge、backup event 或 hindsight。
+`quality_score` 固定 maximize；`hard_score` 使用 SearchSpec 的 `metric_direction`。Selection 不调用
+LLM，只保存 winner、每级 threshold、survivor count、排除原因和 evidence source，不伪造完整全局
+排名，也不覆盖 `best_*` 的观测语义。
 
-## Lazy Allocation
+Winner 恢复后仍校验 exact artifact 与 hard evidence。必要时由 parent hard verifier 重验；失败则
+排除该 subject，并对剩余候选重放同一算法。
 
-allocation 使用两步确认，避免每轮阻塞 worker：
+## Deterministic Allocation
 
-1. settlement 创建 `AnnotationTask`，其终态后才创建绑定相同 settlement id 的 `ScheduleTask`。
-2. 上一 flag 为 `false` 或尚不可用时，verifier 不等待当前 annotation/scheduler 链。
-3. 上一 flag 为 `true` 时，runtime 把当前 task 视为确认任务；host 异步完成 annotation 和 scheduler，
-   runtime 在其终态前拒绝该 lane 继续执行。
-4. 普通异步 task 使用 `allocation_context.phase=screen`，即使输出 `true` 也不生成 Decision 草案。
-5. 确认 task 使用 `phase=confirm` 并额外获得全 candidate 节点；只有当前 flag 再次为 `true` 且
-   `SchedulerOutput.decision` 通过锚点、容量和身份校验，才持久化 `AllocationDecision`。
+Adaptive 模式复用相同 Verifier 和最终 Selection，只增加以下副作用链：
 
-因此一次孤立的 `true` 只设置下一节点的 barrier，不直接退休 candidate。异步 task 在后台
-记录 reward/flag；确认 task 完成后，facade 在 list、verifier 或 continuation gate 上把草案提升为
-Decision。每次 gate 都会先回扫已经消费但尚未绑定 Decision 的确认 task，因此较晚上报的
-flag/草案不会丢失，且 worker 不会越过未结算 confirmation 开始下一轮。
+```text
+VerifierRecordCompleted
+  -> validate task + record + SettlementReceipt
+  -> immutable SearchSnapshot score-table relay
+  -> pure FeaturePipeline
+  -> deterministic AllocationPolicy
+  -> AllocationPlan | no-op
+  -> durable AllocationDecision(pending)
+  -> logical lane fence
+  -> one native cancel per retirement target
+  -> accepted receipt
+  -> AllocationExecutor apply
+  -> retire old candidate + materialize child
+  -> Host starts child worker
+```
 
-## AllocationDecision
+### 唯一 Decision 生产事件
 
-Decision 记录 scheduler 的标准执行计划：
+`AdaptiveDecisionReconciliation.on_verifier_record_completed(record)` 是唯一允许进入
+Snapshot -> FeatureView -> AllocationPolicy -> AllocationDecision 链路的入口。它先验证：
+
+1. record 的 allocation policy 和 score 字段集合与 FrozenSpec 一致；
+2. 对应 task 已 `completed`，且 `output_record_id` 指向该 record；
+3. record 已写入 run-scoped VerifierRecord store；
+4. candidate iteration 中的 SettlementReceipt 与 record subject 完全一致。
+
+Hard verifier 返回、candidate 启动/续轮/恢复、Decision 查询以及 monitor/report 都不能生成
+Decision。外部 API 不暴露 `reconcile()` 或 `snapshot()` 形式的隐式生产入口。
+
+Completed record 是 durable event source。Verifier drainer 优先消费尚无 completed reconciliation
+receipt 的 record，恢复时不再次调用 LLM。Reconciliation 先持久化固定 Snapshot revision 与 plan
+hash 的 prepared journal，再提交 Decision/no-op 和 completed receipt；prepared 事件始终从同一
+Snapshot 重算同一 plan。下游失败不能反向修改已完成的 task 或 record。
+
+### Snapshot 评分行
+
+Snapshot 中每个 node 是一条已完成的不可变评分行：
+
+```text
+SnapshotNode
+  candidate_id / iteration / settlement_id / node_id
+  verifier_record_id / verifier_subject_hash
+  quality_score
+  allocation_scores
+```
+
+Snapshot builder 中转与冻结 policy 匹配的全部 completed records，并附带 candidate lane 元数据。
+它不读取 task 状态，不复制 disposition、rollback 或 artifact，也不按 `keep/retain`、failure 类型或
+`artifact_iteration_eligible` 过滤。没有 record 就没有评分行，缺失值不会折算为 0。
+
+退休对象只来自当前 eligible lane；派生来源可以来自任意已有评分行，包括旧 iteration、已退休
+candidate 和 `discard/failure` attempt。`verifier_subject_hash` 只绑定 provenance，不参与 policy
+计算。Snapshot 与 FeatureView 是可重建中转视图，不形成第二份搜索状态树。
+
+### FeaturePipeline 与 AllocationPolicy
+
+FeatureProvider 和 AllocationPolicy 是无 I/O 纯计算，不得读取 store、时钟、环境、workspace 或
+host。FeatureProvider 只输出版本化事实，不生成 priority，也不解释 policy 参数。
+
+当前 `priority_replace/v1` 执行以下规则：
+
+1. 每个 active lane 必须至少有一个由已启用 FeatureProvider 产生的可比较值，否则 no-op；
+2. 对 active lane 的最新 `allocation_utility` 与最近三次 `progress_reward` 均值再次取算术平均，
+   得到 `[0,1]` lane priority；
+3. 从 Snapshot 全部评分行中选择 `allocation_utility` 最高的 source attempt；
+4. 当 `source utility - weakest active lane priority >= switch_margin` 且 capacity 允许时，产生
+   replacement plan。
+
+该规则同样适用于 `max_parallel=1`。`switch_margin` 是 `priority_replace/v1` 的专有参数，范围为
+`[0,1]`；Snapshot 和 FeatureProvider 不理解它。缺少 `allocation_utility` 的评分行不能使用
+`quality_score` fallback。当前版本不执行价值回传、探索配额或广度/深度奖励；未来 policy 必须
+用独立版本化 spec 定义 feature 组合、缺失值和参数语义。
+
+### AllocationPlan 与 Decision
+
+AllocationPlan 只描述逻辑意图：
+
+```text
+based_on_snapshot_revision
+policy_id / feature_hash / plan_hash
+retire_candidate_ids
+expansions:
+  source candidate/iteration/settlement/node/VerifierRecord identity
+  direction_key / rationale
+  optional worker_budget
+reason_codes
+```
+
+Plan 不携带 artifact，不分配 candidate id、workspace 或 session。Application 使用同一 Snapshot 和
+冻结 policy 重算结果，再根据 source identity 找回 SettlementReceipt，验证 subject hash，并将
+receipt 中的 `attempt_artifact_ref/hash` 与 `ledger_artifact_ref` 固化进
+`AllocationDecision.ExpansionSource`。
+
+`AllocationDecisions.record()` 在 run lock 内完成重算、相同 identity 幂等检查和 pending 检查。
+相同 plan 返回原 Decision；已有另一 pending Decision 时本次 no-op。因此每个 run 最多一个 pending
+Decision 是原子持久化不变量。
+
+### Retirement fence 与同步淘汰
+
+Decision 状态为：
+
+```text
+pending -> applied
+        -> superseded
+        -> terminal_error
+```
+
+Pending Decision 一旦指定 `retire_candidate_ids`，admission 立即 fence 目标 lane，禁止 `recover`、
+`redispatch`、`start_session`、`continue_session` 和 `run_verifier` 继续进入 candidate 执行。
+
+应用 Decision 时，host 对每个目标只发送一次原生 cancel，不等待 worker 物理退出：
+
+- `accepted`：host 已接受 cancel，不代表进程已经退出；
+- `already_terminal`：目标已经终态，可以 apply；
+- `not_found`：没有可取消的活动目标，可以 apply；
+- `rejected`：host 拒绝，Decision 保持 pending 并返回错误。
+
+收到可接受回执后，AllocationExecutor 在 run lock 内重新校验 Decision、Snapshot、SettlementReceipt、
+ExpansionSource、eligibility、capacity 和 budget，然后退休旧 candidate、分配 child id，并从
+`ExpansionSource.attempt_artifact_ref` 物化派生 candidate。实际启动 child worker 仍归 host。
+
+重复 apply 使用持久 Decision、candidate 和 session provenance 恢复，不重新调用 LLM、不重复发送
+已记录的 cancel，也不重新解释 policy。过期输入进入 `superseded`；不可恢复的协议错误进入
+`terminal_error`。
+
+### Admission 边界
+
+Verifier queue 不是 candidate admission 输入。Adaptive admission 只检查：
+
+1. candidate 的 `allocation_eligibility` 仍为 `eligible`；
+2. 是否存在将其列为 retirement target 的 pending AllocationDecision。
+
+Apply 前由 pending Decision fence 消除续轮竞态；apply 后由持久化的 `retired` 状态继续拒绝执行。
+Verifier task 的 pending、running、retry 或 error 状态不参与 admission。
+
+因此 worker 的动态 `candidate_task.instructions` 只要求正常继续 candidate 循环，不轮询 Verifier
+task 或 AllocationDecision。只有 runtime 或 host 明确拒绝、fence 或中断当前 lane 时才收尾；
+Decision 的发现、物理中止和应用始终属于 Main、host 与 Allocation runtime。
+
+## Queue 与 Host
+
+Verifier task 的 FIFO、lease 和 retry 由 [LLM Verifier](llm-verifier.md#队列与恢复) 拥有。Candidate
+只负责 hard settlement 后幂等入队，Verifier backlog 不影响其原始迭代预算。
+
+Codex 与 Pi 的可信 host callback 负责唤醒 Annotation 和 Verifier drainer。对带 allocation policy
+的 completed record，drainer 消费 durable event 并恢复 reconciliation；查询、admission、monitor
+和 report 保持只读。关闭 run 会关闭内部 drainer，失败不会撤销 hard settlement 或 record。
+
+Host/session owner 只负责执行一次 cancel、返回 receipt 和启动 child。它不能推断 candidate 价值、
+绕过 admission 或重新计算 policy。
+
+## 故障与恢复
+
+- 没有 completed record 的 task 不进入 Snapshot，也不会被折算成 0；
+- 只有 `VerifierRecordCompleted` 可以驱动 Decision 生产；
+- reconciliation 失败不改变 task 或 record；
+- rollback 不删除 `discard/failure` attempt 或其评分；
+- Snapshot 后若 receipt、attempt ref/hash 或 subject identity 被替换，Allocation 必须拒绝解析；
+- cancel receipt 丢失时按同一持久 identity 查询或重放；
+- apply 中断后从 Decision 和 materialization provenance 幂等恢复；
+- Selection 的必要分值永久缺失时排除精确 option，候选池为空时显式 blocked；
+- winner 的 hard evidence 或 artifact identity 重验失败时，排除该 subject 后确定性重选。
+
+## 模块所有权
+
+| 组件 | 拥有的职责 | 明确禁止 |
+| --- | --- | --- |
+| Selection application | 候选池、readiness、逐级容差、trace 和重验 | 调用 LLM 或修改 VerifierRecord |
+| Snapshot builder | 中转 completed score rows 和 lane 元数据 | 解释 settlement、过滤 disposition 或填造缺失值 |
+| FeatureProvider / AllocationPolicy | 对数值评分表执行纯计算 | 读取 artifact/state/host 或执行副作用 |
+| Adaptive reconciliation | 消费 completed record，校验身份并编排 Snapshot、policy 和 Decision record | 补建 task、从查询生成 Decision 或执行 Decision |
+| Allocation owner | 重算 plan，绑定 exact attempt，持久化并幂等 apply | 接受 LLM 直接生成的 Decision 或从 rollback artifact 派生 |
+| Adaptive facade | Decision 查询和显式 apply | 暴露 Verifier task/record、隐式 reconcile、构建 Snapshot 或监督 worker |
+| Host/session owner | cancel、receipt 与 child launch | 推断价值或绕过 admission |
+| Monitor/report | 只读投影 task、record、trace 和 Decision | 恢复或驱动业务状态 |
+
+## 验证要求
+
+Adaptive 与 Selection 的核心测试应覆盖：
+
+- pending/running/retry Verifier task 不阻塞 candidate execution；
+- pending retirement Decision 在 apply 前 fence 全部目标操作；
+- 每个目标只 cancel 一次，接受型 receipt 不等待物理退出；
+- Snapshot 中转全部 completed score rows，不读取 task 状态或过滤 disposition；
+- 未结算 iteration、未完成 task、未持久化 record 或 policy 不匹配不能触发 Decision；
+- Decision 查询和 admission 是只读路径；
+- competing plans 在 run lock 内最多产生一个 pending Decision；
+- retired candidate、旧 iteration 和 failure/discard attempt 可作为 allocation source；
+- score row 通过 subject hash 绑定同一 SettlementReceipt，身份重绑定被拒绝；
+- Decision 与 workspace materialization 使用 attempt artifact，不使用 rollback 或 ledger commit；
+- 相同 Snapshot、features 和 policy 产生相同 plan/Decision identity；
+- Selection 覆盖 readiness、容差边界、完整身份链和 winner 重验失败后的重选。
+
+## Monitor Feature Plugin
+
+Monitor feature plugin 基于持久化 Goal record 和只追加 event log 生成只读投影。它属于共享
+observability，不参与 Adaptive 算法；放在本页是为了集中 Search/编排的可选投影说明。
+
+Plugin 默认启用。调用方可以显式选择，或关闭全部 feature plugin：
+
+```text
+goal_plus_monitor_snapshot(feature_plugins=["orchestration"])
+goal_plus_monitor_snapshot(feature_plugins=[])
+```
+
+未知名称会直接报错，避免监控范围被静默改变。Feature plugin 不会启动、等待、通信、中断、重试
+或监督 worker。
+
+### Orchestration View
+
+内置 `orchestration` plugin 将实际发生的普通 subagent 派发投影为 host-neutral 交互结构：
+
+```text
+assignment -> worker_update(bound) -> result -> decision
+```
+
+每条 dispatch 包含 assignment summary、不透明 worker 标识、当前状态和带方向的 event 摘要。Attempt
+还包含 generation、`launching`/`bound` 状态、launch deadline 和 stale-result 数量。旧 generation
+继续显示为 `stale_result`，但不会替换当前 worker。
+
+投影不包含 transcript 内容或路径，只返回 `transcript_available`。它展示持久化协调事实，不推断
+模型意图，也不参与 work item 状态转换。
+
+### Host Metadata
+
+原生通信仍归 host。Host 通过 `goal_plus_record_work_event.metadata` 记录实际 operation：
 
 ```json
 {
-  "schema_version": 3,
-  "decision_id": "allocation-...",
-  "schedule_task_id": "schedule-...",
-  "status": "pending",
-  "trigger_candidate_id": "candidate-001",
-  "trigger_iteration": 4,
-  "rationale": "两次连续 reschedule flag，且另一来源具有更高公开过程价值。",
-  "replacements": [
-    {
-      "retire_candidate_id": "candidate-001",
-      "new_candidate_id": "candidate-005",
-      "source": {
-        "candidate_id": "candidate-002",
-        "iteration": 3,
-        "node_id": "candidate-002/iteration-0003",
-        "settled_commit": "<git sha>",
-        "artifact_hash": "<sha256>",
-        "allocation_depth": 1
-      },
-      "exploration_direction": "验证不同的边界处理策略",
-      "rationale": "来源节点公开证据更强，且方向与已尝试方案不同。",
-      "worker_budget": {"max_runtime_seconds": 300, "on_exceed": "interrupt"}
-    }
-  ]
+  "orchestration_monitor": {
+    "native_operation": "spawn_agent",
+    "direction": "main_to_subagent",
+    "semantic_event": "assignment"
+  }
 }
 ```
 
-runtime 只接受预留的 derived id，以及能精确映射到已结算 iteration、artifact 和 ledger commit 的
-source。Decision 持久化时一次 fence 全部 retirees 的下一轮 iteration。scheduler 自主提出退休、
-来源、派生数量、探索方向和每个派生项的 worker budget；candidate worker 和父 agent 不得补写、
-拆分或改写计划。系统不暴露单份 Decision 的 replacement 或派生深度配置项，但 Decision
-仍受 `budget.max_parallel` 的实时并发容量约束；`budget.max_candidates` 非 `null` 时再受累计
-唯一 candidate 剩余额度约束。
+只有符合 identifier 形式的 operation 名会被公开；prompt 或格式异常的值会被忽略。`direction` 和
+`semantic_event` 是受限的可选 override，省略时由持久 work-event kind 推导。
 
-Decision 文件是恢复锚点。若进程在文件落盘后、候选 fence 或 run 索引更新完成前退出，下一次 gate
-会按同一 `schedule_task_id` 找到已有 Decision 并幂等重放这些状态投影，不会创建第二份 Decision。
+Codex 通常记录 `spawn_agent`、`wait_agent` 和 `followup_task`；Pi wrapper 记录
+`pi_goal_plus_run_work_item` 和 `goal-plus-pi-worker`。两者的原生命令和等待方式不同，但 assignment、
+result 和 main-owned decision 语义可以直接比较。
 
-父 agent 通过 `search_list_allocation_decisions(status="pending")` 获取计划，再调用幂等的
-`search_apply_allocation_decision`。apply 从固定 source commit 创建 Git worktree，继承 results
-ledger、全局 Evidence 可见性和 selected model，并创建每个派生 candidate 的 native session。
-返回多项时必须全部启动，且 live worker 总数不能超过 `budget.max_parallel`。
-重复 apply 复用 session 前仍检查 recovery fence、run/candidate 归属和 execution generation；
-已经 fenced 的旧 session 不能通过 Decision 重放重新获得 launch payload。
+仓库提供确定性的协议对比：
 
-## Worker 协议
+```bash
+python scripts/compare_orchestration_hosts.py \
+  .tmp/orchestration-monitor-comparison
+```
 
-`search_run_verifier` 返回 `scheduler_status`、`schedule_task_id` 和可选
-`allocation_decision`。`scheduler_status=pending` 且 Decision 为空时，worker 不等待、轮询或自行
-运行 scheduler；它结束当前 attempt 并把控制权交回 host。普通 screen task 不影响下一次
-continuation；confirmation task 未结算时，runtime 会拒绝继续该 lane。非空 Decision 表示下一轮
-已经被 fence，worker 应写 handoff 并返回父级。
-
-`search_monitor` 和 report 从 ScheduleTask 索引显示 scheduler task 状态、最近 reward/UCT/flag、
-reward 聚合和 Decision 状态。最终 `search_select`、report 排名和 promotion 仍只采用 hard verifier
-score。
+该脚本验证持久化协议，不是 live-model quality benchmark。

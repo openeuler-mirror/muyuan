@@ -60,8 +60,9 @@ Pi 开发 launcher 的预检查和工具调用使用开发 venv 的隔离 Python
 | Candidate | 一条长期探索 lane 及其隔离 workspace、iteration 和 best artifact |
 | AgentSessionRecord | candidate 与 host-native session 的上下文/来源绑定，不表示进程存活 |
 | Evidence | 一次 verifier settlement 及其精确 artifact、分数和状态 |
-| ScheduleTask | Adaptive Search 对已结算节点的一次持久化 scheduler 调用 |
-| AllocationDecision | Adaptive Search 已校验并可幂等执行的 candidate 替换计划 |
+| VerifierTask / VerifierRecord | 对精确已结算 subject 的可靠异步评估及不可变输出 |
+| SearchSnapshot / FeatureView | 从权威记录重建的确定性 allocation 输入与派生特征 |
+| AllocationDecision | 确定性 policy 产生、已校验并可幂等执行的 candidate 替换计划 |
 | Promotion | 对已选择 artifact 的独立最终验证与 publication/apply 结果 |
 
 ## 架构与所有权
@@ -83,7 +84,8 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 | --- | --- |
 | Goal runtime | intake、host 授权、triage、dispatch identity、Search 归属、final check 和终态 |
 | Search runtime | freeze、workspace、verifier、Evidence、回滚、selection、promotion 和报告 |
-| Adaptive Search | settlement 后的 ScheduleTask、reward、AllocationDecision 和派生 candidate |
+| LLM Verifier | settlement 后的局部质量与可选 adaptive metric；不停止、选择或分配 candidate |
+| Adaptive Search | Snapshot、纯 Feature/AllocationPolicy、AllocationDecision 和派生 candidate |
 | Main Agent | 理解目标、设计验收合同、决定 delegation/Search、审查结果和全局收尾 |
 | Candidate worker | 在自己的合同和 workspace 内选择方向、修改、验证和提交 handoff |
 | Host adapter/supervisor | worker launch、native session、wait、budget、continuation、interrupt 和日志 |
@@ -219,12 +221,14 @@ session 和 generation gate，selection 从已结算 Evidence 重建 best。
 `parallel_loops` 使用固定 lanes：只做初始分配，不因低分补建 candidate；后续优先继续同一
 native session，必要时才在相同 candidate/workspace 上 redispatch。
 
-`adaptive_search` 保留相同 hard verifier settlement，并在之后异步创建 AnnotationTask 和
-ScheduleTask。`runtime.py` 只选择该模式并调用 `AdaptiveSearch` facade；facade 协调 settlement、
-barrier、Scheduler 与 Allocation，`scheduler.py` 管理 ScheduleTask 和调用上下文，
-`allocation.py` 管理 Decision 与派生 workspace/session，`policies.py` 管理版本化策略及其
-context builder。`budget.max_parallel` 是实时活跃 candidate 上限；可选 `max_candidates` 是
-累计物化上限。
+`parallel_loops` 和 `adaptive_search` 共享固定的 LLM-Verifier 质量规则与逐级容差 Selection。
+Selection 使用 `quality_score` 或模式为 `adaptive_search` 时，hard settlement 后幂等创建一个
+VerifierTask，并用一次 LLM 调用生成绑定精确 candidate、iteration、settlement 和 artifact 的不可变
+VerifierRecord。`adaptive_search` 在同一 record 的 `allocation_scores` 中携带冻结 policy 版本定义的
+分配指标；所有指标统一为 `[0,1]` 的 normalized utility，且越高越优。它再构建不可变
+SearchSnapshot，经无 I/O FeaturePipeline 和 AllocationPolicy 生成唯一 canonical Decision，再由
+AllocationExecutor 预检和幂等物化。`budget.max_parallel` 是实时活跃 candidate 上限；可选
+`max_candidates` 是累计物化上限。Candidate id 只在 Executor 应用 Decision 时分配。
 
 Agent 类型由 Goal 当前已授权、已绑定的 Main 原生会话确定，不属于 SearchSpec 可选配置。
 SearchSpec 不接受 `strategy.worker_host`、`strategy.worker_launch.agent_profile` 或内部角色的
@@ -233,28 +237,43 @@ SearchSpec 不接受 `strategy.worker_host`、`strategy.worker_launch.agent_prof
 Codex 仅支持本地 Copy/Git，Pi 支持本地 Copy/Git 或经 preflight 的 ThinkThread。
 无 Goal 的可信底层调用必须显式提供 native host，公开 MCP/Pi 工具不暴露该参数。
 
-Annotation 与 Scheduler 继承冻结的 Main Agent 类型，角色驱动按支持矩阵装配。
+Annotation 与 LLM Verifier 继承冻结的 Main Agent 类型，角色驱动按支持矩阵装配。
 Codex hook 或 Pi extension
 从当前 native host 进程启动这些内部 agent，子进程完整继承宿主外部配置并携带非敏感 host
 provenance；Goal Plus schema、FrozenSpec 和 task profile 不接受或持久化服务认证、endpoint 或
 host 配置目录。Pi extension 还把当前 Main 的 exact model 和 thinking 固定为 execution scope 的
 非敏感 native launch snapshot；未显式覆盖的 Pi child 必须使用该 snapshot，不能重新读取机器级
-default。shared runtime 不启动模型，也不等待模型进程。Adaptive confirmation task 未进入
-终态前，runtime 拒绝该 lane 的 continuation、redispatch 和 verifier；required supplemental
-Annotation 未全部成功时，selection 保持 blocked。
+default。shared runtime 不启动模型，也不等待模型进程。Verifier task 只进入 run-scoped 可靠队列，
+不阻塞 candidate 的启动、续轮、hard settlement、恢复或收尾。required supplemental Annotation 或
+required selection score 尚不可用时，selection
+保持 wait/blocked，不能运行时改变 `ranking_keys` 降级。
 
 模型目录只用于解析显式 model 引用，不构成推理连通性证明。现有 Codex hook/Pi extension
-入口必须在 Goal 创建和 SearchSpec freeze 前，收集本次新增的显式 worker、Annotation 与
-Scheduler model override，按模型去重并并发执行最小推理请求；任一失败时不得创建 Goal 或冻结
+入口必须在 Goal 创建和 SearchSpec freeze 前，收集本次新增的显式 worker 与 Annotation
+model override，按模型去重并并发执行最小推理请求；任一失败时不得创建 Goal 或冻结
 SearchSpec。没有显式 override 时不发送 probe：正在运行的 Main 已经证明当前模型可用，内部
 agent 保持 host 原生继承语义。该检查只使用 native host model 接口，不读取或传递 API
 key、endpoint 或独立 provider 配置。
 
-Scheduler 输出是不可信提案。Model 校验其结构；Allocation/state owner 在持久化或执行前校验
-settled source、artifact、candidate 状态、容量、预留 identity 和幂等前态。Prompt 只承担价值与
-探索方向等模型判断，不承担这些确定性 gate。Scheduler、annotation 或 allocation 失败可以更新
-自身 task 和审计状态，但不得撤销 verifier settlement，也不改变 hard score、selection 或
-promotion。具体合同见 [Adaptive Search](docs/adaptive-search.md)。
+LLM Verifier 输出是不可信的局部评估。Verifier owner 校验 profile、schema、精确 subject、lease 与
+幂等前态；它不能返回 winner 或可执行 Decision。Selection 和 AllocationPolicy 使用冻结参数执行
+纯计算，Allocation owner 在持久化或执行前重算 plan，并校验 Snapshot、settled source、artifact、
+candidate 状态、容量和幂等前态。Verifier、annotation 或 allocation 失败不得撤销 hard settlement
+或绕过 promotion。评估与队列合同见 [LLM Verifier](docs/llm-verifier.md)，确定性选择和
+Allocation 合同见 [Adaptive Search](docs/adaptive-search.md)。
+
+FeatureProvider 只从 Snapshot 派生版本化数值事实，不组合 lane priority，也不解释阈值。具体
+AllocationPolicy 独立拥有所需 feature、组合公式、缺失值规则及参数语义；当前
+`priority_replace/v1` 对可用的最新 `allocation_utility` 与短期 `progress_reward` 均值再次取均值，
+并把 `switch_margin` 解释为最强 source utility 相对最弱 active lane priority 的最小优势。只有所有
+active lane 都能得到可比较 priority 时才允许退休；`max_parallel=1` 也执行相同规则，可从更强的历史
+attempt 派生 replacement。
+
+AllocationDecision 的 pending 退休目标立即禁止新的 worker wake。应用 Decision 前，host 必须按
+candidate identity 向对应 live worker 发送一次物理中止请求，并以宿主接受回执作为执行边界，不等待
+或复查 worker 已经静默；单候选中止不得 fence 整个 run、关闭 sibling 或清理其持久 Evidence。
+Codex 由 Main 调用原生 interrupt，Pi 由可信 extension 在转发 apply 前执行 host-local 中止。
+Allocation runtime 不直接监督 worker。
 
 ## Candidate 合同
 
@@ -325,7 +344,12 @@ SearchSpec 读取任意环境变量。
 ## 持久化与恢复
 
 目标 workspace 下的 `.gp/` 保存 Goal、FrozenSpec、run、candidate、Evidence、promotion、
-host metadata 和最终报告。Adaptive Search 另外持久化 ScheduleTask 与 AllocationDecision。
+host metadata 和最终报告。启用 LLM Verifier 时另外持久化 VerifierTask 和 VerifierRecord；
+Adaptive Search 还持久化可重建 Snapshot、reconciliation journal 与 AllocationDecision。
+带 allocation policy 的 completed VerifierTask/VerifierRecord 是 durable event source；drainer
+优先重放没有 completed receipt 的事件，不再次调用 LLM。reconcile 在写 Decision 前保存固定
+Snapshot revision 与 plan hash，因而可以从进程中断以及“Decision 已写、receipt 未写”恢复。
+该恢复只属于 verifier drainer 的事件消费，admission、Decision 查询和展示入口保持只读。
 状态文件是恢复依据，prompt 记忆不是。
 
 恢复时优先使用 `goal_plus_monitor_snapshot`，再根据持久状态执行 `next_action`。底层文件可

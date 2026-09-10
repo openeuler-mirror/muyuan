@@ -14,5 +14,5 @@ class InternalAgentWork:
         return InternalAgentRun(
             host=frozen.worker_host,
             accepts_work=not run.invalidated_at and run.state in WORKER_ITERATION_RUN_STATES,
-            scheduler_enabled=frozen.spec.strategy.search_scheduler is not None,
+            verifier_enabled=frozen.spec.strategy.requires_llm_verifier,
         )

@@ -2029,6 +2029,100 @@ def snapshot_pool(*, root_dir: Path | str, pool_id: str) -> dict[str, Any]:
     }
 
 
+def interrupt_candidate(
+    *,
+    root_dir: Path | str,
+    pool_id: str,
+    candidate_id: str,
+    client: AgentPosixSdkClient | None = None,
+) -> dict[str, Any]:
+    """Send one cancellation signal to a Child without waiting for exit."""
+    _safe_identifier(candidate_id, "candidate_id")
+    sdk = client or AgentPosixSdkClient()
+    with _TryControllerLock(_controller_lock_path(root_dir, pool_id)) as acquired:
+        if not acquired:
+            raise RuntimeError(f"ThinkThread pool {pool_id} controller is busy")
+        with exclusive_file_lock(_lock_path(root_dir, pool_id)):
+            pool = _load_pool(root_dir, pool_id)
+            matching_jobs = [
+                job
+                for job in _jobs(root_dir, pool)
+                if job.get("candidate_id") == candidate_id
+            ]
+            jobs = [
+                job
+                for job in matching_jobs
+                if job.get("status") in ACTIVE_JOB_STATES
+            ]
+            requested_at = utc_timestamp()
+            for job in jobs:
+                job["interrupt_requested_at"] = requested_at
+                _write_job(root_dir, pool_id, job)
+
+        errors: list[str] = []
+        accepted_job_ids: list[str] = []
+        already_terminal_job_ids: list[str] = []
+        interrupted_job_ids: list[str] = []
+        for job in jobs:
+            child_id = job.get("thinkthread_id")
+            if not isinstance(child_id, str):
+                errors.append(
+                    f"ThinkThread candidate {candidate_id} has no bound Child"
+                )
+                continue
+            try:
+                sdk.invoke(
+                    "thinkthread.signal",
+                    {"id": child_id, "signal": "INT"},
+                )
+            except AgentPosixBridgeError as exc:
+                if exc.code == "ThinkThreadNotFound":
+                    already_terminal_job_ids.append(str(job["job_id"]))
+                else:
+                    errors.append(f"{exc.code}: {exc}")
+            else:
+                accepted_job_ids.append(str(job["job_id"]))
+
+        terminal_job_ids = accepted_job_ids + already_terminal_job_ids
+        for job_id in terminal_job_ids:
+            with exclusive_file_lock(_lock_path(root_dir, pool_id)):
+                current = _load_job(root_dir, pool_id, job_id)
+                if current.get("status") in ACTIVE_JOB_STATES:
+                    current.update(
+                        {
+                            "status": "interrupted",
+                            "finished_at": utc_timestamp(),
+                            "error": {
+                                "stage": "controller",
+                                "error_type": "CandidateInterrupted",
+                                "message": (
+                                    "ThinkThread candidate cancellation was "
+                                    "accepted by the host"
+                                ),
+                            },
+                        }
+                    )
+                    _write_job(root_dir, pool_id, current)
+            interrupted_job_ids.append(job_id)
+
+        return {
+            "pool_id": pool_id,
+            "candidate_id": candidate_id,
+            "status": (
+                "rejected"
+                if errors
+                else "accepted"
+                if accepted_job_ids
+                else "already_terminal"
+                if matching_jobs
+                else "not_found"
+            ),
+            "errors": errors,
+            "interrupted_job_ids": interrupted_job_ids,
+            "state": pool["state"],
+        }
+
+
 def close_pool(
     *,
     root_dir: Path | str,

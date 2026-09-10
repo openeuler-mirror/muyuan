@@ -85,7 +85,7 @@ def test_run_pi_search_candidate_binds_worker_handle_and_final_verifies(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     from goal_plus import evidence_annotator
-    from goal_plus.adaptive_search import scheduler
+    from goal_plus import llm_verifier as verifier
     from goal_plus.bootstrap import build_annotation_services
 
     project = _make_project(tmp_path)
@@ -93,12 +93,13 @@ def test_run_pi_search_candidate_binds_worker_handle_and_final_verifies(
     payload = _pi_rpc_spec(project).model_dump(mode="json")
     payload["strategy"].update(
         orchestration_mode="adaptive_search",
-        search_scheduler={
-             "model": "test-model", "reasoning_effort": "low",
-            "timeout_seconds": 30, "reward": "evidence_llm_value/v3",
-            "allocation": "value_guided_replace/v2",
+        selection={
+            "ranking_keys": ["quality_score", "hard_score"],
+            "ranking_tolerance": [0.05, 0.0],
         },
+        allocation={"policy": "priority_replace/v1"},
     )
+    payload["budget"]["max_candidates"] = 2
     frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"], native_host="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -116,7 +117,7 @@ def test_run_pi_search_candidate_binds_worker_handle_and_final_verifies(
         return True
 
     monkeypatch.setattr(evidence_annotator, "kick_evidence_annotator", claim_annotation)
-    monkeypatch.setattr(scheduler, "kick_scheduler", lambda *args, **kwargs: False)
+    monkeypatch.setattr(verifier, "kick_verifier", lambda *args, **kwargs: False)
 
     def fake_worker(launch: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         observed_launches.append({"launch": launch, "kwargs": kwargs})

@@ -140,9 +140,8 @@ class CandidateSessions:
                 f"cannot redispatch candidate in status {candidate_record.status}"
             )
         if self._adaptive_search_is_enabled(frozen):
-            self.admission.reconcile_candidate_execution_allowed(
-                run_id,
-                candidate_id,
+            self.admission.assert_candidate_execution_allowed(
+                candidate_record,
                 "redispatch",
             )
 
@@ -187,9 +186,8 @@ class CandidateSessions:
         run = self.state.read_run(run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         if self._adaptive_search_is_enabled(frozen):
-            self.admission.reconcile_candidate_execution_allowed(
-                run_id,
-                candidate_id,
+            self.admission.assert_candidate_execution_allowed(
+                self.state.read_candidate(run_id, candidate_id),
                 "start_session",
             )
         with self.state.lock_run(run_id):
@@ -438,9 +436,8 @@ class CandidateSessions:
                 f"cannot continue candidate in status {candidate_record.status}"
             )
         if self._adaptive_search_is_enabled(frozen):
-            self.admission.reconcile_candidate_execution_allowed(
-                session.run_id,
-                session.candidate_id,
+            self.admission.assert_candidate_execution_allowed(
+                candidate_record,
                 "continue_session",
             )
 

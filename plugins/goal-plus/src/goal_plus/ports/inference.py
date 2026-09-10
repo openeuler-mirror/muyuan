@@ -17,7 +17,7 @@ class InferenceArtifactView:
 
 @dataclass(frozen=True)
 class InferenceRoleCapabilities:
-    role: Literal["annotation", "scheduler"]
+    role: Literal["annotation", "verifier"]
     artifact_views: tuple[InferenceArtifactView, ...] = ()
 
 

@@ -28,12 +28,11 @@ def monitor_tool_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
         payload["run"]["host_cleanup"] = _fields(run.get("host_cleanup"), (
             "state", "error", "errors", "cleanup_errors", "detail",
         ))
-        payload["run"]["scheduler"] = _fields(run.get("scheduler"), (
-            "tasks", "attempts", "states", "pending", "consumed", "oldest_pending_age_seconds",
-            "allocation_confirmations", "reschedule_flags",
+        payload["run"]["llm_verifier"] = _fields(run.get("llm_verifier"), (
+            "tasks_total", "task_states", "records_total",
         ))
         payload["run"]["allocation_decisions"] = _fields(run.get("allocation_decisions"), (
-            "total", "pending", "applied", "reserved_replacements",
+            "total", "pending", "applied", "superseded", "terminal_error", "expansions",
         ))
         payload["run"]["promotion"] = _fields(run.get("promotion"), (
             "state", "promotion_mode", "error",

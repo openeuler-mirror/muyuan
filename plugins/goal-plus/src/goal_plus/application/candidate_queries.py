@@ -44,10 +44,7 @@ class CandidateHostQueries:
             strategy = self.source.read_frozen_spec(run.frozen_spec_id).spec.strategy
         except (OSError, ValueError):
             return False
-        return (
-            strategy.orchestration_mode == "adaptive_search"
-            and strategy.search_scheduler is not None
-        )
+        return strategy.orchestration_mode == "adaptive_search"
 
     def requires_immediate_stop(self, session: AgentSessionRecord) -> bool:
         try:
@@ -64,13 +61,19 @@ class CandidateHostQueries:
             )
         return False
 
-    def retired_by_allocation(self, run_id: str, candidate_id: str) -> bool:
-        try:
-            record = self.source.read_candidate(run_id, candidate_id)
-        except (OSError, ValueError):
-            return False
-        return record.allocation_eligibility == "retired" and bool(
-            record.retired_by_decision_id
+    def pending_retirement_decision_id(
+        self, run_id: str, candidate_id: str
+    ) -> str | None:
+        if not self.uses_adaptive_search(run_id):
+            return None
+        return next(
+            (
+                decision.decision_id
+                for decision in self.source.load_allocation_decisions(run_id)
+                if decision.status == "pending"
+                and candidate_id in decision.retire_candidate_ids
+            ),
+            None,
         )
 
     def pi_pool_limit(self, run_id: str, max_parallel: int | None) -> int:
@@ -97,6 +100,16 @@ class CandidateHostQueries:
         if record.status not in {"created", "evaluated"}:
             raise RuntimeError(
                 f"cannot dispatch candidate {candidate_id} in status {record.status}"
+            )
+        if record.allocation_eligibility != "eligible":
+            raise RuntimeError(f"cannot dispatch retired candidate {candidate_id}")
+        pending_decision_id = self.pending_retirement_decision_id(
+            run_id, candidate_id
+        )
+        if pending_decision_id is not None:
+            raise RuntimeError(
+                f"cannot dispatch candidate {candidate_id}: pending allocation "
+                f"decision {pending_decision_id} retires this lane"
             )
 
     def worker_budget(
@@ -179,8 +192,6 @@ class CandidateHostQueries:
         self, agent_session_id: str, *, now: float,
         spawn_input: Mapping[str, object] | None = None,
     ) -> AgentSessionRecord:
-        from goal_plus.domain.adaptive.scheduler import confirmation_execution_barrier
-
         session = self.session(agent_session_id)
         if spawn_input is not None:
             if session.host != "codex" or session.launch.get("tool") != "spawn_agent":
@@ -198,22 +209,10 @@ class CandidateHostQueries:
                 raise RuntimeError("native launch contract mismatch: " + ", ".join(mismatches))
         run = self.source.read_run(session.run_id)
         require_worker_iteration_state(run, "wake native candidate")
-        record = self.source.read_candidate(session.run_id, session.candidate_id)
         self.validate_candidate(session.run_id, session.candidate_id)
-        if record.allocation_eligibility != "eligible":
-            raise RuntimeError("cannot wake a retired native candidate")
         deadline = outer_deadline_epoch(self.context.outer_deadline(session.run_id))
         if deadline is not None and now >= deadline:
             raise RuntimeError("cannot wake a native candidate after its Goal deadline")
-        frozen = self.source.read_frozen_spec(run.frozen_spec_id)
-        if frozen.spec.strategy.orchestration_mode == "adaptive_search" and len(record.iterations) >= 2:
-            iteration = record.iterations[-1].iteration
-            barrier = confirmation_execution_barrier(
-                self.source.load_schedule_task(session.run_id, session.candidate_id, iteration - 1),
-                self.source.load_schedule_task(session.run_id, session.candidate_id, iteration),
-            )
-            if barrier:
-                raise RuntimeError(f"cannot wake native candidate: {barrier}")
         return session
 
     def native_file_write_boundary(

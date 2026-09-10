@@ -1,35 +1,155 @@
-"""Selection state transitions, yielding required verification to the host."""
+"""Deterministic multi-score selection with exact verifier evidence binding."""
 
+from dataclasses import dataclass
 from typing import Any, Callable, Generator, Literal
-from goal_plus.application.candidate_execution import (
-    require_run_not_invalidated,
-)
-from goal_plus.domain.artifacts import (
-    ArtifactRef,
-)
-from goal_plus.domain.evidence import (
-    ScoreReport,
-)
-from goal_plus.domain.search import (
-    RunState,
-)
+
+from goal_plus.application.annotation import AnnotationWorkflow
+from goal_plus.application.annotation_admission import AnnotationAdmission
+from goal_plus.application.candidate_artifacts import CandidateArtifacts
+from goal_plus.application.candidate_checkpoints import CandidateCheckpoints
+from goal_plus.application.candidate_execution import require_run_not_invalidated
+from goal_plus.application.candidate_ledger import CandidateLedger
+from goal_plus.application.candidate_recovery import CandidateRecoveryWorkflow
+from goal_plus.application.goal_authorization import GoalAuthorization
+from goal_plus.application.verifier import VerifierWorkflow, verifier_subject
+from goal_plus.domain.artifacts import ArtifactRef
+from goal_plus.domain.evidence import IterationRecord, ScoreReport
 from goal_plus.domain.evidence_policy import (
     artifact_iteration_eligible,
     iteration_artifact_ref,
 )
-from goal_plus.ports.state import (
-    CandidateRecord,
-    RunRecord,
+from goal_plus.domain.search import FrozenSpec, RunState
+from goal_plus.domain.selection import (
+    ScoreResolution,
+    SelectionOption,
+    SelectionSubjectKey,
+    resolve_candidate_pool,
+    select_winner,
 )
-from goal_plus.application.candidate_recovery import CandidateRecoveryWorkflow
-from goal_plus.application.candidate_artifacts import CandidateArtifacts
-from goal_plus.application.candidate_ledger import CandidateLedger
-from goal_plus.application.candidate_checkpoints import CandidateCheckpoints
-from goal_plus.application.annotation import AnnotationWorkflow
-from goal_plus.application.annotation_admission import AnnotationAdmission
-from goal_plus.application.goal_authorization import GoalAuthorization
+from goal_plus.domain.verifier import (
+    VerifierRecord,
+    VerifierTask,
+    verifier_subject_identity,
+)
 from goal_plus.ports.candidate_settlement import CandidateSettlementState
 from goal_plus.ports.candidate_verification import CandidateVerificationRequest
+from goal_plus.ports.state import CandidateRecord, RunRecord
+
+
+@dataclass(frozen=True)
+class _BaseOption:
+    score: float
+    record: CandidateRecord
+    iteration: IterationRecord
+    artifact_ref: ArtifactRef | None
+    verifier_subject_hash: str
+
+    @property
+    def subject(self) -> SelectionSubjectKey:
+        return SelectionSubjectKey(
+            candidate_id=self.record.candidate_id,
+            iteration=self.iteration.iteration,
+            settlement_id=self.iteration.settlement_id,
+            artifact_hash=self.iteration.artifact_hash,
+            verifier_subject_hash=self.verifier_subject_hash,
+        )
+
+
+def _ordered_subjects(
+    subjects: set[SelectionSubjectKey],
+) -> list[dict[str, Any]]:
+    return [
+        item.__dict__
+        for item in sorted(
+            subjects,
+            key=lambda item: (
+                item.candidate_id,
+                item.iteration if item.iteration is not None else -1,
+                item.settlement_id or "",
+                item.artifact_hash or "",
+                item.verifier_subject_hash,
+            ),
+        )
+    ]
+
+
+class _HardScoreSource:
+    key = "hard_score"
+
+    def __init__(self, direction: Literal["maximize", "minimize"]) -> None:
+        self.direction = direction
+
+    def resolve(self, option: SelectionOption) -> ScoreResolution:
+        return ScoreResolution.resolved(option.hard_score)
+
+
+class _QualityScoreSource:
+    key = "quality_score"
+    direction = "maximize"
+
+    def __init__(
+        self,
+        *,
+        allocation_policy_id: str | None,
+        allocation_score_names: list[str],
+        tasks: list[VerifierTask],
+        records: list[VerifierRecord],
+    ) -> None:
+        self.allocation_policy_id = allocation_policy_id
+        self.allocation_score_names = allocation_score_names
+        self.tasks = tasks
+        self.records = records
+
+    def resolve(self, option: SelectionOption) -> ScoreResolution:
+        subject = option.subject
+        if (
+            subject.iteration is None
+            or subject.settlement_id is None
+            or subject.artifact_hash is None
+            or not subject.verifier_subject_hash
+        ):
+            return ScoreResolution.unavailable("selection subject is not exact")
+        matching_tasks = [
+            task
+            for task in self.tasks
+            if task.allocation_policy_id == self.allocation_policy_id
+            and task.allocation_score_names == self.allocation_score_names
+            and task.subject.candidate_id == subject.candidate_id
+            and task.subject.iteration == subject.iteration
+            and task.subject.settlement_id == subject.settlement_id
+            and task.subject.settlement.attempt_artifact_hash
+            == subject.artifact_hash
+            and verifier_subject_identity(task.subject)
+            == subject.verifier_subject_hash
+        ]
+        if len(matching_tasks) != 1:
+            return ScoreResolution.unavailable("exact verifier task is missing")
+        task = matching_tasks[0]
+        if task.state in {"pending", "running", "retry_wait"}:
+            return ScoreResolution.pending(f"verifier task is {task.state}")
+        if task.state == "terminal_error":
+            return ScoreResolution.unavailable("verifier task failed terminally")
+        if task.state != "completed" or task.output_record_id is None:
+            return ScoreResolution.unavailable("verifier task is not completed")
+        output_records = [
+            item
+            for item in self.records
+            if item.record_id == task.output_record_id
+        ]
+        if len(output_records) != 1:
+            return ScoreResolution.unavailable(
+                "authoritative VerifierRecord is missing or ambiguous"
+            )
+        record = output_records[0]
+        if (
+            record.task_id != task.task_id
+            or record.allocation_policy_id != self.allocation_policy_id
+            or record.subject != task.subject
+        ):
+            return ScoreResolution.unavailable(
+                "authoritative VerifierRecord identity does not match its task"
+            )
+        return ScoreResolution.resolved(record.quality_score)
 
 
 class Selection:
@@ -44,6 +164,7 @@ class Selection:
         annotation: AnnotationWorkflow,
         annotation_admission: AnnotationAdmission,
         authorization: GoalAuthorization,
+        verifier: VerifierWorkflow,
         persist_run: Callable[[RunRecord], None],
     ) -> None:
         self.state, self.recovery, self.artifacts, self.candidate_ledger = (
@@ -57,7 +178,11 @@ class Selection:
             annotation,
             annotation_admission,
         )
-        self.authorization, self.persist_run = authorization, persist_run
+        self.authorization, self.verifier, self.persist_run = (
+            authorization,
+            verifier,
+            persist_run,
+        )
 
     def select(
         self, run_id: str
@@ -80,199 +205,207 @@ class Selection:
             run.state = RunState.SELECTING
             run.budget_used.pop("selection_blocked_reason", None)
             self.persist_run(run)
+
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         records = self.state.read_candidates(run_id)
-        options = self._selection_options(run, records, frozen.spec.metric_direction)
-        if not options:
+        base_options = self._selection_options(run, records, frozen)
+        if not base_options:
             self._mark_selection_blocked(
                 run_id,
-                "no verifier-backed candidate iteration is eligible for selection",
+                "no hard-settled candidate iteration is eligible for selection",
             )
             raise RuntimeError("no verified candidates available for selection")
+        self._ensure_verifier_tasks(frozen, base_options)
 
-        maximize = frozen.spec.metric_direction == "maximize"
-        ranked = sorted(
-            options,
-            key=lambda item: (
-                item[0] if maximize else -item[0],
-                item[1].candidate_id == run.best_candidate_id,
-            ),
-            reverse=True,
+        selection_spec = frozen.spec.strategy.selection
+        domain_options = [
+            SelectionOption(
+                subject=item.subject,
+                hard_score=item.score,
+                original_index=index,
+                preferred=item.record.candidate_id == run.best_candidate_id,
+            )
+            for index, item in enumerate(base_options)
+        ]
+        score_sources = {
+            "hard_score": _HardScoreSource(frozen.spec.metric_direction),
+        }
+        if "quality_score" in selection_spec.ranking_keys:
+            allocation = frozen.spec.strategy.allocation
+            rules = allocation.verifier_rules() if allocation is not None else None
+            score_sources["quality_score"] = _QualityScoreSource(
+                allocation_policy_id=rules.policy_id if rules is not None else None,
+                allocation_score_names=(
+                    rules.score_names
+                    if rules is not None
+                    else []
+                ),
+                tasks=self.verifier.list_tasks(run_id),
+                records=self.verifier.list_records(run_id),
+            )
+        pool = resolve_candidate_pool(
+            domain_options, selection_spec.ranking_keys, score_sources
         )
-        selected_score: float | None = None
-        selected_record: CandidateRecord | None = None
-        selected_iteration: int | None = None
-        selected_artifact_ref: ArtifactRef | None = None
-        selected_git_head: str | None = None
+        exclusions = [dict(item) for item in pool.exclusions]
+        if pool.state == "wait":
+            run = self.state.read_run(run_id)
+            run.selection_exclusions = exclusions
+            run.budget_used["selection_wait_reason"] = (
+                "required verifier score sources are pending"
+            )
+            self.persist_run(run)
+            raise RuntimeError("selection is waiting for required verifier scores")
+        if pool.state == "blocked":
+            run = self.state.read_run(run_id)
+            run.selection_exclusions = exclusions
+            self.persist_run(run)
+            self._mark_selection_blocked(
+                run_id, "all candidates lack a required finite ranking score"
+            )
+            raise RuntimeError("no candidate satisfies the frozen ranking sources")
+
+        by_subject = {item.subject: item for item in base_options}
+        rejected: set[SelectionSubjectKey] = set()
+        selection_trace: list[dict[str, Any]] = []
+        selected: _BaseOption | None = None
+        selected_values: dict[str, float] = {}
         final_report: ScoreReport | None = None
-        selection_evidence_source = "parent_verifier"
-        for (
-            option_score,
-            option_record,
-            option_iteration,
-            option_artifact_ref,
-        ) in ranked:
+        evidence_source = "worker_bound"
+        while len(rejected) < len(pool.pool):
+            result = select_winner(
+                pool.pool,
+                selection_spec.ranking_keys,
+                selection_spec.ranking_tolerance,
+                score_sources,
+                rejected,
+            )
+            option = by_subject[result.winner.option.subject]
+            selection_trace.append(
+                {
+                    "winner_subject": option.subject.__dict__,
+                    "stages": list(result.trace),
+                    "rejected_before_attempt": _ordered_subjects(rejected),
+                }
+            )
             option_record = self.state.read_candidate(
-                run_id,
-                option_record.candidate_id,
+                run_id, option.record.candidate_id
             )
             is_thinkthread = option_record.task.workspace_backend == "thinkthread"
-            if option_artifact_ref and not is_thinkthread:
+            if option.artifact_ref is not None and not is_thinkthread:
                 self.artifacts.restore_candidate_artifact(
                     option_record,
                     frozen.spec.metric_name,
-                    self.candidate_ledger.projection(
-                        frozen,
-                        option_record,
-                    ),
-                    option_artifact_ref,
+                    self.candidate_ledger.projection(frozen, option_record),
+                    option.artifact_ref,
                     (
                         f"goal-plus select {option_record.candidate_id} "
-                        f"iteration {option_iteration}"
+                        f"iteration {option.iteration.iteration}"
                     ),
                 )
-            worker_iteration = next(
-                (
-                    iteration
-                    for iteration in option_record.iterations
-                    if iteration.iteration == option_iteration
-                    and (
-                        iteration.artifact_ref == option_artifact_ref
-                        or (
-                            iteration.artifact_ref is None
-                            and option_artifact_ref is not None
-                            and iteration.git_head == option_artifact_ref.id
-                        )
-                    )
-                    and iteration.agent_session_id is not None
-                ),
-                None,
-            )
             current = (
                 None
                 if is_thinkthread
-                else self.artifacts.candidate_artifact_state(run, frozen, option_record)
+                else self.artifacts.candidate_artifact_state(
+                    run, frozen, option_record
+                )
             )
-            if (
-                worker_iteration is not None
-                and artifact_iteration_eligible(worker_iteration)
-                and (
-                    is_thinkthread
-                    or (
-                        current is not None
-                        and worker_iteration.artifact_hash == current.artifact_hash
-                        and current.artifact_clean
-                    )
+            bound = artifact_iteration_eligible(option.iteration) and (
+                is_thinkthread
+                or (
+                    current is not None
+                    and option.iteration.artifact_hash == current.artifact_hash
+                    and current.artifact_clean
                 )
-            ):
-                selected_score = option_score
-                selected_record = option_record
-                selected_iteration = option_iteration
-                selected_artifact_ref = option_artifact_ref
-                selected_git_head = (
-                    option_artifact_ref.id
-                    if option_artifact_ref is not None
-                    and option_artifact_ref.kind == "git_commit"
-                    else None
-                )
-                selection_evidence_source = "worker_evidence"
-                break
-            if is_thinkthread:
-                # Provider-native selection never restores a Child branch or
-                # reruns against a live tree. Only settled passing snapshot
-                # Evidence can enter the options above.
-                continue
-            report = yield CandidateVerificationRequest(
-                run_id, option_record.candidate_id
             )
-            if report.process_passed and report.aggregate_score is not None:
-                selected_score = report.aggregate_score
-                selected_record = option_record
-                selected_iteration = option_iteration
-                selected_artifact_ref = option_artifact_ref
-                selected_git_head = (
-                    option_artifact_ref.id
-                    if option_artifact_ref is not None
-                    and option_artifact_ref.kind == "git_commit"
-                    else None
-                )
-                final_report = report
+            if bound:
+                selected = option
+                selected_values = result.winner.values
+                evidence_source = "worker_bound"
                 break
+            if not is_thinkthread:
+                report = yield CandidateVerificationRequest(
+                    run_id, option_record.candidate_id
+                )
+                if report.process_passed and report.aggregate_score is not None:
+                    selected = option
+                    selected_values = result.winner.values
+                    final_report = report
+                    evidence_source = "parent_reverify"
+                    break
+            rejected.add(option.subject)
 
-        if selected_record is None or selected_score is None:
+        if selected is None:
+            run = self.state.read_run(run_id)
+            run.rejected_selection_subjects = _ordered_subjects(rejected)
+            run.selection_trace = selection_trace
+            self.persist_run(run)
             self._mark_selection_blocked(
-                run_id,
-                "all eligible candidate revisions failed verification",
+                run_id, "all selected artifact subjects failed hard revalidation"
             )
             raise RuntimeError("no selected candidate has passing verification")
 
-        selected_best_evidence = next(
-            (
-                iteration
-                for iteration in selected_record.iterations
-                if iteration.iteration == selected_iteration
-                and iteration_artifact_ref(
-                    iteration, selected_record.task.workspace_backend
-                )
-                == selected_artifact_ref
-                and artifact_iteration_eligible(iteration)
-            ),
-            None,
+        selected_record = self.state.read_candidate(
+            run_id, selected.record.candidate_id
         )
-        if selected_best_evidence is None:
-            raise RuntimeError("selected candidate has no exact best iteration")
+        selected_artifact_ref = selected.artifact_ref
+        selected_git_head = (
+            selected_artifact_ref.id
+            if selected_artifact_ref is not None
+            and selected_artifact_ref.kind == "git_commit"
+            else None
+        )
         if selected_record.task.workspace_backend == "thinkthread":
-            selected_changed_files = list(selected_best_evidence.changed_files)
-            selected_artifact_hash = selected_best_evidence.artifact_hash
+            selected_artifact_hash = selected.iteration.artifact_hash
             if not selected_artifact_hash:
-                raise RuntimeError(
-                    "selected ThinkThread Evidence has no artifact digest"
-                )
+                raise RuntimeError("selected ThinkThread Evidence has no artifact digest")
         else:
             selected_changed_files = self.artifacts.workspace.candidate_changed_files(
                 run, selected_record, selected_artifact_ref
             )
             selected_artifact_hash = self.artifacts.workspace.artifact_hash(
-                selected_record.task.workspace,
-                selected_changed_files,
+                selected_record.task.workspace, selected_changed_files
             )
+        final_score = (
+            final_report.aggregate_score if final_report is not None else selected.score
+        )
         with self.state.lock_run(run_id):
             run = self.state.read_run(run_id)
             require_run_not_invalidated(run, "record selection")
-            self.annotation.close_queue(
-                run_id,
-                reason="search_selected",
-            )
+            self.annotation.close_queue(run_id, reason="search_selected")
             run.state = RunState.READY_TO_PROMOTE
             run.selected_candidate_id = selected_record.candidate_id
-            run.best_candidate_id = selected_record.candidate_id
-            run.best_score = selected_score
-            run.selected_score = selected_score
-            run.selected_iteration = selected_iteration
+            run.selected_score = selected.score
+            run.selected_hard_score = selected.score
+            run.selected_quality_score = selected_values.get("quality_score")
+            run.selection_basis_hard_score = selected.score
+            run.final_verifier_score = final_score
+            run.selection_evidence_source = evidence_source
+            run.selection_trace = selection_trace
+            run.selection_exclusions = exclusions
+            run.rejected_selection_subjects = _ordered_subjects(rejected)
+            run.selected_iteration = selected.iteration.iteration
             run.selected_git_head = selected_git_head
             run.selected_artifact_ref = selected_artifact_ref
             run.selected_artifact_hash = selected_artifact_hash
             run.budget_used.pop("selection_blocked_reason", None)
+            run.budget_used.pop("selection_wait_reason", None)
             selected_record = self.state.read_candidate(
                 run_id, selected_record.candidate_id
             )
-            selected_best = next(
+            selected_iteration = next(
                 (
-                    iteration
-                    for iteration in selected_record.iterations
-                    if iteration.iteration == selected_iteration
-                    and iteration_artifact_ref(
-                        iteration, selected_record.task.workspace_backend
-                    )
-                    == selected_artifact_ref
-                    and artifact_iteration_eligible(iteration)
+                    item
+                    for item in selected_record.iterations
+                    if item.iteration == selected.iteration.iteration
+                    and item.settlement_id == selected.iteration.settlement_id
+                    and item.artifact_hash == selected.iteration.artifact_hash
                 ),
                 None,
             )
-            if selected_best is None:
-                raise RuntimeError("selected candidate has no exact best iteration")
+            if selected_iteration is None:
+                raise RuntimeError("selected candidate has no exact Evidence subject")
             self.checkpoints.write_best(
-                run, frozen.spec, selected_record, selected_best
+                run, frozen.spec, selected_record, selected_iteration
             )
             selected_record.promotion_report = None
             selected_record.promotion_evidence = None
@@ -280,34 +413,41 @@ class Selection:
             self.persist_run(run)
         return {
             "selected_candidate_id": selected_record.candidate_id,
-            "selected_score": selected_score,
-            "selected_iteration": selected_iteration,
+            "selected_score": selected.score,
+            "selected_hard_score": selected.score,
+            "selected_quality_score": selected_values.get("quality_score"),
+            "selected_iteration": selected.iteration.iteration,
             "selected_git_head": selected_git_head,
             "selected_artifact_ref": (
-                run.selected_artifact_ref.model_dump(mode="json")
-                if run.selected_artifact_ref is not None
+                selected_artifact_ref.model_dump(mode="json")
+                if selected_artifact_ref is not None
                 else None
             ),
             "selected_artifact_hash": selected_artifact_hash,
-            "selection_basis_score": (
-                next(
-                    (
-                        score
-                        for score, record, iteration, artifact_ref in ranked
-                        if record.candidate_id == selected_record.candidate_id
-                        and iteration == selected_iteration
-                        and artifact_ref == selected_artifact_ref
-                    ),
-                    selected_score,
-                )
-            ),
-            "final_verifier_score": (
-                final_report.aggregate_score if final_report else selected_score
-            ),
-            "selection_evidence_source": selection_evidence_source,
+            "ranking_keys": selection_spec.ranking_keys,
+            "ranking_tolerance": selection_spec.ranking_tolerance,
+            "selection_trace": selection_trace,
+            "selection_exclusions": exclusions,
+            "selection_basis_hard_score": selected.score,
+            "final_verifier_score": final_score,
+            "selection_evidence_source": evidence_source,
             "best_candidate_id": run.best_candidate_id,
             "best_score": run.best_score,
         }
+
+    def _ensure_verifier_tasks(
+        self, frozen: FrozenSpec, options: list[_BaseOption]
+    ) -> None:
+        if not frozen.spec.strategy.requires_llm_verifier:
+            return
+        allocation = frozen.spec.strategy.allocation
+        rules = allocation.verifier_rules() if allocation is not None else None
+        for option in options:
+            self.verifier.ensure_assessment(
+                verifier_subject(frozen, option.record, option.iteration),
+                rules.policy_id if rules is not None else None,
+                rules.score_names if rules is not None else [],
+            )
 
     def _mark_selection_blocked(self, run_id: str, reason: str) -> None:
         run = self.state.read_run(run_id)
@@ -319,82 +459,49 @@ class Selection:
         self,
         run: RunRecord,
         records: list[CandidateRecord],
-        metric_direction: Literal["maximize", "minimize"],
-    ) -> list[tuple[float, CandidateRecord, int | None, ArtifactRef | None]]:
-        options: list[
-            tuple[float, CandidateRecord, int | None, ArtifactRef | None]
-        ] = []
+        frozen: FrozenSpec,
+    ) -> list[_BaseOption]:
+        options: list[_BaseOption] = []
         for record in records:
-            if record.task.workspace_backend == "thinkthread":
-                for iteration in reversed(record.iterations):
-                    artifact_ref = iteration_artifact_ref(
-                        iteration, record.task.workspace_backend
-                    )
-                    if (
-                        artifact_iteration_eligible(iteration)
-                        and iteration.disposition not in {"discard", "failure"}
-                        and artifact_ref is not None
-                        and artifact_ref.kind == "fs_snapshot"
-                        and artifact_ref.provider == "thinkthread"
-                    ):
-                        assert iteration.score is not None
-                        options.append(
-                            (
-                                iteration.score,
-                                record,
-                                iteration.iteration,
-                                artifact_ref,
-                            )
-                        )
-                continue
-            current_changed = self.artifacts.workspace.candidate_changed_files(
-                run, record
-            )
-            current_artifact_hash = self.artifacts.workspace.artifact_hash(
-                record.task.workspace, current_changed
-            )
-            report_is_represented = False
+            current_artifact_hash = None
+            if record.task.workspace_backend != "thinkthread":
+                current_changed = self.artifacts.workspace.candidate_changed_files(
+                    run, record
+                )
+                current_artifact_hash = self.artifacts.workspace.artifact_hash(
+                    record.task.workspace, current_changed
+                )
             for iteration in reversed(record.iterations):
                 if (
-                    iteration.process_passed is not True
-                    or iteration.score is None
-                    or iteration.touched_denied_files
-                    or iteration.changed_outside_allowed
+                    not artifact_iteration_eligible(iteration)
                     or iteration.disposition in {"discard", "failure"}
+                    or iteration.score is None
+                    or iteration.settlement_id is None
+                    or iteration.artifact_hash is None
                 ):
                     continue
                 artifact_ref = iteration_artifact_ref(
                     iteration, record.task.workspace_backend
                 )
-                if artifact_ref and artifact_iteration_eligible(iteration):
-                    options.append(
-                        (
-                            iteration.score,
-                            record,
-                            iteration.iteration,
-                            artifact_ref,
-                        )
-                    )
-                elif iteration.artifact_hash == current_artifact_hash:
-                    options.append((iteration.score, record, iteration.iteration, None))
-                if (
-                    record.score_report
-                    and iteration.artifact_hash == current_artifact_hash
-                    and iteration.process_passed == record.score_report.process_passed
-                    and iteration.score == record.score_report.aggregate_score
-                ):
-                    report_is_represented = True
-
-            if (
-                record.score_report
-                and record.score_report.process_passed
-                and record.score_report.aggregate_score is not None
-                and not record.touched_denied_files
-                and not record.changed_outside_allowed
-                and not report_is_represented
-            ):
+                if record.task.workspace_backend == "thinkthread":
+                    if (
+                        artifact_ref is None
+                        or artifact_ref.kind != "fs_snapshot"
+                        or artifact_ref.provider != "thinkthread"
+                    ):
+                        continue
+                elif artifact_ref is None and iteration.artifact_hash != current_artifact_hash:
+                    continue
                 options.append(
-                    (record.score_report.aggregate_score, record, None, None)
+                    _BaseOption(
+                        iteration.score,
+                        record,
+                        iteration,
+                        artifact_ref,
+                        verifier_subject_identity(
+                            verifier_subject(frozen, record, iteration)
+                        ),
+                    )
                 )
         return options
 
@@ -415,10 +522,6 @@ class Selection:
                 )
         if not incomplete:
             return
-        try:
-            self.annotation_admission.ensure(run_id)
-        except Exception:
-            pass
         reason = (
             "required supplemental Evidence annotations are incomplete: "
             + ", ".join(incomplete)

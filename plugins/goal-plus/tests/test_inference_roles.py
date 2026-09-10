@@ -9,16 +9,7 @@ from pathlib import Path
 import pytest
 
 import goal_plus.evidence_annotator as annotation
-from goal_plus.adaptive_search.scheduler import (
-    CodexSchedulerExecutor,
-    PermanentSchedulerExecutionError,
-    PiSchedulerExecutor,
-    ResolvedSchedulerProfile,
-    SchedulerExecutionOutputError,
-    SchedulerExecutionRequest,
-    SchedulerOutput,
-    TransientSchedulerExecutionError,
-)
+from goal_plus.domain.verifier import verifier_result_schema
 from goal_plus.infrastructure.inference_bindings import build_pi_role_tools
 from goal_plus.ports.inference import InferenceArtifactView, InferenceRoleCapabilities
 
@@ -33,7 +24,7 @@ def process_factory(host, mode, payload):
                 output = command[command.index("--output-last-message") + 1]
             else:
                 output = next(value for key, value in kwargs["env"].items() if key in {
-                    "GOAL_PLUS_PI_ANNOTATION_OUTPUT", "GOAL_PLUS_PI_SCHEDULER_OUTPUT",
+                    "GOAL_PLUS_PI_ANNOTATION_OUTPUT", "GOAL_PLUS_PI_VERIFIER_OUTPUT",
                 })
             self.output = Path(output)
 
@@ -87,41 +78,7 @@ def test_annotation_role_output_and_failure_contracts(tmp_path, monkeypatch, hos
     assert monitor["state"] == ("completed" if mode == "valid" else "failed")
 
 
-@pytest.mark.parametrize("host", ["codex", "pi-rpc"])
-@pytest.mark.parametrize("mode", ["valid", "missing", "invalid", "encoding", "not_object", "process_error", "transient_process_error"])
-def test_scheduler_role_output_and_failure_contracts(tmp_path, host, mode, scripted_process_output):
-    payload = [] if mode == "not_object" else {"answer": "accepted"}
-    request = SchedulerExecutionRequest(
-        profile=ResolvedSchedulerProfile(host=host, model="test-model", reasoning_effort="low", timeout_seconds=30),
-        instructions="Evaluate settled input.", prompt="Input.", output_schema={"type": "object"},
-        identity={"run_id": "run_one"}, monitor_path=tmp_path / "monitor.json",
-    )
-    worker = CodexSchedulerExecutor if host == "codex" else PiSchedulerExecutor
-    executor = worker(popen=process_factory(host, mode, payload))
-    error = {
-        "missing": SchedulerExecutionOutputError, "invalid": SchedulerExecutionOutputError,
-        "encoding": UnicodeDecodeError,
-        "not_object": SchedulerExecutionOutputError, "process_error": PermanentSchedulerExecutionError,
-        "transient_process_error": TransientSchedulerExecutionError,
-    }.get(mode)
-    if error is None:
-        result = executor.execute(request)
-        assert result.payload == payload
-        assert result.usage == {"input_tokens": 7, "output_tokens": 3}
-        assert result.invocation.host == host
-        assert result.invocation.task_kind == "search_scheduler"
-        assert result.invocation.model == "test-model"
-    else:
-        with pytest.raises(error) as raised:
-            executor.execute(request)
-        if mode != "encoding":
-            expected = {} if host == "pi-rpc" and mode.endswith("process_error") else {"input_tokens": 7, "output_tokens": 3}
-            assert raised.value.usage == expected
-    monitor = json.loads(request.monitor_path.read_text())
-    assert monitor["state"] == ("completed" if mode == "valid" else "process_exited" if mode == "encoding" else "failed")
-
-
-@pytest.mark.parametrize("role,with_views", [("annotation", True), ("annotation", False), ("scheduler", False)])
+@pytest.mark.parametrize("role,with_views", [("annotation", True), ("annotation", False), ("verifier", False)])
 def test_pi_role_binding_executes_only_authorized_tools(tmp_path, role, with_views):
     node = shutil.which("node")
     if node is None:
@@ -136,7 +93,7 @@ def test_pi_role_binding_executes_only_authorized_tools(tmp_path, role, with_vie
     views = (InferenceArtifactView("target", view),) if with_views else ()
     binding = build_pi_role_tools(
         InferenceRoleCapabilities(role, views),
-        output_schema=(SchedulerOutput.model_json_schema() if role == "scheduler" else
+        output_schema=(verifier_result_schema([]) if role == "verifier" else
                        {"type": "object", "properties": {"answer": {"type": "string"}}}),
     )
     extension = tmp_path / "role.mts"
@@ -173,23 +130,21 @@ console.log(JSON.stringify({ tools: [...tools.keys()], submission, read, denied,
     assert set(result["tools"]) == set(binding.names)
     assert len(binding.names) == (3 if with_views else 1)
     assert result["submission"]["terminate"] is True
-    if role == "scheduler":
+    if role == "verifier":
         from jsonschema import Draft202012Validator
 
         schema = result["parameters"]
-        assert schema["properties"]["reward"]["type"] == "object"
         assert '"$ref"' not in json.dumps(schema)
         payload = {
-            "reward": {"reward": 1, "rubric_score": 1, "exploitation": 1,
-                       "exploration": 0, "uct": 1, "components": {"outcome": 1},
-                       "rationale": "Valid public result."},
-            "allocation_flag": False, "allocation_rationale": "Continue.",
-            "allocation_confidence": 1, "decision": None,
+            "quality_score": 0.8,
+            "allocation_scores": None,
+            "evidence_refs": [],
+            "rationale": "Valid local assessment.",
         }
         validator = Draft202012Validator(schema)
         validator.validate(payload)
-        assert not validator.is_valid({**payload, "reward": json.dumps(payload["reward"])})
-        assert not validator.is_valid({**payload, "reward": {**payload["reward"], "extra": 1}})
+        assert not validator.is_valid({**payload, "quality_score": "0.8"})
+        assert not validator.is_valid({**payload, "extra": 1})
     assert json.loads(output.read_text()) == {"answer": "accepted"}
     if with_views:
         assert result["read"]["content"][0]["text"] == "immutable"
@@ -197,9 +152,9 @@ console.log(JSON.stringify({ tools: [...tools.keys()], submission, read, denied,
     assert (view / "code.txt").read_text() == "immutable"
 
 
-def test_scheduler_binding_cannot_acquire_annotation_views(tmp_path):
-    with pytest.raises(ValueError, match="scheduler cannot acquire"):
+def test_verifier_binding_cannot_acquire_annotation_views(tmp_path):
+    with pytest.raises(ValueError, match="verifier cannot acquire"):
         build_pi_role_tools(
-            InferenceRoleCapabilities("scheduler", (InferenceArtifactView("target", tmp_path),)),
+            InferenceRoleCapabilities("verifier", (InferenceArtifactView("target", tmp_path),)),
             output_schema={"type": "object"},
         )

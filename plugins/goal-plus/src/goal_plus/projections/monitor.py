@@ -91,49 +91,6 @@ def project_evidence_reads(
     }
 
 
-def project_scheduler(
-    tasks: tuple[Any, ...],
-    *,
-    now: float,
-) -> tuple[dict[str, Any], dict[str, list[Any]]]:
-    states: dict[str, int] = {}
-    usage: dict[str, int | float] = {}
-    by_candidate: dict[str, list[Any]] = {}
-    pending_ages: list[float] = []
-    for task in tasks:
-        states[task.state] = states.get(task.state, 0) + 1
-        by_candidate.setdefault(task.candidate_id, []).append(task)
-        if task.state in {"pending", "retry_wait"}:
-            created = parse_utc_timestamp(task.created_at)
-            if created is not None:
-                pending_ages.append(max(0.0, now - created))
-        for key, value in task.usage.items():
-            if isinstance(value, int | float) and not isinstance(value, bool):
-                usage[key] = usage.get(key, 0) + value
-
-    for candidate_tasks in by_candidate.values():
-        candidate_tasks.sort(key=lambda item: item.iteration)
-    return (
-        {
-            "tasks": len(tasks),
-            "attempts": sum(task.attempts for task in tasks),
-            "states": dict(sorted(states.items())),
-            "pending": sum(task.state in {"pending", "retry_wait"} for task in tasks),
-            "consumed": sum(task.consumed_at is not None for task in tasks),
-            "oldest_pending_age_seconds": max(pending_ages, default=None),
-            "allocation_confirmations": sum(
-                bool(task.reserved_candidate_ids) for task in tasks
-            ),
-            "reschedule_flags": sum(
-                task.output is not None and task.output.allocation_flag
-                for task in tasks
-            ),
-            "usage": dict(sorted(usage.items())),
-        },
-        by_candidate,
-    )
-
-
 def metric_context(
     frozen: FrozenSpec,
     task: GoalPlusLinkedSearch | None,

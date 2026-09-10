@@ -12,7 +12,7 @@ from goal_plus.ports.state import RunRecord
 class InternalAgentRun:
     host: AgentHostKind
     accepts_work: bool
-    scheduler_enabled: bool
+    verifier_enabled: bool
 
 
 class InternalAgentRunSource(Protocol):

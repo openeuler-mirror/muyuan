@@ -390,6 +390,26 @@ def _host_execution_scope_close_run_tool(
     return call
 
 
+def _host_execution_scope_interrupt_allocation_tool(
+    root_dir: Path | str,
+) -> Callable[..., dict[str, Any]]:
+    def call(
+        scope_id: str,
+        run_id: str,
+        decision_id: str,
+    ) -> dict[str, Any]:
+        from goal_plus.host_scope import interrupt_allocation_candidates
+
+        return interrupt_allocation_candidates(
+            root_dir=root_dir,
+            scope_id=scope_id,
+            run_id=run_id,
+            decision_id=decision_id,
+        )
+
+    return call
+
+
 def _host_execution_scope_snapshot_tool(
     root_dir: Path | str,
 ) -> Callable[..., dict[str, Any]]:
@@ -443,6 +463,9 @@ def _registry(root_dir: Path | str) -> dict[str, Callable[..., Any]]:
     tools["host_execution_scope_close"] = _host_execution_scope_close_tool(root_dir)
     tools["host_execution_scope_close_run"] = (
         _host_execution_scope_close_run_tool(root_dir)
+    )
+    tools["host_execution_scope_interrupt_allocation"] = (
+        _host_execution_scope_interrupt_allocation_tool(root_dir)
     )
     tools["host_execution_scope_snapshot"] = (
         _host_execution_scope_snapshot_tool(root_dir)

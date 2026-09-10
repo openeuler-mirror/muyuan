@@ -15,7 +15,7 @@ from goal_plus.ports.process_monitor import (
     ProcessObservation,
 )
 
-# Existing Annotation and Scheduler diagnostic limits, not model output limits.
+# Internal inference diagnostic limits, not model output limits.
 MONITOR_UPDATE_SECONDS = 5.0
 MONITOR_TAIL_CHARS = 2_000
 MONITOR_LAST_EVENTS = 12

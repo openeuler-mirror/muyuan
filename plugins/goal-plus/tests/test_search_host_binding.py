@@ -48,20 +48,15 @@ def test_freeze_uses_goal_main_host_and_rejects_override(tmp_path, native_host, 
     assert loaded.worker_host == driver
 
 
-def test_scheduler_cannot_override_main_agent(tmp_path):
+def test_search_spec_rejects_removed_verifier_config(tmp_path):
     payload = spec_for(make_project(tmp_path)).model_dump(mode="json")
     payload["workspace"] = {"backend": "git_worktree"}
     payload["strategy"] = {
-        "orchestration_mode": "adaptive_search",
-        "search_scheduler": {
-            "host": "pi-rpc", "model": "test-model", "reasoning_effort": "low",
-            "timeout_seconds": 60, "reward": "evidence_llm_value/v3",
-            "allocation": "value_guided_replace/v2",
-        },
+        "verifier": {},
     }
     with pytest.raises(ValidationError) as error:
         SearchSpec.model_validate(payload)
-    assert error.value.errors()[0]["loc"] == ("strategy", "search_scheduler", "host")
+    assert error.value.errors()[0]["loc"] == ("strategy", "verifier")
 
 
 def test_native_host_is_part_of_frozen_identity(tmp_path):

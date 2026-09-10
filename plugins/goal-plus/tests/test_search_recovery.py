@@ -9,7 +9,7 @@ import pytest
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.host_recovery import approve_recovery, observe_worker
 from goal_plus.tools import SearchTools
-from goal_plus.models import ArtifactRef, CandidateTask, RunState
+from goal_plus.models import ArtifactRef, CandidateTask, RunState, SearchSpec
 from goal_plus.workspaces import UnsupportedWorkspaceCapability
 from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
@@ -547,17 +547,40 @@ def test_pi_pool_may_stop_fenced_lane_before_closeout(tmp_path, monkeypatch):
 
 
 def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_path):
-    from tests.adaptive_search.test_scheduler import _start_runtime
-
-    runtime, run_id, tasks = _start_runtime(tmp_path, max_parallel=1)
+    project = make_project(tmp_path)
+    payload = spec_for(project, max_parallel=1).model_dump(mode="json")
+    payload["budget"]["max_candidates"] = 2
+    payload["workspace"] = {"backend": "git_worktree"}
+    payload["strategy"].update(
+        {
+            "orchestration_mode": "adaptive_search",
+            "selection": {
+                "ranking_keys": ["quality_score", "hard_score"],
+                "ranking_tolerance": [0.05, 0.0],
+            },
+            "allocation": {"policy": "priority_replace/v1"},
+        }
+    )
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(payload),
+        [project / "evaluator.py"],
+        native_host="codex",
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    tasks = runtime.start_batch(run_id, plan.plan_id)
     task = tasks[0]
     runtime.run_verifier(run_id, task.candidate_id)
     record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    verifier_tasks = runtime.list_verifier_tasks(run_id)
+    assert len(verifier_tasks) == 1
     recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
     runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
     restored = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     assert restored.iterations == record.iterations
     assert restored.results_ledger == record.results_ledger
+    assert runtime.list_verifier_tasks(run_id) == verifier_tasks
 
 
 def test_unsettled_shared_publication_does_not_survive_as_a_family_head(tmp_path, monkeypatch):

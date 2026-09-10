@@ -44,6 +44,10 @@ from goal_plus.thinkthread_agent_posix import (
 
 if TYPE_CHECKING:
     from goal_plus.adaptive_search import AllocationDecision
+    from goal_plus.domain.verifier import (
+        VerifierRecord,
+        VerifierTask,
+    )
 
 
 class FileSearchRuntime:
@@ -68,6 +72,7 @@ class FileSearchRuntime:
         self.selection = services.selection
         self.notifications = services.notifications
         self.artifact_lifecycle = services.artifact_lifecycle
+        self._verifier = services.verifier
         self._adaptive_search = services.adaptive_search
         self.reporter = services.reporter
         self.goal_authorization = services.goal_authorization
@@ -89,8 +94,14 @@ class FileSearchRuntime:
         self.queries = services.queries
         self.evidence_reads = services.evidence_reads
 
-    def search_scheduler_enabled(self, run_id: str) -> bool:
-        return self.queries.search_scheduler_enabled(run_id)
+    def llm_verifier_enabled(self, run_id: str) -> bool:
+        return self.queries.llm_verifier_enabled(run_id)
+
+    def list_verifier_tasks(self, run_id: str) -> list[VerifierTask]:
+        return self._verifier.list_tasks(run_id)
+
+    def list_verifier_records(self, run_id: str) -> list[VerifierRecord]:
+        return self._verifier.list_records(run_id)
 
     def require_frozen_spec_owner(
         self,
@@ -120,7 +131,9 @@ class FileSearchRuntime:
     def list_allocation_decisions(
         self,
         run_id: str,
-        status: Literal["pending", "applied"] | None = None,
+        status: Literal[
+            "pending", "applied", "superseded", "terminal_error"
+        ] | None = None,
     ) -> list[AllocationDecision]:
         self.queries.require_adaptive_search(run_id)
         return self._adaptive_search.list_allocation_decisions(run_id, status)
@@ -207,21 +220,15 @@ class FileSearchRuntime:
                 hypothesis=hypothesis,
                 toolization_decision=toolization_decision,
             )
-            search_scheduler_enabled = False
+            adaptive_search_enabled = False
             if scope == "process":
                 run = self.search_run.state.read_run(run_id)
                 frozen = self.search_run.state.read_frozen_spec(run.frozen_spec_id)
-                search_scheduler_enabled = (
+                adaptive_search_enabled = (
                     frozen.spec.strategy.orchestration_mode == "adaptive_search"
                 )
-            if search_scheduler_enabled:
-                report = self._adaptive_search.resolve_scheduler_barrier(
-                    run_id,
-                    candidate_id,
-                    report,
-                )
         if scope == "process" and (
-            agent_session_id is not None or search_scheduler_enabled
+            agent_session_id is not None or adaptive_search_enabled
         ):
             self.evidence_reads.register_annotations(run_id)
         return report

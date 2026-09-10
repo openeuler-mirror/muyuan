@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar
 import os
+import signal
 import threading
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from goal_plus.models import SearchSpec
 from goal_plus.pi_pool import (
     close_pi_search_pool,
     continue_pi_search_pool,
+    interrupt_pi_search_candidate,
     open_pi_search_pool,
     run_pool_worker,
     snapshot_pi_search_pool,
@@ -586,32 +588,65 @@ def test_pi_pool_worker_publishes_candidate_ready_after_driver_completion(
     ]
 
 
-def test_pi_pool_allocation_decision_releases_unsatisfied_minimum_lease(
+def test_pi_pool_interrupts_only_the_selected_candidate_and_keeps_pool_open(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = _make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
-    spec_data = _pi_rpc_spec_with_budget(
-        project,
-        max_parallel=1,
-    ).model_dump(mode="json")
-    spec_data["budget"]["max_candidates"] = 2
-    spec_data["workspace"] = {"backend": "git_worktree"}
-    spec_data["strategy"].update(
-        {
-            "orchestration_mode": "adaptive_search",
-            "search_scheduler": {
-                "model": "bench-openai/gpt-5.6-sol",
-                "reasoning_effort": "low",
-                "timeout_seconds": 180,
-                "reward": "evidence_llm_value/v3",
-                "allocation": "value_guided_replace/v2",
-            },
-        }
-    )
     frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(spec_data),
+        _pi_rpc_spec_with_budget(project, max_parallel=2),
+        [project / "evaluator.py"], native_host="pi",
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    candidate_ids = _planned_candidates(runtime, run_id, 2)
+    monkeypatch.setattr(pi_pool, "_launch_pool_job", lambda **_kwargs: os.getpid())
+    opened = open_pi_search_pool(
+        root_dir=runtime.root_dir,
+        run_id=run_id,
+        candidate_ids=candidate_ids,
+        max_parallel=2,
+    )
+    signalled_resources = []
+
+    def process(_root, _pool_id, job):
+        return SimpleNamespace(
+            running=lambda: True,
+            send=lambda signum: signalled_resources.append((job["job_id"], signum))
+        )
+
+    monkeypatch.setattr(pi_pool, "_job_process", process)
+    receipt = interrupt_pi_search_candidate(
+        root_dir=runtime.root_dir,
+        pool_id=opened["pool_id"],
+        candidate_id=candidate_ids[0],
+    )
+    snapshot = snapshot_pi_search_pool(
+        root_dir=runtime.root_dir,
+        pool_id=opened["pool_id"],
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["state"] == "open"
+    assert len(signalled_resources) == 1
+    assert signalled_resources[0][1] == signal.SIGTERM
+    assert snapshot["active_count"] == 1
+    assert {
+        job["candidate_id"]: job["status"] for job in snapshot["jobs"]
+    } == {
+        candidate_ids[0]: "interrupted",
+        candidate_ids[1]: "running",
+    }
+
+
+def test_pi_pool_late_worker_result_cannot_reverse_accepted_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        _pi_rpc_spec_with_budget(project, max_parallel=1),
         [project / "evaluator.py"], native_host="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
@@ -622,54 +657,46 @@ def test_pi_pool_allocation_decision_releases_unsatisfied_minimum_lease(
         run_id=run_id,
         candidate_ids=[candidate_id],
         worker_budgets={
-            candidate_id: {
-                "min_runtime_seconds": 10,
-                "min_verifier_runs": 3,
+                candidate_id: {
+                    "min_runtime_seconds": 1,
+                    "min_verifier_runs": 1,
                 "max_runtime_seconds": 20,
                 "on_exceed": "interrupt",
             }
         },
     )
-    submitted = opened["submitted"][0]
+    job_id = opened["submitted"][0]["job_id"]
     now = [0.0]
 
-    def fake_driver(**_request: Any) -> dict[str, Any]:
-        now[0] += 1
+    def completed_after_interrupt(**_request: Any) -> dict[str, Any]:
+        now[0] = 1.1
+        with exclusive_file_lock(
+            pi_pool._pool_lock_path(runtime.root_dir, opened["pool_id"])
+        ):
+            job = pi_pool._load_job(runtime.root_dir, opened["pool_id"], job_id)
+            job["status"] = "interrupted"
+            pi_pool._write_job(runtime.root_dir, opened["pool_id"], job)
         return {
             "ok": True,
             "run_id": run_id,
             "candidate_id": candidate_id,
-            "agent_session_id": "agent_retired",
+            "agent_session_id": "agent_late",
             "bound_session": {"counters": {"verifier_runs": 1}},
             "steps": [],
-            "final_score_report": {
-                "aggregate_score": 1.0,
-                "process_passed": True,
-                "allocation_decision": {"decision_id": "allocation_0001"},
-            },
+            "final_score_report": None,
         }
 
+    monkeypatch.setattr(pi_pool, "run_pi_search_candidate", completed_after_interrupt)
     monkeypatch.setattr(pi_pool.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(pi_pool, "run_pi_search_candidate", fake_driver)
 
     assert run_pool_worker(
         root_dir=runtime.root_dir,
         pool_id=opened["pool_id"],
-        job_id=submitted["job_id"],
-    ) == 0
-    waited = wait_any_pi_search_pool(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-    )
-    [event] = waited["events"]
-    assert event["kind"] == "candidate_ready"
-    assert event["result"]["lease"]["satisfied"] is False
-    assert event["result"]["lease"]["release_reason"] == "allocation_decision"
-    assert event["result"]["lease"]["allocation_decision_id"] == (
-        "allocation_0001"
-    )
-    assert event["result"]["lease"]["dispatch_count"] == 1
+        job_id=job_id,
+    ) == 130
+    assert pi_pool._load_job(
+        runtime.root_dir, opened["pool_id"], job_id
+    )["status"] == "interrupted"
 
 
 def test_pi_pool_worker_continues_same_session_until_cumulative_lease(

@@ -77,8 +77,14 @@ pi
 
 然后完整粘贴 [`pi-goal-prompt.md`](pi-goal-prompt.md)。如果不希望设置顶层截止
 条件，改用 [`pi-goal-prompt-untimed.md`](pi-goal-prompt-untimed.md)。
+要在相同的固定候选流程中启用 LLM-Verifier 极简模式，改用
+[`pi-goal-prompt-llm-verifier.md`](pi-goal-prompt-llm-verifier.md)。该变体只让 Selection
+消费 `quality_score`，不启用 Adaptive allocation。
+要启用确定性 Candidate 退休和替换，改用
+[`pi-goal-prompt-adaptive-search.md`](pi-goal-prompt-adaptive-search.md)。该变体限制两个
+活跃通道和四个累计 Candidate，并由 AllocationPolicy 消费 LLM-Verifier 评分。
 
-以上两个 prompt 使用 `inner_agent=autoresearch`，每个 candidate 在一次 worker
+上述四个 prompt 使用 `inner_agent=autoresearch`，每个 candidate 在一次 worker
 dispatch 中自主执行多轮修改和 verifier。要验证普通 agent 接口，改用
 [`pi-goal-prompt-common.md`](pi-goal-prompt-common.md)：每个 common dispatch 完成一个
 有界 attempt、调用一次 `search_run_verifier` 后返回，后续尝试由 main continuation 同一

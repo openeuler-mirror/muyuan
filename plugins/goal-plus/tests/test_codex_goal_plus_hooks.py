@@ -8,6 +8,7 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from goal_plus import codex_models
 import pytest
@@ -55,7 +56,7 @@ def test_post_tool_hook_pumps_internal_agents_from_codex_host(
 
     def record(root: Path, run_id: str, *, host: str) -> dict[str, bool]:
         calls.append((root, run_id, host))
-        return {"annotation_started": True, "scheduler_started": True}
+        return {"annotation_started": True, "verifier_started": True}
 
     monkeypatch.setattr(internal_agents, "kick_internal_agents", record)
     hook_module._handle_post_tool_lifecycle(
@@ -306,7 +307,7 @@ def _codex_search_worker(
     tmp_path: Path,
     *,
     worker_budget: dict | None = None,
-    search_scheduler: bool = False,
+    adaptive_search: bool = False,
 ) -> tuple[FileSearchRuntime, str, str, str]:
     project = make_project(tmp_path)
     payload = spec_with_strategy(project, {"name": "random"}, max_parallel=1).model_dump(mode="json")
@@ -315,19 +316,17 @@ def _codex_search_worker(
         "max_turns": 8,
         "on_exceed": "interrupt",
     }
-    if search_scheduler:
+    if adaptive_search:
         payload["budget"]["max_candidates"] = 2
         payload["workspace"] = {"backend": "git_worktree"}
         payload["strategy"].update(
             {
                 "orchestration_mode": "adaptive_search",
-                "search_scheduler": {
-                    "model": "gpt-5.2",
-                    "reasoning_effort": "low",
-                    "timeout_seconds": 180,
-                    "reward": "evidence_llm_value/v3",
-                    "allocation": "value_guided_replace/v2",
+                "selection": {
+                    "ranking_keys": ["quality_score", "hard_score"],
+                    "ranking_tolerance": [0.05, 0.0],
                 },
+                "allocation": {"policy": "priority_replace/v1"},
             }
         )
     runtime = FileSearchRuntime(tmp_path / ".gp")
@@ -743,7 +742,7 @@ def test_codex_model_preflight_failure_blocks_before_goal_creation(
     assert not list((search_root / "goal-plus").glob("gp_*/goal.json"))
 
 
-def test_codex_search_freeze_preflight_covers_every_agent_role() -> None:
+def test_codex_search_freeze_preflight_covers_explicit_model_roles() -> None:
     targets = codex_models.search_spec_codex_model_targets(
         {
             "model": "gpt-main",
@@ -759,10 +758,6 @@ def test_codex_search_freeze_preflight_covers_every_agent_role() -> None:
                         "evidence_annotator": {
                             "model": "gpt-annotator",
                         },
-                        "search_scheduler": {
-                            "model": "gpt-scheduler",
-                            "reasoning_effort": "high",
-                        },
                     }
                 }
             },
@@ -773,7 +768,6 @@ def test_codex_search_freeze_preflight_covers_every_agent_role() -> None:
         ("gpt-main", "low"),
         ("gpt-worker", "medium"),
         ("gpt-annotator", "low"),
-        ("gpt-scheduler", "high"),
     }
 
 
@@ -1912,6 +1906,9 @@ def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
     hook_module._prepare_codex_native_tool(search_root, launch_hook)
     [registered] = execution_scope_snapshot(root_dir=search_root, scope_id=scope["scope_id"])["codex_agents"]
     assert registered["run_id"] == run_id
+    assert registered["candidate_id"] == candidate_id
+    assert registered["agent_session_id"] == agent_session_id
+    assert registered["execution_generation"] == session.execution_generation
     assert registered["spawn_pending"] is True
 
     initial = _run_hook(
@@ -1935,7 +1932,6 @@ def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
     assert Path(worker_context["candidate_task"]["workspace"]) == session.workspace
     assert record.goal_plus_id not in context
     assert record.raw_goal not in context
-
     own_context = _run_hook(
         tmp_path,
         search_root,
@@ -2080,6 +2076,44 @@ def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
     active = goal_runtime.status(record.goal_plus_id).active_session
     assert active is not None
     assert active.model_dump(mode="json") == expected_binding
+
+
+def test_codex_allocation_interrupt_targets_only_the_retired_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "goal_plus.infrastructure.state.allocation.FileAllocationState.load_allocation_decision",
+        lambda _state, _run_id, _decision_id: SimpleNamespace(
+            status="pending",
+            retire_candidate_ids=["c001"],
+        ),
+    )
+    scope = {
+        "codex_agents": [
+            {
+                "agent_id": "/root/retired",
+                "native_agent_id": "native-retired",
+                "run_id": "run_test",
+                "candidate_id": "c001",
+                "status": "active",
+            },
+            {
+                "agent_id": "/root/sibling",
+                "native_agent_id": "native-sibling",
+                "run_id": "run_test",
+                "candidate_id": "c002",
+                "status": "active",
+            },
+        ]
+    }
+
+    assert hook_module._codex_allocation_active_targets(
+        tmp_path,
+        scope,
+        run_id="run_test",
+        decision_id="allocation_test",
+    ) == ["native-retired"]
 
 
 def test_post_tool_time_advisory_only_targets_search_candidate_subagent_once(
@@ -3074,7 +3108,12 @@ def test_search_candidate_autoresearch_lease_blocks_until_runtime_then_releases(
     assert released["stop_attempts"] == 2
 
 
-def test_adaptive_retirement_releases_candidate_lease(tmp_path: Path) -> None:
+def test_pending_adaptive_retirement_authorizes_physical_interrupt_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global _OWNER_PID_CACHE
+    _OWNER_PID_CACHE = None
     search_runtime, run_id, candidate_id, agent_session_id = _codex_search_worker(
         tmp_path,
         worker_budget={
@@ -3083,7 +3122,7 @@ def test_adaptive_retirement_releases_candidate_lease(tmp_path: Path) -> None:
             "max_runtime_seconds": 420,
             "on_exceed": "interrupt",
         },
-        search_scheduler=True,
+        adaptive_search=True,
     )
     search_root = search_runtime.root_dir
     goal_runtime = FileGoalPlusRuntime(search_root)
@@ -3121,15 +3160,16 @@ def test_adaptive_retirement_releases_candidate_lease(tmp_path: Path) -> None:
     )
     assert json.loads(active.stdout)["decision"] == "block"
 
-    candidate = search_runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
-    search_runtime.candidate_creation.state.write_candidate(
-        run_id,
-        candidate.model_copy(
-            update={
-                "allocation_eligibility": "retired",
-                "retired_by_decision_id": "allocation_0001",
-            }
-        ),
+    monkeypatch.setattr(
+        "goal_plus.infrastructure.state.candidate_queries."
+        "FileCandidateQueries.load_allocation_decisions",
+        lambda _source, _run_id: [
+            SimpleNamespace(
+                status="pending",
+                retire_candidate_ids=[candidate_id],
+                decision_id="allocation_0001",
+            )
+        ],
     )
     retired = _run_hook(
         tmp_path,
@@ -3151,7 +3191,7 @@ def test_adaptive_retirement_releases_candidate_lease(tmp_path: Path) -> None:
         ).read_text(encoding="utf-8")
     )
     assert lease["status"] == "released"
-    assert lease["release_reason"] == "allocation_decision"
+    assert lease["release_reason"] == "allocation_interrupt"
 
 
 def test_ordinary_subagent_stop_does_not_inherit_parent_next_action(

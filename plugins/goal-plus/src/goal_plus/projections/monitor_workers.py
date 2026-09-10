@@ -17,14 +17,14 @@ def project_candidate(inputs: MonitorCandidateInputs) -> dict[str, Any]:
         inputs.ledger_projection,
         inputs.results_tsv,
     )
-    search_scheduler_enabled = inputs.scheduler_enabled
+    verifier_enabled = inputs.verifier_enabled
     shared_status_counts: dict[str, int] = {}
     toolization_outcome_counts: dict[str, int] = {}
     toolization_signal_counts: dict[str, int] = {}
     toolization_exclusion_counts: dict[str, int] = {}
     toolization_advisory_counts: dict[str, int] = {}
-    candidate_rewards = inputs.rewards
-    last_reward = candidate_rewards[-1] if candidate_rewards else None
+    verifier_records = inputs.verifier_records
+    latest_verifier_record = verifier_records[-1] if verifier_records else None
     for item in candidate.iterations:
         status = item.shared_tool_publish_status
         shared_status_counts[status] = shared_status_counts.get(status, 0) + 1
@@ -104,10 +104,10 @@ def project_candidate(inputs: MonitorCandidateInputs) -> dict[str, Any]:
         "workspace_ledger_projection": workspace_ledger_projection,
         "results_tsv": results_tsv,
     }
-    if search_scheduler_enabled:
-        candidate_schedule_tasks = inputs.schedule_tasks
-        last_schedule_task = (
-            candidate_schedule_tasks[-1] if candidate_schedule_tasks else None
+    if verifier_enabled:
+        candidate_verifier_tasks = inputs.verifier_tasks
+        last_verifier_task = (
+            candidate_verifier_tasks[-1] if candidate_verifier_tasks else None
         )
         candidate_payload.update(
             {
@@ -119,29 +119,20 @@ def project_candidate(inputs: MonitorCandidateInputs) -> dict[str, Any]:
                     if candidate.task.expansion_source is not None
                     else None
                 ),
-                "last_scheduler_reward": (
-                    last_reward.model_dump(mode="json")
-                    if last_reward is not None
+                "latest_verifier_record": (
+                    latest_verifier_record.model_dump(mode="json")
+                    if latest_verifier_record is not None
                     else None
                 ),
-                "scheduler_reward_count": len(candidate_rewards),
-                "last_allocation_decision_id": (
-                    last_iteration.allocation_decision_id if last_iteration else None
-                ),
-                "last_allocation_decision_error": (
-                    last_iteration.allocation_decision_error if last_iteration else None
-                ),
-                "schedule_settlement_watermark": (
-                    candidate.schedule_settlement_watermark
-                ),
-                "schedule_tasks_total": len(candidate_schedule_tasks),
-                "schedule_tasks_pending": sum(
+                "verifier_record_count": len(verifier_records),
+                "verifier_tasks_total": len(candidate_verifier_tasks),
+                "verifier_tasks_pending": sum(
                     item.state in {"pending", "retry_wait"}
-                    for item in candidate_schedule_tasks
+                    for item in candidate_verifier_tasks
                 ),
-                "last_schedule_task": (
-                    last_schedule_task.model_dump(mode="json")
-                    if last_schedule_task is not None
+                "last_verifier_task": (
+                    last_verifier_task.model_dump(mode="json")
+                    if last_verifier_task is not None
                     else None
                 ),
             }

@@ -106,7 +106,7 @@ def test_pool_replies_keep_outcomes_and_pending_jobs_without_launch_history():
     result = {"ok": True, "agent_session_id": "agent_1", "launch": {"prompt": "large"},
               "bound_session": {"evidence_reads": ["large"]}, "steps": ["large"],
               "final_score_report": {"aggregate_score": 2.4, "best_artifact_ref": {"id": "exact"}},
-              "lease": {"satisfied": True, "release_reason": "allocation_decision", "dispatch_count": 2}}
+              "lease": {"satisfied": True, "release_reason": "minimum_satisfied", "dispatch_count": 2}}
     jobs = [{"job_id": f"job_{n}", "candidate_id": "c001", "status": "completed",
              "delivered_at": "now", "result": result} for n in range(50)]
     jobs[0]["delivered_at"] = None

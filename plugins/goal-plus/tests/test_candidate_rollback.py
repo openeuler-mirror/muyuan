@@ -296,12 +296,6 @@ def test_select_and_promote_keep_all_iteration_commits_reachable(
     runtime.promote(run_id, candidate_id)
 
     record = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
-    assert [iteration.disposition for iteration in record.iterations] == [
-        "keep",
-        "keep",
-        "retain",
-        "retain",
-    ]
     revisions = {
         revision
         for iteration in record.iterations

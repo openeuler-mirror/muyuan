@@ -131,13 +131,20 @@ class RunRecord(SearchModel):
     next_candidate_index: int = 1
     next_plan_index: int = 1
     next_agent_session_index: int = 1
-    next_allocation_decision_index: int = 1
     candidates_total: int = 0
     candidates_evaluated: int = 0
     best_candidate_id: str | None = None
     best_score: float | None = None
     selected_candidate_id: str | None = None
     selected_score: float | None = None
+    selected_hard_score: float | None = None
+    selected_quality_score: float | None = None
+    selection_basis_hard_score: float | None = None
+    final_verifier_score: float | None = None
+    selection_evidence_source: str | None = None
+    selection_trace: list[dict[str, Any]] = Field(default_factory=list)
+    selection_exclusions: list[dict[str, Any]] = Field(default_factory=list)
+    rejected_selection_subjects: list[dict[str, Any]] = Field(default_factory=list)
     selected_iteration: int | None = None
     selected_git_head: str | None = None
     selected_artifact_ref: ArtifactRef | None = None
@@ -164,7 +171,6 @@ class CandidateRecord(SearchModel):
     status: Literal["created", "evaluated", "failed"]
     task: CandidateTask
     allocation_eligibility: AllocationEligibility = "eligible"
-    schedule_settlement_watermark: int = Field(default=0, ge=0)
     retired_by_decision_id: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,

@@ -37,6 +37,9 @@ class ScopeAgentRecord(TypedDict, total=False):
     native_agent_id: str
     parent_session_id: str
     run_id: str | None
+    candidate_id: str
+    agent_session_id: str
+    execution_generation: int
     status: str
     registered_at: str | None
     updated_at: str

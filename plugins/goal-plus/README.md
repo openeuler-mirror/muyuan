@@ -131,7 +131,7 @@ not require an extra approval step. `mode=autonomous` (the default) gives
 every initial candidate substantial, renewable same-workspace exploration leases;
 `mode=probe` asks for short feasibility probes first. The explicit mode is
 recorded in `command_config`; its operational guidance remains in the final line
-of `raw_goal`, not as scheduler state.
+of `raw_goal`, not as Search runtime state.
 
 ## Hosts
 
@@ -170,18 +170,18 @@ The following table groups supported Search paths by the native Main Agent.
 ThinkThread provides workspace and Child execution infrastructure; the Agent
 inside the supported ThinkThread path is Pi.
 
-| Main Agent | Workspace backend | Candidate driver | Annotation driver | Adaptive Scheduler |
+| Main Agent | Workspace backend | Candidate driver | Annotation driver | LLM Verifier / Adaptive allocation |
 | --- | --- | --- | --- | --- |
-| Codex | `git_worktree` / `copy` | Native subagent | Codex CLI | Codex CLI; Git worktree only |
-| Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI; Git worktree only |
+| Codex | `git_worktree` / `copy` | Native subagent | Codex CLI | Codex CLI; allocation requires Git worktree |
+| Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI; allocation requires Git worktree |
 | Pi | `thinkthread` | TT Pi Child | TT Pi Child | Not supported |
 | Codex | `thinkthread` | Not supported | Not supported | Not supported |
 
 `workspace.backend` identifies the workspace provider. Agent identity comes from
 the authorized Main session and is recorded as `FrozenSpec.native_host`; it is
 not a SearchSpec option. Runtime derives each role's driver from this identity
-and the workspace backend. Scheduler reward and
-allocation share one inference call, with no separate reward Agent.
+and the workspace backend. Core quality and optional adaptive metrics use separate
+Verifier records; deterministic code owns winner selection and allocation.
 
 ## Mental Model
 
@@ -236,11 +236,11 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 | Stable product and runtime contract | [System Specification](SPEC.md) |
 | Architecture, shared Evidence, rollback, and end-to-end flow | [Shared Plane](docs/shared-plane.md) |
 | Framework layers, ownership, role capabilities, and glossary | [Architecture Diagrams](docs/architecture.md) |
-| Adaptive Search mode and Search Scheduler behavior | [Adaptive Search](docs/adaptive-search.md) |
+| LLM Verifier data, evaluation, and queue contract | [LLM Verifier](docs/llm-verifier.md) |
+| Minimal selection, Adaptive allocation, and monitor projections | [Adaptive Search](docs/adaptive-search.md) |
 | Current MCP and Pi-local tools | [API](docs/api.md) |
 | Host capability comparison | [Agent Host Adapters](docs/agent-host-adapters.md) |
 | Ultra work orchestration | [Ultra Orchestration](docs/ultra.md) |
-| Optional monitor projections | [Monitor Feature Plugins](docs/feature-plugins.md) |
 | Lightweight Search progress UX and rollout plan | [Progress UX](docs/usability-progress.md) |
 | Runtime and host logs | [Debugging](docs/debugging-runtime.md) |
 | Checkout development, plugin refresh, and multi-developer isolation | [Development](docs/development.md) |

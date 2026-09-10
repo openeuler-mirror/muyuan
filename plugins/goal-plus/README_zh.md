@@ -137,7 +137,7 @@ Goal Plus 不能切换它，`main=` 也不是受支持的命令配置。[Torch C
 下面按原生 Main Agent 类型列出当前支持的 Search 路径。ThinkThread 提供工作区和
 Child 执行基础设施；当前受支持的 ThinkThread 路径内运行的 Agent 仍是 Pi。
 
-| Main Agent | 工作区后端 | Candidate 驱动 | Annotation 驱动 | Adaptive Scheduler |
+| Main Agent | 工作区后端 | Candidate 驱动 | Annotation 驱动 | LLM Verifier / Adaptive Allocation |
 | --- | --- | --- | --- | --- |
 | Codex | `git_worktree` / `copy` | 原生 subagent | Codex CLI | Codex CLI；仅 Git worktree 支持 |
 | Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI；仅 Git worktree 支持 |
@@ -147,7 +147,7 @@ Child 执行基础设施；当前受支持的 ThinkThread 路径内运行的 Age
 `workspace.backend` 表示工作区 provider。Agent 身份来自已授权的 Main 会话，记录为
 `FrozenSpec.native_host`，不属于 SearchSpec 可选配置；runtime 根据该身份和工作区后端
 确定各角色的执行驱动。
-Scheduler 的 reward 和 allocation 共用一次推理，不存在单独的 reward Agent。
+LLM Verifier 只评估精确 settlement；最终选择和 Adaptive Allocation 由确定性策略完成。
 
 ## 心智模型
 
@@ -194,10 +194,11 @@ Selected Git Head 和 Artifact Hash，之后才生成可被 Git 应用的 Patch�
 | 稳定的产品与 runtime 合同 | [系统规格](SPEC.md) |
 | 架构、共享 Evidence、回滚和端到端流程 | [Shared Plane](docs/shared-plane.md) |
 | 框架分层、状态职责、角色能力与名词解释 | [架构图集](docs/architecture.md) |
+| LLM Verifier 的数据、评估与队列合同 | [LLM Verifier](docs/llm-verifier.md) |
+| 极简选择、Adaptive allocation 与监控投影 | [Adaptive Search](docs/adaptive-search.md) |
 | 当前 MCP 与 Pi 本地工具 | [API](docs/api.md) |
 | 宿主能力对比 | [Agent Host Adapters](docs/agent-host-adapters.md) |
 | Ultra 工作编排 | [Ultra Orchestration](docs/ultra.md) |
-| 可选监控投影 | [Monitor Feature Plugins](docs/feature-plugins.md) |
 | 运行时与宿主日志 | [Debugging](docs/debugging-runtime.md) |
 | Checkout 开发、plugin 刷新与多开发者隔离 | [Development](docs/development.md) |
 | spec 与可运行示例 | [Examples](examples/README.md) |

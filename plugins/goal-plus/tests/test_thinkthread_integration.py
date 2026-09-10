@@ -825,6 +825,12 @@ def test_thinkthread_autoresearch_settles_private_git_around_outer_snapshots(
         "fsnap-5",
     ]
     assert [item.disposition for item in record.iterations] == ["keep", "discard"]
+    discarded_receipt = record.iterations[1].settlement_receipt
+    assert discarded_receipt is not None
+    assert discarded_receipt.attempt_artifact_ref.id == "fsnap-4"
+    assert discarded_receipt.rollback is not None
+    assert discarded_receipt.rollback.target_artifact_ref.id == "fsnap-2"
+    assert discarded_receipt.rollback.restored_artifact_ref.id == "fsnap-5"
     assert all(item.git_head is None for item in record.iterations)
     assert all(item.git_head is None for item in record.results_ledger)
     assert record.results_ledger_artifact_ref.id == "fsnap-5"
@@ -2194,7 +2200,7 @@ def test_runtime_owned_s0_k2_exact_snapshot_settlement_and_selection(
     assert incomplete["thinkthread_id"] == annotation_child_id
     assert all(path.read_bytes() == value for path, value in settled.items())
     assert kick_pi_internal_agents(runtime.root_dir, run_id) == {
-        "annotation_started": False, "scheduler_started": False,
+        "annotation_started": False, "verifier_started": False,
     }
     assert all(path.read_bytes() == value for path, value in settled.items())
     annotation = annotation_snapshot(root_dir=runtime.root_dir, run_id=run_id)

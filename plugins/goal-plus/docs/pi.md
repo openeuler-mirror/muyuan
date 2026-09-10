@@ -222,7 +222,7 @@ handle `metadata.runtime_start` 和 `pi_metrics.runtime_start`。
 
 Pi Search 的异步 Evidence annotation 也运行在 Pi 上。run-scoped drainer 启动临时
 `pi --mode json --no-session --no-tools` 进程。Pi extension 在成功的 worker verifier 返回后通过
-one-time host capability 同时唤醒 Annotation 和可选 Adaptive Scheduler queue；这些进程完整继承
+one-time host capability 同时唤醒 Annotation 和可选 LLM Verifier queue；这些进程完整继承
 当前 Pi host 配置，并携带 launcher 写入的 host provenance。Goal Plus 不保存或转发服务认证与
 endpoint 配置。显式限定的 annotator model 只改变 host-native 模型选择。verifier settlement
 不等待这些进程，同一次 annotator turn 也会生成 shared-dir Tool View。完整生命周期见
@@ -230,7 +230,7 @@ endpoint 配置。显式限定的 annotator model 只改变 host-native 模型�
 
 Pi driver 补做 final verifier 或复用已结算 Evidence 后，也从 host 收尾路径重扫内部任务，
 不依赖已结束的 worker 再调用工具。唤醒错误单独记录，不撤销硬结算或将成功 verifier 改为
-失败。Adaptive 的 parent 补验可以生成内部 Annotation/Scheduler 输入，但不成为 peer
+失败。Adaptive 的 parent 补验可以生成内部 Annotation/Verifier 输入，但不成为 peer
 Global Evidence；monitor snapshot 仍只读，不承担唤醒。
 
 main turn 结束时，仍为 active 的 Goal Plus record 会携带完整 raw goal 和 elapsed-time context
@@ -356,8 +356,8 @@ count，且总数必须等于 `max_parallel`。`models=` 是 `workers=` 的兼�
 `selected_models` 对每个 candidate/native session 不可变；同时省略 `workers=` 和 `models=` 时
 继承当前 Main 的 exact native model 与 thinking。
 
-`/goal-plus` command 和 `search_freeze_spec` extension gate 只收集显式 worker、annotator、
-scheduler model。匹配当前 Main 的显式引用直接使用 `ctx.model` 对象，其他引用从 native registry
+`/goal-plus` command 和 `search_freeze_spec` extension gate 只收集显式 worker、annotator
+model。匹配当前 Main 的显式引用直接使用 `ctx.model` 对象，其他引用从 native registry
 唯一解析；随后按模型去重，通过一次 `Promise.all` 并发调用 `ctx.modelRegistry.complete()` 发送
 最小 `hi` 请求。任一失败时在 agent 启动前拒绝创建或 freeze。没有显式 model 时完全不 probe，
 正在运行的 Main 已经证明其当前模型可用。extension 直接从 `ctx.model` 和当前 thinking 建立
@@ -438,7 +438,7 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 普通 Ultra work 可以启用 `orchestration` feature plugin。Pi wrapper 会把
 `pi_goal_plus_run_work_item` 和 `goal-plus-pi-worker` 保存为 namespaced event metadata；plugin
 将其投影成与 Codex 相同的 task/result/main-decision 结构，但不会改变 Pi RPC process ownership。
-详见 [Monitor Feature Plugins](feature-plugins.md)。
+详见 [Monitor Feature Plugin](adaptive-search.md#monitor-feature-plugin)。
 
 Search state、candidate commit 和 workspace 以 `.gp/` 为准。
 默认 worker log 是只含元数据的 event log：

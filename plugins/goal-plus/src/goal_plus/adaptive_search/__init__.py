@@ -1,23 +1,23 @@
-"""Adaptive Search facade over the one-shot Search Scheduler."""
+"""Adaptive Search public API."""
 
-from goal_plus.adaptive_search.adaptive_search import (
-    AdaptiveSearch,
-)
+from goal_plus.adaptive_search.adaptive_search import AdaptiveSearch
 from goal_plus.domain.adaptive.models import (
     AllocationDecision,
+    AllocationPlan,
     ExpansionSource,
-    SearchSchedulerSpec,
-)
-from goal_plus.domain.adaptive.policies import (
-    resolve_scheduler_policy,
-    resolve_search_scheduler_policies,
+    PriorityReplacePolicySpec,
+    SearchSnapshot,
+    compute_allocation_plan,
+    compute_feature_view,
 )
 
 __all__ = [
     "AllocationDecision",
+    "AllocationPlan",
     "AdaptiveSearch",
     "ExpansionSource",
-    "SearchSchedulerSpec",
-    "resolve_scheduler_policy",
-    "resolve_search_scheduler_policies",
+    "PriorityReplacePolicySpec",
+    "SearchSnapshot",
+    "compute_allocation_plan",
+    "compute_feature_view",
 ]

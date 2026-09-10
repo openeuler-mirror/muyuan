@@ -18,11 +18,7 @@ from pydantic import (
     model_validator,
 )
 
-from goal_plus.domain.adaptive.models import (
-    ExpansionSource,
-    SearchSchedulerSpec,
-)
-from goal_plus.domain.adaptive.policies import ResolvedSearchSchedulerPolicies
+from goal_plus.domain.adaptive.models import ExpansionSource, PriorityReplacePolicySpec
 from goal_plus.domain.agents import (
     AgentHostHandle,
     AgentHostKind,
@@ -49,6 +45,7 @@ from goal_plus.domain.artifacts import (
 )
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.shared_tools import SharedDirSpec
+from goal_plus.domain.selection import SelectionSpec
 
 CandidateAcceptanceCriterion = Annotated[
     str,
@@ -155,7 +152,8 @@ class StrategySpec(SearchModel):
         default_factory=list,
         exclude_if=lambda value: not value,
     )
-    search_scheduler: SearchSchedulerSpec | None = Field(
+    selection: SelectionSpec = Field(default_factory=SelectionSpec)
+    allocation: PriorityReplacePolicySpec | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
@@ -179,20 +177,29 @@ class StrategySpec(SearchModel):
         return value.strip() if value is not None else None
 
     @model_validator(mode="after")
-    def adaptive_search_requires_scheduler_configuration(self) -> "StrategySpec":
+    def search_mode_configuration_is_consistent(self) -> "StrategySpec":
         adaptive_search = self.orchestration_mode == "adaptive_search"
-        scheduler_configured = self.search_scheduler is not None
-        if adaptive_search and not scheduler_configured:
+        if (
+            "quality_score" in self.selection.ranking_keys
+            and self.orchestration_mode == "rolling_candidates"
+        ):
             raise ValueError(
-                "strategy.orchestration_mode=adaptive_search requires "
-                "strategy.search_scheduler"
+                "quality_score selection requires parallel_loops or adaptive_search"
             )
-        if scheduler_configured and not adaptive_search:
+        if adaptive_search and self.allocation is None:
             raise ValueError(
-                "strategy.search_scheduler requires "
-                "strategy.orchestration_mode=adaptive_search"
+                "strategy.orchestration_mode=adaptive_search requires allocation"
             )
+        if self.allocation is not None and not adaptive_search:
+            raise ValueError("strategy.allocation requires adaptive_search")
         return self
+
+    @property
+    def requires_llm_verifier(self) -> bool:
+        return (
+            self.orchestration_mode == "adaptive_search"
+            or "quality_score" in self.selection.ranking_keys
+        )
 
 
 class VerifierCommand(SearchModel):
@@ -311,11 +318,11 @@ class SearchSpec(SearchModel):
 
     @model_validator(mode="after")
     def strategy_extension_constraints_are_valid(self) -> "SearchSpec":
-        scheduler = self.strategy.search_scheduler
-        if scheduler is not None:
-            scheduler.validate_integration_constraints(
-                workspace_backend=self.workspace.backend,
-            )
+        if (
+            self.strategy.allocation is not None
+            and self.workspace.backend != "git_worktree"
+        ):
+            raise ValueError("adaptive allocation requires workspace.backend=git_worktree")
         return self
 
 
@@ -379,10 +386,6 @@ class FrozenSpec(SearchModel):
     goal_plus_id: str | None = None
     native_host: NativeAgentKind
     spec: SearchSpec
-    search_scheduler_policies: ResolvedSearchSchedulerPolicies | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
     supplemental_evaluation_enabled: bool = False
     supplemental_evaluation_required: bool = False
     verifier_hashes: dict[str, str]
@@ -402,35 +405,6 @@ class FrozenSpec(SearchModel):
     def native_host_supports_workspace(self) -> "FrozenSpec":
         search_worker_host(self.native_host, self.spec.workspace.backend)
         return self
-
-    @model_validator(mode="after")
-    def scheduler_configuration_has_frozen_policies(self) -> "FrozenSpec":
-        configured = self.spec.strategy.search_scheduler
-        policies = self.search_scheduler_policies
-        if (configured is None) != (policies is None):
-            raise ValueError(
-                "search_scheduler configuration and frozen policies must coexist"
-            )
-        if configured is not None and policies is not None:
-            reward_ref, reward_marker, reward_prompt = configured.reward.partition(
-                "@prompt"
-            )
-            allocation_ref, allocation_marker, allocation_prompt = (
-                configured.allocation.partition("@prompt")
-            )
-            if (
-                policies.reward.reference != reward_ref.strip()
-                or policies.reward.supplemental_prompt
-                != (reward_prompt.strip() if reward_marker else None)
-                or policies.allocation.reference != allocation_ref.strip()
-                or policies.allocation.supplemental_prompt
-                != (allocation_prompt.strip() if allocation_marker else None)
-            ):
-                raise ValueError(
-                    "frozen scheduler policies do not match scheduler configuration"
-                )
-        return self
-
 
 class CandidateTask(SearchModel):
     run_id: str
