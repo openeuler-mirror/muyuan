@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import subprocess
 import uuid
@@ -243,8 +244,8 @@ class AgentPosixSdkClient:
             fingerprint != AGENT_POSIX_CONTRACT_FINGERPRINT
             or protocol != AGENT_POSIX_CONTROL_PROTOCOL_VERSION
         ):
-            raise AgentPosixSdkMismatch(
-                "unsupported ThinkThread Agent POSIX SDK contract: "
+            logging.getLogger(__name__).warning(
+                "ThinkThread Agent POSIX SDK differs from the tested baseline: "
                 f"fingerprint={fingerprint!r}, protocol={protocol!r}"
             )
         return result

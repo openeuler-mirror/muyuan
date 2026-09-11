@@ -76,6 +76,14 @@ def test_control_abi_and_single_pi_child_smoke(
     }
 
 
+def test_single_candidate_edit_has_verified_snapshot(run_thinkthread_scenario):
+    report = run_thinkthread_scenario("runtime_single")
+    assert report["score"] == 1.0
+    assert report["snapshot_id"].startswith("fsnap-")
+    assert report["root_unchanged"] is True
+    assert report["cleanup_state"] == "closed"
+
+
 def test_runtime_k2_uses_private_children_and_exact_snapshot_evidence(
     run_thinkthread_scenario: Callable[[str], dict[str, Any]],
 ) -> None:

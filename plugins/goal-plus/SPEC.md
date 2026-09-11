@@ -42,6 +42,9 @@ Verifier 的 Python 模块搜索仅加入其工作目录，不继承外部 `PYTH
 或用户 site-packages。ThinkThread Profile 必须只读开放安装 venv 及解释器软链接链的目标。
 ThinkThread Profile 写入后的宿主或配置校验失败时，恢复原文件内容和权限；首次安装则删除
 新增文件，不提交新版本引用。回滚失败必须明确报告，不能报告安装成功。
+ThinkThread 独立升级不要求重装 Goal Plus。Runtime、Profile schema、SDK 协议版本和 contract
+fingerprint 偏离已测基线时仅警告；Profile 的可选协议声明不决定实际 Extension 握手。
+安装和运行仍校验所需配置结构、接口调用结果、Root/Child filesystem 与授权 capability。
 Pi 开发 launcher 的预检查和工具调用使用开发 venv 的隔离 Python。
 
 ## 核心对象

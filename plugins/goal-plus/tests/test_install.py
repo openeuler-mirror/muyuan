@@ -596,6 +596,49 @@ def test_thinkthread_profile_exposes_python_symlink_chain(
     assert str(actual_prefix) not in readable
 
 
+@pytest.mark.parametrize("protocol", [None, 5, 6])
+def test_thinkthread_profile_accepts_optional_protocol_declaration(installer, capsys, protocol):
+    profile = _thinkthread_pi_profile()
+    loader = profile["agent"]["extension"]["loader"]
+    if protocol is None:
+        loader.pop("protocolVersion")
+    else:
+        loader["protocolVersion"] = protocol
+    installer._validate_base_thinkthread_profile(profile)
+    assert ("warning:" in capsys.readouterr().err) is (protocol == 6)
+
+
+@pytest.mark.parametrize("mode", ["rootFsMode", "childFsMode"])
+def test_thinkthread_profile_still_rejects_incompatible_filesystem(installer, mode):
+    profile = _thinkthread_pi_profile()
+    profile["environment"][mode] = "unsupported"
+    with pytest.raises(installer.InstallError, match="rootFsMode=direct"):
+        installer._validate_base_thinkthread_profile(profile)
+
+
+def test_thinkthread_profile_new_version_warns_and_prepares_install(installer, tmp_path, monkeypatch, capsys):
+    profile = _thinkthread_pi_profile()
+    profile["schemaVersion"] = 5
+    profile["agent"]["extension"]["loader"].pop("protocolVersion")
+    monkeypatch.setattr(installer, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(
+        argv, 0, stdout="thinkthread 0.2.0\n" if "--version" in argv else installer._render_thinkthread_profile(profile),
+    ))
+    plan = installer._preflight_thinkthread_profile(
+        "/opt/bin/tt", profile_path=tmp_path / "goal-plus-pi.toml", node_executable="/opt/node/bin/node",
+    )
+    assert plan.runtime_version == "thinkthread 0.2.0"
+    assert installer._parse_thinkthread_profile(plan.content, source="test")["schemaVersion"] == 5
+    assert "warning:" in capsys.readouterr().err
+
+
+def test_thinkthread_sdk_metadata_difference_warns(installer, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(installer, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(
+        argv, 0, stdout=json.dumps({"protocol": 3, "fingerprint": "new-contract"}),
+    ))
+    installer._validate_agent_posix_sdk("node", tmp_path / "index.js")
+    assert "warning:" in capsys.readouterr().err
+
+
 def test_thinkthread_profile_preflight_is_idempotent(
     installer: ModuleType,
     tmp_path: Path,

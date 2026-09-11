@@ -57,6 +57,22 @@ def test_sdk_bridge_preflight_uses_official_contract_metadata(
     assert result["contractFingerprint"] == AGENT_POSIX_CONTRACT_FINGERPRINT
 
 
+def test_sdk_bridge_metadata_difference_warns_and_allows_calls(monkeypatch, tmp_path, caplog):
+    client = AgentPosixSdkClient(bridge_path=tmp_path / "bridge.mjs")
+    metadata = {"contractFingerprint": "new-contract", "controlProtocolVersion": 3}
+    calls = []
+
+    def invoke(operation, params=None):
+        calls.append(operation)
+        return metadata if operation == "bridge.meta" else {"thinkthreadId": "tt-root"}
+
+    monkeypatch.setattr(client, "invoke", invoke)
+    assert client.preflight() == metadata
+    assert client.self_view() == {"thinkthreadId": "tt-root"}
+    assert calls == ["bridge.meta", "self"]
+    assert "new-contract" in caplog.text
+
+
 def test_sdk_bridge_invalid_json_surfaces_bounded_stderr(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
