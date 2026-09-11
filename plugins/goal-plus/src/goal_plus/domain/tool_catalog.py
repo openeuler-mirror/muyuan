@@ -22,6 +22,7 @@ SEARCH_TOOL_NAMES = {
     "goal_plus_search_get_evidence_detail",
     "goal_plus_search_get_agent_observability",
     "goal_plus_search_run_verifier",
+    "goal_plus_search_wait_verifier",
     "goal_plus_search_list_iterations",
     "goal_plus_search_list_allocation_decisions",
     "goal_plus_search_apply_allocation_decision",
@@ -54,6 +55,7 @@ CANDIDATE_TOOL_NAMES = frozenset(
         "goal_plus_search_copy_shared_tool",
         "goal_plus_search_get_evidence_detail",
         "goal_plus_search_run_verifier",
+        "goal_plus_search_wait_verifier",
         "goal_plus_search_list_iterations",
     }
 )
@@ -72,7 +74,7 @@ def require_tool_role(
     """Enforce model-facing role boundaries identified by a trusted host."""
 
     if role == "main":
-        allowed = tool_name not in {"goal_plus_submit_final_check", *(CANDIDATE_TOOL_NAMES - {"goal_plus_search_run_verifier"})}
+        allowed = tool_name not in {"goal_plus_submit_final_check", *(CANDIDATE_TOOL_NAMES - {"goal_plus_search_run_verifier", "goal_plus_search_wait_verifier"})}
     elif role == "candidate":
         allowed = tool_name in CANDIDATE_TOOL_NAMES
     elif role == "final_checker":

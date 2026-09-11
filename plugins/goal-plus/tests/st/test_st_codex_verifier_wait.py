@@ -12,7 +12,7 @@ import time
 import pytest
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
-from goal_plus.host_recovery import observe_worker
+from goal_plus.host_scope import ensure_execution_scope, register_execution_process, finish_execution_process
 from goal_plus.infrastructure.state.resource_locks import verifier_resource_lock
 from goal_plus.models import SearchSpec
 from goal_plus.paths import host_assets_root
@@ -79,12 +79,13 @@ def test_codex_pending_verifier_snapshot_and_recovery(st_project_root, st_log_di
     data["process_verifiers"][0].update({
         "resource_lock": "native-verifier-wait", "timeout_seconds": client_timeout * 2,
     })
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex")
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     FileGoalPlusRuntime(runtime.root_dir).link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task, = runtime.start_batch(run_id, plan.plan_id)
     session = runtime.start_agent_session(run_id, task.candidate_id)
+    scope = ensure_execution_scope(root_dir=runtime.root_dir, agent_harness="codex", owner_session_id="verifier-st", run_id=run_id)
     runner = CodexRunner(task.workspace, st_log_dir)
     command = runner._build_base_cmd() + ["--json", "--disable", "plugins", "--disable", "hooks"]
     # Only the module's MCP endpoint is under test; no installed plugin or Main lifecycle.
@@ -95,20 +96,23 @@ def test_codex_pending_verifier_snapshot_and_recovery(st_project_root, st_log_di
         "env.PYTHONPATH": str(ROOT / "src"),
         "env.GOAL_PLUS_EVIDENCE_ANNOTATOR_DISABLED": "1",
         "env.GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR": str(st_project_root / "locks"),
+        "env.GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID": session.agent_session_id,
+        "env.GOAL_PLUS_SEARCH_ROOT": str(runtime.root_dir),
         "enabled": True,
     }
     for key, value in mcp.items():
         command += ["-c", f"mcp_servers.goal-plus.{key}={json.dumps(value)}"]
     command.append(
-        session.launch["message"] + "\n\n"
+        f"run_id={run_id}, candidate_id={task.candidate_id}, agent_session_id={session.agent_session_id}.\n"
         "This is a controlled verifier module ST, not an optimization task. "
-        "Call search_get_agent_context, change initial_program.py to VALUE = 1, then call "
-        "search_run_verifier with the current session and hypothesis 'submitted value one'. "
+        "Call goal_plus_search_get_agent_context, change initial_program.py to VALUE = 1, then call "
+        "goal_plus_search_run_verifier with the current session and hypothesis 'submitted value one'. "
         "The controller deliberately holds the verifier resource lock. Wait for the tool response; "
-        "do not cancel it. On pending, call search_get_agent_context and make exactly one duplicate "
-        "search_run_verifier call to check VerifierInProgress. This duplicate is an intentional "
-        "negative test, not a new attempt. Then keep this session alive, sleep briefly and query "
-        "search_get_agent_context until verification.state is needs_recovery. Report that state and stop. "
+        "do not cancel it. On pending, make exactly one duplicate "
+        "goal_plus_search_run_verifier call to check VerifierInProgress. This duplicate is an intentional "
+        "negative test, not a new attempt. Then call goal_plus_search_wait_verifier with that attempt_id, "
+        "the current run/candidate/session IDs and timeout_seconds=30. Repeat wait while pending, "
+        "until the result has verification.state=needs_recovery. Report that state and stop. "
         "After submitting, do not edit any file, commit, restore, launch another agent, invoke nested "
         "CLIs, or change runtime/host configuration. Use native goal-plus MCP tools, not a shell client."
     )
@@ -122,12 +126,15 @@ def test_codex_pending_verifier_snapshot_and_recovery(st_project_root, st_log_di
         try:
             thread = _wait(process, lambda: next((event["thread_id"] for event in _events(log_path)
                            if event.get("type") == "thread.started"), None), log_path, host_overhead_seconds)
-            session = runtime.bind_agent_handle(session.agent_session_id, {"external_id": thread})
-            observe_worker(runtime.root_dir, session, process.pid)
+            session = runtime.bind_agent_handle(session.agent_session_id, {
+                "external_id": thread, "metadata": {"transport": "app-server", "scope_id": scope["scope_id"]},
+            })
+            token = register_execution_process(root_dir=runtime.root_dir, scope_id=scope["scope_id"],
+                                               pid=process.pid, label=f"native-session:{session.agent_session_id}", run_id=run_id)
             pending = _wait(process, lambda: runtime.candidate_creation.state.read_candidate(
                 run_id, task.candidate_id).verification, log_path, host_overhead_seconds)
             submitted_at = time.monotonic()
-            responses = _wait(process, lambda: _tool_results(log_path, "search_run_verifier"),
+            responses = _wait(process, lambda: _tool_results(log_path, "goal_plus_search_run_verifier"),
                               log_path, deadline_seconds)
             response = _response(responses[0])
             assert response["state"] == "pending"
@@ -135,23 +142,23 @@ def test_codex_pending_verifier_snapshot_and_recovery(st_project_root, st_log_di
             assert response["verification"]["attempt_id"] == pending.attempt_id
             assert "aggregate_score" not in response
             responses = _wait(process, lambda: (items if len(items := _tool_results(
-                log_path, "search_run_verifier")) >= 2 else None), log_path, host_overhead_seconds)
+                log_path, "goal_plus_search_run_verifier")) >= 2 else None), log_path, host_overhead_seconds)
             assert "VerifierInProgress" in json.dumps(responses[1])
-            assert any(_response(item).get("verification", {}).get("attempt_id") == pending.attempt_id
-                       for item in _tool_results(log_path, "search_get_agent_context")
-                       if _response(item).get("verification"))
             assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id).iterations == []
             # Keep the submitted attempt queued beyond the real client's timeout.
             while time.monotonic() - submitted_at <= client_timeout:
                 assert process.poll() is None, log_path
                 time.sleep(0.2)
+            assert any(_response(item).get("attempt_id") == pending.attempt_id
+                       for item in _tool_results(log_path, "goal_plus_search_wait_verifier"))
             (task.workspace / "initial_program.py").write_text("VALUE = 2\n")
             resources.close()
             _wait(process, lambda: any(_response(item).get("verification", {}).get("state") == "needs_recovery"
-                  for item in _tool_results(log_path, "search_get_agent_context")
+                  for item in _tool_results(log_path, "goal_plus_search_wait_verifier")
                   if _response(item).get("verification")), log_path, host_overhead_seconds)
             process.wait(timeout=host_overhead_seconds)
             assert process.returncode == 0, log_path
+            finish_execution_process(root_dir=runtime.root_dir, scope_id=scope["scope_id"], token=token)
         finally:
             if process.poll() is None:
                 process.send_signal(signal.SIGINT)
@@ -168,7 +175,7 @@ def test_codex_pending_verifier_snapshot_and_recovery(st_project_root, st_log_di
     assert (task.workspace / "initial_program.py").read_text() == "VALUE = 2\n"
     assert record.verification.state == "needs_recovery"
     recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
-    SearchTools(runtime).search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    SearchTools(runtime).goal_plus_search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
     restored = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     assert restored.verification is None
     assert restored.iterations == record.iterations

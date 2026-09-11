@@ -5,6 +5,7 @@ from typing import Any
 
 from goal_plus.application.candidate_execution import (
     require_current_session,
+    require_no_pending_verification,
     require_worker_iteration_state,
 )
 from goal_plus.application.search_context import SearchContext
@@ -130,6 +131,7 @@ class CandidateHostQueries:
         run = self.source.read_run(session.run_id)
         require_worker_iteration_state(run, "wake native candidate")
         self.validate_candidate(session.run_id, session.candidate_id)
+        require_no_pending_verification(self.source.read_candidate(session.run_id, session.candidate_id))
         deadline = outer_deadline_epoch(self.context.outer_deadline(session.run_id))
         if deadline is not None and now >= deadline:
             raise RuntimeError("cannot wake a native candidate after its Goal deadline")

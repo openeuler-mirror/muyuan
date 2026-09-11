@@ -340,6 +340,12 @@ Candidate verifier 或结算派生投影的操作异常向调用方报错，不�
 置为 `failed`、关闭其他 candidate 的执行或撤销已结算 Evidence。恢复仍遵守既有 artifact、
 session 和 generation gate，selection 从已结算 Evidence 重建 best。
 
+Process verifier 的提交和等待绑定准确 attempt 与不可变 artifact。同一 candidate 仅允许一个
+未结算验证；本地资源冲突按冻结声明互斥。MCP 短等后返回 pending，不取消后台验证，调用方通过有界
+wait 获取对应结果；等待不得重做验证或把其他 attempt 的结果作为本次结果，返回完成结果前
+必须完成硬结算。本地 Codex/Pi 共用 MCP 等待合同；LLM Verifier 异步处理已结算结果，不阻塞
+下一轮。ThinkThread 使用下一次 wake 反馈，其执行路径尚未接入本地资源锁。
+
 一次标准 run 按以下顺序执行：
 
 1. 使用当前 `goal_plus_id` 调用 `goal_plus_search_freeze_spec`

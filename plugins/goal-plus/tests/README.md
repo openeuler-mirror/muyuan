@@ -278,6 +278,8 @@ The controller prepares one candidate through normal APIs and launches one nativ
 against the checkout's MCP server. The production MCP timeout is unchanged. A controller-owned
 resource lock holds the submitted attempt beyond that timeout; native tool events must show a
 `pending` response, readable attempt identity, and rejection of one deliberate duplicate submission.
+The worker then uses `goal_plus_search_wait_verifier` to await that exact attempt without reloading
+context.
 The controller then changes the original workspace and releases the lock. The test checks exact
 snapshot scoring, one Evidence entry, preservation of the later edit, worker observation of
 `needs_recovery`, and checkpoint recovery after native process exit.

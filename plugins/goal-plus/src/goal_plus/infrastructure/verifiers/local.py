@@ -88,7 +88,7 @@ class LocalVerifiers:
     @contextmanager
     def workspace(self, record: CandidateRecord, artifact: ArtifactRef) -> Iterator[CandidateTask]:
         task = record.task
-        references = GitReferences(task.workspace_backend)
+        references = GitReferences(task.workspace_provider)
         parent = self.run_dir(task.run_id) / "candidates" / record.candidate_id / "verification"
         parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=parent) as directory:

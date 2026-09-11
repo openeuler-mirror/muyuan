@@ -3820,9 +3820,9 @@ def test_verifier_snapshot_preserves_later_worker_edits(tmp_path, monkeypatch, b
         initialize_workspace_git_baseline(project)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec_data = spec_for(project).model_dump(mode="json")
-    spec_data["workspace"]["backend"] = backend
+    spec_data["workspace"]["provider"] = backend
     spec = SearchSpec.model_validate(spec_data)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -3858,6 +3858,9 @@ def test_verifier_snapshot_preserves_later_worker_edits(tmp_path, monkeypatch, b
     assert context["iteration_count"] == 1
     assert context["verification"]["state"] == "needs_recovery"
     assert report.verification.state == "needs_recovery"
+    assert SearchTools(runtime).goal_plus_search_wait_verifier(
+        run_id, task.candidate_id, report.attempt_id, session.agent_session_id,
+    ) == report.model_dump(mode="json")
     with pytest.raises(RuntimeError, match="VerifierRecoveryRequired"):
         runtime.run_verifier(run_id, task.candidate_id)
     before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
@@ -3902,6 +3905,11 @@ def test_pending_verifier_is_visible_and_does_not_queue_another_attempt(tmp_path
             before_session = runtime.candidate_sessions.session(session.agent_session_id)
             with pytest.raises(RuntimeError, match="VerifierInProgress"):
                 runtime.continue_agent_session(session.agent_session_id)
+            from goal_plus.candidate_host import candidate_host_queries
+            with pytest.raises(RuntimeError, match="VerifierInProgress"):
+                candidate_host_queries(runtime.root_dir).require_native_execution(
+                    session.agent_session_id, now=runtime.verification.clock.now(),
+                )
             assert runtime.candidate_sessions.session(session.agent_session_id) == before_session
             handoff = workspace / ".tmp/handoff.json"
             handoff.write_text('{"status":"waiting"}')
@@ -3933,6 +3941,10 @@ def test_verifier_interrupted_settlement_requires_checkpoint_recovery(tmp_path, 
     record = restarted.candidate_creation.state.read_candidate(run_id, candidate_id)
     assert record.verification.state == "needs_recovery"
     assert record.iterations == []
+    receipt = SearchTools(restarted).goal_plus_search_wait_verifier(run_id, candidate_id, record.verification.attempt_id)
+    assert receipt["state"] == "needs_recovery"
+    assert "interrupted attempt" in receipt["verification"]["error"]
+    assert "aggregate_score" not in receipt
     with pytest.raises(RuntimeError, match="VerifierRecoveryRequired"):
         restarted.run_verifier(run_id, candidate_id)
     recovery = restarted.prepare_candidate_recovery(run_id, candidate_id)

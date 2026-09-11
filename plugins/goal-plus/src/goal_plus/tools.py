@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+import math
+import time
+from typing import Any, Callable, Literal
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.domain.goal_commands import GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED
 from goal_plus.domain.goal_authorization import GOAL_PLUS_ENTRYPOINT_REQUIRED
 from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
+from goal_plus.domain.evidence import PendingVerification
 from goal_plus.domain.search import (
     AgentSessionRecord,
     CandidateProposal,
@@ -388,8 +391,11 @@ class SearchTools:
         toolization_decision: ToolizationDecision | dict[str, Any] | None = None,
         *,
         inject_evidence: bool = True,
+        on_submitted: Callable[[PendingVerification], None] | None = None,
     ) -> dict[str, Any]:
         self._require_target("goal_plus_search_run_verifier", run_id=run_id)
+        if on_submitted is not None and not callable(on_submitted):
+            raise ValueError("on_submitted must be an internal callback")
         if self.candidate_attempt is not None:
             return self.runtime.thinkthread_verification.accept(
                 self.candidate_attempt, run_id=run_id, candidate_id=candidate_id,
@@ -403,15 +409,18 @@ class SearchTools:
             agent_session_id=agent_session_id,
             hypothesis=hypothesis,
             toolization_decision=toolization_decision,
+            on_submitted=on_submitted,
         )
         result = report.model_dump(mode="json")
-        if scope != "process" or agent_session_id is None or not inject_evidence:
+        if scope != "process" or not inject_evidence:
             return result
         return self.verifier_response(run_id, agent_session_id, result)
 
     def verifier_response(
-        self, run_id: str, agent_session_id: str, result: dict[str, Any],
+        self, run_id: str, agent_session_id: str | None, result: dict[str, Any],
     ) -> dict[str, Any]:
+        if agent_session_id is None or "aggregate_score" not in result:
+            return result
         try:
             if not self.runtime.should_inject_global_evidence_after_verifier(run_id):
                 return result
@@ -429,6 +438,23 @@ class SearchTools:
         result["global_evidence_injected"] = True
         result["global_evidence_entry_count"] = len(snapshot)
         return result
+
+    def goal_plus_search_wait_verifier(
+        self, run_id: str, candidate_id: str, attempt_id: str,
+        agent_session_id: str | None = None, timeout_seconds: float = 30,
+        *, inject_evidence: bool = True,
+    ) -> dict[str, Any]:
+        if not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 60:
+            raise ValueError("timeout_seconds must be finite and between 0 and 60")
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            self._require_target("goal_plus_search_wait_verifier", run_id=run_id, agent_session_id=agent_session_id)
+            result = self.runtime.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
+            remaining = deadline - time.monotonic()
+            if result.get("state") != "pending" or remaining <= 0:
+                return self.verifier_response(run_id, agent_session_id, result) if inject_evidence else result
+            # Poll only the small durable receipt, at most once per second.
+            time.sleep(min(1.0, remaining))
 
     def goal_plus_search_list_iterations(
         self,

@@ -1489,7 +1489,7 @@ def _handle_post_tool_lifecycle(
 ) -> None:
     tool_names = _goal_plus_tool_names(hook_input)
     if set(tool_names).intersection({
-        "goal_plus_search_run_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context",
+        "goal_plus_search_run_verifier", "goal_plus_search_wait_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context",
         "goal_plus_search_select", "goal_plus_search_status", "goal_plus_search_invalidate_run", "goal_plus_search_report",
     }):
         run_ids = list(

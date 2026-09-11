@@ -42,6 +42,8 @@ from goal_plus.domain.tool_catalog import PUBLIC_TOOL_NAMES, CANDIDATE_CAPABILIT
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
+VERIFIER_FAST_WAIT_SECONDS = 1.0
+
 
 def _json_text(value: Any) -> TextContent:
     return TextContent(
@@ -169,8 +171,17 @@ def create_mcp(
         lifespan=session_lifespan if any(item is not None for item in (session_launcher, final_checker, work_items)) else None,
     )
 
+    verifier_calls: set[asyncio.Task] = set()
+
+    def verifier_finished(call: asyncio.Task) -> None:
+        verifier_calls.discard(call)
+        if not call.cancelled():
+            call.exception()
+
     def register_tool():
         def register(function):
+            if function.__name__ == "goal_plus_search_wait_verifier" and (candidate_attempt is not None or candidate_tool_call is not None):
+                return function
             if function.__name__ not in PUBLIC_TOOL_NAMES:
                 return function
             capability = CANDIDATE_CAPABILITIES.get(function.__name__)
@@ -647,7 +658,7 @@ def create_mcp(
 
     @register_tool()
     @_debug_tool_response
-    def goal_plus_search_run_verifier(
+    async def goal_plus_search_run_verifier(
         run_id: str,
         candidate_id: str,
         scope: Literal["process", "promotion"] = "process",
@@ -668,17 +679,52 @@ def create_mcp(
         `promotion` 只属于主流程。带
         `candidate_action="stop_and_report"` 的 `VerifierWorkspaceSideEffect` 是冻结
         verifier 的基础设施失败：worker 不能清理 verifier 输出或重试。
-        返回 state=accepted 时，验证等待当前 turn 静默后执行；结束本轮并等待下一轮注入
-        的准确 ScoreReport，不在 accepted 后继续修改。accepted 本身不是评分结果。
+        返回 accepted 时结束当前 turn，静默后验证，下一次 wake 交付结果。
+        process 调用可先返回 pending；使用返回的 attempt_id 调用 goal_plus_search_wait_verifier 等待准确结果。
         """
-        return tools.goal_plus_search_run_verifier(
-            run_id,
-            candidate_id,
-            scope,
-            agent_session_id,
-            hypothesis,
-            toolization_decision,
+        loop = asyncio.get_running_loop()
+        submitted = loop.create_future()
+        call = asyncio.create_task(asyncio.to_thread(
+            tools.goal_plus_search_run_verifier, run_id, candidate_id, scope,
+            agent_session_id, hypothesis, toolization_decision,
+            inject_evidence=False,
+            on_submitted=lambda pending: loop.call_soon_threadsafe(submitted.set_result, pending),
+        ))
+        verifier_calls.add(call)
+        call.add_done_callback(verifier_finished)
+        if scope != "process":
+            return await asyncio.shield(call)
+        # Never acknowledge an attempt before its immutable identity is durable.
+        await asyncio.wait({call, submitted}, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait({call}, timeout=VERIFIER_FAST_WAIT_SECONDS)
+        if call.done():
+            return await asyncio.to_thread(tools.verifier_response, run_id, agent_session_id, call.result())
+        return {
+            "run_id": run_id, "candidate_id": candidate_id,
+            "state": "pending",
+            "attempt_id": submitted.result().attempt_id,
+            "verification": submitted.result().model_dump(mode="json"),
+            "candidate_action": "wait_for_verifier",
+            "message": "保持工作区不变，使用 attempt_id 调用 goal_plus_search_wait_verifier 等待本次结果。",
+        }
+
+    @register_tool()
+    @_debug_tool_response
+    async def goal_plus_search_wait_verifier(
+        run_id: str, candidate_id: str, attempt_id: str,
+        agent_session_id: str | None = None,
+        timeout_seconds: Annotated[float, Field(ge=0, le=60)] = 30,
+    ) -> dict[str, Any]:
+        """按 attempt_id 等待 process verifier；worker 携带自己的 agent_session_id。
+
+        返回原有 ScoreReport 或 pending/needs_recovery。pending 时可再次等待；
+        等待超时不取消验证，也不提交新 attempt。timeout_seconds=0 只查询。
+        """
+        result = await asyncio.to_thread(
+            tools.goal_plus_search_wait_verifier, run_id, candidate_id, attempt_id,
+            agent_session_id, timeout_seconds, inject_evidence=False,
         )
+        return await asyncio.to_thread(tools.verifier_response, run_id, agent_session_id, result)
 
     @register_tool()
     @_debug_tool_response

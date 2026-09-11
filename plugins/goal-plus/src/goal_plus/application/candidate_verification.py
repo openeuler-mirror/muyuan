@@ -88,6 +88,7 @@ class CandidateVerification:
         agent_session_id: str | None = None,
         hypothesis: str | None = None,
         toolization_decision: ToolizationDecision | dict[str, Any] | None = None,
+        *, on_submitted: Callable[[PendingVerification], None] | None = None,
     ) -> ScoreReport:
         """Subagent self-score with ``agent_session_id``; main final verify
         without it. Process calls record ranking iterations; promotion calls
@@ -238,6 +239,8 @@ class CandidateVerification:
                 current.verification = pending
                 self.state.write_candidate(run_id, current)
             try:
+                if on_submitted is not None:
+                    on_submitted(pending)
                 with self.verifiers.workspace(record, attempt_artifact_ref) as task:
                     verification_record = record.model_copy(update={"task": task})
                     report = self._precheck_candidate(frozen, verification_record)

@@ -284,10 +284,6 @@ def project_candidate_context(inputs: CandidateContextInputs) -> dict[str, Any]:
     }
     if supplemental_enabled:
         context["supplemental_evaluation_enabled"] = True
-    if frozen.spec.strategy.orchestration_mode == "adaptive_search" and candidate_record.score_report is not None:
-        context.update(candidate_record.score_report.model_dump(
-            mode="json", include={"scheduler_status", "allocation_decision"},
-        ))
     reference_workspaces = [
         reference.model_dump(mode="json") for reference in inputs.references
     ]

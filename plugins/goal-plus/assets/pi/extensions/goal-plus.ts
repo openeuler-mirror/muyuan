@@ -2021,7 +2021,7 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 				if (thinkThreadSupplementalEnabled) active.push("goal_plus_search_get_evidence_detail");
 				pi.setActiveTools(active);
 			}
-			if (!isThinkThreadWorker && ["goal_plus_search_run_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context", "goal_plus_search_select", "goal_plus_search_status", "goal_plus_search_invalidate_run", "goal_plus_search_report"].includes(name)) {
+			if (!isThinkThreadWorker && ["goal_plus_search_run_verifier", "goal_plus_search_wait_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context", "goal_plus_search_select", "goal_plus_search_status", "goal_plus_search_invalidate_run", "goal_plus_search_report"].includes(name)) {
 				const runId = stringFrom(forwardedParams.run_id)
 					?? (isRecord(result.details) ? stringFrom(result.details.run_id) : undefined);
 				if (runId) {
@@ -2115,6 +2115,7 @@ function activateWorkerContext(
 	]) {
 		registerRuntimeTool(pi, tool, registered);
 	}
+	if (!isThinkThreadWorker) registerRuntimeTool(pi, "goal_plus_search_wait_verifier", registered);
 	if (candidateTask.share_out_dir) {
 		registerRuntimeTool(pi, "goal_plus_search_stage_shared_tool", registered);
 		registerRuntimeTool(pi, "goal_plus_search_copy_shared_tool", registered);
@@ -2500,6 +2501,7 @@ export default async function (pi: ExtensionAPI) {
 		"goal_plus_search_start_batch",
 		"goal_plus_search_get_agent_observability",
 		"goal_plus_search_run_verifier",
+		"goal_plus_search_wait_verifier",
 		"goal_plus_search_list_allocation_decisions",
 		"goal_plus_search_apply_allocation_decision",
 		"goal_plus_search_select",

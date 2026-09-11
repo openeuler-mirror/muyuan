@@ -450,12 +450,16 @@ View。receipt 只用于报告“某个 View 是否在后续尝试前可见”�
 | 工具 | 调用方 | 用途 |
 | --- | --- | --- |
 | `goal_plus_search_run_verifier` | candidate worker / parent fallback | 提交准确 attempt，运行 process verifier 并结算 candidate-local best |
+| `goal_plus_search_wait_verifier` | 本地 candidate worker / parent | 按 attempt_id 有界等待或查询已提交验证 |
 | `goal_plus_search_stage_shared_tool` | candidate worker | 从 `.tmp/tool-drafts/` stage 新工具或 `tool_family_catalog` head 的实质 revision |
 | `goal_plus_search_copy_shared_tool` | candidate worker | 将 Tool View 绑定的 immutable snapshot 复制到本地 inbox，供阅读或自主复用 |
 
 worker 调用 process verifier 时必须提供一行客观
-`hypothesis`，说明实际实施的尝试。Git/Pi RPC 的 `goal_plus_search_run_verifier` 同步返回包含
-candidate-local `keep`、`retain`、`discard` 或 `failure` 的 `ScoreReport`。ThinkThread Message
+`hypothesis`，说明实际实施的尝试。本地 Codex/Pi 共用 MCP：提交不可变快照后短等，完成时返回包含
+candidate-local `keep`、`retain`、`discard` 或 `failure` 的 `ScoreReport`，未完成则返回 pending 和
+准确 attempt_id。通过 `goal_plus_search_wait_verifier` 继续等待；timeout_seconds 范围为 0–60，
+0 表示只查询。等待结束不会取消验证或启动新 attempt，worker 保持工作区不变直到结算。
+资源等待不消耗 verifier 执行 timeout；执行仍遵守冻结的时限。ThinkThread Message
 proxy 因 quiescent snapshot 约束先返回 `CandidateAttemptAccepted`，完整
 `CandidateAttemptFeedback` 在准确 invocation 完成结算时产生，并注入同一 retained Child 的下一次
 wake。两条路径都向 canonical `.gp` ledger 追加准确记录；只有 inner binding 声明

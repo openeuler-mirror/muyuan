@@ -136,9 +136,10 @@ class CandidateCreation:
                     "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
                 ]
             )
-        instructions.append(
-            "验证返回 pending 或工具等待超时时，保持工作区不变，通过 search_get_agent_context 查询 verification 与最新结果；结算后再继续，needs_recovery 时向 Main 交接。"
-        )
+        if frozen.spec.workspace.provider != "thinkthread":
+            instructions.append(
+                "验证返回 pending 时，保持工作区不变，使用返回的 attempt_id 调用 goal_plus_search_wait_verifier 等待准确结果；再次 pending 就继续等待，needs_recovery 时向 Main 交接。工具异常中断且没有 attempt_id 时，先通过 goal_plus_search_get_agent_context 核对 verification，不重复提交。"
+            )
         if process_environment:
             instructions.append(
                 "candidate_task.process_environment 是本 candidate 的进程环境；运行本地命令时显式应用这些变量。goal_plus_search_run_verifier 会自动使用同一环境。"
@@ -154,7 +155,7 @@ class CandidateCreation:
             )
         elif evidence_mode == "auto":
             instructions.append(
-                "Global Evidence 使用 auto 模式：每次 goal_plus_search_run_verifier 返回的 global_evidence_snapshot 已自动注入最新共享 View，直接使用该快照继续。"
+                "Global Evidence 使用 auto 模式：verifier 结算回包中的 global_evidence_snapshot 已自动注入最新共享 View，直接使用该快照继续。"
             )
         if frozen.spec.strategy.orchestration_mode == "adaptive_search":
             instructions.append(

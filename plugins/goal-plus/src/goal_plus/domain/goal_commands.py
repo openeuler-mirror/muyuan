@@ -250,6 +250,7 @@ SEARCH_TOOL_SUFFIXES = (
     "search_bind_agent_handle",
     "search_continue_agent_session",
     "goal_plus_search_run_verifier",
+    "goal_plus_search_wait_verifier",
     "goal_plus_search_select",
     "goal_plus_search_report",
     "goal_plus_search_promote",

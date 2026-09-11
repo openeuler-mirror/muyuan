@@ -57,6 +57,7 @@ LINKED_SEARCH_TOOL_SUFFIXES = (
     "goal_plus_search_copy_shared_tool",
     "goal_plus_search_get_evidence_detail",
     "goal_plus_search_run_verifier",
+    "goal_plus_search_wait_verifier",
     "goal_plus_search_list_iterations",
     "goal_plus_search_list_allocation_decisions",
     "goal_plus_search_apply_allocation_decision",
