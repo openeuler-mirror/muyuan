@@ -51,9 +51,7 @@ def _json_text(value: Any) -> TextContent:
 
 
 def _debug_tool_response(function):
-    @wraps(function)
-    def measured(*args, **kwargs):
-        result = function(*args, **kwargs)
+    def finish(result):
         if api_debug_enabled():
             try:
                 text = result.text if isinstance(result, TextContent) else result
@@ -69,6 +67,16 @@ def _debug_tool_response(function):
                 pass
         return result
 
+    @wraps(function)
+    def measured(*args, **kwargs):
+        return finish(function(*args, **kwargs))
+
+    @wraps(function)
+    async def measured_async(*args, **kwargs):
+        return finish(await function(*args, **kwargs))
+
+    if iscoroutinefunction(function):
+        return measured_async
     return measured
 
 

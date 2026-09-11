@@ -18,6 +18,7 @@ from goal_plus.domain.agents import SelectedModel
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.evidence import (
+    PendingVerification,
     IterationRecord,
     ResultLedgerEntry,
     ScoreReport,
@@ -189,6 +190,7 @@ class CandidateRecord(SearchModel):
     results_ledger_artifact_ref: ArtifactRef | None = None
     execution_generation: int = Field(default=0, ge=0)
     recovery: CandidateRecovery | None = None
+    verification: PendingVerification | None = None
     inner_agent_state: dict[str, Any] = Field(default_factory=dict)
     provider_mutations: list[ProviderMutationRecord] = Field(default_factory=list)
 

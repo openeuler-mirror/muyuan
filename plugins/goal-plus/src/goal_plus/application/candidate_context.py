@@ -6,6 +6,8 @@ from goal_plus.application.candidate_ranking import (
 from goal_plus.domain.evidence import (
     IterationRecord,
 )
+from goal_plus.domain.agents import WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
+from goal_plus.domain.results_ledger import RESULTS_TSV_RELATIVE_PATH
 
 from goal_plus.ports.search_inspection import (
     ContextState,
@@ -91,8 +93,14 @@ class CandidateContext:
             record.results_ledger_artifact_ref or record.results_ledger_git_head
         )
         projection = self.ledger.projection(frozen, record)
-        results_path = self.ledger.ensure(frozen, record)
-        if not initialized:
+        if record.verification is None:
+            results_path = self.ledger.ensure(frozen, record)
+        else:
+            results_path = (
+                record.task.workspace / RESULTS_TSV_RELATIVE_PATH
+                if projection == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV else None
+            )
+        if not initialized and record.verification is None:
             self.state.write_candidate(session.run_id, record)
         private = record.task.workspace_provider == "thinkthread"
         workspace_status = (
@@ -228,6 +236,10 @@ def project_candidate_context(inputs: CandidateContextInputs) -> dict[str, Any]:
             else None
         ),
         "iteration_count": len(candidate_record.iterations),
+        "verification": (
+            candidate_record.verification.model_dump(mode="json")
+            if candidate_record.verification is not None else None
+        ),
         "recent_iterations": [
             agent_iteration_context(iteration) for iteration in recent_iterations
         ],
@@ -272,6 +284,10 @@ def project_candidate_context(inputs: CandidateContextInputs) -> dict[str, Any]:
     }
     if supplemental_enabled:
         context["supplemental_evaluation_enabled"] = True
+    if frozen.spec.strategy.orchestration_mode == "adaptive_search" and candidate_record.score_report is not None:
+        context.update(candidate_record.score_report.model_dump(
+            mode="json", include={"scheduler_status", "allocation_decision"},
+        ))
     reference_workspaces = [
         reference.model_dump(mode="json") for reference in inputs.references
     ]

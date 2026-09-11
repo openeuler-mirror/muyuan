@@ -9,8 +9,9 @@ import subprocess
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 from goal_plus.domain.worker_policy import process_environment_for_index
 from goal_plus.infrastructure.artifacts.git import git_output
 from goal_plus.infrastructure.process_output import capture_process
@@ -27,6 +28,7 @@ from goal_plus.domain.search import (
     SearchSpec,
     VerifierCommand,
     VerifierRole,
+    CandidateTask,
 )
 from goal_plus.domain.serialization import canonical_json, sha256_text
 from goal_plus.infrastructure.clock import utc_timestamp as utc_timestamp
@@ -40,6 +42,7 @@ from goal_plus.workspaces import (
     IGNORED_SUFFIXES,
     copy_source_tree,
     initialize_workspace_git_baseline,
+    GitReferences,
 )
 
 VERIFIER_PHASE_ENV = "GOAL_PLUS_VERIFIER_PHASE"
@@ -81,6 +84,24 @@ class LocalVerifiers:
 
     def run_dir(self, run_id: str) -> Path:
         return self.runs_dir / run_id
+
+    @contextmanager
+    def workspace(self, record: CandidateRecord, artifact: ArtifactRef) -> Iterator[CandidateTask]:
+        task = record.task
+        references = GitReferences(task.workspace_backend)
+        parent = self.run_dir(task.run_id) / "candidates" / record.candidate_id / "verification"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            destination = Path(directory) / record.candidate_id
+            logical = references.materialize_reference(task.workspace, artifact, destination)
+            try:
+                yield task.model_copy(update={"workspace": logical, "workspace_managed_root": destination})
+            finally:
+                # Keep detached settlement/ledger commits reachable after removing the checkout.
+                head = self.git_head(logical)
+                if head is not None:
+                    git_output(task.workspace, ["git", "update-ref", f"refs/goal-plus/verified/{task.run_id}/{task.candidate_id}", head])
+                references.remove_reference(task.workspace, artifact, destination)
 
     def execute_verifier_process(
         self,

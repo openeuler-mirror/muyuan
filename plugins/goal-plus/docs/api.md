@@ -467,8 +467,8 @@ wake。两条路径都向 canonical `.gp` ledger 追加准确记录；只有 inn
 
 确定性的 verifier 失败也是 attempt 结果，不是缺失结果。Git workspace_provider 的 non-zero exit、timeout 和
 process start failure 都返回失败 `ScoreReport` 并写入带 `attempt_id` 的 iteration；TT 已确认的
-verifier/provider execution error 同样写失败 iteration。只有 provider completion outcome unknown
-才进入 `needs_recovery`，此时不能伪造成功或失败记录。
+verifier/provider execution error 同样写失败 iteration。执行结果未知或本地工作区无法同步时进入
+`needs_recovery`；前者不伪造成功或失败记录，后者保留已结算 Evidence。
 
 启用 `shared_dir` 后，worker 可以同时提交 `toolization_decision`。`staged`
 需要工具名和至少一个正向 signal，`not_applicable`

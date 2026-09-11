@@ -1,6 +1,7 @@
 """Candidate artifact inspection and checkpoint I/O for Git and Copy."""
 
 from pathlib import Path
+import subprocess
 from goal_plus.domain.results_ledger import RESULTS_TSV_RELATIVE_PATH
 from goal_plus.infrastructure.artifacts.git import candidate_git_pathspecs, git_output
 from goal_plus.domain.artifacts import ArtifactRef
@@ -18,6 +19,15 @@ from goal_plus.workspaces import (
 
 
 class FileCandidateArtifacts:
+    def publish_settlement(self, task: CandidateTask, attempt: ArtifactRef, settled: ArtifactRef) -> bool:
+        if self.current_artifact(task) != attempt or self.status(task, ignore_runtime_noise=True):
+            return False
+        try:
+            git_output(task.workspace, ["git", "-c", "merge.autostash=false", "merge", "--ff-only", "--no-edit", settled.id])
+        except subprocess.CalledProcessError:
+            return False
+        return self.current_artifact(task) == settled and not self.status(task, ignore_runtime_noise=True)
+
     def current_artifact(self, task: CandidateTask) -> ArtifactRef | None:
         return LocalGitWorkspace(task.workspace_provider).current_artifact(
             task.workspace

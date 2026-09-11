@@ -56,6 +56,14 @@ class CandidateAttemptAccepted(SearchModel):
     message: str = Field(min_length=1)
 
 
+class PendingVerification(SearchModel):
+    attempt_id: str
+    artifact_ref: ArtifactRef
+    started_at: str
+    state: Literal["running", "needs_recovery"] = "running"
+    error: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
 class ScoreReport(SearchModel):
     run_id: str
     candidate_id: str
@@ -71,6 +79,9 @@ class ScoreReport(SearchModel):
     attempt_id: str | None = Field(default=None, min_length=1)
     attempt_iteration: int | None = Field(default=None, ge=1)
     attempt_artifact_ref: ArtifactRef | None = None
+    verification: PendingVerification | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     disposition: IterationDisposition | None = None
     failure_class: str | None = None
     best_iteration: int | None = Field(default=None, ge=1)

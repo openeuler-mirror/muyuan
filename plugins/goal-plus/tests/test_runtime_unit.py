@@ -3812,6 +3812,145 @@ def test_run_verifier_records_edit_surface_violation_in_iteration(
     assert "config.yaml" in it.changed_files
 
 
+@pytest.mark.parametrize("backend", ["copy", "git_worktree"])
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_verifier_snapshot_preserves_later_worker_edits(tmp_path, monkeypatch, backend, returncode):
+    project = make_project(tmp_path)
+    if backend == "git_worktree":
+        initialize_workspace_git_baseline(project)
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    spec_data = spec_for(project).model_dump(mode="json")
+    spec_data["workspace"]["backend"] = backend
+    spec = SearchSpec.model_validate(spec_data)
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, task.candidate_id, {})
+    baseline = (task.workspace / "initial_program.py").read_text()
+    submitted = "VALUE = 3\n"
+    later = "VALUE = 2\n"
+    (task.workspace / "initial_program.py").write_text(submitted)
+    observed = []
+
+    def verify(command, **kwargs):
+        workspace = kwargs["cwd"]
+        observed.append(workspace)
+        (task.workspace / "initial_program.py").write_text(later)
+        handoff = task.workspace / ".tmp/handoff.json"
+        handoff.parent.mkdir(exist_ok=True)
+        handoff.write_text('{"next":"keep exploring"}')
+        assert (workspace / "initial_program.py").read_text() == submitted
+        return subprocess.CompletedProcess(command, returncode, '{"combined_score":1}\n', "")
+
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", verify)
+    report = runtime.run_verifier(run_id, task.candidate_id, agent_session_id=session.agent_session_id,
+                                  hypothesis="Evaluate the submitted version")
+    assert report.process_passed is (returncode == 0)
+    assert observed[0] != task.workspace
+    assert (task.workspace / "initial_program.py").read_text() == later
+    assert (task.workspace / ".tmp/handoff.json").exists()
+    assert subprocess.check_output(
+        ["git", "show", f"{report.attempt_artifact_ref.id}:initial_program.py"],
+        cwd=task.workspace, text=True,
+    ) == submitted
+    context = runtime.get_agent_context(session.agent_session_id)
+    assert context["iteration_count"] == 1
+    assert context["verification"]["state"] == "needs_recovery"
+    assert report.verification.state == "needs_recovery"
+    with pytest.raises(RuntimeError, match="VerifierRecoveryRequired"):
+        runtime.run_verifier(run_id, task.candidate_id)
+    before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    with pytest.raises(RuntimeError, match="VerifierRecoveryRequired"):
+        runtime.select(run_id)
+    assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
+    assert (task.workspace / "initial_program.py").read_text() == later
+    restarted = FileSearchRuntime(runtime.root_dir)
+    recovery = restarted.prepare_candidate_recovery(run_id, task.candidate_id)
+    monkeypatch.setattr(restarted.recovery.workspace, "read_approval", lambda _: {
+        "recovery": recovery.model_dump(mode="json", exclude={"state"}),
+    })
+    restarted.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    restored = restarted.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    assert restored.verification is None
+    assert restored.iterations == before.iterations
+    assert (task.workspace / "initial_program.py").read_text() == (submitted if returncode == 0 else baseline)
+
+
+def test_pending_verifier_is_visible_and_does_not_queue_another_attempt(tmp_path, monkeypatch):
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    run_id, candidate_id, workspace = create_candidate(runtime, make_project(tmp_path))
+    session = runtime.start_agent_session(run_id, candidate_id, {})
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def verify(command, **kwargs):
+        calls.append(command)
+        started.set()
+        assert release.wait(10)
+        return subprocess.CompletedProcess(command, 0, '{"combined_score":1}\n', "")
+
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", verify)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(runtime.run_verifier, run_id, candidate_id)
+        try:
+            assert started.wait(10)
+            context = runtime.get_agent_context(session.agent_session_id)
+            assert context["iteration_count"] == 0
+            assert context["verification"]["state"] == "running"
+            assert context["verification"]["artifact_ref"]["kind"] == "git_commit"
+            before_session = runtime.candidate_sessions.session(session.agent_session_id)
+            with pytest.raises(RuntimeError, match="VerifierInProgress"):
+                runtime.continue_agent_session(session.agent_session_id)
+            assert runtime.candidate_sessions.session(session.agent_session_id) == before_session
+            handoff = workspace / ".tmp/handoff.json"
+            handoff.write_text('{"status":"waiting"}')
+            second = pool.submit(runtime.run_verifier, run_id, candidate_id)
+            with pytest.raises(RuntimeError, match="VerifierInProgress"):
+                second.result(timeout=2)
+        finally:
+            release.set()
+        report = first.result(timeout=10)
+    assert report.process_passed
+    assert len(calls) == 1
+    assert runtime.get_agent_context(session.agent_session_id)["verification"] is None
+    assert handoff.read_text() == '{"status":"waiting"}'
+
+
+def test_verifier_interrupted_settlement_requires_checkpoint_recovery(tmp_path, monkeypatch):
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    run_id, candidate_id, workspace = create_candidate(runtime, make_project(tmp_path))
+    baseline = (workspace / "initial_program.py").read_text()
+    (workspace / "initial_program.py").write_text("VALUE = 3\n")
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("interrupted attempt")
+
+    monkeypatch.setattr(runtime.verifiers, "run_commands", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted attempt"):
+        runtime.run_verifier(run_id, candidate_id)
+    restarted = FileSearchRuntime(runtime.root_dir)
+    record = restarted.candidate_creation.state.read_candidate(run_id, candidate_id)
+    assert record.verification.state == "needs_recovery"
+    assert record.iterations == []
+    with pytest.raises(RuntimeError, match="VerifierRecoveryRequired"):
+        restarted.run_verifier(run_id, candidate_id)
+    recovery = restarted.prepare_candidate_recovery(run_id, candidate_id)
+    restarted.recover_candidate(run_id, candidate_id, recovery.recovery_id)
+    assert (workspace / "initial_program.py").read_text() == baseline
+    assert restarted.run_verifier(run_id, candidate_id).process_passed
+
+
+def test_verifier_lock_rejects_duplicate_during_attempt_capture(tmp_path):
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    run_id, candidate_id, _ = create_candidate(runtime, make_project(tmp_path))
+    before = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
+    with runtime.settlement.state.lock_verifier(run_id, candidate_id):
+        with pytest.raises(RuntimeError, match="VerifierInProgress"):
+            runtime.run_verifier(run_id, candidate_id)
+    assert runtime.candidate_creation.state.read_candidate(run_id, candidate_id) == before
+
+
 def test_run_verifier_reports_and_cleans_verifier_workspace_side_effect(
     tmp_path: Path,
 ) -> None:
@@ -4301,7 +4440,7 @@ def test_run_verifier_parses_subprocess_metrics_with_mock(
 
     assert report.process_passed is True
     assert report.aggregate_score == 0.75
-    assert calls[0][1]["cwd"] == workspace.resolve()
+    assert calls[0][1]["cwd"] != workspace.resolve()
     assert "PYTHONPATH" in calls[0][1]["env"]
 
 

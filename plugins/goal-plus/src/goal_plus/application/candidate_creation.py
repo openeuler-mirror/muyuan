@@ -136,6 +136,9 @@ class CandidateCreation:
                     "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
                 ]
             )
+        instructions.append(
+            "验证返回 pending 或工具等待超时时，保持工作区不变，通过 search_get_agent_context 查询 verification 与最新结果；结算后再继续，needs_recovery 时向 Main 交接。"
+        )
         if process_environment:
             instructions.append(
                 "candidate_task.process_environment 是本 candidate 的进程环境；运行本地命令时显式应用这些变量。goal_plus_search_run_verifier 会自动使用同一环境。"

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from goal_plus.ports.candidate_creation import CandidateMaterialization
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
+    require_no_pending_verification,
 )
 
 from goal_plus.domain.artifacts import (
@@ -198,7 +199,9 @@ class FileSearchRuntime:
     ) -> ScoreReport:
         if scope not in {"process", "promotion"}:
             raise ValueError("verifier scope must be 'process' or 'promotion'")
-        with self.settlement.state.lock_verifier(run_id, candidate_id):
+        require_no_pending_verification(self.candidate_creation.state.read_candidate(run_id, candidate_id))
+        with self.settlement.state.lock_verifier(run_id, candidate_id, blocking=False):
+            require_no_pending_verification(self.candidate_creation.state.read_candidate(run_id, candidate_id))
             require_candidate_not_recovering(
                 self.candidate_creation.state.read_candidate(run_id, candidate_id)
             )

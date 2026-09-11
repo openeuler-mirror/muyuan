@@ -31,6 +31,8 @@ class CandidateHostQueries:
             record = self.source.read_candidate(session.run_id, session.candidate_id)
         except (OSError, ValueError):
             return False
+        if record.verification is not None and record.verification.state == "needs_recovery":
+            return True
         for iteration in reversed(record.iterations):
             if iteration.agent_session_id not in {None, session.agent_session_id}:
                 continue

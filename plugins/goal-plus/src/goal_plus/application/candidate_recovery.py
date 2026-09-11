@@ -11,6 +11,7 @@ from goal_plus.application.candidate_ranking import best_artifact_iteration_reco
 from goal_plus.application.verifier import verifier_subject
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
+    require_no_pending_verification,
     require_worker_iteration_state,
 )
 from goal_plus.domain.results_ledger import (
@@ -78,6 +79,7 @@ class CandidateRecoveryWorkflow:
 
     def require_closeout(self, run_id: str, record: CandidateRecord) -> None:
         require_candidate_not_recovering(record)
+        require_no_pending_verification(record)
         if record.recovery is None or self.queries.has_fresh_evidence(run_id, record):
             return
         deadline = outer_deadline_epoch(self.context.outer_deadline(run_id))
@@ -217,6 +219,7 @@ class CandidateRecoveryWorkflow:
                     self.candidate_ledger.workspace.check(record, frozen.spec.metric_name)
                 # Tool-copy staging belonged to the interrupted, uncommitted attempt.
                 record.pending_tool_copies = []
+                record.verification = None
                 self._reconcile_recovered_settlements(run, frozen, record)
                 recovery.state = "restored"
                 recovery.restored_artifact_ref = restored

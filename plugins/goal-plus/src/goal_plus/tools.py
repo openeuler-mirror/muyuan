@@ -386,6 +386,8 @@ class SearchTools:
         agent_session_id: str | None = None,
         hypothesis: str | None = None,
         toolization_decision: ToolizationDecision | dict[str, Any] | None = None,
+        *,
+        inject_evidence: bool = True,
     ) -> dict[str, Any]:
         self._require_target("goal_plus_search_run_verifier", run_id=run_id)
         if self.candidate_attempt is not None:
@@ -403,8 +405,13 @@ class SearchTools:
             toolization_decision=toolization_decision,
         )
         result = report.model_dump(mode="json")
-        if scope != "process" or agent_session_id is None:
+        if scope != "process" or agent_session_id is None or not inject_evidence:
             return result
+        return self.verifier_response(run_id, agent_session_id, result)
+
+    def verifier_response(
+        self, run_id: str, agent_session_id: str, result: dict[str, Any],
+    ) -> dict[str, Any]:
         try:
             if not self.runtime.should_inject_global_evidence_after_verifier(run_id):
                 return result

@@ -21,6 +21,7 @@ from goal_plus.domain.evidence import (
 )
 from goal_plus.domain.search import (
     AgentSessionRecord,
+    CandidateTask,
     FrozenSpec,
 )
 from goal_plus.domain.serialization import canonical_json, sha256_text
@@ -112,6 +113,7 @@ class CandidateSettlement:
         expected_disposition: IterationDisposition | None = None,
         settled_artifact_ref: ArtifactRef | None = None,
         inner_git_settlement: InnerGitSettlement | None = None,
+        local_task: CandidateTask | None = None,
     ) -> ScoreReport:
         with self.state.lock_run(run_id):
             run = self.state.read_run(run_id)
@@ -343,6 +345,9 @@ class CandidateSettlement:
                 )
             iteration.disposition = disposition
 
+            worker_task = record.task
+            if local_task is not None:
+                record.task = local_task
             is_thinkthread = record.task.workspace_provider == "thinkthread"
             rollback_target_artifact_ref: ArtifactRef | None = None
             restored_artifact_ref: ArtifactRef | None = None
@@ -583,6 +588,18 @@ class CandidateSettlement:
                 }
             )
             record.status = "evaluated"
+            if local_task is not None:
+                record.task = worker_task
+                synchronized = self.artifacts.workspace.publish_settlement(
+                    worker_task, attempt.artifact_ref,
+                    record.results_ledger_artifact_ref or settled.artifact_ref,
+                )
+                if synchronized:
+                    record.verification = None
+                elif record.verification is not None:
+                    record.verification.state = "needs_recovery"
+                    record.verification.error = "WorkerWorkspaceChanged: submitted artifact was settled separately"
+                report = report.model_copy(update={"verification": record.verification})
             record.score_report = report
             if record.promotion_evidence and (
                 record.promotion_evidence.artifact_ref != report.best_artifact_ref

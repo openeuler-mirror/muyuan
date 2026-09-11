@@ -62,6 +62,8 @@ class CandidateRecoveryQueries:
                     "generation": record.execution_generation,
                     "checkpoint": point,
                     "checkpoint_error": error,
+                    "verification": record.verification.model_dump(mode="json")
+                    if record.verification is not None else None,
                     "unsettled_workspace_changes": unsettled,
                     "workspace_inspection_error": workspace_error,
                     "fresh_recovery_evidence": self.has_fresh_evidence(run_id, record),
