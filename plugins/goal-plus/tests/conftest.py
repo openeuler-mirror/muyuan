@@ -80,6 +80,10 @@ def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
     """Gate selected tests before any fixture can start a real host."""
+    if sys.platform not in ("linux", "darwin"):
+        for item in items:
+            if item.get_closest_marker("host_process") is not None:
+                item.add_marker(pytest.mark.skip(reason="requires Linux or macOS process inspection"))
     if sys.platform != "linux":
         for item in items:
             if item.get_closest_marker("linux_procfs") is not None:

@@ -23,7 +23,7 @@ class ProcessWitness(SearchModel):
 
 @dataclass(frozen=True)
 class ProcessSnapshot:
-    """Linux procfs fields, including the scope record's starttime token."""
+    """Kernel process facts with an opaque, platform-specific start identity."""
 
     pid: int
     start_token: str

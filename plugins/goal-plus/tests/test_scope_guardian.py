@@ -72,7 +72,7 @@ def test_guardian_retries_requested_cleanup_until_native_stop_is_observed(
         scope_for(tmp_path, host="codex")
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 def test_guardian_retries_cleanup_after_confirmed_owner_death(tmp_path, monkeypatch):
     owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:

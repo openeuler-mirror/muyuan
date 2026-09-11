@@ -12,6 +12,7 @@ from goal_plus.execution import process_identity as inspection
 
 @pytest.fixture
 def process_files(monkeypatch):
+    monkeypatch.setattr(inspection, "_PLATFORM", "linux")
     pid = 876543
     fields = ["0"] * 50
     fields[0], fields[2], fields[19] = "S", str(pid), "12345"

@@ -20,7 +20,7 @@ from tests._runtime_helpers import make_project, spec_for, start_host_verified_g
 pytestmark = pytest.mark.pi
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 def test_pi_scope_tool_records_current_native_agent_config(tmp_path: Path) -> None:
     from goal_plus.host_scope import close_execution_scope
 

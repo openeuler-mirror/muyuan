@@ -29,7 +29,7 @@ from goal_plus.host_scope import (
 )
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 def test_scope_fences_new_work_and_stops_registered_process(tmp_path: Path) -> None:
     root = tmp_path / ".gp"
     scope = ensure_execution_scope(
@@ -122,7 +122,7 @@ def test_pi_scope_freezes_non_secret_native_agent_config(tmp_path: Path, scope_o
         )
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX owner signaling")
 def test_guardian_closes_scope_when_owner_process_exits(tmp_path: Path) -> None:
     root = tmp_path / ".gp"
@@ -251,7 +251,7 @@ def test_closed_scope_cannot_be_reopened_implicitly(tmp_path: Path, scope_owner)
         )
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 def test_selection_fences_only_the_attached_run(tmp_path: Path) -> None:
     root = tmp_path / ".gp"
     scope = ensure_execution_scope(
@@ -474,7 +474,7 @@ def test_codex_owner_exit_marks_native_agents_terminal(tmp_path: Path, monkeypat
     assert closed["codex_agents"][0]["status"] == "owner_process_exited"
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX owner signaling")
 def test_guardian_marks_codex_agents_terminal_after_owner_death(
     tmp_path: Path,

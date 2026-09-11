@@ -30,7 +30,7 @@ def request_for(host):
     )
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 @pytest.mark.parametrize("host", ["codex", "pi-rpc"])
 def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, monkeypatch, host):
     calls = []

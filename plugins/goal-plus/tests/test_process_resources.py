@@ -226,6 +226,7 @@ def test_invalid_resource_identity_is_unknown_even_when_the_pid_cannot_match(mon
 
 
 def test_group_inspection_filters_foreign_and_disappearing_processes(monkeypatch):
+    monkeypatch.setattr(inspection, "_PLATFORM", "linux")
     root = Path("/proc")
     monkeypatch.setattr(Path, "iterdir", lambda _: iter(root / name for name in ["self", "1000", "1001", "1002"]))
 
@@ -244,6 +245,7 @@ def test_group_inspection_filters_foreign_and_disappearing_processes(monkeypatch
 
 
 def test_group_inspection_reports_permission_failure_instead_of_an_empty_group(monkeypatch):
+    monkeypatch.setattr(inspection, "_PLATFORM", "linux")
     monkeypatch.setattr(Path, "iterdir", lambda _: iter([Path("/proc/1000")]))
 
     def denied(_pid):

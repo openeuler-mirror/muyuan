@@ -242,12 +242,14 @@ Search record，也不改变 `AgentSessionRecord` 的 provenance 语义。Pi ext
 `execution_scope_id`；Codex hook 使用 native session 和 collaboration task identity，模型不能覆盖
 scope 归属。
 
-Scope、本地 Annotation/Scheduler drainer 和 Pi pool wrapper 的身份校验目前要求可读的 Linux `/proc`。
-Scope 使用启动 tick token；drainer 核对精确 module、root、run 和 generation 参数，并在
+Scope、本地 Annotation/Scheduler drainer 和 Pi pool wrapper 共用平台进程检查。Linux 读取
+`/proc` 的启动 ticks；macOS 通过 `libproc` 读取 PID、微秒级启动时间、进程组和退出状态，
+通过 `sysctl` 读取本次 boot UUID 与完整 argv（不返回环境变量）。两端都不要求额外安装服务。
+启动 token 是平台不透明值；drainer 核对精确 module、root、run 和 generation 参数，并在
 读取命令前后复核启动 token。进程存在但观测不可读、缺失或损坏时返回
 `ProcessInspectionUnavailable`，不退回 PID-only 归属。Scope cleanup 保留 `stop_failed`
 句柄和错误，guardian 对未知 owner 继续观测，不把空值、异常或不可读身份当成 owner 退出。
-Recovery 仍按原记录读取 `ps lstart`，不把它与 procfs token 互相转换。进程组后代与启动
+Recovery 仍按原记录读取 `ps lstart`，不把它与内核启动 token 互相转换。进程组后代与启动
 登记的责任关系见[架构图集](architecture.md#04-恢复与提交)。
 
 Scope/drainer/Pi pool wrapper/Pi RPC 对专用进程组按成员观测清理，不以组长退出代替整组静默。当前句柄已核验
