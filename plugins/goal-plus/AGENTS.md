@@ -89,7 +89,7 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `execution/structured_inference.py`、`execution/inference_output.py`、`ports/inference.py` | 共用原生 Codex/Pi 一次性 CLI、schema、授权 Pi 工具包装配、输出读取与 invocation 观测；角色保留结果验收和 usage 口径；不构造业务用例、处理 TT Child 或接管 native candidate |
 | `infrastructure/inference_bindings.py`、`ports/inference.py` | Annotation/Scheduler 声明有限角色能力；可信 adapter 统一生成 Pi schema、扩展及白名单，无授权 View 则不装配读取工具；PiInferenceTools 仅是 adapter 到 Execution 的传输 DTO |
 | `execution/drainer.py`、`ports/drainer.py`、`infrastructure/state/drainer.py` | 共用 detached worker 的 single flight、启动登记、generation 归属、退出重扫与有界关闭；放行前经限 admission 期间使用的 callback 独立登记 scope 资源，队列退场不完成资源；任务领取/重试/并发和可信 scope admission 仍由各自 owner 决定 |
-| `execution/process_identity.py`、`ports/process_identity.py` | 只读 procfs/group snapshot、drainer/Pi pool 共用精确 argv 检查与既有 recovery ps identity；核验结果直接携带启动身份；未知观测不授权停止或替换，两个 token 格式不互相猜测转换 |
+| `execution/process_identity.py`、`execution/process_identity_darwin.py`、`ports/process_identity.py` | 只读 Linux procfs/macOS libproc 与 sysctl/group snapshot、drainer/Pi pool 共用精确 argv 检查与既有 recovery ps identity；核验结果直接携带启动身份；未知观测不授权停止或替换，两个 token 格式不互相猜测转换 |
 | `execution/process_resources.py`、`ports/process_identity.py` | scope/drainer/Pi pool wrapper/Pi RPC/已登记推理共用单进程和专用组的身份复核、成员观测及有界 TERM/KILL；各资源 owner 通过窄 callback 保存/恢复 boot/member witness，已观测逃逸成员仍按身份停止；不构造 store，清理失败不完成 scope token；未观测逃逸后代不在现有追踪保证内 |
 | `ports/scope.py`、`infrastructure/state/scope.py` | 前者定义 Goal/Search typed attachment、既有 host-local scope/agent/process DTO 与窄 State；后者保存原 JSON、scope/owner/cleanup 锁和枚举；attachment 的类型不授予领域执行权 |
 | `execution/codex_scope.py`、`execution/scope.py` | 原生 agent 的登记、spawn/wake invocation、代际观察与精确归属；共用 scope admission 和创建顺序选择，不构造 store 或调用 native agent |

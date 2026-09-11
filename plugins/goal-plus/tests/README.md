@@ -51,11 +51,13 @@ that slice.
 
 ## Platform Coverage
 
-Tests marked `linux_procfs` use real Linux `/proc` process identities, command
-vectors, boot IDs, or process-group cleanup. They run in the default suite on
-Linux and are skipped on macOS and other platforms before fixtures launch any
-processes. POSIX signals alone do not satisfy this requirement. Inspect the
-slice with `python -m pytest -m linux_procfs -q -rs`.
+Tests marked `host_process` exercise real process identity, scope/guardian and
+process-group cleanup on Linux and macOS. They run without model calls in the
+default suite; inspect this slice with `python -m pytest -m host_process -q -rs`.
+`test_process_identity_darwin.py` also exercises macOS argv and zombie identity.
+Tests specifically marked `linux_procfs` retain Linux-only field assertions or
+ThinkThread's Linux runtime coverage and are skipped on other platforms. Linux parser tests use controlled procfs input
+on both platforms.
 
 Keep the marker on the smallest test that needs real process observation;
 do not mark an entire mixed module or skip pure state tests. Process doubles

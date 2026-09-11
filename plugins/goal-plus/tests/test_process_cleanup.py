@@ -15,7 +15,7 @@ from goal_plus.execution.managed_process import ManagedProcess
 from goal_plus.ports.process_identity import ProcessStopOutcome
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
 @pytest.mark.parametrize("leader_exited", [False, True])
 def test_pi_cleanup_stops_group_members_after_the_leader_exits(leader_exited):
@@ -53,7 +53,7 @@ def test_pi_cleanup_stops_group_members_after_the_leader_exits(leader_exited):
                     process.stdout.close()
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
 def test_pi_cleanup_accepts_an_empty_group_and_repeated_stop():
     process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)

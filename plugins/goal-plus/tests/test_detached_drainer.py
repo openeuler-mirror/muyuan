@@ -228,7 +228,7 @@ def test_stale_or_invalid_registration_does_not_signal_an_unowned_process(harnes
     assert path.read_text() == "not-json"
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 def test_local_process_is_registered_stopped_and_reaped(harness, monkeypatch):
     from goal_plus.host_scope import (
         close_execution_scope, close_run_candidates, ensure_execution_scope,

@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from goal_plus.execution.python_command import module_arguments
 
 EXITED_PROCESS_STATES = frozenset({"Z", "X", "x"})
 RECOVERY_INSPECTION_TIMEOUT_SECONDS = 3
+_PLATFORM = sys.platform
 
 
 class ProcessInspectionUnavailable(RuntimeError):
@@ -18,6 +20,9 @@ class ProcessInspectionUnavailable(RuntimeError):
 
 def boot_identity() -> str:
     try:
+        if _PLATFORM == "darwin":
+            from goal_plus.execution import process_identity_darwin
+            return process_identity_darwin.boot_identity()
         value = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
         if not value:
             raise ValueError("empty boot identity")
@@ -29,6 +34,12 @@ def boot_identity() -> str:
 def inspect_process(pid: int) -> ProcessSnapshot | None:
     if pid <= 0:
         return None
+    if _PLATFORM == "darwin":
+        from goal_plus.execution import process_identity_darwin
+        try:
+            return process_identity_darwin.inspect_process(pid)
+        except (OSError, ValueError) as exc:
+            raise ProcessInspectionUnavailable(f"ProcessInspectionUnavailable: {pid}:stat") from exc
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except (FileNotFoundError, ProcessLookupError) as exc:
@@ -79,17 +90,21 @@ def inspect_command(pid: int, arguments: Sequence[str]) -> ProcessSnapshot | Non
     if before is None or before.state in EXITED_PROCESS_STATES:
         return None
     try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError as exc:
+        if _PLATFORM == "darwin":
+            from goal_plus.execution import process_identity_darwin
+            command = process_identity_darwin.command_arguments(pid)
+        else:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+            if not raw or not raw.endswith(b"\0"):
+                raise ValueError("incomplete command")
+            command = [os.fsdecode(arg) for arg in raw[:-1].split(b"\0")]
+    except (OSError, ValueError) as exc:
         if not process_alive(pid, before.start_token):
             return None
         raise ProcessInspectionUnavailable(f"ProcessInspectionUnavailable: {pid}:cmdline") from exc
     after = inspect_process(pid)
     if after is None or after.start_token != before.start_token or after.state in EXITED_PROCESS_STATES:
         return None
-    if not raw or not raw.endswith(b"\0"):
-        raise ProcessInspectionUnavailable(f"ProcessInspectionUnavailable: {pid}:cmdline")
-    command = [os.fsdecode(arg) for arg in raw[:-1].split(b"\0")]
     return after if command[1:] == list(arguments) else None
 
 
@@ -98,10 +113,12 @@ def inspect_process_group(group_id: int) -> tuple[ProcessSnapshot, ...]:
         raise ProcessInspectionUnavailable(f"ProcessInspectionUnavailable: {group_id}:invalid_group")
     members = []
     try:
-        for path in Path("/proc").iterdir():
-            if not path.name.isdecimal():
-                continue
-            pid = int(path.name)
+        if _PLATFORM == "darwin":
+            from goal_plus.execution import process_identity_darwin
+            pids = process_identity_darwin.group_pids(group_id)
+        else:
+            pids = (int(path.name) for path in Path("/proc").iterdir() if path.name.isdecimal())
+        for pid in pids:
             try:
                 if os.getpgid(pid) != group_id:
                     continue
@@ -110,7 +127,7 @@ def inspect_process_group(group_id: int) -> tuple[ProcessSnapshot, ...]:
             observed = inspect_process(pid)
             if observed is not None and observed.process_group_id == group_id:
                 members.append(observed)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise ProcessInspectionUnavailable(f"ProcessInspectionUnavailable: {group_id}:group_members") from exc
     return tuple(members)
 

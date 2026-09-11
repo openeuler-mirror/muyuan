@@ -22,7 +22,7 @@ from goal_plus.ports.inference import StructuredInferenceRequest
 from goal_plus.ports.process_monitor import ProcessMonitorIdentity
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 def test_unregistered_child_exits_without_exec_when_launcher_is_killed(tmp_path):
     marker = tmp_path / "executed"
     script = (
@@ -205,7 +205,7 @@ def test_managed_terminate_bounds_the_post_kill_wait():
     assert all(timeout is not None and 0 < timeout <= 1 for timeout in waits)
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 @pytest.mark.parametrize("failure", ["write_before", "write_after", "log_close"])
 @pytest.mark.parametrize("exception", [OSError, KeyboardInterrupt])
 def test_drainer_registration_failure_stops_launched_child(tmp_path, local_launch, failure, exception):
@@ -241,7 +241,7 @@ def test_drainer_registration_failure_stops_launched_child(tmp_path, local_launc
         assert record.pid == processes[0].pid
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 @pytest.mark.pi
 @pytest.mark.parametrize("failure", ["construct", "start", "partial_start", "registration"])
 @pytest.mark.parametrize("exception", [OSError, KeyboardInterrupt])
@@ -295,7 +295,7 @@ def test_pi_rpc_initialization_failure_stops_child_and_keeps_scope_recoverable(
     assert result["cleanup"]["active_count"] == 0
 
 
-@pytest.mark.linux_procfs
+@pytest.mark.host_process
 @pytest.mark.pi
 def test_pi_rpc_metrics_interrupt_cannot_bypass_process_cleanup(tmp_path, monkeypatch, local_launch):
     launch, processes = local_launch
