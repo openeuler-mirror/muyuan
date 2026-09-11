@@ -7,6 +7,7 @@ from goal_plus.application.recovery_policy import (
 """Generation fencing and exact committed-checkpoint recovery."""
 
 from typing import Callable
+from goal_plus.domain.agents import WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
 from goal_plus.application.candidate_ranking import best_artifact_iteration_record
 from goal_plus.application.verifier import verifier_subject
 from goal_plus.application.candidate_execution import (

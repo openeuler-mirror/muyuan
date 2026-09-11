@@ -265,6 +265,29 @@ ST_THINKTHREAD_TIMEOUT=1800 ST_THINKTHREAD_ANNOTATION_TIMEOUT=600 \
 
 ## Contracts
 
+### Codex Verifier Wait
+
+Run the verifier module ST with explicit authorization:
+
+```bash
+ST_CODEX_REASONING_EFFORT=low \
+  pytest --run-system-tests -n 0 tests/st/test_st_codex_verifier_wait.py -v -s --tb=short
+```
+
+The controller prepares one candidate through normal APIs and launches one native Codex worker
+against the checkout's MCP server. The production MCP timeout is unchanged. A controller-owned
+resource lock holds the submitted attempt beyond that timeout; native tool events must show a
+`pending` response, readable attempt identity, and rejection of one deliberate duplicate submission.
+The controller then changes the original workspace and releases the lock. The test checks exact
+snapshot scoring, one Evidence entry, preservation of the later edit, worker observation of
+`needs_recovery`, and checkpoint recovery after native process exit.
+
+This is a module ST, not an optimization E2E. Installed plugins/hooks are disabled only for the
+test worker, so it does not validate plugin discovery, Main orchestration, or native child hooks.
+It uses the configured Codex provider and `ST_CODEX_MODEL` (default `gpt-5.6-terra`), usually takes
+6-8 minutes, and writes native JSONL under `.tmp/st-logs/`. The test requires the development
+Python environment and its console scripts on `PATH`; no host installation is changed.
+
 ### TT VLIW Retained Turns
 
 With explicit authorization, run the bounded VLIW role test serially:
