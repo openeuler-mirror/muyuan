@@ -6,12 +6,86 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
+import struct
 from types import SimpleNamespace
 
 import pytest
 
 from goal_plus.execution import process_identity as inspection
 from goal_plus.execution import process_identity_darwin as darwin
+
+
+def test_macos_scope_contract_runs_without_procfs_or_macos_libraries(tmp_path, monkeypatch):
+    """Exercise the real adapter and scope owner on Linux too; fake only kernel I/O."""
+    from goal_plus import host_scope
+
+    pid = 876543
+    state = {"status": 3}
+    argv = bytes(C.c_int(3)) + b"/bin/python\0\0python\0worker\0space argument\0SECRET=not-argv\0"
+
+    def proc_info(target, flavor, include_zombies, output, size):
+        assert (target, flavor, size) == (pid, 3, 136)
+        if state["status"] == 5 and not include_zombies:
+            C.set_errno(errno.ESRCH)
+            return 0
+        # SDK proc_bsdinfo wire offsets; do not construct the production ctypes type.
+        raw = bytearray(136)
+        for offset, value in ((4, state["status"]), (12, pid), (100, pid)):
+            struct.pack_into("=I", raw, offset, value)
+        struct.pack_into("=QQ", raw, 120, 1_700_000_000, 123456)
+        C.memmove(output, bytes(raw), len(raw))
+        return len(raw)
+
+    def group(kind, group_id, output, size):
+        assert (kind, group_id) == (2, pid)
+        if output is not None:
+            output[0] = pid
+        return C.sizeof(C.c_int)
+
+    def procargs(mib, count, output, size, _new, _length):
+        assert list(mib) == [1, 49, pid] and count == 3
+        C.memmove(output, argv, len(argv))
+        C.cast(size, C.POINTER(C.c_size_t))[0] = len(argv)
+        return 0
+
+    def stop(group_id, _signal):
+        assert group_id == pid
+        state["status"] = 5
+
+    def guard(original):
+        def read(path, *args, **kwargs):
+            assert not str(path).startswith("/proc"), "macOS path attempted to read procfs"
+            return original(path, *args, **kwargs)
+        return read
+
+    monkeypatch.setattr(inspection, "_PLATFORM", "darwin")
+    monkeypatch.setattr(darwin, "_lib", lambda: SimpleNamespace(
+        proc_pidinfo=proc_info, proc_listpids=group, sysctl=procargs,
+    ))
+    monkeypatch.setattr(darwin, "_named_value", lambda name: {
+        b"kern.bootsessionuuid": b"test-boot\0", b"kern.argmax": bytes(C.c_int(len(argv))),
+    }[name])
+    for name in ("read_text", "read_bytes", "iterdir"):
+        monkeypatch.setattr(Path, name, guard(getattr(Path, name)))
+    monkeypatch.setattr(os, "getpgid", lambda target: pid if target == pid else pytest.fail("foreign pid"))
+    monkeypatch.setattr(os, "killpg", stop)
+    monkeypatch.setattr(os, "kill", lambda *_: pytest.fail("unverified PID-only signal"))
+
+    observed = inspection.inspect_command(pid, ["worker", "space argument"])
+    assert observed.start_token == "darwin:1700000000:123456"
+    assert inspection.inspect_command(pid, ["worker", "space argument", "SECRET=not-argv"]) is None
+    assert not inspection.process_alive(pid, "darwin:1700000000:123455")
+    scope = host_scope.ensure_execution_scope(
+        root_dir=tmp_path, host="pi", owner_session_id="test", owner_pid=pid, start_guardian=False,
+    )
+    host_scope.register_execution_process(
+        root_dir=tmp_path, scope_id=scope["scope_id"], pid=pid, process_group_id=pid, label="test",
+    )
+    closed = host_scope.close_execution_scope(root_dir=tmp_path, scope_id=scope["scope_id"], reason="test", timeout_seconds=0)
+    assert closed["state"] == "closed"
+    assert closed["cleanup"]["active_count"] == 0
+    assert closed["cleanup"]["errors"] == []
 
 
 def test_procargs_keeps_argument_boundaries_and_excludes_environment():

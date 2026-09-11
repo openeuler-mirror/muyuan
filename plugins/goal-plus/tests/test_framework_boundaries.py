@@ -28,6 +28,21 @@ IO_MEMBERS = {
 }
 
 
+def test_procfs_paths_stay_in_platform_owners():
+    # ThinkThread's legacy service is supported only on its Linux runtime.
+    owners = {"execution/process_identity.py", "thinkthread_annotation.py"}
+    violations = []
+    for path in PACKAGE.rglob("*.py"):
+        if path.relative_to(PACKAGE).as_posix() in owners:
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and (
+                node.value == "/proc" or node.value.startswith("/proc/")
+            ):
+                violations.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
+    assert not violations, "procfs access must stay in the platform owner: " + ", ".join(violations)
+
+
 @pytest.mark.parametrize("module", HOST_CANDIDATE_MODULES)
 def test_candidate_hosts_do_not_pierce_search_state(module):
     tree = ast.parse((PACKAGE / module).read_text())

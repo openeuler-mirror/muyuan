@@ -20,9 +20,6 @@ from goal_plus.infrastructure.clock import SystemClock
 from goal_plus.infrastructure.state.drainer import FileDrainerState
 from goal_plus.ports.drainer import DrainerRecord
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux process group ownership")
-
-
 @contextmanager
 def local_group():
     leader = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], process_group=0)
@@ -45,6 +42,7 @@ def local_group():
                     process.stdout.close()
 
 
+@pytest.mark.host_process
 def test_scope_close_stops_members_even_when_the_leader_exits_on_term(tmp_path):
     scope = ensure_execution_scope(
         root_dir=tmp_path, host="pi", owner_session_id="owner", owner_pid=os.getpid(), start_guardian=False,
@@ -72,6 +70,7 @@ def make_drainer(tmp_path, leader):
     )
 
 
+@pytest.mark.host_process
 def test_drainer_close_does_not_drop_members_when_the_leader_exits(tmp_path):
     with local_group() as (leader, member):
         driver = make_drainer(tmp_path, leader)
@@ -80,6 +79,7 @@ def test_drainer_close_does_not_drop_members_when_the_leader_exits(tmp_path):
         assert not (driver.state.directory / "worker.json").exists()
 
 
+@pytest.mark.host_process
 def test_scope_restores_observed_group_after_its_leader_was_reaped(tmp_path):
     scope = ensure_execution_scope(
         root_dir=tmp_path, host="pi", owner_session_id="owner", owner_pid=os.getpid(), start_guardian=False,
@@ -101,6 +101,7 @@ def test_scope_restores_observed_group_after_its_leader_was_reaped(tmp_path):
 
 
 @pytest.mark.parametrize("operation", ["start", "close"])
+@pytest.mark.host_process
 def test_drainer_preserves_unknown_group_instead_of_replacing_or_forgetting_it(tmp_path, operation):
     with local_group() as (leader, member):
         driver = make_drainer(tmp_path, leader)
@@ -117,6 +118,7 @@ def test_drainer_preserves_unknown_group_instead_of_replacing_or_forgetting_it(t
         assert member.poll() is None
 
 
+@pytest.mark.host_process
 def test_observed_members_remain_owned_after_leader_reaping_without_touching_another_group():
     outsider = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
     try:

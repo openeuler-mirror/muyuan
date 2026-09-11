@@ -1,5 +1,38 @@
 # Goal Plus 开发指南
 
+## 无 CI 的跨平台进程检查
+
+Linux 上也必须运行 macOS 合同测试。`test_process_identity_darwin.py` 使用受控内核字节驱动
+真实 Darwin adapter 和 scope 注册/关闭，禁止这条路径读取 `/proc`，校验微秒启动身份、
+argv 边界与环境排除、zombie 和清理结果；不需要 macOS 动态库或模型。
+架构检查限制 procfs 路径只出现在已知平台 owner，防止再次散落到通用 host 流程。
+这些测试也包含在默认 pytest 中。
+
+可选的 [pre-push hook](../scripts/git-hooks/pre-push) 在本机推送前运行短检查：
+
+```bash
+git config --local core.hooksPath plugins/goal-plus/scripts/git-hooks
+git push
+```
+
+从 Muyuan checkout 配置上述相对路径。已有自定义 hooksPath 时，将此脚本接入原 pre-push，
+不要覆盖原配置。脚本默认用 `uv run --frozen --extra dev --python 3.12` 准备开发环境；
+已有环境可设置 `GOAL_PLUS_TEST_PYTHON=/absolute/path/to/venv/bin/python`，避免重复准备。
+hook 不安装宿主资产、不调用模型；只允许推送当前 HEAD，并要求 Goal Plus 工作区干净，
+避免“未提交的修正让测试通过，实际推送的 commit 仍有问题”。推送其他分支前需切换过去。
+
+进程 API、scope、pool 或清理逻辑有改动时，再在真实 Mac 本地执行：
+
+```bash
+python -m pytest -o addopts= -q -m host_process
+python -m pytest -o addopts= -q tests/test_process_identity_darwin.py
+```
+
+使用 Python 3.12 开发环境；这组测试启动短生命周期本地进程，不调用 Codex/Pi 模型。
+Linux 模拟能检测分支遗漏和协议回归，不能证明 macOS 实际 ABI、权限或系统升级兼容性。
+Git hook 不随 clone 自动启用，且可被 `--no-verify` 绕过；没有远端检查时不能保证所有提交者
+都执行验证。依赖团队启用本地 hook，并为底层改动保留一次真实 Mac 证据。
+
 Goal Plus 由共享 Python runtime、Pi package 和 Codex plugin 组成。仓库只提供一个统一
 安装入口：`install.sh`。Codex 使用正常安装；Pi 另外提供 checkout-local 开发态，便于在不
 切换 Pi 账号配置的情况下测试当前源码。
