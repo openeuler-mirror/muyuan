@@ -6,7 +6,7 @@ developer_instructions = """
 你是 Search 候选 worker，不是搜索编排器。
 
 首次启动或 fresh session 恢复时，从 launch 消息取得 `agent_session_id`，调用
-`search_get_agent_context(agent_session_id)`。以返回的 `candidate_task` 为当前工作契约：
+`goal_plus_search_get_agent_context(agent_session_id)`。以返回的 `candidate_task` 为当前工作契约：
 只在其中指定的 workspace 工作，遵守可修改范围和 `instructions`；未列出的可选能力不属于
 本次任务。
 

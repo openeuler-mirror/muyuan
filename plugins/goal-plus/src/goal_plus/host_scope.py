@@ -1,14 +1,12 @@
 """Host-local ownership and cleanup for Goal Plus execution resources.
 
 Execution scopes deliberately live outside Search records.  They bind live host
-resources to the native main-agent process without turning the Search runtime
+receipts to the native main-agent session without turning the Search runtime
 into a worker supervisor.
 """
 
 from __future__ import annotations
 
-import argparse
-import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -18,38 +16,25 @@ from typing import Any, Literal
 from goal_plus.infrastructure.state.files import load_json
 from goal_plus.bootstrap import (
     build_codex_scope_registry, build_scope_activation, build_scope_cleanup,
-    build_scope_guardian_launcher, build_scope_process_registry, build_scope_state,
+    build_scope_process_registry, build_scope_state,
 )
 from goal_plus.execution.scope import assert_scope_admission, newest_scope, normalize_native_agent_config, scope_attachments
-from goal_plus.execution.process_identity import process_alive
-from goal_plus.execution.scope_guardian import ScopeGuardian
-from goal_plus.ports.scope import ScopeAttachment, ScopeGuardianObservation, ScopeHost, validate_scope_id
-from goal_plus.ports.process_identity import ProcessWitness
+from goal_plus.ports.scope import ScopeAttachment, ScopeHost, ScopeRecord, SCOPE_PROCESS_TERMINAL_STATUSES
 
 def ensure_execution_scope(
     *,
     root_dir: Path | str,
-    host: ScopeHost,
+    agent_harness: ScopeHost,
     owner_session_id: str,
-    owner_pid: int,
     run_id: str | None = None,
     native_agent_config: dict[str, Any] | None = None,
-    start_guardian: bool = True,
     activation_id: str | None = None,
 ) -> dict[str, Any]:
-    return build_scope_activation(root_dir, _HostScopeCleanupServices(root_dir)).ensure(
-        host=host, owner_session_id=owner_session_id, owner_pid=owner_pid,
+    return build_scope_activation(root_dir).ensure(
+        agent_harness=agent_harness, owner_session_id=owner_session_id,
         attachment=ScopeAttachment.from_id(run_id) if run_id is not None else None,
         native_agent_config=native_agent_config,
-        start_guardian=start_guardian, activation_id=activation_id,
-    )
-
-
-def restore_execution_scope_guardians(
-    *, root_dir: Path | str, host: ScopeHost, owner_session_id: str,
-) -> None:
-    return build_scope_guardian_launcher(root_dir).restore_owner(
-        host=host, owner_session_id=owner_session_id,
+        activation_id=activation_id,
     )
 
 
@@ -132,34 +117,13 @@ def register_execution_process(
     root_dir: Path | str,
     scope_id: str,
     pid: int,
-    process_group_id: int | None,
     label: str,
     run_id: str | None = None,
     kind: Literal["candidate", "internal"] = "candidate",
 ) -> str:
     return build_scope_process_registry(root_dir).register(
-        scope_id=scope_id, pid=pid, process_group_id=process_group_id,
+        scope_id=scope_id, pid=pid,
         label=label, attachment=ScopeAttachment.from_id(run_id) if run_id is not None else None, kind=kind,
-    )
-
-
-def remember_execution_process(
-    *, root_dir: Path | str, scope_id: str, token: str, witness: ProcessWitness,
-) -> None:
-    return build_scope_process_registry(root_dir).remember(
-        scope_id=scope_id, token=token, witness=witness,
-    )
-
-
-def execution_process_witness(*, root_dir: Path | str, scope_id: str, token: str) -> ProcessWitness | None:
-    return build_scope_process_registry(root_dir).witness(
-        scope_id=scope_id, token=token,
-    )
-
-
-def observe_execution_processes(*, root_dir: Path | str, scope_id: str) -> None:
-    return build_scope_process_registry(root_dir).observe(
-        scope_id=scope_id,
     )
 
 
@@ -258,7 +222,7 @@ def pi_native_agent_config_for_run(
     scope = execution_scope_for_run(root_dir=root_dir, run_id=run_id)
     if scope is None:
         raise RuntimeError(f"Search run {run_id} has no Pi execution scope")
-    if scope.get("host") != "pi":
+    if scope.get("agent_harness") != "pi":
         raise RuntimeError(f"Search run {run_id} is not owned by a Pi execution scope")
     if scope.get("state") != "open":
         raise RuntimeError(f"Search run {run_id} Pi execution scope is not open")
@@ -271,10 +235,10 @@ def pi_native_agent_config_for_run(
 
 
 def execution_scope_for_owner(
-    *, root_dir: Path | str, host: ScopeHost, owner_session_id: str
+    *, root_dir: Path | str, agent_harness: ScopeHost, owner_session_id: str
 ) -> dict[str, Any] | None:
     return newest_scope(scope for scope in build_scope_state(root_dir).records() if (
-        scope.get("host") == host and scope.get("owner_session_id") == owner_session_id
+        scope.get("agent_harness") == agent_harness and scope.get("owner_session_id") == owner_session_id
     ))
 
 
@@ -309,60 +273,22 @@ def run_accepts_internal_agent_launch(
     return scope is None or scope.get("state") == "open"
 
 
-def _pool_paths(root_dir: Path | str, host_dir: str) -> list[Path]:
-    root = Path(root_dir).expanduser().resolve() / "host-pools" / host_dir
-    return sorted(root.glob("*/pool.json"))
-
-
-def _close_attachment_pools(
+def _close_attachment_sessions(
     *, root_dir: Path | str, attachment: ScopeAttachment, scope_id: str, timeout_seconds: float
 ) -> tuple[list[dict[str, Any]], list[str]]:
     snapshots: list[dict[str, Any]] = []
     errors: list[str] = []
-    for path in _pool_paths(root_dir, "pi"):
-        pool = load_json(path)
-        if pool.get("run_id") != attachment.identity or pool.get("execution_scope_id") != scope_id:
+    resource_dir = Path(root_dir).resolve() / "host-scopes" / scope_id / "thinkthread-sessions"
+    for path in resource_dir.glob("*.json"):
+        record = load_json(path)
+        if record.get("run_id") != attachment.identity:
             continue
         try:
-            from goal_plus.pi_pool import close_pi_search_pool
+            from goal_plus.infrastructure.thinkthread_sessions import release_session_resource
 
-            snapshot = close_pi_search_pool(
-                root_dir=root_dir,
-                pool_id=str(pool["pool_id"]),
-                mode="interrupt",
-                timeout_seconds=timeout_seconds,
-                _allow_early_close=True,
-            )
-            snapshots.append(snapshot)
-            if snapshot.get("state") != "closed":
-                errors.append(
-                    f"pi:{pool.get('pool_id')}:cleanup_incomplete:{snapshot.get('state')}"
-                )
-        except Exception as exc:  # noqa: BLE001 - cleanup must record host failures
-            errors.append(f"pi:{pool.get('pool_id')}:{type(exc).__name__}:{exc}")
-    for path in _pool_paths(root_dir, "thinkthread"):
-        pool = load_json(path)
-        if pool.get("run_id") != attachment.identity or pool.get("execution_scope_id") != scope_id:
-            continue
-        try:
-            from goal_plus.thinkthread_pool import close_pool
-
-            snapshot = close_pool(
-                root_dir=root_dir,
-                pool_id=str(pool["pool_id"]),
-                mode="interrupt",
-                timeout_seconds=timeout_seconds,
-            )
-            snapshots.append(snapshot)
-            if snapshot.get("state") != "closed":
-                errors.append(
-                    "thinkthread:"
-                    f"{pool.get('pool_id')}:cleanup_incomplete:{snapshot.get('state')}"
-                )
-        except Exception as exc:  # noqa: BLE001 - cleanup must record host failures
-            errors.append(
-                f"thinkthread:{pool.get('pool_id')}:{type(exc).__name__}:{exc}"
-            )
+            snapshots.append(release_session_resource(path, timeout=timeout_seconds))
+        except Exception as exc:
+            errors.append(f"thinkthread-session:{path.stem}:{type(exc).__name__}:{exc}")
     return snapshots, errors
 
 
@@ -374,128 +300,13 @@ def close_run_internal_agents(
     try:
         scope = execution_scope_for_run(root_dir=root_dir, run_id=run_id)
         if scope is not None:
-            remaining, process_errors = build_scope_process_registry(root_dir).stop(
+            build_scope_process_registry(root_dir).release(
                 scope_id=str(scope["scope_id"]), attachment=ScopeAttachment.from_id(run_id),
-                timeout_seconds=timeout_seconds, kind="internal",
+                kind="internal",
             )
-            errors.extend(process_errors)
-            if remaining:
-                errors.append(f"internal:processes_remaining:{remaining}")
     except Exception as exc:
         errors.append(f"internal:{type(exc).__name__}:{exc}")
     return errors
-
-
-def interrupt_run_candidate(
-    *,
-    root_dir: Path | str,
-    scope_id: str,
-    run_id: str,
-    candidate_id: str,
-) -> dict[str, Any]:
-    """Request cancellation of one Pi-owned candidate without closing its run."""
-    scope = execution_scope_snapshot(root_dir=root_dir, scope_id=scope_id)
-    if scope.get("host") != "pi":
-        raise RuntimeError(
-            "Codex candidate interruption must use the native interrupt_agent tool"
-        )
-    if scope.get("state") != "open":
-        raise RuntimeError(f"execution scope {scope_id} is not open")
-    if run_id not in scope.get("run_ids", []):
-        raise PermissionError(
-            f"execution scope {scope_id} does not own Search run {run_id}"
-        )
-
-    receipts: list[dict[str, Any]] = []
-    for path in _pool_paths(root_dir, "pi"):
-        pool = load_json(path)
-        if (
-            pool.get("run_id") != run_id
-            or pool.get("execution_scope_id") != scope_id
-        ):
-            continue
-        from goal_plus.pi_pool import interrupt_pi_search_candidate
-
-        receipts.append(
-            interrupt_pi_search_candidate(
-                root_dir=root_dir,
-                pool_id=str(pool["pool_id"]),
-                candidate_id=candidate_id,
-            )
-        )
-    for path in _pool_paths(root_dir, "thinkthread"):
-        pool = load_json(path)
-        if (
-            pool.get("run_id") != run_id
-            or pool.get("execution_scope_id") != scope_id
-        ):
-            continue
-        from goal_plus.thinkthread_pool import interrupt_candidate
-
-        receipts.append(
-            interrupt_candidate(
-                root_dir=root_dir,
-                pool_id=str(pool["pool_id"]),
-                candidate_id=candidate_id,
-            )
-        )
-    statuses = [str(item.get("status") or "rejected") for item in receipts]
-    status = (
-        "rejected"
-        if "rejected" in statuses
-        else "accepted"
-        if "accepted" in statuses
-        else "already_terminal"
-        if "already_terminal" in statuses
-        else "not_found"
-    )
-    return {
-        "run_id": run_id,
-        "candidate_id": candidate_id,
-        "status": status,
-        "resources": receipts,
-    }
-
-
-def interrupt_allocation_candidates(
-    *,
-    root_dir: Path | str,
-    scope_id: str,
-    run_id: str,
-    decision_id: str,
-) -> dict[str, Any]:
-    """Request cancellation for every retirement in one Allocation Decision."""
-    from goal_plus.infrastructure.state.allocation import FileAllocationState
-
-    decision = FileAllocationState(root_dir).load_allocation_decision(
-        run_id, decision_id
-    )
-    if decision.status not in {"pending", "applied"}:
-        raise RuntimeError(
-            f"allocation decision {decision_id} cannot interrupt candidates in "
-            f"status {decision.status}"
-        )
-    candidates = [
-        interrupt_run_candidate(
-            root_dir=root_dir,
-            scope_id=scope_id,
-            run_id=run_id,
-            candidate_id=candidate_id,
-        )
-        for candidate_id in decision.retire_candidate_ids
-    ]
-    rejected = [
-        item["candidate_id"]
-        for item in candidates
-        if item.get("status") == "rejected"
-    ]
-    return {
-        "run_id": run_id,
-        "decision_id": decision_id,
-        "status": "rejected" if rejected else "accepted",
-        "rejected_candidate_ids": rejected,
-        "candidates": candidates,
-    }
 
 
 def _close_run_internal_drainers(
@@ -550,10 +361,10 @@ def _close_run_internal_drainers(
 class _HostScopeCleanupServices:
     root_dir: Path | str
 
-    def close_pools(
+    def close_sessions(
         self, *, attachment: ScopeAttachment, scope_id: str, timeout_seconds: float,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        return _close_attachment_pools(
+        return _close_attachment_sessions(
             root_dir=self.root_dir, attachment=attachment, scope_id=scope_id, timeout_seconds=timeout_seconds,
         )
 
@@ -562,8 +373,8 @@ class _HostScopeCleanupServices:
             root_dir=self.root_dir, run_id=run_id, timeout_seconds=timeout_seconds,
         )
 
-    def codex_run_is_quiescent(self, run_id: str) -> bool:
-        return _codex_run_is_durably_quiescent(self.root_dir, run_id)
+    def codex_run_is_quiescent(self, run_id: str, *, scope: ScopeRecord) -> bool:
+        return _codex_run_is_durably_quiescent(self.root_dir, run_id, scope=scope)
 
 
 def close_execution_scope(
@@ -586,22 +397,17 @@ def close_run_candidates(
     )
 
 
-def _codex_run_is_durably_quiescent(root_dir: Path | str, run_id: str) -> bool:
+def _codex_run_is_durably_quiescent(root_dir: Path | str, run_id: str, *, scope: ScopeRecord) -> bool:
     from goal_plus.candidate_host import candidate_host_queries
 
     queries = candidate_host_queries(root_dir)
     sessions = queries.sessions(run_id)
     if not sessions:
         return True
-    terminal = {"completed", "failed", "interrupted", "timed_out", "cancelled"}
     for session in sessions:
-        if session.host != "codex":
+        if session.agent_harness != "codex":
             continue
-        metadata = session.host_handle.metadata
-        if metadata.get("subagent_stop_observed_at"):
-            continue
-        if str(metadata.get("status") or metadata.get("terminal_status") or "").lower() in terminal:
-            continue
+        metadata = session.session_handle.metadata
         recovery = queries.recovery(run_id, session.candidate_id)
         if (
             recovery is not None and recovery.state == "restored"
@@ -610,39 +416,15 @@ def _codex_run_is_durably_quiescent(root_dir: Path | str, run_id: str) -> bool:
         ):
             # Restore already required trusted quiescence for these exact sessions.
             continue
+        if metadata.get("transport") == "app-server":
+            # A released receipt closes admission for this exact session.
+            # It makes no claim about operating-system process lifetime.
+            resources = [item for item in scope.get("processes", [])
+                         if item.get("run_id") == run_id
+                         and item.get("kind", "candidate") == "candidate"
+                         and item.get("label") == f"native-session:{session.agent_session_id}"]
+            if resources and all(item.get("status") in SCOPE_PROCESS_TERMINAL_STATUSES for item in resources):
+                continue
+            return False
         return False
     return True
-
-
-def execution_scope_observation(*, root_dir: Path | str, scope_id: str) -> ScopeGuardianObservation:
-    scope = execution_scope_snapshot(root_dir=root_dir, scope_id=scope_id)
-    return ScopeGuardianObservation.model_validate({
-        name: scope.get(name) for name in ScopeGuardianObservation.model_fields
-    })
-
-
-def run_guardian(*, root_dir: Path | str, scope_id: str) -> int:
-    scope_id = validate_scope_id(scope_id)
-    root_dir = Path(root_dir).expanduser().resolve()
-    return ScopeGuardian(
-        read=lambda: execution_scope_observation(root_dir=root_dir, scope_id=scope_id),
-        close=lambda reason: close_execution_scope(root_dir=root_dir, scope_id=scope_id, reason=reason),
-        owner_alive=process_alive, pause=time.sleep,
-        observe_resources=lambda: observe_execution_processes(root_dir=root_dir, scope_id=scope_id),
-    ).run()
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Goal Plus host execution-scope guardian")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    guard = subparsers.add_parser("guard")
-    guard.add_argument("--root", required=True)
-    guard.add_argument("--scope-id", required=True)
-    args = parser.parse_args(argv)
-    if args.command == "guard":
-        return run_guardian(root_dir=args.root, scope_id=args.scope_id)
-    return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

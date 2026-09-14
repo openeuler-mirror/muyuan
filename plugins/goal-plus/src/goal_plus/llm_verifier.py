@@ -308,14 +308,23 @@ class LlmVerifier:
             raise ValueError("verifier prompt exceeds the bounded input limit")
         run = self.state.read_run(task.run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
-        host = "codex" if frozen.worker_host == "codex" else "pi-rpc"
+        agent_harness = frozen.agent_harness
+        require_inherited_host(agent_harness)
         model = os.environ.get(CODEX_MODEL_ENV)
         reasoning = os.environ.get(CODEX_REASONING_EFFORT_ENV)
+        if agent_harness == "pi":
+            from goal_plus.host_scope import pi_native_agent_config_for_run
+
+            inherited = pi_native_agent_config_for_run(
+                root_dir=self.root_dir, run_id=task.run_id,
+            )
+            model = inherited["model_pattern"]
+            reasoning = inherited.get("thinking_level")
         timeout = 900.0
         output_schema = verifier_result_schema(task.allocation_score_names)
         instructions = self._evaluation_instructions(policy_rules)
         pi_tools = None
-        if host == "pi-rpc":
+        if agent_harness == "pi":
             instructions += (
                 f"\n必须调用 {PI_VERIFIER_TOOL_NAME} 作为最后且唯一的输出动作；"
                 "不要直接输出 JSON 文本，也不要调用其他工具。"
@@ -337,7 +346,7 @@ class LlmVerifier:
                 candidate_id=task.candidate_id,
                 iteration=task.iteration,
                 attempt=task.attempts,
-                host=host,
+                agent_harness=agent_harness,
                 model=str(model) if model else None,
                 reasoning_effort=str(reasoning) if reasoning else None,
                 timeout_seconds=timeout,
@@ -345,7 +354,7 @@ class LlmVerifier:
             include_event_timestamps=True,
         )
         request = StructuredInferenceRequest(
-            host=host,
+            agent_harness=agent_harness,
             instructions=instructions,
             prompt=prompt,
             output_schema=output_schema,
@@ -367,7 +376,7 @@ class LlmVerifier:
                 and task.lease is not None
                 and current.lease.worker_id == task.lease.worker_id
             ),
-            usage=_codex_usage if host == "codex" else _pi_usage,
+            usage=_codex_usage if agent_harness == "codex" else _pi_usage,
             registration=build_inference_registration(
                 self.root_dir, task.run_id, label="llm-verifier"
             ),
@@ -379,7 +388,7 @@ class LlmVerifier:
             raise RuntimeError(result.stop_detail or "LLM verifier terminated")
         if result.returncode != 0:
             raise RuntimeError(
-                f"{'codex exec' if host == 'codex' else 'pi'} exited "
+                f"{'codex exec' if agent_harness == 'codex' else 'pi'} exited "
                 f"{result.returncode}: {detail or 'no process output'}"
             )
         if result.output_error is not None:
@@ -405,7 +414,8 @@ class LlmVerifier:
         )
         invocation = VerifierInvocationRecord(
             invocation_id=result.invocation.invocation_id,
-            backend=host,
+            agent_harness=agent_harness,
+            reasoning_effort=result.invocation.reasoning_effort,
             model=result.invocation.model or "host-default",
             started_at=result.invocation.started_at,
             completed_at=result.invocation.completed_at,
@@ -517,7 +527,7 @@ def kick_verifier(
     root_dir: Path | str,
     run_id: str,
     *,
-    host: str,
+    agent_harness: str,
 ) -> bool:
     if os.environ.get(VERIFIER_DISABLED_ENV, "").strip().lower() in {
         "1",
@@ -537,7 +547,7 @@ def kick_verifier(
         )
 
         work = build_internal_agent_work(root_dir).inspect(run_id)
-        if not work.verifier_enabled or work.host != host:
+        if not work.verifier_enabled or work.agent_harness != agent_harness:
             return False
         if not run_accepts_internal_agent_launch(root_dir=root_dir, run_id=run_id):
             return False
@@ -551,7 +561,7 @@ def kick_verifier(
         ) as register_process:
             return _drainer(root_dir, run_id).start(
                 has_work=lambda: _has_work(state, consumer, run_id),
-                environment=lambda: inherited_host_environment(host),
+                environment=lambda: inherited_host_environment(agent_harness),
                 register_process=register_process,
             )
     except Exception as exc:
@@ -577,7 +587,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         work = FileCandidateQueries(args.root).read_run(args.run_id)
         frozen = FileCandidateQueries(args.root).read_frozen_spec(work.frozen_spec_id)
-        require_inherited_host(frozen.worker_host)
+        require_inherited_host(frozen.agent_harness)
         drain_verifier_tasks(
             args.root, args.run_id, generation=args.generation
         )

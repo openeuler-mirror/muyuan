@@ -37,7 +37,7 @@ circle-packing/
     `-- runs/<run_id>/   # 候选 Evidence、publication、report.md、report.html
 ```
 
-`git_worktree` backend 会校验包含该模板的外层 Git 仓库是否干净。开始运行前应处理
+`git_worktree` 工作区实现会校验包含该模板的外层 Git 仓库是否干净。开始运行前应处理
 staged、unstaged 或未忽略的 untracked 文件；`.gp/` 本身已被忽略，不会造成判脏。
 
 ## 检查本地 baseline
@@ -88,7 +88,7 @@ Pi prompt 不固定 `main`、`annotator` 或 `workers`，直接使用 Pi 当前�
 ## 工作区合同
 
 当前目录中的 [`search-spec.json`](search-spec.json) 是权威 SearchSpec。它使用
-`source_path="workspace-template"`、`workspace_backend=git_worktree` 和
+`source_path="workspace-template"`、`workspace_provider=git_worktree` 和
 `promotion_mode=artifact_only`：
 
 - `workspace-template/` 始终只读。
@@ -97,9 +97,8 @@ Pi prompt 不固定 `main`、`annotator` 或 `workers`，直接使用 Pi 当前�
 - selection 后生成 publication artifact，但不应用回模板。
 - 任务终态后生成一次 `report.md` 和 `report.html`。
 
-十分钟配置是整个 Goal Plus 任务的 deadline。候选 lease 和必要的收尾边界由冻结
-SearchSpec 与 Host 合同执行，不在用户 prompt 中额外编排。时间预算不改变结果是否有效
-的验收标准。
+十分钟配置是整个 Goal Plus 任务的 deadline。候选返回后由 Main 根据 Evidence 判断
+是否继续；没有固定 worker 时长或提前收尾窗口。时间预算不改变结果有效性的验收标准。
 
 ## 检查运行结果
 

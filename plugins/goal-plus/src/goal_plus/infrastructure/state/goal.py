@@ -1,4 +1,4 @@
-"""Decode canonical Goal history and read durable session/pool ownership."""
+"""Decode canonical Goal history and read durable session ownership."""
 
 import json
 from pathlib import Path
@@ -108,23 +108,6 @@ class FileGoalQueries:
             for path in (self.root_dir / "runs").glob("*/agent_sessions/*.json")
             if path.stem == agent_session_id
         ]
-
-    def pool_run_id(self, pool_id: str) -> str | None:
-        path = next(
-            (
-                path
-                for path in (self.root_dir / "host-pools" / "pi").glob("*/pool.json")
-                if path.parent.name == pool_id
-            ),
-            None,
-        )
-        if path is None:
-            return None
-        try:
-            run_id = load_json(path).get("run_id")
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
-            return None
-        return run_id if isinstance(run_id, str) else None
 
     def read_goal(self, goal_plus_id: str) -> GoalPlusRecord:
         payload = load_json(self.goals_dir / goal_plus_id / "goal.json")

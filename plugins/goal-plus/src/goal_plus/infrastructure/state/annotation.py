@@ -105,7 +105,7 @@ class FileAnnotationState:
         return [
             AnnotationCandidateEvidence(
                 candidate_id=record.candidate_id,
-                workspace_backend=record.task.workspace_backend,
+                workspace_provider=record.task.workspace_provider,
                 iterations=record.iterations,
             )
             for record in records
@@ -172,7 +172,7 @@ class FileAnnotationState:
     def _context_record(record: CandidateRecord) -> AnnotationCandidateContext:
         return AnnotationCandidateContext(
             candidate_id=record.candidate_id,
-            workspace_backend=record.task.workspace_backend,
+            workspace_provider=record.task.workspace_provider,
             iterations=record.iterations,
             workspace=record.task.workspace,
             workspace_base_revision=record.task.workspace_base_revision,

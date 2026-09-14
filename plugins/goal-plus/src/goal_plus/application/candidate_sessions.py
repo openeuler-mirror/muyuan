@@ -1,16 +1,17 @@
 """Candidate session identity, provenance and launch admission."""
 
 import math
-from typing import Any
+from typing import Any, Literal
 from goal_plus.application.adaptive_admission import AdaptiveAdmission
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
     require_current_session,
+    require_session_execution,
     require_worker_iteration_state,
 )
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.application.search_context import SearchContext
-from goal_plus.domain.agents import AgentHostHandle
+from goal_plus.domain.agents import AgentSessionHandle, AgentHarnessKind, AgentRuntimeProvider
 from goal_plus.domain.search import AgentSessionRecord, FrozenSpec, RunState
 from goal_plus.domain.time import outer_deadline_epoch
 from goal_plus.domain.worker_policy import (
@@ -23,6 +24,7 @@ from goal_plus.ports.candidate_sessions import (
     MODEL_HANDOFF_RELATIVE_PATH,
 )
 from goal_plus.ports.clock import Clock
+from goal_plus.ports.session import SessionInvocationResult
 from goal_plus.ports.state import CandidateRecord
 
 
@@ -52,6 +54,8 @@ class CandidateSessions:
         allow_stale: bool = False,
     ) -> AgentSessionRecord:
         session = self.state.read_agent_session(agent_session_id, run_id)
+        run = self.state.read_run(session.run_id)
+        require_session_execution(session, self.state.read_frozen_spec(run.frozen_spec_id))
         if not allow_stale:
             require_current_session(
                 session, self.state.read_candidate(session.run_id, session.candidate_id)
@@ -70,7 +74,6 @@ class CandidateSessions:
     ) -> dict[str, Any]:
         budget = self.constrain_budget(
             candidate_record.task.run_id,
-            frozen,
             worker_budget_override
             if worker_budget_override is not None
             else candidate_worker_budget(frozen, candidate_record.task),
@@ -89,7 +92,6 @@ class CandidateSessions:
     ) -> dict[str, Any]:
         budget = self.constrain_budget(
             candidate_record.task.run_id,
-            frozen,
             worker_budget_override
             if worker_budget_override is not None
             else candidate_worker_budget(frozen, candidate_record.task),
@@ -118,6 +120,61 @@ class CandidateSessions:
             reuse_initial=True,
         )
 
+    def prepare_invocation(
+        self, run_id: str, candidate_id: str, *, agent_harness: AgentHarnessKind,
+        runtime_provider: AgentRuntimeProvider = "direct",
+        mode: Literal["start", "continue", "refresh"] = "start",
+        agent_session_id: str | None = None,
+        worker_budget: dict[str, Any] | None = None,
+    ) -> AgentSessionRecord:
+        """Resolve provenance and prepare a launch; the host still executes it."""
+        if mode not in {"start", "continue", "refresh"}:
+            raise ValueError("unsupported candidate invocation mode")
+        if agent_session_id is not None and mode != "continue":
+            raise ValueError("agent_session_id requires continue mode")
+        run = self.state.read_run(run_id)
+        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+        if (frozen.agent_harness, frozen.runtime_provider) != (agent_harness, runtime_provider):
+            raise ValueError("candidate invocation host does not match the frozen worker host")
+        if mode == "start":
+            return self.start_agent_session(run_id, candidate_id, worker_budget=worker_budget)
+        if mode == "refresh":
+            return self.redispatch_candidate(run_id, candidate_id, worker_budget=worker_budget)
+        sessions = [
+            session for session in self.state.read_agent_sessions(run_id)
+            if session.candidate_id == candidate_id and session.agent_harness == agent_harness
+            and session.runtime_provider == runtime_provider
+            and (agent_session_id is None or session.agent_session_id == agent_session_id)
+        ]
+        if not sessions:
+            raise ValueError("no native session belongs to the requested candidate")
+        return self.continue_agent_session(sessions[-1].agent_session_id, worker_budget=worker_budget)
+
+    def record_run_request(self, agent_session_id: str, call_id: str, fingerprint: str) -> None:
+        from goal_plus.domain.search import CandidateRunRequest
+
+        session = self.state.read_agent_session(agent_session_id)
+        with self.state.lock_run(session.run_id):
+            session = self.state.read_agent_session(agent_session_id)
+            candidate = self.state.read_candidate(session.run_id, session.candidate_id)
+            require_current_session(session, candidate)
+            previous = next((item for item in session.run_requests if item.call_id == call_id), None)
+            if previous is not None:
+                if previous.fingerprint != fingerprint:
+                    raise ValueError("SessionRunConflict: call_id was used with different input")
+                return
+            session.run_requests.append(CandidateRunRequest(call_id=call_id, fingerprint=fingerprint))
+            self.state.write_agent_session(session)
+
+    def replace_session(self, agent_session_id: str, *, call_id: str, fingerprint: str) -> AgentSessionRecord:
+        """Host calls only after confirming the idle controller's resources are closed."""
+        session = self.state.read_agent_session(agent_session_id)
+        return self._create_agent_session(
+            run_id=session.run_id, candidate_id=session.candidate_id,
+            directive={"state_level_resume": True}, replaced_agent_session_id=agent_session_id,
+            run_request=(call_id, fingerprint),
+        )
+
     def redispatch_candidate(
         self,
         run_id: str,
@@ -129,7 +186,7 @@ class CandidateSessions:
 
         This is state-level resume, not same-worker continuation. It allocates
         a new agent_session_id for the same candidate/workspace. Inner-agent
-        behavior and any legacy native role come from the frozen binding. A
+        behavior comes from the frozen binding. A
         worker budget override applies only to this launch.
         """
         run = self.state.read_run(run_id)
@@ -160,11 +217,11 @@ class CandidateSessions:
             "resume_candidate_id": candidate_id,
             "previous_agent_session_ids": previous_session_ids,
             "resume_instruction": (
-                "这是现有候选的新 worker session。首先调用 search_get_agent_context，"
+                "这是现有候选的新 worker session。首先调用 goal_plus_search_get_agent_context，"
                 "使用其中本 candidate 的紧凑历史和可选 ledger projection 恢复权威上下文；"
                 "仅在必须"
-                "核对旧轮次详情时调用 search_list_iterations，再读取 "
-                "search_get_global_evidence。"
+                "核对旧轮次详情时调用 goal_plus_search_list_iterations，再读取 "
+                "goal_plus_search_get_global_evidence。"
             ),
         }
         return self._create_agent_session(
@@ -182,6 +239,8 @@ class CandidateSessions:
         directive: dict[str, Any] | str | None,
         worker_budget_override: dict[str, Any] | None = None,
         reuse_initial: bool = False,
+        replaced_agent_session_id: str | None = None,
+        run_request: tuple[str, str] | None = None,
     ) -> AgentSessionRecord:
         run = self.state.read_run(run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
@@ -204,6 +263,11 @@ class CandidateSessions:
 
             candidate_record = self.state.read_candidate(run_id, candidate_id)
             require_candidate_not_recovering(candidate_record)
+            if replaced_agent_session_id is not None:
+                require_current_session(self.state.read_agent_session(replaced_agent_session_id), candidate_record)
+                if candidate_record.status not in {"created", "evaluated"}:
+                    raise RuntimeError("candidate cannot be redispatched in its current state")
+                candidate_record.execution_generation += 1
             workspace = candidate_record.task.workspace
             if self._adaptive_search_is_enabled(frozen):
                 self.admission.assert_candidate_execution_allowed(
@@ -213,7 +277,6 @@ class CandidateSessions:
 
             if worker_budget_override is not None:
                 worker_budget_override = normalize_worker_budget_override(
-                    worker_host=frozen.worker_host,
                     worker_budget=worker_budget_override,
                 )
 
@@ -237,6 +300,7 @@ class CandidateSessions:
                     None,
                 )
                 if session is not None:
+                    require_session_execution(session, frozen)
                     if (
                         session.directive == normalized_directive
                         and worker_budget_override is None
@@ -273,16 +337,12 @@ class CandidateSessions:
                 candidate_record=candidate_record,
                 worker_budget_override=worker_budget_override,
             )
-            host = frozen.worker_host
-            if host == "pi-rpc":
+            agent_harness = frozen.agent_harness
+            if agent_harness == "pi" and frozen.runtime_provider == "direct":
                 launch["run_id"] = run_id
-            host_handle = AgentHostHandle(host=host)
-            if host == "codex":
-                host_handle = host_handle.model_copy(
-                    update={"task_name": launch.get("task_name")}
-                )
-            elif host == "pi-rpc":
-                host_handle = host_handle.model_copy(
+            session_handle = AgentSessionHandle(agent_harness=agent_harness, runtime_provider=frozen.runtime_provider)
+            if agent_harness == "pi" and frozen.runtime_provider == "direct":
+                session_handle = session_handle.model_copy(
                     update={
                         "external_id": launch.get("session_id", agent_session_id),
                         "metadata": {"continuation": "native_session"},
@@ -295,8 +355,9 @@ class CandidateSessions:
                 candidate_id=candidate_id,
                 selected_model=candidate_record.task.selected_model,
                 model_provenance=candidate_record.task.model_provenance,
-                host=host,
-                host_handle=host_handle,
+                agent_harness=agent_harness,
+                runtime_provider=frozen.runtime_provider,
+                session_handle=session_handle,
                 created_at=now,
                 updated_at=now,
                 directive=normalized_directive,
@@ -304,7 +365,18 @@ class CandidateSessions:
                 launch=launch,
                 counters={},
             )
+            if run_request is not None:
+                from goal_plus.domain.search import CandidateRunRequest
+
+                request = CandidateRunRequest(call_id=run_request[0], fingerprint=run_request[1],
+                                              target_session_id=agent_session_id)
+                session.run_requests.append(request)
+                previous = self.state.read_agent_session(replaced_agent_session_id)
+                previous.run_requests.append(request)
+                self.state.write_agent_session(previous)
             self.state.write_session_index(run)
+            if replaced_agent_session_id is not None:
+                self.state.write_execution_generation(candidate_record)
             self.state.write_agent_session(session)
             return session
 
@@ -315,42 +387,17 @@ class CandidateSessions:
     ) -> AgentSessionRecord:
         """Bind a runtime session to the host-specific worker handle."""
         session = self.session(agent_session_id)
-        host = handle.get("host", session.host)
-        if host != session.host:
+        handle = AgentSessionHandle.model_validate({"agent_harness": session.agent_harness, "runtime_provider": session.runtime_provider, **handle}).model_dump(exclude_unset=True)
+        agent_harness = handle.get("agent_harness", session.agent_harness)
+        if agent_harness != session.agent_harness or handle["runtime_provider"] != session.runtime_provider:
             raise ValueError(
-                f"agent session host is {session.host}, got handle for {host}"
+                f"agent session host is {session.agent_harness}, got handle for {agent_harness}"
             )
 
         metadata = {
-            **session.host_handle.metadata,
+            **session.session_handle.metadata,
             **dict(handle.get("metadata") or {}),
         }
-        if session.host == "pi-rpc":
-            prior_dispatches = session.host_handle.metadata.get("dispatches")
-            dispatches = (
-                list(prior_dispatches) if isinstance(prior_dispatches, list) else []
-            )
-            handle_metadata = dict(handle.get("metadata") or {})
-            metrics = handle_metadata.get("pi_metrics")
-            metrics = metrics if isinstance(metrics, dict) else {}
-            dispatches.append(
-                {
-                    "process_pid": handle_metadata.get("process_pid"),
-                    "started_at": metrics.get("dispatch_started_at")
-                    or metrics.get("started_at"),
-                    "ended_at": metrics.get("dispatch_ended_at")
-                    or metrics.get("ended_at"),
-                    "duration_seconds": metrics.get("dispatch_duration_seconds")
-                    or metrics.get("duration_seconds"),
-                    "usage": metrics.get("usage_delta"),
-                    "baseline_last_entry_id": metrics.get("baseline_last_entry_id"),
-                    "final_last_entry_id": metrics.get("final_last_entry_id"),
-                    "timed_out": bool(handle_metadata.get("timed_out")),
-                    "runner_failed": bool(handle_metadata.get("runner_failed")),
-                }
-            )
-            metadata["dispatches"] = dispatches
-            metadata["dispatch_count"] = len(dispatches)
         progress = metadata.get("progress_handoff")
         if isinstance(progress, dict) and not isinstance(
             progress.get("model_handoff"), dict
@@ -385,25 +432,76 @@ class CandidateSessions:
         if handoff_error:
             metadata["progress_handoff_error"] = handoff_error
         metadata["bound_at"] = self.clock.timestamp()
-        updated_handle = session.host_handle.model_copy(
+        updated_handle = session.session_handle.model_copy(
             update={
-                "host": session.host,
+                "agent_harness": session.agent_harness,
                 "external_id": handle.get(
-                    "external_id", session.host_handle.external_id
+                    "external_id", session.session_handle.external_id
                 ),
-                "task_name": handle.get("task_name", session.host_handle.task_name),
-                "nickname": handle.get("nickname", session.host_handle.nickname),
+                "nickname": handle.get("nickname", session.session_handle.nickname),
                 "metadata": metadata,
             }
         )
         updated = session.model_copy(
             update={
-                "host_handle": updated_handle,
+                "session_handle": updated_handle,
                 "updated_at": self.clock.timestamp(),
             }
         )
         self.state.write_agent_session(updated)
         return updated
+
+    def record_native_invocation(
+        self, agent_session_id: str, result: SessionInvocationResult,
+    ) -> AgentSessionRecord:
+        """Persist exact host observations without granting execution or settling Evidence."""
+        initial = self.session(agent_session_id)
+        with self.state.lock_run(initial.run_id):
+            session = self.session(agent_session_id)
+            if (result.agent_harness, result.runtime_provider) != (session.agent_harness, session.runtime_provider):
+                raise PermissionError("observation does not match session execution identity")
+            if session.session_handle.external_id != result.native_session_id:
+                raise PermissionError("observation does not belong to the native session handle")
+            observation = result.observation
+            if observation is None:
+                return session
+            metadata = dict(session.session_handle.metadata)
+            dispatches = list(metadata.get("dispatches") or [])
+            receipt = {
+                "agent_harness": result.agent_harness,
+                "runtime_provider": result.runtime_provider,
+                "native_session_id": result.native_session_id,
+                "invocation_id": result.invocation_id,
+                "state": result.state,
+                "started_at": observation.started_at,
+                "ended_at": observation.ended_at,
+                "duration_seconds": observation.duration_seconds,
+                "usage": result.usage,
+            }
+            for previous in dispatches:
+                if (
+                    previous.get("native_session_id") == result.native_session_id
+                    and previous.get("invocation_id") == result.invocation_id
+                ):
+                    if previous != receipt:
+                        raise ValueError("native invocation observation already recorded with different facts")
+                    return session
+            dispatches.append(receipt)
+            metadata.update(
+                dispatches=dispatches, dispatch_count=len(dispatches),
+                terminal_state=result.state, started_at=dispatches[0]["started_at"],
+                ended_at=observation.ended_at,
+                duration_seconds=sum(item["duration_seconds"] for item in dispatches),
+            )
+            if session.agent_harness == "pi" and observation.pi_metrics is not None:
+                metadata["pi_metrics"] = observation.pi_metrics
+                metadata["session_file"] = observation.pi_metrics.get("session_file")
+            updated = session.model_copy(update={
+                "session_handle": session.session_handle.model_copy(update={"metadata": metadata}),
+                "updated_at": self.clock.timestamp(),
+            })
+            self.state.write_agent_session(updated)
+            return updated
 
     def continue_agent_session(
         self,
@@ -442,7 +540,6 @@ class CandidateSessions:
             )
 
         worker_budget_override = normalize_worker_budget_override(
-            worker_host=session.host,
             worker_budget=worker_budget,
         )
         launch = self._build_continue_launch_payload(
@@ -477,14 +574,12 @@ class CandidateSessions:
             else candidate_worker_budget(frozen, candidate_record.task)
         )
         return normalize_worker_budget_override(
-            worker_host=frozen.worker_host,
             worker_budget=worker_budget,
         )
 
     def constrain_budget(
         self,
         run_id: str,
-        frozen: FrozenSpec,
         worker_budget: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
         deadline_value = self.context.outer_deadline(run_id)
@@ -493,16 +588,11 @@ class CandidateSessions:
         deadline = outer_deadline_epoch(deadline_value)
         if deadline is None:
             raise RuntimeError("invalid GOAL_PLUS_OUTER_DEADLINE_AT value")
-        reserve = float(
-            frozen.spec.strategy.config.get("closeout_reserve_seconds")
-            or frozen.spec.strategy.config.get("reserve_closeout_seconds")
-            or 0
-        )
-        available = deadline - self.clock.now() - reserve
+        available = deadline - self.clock.now()
         if available < 1:
             raise RuntimeError(
                 "OuterDeadlineExceeded: no candidate worker can start after the "
-                "Goal Plus closeout boundary"
+                "Goal Plus deadline"
             )
         if worker_budget is None or worker_budget.get("max_runtime_seconds") is None:
             return worker_budget
@@ -512,6 +602,18 @@ class CandidateSessions:
             max(1, math.floor(available)),
         )
         return effective
+
+    def invocation_timeout(self, agent_session_id: str, requested: float) -> float:
+        """Bound a native invocation by its prepared budget and current Goal deadline."""
+        if not math.isfinite(requested) or requested <= 0:
+            raise ValueError("invocation timeout must be finite and positive")
+        session = self.session(agent_session_id)
+        maximum = (session.launch.get("budget_control") or {}).get("max_runtime_seconds")
+        effective = min(requested, maximum) if maximum is not None else requested
+        budget = self.constrain_budget(
+            session.run_id, {"max_runtime_seconds": math.ceil(effective)},
+        )
+        return min(effective, budget["max_runtime_seconds"])
 
     def _normalize_main_directive(
         self,
@@ -544,10 +646,10 @@ class CandidateSessions:
             self.authorization.require_search_execution(run_id)
             require_worker_iteration_state(run, "bind ThinkThread candidate")
             record = self.state.read_candidate(run_id, candidate_id)
-            if record.task.workspace_backend != "thinkthread":
-                raise ValueError("candidate does not use the ThinkThread backend")
+            if record.task.workspace_provider != "thinkthread":
+                raise ValueError("candidate does not use the ThinkThread workspace_provider")
             session = self.session(agent_session_id, run_id=run_id)
-            if session.candidate_id != candidate_id or session.host != "thinkthread":
+            if session.candidate_id != candidate_id or session.runtime_provider != "thinkthread":
                 raise PermissionError(
                     "ThinkThread Child binding does not match the candidate session"
                 )
@@ -574,7 +676,8 @@ class CandidateSessions:
         self.bind_agent_handle(
             agent_session_id,
             {
-                "host": "thinkthread",
+                "agent_harness": "pi",
+                "runtime_provider": "thinkthread",
                 "external_id": thinkthread_id,
                 "metadata": {
                     "fs_branch_id": branch_id,

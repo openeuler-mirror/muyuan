@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from goal_plus.models import (
-    AgentHostHandle,
+    AgentSessionHandle,
     AgentSessionRecord,
     ArtifactRef,
     Budget,
@@ -381,7 +381,7 @@ def test_required_supplemental_evaluation_rejects_disabled_mode(
         match="requires GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED=1",
     ):
         FileSearchRuntime(tmp_path / ".gp-missing").freeze_spec(
-            SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex"
+            SearchSpec.model_validate(data), [project / "evaluator.py"], agent_harness="codex"
         )
 
 
@@ -395,7 +395,7 @@ def test_supplemental_evaluation_does_not_change_frozen_spec(
     monkeypatch.setenv(SUPPLEMENTAL_EVALUATION_REQUIRED_ENV, "1")
 
     frozen = FileSearchRuntime(tmp_path / ".gp").freeze_spec(
-        SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex"
+        SearchSpec.model_validate(data), [project / "evaluator.py"], agent_harness="codex"
     )
 
     frozen_spec = frozen.spec.model_dump(mode="json")
@@ -505,24 +505,24 @@ def test_verifier_resource_lock_rejects_blank_names() -> None:
         VerifierCommand.model_validate(command)
 
 
-def test_search_spec_supports_registered_workspace_backends() -> None:
+def test_search_spec_supports_registered_workspace_providers() -> None:
     default_spec = SearchSpec.model_validate(valid_spec_dict())
-    assert default_spec.workspace.backend == "git_worktree"
+    assert default_spec.workspace.provider == "git_worktree"
     assert default_spec.model_dump(mode="json")["workspace"] == {
-        "backend": "git_worktree",
+        "provider": "git_worktree",
         "promotion_mode": "apply",
     }
 
     copy_data = valid_spec_dict()
-    copy_data["workspace"] = {"backend": "copy"}
+    copy_data["workspace"] = {"provider": "copy"}
     copy_spec = SearchSpec.model_validate(copy_data)
-    assert copy_spec.workspace.backend == "copy"
+    assert copy_spec.workspace.provider == "copy"
     assert copy_spec.workspace.promotion_mode == "artifact_only"
 
     thinkthread_data = valid_spec_dict()
-    thinkthread_data["workspace"] = {"backend": "thinkthread"}
+    thinkthread_data["workspace"] = {"provider": "thinkthread"}
     thinkthread_spec = SearchSpec.model_validate(thinkthread_data)
-    assert thinkthread_spec.workspace.backend == "thinkthread"
+    assert thinkthread_spec.workspace.provider == "thinkthread"
     assert thinkthread_spec.workspace.promotion_mode == "apply"
 
     thinkthread_data["workspace"]["dependencies"] = [
@@ -537,10 +537,10 @@ def test_search_spec_supports_registered_workspace_backends() -> None:
 
     non_thinkthread_dependencies = valid_spec_dict()
     non_thinkthread_dependencies["workspace"] = {
-        "backend": "git_worktree",
+        "provider": "git_worktree",
         "dependencies": [{"path": "config.json", "scope": "content"}],
     }
-    with pytest.raises(ValidationError, match="require backend='thinkthread'"):
+    with pytest.raises(ValidationError, match="require provider='thinkthread'"):
         SearchSpec.model_validate(non_thinkthread_dependencies)
 
     thinkthread_data["workspace"]["dependencies"] = [
@@ -551,14 +551,14 @@ def test_search_spec_supports_registered_workspace_backends() -> None:
 
     invalid_copy_data = valid_spec_dict()
     invalid_copy_data["workspace"] = {
-        "backend": "copy",
+        "provider": "copy",
         "promotion_mode": "apply",
     }
     with pytest.raises(ValidationError, match="artifact_only"):
         SearchSpec.model_validate(invalid_copy_data)
 
     invalid_data = valid_spec_dict()
-    invalid_data["workspace"] = {"backend": "overlay"}
+    invalid_data["workspace"] = {"provider": "overlay"}
     with pytest.raises(ValidationError):
         SearchSpec.model_validate(invalid_data)
 
@@ -602,9 +602,8 @@ def test_search_spec_requires_structured_strategy() -> None:
         "name": "agent_guided",
         "worker_agent_type": "search_candidate_agent",
     }
-    legacy_spec = SearchSpec.model_validate(legacy)
-    assert legacy_spec.strategy.inner_agent is None
-    assert legacy_spec.strategy.worker_agent_type == "search_candidate_agent"
+    with pytest.raises(ValidationError, match="worker_agent_type"):
+        SearchSpec.model_validate(legacy)
 
     legacy_string = valid_spec_dict()
     legacy_string["strategy"] = "evolve"
@@ -623,10 +622,10 @@ def test_search_spec_requires_structured_strategy() -> None:
             SearchSpec.model_validate(data)
 
 
-@pytest.mark.parametrize("host", ["codex", "pi-rpc", "thinkthread"])
-def test_strategy_spec_cannot_select_worker_host(host) -> None:
+@pytest.mark.parametrize("agent_harness", ["codex", "pi", "thinkthread"])
+def test_strategy_spec_cannot_select_worker_host(agent_harness) -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        StrategySpec.model_validate({"worker_host": host})
+        StrategySpec.model_validate({"worker_host": agent_harness})
 
 
 @pytest.mark.parametrize("agent", ["pi", "codex"])
@@ -823,7 +822,7 @@ def test_strategy_spec_derives_llm_verifier_requirement() -> None:
 def test_adaptive_verifier_rules_are_owned_by_frozen_policy(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     spec_data = spec_for(project).model_dump(mode="json")
-    spec_data["workspace"] = {"backend": "git_worktree"}
+    spec_data["workspace"] = {"provider": "git_worktree"}
     spec_data["budget"]["max_candidates"] = (
         spec_data["budget"]["max_parallel"] + 1
     )
@@ -837,7 +836,7 @@ def test_adaptive_verifier_rules_are_owned_by_frozen_policy(tmp_path: Path) -> N
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"], native_host="codex",
+        [project / "evaluator.py"], agent_harness="codex",
     )
     assert frozen.spec.strategy.allocation is not None
     rules = frozen.spec.strategy.allocation.verifier_rules()
@@ -851,8 +850,6 @@ def test_adaptive_verifier_rules_are_owned_by_frozen_policy(tmp_path: Path) -> N
 def test_strategy_spec_accepts_worker_budget() -> None:
     spec = StrategySpec(
         worker_budget={
-            "min_runtime_seconds": 300,
-            "min_verifier_runs": 2,
             "max_runtime_seconds": 600,
             "max_turns": 8,
             "on_exceed": "interrupt",
@@ -860,14 +857,10 @@ def test_strategy_spec_accepts_worker_budget() -> None:
     )
 
     assert isinstance(spec.worker_budget, WorkerBudget)
-    assert spec.worker_budget.min_runtime_seconds == 300
-    assert spec.worker_budget.min_verifier_runs == 2
     assert spec.worker_budget.max_runtime_seconds == 600
     assert spec.worker_budget.max_turns == 8
     assert spec.worker_budget.on_exceed == "interrupt"
     assert spec.model_dump(mode="json")["worker_budget"] == {
-        "min_runtime_seconds": 300,
-        "min_verifier_runs": 2,
         "max_runtime_seconds": 600,
         "max_turns": 8,
         "on_exceed": "interrupt",
@@ -931,13 +924,14 @@ def test_evidence_annotator_config_is_optional_and_overridable() -> None:
         StrategySpec(evidence_annotator={"unsupported": "value"})
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         StrategySpec(
-            evidence_annotator={"host": "codex"},
+            evidence_annotator={"agent_harness": "codex"},
         )
 
 
 def test_internal_agent_profiles_have_only_host_owned_launch_fields() -> None:
     assert set(ResolvedEvidenceAnnotatorProfile.model_fields) == {
-        "host",
+        "agent_harness",
+        "runtime_provider",
         "model",
         "reasoning_effort",
         "timeout_seconds",
@@ -955,10 +949,10 @@ def test_worker_budget_requires_runtime_or_turn_limit() -> None:
     with pytest.raises(ValidationError):
         WorkerBudget(max_turns=0)
 
-    with pytest.raises(ValidationError, match="requires max_runtime_seconds"):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         WorkerBudget(min_runtime_seconds=300, max_turns=8)
 
-    with pytest.raises(ValidationError, match="must be less than"):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         WorkerBudget(min_runtime_seconds=600, max_runtime_seconds=600)
 
 
@@ -998,16 +992,16 @@ def test_agent_session_record_is_context_handle_with_required_candidate() -> Non
         workspace=Path("/tmp/c001"),
         directive={"goal": "try one direction"},
         launch={
-            "agent_type": "search_candidate_agent",
+            "transport": "app-server",
             "description": "c001 try one direction",
             "prompt": "agent_session_id=agent_001; candidate_id=c001; idea: try one direction",
         },
         counters={"verifier_runs": 0},
     )
     assert session.candidate_id == "c001"
-    assert session.host == "codex"
-    assert session.host_handle == AgentHostHandle(host="codex")
-    assert session.launch["agent_type"] == "search_candidate_agent"
+    assert session.agent_harness == "codex"
+    assert session.session_handle == AgentSessionHandle(agent_harness="codex")
+    assert session.launch["transport"] == "app-server"
 
     # candidate_id is now required - a subagent session without a candidate
     # has no useful role in this runtime.

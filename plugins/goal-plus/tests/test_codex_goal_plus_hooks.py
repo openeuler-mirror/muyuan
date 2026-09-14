@@ -44,8 +44,8 @@ pytestmark = pytest.mark.codex
 
 
 @pytest.mark.parametrize("tool", [
-    "search_run_verifier", "search_get_global_evidence", "search_get_agent_context",
-    "search_select", "search_status", "search_invalidate_run", "search_report",
+    "goal_plus_search_run_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context",
+    "goal_plus_search_select", "goal_plus_search_status", "goal_plus_search_invalidate_run", "goal_plus_search_report",
 ])
 def test_post_tool_hook_pumps_internal_agents_from_codex_host(
     tmp_path: Path,
@@ -54,8 +54,8 @@ def test_post_tool_hook_pumps_internal_agents_from_codex_host(
 ) -> None:
     calls: list[tuple[Path, str, str]] = []
 
-    def record(root: Path, run_id: str, *, host: str) -> dict[str, bool]:
-        calls.append((root, run_id, host))
+    def record(root: Path, run_id: str, *, agent_harness: str) -> dict[str, bool]:
+        calls.append((root, run_id, agent_harness))
         return {"annotation_started": True, "verifier_started": True}
 
     monkeypatch.setattr(internal_agents, "kick_internal_agents", record)
@@ -114,7 +114,7 @@ def test_subagent_stop_kicks_internal_agents_after_terminal_observation(
     monkeypatch.setattr(
         internal_agents,
         "kick_internal_agents",
-        lambda root, run_id, *, host: calls.append((root, run_id, host)),
+        lambda root, run_id, *, agent_harness: calls.append((root, run_id, agent_harness)),
     )
 
     hook_module._run_recorded_stop_event(
@@ -142,7 +142,7 @@ def test_child_post_tool_hook_recovers_owning_runtime_root(
         "tool_name": "exec",
         "tool_input": (
             "await tools."
-            "mcp__goal_plus__search_run_verifier({"
+            "mcp__goal_plus__goal_plus_search_run_verifier({"
             'run_id:"run_nested",agent_session_id:"agent_nested"});'
         ),
     }
@@ -158,37 +158,12 @@ def test_child_post_tool_hook_recovers_owning_runtime_root(
     assert observed == [search_root]
 
 
-_OWNER_PID_CACHE: int | None = False
-
-
-def _codex_owner_pid_cached() -> int | None:
-    """Walk the parent chain once per test process; the pytest parent tree
-    never changes and each uncached walk costs a ``ps`` subprocess per hop."""
-    global _OWNER_PID_CACHE
-    if _OWNER_PID_CACHE is False:
-        from goal_plus.host_recovery import codex_owner_pid
-        _OWNER_PID_CACHE = codex_owner_pid()
-    return _OWNER_PID_CACHE
-
-
 def _run_hook(
     tmp_path: Path,
     search_root: Path,
     hook_input: dict,
     **env: str,
 ) -> object:
-    # Unit fixtures create records without a native start hook. Register the
-    # current host as their existing owner; process replacement is tested in
-    # test_goal_plus_control, not simulated by every invocation.
-    from goal_plus.host_recovery import claim_main_owner
-    owner = _codex_owner_pid_cached()
-    if owner:
-        runtime = FileGoalPlusRuntime(search_root)
-        for path in runtime.goals_dir.glob("gp_*/goal.json"):
-            record = runtime.status(path.parent.name)
-            binding = record.active_session
-            if binding and binding.state == "attached" and not runtime.is_terminal(record) and not (search_root / "host-recovery" / "mains" / f"{record.goal_plus_id}.json").exists():
-                claim_main_owner(search_root, record.goal_plus_id, binding.host, binding.session_id, owner, restoring=False)
     return run_host_hook_inprocess(
         hook_input,
         cwd=tmp_path,
@@ -242,7 +217,7 @@ def _terminal_report_goal(
     record = runtime.create_goal("Render the terminal Search report")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     record = runtime.status(record.goal_plus_id)
     linked = GoalPlusLinkedSearch(
@@ -318,7 +293,7 @@ def _codex_search_worker(
     }
     if adaptive_search:
         payload["budget"]["max_candidates"] = 2
-        payload["workspace"] = {"backend": "git_worktree"}
+        payload["workspace"] = {"provider": "git_worktree"}
         payload["strategy"].update(
             {
                 "orchestration_mode": "adaptive_search",
@@ -330,7 +305,7 @@ def _codex_search_worker(
             }
         )
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"], native_host="codex")
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -413,7 +388,7 @@ def test_user_prompt_submit_precreates_and_binds_goal(tmp_path: Path) -> None:
         + EXPLORATION_MODE_LINES["autonomous"]
     )
     assert record.active_session is not None
-    assert record.active_session.host == "codex"
+    assert record.active_session.agent_harness == "codex"
     assert record.active_session.session_id == "session-codex"
     assert record.policy["execution"]["main_reasoning_effort"] == "host_selected"
     assert record.policy["execution"]["host"]["native_reasoning_effort"] == "low"
@@ -424,9 +399,26 @@ def test_user_prompt_submit_precreates_and_binds_goal(tmp_path: Path) -> None:
     assert record.goal_plus_id in context
     assert record.raw_goal in context
     assert record.control.state == "active"
+    assert record.phase == "goal"
+    assert record.next_action.kind == "execute_goal"
+    assert record.triage is None
     assert "当前未设置最大运行时间" in context
     assert "不要询问或等待确认" in context
     assert "告知后立即继续执行" in context
+
+    edit = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-codex",
+            "tool_name": "apply_patch",
+            "tool_input": {"patch": "*** Begin Patch\n*** Add File: fix.py\n+pass\n*** End Patch"},
+        },
+    )
+    assert edit.returncode == 0, edit.stderr
+    assert edit.stdout == ""
+    assert runtime.status(record.goal_plus_id).triage is None
 
 
 @pytest.mark.parametrize(
@@ -498,7 +490,7 @@ def test_ordinary_subagent_does_not_get_goal_plus_permission_banner(
             "transcript_path": str(transcript),
             "agent_id": "worker-thread",
             "agent_type": "default",
-            "tool_name": "mcp__goal_plus__search_get_agent_context",
+            "tool_name": "mcp__goal_plus__goal_plus_search_get_agent_context",
             "tool_input": {"agent_session_id": "agent_demo_001"},
         },
     )
@@ -555,7 +547,7 @@ def test_native_session_followup_finds_existing_parent_root(tmp_path: Path) -> N
     record = runtime.create_goal("Optimize the repository")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-parent"},
+        {"agent_harness": "codex", "session_id": "session-parent"},
     )
     env = dict(os.environ)
     for name in (
@@ -1082,7 +1074,7 @@ def test_native_codex_resume_requires_explicit_goal_plus_resume(tmp_path: Path) 
     assert [item.action for item in record.host_command_invocations] == ["start", "resume"]
 
 
-def test_codex_interrupted_final_checker_is_recorded_and_can_stop(tmp_path: Path) -> None:
+def test_bound_codex_final_checker_role_and_stop(tmp_path: Path, monkeypatch) -> None:
     search_root = tmp_path / ".gp"
     runtime = FileGoalPlusRuntime(search_root)
     record = runtime.create_goal(
@@ -1091,7 +1083,7 @@ def test_codex_interrupted_final_checker_is_recorded_and_can_stop(tmp_path: Path
     )
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     runtime.record_triage(
         record.goal_plus_id,
@@ -1102,11 +1094,12 @@ def test_codex_interrupted_final_checker_is_recorded_and_can_stop(tmp_path: Path
         },
     )
     request = runtime.prepare_final_check(record.goal_plus_id, "codex")
-    checker_context = {
-        "agent_id": "checker-1",
-        "agent_type": request["launch"]["agent_type"],
-        "task_name": request["launch"]["task_name"],
-    }
+    from goal_plus.domain.goal import GoalPlusFinalCheckerIdentity
+
+    identity = GoalPlusFinalCheckerIdentity(goal_plus_id=record.goal_plus_id, check_id=request["check"]["check_id"], goal_revision=1)
+    runtime.goal_completion.bind_native_checker(identity, agent_harness="codex", native_session_id="checker-1",
+                                                scope_id="scope-checker", control_version=record.control.version)
+    checker_context = {"session_id": "checker-1"}
 
     main_submission = _run_hook(
         tmp_path,
@@ -1119,6 +1112,7 @@ def test_codex_interrupted_final_checker_is_recorded_and_can_stop(tmp_path: Path
         },
     )
     assert "GoalPlusRoleDenied" in _pre_tool_denial(main_submission)
+    monkeypatch.setenv("GOAL_PLUS_FINAL_CHECK_IDENTITY", identity.model_dump_json())
 
     checker_status = _run_hook(
         tmp_path,
@@ -1147,15 +1141,12 @@ def test_codex_interrupted_final_checker_is_recorded_and_can_stop(tmp_path: Path
         tmp_path,
         search_root,
         {
-            "hook_event_name": "SubagentStop",
-            "session_id": "session-codex",
+            "hook_event_name": "Stop",
             **checker_context,
         },
     )
     assert result.stdout == ""
-    interrupted = runtime.status(record.goal_plus_id)
-    assert interrupted.final_checks[-1].status == "interrupted"
-    assert interrupted.next_action.kind == "retry_final_check"  # type: ignore[union-attr]
+    assert runtime.status(record.goal_plus_id).final_checks[-1].status == "pending"
 
 
 def test_codex_stop_blocks_goal_mode_until_required_check_passes(tmp_path: Path) -> None:
@@ -1167,7 +1158,7 @@ def test_codex_stop_blocks_goal_mode_until_required_check_passes(tmp_path: Path)
     )
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     runtime.record_triage(
         record.goal_plus_id,
@@ -1188,7 +1179,7 @@ def test_codex_stop_blocks_goal_mode_until_required_check_passes(tmp_path: Path)
     )
     payload = json.loads(result.stdout)
     assert payload["decision"] == "block"
-    assert "goal_plus_prepare_final_check" in payload["reason"]
+    assert "goal_plus_run_final_check" in payload["reason"]
 
 
 def test_interrupted_codex_final_checker_must_submit_before_subagent_stop(
@@ -1202,7 +1193,7 @@ def test_interrupted_codex_final_checker_must_submit_before_subagent_stop(
     )
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     runtime.record_triage(
         record.goal_plus_id,
@@ -1262,15 +1253,15 @@ def test_post_tool_tracks_and_interrupts_codex_native_agent(
     record = start_host_verified_goal(search_root, tmp_path, session_id="session-codex")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     scope = ensure_execution_scope(
         root_dir=search_root,
-        host="codex",
+        agent_harness="codex",
         owner_session_id="session-codex",
-        owner_pid=os.getpid(),
+
         run_id=record.goal_plus_id,
-        start_guardian=False,
+
     )
 
     launch = {
@@ -1278,7 +1269,7 @@ def test_post_tool_tracks_and_interrupts_codex_native_agent(
         "tool_name": tool_name, "tool_use_id": "spawn-1",
         "tool_input": {"task_name": "worker", "message": "bounded work"},
     }
-    hook_module._claim_codex_main(search_root, record.goal_plus_id, launch, restoring=False)
+    hook_module._validate_codex_main_session(search_root, record.goal_plus_id, launch)
     hook_module._prepare_codex_native_tool(search_root, launch)
     assert execution_scope_snapshot(root_dir=search_root, scope_id=scope["scope_id"])["codex_agents"][0]["spawn_pending"] is True
     spawned = _run_hook(
@@ -1395,15 +1386,15 @@ def test_subagent_stop_uses_agent_transcript_to_finish_canonical_task(
     record = start_host_verified_goal(search_root, tmp_path, session_id="session-codex")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     scope = ensure_execution_scope(
         root_dir=search_root,
-        host="codex",
+        agent_harness="codex",
         owner_session_id="session-codex",
-        owner_pid=os.getpid(),
+
         run_id=record.goal_plus_id,
-        start_guardian=False,
+
     )
     register_codex_agent(
         root_dir=search_root,
@@ -1462,15 +1453,15 @@ def test_aborted_stop_blocks_until_codex_children_are_interrupted(
     record = runtime.create_goal("Abort without leaving native children")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     scope = ensure_execution_scope(
         root_dir=search_root,
-        host="codex",
+        agent_harness="codex",
         owner_session_id="session-codex",
-        owner_pid=os.getpid(),
+
         run_id=record.goal_plus_id,
-        start_guardian=False,
+
     )
     register_codex_agent(
         root_dir=search_root,
@@ -1538,7 +1529,7 @@ def test_stop_closes_scope_for_detached_goal_without_durable_mutation(
     record = runtime.create_goal("Abort a detached native session")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     runtime.detach_session(
         record.goal_plus_id,
@@ -1548,11 +1539,11 @@ def test_stop_closes_scope_for_detached_goal_without_durable_mutation(
     before = runtime.status(record.goal_plus_id).model_dump(mode="json")
     scope = ensure_execution_scope(
         root_dir=search_root,
-        host="codex",
+        agent_harness="codex",
         owner_session_id="session-codex",
-        owner_pid=os.getpid(),
+
         run_id=record.goal_plus_id,
-        start_guardian=False,
+
     )
 
     hook_input = {
@@ -1583,7 +1574,7 @@ def test_terminal_goal_stop_waits_for_codex_scope_quiescence(tmp_path: Path) -> 
     record = runtime.create_goal("Finish after child cleanup")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     runtime.set_status(
         record.goal_plus_id,
@@ -1593,11 +1584,11 @@ def test_terminal_goal_stop_waits_for_codex_scope_quiescence(tmp_path: Path) -> 
     )
     scope = ensure_execution_scope(
         root_dir=search_root,
-        host="codex",
+        agent_harness="codex",
         owner_session_id="session-codex",
-        owner_pid=os.getpid(),
+
         run_id=record.goal_plus_id,
-        start_guardian=False,
+
     )
     register_codex_agent(
         root_dir=search_root,
@@ -1647,7 +1638,7 @@ def test_session_start_preserves_same_session_without_authorizing_new_session(
     record = runtime.create_goal("Optimize model throughput")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
 
     hook_input = {
@@ -1688,6 +1679,27 @@ def test_session_start_preserves_same_session_without_authorizing_new_session(
     assert "GoalPlusEntrypointRequired" in json.loads(denied.stdout)[
         "hookSpecificOutput"
     ]["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_compaction_restores_overview_without_granting_execution(tmp_path: Path, terminal: bool) -> None:
+    search_root = tmp_path / ".gp"
+    before = None
+    if terminal:
+        runtime = FileGoalPlusRuntime(search_root)
+        record = runtime.create_goal("Completed work")
+        runtime.activate_session(record.goal_plus_id, {"agent_harness": "codex", "session_id": "session-codex"})
+        runtime.set_status(record.goal_plus_id, status="complete", reason="done")
+        before = runtime.status(record.goal_plus_id).model_dump(mode="json")
+    result = _run_hook(tmp_path, search_root, {
+        "hook_event_name": "SessionStart", "source": "compact", "session_id": "session-codex",
+    })
+    overview = (Path(__file__).parents[1] / "assets/goal-plus-instructions.txt").read_text().strip()
+    assert overview in _additional_context(result, "SessionStart")
+    if terminal:
+        assert runtime.status(record.goal_plus_id).model_dump(mode="json") == before
+    else:
+        assert not search_root.exists()
 
 
 def test_compaction_session_start_preserves_authorized_goal_turn(
@@ -1742,7 +1754,7 @@ def test_stop_uses_collaboration_mode_from_exact_native_turn(tmp_path: Path, mod
     search_root = tmp_path / ".gp"
     runtime = FileGoalPlusRuntime(search_root)
     record = runtime.create_goal("Finish the task")
-    runtime.activate_session(record.goal_plus_id, {"host": "codex", "session_id": "session-codex"})
+    runtime.activate_session(record.goal_plus_id, {"agent_harness": "codex", "session_id": "session-codex"})
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_text("\n".join(json.dumps({
         "type": "turn_context",
@@ -1767,7 +1779,7 @@ def test_child_hooks_do_not_inherit_or_rebind_main_goal_context(tmp_path: Path) 
     runtime.activate_session(
         record.goal_plus_id,
         {
-            "host": "codex",
+            "agent_harness": "codex",
             "session_id": "session-main",
             "transcript_path": "/tmp/main.jsonl",
         },
@@ -1807,7 +1819,7 @@ def test_child_hooks_do_not_inherit_or_rebind_main_goal_context(tmp_path: Path) 
             "hook_event_name": "PreToolUse",
             "session_id": "session-main",
             "transcript_path": str(transcript),
-            "tool_name": "mcp__goal-plus__search_create",
+            "tool_name": "mcp__goal-plus__goal_plus_search_create",
             "tool_input": {"frozen_spec_id": "spec_missing"},
         },
     )
@@ -1848,282 +1860,17 @@ def test_child_hooks_do_not_inherit_or_rebind_main_goal_context(tmp_path: Path) 
 
 
 @pytest.mark.host_process
-def test_search_candidate_hook_context_is_initial_only_and_main_is_unchanged(
-    tmp_path: Path,
-) -> None:
-    search_runtime, run_id, candidate_id, agent_session_id = _codex_search_worker(
-        tmp_path
-    )
-    search_root = search_runtime.root_dir
-    goal_runtime = FileGoalPlusRuntime(search_root)
-    record = start_host_verified_goal(search_root, tmp_path, session_id="session-main")
-    goal_runtime.activate_session(
-        record.goal_plus_id,
-        {
-            "host": "codex",
-            "session_id": "session-main",
-            "transcript_path": "/tmp/main.jsonl",
-        },
-    )
-    main_binding = goal_runtime.status(record.goal_plus_id).active_session
-    assert main_binding is not None
-    expected_binding = main_binding.model_dump(mode="json")
-    transcript = tmp_path / "search-candidate.jsonl"
-    _write_codex_subagent_transcript(
-        transcript,
-        parent_session_id="session-main",
-        child_session_id="child-search",
-    )
-    session = search_runtime.candidate_sessions.session(agent_session_id)
-
-    assert hook_module._execution_scope_attachment(
-        search_root, {"task_name": session.launch["task_name"], "message": "host-owned launch"},
-        fallback=record.goal_plus_id,
-    ) == hook_module.ScopeAttachment("search_run", run_id)
-
-    goal_runtime.link_search_run(
-        record.goal_plus_id, search_runtime.search_run.state.read_run(run_id).frozen_spec_id, run_id,
-    )
-    scope = ensure_execution_scope(
-        root_dir=search_root, host="codex", owner_session_id="session-main",
-        owner_pid=os.getpid(), run_id=run_id, start_guardian=False,
-    )
-    spawn_input = {key: value for key, value in session.launch.items() if key not in {"tool", "budget_control"}}
-    spawn_input["message"] = "opaque host transport"
-    spawn_input.pop("agent_type")
-    launch_hook = {
-        "hook_event_name": "PreToolUse", "session_id": "session-main",
-        "tool_name": "collaborationspawn_agent", "tool_use_id": "candidate-spawn",
-        "tool_input": {**spawn_input, "fork_turns": "all"},
-    }
-    hook_module._claim_codex_main(search_root, record.goal_plus_id, launch_hook, restoring=False)
-    before = {path: path.read_bytes() for path in (search_root / "runs").rglob("*.json")}
-    with pytest.raises(RuntimeError, match="native launch contract mismatch: fork_turns"):
-        hook_module._prepare_codex_native_tool(search_root, launch_hook)
-    assert not execution_scope_snapshot(root_dir=search_root, scope_id=scope["scope_id"]).get("codex_agents")
-    assert {path: path.read_bytes() for path in before} == before
-    launch_hook["tool_input"] = spawn_input
-    hook_module._prepare_codex_native_tool(search_root, launch_hook)
-    [registered] = execution_scope_snapshot(root_dir=search_root, scope_id=scope["scope_id"])["codex_agents"]
-    assert registered["run_id"] == run_id
-    assert registered["candidate_id"] == candidate_id
-    assert registered["agent_session_id"] == agent_session_id
-    assert registered["execution_generation"] == session.execution_generation
-    assert registered["spawn_pending"] is True
-
-    initial = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "session-main",
-            "transcript_path": str(transcript),
-            "task_name": "/root/" + session.launch["task_name"],
-            "prompt": spawn_input["message"],
-        },
-    )
-    context = _additional_context(initial, "UserPromptSubmit")
-    context_session_id = _candidate_session_id(context)
-    assert context_session_id == agent_session_id
-    worker_context = SearchTools(search_runtime).search_get_agent_context(
-        context_session_id
-    )
-    assert worker_context["candidate_id"] == candidate_id
-    assert Path(worker_context["candidate_task"]["workspace"]) == session.workspace
-    assert record.goal_plus_id not in context
-    assert record.raw_goal not in context
-    own_context = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "PreToolUse",
-            "session_id": "session-main",
-            "transcript_path": str(transcript),
-            "tool_name": "mcp__goal-plus__search_get_agent_context",
-            "tool_input": {"agent_session_id": agent_session_id},
-        },
-    )
-    assert own_context.returncode == 0
-    assert own_context.stdout == ""
-
-    patch_hook = {
-        "hook_event_name": "PreToolUse",
-        "session_id": "session-main",
-        "transcript_path": str(transcript),
-        "cwd": str(tmp_path),
-        "tool_name": "apply_patch",
-    }
-    before = {path: path.read_bytes() for path in (search_root / "runs").rglob("*.json")}
-    baseline = tmp_path / "workspace-template" / "initial_program.py"
-    denied_patch = _run_hook(tmp_path, search_root, {
-        **patch_hook,
-        "tool_input": {"command": (
-            f"*** Begin Patch\n*** Delete File: {baseline}\n"
-            f"*** Add File: {baseline}\n+pass\n*** End Patch"
-        )},
-    })
-    assert "CandidateWriteDenied" in _pre_tool_denial(denied_patch)
-    scratch = session.workspace / ".tmp"
-    scratch.mkdir(exist_ok=True)
-    (scratch / "outside").symlink_to(tmp_path, target_is_directory=True)
-    for body in (
-        f"*** Update File: {session.workspace / 'initial_program.py'}\n*** Move to: {baseline}\n@@\n-old\n+new",
-        f"*** Update File: {session.workspace / 'evaluator.py'}\n@@\n-old\n+new",
-        "*** Add File: .tmp/outside/baseline.py\n+pass",
-        "*** Delete File: .git/config",
-    ):
-        result = _run_hook(tmp_path, search_root, {
-            **patch_hook, "cwd": str(session.workspace),
-            "tool_input": {"command": f"*** Begin Patch\n{body}\n*** End Patch"},
-        })
-        assert "CandidateWriteDenied" in _pre_tool_denial(result)
-    own_patch = {
-        **patch_hook, "cwd": str(session.workspace),
-        "tool_input": {"command": (
-            "*** Begin Patch\n*** Add File: .tmp/diagnostic.py\n+pass\n"
-            "*** Update File: initial_program.py\n@@\n-old\n+new\n"
-            "*** Delete File: .tmp/obsolete.py\n*** End Patch"
-        )},
-    }
-    allowed_patch = _run_hook(tmp_path, search_root, own_patch)
-    assert allowed_patch.returncode == 0
-    assert allowed_patch.stdout == ""
-    unknown_patch = _run_hook(tmp_path, search_root, {
-        **own_patch, "tool_input": {"command": "unrecognized transport"},
-    })
-    assert "CandidateWriteDenied" in _pre_tool_denial(unknown_patch)
-    invocation = record.host_command_invocations[0]
-    goal_runtime.control_from_host_command(record.goal_plus_id, invocation=invocation.model_copy(
-        update={"action": "pause", "invocation_id": "patch-pause"},
-    ))
-    assert "CandidateWriteDenied" in _pre_tool_denial(_run_hook(tmp_path, search_root, own_patch))
-    goal_runtime.control_from_host_command(record.goal_plus_id, invocation=invocation.model_copy(
-        update={"action": "resume", "invocation_id": "patch-resume"},
-    ))
-    assert {path: path.read_bytes() for path in before} == before
-
-    peer = search_runtime.redispatch_candidate(run_id, candidate_id)
-    peer_denial = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "PreToolUse",
-            "session_id": "session-main",
-            "transcript_path": str(transcript),
-            "tool_name": "mcp__goal-plus__search_get_agent_context",
-            "tool_input": {"agent_session_id": peer.agent_session_id},
-        },
-    )
-    assert "GoalPlusSessionMismatch" in _pre_tool_denial(peer_denial)
-
-    orchestration_denial = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "PreToolUse",
-            "session_id": "session-main",
-            "transcript_path": str(transcript),
-            "tool_name": "mcp__goal-plus__search_select",
-            "tool_input": {"run_id": run_id},
-        },
-    )
-    assert "GoalPlusRoleDenied" in _pre_tool_denial(orchestration_denial)
-
-    search_runtime.bind_agent_handle(
-        agent_session_id,
-        {
-            "host": "codex",
-            "external_id": "child-search",
-            "task_name": session.launch["task_name"],
-        },
-    )
-    continued = search_runtime.continue_agent_session(agent_session_id)
-    continuation = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "session-main",
-            "transcript_path": str(transcript),
-            "prompt": continued.launch["message"],
-        },
-    )
-    assert continuation.returncode == 0
-    assert continuation.stdout == ""
-
-    fresh = search_runtime.redispatch_candidate(run_id, candidate_id)
-    fresh_context = _additional_context(
-        _run_hook(
-            tmp_path,
-            search_root,
-            {
-                "hook_event_name": "UserPromptSubmit",
-                "session_id": "session-main",
-                "transcript_path": str(transcript),
-                "prompt": fresh.launch["message"],
-            },
-        ),
-        "UserPromptSubmit",
-    )
-    fresh_session_id = _candidate_session_id(fresh_context)
-    assert fresh_session_id == fresh.agent_session_id
-    fresh_worker_context = SearchTools(search_runtime).search_get_agent_context(
-        fresh_session_id
-    )
-    assert fresh_worker_context["candidate_id"] == candidate_id
-    assert Path(fresh_worker_context["candidate_task"]["workspace"]) == session.workspace
-
-    active = goal_runtime.status(record.goal_plus_id).active_session
-    assert active is not None
-    assert active.model_dump(mode="json") == expected_binding
-
-
-def test_codex_allocation_interrupt_targets_only_the_retired_candidate(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "goal_plus.infrastructure.state.allocation.FileAllocationState.load_allocation_decision",
-        lambda _state, _run_id, _decision_id: SimpleNamespace(
-            status="pending",
-            retire_candidate_ids=["c001"],
-        ),
-    )
-    scope = {
-        "codex_agents": [
-            {
-                "agent_id": "/root/retired",
-                "native_agent_id": "native-retired",
-                "run_id": "run_test",
-                "candidate_id": "c001",
-                "status": "active",
-            },
-            {
-                "agent_id": "/root/sibling",
-                "native_agent_id": "native-sibling",
-                "run_id": "run_test",
-                "candidate_id": "c002",
-                "status": "active",
-            },
-        ]
-    }
-
-    assert hook_module._codex_allocation_active_targets(
-        tmp_path,
-        scope,
-        run_id="run_test",
-        decision_id="allocation_test",
-    ) == ["native-retired"]
-
-
-def test_post_tool_time_advisory_only_targets_search_candidate_subagent_once(
+def test_post_tool_time_advisory_only_targets_bound_candidate_once(
     tmp_path: Path,
 ) -> None:
     runtime, run_id, candidate_id, agent_session_id = _codex_search_worker(tmp_path)
     search_root = runtime.root_dir
+    runtime.bind_agent_handle(agent_session_id, {
+        "external_id": "search-worker-agent", "metadata": {"transport": "app-server"},
+    })
     context_tool = {
         "hook_event_name": "PostToolUse",
-        "tool_name": "mcp__goal-plus__search_get_agent_context",
+        "tool_name": "mcp__goal-plus__goal_plus_search_get_agent_context",
         "tool_input": {"agent_session_id": agent_session_id},
         "tool_response": {
             "run_id": run_id,
@@ -2169,15 +1916,16 @@ def test_post_tool_time_advisory_only_targets_search_candidate_subagent_once(
         search_root,
         {
                 "hook_event_name": "PostToolUse",
-                "agent_id": "search-worker-agent",
+                "session_id": "search-worker-agent",
                 "agent_type": "search_candidate_agent",
             "tool_name": "functions.exec",
             "tool_input": (
-                "const r = await tools.mcp__goal_plus__search_get_agent_context("
+                "const r = await tools.mcp__goal_plus__goal_plus_search_get_agent_context("
                 f'{{agent_session_id:"{agent_session_id}"}}); text(r);'
             ),
         },
         GOAL_PLUS_OUTER_DEADLINE_AT="1970-01-01T00:00:00Z",
+        GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID=agent_session_id,
     )
     assert mapped.stdout == ""
 
@@ -2192,30 +1940,31 @@ def test_post_tool_time_advisory_only_targets_search_candidate_subagent_once(
         search_root,
         {
             "hook_event_name": "PostToolUse",
-            "agent_id": "search-worker-agent",
+            "session_id": "search-worker-agent",
             "agent_type": "search_candidate_agent",
             "tool_name": "read",
             "tool_input": {"path": "initial_program.py"},
         },
         GOAL_PLUS_OUTER_DEADLINE_AT="1970-01-01T00:00:00Z",
+        GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID=agent_session_id,
     )
 
     context = _additional_context(advisory, "PostToolUse")
-    assert "时间提示（仅供参考）" in context
+    assert context
     assert candidate_id in context
-    assert "不强制采取任何动作" in context
 
     repeated = _run_hook(
         tmp_path,
         search_root,
         {
             "hook_event_name": "PostToolUse",
-            "agent_id": "search-worker-agent",
+            "session_id": "search-worker-agent",
             "agent_type": "search_candidate_agent",
             "tool_name": "edit",
             "tool_input": {"path": "initial_program.py"},
         },
         GOAL_PLUS_OUTER_DEADLINE_AT="1970-01-01T00:00:00Z",
+        GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID=agent_session_id,
     )
     assert repeated.stdout == ""
     evidence = list(
@@ -2249,12 +1998,13 @@ def test_post_tool_time_advisory_uses_current_codex_turn_budget(
         agent_session_id=agent_session_id,
         hypothesis="Current-turn deadline sample",
     )
-    session = runtime.candidate_sessions.session(agent_session_id, run_id=run_id)
+    runtime.bind_agent_handle(agent_session_id, {
+        "external_id": "worker-native-session", "metadata": {"transport": "app-server"},
+    })
     transcript = tmp_path / "rollout-worker-deadline.jsonl"
     _write_codex_rollout(
         transcript,
         turn_id="turn-worker-deadline",
-        agent_path=f"/root/{session.launch['task_name']}",
         turn_started_at=(datetime.now(timezone.utc) - timedelta(seconds=90))
         .isoformat()
         .replace("+00:00", "Z"),
@@ -2271,9 +2021,10 @@ def test_post_tool_time_advisory_uses_current_codex_turn_budget(
             "tool_name": "read",
             "tool_input": {"path": "initial_program.py"},
         },
+        GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID=agent_session_id,
     )
 
-    assert "时间提示（仅供参考）" in _additional_context(advisory, "PostToolUse")
+    assert _additional_context(advisory, "PostToolUse")
     evidence_path = (
         runtime.root_dir
         / "host-logs"
@@ -2292,7 +2043,7 @@ def test_pre_tool_use_blocks_search_before_spec_is_ready(tmp_path: Path) -> None
     record = runtime.create_goal("Optimize model throughput")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
 
     result = _run_hook(
@@ -2301,7 +2052,7 @@ def test_pre_tool_use_blocks_search_before_spec_is_ready(tmp_path: Path) -> None
         {
             "hook_event_name": "PreToolUse",
             "session_id": "session-codex",
-            "tool_name": "mcp__goal-plus__search_create",
+            "tool_name": "mcp__goal-plus__goal_plus_search_create",
             "tool_input": {},
         },
     )
@@ -2311,7 +2062,7 @@ def test_pre_tool_use_blocks_search_before_spec_is_ready(tmp_path: Path) -> None
     assert specific == {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
-        "permissionDecisionReason": "Search 工具要求先提供高置信度的冻结 spec draft。",
+        "permissionDecisionReason": "GoalPlusOwnershipMismatch: tool goal_plus_id does not match the host-authorized Goal Plus record",
     }
     assert runtime.status(record.goal_plus_id).hook_counters["pre_tool_use"] == 1
 
@@ -2321,7 +2072,7 @@ def test_pre_tool_use_blocks_search_before_spec_is_ready(tmp_path: Path) -> None
     [
         "mcp__goal-plus__goal_plus_create",
         "mcp__goal-plus__goal_plus_record_triage",
-        "mcp__goal-plus__search_create",
+        "mcp__goal-plus__goal_plus_search_create",
         "mcp__goal_plus__future_action_without_prefix",
     ],
 )
@@ -2371,7 +2122,7 @@ def test_pre_tool_use_gates_nested_invocation_not_code_text(tmp_path: Path) -> N
             "hook_event_name": "PreToolUse",
             "agent_id": "ordinary-child",
             "tool_name": "functions.exec",
-            "tool_input": "await tools.exec_command({cmd: 'rg search_run_verifier src/'});",
+            "tool_input": "await tools.exec_command({cmd: 'rg goal_plus_search_run_verifier src/'});",
         },
     )
 
@@ -2391,12 +2142,12 @@ def test_pre_tool_use_gates_nested_invocation_not_code_text(tmp_path: Path) -> N
 
 @pytest.mark.parametrize("tool_name", [
     "mcp__codex_apps__gmail__search_emails",
-    "mcp__foreign__search_create", "mcp__foreign__goal_plus_create",
-    "mcp__foreign__search_prepare_recovery", "mcp__foreign__apply_patch",
-    "mcp__foreign__spawn_agent", "foreign.search_create",
-    "search_create", "goal_plus_create", "pi_search_pool_open",
-    "mcp__goal_plus_extra__search_create",
-    "mcp__foreign__mcp__goal_plus__search_create",
+    "mcp__foreign__goal_plus_search_create", "mcp__foreign__goal_plus_create",
+    "mcp__foreign__goal_plus_search_prepare_recovery", "mcp__foreign__apply_patch",
+    "mcp__foreign__spawn_agent", "foreign.goal_plus_search_create",
+    "goal_plus_search_create", "goal_plus_create", "pi_search_pool_open",
+    "mcp__goal_plus_extra__goal_plus_search_create",
+    "mcp__foreign__mcp__goal_plus__goal_plus_search_create",
 ])
 @pytest.mark.parametrize("child", [False, True])
 def test_foreign_tool_identity_does_not_require_goal_plus(tmp_path, tool_name, child):
@@ -2414,8 +2165,8 @@ def test_foreign_tool_identity_does_not_require_goal_plus(tmp_path, tool_name, c
 
 
 @pytest.mark.parametrize("tool_name", [
-    "mcp__foreign__search_run_verifier", "mcp__foreign__search_status",
-    "mcp__foreign__search_get_agent_context", "mcp__foreign__spawn_agent",
+    "mcp__foreign__goal_plus_search_run_verifier", "mcp__foreign__goal_plus_search_status",
+    "mcp__foreign__goal_plus_search_get_agent_context", "mcp__foreign__spawn_agent",
     "functions.foreign.interrupt_agent",
     "functions.collaboration.foreign.interrupt_agent",
     "mcp__foreign__functions.collaboration.interrupt_agent",
@@ -2440,14 +2191,14 @@ def test_foreign_tools_leave_attached_goal_unchanged(tmp_path, paused):
     record = start_host_verified_goal(search_root, tmp_path, session_id="session-codex")
     runtime = FileGoalPlusRuntime(search_root)
     goal_id = record.goal_plus_id
-    runtime.activate_session(goal_id, {"host": "codex", "session_id": "session-codex"})
+    runtime.activate_session(goal_id, {"agent_harness": "codex", "session_id": "session-codex"})
     if paused:
         record = runtime.status(goal_id)
         runtime.control_from_host_command(goal_id, invocation=record.host_command_invocations[0].model_copy(
             update={"action": "pause", "invocation_id": "identity-pause"},
         ))
     before = runtime.status(goal_id).model_dump_json()
-    for tool in ("search_create", "goal_plus_set_status", "search_run_verifier", "apply_patch", "spawn_agent"):
+    for tool in ("goal_plus_search_create", "goal_plus_set_status", "goal_plus_search_run_verifier", "apply_patch", "spawn_agent"):
         result = _run_hook(tmp_path, search_root, {
             "hook_event_name": "PreToolUse", "session_id": "session-codex",
             "tool_name": f"mcp__foreign__{tool}",
@@ -2497,7 +2248,7 @@ def test_pre_tool_use_allows_linked_report_for_terminal_goal(
         {
             "hook_event_name": "PreToolUse",
             "session_id": "session-codex",
-            "tool_name": "mcp__goal-plus__search_report",
+            "tool_name": "mcp__goal-plus__goal_plus_search_report",
             "tool_input": {"run_id": "run_terminal"},
         },
     )
@@ -2517,7 +2268,7 @@ def test_pre_tool_use_denies_report_without_terminal_run_link(tmp_path: Path) ->
         {
             "hook_event_name": "PreToolUse",
             "session_id": "other-session",
-            "tool_name": "mcp__goal-plus__search_report",
+            "tool_name": "mcp__goal-plus__goal_plus_search_report",
             "tool_input": {"run_id": "run_other"},
         },
     )
@@ -2544,7 +2295,7 @@ def test_pre_tool_use_allows_terminal_report_for_detached_original_session(
         {
             "hook_event_name": "PreToolUse",
             "session_id": "later-codex-session",
-            "tool_name": "mcp__goal-plus__search_report",
+            "tool_name": "mcp__goal-plus__goal_plus_search_report",
             "tool_input": {"run_id": "run_terminal"},
         },
     )
@@ -2775,7 +2526,7 @@ def test_pre_tool_use_ignores_unrelated_tool(tmp_path: Path) -> None:
     record = runtime.create_goal("Optimize model throughput")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
 
     result = _run_hook(
@@ -2792,13 +2543,13 @@ def test_pre_tool_use_ignores_unrelated_tool(tmp_path: Path) -> None:
     assert runtime.status(record.goal_plus_id).hook_counters == {}
 
 
-def test_unbound_search_candidate_stop_requires_own_verifier(tmp_path: Path) -> None:
+def test_unbound_search_candidate_can_return_without_completing_goal(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     runtime = FileGoalPlusRuntime(search_root)
     record = runtime.create_goal("Optimize model throughput")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
 
     result = _run_hook(
@@ -2812,386 +2563,9 @@ def test_unbound_search_candidate_stop_requires_own_verifier(tmp_path: Path) -> 
         },
     )
 
-    payload = json.loads(result.stdout)
-    assert payload["decision"] == "block"
-    assert "必须使用自己的 agent_session_id 完成至少一次 search_run_verifier" in payload[
-        "reason"
-    ]
-    assert "父级负责" in payload["reason"]
+    assert result.stdout == ""
+    assert runtime.status(record.goal_plus_id).status == "active"
     assert runtime.status(record.goal_plus_id).hook_counters["subagent_stop"] == 1
-
-
-def test_search_candidate_stop_is_owned_by_its_verifier_not_parent_next_action(
-    tmp_path: Path,
-) -> None:
-    search_runtime, run_id, candidate_id, agent_session_id = _codex_search_worker(
-        tmp_path
-    )
-    search_root = search_runtime.root_dir
-    goal_runtime = FileGoalPlusRuntime(search_root)
-    record = goal_runtime.create_goal("Optimize model throughput")
-    goal_runtime.activate_session(
-        record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
-    )
-    agent_identity = "search-worker-agent"
-
-    mapped = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "PostToolUse",
-            "agent_id": agent_identity,
-            "agent_type": "search_candidate_agent",
-            "tool_name": "mcp__goal-plus__search_get_agent_context",
-            "tool_input": {"agent_session_id": agent_session_id},
-        },
-    )
-    assert mapped.stdout == ""
-
-    before_verifier = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "SubagentStop",
-            "session_id": "session-codex",
-            "agent_id": agent_identity,
-        },
-    )
-    blocked = json.loads(before_verifier.stdout)
-    assert blocked["decision"] == "block"
-    assert agent_session_id in blocked["reason"]
-    assert "search_run_verifier" in blocked["reason"]
-
-    search_runtime.run_verifier(
-        run_id,
-        candidate_id,
-        agent_session_id=agent_session_id,
-        hypothesis="Hook-owned worker evidence",
-    )
-    after_verifier = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "SubagentStop",
-            "session_id": "session-codex",
-            "agent_id": agent_identity,
-            "agent_transcript_path": "/tmp/codex-search-worker.jsonl",
-            "model": "gpt-5.5",
-        },
-    )
-    assert after_verifier.stdout == ""
-    rebound = search_runtime.candidate_sessions.session(agent_session_id)
-    assert rebound.host_handle.external_id == agent_identity
-    assert rebound.host_handle.metadata["session_file"] == "/tmp/codex-search-worker.jsonl"
-    assert rebound.host_handle.metadata["model"] == "gpt-5.5"
-    assert "subagent_stop_observed_at" in rebound.host_handle.metadata
-
-    subagent_events = _stop_hook_events(search_root)
-    assert len(subagent_events) == 2
-    assert {event["decision"] for event in subagent_events} == {"allow", "block"}
-    for event in subagent_events:
-        assert event["hook_event_name"] == "SubagentStop"
-        assert event["goal_plus_id"] == record.goal_plus_id
-        assert event["host_agent_id"] == agent_identity
-        assert event["agent_session_id"] == agent_session_id
-        assert event["run_id"] == run_id
-        assert event["candidate_id"] == candidate_id
-
-    parent_stop = _run_hook(
-        tmp_path,
-        search_root,
-        {"hook_event_name": "Stop", "session_id": "session-codex"},
-    )
-    parent_payload = json.loads(parent_stop.stdout)
-    assert parent_payload["decision"] == "block"
-    assert "判断原始目标" in parent_payload["reason"]
-    counters = goal_runtime.status(record.goal_plus_id).hook_counters
-    assert counters["subagent_stop"] == 2
-    assert counters["stop"] == 1
-
-
-def test_unlinked_search_candidate_stop_does_not_inherit_unrelated_active_goal(
-    tmp_path: Path,
-) -> None:
-    search_runtime, run_id, candidate_id, agent_session_id = _codex_search_worker(
-        tmp_path
-    )
-    search_root = search_runtime.root_dir
-    goal_runtime = FileGoalPlusRuntime(search_root)
-    unrelated = goal_runtime.create_goal("Unrelated active Goal Plus task")
-    goal_runtime.activate_session(
-        unrelated.goal_plus_id,
-        {"host": "codex", "session_id": "parent-session"},
-    )
-    agent_identity = "standalone-search-worker"
-
-    mapped = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "PostToolUse",
-            "agent_id": agent_identity,
-            "agent_type": "search_candidate_agent",
-            "tool_name": "mcp__goal-plus__search_get_agent_context",
-            "tool_input": {"agent_session_id": agent_session_id},
-        },
-    )
-    assert mapped.returncode == 0
-
-    stopped = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "SubagentStop",
-            "session_id": "child-session",
-            "agent_id": agent_identity,
-        },
-    )
-
-    assert stopped.returncode == 0
-    assert stopped.stdout == ""
-    [event] = _stop_hook_events(search_root)
-    assert event["decision"] == "skipped"
-    assert event["goal_plus_id"] is None
-    assert event["agent_session_id"] == agent_session_id
-    assert event["run_id"] == run_id
-    assert event["candidate_id"] == candidate_id
-
-
-def test_search_candidate_autoresearch_lease_blocks_until_runtime_then_releases(
-    tmp_path: Path,
-) -> None:
-    search_runtime, run_id, candidate_id, agent_session_id = _codex_search_worker(
-        tmp_path,
-        worker_budget={
-            "min_runtime_seconds": 300,
-            "min_verifier_runs": 1,
-            "max_runtime_seconds": 420,
-            "on_exceed": "interrupt",
-        },
-    )
-    search_root = search_runtime.root_dir
-    goal_runtime = FileGoalPlusRuntime(search_root)
-    record = goal_runtime.create_goal("Run one sustained AutoResearch worker")
-    goal_runtime.activate_session(
-        record.goal_plus_id,
-        {"host": "codex", "session_id": "parent-session"},
-    )
-    goal_runtime.link_search_run(
-        record.goal_plus_id,
-        search_runtime.search_run.state.read_run(run_id).frozen_spec_id,
-        run_id,
-    )
-    agent_identity = "019f-native-autoresearch-worker"
-    session = search_runtime.candidate_sessions.session(agent_session_id)
-    transcript_started_at = datetime.now(timezone.utc)
-    transcript_dir = (
-        tmp_path
-        / "codex-home"
-        / "sessions"
-        / f"{transcript_started_at.year:04d}"
-        / f"{transcript_started_at.month:02d}"
-        / f"{transcript_started_at.day:02d}"
-    )
-    transcript_dir.mkdir(parents=True)
-    transcript_path = transcript_dir / "codex-autoresearch-worker.jsonl"
-    transcript_path.write_text(
-        json.dumps(
-            {
-                "timestamp": transcript_started_at.isoformat().replace(
-                    "+00:00", "Z"
-                ),
-                "type": "session_meta",
-                "payload": {
-                    "id": agent_identity,
-                    "session_id": agent_identity,
-                    "agent_path": session.host_handle.task_name,
-                    "message": f"agent_session_id={agent_session_id}",
-                },
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    search_runtime.run_verifier(
-        run_id,
-        candidate_id,
-        agent_session_id=agent_session_id,
-        hypothesis="Hook-owned worker evidence",
-    )
-
-    early_stop = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "SubagentStop",
-            "session_id": "child-session",
-            "agent_id": agent_identity,
-            "agent_type": "default",
-        },
-        CODEX_HOME=str(tmp_path / "codex-home"),
-    )
-    blocked = json.loads(early_stop.stdout)
-    assert blocked["decision"] == "block"
-    assert "AutoResearch lease" in blocked["reason"]
-    assert "不要返回父级" in blocked["reason"]
-    assert "不要休眠或忙等" in blocked["reason"]
-    assert "沿用已加载的 candidate-local 证据和 Global Evidence" in blocked["reason"]
-    assert "search_get_agent_context" not in blocked["reason"]
-    assert "search_get_global_evidence" not in blocked["reason"]
-    assert "一句话 hypothesis" in blocked["reason"]
-    assert "省略 scope 以使用 process verifier" in blocked["reason"]
-    assert "继续深度搜索" in blocked["reason"]
-    assert "不要通过重复返回来轮询此 hook" in blocked["reason"]
-    assert "把局部饱和视为转向信号" in blocked["reason"]
-    assert "与已有尝试不同的实质方向" in blocked["reason"]
-    assert "或基于连续结果形成具体的结构性饱和证据时才准备返回" not in blocked[
-        "reason"
-    ]
-    assert "立即再次尝试结束" not in blocked["reason"]
-    protocol = [
-        "沿用已加载",
-        "选择不同",
-        "实现修改",
-        "search_run_verifier",
-        "hypothesis",
-    ]
-    assert all(step in blocked["reason"] for step in protocol)
-    assert [blocked["reason"].index(step) for step in protocol] == sorted(
-        blocked["reason"].index(step) for step in protocol
-    )
-
-    evidence_path = (
-        search_root
-        / "host-logs"
-        / "codex-autoresearch-leases"
-        / f"{agent_session_id}.json"
-    )
-    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert evidence["status"] == "active"
-    assert evidence["blocked_stop_attempts"] == 1
-    assert evidence["parent_closeout_after_seconds"] == 375
-    assert evidence["min_runtime_seconds"] == 300
-    assert evidence["max_runtime_seconds"] == 420
-    assert evidence["start_event"] == "SubagentStartTranscript"
-    assert evidence["lease_precedes_parent_closeout"] is True
-    assert evidence["lease_precedes_parent_hard_deadline"] is True
-
-    evidence["started_at"] = (
-        datetime.now(timezone.utc) - timedelta(seconds=301)
-    ).isoformat().replace("+00:00", "Z")
-    evidence_path.write_text(
-        json.dumps(evidence, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-    completed_stop = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "SubagentStop",
-            "session_id": "child-session",
-            "agent_id": agent_identity,
-            "agent_type": "default",
-        },
-        CODEX_HOME=str(tmp_path / "codex-home"),
-    )
-    assert completed_stop.stdout == ""
-    released = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert released["status"] == "released"
-    assert released["release_reason"] == "lease_satisfied"
-    assert released["elapsed_seconds"] >= 300
-    assert released["released_within_parent_closeout_budget"] is True
-    assert released["released_within_max_runtime"] is True
-    assert released["blocked_stop_attempts"] == 1
-    assert released["stop_attempts"] == 2
-
-
-def test_pending_adaptive_retirement_authorizes_physical_interrupt_stop(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    global _OWNER_PID_CACHE
-    _OWNER_PID_CACHE = None
-    search_runtime, run_id, candidate_id, agent_session_id = _codex_search_worker(
-        tmp_path,
-        worker_budget={
-            "min_runtime_seconds": 300,
-            "min_verifier_runs": 2,
-            "max_runtime_seconds": 420,
-            "on_exceed": "interrupt",
-        },
-        adaptive_search=True,
-    )
-    search_root = search_runtime.root_dir
-    goal_runtime = FileGoalPlusRuntime(search_root)
-    goal = goal_runtime.create_goal("Adaptively optimize model throughput")
-    goal_runtime.activate_session(
-        goal.goal_plus_id,
-        {"host": "codex", "session_id": "parent-session"},
-    )
-    goal_runtime.link_search_run(
-        goal.goal_plus_id,
-        search_runtime.search_run.state.read_run(run_id).frozen_spec_id,
-        run_id,
-    )
-    agent_identity = "adaptive-search-worker"
-    _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "PostToolUse",
-            "agent_id": agent_identity,
-            "agent_type": "search_candidate_agent",
-            "tool_name": "mcp__goal-plus__search_get_agent_context",
-            "tool_input": {"agent_session_id": agent_session_id},
-        },
-    )
-
-    active = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "SubagentStop",
-            "session_id": "child-session",
-            "agent_id": agent_identity,
-        },
-    )
-    assert json.loads(active.stdout)["decision"] == "block"
-
-    monkeypatch.setattr(
-        "goal_plus.infrastructure.state.candidate_queries."
-        "FileCandidateQueries.load_allocation_decisions",
-        lambda _source, _run_id: [
-            SimpleNamespace(
-                status="pending",
-                retire_candidate_ids=[candidate_id],
-                decision_id="allocation_0001",
-            )
-        ],
-    )
-    retired = _run_hook(
-        tmp_path,
-        search_root,
-        {
-            "hook_event_name": "SubagentStop",
-            "session_id": "child-session",
-            "agent_id": agent_identity,
-        },
-    )
-
-    assert retired.stdout == ""
-    lease = json.loads(
-        (
-            search_root
-            / "host-logs"
-            / "codex-autoresearch-leases"
-            / f"{agent_session_id}.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert lease["status"] == "released"
-    assert lease["release_reason"] == "allocation_interrupt"
 
 
 def test_ordinary_subagent_stop_does_not_inherit_parent_next_action(
@@ -3202,7 +2576,7 @@ def test_ordinary_subagent_stop_does_not_inherit_parent_next_action(
     record = runtime.create_goal("Implement a feature")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
 
     result = _run_hook(
@@ -3226,7 +2600,7 @@ def test_stop_for_terminal_goal_emits_non_llm_stats(tmp_path: Path) -> None:
     record = runtime.create_goal("Optimize model throughput")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     runtime.set_status(
         record.goal_plus_id,
@@ -3249,7 +2623,7 @@ def test_stop_for_terminal_goal_emits_non_llm_stats(tmp_path: Path) -> None:
     message = json.loads(result.stdout)["systemMessage"]
     assert f"goal_plus_id={record.goal_plus_id}" in message
     assert "status=complete" in message
-    assert "phase=intake" in message
+    assert "phase=goal" in message
     assert "search_tasks=0" in message
     assert "stop=1" in message
 
@@ -3284,7 +2658,7 @@ def test_stop_prefers_new_active_goal_over_older_terminal_goal(
     terminal = runtime.create_goal("Completed work")
     runtime.activate_session(
         terminal.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
     runtime.set_status(
         terminal.goal_plus_id,
@@ -3294,7 +2668,7 @@ def test_stop_prefers_new_active_goal_over_older_terminal_goal(
     active = runtime.create_goal("Implement the new active work")
     runtime.activate_session(
         active.goal_plus_id,
-        {"host": "codex", "session_id": "session-codex"},
+        {"agent_harness": "codex", "session_id": "session-codex"},
     )
 
     result = _run_hook(
@@ -3322,7 +2696,7 @@ def test_ordinary_prompt_detaches_terminal_goal_before_next_stop(
     runtime.activate_session(
         record.goal_plus_id,
         {
-            "host": "codex",
+            "agent_harness": "codex",
             "session_id": "session-codex",
             "metadata": {"native_entry_id": "turn-goal"},
         },

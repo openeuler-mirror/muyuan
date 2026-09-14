@@ -13,6 +13,44 @@ from goal_plus.server import create_mcp
 from tests._fastmcp_helpers import tools_by_name
 
 
+def test_ready_spec_draft_returns_actionable_tool_error_without_state_change(tmp_path):
+    from goal_plus.goal_plus import FileGoalPlusRuntime
+    from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
+
+    project = make_project(tmp_path)
+    root = tmp_path / ".gp"
+    goal = start_host_verified_goal(root, project)
+    runtime = FileGoalPlusRuntime(root)
+    runtime.record_triage(goal.goal_plus_id, {
+        "is_optimization": True, "confidence": "high", "recommended_phase": "search",
+    })
+    goal_path = root / "goal-plus" / goal.goal_plus_id / "goal.json"
+    before = goal_path.read_bytes()
+    spec = spec_for(project).model_dump(mode="json")
+    incomplete = {key: value for key, value in spec.items() if key != "process_verifiers"}
+    draft = {
+        "baseline": {}, "metric": {}, "correctness_gate": {}, "edit_surface": {},
+        "search_spec": incomplete, "promotion_rule": "best verified score", "confidence": "high",
+    }
+
+    async def exercise():
+        async with Client(create_mcp(root, caller_role="main")) as client:
+            rejected = await client.call_tool("goal_plus_search_freeze_spec", {
+                "goal_plus_id": goal.goal_plus_id, "spec": incomplete, "verifier_artifact_paths": ["evaluator.py"],
+            }, raise_on_error=False)
+            assert rejected.is_error
+            text = "\n".join(item.text for item in rejected.content if item.type == "text")
+            assert "process_verifiers" in text
+            assert goal_path.read_bytes() == before
+            accepted = await client.call_tool("goal_plus_search_freeze_spec", {
+                "goal_plus_id": goal.goal_plus_id, "spec": spec, "verifier_artifact_paths": ["evaluator.py"],
+            })
+            assert not accepted.is_error
+
+    asyncio.run(exercise())
+    assert runtime.status(goal.goal_plus_id).spec_draft is None
+
+
 def test_create_mcp(tmp_path: Path) -> None:
     runtime_root = tmp_path / ".search"
 
@@ -21,6 +59,24 @@ def test_create_mcp(tmp_path: Path) -> None:
     assert isinstance(mcp, FastMCP)
     assert mcp.version == __version__
     assert not runtime_root.exists()
+
+
+def test_public_catalog_has_one_search_spec_and_no_removed_aliases(tmp_path):
+    from goal_plus.domain.tool_catalog import PUBLIC_TOOL_NAMES, SESSION_TOOL_NAMES
+    tools = asyncio.run(tools_by_name(create_mcp(
+        tmp_path / ".gp", caller_role="main", session_controls=lambda *_: None, session_launcher=object(),
+    )))
+    assert set(tools) <= PUBLIC_TOOL_NAMES
+    assert SESSION_TOOL_NAMES <= set(tools)
+    assert all(name.startswith("goal_plus_") for name in tools)
+    assert sum('"process_verifiers"' in json.dumps(tool.parameters) for tool in tools.values()) == 1
+    assert {"run_id", "candidate_id", "call_id", "prompt", "timeout_seconds"} == set(tools["goal_plus_session_run"].parameters["required"])
+    assert tools["goal_plus_search_list_allocation_decisions"].parameters["properties"]["status"]["default"] == "pending"
+    for name in ("goal_plus_session_open", "goal_plus_session_wake", "goal_plus_session_start",
+                 "goal_plus_create", "goal_plus_update_goal", "goal_plus_gate", "goal_plus_save_spec_draft",
+                 "goal_plus_link_search_run", "goal_plus_prepare_final_check",
+                 "search_freeze_spec", "search_create", "search_start_agent_session"):
+        assert name not in tools
 
 
 def test_cli_exposes_package_version(
@@ -41,51 +97,47 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
 
     tools = asyncio.run(tools_by_name(mcp))
 
+    history_detail = tools["goal_plus_search_list_history"].parameters["properties"]["detail"]
+    assert history_detail["type"] == "boolean"
+    assert history_detail["default"] is False
+
     assert set(tools) == {
-        "search_freeze_spec",
-        "search_create",
-        "search_status",
-        "search_recovery_status",
-        "search_prepare_recovery",
-        "search_recover_candidate",
-        "search_invalidate_run",
-        "search_list_history",
-        "search_plan_next",
-        "search_start_batch",
-        "search_start_agent_session",
-        "search_redispatch_candidate",
-        "search_bind_agent_handle",
-        "search_continue_agent_session",
-        "search_get_agent_context",
-        "search_get_global_evidence",
-        "search_reference_open",
-        "search_stage_shared_tool",
-        "search_copy_shared_tool",
-        "search_get_evidence_detail",
-        "search_get_agent_observability",
-        "search_run_verifier",
-        "search_list_iterations",
-        "search_list_allocation_decisions",
-        "search_apply_allocation_decision",
-        "search_select",
-        "search_report",
-        "search_promote",
-        "search_apply_promotion",
-        "goal_plus_create",
+        "goal_plus_search_freeze_spec",
+        "goal_plus_search_create",
+        "goal_plus_search_status",
+        "goal_plus_search_recovery_status",
+        "goal_plus_search_prepare_recovery",
+        "goal_plus_search_recover_candidate",
+        "goal_plus_search_invalidate_run",
+        "goal_plus_search_list_history",
+        "goal_plus_search_plan_next",
+        "goal_plus_search_start_batch",
+        "goal_plus_search_get_agent_context",
+        "goal_plus_search_get_global_evidence",
+        "goal_plus_search_reference_open",
+        "goal_plus_search_stage_shared_tool",
+        "goal_plus_search_copy_shared_tool",
+        "goal_plus_search_get_evidence_detail",
+        "goal_plus_search_get_agent_observability",
+        "goal_plus_search_run_verifier",
+        "goal_plus_search_list_iterations",
+        "goal_plus_search_list_allocation_decisions",
+        "goal_plus_search_apply_allocation_decision",
+        "goal_plus_search_select",
+        "goal_plus_search_report",
+        "goal_plus_search_promote",
+        "goal_plus_search_apply_promotion",
         "goal_plus_status",
         "goal_plus_history",
-        "goal_plus_update_goal",
         "goal_plus_monitor_snapshot",
         "goal_plus_list_models",
         "goal_plus_record_triage",
         "goal_plus_record_work_event",
-        "goal_plus_save_spec_draft",
-        "goal_plus_link_search_run",
         "goal_plus_record_search_result",
-        "goal_plus_prepare_final_check",
+        "goal_plus_run_final_check",
+        "goal_plus_run_work_item",
         "goal_plus_submit_final_check",
         "goal_plus_set_status",
-        "goal_plus_gate",
     }
 
 
@@ -93,17 +145,18 @@ def test_invalidate_run_and_successor_expose_contract_fields(tmp_path: Path) -> 
     mcp = create_mcp(tmp_path / ".search")
     tools = asyncio.run(tools_by_name(mcp))
 
-    create_properties = tools["search_create"].parameters["properties"]
-    invalidation = tools["search_invalidate_run"].parameters
+    create_properties = tools["goal_plus_search_create"].parameters["properties"]
+    invalidation = tools["goal_plus_search_invalidate_run"].parameters
 
     assert "source_run_id" in create_properties
     assert set(create_properties) == {
         "goal_plus_id",
         "frozen_spec_id",
+        "request_id",
         "source_run_id",
     }
-    assert "goal_plus_id" in tools["search_freeze_spec"].parameters["required"]
-    assert "goal_plus_id" in tools["search_create"].parameters["required"]
+    assert "goal_plus_id" in tools["goal_plus_search_freeze_spec"].parameters["required"]
+    assert "goal_plus_id" in tools["goal_plus_search_create"].parameters["required"]
     assert "goal_plus_list_models" in tools
     assert set(invalidation["required"]) == {
         "run_id",
@@ -114,42 +167,13 @@ def test_invalidate_run_and_successor_expose_contract_fields(tmp_path: Path) -> 
     assert "verifier_coverage_inadequate" in invalidation["properties"]["reason"][
         "enum"
     ]
-    description = " ".join(tools["search_invalidate_run"].description.split())
-    assert "原子地阻止新规划" in description
-    assert "中断 host pool" in description
-
-
-def test_legacy_goal_entrypoint_tools_are_deny_only_tombstones(tmp_path: Path) -> None:
-    tools = asyncio.run(tools_by_name(create_mcp(tmp_path / ".search")))
-
-    create_description = " ".join(tools["goal_plus_create"].description.split())
-    update_description = " ".join(tools["goal_plus_update_goal"].description.split())
-    assert "始终报错" in create_description
-    assert "`$goal-plus`" in create_description
-    assert "始终报错" in update_description
-    assert "`/goal-plus edit`" in update_description
-
-
-def test_start_agent_session_returns_launch_payload(tmp_path: Path) -> None:
-    mcp = create_mcp(tmp_path / ".search")
-
-    tools = asyncio.run(tools_by_name(mcp))
-    schema = tools["search_start_agent_session"].parameters
-
-    properties = schema["properties"]
-    assert "candidate_id" in properties
-    assert "directive" in properties
-    assert "worker_budget" in properties
-    # The legacy admission parameters (budget, visibility_mode) are gone.
-    assert "budget" not in properties
-    assert "visibility_mode" not in properties
 
 
 def test_mcp_exposes_structured_triage_and_candidate_proposals(tmp_path: Path) -> None:
     tools = asyncio.run(tools_by_name(create_mcp(tmp_path / ".search")))
 
     triage = tools["goal_plus_record_triage"].parameters["properties"]["triage"]
-    proposals = tools["search_start_batch"].parameters["properties"]["proposals"]
+    proposals = tools["goal_plus_search_start_batch"].parameters["properties"]["proposals"]
     proposal_items = proposals["anyOf"][0]["items"]
 
     assert set(triage["required"]) == {
@@ -186,14 +210,14 @@ def test_mcp_returns_large_worker_context_once_as_compact_text(
     }
     monkeypatch.setattr(
         server_module.SearchTools,
-        "search_get_agent_context",
+        "goal_plus_search_get_agent_context",
         lambda _self, _agent_session_id: payload,
     )
 
     async def call_context():
         async with Client(create_mcp(tmp_path / ".search")) as client:
             return await client.call_tool(
-                "search_get_agent_context",
+                "goal_plus_search_get_agent_context",
                 {"agent_session_id": "agent_001"},
             )
 
@@ -209,35 +233,11 @@ def test_mcp_returns_large_worker_context_once_as_compact_text(
     )
 
 
-def test_redispatch_candidate_preserves_frozen_binding(tmp_path: Path) -> None:
-    mcp = create_mcp(tmp_path / ".search")
-
-    tools = asyncio.run(tools_by_name(mcp))
-    schema = tools["search_redispatch_candidate"].parameters
-
-    properties = schema["properties"]
-    assert "run_id" in properties
-    assert "candidate_id" in properties
-    assert "directive" not in properties
-    assert "worker_agent_type" not in properties
-    assert "inner_agent" not in properties
-    assert "worker_budget" in properties
-
-
-def test_continue_agent_session_exposes_neutral_continuation_schema(tmp_path: Path) -> None:
-    mcp = create_mcp(tmp_path / ".search")
-
-    tools = asyncio.run(tools_by_name(mcp))
-
-    assert "agent_session_id" in tools["search_continue_agent_session"].parameters["properties"]
-    assert "directive" not in tools["search_continue_agent_session"].parameters["properties"]
-
-
 def test_run_verifier_exposes_optional_agent_session_id(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
     tools = asyncio.run(tools_by_name(mcp))
-    schema = tools["search_run_verifier"].parameters
+    schema = tools["goal_plus_search_run_verifier"].parameters
 
     assert "agent_session_id" in schema["properties"]
     assert "hypothesis" in schema["properties"]
@@ -260,24 +260,24 @@ def test_run_verifier_exposes_optional_agent_session_id(tmp_path: Path) -> None:
     )
     exclusion_schema = decision_schema["properties"]["exclusion"]["anyOf"][0]
     assert "no_toolizable_material" in exclusion_schema["enum"]
-    assert tools["search_copy_shared_tool"].parameters["required"] == [
+    assert tools["goal_plus_search_copy_shared_tool"].parameters["required"] == [
         "agent_session_id",
         "tool_id",
         "snapshot_hash",
     ]
-    copy_description = tools["search_copy_shared_tool"].description
+    copy_description = tools["goal_plus_search_copy_shared_tool"].description
     assert "精确 id/hash" in copy_description
     assert "临时 inbox" in copy_description
     assert "具体采用契约见 candidate instructions" in copy_description
     assert "adopted_tools" not in copy_description
-    assert tools["search_stage_shared_tool"].parameters["required"] == [
+    assert tools["goal_plus_search_stage_shared_tool"].parameters["required"] == [
         "agent_session_id",
         "name",
         "summary",
         "entrypoint",
         "candidate_relative_source_paths",
     ]
-    stage_description = tools["search_stage_shared_tool"].description
+    stage_description = tools["goal_plus_search_stage_shared_tool"].description
     assert ".tmp/tool-drafts/" in stage_description
     assert "只执行" in stage_description
     assert "passing verifier 结算" in stage_description
@@ -288,15 +288,15 @@ def test_run_verifier_exposes_optional_agent_session_id(tmp_path: Path) -> None:
         "candidate 产品实现",
     ):
         assert runtime_only_detail not in stage_description
-    assert tools["search_get_global_evidence"].parameters["required"] == [
+    assert tools["goal_plus_search_get_global_evidence"].parameters["required"] == [
         "agent_session_id"
     ]
-    assert tools["search_get_evidence_detail"].parameters["required"] == [
+    assert tools["goal_plus_search_get_evidence_detail"].parameters["required"] == [
         "agent_session_id",
         "candidate_id",
         "iteration",
     ]
-    assert tools["search_get_evidence_detail"].parameters["properties"]["iteration"][
+    assert tools["goal_plus_search_get_evidence_detail"].parameters["properties"]["iteration"][
         "minimum"
     ] == 1
 
@@ -305,7 +305,7 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     mcp = create_mcp(tmp_path / ".search")
     tools = asyncio.run(tools_by_name(mcp))
 
-    spec_schema = tools["search_freeze_spec"].parameters["properties"]["spec"]
+    spec_schema = tools["goal_plus_search_freeze_spec"].parameters["properties"]["spec"]
 
     assert set(spec_schema["required"]) >= {
         "objective",
@@ -349,7 +349,7 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     assert "null 表示不限制" in budget["max_candidates"]["description"]
     assert "大于等于 max_parallel" in budget["max_candidates"]["description"]
 
-    freeze_description = " ".join(tools["search_freeze_spec"].description.split())
+    freeze_description = " ".join(tools["goal_plus_search_freeze_spec"].description.split())
     assert "唯一决定初始候选 Agent 数" in freeze_description
     assert "一次性源码副本" in freeze_description
     assert "GOAL_PLUS_VERIFIER_TMPDIR" in freeze_description
@@ -357,7 +357,7 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     assert "clean HEAD" in freeze_description
 
     verifier_description = " ".join(
-        tools["search_run_verifier"].description.split()
+        tools["goal_plus_search_run_verifier"].description.split()
     )
     assert "VerifierWorkspaceSideEffect" in verifier_description
     assert 'candidate_action="stop_and_report"' in verifier_description
@@ -367,7 +367,7 @@ def test_plan_next_exposes_per_round_budget_semantics(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
     tools = asyncio.run(tools_by_name(mcp))
 
-    plan_tool = tools["search_plan_next"]
+    plan_tool = tools["goal_plus_search_plan_next"]
     requested_k = plan_tool.parameters["properties"]["requested_k"]
 
     assert requested_k["default"] == 4
@@ -376,41 +376,6 @@ def test_plan_next_exposes_per_round_budget_semantics(tmp_path: Path) -> None:
     assert "标准流程必须传入 budget.max_parallel" in requested_k["description"]
     assert "`requested_k` 与" in plan_tool.description
     assert "标准流程必须令两者相等" in plan_tool.description
-
-
-def test_spec_draft_exposes_partial_nested_search_spec_schema(tmp_path: Path) -> None:
-    mcp = create_mcp(tmp_path / ".search")
-    tools = asyncio.run(tools_by_name(mcp))
-
-    draft = tools["goal_plus_save_spec_draft"].parameters["properties"][
-        "spec_draft"
-    ]
-    typed_search_spec = draft["properties"]["search_spec"]
-
-    assert "objective" in typed_search_spec["properties"]
-    assert "edit_surface" in typed_search_spec["properties"]
-    assert "budget" in typed_search_spec["properties"]
-    assert "process_verifiers" in typed_search_spec["properties"]
-    assert "required" not in typed_search_spec
-
-    draft_budget_schema = typed_search_spec["properties"]["budget"]
-    draft_budget = next(
-        option
-        for option in draft_budget_schema["anyOf"]
-        if option.get("type") == "object"
-    )["properties"]
-    assert "初始创建并实际并行工作" in draft_budget["max_parallel"]["description"]
-
-
-def test_goal_plus_gate_exposes_hook_friendly_schema(tmp_path: Path) -> None:
-    mcp = create_mcp(tmp_path / ".search")
-
-    tools = asyncio.run(tools_by_name(mcp))
-    schema = tools["goal_plus_gate"].parameters
-
-    assert "goal_plus_id" in schema["properties"]
-    assert "event" in schema["properties"]
-    assert "context" in schema["properties"]
 
 
 def test_goal_plus_monitor_snapshot_exposes_read_only_schema(tmp_path: Path) -> None:
@@ -429,10 +394,10 @@ def test_agent_observability_exposes_read_only_schema(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
 
     tools = asyncio.run(tools_by_name(mcp))
-    schema = tools["search_get_agent_observability"].parameters
+    schema = tools["goal_plus_search_get_agent_observability"].parameters
 
     assert set(schema["required"]) == {"agent_session_id"}
-    description = " ".join(tools["search_get_agent_observability"].description.split())
+    description = " ".join(tools["goal_plus_search_get_agent_observability"].description.split())
     assert "只读" in description
     assert "reasoning" in description
 
@@ -443,21 +408,11 @@ def test_goal_plus_create_has_no_mode_hint_or_verifier_confirm_tool(
     mcp = create_mcp(tmp_path / ".search")
 
     tools = asyncio.run(tools_by_name(mcp))
-    create_schema = tools["goal_plus_create"].parameters
-
-    assert "mode_hint" not in create_schema["properties"]
-    assert "raw_goal" in create_schema["properties"]
     assert "goal_plus_confirm_frozen_verifier" not in tools
-    update_schema = tools["goal_plus_update_goal"].parameters
-    prepare_schema = tools["goal_plus_prepare_final_check"].parameters
+    run_schema = tools["goal_plus_run_final_check"].parameters
     submit_schema = tools["goal_plus_submit_final_check"].parameters
     status_schema = tools["goal_plus_set_status"].parameters
-    assert set(update_schema["required"]) >= {
-        "goal_plus_id",
-        "raw_goal",
-        "expected_revision",
-    }
-    assert "checker_host" in prepare_schema["properties"]
+    assert set(run_schema["properties"]) == {"goal_plus_id"}
     assert set(submit_schema["required"]) >= {
         "goal_plus_id",
         "check_id",
@@ -495,26 +450,26 @@ def test_create_mcp_constructs_runtime_with_configured_root(
             created_goal_runtimes.append(root_dir)
 
     class FakeTools:
-        def __init__(self, runtime, goal_runtime):
+        def __init__(self, runtime, goal_runtime, *, candidate_attempt=None):
             self.runtime = runtime
             self.goal_runtime = goal_runtime
 
-        def search_freeze_spec(self, *args, **kwargs):
+        def goal_plus_search_freeze_spec(self, *args, **kwargs):
             return {}
 
-        def search_create(self, *args, **kwargs):
+        def goal_plus_search_create(self, *args, **kwargs):
             return {}
 
-        def search_status(self, *args, **kwargs):
+        def goal_plus_search_status(self, *args, **kwargs):
             return {}
 
-        def search_list_history(self, *args, **kwargs):
+        def goal_plus_search_list_history(self, *args, **kwargs):
             return {}
 
-        def search_plan_next(self, *args, **kwargs):
+        def goal_plus_search_plan_next(self, *args, **kwargs):
             return {}
 
-        def search_start_batch(self, *args, **kwargs):
+        def goal_plus_search_start_batch(self, *args, **kwargs):
             return []
 
         def search_start_agent_session(self, *args, **kwargs):
@@ -526,31 +481,31 @@ def test_create_mcp_constructs_runtime_with_configured_root(
         def search_continue_agent_session(self, *args, **kwargs):
             return {}
 
-        def search_get_agent_context(self, *args, **kwargs):
+        def goal_plus_search_get_agent_context(self, *args, **kwargs):
             return {}
 
-        def search_get_global_evidence(self, *args, **kwargs):
+        def goal_plus_search_get_global_evidence(self, *args, **kwargs):
             return []
 
-        def search_get_evidence_detail(self, *args, **kwargs):
+        def goal_plus_search_get_evidence_detail(self, *args, **kwargs):
             return {}
 
-        def search_run_verifier(self, *args, **kwargs):
+        def goal_plus_search_run_verifier(self, *args, **kwargs):
             return {}
 
-        def search_list_iterations(self, *args, **kwargs):
+        def goal_plus_search_list_iterations(self, *args, **kwargs):
             return []
 
-        def search_select(self, *args, **kwargs):
+        def goal_plus_search_select(self, *args, **kwargs):
             return {}
 
-        def search_report(self, *args, **kwargs):
+        def goal_plus_search_report(self, *args, **kwargs):
             return {}
 
-        def search_promote(self, *args, **kwargs):
+        def goal_plus_search_promote(self, *args, **kwargs):
             return {}
 
-        def search_apply_promotion(self, *args, **kwargs):
+        def goal_plus_search_apply_promotion(self, *args, **kwargs):
             return {}
 
     class FakeGoalTools:

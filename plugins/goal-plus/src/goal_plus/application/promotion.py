@@ -55,7 +55,7 @@ class Promotion:
         require_run_not_invalidated(run, "promote")
         if run.selected_candidate_id != candidate_id:
             raise RuntimeError(
-                "cannot promote candidate before search_select selects it"
+                "cannot promote candidate before goal_plus_search_select selects it"
             )
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
 
@@ -72,13 +72,13 @@ class Promotion:
             selected_artifact_ref = ArtifactRef(
                 kind="git_commit",
                 id=run.selected_git_head,
-                provider=record.task.workspace_backend,
+                provider=record.task.workspace_provider,
             )
         if selected_artifact_ref is None:
             reject_promotion(
                 "cannot promote candidate without an immutable selected artifact"
             )
-        if record.task.workspace_backend == "thinkthread":
+        if record.task.workspace_provider == "thinkthread":
             return self.thinkthread.prepare(
                 run,
                 frozen,
@@ -215,13 +215,13 @@ class Promotion:
                         kind="git_commit",
                         id=record.task.workspace_base_revision
                         or selected_artifact_ref.id,
-                        provider=record.task.workspace_backend,
+                        provider=record.task.workspace_provider,
                     )
                 run.promotion = PromotionRecord(
                     promotion_id=f"promotion_{candidate_id}",
                     run_id=run_id,
                     candidate_id=candidate_id,
-                    provider=record.task.workspace_backend,
+                    provider=record.task.workspace_provider,
                     strategy="legacy_patch",
                     promotion_mode=frozen.spec.workspace.promotion_mode,
                     base_artifact_ref=base_ref,

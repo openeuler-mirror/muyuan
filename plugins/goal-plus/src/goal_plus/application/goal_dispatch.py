@@ -24,10 +24,12 @@ from goal_plus.domain.goal_commands import (
     DEFAULT_WORK_LAUNCH_TTL_SECONDS,
     WORK_EVENT_ALLOWED_STATUSES,
     WORK_EVENT_STATUS,
+    WORK_EVENT_SUMMARY_MAX_CHARACTERS,
 )
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.ports.goal_state import GoalState
 from goal_plus.ports.clock import Clock
+from goal_plus.ports.session import NativeMainCaller
 
 
 class GoalDispatch:
@@ -52,17 +54,25 @@ class GoalDispatch:
         attempt_id: str | None = None,
         generation: int | None = None,
         launch_ttl_seconds: int = DEFAULT_WORK_LAUNCH_TTL_SECONDS,
+        native_main: NativeMainCaller | None = None,
     ) -> GoalPlusRecord:
         with self.state.lock_goal(goal_plus_id):
             summary = summary.strip()
             if not summary:
                 raise ValueError("work event summary must not be empty")
-            if len(summary) > 4000:
+            if len(summary) > WORK_EVENT_SUMMARY_MAX_CHARACTERS:
                 raise ValueError("work event summary must not exceed 4000 characters")
             if generation is not None and generation < 1:
                 raise ValueError("work attempt generation must be positive")
 
             record = self.state.read_goal(goal_plus_id)
+            if native_main is not None:
+                execution = event in {"dispatch", "rework", "bind", "message"}
+                self.authorization.require_main_goal_session(
+                    goal_plus_id, agent_harness=native_main.agent_harness, session_id=native_main.session_id, execution=execution,
+                )
+                if execution and record.control.version != native_main.control_version:
+                    raise PermissionError("MainSessionMismatch: dispatch belongs to an old activation")
             if (
                 is_terminal_goal(record)
                 or event == "dispatch"

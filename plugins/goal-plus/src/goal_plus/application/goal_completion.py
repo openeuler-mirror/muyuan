@@ -8,6 +8,7 @@ from pydantic import TypeAdapter
 from goal_plus.domain.goal import (
     GoalPlusControl,
     GoalPlusFinalCheck,
+    GoalPlusFinalCheckerIdentity,
     GoalPlusFinalCheckerHost,
     GoalPlusNextAction,
     GoalPlusRecord,
@@ -44,13 +45,57 @@ class GoalCompletion:
         self.artifacts = artifacts
         self.reconciliation = reconciliation
 
+    def require_native_checker(
+        self, identity: GoalPlusFinalCheckerIdentity, native_session_id: str,
+    ) -> GoalPlusRecord:
+        record = self.state.read_goal(identity.goal_plus_id)
+        check = next((item for item in record.final_checks if item.check_id == identity.check_id), None)
+        if (
+            check is None or check.goal_revision != identity.goal_revision
+            or record.goal_revision != identity.goal_revision
+            or not native_session_id
+            or check.checker_metadata.get("native_session_id") != native_session_id
+        ):
+            raise PermissionError("FinalCheckerIdentityMismatch: native checker does not own this check")
+        return record
+
+    def bind_native_checker(
+        self, identity: GoalPlusFinalCheckerIdentity, *, agent_harness: GoalPlusFinalCheckerHost,
+        native_session_id: str, scope_id: str, control_version: int,
+    ) -> None:
+        with self.state.lock_goal(identity.goal_plus_id):
+            record = self.state.read_goal(identity.goal_plus_id)
+            check = next((item for item in record.final_checks if item.check_id == identity.check_id), None)
+            if (
+                record.status != "active" or record.control.state != "active"
+                or record.control.version != control_version
+                or record.goal_revision != identity.goal_revision
+                or check is None or check.goal_revision != identity.goal_revision
+                or check.checker_harness != agent_harness or check.status != "pending"
+                or not native_session_id
+            ):
+                raise PermissionError("FinalCheckerAdmissionDenied: check is not the current pending request")
+            binding = {"native_session_id": native_session_id, "scope_id": scope_id, "control_version": control_version}
+            if check.checker_metadata.get("native_session_id"):
+                if all(check.checker_metadata.get(key) == value for key, value in binding.items()):
+                    return
+                raise PermissionError("FinalCheckerAlreadyBound: check already has a native session")
+            check.checker_metadata.update(binding)
+            self.state.write_goal(record)
+
     def prepare_final_check(
         self,
         goal_plus_id: str,
-        checker_host: GoalPlusFinalCheckerHost,
+        checker_harness: GoalPlusFinalCheckerHost,
+        *,
+        expected_revision: int | None = None,
+        expected_control_version: int | None = None,
     ) -> dict[str, Any]:
         with self.state.lock_goal(goal_plus_id):
             record = self.state.read_goal(goal_plus_id)
+            if ((expected_revision is not None and record.goal_revision != expected_revision)
+                    or (expected_control_version is not None and record.control.version != expected_control_version)):
+                raise PermissionError("FinalCheckerAdmissionDenied: Goal changed before check preparation")
             if record.status != "active" or record.control.state != "active":
                 raise RuntimeError(
                     "Final check can only start for an active Goal Plus record."
@@ -68,6 +113,13 @@ class GoalCompletion:
 
             current = latest_final_check(record)
             if (
+                current is not None and current.status == "pending"
+                and current.checker_metadata.get("native_session_id")
+                and current.checker_metadata.get("control_version") != record.control.version
+            ):
+                current.status = "superseded"
+                current.completed_at = self.clock.timestamp()
+            if (
                 current is not None
                 and current.goal_revision == record.goal_revision
                 and current.status == "pending"
@@ -81,7 +133,7 @@ class GoalCompletion:
                         f"{len(record.final_checks) + 1:03d}"
                     ),
                     goal_revision=record.goal_revision,
-                    checker_host=checker_host,
+                    checker_harness=checker_harness,
                     requested_phase=(
                         current.requested_phase
                         if record.phase == "final_check" and current is not None
@@ -102,7 +154,7 @@ class GoalCompletion:
                             metadata={
                                 "check_id": check.check_id,
                                 "goal_revision": record.goal_revision,
-                                "checker_host": checker_host,
+                                "checker_harness": checker_harness,
                             },
                         ),
                         "updated_at": now,
@@ -120,9 +172,7 @@ class GoalCompletion:
                 "goal_plus_id": goal_plus_id,
                 "goal_revision": record.goal_revision,
                 "check": check.model_dump(mode="json"),
-                "launch": final_check_launch(
-                    record, check, self.artifacts.final_check_inputs(record)
-                ),
+                "launch": final_check_launch(record, check),
             }
 
     def submit_final_check(
@@ -135,6 +185,7 @@ class GoalCompletion:
         findings: list[dict[str, Any]] | None = None,
         evidence: list[dict[str, Any]] | None = None,
         checker_metadata: dict[str, Any] | None = None,
+        *, native_session_id: str | None = None,
     ) -> GoalPlusRecord:
         with self.state.lock_goal(goal_plus_id):
             record = self.state.read_goal(goal_plus_id)
@@ -158,6 +209,12 @@ class GoalCompletion:
             if check_index is None:
                 raise RuntimeError(f"Unknown final check id: {check_id}")
             check = record.final_checks[check_index]
+            if check.checker_metadata.get("native_session_id") and (
+                native_session_id != check.checker_metadata["native_session_id"]
+                or check.checker_metadata.get("control_version") != record.control.version
+                or record.status != "active" or record.control.state != "active"
+            ):
+                raise PermissionError("FinalCheckerIdentityMismatch: checker activation is no longer authorized")
             if check.goal_revision != goal_revision:
                 raise RuntimeError(
                     "Final check goal revision does not match the submission."
@@ -192,7 +249,7 @@ class GoalCompletion:
                     "summary": normalized_summary,
                     "findings": findings or [],
                     "evidence": normalized_evidence,
-                    "checker_metadata": checker_metadata or {},
+                    "checker_metadata": {**(checker_metadata or {}), **check.checker_metadata},
                 }
             )
             checks = list(record.final_checks)

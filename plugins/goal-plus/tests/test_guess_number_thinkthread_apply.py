@@ -35,8 +35,8 @@ def test_guess_number_thinkthread_apply_example_is_deterministic(
     assert spec.strategy.orchestration_mode == "parallel_loops"
     assert "worker_host" not in spec.strategy.model_dump()
     assert spec.strategy.worker_launch is None
-    assert "host" not in spec.strategy.evidence_annotator.model_dump()
-    assert spec.workspace.backend == "thinkthread"
+    assert "agent_harness" not in spec.strategy.evidence_annotator.model_dump()
+    assert spec.workspace.provider == "thinkthread"
     assert spec.workspace.promotion_mode == "apply"
     assert spec.edit_surface.allow == ["guess.py"]
     assert len(spec.root_hypotheses) == 2
@@ -83,7 +83,7 @@ def test_guess_number_thinkthread_prompt_is_outcome_focused() -> None:
 
     assert first_line.startswith(
         "/goal-plus mode=probe max_parallel=2 max_duration_seconds=600 "
-        "workspace_backend=thinkthread promotion_mode=apply "
+        "workspace_provider=thinkthread promotion_mode=apply "
         "strategy=agent_guided "
     )
     assert "c001" in prompt and "`print(0)`" in prompt

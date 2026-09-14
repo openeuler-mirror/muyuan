@@ -556,7 +556,7 @@ def build_run_statistics(
             ),
         },
         "workspace_operations": {
-            "provider": frozen.spec.workspace.backend,
+            "provider": frozen.spec.workspace.provider,
             "promotion_mode": frozen.spec.workspace.promotion_mode,
             "capacity_estimate": workspace_capacity_estimate,
             "workspace_creation": {
@@ -607,7 +607,7 @@ def build_run_statistics(
             "successful_session_rate": _rate(successful_sessions, len(sessions)),
             "timed_out": timed_out,
             "runner_failed": runner_failed,
-            "hosts": _counter(session.host for session in sessions),
+            "hosts": _counter(session.agent_harness for session in sessions),
             "providers": _counter(providers),
             "models": _counter(models),
             "terminal_states": _counter(terminal_states),

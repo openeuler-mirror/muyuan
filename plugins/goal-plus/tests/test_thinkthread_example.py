@@ -27,7 +27,7 @@ def test_thinkthread_goal_mode_example_does_not_enable_search_or_git() -> None:
     assert "不调用任何 `search_*`" in command
     assert "agent-posix" not in prompt
     assert "THINKTHREAD_" not in prompt
-    assert "workspace_backend=" not in prompt
+    assert "workspace_provider=" not in prompt
     assert "git init" not in readme
     assert "git-tt" in readme
 

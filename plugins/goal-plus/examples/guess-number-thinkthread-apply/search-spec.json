@@ -44,18 +44,12 @@
   "strategy": {
     "name": "agent_guided",
     "orchestration_mode": "parallel_loops",
-    "worker_budget": {
-      "max_runtime_seconds": 120,
-      "max_turns": 4,
-      "on_exceed": "interrupt"
-    },
     "config": {
-      "closeout_reserve_seconds": 180,
       "global_evidence_mode": "manual"
     }
   },
   "workspace": {
-    "backend": "thinkthread",
+    "provider": "thinkthread",
     "promotion_mode": "apply"
   },
   "constraints": {

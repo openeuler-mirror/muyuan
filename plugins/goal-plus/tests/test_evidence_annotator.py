@@ -200,10 +200,10 @@ def test_outer_deadline_accepts_unix_epoch() -> None:
 def test_drainer_serially_describes_pending_evidence(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
-    spec_data["workspace"] = {"backend": "git_worktree"}
+    spec_data["workspace"] = {"provider": "git_worktree"}
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(spec_data), [project / "evaluator.py"], native_host="codex"
+        SearchSpec.model_validate(spec_data), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -290,7 +290,7 @@ def test_annotation_admission_reconciles_settlement_write_failures(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -361,7 +361,7 @@ def test_annotation_admission_repairs_legacy_queue_first_crash_window(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -415,7 +415,7 @@ def test_annotation_admission_reconcile_preserves_closed_queue_fence(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -606,8 +606,7 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     scripted_process_output,
-    scope_owner,
-) -> None:
+    ) -> None:
     commands: list[list[str]] = []
     popen_kwargs: list[dict] = []
     prompts: list[str] = []
@@ -714,24 +713,10 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
             return self.returncode
 
     monkeypatch.setattr(subprocess, "Popen", FakeProcess)
-    from goal_plus.execution import process_identity
-    from goal_plus.ports.process_identity import ProcessSnapshot
-
-    def inspect(pid):
-        if pid == scope_owner.pid:
-            return scope_owner
-        assert pid == 24680
-        return ProcessSnapshot(pid, "test-child", pid, "S") if processes[-1].poll() is None else None
-
-    monkeypatch.setattr(process_identity, "inspect_process", inspect)
-    monkeypatch.setattr("goal_plus.execution.managed_process.inspect_process", inspect)
-    monkeypatch.setattr(process_identity, "inspect_process_group", lambda pid: (item,) if (item := inspect(pid)) else ())
-    monkeypatch.setattr(process_identity, "boot_identity", lambda: "test-boot")
-    monkeypatch.setattr(os, "killpg", lambda *_: pytest.fail("fake inference should finish cleanly"))
     pi_home = tmp_path / "pi-home"
     pi_home.mkdir()
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(pi_home))
-    monkeypatch.setenv("GOAL_PLUS_INTERNAL_AGENT_HOST", "pi-rpc")
+    monkeypatch.setenv("GOAL_PLUS_INTERNAL_AGENT_HARNESS", "pi")
     artifact_root = tmp_path / "artifact-view"
     artifact_root.mkdir()
     context = {
@@ -751,7 +736,8 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
             }
         ],
         "annotator": {
-            "host": "pi-rpc",
+            "agent_harness": "pi",
+            "runtime_provider": "direct",
             "model": "bench-openai/gpt-5.6-terra",
             "reasoning_effort": "high",
             "timeout_seconds": 30,
@@ -849,22 +835,23 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
     )
     ensure_execution_scope(
         root_dir=runtime_root,
-        host="pi",
+        agent_harness="pi",
         owner_session_id="annotation-main",
-        owner_pid=os.getpid(),
+
         run_id="run_annotation",
         native_agent_config={
             "model_pattern": "native-main/example-model",
             "thinking_level": "low",
         },
-        start_guardian=False,
+
     )
     context.update(
         {
             "run_id": "run_annotation",
             "runtime_root": str(runtime_root),
             "annotator": {
-                "host": "pi-rpc",
+                "agent_harness": "pi",
+                "runtime_provider": "direct",
                 "model": None,
                 "reasoning_effort": None,
                 "timeout_seconds": 30,
@@ -890,7 +877,7 @@ def test_kick_is_single_flight_and_non_blocking(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -915,18 +902,13 @@ def test_kick_is_single_flight_and_non_blocking(
     monkeypatch.delenv("GOAL_PLUS_EVIDENCE_ANNOTATOR_DISABLED")
     monkeypatch.setenv("HOST_ONLY_MODEL_CONFIGURATION", "inherited")
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    from goal_plus.ports.process_identity import ProcessSnapshot
 
-    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_worker", lambda pid, *_, **__: ProcessSnapshot(pid, "current", pid, "S"))
-    monkeypatch.setattr("goal_plus.execution.process_identity.boot_identity", lambda: "test-boot")
-    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process", lambda pid: ProcessSnapshot(pid, "current", pid, "S"))
-    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process_group", lambda pid: (ProcessSnapshot(pid, "current", pid, "S"),))
 
-    assert kick_evidence_annotator(runtime.root_dir, run_id, host="codex") is True
-    assert kick_evidence_annotator(runtime.root_dir, run_id, host="codex") is False
+    assert kick_evidence_annotator(runtime.root_dir, run_id, agent_harness="codex") is True
+    assert kick_evidence_annotator(runtime.root_dir, run_id, agent_harness="codex") is False
     assert len(launches) == 1
-    assert launch_options[0]["start_new_session"] is True
-    assert launch_options[0]["env"]["GOAL_PLUS_INTERNAL_AGENT_HOST"] == "codex"
+    assert "start_new_session" not in launch_options[0]
+    assert launch_options[0]["env"]["GOAL_PLUS_INTERNAL_AGENT_HARNESS"] == "codex"
     assert launch_options[0]["env"]["HOST_ONLY_MODEL_CONFIGURATION"] == "inherited"
 
 
@@ -939,7 +921,7 @@ def test_required_annotations_block_selection_until_every_view_is_complete(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -997,7 +979,7 @@ def test_permanent_failure_is_not_retried_and_selection_cancels_late_view(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1116,7 +1098,7 @@ def test_permanent_failure_is_not_retried_and_selection_cancels_late_view(
     ) == 0
     assert processes[0].terminated is True
     assert runtime.get_global_evidence(session.agent_session_id)[-1]["view"] is None
-    assert kick_evidence_annotator(runtime.root_dir, run_id, host="codex") is False
+    assert kick_evidence_annotator(runtime.root_dir, run_id, agent_harness="codex") is False
     closed_task = runtime.annotation.task(
         run_id, task.candidate_id, 3
     )
@@ -1151,7 +1133,7 @@ def test_selection_cancels_pending_retry_before_promotion(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1205,7 +1187,7 @@ def test_expired_outer_deadline_never_starts_verifier_or_annotation(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1225,7 +1207,7 @@ def test_expired_outer_deadline_never_starts_verifier_or_annotation(
     )
     assert annotation_task is None
     assert runtime.list_iterations(run_id, task.candidate_id) == []
-    assert kick_evidence_annotator(runtime.root_dir, run_id, host="codex") is False
+    assert kick_evidence_annotator(runtime.root_dir, run_id, agent_harness="codex") is False
 
 
 def test_unix_outer_deadline_allows_annotation_task(
@@ -1237,7 +1219,7 @@ def test_unix_outer_deadline_allows_annotation_task(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1265,7 +1247,7 @@ def test_transient_annotation_failure_has_bounded_persistent_retries(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1329,7 +1311,7 @@ def test_oversized_diff_uses_full_artifact_view(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1376,7 +1358,7 @@ def test_oversized_diff_uses_full_artifact_view(tmp_path: Path) -> None:
     assert annotation_task.view is not None
 
 
-def test_close_evidence_annotator_stops_owned_process_group(
+def test_close_evidence_annotator_releases_generation_without_pid_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1389,32 +1371,9 @@ def test_close_evidence_annotator_stops_owned_process_group(
     directory = root / "runs" / run_id / "evidence-annotator"
     state = FileDrainerState(directory, "annotator.log")
     state.write_worker(DrainerRecord(pid=4242, generation=generation, started_at="now"))
-    alive = True
-    signals: list[tuple[int, int]] = []
-
-    from goal_plus.ports.process_identity import ProcessSnapshot
-
-    def matches(pid: int, observed_run: str, observed_generation: str, **_kwargs):
-        assert (pid, observed_run, observed_generation) == (
-            4242,
-            run_id,
-            generation,
-        )
-        return ProcessSnapshot(pid, generation, pid, "S") if alive else None
-
-    def killpg(pid: int, signum: int) -> None:
-        nonlocal alive
-        signals.append((pid, signum))
-        alive = False
-
-    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_worker", matches)
-    monkeypatch.setattr("goal_plus.execution.process_identity.boot_identity", lambda: "test-boot")
-    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process", lambda pid: matches(pid, run_id, generation))
-    monkeypatch.setattr("goal_plus.execution.process_identity.inspect_process_group", lambda pid: (matches(pid, run_id, generation),) if alive else ())
-    monkeypatch.setattr(annotator_module.os, "killpg", killpg)
+    monkeypatch.setattr(annotator_module.os, "kill", lambda *_: pytest.fail("unexpected PID access"))
 
     result = close_evidence_annotator(root_dir=root, run_id=run_id)
 
-    assert result is not None and result["status"] == "stopped"
-    assert signals and signals[0][0] == 4242
+    assert result is not None and result["status"] == "released"
     assert not (directory / "worker.json").exists()

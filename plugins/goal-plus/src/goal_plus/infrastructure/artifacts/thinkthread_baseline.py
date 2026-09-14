@@ -26,6 +26,11 @@ class ThinkThreadBaseline:
         client: AgentPosixSdkClient,
         source_relative_path: str,
     ) -> None:
+        if Path(root_dir).resolve().is_relative_to(Path.cwd().resolve()):
+            raise ValueError(
+                "ThinkThread runtime root must be outside the attached Root tree; "
+                "use the managed Profile GOAL_PLUS_ROOT session directory"
+            )
         root = validate_thinkthread_root(client)
         self.provider_handle = {
             "provider": "thinkthread",

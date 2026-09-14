@@ -7,12 +7,12 @@
     "goal-plus",
     "agentic-search"
   ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
   "pi": {
     "extensions": [
       "assets/pi/extensions/goal-plus.ts"
-    ],
-    "skills": [
-      "assets/pi/skills/goal-plus/SKILL.md"
     ]
   }
 }

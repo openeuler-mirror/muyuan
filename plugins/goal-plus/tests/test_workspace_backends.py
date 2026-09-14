@@ -34,7 +34,7 @@ def test_git_capacity_estimate_counts_four_full_repository_checkouts(
 
     estimate = estimate_workspace_capacity(
         source=source,
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         worktree_nodes=4,
         destination_root=tmp_path / "run" / ".gp",
     )
@@ -101,7 +101,7 @@ def test_copy_backend_creates_independent_git_workspaces(tmp_path: Path) -> None
     second_path = run_dir / "workspace" / "c002"
 
     first = materialize_candidate_workspace(
-        backend="copy",
+        workspace_provider="copy",
         run_dir=run_dir,
         source=source,
         workspace=first_path,
@@ -109,7 +109,7 @@ def test_copy_backend_creates_independent_git_workspaces(tmp_path: Path) -> None
         candidate_id="c001",
     )
     second = materialize_candidate_workspace(
-        backend="copy",
+        workspace_provider="copy",
         run_dir=run_dir,
         source=source,
         workspace=second_path,
@@ -117,10 +117,10 @@ def test_copy_backend_creates_independent_git_workspaces(tmp_path: Path) -> None
         candidate_id="c002",
     )
 
-    assert first.backend == "copy"
+    assert first.workspace_provider == "copy"
     assert first.branch is None
     assert first.base_revision is not None
-    assert second.backend == "copy"
+    assert second.workspace_provider == "copy"
     assert (first_path / "program.py").read_text(encoding="utf-8") == "VALUE = 0\n"
     assert common_git_dir(first_path) != common_git_dir(second_path)
 
@@ -136,7 +136,7 @@ def test_copy_checkpoint_refuses_parent_repository_after_git_dir_is_removed(
     git_commit(repository, "source baseline")
     workspace = repository / "run" / "workspace" / "c001"
     materialize_candidate_workspace(
-        backend="copy",
+        workspace_provider="copy",
         run_dir=repository / "run",
         source=source,
         workspace=workspace,
@@ -167,7 +167,7 @@ def test_git_worktree_backend_shares_objects_but_keeps_branches_independent(
     second_path = run_dir / "workspace" / "c002"
 
     first = materialize_candidate_workspace(
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         run_dir=run_dir,
         source=source,
         workspace=first_path,
@@ -175,7 +175,7 @@ def test_git_worktree_backend_shares_objects_but_keeps_branches_independent(
         candidate_id="c001",
     )
     second = materialize_candidate_workspace(
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         run_dir=run_dir,
         source=source,
         workspace=second_path,
@@ -220,7 +220,7 @@ def test_git_worktree_clones_full_history_and_returns_nested_logical_workspace(
     second = git_commit(repository, "second source commit")
 
     materialized = materialize_candidate_workspace(
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         run_dir=tmp_path / "run",
         source=source,
         workspace=tmp_path / "run" / "workspace" / "c001",
@@ -251,7 +251,7 @@ def test_git_worktree_baseline_tracks_files_ignored_by_source_gitignore(
     workspace = tmp_path / "run" / "workspace" / "c001"
 
     materialize_candidate_workspace(
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         run_dir=tmp_path / "run",
         source=source,
         workspace=workspace,
@@ -272,7 +272,7 @@ def test_git_worktree_materialization_is_idempotent_after_workspace_creation(
     workspace = run_dir / "workspace" / "c001"
 
     first = materialize_candidate_workspace(
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         run_dir=run_dir,
         source=source,
         workspace=workspace,
@@ -280,7 +280,7 @@ def test_git_worktree_materialization_is_idempotent_after_workspace_creation(
         candidate_id="c001",
     )
     second = materialize_candidate_workspace(
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         run_dir=run_dir,
         source=source,
         workspace=workspace,
@@ -302,7 +302,7 @@ def test_git_worktree_recovers_incomplete_run_repository(tmp_path: Path) -> None
     workspace = run_dir / "workspace" / "c001"
 
     materialize_candidate_workspace(
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         run_dir=run_dir,
         source=source,
         workspace=workspace,
@@ -323,7 +323,7 @@ def test_git_worktree_child_starts_from_explicit_parent_revision(
     child_path = run_dir / "workspace" / "c003"
 
     parent = materialize_candidate_workspace(
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         run_dir=run_dir,
         source=source,
         workspace=parent_path,
@@ -334,7 +334,7 @@ def test_git_worktree_child_starts_from_explicit_parent_revision(
     parent_revision = git_commit(parent_path, "parent winner")
 
     child = materialize_candidate_workspace(
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         run_dir=run_dir,
         source=source,
         workspace=child_path,
@@ -359,7 +359,7 @@ def test_thinkthread_cannot_materialize_a_local_workspace(
         match="materialize_candidate",
     ):
         materialize_candidate_workspace(
-            backend="thinkthread",
+            workspace_provider="thinkthread",
             run_dir=tmp_path / "run",
             source=make_source(tmp_path),
             workspace=tmp_path / "run" / "workspace" / "c001",

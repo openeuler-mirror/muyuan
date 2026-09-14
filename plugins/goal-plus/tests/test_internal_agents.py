@@ -39,13 +39,13 @@ def pump(tmp_path, monkeypatch):
     monkeypatch.setattr(
         evidence_annotator,
         "kick_evidence_annotator",
-        lambda root, run_id, *, host: calls.append(("annotation", run_id, host))
+        lambda root, run_id, *, agent_harness: calls.append(("annotation", run_id, agent_harness))
         or True,
     )
     monkeypatch.setattr(
         verifier,
         "kick_verifier",
-        lambda root, run_id, *, host: calls.append(("verifier", run_id, host))
+        lambda root, run_id, *, agent_harness: calls.append(("verifier", run_id, agent_harness))
         or True,
     )
     monkeypatch.setattr(
@@ -69,12 +69,8 @@ def json_state(pump):
     }
 
 
-def kick(pump, host=None):
-    return internal_agents.kick_internal_agents(
-        pump.store.root_dir,
-        "run_test",
-        host=host or pump.frozen.worker_host,
-    )
+def kick(pump, agent_harness=None):
+    return internal_agents.kick_internal_agents(pump.store.root_dir, "run_test", agent_harness=agent_harness or pump.frozen.agent_harness)
 
 
 @pytest.mark.parametrize("state", list(RunState))
@@ -95,7 +91,7 @@ def test_internal_work_query_is_read_only(pump, state):
             RunState.SELECTION_BLOCKED,
         }
     )
-    assert work.host == pump.frozen.worker_host
+    assert work.agent_harness == pump.frozen.agent_harness
     assert work.verifier_enabled is True
     assert json_state(pump) == before
 

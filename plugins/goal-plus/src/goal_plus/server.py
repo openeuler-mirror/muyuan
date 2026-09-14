@@ -1,33 +1,43 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+from dataclasses import asdict
+from contextlib import asynccontextmanager
+from collections.abc import Callable, Mapping
 from functools import wraps
+from inspect import iscoroutinefunction, signature
 from pathlib import Path
 from typing import Annotated, Any, Literal, TYPE_CHECKING
 
 from mcp.types import TextContent
-from pydantic import Field
+from pydantic import Field, TypeAdapter, ValidationError
 
 from goal_plus._version import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
-from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
 from goal_plus.domain.search import (
     CandidateProposal,
     SearchSpec,
 )
 from goal_plus.domain.goal import (
+    GoalPlusFinalCheckerIdentity,
     GoalPlusSpecDraftInput,
     GoalPlusStatus,
     GoalPlusTriage,
     GoalPlusWorkEventKind,
 )
 from goal_plus.domain.shared_tools import ToolizationDecision
-from goal_plus.paths import DEFAULT_RUNTIME_ROOT
+from goal_plus.paths import DEFAULT_RUNTIME_ROOT, host_assets_root
 from goal_plus.runtime import FileSearchRuntime
-from goal_plus.tools import GoalPlusTools, SearchTools
+from goal_plus.tools import GoalPlusTools, SearchTools, ToolCallerRole, require_tool_role
 from goal_plus.infrastructure.api_debug import api_debug_enabled, log_api_response_size
 from goal_plus.projections.goal_tools import GOAL_HISTORY_DEFAULT_LIMIT, GOAL_HISTORY_MAX_LIMIT
+from goal_plus.projections.session_tools import session_call_receipt
+from goal_plus.ports.session import FinalCheckRunner, SessionControlLookup, SessionLauncher, WorkItemRunner
+from goal_plus.ports.thinkthread_verification import DeferredCandidateAttempt
+from goal_plus.domain.tool_catalog import PUBLIC_TOOL_NAMES, CANDIDATE_CAPABILITIES
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -62,20 +72,237 @@ def _debug_tool_response(function):
     return measured
 
 
+def native_mcp_caller() -> str:
+    from fastmcp.server.dependencies import get_context
+
+    request = get_context().request_context
+    meta = request.meta if request is not None else None
+    identity = meta.get("threadId") if isinstance(meta, Mapping) else getattr(meta, "threadId", None)
+    if not isinstance(identity, str) or not identity.strip():
+        raise PermissionError("MainSessionMismatch: MCP request has no native thread identity")
+    return identity
+
+
 def create_mcp(
     root_dir: str | Path = DEFAULT_RUNTIME_ROOT,
+    *,
+    caller_role: ToolCallerRole | None = None,
+    caller_agent_session_id: str | None = None,
+    caller_final_check: "GoalPlusFinalCheckerIdentity | None" = None,
+    session_controls: SessionControlLookup | None = None,
+    session_launcher: SessionLauncher | None = None,
+    final_checker: FinalCheckRunner | None = None,
+    work_items: WorkItemRunner | None = None,
+    candidate_attempt: DeferredCandidateAttempt | None = None,
+    candidate_tool_call: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> FastMCP:
     from fastmcp import FastMCP
 
-    runtime = FileSearchRuntime(root_dir)
-    goal_runtime = FileGoalPlusRuntime(root_dir)
-    tools = SearchTools(runtime, goal_runtime)
-    goal_tools = GoalPlusTools(goal_runtime)
-    mcp = FastMCP("goal-plus", version=__version__)
+    if (caller_role == "final_checker") != (caller_final_check is not None):
+        raise ValueError("final checker MCP requires its host-bound check identity")
+    if caller_role == "candidate" and not caller_agent_session_id:
+        raise ValueError("candidate MCP requires a host-bound agent session identity")
+    if caller_agent_session_id is not None and caller_role != "candidate":
+        raise ValueError("agent session binding requires the candidate MCP role")
+    if candidate_attempt is not None and (
+        caller_role != "candidate" or caller_agent_session_id != candidate_attempt.agent_session_id
+    ):
+        raise ValueError("deferred verification requires its host-bound candidate MCP identity")
+    if session_controls is not None and caller_role != "main" and not (
+        caller_role is None and session_launcher is session_controls
+    ):
+        raise ValueError("session control requires a trusted Main MCP binding")
+    if session_launcher is not None and session_controls is None:
+        raise ValueError("session launch requires session control")
+    if candidate_tool_call is not None and (caller_role != "candidate" or candidate_attempt is not None):
+        raise ValueError("remote candidate tools require a bound candidate without local settlement")
+    runtime = FileSearchRuntime(root_dir) if candidate_tool_call is None else None
+    goal_runtime = FileGoalPlusRuntime(root_dir) if candidate_tool_call is None else None
+    tools = SearchTools(runtime, goal_runtime, candidate_attempt=candidate_attempt) if runtime is not None else None
+    goal_tools = GoalPlusTools(goal_runtime) if goal_runtime is not None else None
+    capabilities = None
+    if caller_agent_session_id and runtime is not None:
+        try:
+            session = runtime.candidate_sessions.session(caller_agent_session_id)
+        except FileNotFoundError:
+            # Schema-only transports use an unbound template identity. Calls
+            # still require the exact durable session in their domain owner.
+            session = None
+        if session is not None:
+            frozen = runtime.queries.state.read_frozen_spec(
+                runtime.queries.state.read_run(session.run_id).frozen_spec_id
+            )
+            capabilities = {"supplemental": frozen.supplemental_evaluation_enabled,
+                            "shared_tools": frozen.spec.shared_dir.enabled}
+    @asynccontextmanager
+    async def session_lifespan(server):
+        try:
+            yield {}
+        finally:
+            import anyio
 
-    @mcp.tool()
+            # Transport disconnect cancels its task group before lifespan exit.
+            # Resource shutdown must finish even in that cancelled scope.
+            with anyio.CancelScope(shield=True):
+                errors = []
+                for resource in (session_launcher, final_checker, work_items):
+                    if resource is not None:
+                        try:
+                            await anyio.to_thread.run_sync(resource.shutdown)
+                        except Exception as exc:
+                            errors.append(exc)
+                if errors:
+                    raise RuntimeError("native MCP resource cleanup failed") from errors[0]
+
+    mcp = FastMCP(
+        "goal-plus", version=__version__,
+        instructions=(host_assets_root() / "assets/goal-plus-instructions.txt").read_text(encoding="utf-8").strip()
+        if caller_role in {None, "main"} else None,
+        lifespan=session_lifespan if any(item is not None for item in (session_launcher, final_checker, work_items)) else None,
+    )
+
+    def register_tool():
+        def register(function):
+            if function.__name__ not in PUBLIC_TOOL_NAMES:
+                return function
+            capability = CANDIDATE_CAPABILITIES.get(function.__name__)
+            if capability and capabilities is not None and not capabilities[capability]:
+                return function
+            if caller_role is None:
+                return mcp.tool()(function)
+            try:
+                require_tool_role(
+                    caller_role, function.__name__,
+                    caller_agent_session_id=caller_agent_session_id,
+                    requested_agent_session_ids=(
+                        [caller_agent_session_id] if caller_agent_session_id else []
+                    ),
+                )
+            except PermissionError:
+                return function
+            tool_signature = signature(function)
+
+            def check_call(*args, **kwargs):
+                arguments = tool_signature.bind(*args, **kwargs).arguments
+                requested_session = arguments.get("agent_session_id")
+                if caller_final_check is not None:
+                    if arguments.get("goal_plus_id") != caller_final_check.goal_plus_id or (
+                        function.__name__ == "goal_plus_submit_final_check" and (
+                            arguments.get("check_id") != caller_final_check.check_id
+                            or arguments.get("goal_revision") != caller_final_check.goal_revision
+                        )
+                    ):
+                        raise PermissionError("FinalCheckerIdentityMismatch: tool target does not match the bound check")
+                    goal_runtime.goal_completion.require_native_checker(caller_final_check, native_mcp_caller())
+                require_tool_role(
+                    caller_role, function.__name__,
+                    caller_agent_session_id=caller_agent_session_id,
+                    requested_agent_session_ids=(
+                        [requested_session] if isinstance(requested_session, str) else []
+                    ),
+                )
+            if candidate_tool_call is not None:
+                @wraps(function)
+                def bound_call(*args, **kwargs):
+                    check_call(*args, **kwargs)
+                    arguments = tool_signature.bind(*args, **kwargs)
+                    arguments.apply_defaults()
+                    result = candidate_tool_call(
+                        function.__name__, TypeAdapter(Any).dump_python(dict(arguments.arguments), mode="json"),
+                    )
+                    return (_json_text(result) if tool_signature.return_annotation in (TextContent, "TextContent")
+                            else result)
+            elif iscoroutinefunction(function):
+                @wraps(function)
+                async def bound_call(*args, **kwargs):
+                    check_call(*args, **kwargs)
+                    return await function(*args, **kwargs)
+            else:
+                @wraps(function)
+                def bound_call(*args, **kwargs):
+                    check_call(*args, **kwargs)
+                    return function(*args, **kwargs)
+
+            return mcp.tool()(bound_call)
+        return register
+
+    if session_controls is not None:
+        if session_launcher is not None:
+            @register_tool()
+            async def goal_plus_session_run(
+                run_id: str, candidate_id: str, call_id: Annotated[str, Field(min_length=1)],
+                prompt: Annotated[str, Field(min_length=1)],
+                timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)],
+                new_session: bool = False,
+            ) -> dict[str, Any]:
+                """Prepare, bind and run one candidate invocation; return its session/call state immediately.
+
+                Reuse call_id for identical retries. Later calls reuse the current session;
+                new_session closes idle resources and dispatches a new generation. Active calls
+                accept steering through message. Unknown local execution requires explicit recovery.
+                The frozen budget and Goal deadline bound the execution allowance.
+                """
+                return await asyncio.to_thread(
+                    session_launcher.run_candidate, run_id, candidate_id, call_id, prompt,
+                    timeout_seconds, new_session,
+                )
+
+        @register_tool()
+        async def goal_plus_session_wait(
+            session_id: str, call_id: str,
+            timeout_seconds: Annotated[float, Field(
+                ge=0, allow_inf_nan=False,
+                description="Maximum time this read waits for the invocation result; zero polls immediately. "
+                "Does not change the execution allowance supplied to run or stop a running invocation.",
+            )] = 0,
+            detail: bool = False,
+        ) -> dict[str, Any]:
+            """Read exact call state and errors, optionally waiting. A wait timeout returns running without stopping execution.
+
+            Completed means the invocation returned, not that verification passed. Read Search results with
+            goal_plus_search_list_history; detail=true retrieves the full invocation output and host diagnostics.
+            """
+            return session_call_receipt(await asyncio.to_thread(
+                lambda: session_controls(session_id, "wait").wait(call_id, timeout=timeout_seconds),
+            ), detail=detail)
+
+        @register_tool()
+        async def goal_plus_session_message(
+            session_id: str, call_id: str, prompt: str,
+            timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)],
+        ) -> dict[str, Any]:
+            """Steer the identified active invocation. Use wake to give an idle session another task."""
+            await asyncio.to_thread(
+                lambda: session_controls(session_id, "message").message(call_id, prompt, timeout=timeout_seconds),
+            )
+            return {"session_id": session_id, "call_id": call_id, "accepted": True}
+
+        @register_tool()
+        async def goal_plus_session_interrupt(
+            session_id: str, call_id: str,
+            timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)],
+        ) -> dict[str, Any]:
+            """Interrupt the identified turn. Wait for its settled outcome before reusing the session."""
+            await asyncio.to_thread(
+                lambda: session_controls(session_id, "interrupt").interrupt(call_id, timeout=timeout_seconds),
+            )
+            return {"session_id": session_id, "call_id": call_id, "accepted": True}
+
+        @register_tool()
+        async def goal_plus_session_stop(session_id: str) -> dict[str, Any]:
+            """Stop this native execution, preserving native history and recorded invocation outcomes."""
+            await asyncio.to_thread(lambda: session_controls(session_id, "stop").stop())
+            return {"session_id": session_id, "execution_stopped": True}
+
+        @register_tool()
+        async def goal_plus_session_close(session_id: str) -> dict[str, Any]:
+            """Close the host's session controller and its execution resources. Does not delete artifacts or history."""
+            await asyncio.to_thread(lambda: session_controls(session_id, "close").close())
+            return {"session_id": session_id, "closed": True}
+
+    @register_tool()
     @_debug_tool_response
-    def search_freeze_spec(
+    def goal_plus_search_freeze_spec(
         goal_plus_id: str,
         spec: SearchSpec,
         verifier_artifact_paths: list[str],
@@ -83,14 +310,13 @@ def create_mcp(
         """将 SearchSpec 及其 verifier 文件冻结为不可变 bundle。
 
         `goal_plus_id` 必须是当前 host session 绑定的 active Goal。冻结前校验 worker host、
-        workspace backend 和 source 状态；`git_worktree`
+        workspace provider 和 source 状态；`git_worktree`
         要求整个 source repository 对应 clean HEAD，dirty source 会在 verifier preflight
         前失败。ThinkThread 仅接受匹配的 Pi ThinkThread host/Profile，并在 create 时通过
-        exact Agent POSIX preflight 固定 Root-owned snapshot；Codex/Pi RPC 不能混用该 backend。
-        返回 `frozen_spec_id`、`task_skill_notice` 和 `workspace_capacity_notice`，应在
-        `search_create` 前调用。后两者分别列出 source Git index 中
-        `.agents/skills/*/SKILL.md` 的自动发现结果，以及按 `budget.max_parallel` 计算的
-        source/worktree/object-store 容量预检。verifier 文件按 hash 固定；
+        exact Agent POSIX preflight 固定 Root-owned snapshot；Codex/Pi RPC 不能混用该 workspace_provider。
+        成功只返回 `frozen_spec_id` 与 frozen 状态，容量不足时附带警告；
+        将该 ID 交给 `goal_plus_search_create`。完整合同、技能清单和容量估算留在持久状态。
+        verifier 文件按 hash 固定；
         `verifier_artifact_paths` 必须使用相对 `source_path` 的路径，不能越界；
         候选执行期间修改它们会强制分数为 0.0。冻结会预检每个 `ranking_signal`：
         它必须以 0 退出，并输出一个最终 JSON 对象，其中包含有限数值类型的
@@ -107,12 +333,13 @@ def create_mcp(
         共用同一可见变量。需要 worker 遵守的公开条件写入 `candidate_acceptance`；
         `constraints` 保持 runtime 私有。
         """
-        return tools.search_freeze_spec(goal_plus_id, spec, verifier_artifact_paths)
+        return tools.goal_plus_search_freeze_spec(goal_plus_id, spec, verifier_artifact_paths)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
     def goal_plus_list_models(
-        host: AgentHostKind,
+        agent_harness: AgentHarnessKind,
+        runtime_provider: AgentRuntimeProvider,
         query: str | None = None,
     ) -> dict[str, Any]:
         """列出指定 Codex/Pi host 当前可用的模型。
@@ -121,61 +348,66 @@ def create_mcp(
         `strategy.models[].model` 的精确 host 引用；不存在或有歧义的请求会在冻结时
         直接失败。省略 `query` 返回完整清单。
         """
-        return tools.goal_plus_list_models(host, query)
+        return tools.goal_plus_list_models(agent_harness, runtime_provider, query)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_create(
+    def goal_plus_search_create(
         goal_plus_id: str,
         frozen_spec_id: str,
+        request_id: Annotated[str, Field(min_length=1)],
         source_run_id: str | None = None,
     ) -> dict[str, str]:
-        """从冻结 spec 启动 Search run，并返回 `run_id`。
+        """从冻结 spec 创建 Search run，返回 `run_id`；然后关联 Goal，再规划候选。
 
-        `goal_plus_id` 必须与 freeze 使用的当前 active Goal 相同。启动前复检 worker host、
-        workspace backend 和 source Git 状态；当前 Codex/Pi RPC
-        请求 ThinkThread，或 Git-backed source 在 freeze 后变 dirty，都会在创建 run 或
-        candidate checkout 前失败。
+        request_id 标识可恢复的创建请求；同参数重试返回原 run，并自动关联当前 Goal revision。
+        创建本身不完成关联；尚未关联的 run 不能用于候选操作。
+        `goal_plus_id` 必须与 freeze 使用的当前 active Goal 相同。启动前复检冻结的
+        agent_harness/runtime_provider 组合、workspace provider 和 source Git 状态；
+        不支持的组合，或 Git source 在 freeze 后变 dirty，会在创建 run 或 candidate 前失败。
         创建时会在 `GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR` 下独占冻结 spec 引用的 device pool。
         多个进程或容器共享设备时必须映射同一个 host 锁目录。只有无法避免新的不可变 run
         时才传入 `source_run_id`。新 run 会收到来源 frontier、
         限定范围的问题和特性账本的有界 snapshot。来源分数只是历史，必须在新契约下重新验证。
         """
-        return tools.search_create(goal_plus_id, frozen_spec_id, source_run_id)
+        return tools.goal_plus_search_create(goal_plus_id, frozen_spec_id, request_id, source_run_id)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_status(run_id: str) -> dict[str, Any]:
+    def goal_plus_search_status(run_id: str) -> dict[str, Any]:
         """返回 run 状态、预算使用和最佳分数的只读 snapshot。"""
-        return tools.search_status(run_id)
+        return tools.goal_plus_search_status(run_id)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_recovery_status(run_id: str) -> dict[str, Any]:
+    def goal_plus_search_recovery_status(run_id: str) -> dict[str, Any]:
         """读取各 candidate 的完整结算恢复点、generation 和 host session，不启动或回滚任何工作。"""
-        return tools.search_recovery_status(run_id)
+        return tools.goal_plus_search_recovery_status(run_id)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_prepare_recovery(run_id: str, candidate_id: str) -> dict[str, Any]:
+    def goal_plus_search_prepare_recovery(run_id: str, candidate_id: str) -> dict[str, Any]:
         """固定中断 candidate 的结算恢复点并隔离旧 generation，返回 recovery_id。
 
-        随后由 host 停止并确认旧 worker 结束，再调用 search_recover_candidate。
+        随后由 host 停止并确认旧 worker 结束，再调用 goal_plus_search_recover_candidate。
         """
-        return tools.search_prepare_recovery(run_id, candidate_id)
+        return tools.goal_plus_search_prepare_recovery(run_id, candidate_id)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_recover_candidate(run_id: str, candidate_id: str, recovery_id: str) -> dict[str, Any]:
+    def goal_plus_search_recover_candidate(run_id: str, candidate_id: str, recovery_id: str) -> dict[str, Any]:
         """恢复已结算 artifact，保留 Evidence 与中断现场备份；用同一 recovery_id 重试。
 
         恢复后由 host 启动并绑定 fresh worker，继续验证。
         """
-        return tools.search_recover_candidate(run_id, candidate_id, recovery_id)
+        result = tools.goal_plus_search_recover_candidate(run_id, candidate_id, recovery_id)
+        if session_launcher is not None:
+            session_launcher.wake_internal_agents(run_id)
+        return result
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_invalidate_run(
+    def goal_plus_search_invalidate_run(
         run_id: str,
         reason: Literal[
             "verifier_contract_invalid",
@@ -190,12 +422,12 @@ def create_mcp(
         """主 agent 确认 verifier 不充分后隔离 run。
 
         该操作会原子地阻止新规划、session、verifier 记录、选择和提升。它不控制 host
-        worker：调用后，主 agent 必须中断 host pool，等待每个 worker 达到终态，
+        worker：调用后，主 agent 必须通过共同 session stop/close 停止所属候选并确认资源退出，
         再修复/冻结 verifier，并使用 `source_run_id` 创建新 run。
         """
-        return tools.search_invalidate_run(run_id, reason, summary, evidence)
+        return tools.goal_plus_search_invalidate_run(run_id, reason, summary, evidence)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
     def goal_plus_monitor_snapshot(
         goal_plus_id: str | None = None,
@@ -218,19 +450,25 @@ def create_mcp(
             detail=detail,
         )
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_list_history(
+    def goal_plus_search_list_history(
         run_id: str,
         top_n: int = 5,
         sort_by: str = "score",
+        detail: bool = False,
     ) -> dict[str, Any]:
-        """返回已评估候选及其分数的只读排名列表。"""
-        return tools.search_list_history(run_id, top_n, sort_by)
+        """返回候选排名、验证结果、异常和当前 run 的研究摘要。
 
-    @mcp.tool()
+        默认省略宿主诊断及重复配置；detail=true 读取完整 session、日志、研究与失效证据。
+        best 与 latest 验证结果不一致时单独返回 latest；未验证分数保持 null。
+        top_n 限制排名中的候选数量，研究汇总仍覆盖当前 run 的所有候选。
+        """
+        return tools.goal_plus_search_list_history(run_id, top_n, sort_by, detail=detail)
+
+    @register_tool()
     @_debug_tool_response
-    def search_plan_next(
+    def goal_plus_search_plan_next(
         run_id: str,
         requested_k: Annotated[
             int,
@@ -243,77 +481,41 @@ def create_mcp(
             ),
         ] = 4,
     ) -> dict[str, Any]:
-        """从冻结的整个 run 预算中规划一个候选 batch/轮次。
+        """为已关联 Goal 的 run 取得唯一初始候选 plan，返回 plan_id 和 planned_k。
 
         `requested_k` 只适用于这一次初始规划。实际 `planned_k` 是 `requested_k` 与
-        `budget.max_parallel` 剩余可用数量的最小值。标准流程必须令两者相等。返回
-        `plan_id` 和候选任务。
+        `budget.max_parallel` 剩余可用数量的最小值。标准流程必须令两者相等。
+        下一步用 goal_plus_search_start_batch 一次性提交该 plan 的完整 proposals 列表。
+        重复调用返回已有 plan；已启动候选的后续探索通过同一 session 的 wake 继续。
         """
-        return tools.search_plan_next(run_id, requested_k)
+        return tools.goal_plus_search_plan_next(run_id, requested_k)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_start_batch(
+    def goal_plus_search_start_batch(
         run_id: str,
         plan_id: str,
-        proposals: list[CandidateProposal] | None = None,
+        proposals: Annotated[
+            list[CandidateProposal] | None,
+            Field(description=(
+                "该 plan 要启动的完整候选列表，一次性提交。例如需要两个候选时在同一列表放两个 proposal。"
+                "同 plan 的后续调用只返回已创建批次，不追加或替换候选。固定 work-order plan 省略此字段。"
+            )),
+        ] = None,
     ) -> list[dict[str, Any]]:
-        """materialize 已规划的候选工作区（`source_path` 的副本）。
+        """一次性物化 plan 的完整初始候选批次，返回 candidate ID、workspace provider 和实际选定模型。
 
-        每个返回项拥有隔离工作区和待展示的 `task_skill_notice`；候选编辑必须
-        留在其中。不要在 `search_plan_next` 前调用。
+        在 goal_plus_search_plan_next 之后调用。需要 K=2 时将两个 proposal 放在同一次调用的
+        proposals 列表中；分两次各传一个不会创建两个候选。成功后的重复调用是幂等读取，
+        即使传入不同 proposals 也不会追加或替换。省略 proposals 只适用于已有固定 work orders 的 plan。
+        完整工作合同由宿主交付 candidate，不回显 instructions 或 provider 内部句柄。
+        物化后为每个 candidate 调用 goal_plus_session_run。
         """
-        return tools.search_start_batch(run_id, plan_id, proposals)
+        return tools.goal_plus_search_start_batch(run_id, plan_id, proposals)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_start_agent_session(
-        run_id: str,
-        candidate_id: str,
-        directive: dict[str, Any] | str | None = None,
-        worker_budget: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """创建 context/provenance handle 和 host 原生 launch payload。
-
-        它不会启动 worker 或跟踪 lifecycle。可选 `worker_budget` 只覆盖本次派发，
-        不改变冻结 spec。对所选 host 使用返回的 `launch` payload。prompt 提供的
-        `candidate_id` 只是标签；worker 必须从 `search_get_agent_context` 获取权威上下文。
-        """
-        return tools.search_start_agent_session(
-            run_id, candidate_id, directive, worker_budget
-        )
-
-    @mcp.tool()
-    @_debug_tool_response
-    def search_redispatch_candidate(
-        run_id: str,
-        candidate_id: str,
-        worker_budget: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """为现有候选工作区创建新的 worker launch。
-
-        这是状态级恢复，不是同 worker continuation。它为相同 candidate/workspace 返回新的
-        `agent_session_id` 和 host launch payload。`worker_budget` 只覆盖本次派发；frozen
-        `inner_agent` 和 resolved binding 均保持不变。候选任务 policy 不变。
-        """
-        return tools.search_redispatch_candidate(
-            run_id,
-            candidate_id,
-            worker_budget,
-        )
-
-    @mcp.tool()
-    @_debug_tool_response
-    def search_bind_agent_handle(
-        agent_session_id: str,
-        handle: dict[str, Any],
-    ) -> dict[str, Any]:
-        """把运行时 agent session 绑定到 host worker handle。"""
-        return tools.search_bind_agent_handle(agent_session_id, handle)
-
-    @mcp.tool()
-    @_debug_tool_response
-    def search_get_agent_observability(
+    def goal_plus_search_get_agent_observability(
         agent_session_id: str,
     ) -> dict[str, Any]:
         """读取一个 agent session 的规范化 host metric 和产物。
@@ -322,27 +524,11 @@ def create_mcp(
         `pi_metrics`。此调用只读，不会等待、继续或中断 worker。绝不返回 prompt、
         reasoning 或工具 payload 正文。
         """
-        return tools.search_get_agent_observability(agent_session_id)
+        return tools.goal_plus_search_get_agent_observability(agent_session_id)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_continue_agent_session(
-        agent_session_id: str,
-        worker_budget: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """返回继续已绑定 worker session 所需的 host launch 字段。
-
-        支持原生 continuation 的 host 会复用相同 worker handle。可选 worker budget
-        只覆盖本次 continuation 派发。continuation prompt 保持中性，由 worker 选择下一步。
-        """
-        return tools.search_continue_agent_session(
-            agent_session_id,
-            worker_budget,
-        )
-
-    @mcp.tool()
-    @_debug_tool_response
-    def search_get_agent_context(agent_session_id: str) -> TextContent:
+    def goal_plus_search_get_agent_context(agent_session_id: str) -> TextContent:
         """Subagent 的首次调用，返回紧凑的权威工作合同。
 
         返回 run_id、candidate_id、workspace、candidate_task（含冻结验收合同与 candidate
@@ -350,11 +536,11 @@ def create_mcp(
         projection。由 subagent 调用，不由主
         agent 调用。subagent 必须把 prompt 提供的 id 只当作标签，并将此响应作为事实来源。
         """
-        return _json_text(tools.search_get_agent_context(agent_session_id))
+        return _json_text(tools.goal_plus_search_get_agent_context(agent_session_id))
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_get_global_evidence(
+    def goal_plus_search_get_global_evidence(
         agent_session_id: str,
     ) -> TextContent:
         """返回当前 run 的窄 Global Evidence 视图。
@@ -364,11 +550,11 @@ def create_mcp(
         的可用标记。任何 View 为 null 都不影响 verifier Evidence；worker 不需要等待，
         可先依据 Evidence 独立探索。
         """
-        return _json_text(tools.search_get_global_evidence(agent_session_id))
+        return _json_text(tools.goal_plus_search_get_global_evidence(agent_session_id))
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_reference_open(
+    def goal_plus_search_reference_open(
         agent_session_id: str,
         source_candidate_id: str,
         source_iteration: Annotated[int, Field(ge=1)],
@@ -379,15 +565,15 @@ def create_mcp(
         返回的 root 可直接使用普通文件和命令工具查看，但不是 peer 的活动 workspace，
         实现修改仍应只发生在 candidate workspace。
         """
-        return tools.search_reference_open(
+        return tools.goal_plus_search_reference_open(
             agent_session_id,
             source_candidate_id,
             source_iteration,
         )
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_copy_shared_tool(
+    def goal_plus_search_copy_shared_tool(
         agent_session_id: str,
         tool_id: str,
         snapshot_hash: str,
@@ -396,11 +582,11 @@ def create_mcp(
 
         receipt 由下一次 worker verifier 消费；具体采用契约见 candidate instructions。
         """
-        return tools.search_copy_shared_tool(agent_session_id, tool_id, snapshot_hash)
+        return tools.goal_plus_search_copy_shared_tool(agent_session_id, tool_id, snapshot_hash)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_stage_shared_tool(
+    def goal_plus_search_stage_shared_tool(
         agent_session_id: str,
         name: str,
         summary: str,
@@ -418,7 +604,7 @@ def create_mcp(
         source paths 必须位于当前 candidate 的 `.tmp/tool-drafts/` 下。该工具只执行
         staging；路径和 revision 合法性由 runtime 校验，发布由 passing verifier 结算。
         """
-        return tools.search_stage_shared_tool(
+        return tools.goal_plus_search_stage_shared_tool(
             agent_session_id,
             name,
             summary,
@@ -430,9 +616,9 @@ def create_mcp(
             coverage_keys,
         )
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_get_evidence_detail(
+    def goal_plus_search_get_evidence_detail(
         agent_session_id: str,
         candidate_id: str,
         iteration: Annotated[int, Field(ge=1)],
@@ -444,16 +630,16 @@ def create_mcp(
         允许读取调用方自己的 candidate。返回内容不含 peer workspace、transcript 或推理。
         """
         return _json_text(
-            tools.search_get_evidence_detail(
+            tools.goal_plus_search_get_evidence_detail(
                 agent_session_id,
                 candidate_id,
                 iteration,
             )
         )
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_run_verifier(
+    def goal_plus_search_run_verifier(
         run_id: str,
         candidate_id: str,
         scope: Literal["process", "promotion"] = "process",
@@ -474,8 +660,10 @@ def create_mcp(
         `promotion` 只属于主流程。带
         `candidate_action="stop_and_report"` 的 `VerifierWorkspaceSideEffect` 是冻结
         verifier 的基础设施失败：worker 不能清理 verifier 输出或重试。
+        返回 state=accepted 时，验证等待当前 turn 静默后执行；结束本轮并等待下一轮注入
+        的准确 ScoreReport，不在 accepted 后继续修改。accepted 本身不是评分结果。
         """
-        return tools.search_run_verifier(
+        return tools.goal_plus_search_run_verifier(
             run_id,
             candidate_id,
             scope,
@@ -484,85 +672,80 @@ def create_mcp(
             toolization_decision,
         )
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_list_iterations(
+    def goal_plus_search_list_iterations(
         agent_session_id: str,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=GOAL_HISTORY_MAX_LIMIT)] = GOAL_HISTORY_DEFAULT_LIMIT,
     ) -> TextContent:
         """返回当前 agent session 所属候选可能很大的完整 iteration 历史。
 
         candidate worker 只应查询 agent context 中自己的 run/candidate，并且仅在紧凑
         context、可选 ledger projection 和 Git 无法回答旧轮次的准确 verifier 事实时调用。
         """
-        return _json_text(tools.search_list_iterations(agent_session_id))
+        return _json_text(tools.goal_plus_search_list_iterations(agent_session_id, offset, limit))
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_list_allocation_decisions(
+    def goal_plus_search_list_allocation_decisions(
         run_id: str,
-        status: Literal[
-            "pending", "applied", "superseded", "terminal_error"
-        ] | None = None,
-    ) -> list[dict[str, Any]]:
+        status: Literal["pending", "applied", "superseded", "terminal_error"] | None = "pending",
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=GOAL_HISTORY_MAX_LIMIT)] = GOAL_HISTORY_DEFAULT_LIMIT,
+    ) -> dict[str, Any]:
         """仅当 FrozenSpec 使用 adaptive_search 时读取持久化资源分配决策。
 
         该工具只读，不启动、继续或中断任何 host worker。未传 status 时返回全部决策。
         """
-        return tools.search_list_allocation_decisions(run_id, status)
+        return tools.goal_plus_search_list_allocation_decisions(run_id, status, offset, limit)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_apply_allocation_decision(
+    def goal_plus_search_apply_allocation_decision(
         run_id: str,
         decision_id: str,
     ) -> dict[str, Any]:
         """仅当 FrozenSpec 使用 adaptive_search 时幂等应用准确决策。
 
-        runtime 先预检 decision 中全部 expansion，再保留被退休候选的 Evidence、物化
-        所有派生 workspace、创建 agent-session provenance，并返回每个 expansion 的 host
-        launch payload。调用方仍须通过 Codex/Pi host 启动全部 worker 并绑定原生 handle；
-        该工具不监督 worker 生命周期。
+        runtime 预检全部 expansion，保留退休候选 Evidence，物化派生 workspace 并准备
+        session provenance。可信 session host 提交准确取消回执后才可 apply。
+        将返回的 agent_sessions 交给 goal_plus_session_run 启动派生候选。
         """
-        return tools.search_apply_allocation_decision(run_id, decision_id)
+        if session_launcher is None:
+            raise PermissionError("allocation apply requires a trusted session host")
+        session_launcher.cancel_allocation(run_id, decision_id)
+        return tools.goal_plus_search_apply_allocation_decision(run_id, decision_id)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_select(run_id: str) -> dict[str, Any]:
-        """按分数选择最佳已评估候选。在验证候选后调用。"""
-        return tools.search_select(run_id)
+    def goal_plus_search_select(run_id: str) -> dict[str, Any]:
+        """按冻结 ranking keys/tolerance 选择 exact artifact；必需质量评分 pending 时等待队列完成。"""
+        try:
+            return tools.goal_plus_search_select(run_id)
+        finally:
+            if session_launcher is not None:
+                session_launcher.wake_internal_agents(run_id)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_report(run_id: str) -> dict[str, str]:
+    def goal_plus_search_report(run_id: str) -> dict[str, str]:
         """生成最终 Markdown/HTML 报告；已链接的 Goal Plus 必须处于终态。"""
-        return tools.search_report(run_id)
+        return tools.goal_plus_search_report(run_id)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_promote(run_id: str, candidate_id: str) -> dict[str, Any]:
+    def goal_plus_search_promote(run_id: str, candidate_id: str) -> dict[str, Any]:
         """准备 provider-native publication，不改变主源码工作区。"""
-        return tools.search_promote(run_id, candidate_id)
+        return tools.goal_plus_search_promote(run_id, candidate_id)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def search_apply_promotion(run_id: str) -> dict[str, Any]:
+    def goal_plus_search_apply_promotion(run_id: str) -> dict[str, Any]:
         """按 frozen promotion mode 将 publication 写回 Git repo 或 ThinkThread Root。"""
-        return tools.search_apply_promotion(run_id)
+        return tools.goal_plus_search_apply_promotion(run_id)
 
-    @mcp.tool()
-    @_debug_tool_response
-    def goal_plus_create(
-        raw_goal: str,
-        source_path: str | None = None,
-        policy: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """已禁用的兼容入口；始终报错且绝不创建记录。
-
-        只能用 Codex `$goal-plus` 或 Pi `/goal-plus` 由宿主入口创建 Goal Plus。
-        """
-        return goal_tools.goal_plus_create(raw_goal, source_path, policy)
-
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
     def goal_plus_status(
         goal_plus_id: str, detail: bool = False,
@@ -571,11 +754,11 @@ def create_mcp(
 
         默认不返回完整目标、草案、历史或审计日志。初始化、恢复会话或 revision 变化时
         使用 detail=true 读取完整 raw_goal、配置、policy、triage 和 spec_draft。
-        历史详情用 goal_plus_history；恢复详情用 search_recovery_status。
+        历史详情用 goal_plus_history；恢复详情用 goal_plus_search_recovery_status。
         """
         return goal_tools.goal_plus_status(goal_plus_id, detail=detail)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
     def goal_plus_history(
         goal_plus_id: str,
@@ -590,35 +773,22 @@ def create_mcp(
         """
         return goal_tools.goal_plus_history(goal_plus_id, collection, offset, limit)
 
-    @mcp.tool()
-    @_debug_tool_response
-    def goal_plus_update_goal(
-        goal_plus_id: str,
-        raw_goal: str,
-        expected_revision: int,
-        reason: str | None = None,
-    ) -> dict[str, Any]:
-        """已禁用的兼容入口；始终报错且绝不修改目标。
-
-        只能用 Codex `$goal-plus edit` 或 Pi `/goal-plus edit` 由宿主入口修订。
-        """
-        return goal_tools.goal_plus_update_goal(
-            goal_plus_id,
-            raw_goal,
-            expected_revision,
-            reason,
-        )
-
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
     def goal_plus_record_triage(
         goal_plus_id: str,
         triage: GoalPlusTriage,
     ) -> dict[str, Any]:
-        """记录目标应保留 goal 形态，还是向 Search 升级。"""
+        """按需记录 Search 分流判断；普通 coding 无需调用。
+
+        Goal 默认直接执行普通实现、文档、审查或调查。只有数值 metric、确定性 verifier、隔离
+        edit surface 和有价值的探索方向齐备时才进入 search；优化目标尚缺评价合同则进入
+        spec_discovery，并在 missing 中记录缺项。评价目标和适用范围由 Main 判断，显式
+        command_config 优先。完整评价合同直接交给 goal_plus_search_freeze_spec。
+        """
         return goal_tools.goal_plus_record_triage(goal_plus_id, triage)
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
     def goal_plus_record_work_event(
         goal_plus_id: str,
@@ -656,26 +826,7 @@ def create_mcp(
             launch_ttl_seconds=launch_ttl_seconds,
         )
 
-    @mcp.tool()
-    @_debug_tool_response
-    def goal_plus_save_spec_draft(
-        goal_plus_id: str,
-        spec_draft: GoalPlusSpecDraftInput,
-    ) -> dict[str, Any]:
-        """在 search_freeze_spec 前保存发现的冻结 spec 候选。"""
-        return goal_tools.goal_plus_save_spec_draft(goal_plus_id, spec_draft)
-
-    @mcp.tool()
-    @_debug_tool_response
-    def goal_plus_link_search_run(
-        goal_plus_id: str,
-        frozen_spec_id: str,
-        run_id: str,
-    ) -> dict[str, Any]:
-        """把现有 Search MCP run 链接到 goal-plus 记录。"""
-        return goal_tools.goal_plus_link_search_run(goal_plus_id, frozen_spec_id, run_id)
-
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
     def goal_plus_record_search_result(
         goal_plus_id: str,
@@ -695,16 +846,30 @@ def create_mcp(
             summary,
         )
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
-    def goal_plus_prepare_final_check(
+    async def goal_plus_run_work_item(
         goal_plus_id: str,
-        checker_host: Literal["codex", "pi"],
+        work_item_id: str,
+        task: Annotated[str, Field(min_length=1, max_length=4000)],
+        max_runtime_seconds: Annotated[int, Field(ge=30, le=3600)] = 600,
     ) -> dict[str, Any]:
-        """创建或恢复必需的最终检查请求，并返回 host launch payload。"""
-        return goal_tools.goal_plus_prepare_final_check(goal_plus_id, checker_host)
+        """派发普通子任务并等待结果。同一 work_item_id 的 result_ready 可在同一 native session 返工；Main 审查后记录 accepted。"""
+        if work_items is None:
+            raise RuntimeError("native delegation requires a trusted Main host binding")
+        return await asyncio.to_thread(work_items.run, goal_plus_id, work_item_id, task, max_runtime_seconds)
 
-    @mcp.tool()
+    @register_tool()
+    @_debug_tool_response
+    async def goal_plus_run_final_check(
+        goal_plus_id: str,
+    ) -> dict[str, Any]:
+        """为当前 Goal revision 准备并运行独立只读检查，返回结论/findings 并关闭资源。失败后修复，再调用本工具。"""
+        if final_checker is None:
+            raise RuntimeError("native final checker requires a trusted Main host binding")
+        return await asyncio.to_thread(final_checker.check, goal_plus_id)
+
+    @register_tool()
     @_debug_tool_response
     def goal_plus_submit_final_check(
         goal_plus_id: str,
@@ -726,9 +891,10 @@ def create_mcp(
             findings,
             evidence,
             checker_metadata,
+            native_session_id=native_mcp_caller() if caller_final_check is not None else None,
         )
 
-    @mcp.tool()
+    @register_tool()
     @_debug_tool_response
     def goal_plus_set_status(
         goal_plus_id: str,
@@ -746,17 +912,60 @@ def create_mcp(
             next_action,
         )
 
-    @mcp.tool()
-    @_debug_tool_response
-    def goal_plus_gate(
-        goal_plus_id: str,
-        event: str,
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        """为 goal-plus 流程控制返回适合 hook 使用的 allow/block 决策。"""
-        return goal_tools.goal_plus_gate(goal_plus_id, event, context)
-
     return mcp
+
+
+def create_host_mcp(
+    root_dir: str | Path = DEFAULT_RUNTIME_ROOT, *, agent_harness: Literal["codex", "pi"],
+    caller_role: ToolCallerRole | None = None, caller_agent_session_id: str | None = None,
+    caller_final_check: "GoalPlusFinalCheckerIdentity | None" = None,
+) -> FastMCP:
+    if caller_role not in {None, "main"}:
+        return create_mcp(root_dir, caller_role=caller_role, caller_agent_session_id=caller_agent_session_id,
+                          caller_final_check=caller_final_check)
+    from goal_plus.session_host import NativeCandidateHost
+    from goal_plus.final_check_host import NativeFinalCheckHost
+    from goal_plus.delegation_host import NativeDelegationHost
+
+    sessions = NativeCandidateHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller)
+    return create_mcp(
+        root_dir, caller_role=caller_role, session_controls=sessions, session_launcher=sessions,
+        final_checker=NativeFinalCheckHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller),
+        work_items=NativeDelegationHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller),
+    )
+
+
+def create_codex_mcp(root_dir: str | Path = DEFAULT_RUNTIME_ROOT) -> FastMCP:
+    import os
+    from goal_plus.codex_hook_input import CODEX_CANDIDATE_SESSION_ENV, CODEX_ORDINARY_ROLE_ENV
+    from goal_plus.infrastructure.final_check_binding import declared_final_checker
+
+    candidate_id = os.environ.get(CODEX_CANDIDATE_SESSION_ENV)
+    checker = declared_final_checker()
+    ordinary = os.environ.get(CODEX_ORDINARY_ROLE_ENV)
+    thinkthread_role = os.environ.get("GOAL_PLUS_THINKTHREAD_ROLE")
+    if thinkthread_role is not None:
+        if thinkthread_role not in {"main", "candidate"} or any(item is not None for item in (candidate_id, checker, ordinary)):
+            raise PermissionError("invalid or conflicting ThinkThread native role")
+        if thinkthread_role == "main":
+            from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_main_mcp
+
+            return create_thinkthread_main_mcp(root_dir)
+        from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_candidate_mcp
+
+        return create_thinkthread_candidate_mcp()
+    if sum(item is not None for item in (candidate_id, checker, ordinary)) > 1:
+        raise PermissionError("native process has conflicting role declarations")
+    if ordinary is not None and ordinary != "ordinary":
+        raise PermissionError("invalid ordinary native role declaration")
+    if candidate_id is not None or checker is not None or ordinary is not None:
+        root_dir = os.environ.get("GOAL_PLUS_SEARCH_ROOT")
+        if not root_dir or not Path(root_dir).is_absolute():
+            raise PermissionError("candidate MCP requires its host-declared absolute runtime root")
+    return create_host_mcp(
+        root_dir, agent_harness="codex", caller_role="candidate" if candidate_id is not None else "final_checker" if checker else "ordinary" if ordinary else "main",
+        caller_agent_session_id=candidate_id, caller_final_check=checker,
+    )
 
 
 def main() -> None:
@@ -786,7 +995,7 @@ def main() -> None:
         from goal_plus.goal_plus_stop_hook import main as hook_main
 
         raise SystemExit(hook_main())
-    create_mcp(args.root).run(transport="stdio")
+    create_codex_mcp(args.root).run(transport="stdio")
 
 
 if __name__ == "__main__":

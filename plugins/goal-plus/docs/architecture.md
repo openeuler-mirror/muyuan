@@ -16,6 +16,15 @@
 
 ## 先认识这些名词
 
+Agent 身份、执行托管和工作区是三个独立维度：`agent_harness=codex|pi`、
+`runtime_provider=direct|thinkthread`、`workspace.provider=copy|git_worktree|thinkthread`。
+Domain 校验支持组合；Infrastructure 从可信 Main 身份和工作区要求装配冻结执行绑定；
+Application 保留授权和状态转换；Execution 保留 native/Child 生命周期。
+ThinkThread 不是 agent 身份，也不决定搜索方向、评分或 publication。
+进程生命周期交给 agent/宿主。GP 不维护平台进程身份、进程组观测或 guardian；
+Execution 只操作当前持有的直接句柄，Scope 负责 session/activation admission 和登记释放。
+当前只支持 Codex/Pi direct Copy/Git 和 Pi ThinkThread TT workspace；不扩展第三种 harness。
+
 这些词分为几组：前四个描述业务流程，DTO/Ports 描述模块之间的合同，Drainer 描述后台
 执行机制，Binding/Capability 描述角色如何接入与获得能力。每张 SVG 底部都有简短词表。
 
@@ -129,11 +138,12 @@ RPC 实现；也不因增加一个角色预建通用 Agent 基类、注册器、
 
 ![独立 journal 与共用 TT request 恢复](diagrams/04-durability.svg)
 
-图上半部分区分两个持久 owner，下半部分用一次 publication 写操作说明提交时序。快照物化
+图上半部分说明 baseline 准备如何使用 provider mutation journal，下半部分用一次 publication 写操作说明提交时序。快照物化
 与 source apply 是两次独立操作、两个 intent；不能把图理解成单个 request 横跨整条发布链。
 
-Pool baseline intent 保存本 pool 的 S0 捕获和关闭责任；provider mutation journal 保存
-run/candidate 的具体操作 intent、参数摘要、结果和关闭责任。共同 Request 组件只观察、
+Search baseline 通过 provider mutation journal 保存 S0 捕获的 intent、参数摘要、结果和
+关闭责任；candidate 使用 run 已冻结的准确 baseline，不再由 pool 重复捕获。
+同一 journal 也记录 run/candidate 的其他 provider mutation。共同 Request 组件只观察、
 确认关闭并核验 exact requestId/method，不合并 journal、不换 RequestId，也不决定业务重试。
 RPC 消息的 hash/chunk/ack/cursor 是另一层协议，其成功不能证明文件系统操作成功。
 
@@ -164,7 +174,7 @@ Snapshot cleanup 根据持久 ownership 和 pins 决定；Host cleanup 根据登
 | SearchSnapshot / FeatureView | Adaptive 纯计算与只读装配 | 可删除并从权威记录重建，不修改 candidate 或 verifier record |
 | AllocationDecision / applied 投影 | Allocation owner | 确定性 policy 产生逻辑 plan；candidate creation 负责被授权的物化与 session 准备 |
 | Selection / Promotion / apply outcome | 各 publication 用例 | Adapter 返回协议事实；Host 提静默事实；都不能自行宣布业务通过 |
-| Pool baseline intent | TT pool owner | 共用 Request 协议给出观察，不写 pool 文件 |
+| Baseline snapshot / source handle | Search bootstrap 与 provider mutation journal | Candidate 消费冻结的准确 baseline，不重新捕获 |
 | Provider mutation journal | Mutation journal owner | 具体操作 adapter 使用原 intent；Request 组件不决定重新执行 |
 | Scope / handle / process / drainer / RPC | 对应 Host / Execution owner | 用例核验窄 host facts；不读取 PID 猜业务授权 |
 | Reference / snapshot cleanup | Reference / ArtifactLifecycle owner | Provider adapter 执行已授权 I/O；报告与跨 run pins 约束清理 |

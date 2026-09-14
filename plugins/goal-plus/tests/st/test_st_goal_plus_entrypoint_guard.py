@@ -97,7 +97,7 @@ def test_codex_exact_host_command_can_start_and_complete_goal_plus(
     assert record["entrypoint_status"] == "host_verified", result.log_path
     assert len(record["host_command_invocations"]) == 1, result.log_path
     invocation = record["host_command_invocations"][0]
-    assert invocation["host"] == "codex", result.log_path
+    assert invocation["agent_harness"] == "codex", result.log_path
     assert invocation["action"] == "start", result.log_path
     assert record["triage"]["recommended_phase"] == "goal", result.log_path
     assert record["work_items"] == [], result.log_path

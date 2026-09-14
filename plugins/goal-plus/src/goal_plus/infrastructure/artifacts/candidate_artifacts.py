@@ -19,14 +19,14 @@ from goal_plus.workspaces import (
 
 class FileCandidateArtifacts:
     def current_artifact(self, task: CandidateTask) -> ArtifactRef | None:
-        return LocalGitWorkspace(task.workspace_backend).current_artifact(
+        return LocalGitWorkspace(task.workspace_provider).current_artifact(
             task.workspace
         )
 
     def status(
         self, task: CandidateTask, *, ignore_runtime_noise: bool = False
     ) -> list[str]:
-        return LocalGitWorkspace(task.workspace_backend).status(
+        return LocalGitWorkspace(task.workspace_provider).status(
             task.workspace, ignore_runtime_noise=ignore_runtime_noise
         )
 
@@ -37,21 +37,21 @@ class FileCandidateArtifacts:
         preserved_files: dict[str, str],
         message: str,
     ) -> ArtifactRef:
-        return LocalGitWorkspace(task.workspace_backend).restore(
+        return LocalGitWorkspace(task.workspace_provider).restore(
             task.workspace, artifact, preserved_files, message
         )
 
     def is_descendant(
         self, task: CandidateTask, base: ArtifactRef, target: ArtifactRef
     ) -> bool:
-        return LocalGitWorkspace(task.workspace_backend).is_descendant(
+        return LocalGitWorkspace(task.workspace_provider).is_descendant(
             task.workspace, base, target
         )
 
     def changed_between(
         self, task: CandidateTask, base: ArtifactRef, target: ArtifactRef
     ) -> list[str]:
-        return LocalGitWorkspace(task.workspace_backend).changed_files(
+        return LocalGitWorkspace(task.workspace_provider).changed_files(
             task.workspace, base, target, candidate_git_pathspecs()
         )
 
@@ -72,11 +72,11 @@ class FileCandidateArtifacts:
         record: CandidateRecord,
         artifact_ref: ArtifactRef | None = None,
     ) -> list[str]:
-        provider = LocalGitWorkspace(record.task.workspace_backend)
+        provider = LocalGitWorkspace(record.task.workspace_provider)
         target = artifact_ref or provider.current_artifact(record.task.workspace)
         base = run.source_artifact_ref
         if (
-            record.task.workspace_backend == "git_worktree"
+            record.task.workspace_provider == "git_worktree"
             and base is not None
             and target is not None
             and base.provider == target.provider
@@ -151,7 +151,7 @@ class FileCandidateArtifacts:
         record: CandidateRecord,
         message: str,
     ) -> ArtifactRef | None:
-        return LocalGitWorkspace(record.task.workspace_backend).checkpoint(
+        return LocalGitWorkspace(record.task.workspace_provider).checkpoint(
             record.task.workspace,
             message,
             candidate_git_pathspecs(),

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Mapping, Protocol
 
 from goal_plus.domain.goal import GoalPlusRecord
+from goal_plus.domain.goal_authorization import tool_matches
 
 
 @dataclass(frozen=True)
@@ -12,7 +13,6 @@ class GoalToolTarget:
     goal_plus_id: str | None = None
     run_id: str | None = None
     agent_session_id: str | None = None
-    pool_id: str | None = None
     source_run_id: str | None = None
     source_run_requested: bool = False
 
@@ -28,8 +28,10 @@ class GoalToolTarget:
             tool_name=tool_name,
             goal_plus_id=reference("goal_plus_id"),
             run_id=reference("run_id"),
-            agent_session_id=reference("agent_session_id"),
-            pool_id=reference("pool_id"),
+            agent_session_id=reference("agent_session_id") or (
+                reference("session_id") if any(tool_matches(tool_name, "goal_plus_session_" + action)
+                for action in ("wake", "wait", "message", "interrupt", "stop", "close")) else None
+            ),
             source_run_id=reference("source_run_id"),
             source_run_requested=tool_input.get("source_run_id") is not None,
         )
@@ -39,4 +41,3 @@ class GoalAuthorizationSource(Protocol):
     def goal_ids(self) -> list[str]: ...
     def read_goal(self, goal_plus_id: str) -> GoalPlusRecord: ...
     def session_run_ids(self, agent_session_id: str) -> list[str]: ...
-    def pool_run_id(self, pool_id: str) -> str | None: ...

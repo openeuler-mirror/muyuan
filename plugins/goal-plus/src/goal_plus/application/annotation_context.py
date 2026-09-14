@@ -121,7 +121,7 @@ class AnnotationContextBuilder:
                 record.workspace,
                 reference.artifact_ref,
                 destination,
-                backend=reference.workspace_backend,
+                workspace_provider=reference.workspace_provider,
             )
             opened.append(
                 {
@@ -154,7 +154,7 @@ class AnnotationContextBuilder:
         )
         if (
             iteration is None
-            or iteration_artifact_ref(iteration, record.workspace_backend) is None
+            or iteration_artifact_ref(iteration, record.workspace_provider) is None
         ):
             raise RuntimeError("annotation requires immutable worker Evidence")
         task = self.workflow.task(run_id, candidate_id, iteration_number)
@@ -170,12 +170,12 @@ class AnnotationContextBuilder:
         ):
             raise RuntimeError("annotation task does not match settled Evidence")
         attempt_artifact_ref = iteration_artifact_ref(
-            iteration, record.workspace_backend
+            iteration, record.workspace_provider
         )
         assert attempt_artifact_ref is not None
         diff_head = attempt_artifact_ref
         candidate_base_artifact_ref = record.base_artifact_ref
-        if record.workspace_backend == "thinkthread":
+        if record.workspace_provider == "thinkthread":
             attempt_base = task.attempt_base_artifact_ref
             candidate_base = candidate_base_artifact_ref
             if (
@@ -193,10 +193,10 @@ class AnnotationContextBuilder:
             attempt_base = ArtifactRef(
                 kind="git_commit",
                 id=task.attempt_base_commit,
-                provider=record.workspace_backend,
+                provider=record.workspace_provider,
             )
             head = ArtifactRef(
-                kind="git_commit", id=commit, provider=record.workspace_backend
+                kind="git_commit", id=commit, provider=record.workspace_provider
             )
             if not self.artifacts.commit_available(
                 record.workspace, task.attempt_base_commit
@@ -209,7 +209,7 @@ class AnnotationContextBuilder:
             candidate_base = ArtifactRef(
                 kind="git_commit",
                 id=candidate_base_commit,
-                provider=record.workspace_backend,
+                provider=record.workspace_provider,
             )
         source_path = str(run.source_provider_handle.get("source_relative_path") or ".")
         attempt = ArtifactComparison(
@@ -376,7 +376,7 @@ class AnnotationContextBuilder:
                     item
                     for item in record.iterations
                     if iteration_matches_evidence_reference(
-                        item, reference, record.workspace_backend
+                        item, reference, record.workspace_provider
                     )
                 ),
                 None,
@@ -386,11 +386,11 @@ class AnnotationContextBuilder:
             changed_files: list[str] = []
             peer_diff: str | None = None
             diff_omitted: str | None = None
-            artifact_ref = iteration_artifact_ref(iteration, record.workspace_backend)
+            artifact_ref = iteration_artifact_ref(iteration, record.workspace_provider)
             if artifact_ref is None:
                 raise RuntimeError("annotation comparison artifact is unavailable")
             diff_head = artifact_ref
-            if record.workspace_backend == "thinkthread":
+            if record.workspace_provider == "thinkthread":
                 base = record.base_artifact_ref
                 if base is None:
                     raise RuntimeError(
@@ -402,7 +402,7 @@ class AnnotationContextBuilder:
                 diff_head = ArtifactRef(
                     kind="git_commit",
                     id=iteration.git_head,
-                    provider=record.workspace_backend,
+                    provider=record.workspace_provider,
                 )
                 base_commit = (
                     record.workspace_base_revision or iteration.attempt_base_git_head
@@ -411,7 +411,7 @@ class AnnotationContextBuilder:
                     ArtifactRef(
                         kind="git_commit",
                         id=base_commit,
-                        provider=record.workspace_backend,
+                        provider=record.workspace_provider,
                     )
                     if base_commit
                     else None

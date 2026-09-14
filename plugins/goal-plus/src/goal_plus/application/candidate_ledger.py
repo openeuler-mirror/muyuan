@@ -198,7 +198,7 @@ class CandidateLedger:
             record.results_ledger_git_head = None
             return None
         if projection == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV:
-            if record.task.workspace_backend == "thinkthread":
+            if record.task.workspace_provider == "thinkthread":
                 backfill_results_ledger_from_iterations(
                     record,
                     frozen.spec.metric_name,
@@ -228,7 +228,7 @@ class CandidateLedger:
             workspace_ledger_projection
             == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
         ):
-            if record.task.workspace_backend == "thinkthread":
+            if record.task.workspace_provider == "thinkthread":
                 settled_ref = entry.ledger_artifact_ref
                 if (
                     settled_ref is None

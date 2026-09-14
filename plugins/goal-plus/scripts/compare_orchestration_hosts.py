@@ -13,13 +13,13 @@ from goal_plus.monitor import goal_plus_monitor_snapshot
 HOSTS = {
     "codex": {
         "native_reasoning_effort": "max",
-        "dispatch": "spawn_agent",
-        "result": "wait_agent",
+        "dispatch": "goal_plus_run_work_item",
+        "result": "goal_plus_run_work_item",
     },
     "pi": {
         "native_reasoning_effort": "xhigh",
-        "dispatch": "pi_goal_plus_run_work_item",
-        "result": "goal-plus-pi-worker",
+        "dispatch": "goal_plus_run_work_item",
+        "result": "goal_plus_run_work_item",
     },
 }
 

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1675" viewBox="0 0 1400 1675" role="img" aria-labelledby="title desc">
   <title id="title">Goal Plus 恢复边界：独立 journal 与共用 TT request 协议</title>
-  <desc id="desc">Pool baseline intent 与 provider mutation journal 保持独立。共用组件只处理 exact request 观察和关闭，不写状态、不重做 mutation。Publication 先写 durable intent 再执行，业务 owner 核对返回身份后提交；unknown 保留责任。</desc>
+  <desc id="desc">Search baseline 准备通过 provider mutation journal 记录 S0 捕获。共用组件只处理 exact request 观察和关闭，不写状态、不重做 mutation。Publication 先写 durable intent 再执行，业务 owner 核对返回身份后提交；unknown 保留责任。</desc>
   <defs>
     <style>
       text{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#202b33;font-size:18px;letter-spacing:0}.title{font-size:32px;font-weight:700}.sub{font-size:17px;fill:#596873}.heading{font-size:22px;font-weight:700}.label{font-size:17px;font-weight:700}.box{rx:6;stroke-width:1.5}.business{fill:#edf8f5;stroke:#70aea2}.host{fill:#f9eff3;stroke:#bd899e}.state{fill:#fff8e8;stroke:#c4a866}.pure{fill:#f1f5fd;stroke:#8ca6cd}.neutral{fill:#f5f7f8;stroke:#b0bdc4}.flow{fill:none;stroke:#087b70;stroke-width:2.5;marker-end:url(#arrow)}.return{fill:none;stroke:#677b92;stroke-width:2;stroke-dasharray:7 5;marker-end:url(#return)}.life{stroke:#c2cbd0;stroke-width:1.5;stroke-dasharray:5 6}
@@ -12,18 +12,18 @@
   <text x="40" y="52" class="title">04 / 共用恢复协议，保持业务与持久状态责任独立</text>
   <text x="40" y="85" class="sub">持久化边界 · RPC delivery、provider request、业务结算、host 资源静默分别记录与核验。</text>
 
-  <rect x="40" y="124" width="620" height="108" class="box state"/>
-  <text x="64" y="162" class="heading">D1 · Pool baseline owner</text>
-  <text x="64" y="198">pool intent / S0 / RequestId / capture 与 close 进展</text>
+  <rect x="40" y="124" width="620" height="108" class="box business"/>
+  <text x="64" y="162" class="heading">D1 · Search baseline preparation</text>
+  <text x="64" y="198">冻结 Root / S0；捕获责任交给 provider mutation journal</text>
   <rect x="740" y="124" width="620" height="108" class="box state"/>
   <text x="764" y="162" class="heading">Provider mutation journal owner</text>
-  <text x="764" y="198">run/candidate intent / 参数摘要 / 同请求重放 / close 责任</text>
-  <path d="M350 232V263H565V295" class="flow"/>
+  <text x="764" y="198">baseline / run / candidate intent；参数、结果与 close 责任</text>
+  <path d="M660 178H740" class="flow"/>
   <path d="M1050 232V263H835V295" class="flow"/>
   <rect x="250" y="295" width="900" height="103" class="box host"/>
   <text x="274" y="333" class="heading">D2 · 一套 TT Request 协议：observe / close / unknown 后确认</text>
   <text x="274" y="368">校验 requestId + method；返回具名观察。无 journal 写入、无业务重试预算、无新 RequestId。</text>
-  <text x="40" y="437" class="sub">RequestNotFound：关闭时证明已不存在；恢复执行时只表示 absent，不能据此宣布原操作成功。两个 journal 的格式与提交点保持独立。</text>
+  <text x="40" y="437" class="sub">RequestNotFound：关闭时证明已不存在；恢复执行时只表示 absent，不能据此宣布原操作成功。Session 资源记录不替代 provider journal。</text>
 
   <text x="40" y="491" class="heading">D3–D5 / Publication 一次写操作的责任时序</text>
   <rect x="40" y="518" width="360" height="65" class="box business"/>

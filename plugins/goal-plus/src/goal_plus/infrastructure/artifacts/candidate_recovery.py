@@ -18,7 +18,7 @@ class ProviderCandidateRecovery:
         self.root_dir = Path(root_dir).resolve()
 
     def require_recoverable(self, record: CandidateRecord) -> None:
-        require_local_backend(record.task.workspace_backend, "recover")
+        require_local_backend(record.task.workspace_provider, "recover")
 
     def read_approval(self, recovery_id: str) -> dict[str, Any]:
         path = self.root_dir / "host-recovery" / "approvals" / f"{recovery_id}.json"
@@ -31,7 +31,7 @@ class ProviderCandidateRecovery:
         preserved_files: dict[str, str],
     ) -> ArtifactRef:
         run_dir = self.root_dir / "runs" / record.task.run_id
-        return LocalGitWorkspace(record.task.workspace_backend).recover(
+        return LocalGitWorkspace(record.task.workspace_provider).recover(
             record.task.workspace,
             recovery.point.artifact_ref,
             managed_root=record.task.workspace_managed_root or record.task.workspace,
@@ -49,7 +49,7 @@ class ProviderCandidateRecovery:
     def matches_checkpoint(
         self, record: CandidateRecord, expected: ArtifactRef, restored: ArtifactRef
     ) -> bool:
-        provider = LocalGitWorkspace(record.task.workspace_backend)
+        provider = LocalGitWorkspace(record.task.workspace_provider)
         managed = record.task.workspace_managed_root or record.task.workspace
         return not (
             provider.changed_files(managed, expected, restored, ["."])
@@ -59,7 +59,7 @@ class ProviderCandidateRecovery:
     def has_unsettled_changes(
         self, record: CandidateRecord, expected: ArtifactRef
     ) -> bool:
-        provider = LocalGitWorkspace(record.task.workspace_backend)
+        provider = LocalGitWorkspace(record.task.workspace_provider)
         managed = record.task.workspace_managed_root or record.task.workspace
         current = provider.current_artifact(managed)
         return bool(

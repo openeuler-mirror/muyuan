@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10
@@ -11,6 +14,38 @@ from goal_plus import __version__
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_dependency_lock_matches_declared_constraints() -> None:
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        project = tomllib.load(handle)["project"]
+    with (ROOT / "uv.lock").open("rb") as handle:
+        lock = tomllib.load(handle)
+    package = next(item for item in lock["package"] if item["name"] == project["name"])
+
+    declarations = list(project["dependencies"])
+    for values in project.get("optional-dependencies", {}).values():
+        declarations.extend(values)
+
+    # uv rewrites environment markers; this offline gate checks declared constraints.
+    # Full resolution and marker consistency remain covered by uv lock --check.
+    def constraints(requirement: Requirement) -> tuple:
+        return (canonicalize_name(requirement.name), requirement.specifier,
+                frozenset(requirement.extras), requirement.url)
+
+    expected = {constraints(Requirement(value)) for value in declarations}
+    actual = set()
+    for entry in package["metadata"]["requires-dist"]:
+        requirement = Requirement(entry["name"] + entry.get("specifier", ""))
+        requirement.extras = set(entry.get("extras", []))
+        requirement.url = entry.get("url")
+        actual.add(constraints(requirement))
+
+    assert actual == expected, "Run uv lock --no-config --managed-python --python 3.12"
+    assert lock["requires-python"] == project["requires-python"]
+    assert set(package["metadata"].get("provides-extras", [])) == set(
+        project.get("optional-dependencies", {})
+    )
 
 
 def test_hatch_build_uses_runtime_version_source() -> None:

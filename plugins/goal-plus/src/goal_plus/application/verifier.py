@@ -34,7 +34,7 @@ def verifier_subject(
         receipt.run_id != record.task.run_id
         or receipt.candidate_id != record.candidate_id
         or receipt.evidence.metric_name != frozen.spec.metric_name
-        or receipt.attempt_artifact_ref.provider != record.task.workspace_backend
+        or receipt.attempt_artifact_ref.provider != record.task.workspace_provider
     ):
         raise ValueError("settlement receipt does not match the candidate contract")
     return VerifierSubject(

@@ -807,7 +807,7 @@ def test_removed_snapshot_artifact_view_fails_before_provider_access(
         "read_context_candidate",
         lambda _run_id, _candidate_id: SimpleNamespace(
             workspace=tmp_path / "unused",
-            workspace_backend="thinkthread",
+            workspace_provider="thinkthread",
             iterations=[iteration],
         ),
     )
@@ -838,7 +838,7 @@ def test_removed_snapshot_artifact_view_fails_before_provider_access(
                 candidate_id="c001",
                 iteration=1,
                 artifact_ref=artifact,
-                workspace_backend="thinkthread",
+                workspace_provider="thinkthread",
                 display_name="target",
             )
         ],

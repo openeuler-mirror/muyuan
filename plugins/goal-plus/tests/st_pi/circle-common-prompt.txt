@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 max_duration_seconds=900 workspace_backend=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=common Complete one bounded Circle Packing search and apply the best valid result.
+/goal-plus max_parallel=2 max_duration_seconds=900 workspace_provider=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=common Complete one bounded Circle Packing search and apply the best valid result.
 
 Use `search-spec.json` as the evaluation contract, with `source_path="workspace"`,
 and `strategy.inner_agent="common"`. The source is the
@@ -7,7 +7,7 @@ Keep the frozen verifier unchanged and do not use the network.
 
 Create exactly two candidates and dispatch each once. In each proposal, request
 one small change to the concentric-ring placement, immediately followed by one
-`search_run_verifier` call and a return. Candidate 1 should adjust the inner ring
+`goal_plus_search_run_verifier` call and a return. Candidate 1 should adjust the inner ring
 radius slightly; candidate 2 should adjust the outer ring radius slightly.
 These are bounded lifecycle checks: do not run parameter sweeps, replace the
 algorithm, or continue candidates. Keep each worker budget at 240 seconds and

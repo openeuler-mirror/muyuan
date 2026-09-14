@@ -63,7 +63,7 @@ class GoalRevisions:
                 now, command_config.max_duration_seconds
             ),
             status="active",
-            phase="intake",
+            phase="goal",
             policy=normalized_policy,
             goal_revision=1,
             goal_revisions=[
@@ -76,8 +76,8 @@ class GoalRevisions:
                 )
             ],
             next_action=GoalPlusNextAction(
-                kind="record_triage",
-                description="判断原始目标应按 /goal 运行，还是升级到 Search Mode。",
+                kind="execute_goal",
+                description="执行原始目标；需要 Search 时准备评价合同。",
                 required=True,
             ),
             entrypoint_status=(
@@ -259,14 +259,14 @@ class GoalRevisions:
                         else record.control.reason,
                         version=record.control.version + 1,
                     ),
-                    "phase": "intake",
+                    "phase": "goal",
                     "triage": None,
                     "spec_draft": None,
                     "linked_search": None,
                     "next_action": GoalPlusNextAction(
-                        kind="record_triage",
+                        kind="execute_goal",
                         description=(
-                            "在继续工作或进入 Search Mode 前，重新分类修订后的原始目标。"
+                            "执行修订后的原始目标；需要 Search 时准备当前修订版的评价合同。"
                         ),
                         required=True,
                         metadata={"goal_revision": next_revision},

@@ -5,6 +5,7 @@ from goal_plus.application.candidate_execution import require_current_session
 from goal_plus.domain.search import AgentSessionRecord, CandidateProposal
 from goal_plus.ports.allocation_apply import (
     AllocationApplied,
+    AllocationCancellationProof,
     AllocationApplyState,
     AllocationMaterializationProjection,
 )
@@ -25,12 +26,14 @@ class AllocationApply:
         materialize: MaterializeCandidate,
         start_session: PrepareInitialSession,
         clock: Clock,
+        cancellation: AllocationCancellationProof,
     ) -> None:
         self._state = state
         self._preparation = preparation
         self._materialize = materialize
         self._start_session = start_session
         self._clock = clock
+        self._cancellation = cancellation
 
     def _assign_candidate_ids_locked(self, run_id: str, decision_id: str):
         decision = self._state.load_allocation_decision(run_id, decision_id)
@@ -81,6 +84,14 @@ class AllocationApply:
 
     def apply(self, run_id: str, decision_id: str) -> AllocationApplied:
         with self._state.lock_run(run_id):
+            decision = self._state.load_allocation_decision(run_id, decision_id)
+            retirees = {candidate_id: self._state.read_candidate(run_id, candidate_id)
+                        for candidate_id in decision.retire_candidate_ids}
+            self._cancellation.require_accepted(decision, [
+                session for session in self._state.read_agent_sessions(run_id)
+                if session.candidate_id in retirees
+                and session.execution_generation == retirees[session.candidate_id].execution_generation
+            ])
             try:
                 prepared = self._preparation.prepare_locked(run_id, decision_id)
                 if any(

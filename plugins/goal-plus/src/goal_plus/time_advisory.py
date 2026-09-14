@@ -60,11 +60,11 @@ def find_agent_session(
 
 
 def is_search_candidate_session(session: AgentSessionRecord) -> bool:
-    if session.host == "pi-rpc":
+    if session.agent_harness == "pi":
         return str(session.launch.get("role") or "worker") == "worker"
     # This typed record is created only by candidate_sessions and already binds
     # run/candidate identity. A host task's display name does not confer a role.
-    return session.host == "codex"
+    return session.agent_harness == "codex"
 
 
 def _candidate_records(root: Path, run_id: str) -> list[CandidateRecord]:
@@ -178,7 +178,7 @@ def _message(
     if low_sample:
         lines.append("该估算只有一个提交样本，应视为低置信度。")
     lines.append(
-        "请考虑剩余时间。自行决定继续当前工作，还是最后运行一次 search_run_verifier "
+        "请考虑剩余时间。自行决定继续当前工作，还是最后运行一次 goal_plus_search_run_verifier "
         "并返回当前最佳结果；不强制采取任何动作。"
     )
     return "\n".join(lines)

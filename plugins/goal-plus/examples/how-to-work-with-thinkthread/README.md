@@ -15,7 +15,8 @@ Host shell
 
 这个切片有意不派生 Child。它先回答一个更基础的问题：不改变 Goal Plus MCP 合同，能否把
 同一个普通 Goal Mode 放进 ThinkThread Runtime。Search candidate、private Child、snapshot
-verifier 和 `fs.apply` 属于后续的 Pi + ThinkThread Search 切片。
+verifier 和 `fs.apply` 由 [Guess Number](../guess-number-thinkthread-apply/README.md) 和
+[Circle TT](../circle-packing-thinkthread-apply/README.md) 单独演示。
 
 ## 1. 前置条件
 
@@ -37,13 +38,12 @@ tt profile show goal-plus-pi
 
 安装器不会安装或卸载 ThinkThread RPM。它验证当前 Runtime 和内置 Pi Profile，安装现有 Goal Plus
 Python/Pi 组件，再生成受管的 `goal-plus-pi` Profile。该 Profile 沿用 TT 自带 Pi Agent Extension，
-显式加载本 checkout 的 Goal Plus extension/skill，只读开放 checkout 与当前 Python environment，
-同时开放 Pi 使用的 Node runtime prefix，并把每个 Pi Session 的 Goal Plus 状态放入
+显式加载不可变安装副本的 Goal Plus extension，只读开放该副本及受管 Python environment，
+同时开放 Node runtime 和解释器软链接链目标，并把每个 Pi Session 的 Goal Plus 状态放入
 Session-private runtime root。已有同名且不归本 checkout 所有的用户 Profile 不会被覆盖。
 
-ThinkThread Runtime、Agent POSIX SDK/CLI 和安装包应来自同一个 Capsule release。当前
-Goal Plus 集成方案以 `capsule_public` 的 release manifest 为版本依据；只看到相同的
-`tt --version` semver 不能证明 RPM release、protocol fingerprint 和内核保护基线完全匹配。
+版本、protocol 声明和 fingerprint 偏离已测基线时只警告；实际接口、Profile 结构与 delegated
+capability 仍必须通过检查。兼容的 ThinkThread 升级无需重装 Goal Plus，详见 [Pi](../../docs/pi.md)。
 
 ## 2. 准备一次性工作区
 
@@ -92,7 +92,7 @@ Root/Child 状态写冲突。
 - `greeting.txt` 精确包含 `Hello from ThinkThread!`；
 - `verify.py` 成功；
 - Goal Plus record 的 triage 是非优化 Goal Mode；
-- work DAG 只有 main-owned work，没有普通 subagent attempt；
+- 任务由 Main 完成，没有普通 subagent dispatch attempt；
 - Goal Plus record 不存在 linked Search run。
 
 ## 4. 三层接口分别负责什么
@@ -101,13 +101,13 @@ Root/Child 状态写冲突。
 | --- | --- | --- |
 | ThinkThread Host | `tt run`、`tt ps` | 创建、启动、观察 Root；可信 Host 自动化也可使用 Management SDK |
 | ThinkThread Runtime | Root direct filesystem 与 protected Pi execution | 承载当前 Pi 进程；本例不派生 Child |
-| Goal Plus | `/goal-plus` 加 `goal_plus_record_triage`、`goal_plus_upsert_work_items`、`goal_plus_record_work_event`、`goal_plus_set_status` MCP tools | 目标、work DAG、验收 Evidence 和终态 |
+| Goal Plus | `/goal-plus` 加 `goal_plus_status`、`goal_plus_record_triage`、`goal_plus_set_status` MCP tools | 目标、Main 分流、验收 Evidence 和终态 |
 
 这个最小切片只证明现有两条公共边界可以组合：Host 用 `tt` 创建 protected execution，
 Pi 使用现有 Goal Plus MCP/facade 管理任务。它不测试或规定 Pi 对 ThinkThread Agent POSIX API
 的可见性，也不把 `tt` 包装成 runtime-owned worker supervisor。
 
-这个例子也不调用 `git-tt` 或 Search candidate pool。Goal Plus Search 的 Child、Agent POSIX、
+这个例子也不调用 `git-tt` 或 Search session 工具。Goal Plus Search 的 Child、Agent POSIX、
 snapshot Evidence 和 publication 边界见
 [ThinkThread 与 Git Workspace 架构](../../docs/workspace-sandbox-arch.md)。
 

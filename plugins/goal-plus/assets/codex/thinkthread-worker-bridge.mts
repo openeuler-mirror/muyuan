@@ -1,0 +1,78 @@
+import { pathToFileURL } from "node:url";
+import { dispatchMetadata, requestWorkerTool, THINKTHREAD_GOAL_PLUS_PROTOCOL as protocol, THINKTHREAD_WORKER_RPC_TIMEOUT_MS } from "../thinkthread-session-rpc.ts";
+
+// Only trusted Parent Messages provide the candidate binding. MCP arguments cannot select it.
+export async function workerBinding(client: any, parentId: string) {
+    const self = await client.invoke("self", {});
+    if (!parentId || self.parentThinkthreadId !== parentId
+        || self.capabilities?.length !== 1 || self.capabilities[0].id !== "thinkthread.message") {
+        throw new Error("Goal Plus tools require an authenticated Message-only Child");
+    }
+    let cursor: string | undefined;
+    let latest: any;
+    do {
+        const page = await client.invoke("message.receive", {
+            senderThinkthreadId: parentId, limit: 32, ...(cursor ? {after: cursor} : {}),
+        });
+        if (!Array.isArray(page.messages) || typeof page.nextCursor !== "string") {
+            throw new Error("Invalid Parent dispatch Message page");
+        }
+        for (const message of page.messages) {
+            if (message.senderThinkthreadId !== parentId || message.recipientThinkthreadId !== self.thinkthreadId
+                || message.truncated !== false || typeof message.text !== "string") continue;
+            // Tool replies and steering envelopes can quote dispatch text but cannot create a binding.
+            try { JSON.parse(message.text); continue; } catch { /* Dispatch is a plain-text native input. */ }
+            const binding = dispatchMetadata(message.text);
+            if (!binding.dispatchNonce || !binding.registrationNonce || !binding.agentSessionId) continue;
+            if (typeof message.messageId !== "string") throw new Error("Dispatch has no Message identity");
+            latest = {...binding, parentId, childId: self.thinkthreadId, messageId: message.messageId};
+        }
+        if (!page.hasMore) break;
+        if (page.nextCursor === cursor) throw new Error("Parent Message cursor did not advance");
+        cursor = page.nextCursor;
+    } while (true);
+    if (!latest) throw new Error("Child has no retained Goal Plus dispatch");
+    if (latest.thinkthreadRole === "annotator") throw new Error("Annotation requires its own role binding");
+    return latest;
+}
+
+export async function workerOperation(client: any, parentId: string, request: any) {
+    const binding = await workerBinding(client, parentId);
+    if (request.operation === "binding") return binding;
+    if (request.operation !== "call" || request.params?.agent_session_id !== binding.agentSessionId) {
+        throw new Error("MCP candidate binding does not match the current Parent dispatch");
+    }
+    const {name, arguments: args} = request.params;
+    if (typeof name !== "string" || !args || typeof args !== "object" || Array.isArray(args)
+        || args.agent_session_id !== binding.agentSessionId) {
+        throw new Error("MCP tool arguments do not match the bound candidate");
+    }
+    for (const payload of [
+        {type: "registration", registration_nonce: binding.registrationNonce},
+        {type: "dispatch_ack", dispatch_nonce: binding.dispatchNonce, message_id: binding.messageId},
+    ]) {
+        await client.invoke("message.send", {
+            recipientThinkthreadId: parentId, text: JSON.stringify({protocol, ...payload}), wake: false,
+        });
+    }
+    return requestWorkerTool(client, parentId, binding.agentSessionId, name, args,
+        AbortSignal.timeout(THINKTHREAD_WORKER_RPC_TIMEOUT_MS));
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+    try {
+        let input = "";
+        for await (const chunk of process.stdin) input += chunk;
+        const entry = process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY;
+        if (!entry) throw new Error("The installed Agent POSIX SDK is required");
+        const {AgentPosixClient} = await import(entry.startsWith("file:") ? entry : pathToFileURL(entry).href);
+        const result = await workerOperation(AgentPosixClient.fromEnv(), process.env.THINKTHREAD_PARENT_ID ?? "", JSON.parse(input));
+        process.stdout.write(JSON.stringify({ok: true, result}) + "\n");
+    } catch (error) {
+        process.stdout.write(JSON.stringify({ok: false, error: {
+            name: error instanceof Error ? error.name : "Error",
+            message: error instanceof Error ? error.message : String(error),
+        }}) + "\n");
+        process.exitCode = 1;
+    }
+}

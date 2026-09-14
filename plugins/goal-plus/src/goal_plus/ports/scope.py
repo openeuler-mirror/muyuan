@@ -4,13 +4,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, ContextManager, Literal, Protocol, TypedDict
 
-from pydantic import Field
-
-from goal_plus.domain.base import SearchModel
 from goal_plus.domain.goal_authorization import GOAL_ID_RE
 
 
 ScopeHost = Literal["codex", "pi"]
+SCOPE_PROCESS_TERMINAL_STATUSES = frozenset({"finished", "released"})
 
 
 @dataclass(frozen=True)
@@ -55,9 +53,6 @@ class ScopeAgentRecord(TypedDict, total=False):
 class ScopeProcessRecord(TypedDict, total=False):
     token: str
     pid: int
-    process_group_id: int | None
-    start_token: str
-    witness: dict[str, Any]
     label: str
     run_id: str | None
     kind: Literal["candidate", "internal"]
@@ -66,22 +61,30 @@ class ScopeProcessRecord(TypedDict, total=False):
     finished_at: str | None
 
 
+class AllocationCancellationRecord(TypedDict):
+    run_id: str
+    decision_id: str
+    candidate_id: str
+    agent_session_id: str
+    execution_generation: int
+    native_session_id: str | None
+    call_id: str | None
+    status: Literal["requested", "accepted", "rejected", "unknown"]
+    error: str | None
+
+
 class ScopeRecord(TypedDict, total=False):
     """Existing operational document; optional keys remain absent when not recorded."""
 
     schema_version: int
     scope_id: str
-    host: ScopeHost
+    agent_harness: ScopeHost
     owner_session_id: str
-    owner_pid: int
-    owner_start_token: str
     generation: int
     activation_id: str | None
     state: Literal["open", "closing", "cleanup_failed", "closed"]
     run_ids: list[str]
     fenced_run_ids: list[str]
-    guardian_pid: int | None
-    guardian_start_token: str
     native_agent_config: dict[str, str]
     created_at: str
     created_at_ns: int
@@ -93,11 +96,12 @@ class ScopeRecord(TypedDict, total=False):
     codex_observation: dict[str, Any]
     processes: list[ScopeProcessRecord]
     cleanup: dict[str, Any]
+    allocation_cancellations: list[AllocationCancellationRecord]
 
 
 class ScopeState(Protocol):
     def lock(self, scope_id: str) -> ContextManager[None]: ...
-    def owner_lock(self, host: ScopeHost, owner_session_id: str) -> ContextManager[None]: ...
+    def owner_lock(self, agent_harness: ScopeHost, owner_session_id: str) -> ContextManager[None]: ...
     def cleanup_lock(self, scope_id: str) -> ContextManager[None]: ...
     def exists(self, scope_id: str) -> bool: ...
     def read(self, scope_id: str) -> ScopeRecord: ...
@@ -108,13 +112,13 @@ class ScopeState(Protocol):
 class ScopeCleanupServices(Protocol):
     """Host-owned cleanup and read-only quiescence checks, never task transitions."""
 
-    def close_pools(
+    def close_sessions(
         self, *, attachment: ScopeAttachment, scope_id: str, timeout_seconds: float,
     ) -> tuple[list[dict[str, Any]], list[str]]: ...
 
     def close_drainers(self, *, run_id: str, timeout_seconds: float) -> list[str]: ...
 
-    def codex_run_is_quiescent(self, run_id: str) -> bool: ...
+    def codex_run_is_quiescent(self, run_id: str, *, scope: ScopeRecord) -> bool: ...
 
 
 def validate_scope_id(value: str) -> str:
@@ -122,10 +126,3 @@ def validate_scope_id(value: str) -> str:
     if not value or any(char not in allowed for char in value):
         raise ValueError(f"invalid scope_id: {value!r}")
     return value
-
-
-class ScopeGuardianObservation(SearchModel):
-    state: Literal["open", "closing", "cleanup_failed", "closed"]
-    owner_pid: int | None = Field(default=None, strict=True, gt=0)
-    owner_start_token: str | None = None
-    close_reason: str | None = None

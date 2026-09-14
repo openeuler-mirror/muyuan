@@ -6,8 +6,9 @@ from typing import Any, Literal
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.domain.goal_commands import GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED
 from goal_plus.domain.goal_authorization import GOAL_PLUS_ENTRYPOINT_REQUIRED
-from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
 from goal_plus.domain.search import (
+    AgentSessionRecord,
     CandidateProposal,
     SearchSpec,
     VerifierInvalidationReason,
@@ -21,63 +22,25 @@ from goal_plus.domain.goal import (
     GoalPlusWorkEventKind,
 )
 from goal_plus.domain.shared_tools import ToolizationDecision
+from goal_plus.ports.thinkthread_verification import DeferredCandidateAttempt
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.runtime import FileSearchRuntime
-from goal_plus.application.candidate_creation import format_task_skill_listing
-from goal_plus.workspaces import format_workspace_capacity_notice
 from goal_plus.projections.goal_tools import (
     goal_receipt, goal_status, reconciliation_summary, search_task_receipt, work_item_summary,
     GOAL_HISTORY_DEFAULT_LIMIT, GOAL_HISTORY_MAX_LIMIT,
 )
 from goal_plus.projections.monitor_tools import monitor_tool_summary
-
-
-ToolCallerRole = Literal["main", "candidate", "final_checker", "ordinary"]
-
-CANDIDATE_TOOL_NAMES = frozenset(
-    {
-        "search_get_agent_context",
-        "search_get_global_evidence",
-        "search_reference_open",
-        "search_stage_shared_tool",
-        "search_copy_shared_tool",
-        "search_get_evidence_detail",
-        "search_run_verifier",
-        "search_list_iterations",
-    }
-)
-FINAL_CHECKER_TOOL_NAMES = frozenset(
-    {"goal_plus_status", "goal_plus_submit_final_check"}
+from goal_plus.projections.session_tools import session_receipt
+from goal_plus.projections.search_tools import (
+    candidate_task_receipt, frozen_spec_receipt, promotion_apply_receipt,
+    search_history_summary, search_plan_receipt,
+    history_page,
 )
 
 
-def require_tool_role(
-    role: ToolCallerRole,
-    tool_name: str,
-    *,
-    caller_agent_session_id: str | None = None,
-    requested_agent_session_ids: list[str] | None = None,
-) -> None:
-    """Enforce model-facing role boundaries identified by a trusted host."""
-
-    if role == "main":
-        allowed = tool_name != "goal_plus_submit_final_check"
-    elif role == "candidate":
-        allowed = tool_name in CANDIDATE_TOOL_NAMES
-    elif role == "final_checker":
-        allowed = tool_name in FINAL_CHECKER_TOOL_NAMES
-    else:
-        allowed = False
-    if not allowed:
-        raise PermissionError(f"GoalPlusRoleDenied: {role} cannot call {tool_name}")
-    if role == "candidate" and (
-        caller_agent_session_id is None
-        or set(requested_agent_session_ids or []) != {caller_agent_session_id}
-    ):
-        raise PermissionError(
-            "GoalPlusSessionMismatch: candidate tools require the caller's own "
-            "agent_session_id"
-        )
+from goal_plus.domain.tool_catalog import (
+    ToolCallerRole, CANDIDATE_TOOL_NAMES, FINAL_CHECKER_TOOL_NAMES, require_tool_role,
+)
 
 
 class SearchTools:
@@ -87,9 +50,12 @@ class SearchTools:
         self,
         runtime: FileSearchRuntime,
         goal_runtime: FileGoalPlusRuntime | None = None,
+        *,
+        candidate_attempt: DeferredCandidateAttempt | None = None,
     ) -> None:
         self.runtime = runtime
         self.goal_runtime = goal_runtime
+        self.candidate_attempt = candidate_attempt
 
     def _require_target(self, tool_name: str, **tool_input: Any) -> None:
         if self.goal_runtime is not None:
@@ -107,13 +73,13 @@ class SearchTools:
             {"goal_plus_id": goal_plus_id, **tool_input},
         )
 
-    def search_freeze_spec(
+    def goal_plus_search_freeze_spec(
         self,
         goal_plus_id: str,
         spec: dict[str, Any] | SearchSpec,
         verifier_artifact_paths: list[str],
     ) -> dict[str, Any]:
-        self._require_search_bootstrap("search_freeze_spec", goal_plus_id)
+        self._require_search_bootstrap("goal_plus_search_freeze_spec", goal_plus_id)
         parsed_spec = spec if isinstance(spec, SearchSpec) else SearchSpec.model_validate(spec)
         source_path = Path(parsed_spec.source_path).expanduser().resolve()
         artifact_paths: list[Path] = []
@@ -134,101 +100,98 @@ class SearchTools:
             artifact_paths,
             goal_plus_id=goal_plus_id,
         )
-        payload = frozen.model_dump(mode="json")
-        visible = format_task_skill_listing(frozen.task_skill_paths)
-        payload["task_skill_notice"] = (
-            "Git-tracked task-local Skills visible from source: "
-            + visible
-            if frozen.task_skill_paths
-            else "No Git-tracked task-local Skills found under .agents/skills."
-        )
-        if frozen.workspace_capacity_estimate is not None:
-            payload["workspace_capacity_notice"] = format_workspace_capacity_notice(
-                frozen.workspace_capacity_estimate
-            )
-        return payload
+        return frozen_spec_receipt(frozen)
 
-    def search_create(
+    def goal_plus_search_create(
         self,
         goal_plus_id: str,
         frozen_spec_id: str,
+        request_id: str,
         source_run_id: str | None = None,
     ) -> dict[str, str]:
-        self._require_search_bootstrap(
-            "search_create",
-            goal_plus_id,
-            source_run_id=source_run_id,
+        from goal_plus.application.goal_search_create import GoalSearchCreate
+
+        goals = self.goal_runtime or FileGoalPlusRuntime(self.runtime.root_dir)
+        try:
+            previous = goals.status(goal_plus_id)
+        except FileNotFoundError:
+            previous = None
+        if previous is None or not any(item.request_id == request_id and item.state == "linked"
+                                       for item in previous.search_create_requests):
+            self._require_search_bootstrap("goal_plus_search_create", goal_plus_id, source_run_id=source_run_id)
+        frozen = self.runtime.require_frozen_spec_owner(frozen_spec_id, goal_plus_id)
+        return GoalSearchCreate(goals.goal_search, self.runtime.search_run).create(
+            goal_plus_id, frozen, request_id, source_run_id,
         )
-        self.runtime.require_frozen_spec_owner(frozen_spec_id, goal_plus_id)
-        return {
-            "run_id": self.runtime.create_run(
-                frozen_spec_id,
-                source_run_id=source_run_id,
-            )
-        }
 
     def goal_plus_list_models(
         self,
-        host: AgentHostKind,
+        agent_harness: AgentHarnessKind,
+        runtime_provider: AgentRuntimeProvider,
         query: str | None = None,
     ) -> dict[str, Any]:
-        return self.runtime.list_available_models(host, query)
+        return self.runtime.list_available_models(agent_harness, runtime_provider, query)
 
-    def search_invalidate_run(
+    def goal_plus_search_invalidate_run(
         self,
         run_id: str,
         reason: VerifierInvalidationReason,
         summary: str,
         evidence: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        self._require_target("search_invalidate_run", run_id=run_id)
-        return self.runtime.invalidate_run(
+        self._require_target("goal_plus_search_invalidate_run", run_id=run_id)
+        run = self.runtime.invalidate_run(
             run_id,
             reason=reason,
             summary=summary,
             evidence=evidence,
-        ).model_dump(mode="json")
+        )
+        return run.model_dump(mode="json", include={
+            "run_id", "state", "invalidated_at", "invalidation_reason",
+        }, exclude_none=True)
 
-    def search_status(self, run_id: str) -> dict[str, Any]:
+    def goal_plus_search_status(self, run_id: str) -> dict[str, Any]:
         return self.runtime.status(run_id).model_dump(mode="json")
 
-    def search_recovery_status(self, run_id: str) -> dict[str, Any]:
-        self._require_target("search_recovery_status", run_id=run_id)
-        return self.runtime.search_recovery_status(run_id)
+    def goal_plus_search_recovery_status(self, run_id: str) -> dict[str, Any]:
+        self._require_target("goal_plus_search_recovery_status", run_id=run_id)
+        return self.runtime.goal_plus_search_recovery_status(run_id)
 
-    def search_prepare_recovery(self, run_id: str, candidate_id: str) -> dict[str, Any]:
-        self._require_target("search_prepare_recovery", run_id=run_id)
+    def goal_plus_search_prepare_recovery(self, run_id: str, candidate_id: str) -> dict[str, Any]:
+        self._require_target("goal_plus_search_prepare_recovery", run_id=run_id)
         return self.runtime.prepare_candidate_recovery(run_id, candidate_id).model_dump(mode="json")
 
-    def search_recover_candidate(
+    def goal_plus_search_recover_candidate(
         self, run_id: str, candidate_id: str, recovery_id: str
     ) -> dict[str, Any]:
         from goal_plus.host_recovery import approve_recovery
-        self._require_target("search_recover_candidate", run_id=run_id)
+        self._require_target("goal_plus_search_recover_candidate", run_id=run_id)
         recovery = self.runtime.recovery.request(run_id, candidate_id, recovery_id)
         if recovery.state != "restored":
             approve_recovery(self.runtime.root_dir, recovery)
         return self.runtime.recover_candidate(run_id, candidate_id, recovery_id).model_dump(mode="json")
 
-    def search_list_history(
+    def goal_plus_search_list_history(
         self,
         run_id: str,
         top_n: int = 5,
         sort_by: str = "score",
+        detail: bool = False,
     ) -> dict[str, Any]:
-        return self.runtime.list_history(run_id, top_n=top_n, sort_by=sort_by)
+        history = self.runtime.list_history(run_id, top_n=top_n, sort_by=sort_by)
+        return history if detail else search_history_summary(history)
 
-    def search_plan_next(self, run_id: str, requested_k: int = 4) -> dict[str, Any]:
-        self._require_target("search_plan_next", run_id=run_id)
-        return self.runtime.plan_next(run_id, requested_k=requested_k).model_dump(mode="json")
+    def goal_plus_search_plan_next(self, run_id: str, requested_k: int = 4) -> dict[str, Any]:
+        self._require_target("goal_plus_search_plan_next", run_id=run_id)
+        return search_plan_receipt(self.runtime.plan_next(run_id, requested_k=requested_k))
 
-    def search_start_batch(
+    def goal_plus_search_start_batch(
         self,
         run_id: str,
         plan_id: str,
         proposals: list[CandidateProposal | dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        self._require_target("search_start_batch", run_id=run_id)
+        self._require_target("goal_plus_search_start_batch", run_id=run_id)
         parsed_proposals = (
             [
                 proposal
@@ -239,16 +202,8 @@ class SearchTools:
             if proposals is not None
             else None
         )
-        payloads = []
-        for task in self.runtime.start_batch(run_id, plan_id, parsed_proposals):
-            payload = task.model_dump(mode="json")
-            payload["task_skill_notice"] = (
-                f"Subagent {task.candidate_id} repository Skills: "
-                f"{format_task_skill_listing(task.task_skill_paths)}. "
-                "External Skills remain host-managed."
-            )
-            payloads.append(payload)
-        return payloads
+        return [candidate_task_receipt(task)
+                for task in self.runtime.start_batch(run_id, plan_id, parsed_proposals)]
 
     def search_start_agent_session(
         self,
@@ -258,12 +213,12 @@ class SearchTools:
         worker_budget: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._require_target("search_start_agent_session", run_id=run_id)
-        return self.runtime.start_agent_session(
+        return session_receipt(self.runtime.start_agent_session(
             run_id=run_id,
             candidate_id=candidate_id,
             directive=directive,
             worker_budget=worker_budget,
-        ).model_dump(mode="json")
+        ))
 
     def search_redispatch_candidate(
         self,
@@ -272,11 +227,11 @@ class SearchTools:
         worker_budget: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._require_target("search_redispatch_candidate", run_id=run_id)
-        return self.runtime.redispatch_candidate(
+        return session_receipt(self.runtime.redispatch_candidate(
             run_id=run_id,
             candidate_id=candidate_id,
             worker_budget=worker_budget,
-        ).model_dump(mode="json")
+        ))
 
     def search_bind_agent_handle(
         self,
@@ -287,10 +242,10 @@ class SearchTools:
             "search_bind_agent_handle",
             agent_session_id=agent_session_id,
         )
-        return self.runtime.bind_agent_handle(
+        return session_receipt(self.runtime.bind_agent_handle(
             agent_session_id=agent_session_id,
             handle=handle,
-        ).model_dump(mode="json")
+        ))
 
     def search_continue_agent_session(
         self,
@@ -301,18 +256,18 @@ class SearchTools:
             "search_continue_agent_session",
             agent_session_id=agent_session_id,
         )
-        return self.runtime.continue_agent_session(
+        return session_receipt(self.runtime.continue_agent_session(
             agent_session_id=agent_session_id,
             worker_budget=worker_budget,
-        ).model_dump(mode="json")
+        ))
 
-    def search_get_agent_context(self, agent_session_id: str) -> dict[str, Any]:
+    def goal_plus_search_get_agent_context(self, agent_session_id: str) -> dict[str, Any]:
         self._require_target(
-            "search_get_agent_context",
+            "goal_plus_search_get_agent_context",
             agent_session_id=agent_session_id,
         )
         result = self.runtime.get_agent_context(agent_session_id)
-        if result.get("host") != "thinkthread" or not result.get("iteration_count"):
+        if result.get("runtime_provider") != "thinkthread" or not result.get("iteration_count"):
             return result
         try:
             if not self.runtime.should_inject_global_evidence_after_verifier(
@@ -334,24 +289,24 @@ class SearchTools:
         result["global_evidence_entry_count"] = len(snapshot)
         return result
 
-    def search_get_global_evidence(
+    def goal_plus_search_get_global_evidence(
         self,
         agent_session_id: str,
     ) -> list[dict[str, Any]]:
         self._require_target(
-            "search_get_global_evidence",
+            "goal_plus_search_get_global_evidence",
             agent_session_id=agent_session_id,
         )
         return self.runtime.get_global_evidence(agent_session_id)
 
-    def search_reference_open(
+    def goal_plus_search_reference_open(
         self,
         agent_session_id: str,
         source_candidate_id: str,
         source_iteration: int,
     ) -> dict[str, Any]:
         self._require_target(
-            "search_reference_open",
+            "goal_plus_search_reference_open",
             agent_session_id=agent_session_id,
         )
         return self.runtime.open_reference_workspace(
@@ -360,14 +315,14 @@ class SearchTools:
             source_iteration,
         ).model_dump(mode="json")
 
-    def search_copy_shared_tool(
+    def goal_plus_search_copy_shared_tool(
         self,
         agent_session_id: str,
         tool_id: str,
         snapshot_hash: str,
     ) -> dict[str, Any]:
         self._require_target(
-            "search_copy_shared_tool",
+            "goal_plus_search_copy_shared_tool",
             agent_session_id=agent_session_id,
         )
         return self.runtime.copy_shared_tool(
@@ -376,7 +331,7 @@ class SearchTools:
             snapshot_hash,
         )
 
-    def search_stage_shared_tool(
+    def goal_plus_search_stage_shared_tool(
         self,
         agent_session_id: str,
         name: str,
@@ -389,7 +344,7 @@ class SearchTools:
         coverage_keys: list[str] | None = None,
     ) -> dict[str, Any]:
         self._require_target(
-            "search_stage_shared_tool",
+            "goal_plus_search_stage_shared_tool",
             agent_session_id=agent_session_id,
         )
         return self.runtime.stage_shared_tool(
@@ -404,14 +359,14 @@ class SearchTools:
             coverage_keys=coverage_keys,
         )
 
-    def search_get_evidence_detail(
+    def goal_plus_search_get_evidence_detail(
         self,
         agent_session_id: str,
         candidate_id: str,
         iteration: int,
     ) -> dict[str, Any]:
         self._require_target(
-            "search_get_evidence_detail",
+            "goal_plus_search_get_evidence_detail",
             agent_session_id=agent_session_id,
         )
         return self.runtime.get_evidence_detail(
@@ -420,10 +375,10 @@ class SearchTools:
             iteration,
         )
 
-    def search_get_agent_observability(self, agent_session_id: str) -> dict[str, Any]:
+    def goal_plus_search_get_agent_observability(self, agent_session_id: str) -> dict[str, Any]:
         return self.runtime.get_agent_observability(agent_session_id)
 
-    def search_run_verifier(
+    def goal_plus_search_run_verifier(
         self,
         run_id: str,
         candidate_id: str,
@@ -432,7 +387,13 @@ class SearchTools:
         hypothesis: str | None = None,
         toolization_decision: ToolizationDecision | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self._require_target("search_run_verifier", run_id=run_id)
+        self._require_target("goal_plus_search_run_verifier", run_id=run_id)
+        if self.candidate_attempt is not None:
+            return self.runtime.thinkthread_verification.accept(
+                self.candidate_attempt, run_id=run_id, candidate_id=candidate_id,
+                agent_session_id=agent_session_id, scope=scope, hypothesis=hypothesis,
+                toolization_decision=toolization_decision,
+            ).model_dump(mode="json")
         report = self.runtime.run_verifier(
             run_id,
             candidate_id,
@@ -462,77 +423,80 @@ class SearchTools:
         result["global_evidence_entry_count"] = len(snapshot)
         return result
 
-    def search_list_iterations(
+    def goal_plus_search_list_iterations(
         self,
         agent_session_id: str,
-    ) -> list[dict[str, Any]]:
+        offset: int = 0,
+        limit: int = GOAL_HISTORY_DEFAULT_LIMIT,
+    ) -> dict[str, Any]:
         self._require_target(
-            "search_list_iterations",
+            "goal_plus_search_list_iterations",
             agent_session_id=agent_session_id,
         )
-        return self.runtime.list_agent_iterations(agent_session_id)
+        return history_page(self.runtime.list_agent_iterations(agent_session_id), offset, limit)
 
-    def search_list_allocation_decisions(
+    def goal_plus_search_list_allocation_decisions(
         self,
         run_id: str,
-        status: Literal[
-            "pending", "applied", "superseded", "terminal_error"
-        ] | None = None,
-    ) -> list[dict[str, Any]]:
-        self._require_target("search_list_allocation_decisions", run_id=run_id)
-        return [
+        status: Literal["pending", "applied", "superseded", "terminal_error"] | None = "pending",
+        offset: int = 0,
+        limit: int = GOAL_HISTORY_DEFAULT_LIMIT,
+    ) -> dict[str, Any]:
+        self._require_target("goal_plus_search_list_allocation_decisions", run_id=run_id)
+        return history_page([
             item.model_dump(mode="json")
             for item in self.runtime.list_allocation_decisions(run_id, status)
-        ]
+        ], offset, limit)
 
-    def search_apply_allocation_decision(
+    def goal_plus_search_apply_allocation_decision(
         self,
         run_id: str,
         decision_id: str,
     ) -> dict[str, Any]:
-        self._require_target("search_apply_allocation_decision", run_id=run_id)
-        return self.runtime.apply_allocation_decision(run_id, decision_id)
+        self._require_target("goal_plus_search_apply_allocation_decision", run_id=run_id)
+        applied = self.runtime.apply_allocation_decision(run_id, decision_id)
+        return {
+            **applied,
+            "agent_sessions": [
+                session_receipt(AgentSessionRecord.model_validate(session))
+                for session in applied["agent_sessions"]
+            ],
+        }
 
-    def search_select(self, run_id: str) -> dict[str, Any]:
-        self._require_target("search_select", run_id=run_id)
+    def goal_plus_search_select(self, run_id: str) -> dict[str, Any]:
+        self._require_target("goal_plus_search_select", run_id=run_id)
         return self.runtime.select(run_id)
 
-    def search_report(self, run_id: str) -> dict[str, str]:
+    def goal_plus_search_report(self, run_id: str) -> dict[str, str]:
         report_path = self.runtime.report(run_id)
         return {
             "report_path": str(report_path),
             "html_report_path": str(report_path.with_suffix(".html")),
         }
 
-    def search_promote(self, run_id: str, candidate_id: str) -> dict[str, Any]:
-        self._require_target("search_promote", run_id=run_id)
+    def goal_plus_search_promote(self, run_id: str, candidate_id: str) -> dict[str, Any]:
+        self._require_target("goal_plus_search_promote", run_id=run_id)
         artifact_path = self.runtime.promote(run_id, candidate_id)
         promotion = self.runtime.promotion_record(run_id)
         source_path, apply_cwd, apply_directory = (
             self.runtime.promotion_apply_coordinates(run_id)
         )
-        return {
+        payload = {
             "artifact_path": str(artifact_path),
             "source_path": str(source_path),
-            "apply_cwd": str(apply_cwd),
-            "apply_directory": apply_directory,
             "promotion_id": promotion.promotion_id,
-            "provider": promotion.provider,
-            "strategy": promotion.strategy,
             "promotion_mode": promotion.promotion_mode,
             "apply_required": promotion.promotion_mode == "apply",
             "state": promotion.state,
-            "publication_artifact_ref": (
-                promotion.publication_artifact_ref.model_dump(mode="json")
-                if promotion.publication_artifact_ref is not None
-                else None
-            ),
         }
+        if promotion.promotion_mode == "artifact_only":
+            payload.update(apply_cwd=str(apply_cwd), apply_directory=apply_directory)
+        return payload
 
-    def search_apply_promotion(self, run_id: str) -> dict[str, Any]:
-        self._require_target("search_apply_promotion", run_id=run_id)
+    def goal_plus_search_apply_promotion(self, run_id: str) -> dict[str, Any]:
+        self._require_target("goal_plus_search_apply_promotion", run_id=run_id)
         promotion = self.runtime.apply_promotion(run_id)
-        return promotion.model_dump(mode="json")
+        return promotion_apply_receipt(promotion)
 
     def search_main_agent_notifications(self, run_id: str) -> dict[str, Any]:
         return {
@@ -743,13 +707,16 @@ class GoalPlusTools:
     def goal_plus_prepare_final_check(
         self,
         goal_plus_id: str,
-        checker_host: str,
+        checker_harness: str,
     ) -> dict[str, Any]:
         self._require_target("goal_plus_prepare_final_check", goal_plus_id)
-        return self.runtime.prepare_final_check(
+        prepared = self.runtime.prepare_final_check(
             goal_plus_id,
-            checker_host=checker_host,  # type: ignore[arg-type]
+            checker_harness=checker_harness,  # type: ignore[arg-type]
         )
+        return {"goal_plus_id": prepared["goal_plus_id"], "goal_revision": prepared["goal_revision"],
+                "check": {key: prepared["check"][key] for key in ("check_id", "status")},
+                "launch": prepared["launch"]}
 
     def goal_plus_submit_final_check(
         self,
@@ -761,6 +728,7 @@ class GoalPlusTools:
         findings: list[dict[str, Any]] | None = None,
         evidence: list[dict[str, Any]] | None = None,
         checker_metadata: dict[str, Any] | None = None,
+        *, native_session_id: str | None = None,
     ) -> dict[str, Any]:
         self._require_target("goal_plus_submit_final_check", goal_plus_id)
         record = self.runtime.submit_final_check(
@@ -772,10 +740,11 @@ class GoalPlusTools:
             findings=findings,
             evidence=evidence,
             checker_metadata=checker_metadata,
+            native_session_id=native_session_id,
         )
         check = next(check for check in record.final_checks if check.check_id == check_id)
         return {**goal_receipt(record), "final_check": check.model_dump(mode="json", include={
-            "check_id", "goal_revision", "status", "summary",
+            "check_id", "goal_revision", "status",
         })}
 
     def goal_plus_set_status(

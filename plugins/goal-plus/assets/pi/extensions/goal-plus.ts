@@ -1,7 +1,9 @@
 import { LooseObject, RuntimeToolSchemas, RuntimeToolDescriptions } from "./lib/goal-plus-schemas.ts";
-import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, projectModuleInvocation, parseJsonObject, commandFailure, runJsonCli, runHostCommandCli } from "./lib/goal-plus-transport.ts";
-import { THINKTHREAD_GOAL_PLUS_PROTOCOL, requestWorkerTool } from "./lib/goal-plus-thinkthread-rpc.ts";
+import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, parseJsonObject, runJsonCli, runHostCommandCli, closeMcpConnections } from "./lib/goal-plus-transport.ts";
+import { THINKTHREAD_GOAL_PLUS_PROTOCOL, WorkerSteeringReceiver, dispatchMessageId, dispatchMetadata, requestWorkerTool } from "../../thinkthread-session-rpc.ts";
 import { toolOwner, type ToolOwner } from "./lib/goal-plus-tool-identity.ts";
+import { registerSessionDiagnostics, sessionDiagnosticsEnabled } from "./lib/goal-plus-session-diagnostics.ts";
+import { SessionArchive, sendDiagnosticMessages } from "./lib/goal-plus-session-archive.ts";
 import { parseArgs, type ExtensionAPI, type ExtensionContext, type ToolCallEvent, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { createHash, randomUUID } from "node:crypto";
@@ -21,9 +23,13 @@ import {
 } from "./lib/goal-plus-progress.ts";
 
 const role = process.env.GOAL_PLUS_PI_ROLE || "main";
+const sharedMcpTools = new Map<string, { description: string; inputSchema: TSchema }>();
+const diagnosticToolContracts = new Map<string, { name: string; description: string; parameters: unknown }>();
+const sessionArchive = new SessionArchive();
 const extensionPath = fileURLToPath(import.meta.url);
 const isThinkThreadProfile = Boolean(process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY);
 const isThinkThreadWorker = role === "worker" && isThinkThreadProfile;
+let thinkThreadSupplementalEnabled = false;
 
 
 
@@ -61,6 +67,8 @@ let workerSdkClientPromise: Promise<any> | undefined;
 const workerAcknowledgedDispatches = new Set<string>();
 let workerRpcTail: Promise<void> = Promise.resolve();
 let workerActiveDispatchNonce: string | undefined;
+let stopWorkerSteering: (() => void) | undefined;
+let workerSteeringIdentity: { agentSessionId: string; dispatchNonce: string; messageId: string } | undefined;
 let workerVerifierSubmitted = false;
 let workerMissingAttemptContinuationSent = false;
 let workerInnerGitBinding: ThinkThreadInnerGitBinding | undefined;
@@ -81,12 +89,12 @@ const AGENT_POSIX_CONTROL_PROTOCOL_VERSION = 2;
 const AGENT_POSIX_CONTRACT_FINGERPRINT =
 	"fcc80b665cd990f9d1e3681a9d384cb99994f2b739cd4fbddc97bdda01391131";
 const THINKTHREAD_ANNOTATION_TOOL_NAMES = [
-	"thinkthread_annotation_next",
-	"thinkthread_artifact_view_list",
-	"thinkthread_artifact_view_stat",
-	"thinkthread_artifact_view_pread",
-	"thinkthread_artifact_view_diff",
-	"thinkthread_annotation_submit",
+	"goal_plus_thinkthread_annotation_next",
+	"goal_plus_thinkthread_artifact_view_list",
+	"goal_plus_thinkthread_artifact_view_stat",
+	"goal_plus_thinkthread_artifact_view_pread",
+	"goal_plus_thinkthread_artifact_view_diff",
+	"goal_plus_thinkthread_annotation_submit",
 ] as const;
 const THINKTHREAD_ANNOTATION_TOOLS = new Set<string>(THINKTHREAD_ANNOTATION_TOOL_NAMES);
 
@@ -144,19 +152,24 @@ const MAIN_GATED_TOOLS = new Set([
 	"write",
 ]);
 const MAIN_READ_ONLY_RUNTIME_TOOLS = new Set([
-	"search_recovery_status",
+	"goal_plus_search_recovery_status",
 	"goal_plus_status",
 	"goal_plus_history",
 	"goal_plus_monitor_snapshot",
 	"goal_plus_list_models",
-	"search_status",
-	"search_list_history",
-	"search_list_iterations",
-	"search_get_agent_observability",
+	"goal_plus_search_status",
+	"goal_plus_search_list_history",
+	"goal_plus_search_list_iterations",
+	"goal_plus_search_get_agent_observability",
+]);
+const MAIN_SESSION_CLEANUP_TOOLS = new Set([
+	"goal_plus_session_wait", "goal_plus_session_interrupt",
+	"goal_plus_session_stop", "goal_plus_session_close",
 ]);
 
 function requiresGoalPlusAuthorization(toolName: string, owner: ToolOwner): boolean {
-	return owner === "goal-plus" && !MAIN_READ_ONLY_RUNTIME_TOOLS.has(toolName);
+	return owner === "goal-plus" && !MAIN_READ_ONLY_RUNTIME_TOOLS.has(toolName)
+		&& !MAIN_SESSION_CLEANUP_TOOLS.has(toolName);
 }
 
 interface GoalPlusNativeState {
@@ -247,7 +260,7 @@ interface GoalPlusStatsEntry {
 interface PiRuntimeStartEntry {
 	schema_version: 1;
 	agent: string;
-	host: "pi" | "pi-rpc";
+	agent_harness: "pi";
 	mode: string;
 	project_trusted: boolean;
 	active_tools: string[];
@@ -276,7 +289,7 @@ function optionalNumberFrom(value: unknown): number | undefined {
 }
 
 function commandContextFrom(ctx: ExtensionContext): CommandRuntimeContext {
-	return { cwd: ctx.cwd };
+	return { cwd: ctx.cwd, nativeSessionId: ctx.sessionManager.getSessionId() };
 }
 
 function piRuntimeAgent(): string {
@@ -295,7 +308,7 @@ function buildPiRuntimeStartEntry(pi: ExtensionAPI, ctx: ExtensionContext): PiRu
 	return {
 		schema_version: 1,
 		agent: piRuntimeAgent(),
-		host: role === "main" ? "pi" : "pi-rpc",
+		agent_harness: "pi",
 		mode: ctx.mode,
 		project_trusted: ctx.isProjectTrusted(),
 		active_tools: activeTools,
@@ -319,7 +332,7 @@ function appendPiRuntimeStartEntry(pi: ExtensionAPI, ctx: ExtensionContext): PiR
 function renderPiRuntimeStartEntry(entry: PiRuntimeStartEntry, expanded: boolean): string[] {
 	const trust = entry.project_trusted ? "true" : "false";
 	const lines = [
-		`Pi start · agent=${entry.agent} · host=${entry.host} · mode=${entry.mode} · project_trusted=${trust} · sandbox=${entry.pi_sandbox} · builtin_approval=${entry.pi_builtin_tool_approval}`,
+		`Pi start · agent=${entry.agent} · harness=${entry.agent_harness} · mode=${entry.mode} · project_trusted=${trust} · sandbox=${entry.pi_sandbox} · builtin_approval=${entry.pi_builtin_tool_approval}`,
 		`tools=${entry.active_builtin_tools.length} builtin + ${entry.active_non_builtin_tools.length} non-builtin · filesystem=${entry.filesystem_access} · network=${entry.network_access}`,
 	];
 	if (expanded) {
@@ -344,7 +357,12 @@ function renderPiRuntimeStartEntry(entry: PiRuntimeStartEntry, expanded: boolean
 
 
 function toolParameters(name: string): TSchema {
-	return RuntimeToolSchemas[name] ?? LooseObject;
+    const shared = sharedMcpTools.get(name);
+    if (shared) return shared.inputSchema;
+    if (name.startsWith("pi_") || name.startsWith("goal_plus_thinkthread_")) {
+        return RuntimeToolSchemas[name] ?? LooseObject;
+    }
+    throw new Error(`Goal Plus MCP did not advertise ${name}`);
 }
 
 function goalPlusIdFrom(value: unknown): string | undefined {
@@ -381,11 +399,10 @@ async function ensureExecutionScope(
 		throw new Error("Execution scope requires the active Goal Plus native session");
 	}
 	const result = await runJsonCli(pi, commandContextFrom(ctx), "host_execution_scope_open", {
-		host: "pi",
+		agent_harness: "pi",
 		goal_plus_id: activeGoalPlusId,
 		native_session_id: nativeSessionId,
 		owner_session_id: `${activeGoalPlusId}:${ctx.cwd}`,
-		owner_pid: process.pid,
 		run_id: runId,
 		native_agent_config: nativeAgentConfig,
 	});
@@ -511,16 +528,24 @@ async function workerAgentPosixClient(): Promise<any> {
 		);
 	}
 	const sdk = await workerSdkModulePromise;
-	if (
-		sdk.CONTROL_PROTOCOL_VERSION !== AGENT_POSIX_CONTROL_PROTOCOL_VERSION ||
-		sdk.CONTRACT_FINGERPRINT !== AGENT_POSIX_CONTRACT_FINGERPRINT
-	) {
-		throw new Error(
-			`unsupported ThinkThread Agent POSIX SDK contract: protocol=${String(sdk.CONTROL_PROTOCOL_VERSION)}, fingerprint=${String(sdk.CONTRACT_FINGERPRINT)}`,
-		);
-	}
 	if (!workerSdkClientPromise) {
-		workerSdkClientPromise = Promise.resolve(sdk.AgentPosixClient.fromEnv());
+		if (
+			sdk.CONTROL_PROTOCOL_VERSION !== AGENT_POSIX_CONTROL_PROTOCOL_VERSION ||
+			sdk.CONTRACT_FINGERPRINT !== AGENT_POSIX_CONTRACT_FINGERPRINT
+		) {
+			console.warn(
+				`ThinkThread Agent POSIX SDK differs from the tested baseline: protocol=${String(sdk.CONTROL_PROTOCOL_VERSION)}, fingerprint=${String(sdk.CONTRACT_FINGERPRINT)}`,
+			);
+		}
+		if (typeof sdk.AgentPosixClient?.fromEnv !== "function") {
+			throw new Error("ThinkThread Agent POSIX SDK is missing AgentPosixClient.fromEnv");
+		}
+		workerSdkClientPromise = Promise.resolve(sdk.AgentPosixClient.fromEnv()).then((client) => {
+			if (typeof client?.invoke !== "function") {
+				throw new Error("ThinkThread Agent POSIX SDK client is missing invoke");
+			}
+			return client;
+		});
 	}
 	return workerSdkClientPromise;
 }
@@ -531,18 +556,7 @@ function latestDispatchMetadata(ctx: ExtensionContext, dispatchText?: string): {
 	agentSessionId?: string;
 	thinkthreadRole?: string;
 } {
-	const serialized = JSON.stringify(ctx.sessionManager.getEntries());
-	const registration = /registration_nonce=([0-9a-f-]{36})/i.exec(serialized)?.[1];
-	const currentDispatches = [
-		...(dispatchText ?? "").matchAll(/dispatch_nonce=([0-9a-f-]{36})/gi),
-	];
-	const sessionDispatches = [...serialized.matchAll(/dispatch_nonce=([0-9a-f-]{36})/gi)];
-	return {
-		registrationNonce: registration,
-		dispatchNonce: currentDispatches.at(-1)?.[1] ?? sessionDispatches.at(-1)?.[1],
-		agentSessionId: /agent_session_id=([A-Za-z0-9._-]+)/.exec(serialized)?.[1],
-		thinkthreadRole: /goal_plus_thinkthread_role=([A-Za-z0-9._-]+)/.exec(serialized)?.[1],
-	};
+	return dispatchMetadata(dispatchText ?? "", JSON.stringify(ctx.sessionManager.getEntries()));
 }
 
 function innerGitBindingFromContext(
@@ -684,17 +698,17 @@ async function runThinkThreadWorkerToolSerial(
 	signal: AbortSignal,
 ) {
 	const allowed = new Set([
-		"search_get_agent_context",
-		"search_get_global_evidence",
-		"search_get_evidence_detail",
-		"search_run_verifier",
-		"search_list_iterations",
-		"thinkthread_annotation_next",
-		"thinkthread_artifact_view_list",
-		"thinkthread_artifact_view_stat",
-		"thinkthread_artifact_view_pread",
-		"thinkthread_artifact_view_diff",
-		"thinkthread_annotation_submit",
+		"goal_plus_search_get_agent_context",
+		"goal_plus_search_get_global_evidence",
+		"goal_plus_search_get_evidence_detail",
+		"goal_plus_search_run_verifier",
+		"goal_plus_search_list_iterations",
+		"goal_plus_thinkthread_annotation_next",
+		"goal_plus_thinkthread_artifact_view_list",
+		"goal_plus_thinkthread_artifact_view_stat",
+		"goal_plus_thinkthread_artifact_view_pread",
+		"goal_plus_thinkthread_artifact_view_diff",
+		"goal_plus_thinkthread_annotation_submit",
 	]);
 	if (!allowed.has(name)) {
 		throw new Error(`ThinkThread Candidate Child tool is not allowed: ${name}`);
@@ -730,7 +744,7 @@ async function runThinkThreadWorkerToolSerial(
 	if ("_inner_git_attempt" in requestParams) {
 		throw new Error("ThinkThread private inner Git metadata is extension-owned");
 	}
-	if (name === "search_run_verifier" && workerInnerGitBinding) {
+	if (name === "goal_plus_search_run_verifier" && workerInnerGitBinding) {
 		if (!metadata.dispatchNonce) {
 			throw new Error("ThinkThread AutoResearch-Git attempt has no dispatch nonce");
 		}
@@ -745,7 +759,7 @@ async function runThinkThreadWorkerToolSerial(
 	const result = await requestWorkerTool(
 		client, parentId, metadata.agentSessionId, name, requestParams, signal,
 	);
-	if (name === "search_run_verifier") workerVerifierSubmitted = true;
+	if (name === "goal_plus_search_run_verifier") workerVerifierSubmitted = true;
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
 		details: result,
@@ -815,7 +829,8 @@ function scopeThinkThreadWorkerTools(
 		return;
 	}
 	pi.setActiveTools(
-		pi.getActiveTools().filter((name) => !THINKTHREAD_ANNOTATION_TOOLS.has(name)),
+		pi.getActiveTools().filter((name) => !THINKTHREAD_ANNOTATION_TOOLS.has(name)
+			&& (name !== "goal_plus_search_get_evidence_detail" || thinkThreadSupplementalEnabled)),
 	);
 }
 
@@ -845,16 +860,21 @@ async function acknowledgeThinkThreadDispatch(
 			parentId,
 			metadata.registrationNonce,
 		);
+		const messageId = await dispatchMessageId(client, parentId, metadata.dispatchNonce);
 		await client.invoke("message.send", {
 			recipientThinkthreadId: parentId,
 			text: JSON.stringify({
 				protocol: THINKTHREAD_GOAL_PLUS_PROTOCOL,
 				type: "dispatch_ack",
 				dispatch_nonce: metadata.dispatchNonce,
+				message_id: messageId,
 			}),
 			wake: false,
 		});
 		workerAcknowledgedDispatches.add(metadata.dispatchNonce);
+		workerSteeringIdentity = metadata.agentSessionId && metadata.thinkthreadRole !== "annotator"
+			? { agentSessionId: metadata.agentSessionId, dispatchNonce: metadata.dispatchNonce, messageId }
+			: undefined;
 	}
 	await initializeThinkThreadInnerGit(pi, ctx);
 }
@@ -919,7 +939,7 @@ function piHostInvocation(
 	nativeEntryId: string,
 ) {
 	return {
-		host: "pi",
+		agent_harness: "pi",
 		transport: "pi_extension_command",
 		command,
 		action,
@@ -1350,7 +1370,7 @@ function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
 		...(status.raw_goal ? ["原始目标：", status.raw_goal]
 			: ["初始化、恢复或 revision 变化时，用 goal_plus_status(detail=true) 读取完整目标和配置。"]),
 		"",
-		"加载 goal-plus skill；每轮读取 goal_plus_status 的 control、next_action 和 reconciliation。",
+		"遵循 Goal Plus MCP 说明；每轮读取 goal_plus_status 的 control、next_action 和 reconciliation。",
 	];
 	if (action) {
 		lines.push(
@@ -1605,7 +1625,7 @@ function buildGoalStartPrompt(
 	}
 	lines.push(
 		"",
-		"加载 goal-plus skill，并从 goal_plus_status 的 next_action 开始执行。",
+		"遵循 Goal Plus MCP 说明，并从 goal_plus_status 的 next_action 开始执行。",
 		"首次启动时，若目标和当前对话未给出最大运行时间，简短告知任务将持续至完成或用户停止，然后继续。",
 	);
 	return lines.join("\n");
@@ -1689,16 +1709,6 @@ function currentPiNativeAgentConfig(
 	};
 }
 
-function inheritPiNativeAgentConfig(
-	launch: Record<string, unknown>,
-	nativeAgentConfig: PiNativeAgentConfig,
-): Record<string, unknown> {
-	return {
-		...launch,
-		model_pattern: stringFrom(launch.model_pattern) ?? nativeAgentConfig.model_pattern,
-		thinking_level: stringFrom(launch.thinking_level) ?? nativeAgentConfig.thinking_level,
-	};
-}
 
 function piExecutionPolicy(nativeReasoningEffort: string) {
 	return {
@@ -1853,7 +1863,7 @@ async function updateGoalPlusStart(
 			"用户已编辑 Goal Plus 目标。",
 		`goal_plus_id: ${status.goal_plus_id}`,
 		`goal_revision: ${status.goal_revision ?? "unknown"}`,
-			"新的原始目标取代之前的目标。继续前重新运行 goal_plus_record_triage。",
+			"新的原始目标取代之前的目标。直接执行修订后的目标；需要 Search 时准备当前修订版的评价合同。",
 			"以前的 Search 任务仅作为历史证据保留；不要把旧修订版的结果或最终检查视为当前结果。",
 	].join("\n");
 }
@@ -1899,27 +1909,32 @@ function startGoalPlusMainTurn(
 	deliverAsFollowUp: boolean,
 ) {
 	mainStartPending = true;
-	pi.sendMessage(
-		{
-			customType: GOAL_PLUS_COMMAND_CONTEXT_TYPE,
-			content: context,
-			display: false,
-			details: {
-				goal_plus_id: activeGoalPlusId,
-				entrypoint_status: "host_verified",
-				goal_revision: cachedGoalStatus?.goal_revision,
-				control_version: cachedGoalStatus?.control?.version,
-				session_id: cachedGoalStatus?.active_session?.session_id,
-				request_id: randomUUID(),
-			},
+	const message = {
+		customType: GOAL_PLUS_COMMAND_CONTEXT_TYPE,
+		content: context,
+		display: false,
+		details: {
+			goal_plus_id: activeGoalPlusId,
+			entrypoint_status: "host_verified",
+			goal_revision: cachedGoalStatus?.goal_revision,
+			control_version: cachedGoalStatus?.control?.version,
+			session_id: cachedGoalStatus?.active_session?.session_id,
+			request_id: randomUUID(),
 		},
-		deliverAsFollowUp
-			? { triggerTurn: true, deliverAs: "followUp" }
-			: { triggerTurn: true },
-	);
+	};
+	if (deliverAsFollowUp) {
+		pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
+	} else {
+		// Custom-message triggers bypass before_agent_start in native Pi.
+		pi.sendMessage(message, { deliverAs: "nextTurn" });
+		pi.sendUserMessage("Continue the authorized Goal Plus task.");
+	}
 }
 
 function registerGoalPlusTool<TParams extends TSchema>(pi: ExtensionAPI, definition: ToolDefinition<TParams>) {
+	diagnosticToolContracts.set(definition.name, {
+		name: definition.name, description: definition.description, parameters: definition.parameters,
+	});
 	// The registration closure is the ownership capability. This still gates our
 	// own execute callback if host source metadata is absent; an overridden tool
 	// from another extension never inherits this closure merely by sharing a name.
@@ -1963,32 +1978,30 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 	registerGoalPlusTool(pi, {
 		name,
 		label: name,
-		description: RuntimeToolDescriptions[name] ?? `调用 goal-plus facade 工具 ${name}。`,
+		description: sharedMcpTools.get(name)?.description ?? RuntimeToolDescriptions[name] ?? `调用 goal-plus facade 工具 ${name}。`,
 		parameters: toolParameters(name),
-		executionMode: "sequential",
+		executionMode: name === "goal_plus_run_work_item" ? "concurrent" : "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const commandCtx = commandContextFrom(ctx);
 			const startEntryCount = ctx.sessionManager.getEntries().length;
 			const canPersistPiState = canPersistGoalState(ctx);
 			let forwardedParams = params as Record<string, unknown>;
-			let executionScopeId: string | undefined;
-			if (role === "main" && name === "search_freeze_spec") {
+			if (role === "main" && name === "goal_plus_search_freeze_spec") {
 				await probePiSearchSpecModels(ctx, forwardedParams);
 			}
 			if (role === "main") {
+				if (["goal_plus_run_final_check", "goal_plus_run_work_item"].includes(name)) {
+					await ensureExecutionScope(pi, ctx, String(forwardedParams.goal_plus_id), currentPiNativeAgentConfig(pi, ctx));
+				}
 				const runId = stringFrom(forwardedParams.run_id);
-				if (runId && ["search_start_agent_session", "pi_search_pool_open", "thinkthread_search_pool_open", "search_apply_allocation_decision", "search_select"].includes(name)) {
+				if (runId && ["goal_plus_session_run", "goal_plus_search_select"].includes(name)) {
 					const scopeId = await ensureExecutionScope(
 						pi,
 						ctx,
 						runId,
 						currentPiNativeAgentConfig(pi, ctx),
 					);
-					executionScopeId = scopeId;
-					if (name === "pi_search_pool_open" || name === "thinkthread_search_pool_open") {
-						forwardedParams = { ...forwardedParams, execution_scope_id: scopeId };
-					}
-					if (name === "search_select") {
+					if (name === "goal_plus_search_select") {
 						const quiet = await runJsonCli(pi, commandCtx, "host_execution_scope_close_run", {
 							scope_id: scopeId,
 							run_id: runId,
@@ -1999,25 +2012,16 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 					}
 				}
 			}
-			if (role === "main" && name === "search_apply_allocation_decision") {
-				const runId = stringFrom(forwardedParams.run_id);
-				const decisionId = stringFrom(forwardedParams.decision_id);
-				if (!runId || !decisionId || !executionScopeId) {
-					throw new Error("Adaptive allocation interruption requires run, Decision, and execution scope identity");
-				}
-				const receipt = await runJsonCli(pi, commandCtx, "host_execution_scope_interrupt_allocation", {
-					scope_id: executionScopeId,
-					run_id: runId,
-					decision_id: decisionId,
-				});
-				if (!isRecord(receipt.details) || receipt.details.ok === false || receipt.details.status === "rejected") {
-					throw new Error(String((isRecord(receipt.details) && receipt.details.error) || `Allocation Decision ${decisionId} cancellation was rejected`));
-				}
-			}
 			const result = isThinkThreadWorker
 						? await runThinkThreadWorkerTool(pi, ctx, name, forwardedParams, signal)
-					: await runJsonCli(pi, commandCtx, name, forwardedParams);
-			if (!isThinkThreadWorker && ["search_run_verifier", "search_get_global_evidence", "search_get_agent_context", "search_select", "search_status", "search_invalidate_run", "search_report"].includes(name)) {
+					: await runJsonCli(pi, commandCtx, name, forwardedParams, signal);
+			if (isThinkThreadWorker && name === "goal_plus_search_get_agent_context" && isRecord(result.details)) {
+				thinkThreadSupplementalEnabled = result.details.supplemental_evaluation_enabled === true;
+				const active = pi.getActiveTools().filter((tool) => tool !== "goal_plus_search_get_evidence_detail");
+				if (thinkThreadSupplementalEnabled) active.push("goal_plus_search_get_evidence_detail");
+				pi.setActiveTools(active);
+			}
+			if (!isThinkThreadWorker && ["goal_plus_search_run_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context", "goal_plus_search_select", "goal_plus_search_status", "goal_plus_search_invalidate_run", "goal_plus_search_report"].includes(name)) {
 				const runId = stringFrom(forwardedParams.run_id)
 					?? (isRecord(result.details) ? stringFrom(result.details.run_id) : undefined);
 				if (runId) {
@@ -2035,7 +2039,7 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 			if (name === "goal_plus_submit_final_check") {
 				activateGoal(pi, result.details, startEntryCount, canPersistPiState);
 			}
-			if (name === "search_get_agent_context") {
+			if (name === "goal_plus_search_get_agent_context") {
 				activateWorkerContext(pi, result.details, registered, true);
 			}
 			return result;
@@ -2104,19 +2108,19 @@ function activateWorkerContext(
 		};
 	}
 	for (const tool of [
-		"search_get_global_evidence",
-		"search_reference_open",
-		"search_run_verifier",
-		"search_list_iterations",
+		"goal_plus_search_get_global_evidence",
+		"goal_plus_search_reference_open",
+		"goal_plus_search_run_verifier",
+		"goal_plus_search_list_iterations",
 	]) {
 		registerRuntimeTool(pi, tool, registered);
 	}
 	if (candidateTask.share_out_dir) {
-		registerRuntimeTool(pi, "search_stage_shared_tool", registered);
-		registerRuntimeTool(pi, "search_copy_shared_tool", registered);
+		registerRuntimeTool(pi, "goal_plus_search_stage_shared_tool", registered);
+		registerRuntimeTool(pi, "goal_plus_search_copy_shared_tool", registered);
 	}
 	if (details.supplemental_evaluation_enabled === true) {
-		registerRuntimeTool(pi, "search_get_evidence_detail", registered);
+		registerRuntimeTool(pi, "goal_plus_search_get_evidence_detail", registered);
 	}
 	if (persist && firstActivation) {
 		pi.appendEntry(WORKER_CONTEXT_ENTRY_TYPE, {
@@ -2137,240 +2141,6 @@ function activateWorkerContext(
 	}
 }
 
-function registerPiFinalCheckTool(pi: ExtensionAPI) {
-	registerGoalPlusTool(pi, {
-		name: "pi_goal_plus_run_final_check",
-		label: "Pi Goal Plus Final Check",
-		description: "根据 goal_plus_prepare_final_check.launch 启动前台 Pi RPC 最终检查审查员。",
-		parameters: toolParameters("pi_goal_plus_run_final_check"),
-		executionMode: "sequential",
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const commandCtx = commandContextFrom(ctx);
-			const invocation = projectModuleInvocation(commandCtx, "goal-plus-pi-worker", "goal_plus.pi_worker");
-			let launch = (params as { launch: Record<string, unknown> }).launch;
-			const nativeAgentConfig = currentPiNativeAgentConfig(pi, ctx);
-			const goalIdentity = stringFrom(launch.goal_plus_id) ?? activeGoalPlusId;
-			if (goalIdentity) {
-				const scopeId = await ensureExecutionScope(
-					pi,
-					ctx,
-					goalIdentity,
-					nativeAgentConfig,
-				);
-				launch = { ...launch, execution_scope_id: scopeId };
-			}
-			launch = inheritPiNativeAgentConfig(launch, nativeAgentConfig);
-			const result = await pi.exec(invocation.command, [
-				...invocation.argsPrefix,
-				"run",
-				"--launch-json",
-				JSON.stringify(launch),
-			]);
-			const goalPlusId = typeof launch.goal_plus_id === "string" ? launch.goal_plus_id : activeGoalPlusId;
-			const handle = result.code === 0 ? JSON.parse(result.stdout || "{}") : undefined;
-			const statusResult = goalPlusId
-				? await runJsonCli(pi, commandCtx, "goal_plus_status", { goal_plus_id: goalPlusId })
-				: undefined;
-			if (result.code !== 0) {
-				const failure = commandFailure("pi_goal_plus_run_final_check", invocation, result);
-				const details = { ...failure.details, status: statusResult?.details };
-				return { content: [{ type: "text" as const, text: failure.text }], details };
-			}
-			const details = { handle, status: statusResult?.details };
-			cachedGoalStatus = statusFrom(statusResult?.details);
-			return {
-				content: [{ type: "text" as const, text: JSON.stringify(details, null, 2) }],
-				details,
-			};
-		},
-	});
-}
-
-function registerPiWorkItemTool(pi: ExtensionAPI) {
-	registerGoalPlusTool(pi, {
-		name: "pi_goal_plus_run_work_item",
-		label: "Pi Goal Plus Work Item",
-		description: "在隔离的 Pi RPC 子进程中直接执行一个普通 subagent 任务。",
-		parameters: toolParameters("pi_goal_plus_run_work_item"),
-		executionMode: "concurrent",
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const input = params as {
-				goal_plus_id: string;
-				work_item_id: string;
-				task: string;
-				max_runtime_seconds?: number;
-			};
-			const commandCtx = commandContextFrom(ctx);
-			const nativeAgentConfig = currentPiNativeAgentConfig(pi, ctx);
-			const executionScopeId = await ensureExecutionScope(
-				pi,
-				ctx,
-				input.goal_plus_id,
-				nativeAgentConfig,
-			);
-			const statusResult = await runJsonCli(pi, commandCtx, "goal_plus_status", {
-				goal_plus_id: input.goal_plus_id,
-			});
-			const status = statusFrom(statusResult.details);
-			const workItem = status?.work_items?.find(
-				(item) => isRecord(item) && item.work_item_id === input.work_item_id,
-			);
-			const resumable = isRecord(workItem) && workItem.status === "result_ready" &&
-				typeof workItem.agent_id === "string" &&
-				typeof workItem.attempt_id === "string" &&
-				typeof workItem.generation === "number";
-			let sessionId: string;
-			let attemptId: unknown;
-			let generation: unknown;
-			if (resumable && isRecord(workItem)) {
-				sessionId = String(workItem.agent_id);
-				const resumed = await runJsonCli(pi, commandCtx, "goal_plus_record_work_event", {
-					goal_plus_id: input.goal_plus_id,
-					work_item_id: input.work_item_id,
-					event: "rework",
-					summary: input.task,
-					host: "pi",
-					task_name: input.work_item_id,
-					agent_id: sessionId,
-					metadata: {
-						orchestration_monitor: {
-							native_operation: "pi_goal_plus_run_work_item",
-							direction: "main_to_subagent",
-						},
-					},
-				});
-				if (isRecord(resumed.details) && resumed.details.ok === false) {
-					throw new Error(String(resumed.details.error || "Pi work item resume was rejected"));
-				}
-				const resumedItem = isRecord(resumed.details) ? resumed.details.work_item : undefined;
-				attemptId = isRecord(resumedItem) ? resumedItem.attempt_id : undefined;
-				generation = isRecord(resumedItem) ? resumedItem.generation : undefined;
-			} else {
-				sessionId = `${input.goal_plus_id}_${input.work_item_id}_${Date.now()}`.replace(
-					/[^A-Za-z0-9._-]/g,
-					"_",
-				);
-				const dispatchResult = await runJsonCli(pi, commandCtx, "goal_plus_record_work_event", {
-					goal_plus_id: input.goal_plus_id,
-					work_item_id: input.work_item_id,
-					event: "dispatch",
-					summary: input.task,
-					host: "pi",
-					task_name: input.work_item_id,
-					metadata: {
-						orchestration_monitor: {
-							native_operation: "pi_goal_plus_run_work_item",
-							semantic_event: "assignment",
-							direction: "main_to_subagent",
-						},
-					},
-				});
-				if (isRecord(dispatchResult.details) && dispatchResult.details.ok === false) {
-					throw new Error(String(dispatchResult.details.error || "Pi work item dispatch was rejected"));
-				}
-				const dispatchedItem = isRecord(dispatchResult.details) ? dispatchResult.details.work_item : undefined;
-				attemptId = isRecord(dispatchedItem) ? dispatchedItem.attempt_id : undefined;
-				generation = isRecord(dispatchedItem) ? dispatchedItem.generation : undefined;
-			}
-			if (typeof attemptId !== "string" || typeof generation !== "number") {
-				throw new Error(`Pi work item ${input.work_item_id} did not return an attempt identity`);
-			}
-			const launch = inheritPiNativeAgentConfig({
-				role: "ordinary",
-				root: runtimeRoot,
-				cwd: status?.source_path || ctx.cwd,
-				agent_session_id: sessionId,
-				session_id: sessionId,
-				prompt: [
-					"You are an implementation subagent. Work only on the assigned item.",
-					`Task: ${input.task}`,
-					"Do not coordinate other agents or use Goal Plus/Search tools. Return a concise result and verification evidence.",
-				].join("\n\n"),
-				budget_control: {
-					max_runtime_seconds: input.max_runtime_seconds ?? 600,
-					soft_closeout_seconds: 30,
-				},
-				execution_scope_id: executionScopeId,
-				goal_plus_work_item: resumable
-					? undefined
-					: {
-						goal_plus_id: input.goal_plus_id,
-						work_item_id: input.work_item_id,
-						attempt_id: attemptId,
-						generation,
-						host: "pi",
-						task_name: input.work_item_id,
-					},
-			}, nativeAgentConfig);
-			const invocation = projectModuleInvocation(commandCtx, "goal-plus-pi-worker", "goal_plus.pi_worker");
-			const result = await pi.exec(invocation.command, [
-				...invocation.argsPrefix,
-				"run",
-				"--launch-json",
-				JSON.stringify(launch),
-			]);
-			if (result.code !== 0) {
-				await runJsonCli(pi, commandCtx, "goal_plus_record_work_event", {
-					goal_plus_id: input.goal_plus_id,
-					work_item_id: input.work_item_id,
-					event: "failed",
-					summary: "Pi subagent process failed before returning a result.",
-					host: "pi",
-					agent_id: sessionId,
-					attempt_id: attemptId,
-					generation,
-					metadata: {
-						orchestration_monitor: {
-							native_operation: "goal-plus-pi-worker",
-							direction: "subagent_to_main",
-						},
-					},
-				});
-				return commandFailure("pi_goal_plus_run_work_item", invocation, result);
-			}
-			const handle = JSON.parse(result.stdout || "{}");
-			const metadata = isRecord(handle) && isRecord(handle.metadata) ? handle.metadata : {};
-			const metrics = isRecord(metadata.pi_metrics) ? metadata.pi_metrics : {};
-			const observedThinking = typeof metrics.thinking_level === "string"
-				? metrics.thinking_level
-				: undefined;
-			const failed = metadata.timed_out === true || !observedThinking;
-			const assistantText = typeof metadata.assistant_text === "string"
-				? metadata.assistant_text.trim()
-				: "";
-			const summary = assistantText
-				? assistantText.slice(0, 4000)
-				: "Pi subagent completed without a textual result.";
-			const updated = await runJsonCli(pi, commandCtx, "goal_plus_record_work_event", {
-				goal_plus_id: input.goal_plus_id,
-				work_item_id: input.work_item_id,
-				event: failed ? "failed" : "result",
-				summary: failed ? "Pi subagent did not complete with a reported thinking level." : summary,
-				host: "pi",
-				task_name: input.work_item_id,
-				agent_id: sessionId,
-				attempt_id: attemptId,
-				generation,
-				transcript_path: typeof metadata.session_file === "string" ? metadata.session_file : undefined,
-				metadata: {
-					requested_reasoning_effort: nativeAgentConfig.thinking_level ?? "unavailable",
-					native_reasoning_effort: observedThinking,
-					orchestration_monitor: {
-						native_operation: "goal-plus-pi-worker",
-						direction: "subagent_to_main",
-					},
-				},
-			});
-			if (isRecord(updated.details) && updated.details.ok === false) {
-				throw new Error(String(updated.details.error || "Pi work item result was rejected"));
-			}
-			return {
-				content: [{ type: "text" as const, text: summary }],
-				details: { handle, status: updated.details },
-			};
-		},
-	});
-}
 
 function extractCandidatePath(event: ToolCallEvent): string | undefined {
 	const input = event.input as Record<string, unknown>;
@@ -2382,7 +2152,7 @@ function extractCandidatePath(event: ToolCallEvent): string | undefined {
 }
 
 function workspaceGuard(event: ToolCallEvent, ctx: ExtensionContext, owner: ToolOwner) {
-	if (owner === "goal-plus" && role !== "main" && ["search_recovery_status", "search_prepare_recovery", "search_recover_candidate"].includes(event.toolName)) {
+	if (owner === "goal-plus" && role !== "main" && ["goal_plus_search_recovery_status", "goal_plus_search_prepare_recovery", "goal_plus_search_recover_candidate"].includes(event.toolName)) {
 		return { block: true, reason: "Search recovery is Main-owned." };
 	}
 	if (role === "worker" && workerGeneration && !isThinkThreadWorker) {
@@ -2407,11 +2177,11 @@ function workspaceGuard(event: ToolCallEvent, ctx: ExtensionContext, owner: Tool
 			reason: `ThinkThread Annotation Child tool is not allowed: ${event.toolName}`,
 		};
 	}
-	if (owner === "goal-plus" && event.toolName === "search_get_agent_context") return undefined;
+	if (owner === "goal-plus" && event.toolName === "goal_plus_search_get_agent_context") return undefined;
 	if (!sawContext) {
 		const readOnly = new Set(["read", "grep", "find", "ls"]);
 		if (owner === "native" && readOnly.has(event.toolName)) return undefined;
-		return { block: true, reason: "使用变更类工具前调用 search_get_agent_context。" };
+		return { block: true, reason: "使用变更类工具前调用 goal_plus_search_get_agent_context。" };
 	}
 	if (!workspaceRoot) return undefined;
 	if (owner !== "native" || !["edit", "write", "bash"].includes(event.toolName)) return undefined;
@@ -2574,8 +2344,30 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 
 let piForGate: ExtensionAPI;
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
 	piForGate = pi;
+	let mcpInstructions: string | undefined;
+	if (role !== "ordinary") {
+		const manifest = await runJsonCli(pi, { cwd: process.cwd() }, "host_mcp_manifest", {});
+		if (!isRecord(manifest.details) || !Array.isArray(manifest.details.tools)) {
+			throw new Error("Goal Plus MCP tool discovery failed");
+		}
+		if (role === "main") {
+			if (typeof manifest.details.instructions !== "string" || !manifest.details.instructions.trim()) {
+				throw new Error("Goal Plus MCP instructions are missing");
+			}
+			mcpInstructions = manifest.details.instructions.trim();
+		}
+		for (const tool of manifest.details.tools) {
+			if (!isRecord(tool) || typeof tool.name !== "string" || !isRecord(tool.inputSchema)) {
+				throw new Error("Goal Plus MCP returned an invalid tool schema");
+			}
+			sharedMcpTools.set(tool.name, {
+				description: typeof tool.description === "string" ? tool.description : tool.name,
+				inputSchema: tool.inputSchema as TSchema,
+			});
+		}
+	}
 	if (typeof pi.registerEntryRenderer === "function") {
 		pi.registerEntryRenderer<PiRuntimeStartEntry>(GOAL_PLUS_RUNTIME_ENTRY_TYPE, (entry, { expanded }, theme) => {
 			const lines = renderPiRuntimeStartEntry(entry.data, expanded);
@@ -2615,7 +2407,7 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 	// BEGIN GENERATED GOAL PLUS COMMAND CONFIG
-	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_backend=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [inner_agent=ADAPTER_ID] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
+	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_provider=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [inner_agent=ADAPTER_ID] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
 	// END GENERATED GOAL PLUS COMMAND CONFIG
 	if (!isPrintLikeInvocation) {
 		pi.registerCommand("goal-plus", {
@@ -2680,58 +2472,51 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	const mainTools = [
+		"goal_plus_session_run",
+		"goal_plus_session_wait",
+		"goal_plus_session_message",
+		"goal_plus_session_interrupt",
+		"goal_plus_session_stop",
+		"goal_plus_session_close",
 		"goal_plus_status",
 		"goal_plus_history",
 		"goal_plus_monitor_snapshot",
 		"goal_plus_list_models",
 		"goal_plus_record_triage",
 		"goal_plus_record_work_event",
-		"goal_plus_save_spec_draft",
-		"goal_plus_link_search_run",
 		"goal_plus_record_search_result",
-		"goal_plus_prepare_final_check",
+		"goal_plus_run_final_check",
 		"goal_plus_set_status",
-		"goal_plus_gate",
-		"pi_goal_plus_run_work_item",
-		"search_freeze_spec",
-		"search_create",
-		"search_status",
-		"search_recovery_status",
-		"search_prepare_recovery",
-		"search_recover_candidate",
-		"search_invalidate_run",
-		"search_list_history",
-		"search_plan_next",
-		"search_start_batch",
-		"search_get_agent_observability",
-		"search_run_verifier",
-		"search_list_allocation_decisions",
-		"search_apply_allocation_decision",
-		"search_select",
-		"search_report",
-		"search_promote",
-		"search_apply_promotion",
-		"pi_search_pool_open",
-		"pi_search_pool_wait_any",
-		"pi_search_pool_snapshot",
-		"pi_search_pool_continue",
-		"pi_search_pool_close",
-		"thinkthread_search_pool_open",
-		"thinkthread_search_pool_wait_any",
-		"thinkthread_search_pool_snapshot",
-		"thinkthread_search_pool_continue",
-		"thinkthread_search_pool_close",
+		"goal_plus_run_work_item",
+		"goal_plus_search_freeze_spec",
+		"goal_plus_search_create",
+		"goal_plus_search_status",
+		"goal_plus_search_recovery_status",
+		"goal_plus_search_prepare_recovery",
+		"goal_plus_search_recover_candidate",
+		"goal_plus_search_invalidate_run",
+		"goal_plus_search_list_history",
+		"goal_plus_search_plan_next",
+		"goal_plus_search_start_batch",
+		"goal_plus_search_get_agent_observability",
+		"goal_plus_search_run_verifier",
+		"goal_plus_search_list_allocation_decisions",
+		"goal_plus_search_apply_allocation_decision",
+		"goal_plus_search_select",
+		"goal_plus_search_report",
+		"goal_plus_search_promote",
+		"goal_plus_search_apply_promotion",
 	];
-	const workerTools = ["search_get_agent_context"];
+	const workerTools = ["goal_plus_search_get_agent_context"];
 	const thinkThreadWorkerTools = [
-		"search_get_agent_context",
-		"search_get_global_evidence",
-		"search_reference_open",
-		"search_stage_shared_tool",
-		"search_copy_shared_tool",
-		"search_get_evidence_detail",
-		"search_run_verifier",
-		"search_list_iterations",
+		"goal_plus_search_get_agent_context",
+		"goal_plus_search_get_global_evidence",
+		"goal_plus_search_reference_open",
+		"goal_plus_search_stage_shared_tool",
+		"goal_plus_search_copy_shared_tool",
+		"goal_plus_search_get_evidence_detail",
+		"goal_plus_search_run_verifier",
+		"goal_plus_search_list_iterations",
 	];
 	const thinkThreadAnnotationTools = [...THINKTHREAD_ANNOTATION_TOOL_NAMES];
 	const finalCheckerTools = ["goal_plus_status", "goal_plus_submit_final_check"];
@@ -2739,9 +2524,9 @@ export default function (pi: ExtensionAPI) {
 		? isThinkThreadWorker
 			? [
 				...thinkThreadWorkerTools.filter((tool) => ![
-					"search_reference_open",
-					"search_stage_shared_tool",
-					"search_copy_shared_tool",
+					"goal_plus_search_reference_open",
+					"goal_plus_search_stage_shared_tool",
+					"goal_plus_search_copy_shared_tool",
 				].includes(tool)),
 				...thinkThreadAnnotationTools,
 			]
@@ -2755,13 +2540,9 @@ export default function (pi: ExtensionAPI) {
 	for (const tool of roleTools) {
 		registerRuntimeTool(pi, tool, registeredRuntimeTools);
 	}
-	if (role === "main") {
-		registerPiFinalCheckTool(pi);
-		registerPiWorkItemTool(pi);
-	}
 	pi.on("input", async (event, ctx) => {
 		scopeThinkThreadWorkerTools(pi, ctx, event.text);
-		if (role !== "main") {
+		if (role !== "main" || event.source === "extension") {
 			return { action: "continue" };
 		}
 		const request = goalPlusRequestFromSlashInput(event.text);
@@ -2903,7 +2684,9 @@ export default function (pi: ExtensionAPI) {
 			throw error;
 		}
 		if (role === "main") mainStartPending = false;
-		if (role !== "main" || !activeGoalPlusId) return;
+		if (role !== "main") return;
+		const systemPrompt = `${event.systemPrompt}\n\n${mcpInstructions}`;
+		if (!activeGoalPlusId) return { systemPrompt };
 		const commandCtx = commandContextFrom(ctx);
 		const persist = canPersistGoalState(ctx);
 		const status = await refreshActiveGoal(pi, commandCtx, persist);
@@ -2917,8 +2700,9 @@ export default function (pi: ExtensionAPI) {
 			? buildGoalPlusContext(status)
 			: undefined;
 		const content = [publication.content, goalContext].filter((item): item is string => Boolean(item));
-		if (content.length === 0) return;
+		if (content.length === 0) return { systemPrompt };
 		return {
+			systemPrompt,
 			message: {
 				customType: "goal-plus-native-context",
 				content: content.join("\n\n"),
@@ -2932,10 +2716,57 @@ export default function (pi: ExtensionAPI) {
 			},
 		};
 	});
+	registerSessionDiagnostics(pi, diagnosticToolContracts);
+	pi.on("turn_start", (event, ctx) => {
+		if (role !== "main" || !sessionDiagnosticsEnabled()) return;
+		// Observe the host's final prompt after all before_agent_start handlers.
+		// Custom entries stay in native history but do not enter model context.
+		try {
+		const expected = mcpInstructions.trim();
+		pi.appendEntry("goal-plus-instructions-observation", {
+			version: 1,
+			session_id: ctx.sessionManager.getSessionId(),
+			turn_index: event.turnIndex,
+			expected_sha256: createHash("sha256").update(expected).digest("hex"),
+			overview_present: expected.length > 0 && ctx.getSystemPrompt().includes(expected),
+		});
+		} catch { /* Optional observations cannot prevent inference. */ }
+	});
 	pi.on("agent_start", async (_event, ctx) => {
 		if (role === "main") mainTurnSignal = ctx.signal;
+		stopWorkerSteering?.();
+		if (!isThinkThreadWorker || !workerSteeringIdentity) return;
+		const client = await workerAgentPosixClient();
+		const parentId = process.env.THINKTHREAD_PARENT_ID!;
+		const receiver = new WorkerSteeringReceiver(client, parentId, workerSteeringIdentity,
+			() => !ctx.isIdle() && !ctx.signal?.aborted,
+			(prompt) => pi.sendUserMessage(prompt, { deliverAs: "steer" }), () => ctx.abort());
+		let stopped = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const poll = async () => {
+			try { await receiver.poll(); } catch {
+				// A lost acknowledgement is retried from the retained Message page.
+			} finally {
+				if (!stopped) timer = setTimeout(poll, 100);
+			}
+		};
+		stopWorkerSteering = () => { stopped = true; receiver.close(); clearTimeout(timer); };
+		void poll();
 	});
 	pi.on("agent_end", async (event, ctx) => {
+		stopWorkerSteering?.();
+		await sessionArchive.flush(ctx, { root: runtimeRoot, role, sourceRoot: sourceRoot(commandContextFrom(ctx)),
+			checkpoint: data => pi.appendEntry("goal-plus-session-archive-checkpoint", data),
+			...(isThinkThreadWorker ? { worker: async () => {
+				const metadata = latestDispatchMetadata(ctx);
+				const parentId = process.env.THINKTHREAD_PARENT_ID;
+				if (!parentId || !metadata.agentSessionId) {
+					throw new Error("ThinkThread diagnostic parent binding mismatch");
+				}
+				return { agentSessionId: metadata.agentSessionId,
+					send: (messages: Record<string, unknown>[]) => sendDiagnosticMessages(parentId, messages) };
+			} } : {}),
+		});
 		const lastMessage = event.messages.at(-1);
 		const persist = canPersistGoalState(ctx);
 		if (role === "main" && presentedPublicationNotifications.size > 0) {
@@ -2991,7 +2822,7 @@ export default function (pi: ExtensionAPI) {
 				pi.sendMessage(
 					{
 						customType: "goal-plus-thinkthread-missing-attempt",
-						content: "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 search_get_agent_context；随后完成本轮修改，并使用当前 agent_session_id 恰好调用一次 search_run_verifier。不得只读取或总结后再次结束。",
+						content: "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成本轮修改，并使用当前 agent_session_id 恰好调用一次 goal_plus_search_run_verifier。不得只读取或总结后再次结束。",
 						display: false,
 						details: { dispatchNonce: workerActiveDispatchNonce },
 					},
@@ -3023,7 +2854,11 @@ export default function (pi: ExtensionAPI) {
 		await settleMainGoal(pi, ctx);
 	});
 	pi.on("session_shutdown", async (event, ctx) => {
-		if (role !== "main") return;
-		await closeExecutionScope(pi, commandContextFrom(ctx), `pi_session_shutdown:${event.reason}`);
+		stopWorkerSteering?.();
+		try {
+			if (role === "main") await closeExecutionScope(pi, commandContextFrom(ctx), `pi_session_shutdown:${event.reason}`);
+		} finally {
+			await closeMcpConnections();
+		}
 	});
 }

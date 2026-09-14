@@ -91,7 +91,7 @@ def run_thinkthread_scenario(thinkthread_root: tuple[Path, Path]):
     def run(scenario: str) -> dict[str, Any]:
         harness = workspace / ".st-harness"
         shutil.copytree(ROOT / "tests/st_thinkthread", harness,
-                        ignore=shutil.ignore_patterns("__pycache__"))
+                        ignore=shutil.ignore_patterns("__pycache__", ".tmp"))
         report_path = workspace / ".goal-plus-thinkthread-st-report.json"
         driver_result_path = workspace / ".goal-plus-thinkthread-st-driver.json"
         report_path.unlink(missing_ok=True)

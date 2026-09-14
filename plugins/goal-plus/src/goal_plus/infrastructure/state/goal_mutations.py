@@ -17,6 +17,9 @@ class FileGoalState(FileGoalQueries):
     def lock_entrypoint(self):
         return exclusive_file_lock(self.root_dir / "goal-plus-entrypoint.lock")
 
+    def lock_search_create(self, goal_plus_id: str, request_key: str):
+        return exclusive_file_lock(self.goals_dir / goal_plus_id / f"search-create-{request_key}.lock")
+
     def new_attempt_id(self) -> str:
         return f"attempt_{uuid4().hex}"
 

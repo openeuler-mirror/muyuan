@@ -7,7 +7,7 @@ import pytest
 
 from goal_plus.host_observability import collect_codex_observability, collect_codex_transcript_observability, collect_pi_observability, discover_codex_session_file
 from goal_plus.projections.usage import normalize_pi_usage
-from goal_plus.models import AgentHostHandle, AgentSessionRecord
+from goal_plus.models import AgentSessionHandle, AgentSessionRecord
 
 
 pytestmark = [pytest.mark.codex, pytest.mark.pi]
@@ -16,15 +16,15 @@ pytestmark = [pytest.mark.codex, pytest.mark.pi]
 def _session(
     tmp_path: Path,
     *,
-    host: str,
-    handle: AgentHostHandle,
+    agent_harness: str,
+    handle: AgentSessionHandle,
 ) -> AgentSessionRecord:
     return AgentSessionRecord(
         agent_session_id="agent_20260716_demo_001",
         run_id="run_20260716_demo",
         candidate_id="c001",
-        host=host,  # type: ignore[arg-type]
-        host_handle=handle,
+        agent_harness=agent_harness,  # type: ignore[arg-type]
+        session_handle=handle,
         created_at="2026-07-16T10:00:00Z",
         updated_at="2026-07-16T10:00:00Z",
         workspace=tmp_path,
@@ -37,8 +37,8 @@ def test_codex_observability_discovers_and_normalizes_native_session(
     task_name = "search_agent_20260716_demo_001"
     session = _session(
         tmp_path,
-        host="codex",
-        handle=AgentHostHandle(host="codex", task_name=task_name),
+        agent_harness="codex",
+        handle=AgentSessionHandle(agent_harness="codex", external_id="codex-thread-1"),
     )
     codex_home = tmp_path / "codex-home"
     session_dir = codex_home / "sessions" / "2026" / "07" / "16"
@@ -167,9 +167,9 @@ def test_codex_observability_discovers_and_normalizes_native_session(
 def test_pi_observability_normalizes_legacy_metrics(tmp_path: Path) -> None:
     session = _session(
         tmp_path,
-        host="pi-rpc",
-        handle=AgentHostHandle(
-            host="pi-rpc",
+        agent_harness="pi",
+        handle=AgentSessionHandle(
+            agent_harness="pi",
             metadata={
                 "pi_metrics": {
                     "scope": "run_delta",
@@ -199,16 +199,16 @@ def test_pi_observability_normalizes_legacy_metrics(tmp_path: Path) -> None:
                     "runtime_start": {
                         "schema_version": 1,
                         "agent": "candidate",
-                        "host": "pi-rpc",
+                        "agent_harness": "pi",
                         "mode": "rpc",
                         "project_trusted": True,
                         "active_tools": [
                             "bash",
                             "read",
-                            "search_get_agent_context",
+                            "goal_plus_search_get_agent_context",
                         ],
                         "active_builtin_tools": ["bash", "read"],
-                        "active_non_builtin_tools": ["search_get_agent_context"],
+                        "active_non_builtin_tools": ["goal_plus_search_get_agent_context"],
                         "pi_sandbox": "none",
                         "pi_builtin_tool_approval": "none",
                         "filesystem_access": "launcher-process-user",
@@ -237,12 +237,12 @@ def test_pi_observability_normalizes_legacy_metrics(tmp_path: Path) -> None:
     assert result["runtime_start"] == {
         "source": "pi_session_entry",
         "agent": "candidate",
-        "host": "pi-rpc",
+        "agent_harness": "pi",
         "mode": "rpc",
         "project_trusted": True,
-        "active_tools": ["bash", "read", "search_get_agent_context"],
+        "active_tools": ["bash", "read", "goal_plus_search_get_agent_context"],
         "active_builtin_tools": ["bash", "read"],
-        "active_non_builtin_tools": ["search_get_agent_context"],
+        "active_non_builtin_tools": ["goal_plus_search_get_agent_context"],
         "pi_sandbox": "none",
         "pi_builtin_tool_approval": "none",
         "filesystem_access": "launcher-process-user",
@@ -382,7 +382,7 @@ def test_codex_activity_classifies_loop_behavior_without_persisting_content(
                 "name": "exec",
                 "input": (
                     "const hits = ALL_TOOLS.filter(x => "
-                    "/search_get_agent_context|search_get_global_plan/.test(x.name));"
+                    "/goal_plus_search_get_agent_context|search_get_global_plan/.test(x.name));"
                 ),
             },
         },
@@ -394,7 +394,7 @@ def test_codex_activity_classifies_loop_behavior_without_persisting_content(
                 "name": "exec",
                 "input": (
                     "const r = await tools.mcp__goal_plus__"
-                    "search_get_agent_context({agent_session_id:'agent-secret'});"
+                    "goal_plus_search_get_agent_context({agent_session_id:'agent-secret'});"
                 ),
             },
         },
@@ -406,7 +406,7 @@ def test_codex_activity_classifies_loop_behavior_without_persisting_content(
                 "name": "exec",
                 "input": (
                     "const r = await tools.mcp__goal_plus__"
-                    "search_get_global_evidence({agent_session_id:'agent-secret'});"
+                    "goal_plus_search_get_global_evidence({agent_session_id:'agent-secret'});"
                 ),
             },
         },

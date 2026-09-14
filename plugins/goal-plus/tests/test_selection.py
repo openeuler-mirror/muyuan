@@ -1,3 +1,7 @@
+from dataclasses import replace
+
+import pytest
+
 from goal_plus.application.selection import _QualityScoreSource
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.selection import SelectionOption, SelectionSubjectKey
@@ -81,7 +85,7 @@ def _completed_assessment(
         rationale="selection test record",
         invocation=VerifierInvocationRecord(
             invocation_id=f"invocation_{token}",
-            backend="codex",
+            agent_harness="codex",
             model="test-model",
             started_at="2026-01-01T00:00:00Z",
             completed_at="2026-01-01T00:00:01Z",
@@ -161,3 +165,82 @@ def test_quality_source_requires_the_task_output_record_pointer() -> None:
     )
 
     assert source.resolve(_selection_option(subject)).state == "unavailable"
+
+
+@pytest.fixture
+def quality_run(tmp_path):
+    from goal_plus.application.verifier import VerifierWorkflow
+    from goal_plus.domain.selection import SelectionSpec
+    from goal_plus.infrastructure.clock import SystemClock
+    from goal_plus.infrastructure.state.verifier import FileVerifierState
+    from goal_plus.runtime import FileSearchRuntime
+    from tests._runtime_helpers import make_project, spec_for
+
+    project = make_project(tmp_path)
+    (project / "evaluator.py").write_text(
+        "import json\nfrom initial_program import VALUE\n"
+        "print(json.dumps({'combined_score': float(VALUE)}))\n"
+    )
+    spec = spec_for(project, max_parallel=2)
+    spec.workspace.provider = "git_worktree"
+    spec.strategy.selection = SelectionSpec(
+        ranking_keys=["quality_score", "hard_score"], ranking_tolerance=[0.05, 0.0],
+    )
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+    candidates = runtime.start_batch(run_id, plan.plan_id)
+    reports = []
+    for candidate, score in zip(candidates, [1, 3]):
+        (candidate.workspace / "initial_program.py").write_text(f"VALUE = {score}\n")
+        reports.append(runtime.run_verifier(run_id, candidate.candidate_id))
+    workflow = VerifierWorkflow(FileVerifierState(runtime.root_dir), SystemClock())
+    return runtime, run_id, candidates, reports, workflow
+
+
+@pytest.mark.parametrize("outcome", ["quality", "terminal_score", "all_scores_failed", "revalidation_failed"])
+def test_selection_waits_for_quality_and_preserves_hard_evidence(quality_run, monkeypatch, outcome):
+    from goal_plus.bootstrap import build_internal_agent_work
+    from tests.test_llm_verifier import invocation
+
+    runtime, run_id, candidates, reports, workflow = quality_run
+    before = [runtime.list_iterations(run_id, item.candidate_id) for item in candidates]
+    with pytest.raises(RuntimeError, match="waiting for required verifier scores"):
+        runtime.select(run_id)
+    assert runtime.search_run.state.read_run(run_id).selected_candidate_id is None
+    assert build_internal_agent_work(runtime.root_dir).inspect(run_id).accepts_work
+    assert len(workflow.list_tasks(run_id)) == 2
+    while task := workflow.claim_task("quality-test", 60, run_id=run_id):
+        if outcome == "all_scores_failed" or (outcome == "terminal_score" and task.candidate_id == "c001"):
+            workflow.fail_task(task.task_id, "controlled terminal inference failure", retryable=False)
+        else:
+            workflow.complete_task(task.task_id, {
+                "quality_score": 0.9 if task.candidate_id == "c001" else 0.2,
+                "allocation_scores": None, "rationale": "Controlled quality assessment",
+            }, invocation())
+    if outcome == "all_scores_failed":
+        with pytest.raises(RuntimeError, match="no candidate satisfies"):
+            runtime.select(run_id)
+        assert runtime.search_run.state.read_run(run_id).selected_candidate_id is None
+    else:
+        if outcome == "revalidation_failed":
+            artifact_state = runtime.selection.artifacts.candidate_artifact_state
+
+            def changed_state(run, frozen, record):
+                state = artifact_state(run, frozen, record)
+                return replace(state, artifact_hash="f" * 64) if record.candidate_id == "c001" else state
+
+            monkeypatch.setattr(runtime.selection.artifacts, "candidate_artifact_state", changed_state)
+            selecting = runtime.selection.select(run_id)
+            assert next(selecting).candidate_id == "c001"
+            with pytest.raises(StopIteration) as completed:
+                selecting.send(reports[0].model_copy(update={"process_passed": False, "aggregate_score": None}))
+            result = completed.value.value
+            assert len(result["selection_trace"]) == 2
+        else:
+            result = runtime.select(run_id)
+        assert result["selected_candidate_id"] == ("c001" if outcome == "quality" else "c002")
+        assert result["selected_quality_score"] == (0.9 if outcome == "quality" else 0.2)
+    assert [runtime.list_iterations(run_id, item.candidate_id) for item in candidates] == before
+    assert len(workflow.list_tasks(run_id)) == 2

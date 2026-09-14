@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from goal_plus.domain.agents import (
-    AgentHostKind,
+    AgentHarnessKind,
+    AgentRuntimeProvider,
     WorkspaceLedgerProjection,
     WORKSPACE_LEDGER_PROJECTION_NONE,
 )
@@ -29,10 +30,10 @@ class ResolvedInnerAgentBinding:
 
     inner_agent_id: str
     adapter_version: str
-    worker_host: AgentHostKind
+    agent_harness: AgentHarnessKind
+    runtime_provider: AgentRuntimeProvider
     host_adapter_version: str
     prompt_asset: str | None = None
-    native_agent_type: str | None = None
     continuation_mode: str = "none"
     workspace_ledger_projection: WorkspaceLedgerProjection = (
         WORKSPACE_LEDGER_PROJECTION_NONE
@@ -42,46 +43,27 @@ class ResolvedInnerAgentBinding:
         return {
             "inner_agent_id": self.inner_agent_id,
             "adapter_version": self.adapter_version,
-            "worker_host": self.worker_host,
+            "agent_harness": self.agent_harness,
+            "runtime_provider": self.runtime_provider,
             "host_adapter_version": self.host_adapter_version,
             "prompt_asset": self.prompt_asset,
-            "native_agent_type": self.native_agent_type,
             "continuation_mode": self.continuation_mode,
             "workspace_ledger_projection": self.workspace_ledger_projection,
         }
 
 
 @dataclass(frozen=True)
-class ThinkThreadDispatchCandidate:
-    candidate_id: str
-    agent_session_id: str
-    message: str
-    max_runtime_seconds: int
-    inner_git_binding: dict[str, Any] | None = None
-
-    def pool_payload(self) -> dict[str, Any]:
-        return {
-            "candidate_id": self.candidate_id,
-            "agent_session_id": self.agent_session_id,
-            "message": self.message,
-            "max_runtime_seconds": self.max_runtime_seconds,
-            "inner_git_binding": self.inner_git_binding,
-        }
-
-
-@dataclass(frozen=True)
-class ThinkThreadPoolDispatch:
-    run_id: str
+class ThinkThreadSessionLaunch:
+    session: AgentSessionRecord
+    root_thinkthread_id: str
     baseline_snapshot_id: str
-    max_parallel: int
-    candidates: tuple[ThinkThreadDispatchCandidate, ...]
+    inner_git_binding: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
 class ThinkThreadContinuation:
     agent_session_id: str
     message: str
-    max_runtime_seconds: int
 
 
 class CandidateHostSource(Protocol):

@@ -1,6 +1,7 @@
 """Shared recovery/generation gates for new and reused candidate bindings."""
 
-from goal_plus.domain.search import AgentSessionRecord, RunState
+from goal_plus.domain.search import AgentSessionRecord, FrozenSpec, RunState
+from goal_plus.domain.agents import validate_search_execution
 from goal_plus.ports.state import CandidateRecord, RunRecord
 
 
@@ -40,6 +41,11 @@ def require_candidate_not_recovering(record: CandidateRecord) -> None:
 def require_current_session(
     session: AgentSessionRecord, record: CandidateRecord
 ) -> AgentSessionRecord:
+    validate_search_execution(session.agent_harness, session.runtime_provider, record.task.workspace_provider)
+    if (session.agent_harness, session.runtime_provider) != (
+        session.session_handle.agent_harness, session.session_handle.runtime_provider,
+    ):
+        raise ValueError("session handle does not match execution identity")
     if (
         session.run_id != record.task.run_id
         or session.candidate_id != record.candidate_id
@@ -53,3 +59,8 @@ def require_current_session(
         )
     require_candidate_not_recovering(record)
     return session
+
+
+def require_session_execution(session: AgentSessionRecord, frozen: FrozenSpec) -> None:
+    if (session.agent_harness, session.runtime_provider) != (frozen.agent_harness, frozen.runtime_provider):
+        raise ValueError("session execution identity does not match frozen binding")

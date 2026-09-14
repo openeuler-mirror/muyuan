@@ -62,8 +62,8 @@ def test_managed_limit_counts_bytes_and_includes_output_after_fast_exit(size):
         process.stderr.close()
 
 
-@pytest.mark.parametrize("host", ["codex", "pi-rpc"])
-def test_inference_rejects_oversized_result_before_json_decode(tmp_path, monkeypatch, host):
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+def test_inference_rejects_oversized_result_before_json_decode(tmp_path, monkeypatch, agent_harness):
     import goal_plus.execution.inference_output as output_module
 
     monkeypatch.setattr(output_module, "INFERENCE_RESULT_LIMIT_BYTES", 128)
@@ -71,7 +71,7 @@ def test_inference_rejects_oversized_result_before_json_decode(tmp_path, monkeyp
     directories = []
 
     def popen(command, **options):
-        output = (command[command.index("--output-last-message") + 1] if host == "codex"
+        output = (command[command.index("--output-last-message") + 1] if agent_harness == "codex"
                   else options["env"]["TEST_INFERENCE_OUTPUT"])
         directories.append(Path(output).parent)
         script = (
@@ -82,7 +82,7 @@ def test_inference_rejects_oversized_result_before_json_decode(tmp_path, monkeyp
         return native_popen([sys.executable, "-c", script, output], **options)
 
     result = build_structured_inference(popen=popen).execute(
-        request_for(host), monitor=monitor(), is_active=None, usage=lambda *_: {"output_tokens": 7},
+        request_for(agent_harness), monitor=monitor(), is_active=None, usage=lambda *_: {"output_tokens": 7},
     )
     assert result.process.state == "process_exited"
     assert result.payload is None and result.output_text is None
@@ -92,15 +92,15 @@ def test_inference_rejects_oversized_result_before_json_decode(tmp_path, monkeyp
     assert not directories[0].exists()
 
 
-@pytest.mark.parametrize("host", ["codex", "pi-rpc"])
-def test_inference_does_not_parse_partial_usage_or_accept_output_after_stream_overflow(monkeypatch, host):
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+def test_inference_does_not_parse_partial_usage_or_accept_output_after_stream_overflow(monkeypatch, agent_harness):
     import goal_plus.execution.process_output as output_module
 
     monkeypatch.setattr(output_module, "PROCESS_OUTPUT_LIMIT_BYTES", 128)
     native_popen = subprocess.Popen
 
     def popen(command, **options):
-        output = (command[command.index("--output-last-message") + 1] if host == "codex"
+        output = (command[command.index("--output-last-message") + 1] if agent_harness == "codex"
                   else options["env"]["TEST_INFERENCE_OUTPUT"])
         script = (
             "import os,sys; from pathlib import Path; "
@@ -112,7 +112,7 @@ def test_inference_does_not_parse_partial_usage_or_accept_output_after_stream_ov
         pytest.fail("overflowed transcript was treated as complete usage")
 
     result = build_structured_inference(popen=popen).execute(
-        replace(request_for(host), timeout_seconds=5), monitor=monitor(), is_active=None, usage=no_partial_usage,
+        replace(request_for(agent_harness), timeout_seconds=5), monitor=monitor(), is_active=None, usage=no_partial_usage,
     )
     assert result.process.state == "output_limit_exceeded"
     assert result.payload is None and result.output_text is None

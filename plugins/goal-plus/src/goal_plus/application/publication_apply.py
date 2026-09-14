@@ -319,7 +319,7 @@ class PublicationApply:
         ):
             if initial.state != RunState.PROMOTED:
                 raise RuntimeError(
-                    "search_promote must prepare a promotion before apply"
+                    "goal_plus_search_promote must prepare a promotion before apply"
                 )
             if initial.promotion.promotion_mode == "artifact_only":
                 raise RuntimeError(
@@ -332,7 +332,7 @@ class PublicationApply:
             run = self.state.read_run(run_id)
             if run.state != RunState.PROMOTED or run.promotion is None:
                 raise RuntimeError(
-                    "search_promote must prepare a promotion before apply"
+                    "goal_plus_search_promote must prepare a promotion before apply"
                 )
             promotion = run.promotion
             if promotion.state == "applied":

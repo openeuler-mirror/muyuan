@@ -24,7 +24,7 @@ def _search_fixture(tmp_path: Path) -> tuple[Path, str, str]:
     runtime = FileSearchRuntime(project / ".gp")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=1),
-        [project / "evaluator.py"], native_host="codex",
+        [project / "evaluator.py"], agent_harness="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -131,10 +131,10 @@ def test_monitor_script_renders_orchestration_feature_plugin(tmp_path: Path) -> 
     )
     assert result.returncode == 0, result.stderr
     assert "orchestration: plugin=v3 host=codex" in result.stdout
-    assert "native=spawn_agent,wait_agent" in result.stdout
+    assert "native=goal_plus_run_work_item" in result.stdout
     assert "generation=1 launch=bound stale=0" in result.stdout
     assert "flow=assignment>worker_update>result>decision" in result.stdout
-    assert "assignment main_to_subagent gen=1 via=spawn_agent" in result.stdout
+    assert "assignment main_to_subagent gen=1 via=goal_plus_run_work_item" in result.stdout
 
 
 def test_monitor_script_reports_missing_runtime_root(tmp_path: Path) -> None:

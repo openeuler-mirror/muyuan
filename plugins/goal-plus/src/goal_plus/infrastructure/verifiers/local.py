@@ -5,22 +5,17 @@ import json
 import math
 import os
 import shutil
-import signal
 import subprocess
 import tempfile
-import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Literal
 from goal_plus.domain.worker_policy import process_environment_for_index
 from goal_plus.infrastructure.artifacts.git import git_output
-from goal_plus.infrastructure.process_output import (
-    BoundedOutput,
-    TERM_GRACE_SECONDS as VERIFIER_TERM_GRACE_SECONDS,
-    terminate_process_group,
-)
-from goal_plus.domain.artifacts import ArtifactRef, WorkspaceBackend
+from goal_plus.infrastructure.process_output import capture_process
+from goal_plus.infrastructure.process_output import TERM_GRACE_SECONDS as VERIFIER_TERM_GRACE_SECONDS
+from goal_plus.domain.artifacts import ArtifactRef, WorkspaceProvider
 from goal_plus.domain.evidence import ScoreReport, VerifierResult
 from goal_plus.domain.search import (
     BootstrapVerification,
@@ -107,82 +102,10 @@ class LocalVerifiers:
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=True,
         )
-        stdout_capture = BoundedOutput()
-        stderr_capture = BoundedOutput()
-
-        def drain(stream: Any, capture: BoundedOutput) -> None:
-            try:
-                while True:
-                    chunk = stream.read(8192)
-                    if not chunk:
-                        break
-                    capture.append(chunk)
-            except (OSError, ValueError):
-                pass
-
-        readers = [
-            threading.Thread(
-                target=drain,
-                args=(process.stdout, stdout_capture),
-                daemon=True,
-            ),
-            threading.Thread(
-                target=drain,
-                args=(process.stderr, stderr_capture),
-                daemon=True,
-            ),
-        ]
-        for reader in readers:
-            reader.start()
-
-        timed_out = False
-        try:
-            returncode = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            terminate_process_group(process)
-            returncode = (
-                process.returncode
-                if process.returncode is not None
-                else -signal.SIGKILL
-            )
-
-        for reader in readers:
-            reader.join(timeout=VERIFIER_TERM_GRACE_SECONDS)
-        if any(reader.is_alive() for reader in readers):
-            # A verifier that exits while leaving descendants with inherited
-            # output pipes would otherwise leak both processes and reader threads.
-            terminate_process_group(process)
-            for reader in readers:
-                reader.join(timeout=VERIFIER_TERM_GRACE_SECONDS)
-        for stream in (process.stdout, process.stderr):
-            if stream is not None and not stream.closed:
-                stream.close()
-
-        stdout = stdout_capture.text()
-        stderr = stderr_capture.text()
-        if timed_out:
-            raise subprocess.TimeoutExpired(
-                command,
-                timeout,
-                output=stdout,
-                stderr=stderr,
-            )
-        completed = subprocess.CompletedProcess(
-            args=command,
-            returncode=returncode,
-            stdout=stdout,
-            stderr=stderr,
-        )
-        if check and returncode:
-            raise subprocess.CalledProcessError(
-                returncode,
-                command,
-                output=stdout,
-                stderr=stderr,
-            )
+        completed = capture_process(process, timeout=timeout)
+        if check:
+            completed.check_returncode()
         return completed
 
     def run_bootstrap_verifiers(
@@ -190,7 +113,7 @@ class LocalVerifiers:
         *,
         spec: SearchSpec,
         workspace: Path,
-        backend: WorkspaceBackend,
+        workspace_provider: WorkspaceProvider,
         phase: Literal["origin", "workspace_relocation"],
         verifier_hashes: dict[str, str],
         log_dir: Path,
@@ -282,7 +205,7 @@ class LocalVerifiers:
             aggregate_score = 0.0
         return BootstrapVerification(
             phase=phase,
-            backend=backend,
+            workspace_provider=workspace_provider,
             passed=passed,
             aggregate_score=aggregate_score,
             verifier_results=results,
@@ -514,7 +437,7 @@ class LocalVerifiers:
                 baseline = self.run_bootstrap_verifiers(
                     spec=spec,
                     workspace=workspace,
-                    backend=spec.workspace.backend,
+                    workspace_provider=spec.workspace.provider,
                     phase="origin",
                     verifier_hashes={},
                     log_dir=self.runs_dir.parent / "bootstrap" / f"origin-{uuid.uuid4().hex[:12]}",

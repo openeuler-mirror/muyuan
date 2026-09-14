@@ -23,15 +23,15 @@ from goal_plus.projections.monitor import (
 from goal_plus.ports.monitor import MonitorCandidateInputs, MonitorSessionInputs
 from goal_plus.projections.monitor_workers import project_candidate, project_session
 from goal_plus._version import __version__
-from goal_plus.agent_hosts import (
+from goal_plus.domain.agents import (
     INNER_AGENT_AUTORESEARCH,
     INNER_AGENT_COMMON,
     WORKSPACE_LEDGER_PROJECTION_NONE,
     WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV,
-    collect_host_observability,
-    resolve_inner_agent_binding,
 )
 from goal_plus.infrastructure.state.verifier_views import load_search_verifier_views
+from goal_plus.agent_hosts import collect_host_observability
+from goal_plus.infrastructure.host_bindings import resolve_inner_agent_binding
 from goal_plus.feature_plugins import collect_goal_monitor_features
 from goal_plus.infrastructure.state.goal import FileGoalQueries
 from goal_plus.host_observability import collect_codex_transcript_observability
@@ -122,7 +122,7 @@ def _evidence_annotation_payload(run_dir: Path) -> dict[str, Any]:
                     "candidate_id",
                     "iteration",
                     "attempt",
-                    "host",
+                    "agent_harness",
                     "model",
                     "reasoning_effort",
                     "timeout_seconds",
@@ -283,11 +283,11 @@ def _time_advisory_evidence(
     root: Path,
     session: AgentSessionRecord,
 ) -> dict[str, Any] | None:
-    metadata = session.host_handle.metadata
+    metadata = session.session_handle.metadata
     pi_advisory = metadata.get("time_advisory")
     if isinstance(pi_advisory, dict):
         return pi_advisory
-    if session.host != "codex":
+    if session.agent_harness != "codex":
         return None
     path = (
         root
@@ -325,20 +325,20 @@ def _agent_observability(
             "agent_session_id": session.agent_session_id,
             "run_id": session.run_id,
             "candidate_id": session.candidate_id,
-            "host": session.host,
+            "agent_harness": session.agent_harness,
+            "runtime_provider": session.runtime_provider,
             "source": "collection_failed",
             "identity": {
                 "native_session_id": None,
-                "external_id": session.host_handle.external_id,
-                "task_name": session.host_handle.task_name,
-                "nickname": session.host_handle.nickname,
+                "external_id": session.session_handle.external_id,
+                "nickname": session.session_handle.nickname,
             },
             "execution": {
                 "duration_seconds": None,
                 "terminal_state": "unknown",
-                "timed_out": bool(session.host_handle.metadata.get("timed_out")),
+                "timed_out": bool(session.session_handle.metadata.get("timed_out")),
                 "runner_failed": bool(
-                    session.host_handle.metadata.get("runner_failed")
+                    session.session_handle.metadata.get("runner_failed")
                 ),
             },
             "usage": {"cost_usd": None},
@@ -349,15 +349,16 @@ def _agent_observability(
                 "source": "unknown",
             },
             "artifacts": {
-                "event_log": session.host_handle.metadata.get("event_log"),
-                "text_log": session.host_handle.metadata.get("text_log"),
-                "session_file": session.host_handle.metadata.get("session_file"),
+                "event_log": session.session_handle.metadata.get("event_log"),
+                "text_log": session.session_handle.metadata.get("text_log"),
+                "session_file": session.session_handle.metadata.get("session_file"),
             },
             "handoff": {"present": False, "source_path": None, "error": None},
             "runtime_start": {
                 "source": "unavailable",
                 "agent": None,
-                "host": session.host,
+                "agent_harness": session.agent_harness,
+            "runtime_provider": session.runtime_provider,
                 "mode": None,
                 "project_trusted": None,
                 "active_tools": [],
@@ -387,56 +388,39 @@ def _host_cleanup_payload(
     """Project host-local cleanup without exposing its filesystem layout."""
 
     if (
-        frozen.spec.workspace.backend != "thinkthread"
-        and frozen.worker_host != "thinkthread"
+        frozen.spec.workspace.provider != "thinkthread"
+        and frozen.runtime_provider != "thinkthread"
     ):
         return {
             "schema_version": 1,
             "provider": None,
             "state": "not_applicable",
-            "candidate_pools": None,
+            "candidate_sessions": None,
             "annotation": None,
             "snapshots": None,
             "final_artifacts": None,
             "blockers": [],
         }
 
-    pool_states: list[str] = []
-    pool_cleanup_states: list[str] = []
-    pool_jobs_total = 0
-    for path in sorted((root_dir / "host-pools" / "thinkthread").glob("*/pool.json")):
-        try:
-            pool = load_json(path)
-        except (OSError, ValueError, json.JSONDecodeError):
-            continue
-        if pool.get("run_id") != run.run_id:
-            continue
-        pool_states.append(str(pool.get("state") or "unknown"))
-        jobs = pool.get("jobs")
-        if isinstance(jobs, list):
-            pool_jobs_total += len(jobs)
-        cleanup = pool.get("cleanup")
-        if isinstance(cleanup, list):
-            pool_cleanup_states.extend(
-                str(item.get("state") or "unknown")
-                for item in cleanup
-                if isinstance(item, dict)
-            )
-    pool_complete = (
-        all(state == "closed" for state in pool_states)
-        if pool_states
+    session_states: list[str] = []
+    for path in sorted((root_dir / "host-scopes").glob("*/thinkthread-sessions/*.json")):
+        resource = load_json(path)
+        if resource.get("run_id") == run.run_id:
+            state = str(resource.get("cleanup_state") or "open")
+            session_states.append(state)
+    sessions_complete = (
+        all(state == "closed" for state in session_states)
+        if session_states
         else not candidates
     )
-    candidate_pools = {
-        "observed": len(pool_states),
-        "states": state_counts(pool_states),
-        "jobs_total": pool_jobs_total,
-        "cleanup_states": state_counts(pool_cleanup_states),
-        "complete": pool_complete,
+    candidate_sessions = {
+        "observed": len(session_states),
+        "states": state_counts(session_states),
+        "complete": sessions_complete,
     }
 
-    annotation_host = frozen.worker_host
-    annotation_applicable = annotation_host == "thinkthread"
+    annotation_host = frozen.agent_harness
+    annotation_applicable = frozen.runtime_provider == "thinkthread"
     annotation_state = "not_applicable"
     annotation_service_state = "not_applicable"
     annotation_observed = False
@@ -537,8 +521,8 @@ def _host_cleanup_payload(
     }
 
     blockers: list[str] = []
-    if not pool_complete:
-        blockers.append("candidate_pools:not_closed")
+    if not sessions_complete:
+        blockers.append("candidate_sessions:not_closed")
     if not annotation_complete:
         if not annotation_service_complete:
             blockers.append(f"annotation_service:{annotation_service_state}")
@@ -550,7 +534,7 @@ def _host_cleanup_payload(
         blockers.append(f"snapshots:{snapshot_state}")
 
     component_states = [
-        *pool_states,
+        *session_states,
         annotation_state,
         annotation_service_state,
         snapshot_state,
@@ -569,7 +553,7 @@ def _host_cleanup_payload(
         "schema_version": 1,
         "provider": "thinkthread",
         "state": overall_state,
-        "candidate_pools": candidate_pools,
+        "candidate_sessions": candidate_sessions,
         "annotation": annotation,
         "snapshots": snapshots,
         "final_artifacts": final_artifacts,
@@ -676,7 +660,8 @@ def _search_task_payload(
             "strategy": (
                 {
                     "name": frozen.spec.strategy.name,
-                    "worker_host": frozen.worker_host,
+                    "agent_harness": frozen.agent_harness,
+                    "runtime_provider": frozen.runtime_provider,
                 }
                 if frozen is not None
                 else None
@@ -1066,17 +1051,17 @@ def goal_plus_monitor_snapshot(
                         or frozen.spec.strategy.inner_agent
                         or (
                             INNER_AGENT_COMMON
-                            if frozen.worker_host == "thinkthread"
+                            if frozen.runtime_provider == "thinkthread"
                             else INNER_AGENT_AUTORESEARCH
                         )
                     )
                     workspace_ledger_projection = resolve_inner_agent_binding(
-                        frozen.worker_host,
+                        frozen.agent_harness,
                         inner_agent,
-                        legacy_native_agent_type=frozen.spec.strategy.worker_agent_type,
+                        frozen.runtime_provider,
                     ).workspace_ledger_projection
             if (
-                candidate.task.workspace_backend == "thinkthread"
+                candidate.task.workspace_provider == "thinkthread"
                 and workspace_ledger_projection
                 == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
             ):
@@ -1148,7 +1133,7 @@ def goal_plus_monitor_snapshot(
 
         main_agent["subagent_count"] = len(sessions)
         main_agent["worker_dispatch_count"] = sum(
-            int(session.host_handle.metadata.get("dispatch_count") or 1)
+            int(session.session_handle.metadata.get("dispatch_count") or 1)
             for session in sessions
         )
         main_agent["verifier_count"] = sum(
@@ -1180,7 +1165,7 @@ def goal_plus_monitor_snapshot(
         orchestrator_observability is None
         and goal_record is not None
         and goal_record.active_session is not None
-        and goal_record.active_session.host == "codex"
+        and goal_record.active_session.agent_harness == "codex"
         and goal_record.active_session.transcript_path
     ):
         transcript_path = Path(goal_record.active_session.transcript_path).expanduser()
@@ -1255,7 +1240,7 @@ def goal_plus_monitor_snapshot(
                 cleanup = raw_scope.get("cleanup")
                 execution_scope = {
                     "scope_id": raw_scope.get("scope_id"),
-                    "host": raw_scope.get("host"),
+                    "agent_harness": raw_scope.get("agent_harness"),
                     "owner_session_id": raw_scope.get("owner_session_id"),
                     "state": raw_scope.get("state"),
                     "active_count": (

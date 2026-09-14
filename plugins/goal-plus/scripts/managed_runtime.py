@@ -47,10 +47,12 @@ def files(source: Path):
                 yield item.relative_to(source), item.read_bytes()
 
 
-def fingerprint(source: Path, captured: list[tuple[Path, bytes]] | None = None) -> str:
+def fingerprint(source: Path, captured: list[tuple[Path, bytes]] | None = None, *, codex_env_vars: tuple[str, ...] = ()) -> str:
     digest = hashlib.sha256((SCHEMA + PYTHON_VERSION + str(source.resolve())).encode())
     for relative, content in (files(source) if captured is None else captured):
         digest.update(str(relative).encode() + b"\0" + hashlib.sha256(content).digest())
+    if codex_env_vars:
+        digest.update(json.dumps(sorted(set(codex_env_vars))).encode())
     return digest.hexdigest()
 
 
@@ -87,10 +89,10 @@ def locked():
         yield
 
 
-def prepare(source: Path, *, dry_run: bool = False) -> Path:
+def prepare(source: Path, *, dry_run: bool = False, codex_env_vars: tuple[str, ...] = ()) -> Path:
     source = source.resolve()
     captured = list(files(source))
-    build = fingerprint(source, captured)
+    build = fingerprint(source, captured, codex_env_vars=codex_env_vars)
     release = home() / "releases" / build
     package = release / "package"
     python = release / "venv" / "bin" / "python"
@@ -123,7 +125,6 @@ def prepare(source: Path, *, dry_run: bool = False) -> Path:
                 marketplace_path = package / ".agents/plugins/marketplace.json"
                 marketplace_path.parent.mkdir(parents=True, exist_ok=True)
                 marketplace_path.write_text(json.dumps(marketplace, indent=2) + "\n")
-                shutil.copytree(codex_assets / "skills", package / "skills")
             pi_manifest = package / "assets/pi/package.json"
             if pi_manifest.is_file():
                 shutil.copyfile(pi_manifest, package / "package.json")
@@ -144,6 +145,9 @@ def prepare(source: Path, *, dry_run: bool = False) -> Path:
             if (codex_assets / "mcp.json").is_file():
                 mcp = json.loads((codex_assets / "mcp.json").read_text())
                 mcp["mcpServers"]["goal-plus"]["args"][0] = str(launcher)
+                if codex_env_vars:
+                    server = mcp["mcpServers"]["goal-plus"]
+                    server["env_vars"] = sorted(set(server.get("env_vars", [])) | set(codex_env_vars))
                 mcp_path.write_text(json.dumps(mcp, indent=2) + "\n")
             info = {"schema": SCHEMA, "build": build, "source": str(source),
                     "package": str(package), "python": str(python), "python_version": PYTHON_VERSION}

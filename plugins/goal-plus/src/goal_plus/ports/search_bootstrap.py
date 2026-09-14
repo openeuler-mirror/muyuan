@@ -3,11 +3,11 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
-from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
 
 from goal_plus.domain.artifacts import (
     ArtifactRef,
-    WorkspaceBackend,
+    WorkspaceProvider,
     WorkspaceCapacityEstimate,
 )
 from goal_plus.domain.search import (
@@ -20,6 +20,7 @@ from goal_plus.domain.search import (
 
 @dataclass(frozen=True)
 class FreezeInputs:
+    runtime_provider: AgentRuntimeProvider
     spec: SearchSpec
     source_root: Path
     supplemental_enabled: bool
@@ -35,7 +36,7 @@ class FreezeInputs:
 
 class FreezeSource(Protocol):
     def prepare(
-        self, spec: SearchSpec, verifier_artifacts: list[Path], *, worker_host: AgentHostKind
+        self, spec: SearchSpec, verifier_artifacts: list[Path], *, agent_harness: AgentHarnessKind
     ) -> FreezeInputs: ...
 
 
@@ -51,7 +52,7 @@ class BootstrapVerifiers(Protocol):
         *,
         spec: SearchSpec,
         workspace: Path,
-        backend: WorkspaceBackend,
+        workspace_provider: WorkspaceProvider,
         phase: Literal["origin", "workspace_relocation"],
         verifier_hashes: dict[str, str],
         log_dir: Path,

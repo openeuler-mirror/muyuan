@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 max_duration_seconds=300 workspace_backend=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=autoresearch 优化 `workspace/initial_program.py` 的 Circle Packing 解。
+/goal-plus max_parallel=2 max_duration_seconds=300 workspace_provider=git_worktree promotion_mode=apply strategy=agent_guided inner_agent=autoresearch 优化 `workspace/initial_program.py` 的 Circle Packing 解。
 
 问题：当前程序需要在单位正方形内放置恰好 26 个互不重叠的圆，并尽可能增大
 所有圆的半径之和。
@@ -8,7 +8,7 @@
 
 工作区合同：`workspace/` 是本任务可写的独立源码 Git 仓库。以当前目录中的
 `search-spec.json` 为权威 SearchSpec 基础，保持 `source_path="workspace"` 和
-`workspace.backend="git_worktree"`；不要把当前示例目录或其外层仓库当作 source。
+`workspace.provider="git_worktree"`；不要把当前示例目录或其外层仓库当作 source。
 
 Adaptive Search 模式：在冻结 SearchSpec 时增加以下配置：
 

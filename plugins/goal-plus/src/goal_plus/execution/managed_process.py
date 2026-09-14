@@ -5,12 +5,9 @@ import time
 from collections.abc import Callable
 from typing import Literal
 
-from goal_plus.execution.process_identity import inspect_process
 from goal_plus.execution.process_monitor import ProcessMonitor
 from goal_plus.execution.process_output import ProcessOutput, ProcessOutputLimitExceeded
-from goal_plus.execution.process_resources import OwnedProcess, stop_processes
 from goal_plus.ports.process import ProcessOutcome
-from goal_plus.ports.process_identity import ProcessWitness
 
 # Existing inference polling, TERM grace, and final pipe-drain intervals.
 PROCESS_POLL_SECONDS = 0.5
@@ -35,32 +32,9 @@ class ManagedProcess:
         self.output_limit_bytes = output_limit_bytes
         self.term_timeout = term_timeout
         self.kill_timeout = kill_timeout
-        self._process_group: OwnedProcess | None = None
-
-    def own_process_group(
-        self, *, remember: Callable[[ProcessWitness], None] | None = None,
-        recall: Callable[[], ProcessWitness | None] | None = None,
-    ) -> None:
-        """Bind a host-launched dedicated group before admitting work to it."""
-        identity = inspect_process(self.process.pid)
-        resource = OwnedProcess(
-            self.process.pid, identity.start_token if identity else None, self.process.pid,
-            remember=remember, recall=recall,
-        )
-        resource.running()
-        self._process_group = resource
 
     def terminate(self) -> None:
         process = self.process
-        if self._process_group is not None:
-            outcome, = stop_processes(
-                [self._process_group], term_timeout=self.term_timeout, kill_timeout=self.kill_timeout,
-            )
-            if not outcome.stopped:
-                detail = "; ".join(outcome.errors) or "process group still running"
-                raise RuntimeError(f"process_group_cleanup_failed: {process.pid}: {detail}")
-            process.wait(timeout=self.kill_timeout)
-            return
         if process.poll() is not None:
             return
         process.terminate()
@@ -115,7 +89,6 @@ class ManagedProcess:
         try:
             output = ProcessOutput(
                 self.process, limit_bytes=self.output_limit_bytes,
-                before_reap=self._process_group.running if self._process_group is not None else None,
             )
             monitor.observe("running", self.process, force=True)
             while True:

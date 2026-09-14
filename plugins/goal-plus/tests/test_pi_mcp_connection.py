@@ -1,0 +1,68 @@
+"""The Pi adapter keeps one real, role-bound MCP server across tool calls."""
+
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+
+ROOT = Path(__file__).parents[1]
+pytestmark = pytest.mark.pi
+
+
+@pytest.mark.parametrize("role", ["main", "worker"])
+def test_persistent_pi_mcp_connection_and_shutdown(tmp_path, role):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to exercise the Pi MCP adapter")
+    if not (ROOT / "assets/pi/node_modules/@modelcontextprotocol/sdk/package.json").is_file():
+        pytest.skip("Pi MCP SDK dependencies require npm ci --prefix assets/pi")
+    result = subprocess.run([
+        node, "--experimental-strip-types", "--input-type=module", "-e", SCRIPT,
+        str(ROOT / "assets/pi/extensions/lib/goal-plus-mcp.ts"), sys.executable, str(tmp_path),
+    ], env={
+        **os.environ, "PYTHONPATH": str(ROOT / "src"), "GOAL_PLUS_PI_ROLE": role,
+        "GOAL_PLUS_AGENT_SESSION_ID": "bound-candidate",
+    }, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+SCRIPT = r'''
+import assert from "node:assert/strict";
+import {pathToFileURL} from "node:url";
+const [path, python, cwd] = process.argv.slice(1);
+const {PiMcpConnection} = await import(pathToFileURL(path));
+const connection = new PiMcpConnection(python,
+  ["-m", "goal_plus.pi_tool", "--root", cwd + "/.gp", "host_mcp_serve"], cwd);
+let pid;
+try {
+  const manifest = await connection.open();
+  assert.equal(manifest.server.name, "goal-plus");
+  pid = connection.transport.pid;
+  assert(pid > 0);
+  if (process.env.GOAL_PLUS_PI_ROLE === "worker") {
+    assert(!manifest.instructions);
+    assert(!manifest.tools.some(tool => tool.name === "goal_plus_search_select"));
+    const result = await connection.call("goal_plus_search_get_agent_context", {agent_session_id: "another-candidate"});
+    assert.equal(result.details.ok, false);
+    assert.match(result.details.error, /GoalPlusSessionMismatch/);
+  } else {
+    assert.equal(typeof manifest.instructions, "string");
+    assert(manifest.instructions.includes("goal_plus_status"));
+    assert(manifest.tools.some(tool => tool.name === "goal_plus_search_select"));
+    const first = await connection.call("goal_plus_monitor_snapshot", {});
+    const second = await connection.call("goal_plus_monitor_snapshot", {});
+    assert(first.details && second.details);
+    assert.equal(first.details.ok, true);
+    assert.equal(second.details.ok, true);
+    assert.equal(connection.transport.pid, pid);
+  }
+} finally {
+  await connection.close();
+}
+assert.throws(() => process.kill(pid, 0), {code: "ESRCH"});
+await assert.rejects(connection.call("goal_plus_monitor_snapshot", {}), /closed/);
+'''

@@ -35,10 +35,10 @@ def test_circle_packing_public_baseline_emits_goal_plus_metric() -> None:
     assert report["sum_radii"] == pytest.approx(1.7983485547704765)
 
 
-def test_circle_packing_reserves_half_of_its_ten_minute_budget_for_closeout() -> None:
+def test_circle_packing_keeps_annotation_timeout_without_fixed_worker_duration() -> None:
     spec = json.loads((EXAMPLE / "search-spec.json").read_text(encoding="utf-8"))
 
-    assert spec["strategy"]["config"]["closeout_reserve_seconds"] == 300
+    assert "worker_budget" not in spec["strategy"]
     assert spec["strategy"]["evidence_annotator"]["timeout_seconds"] == 300
 
 
@@ -68,14 +68,14 @@ def test_circle_packing_promotion_exports_report_without_changing_template(
     start_host_verified_goal(root, source)
     tools = SearchTools(FileSearchRuntime(root))
 
-    frozen = tools.search_freeze_spec(
+    frozen = tools.goal_plus_search_freeze_spec(
         "gp_0001",
         spec,
         [str(verifier.relative_to(source))],
     )
-    run_id = tools.search_create("gp_0001", frozen["frozen_spec_id"])["run_id"]
-    plan = tools.search_plan_next(run_id, 2)
-    tasks = tools.search_start_batch(
+    run_id = tools.goal_plus_search_create("gp_0001", frozen["frozen_spec_id"], "initial")["run_id"]
+    plan = tools.goal_plus_search_plan_next(run_id, 2)
+    tasks = tools.goal_plus_search_start_batch(
         run_id,
         plan["plan_id"],
         proposals=[
@@ -89,19 +89,23 @@ def test_circle_packing_promotion_exports_report_without_changing_template(
             task["candidate_id"],
             {"goal": "verify the unchanged candidate baseline"},
         )
-        tools.search_get_agent_context(session["agent_session_id"])
-        tools.search_run_verifier(
+        tools.goal_plus_search_get_agent_context(session["agent_session_id"])
+        tools.goal_plus_search_run_verifier(
             run_id,
             task["candidate_id"],
             agent_session_id=session["agent_session_id"],
             hypothesis="unchanged baseline",
         )
 
-    selected = tools.search_select(run_id)
-    promoted = tools.search_promote(run_id, selected["selected_candidate_id"])
+    selected = tools.goal_plus_search_select(run_id)
+    promoted = tools.goal_plus_search_promote(run_id, selected["selected_candidate_id"])
     with pytest.raises(RuntimeError, match="artifact-only"):
-        tools.search_apply_promotion(run_id)
-    report = tools.search_report(run_id)
+        tools.goal_plus_search_apply_promotion(run_id)
+    from goal_plus.goal_plus import FileGoalPlusRuntime
+    goals = FileGoalPlusRuntime(root)
+    goals.record_search_result("gp_0001", run_id)
+    goals.set_status("gp_0001", "complete", reason="Verified example publication")
+    report = tools.goal_plus_search_report(run_id)
 
     assert initial_program.read_bytes() == baseline
     assert (source / "initial_program.py").read_bytes() == baseline

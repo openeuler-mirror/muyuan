@@ -12,7 +12,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -25,7 +25,6 @@ from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT
 from goal_plus.time_advisory import (
     build_search_time_advisory,
     find_agent_session,
-    is_search_candidate_session,
 )
 from goal_plus.tools import ToolCallerRole, require_tool_role
 
@@ -232,7 +231,7 @@ def _codex_host_invocation(
     identity = "\0".join((session_id, native_entry_id or "", prompt))
     invocation_id = f"codex:{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
     return {
-        "host": "codex",
+        "agent_harness": "codex",
         "transport": "codex_user_prompt_submit",
         "command": request["command"],
         "action": request["action"],
@@ -474,158 +473,32 @@ def _is_subagent_context(hook_input: dict[str, Any]) -> bool:
 
 
 def _is_child_context(hook_input: dict[str, Any]) -> bool:
-    return _is_subagent_context(hook_input) or _transcript_declares_subagent(
-        hook_input
+    return (
+        os.environ.get(hook_input_codec.CODEX_CANDIDATE_SESSION_ENV) is not None
+        or os.environ.get(hook_input_codec.CODEX_ORDINARY_ROLE_ENV) is not None
+        or os.environ.get("GOAL_PLUS_FINAL_CHECK_IDENTITY") is not None
+        or _is_subagent_context(hook_input) or _transcript_declares_subagent(hook_input)
     )
 
 
 def _is_final_checker_context(search_root: Path, hook_input: dict[str, Any]) -> bool:
-    from goal_plus.application.goal_final_check_launch import codex_final_check_task_name
-
-    if any(hook_input.get(key) == "goal_plus_final_checker" for key in ("agent_type", "agentType")):
-        return True  # Exact custom-agent identity registered by this plugin.
-    tasks = {
-        Path(value).name
-        for value in (_codex_subagent_task_name(hook_input), hook_input.get("task_name"), hook_input.get("taskName"))
-        if isinstance(value, str) and value
-    }
-    if not tasks:
+    if os.environ.get(hook_input_codec.CODEX_CANDIDATE_SESSION_ENV) is not None:
         return False
-    return any(
-        codex_final_check_task_name(check.check_id) in tasks
-        for record in _resumable_records(search_root)
-        for check in record.final_checks
-        if check.checker_host == "codex" and check.goal_revision == record.goal_revision
-    )
+    from goal_plus.infrastructure.final_check_binding import declared_final_checker
+    from goal_plus.goal_plus import FileGoalPlusRuntime
 
-
-def _subagent_identity(hook_input: dict[str, Any]) -> str | None:
-    for key in (
-        "agent_id",
-        "agentId",
-        "agent_transcript_path",
-        "agentTranscriptPath",
-        "transcript_path",
-        "transcriptPath",
-    ):
-        value = hook_input.get(key)
-        if isinstance(value, str) and value:
-            return value
-    target = hook_input.get("target")
-    if isinstance(target, dict):
-        for key in ("agent_id", "agentId", "agent", "transcript_path"):
-            value = target.get(key)
-            if isinstance(value, str) and value:
-                return value
-    return None
-
-
-def _agent_transcript_path(hook_input: dict[str, Any]) -> Path | None:
-    value = hook_input.get("agent_transcript_path") or hook_input.get(
-        "agentTranscriptPath"
-    )
-    if not isinstance(value, str) or not value:
-        return None
-    path = Path(value).expanduser()
-    return path if path.is_file() else None
-
-
-def _agent_transcript_started_at(hook_input: dict[str, Any]) -> datetime | None:
-    path = _agent_transcript_path(hook_input)
-    if path is None:
-        return None
-    for payload in iter_codex_transcript_header(path):
-        timestamp = payload.get("timestamp")
-        if isinstance(timestamp, str):
-            parsed = _utc_datetime(timestamp)
-            if parsed is not None:
-                return parsed
-    return None
-
-
-def _candidate_session_from_launch_prompt(
-    search_root: Path,
-    hook_input: dict[str, Any],
-) -> Any | None:
-    prompt = _prompt(hook_input).strip()
-    if not prompt:
-        return None
-    for agent_session_id in _runtime_agent_session_ids(prompt):
-        session = find_agent_session(search_root, agent_session_id)
-        if (
-            session is None
-            or session.host != "codex"
-            or not is_search_candidate_session(session)
-        ):
-            continue
-        launch_message = session.launch.get("message")
-        if isinstance(launch_message, str) and launch_message.strip() == prompt:
-            return session
-    return None
-
-
-def _candidate_session_from_native_identity(
-    search_root: Path,
-    hook_input: dict[str, Any],
-) -> Any | None:
-    identity = _subagent_identity(hook_input)
-    hook_transcript = _agent_transcript_path(hook_input)
-    if identity is None and hook_transcript is None:
-        return None
-
-    from goal_plus.host_observability import discover_codex_session_file
-
-    for session in candidate_host_queries(search_root).discover_sessions():
-        if (
-            session is None
-            or session.host != "codex"
-            or not is_search_candidate_session(session)
-        ):
-            continue
-        native_path = discover_codex_session_file(session)
-        if native_path is None:
-            continue
-        if hook_transcript is not None:
-            try:
-                if native_path.resolve() == hook_transcript.resolve():
-                    return session
-            except OSError:
-                pass
-        if identity in {
-            session.host_handle.external_id,
-            session.host_handle.task_name,
-            session.launch.get("task_name"),
-        }:
-            return session
-        meta = read_codex_session_meta(native_path)
-        if meta is not None and identity in {
-            meta.get("id"),
-            meta.get("session_id"),
-            meta.get("agent_path"),
-        }:
-            return session
-    return None
-
-
-def _candidate_session_from_task_name(
-    search_root: Path,
-    hook_input: dict[str, Any],
-) -> Any | None:
-    task_name = _codex_subagent_task_name(hook_input)
-    if task_name is None:
-        return None
-    expected = Path(task_name).name
-    session = candidate_host_queries(search_root).launch_task_session(expected, host="codex")
-    return session if session is not None and is_search_candidate_session(session) else None
+    if os.environ.get("GOAL_PLUS_FINAL_CHECK_IDENTITY") is not None:
+        try:
+            identity = declared_final_checker()
+            FileGoalPlusRuntime(search_root).goal_completion.require_native_checker(identity, _session_id(hook_input))
+            return True
+        except (ValueError, PermissionError, FileNotFoundError):
+            return False
+    return False
 
 
 def _time_advisory_dir(search_root: Path) -> Path:
     return search_root / "host-logs" / "codex-time-advisory"
-
-
-def _identity_path(search_root: Path, identity: str) -> Path:
-    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    return _time_advisory_dir(search_root) / "workers" / f"{digest}.json"
 
 
 def _read_json_object(path: Path) -> dict[str, Any] | None:
@@ -644,37 +517,6 @@ def _write_json_object(path: Path, payload: dict[str, Any]) -> None:
         encoding="utf-8",
     )
     os.replace(temporary, path)
-
-
-def _autoresearch_lease_dir(search_root: Path) -> Path:
-    return search_root / "host-logs" / "codex-autoresearch-leases"
-
-
-def _autoresearch_lease_path(search_root: Path, agent_session_id: str) -> Path:
-    return _autoresearch_lease_dir(search_root) / f"{agent_session_id}.json"
-
-
-def _autoresearch_lease_policy(session: Any) -> dict[str, Any] | None:
-    launch = session.launch if isinstance(session.launch, dict) else {}
-    budget_control = launch.get("budget_control")
-    if not isinstance(budget_control, dict):
-        return None
-    lease = budget_control.get("autoresearch_lease")
-    if not isinstance(lease, dict) or lease.get("mode") != "subagent_stop":
-        return None
-    min_runtime_seconds = lease.get("min_runtime_seconds", 0)
-    min_verifier_runs = lease.get("min_verifier_runs", 1)
-    if not isinstance(min_runtime_seconds, int) or min_runtime_seconds < 0:
-        return None
-    if not isinstance(min_verifier_runs, int) or min_verifier_runs <= 0:
-        return None
-    return {
-        "min_runtime_seconds": min_runtime_seconds,
-        "min_verifier_runs": min_verifier_runs,
-        "max_runtime_seconds": budget_control.get("max_runtime_seconds"),
-        "soft_closeout_seconds": budget_control.get("soft_closeout_seconds"),
-        "initial_wait_timeout_ms": budget_control.get("initial_wait_timeout_ms"),
-    }
 
 
 def _utc_now() -> datetime:
@@ -759,273 +601,31 @@ def _utc_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _ensure_autoresearch_lease(
-    search_root: Path,
-    session: Any,
-    hook_input: dict[str, Any],
-) -> dict[str, Any] | None:
-    policy = _autoresearch_lease_policy(session)
-    if policy is None:
-        return None
-    path = _autoresearch_lease_path(search_root, session.agent_session_id)
-    existing = _read_json_object(path)
-    transcript_started_at = _agent_transcript_started_at(hook_input)
-    if transcript_started_at is None:
-        from goal_plus.host_observability import discover_codex_session_file
-
-        native_path = discover_codex_session_file(session)
-        if native_path is not None:
-            transcript_started_at = _agent_transcript_started_at(
-                {"agent_transcript_path": str(native_path)}
-            )
-    if existing is not None:
-        existing_started_at = _utc_datetime(existing.get("started_at"))
-        if transcript_started_at is not None and (
-            existing_started_at is None
-            or transcript_started_at < existing_started_at
-        ):
-            min_runtime_seconds = int(existing.get("min_runtime_seconds") or 0)
-            existing = {
-                **existing,
-                "started_at": _utc_text(transcript_started_at),
-                "start_event": "SubagentStartTranscript",
-                "lease_deadline_at": _utc_text(
-                    transcript_started_at
-                    + timedelta(seconds=min_runtime_seconds)
-                ),
-            }
-            _write_json_object(path, existing)
-        return existing
-
-    now = transcript_started_at or _utc_now()
-    initial_wait_ms = policy.get("initial_wait_timeout_ms")
-    parent_closeout_after_seconds = (
-        int(initial_wait_ms) / 1000
-        if isinstance(initial_wait_ms, int)
-        else None
-    )
-    max_runtime_seconds = policy.get("max_runtime_seconds")
-    lease_precedes_parent_closeout = (
-        policy["min_runtime_seconds"] < parent_closeout_after_seconds
-        if parent_closeout_after_seconds is not None
-        else None
-    )
-    lease_precedes_parent_hard_deadline = (
-        policy["min_runtime_seconds"] < max_runtime_seconds
-        if isinstance(max_runtime_seconds, int)
-        else None
-    )
-    payload = {
-        "agent_session_id": session.agent_session_id,
-        "run_id": session.run_id,
-        "candidate_id": session.candidate_id,
-        "status": "active",
-        "started_at": _utc_text(now),
-        "lease_deadline_at": _utc_text(
-            now + timedelta(seconds=policy["min_runtime_seconds"])
-        ),
-        "start_event": (
-            "SubagentStartTranscript"
-            if transcript_started_at is not None
-            else _hook_event_name(hook_input)
-        ),
-        "start_tool": _tool_name(hook_input) or None,
-        "min_runtime_seconds": policy["min_runtime_seconds"],
-        "min_verifier_runs": policy["min_verifier_runs"],
-        "max_runtime_seconds": policy["max_runtime_seconds"],
-        "soft_closeout_seconds": policy["soft_closeout_seconds"],
-        "parent_closeout_after_seconds": parent_closeout_after_seconds,
-        "lease_precedes_parent_closeout": lease_precedes_parent_closeout,
-        "lease_precedes_parent_hard_deadline": (
-            lease_precedes_parent_hard_deadline
-        ),
-        "stop_attempts": 0,
-        "blocked_stop_attempts": 0,
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return _read_json_object(path)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, sort_keys=True, ensure_ascii=False)
-        handle.write("\n")
-    return payload
-
-
-def _autoresearch_lease_stop_context(
-    search_root: Path,
-    session: Any,
-    *,
-    verifier_runs: int,
-) -> dict[str, Any] | None:
-    evidence = _ensure_autoresearch_lease(search_root, session, {})
-    if evidence is None:
-        return None
-    started_at = _utc_datetime(evidence.get("started_at"))
-    if started_at is None:
-        return None
-
-    now = _utc_now()
-    elapsed_seconds = max(0.0, (now - started_at).total_seconds())
-    min_runtime_seconds = int(evidence.get("min_runtime_seconds") or 0)
-    min_verifier_runs = int(evidence.get("min_verifier_runs") or 1)
-    remaining_seconds = max(0.0, min_runtime_seconds - elapsed_seconds)
-    infrastructure_stop = candidate_host_queries(search_root).requires_immediate_stop(session)
-    allocation_decision_id = candidate_host_queries(
-        search_root
-    ).pending_retirement_decision_id(session.run_id, session.candidate_id)
-    allocation_stop = allocation_decision_id is not None
-    verifier_complete = verifier_runs >= min_verifier_runs
-    runtime_complete = remaining_seconds <= 0
-    completion_complete = infrastructure_stop or allocation_stop or (
-        verifier_complete and runtime_complete
-    )
-
-    stop_attempts = int(evidence.get("stop_attempts") or 0) + 1
-    blocked_stop_attempts = int(evidence.get("blocked_stop_attempts") or 0)
-    if not completion_complete:
-        blocked_stop_attempts += 1
-
-    updated = {
-        **evidence,
-        "status": "released" if completion_complete else "active",
-        "stop_attempts": stop_attempts,
-        "blocked_stop_attempts": blocked_stop_attempts,
-        "last_stop_attempt_at": _utc_text(now),
-        "elapsed_seconds": round(elapsed_seconds, 3),
-        "remaining_seconds": round(remaining_seconds, 3),
-        "verifier_runs": verifier_runs,
-    }
-    if evidence.get("first_stop_attempt_at") is None:
-        updated["first_stop_attempt_at"] = _utc_text(now)
-    if completion_complete:
-        parent_closeout_after_seconds = evidence.get(
-            "parent_closeout_after_seconds"
-        )
-        max_runtime_seconds = evidence.get("max_runtime_seconds")
-        updated.update(
-            {
-                "released_at": _utc_text(now),
-                "released_within_parent_closeout_budget": (
-                    elapsed_seconds < parent_closeout_after_seconds
-                    if isinstance(parent_closeout_after_seconds, (int, float))
-                    else None
-                ),
-                "released_within_max_runtime": (
-                    elapsed_seconds < max_runtime_seconds
-                    if isinstance(max_runtime_seconds, int)
-                    else None
-                ),
-                "release_reason": (
-                    "infrastructure_stop_and_report"
-                    if infrastructure_stop
-                    else "allocation_interrupt"
-                    if allocation_stop
-                    else "lease_satisfied"
-                ),
-            }
-        )
-    _write_json_object(
-        _autoresearch_lease_path(search_root, session.agent_session_id),
-        updated,
-    )
-
-    reason: str | None = None
-    if not completion_complete:
-        requirements = []
-        if not runtime_complete:
-            requirements.append(
-                f"至少再继续 {remaining_seconds:.1f} 秒"
-            )
-        if not verifier_complete:
-            requirements.append(
-                f"再完成 {min_verifier_runs - verifier_runs} 次 "
-                "search_run_verifier iteration"
-            )
-        reason = (
-            f"Search 候选 {session.agent_session_id} 的 AutoResearch lease 仍处于 active："
-            f"{'，并且'.join(requirements)}。不要返回父级。沿用已加载的 candidate-local 证据"
-            "和 Global Evidence，选择不同且有证据支持的"
-            "假设并实现修改，然后使用同一 "
-            "agent_session_id 运行 search_run_verifier，省略 scope 以使用 process verifier，"
-            "并用一句话 hypothesis 客观概括本轮实际尝试。"
-            "将结果与当前最佳项比较并继续深度搜索。不要因为完成一次 iteration、暂时没有"
-            "改进或一次失败就尝试结束，也不要通过重复返回来轮询此 hook。只要 lease 仍"
-            "处于 active，就必须把局部饱和视为转向信号，重新评估瓶颈并选择与已有尝试"
-            "不同的实质方向；只有收到父级 closeout/deadline 后才准备收尾。不要自行估算时间，"
-            "不要休眠或忙等。父级 watchdog 在该 lease 之后另有 closeout 窗口。"
-        )
-
-    return {
-        "search_candidate_completion_complete": completion_complete,
-        "search_candidate_completion_reason": reason,
-        "search_candidate_min_runtime_seconds": min_runtime_seconds,
-        "search_candidate_elapsed_seconds": elapsed_seconds,
-        "search_candidate_remaining_seconds": remaining_seconds,
-        "search_candidate_required_verifier_runs": min_verifier_runs,
-        "search_candidate_infrastructure_stop": infrastructure_stop,
-        "search_candidate_allocation_stop": allocation_stop,
-        "search_candidate_allocation_decision_id": allocation_decision_id,
-    }
-
-
 def _search_candidate_agent_session_id(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> str | None:
     if not _is_child_context(hook_input) or _is_final_checker_context(search_root, hook_input):
         return None
-    identity = _subagent_identity(hook_input)
-    mapped_session = None
-    if identity is not None:
-        mapping = _read_json_object(_identity_path(search_root, identity))
-        mapped = mapping.get("agent_session_id") if mapping else None
-        if isinstance(mapped, str) and mapped:
-            candidate = find_agent_session(search_root, mapped)
-            if (
-                candidate is not None
-                and candidate.host == "codex"
-                and is_search_candidate_session(candidate)
-            ):
-                mapped_session = candidate
-    session = (
-        mapped_session
-        or _candidate_session_from_task_name(search_root, hook_input)
-        or _candidate_session_from_native_identity(search_root, hook_input)
-    )
-    if session is None and _declares_search_candidate(hook_input):
-        requested = _runtime_agent_session_ids(hook_input_codec.raw_tool_input(hook_input))
-        if len(requested) == 1:
-            candidate = find_agent_session(search_root, requested[0])
-            if (
-                candidate is not None
-                and candidate.host == "codex"
-                and is_search_candidate_session(candidate)
-            ):
-                session = candidate
-    if session is not None:
-        if identity is not None:
-            _write_json_object(
-                _identity_path(search_root, identity),
-                {
-                    "agent_session_id": session.agent_session_id,
-                    "mapped_at": _utc_text(_utc_now()),
-                    "source": "codex_subagent_identity",
-                },
-            )
-        _ensure_autoresearch_lease(
-            search_root,
-            session,
-            hook_input,
-        )
-        return session.agent_session_id
-    return None
+    declared = os.environ.get(hook_input_codec.CODEX_CANDIDATE_SESSION_ENV)
+    if not declared:
+        return None
+    try:
+        session = candidate_host_queries(search_root).session(declared)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    if (
+        session.agent_harness != "codex"
+        or session.session_handle.metadata.get("transport") != "app-server"
+        or session.session_handle.external_id != _session_id(hook_input)
+    ):
+        return None
+    return session.agent_session_id
 
 
 def _declares_search_candidate(hook_input: dict[str, Any]) -> bool:
     # Generic task names are user-selected text, not custom-agent registrations.
-    return any(
+    return os.environ.get(hook_input_codec.CODEX_CANDIDATE_SESSION_ENV) is not None or any(
         hook_input.get(key) in {"search_candidate_agent", "search_candidate_common_agent"}
         for key in ("agent_type", "agentType")
         if isinstance(hook_input.get(key), str)
@@ -1043,61 +643,16 @@ def _search_candidate_stop_context(
             return None
         return {
             "goal_plus_subagent_role": "search_candidate",
-            "search_candidate_verifier_complete": False,
         }
     session = find_agent_session(search_root, agent_session_id)
     if session is None:
         return None
-    verifier_runs = session.counters.get("verifier_runs", 0)
-    lease_context = _autoresearch_lease_stop_context(
-        search_root,
-        session,
-        verifier_runs=verifier_runs,
-    )
     return {
         "goal_plus_subagent_role": "search_candidate",
         "search_candidate_agent_session_id": agent_session_id,
         "search_candidate_run_id": session.run_id,
         "search_candidate_id": session.candidate_id,
-        "search_candidate_verifier_runs": verifier_runs,
-        "search_candidate_verifier_complete": verifier_runs > 0,
-        **(lease_context or {}),
     }
-
-
-def _bind_codex_subagent_observability(
-    search_root: Path,
-    agent_session_id: str,
-    hook_input: dict[str, Any],
-) -> None:
-    """Persist native transcript identity exposed by Codex SubagentStop."""
-    transcript_path = hook_input.get("agent_transcript_path") or hook_input.get(
-        "agentTranscriptPath"
-    )
-    model = hook_input.get("model")
-    agent_id = hook_input.get("agent_id") or hook_input.get("agentId")
-    metadata: dict[str, Any] = {
-        "subagent_stop_observed_at": datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    }
-    if isinstance(transcript_path, str) and transcript_path:
-        metadata["session_file"] = transcript_path
-    if isinstance(model, str) and model:
-        metadata["model"] = model
-    handle: dict[str, Any] = {"host": "codex", "metadata": metadata}
-    session = find_agent_session(search_root, agent_session_id)
-    if (
-        isinstance(agent_id, str)
-        and agent_id
-        and session is not None
-        and session.host_handle.external_id is None
-    ):
-        handle["external_id"] = agent_id
-    from goal_plus.runtime import FileSearchRuntime
-
-    FileSearchRuntime(search_root).bind_agent_handle(agent_session_id, handle)
 
 
 def _claim_time_advisory(
@@ -1161,8 +716,8 @@ def _search_candidate_time_advisory(
 
 
 def _host_kind(hook_input: dict[str, Any]) -> str:
-    value = hook_input.get("host")
-    if value in {"codex", "pi-rpc"}:
+    value = hook_input.get("agent_harness")
+    if value in {"codex", "pi"}:
         return value
     return "codex"
 
@@ -1315,12 +870,19 @@ def _select_hook_goal_id(search_root: Path, hook_input: dict[str, Any]) -> str |
     ) or _select_explicit_goal_id(search_root)
 
 
+def _mcp_overview() -> str:
+    from goal_plus.paths import host_assets_root
+
+    return (host_assets_root() / "assets/goal-plus-instructions.txt").read_text(encoding="utf-8").strip()
+
+
 def _goal_context(
     record: Any,
     *,
     role_model_context: str = "",
     initial_start: bool = False,
 ) -> str:
+    overview = _mcp_overview()
     next_action = record.next_action
     next_action_text = (
         f"{next_action.kind}: {next_action.description}"
@@ -1361,16 +923,10 @@ def _goal_context(
         f"最终检查 policy：{record.policy.get('final_check', {'mode': 'disabled'})}。\n"
         f"当前 phase：{record.phase}；next action：{next_action_text}\n"
         f"{start_notice}"
-        "加载 goal-plus skill；每轮读取 goal_plus_status 的 control、next_action 和 reconciliation。\n"
+        f"{overview}\n"
+        "每轮读取 goal_plus_status 的 control、next_action 和 reconciliation。\n"
     )
     return f"{context}\n{role_model_context}" if role_model_context else context
-
-
-def _candidate_context(session: Any) -> str:
-    return (
-        "goal_plus_context_role=search_candidate\n"
-        f"goal_plus_agent_session_id={session.agent_session_id}"
-    )
 
 
 def _emit_additional_context(
@@ -1445,11 +1001,6 @@ def _execution_scope_attachment(
     *,
     fallback: str | None,
 ) -> ScopeAttachment | None:
-    task_name = value.get("task_name") if isinstance(value, dict) else None
-    if isinstance(task_name, str) and task_name:
-        session = candidate_host_queries(search_root).launch_task_session(task_name, host="codex")
-        if session is not None:
-            return ScopeAttachment("search_run", session.run_id)
     run_ids = _runtime_run_ids(value)
     if len(run_ids) == 1:
         return ScopeAttachment("search_run", run_ids[0])
@@ -1486,7 +1037,7 @@ def _codex_scope_for_hook(
             return invocation_scope
     session_id = _session_id(hook_input)
     if not _is_child_context(hook_input) and session_id:
-        return execution_scope_for_owner(root_dir=search_root, host="codex", owner_session_id=session_id)
+        return execution_scope_for_owner(root_dir=search_root, agent_harness="codex", owner_session_id=session_id)
     transcript = hook_input_codec.transcript_path(hook_input)
     meta = read_codex_session_meta(Path(transcript).expanduser()) if transcript else None
     parent_session_id = meta.get("parent_thread_id") if meta else None
@@ -1585,16 +1136,22 @@ GOAL_PLUS_READ_ONLY_TOOLS = {
     "goal_plus_history",
     "goal_plus_monitor_snapshot",
     "goal_plus_list_models",
-    "search_status",
-    "search_list_history",
-    "search_list_iterations",
-    "search_get_agent_observability",
+    "goal_plus_search_status",
+    "goal_plus_search_list_history",
+    "goal_plus_search_list_iterations",
+    "goal_plus_search_get_agent_observability",
+}
+GOAL_PLUS_SESSION_CLEANUP_TOOLS = {
+    "goal_plus_session_wait", "goal_plus_session_interrupt",
+    "goal_plus_session_stop", "goal_plus_session_close",
 }
 
 
 def _requires_goal_plus_authorization(tool_name: str) -> bool:
     logical_name = goal_plus_tool_name(tool_name)
-    return logical_name is not None and logical_name not in GOAL_PLUS_READ_ONLY_TOOLS
+    return logical_name is not None and logical_name not in (
+        GOAL_PLUS_READ_ONLY_TOOLS | GOAL_PLUS_SESSION_CLEANUP_TOOLS
+    )
 
 
 def _requires_hook_authorization(hook_input: dict[str, Any]) -> bool:
@@ -1645,20 +1202,15 @@ def _emit_terminal_stats(record: Any) -> None:
     print(json.dumps({"systemMessage": message}, ensure_ascii=False))
 
 
-def _claim_codex_main(search_root: Path, goal_id: str, hook_input: dict[str, Any], *, restoring: bool = True) -> None:
+def _validate_codex_main_session(search_root: Path, goal_id: str, hook_input: dict[str, Any]) -> None:
     from goal_plus.goal_plus import FileGoalPlusRuntime
-    from goal_plus.host_recovery import claim_main_owner, codex_owner_pid
     runtime = FileGoalPlusRuntime(search_root)
-    if runtime.is_terminal(runtime.status(goal_id)):
+    record = runtime.status(goal_id)
+    if runtime.is_terminal(record):
         return
-    pid = codex_owner_pid()
-    if pid is not None:
-        claim_main_owner(search_root, goal_id, "codex", _session_id(hook_input) or "", pid, restoring=restoring)
-        from goal_plus.host_scope import restore_execution_scope_guardians
-
-        restore_execution_scope_guardians(
-            root_dir=search_root, host="codex", owner_session_id=_session_id(hook_input) or "",
-        )
+    binding = record.active_session
+    if binding is not None and (binding.agent_harness != "codex" or binding.session_id != _session_id(hook_input)):
+        raise RuntimeError("MainSessionMismatch: cannot claim another native session")
 
 
 def _handle_user_prompt_submit(
@@ -1666,26 +1218,6 @@ def _handle_user_prompt_submit(
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> None:
-    candidate_session = _candidate_session_from_task_name(search_root, hook_input) if _is_child_context(hook_input) else None
-    identity_source = "native_task" if candidate_session is not None else "launch_prompt"
-    candidate_session = candidate_session or _candidate_session_from_launch_prompt(search_root, hook_input)
-    if candidate_session is not None:
-        identity = _subagent_identity(hook_input)
-        if identity is not None:
-            _write_json_object(
-                _identity_path(search_root, identity),
-                {
-                    "agent_session_id": candidate_session.agent_session_id,
-                    "mapped_at": _utc_text(_utc_now()),
-                    "source": identity_source,
-                },
-            )
-        if candidate_session.launch.get("tool") != "followup_task":
-            _emit_additional_context(
-                "UserPromptSubmit",
-                _candidate_context(candidate_session),
-            )
-        return
     if _is_child_context(hook_input):
         return
 
@@ -1698,7 +1230,7 @@ def _handle_user_prompt_submit(
     request = _goal_plus_request(hook_input)
     if goal_id is not None:
         try:
-            _claim_codex_main(search_root, goal_id, hook_input)
+            _validate_codex_main_session(search_root, goal_id, hook_input)
         except RuntimeError as exc:
             _emit_user_prompt_block(str(exc))
             return
@@ -1713,7 +1245,7 @@ def _handle_user_prompt_submit(
         if goal_id is not None:
             decision = runtime.handle_host_session_event(
                 goal_id,
-                host=_host_kind(hook_input),
+                agent_harness=_host_kind(hook_input),
                 session_id=session_id,
                 event="user_turn",
                 delivery="next_user_turn",
@@ -1867,7 +1399,7 @@ def _handle_user_prompt_submit(
     record = runtime.activate_session(
         goal_id,
         {
-            "host": _host_kind(hook_input),
+            "agent_harness": _host_kind(hook_input),
             "session_id": session_id,
             "transcript_path": hook_input_codec.transcript_path(hook_input),
             "metadata": {
@@ -1878,7 +1410,7 @@ def _handle_user_prompt_submit(
         },
     )
     runtime.gate(goal_id, event="user_prompt_submit", context=hook_input)
-    _claim_codex_main(search_root, goal_id, hook_input, restoring=False)
+    _validate_codex_main_session(search_root, goal_id, hook_input)
     goal_context = _goal_context(
         record,
         role_model_context=codex_models.role_model_context(role_models),
@@ -1901,15 +1433,17 @@ def _handle_session_start(
         include_paused=True,
     )
     if goal_id is None or session_id is None:
+        if hook_input.get("source") == "compact":
+            _emit_additional_context("SessionStart", _mcp_overview())
         return
     try:
-        _claim_codex_main(search_root, goal_id, hook_input)
+        _validate_codex_main_session(search_root, goal_id, hook_input)
     except RuntimeError as exc:
         _emit_additional_context("SessionStart", str(exc))
         return
     decision = runtime.handle_host_session_event(
         goal_id,
-        host=_host_kind(hook_input),
+        agent_harness=_host_kind(hook_input),
         session_id=session_id,
         event="session_start",
         delivery="next_user_turn",
@@ -1920,6 +1454,8 @@ def _handle_session_start(
             "SessionStart",
             _goal_context(runtime.status(goal_id)),
         )
+    elif hook_input.get("source") == "compact":
+        _emit_additional_context("SessionStart", _mcp_overview())
 
 
 def _handle_interrupt(
@@ -1939,7 +1475,7 @@ def _handle_interrupt(
         return
     runtime.handle_host_session_event(
         goal_id,
-        host=_host_kind(hook_input),
+        agent_harness=_host_kind(hook_input),
         session_id=session_id,
         event="interrupt",
         delivery="next_user_turn",
@@ -1953,8 +1489,8 @@ def _handle_post_tool_lifecycle(
 ) -> None:
     tool_names = _goal_plus_tool_names(hook_input)
     if set(tool_names).intersection({
-        "search_run_verifier", "search_get_global_evidence", "search_get_agent_context",
-        "search_select", "search_status", "search_invalidate_run", "search_report",
+        "goal_plus_search_run_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context",
+        "goal_plus_search_select", "goal_plus_search_status", "goal_plus_search_invalidate_run", "goal_plus_search_report",
     }):
         run_ids = list(
             dict.fromkeys(
@@ -1969,7 +1505,7 @@ def _handle_post_tool_lifecycle(
 
             codex_models.export_codex_native_model_config(hook_input)
             try:
-                kick_internal_agents(search_root, run_ids[0], host="codex")
+                kick_internal_agents(search_root, run_ids[0], agent_harness="codex")
             except Exception as exc:
                 print(f"[goal-plus-hook] internal-agent pump failed: {exc}", file=sys.stderr)
 
@@ -2075,7 +1611,7 @@ def _prepare_codex_native_tool(search_root: Path, hook_input: dict[str, Any]) ->
             "host_execution_scope_open", {"goal_plus_id" if attachment.kind == "goal" else "run_id": attachment.identity},
         )
         binding = goal.active_session
-        if binding is None or binding.host != "codex" or binding.state != "attached" or binding.session_id != scope.get("owner_session_id"):
+        if binding is None or binding.agent_harness != "codex" or binding.state != "attached" or binding.session_id != scope.get("owner_session_id"):
             raise RuntimeError("Codex launch requires the attached scope owner's Goal session")
         if child:
             if tool == "followup_task" and not str(agent["agent_id"]).startswith(parent["agent_id"].rstrip("/") + "/"):
@@ -2083,30 +1619,11 @@ def _prepare_codex_native_tool(search_root: Path, hook_input: dict[str, Any]) ->
         elif goal.active_session is None or goal.active_session.session_id != _session_id(hook_input):
             raise RuntimeError("Codex launch requires the current Goal Main session")
         else:
-            _claim_codex_main(search_root, goal.goal_plus_id, hook_input)
+            _validate_codex_main_session(search_root, goal.goal_plus_id, hook_input)
             goals.require_active_tool_target("host_execution_scope_open", {"goal_plus_id": goal.goal_plus_id})
         candidate_session = None
         if attachment.kind == "search_run":
-            run_id = attachment.require_search_run()
-            goals.authorization.require_search_execution(run_id)
-            queries = candidate_host_queries(search_root)
-            identities = {agent["agent_id"], agent["label"]} if agent else set()
-            requested_sessions = _runtime_agent_session_ids(hook_input_codec.raw_tool_input(hook_input)) if agent is None else []
-            sessions = [session for session in queries.sessions(run_id, host="codex") if (
-                session.agent_session_id in requested_sessions
-                or agent is None and tool == "spawn_agent" and session.launch.get("task_name") == hook_input_codec.tool_input(hook_input).get("task_name")
-                or session.host_handle.external_id in identities or session.host_handle.task_name in identities
-                or agent is not None and any(str(agent["agent_id"]).startswith(name.rstrip("/") + "/") for name in (
-                    session.host_handle.external_id, session.host_handle.task_name,
-                ) if name and name.startswith("/"))
-            )]
-            if len(sessions) != 1:
-                raise RuntimeError("Codex launch requires an unambiguous candidate session binding")
-            candidate_session = sessions[0]
-            queries.require_native_execution(
-                sessions[0].agent_session_id, now=time.time(),
-                spawn_input=hook_input_codec.tool_input(hook_input) if agent is None and tool == "spawn_agent" else None,
-            )
+            raise RuntimeError("Search candidates must use the common session controls")
         if tool == "spawn_agent":
             from goal_plus.host_scope import register_codex_agent
 
@@ -2209,45 +1726,16 @@ def _close_codex_scope_for_stop(
     )
 
 
-def _codex_allocation_active_targets(
-    search_root: Path,
-    scope: dict[str, Any],
-    *,
-    run_id: str,
-    decision_id: str,
-) -> list[str]:
-    from goal_plus.execution.codex_scope import active_codex_agents
-    from goal_plus.infrastructure.state.allocation import FileAllocationState
-    from goal_plus.ports.scope import ScopeAttachment
-
-    decision = FileAllocationState(search_root).load_allocation_decision(
-        run_id, decision_id
-    )
-    if decision.status not in {"pending", "applied"}:
-        raise RuntimeError(
-            f"allocation decision {decision_id} cannot interrupt candidates in "
-            f"status {decision.status}"
-        )
-    attachment = ScopeAttachment.from_id(run_id)
-    targets: list[str] = []
-    for candidate_id in decision.retire_candidate_ids:
-        targets.extend(
-            str(item.get("native_agent_id") or item["agent_id"])
-            for item in active_codex_agents(
-                scope,
-                attachment=attachment,
-                candidate_id=candidate_id,
-            )
-        )
-    return list(dict.fromkeys(targets))
-
-
 def _handle_pre_tool_use(
     runtime: Any,
     search_root: Path,
     hook_input: dict[str, Any],
 ) -> None:
     tool_name = _tool_name(hook_input)
+    if goal_plus_tool_name(tool_name) in GOAL_PLUS_SESSION_CLEANUP_TOOLS:
+        # Role checks already ran; the MCP host checks exact Main ownership.
+        # A paused Goal must still be able to observe and stop its resources.
+        return
     if not _should_gate_tool(tool_name) and not _requires_hook_authorization(
         hook_input
     ):
@@ -2274,7 +1762,7 @@ def _handle_pre_tool_use(
         _session_id(hook_input),
         include_terminal=allow_terminal_session,
     )
-    if goal_id is None and logical_name == "search_report":
+    if goal_id is None and logical_name == "goal_plus_search_report":
         run_ids = _runtime_run_ids(hook_input_codec.raw_tool_input(hook_input))
         if len(run_ids) == 1:
             goal_id = _select_terminal_report_goal_id(search_root, run_ids[0])
@@ -2292,11 +1780,11 @@ def _handle_pre_tool_use(
             )
         return
     try:
-        _claim_codex_main(search_root, goal_id, hook_input)
+        _validate_codex_main_session(search_root, goal_id, hook_input)
     except RuntimeError as exc:
         _emit_pre_tool_block(str(exc))
         return
-    if logical_name == "search_freeze_spec":
+    if logical_name == "goal_plus_search_freeze_spec":
         try:
             codex_models.probe_codex_models(codex_models.search_spec_codex_model_targets(hook_input))
         except RuntimeError as exc:
@@ -2314,11 +1802,11 @@ def _handle_pre_tool_use(
         return
     run_ids = _runtime_run_ids(hook_input_codec.raw_tool_input(hook_input))
     scope_start_tools = {
-        "goal_plus_prepare_final_check",
+        "goal_plus_run_final_check",
+        "goal_plus_run_work_item",
         "goal_plus_record_work_event",
-        "search_start_agent_session",
-        "search_apply_allocation_decision",
-        "search_select",
+        "goal_plus_session_run",
+        "goal_plus_search_select",
         "spawn_agent",
     }
     if logical_name not in scope_start_tools:
@@ -2336,46 +1824,20 @@ def _handle_pre_tool_use(
             fallback=goal_id,
         )
         record = runtime.authorization.require_scope_attachment(goal_id, attachment)
-        from goal_plus.host_recovery import codex_owner_pid
-
-        owner_pid = codex_owner_pid()
-        if owner_pid is None:
-            raise RuntimeError("Codex execution scope requires an identified native owner process")
+        native_config = codex_models.codex_native_model_config(hook_input)
         scope = ensure_execution_scope(
             root_dir=search_root,
-            host="codex",
+            agent_harness="codex",
             owner_session_id=session_id,
-            owner_pid=owner_pid,
             run_id=attachment.identity,
             activation_id=f"{record.goal_plus_id}:{record.control.version}",
+            native_agent_config=native_config if native_config.get("model") else None,
         )
         if logical_name == "spawn_agent":
             _prepare_codex_native_tool(search_root, hook_input)
-        if logical_name == "search_apply_allocation_decision":
+        if logical_name == "goal_plus_search_select":
             if len(run_ids) != 1:
-                raise RuntimeError(
-                    "search_apply_allocation_decision requires exactly one run_id"
-                )
-            decision_id = hook_input_codec.tool_input(hook_input).get("decision_id")
-            if not isinstance(decision_id, str) or not decision_id:
-                raise RuntimeError(
-                    "search_apply_allocation_decision requires decision_id"
-                )
-            active_targets = _codex_allocation_active_targets(
-                search_root,
-                scope,
-                run_id=run_ids[0],
-                decision_id=decision_id,
-            )
-            if active_targets:
-                raise RuntimeError(
-                    "allocation retirement requires an accepted native "
-                    "interrupt_agent request before apply; targets="
-                    + ",".join(active_targets)
-                )
-        if logical_name == "search_select":
-            if len(run_ids) != 1:
-                raise RuntimeError("search_select requires exactly one run_id")
+                raise RuntimeError("goal_plus_search_select requires exactly one run_id")
             close_run_candidates(
                 root_dir=search_root,
                 scope_id=str(scope["scope_id"]),
@@ -2393,13 +1855,20 @@ def _handle_stop_event(
     event: str,
 ) -> dict[str, Any]:
     if event == "stop" and _is_child_context(hook_input):
+        session = None
+        if os.environ.get(hook_input_codec.CODEX_CANDIDATE_SESSION_ENV) is not None:
+            identity = _search_candidate_agent_session_id(search_root, hook_input)
+            if identity is not None:
+                session = find_agent_session(search_root, identity)
+        # App-server candidates report Stop as root threads. Their controller
+        # owns delivery; record exact provenance without running Main's gate.
         return {
             "decision": "skipped",
-            "reason": "child_session",
+            "reason": "native_candidate_return" if session is not None else "child_session",
             "goal_plus_id": None,
-            "agent_session_id": None,
-            "run_id": None,
-            "candidate_id": None,
+            "agent_session_id": session.agent_session_id if session is not None else None,
+            "run_id": session.run_id if session is not None else None,
+            "candidate_id": session.candidate_id if session is not None else None,
         }
     candidate_context = None
     if event == "subagent_stop" and not _is_final_checker_context(search_root, hook_input):
@@ -2529,33 +1998,9 @@ def _handle_stop_event(
     gate_context = hook_input
     if event == "subagent_stop" and _is_final_checker_context(search_root, hook_input):
         gate_context = {**hook_input, "goal_plus_subagent_role": "final_checker"}
-        record = runtime.status(goal_id)
-        latest = record.final_checks[-1] if record.final_checks else None
-        if (
-            latest is not None
-            and latest.goal_revision == record.goal_revision
-            and latest.status == "pending"
-        ):
-            runtime.submit_final_check(
-                goal_id,
-                check_id=latest.check_id,
-                goal_revision=record.goal_revision,
-                verdict="interrupted",
-                summary="Codex 最终检查员在提交结论前停止。",
-                checker_metadata={"hook_event": "SubagentStop"},
-            )
     elif event == "subagent_stop":
         if candidate_context is not None:
             gate_context = {**hook_input, **candidate_context}
-            agent_session_id = candidate_context.get(
-                "search_candidate_agent_session_id"
-            )
-            if isinstance(agent_session_id, str):
-                _bind_codex_subagent_observability(
-                    search_root,
-                    agent_session_id,
-                    hook_input,
-                )
         else:
             record = runtime.status(goal_id)
             latest = record.final_checks[-1] if record.final_checks else None
@@ -2571,7 +2016,7 @@ def _handle_stop_event(
                 }
     if event == "stop":
         try:
-            _claim_codex_main(search_root, goal_id, hook_input)
+            _validate_codex_main_session(search_root, goal_id, hook_input)
         except RuntimeError as exc:
             return {"decision": "skipped", "reason": str(exc), "goal_plus_id": goal_id}
         turn_context = (hook_input_codec.codex_turn_event(hook_input) or {}).get("payload", {})
@@ -2705,7 +2150,7 @@ def _run_recorded_stop_event(
             kick_internal_agents(
                 search_root,
                 result["run_id"],
-                host="codex",
+                agent_harness="codex",
             )
         except Exception as exc:
             print(
@@ -2728,7 +2173,7 @@ def main() -> int:
         event_name = _hook_event_name(hook_input)
         if event_name == "PreToolUse" and _is_subagent_context(hook_input):
             if goal_plus_tool_name(_tool_name(hook_input)) in {
-                "search_recovery_status", "search_prepare_recovery", "search_recover_candidate"
+                "goal_plus_search_recovery_status", "goal_plus_search_prepare_recovery", "goal_plus_search_recover_candidate"
             }:
                 _emit_pre_tool_block("Search recovery is Main-owned; a worker cannot recover or fence a candidate.")
                 return 0
@@ -2736,15 +2181,11 @@ def main() -> int:
             # before the normal permission notice returns early.
             session_id = _search_candidate_agent_session_id(search_root, hook_input)
             if session_id:
-                from goal_plus.host_recovery import codex_owner_pid, observe_worker
                 try:
-                    worker = candidate_host_queries(search_root).session(session_id)
+                    candidate_host_queries(search_root).session(session_id)
                 except Exception as exc:
                     _emit_pre_tool_block(str(exc))
                     return 0
-                owner = codex_owner_pid()
-                if owner is not None:
-                    observe_worker(search_root, worker, owner)
         if event_name == "PreToolUse":
             try:
                 if _logical_tool_name(_tool_name(hook_input)) not in {"spawn_agent", "followup_task"} or _is_child_context(hook_input):
@@ -2765,6 +2206,8 @@ def main() -> int:
             from goal_plus.goal_plus import FileGoalPlusRuntime
 
             if event_name in {"SessionStart", "Interrupt"} and not search_root.exists():
+                if event_name == "SessionStart" and hook_input.get("source") == "compact" and not _is_child_context(hook_input):
+                    _emit_additional_context("SessionStart", _mcp_overview())
                 return 0
             if (
                 event_name == "PreToolUse"
@@ -2792,9 +2235,6 @@ def main() -> int:
 
         if event_name == "PostToolUse":
             if _logical_tool_name(_tool_name(hook_input)) == "list_agents":
-                from goal_plus.goal_plus import FileGoalPlusRuntime
-                from goal_plus.host_recovery import observe_codex_registry
-                goal_id = _select_session_goal_id(search_root, _session_id(hook_input))
                 payload = hook_input.get("tool_response")
                 if isinstance(payload, str):
                     try:
@@ -2810,13 +2250,6 @@ def main() -> int:
                         payload = record_codex_registry(
                             root_dir=search_root, scope_id=str(scope["scope_id"]),
                             tool_use_id=_tool_use_id(hook_input), payload=payload,
-                        )
-                if goal_id is not None and scope is not None and isinstance(payload, dict):
-                    goal = FileGoalPlusRuntime(search_root).status(goal_id)
-                    for task in goal.search_tasks:
-                        observe_codex_registry(
-                            search_root, candidate_host_queries(search_root).sessions(task.run_id),
-                            payload, scope=scope,
                         )
             _handle_post_tool_lifecycle(search_root, hook_input)
             time_advisory = _search_candidate_time_advisory(search_root, hook_input)

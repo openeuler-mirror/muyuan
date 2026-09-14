@@ -15,6 +15,26 @@ EXAMPLE = ROOT / "examples" / "circle-packing-thinkthread-apply"
 pytestmark = pytest.mark.example
 
 
+def test_public_example_accepts_closed_unsettled_continuation_only():
+    from tests.st_thinkthread.test_circle_main import assert_acknowledged_invocations
+
+    dispatches = [{"invocation_id": "first-delivery"}]
+    resource = {"acknowledged_messages": {"first": "first-delivery", "second": "unfinished"},
+                "active_message_id": "unfinished", "cleanup_state": "closed", "status": "stopped",
+                "invocation_result": None, "attempt_request": None}
+    assert_acknowledged_invocations(resource, dispatches, bounded=False)
+    with pytest.raises(AssertionError):
+        assert_acknowledged_invocations(resource, dispatches, bounded=True)
+    for mutation in [
+        {"cleanup_state": "closing"}, {"status": "running"},
+        {"active_message_id": "peer-message"}, {"attempt_request": {"state": "accepted"}},
+        {"invocation_result": {"state": "completed"}},
+        {"acknowledged_messages": {"second": "unfinished"}},
+    ]:
+        with pytest.raises(AssertionError):
+            assert_acknowledged_invocations({**resource, **mutation}, dispatches, bounded=False)
+
+
 def test_circle_packing_thinkthread_apply_example_is_deterministic(
     tmp_path: Path,
 ) -> None:
@@ -36,8 +56,8 @@ def test_circle_packing_thinkthread_apply_example_is_deterministic(
     assert "worker_host" not in spec.strategy.model_dump()
     assert spec.strategy.inner_agent == "autoresearch"
     assert spec.strategy.worker_launch is None
-    assert "host" not in spec.strategy.evidence_annotator.model_dump()
-    assert spec.workspace.backend == "thinkthread"
+    assert "agent_harness" not in spec.strategy.evidence_annotator.model_dump()
+    assert spec.workspace.provider == "thinkthread"
     assert spec.workspace.promotion_mode == "apply"
     assert spec.edit_surface.allow == ["initial_program.py"]
     assert spec.constraints["success_threshold"] == 2.4
@@ -106,7 +126,7 @@ def test_circle_packing_thinkthread_prompt_is_outcome_focused() -> None:
 
     assert first_line.startswith(
         "/goal-plus mode=probe max_parallel=2 max_duration_seconds=1200 "
-        "workspace_backend=thinkthread promotion_mode=apply "
+        "workspace_provider=thinkthread promotion_mode=apply "
         "strategy=agent_guided inner_agent=autoresearch "
     )
     assert "c001" in prompt and "candidate-hints/rectangular.py" in prompt

@@ -5,7 +5,6 @@ import hashlib
 import json
 import math
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -39,12 +38,12 @@ from goal_plus.thinkthread_agent_posix import (
 from goal_plus.thinkthread_artifacts import ThinkThreadArtifactViewRouter
 
 ANNOTATION_TOOLS = {
-    "thinkthread_annotation_next",
-    "thinkthread_artifact_view_list",
-    "thinkthread_artifact_view_stat",
-    "thinkthread_artifact_view_pread",
-    "thinkthread_artifact_view_diff",
-    "thinkthread_annotation_submit",
+    "goal_plus_thinkthread_annotation_next",
+    "goal_plus_thinkthread_artifact_view_list",
+    "goal_plus_thinkthread_artifact_view_stat",
+    "goal_plus_thinkthread_artifact_view_pread",
+    "goal_plus_thinkthread_artifact_view_diff",
+    "goal_plus_thinkthread_annotation_submit",
 }
 ANNOTATION_SERVICE_POLL_SECONDS = 0.1
 ANNOTATION_SERVICE_ERROR_BACKOFF_SECONDS = 0.25
@@ -119,36 +118,6 @@ def _append_service_log(root_dir: Path | str, run_id: str, message: str) -> None
         handle.write(f"{utc_timestamp()} {message}\n")
 
 
-def _process_matches_service(pid: int, run_id: str, generation: str) -> bool:
-    if pid <= 0 or not generation:
-        return False
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, ValueError):
-        return False
-    except PermissionError:
-        return True
-
-    cmdline_path = Path(f"/proc/{pid}/cmdline")
-    if not cmdline_path.exists():  # pragma: no cover - non-Linux POSIX
-        return True
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-        if stat.rsplit(")", 1)[-1].strip().startswith("Z"):
-            return False
-        command = cmdline_path.read_bytes().replace(b"\0", b" ").decode(
-            "utf-8", errors="replace"
-        )
-    except OSError:
-        return True
-    return (
-        "goal_plus.thinkthread_annotation" in command
-        and " serve " in f" {command} "
-        and run_id in command
-        and generation in command
-    )
-
-
 def _active_task(
     host: AnnotationHostService,
     state: dict[str, Any],
@@ -215,27 +184,27 @@ def _dispatch_tool(
     run_id = str(state["run_id"])
     if "run_id" in params and params["run_id"] != run_id:
         raise PermissionError("ThinkThread annotation run binding mismatch")
-    if tool == "thinkthread_annotation_next":
+    if tool == "goal_plus_thinkthread_annotation_next":
         return _claim_next(host, state)
     task = _active_task(host, state)
     router = _artifact_router(client, task)
-    if tool == "thinkthread_artifact_view_list":
+    if tool == "goal_plus_thinkthread_artifact_view_list":
         return router.readdir(str(params["view_id"]), str(params.get("path") or "."))
-    if tool == "thinkthread_artifact_view_stat":
+    if tool == "goal_plus_thinkthread_artifact_view_stat":
         return router.stat(str(params["view_id"]), str(params.get("path") or "."))
-    if tool == "thinkthread_artifact_view_pread":
+    if tool == "goal_plus_thinkthread_artifact_view_pread":
         return router.pread(
             str(params["view_id"]),
             str(params["path"]),
             offset=int(params.get("offset") or 0),
             length=int(params.get("length") or 64 * 1024),
         )
-    if tool == "thinkthread_artifact_view_diff":
+    if tool == "goal_plus_thinkthread_artifact_view_diff":
         return router.diff(
             str(params["base_view_id"]),
             str(params["target_view_id"]),
         )
-    if tool == "thinkthread_annotation_submit":
+    if tool == "goal_plus_thinkthread_annotation_submit":
         output = EvidenceAnnotationOutput.model_validate(params)
         result = EvidenceAnnotationResult(
             description=output.description,
@@ -337,6 +306,10 @@ def _process_message(
     state: dict[str, Any],
     message: dict[str, Any],
 ) -> None:
+    from goal_plus.infrastructure.session_diagnostics import archive_diagnostic_message
+
+    if archive_diagnostic_message(root_dir, state, message):
+        return
     payload = message_payload(message)
     if payload is None or payload.get("protocol") != PROTOCOL:
         return
@@ -498,10 +471,10 @@ def _model_for_task(task: EvidenceAnnotationTask) -> dict[str, str] | None:
 def _dispatch_message(state: dict[str, Any]) -> str:
     return (
         "你是 Goal Plus retained Evidence Annotation Child。只处理 Runtime 已录取的"
-        " annotation task；先调用 thinkthread_annotation_next，只可使用"
-        " thinkthread_artifact_view_list、thinkthread_artifact_view_stat、"
-        " thinkthread_artifact_view_pread、thinkthread_artifact_view_diff 读取授权的"
-        " target/peer immutable snapshots，最后调用 thinkthread_annotation_submit。"
+        " annotation task；先调用 goal_plus_thinkthread_annotation_next，只可使用"
+        " goal_plus_thinkthread_artifact_view_list、goal_plus_thinkthread_artifact_view_stat、"
+        " goal_plus_thinkthread_artifact_view_pread、goal_plus_thinkthread_artifact_view_diff 读取授权的"
+        " target/peer immutable snapshots，最后调用 goal_plus_thinkthread_annotation_submit。"
         "不得运行命令、代码、测试或 verifier，也不得调用以上清单外的工具。重复直到"
         " next 返回 idle；不得修改 Root、candidate branch、score 或 selection。\n\n"
         f"goal_plus_thinkthread_role=annotator; run_id={state['run_id']}; "
@@ -822,19 +795,8 @@ def kick_thinkthread_annotation_service(
         if state is None or state.get("status") not in {"running", "ready"}:
             return False
         current = _load_service(root_dir, run_id)
-        # The owned loop's terminal record is authoritative even when the Root
-        # denies PID probes. An exited service must not fence a retained wake.
-        if isinstance(current, dict) and current.get("status") not in {"exited", "stopped"}:
-            try:
-                pid = int(current.get("pid") or 0)
-            except (TypeError, ValueError):
-                pid = 0
-            if _process_matches_service(
-                pid,
-                run_id,
-                str(current.get("generation") or ""),
-            ):
-                return False
+        if isinstance(current, dict) and current.get("status") not in {"exited", "released"}:
+            return False
 
         generation = uuid.uuid4().hex
         source_root = Path(__file__).resolve().parents[1]
@@ -866,28 +828,7 @@ def kick_thinkthread_annotation_service(
                 "close_fds": True,
                 "env": environment,
             }
-            start_new_session = True
-            try:
-                process = subprocess.Popen(
-                    command,
-                    **launch_options,
-                    start_new_session=True,
-                )
-            except PermissionError as exc:
-                # Some protected Roots deny setsid(2). The service still
-                # outlives the short-lived tool process with detached stdio.
-                _append_service_log(
-                    root_dir,
-                    run_id,
-                    f"detached launch unavailable ({type(exc).__name__}: {exc}); "
-                    "retrying without a new session",
-                )
-                process = subprocess.Popen(
-                    command,
-                    **launch_options,
-                    start_new_session=False,
-                )
-                start_new_session = False
+            process = subprocess.Popen(command, **launch_options)
         _write_service(
             root_dir,
             run_id,
@@ -897,7 +838,6 @@ def kick_thinkthread_annotation_service(
                 "generation": generation,
                 "pid": int(process.pid),
                 "status": "running",
-                "start_new_session": start_new_session,
                 "started_at": utc_timestamp(),
             },
         )
@@ -1017,12 +957,9 @@ def service_thinkthread_annotation(
 
 def _service_owned(root_dir: Path | str, run_id: str, generation: str) -> bool:
     service = _load_service(root_dir, run_id)
-    if not isinstance(service, dict) or service.get("generation") != generation:
+    if not isinstance(service, dict) or service.get("generation") != generation or service.get("status") != "running":
         return False
-    try:
-        return int(service.get("pid") or 0) == os.getpid()
-    except (TypeError, ValueError):
-        return False
+    return True
 
 
 def serve_thinkthread_annotation(
@@ -1101,81 +1038,20 @@ def serve_thinkthread_annotation(
                 if (
                     isinstance(service, dict)
                     and service.get("generation") == generation
-                    and int(service.get("pid") or 0) == os.getpid()
                 ):
                     service["status"] = "exited"
                     service["finished_at"] = utc_timestamp()
                     _write_service(root_dir, run_id, service)
 
 
-def _stop_thinkthread_annotation_service(
-    root_dir: Path | str,
-    run_id: str,
-    *,
-    timeout_seconds: float,
-) -> None:
+def _release_thinkthread_annotation_service(root_dir: Path | str, run_id: str) -> None:
+    """Revoke the service generation; the host owns its process lifecycle."""
     with exclusive_file_lock(_service_lock_path(root_dir, run_id)):
         service = _load_service(root_dir, run_id)
-        if not isinstance(service, dict):
-            return
-        if service.get("status") in {"stale", "stopped", "exited"}:
-            return
-        try:
-            pid = int(service.get("pid") or 0)
-        except (TypeError, ValueError):
-            pid = 0
-        generation = str(service.get("generation") or "")
-        if not _process_matches_service(pid, run_id, generation):
-            service["status"] = "stale"
+        if isinstance(service, dict) and service.get("status") == "running":
+            service["status"] = "released"
             service["finished_at"] = utc_timestamp()
             _write_service(root_dir, run_id, service)
-            return
-        service["status"] = "stopping"
-        service["stop_requested_at"] = utc_timestamp()
-        _write_service(root_dir, run_id, service)
-
-    def send_signal(signum: signal.Signals) -> None:
-        try:
-            if service.get("start_new_session") is True:
-                os.killpg(pid, signum)
-            else:
-                os.kill(pid, signum)
-        except ProcessLookupError:
-            pass
-
-    try:
-        send_signal(signal.SIGTERM)
-    except PermissionError:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    deadline = time.monotonic() + max(0.0, timeout_seconds)
-    while time.monotonic() < deadline and _process_matches_service(
-        pid, run_id, generation
-    ):
-        time.sleep(0.05)
-    if _process_matches_service(pid, run_id, generation):
-        try:
-            send_signal(signal.SIGKILL)
-        except PermissionError:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        kill_deadline = time.monotonic() + 1.0
-        while time.monotonic() < kill_deadline and _process_matches_service(
-            pid, run_id, generation
-        ):
-            time.sleep(0.05)
-    if _process_matches_service(pid, run_id, generation):
-        raise RuntimeError(f"ThinkThread annotation service {pid} did not stop")
-    with exclusive_file_lock(_service_lock_path(root_dir, run_id)):
-        latest = _load_service(root_dir, run_id)
-        if isinstance(latest, dict) and latest.get("generation") == generation:
-            latest["status"] = "stopped"
-            latest["finished_at"] = utc_timestamp()
-            _write_service(root_dir, run_id, latest)
 
 
 def close_thinkthread_annotation(
@@ -1186,11 +1062,7 @@ def close_thinkthread_annotation(
     timeout_seconds: float = 15.0,
 ) -> dict[str, Any] | None:
     sdk = client or AgentPosixSdkClient()
-    _stop_thinkthread_annotation_service(
-        root_dir,
-        run_id,
-        timeout_seconds=min(timeout_seconds, 5.0),
-    )
+    _release_thinkthread_annotation_service(root_dir, run_id)
     with exclusive_file_lock(_lock_path(root_dir, run_id)):
         state = _load_state(root_dir, run_id)
         if state is None or state.get("status") == "closed":
@@ -1258,6 +1130,9 @@ def close_thinkthread_annotation(
                         if observed.get("state") != "removed":
                             raise
             if isinstance(child_id, str) and child is not None:
+                from goal_plus.infrastructure.session_diagnostics import collect_child_diagnostics
+
+                collect_child_diagnostics(root_dir, state, sdk)
                 state["close_intent"]["state"] = "destroying_child"
                 _write_state(root_dir, state)
                 ChildDriver(sdk, SystemClock()).destroy(child_id)

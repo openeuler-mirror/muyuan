@@ -69,7 +69,7 @@ class ReferenceWorkspaces:
                 artifact_ref = ArtifactRef(
                     kind="git_commit",
                     id=evidence.git_head,
-                    provider=source.task.workspace_backend,
+                    provider=source.task.workspace_provider,
                 )
             if artifact_ref is None:
                 raise RuntimeError("Evidence iteration has no immutable artifact")
@@ -119,7 +119,7 @@ class ReferenceWorkspaces:
                 source_iteration=iteration,
                 artifact_ref=artifact_ref,
                 display_name=display_name,
-                workspace_backend=source.task.workspace_backend,
+                workspace_provider=source.task.workspace_provider,
                 access=ReferenceWorkspaceAccess(
                     kind="filesystem_path",
                     root=reference_root,

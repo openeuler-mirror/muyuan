@@ -41,14 +41,13 @@ class CodexRunner:
         cmd = self._build_base_cmd(final_path=final_path)
         harness_contract = (
             "This is a non-interactive Codex $goal-plus system test. "
-            "Use the project-local Codex goal-plus and search skills. Decide "
+            "Use the shared Goal Plus MCP interface. Decide "
             "autonomously whether Search adds value, discover any missing "
             "verifier/spec details, and enter Search when the draft is ready. "
             "Do not ask for or wait for user confirmation. "
             "You are already inside the ST harness: do not run pytest, any "
             "host CLI, or any tests/st command. Drive the goal-plus "
-            "MCP tools directly, and only launch workers through the project "
-            "host-pool contract from runtime launch payloads. The host command "
+            "MCP tools directly and use its session controls for candidates. The host command "
             "has already created the Goal Plus record; never call "
             "goal_plus_create or goal_plus_update_goal.\n\n"
         )

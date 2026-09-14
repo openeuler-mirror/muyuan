@@ -27,8 +27,6 @@ from goal_plus.ports.clock import Clock
 from goal_plus.ports.goal_authorization import GoalToolTarget
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.domain.goal_closeout import (
-    has_search_ready_spec,
-    search_block_reason,
     tool_name,
     tool_input,
     is_search_tool,
@@ -91,17 +89,16 @@ class GoalGate:
                     "goal_plus_list_models",
                     "goal_plus_record_work_event",
                     "goal_plus_submit_final_check",
-                    "search_status",
-                    "search_recovery_status",
-                    "search_list_history",
-                    "search_list_iterations",
-                    "search_get_agent_observability",
-                    "search_report",
-                    "search_run_verifier",
+                    "goal_plus_search_status",
+                    "goal_plus_search_recovery_status",
+                    "goal_plus_search_list_history",
+                    "goal_plus_search_list_iterations",
+                    "goal_plus_search_get_agent_observability",
+                    "goal_plus_search_report",
+                    "goal_plus_search_run_verifier",
                 }
                 is_domain = owned_tool is not None or tool in {
                     *GOAL_SCOPED_TOOL_SUFFIXES, *LINKED_SEARCH_TOOL_SUFFIXES,
-                    "pi_goal_plus_run_final_check", "pi_goal_plus_run_work_item",
                 }
                 if (
                     event == "pre_tool_use"
@@ -144,36 +141,8 @@ class GoalGate:
                     return self._record_gate(record, event, "allow")
 
                 subagent_role = context.get("goal_plus_subagent_role")
-                if subagent_role == "search_candidate":
-                    completion_complete = context.get(
-                        "search_candidate_completion_complete"
-                    )
-                    if completion_complete is True or (
-                        completion_complete is None
-                        and context.get("search_candidate_verifier_complete") is True
-                    ):
-                        return self._record_gate(record, event, "allow")
-                    agent_session_id = context.get("search_candidate_agent_session_id")
-                    session_detail = (
-                        f" {agent_session_id}"
-                        if isinstance(agent_session_id, str)
-                        else ""
-                    )
-                    reason = context.get("search_candidate_completion_reason")
-                    if not isinstance(reason, str) or not reason:
-                        reason = (
-                            f"Search 候选{session_detail}停止前，必须使用自己的 agent_session_id "
-                            "完成至少一次 search_run_verifier 调用。选择、报告、提升和最终审计仍由"
-                            "父级负责。"
-                        )
-                    return self._record_gate(
-                        record,
-                        event,
-                        "block",
-                        reason=reason,
-                        continuation_prompt=reason,
-                    )
-                if subagent_role == "ordinary":
+                if subagent_role in {"search_candidate", "ordinary"}:
+                    # A native return is not Search Evidence or Goal completion.
                     return self._record_gate(record, event, "allow")
 
             if event == "stop":
@@ -223,20 +192,12 @@ class GoalGate:
                         reason=reason,
                         continuation_prompt=(
                             f"Goal Plus {record.goal_plus_id} 修订版 {record.goal_revision} 需要独立"
-                            "最终检查。使用当前 host 调用 goal_plus_prepare_final_check，启动返回的"
-                            "前台审查员，并确保它在停止前调用 goal_plus_submit_final_check。"
+                            "最终检查。调用 goal_plus_run_final_check 并审查返回的结论。"
                         ),
                     )
 
             if event == "pre_tool_use":
                 current_tool = tool_name(context)
-                if is_search_tool(current_tool) and not has_search_ready_spec(record):
-                    return self._record_gate(
-                        record,
-                        event,
-                        "block",
-                        reason=search_block_reason(record),
-                    )
                 ownership_error = self.authorization.ownership_error(record, target)
                 if ownership_error is not None:
                     return self._record_gate(
@@ -293,8 +254,7 @@ class GoalGate:
         action = record.next_action
         action_text = action.description if action else "没有记录下一步 action。"
         final_check_text = (
-            "该目标修订版必须通过独立最终检查；调用 goal_plus_prepare_final_check，"
-            "并完成返回的 host 审查流程。"
+            "该目标修订版必须通过独立最终检查；调用 goal_plus_run_final_check 并审查结论。"
             if final_check_mode(record) == "required"
             else "policy 不要求独立最终检查。"
         )
@@ -330,8 +290,8 @@ class GoalGate:
             "若必需工作、验证、提升和审计已经完成，即使实际收尾晚于预设也使用 complete，并在"
             "evidence 中分别记录预设时间和实际完成收尾时间；不要输出 late，也不要仅因超出预设"
             "而使用 blocked。blocked 只表示仍缺少外部输入、权限、资源或状态变化，导致任务确实"
-            "无法继续。如果没有时间限制，继续到目标满足，或出现这种真实阻塞。worker lease 或"
-            "probe 结束绝不会完成 Goal Plus 任务。停止前，使用 complete、blocked 或 abandoned"
+            "无法继续。如果没有时间限制，继续到目标满足，或出现这种真实阻塞。单次 worker 或"
+            "probe 返回不代表 Goal Plus 任务完成。停止前，使用 complete、blocked 或 abandoned"
             "调用 goal_plus_set_status，并提供真实原因和证据。\n\n"
             + self.reconciliation.reconciliation_context(record.goal_plus_id)
         )

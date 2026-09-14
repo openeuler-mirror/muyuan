@@ -4,10 +4,12 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
-from goal_plus.agent_hosts import host_binding, host_model_catalog, resolve_inner_agent_binding, portable_strategy_mode, UnsupportedHostCapability
-from goal_plus.domain.agents import AgentHostKind, ModelSpec, WorkerLaunchOptions
+from goal_plus.agent_hosts import host_model_catalog
+from goal_plus.infrastructure.host_bindings import execution_binding, resolve_inner_agent_binding
+from goal_plus.ports.agent_hosts import UnsupportedHostCapability
+from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider, ModelSpec, WorkerLaunchOptions
 from goal_plus.domain.search import SearchSpec, StrategySpec, DevicePoolSpec, DevicePoolInventory
-from goal_plus.domain.worker_policy import resolved_inner_agent_id, validate_worker_budget_for_host, worker_budget_dict
+from goal_plus.domain.worker_policy import portable_strategy_mode, resolved_inner_agent_id, worker_budget_dict
 from goal_plus.ports.candidate_host import ResolvedInnerAgentBinding
 from goal_plus.ports.search_configuration import ModelDiscovery
 
@@ -67,14 +69,16 @@ def supplemental_evaluation_required(
 class HostModelDiscovery:
     def list_available_models(
         self,
-        host: AgentHostKind,
+        agent_harness: AgentHarnessKind,
+        runtime_provider: AgentRuntimeProvider = "direct",
         query: str | None = None,
     ) -> dict[str, Any]:
-        binding = host_binding(host)
+        binding = execution_binding(agent_harness, runtime_provider)
         return {
-            "host": host,
+            "agent_harness": agent_harness,
+            "runtime_provider": runtime_provider,
             "adapter_version": binding.adapter_version,
-            "models": host_model_catalog(host).list_available_models(query),
+            "models": host_model_catalog(agent_harness, runtime_provider).list_available_models(query),
         }
 
 
@@ -121,7 +125,7 @@ class SearchConfiguration:
             + ", ".join(str(model.get("model")) for model in matches)
         )
 
-    def normalize_strategy_models(self, spec: SearchSpec, host: AgentHostKind) -> SearchSpec:
+    def normalize_strategy_models(self, spec: SearchSpec, agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> SearchSpec:
         requested = list(spec.strategy.models)
         if not requested:
             return spec
@@ -144,7 +148,7 @@ class SearchConfiguration:
         else:
             counts = [None] * len(requested)
 
-        discovery = self.models.list_available_models(host)
+        discovery = self.models.list_available_models(agent_harness, runtime_provider)
         available = discovery["models"]
         normalized_models: list[ModelSpec] = []
         for requested_model, count in zip(requested, counts, strict=True):
@@ -163,27 +167,27 @@ class SearchConfiguration:
         return spec.model_copy(update={"strategy": strategy})
 
     @staticmethod
-    def validate_host_workspace_backend(spec: SearchSpec, host: AgentHostKind) -> None:
-        backend = spec.workspace.backend
-        capabilities = host_binding(host).capabilities
-        supported = capabilities.supported_workspace_backends
-        if backend in supported and capabilities.search_enabled:
+    def validate_host_workspace_provider(spec: SearchSpec, agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> None:
+        workspace_provider = spec.workspace.provider
+        capabilities = execution_binding(agent_harness, runtime_provider).capabilities
+        supported = capabilities.supported_workspace_providers
+        if workspace_provider in supported and capabilities.search_enabled:
             return
-        if backend in supported and not capabilities.search_enabled:
+        if workspace_provider in supported and not capabilities.search_enabled:
             raise UnsupportedHostCapability(
                 capabilities.disabled_reason
-                or f"{host} worker_host Search capability is disabled"
+                or f"{agent_harness} agent_harness Search capability is disabled"
             )
         supported_names = ", ".join(sorted(supported))
         raise UnsupportedHostCapability(
-            f"{host} worker_host does not support workspace backend {backend!r}; "
+            f"{agent_harness} agent_harness does not support workspace provider {workspace_provider!r}; "
             f"supported backends: {supported_names}. Candidate checkout was "
             "rejected before Search run creation."
         )
 
     @classmethod
-    def normalize_inner_agent_spec(cls, spec: SearchSpec, host: AgentHostKind) -> SearchSpec:
-        inner_agent = resolved_inner_agent_id(spec.strategy, host)
+    def normalize_inner_agent_spec(cls, spec: SearchSpec, agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> SearchSpec:
+        inner_agent = resolved_inner_agent_id(spec.strategy, agent_harness, runtime_provider)
         if spec.strategy.inner_agent == inner_agent:
             return spec
         strategy = spec.strategy.model_copy(update={"inner_agent": inner_agent})
@@ -193,17 +197,18 @@ class SearchConfiguration:
     def inner_agent_binding(
         cls,
         strategy: StrategySpec,
-        host: AgentHostKind,
+        agent_harness: AgentHarnessKind,
+        runtime_provider: AgentRuntimeProvider = "direct",
     ) -> ResolvedInnerAgentBinding:
         return resolve_inner_agent_binding(
-            host,
-            resolved_inner_agent_id(strategy, host),
-            legacy_native_agent_type=strategy.worker_agent_type,
+            agent_harness,
+            resolved_inner_agent_id(strategy, agent_harness, runtime_provider),
+            runtime_provider,
         )
 
     @classmethod
-    def validate_inner_agent_binding(cls, strategy: StrategySpec, host: AgentHostKind) -> None:
-        cls.inner_agent_binding(strategy, host)
+    def validate_inner_agent_binding(cls, strategy: StrategySpec, agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> None:
+        cls.inner_agent_binding(strategy, agent_harness, runtime_provider)
 
     @staticmethod
     def apply_global_evidence_mode_from_environment(spec: SearchSpec) -> SearchSpec:
@@ -232,13 +237,13 @@ class SearchConfiguration:
             raise ValueError(
                 "strategy.config.global_evidence_mode must be one of " + allowed
             )
-        misplaced = sorted(
-            {"min_runtime_seconds", "min_verifier_runs"}.intersection(strategy.config)
+        removed = sorted(
+            {"min_runtime_seconds", "min_verifier_runs", "closeout_reserve_seconds", "reserve_closeout_seconds"}.intersection(strategy.config)
         )
-        if misplaced:
+        if removed:
             raise ValueError(
-                "strategy.config cannot contain worker lease fields "
-                f"{', '.join(misplaced)}; place them in strategy.worker_budget"
+                "strategy.config no longer supports exploration time policies: "
+                + ", ".join(removed)
             )
 
     @staticmethod
@@ -287,25 +292,22 @@ class SearchConfiguration:
     def strategy_mode(self, strategy: StrategySpec) -> str:
         return strategy.name.strip().lower().replace("-", "_")
 
-    def validate_host_strategy(self, strategy: StrategySpec, host: AgentHostKind) -> None:
+    def validate_host_strategy(self, strategy: StrategySpec, agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> None:
         self.validate_strategy_config(strategy)
-        self.validate_inner_agent_binding(strategy, host)
-        self.validate_worker_launch_for_host(strategy, host)
-        validate_worker_budget_for_host(
-            worker_host=host,
-            worker_budget=strategy.worker_budget,
-        )
+        self.validate_inner_agent_binding(strategy, agent_harness, runtime_provider)
+        self.validate_worker_launch_for_host(strategy, agent_harness, runtime_provider)
         if not portable_strategy_mode(strategy.name):
             raise ValueError(
-                f"{host} worker driver does not support strategy "
+                f"{agent_harness} worker driver does not support strategy "
                 f"{strategy.name}; use default/agent_guided or random"
             )
 
-    def validate_worker_launch_for_host(self, strategy: StrategySpec, host: AgentHostKind) -> None:
+    def validate_worker_launch_for_host(self, strategy: StrategySpec, agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> None:
         self.validate_worker_launch_options_for_host(
-            host,
+            agent_harness,
             strategy.worker_launch,
             "worker_launch",
+            runtime_provider,
         )
         for model in strategy.models:
             launch = WorkerLaunchOptions(
@@ -314,20 +316,22 @@ class SearchConfiguration:
                 service_tier=model.service_tier,
             )
             self.validate_worker_launch_options_for_host(
-                host,
+                agent_harness,
                 launch,
                 f"model {model.model!r}",
+                runtime_provider,
             )
 
     @staticmethod
     def validate_worker_launch_options_for_host(
-        worker_host: str,
+        agent_harness: AgentHarnessKind,
         worker_launch: WorkerLaunchOptions | None,
         label: str,
+        runtime_provider: AgentRuntimeProvider = "direct",
     ) -> None:
         if worker_launch is None:
             return
-        adapter = host_binding(worker_host)
+        adapter = execution_binding(agent_harness, runtime_provider)
         requested = worker_launch.model_dump(mode="json", exclude_none=True)
         capability_by_field = {
             "model": adapter.capabilities.supports_model_override,
@@ -339,7 +343,7 @@ class SearchConfiguration:
         )
         if unsupported:
             raise ValueError(
-                f"{worker_host} worker_host does not support {label} fields: "
+                f"{agent_harness} agent_harness does not support {label} fields: "
                 f"{', '.join(unsupported)}"
             )
 
@@ -348,25 +352,25 @@ class SearchConfiguration:
             return None
         return strategy.worker_launch.model_dump(mode="json", exclude_none=True)
 
-    def worker_policy(self, strategy: StrategySpec, host: AgentHostKind) -> dict[str, Any]:
-        adapter = host_binding(host)
-        binding = self.inner_agent_binding(strategy, host)
+    def worker_policy(self, strategy: StrategySpec, agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> dict[str, Any]:
+        adapter = execution_binding(agent_harness, runtime_provider)
+        binding = self.inner_agent_binding(strategy, agent_harness, runtime_provider)
         worker_budget = worker_budget_dict(strategy)
         worker_launch = self.worker_launch_dict(strategy)
         policy = {
-            "host": host,
+            "agent_harness": agent_harness,
+            "runtime_provider": runtime_provider,
             "inner_agent": binding.inner_agent_id,
             "inner_agent_binding": binding.as_dict(),
             "worker_budget": worker_budget,
             "worker_launch": worker_launch,
-            "pool": adapter.capabilities.pool.as_dict(),
+            "session_control": adapter.capabilities.session_control.as_dict(),
             "reason": (
-                f"主 agent 使用 search_start_agent_session 返回的 launch payload，"
-                f"通过 host-pool 契约启动 {host} worker。"
+                "Main 调用 goal_plus_session_run 执行 candidate，"
+                "goal_plus_session_wait 获取结果；后续 run 默认复用当前 session，"
+                "收尾调用 goal_plus_session_close。launch payload 由宿主内部消费。"
             ),
         }
-        if strategy.worker_agent_type is not None:
-            policy["legacy_worker_agent_type"] = strategy.worker_agent_type
         return policy
 
     def normalize_worker_policy(
@@ -374,30 +378,21 @@ class SearchConfiguration:
         strategy: StrategySpec,
         worker_policy: dict[str, Any] | None = None,
         *,
-        host: AgentHostKind,
+        agent_harness: AgentHarnessKind,
+        runtime_provider: AgentRuntimeProvider = "direct",
     ) -> dict[str, Any]:
-        base_policy = self.worker_policy(strategy, host)
+        base_policy = self.worker_policy(strategy, agent_harness, runtime_provider)
         policy = {**base_policy, **(worker_policy or {})}
-        if policy.get("host") != host:
+        if policy.get("agent_harness") != agent_harness or policy.get("runtime_provider") != runtime_provider:
             raise ValueError("worker policy host must match the frozen Main host binding")
         inner_agent = str(
-            policy.get("inner_agent") or resolved_inner_agent_id(strategy, host)
+            policy.get("inner_agent") or resolved_inner_agent_id(strategy, agent_harness, runtime_provider)
         )
-        legacy_native_agent_type = policy.get("legacy_worker_agent_type")
-        if legacy_native_agent_type is None:
-            legacy_native_agent_type = policy.get("worker_agent_type")
         binding = resolve_inner_agent_binding(
-            host,
+            agent_harness,
             inner_agent,
-            legacy_native_agent_type=(
-                str(legacy_native_agent_type)
-                if legacy_native_agent_type is not None
-                else strategy.worker_agent_type
-            ),
+            runtime_provider,
         )
         policy["inner_agent"] = binding.inner_agent_id
         policy["inner_agent_binding"] = binding.as_dict()
-        policy.pop("worker_agent_type", None)
-        if legacy_native_agent_type is not None:
-            policy["legacy_worker_agent_type"] = str(legacy_native_agent_type)
         return policy

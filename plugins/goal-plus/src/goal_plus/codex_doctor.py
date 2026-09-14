@@ -27,11 +27,6 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     import tomli as tomllib
 
 
-REQUIRED_SKILLS = (
-    "goal-plus",
-    "goal-plus-with-final-check",
-    "search",
-)
 HOOK_EVENT_LABELS = {
     "UserPromptSubmit": "user_prompt_submit",
     "SessionStart": "session_start",
@@ -246,15 +241,15 @@ def _check_plugin(
             ),
             installation,
         )
-    project_skill = project_root / ".codex" / "skills" / "goal-plus" / "SKILL.md"
-    if project_skill.is_file():
+    project_hooks = project_root / ".codex" / "hooks.json"
+    if project_hooks.is_file():
         return (
             CheckResult(
                 "codex.plugin",
                 "warn",
-                "The marketplace plugin is not enabled; Codex can use the project-local assets.",
+                "Legacy project-local hooks detected; use install.sh --codex to install the supported plugin.",
                 {
-                    "project_skill": str(project_skill),
+                    "project_hooks": str(project_hooks),
                     "plugin_status": installation.status if installation else "not listed",
                 },
             ),
@@ -271,33 +266,6 @@ def _check_plugin(
     )
 
 
-def _check_skills(
-    *,
-    installation: PluginInstallation | None,
-    project_root: Path,
-) -> CheckResult:
-    if installation is not None and installation.status == "installed, enabled" and installation.path:
-        skill_root = installation.path / "skills"
-        source = "plugin"
-    else:
-        skill_root = project_root / ".codex" / "skills"
-        source = "project"
-    missing = [name for name in REQUIRED_SKILLS if not (skill_root / name / "SKILL.md").is_file()]
-    if missing:
-        return CheckResult(
-            "codex.skills",
-            "fail",
-            "Required Goal Plus skills are missing.",
-            {"skill_root": str(skill_root), "missing": missing, "source": source},
-        )
-    return CheckResult(
-        "codex.skills",
-        "pass",
-        f"All required Goal Plus skills are present in the {source} assets.",
-        {"skill_root": str(skill_root), "skills": list(REQUIRED_SKILLS), "source": source},
-    )
-
-
 def _check_agent_roles(
     *,
     installation: PluginInstallation | None,
@@ -310,7 +278,7 @@ def _check_agent_roles(
             "The installable plugin uses self-contained built-in roles.",
             {
                 "search_worker": "default",
-                "final_checker": "default",
+                "final_checker": "native-session-read-only",
                 "custom_agents_packaged": False,
             },
         )
@@ -318,7 +286,6 @@ def _check_agent_roles(
     required = (
         "search_candidate_agent.toml",
         "search_candidate_common_agent.toml",
-        "goal_plus_final_checker.toml",
     )
     missing = [name for name in required if not (agent_root / name).is_file()]
     if missing:
@@ -666,7 +633,7 @@ def _check_packaged_assets(source_root: Path) -> CheckResult:
         assets / "plugin.json",
         assets / "mcp.json",
         assets / "hooks.json",
-        *(assets / "skills" / name / "SKILL.md" for name in REQUIRED_SKILLS),
+        source_root / "assets/goal-plus-instructions.txt",
     )
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -705,7 +672,6 @@ def collect_report(
         _check_goal_plus_cli(codex_home, installation.path if installation and installation.path else source_root),
         _check_packaged_assets(source_root),
         plugin_check,
-        _check_skills(installation=installation, project_root=project_root),
         _check_agent_roles(installation=installation, project_root=project_root),
         _check_mcp(codex_home),
         _check_hooks(

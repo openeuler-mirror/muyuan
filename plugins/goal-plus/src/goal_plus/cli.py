@@ -53,9 +53,9 @@ def main() -> None:
         raise SystemExit(hook_main())
 
     from goal_plus.paths import DEFAULT_RUNTIME_ROOT
-    from goal_plus.server import create_mcp
+    from goal_plus.server import create_codex_mcp
 
-    create_mcp(args.root or DEFAULT_RUNTIME_ROOT).run(transport="stdio")
+    create_codex_mcp(args.root or DEFAULT_RUNTIME_ROOT).run(transport="stdio")
 
 
 if __name__ == "__main__":

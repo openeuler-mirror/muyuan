@@ -7,19 +7,6 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-ORCHESTRATION_SKILLS = ("goal-plus", "goal-plus-with-final-check", "search")
-
-
-def _skill_frontmatter(path: Path) -> dict[str, str]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    assert lines and lines[0] == "---"
-    closing = lines.index("---", 1)
-    return {
-        key.strip(): value.strip()
-        for line in lines[1:closing]
-        for key, separator, value in [line.partition(":")]
-        if separator
-    }
 
 
 pytestmark = pytest.mark.codex
@@ -30,20 +17,9 @@ def test_source_assets_do_not_publish_host_discovery_entries() -> None:
         assert not (ROOT / relative).exists()
     for relative in (".codex/skills", ".codex/agents", ".pi/extensions", ".pi/skills", ".pi/prompts", "skills", "hooks"):
         assert not any(path.is_file() for path in (ROOT / relative).rglob("*"))
-    for name in ORCHESTRATION_SKILLS:
-        assert (ROOT / "assets/codex/skills" / name / "SKILL.md").is_file()
-
-
-@pytest.mark.parametrize("name", ORCHESTRATION_SKILLS)
-def test_codex_orchestration_skills_are_explicit_and_main_only(name: str) -> None:
-    skill_dir = ROOT / "assets" / "codex" / "skills" / name
-    metadata = _skill_frontmatter(skill_dir / "SKILL.md")
-    interface = (skill_dir / "agents" / "openai.yaml").read_text(encoding="utf-8")
-
-    assert metadata["name"] == name
-    assert "Goal Plus Main Agent" in metadata["description"]
-    assert "Search candidate worker" in metadata["description"]
-    assert "allow_implicit_invocation: false" in interface
+    assert not list((ROOT / "assets/codex").rglob("SKILL.md"))
+    manifest = json.loads((ROOT / "assets/codex/plugin.json").read_text())
+    assert "skills" not in manifest
 
 
 def test_codex_mcp_and_hook_assets_register_runtime_entrypoints() -> None:
@@ -76,7 +52,7 @@ def test_codex_main_and_candidate_mcp_inherit_debug_switch() -> None:
         config = tomllib.loads((ROOT / path).read_text())
         assert "GOAL_PLUS_DEBUG" in config["mcp_servers"]["goal-plus"]["env_vars"]
 
-def test_codex_plugin_default_prompts_use_goal_plus_skill() -> None:
+def test_codex_plugin_default_prompts_use_exact_host_command() -> None:
     manifest = json.loads(
         (ROOT / "assets/codex/plugin.json").read_text(encoding="utf-8")
     )
@@ -100,7 +76,7 @@ def test_codex_and_pi_worker_launch_contracts_share_the_portable_core() -> None:
 
     for instruction in (
         "你是 Search 候选 worker，不是搜索编排器。",
-        "search_get_agent_context(agent_session_id)",
+        "goal_plus_search_get_agent_context(agent_session_id)",
         "以返回的 `candidate_task` 为当前工作契约",
         "不要创建或管理其他 candidate",
         "沿用已加载的运行时上下文和 Evidence",

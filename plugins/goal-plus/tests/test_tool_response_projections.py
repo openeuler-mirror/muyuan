@@ -11,7 +11,6 @@ from goal_plus.domain.goal import GoalPlusLinkedSearch
 from goal_plus.pi_tool import call_pi_tool
 from goal_plus.projections.goal_tools import goal_status, reconciliation_summary, search_task_receipt
 from goal_plus.projections.monitor_tools import monitor_tool_summary
-from goal_plus.projections.pool_tools import pool_close_receipt, pool_tool_summary
 from goal_plus.server import create_mcp
 from goal_plus.tools import GoalPlusTools
 from tests._runtime_helpers import start_host_verified_goal
@@ -100,48 +99,6 @@ def test_recovery_summary_preserves_action_identity_and_errors():
     assert candidate == {"candidate_id": "c001", "generation": 4,
                          "next_step": "start_fresh_worker", "recovery_id": "recovery_4",
                          "workspace_inspection_error": "unavailable"}
-
-
-def test_pool_replies_keep_outcomes_and_pending_jobs_without_launch_history():
-    result = {"ok": True, "agent_session_id": "agent_1", "launch": {"prompt": "large"},
-              "bound_session": {"evidence_reads": ["large"]}, "steps": ["large"],
-              "final_score_report": {"aggregate_score": 2.4, "best_artifact_ref": {"id": "exact"}},
-              "lease": {"satisfied": True, "release_reason": "minimum_satisfied", "dispatch_count": 2}}
-    jobs = [{"job_id": f"job_{n}", "candidate_id": "c001", "status": "completed",
-             "delivered_at": "now", "result": result} for n in range(50)]
-    jobs[0]["delivered_at"] = None
-    snapshot = pool_tool_summary({"pool_id": "pool_1", "state": "closed", "jobs": jobs})
-    assert [j["job_id"] for j in snapshot["jobs"]] == ["job_0"]
-    assert "result" not in snapshot["jobs"][0]
-    assert snapshot["jobs_total"] == 50
-    reply = pool_tool_summary({"events": [{"event_id": "event_1", "result": result}]})
-    event = reply["events"][0]
-    assert event["result"]["final_score_report"] == result["final_score_report"]
-    assert event["result"]["lease"] == result["lease"]
-    assert "launch" not in event["result"] and "steps" not in event["result"]
-    assert "launch" in result
-
-
-def test_pool_close_receipt_is_constant_after_delivery_but_exposes_unresolved_jobs():
-    closed = {"pool_id": "pool_1", "state": "closed", "active_count": 0,
-              "undelivered_count": 0, "jobs": []}
-    before = pool_close_receipt(closed)
-    jobs = [{"job_id": f"job_{n}", "candidate_id": "c001", "status": "completed",
-             "delivered_at": "now", "result": {"ok": True, "final_score_report": {"large": "x" * 5000}}}
-            for n in range(100)]
-    assert pool_close_receipt({**closed, "jobs": jobs}) == before
-    assert len(json.dumps(before, separators=(",", ":"))) < 200
-    jobs[-1].update(status="failed", error={"message": "worker exited"})
-    jobs[-1]["result"] = {"ok": False, "failure": {"stage": "verification", "message": "unavailable"}}
-    jobs[0]["delivered_at"] = None
-    jobs.append({"job_id": "active", "candidate_id": "c002", "status": "running"})
-    pending = pool_close_receipt({**closed, "state": "draining", "active_count": 1,
-                                 "undelivered_count": 1, "jobs": jobs})
-    assert pending["state"] == "draining" and pending["active_count"] == 1
-    assert pending["undelivered_count"] == 1
-    assert [item["job_id"] for item in pending["jobs"]] == ["job_0", "job_99", "active"]
-    assert pending["jobs"][1]["error"] == {"message": "worker exited"}
-    assert pending["jobs"][1]["failure"]["failure"]["message"] == "unavailable"
 
 
 def test_monitor_keeps_annotation_barrier_and_cleanup_errors():

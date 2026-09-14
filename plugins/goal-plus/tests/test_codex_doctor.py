@@ -19,16 +19,11 @@ def _make_project_assets(root: Path) -> dict[str, object]:
     hooks_path = root / ".codex" / "hooks.json"
     hooks_path.parent.mkdir(parents=True)
     hooks_path.write_text(json.dumps(hooks_payload), encoding="utf-8")
-    for name in codex_doctor.REQUIRED_SKILLS:
-        skill_path = root / ".codex" / "skills" / name / "SKILL.md"
-        skill_path.parent.mkdir(parents=True)
-        skill_path.write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
     agent_root = root / ".codex" / "agents"
     agent_root.mkdir(parents=True)
     for name in (
         "search_candidate_agent.toml",
         "search_candidate_common_agent.toml",
-        "goal_plus_final_checker.toml",
     ):
         (agent_root / name).write_text(f'name = "{name[:-5]}"\n', encoding="utf-8")
     return hooks_payload
@@ -99,25 +94,12 @@ def test_parse_plugin_installation_with_enabled_local_plugin(tmp_path: Path) -> 
     assert installation.path == tmp_path.resolve()
 
 
-def test_enabled_plugin_uses_installable_top_level_skills(tmp_path: Path) -> None:
-    for name in codex_doctor.REQUIRED_SKILLS:
-        skill_path = tmp_path / "skills" / name / "SKILL.md"
-        skill_path.parent.mkdir(parents=True, exist_ok=True)
-        skill_path.write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+def test_enabled_plugin_uses_native_roles_without_skills(tmp_path: Path) -> None:
     installation = codex_doctor.PluginInstallation(
         plugin_id="goal-plus@muyuan",
         status="installed, enabled",
         path=tmp_path,
     )
-
-    result = codex_doctor._check_skills(
-        installation=installation,
-        project_root=tmp_path / "unrelated-project",
-    )
-
-    assert result.status == "pass"
-    assert result.details["source"] == "plugin"
-    assert result.details["skill_root"] == str(tmp_path / "skills")
 
     roles = codex_doctor._check_agent_roles(
         installation=installation,
@@ -125,7 +107,7 @@ def test_enabled_plugin_uses_installable_top_level_skills(tmp_path: Path) -> Non
     )
     assert roles.status == "pass"
     assert roles.details["search_worker"] == "default"
-    assert roles.details["final_checker"] == "default"
+    assert roles.details["final_checker"] == "native-session-read-only"
     assert roles.details["custom_agents_packaged"] is False
 
 
@@ -235,7 +217,6 @@ def test_collect_report_accepts_complete_project_local_setup(
         "goal_plus.executable": "warn",
         "goal_plus.package_assets": "pass",
         "codex.plugin": "warn",
-        "codex.skills": "pass",
         "codex.agent_roles": "pass",
         "codex.mcp": "pass",
         "codex.hooks": "pass",

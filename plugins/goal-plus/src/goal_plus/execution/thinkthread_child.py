@@ -1,5 +1,6 @@
 """Message-only Child execution and exact ownership recovery for TT roles."""
 
+import math
 from typing import Any
 
 from goal_plus.execution.thinkthread_rpc import MESSAGE_RECEIVE_LIMIT, registration_matches
@@ -111,14 +112,15 @@ class ChildDriver:
         if isinstance(wake, dict) and wake.get("messageId") == active_message:
             outcome = wake.get("outcome")
             if outcome in {"completed", "interrupted", "failed", "cancelled"}:
-                finished = wake.get("finishedAtMs")
+                finished = wake.get("finishedAtUnixMs")
                 if (
-                    isinstance(finished, (int, float)) and not isinstance(finished, bool)
-                    and self.clock.now() * 1000 < float(finished) + TURN_QUIESCENCE_SECONDS * 1000
+                    not isinstance(finished, (int, float)) or isinstance(finished, bool)
+                    or not math.isfinite(finished)
+                    or self.clock.now() * 1000 < float(finished) + TURN_QUIESCENCE_SECONDS * 1000
                 ):
                     return None
                 return str(outcome)
-        if child.get("executionState") == "absent" and child.get("completion") is not None:
+        if active_message is None and child.get("executionState") == "absent" and child.get("completion") is not None:
             return "completed" if agent_state == "ready" else "failed"
         return None
 
@@ -159,3 +161,69 @@ class ChildDriver:
                     raise exc
             else:
                 raise
+
+    def reset_branch(self, child_id: str, *, root_id: str, branch_id: str, snapshot_id: str) -> None:
+        child = self.observe(child_id, root_id=root_id, branch_id=branch_id)
+        if child is None:
+            raise RuntimeError("ThinkThread Child disappeared before branch reset")
+        if child.get("executionState") != "absent":
+            self.interrupt(child_id, 5.0)
+            child = self.observe(child_id, root_id=root_id, branch_id=branch_id)
+            if child is None or child.get("executionState") != "absent":
+                raise RuntimeError("ThinkThread Child must stop before branch reset")
+        branch = self.client.invoke("fs.branch.stat", {"branchId": branch_id})
+        if branch.get("branchId") != branch_id or branch.get("thinkthreadId") != child_id:
+            raise PermissionError("ThinkThread branch ownership mismatch")
+        if branch.get("baseSnapshotId") == snapshot_id:
+            return
+        generation = branch.get("controlGeneration")
+        if not isinstance(generation, int) or isinstance(generation, bool):
+            raise RuntimeError("ThinkThread branch omitted controlGeneration")
+        try:
+            self.client.invoke("fs.branch.reset", {
+                "branchId": branch_id, "toSnapshotId": snapshot_id, "ifGeneration": generation,
+            }, timeout_seconds=60.0)
+        except AgentPosixBridgeError as exc:
+            if not exc.completion_unknown:
+                raise
+        observed = self.client.invoke("fs.branch.stat", {"branchId": branch_id})
+        if observed.get("baseSnapshotId") != snapshot_id:
+            raise RuntimeError("ThinkThread branch reset did not establish the exact snapshot")
+
+    def release(self, child_id: str, *, root_id: str, branch_id: str, timeout: float) -> None:
+        child = self.observe(child_id, root_id=root_id, branch_id=branch_id)
+        if child is not None and child.get("executionState") != "absent":
+            self.interrupt(child_id, timeout)
+            child = self.observe(child_id, root_id=root_id, branch_id=branch_id)
+            if child is not None and child.get("executionState") != "absent":
+                raise RuntimeError("ThinkThread Child remained active during resource release")
+        try:
+            branch = self.client.invoke("fs.branch.stat", {"branchId": branch_id})
+        except AgentPosixBridgeError as exc:
+            if exc.code != "FsBranchNotFound":
+                raise
+            branch = None
+        if branch is not None:
+            if branch.get("branchId") != branch_id or branch.get("thinkthreadId") != child_id:
+                raise PermissionError("ThinkThread branch ownership mismatch during resource release")
+            if branch.get("state") != "removed":
+                generation = branch.get("controlGeneration")
+                if not isinstance(generation, int) or isinstance(generation, bool):
+                    raise RuntimeError("ThinkThread branch omitted controlGeneration")
+                try:
+                    self.client.invoke("fs.branch.remove", {"branchId": branch_id, "ifGeneration": generation})
+                except AgentPosixBridgeError as exc:
+                    if not exc.completion_unknown:
+                        raise
+                try:
+                    removed = self.client.invoke("fs.branch.stat", {"branchId": branch_id})
+                except AgentPosixBridgeError as exc:
+                    if exc.code != "FsBranchNotFound":
+                        raise
+                else:
+                    if removed.get("state") != "removed":
+                        raise RuntimeError("ThinkThread branch removal is not confirmed")
+        if child is not None:
+            self.destroy(child_id)
+            if self.observe(child_id, root_id=root_id, branch_id=branch_id) is not None:
+                raise RuntimeError("ThinkThread Child destruction is not confirmed")

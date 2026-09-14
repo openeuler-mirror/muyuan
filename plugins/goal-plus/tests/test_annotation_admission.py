@@ -49,7 +49,7 @@ def frozen_spec(clock: Clock, *, adaptive: bool = False) -> FrozenSpec:
                 "allocation": {"policy": "priority_replace/v1"},
             }
         )
-    return FrozenSpec(native_host="codex",
+    return FrozenSpec(runtime_provider="direct", agent_harness="codex",
         frozen_spec_id="frozen_test",
         spec_hash="hash",
         spec=SearchSpec.model_validate(data),

@@ -47,11 +47,11 @@ def write_text(path: Path, text: str) -> None:
 
 
 @contextmanager
-def exclusive_file_lock(lock_path: Path) -> Iterator[None]:
+def exclusive_file_lock(lock_path: Path, *, blocking: bool = True) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     if fcntl is not None:
         with lock_path.open("a", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
             try:
                 yield
             finally:
@@ -64,6 +64,8 @@ def exclusive_file_lock(lock_path: Path) -> Iterator[None]:
             lock_dir.mkdir(parents=True)
             break
         except FileExistsError:
+            if not blocking:
+                raise BlockingIOError(f"file lock is owned: {lock_path}") from None
             time.sleep(0.05)
     try:
         yield

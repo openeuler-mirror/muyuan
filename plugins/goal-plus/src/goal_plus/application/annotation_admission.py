@@ -82,7 +82,7 @@ class AnnotationAdmission:
         if not eligible:
             raise RuntimeError("ThinkThread annotator spawn requires an eligible task")
         task = self.workflow.task(run_id, *eligible[0])
-        if task is None or task.profile is None or task.profile.host != "thinkthread":
+        if task is None or task.profile is None or task.profile.runtime_provider != "thinkthread":
             raise RuntimeError("ThinkThread annotation task has no ThinkThread profile")
         return ThinkThreadAnnotationDispatch(
             baseline_snapshot_id=baseline.id,
@@ -182,7 +182,7 @@ class AnnotationAdmission:
     ) -> tuple[ResolvedEvidenceAnnotatorProfile | None, str | None]:
         strategy = frozen.spec.strategy
         configured = strategy.evidence_annotator
-        annotation_host = frozen.worker_host
+        annotation_host = frozen.agent_harness
         worker_launch = strategy.worker_launch
         model = configured.model
 
@@ -199,7 +199,8 @@ class AnnotationAdmission:
             )
         return (
             ResolvedEvidenceAnnotatorProfile(
-                host=annotation_host,
+                agent_harness=annotation_host,
+                runtime_provider=frozen.runtime_provider,
                 model=model,
                 reasoning_effort=reasoning_effort,
                 timeout_seconds=configured.timeout_seconds,
@@ -231,7 +232,7 @@ class AnnotationAdmission:
                 artifact_ref = ArtifactRef(
                     kind="git_commit",
                     id=iteration.git_head,
-                    provider=record.workspace_backend,
+                    provider=record.workspace_provider,
                 )
             if artifact_ref is None:
                 raise RuntimeError(
@@ -252,7 +253,7 @@ class AnnotationAdmission:
                 candidate_id=record.candidate_id,
                 iteration=iteration.iteration,
                 artifact_ref=artifact_ref,
-                workspace_backend=record.workspace_backend,
+                workspace_provider=record.workspace_provider,
                 display_name=(
                     f"{role}-{record.candidate_id}-iteration-{iteration.iteration:04d}"
                 ),
@@ -277,7 +278,7 @@ class AnnotationAdmission:
                     item
                     for item in peer_record.iterations
                     if iteration_matches_evidence_reference(
-                        item, reference, peer_record.workspace_backend
+                        item, reference, peer_record.workspace_provider
                     )
                 ),
                 None,
@@ -515,7 +516,7 @@ class AnnotationAdmission:
                 iteration=iteration.iteration,
                 commit=iteration.git_head,
                 artifact_ref=iteration_artifact_ref(
-                    iteration, record.workspace_backend
+                    iteration, record.workspace_provider
                 ),
             )
             for _, record, iteration in settled[-MAX_EVIDENCE_COMPARISON_PEERS:]

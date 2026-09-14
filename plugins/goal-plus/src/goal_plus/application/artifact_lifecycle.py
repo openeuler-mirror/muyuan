@@ -84,8 +84,8 @@ class ArtifactLifecycle:
     ) -> list[str]:
         pins = set(external.get(snapshot_id, set()))
         pins.update(
-            f"pool:{pool_id}:{state}"
-            for pool_id, state in self.state.pool_states(run.run_id)
+            f"session:{session_id}:{state}"
+            for session_id, state in self.state.session_resource_states(run.run_id)
             if state != "closed"
         )
         annotation = self.state.annotation_state(run.run_id)

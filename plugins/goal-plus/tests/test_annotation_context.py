@@ -82,8 +82,8 @@ class Artifacts:
             f"{comparison.base.id} -> {comparison.head.id}", self.truncated
         )
 
-    def open_view(self, workspace, artifact, destination, *, backend):
-        self.opened.append((workspace, artifact, destination, backend))
+    def open_view(self, workspace, artifact, destination, *, workspace_provider):
+        self.opened.append((workspace, artifact, destination, workspace_provider))
         return ReferenceWorkspaceAccess(
             kind="filesystem_path",
             root=destination,
@@ -292,7 +292,7 @@ def test_cleanup_fence_prevents_opening_artifacts(context_api, status):
     )
     state.iteration.artifact_ref = snapshot
     task.artifact_views[0].artifact_ref = snapshot
-    task.artifact_views[0].workspace_backend = "thinkthread"
+    task.artifact_views[0].workspace_provider = "thinkthread"
     state.run.provider_cleanup = [
         ProviderResourceCleanupRecord(
             resource_id=snapshot.id,

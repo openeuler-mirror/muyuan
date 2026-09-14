@@ -172,7 +172,7 @@ while true; do
   "$python_bin" - <<'PY'
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime, timezone
 import json
 import math
@@ -380,17 +380,6 @@ def read_sessions(root: Path, run_id: str) -> dict[str, dict[str, Any]]:
     return result
 
 
-def read_pools(root: Path, run_id: str) -> list[dict[str, Any]]:
-    pools = []
-    for path in sorted((root / "host-pools" / "pi").glob("pool_*/pool.json")):
-        pool = load(path)
-        if pool.get("run_id") != run_id:
-            continue
-        jobs = [load(job_path) for job_path in sorted(path.parent.glob("jobs/job_*/job.json"))]
-        pools.append({"pool": pool, "jobs": jobs})
-    return pools
-
-
 def run_artifacts(root: Path, run_id: str) -> dict[str, Any]:
     run_dir = root / "runs" / run_id
     patches = sorted((run_dir / "promotion").glob("*.patch"))
@@ -402,7 +391,7 @@ def run_artifacts(root: Path, run_id: str) -> dict[str, Any]:
 
 
 def handoff_summary(session: dict[str, Any]) -> tuple[str | None, list[str]]:
-    handle = session.get("host_handle")
+    handle = session.get("session_handle")
     metadata = handle.get("metadata") if isinstance(handle, dict) else None
     progress = metadata.get("progress_handoff") if isinstance(metadata, dict) else None
     if not isinstance(progress, dict):
@@ -439,7 +428,6 @@ def assemble(root: Path, goal_id: str | None, requested_run: str, limit: int, st
                 "plans": read_plans(root, candidate_run_id),
                 "candidate_records": candidates,
                 "session_records": read_sessions(root, candidate_run_id),
-                "pi_pools": read_pools(root, candidate_run_id),
                 "artifacts": run_artifacts(root, candidate_run_id),
             }
         )
@@ -475,7 +463,7 @@ def render_verbose_goal(bundle: dict[str, Any]) -> None:
         print(
             f"  final check: status={final_check.get('status', '-')} "
             f"verdict={final_check.get('verdict') or '-'} "
-            f"checker={final_check.get('checker_host') or '-'}"
+            f"checker={final_check.get('checker_harness') or '-'}"
         )
     aggregate = primary.get("search_task_aggregate") or {}
     print(
@@ -513,27 +501,6 @@ def render_plans(plans: list[dict[str, Any]]) -> None:
             print(f"      strategy state: {json.dumps(state, ensure_ascii=False, sort_keys=True)}")
 
 
-def render_pools(pools: list[dict[str, Any]]) -> None:
-    for item in pools:
-        pool = item["pool"]
-        jobs = item["jobs"]
-        counts = Counter(str(job.get("status", "unknown")) for job in jobs)
-        count_text = ", ".join(f"{key}={counts[key]}" for key in sorted(counts)) or "no jobs"
-        print(
-            f"  pi pool {pool.get('pool_id')}: state={pool.get('state')} "
-            f"parallel={pool.get('max_parallel')} {count_text} "
-            f"updated={age(pool.get('updated_at'))} ago (persisted host snapshot)"
-        )
-        for job in jobs:
-            print(
-                f"    job {job.get('job_id')}: candidate={job.get('candidate_id')} "
-                f"status={job.get('status')} pid={job.get('pid', '-')} "
-                f"redispatch={bool(job.get('redispatch'))} updated={age(job.get('updated_at'))} ago"
-            )
-            if job.get("error"):
-                print(f"      error: {short(job['error'], 180)}")
-
-
 def render_subagent(subagent: dict[str, Any], session: dict[str, Any]) -> None:
     observability = subagent.get("observability") or {}
     identity = observability.get("identity") or {}
@@ -544,7 +511,7 @@ def render_subagent(subagent: dict[str, Any], session: dict[str, Any]) -> None:
     model = execution.get("model") or "-"
     effort = execution.get("reasoning_effort") or "-"
     print(
-        f"      agent {subagent.get('agent_session_id')}: host={subagent.get('host')} "
+        f"      agent {subagent.get('agent_session_id')}: harness={subagent.get('agent_harness')} provider={subagent.get('runtime_provider')} "
         f"liveness={subagent.get('liveness')} terminal={execution.get('terminal_state', '-')} "
         f"model={model}/{effort} updated={age(subagent.get('updated_at'))} ago"
     )
@@ -693,7 +660,7 @@ def render_verbose_run(item: dict[str, Any]) -> None:
         history_text += f"(top_n={history['top_n']})"
     print(
         f"  strategy: {strategy.get('name', '-')}/{strategy.get('driver', '-')} "
-        f"host={strategy.get('worker_host', '-')} mode={strategy.get('worker_mode', '-')} "
+        f"harness={strategy.get('agent_harness', '-')} provider={strategy.get('runtime_provider', '-')} mode={strategy.get('worker_mode', '-')} "
         f"history={history_text}"
     )
     run_age_label = "age" if run.get("state") in {"promoted", "aborted", "failed"} else "elapsed"
@@ -733,7 +700,6 @@ def render_verbose_run(item: dict[str, Any]) -> None:
         f"promotion={','.join(artifacts.get('promotion_patches') or []) or '-'}"
     )
     render_plans(item["plans"])
-    render_pools(item["pi_pools"])
     print("  candidates:")
     subagents_by_candidate: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for subagent in snapshot.get("subagents", []):
@@ -839,18 +805,6 @@ def render_compact_goal(bundle: dict[str, Any]) -> None:
     render_orchestration(primary, verbose=False)
 
 
-def render_compact_pools(pools: list[dict[str, Any]]) -> None:
-    for item in pools:
-        pool = item["pool"]
-        jobs = item["jobs"]
-        counts = Counter(str(job.get("status", "unknown")) for job in jobs)
-        count_text = ",".join(f"{key}={counts[key]}" for key in sorted(counts)) or "no-jobs"
-        print(
-            f"  pool {pool.get('pool_id')}: state={pool.get('state')} "
-            f"parallel={pool.get('max_parallel')} {count_text}"
-        )
-
-
 def render_compact_candidate(
     candidate_id: str,
     summary: dict[str, Any],
@@ -941,7 +895,7 @@ def render_compact_run(item: dict[str, Any]) -> None:
         f"run {run.get('run_id')}: state={run.get('state')} "
         f"{direction} {spec.get('metric_name', '-')} best={score(run.get('best_score'))} "
         f"selected={run.get('selected_candidate_id') or '-'} | "
-        f"strategy={strategy.get('name', '-')}/{strategy.get('worker_host', '-')} "
+        f"strategy={strategy.get('name', '-')}/{strategy.get('agent_harness', '-')}/{strategy.get('runtime_provider', '-')} "
         f"candidates={run.get('candidates_evaluated', 0)}/{run.get('candidates_total', 0)} "
         f"rounds={run.get('started_rounds_total', 0)}/{run.get('planning_rounds_total', 0)}"
     )
@@ -952,7 +906,6 @@ def render_compact_run(item: dict[str, Any]) -> None:
             f"requested={plan.get('requested_k')} planned={plan.get('planned_k')} | "
             f"{short(trace.get('selection_rule'), 120)}"
         )
-    render_compact_pools(item["pi_pools"])
     subagents_by_candidate: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for subagent in snapshot.get("subagents", []):
         subagents_by_candidate[str(subagent.get("candidate_id"))].append(subagent)

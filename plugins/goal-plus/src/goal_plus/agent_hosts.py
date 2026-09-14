@@ -3,118 +3,28 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from dataclasses import dataclass, field
 from queue import Empty, Queue
 from threading import Thread
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
-from goal_plus.agent_pool import HostPoolContract
 from goal_plus.execution.managed_process import ManagedProcess
 from goal_plus.host_observability import (
     collect_codex_observability,
     collect_pi_observability,
 )
-from goal_plus.domain.agents import (
-    AgentHostKind, INNER_AGENT_AUTORESEARCH, INNER_AGENT_COMMON,
-    WORKSPACE_LEDGER_PROJECTION_NONE,
-    WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV,
+from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider, validate_agent_execution
+from goal_plus.domain.search import AgentSessionRecord
+from goal_plus.infrastructure.host_bindings import (
+    execution_binding as _execution_binding,
+    require_execution_enabled as _require_execution_enabled,
 )
-from goal_plus.ports.candidate_host import ResolvedInnerAgentBinding
-from goal_plus.domain.worker_policy import resolved_inner_agent_id
-from goal_plus.domain.search import AgentSessionRecord, FrozenSpec, CandidateTask
-from goal_plus.domain.artifacts import WorkspaceBackend
+from goal_plus.ports.agent_hosts import (
+    CandidateLaunchAdapter, HostModelCatalog, UnsupportedHostCapability,
+)
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT
 
 
-PORTABLE_STRATEGY_MODES = {
-    "agent",
-    "agent_guided",
-    "default",
-    "random",
-    "random_mode",
-}
-CODEX_MIN_WAIT_SECONDS = 10
 MODEL_DISCOVERY_STOP_SECONDS = 2.0
-
-
-
-class UnsupportedHostCapability(RuntimeError):
-    """Raised when a host cannot provide a requested worker capability."""
-
-
-@dataclass(frozen=True)
-class HostCapabilities:
-    search_enabled: bool = True
-    disabled_reason: str | None = None
-    supports_soft_closeout: bool = False
-    supports_model_discovery: bool = False
-    supports_model_override: bool = False
-    supports_reasoning_effort: bool = False
-    supports_service_tier: bool = False
-    supports_usage_metadata: bool = False
-    supports_process_kill: bool = False
-    supported_workspace_backends: frozenset[WorkspaceBackend] = frozenset()
-    supports_process_environment: bool = False
-    supported_inner_agents: frozenset[str] = frozenset()
-    pool: HostPoolContract = field(default_factory=HostPoolContract)
-
-
-@dataclass(frozen=True)
-class HostBinding:
-    name: AgentHostKind
-    adapter_version: str
-    capabilities: HostCapabilities
-
-
-class HostModelCatalog(Protocol):
-    def list_available_models(self, query: str | None = None) -> list[dict[str, Any]]: ...
-
-
-class CandidateLaunchAdapter(Protocol):
-    def build_launch_payload(
-        self,
-        *,
-        native_agent_type: str | None,
-        candidate_id: str,
-        agent_session_id: str,
-        short_intent: str,
-        one_paragraph_idea: str,
-        worker_budget: dict[str, Any] | None = None,
-        worker_launch: dict[str, Any] | None = None,
-        root: str | None = None,
-        cwd: str | None = None,
-        worker_prompt: str | None = None,
-        process_environment: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        ...
-
-    def build_continue_payload(
-        self,
-        *,
-        native_agent_type: str | None,
-        candidate_id: str,
-        agent_session_id: str,
-        external_id: str | None,
-        task_name: str | None,
-        short_intent: str,
-        one_paragraph_idea: str,
-        root: str | None = None,
-        cwd: str | None = None,
-        worker_prompt: str | None = None,
-        worker_budget: dict[str, Any] | None = None,
-        worker_launch: dict[str, Any] | None = None,
-        host_metadata: dict[str, Any] | None = None,
-        process_environment: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        ...
-
-
-def _normalize_mode(value: str) -> str:
-    return value.strip().lower().replace("-", "_")
-
-
-def portable_strategy_mode(value: str) -> bool:
-    return _normalize_mode(value) in PORTABLE_STRATEGY_MODES
 
 
 def _send_json_line(process: subprocess.Popen[str], payload: dict[str, Any]) -> None:
@@ -183,32 +93,9 @@ def _filter_available_models(
     ]
 
 
-def _codex_task_name(agent_session_id: str) -> str:
-    normalized = re.sub(r"[^a-z0-9_]+", "_", agent_session_id.lower()).strip("_")
-    return f"search_{normalized or 'agent'}"
-
-
-def _soft_closeout_seconds(max_runtime_seconds: int) -> int:
-    return min(45, max(5, int(max_runtime_seconds) // 5))
-
-
-def _pi_soft_closeout_seconds(
-    max_runtime_seconds: int,
-    min_runtime_seconds: int | None,
-) -> int:
-    if min_runtime_seconds:
-        return max(1, max_runtime_seconds - min_runtime_seconds)
-    return _soft_closeout_seconds(max_runtime_seconds)
-
-
-CODEX_CLOSEOUT_MESSAGE = (
-    "Worker 的截止时间临近。停止启动新工作；如有需要，最后运行一次 "
-    "search_run_verifier，更新 .tmp/handoff.json，并返回简洁摘要。"
-)
-
 WORKER_BOUNDARY = (
     "你是 Search 候选 worker，不是搜索编排器。首先使用提供的 agent_session_id "
-    "调用 search_get_agent_context，以返回的 candidate_task 为当前工作契约：只在其中指定的 "
+    "调用 goal_plus_search_get_agent_context，以返回的 candidate_task 为当前工作契约：只在其中指定的 "
     "workspace 工作，遵守可修改范围和 instructions。独立选择候选内的技术方向；规划、创建"
     "其他 candidate、最终选择、报告和 promotion 属于父 agent。"
 )
@@ -220,70 +107,21 @@ def _worker_contract(worker_prompt: str | None) -> str:
     return prompt or WORKER_BOUNDARY
 
 
-def _codex_budget_control(
-    target: str,
-    worker_budget: dict[str, Any] | None,
-) -> dict[str, Any] | None:
+def _budget_control(worker_budget: dict[str, Any] | None) -> dict[str, Any] | None:
     if not worker_budget:
         return None
-    max_runtime_seconds = worker_budget.get("max_runtime_seconds")
-    budget_control: dict[str, Any] = {
-        "mode": "parent_watchdog",
-        "max_runtime_seconds": max_runtime_seconds,
+    control = {
+        "mode": "session_control",
+        "max_runtime_seconds": worker_budget.get("max_runtime_seconds"),
         "on_exceed": worker_budget.get("on_exceed", "interrupt"),
-        "interrupt_tool": "interrupt_agent",
-        "interrupt_target": target,
     }
-    if max_runtime_seconds is not None:
-        soft_closeout_seconds = max(
-            CODEX_MIN_WAIT_SECONDS,
-            _soft_closeout_seconds(int(max_runtime_seconds)),
-        )
-        initial_wait_seconds = int(max_runtime_seconds) - soft_closeout_seconds
-        if initial_wait_seconds < CODEX_MIN_WAIT_SECONDS:
-            raise ValueError(
-                "codex worker_budget.max_runtime_seconds must accommodate "
-                "two native wait intervals"
-            )
-        min_runtime_seconds = worker_budget.get("min_runtime_seconds")
-        if (
-            min_runtime_seconds is not None
-            and int(min_runtime_seconds) >= initial_wait_seconds
-        ):
-            raise ValueError(
-                "codex worker_budget.min_runtime_seconds must end before the "
-                "parent watchdog soft-closeout point; increase "
-                "max_runtime_seconds to reserve worker closeout time"
-            )
-        budget_control.update(
-            {
-                "initial_wait_timeout_ms": initial_wait_seconds * 1000,
-                "soft_closeout_seconds": soft_closeout_seconds,
-                "closeout_tool": "send_message",
-                "closeout_target": target,
-                "closeout_message": CODEX_CLOSEOUT_MESSAGE,
-                "final_wait_timeout_ms": soft_closeout_seconds * 1000,
-            }
-        )
-        if min_runtime_seconds is not None or worker_budget.get(
-            "min_verifier_runs"
-        ) is not None:
-            budget_control["autoresearch_lease"] = {
-                "mode": "subagent_stop",
-                "min_runtime_seconds": int(min_runtime_seconds or 0),
-                "min_verifier_runs": int(
-                    worker_budget.get("min_verifier_runs") or 1
-                ),
-                "start_event": "native_child_session",
-                "release_before_parent_closeout": True,
-            }
     if worker_budget.get("max_turns") is not None:
-        budget_control["max_turns_hint"] = worker_budget["max_turns"]
-    return budget_control
+        control["max_turns_hint"] = worker_budget["max_turns"]
+    return control
 
 
 class CodexModelCatalog:
-    name: AgentHostKind = "codex"
+    name: AgentHarnessKind = "codex"
 
     def list_available_models(
         self,
@@ -312,7 +150,7 @@ class CodexModelCatalog:
                         "clientInfo": {
                             "name": "goal_plus",
                             "title": "Goal Plus",
-                            "version": host_binding(self.name).adapter_version,
+                            "version": _execution_binding(self.name).adapter_version,
                         }
                     },
                 },
@@ -371,12 +209,11 @@ class CodexModelCatalog:
 
 
 class CodexCandidateLaunch:
-    name: AgentHostKind = "codex"
+    name: AgentHarnessKind = "codex"
 
     def build_launch_payload(
         self,
         *,
-        native_agent_type: str | None,
         candidate_id: str,
         agent_session_id: str,
         short_intent: str,
@@ -384,44 +221,27 @@ class CodexCandidateLaunch:
         worker_budget: dict[str, Any] | None = None,
         worker_launch: dict[str, Any] | None = None,
         root: str | None = None,
-        cwd: str | None = None,
         worker_prompt: str | None = None,
-        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        task_name = _codex_task_name(agent_session_id)
-        worker_contract = _worker_contract(worker_prompt)
         payload = {
-            "tool": "spawn_agent",
-            "task_name": task_name,
-            "agent_type": "default",
-            "fork_turns": "none",
+            "transport": "app-server",
+            "continuation": "native_session",
+            "agent_session_id": agent_session_id,
+            "candidate_id": candidate_id,
             "message": (
-                f"{worker_contract}\n\n"
+                f"{_worker_contract(worker_prompt)}\n\n"
                 f"agent_session_id={agent_session_id}; "
                 f"candidate_id={candidate_id}; "
                 f"assigned_worker_budget={worker_budget or 'host 默认值'}; "
                 f"思路：{one_paragraph_idea}"
             ),
         }
-        # The default worker contract is already embedded in ``message``. Map
-        # it to Codex's built-in no-config role: selecting the project-local
-        # role reloads config after model inheritance and can discard a
-        # runtime-only parent model before service-tier validation. An explicit
-        # ``default`` also prevents the orchestrator from inventing that custom
-        # role when projecting the returned payload. Non-default roles remain
-        # an explicit opt-in.
-        if native_agent_type and native_agent_type != "search_candidate_agent":
-            payload["agent_type"] = native_agent_type
         if worker_launch:
-            payload.update(
-                {
-                    key: value
-                    for key, value in worker_launch.items()
-                    if key in {"model", "reasoning_effort", "service_tier"}
-                    and value is not None
-                }
-            )
-        budget_control = _codex_budget_control(task_name, worker_budget)
+            payload.update({
+                key: value for key, value in worker_launch.items()
+                if key in {"model", "reasoning_effort", "service_tier"} and value is not None
+            })
+        budget_control = _budget_control(worker_budget)
         if budget_control:
             payload["budget_control"] = budget_control
         return payload
@@ -429,29 +249,24 @@ class CodexCandidateLaunch:
     def build_continue_payload(
         self,
         *,
-        native_agent_type: str | None,
         candidate_id: str,
         agent_session_id: str,
         external_id: str | None,
-        task_name: str | None,
         short_intent: str,
         one_paragraph_idea: str,
         root: str | None = None,
-        cwd: str | None = None,
         worker_prompt: str | None = None,
         worker_budget: dict[str, Any] | None = None,
         worker_launch: dict[str, Any] | None = None,
-        host_metadata: dict[str, Any] | None = None,
-        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        target = task_name or external_id
-        if not target:
-            raise UnsupportedHostCapability(
-                "codex continuation requires a bound task name or agent id"
-            )
+        if not external_id:
+            raise UnsupportedHostCapability("codex continuation requires a bound native session id")
         payload: dict[str, Any] = {
-            "tool": "followup_task",
-            "target": target,
+            "transport": "app-server",
+            "continuation": "native_session",
+            "agent_session_id": agent_session_id,
+            "candidate_id": candidate_id,
+            "native_session_id": external_id,
             "message": (
                 "continue_existing_agent_session=true; "
                 f"agent_session_id={agent_session_id}; "
@@ -460,14 +275,14 @@ class CodexCandidateLaunch:
                 f"指令：{one_paragraph_idea}"
             ),
         }
-        budget_control = _codex_budget_control(target, worker_budget)
+        budget_control = _budget_control(worker_budget)
         if budget_control:
             payload["budget_control"] = budget_control
         return payload
 
 
 class PiRpcModelCatalog:
-    name: AgentHostKind = "pi-rpc"
+    name: AgentHarnessKind = "pi"
 
     def list_available_models(
         self,
@@ -536,39 +351,7 @@ class PiRpcModelCatalog:
 
 
 class PiRpcCandidateLaunch:
-    name: AgentHostKind = "pi-rpc"
-
-    def _budget_control(
-        self,
-        worker_budget: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        if not worker_budget:
-            return None
-        max_runtime_seconds = worker_budget.get("max_runtime_seconds")
-        min_runtime_seconds = worker_budget.get("min_runtime_seconds")
-        budget_control: dict[str, Any] = {
-            "mode": "pi_rpc_process_watchdog",
-            "continuation": "native_session",
-            "max_runtime_seconds": max_runtime_seconds,
-            "on_exceed": worker_budget.get("on_exceed", "interrupt"),
-        }
-        if max_runtime_seconds is not None:
-            budget_control["soft_closeout_seconds"] = _pi_soft_closeout_seconds(
-                int(max_runtime_seconds),
-                int(min_runtime_seconds) if min_runtime_seconds is not None else None,
-            )
-        min_verifier_runs = worker_budget.get("min_verifier_runs")
-        if min_runtime_seconds is not None or min_verifier_runs is not None:
-            budget_control["autoresearch_lease"] = {
-                "mode": "pool_supervisor",
-                "min_runtime_seconds": int(min_runtime_seconds or 0),
-                "min_verifier_runs": int(min_verifier_runs or 1),
-                "start_event": "initial_pool_dispatch",
-                "cumulative_across_dispatches": True,
-            }
-        if worker_budget.get("max_turns") is not None:
-            budget_control["max_turns_hint"] = worker_budget["max_turns"]
-        return budget_control
+    name: AgentHarnessKind = "pi"
 
     def _base_prompt(
         self,
@@ -599,7 +382,6 @@ class PiRpcCandidateLaunch:
     def build_launch_payload(
         self,
         *,
-        native_agent_type: str | None,
         candidate_id: str,
         agent_session_id: str,
         short_intent: str,
@@ -607,20 +389,15 @@ class PiRpcCandidateLaunch:
         worker_budget: dict[str, Any] | None = None,
         worker_launch: dict[str, Any] | None = None,
         root: str | None = None,
-        cwd: str | None = None,
         worker_prompt: str | None = None,
-        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "tool": "pi_rpc_worker",
+            "transport": "native-rpc",
             "agent_session_id": agent_session_id,
             "candidate_id": candidate_id,
             "session_id": agent_session_id,
-            "root": root or DEFAULT_RUNTIME_ROOT,
-            "cwd": cwd or ".",
             "description": f"{candidate_id} {short_intent}",
             "continuation": "native_session",
-            "session_persistence": "cross_process",
             "prompt": self._base_prompt(
                 worker_prompt=worker_prompt,
                 agent_session_id=agent_session_id,
@@ -629,15 +406,12 @@ class PiRpcCandidateLaunch:
                 worker_budget=worker_budget,
             ),
         }
-        del native_agent_type
-        if process_environment:
-            payload["environment"] = process_environment
         if worker_launch:
             if worker_launch.get("model") is not None:
                 payload["model_pattern"] = worker_launch["model"]
             if worker_launch.get("reasoning_effort") is not None:
                 payload["thinking_level"] = worker_launch["reasoning_effort"]
-        budget_control = self._budget_control(worker_budget)
+        budget_control = _budget_control(worker_budget)
         if budget_control:
             payload["budget_control"] = budget_control
         return payload
@@ -645,20 +419,15 @@ class PiRpcCandidateLaunch:
     def build_continue_payload(
         self,
         *,
-        native_agent_type: str | None,
         candidate_id: str,
         agent_session_id: str,
         external_id: str | None,
-        task_name: str | None,
         short_intent: str,
         one_paragraph_idea: str,
         root: str | None = None,
-        cwd: str | None = None,
         worker_prompt: str | None = None,
         worker_budget: dict[str, Any] | None = None,
         worker_launch: dict[str, Any] | None = None,
-        host_metadata: dict[str, Any] | None = None,
-        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         session_id = (external_id or "").strip()
         if not session_id:
@@ -666,15 +435,12 @@ class PiRpcCandidateLaunch:
                 "pi-rpc continuation requires a bound native session id"
             )
         payload: dict[str, Any] = {
-            "tool": "pi_rpc_worker",
+            "transport": "native-rpc",
             "agent_session_id": agent_session_id,
             "candidate_id": candidate_id,
             "session_id": session_id,
-            "root": root or DEFAULT_RUNTIME_ROOT,
-            "cwd": cwd or ".",
             "description": f"{candidate_id} {short_intent}",
             "continuation": "native_session",
-            "session_persistence": "cross_process",
             "prompt": self._base_prompt(
                 worker_prompt=worker_prompt,
                 agent_session_id=agent_session_id,
@@ -684,37 +450,26 @@ class PiRpcCandidateLaunch:
                 resume=True,
             ),
         }
-        del native_agent_type
-        if process_environment:
-            payload["environment"] = process_environment
         if worker_launch:
             if worker_launch.get("model") is not None:
                 payload["model_pattern"] = worker_launch["model"]
             if worker_launch.get("reasoning_effort") is not None:
                 payload["thinking_level"] = worker_launch["reasoning_effort"]
-        metrics = (host_metadata or {}).get("pi_metrics")
-        if isinstance(metrics, dict):
-            payload["metrics_baseline"] = {
-                "last_entry_id": metrics.get("final_last_entry_id"),
-                "entry_count": metrics.get("final_entry_count"),
-                "usage_total": metrics.get("usage_total"),
-                "duration_seconds": metrics.get("duration_seconds"),
-                "started_at": metrics.get("started_at"),
-            }
-        budget_control = self._budget_control(worker_budget)
+        budget_control = _budget_control(worker_budget)
         if budget_control:
             payload["budget_control"] = budget_control
         return payload
 
 
 class ThinkThreadModelCatalog:
-    name: AgentHostKind = "thinkthread"
+    name: AgentHarnessKind = "pi"
+    runtime_provider: AgentRuntimeProvider = "thinkthread"
 
     def list_available_models(
         self,
         query: str | None = None,
     ) -> list[dict[str, Any]]:
-        require_host_enabled(self.name)
+        _require_execution_enabled(self.name, self.runtime_provider)
         client = thinkthread_host_client()
         client.preflight()
         profiles = client.self_view().get("profiles")
@@ -764,7 +519,8 @@ class ThinkThreadModelCatalog:
 
 
 class ThinkThreadCandidateLaunch:
-    name: AgentHostKind = "thinkthread"
+    name: AgentHarnessKind = "pi"
+    runtime_provider: AgentRuntimeProvider = "thinkthread"
 
     @staticmethod
     def _validate_worker_launch(
@@ -792,48 +548,6 @@ class ThinkThreadCandidateLaunch:
         return {"provider": provider, "model": model_id}
 
     @staticmethod
-    def _budget_control(
-        worker_budget: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        if not worker_budget:
-            return None
-        max_runtime_seconds = worker_budget.get("max_runtime_seconds")
-        control: dict[str, Any] = {
-            "mode": "thinkthread_child_watchdog",
-            "max_runtime_seconds": max_runtime_seconds,
-            "on_exceed": worker_budget.get("on_exceed", "interrupt"),
-            "interrupt_sequence": ["INT", "TERM"],
-            "continuation": "retained_child_session",
-        }
-        if max_runtime_seconds is not None:
-            control["soft_closeout_seconds"] = _pi_soft_closeout_seconds(
-                int(max_runtime_seconds),
-                (
-                    int(worker_budget["min_runtime_seconds"])
-                    if worker_budget.get("min_runtime_seconds") is not None
-                    else None
-                ),
-            )
-        if (
-            worker_budget.get("min_runtime_seconds") is not None
-            or worker_budget.get("min_verifier_runs") is not None
-        ):
-            control["autoresearch_lease"] = {
-                "mode": "thinkthread_pool_controller",
-                "min_runtime_seconds": int(
-                    worker_budget.get("min_runtime_seconds") or 0
-                ),
-                "min_verifier_runs": int(
-                    worker_budget.get("min_verifier_runs") or 1
-                ),
-                "start_event": "initial_child_dispatch",
-                "cumulative_across_wakes": True,
-            }
-        if worker_budget.get("max_turns") is not None:
-            control["max_turns_hint"] = worker_budget["max_turns"]
-        return control
-
-    @staticmethod
     def _message(
         *,
         worker_prompt: str | None,
@@ -853,7 +567,7 @@ class ThinkThreadCandidateLaunch:
                 f"assigned_worker_budget={worker_budget or 'host 默认值'}; "
                 f"本轮目标：{one_paragraph_idea}"
             )
-        header = (worker_prompt or "首先调用 search_get_agent_context。").strip()
+        header = (worker_prompt or "首先调用 goal_plus_search_get_agent_context。").strip()
         return (
             f"{header}\n\n"
             "continue_existing_agent_session=false; "
@@ -865,7 +579,6 @@ class ThinkThreadCandidateLaunch:
     def build_launch_payload(
         self,
         *,
-        native_agent_type: str | None = None,
         candidate_id: str = "",
         agent_session_id: str = "",
         short_intent: str = "",
@@ -873,15 +586,12 @@ class ThinkThreadCandidateLaunch:
         worker_budget: dict[str, Any] | None = None,
         worker_launch: dict[str, Any] | None = None,
         root: str | None = None,
-        cwd: str | None = None,
         worker_prompt: str | None = None,
-        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        del native_agent_type, cwd, process_environment
-        require_host_enabled(self.name)
+        _require_execution_enabled(self.name, self.runtime_provider)
         model = self._validate_worker_launch(worker_launch)
         payload: dict[str, Any] = {
-            "tool": "thinkthread_child",
+            "transport": "thinkthread",
             "agent_session_id": agent_session_id,
             "candidate_id": candidate_id,
             "session_id": agent_session_id,
@@ -902,7 +612,7 @@ class ThinkThreadCandidateLaunch:
         }
         if model is not None:
             payload["model"] = model
-        budget_control = self._budget_control(worker_budget)
+        budget_control = _budget_control(worker_budget)
         if budget_control:
             payload["budget_control"] = budget_control
         return payload
@@ -910,30 +620,24 @@ class ThinkThreadCandidateLaunch:
     def build_continue_payload(
         self,
         *,
-        native_agent_type: str | None,
         candidate_id: str,
         agent_session_id: str,
         external_id: str | None,
-        task_name: str | None,
         short_intent: str,
         one_paragraph_idea: str,
         root: str | None = None,
-        cwd: str | None = None,
         worker_prompt: str | None = None,
         worker_budget: dict[str, Any] | None = None,
         worker_launch: dict[str, Any] | None = None,
-        host_metadata: dict[str, Any] | None = None,
-        process_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        del native_agent_type, task_name, cwd, host_metadata, process_environment
-        require_host_enabled(self.name)
+        _require_execution_enabled(self.name, self.runtime_provider)
         if not external_id:
             raise UnsupportedHostCapability(
                 "thinkthread continuation requires a bound Child id"
             )
         model = self._validate_worker_launch(worker_launch)
         payload: dict[str, Any] = {
-            "tool": "thinkthread_child",
+            "transport": "thinkthread",
             "agent_session_id": agent_session_id,
             "candidate_id": candidate_id,
             "thinkthread_id": external_id,
@@ -952,114 +656,32 @@ class ThinkThreadCandidateLaunch:
         }
         if model is not None:
             payload["model"] = model
-        budget_control = self._budget_control(worker_budget)
+        budget_control = _budget_control(worker_budget)
         if budget_control:
             payload["budget_control"] = budget_control
         return payload
 
 
-_HOST_BINDINGS: dict[AgentHostKind, HostBinding] = {
-    "codex": HostBinding("codex", "codex-app-server-v1", HostCapabilities(
-        supports_soft_closeout=True,
-        supports_model_discovery=True,
-        supports_model_override=True,
-        supports_reasoning_effort=True,
-        supports_service_tier=True,
-        supports_usage_metadata=True,
-        supported_workspace_backends=frozenset({"copy", "git_worktree"}),
-        supported_inner_agents=frozenset(
-            {INNER_AGENT_AUTORESEARCH, INNER_AGENT_COMMON}
-        ),
-        pool=HostPoolContract(
-            launch_mode="async",
-            wait_mode="wait_any",
-            continuation_mode="same_worker",
-            deadline_mode="parent_watchdog",
-            recovery_mode="host_resident",
-            completion_stage="candidate_ready",
-            submit_tool="spawn_agent",
-            wait_tool="wait_agent",
-            snapshot_tool="list_agents",
-            continue_tool="followup_task",
-            closeout_tool="send_message",
-            interrupt_tool="interrupt_agent",
-        ),
-    )),
-    "pi-rpc": HostBinding("pi-rpc", "pi-rpc-v1", HostCapabilities(
-        supports_soft_closeout=True,
-        supports_model_discovery=True,
-        supports_model_override=True,
-        supports_reasoning_effort=True,
-        supports_usage_metadata=True,
-        supports_process_kill=True,
-        supported_workspace_backends=frozenset({"copy", "git_worktree"}),
-        supports_process_environment=True,
-        supported_inner_agents=frozenset(
-            {INNER_AGENT_AUTORESEARCH, INNER_AGENT_COMMON}
-        ),
-        pool=HostPoolContract(
-            launch_mode="async",
-            wait_mode="wait_any",
-            continuation_mode="native_session",
-            deadline_mode="worker_watchdog",
-            recovery_mode="supervisor_persisted",
-            completion_stage="candidate_ready",
-            open_tool="pi_search_pool_open",
-            wait_tool="pi_search_pool_wait_any",
-            snapshot_tool="pi_search_pool_snapshot",
-            continue_tool="pi_search_pool_continue",
-            closeout_tool="pi_search_pool_close",
-            interrupt_tool="pi_search_pool_close",
-        ),
-    )),
-    "thinkthread": HostBinding("thinkthread", "thinkthread-v3-pi", HostCapabilities(
-        search_enabled=True,
-        supported_workspace_backends=frozenset({"thinkthread"}),
-        supported_inner_agents=frozenset(
-            {INNER_AGENT_AUTORESEARCH, INNER_AGENT_COMMON}
-        ),
-        pool=HostPoolContract(
-            launch_mode="async",
-            wait_mode="wait_any",
-            continuation_mode="native_session",
-            deadline_mode="worker_watchdog",
-            recovery_mode="supervisor_persisted",
-            completion_stage="candidate_ready",
-            open_tool="thinkthread_search_pool_open",
-            wait_tool="thinkthread_search_pool_wait_any",
-            snapshot_tool="thinkthread_search_pool_snapshot",
-            continue_tool="thinkthread_search_pool_continue",
-            closeout_tool="thinkthread_search_pool_close",
-            interrupt_tool="thinkthread_search_pool_close",
-        ),
-    )),
+_MODEL_CATALOGS: dict[AgentHarnessKind, HostModelCatalog] = {
+    "codex": CodexModelCatalog(), "pi": PiRpcModelCatalog(),
 }
-_MODEL_CATALOGS: dict[AgentHostKind, HostModelCatalog] = {
-    "codex": CodexModelCatalog(), "pi-rpc": PiRpcModelCatalog(),
-    "thinkthread": ThinkThreadModelCatalog(),
-}
-_CANDIDATE_LAUNCH: dict[AgentHostKind, CandidateLaunchAdapter] = {
-    "codex": CodexCandidateLaunch(), "pi-rpc": PiRpcCandidateLaunch(),
-    "thinkthread": ThinkThreadCandidateLaunch(),
+_CANDIDATE_LAUNCH: dict[AgentHarnessKind, CandidateLaunchAdapter] = {
+    "codex": CodexCandidateLaunch(), "pi": PiRpcCandidateLaunch(),
 }
 
 
-def host_binding(host: AgentHostKind) -> HostBinding:
-    return _HOST_BINDINGS[host]
+def host_model_catalog(agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> HostModelCatalog:
+    validate_agent_execution(agent_harness, runtime_provider)
+    if runtime_provider == "thinkthread":
+        return ThinkThreadModelCatalog()
+    return _MODEL_CATALOGS[agent_harness]
 
 
-def host_model_catalog(host: AgentHostKind) -> HostModelCatalog:
-    return _MODEL_CATALOGS[host]
-
-
-def candidate_launch_adapter(host: AgentHostKind) -> CandidateLaunchAdapter:
-    return _CANDIDATE_LAUNCH[host]
-
-
-def require_host_enabled(host: AgentHostKind) -> None:
-    binding = host_binding(host)
-    if not binding.capabilities.search_enabled:
-        raise UnsupportedHostCapability(binding.capabilities.disabled_reason or f"{host} Search is disabled")
+def candidate_launch_adapter(agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> CandidateLaunchAdapter:
+    validate_agent_execution(agent_harness, runtime_provider)
+    if runtime_provider == "thinkthread":
+        return ThinkThreadCandidateLaunch()
+    return _CANDIDATE_LAUNCH[agent_harness]
 
 
 def thinkthread_host_client():
@@ -1070,11 +692,12 @@ def thinkthread_host_client():
 def _collect_thinkthread_observability(
     session: AgentSessionRecord,
 ) -> dict[str, Any]:
-    require_host_enabled("thinkthread")
-    child_id = session.host_handle.external_id
+    _require_execution_enabled("pi", "thinkthread")
+    child_id = session.session_handle.external_id
     if not child_id:
         return {
-            "host": "thinkthread",
+            "agent_harness": "pi",
+            "runtime_provider": "thinkthread",
             "available": False,
             "reason": "agent session is not bound to a ThinkThread Child",
         }
@@ -1082,13 +705,15 @@ def _collect_thinkthread_observability(
         child = thinkthread_host_client().invoke("thinkthread.get", {"id": child_id})
     except Exception as exc:
         return {
-            "host": "thinkthread",
+            "agent_harness": "pi",
+            "runtime_provider": "thinkthread",
             "available": False,
             "reason": str(exc),
             "error_code": getattr(exc, "code", None),
         }
     return {
-        "host": "thinkthread",
+        "agent_harness": "pi",
+        "runtime_provider": "thinkthread",
         "available": True,
         "thinkthread_id": child.get("thinkthreadId"),
         "agent_state": child.get("agentState"),
@@ -1102,97 +727,10 @@ def _collect_thinkthread_observability(
 
 
 def collect_host_observability(session: AgentSessionRecord) -> dict[str, Any]:
-    if session.host == "codex":
-        return collect_codex_observability(session)
-    if session.host == "pi-rpc":
-        return collect_pi_observability(session)
-    if session.host == "thinkthread":
+    if session.runtime_provider == "thinkthread":
         return _collect_thinkthread_observability(session)
-    raise ValueError(f"unsupported observation host: {session.host}")
-
-
-def resolve_inner_agent_binding(
-    host: AgentHostKind,
-    inner_agent: str,
-    *,
-    legacy_native_agent_type: str | None = None,
-) -> ResolvedInnerAgentBinding:
-    """Resolve a logical inner-agent id without exposing host roles in specs."""
-
-    adapter = host_binding(host)
-    inner_agent_id = inner_agent.strip()
-    if inner_agent_id not in adapter.capabilities.supported_inner_agents:
-        supported = ", ".join(sorted(adapter.capabilities.supported_inner_agents))
-        raise UnsupportedHostCapability(
-            f"{host} worker_host does not support inner_agent={inner_agent_id!r}; "
-            f"supported inner agents: {supported or 'none'}"
-        )
-
-    prompt_assets: dict[tuple[AgentHostKind, str], str] = {
-        (
-            "codex",
-            INNER_AGENT_AUTORESEARCH,
-        ): "assets/codex/agents/search_candidate_agent.toml",
-        (
-            "codex",
-            INNER_AGENT_COMMON,
-        ): "assets/codex/agents/search_candidate_common_agent.toml",
-        (
-            "pi-rpc",
-            INNER_AGENT_AUTORESEARCH,
-        ): "assets/pi/prompts/search-candidate-worker.md",
-        (
-            "pi-rpc",
-            INNER_AGENT_COMMON,
-        ): "assets/pi/prompts/search-candidate-common.md",
-        (
-            "thinkthread",
-            INNER_AGENT_AUTORESEARCH,
-        ): "assets/pi/prompts/search-candidate-worker.md",
-    }
-    native_agent_type = (
-        legacy_native_agent_type.strip()
-        if host == "codex" and legacy_native_agent_type
-        else None
-    )
-    return ResolvedInnerAgentBinding(
-        inner_agent_id=inner_agent_id,
-        adapter_version=(
-            "builtin-autoresearch-git-v1"
-            if inner_agent_id == INNER_AGENT_AUTORESEARCH
-            else f"builtin-{inner_agent_id}-v1"
-        ),
-        worker_host=host,
-        host_adapter_version=adapter.adapter_version,
-        prompt_asset=prompt_assets.get((host, inner_agent_id)),
-        native_agent_type=native_agent_type,
-        continuation_mode=adapter.capabilities.pool.continuation_mode,
-        workspace_ledger_projection=(
-            WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
-            if inner_agent_id == INNER_AGENT_AUTORESEARCH
-            else WORKSPACE_LEDGER_PROJECTION_NONE
-        ),
-    )
-
-
-def candidate_inner_agent_binding(
-    frozen: FrozenSpec,
-    candidate_task: CandidateTask,
-) -> ResolvedInnerAgentBinding:
-    worker_policy = candidate_task.strategy_metadata.get("worker_policy", {})
-    inner_agent = str(
-        worker_policy.get("inner_agent")
-        or resolved_inner_agent_id(frozen.spec.strategy, frozen.worker_host)
-    )
-    legacy_native_agent_type = worker_policy.get("legacy_worker_agent_type")
-    if legacy_native_agent_type is None:
-        legacy_native_agent_type = worker_policy.get("worker_agent_type")
-    return resolve_inner_agent_binding(
-        frozen.worker_host,
-        inner_agent,
-        legacy_native_agent_type=(
-            str(legacy_native_agent_type)
-            if legacy_native_agent_type is not None
-            else frozen.spec.strategy.worker_agent_type
-        ),
-    )
+    if session.agent_harness == "codex":
+        return collect_codex_observability(session)
+    if session.agent_harness == "pi":
+        return collect_pi_observability(session)
+    raise ValueError(f"unsupported observation host: {session.agent_harness}")

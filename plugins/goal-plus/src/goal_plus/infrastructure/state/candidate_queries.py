@@ -78,7 +78,7 @@ class FileCandidateQueries:
             match_runs = ", ".join(path.parents[1].name for path in matches)
             raise RuntimeError(
                 f"ambiguous agent_session_id {agent_session_id}; matched runs: {match_runs}. "
-                "Use a globally unique agent_session_id from search_start_agent_session."
+                "Use the exact session_id returned by goal_plus_session_run."
             )
         raise FileNotFoundError(f"agent session not found: {agent_session_id}")
 

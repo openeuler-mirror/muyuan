@@ -83,7 +83,7 @@ def test_materialized_guard_separates_ranking_from_semantic_acceptance(
     spec_data["source_path"] = str(workspace)
     frozen = FileSearchRuntime(tmp_path / ".gp").freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [workspace / ".goal-plus-verifiers" / "score_throughput.py"], native_host="codex",
+        [workspace / ".goal-plus-verifiers" / "score_throughput.py"], agent_harness="codex",
     )
     assert frozen.task_skill_paths == [TASK_SKILL]
     with pytest.raises(FileExistsError, match="choose a new --output path"):
@@ -108,10 +108,9 @@ def test_final_check_rejection_requires_a_fresh_reviewer(tmp_path: Path) -> None
     )
 
     first = runtime.prepare_final_check(record.goal_plus_id, "codex")
-    assert TASK_SKILL in first["launch"]["message"]
-    assert "plugins/goal-plus/skills/unrelated/SKILL.md" not in first["launch"][
-        "message"
-    ]
+    inputs = runtime.goal_completion.artifacts.final_check_inputs(runtime.state.read_goal(record.goal_plus_id))
+    assert TASK_SKILL in inputs.task_skill_paths
+    assert "plugins/goal-plus/skills/unrelated/SKILL.md" not in inputs.task_skill_paths
     failed = runtime.submit_final_check(
         record.goal_plus_id,
         check_id=first["check"]["check_id"],
@@ -140,7 +139,6 @@ def test_final_check_rejection_requires_a_fresh_reviewer(tmp_path: Path) -> None
 
     second = runtime.prepare_final_check(record.goal_plus_id, "codex")
     assert second["check"]["check_id"] != first["check"]["check_id"]
-    assert second["launch"]["task_name"] != first["launch"]["task_name"]
     completed = runtime.submit_final_check(
         record.goal_plus_id,
         check_id=second["check"]["check_id"],

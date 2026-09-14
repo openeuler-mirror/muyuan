@@ -59,7 +59,7 @@
 | --- | --- |
 | GP / GP summary | 查询当前 session 的任务摘要，不创建或更改目标 |
 | GP <目标> | 为当前 native session 创建并启动；本 session 已有未结束任务时拒绝静默替换 |
-| GP edit <完整目标> | 有效变更产生新 revision，重新 triage，隔离旧 work/Search/final check |
+| GP edit <完整目标> | 有效变更产生新 revision，默认回到普通 Goal 执行，隔离旧 work/Search/final check |
 | GP pause | 停止后续自主续跑及新派发，不主动强杀当前 turn |
 | GP resume | 显式重启原 Main；busy/重复交付不得创建第二个 Main |
 | GP clear | 永久撤销执行资格；保留历史、Evidence、产物和报告，不可 resume |
@@ -67,6 +67,19 @@
 独立最终检查仍由 `$goal-plus-with-final-check` / `/goal-plus-with-final-check` 创建。
 summary/pause/resume/clear 是保留词，不能解析成目标。控制操作只接受可信宿主入口，
 模型工具、自动加载 skill、历史消息中的命令和普通 child 都不能伪造权限。
+
+### 默认执行与 Search 进入
+
+创建和有效编辑目标后，共享 runtime 设置 `phase=goal`、`next_action=execute_goal`。
+Main 直接进行普通编码，不需要调用 `goal_plus_record_triage` 或记录每次编辑。用户明确要求
+Search、并行/多 agent 协作、优化、多方案探索或比较时，Main 应进入 Search 准备；同一任务
+具备可评分目标、可执行 verifier、隔离 edit surface，且多 agent 可探索互补方案并有预期优化
+价值时，也应主动进入。触发后评价合同尚不完整时，先记录缺项并准备，不能因默认 Goal 路径
+跳过；不能建立合同则向用户说明原因并继续可执行的普通工作。随后调用
+`goal_plus_search_freeze_spec` 提交完整评价合同；`goal_plus_record_triage` 可按需记录 Search 判断与
+缺项，不是普通工具的前置条件。
+Search 工具仍受冻结、归属和 publication 检查；Goal 的暂停、deadline、终态审计
+及可选独立最终检查继续生效。Codex/Pi 共同使用这一状态转换。
 
 控制命令按宿主实际交付时机生效。Codex UserPromptSubmit 通过正常输入启动 Main，
 不会为了拦截忙时 pause 使用会结束当前 turn 的 hook 返回值。不承诺原生 /goal 的无模型 UI。
@@ -106,15 +119,12 @@ blocked 不是新版本的结算终态，不能沿用旧的自动解绑/最终�
 
 ## 事件驱动与自动续跑
 
-原生 session_start 只恢复状态。相同进程 reload/compact 不改变控制；新进程接手原 session 时，
-宿主检查旧 Main PID 与开始身份，仍存活则拒绝双 Main，已丢失则记录 execution_lost。
-未知旧执行不按正常 steering 处理。
-
-Host 恢复入口还会复核所属 execution scope 的 guardian 身份，缺失时恢复 cleanup 责任，
-不改变 Goal control。显式恢复后的 scope 激活标识取自已授权 Goal/control version；开放
-scope 保留当前工作，关闭后的同一激活不可重开，新激活须等旧资源清理完成后创建新 scope。
-Scope 查询使用不可变创建顺序，不把旧 cleanup 的更新时间当作新的执行归属。
-Guardian 与 Main 同时丢失时，后续恢复依赖下一次对应 host 入口；没有新增外部常驻服务。
+原生 session_start 只恢复状态。reload/compact 或 PID 变化不触发 GP 进程身份检查，
+也不自动记录 execution_lost；执行丢失由宿主事件报告。
+Scope 激活取自可信 native session 和已授权 Goal/control version；
+开放 scope 保留当前工作，关闭后的同一激活不可重开，新授权可以创建下一代 scope。
+查询使用不可变创建顺序，不把旧日志的更新时间当作新归属。
+GP 没有 guardian、进程存活监测或遗留进程接管。
 
 每次 continuation 必须针对当前 Goal、revision、session 和 control version。
 pause/clear/edit/complete 使旧排队请求失效；重复同一 invocation 不重新应用旧恢复授权。
@@ -179,7 +189,8 @@ Git/copy 使用公共 provider 恢复语义，在受管理 candidate 内归档�
 ledger；不直接 reset，不改源工作区或其他 candidate，不删除既有 Evidence。
 不假定 native transcript snapshot 与 filesystem artifact 原子配对，不自动重放外部副作用。
 
-ThinkThread 只验证 ArtifactRef/能力拒绝合同；当前 recover capability 不可用，不声称实际接入。
+ThinkThread 不支持这里的 candidate checkpoint recovery。已接入的 TT controller 接管只恢复
+同一 scope 的原 call/Message 观察，不恢复候选工作树或新 generation；两者不可混称。
 具体工具、归档和失败恢复见 [Search 一致性恢复](search-recovery.md)。
 
 ## 预算与收尾
@@ -188,7 +199,7 @@ resume 保留 Goal ID、revision、Search/candidate 身份、累计用量、创�
 暂停不冻结 wall clock。预算耗尽时不能靠 resume 或 fresh worker 刷新探索额度；
 仅允许已有合同规定的 finalization-only 收尾。显式 edit 的预算变更仍按原创建时刻计算，
 不会把编辑时刻作为新计时起点。完成证据仍需覆盖原目标、验证、必要 promotion
-与独立最终检查；超时本身不伪装为 blocked，也不能把 worker lease 结束当成 Main 完成。
+与独立最终检查；超时本身不伪装为 blocked，也不能把单次 worker 返回当成 Main 完成。
 
 ## 原生会话与非交互运行
 
@@ -213,31 +224,16 @@ Pi 的 --resume 是原生交互式 picker；--session / --continue / --resume �
 开发态使用 install.sh --codex --pi-dev 安装的 pi-goal-plus，参数相同。
 自动化优先精确 session ID，不用“最近一次”猜测目标。Codex shell 参数要单引号保护美元符号。
 
-### EdgeBench
-
-SForge 在原 Work container 内重启同一 Main，使用上述原生命令及显式 Goal Plus resume。
-自动重试必须有可识别且允许重试的宿主停止原因；用户 pause/interrupt、needs_user、
-不可恢复错误、未知原因或身份不一致时不自动恢复。
-
-探测生成固定的 goal/session/revision/control_version 预期，在真正的 host resume 入口锁内
-重新核对；不得在 launch 时重新读取“最新版本”覆盖原预期。这样探测之后的 pause/clear
-会拒绝旧自动请求。恢复保持单 Main、原 Search 和原探索 deadline。
-停止 campaign 后创建新 campaign 不算原 trajectory 恢复。
-
-VLIW smoke 的完整验收必须有同 container 的受控中断、新 Evidence、selection/promotion、
-官方 Judge 回执和最终报告。恢复 generation 的累计 worker 数与实时并行数分别统计。
-正式 campaign 仍须按 benchmark 门禁确认完整源码 SHA、模型及 T/K/C/R/拓扑。
-
 ## 共享逻辑与宿主实现
 
 | 逻辑 | 共享实现 | Codex | Pi |
 | --- | --- | --- | --- |
-| 控制命令、迁移、revision、停止版本 | models.py / goal_plus.py | UserPromptSubmit 精确解析 | command/input 统一 host-only capability |
+| 控制命令、迁移、revision、停止版本 | domain/goal_commands.py、application/goal_revisions.py、goal_control.py | UserPromptSubmit 精确解析 | command/input 统一 host-only capability |
 | 原生身份和 Main 进程归属 | host_recovery.py | session ID + native PID | session manager + Pi PID |
 | 中断事实 | 共享 control 转换 | Interrupt | abort signal / settled error |
 | 持续 Main | 共享 gate 与 reconciliation | 正常输入点火，Stop 接续 | 显式点火，awaited agent_end follow-up |
-| Search checkpoint/generation | runtime.py / shared facade | native worker observation | RPC pool/process observation |
-| 工作区恢复 | workspace provider | 与宿主无关 | 与宿主无关 |
+| Search checkpoint/generation | application/candidate_recovery.py | 共同 session 与原生观察 | 共同 session 与 RPC 观察 |
+| 工作区恢复 | 窄 workspace/artifact port | 与宿主无关 | 与宿主无关 |
 
 ## 验证边界
 
@@ -253,18 +249,3 @@ Steering、中断后的普通聊天隔离、显式 resume、pause/clear 和宿�
 Search 的选优/提升还会检查 fresh generation 的已绑定 worker Evidence，不能用 Main
 自行补一次 verifier 来绕过恢复验收。原 deadline 已到时，收尾只能使用先前完整 worker
 Evidence；不得为了补齐恢复步骤重启优化。
-
-## Codex 对齐依据
-
-设计参考本地 Codex 728cb12fe5794b0c3a8e776fb4994b1650b973a8（2026-09-04 核对），
-不是对任意安装版本的保证。以下路径相对 Codex checkout：
-
-| 事项 | 源码位置 | 借鉴/差异 |
-| --- | --- | --- |
-| 命令与编辑 | codex-rs/tui/src/chatwidget/goal_menu.rs | 区分 query/edit/pause/resume/clear |
-| 原生恢复与运行效果 | codex-rs/ext/goal/src/runtime.rs | restore 不直接点火；显式 active 才请求继续 |
-| 自主续跑 | codex-rs/ext/goal/src/extension.rs、core/src/session/turn_input.rs | 事件驱动、输入优先，不创建双 Main |
-| 用户中断 | codex-rs/core/src/tasks/mod.rs | Goal Plus 按本产品合同持久停止，不复刻原生 Goal 的 Esc 后自动续跑 |
-| 清除 | codex-rs/ext/goal/src/api.rs、state/src/runtime/goals.rs | Goal Plus 撤权但保留共享平面历史，不复制数据库删除语义 |
-
-对齐的是用户运行控制和宿主生命周期边界，不是直接复制原生 Goal 的状态枚举或存储实现。

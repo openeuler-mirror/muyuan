@@ -20,6 +20,7 @@ from goal_plus.domain.artifacts import (
     ArtifactRef,
 )
 from goal_plus.domain.evidence import (
+    CandidateAttemptAccepted,
     IterationDisposition,
     IterationRecord,
     ScoreReport,
@@ -41,7 +42,7 @@ from goal_plus.application.candidate_ledger import CandidateLedger
 from goal_plus.application.shared_tools import SharedTools
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.ports.candidate_settlement import CandidateSettlementState, InnerGitSettlement
-from goal_plus.ports.thinkthread_verification import ThinkThreadAttemptIO
+from goal_plus.ports.thinkthread_verification import DeferredCandidateAttempt, ThinkThreadAttemptIO
 from goal_plus.ports.clock import Clock
 
 
@@ -63,6 +64,81 @@ class ThinkThreadVerification:
             candidate_ledger,
         )
         self.shared_tools, self.settlement = shared_tools, settlement
+
+    def _bound_candidate(
+        self, run_id: str, candidate_id: str, agent_session_id: str,
+        thinkthread_id: str, branch_id: str,
+    ) -> CandidateRecord:
+        session = self.candidate_sessions.session(agent_session_id, run_id=run_id)
+        record = self.state.read_candidate(run_id, candidate_id)
+        if record.task.workspace_provider != "thinkthread" or session.runtime_provider != "thinkthread":
+            raise ValueError("candidate does not use the ThinkThread workspace_provider")
+        binding = record.task.workspace_provider_handle
+        if (
+            session.candidate_id != candidate_id
+            or session.session_handle.external_id != thinkthread_id
+            or binding.get("thinkthread_id") != thinkthread_id
+            or binding.get("branch_id") != branch_id
+            or binding.get("agent_session_id") != agent_session_id
+            or not thinkthread_id or not branch_id
+        ):
+            raise PermissionError("ThinkThread attempt identity does not match the bound Child")
+        if record.status not in {"created", "evaluated"}:
+            raise RuntimeError(f"cannot verify candidate in status {record.status}")
+        return record
+
+    def accept(
+        self, submission: DeferredCandidateAttempt, *, run_id: str, candidate_id: str,
+        agent_session_id: str | None, scope: str, hypothesis: str | None,
+        toolization_decision: ToolizationDecision | dict[str, Any] | None,
+    ) -> CandidateAttemptAccepted:
+        """Admit a request for later quiescent verification; does not create Evidence."""
+        if scope != "process":
+            raise PermissionError("ThinkThread Child may request only process verification")
+        if (run_id, candidate_id, agent_session_id) != (
+            submission.run_id, submission.candidate_id, submission.agent_session_id,
+        ):
+            raise PermissionError("ThinkThread verifier request does not match the bound invocation")
+        hypothesis = (hypothesis or "").strip()
+        if not hypothesis:
+            raise ValueError("worker process verifier requires a non-empty hypothesis")
+        with self.state.lock_run(run_id):
+            run = self.state.read_run(run_id)
+            self.authorization.require_search_execution(run_id)
+            require_worker_iteration_state(run, "accept ThinkThread attempt")
+            record = self._bound_candidate(
+                run_id, candidate_id, submission.agent_session_id,
+                submission.thinkthread_id, submission.branch_id,
+            )
+            frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+            decision = self.shared_tools.normalize_toolization_decision(
+                run_id=run_id, frozen=frozen, scope="process",
+                agent_session_id=submission.agent_session_id,
+                toolization_decision=toolization_decision,
+            )
+            prior = submission.prior
+            if prior is not None:
+                if prior.request_id != submission.request_id:
+                    raise RuntimeError("only one candidate attempt may be accepted per Child turn")
+                if (
+                    (prior.run_id, prior.candidate_id, prior.agent_session_id, prior.attempt_id)
+                    != (run_id, candidate_id, agent_session_id, submission.attempt_id)
+                    or prior.hypothesis != hypothesis or prior.toolization_decision != decision
+                ):
+                    raise ValueError("verifier request id was reused with new content")
+                return prior
+            if self.candidate_ledger.projection(frozen, record) == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV:
+                self._validate_thinkthread_inner_git_attempt(record, submission.inner_git_attempt)
+            elif submission.inner_git_attempt is not None:
+                raise PermissionError("private inner Git metadata is not allowed for this inner-agent binding")
+            return CandidateAttemptAccepted(
+                attempt_id=submission.attempt_id, request_id=submission.request_id,
+                run_id=run_id, candidate_id=candidate_id, agent_session_id=submission.agent_session_id,
+                hypothesis=hypothesis, toolization_decision=decision, accepted_at=self.clock.timestamp(),
+                message="The attempt was accepted. Its exact snapshot verifier will run after "
+                "this Child turn reaches a quiescent boundary. Finish the turn without "
+                "further writes; the exact ScoreReport will be injected into the next wake.",
+            )
 
     def verify(
         self,
@@ -95,18 +171,9 @@ class ThinkThreadVerification:
                     toolization_decision=toolization_decision,
                 )
             )
-            record = self.state.read_candidate(run_id, candidate_id)
-            if record.task.workspace_backend != "thinkthread":
-                raise ValueError("candidate does not use the ThinkThread backend")
-            binding = record.task.workspace_provider_handle
-            if (
-                binding.get("thinkthread_id") != thinkthread_id
-                or binding.get("branch_id") != branch_id
-                or binding.get("agent_session_id") != agent_session_id
-            ):
-                raise PermissionError(
-                    "ThinkThread attempt identity does not match the bound Child"
-                )
+            record = self._bound_candidate(
+                run_id, candidate_id, agent_session_id, thinkthread_id, branch_id,
+            )
             for iteration in record.iterations:
                 provider = iteration.metrics.get("_candidate_attempt")
                 legacy = iteration.metrics.get("_thinkthread_settlement")

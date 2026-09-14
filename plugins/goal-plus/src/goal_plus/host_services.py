@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Any
-from goal_plus.agent_hosts import candidate_inner_agent_binding
+from goal_plus.infrastructure.host_bindings import candidate_inner_agent_binding
 from goal_plus.application.candidate_host import ThinkThreadCandidatePreparation
 from goal_plus.candidate_host import candidate_host_queries
 from goal_plus.domain.evidence import ScoreReport
@@ -19,7 +19,6 @@ class SearchHostService(ThinkThreadCandidatePreparation):
         self.runtime = runtime or FileSearchRuntime(root_dir)
         super().__init__(
             candidate_host_queries(root_dir),
-            start_session=self.runtime.candidate_sessions.start_agent_session,
             continue_session=self.runtime.candidate_sessions.continue_agent_session,
             resolve_binding=candidate_inner_agent_binding,
         )

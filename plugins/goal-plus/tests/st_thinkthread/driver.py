@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import nullcontext
 import json
 import os
 import subprocess
@@ -13,6 +14,7 @@ from typing import Any
 
 from goal_plus.ports.annotation import EvidenceAnnotationResult
 from goal_plus.annotation_host import AnnotationHostService
+from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import ArtifactRef, CandidateProposal, SearchSpec
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.thinkthread_agent_posix import (
@@ -29,16 +31,13 @@ from goal_plus.thinkthread_annotation import (
 )
 from goal_plus.thinkthread_artifacts import (
     ThinkThreadArtifactViewRouter,
-    decode_fs_run_output,
     fs_path_text,
 )
-from goal_plus.thinkthread_pool import (
-    close_pool,
-    continue_thinkthread_search_pool,
-    open_pool,
-    open_thinkthread_search_pool,
-    wait_any,
-)
+from goal_plus.execution.thinkthread_child import ChildDriver
+from goal_plus.execution.thinkthread_session import ThinkThreadSession
+from goal_plus.infrastructure.clock import SystemClock
+from goal_plus.ports.thinkthread_session import ThinkThreadSessionInput, ThinkThreadSessionHooks
+from candidate_sessions import CandidateSessions, complete_scenario_goal
 
 
 def _request_id(label: str) -> str:
@@ -163,7 +162,7 @@ def run_abi_smoke(config: dict[str, Any]) -> dict[str, Any]:
     client = AgentPosixSdkClient()
     root = validate_thinkthread_root(client)
     workspace = Path(config["report_path"]).parent
-    runtime_root = workspace / ".gp-tt-smoke"
+    runtime_root = Path(os.environ["GOAL_PLUS_ROOT"]) / "st-tt-smoke"
     workspace.joinpath("abi.txt").write_text("base\n", encoding="utf-8")
     workspace.joinpath("dependency.txt").write_text("dependency-v1\n", encoding="utf-8")
     workspace.joinpath("delete-me.txt").write_text("delete\n", encoding="utf-8")
@@ -304,40 +303,20 @@ def run_abi_smoke(config: dict[str, Any]) -> dict[str, Any]:
     assert not workspace.joinpath("dependency-target.txt").exists()
     _close_request(client, dependency_request)
 
-    smoke = open_pool(
-        root_dir=runtime_root,
-        run_id="st_single_child_smoke",
-        candidates=[
-            {
-                "candidate_id": "smoke",
-                "message": (
-                    "This is TT-LNX-CHILD-001 single Child smoke. Do not modify files or call "
-                    "tools. Reply exactly THINKTHREAD_CHILD_SMOKE_READY and end the turn."
-                ),
-                "max_runtime_seconds": 180,
-            }
-        ],
-        max_parallel=1,
-        baseline_snapshot_id=dependency_base,
-        client=client,
-    )
-    event = wait_any(
-        root_dir=runtime_root,
-        pool_id=smoke["pool_id"],
-        timeout_seconds=180,
-        client=client,
-    )["event"]
-    assert event is not None and event["kind"] == "candidate_ready"
-    smoke_job = event["result"]
-    assert smoke_job["thinkthread_id"].startswith("tt-")
-    smoke_branch_id = str(smoke["jobs"][0]["fs_branch_id"])
-    closed = close_pool(
-        root_dir=runtime_root,
-        pool_id=smoke["pool_id"],
-        mode="drain",
-        client=client,
-    )
-    assert closed["state"] == "closed"
+    record = {}
+    clock = SystemClock()
+    driver = ChildDriver(client, clock)
+    actor = ThinkThreadSession(ThinkThreadSessionInput(root["thinkthreadId"], dependency_base),
+        driver, clock, record, ThinkThreadSessionHooks(nullcontext, lambda _: None,
+        lambda _: None, lambda _: None, lambda _: ""))
+    try:
+        result = actor.run("Do not modify files or call tools. Reply THINKTHREAD_CHILD_SMOKE_READY and end the turn.", timeout=180)
+        assert result.state == "completed", result
+        smoke_child_id, smoke_branch_id = result.native_session_id, record["fs_branch_id"]
+    finally:
+        actor.close()
+        if actor.native_session_id is not None:
+            driver.release(actor.native_session_id, root_id=root["thinkthreadId"], branch_id=record["fs_branch_id"], timeout=10)
 
     for index, snapshot_id in enumerate(reversed(snapshots)):
         _remove_snapshot(client, snapshot_id, f"abi-{index}")
@@ -354,7 +333,7 @@ def run_abi_smoke(config: dict[str, Any]) -> dict[str, Any]:
         ],
         "root_thinkthread_id": root["thinkthreadId"],
         "single_child": {
-            "thinkthread_id": smoke_job["thinkthread_id"],
+            "thinkthread_id": smoke_child_id,
             "fs_branch_id": smoke_branch_id,
         },
         "snapshots": {
@@ -410,7 +389,7 @@ def _runtime_spec(
             "evidence_annotator": {},
         },
         "workspace": {
-            "backend": "thinkthread",
+            "provider": "thinkthread",
             "promotion_mode": "apply",
         },
     }
@@ -477,7 +456,7 @@ def _annotation_proposal(value: int) -> CandidateProposal:
                 "Use a local command that does not print the file to replace only the "
                 f"first byte of project/large.txt with `{value}`; preserve every other byte."
             ),
-            "Call search_run_verifier exactly once with a concise hypothesis, then end the turn.",
+            "Call goal_plus_search_run_verifier exactly once with a concise hypothesis, then end the turn.",
         ],
     )
 
@@ -533,10 +512,10 @@ def run_runtime_single(config: dict[str, Any]) -> dict[str, Any]:
     root = validate_thinkthread_root(client)
     workspace = Path(config["report_path"]).parent
     project = _runtime_project(workspace)
-    runtime = FileSearchRuntime(workspace / ".gp-tt-runtime-single")
+    runtime = FileSearchRuntime(Path(os.environ["GOAL_PLUS_ROOT"]) / "st-tt-runtime-single")
     spec = _runtime_spec(project, inner_agent="common")
     spec.budget.max_parallel = 1
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi")
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     runtime.start_batch(run_id, plan.plan_id, proposals=[CandidateProposal(
@@ -544,16 +523,13 @@ def run_runtime_single(config: dict[str, Any]) -> dict[str, Any]:
         hypothesis="One verified edit proves the model and ThinkThread tool path.",
         instructions=[
             "Edit only project/solution.txt so its complete content is exactly `1` followed by a newline.",
-            "Call search_run_verifier exactly once, then end the turn after the accepted receipt.",
+            "Call goal_plus_search_run_verifier exactly once, then end the turn after the accepted receipt.",
         ],
     )])
-    opened = open_thinkthread_search_pool(root_dir=runtime.root_dir, run_id=run_id, client=client)
+    workers = CandidateSessions(runtime, run_id, config)
+    workers.start_all()
     try:
-        waited = wait_any(root_dir=runtime.root_dir, pool_id=opened["pool_id"],
-                          timeout_seconds=180, client=client)
-        event = waited["event"]
-        assert event is not None and event["kind"] == "candidate_ready", waited
-        feedback = event["attempt_result"]
+        feedback = json.loads(workers.wait("c001").text)
         assert feedback["state"] == "verified", feedback
         record = runtime.candidate_creation.state.read_candidate(run_id, "c001")
         assert len(record.iterations) == 1
@@ -563,8 +539,7 @@ def run_runtime_single(config: dict[str, Any]) -> dict[str, Any]:
         assert client.snapshot_read_file(snapshot_id, "project/solution.txt") == b"1\n"
         assert project.joinpath("solution.txt").read_bytes() == b"0\n"
     finally:
-        closed = close_pool(root_dir=runtime.root_dir, pool_id=opened["pool_id"],
-                            mode="interrupt", client=client)
+        closed = workers.close()
         close_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
     assert closed["state"] == "closed", closed
     return {"scenario": config["scenario"], "model": config["model"],
@@ -578,7 +553,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
     validate_thinkthread_root(client)
     workspace = Path(config["report_path"]).parent
     project = _runtime_project(workspace)
-    runtime_root = workspace / ".gp-tt-runtime-k2"
+    runtime_root = Path(os.environ["GOAL_PLUS_ROOT"]) / "st-tt-runtime-k2"
     runtime = FileSearchRuntime(runtime_root)
     inner_agent = (
         "autoresearch"
@@ -587,7 +562,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
     )
     frozen = runtime.freeze_spec(
         _runtime_spec(project, inner_agent=inner_agent),
-        [project / "evaluator.py"], native_host="pi",
+        [project / "evaluator.py"], agent_harness="pi",
     )
     assert frozen.spec.strategy.inner_agent == inner_agent
     run_id = runtime.create_run(frozen.frozen_spec_id)
@@ -595,7 +570,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
     inner_agent_binding = plan.worker_policy["inner_agent_binding"]
     assert plan.worker_policy["inner_agent"] == inner_agent
     assert inner_agent_binding["inner_agent_id"] == inner_agent
-    assert inner_agent_binding["worker_host"] == "thinkthread"
+    assert inner_agent_binding["runtime_provider"] == "thinkthread"
     expected_projection = (
         "results_tsv" if inner_agent == "autoresearch" else "none"
     )
@@ -610,7 +585,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
             hypothesis="A sequence from one to three proves iterative continuation.",
             instructions=[
                 "Read project/solution.txt. If its complete content is `0`, replace it with `1` followed by a newline. If its complete content is `1`, replace it with `3` followed by a newline.",
-                "On every dispatch, call search_run_verifier exactly once with a concise hypothesis, then end the turn after the accepted receipt.",
+                "On every dispatch, call goal_plus_search_run_verifier exactly once with a concise hypothesis, then end the turn after the accepted receipt.",
             ],
         )
         if inner_agent == "autoresearch"
@@ -619,7 +594,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
             hypothesis="A score of one proves the first private branch.",
             instructions=[
                 "Edit only project/solution.txt so its complete content is exactly `1` followed by a newline.",
-                "Call search_run_verifier exactly once with a concise hypothesis, then end the turn.",
+                "Call goal_plus_search_run_verifier exactly once with a concise hypothesis, then end the turn.",
             ],
         )
     )
@@ -633,54 +608,32 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
                 hypothesis="A score of two proves the second private branch.",
                 instructions=[
                     "Edit only project/solution.txt so its complete content is exactly `2` followed by a newline.",
-                    "Call search_run_verifier exactly once with a concise hypothesis, then end the turn.",
+                    "Call goal_plus_search_run_verifier exactly once with a concise hypothesis, then end the turn.",
                 ],
             ),
         ],
     )
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime_root,
-        run_id=run_id,
-        client=client,
-    )
-    pool_id = str(opened["pool_id"])
-    events: list[dict[str, Any]] = []
+    workers = CandidateSessions(runtime, run_id, config)
+    workers.start_all()
+    results, feedbacks = {}, {}
     inner_git_verified = False
     artifact_view_private_paths_filtered = False
-    scenario_completed = False
     try:
-        for _ in tasks:
-            waited = wait_any(
-                root_dir=runtime_root,
-                pool_id=pool_id,
-                timeout_seconds=240,
-                client=client,
-            )
-            event = waited["event"]
-            assert event is not None, waited["pool"]
-            assert event["kind"] == "candidate_ready", event
-            pool_job = next(
-                job
-                for job in waited["pool"]["jobs"]
-                if job["candidate_id"] == event["candidate_id"]
-            )
-            accepted = pool_job["attempt_request"]
-            feedback = event["attempt_result"]
+        for task in tasks:
+            result = workers.wait(task.candidate_id)
+            feedback = json.loads(result.text)
+            accepted = workers.controls[task.candidate_id].session.record["attempt_request"]
             assert accepted["state"] == "accepted"
             assert feedback["state"] == "verified"
             assert accepted["attempt_id"] == feedback["attempt_id"]
             assert accepted["request_id"] == feedback["request_id"]
-            assert feedback == pool_job["attempt_result"]
-            events.append(event)
+            results[task.candidate_id], feedbacks[task.candidate_id] = result, feedback
 
         records = {
             record.candidate_id: record
             for record in runtime.candidate_creation.state.read_candidates(run_id)
         }
-        events_by_candidate = {
-            str(event["candidate_id"]): event for event in events
-        }
-        jobs = {str(job["candidate_id"]): job for job in opened["jobs"]}
+        worker_records = {key: control.session.record for key, control in workers.controls.items()}
         candidates: dict[str, Any] = {}
         for candidate_id, expected_score in (("c001", 1.0), ("c002", 2.0)):
             record = records[candidate_id]
@@ -716,9 +669,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
                     "project/results.tsv",
                 ).decode("utf-8")
                 assert len(attempt_results.splitlines()) == 1
-                workspace_artifact = events_by_candidate[candidate_id][
-                    "attempt_result"
-                ]["workspace_artifact_after_attempt"]
+                workspace_artifact = feedbacks[candidate_id]["workspace_artifact_after_attempt"]
                 settled_results = client.snapshot_read_file(
                     workspace_artifact["id"],
                     "project/results.tsv",
@@ -794,7 +745,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
             )
             assert len(context["recent_iterations"]) == 1
             assert context["recent_iterations"][0]["attempt_id"] == (
-                events_by_candidate[candidate_id]["attempt_result"]["attempt_id"]
+                feedbacks[candidate_id]["attempt_id"]
             )
             assert len(record.results_ledger) == 1
             assert record.results_ledger_git_head is None
@@ -805,51 +756,21 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
             )
             assert has_autoresearch_prompt is (inner_agent == "autoresearch")
             candidates[candidate_id] = {
-                "thinkthread_id": jobs[candidate_id]["thinkthread_id"],
+                "thinkthread_id": worker_records[candidate_id]["thinkthread_id"],
                 "agent_session_id": record.iterations[0].agent_session_id,
-                "fs_branch_id": jobs[candidate_id]["fs_branch_id"],
+                "fs_branch_id": worker_records[candidate_id]["fs_branch_id"],
                 "artifact_ref": iteration.artifact_ref.model_dump(mode="json"),
                 "verifier_snapshot_id": verifier_result.metrics["snapshot_id"],
                 "score": iteration.score,
             }
 
-        first_feedback = next(
-            event["attempt_result"]
-            for event in events
-            if event["candidate_id"] == "c001"
-        )
-        continued = continue_thinkthread_search_pool(
-            root_dir=runtime_root,
-            pool_id=pool_id,
-            candidate_id="c001",
-            client=client,
-        )
-        continued_job = next(
-            job for job in continued["jobs"] if job["candidate_id"] == "c001"
-        )
-        assert continued_job["dispatch_index"] == 2
-        assert len(continued_job["attempt_history"]) == 1
-        assert (
-            continued_job["attempt_history"][0]["attempt_id"]
-            == first_feedback["attempt_id"]
-        )
-        continued_wait = wait_any(
-            root_dir=runtime_root,
-            pool_id=pool_id,
-            timeout_seconds=240,
-            client=client,
-        )
-        continued_event = continued_wait["event"]
-        assert continued_event is not None, continued_wait["pool"]
-        assert continued_event["kind"] == "candidate_ready", continued_event
-        assert continued_event["candidate_id"] == "c001"
-        continued_pool_job = next(
-            job
-            for job in continued_wait["pool"]["jobs"]
-            if job["candidate_id"] == "c001"
-        )
-        second_accepted = continued_pool_job["attempt_request"]
-        second_feedback = continued_event["attempt_result"]
+        first_feedback = feedbacks["c001"]
+        workers.start("c001", call_id="2", prompt="Continue the assigned next revision in this session.")
+        continued_result = workers.wait("c001", call_id="2")
+        assert continued_result.native_session_id == results["c001"].native_session_id
+        assert continued_result.invocation_id != results["c001"].invocation_id
+        second_accepted = workers.controls["c001"].session.record["attempt_request"]
+        second_feedback = json.loads(continued_result.text)
         assert second_accepted["attempt_id"] == second_feedback["attempt_id"]
         assert second_feedback["attempt_id"] != first_feedback["attempt_id"]
         assert second_feedback["attempt_iteration"] == 2
@@ -909,18 +830,8 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
         assert len({item["agent_session_id"] for item in candidates.values()}) == 2
         assert len({item["fs_branch_id"] for item in candidates.values()}) == 2
         assert len({item["artifact_ref"]["id"] for item in candidates.values()}) == 2
-        scenario_completed = True
     finally:
-        if (
-            scenario_completed
-            or os.environ.get("ST_THINKTHREAD_PRESERVE_ON_FAILURE") != "1"
-        ):
-            closed = close_pool(
-                root_dir=runtime_root,
-                pool_id=pool_id,
-                mode="interrupt",
-                client=client,
-            )
+        closed = workers.close()
     assert closed["state"] == "closed"
     close_thinkthread_annotation(root_dir=runtime_root, run_id=run_id, client=client)
     assert client.invoke("thinkthread.list").get("children") == []
@@ -946,12 +857,12 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
         "artifact_view_private_paths_filtered": (
             artifact_view_private_paths_filtered
         ),
-        "event_candidates": sorted(event["candidate_id"] for event in events),
+        "candidate_ids": sorted(results),
         "candidates": candidates,
         "continuation": {
             "candidate_id": "c001",
             "previous_attempt_id": first_feedback["attempt_id"],
-            "history_attempt_id": continued_job["attempt_history"][0]["attempt_id"],
+            "history_attempt_id": continued_record.iterations[0].metrics["_candidate_attempt"]["id"],
             "next_attempt_id": second_feedback["attempt_id"],
             "iteration_count": len(continued_record.iterations),
             "results_ledger_count": len(continued_record.results_ledger),
@@ -960,7 +871,7 @@ def run_runtime_k2(config: dict[str, Any]) -> dict[str, Any]:
             "disposition": continued_record.iterations[-1].disposition,
         },
         "root_solution": project.joinpath("solution.txt").read_text(encoding="utf-8"),
-        "cleanup_states": sorted(item["state"] for item in closed["cleanup"]),
+        "cleanup_state": closed["state"],
     }
 
 
@@ -970,9 +881,9 @@ def run_annotation_views(config: dict[str, Any]) -> dict[str, Any]:
     validate_thinkthread_root(client)
     workspace = Path(config["report_path"]).parent
     project = _annotation_project(workspace)
-    runtime_root = workspace / ".gp-tt-annotation"
+    runtime_root = Path(os.environ["GOAL_PLUS_ROOT"]) / "st-tt-annotation"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(_annotation_spec(project), [project / "evaluator.py"], native_host="pi")
+    frozen = runtime.freeze_spec(_annotation_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     runtime.start_batch(
@@ -980,22 +891,11 @@ def run_annotation_views(config: dict[str, Any]) -> dict[str, Any]:
         plan.plan_id,
         proposals=[_annotation_proposal(1), _annotation_proposal(2)],
     )
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime_root,
-        run_id=run_id,
-        client=client,
-    )
-    pool_id = str(opened["pool_id"])
+    workers = CandidateSessions(runtime, run_id, config)
+    workers.start_all()
     try:
-        for _ in range(2):
-            waited = wait_any(
-                root_dir=runtime_root,
-                pool_id=pool_id,
-                timeout_seconds=300,
-                client=client,
-            )
-            assert waited["event"] is not None, waited["pool"]
-            assert waited["event"]["kind"] == "candidate_ready", waited["event"]
+        for candidate_id in workers.sessions:
+            workers.wait(candidate_id)
 
         state = _wait_for_annotations(runtime, run_id, client)
         settled = [
@@ -1007,7 +907,7 @@ def run_annotation_views(config: dict[str, Any]) -> dict[str, Any]:
         submit_responses = [
             record["response"]
             for record in settled
-            if record.get("tool") == "thinkthread_annotation_submit"
+            if record.get("tool") == "goal_plus_thinkthread_annotation_submit"
             and isinstance(record.get("response"), dict)
         ]
         published_submit_count = sum(
@@ -1019,20 +919,20 @@ def run_annotation_views(config: dict[str, Any]) -> dict[str, Any]:
             response.get("ok") is False for response in submit_responses
         )
         expected_tools = {
-            "thinkthread_annotation_next",
-            "thinkthread_artifact_view_list",
-            "thinkthread_artifact_view_stat",
-            "thinkthread_artifact_view_pread",
-            "thinkthread_artifact_view_diff",
-            "thinkthread_annotation_submit",
+            "goal_plus_thinkthread_annotation_next",
+            "goal_plus_thinkthread_artifact_view_list",
+            "goal_plus_thinkthread_artifact_view_stat",
+            "goal_plus_thinkthread_artifact_view_pread",
+            "goal_plus_thinkthread_artifact_view_diff",
+            "goal_plus_thinkthread_annotation_submit",
         }
         assert set(tools) == expected_tools
-        assert tools.count("thinkthread_artifact_view_pread") >= 2
+        assert tools.count("goal_plus_thinkthread_artifact_view_pread") >= 2
 
         claimed_contexts = [
             record["response"]["result"]["task"]
             for record in settled
-            if record.get("tool") == "thinkthread_annotation_next"
+            if record.get("tool") == "goal_plus_thinkthread_annotation_next"
             and record.get("response", {}).get("ok") is True
             and record["response"].get("result", {}).get("state") == "claimed"
         ]
@@ -1069,12 +969,7 @@ def run_annotation_views(config: dict[str, Any]) -> dict[str, Any]:
                 fs_path_text(entry["path"]) for entry in entries
             }
     finally:
-        closed = close_pool(
-            root_dir=runtime_root,
-            pool_id=pool_id,
-            mode="interrupt",
-            client=client,
-        )
+        closed = workers.close()
         if runtime.search_run.state.read_run(run_id).state not in {"ready_to_promote", "promoted"}:
             runtime.select(run_id)
 
@@ -1094,7 +989,7 @@ def run_annotation_views(config: dict[str, Any]) -> dict[str, Any]:
             context["actual_diff_omitted"] for context in claimed_contexts
         ],
         "peer_comparison_count": len(peer_context["comparison_basis"]),
-        "cleanup_states": sorted(item["state"] for item in closed["cleanup"]),
+        "cleanup_state": closed["state"],
     }
 
 
@@ -1103,11 +998,11 @@ def run_annotation_cancel(config: dict[str, Any]) -> dict[str, Any]:
     validate_thinkthread_root(client)
     workspace = Path(config["report_path"]).parent
     project = _runtime_project(workspace)
-    runtime_root = workspace / ".gp-tt-annotation-cancel"
+    runtime_root = Path(os.environ["GOAL_PLUS_ROOT"]) / "st-tt-annotation-cancel"
     runtime = FileSearchRuntime(runtime_root)
     frozen = runtime.freeze_spec(
         _runtime_spec(project, annotation_host="thinkthread"),
-        [project / "evaluator.py"], native_host="pi",
+        [project / "evaluator.py"], agent_harness="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1120,34 +1015,17 @@ def run_annotation_cancel(config: dict[str, Any]) -> dict[str, Any]:
                 hypothesis="The exact private snapshot scores one.",
                 instructions=[
                     "Set project/solution.txt to exactly `1` followed by a newline.",
-                    "Call search_run_verifier exactly once, then end the turn.",
+                    "Call goal_plus_search_run_verifier exactly once, then end the turn.",
                 ],
             )
         ],
     )
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime_root,
-        run_id=run_id,
-        client=client,
-    )
-    pool_id = str(opened["pool_id"])
+    workers = CandidateSessions(runtime, run_id, config)
+    workers.start_all()
     selected = False
     try:
-        waited = wait_any(
-            root_dir=runtime_root,
-            pool_id=pool_id,
-            timeout_seconds=240,
-            client=client,
-        )
-        assert waited["event"] is not None
-        assert waited["event"]["kind"] == "candidate_ready"
-        pool_closed = close_pool(
-            root_dir=runtime_root,
-            pool_id=pool_id,
-            mode="drain",
-            client=client,
-        )
-        assert pool_closed["state"] == "closed"
+        workers.wait(candidate.candidate_id)
+        workers.close_candidates()
 
         deadline = time.monotonic() + 180
         annotation = None
@@ -1194,22 +1072,12 @@ def run_annotation_cancel(config: dict[str, Any]) -> dict[str, Any]:
         assert cancelled is not None
         assert cancelled.state == "cancelled"
         assert cancelled.view is None
-        closed_annotation = annotation_snapshot(root_dir=runtime_root, run_id=run_id)
-        assert closed_annotation is not None and closed_annotation["status"] == "closed"
-        assert client.invoke("thinkthread.list").get("children") == []
     finally:
-        if not selected:
-            close_pool(
-                root_dir=runtime_root,
-                pool_id=pool_id,
-                mode="interrupt",
-                client=client,
-            )
-            close_thinkthread_annotation(
-                root_dir=runtime_root,
-                run_id=run_id,
-                client=client,
-            )
+        closed = workers.close()
+
+    closed_annotation = annotation_snapshot(root_dir=runtime_root, run_id=run_id)
+    assert closed_annotation is not None and closed_annotation["status"] == "closed"
+    assert client.invoke("thinkthread.list").get("children") == []
 
     return {
         "schema_version": 1,
@@ -1221,7 +1089,7 @@ def run_annotation_cancel(config: dict[str, Any]) -> dict[str, Any]:
         "queue_generation_before": queue_before.generation,
         "queue_generation_after": queue_after.generation,
         "late_result_published": False,
-        "cleanup_states": sorted(item["state"] for item in pool_closed["cleanup"]),
+        "cleanup_state": closed["state"],
     }
 
 
@@ -1269,21 +1137,22 @@ class _ApplyDeliveryFault:
 def _prepare_publication_case(
     *,
     client: AgentPosixSdkClient,
+    config: dict[str, Any],
     workspace: Path,
     label: str,
     dependencies: list[dict[str, str]] | None = None,
-) -> tuple[FileSearchRuntime, str, Path]:
+) -> tuple[FileSearchRuntime, str, Path, Path]:
     case_root = workspace / "publication-cases" / label
     case_root.mkdir(parents=True)
     project = _runtime_project(case_root)
     project.joinpath("notes.txt").write_text("baseline\n", encoding="utf-8")
-    runtime_root = workspace / f".gp-tt-publication-{label}"
+    runtime_root = Path(os.environ["GOAL_PLUS_ROOT"]) / f"st-tt-publication-{label}"
     payload = _runtime_spec(project).model_dump(mode="json")
     payload["workspace"]["dependencies"] = dependencies or []
     runtime = FileSearchRuntime(runtime_root)
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(payload),
-        [project / "evaluator.py"], native_host="pi",
+        [project / "evaluator.py"], agent_harness="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1297,33 +1166,17 @@ def _prepare_publication_case(
                 hypothesis="The exact private snapshot scores one.",
                 instructions=[
                     f"Set {source_subdir}/solution.txt to exactly `1` followed by a newline.",
-                    "Call search_run_verifier exactly once, then end the turn.",
+                    "Call goal_plus_search_run_verifier exactly once, then end the turn.",
                 ],
             )
         ],
     )
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime_root,
-        run_id=run_id,
-        client=client,
-    )
-    pool_id = str(opened["pool_id"])
+    workers = CandidateSessions(runtime, run_id, config)
+    workers.start_all()
     try:
-        waited = wait_any(
-            root_dir=runtime_root,
-            pool_id=pool_id,
-            timeout_seconds=240,
-            client=client,
-        )
-        assert waited["event"] is not None
-        assert waited["event"]["kind"] == "candidate_ready"
+        workers.wait(candidate.candidate_id)
     finally:
-        closed = close_pool(
-            root_dir=runtime_root,
-            pool_id=pool_id,
-            mode="drain",
-            client=client,
-        )
+        closed = workers.close()
     assert closed["state"] == "closed"
     selection = runtime.select(run_id)
     assert selection["selected_candidate_id"] == candidate.candidate_id
@@ -1332,7 +1185,7 @@ def _prepare_publication_case(
     promotion = runtime.promotion_record(run_id)
     assert promotion.state == "prepared"
     assert promotion.apply_request_id is not None
-    return runtime, run_id, project
+    return runtime, run_id, project, manifest
 
 
 def _cleanup_summary(runtime: FileSearchRuntime, run_id: str) -> dict[str, Any]:
@@ -1352,8 +1205,9 @@ def run_publication_recovery(config: dict[str, Any]) -> dict[str, Any]:
     validate_thinkthread_root(client)
     workspace = Path(config["report_path"]).parent
 
-    applied_runtime, applied_run, applied_project = _prepare_publication_case(
+    applied_runtime, applied_run, applied_project, applied_manifest = _prepare_publication_case(
         client=client,
+        config=config,
         workspace=workspace,
         label="applied",
     )
@@ -1369,13 +1223,15 @@ def run_publication_recovery(config: dict[str, Any]) -> dict[str, Any]:
     )
     applied_notifications = applied_runtime.main_agent_notifications(applied_run)
     assert [item.kind for item in applied_notifications] == ["publication_applied"]
+    complete_scenario_goal(applied_runtime, applied_run, applied_manifest)
     applied_runtime.report(applied_run)
     applied_cleanup = _cleanup_summary(applied_runtime, applied_run)
     assert applied_cleanup["state"] == "complete"
     assert applied_cleanup["record_states"] == ["removed"]
 
-    changed_runtime, changed_run, changed_project = _prepare_publication_case(
+    changed_runtime, changed_run, changed_project, changed_manifest = _prepare_publication_case(
         client=client,
+        config=config,
         workspace=workspace,
         label="changed-conflict",
     )
@@ -1397,13 +1253,20 @@ def run_publication_recovery(config: dict[str, Any]) -> dict[str, Any]:
     assert [item.kind for item in changed_notifications] == [
         "publication_pending_integration"
     ]
+    changed_goals = FileGoalPlusRuntime(changed_runtime.root_dir)
+    changed_goal_id = changed_goals.authorization.run_owner(changed_run)
+    changed_goals.set_status(
+        changed_goal_id, "abandoned",
+        reason="Conflict scenario ends without Main integration; retain the pending artifact.",
+    )
     changed_runtime.report(changed_run)
     changed_cleanup = _cleanup_summary(changed_runtime, changed_run)
     assert changed_cleanup["state"] == "retained"
     assert "publication:awaiting_main_integration" in changed_cleanup["pins"]
 
-    dependency_runtime, dependency_run, dependency_project = _prepare_publication_case(
+    dependency_runtime, dependency_run, dependency_project, dependency_manifest = _prepare_publication_case(
         client=client,
+        config=config,
         workspace=workspace,
         label="dependency-conflict",
         dependencies=[{"path": "dependency.txt", "scope": "content"}],
@@ -1426,8 +1289,9 @@ def run_publication_recovery(config: dict[str, Any]) -> dict[str, Any]:
     assert dependency_outcome.pending_artifact_path is not None
     assert dependency_outcome.pending_artifact_path.is_file()
 
-    recovery_runtime, recovery_run, recovery_project = _prepare_publication_case(
+    recovery_runtime, recovery_run, recovery_project, recovery_manifest = _prepare_publication_case(
         client=client,
+        config=config,
         workspace=workspace,
         label="response-loss",
     )
@@ -1455,8 +1319,9 @@ def run_publication_recovery(config: dict[str, Any]) -> dict[str, Any]:
         "publication_applied"
     ]
 
-    fenced_runtime, fenced_run, fenced_project = _prepare_publication_case(
+    fenced_runtime, fenced_run, fenced_project, fenced_manifest = _prepare_publication_case(
         client=client,
+        config=config,
         workspace=workspace,
         label="needs-recovery",
     )
@@ -1576,8 +1441,8 @@ def run_circle_baseline(config: dict[str, Any]) -> dict[str, Any]:
     assert {p.relative_to(project): p.read_bytes() for p in project.rglob("*") if p.is_file()} == before
     spec = SearchSpec.model_validate_json((project / "search-spec.json").read_text())
     spec.source_path = str(project)
-    runtime = FileSearchRuntime(workspace / ".gp-circle-baseline")
-    frozen = runtime.freeze_spec(spec, [verifier], native_host="pi")
+    runtime = FileSearchRuntime(Path(os.environ["GOAL_PLUS_ROOT"]) / "st-circle-baseline")
+    frozen = runtime.freeze_spec(spec, [verifier], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     run = runtime.search_run.state.read_run(run_id)
     baseline = run.workspace_bootstrap_verification
@@ -1606,6 +1471,10 @@ def main() -> int:
         "annotation_cancel": run_annotation_cancel,
         "publication_recovery": run_publication_recovery,
     }
+    if config["scenario"] in {"unified_session", "unified_session_cold", "unified_session_steering", "unified_session_active", "unified_session_controls"}:
+        from unified_session_scenario import run_unified_session
+
+        scenarios[config["scenario"]] = run_unified_session
     if config["scenario"] == "vliw_retained_turns":
         from vliw_scenario import run_vliw_retained_turns
 

@@ -42,7 +42,7 @@ AllocationPolicy 或 AllocationExecutor。
 
 ```yaml
 workspace:
-  backend: git_worktree
+  provider: git_worktree
 strategy:
   orchestration_mode: adaptive_search
   selection:
@@ -236,16 +236,22 @@ pending -> applied
 Pending Decision 一旦指定 `retire_candidate_ids`，admission 立即 fence 目标 lane，禁止 `recover`、
 `redispatch`、`start_session`、`continue_session` 和 `run_verifier` 继续进入 candidate 执行。
 
-应用 Decision 时，host 对每个目标只发送一次原生 cancel，不等待 worker 物理退出：
+公共 `goal_plus_search_apply_allocation_decision` 通过可信 MCP session host 对准确目标发起
+原生取消。scope 中的取消 intent/receipt 绑定 Decision、candidate、session、generation、native
+handle 和 call，不接受模型提供取消事实。准确 controller 的已完成调用可记为 accepted；
+尚未启动的 session 无需取消。缺失 controller 不能作为 not_found 成功处理。
 
-- `accepted`：host 已接受 cancel，不代表进程已经退出；
-- `already_terminal`：目标已经终态，可以 apply；
-- `not_found`：没有可取消的活动目标，可以 apply；
-- `rejected`：host 拒绝，Decision 保持 pending 并返回错误。
+- `accepted`：取消已接受或准确调用已完成，不证明资源退出；重复请求复用回执；
+- `rejected`：宿主明确拒绝，Decision 保持 pending，允许重试；
+- `requested` / `unknown`：尚无准确结果，必须恢复，不能重新发送不确定的取消或直接 apply。
+  同一 controller 后续确认原 call 为 completed/interrupted 时，重试 apply 只观察该准确终态并
+  保存 accepted 回执；仍在运行、失败或 controller 缺失时保持恢复要求。
 
 收到可接受回执后，AllocationExecutor 在 run lock 内重新校验 Decision、Snapshot、SettlementReceipt、
 ExpansionSource、eligibility、capacity 和 budget，然后退休旧 candidate、分配 child id，并从
 `ExpansionSource.attempt_artifact_ref` 物化派生 candidate。实际启动 child worker 仍归 host。
+派生 session 通过 `goal_plus_session_run` 启动。旧 session 的 close、资源退出和容量检查独立于
+取消接受；清理失败保留资源状态，不因 Decision applied 而伪报清理成功。
 
 重复 apply 使用持久 Decision、candidate 和 session provenance 恢复，不重新调用 LLM、不重复发送
 已记录的 cancel，也不重新解释 policy。过期输入进入 `superseded`；不可恢复的协议错误进入
@@ -322,59 +328,5 @@ Adaptive 与 Selection 的核心测试应覆盖：
 ## Monitor Feature Plugin
 
 Monitor feature plugin 基于持久化 Goal record 和只追加 event log 生成只读投影。它属于共享
-observability，不参与 Adaptive 算法；放在本页是为了集中 Search/编排的可选投影说明。
-
-Plugin 默认启用。调用方可以显式选择，或关闭全部 feature plugin：
-
-```text
-goal_plus_monitor_snapshot(feature_plugins=["orchestration"])
-goal_plus_monitor_snapshot(feature_plugins=[])
-```
-
-未知名称会直接报错，避免监控范围被静默改变。Feature plugin 不会启动、等待、通信、中断、重试
-或监督 worker。
-
-### Orchestration View
-
-内置 `orchestration` plugin 将实际发生的普通 subagent 派发投影为 host-neutral 交互结构：
-
-```text
-assignment -> worker_update(bound) -> result -> decision
-```
-
-每条 dispatch 包含 assignment summary、不透明 worker 标识、当前状态和带方向的 event 摘要。Attempt
-还包含 generation、`launching`/`bound` 状态、launch deadline 和 stale-result 数量。旧 generation
-继续显示为 `stale_result`，但不会替换当前 worker。
-
-投影不包含 transcript 内容或路径，只返回 `transcript_available`。它展示持久化协调事实，不推断
-模型意图，也不参与 work item 状态转换。
-
-### Host Metadata
-
-原生通信仍归 host。Host 通过 `goal_plus_record_work_event.metadata` 记录实际 operation：
-
-```json
-{
-  "orchestration_monitor": {
-    "native_operation": "spawn_agent",
-    "direction": "main_to_subagent",
-    "semantic_event": "assignment"
-  }
-}
-```
-
-只有符合 identifier 形式的 operation 名会被公开；prompt 或格式异常的值会被忽略。`direction` 和
-`semantic_event` 是受限的可选 override，省略时由持久 work-event kind 推导。
-
-Codex 通常记录 `spawn_agent`、`wait_agent` 和 `followup_task`；Pi wrapper 记录
-`pi_goal_plus_run_work_item` 和 `goal-plus-pi-worker`。两者的原生命令和等待方式不同，但 assignment、
-result 和 main-owned decision 语义可以直接比较。
-
-仓库提供确定性的协议对比：
-
-```bash
-python scripts/compare_orchestration_hosts.py \
-  .tmp/orchestration-monitor-comparison
-```
-
-该脚本验证持久化协议，不是 live-model quality benchmark。
+observability，不参与 Adaptive 算法。启用方式、Orchestration View、host metadata 和确定性
+协议对比见 [Monitor Feature Plugin 使用说明](feature-plugins.md)。

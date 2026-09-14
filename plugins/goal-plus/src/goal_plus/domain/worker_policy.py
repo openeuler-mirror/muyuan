@@ -3,32 +3,19 @@
 import re
 from typing import Any
 from goal_plus.domain.agents import (
-    WorkerBudget, SelectedModel, AgentHostKind,
-    INNER_AGENT_COMMON,
-    INNER_AGENT_AUTORESEARCH,
+    WorkerBudget, SelectedModel, AgentHarnessKind, AgentRuntimeProvider,
+    EXECUTION_INNER_AGENT_DEFAULTS, validate_agent_execution,
 )
 from goal_plus.domain.search import CandidateTask, FrozenSpec, StrategySpec, SearchPlan, DevicePoolSpec, DevicePoolInventory
 
 
-def validate_worker_budget_for_host(
-    *,
-    worker_host: str,
-    worker_budget: WorkerBudget | None,
-) -> None:
-    if worker_host in {"pi-rpc", "thinkthread"} and (
-        worker_budget is None or worker_budget.max_runtime_seconds is None
-    ):
-        raise ValueError(
-            f"{worker_host} worker_budget requires max_runtime_seconds so the "
-            "host supervisor can enforce a process deadline"
-        )
-    if worker_budget is None:
-        return
-    if worker_host == "codex" and worker_budget.max_runtime_seconds is None:
-        raise ValueError(
-            "codex worker_budget requires max_runtime_seconds so the "
-            "parent agent can enforce a watchdog deadline"
-        )
+PORTABLE_STRATEGY_MODES = frozenset({
+    "agent", "agent_guided", "default", "random", "random_mode",
+})
+
+
+def portable_strategy_mode(value: str) -> bool:
+    return value.strip().lower().replace("-", "_") in PORTABLE_STRATEGY_MODES
 
 
 def worker_budget_dict(strategy: StrategySpec) -> dict[str, Any] | None:
@@ -50,25 +37,21 @@ def candidate_worker_budget(
 
 def normalize_worker_budget_override(
     *,
-    worker_host: str,
     worker_budget: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     if worker_budget is None:
         return None
     parsed = WorkerBudget.model_validate(worker_budget)
-    validate_worker_budget_for_host(
-        worker_host=worker_host,
-        worker_budget=parsed,
-    )
     return parsed.model_dump(mode="json")
 
 
-def resolved_inner_agent_id(strategy: StrategySpec, host: AgentHostKind) -> str:
+def resolved_inner_agent_id(
+    strategy: StrategySpec, agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider,
+) -> str:
+    validate_agent_execution(agent_harness, runtime_provider)
     if strategy.inner_agent is not None:
         return strategy.inner_agent
-    if host == "thinkthread":
-        return INNER_AGENT_COMMON
-    return INNER_AGENT_AUTORESEARCH
+    return EXECUTION_INNER_AGENT_DEFAULTS[(agent_harness, runtime_provider)]
 
 
 def selected_model_provenance(model: SelectedModel) -> dict[str, Any]:

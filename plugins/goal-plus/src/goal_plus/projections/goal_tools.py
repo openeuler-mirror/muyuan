@@ -69,6 +69,11 @@ def goal_status(record: GoalPlusRecord, *, detail: bool = False) -> dict[str, An
         payload["latest_final_check"] = latest_check.model_dump(mode="json", include={
             "check_id", "goal_revision", "status",
         }, exclude_none=True)
+    pending_creates = [item for item in record.search_create_requests if item.state != "linked"]
+    if pending_creates:
+        payload["search_create_requests"] = [item.model_dump(mode="json", include={
+            "request_id", "run_id", "state", "error", "goal_revision",
+        }, exclude_none=True) for item in pending_creates]
     if detail:
         payload.update(record.model_dump(mode="json", include={
             "raw_goal", "policy", "triage", "spec_draft", "source_path",

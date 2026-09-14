@@ -40,6 +40,7 @@ WORK_EVENT_ALLOWED_STATUSES = {
     "failed": {"launching", "active"},
     "cancelled": {"launching", "active", "result_ready", "failed"},
 }
+WORK_EVENT_SUMMARY_MAX_CHARACTERS = 4000
 
 
 EXPLORATION_MODES = {"autonomous", "probe"}
@@ -53,17 +54,16 @@ LEGACY_EXPLORATION_MODE_LINE_PREFIX = "Goal Plus exploration mode:"
 
 EXPLORATION_MODE_LINES = {
     "autonomous": (
-        "Goal Plus 探索模式：autonomous。以冻结的 worker budget、host 强制执行的 lease、"
-        "外层剩余时间和收尾预留作为唯一时间边界；只要全局停止 policy 为 false，就在现有"
-        "工作区恢复每个已完成候选，让该候选自行选择下一个有证据支持的方向。分数或排名"
-        "不能导致替换，轮询超时、原生 turn 或 worker lease 结束也绝不会完成或停止 "
-        "Goal Plus 任务。"
+        "Goal Plus 探索模式：autonomous。候选返回后，Main 根据目标完成情况、持久证据和"
+        "用户明确给定的时间上限判断是否继续；需要继续时复用同一候选和 session，让候选"
+        "自行选择下一个有证据支持的方向。分数或排名不能导致替换，单次调用返回或等待"
+        "超时不代表 Goal Plus 任务完成。用户要求停止时停止。"
     ),
     "probe": (
-        "Goal Plus 探索模式：probe。使用较短的 worker lease 或轮次预算来确定可行性、"
-        "潜力和关键阻塞因素；如果整体 probe 目标仍未完成且还有时间，恢复同一个候选，"
-        "让它自行选择下一个有证据支持的步骤。分数或排名不能导致替换，probe 结束也绝不会"
-        "完成或停止 Goal Plus 任务。"
+        "Goal Plus 探索模式：probe。围绕可行性、潜力和关键阻塞因素安排有界尝试；候选"
+        "返回后由 Main 根据持久证据判断是否需要继续，并尊重用户明确给定的时间上限。"
+        "需要继续时复用同一候选和 session，让候选自行选择下一个有证据支持的步骤。"
+        "分数或排名不能导致替换，单次 probe 返回不代表 Goal Plus 任务完成。用户要求停止时停止。"
     ),
 }
 
@@ -115,11 +115,11 @@ GOAL_PLUS_COMMAND_OPTIONS = (
         value_kind="positive_integer",
     ),
     GoalPlusCommandOption(
-        "workspace_backend",
-        "workspace_backend",
+        "workspace_provider",
+        "workspace_provider",
         "copy | git_worktree | thinkthread",
         "未设置；由 Agent 根据任务和 host 能力决定。",
-        "约束 `SearchSpec.workspace.backend`。",
+        "约束 `SearchSpec.workspace.provider`。",
         value_kind="choice",
         choices=("copy", "git_worktree", "thinkthread"),
     ),
@@ -143,7 +143,7 @@ GOAL_PLUS_COMMAND_OPTIONS = (
         "inner_agent",
         "inner_agent",
         "ADAPTER_ID",
-        "未设置；沿用当前 host/backend 的兼容默认值。",
+        "未设置；direct 默认 autoresearch，ThinkThread 默认 common。",
         "约束 `SearchSpec.strategy.inner_agent`。",
     ),
     GoalPlusCommandOption(
@@ -238,27 +238,22 @@ _COMMAND_CONFIG_DIRECTIVE_RE = re.compile(
 
 
 SEARCH_TOOL_SUFFIXES = (
-    "search_freeze_spec",
-    "search_create",
-    "search_status",
+    "goal_plus_search_freeze_spec",
+    "goal_plus_search_create",
+    "goal_plus_search_status",
     *SEARCH_RECOVERY_TOOL_SUFFIXES,
-    "search_list_history",
-    "search_plan_next",
-    "search_start_batch",
+    "goal_plus_search_list_history",
+    "goal_plus_search_plan_next",
+    "goal_plus_search_start_batch",
     "search_start_agent_session",
     "search_redispatch_candidate",
     "search_bind_agent_handle",
     "search_continue_agent_session",
-    "search_run_verifier",
-    "search_select",
-    "search_report",
-    "search_promote",
-    "search_apply_promotion",
-    "pi_search_pool_open",
-    "pi_search_pool_wait_any",
-    "pi_search_pool_snapshot",
-    "pi_search_pool_continue",
-    "pi_search_pool_close",
+    "goal_plus_search_run_verifier",
+    "goal_plus_search_select",
+    "goal_plus_search_report",
+    "goal_plus_search_promote",
+    "goal_plus_search_apply_promotion",
 )
 
 

@@ -55,7 +55,7 @@ def subject(run_id: str = "run_1") -> VerifierSubject:
 def invocation() -> VerifierInvocationRecord:
     return VerifierInvocationRecord(
         invocation_id="invocation_1",
-        backend="codex",
+        agent_harness="codex",
         model="test-model",
         started_at="2026-01-01T00:00:00Z",
         completed_at="2026-01-01T00:00:01Z",

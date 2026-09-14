@@ -20,7 +20,7 @@ class Clock:
 def identity(**kwargs):
     return ProcessMonitorIdentity(
         run_id="run_one", candidate_id="c001", iteration=3, attempt=2,
-        host="pi-rpc", model="provider/model", timeout_seconds=30, **kwargs,
+        agent_harness="pi", model="provider/model", timeout_seconds=30, **kwargs,
     )
 
 

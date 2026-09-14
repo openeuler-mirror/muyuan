@@ -22,6 +22,7 @@ from goal_plus.domain.search import (
     FrozenSpec,
 )
 from goal_plus.domain.time import outer_deadline_epoch
+from goal_plus.domain.agents import WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
 from goal_plus.ports.state import (
     CandidateRecord,
     RunRecord,
@@ -173,6 +174,11 @@ class CandidateRecoveryWorkflow:
                 self.authorization.require_search_execution(run.run_id)
                 require_worker_iteration_state(run, "recover candidate")
                 record = self.state.read_candidate(run_id, candidate_id)
+                frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+                if frozen.spec.strategy.orchestration_mode == "adaptive_search":
+                    self.sessions.admission.assert_candidate_execution_allowed(
+                        record, "recover"
+                    )
                 recovery = record.recovery
                 if recovery is None or recovery.recovery_id != recovery_id:
                     raise RuntimeError("RecoveryIdentityMismatch")
@@ -187,17 +193,17 @@ class CandidateRecoveryWorkflow:
                     ):
                         raise RuntimeError("RecoveryHostQuiescenceRequired")
                 self.workspace.require_recoverable(record)
-                frozen = self.state.read_frozen_spec(run.frozen_spec_id)
                 recovery.state = "restoring"
                 self.state.write_candidate(run_id, record)
+                preserved_files = {}
+                if self.candidate_ledger.projection(frozen, record) == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV:
+                    preserved_files[RESULTS_TSV_RELATIVE_PATH] = render_results_tsv(
+                        record.results_ledger, frozen.spec.metric_name
+                    )
                 restored = self.workspace.restore(
                     record,
                     recovery,
-                    {
-                        RESULTS_TSV_RELATIVE_PATH: render_results_tsv(
-                            record.results_ledger, frozen.spec.metric_name
-                        )
-                    },
+                    preserved_files,
                 )
                 if restored.provider != recovery.point.artifact_ref.provider:
                     raise RuntimeError("RecoveryArtifactProviderMismatch")
@@ -207,7 +213,8 @@ class CandidateRecoveryWorkflow:
                     raise RuntimeError(
                         "RecoveryArtifactMismatch: restored tree is not the checkpoint"
                     )
-                self.candidate_ledger.workspace.check(record, frozen.spec.metric_name)
+                if preserved_files:
+                    self.candidate_ledger.workspace.check(record, frozen.spec.metric_name)
                 # Tool-copy staging belonged to the interrupted, uncommitted attempt.
                 record.pending_tool_copies = []
                 self._reconcile_recovered_settlements(run, frozen, record)

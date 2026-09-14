@@ -30,6 +30,20 @@ def installer(tmp_path, monkeypatch) -> ModuleType:
     return _load_installer()
 
 
+def test_codex_provider_credentials_forward_only_configured_names(installer, tmp_path, monkeypatch):
+    home = tmp_path / "codex"
+    home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("UNRELATED_TOKEN", "private-unrelated")
+    monkeypatch.setenv("MODEL_TOKEN", "private-provider")
+    (home / "config.toml").write_text(
+        '[model_providers.custom]\nenv_key="MODEL_TOKEN"\n'
+        'base_url="https://example.invalid"\n'
+        '[model_providers.custom.env_http_headers]\nAuthorization="HEADER_TOKEN"\n'
+    )
+    assert installer._codex_provider_env_vars() == ("HEADER_TOKEN", "MODEL_TOKEN", "OPENAI_API_KEY")
+
+
 def _write_pi_settings(agent_dir: Path, packages: list[object]) -> None:
     agent_dir.mkdir(parents=True)
     (agent_dir / "settings.json").write_text(
@@ -159,8 +173,7 @@ def test_pi_dev_assets_scope_only_the_launcher(
     assert "--no-prompt-templates" in launcher
     assert launcher.index("--no-extensions") < launcher.index("--extension")
     assert str(ROOT / "assets" / "pi" / "extensions" / "goal-plus.ts") in launcher
-    assert "--skill" in launcher
-    assert str(ROOT / "assets" / "pi" / "skills" / "goal-plus" / "SKILL.md") in launcher
+    assert "--skill" not in launcher
     assert 'export PATH="$goal_plus_venv/bin:$PATH"' in launcher
     assert "--check-pi-dev-runtime" in launcher
     subprocess.run(["bash", "-n", str(launcher_path)], check=True)
@@ -350,9 +363,9 @@ def test_pi_normal_rejects_same_checkout_loose_resource(
 ) -> None:
     agent_dir = tmp_path / "pi-agent"
     _write_pi_settings(agent_dir, [])
-    skill = agent_dir / "skills" / "goal-plus"
-    skill.parent.mkdir(parents=True)
-    skill.symlink_to(ROOT / "assets" / "pi" / "skills" / "goal-plus", target_is_directory=True)
+    extension = agent_dir / "extensions" / "goal-plus.ts"
+    extension.parent.mkdir(parents=True)
+    extension.symlink_to(ROOT / "assets" / "pi" / "extensions" / "goal-plus.ts")
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
     with pytest.raises(installer.InstallError, match="conflicting Goal Plus"):
@@ -539,8 +552,6 @@ def test_thinkthread_profile_explicitly_binds_goal_plus_runtime(
     assert arguments == [
         "--extension",
         str(ROOT / "assets" / "pi" / "extensions" / "goal-plus.ts"),
-        "--skill",
-        str(ROOT / "assets" / "pi" / "skills" / "goal-plus" / "SKILL.md"),
     ]
     assert str(ROOT) in parsed["environment"]["read"]
     assert str(python_prefix) in parsed["environment"]["read"]
@@ -563,6 +574,74 @@ def test_thinkthread_profile_explicitly_binds_goal_plus_runtime(
         bridge.resolve()
     )
     assert "GOAL_PLUS_AGENT_POSIX_BRIDGE" not in parsed["environment"]["child"]
+
+
+def test_thinkthread_codex_profile_preserves_native_extension_and_binds_managed_config(installer, tmp_path):
+    base = _thinkthread_pi_profile()
+    base["agent"]["name"] = "codex"
+    base["agent"]["extension"]["name"] = "codex"
+    base["agent"]["extension"]["loader"]["command"] = ["thinkthread-extension-codex"]
+    config = tmp_path / "managed-config"
+    profile = installer._build_thinkthread_profile(
+        base, node_executable=str(tmp_path / "node/bin/node"),
+        runtime_python=tmp_path / "venv/bin/python", codex_config_dir=config,
+    )
+    assert profile["agent"]["extension"] == base["agent"]["extension"]
+    assert profile["agent"]["args"] == base["agent"].get("args", [])
+    assert profile["agent"]["configDirEnv"] == "CODEX_CONFIG_DIR"
+    assert profile["agent"]["configDirDefault"] == str(config)
+    assert profile["agent"]["configDirAccess"] == "read_only"
+    assert profile["environment"]["child"]["GOAL_PLUS_THINKTHREAD_ROLE"] == "candidate"
+    assert profile["environment"]["root"]["GOAL_PLUS_THINKTHREAD_ROLE"] == "main"
+    assert profile["environment"]["root"]["GOAL_PLUS_ROOT"] == "${CODEX_HOME}/goal-plus"
+    assert "GOAL_PLUS_PI_ROLE" not in profile["environment"]["child"]
+    with pytest.raises(installer.InstallError, match="managed absolute source config"):
+        installer._build_thinkthread_profile(base)
+
+
+def test_thinkthread_codex_config_isolates_native_tools_and_forwards_only_env_names(installer, tmp_path):
+    source = {
+        "model": "provider-model", "model_provider": "custom",
+        "model_providers": {"custom": {"env_key": "CUSTOM_MODEL_KEY", "base_url": "https://example.invalid"}},
+        "developer_instructions": "Main-only instructions", "plugins": {"private": {"enabled": True}},
+        "mcp_servers": {"private": {"command": "private-server"}},
+    }
+    config = installer._build_thinkthread_codex_config(source, runtime_python=tmp_path / "venv/bin/python")
+    assert config["model_providers"] == source["model_providers"]
+    assert config["model"] == source["model"]
+    assert set(config["mcp_servers"]) == {"goal-plus"}
+    assert "developer_instructions" not in config and "plugins" not in config
+    mcp = config["mcp_servers"]["goal-plus"]
+    assert mcp["args"] == ["-I", "-m", "goal_plus.server"]
+    assert "THINKTHREAD_CONTROL_TOKEN" in mcp["env_vars"]
+    assert "env" not in mcp
+    assert source["mcp_servers"] == {"private": {"command": "private-server"}}
+    assert installer.tomllib.loads(installer._render_thinkthread_profile(config)) == config
+
+
+def test_thinkthread_codex_config_plan_keeps_auth_as_an_owned_file_reference(installer, tmp_path):
+    source = tmp_path / "codex-config"
+    source.mkdir()
+    (source / "config.toml").write_text('model = "native-model"\n')
+    auth = source / "auth.json"
+    auth.write_text('{"fixture":"not-a-credential"}')
+    package = tmp_path / "release/package"
+    plan = installer._plan_thinkthread_codex_config(package, source)
+    assert not plan.directory.exists()
+    assert plan.auth_source == auth
+    installer._install_thinkthread_codex_config(plan, dry_run=True)
+    assert not plan.directory.exists()
+    installer._install_thinkthread_codex_config(plan, dry_run=False)
+    assert (plan.directory / "auth.json").is_symlink()
+    assert (plan.directory / "auth.json").resolve() == auth
+    assert (plan.directory / "config.toml").stat().st_mode & 0o777 == 0o600
+    installer._install_thinkthread_codex_config(plan, dry_run=False)
+    assert auth.read_text() == '{"fixture":"not-a-credential"}'
+    (source / "config.toml").write_text('model = "different-model"\n')
+    assert installer._plan_thinkthread_codex_config(package, source).directory != plan.directory
+    (plan.directory / ".goal-plus-owner.json").unlink()
+    with pytest.raises(installer.InstallError, match="unowned"):
+        installer._install_thinkthread_codex_config(plan, dry_run=False)
 
 
 def test_thinkthread_profile_exposes_python_symlink_chain(
@@ -1029,6 +1108,8 @@ def test_pi_update_preserves_filters_and_recovers_settings(installer, tmp_path, 
     monkeypatch.setattr(installer, "_pi_goal_plus_entries", lambda: [{"source": "../old", "resolved_path": old, "settings_path": agent / "settings.json"}])
     installer.managed_runtime.bind("pi", agent, old)
     def run(argv, **kwargs):
+        if argv[1] == "ci":
+            return
         if argv[1] == "remove":
             assert argv[2] == str(old)
             (agent / "settings.json").write_text(json.dumps({"packages": ["npm:unrelated"], "theme": "dark"}))
@@ -1046,6 +1127,28 @@ def test_pi_update_preserves_filters_and_recovers_settings(installer, tmp_path, 
         result = json.loads((agent / "settings.json").read_text())
         assert result == {**original, "packages": [{"source": str(new), "extensions": ["*.ts"]}, "npm:unrelated"]}
     assert json.loads(installer.managed_runtime.binding_path("pi", agent).read_text())["package"] == str(old if fail else new)
+
+
+def test_pi_mcp_dependency_failure_preserves_registration(installer, tmp_path, monkeypatch):
+    agent = tmp_path / "pi"
+    old, new = tmp_path / "old", tmp_path / "new"
+    _write_pi_settings(agent, [str(old)])
+    settings = agent / "settings.json"
+    before = settings.read_bytes()
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent))
+    installer.managed_runtime.bind("pi", agent, old)
+
+    def fail_dependency(argv, **kwargs):
+        assert argv[1] == "ci"
+        assert "--ignore-scripts" in argv
+        raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(installer, "_run", fail_dependency)
+    with pytest.raises(subprocess.CalledProcessError):
+        installer._install_pi(pi="pi", package=new, dry_run=False)
+    assert settings.read_bytes() == before
+    assert json.loads(installer.managed_runtime.binding_path("pi", agent).read_text())["package"] == str(old)
+    assert not installer.managed_runtime.binding_path("pi-pending", agent).exists()
 
 
 def test_python_symlink_chain_can_revisit_directory_with_different_suffix(installer, tmp_path):
@@ -1137,6 +1240,8 @@ def test_pi_post_install_failure_restores_settings_and_binding(installer, tmp_pa
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent))
     installer.managed_runtime.bind("pi", agent, old)
     def run(argv, **kwargs):
+        if argv[1] == "ci":
+            return
         value = {"invalid_json": "{", "invalid_shape": "[]"}.get(failure, '{"packages": []}')
         settings.write_text(value if argv[1] == "install" else '{"packages": []}')
     monkeypatch.setattr(installer, "_run", run)
@@ -1180,7 +1285,7 @@ def test_pi_reinstall_removes_direct_resource_registration(installer, tmp_path, 
     assert extension.exists()
 
 
-@pytest.mark.parametrize("drift", [None, "duplicate", "disabled", "wrong_source"])
+@pytest.mark.parametrize("drift", [None, "duplicate", "disabled", "wrong_source", "obsolete_skill"])
 def test_pi_verification_uses_enabled_host_resources(installer, tmp_path, monkeypatch, drift):
     agent = tmp_path / "agent"
     package = tmp_path / "goal-plus"
@@ -1190,12 +1295,14 @@ def test_pi_verification_uses_enabled_host_resources(installer, tmp_path, monkey
     monkeypatch.setattr(installer.managed_runtime, "verify", lambda _: {})
     resources = {
         "extensions": [{"path": str(package / "assets/pi/extensions/goal-plus.ts"), "enabled": drift != "disabled"}],
-        "skills": [{"path": str(package / "assets/pi/skills/goal-plus/SKILL.md"), "enabled": True}],
+        "skills": [],
     }
     if drift == "duplicate":
         resources["extensions"].append({"path": str(ROOT / ".pi/extensions/goal-plus.ts"), "enabled": True})
     elif drift == "wrong_source":
         resources["extensions"][0]["path"] = str(ROOT / ".pi/extensions/goal-plus.ts")
+    elif drift == "obsolete_skill":
+        resources["skills"].append({"path": str(package / "assets/pi/skills/goal-plus/SKILL.md"), "enabled": True})
     monkeypatch.setattr(installer, "_run", lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps(resources)))
     if drift:
         with pytest.raises(installer.InstallError, match="mismatch"):

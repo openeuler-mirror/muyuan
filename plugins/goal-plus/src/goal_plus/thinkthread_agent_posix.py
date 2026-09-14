@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.ports.thinkthread import AgentPosixBridgeError, AgentPosixSdkMismatch, capability_ids
 
 AGENT_POSIX_CONTRACT_FINGERPRINT = (
@@ -62,13 +63,17 @@ def decode_snapshot_pread(
     return chunk, eof
 
 
-def validate_thinkthread_root(client: AgentPosixSdkClient) -> dict[str, Any]:
-    """Fail closed unless the caller is the supported Pi Root controller."""
+def validate_thinkthread_root(
+    client: AgentPosixSdkClient, *, agent_harness: AgentHarnessKind = "pi",
+) -> dict[str, Any]:
+    """Verify the actual Root and its delegated self Profile against the host binding."""
 
+    if agent_harness not in {"pi", "codex"}:
+        raise ValueError("ThinkThread requires a trusted native host: codex or pi")
     client.preflight()
     root = client.self_view()
     if root.get("parentThinkthreadId") is not None:
-        raise RuntimeError("ThinkThread pool controller must run in a Root")
+        raise RuntimeError("ThinkThread controller must run in a Root")
     required = {
         "thinkthread.child",
         "thinkthread.message",
@@ -93,8 +98,8 @@ def validate_thinkthread_root(client: AgentPosixSdkClient) -> dict[str, Any]:
         if isinstance(profiles, list)
         else None
     )
-    if not isinstance(profile, dict) or profile.get("agent") != "pi":
-        raise RuntimeError("ThinkThread Profile self must select the Pi Agent")
+    if not isinstance(profile, dict) or profile.get("agent") != agent_harness:
+        raise RuntimeError(f"ThinkThread Profile self must select the {agent_harness} Agent")
     derivations = {
         (item.get("session"), item.get("fs"))
         for item in profile.get("allowedDerivations", [])

@@ -1231,7 +1231,8 @@ def _render_sessions(task: dict[str, Any]) -> str:
             f'<td class="mono"><strong>{escape_html(session.get("agent_session_id"))}</strong></td>'
             f'<td class="mono">{escape_html(dispatch_label)}</td>'
             f'<td class="mono">{escape_html(session.get("candidate_id"))}</td>'
-            f"<td>{escape_html(session.get('host'))}</td>"
+            f"<td>{escape_html(session.get('agent_harness'))}</td>"
+            f"<td>{escape_html(session.get('runtime_provider'))}</td>"
             f"<td>{escape_html(session.get('provider'))}</td>"
             f"<td>{escape_html(session.get('model'))}</td>"
             f"<td>{render_status(terminal)}</td>"
@@ -1248,7 +1249,7 @@ def _render_sessions(task: dict[str, Any]) -> str:
         )
     return (
         '<div class="table-scroll"><table><thead><tr>'
-        "<th>Session</th><th>Dispatch</th><th>Candidate</th><th>Host</th><th>Provider</th><th>Model</th>"
+        "<th>Session</th><th>Dispatch</th><th>Candidate</th><th>Harness</th><th>Runtime provider</th><th>Model provider</th><th>Model</th>"
         "<th>Terminal state</th><th>Duration</th><th>Processed tokens</th><th>Estimated cost</th><th>Verifier runs</th>"
         "<th>Evidence reads</th><th>Injected evidence</th><th>Detail reads</th><th>Last evidence read</th><th>Last detail read</th>"
         f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
@@ -1733,7 +1734,7 @@ def _render_bootstrap_verification(task: dict[str, Any]) -> str:
         rows.append(
             "<tr>"
             f"<td><code>{escape_html(verification.get('phase'))}</code></td>"
-            f"<td><code>{escape_html(verification.get('backend'))}</code></td>"
+            f"<td><code>{escape_html(verification.get('workspace_provider'))}</code></td>"
             f"<td><code>{escape_html(verification.get('candidate_id'))}</code></td>"
             f"<td>{render_status('passed' if verification.get('passed') else 'failed')}</td>"
             f'<td class="mono">{escape_html(numeric_value(verification.get("aggregate_score"), digits=4))}</td>'

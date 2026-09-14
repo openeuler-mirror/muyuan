@@ -3,7 +3,7 @@
 import subprocess
 from pathlib import Path
 from goal_plus.domain.artifacts import ArtifactRef
-from goal_plus.agent_hosts import candidate_inner_agent_binding
+from goal_plus.infrastructure.host_bindings import candidate_inner_agent_binding
 from goal_plus.domain.search import FrozenSpec
 from goal_plus.domain.results_ledger import LEGACY_RESULTS_TSV_RELATIVE_PATH
 from goal_plus.domain.evidence import ResultLedgerEntry
@@ -68,7 +68,7 @@ class FileCandidateLedgerWorkspace:
                 "the runtime; existing rows are immutable and only one "
                 "runtime-appended row is allowed per returned verifier report"
             )
-        provider = LocalGitWorkspace(record.task.workspace_backend)
+        provider = LocalGitWorkspace(record.task.workspace_provider)
         if provider.current_artifact(record.task.workspace) is None:
             raise RuntimeError(
                 "ResultsLedgerMutation: candidate workspace has no valid scoped "
@@ -100,10 +100,10 @@ class FileCandidateLedgerWorkspace:
 
     def _initialize_git(self, record: CandidateRecord) -> None:
         workspace = record.task.workspace
-        provider = LocalGitWorkspace(record.task.workspace_backend)
+        provider = LocalGitWorkspace(record.task.workspace_provider)
         if provider.current_artifact(workspace) is not None:
             return
-        if record.task.workspace_backend != "copy":
+        if record.task.workspace_provider != "copy":
             raise RuntimeError(
                 "ResultsLedgerCommitError: candidate workspace has no usable "
                 "Git repository for workspace/results.tsv"
@@ -143,7 +143,7 @@ class FileCandidateLedgerWorkspace:
         record: CandidateRecord,
         message: str,
     ) -> ArtifactRef | None:
-        return LocalGitWorkspace(record.task.workspace_backend).checkpoint(
+        return LocalGitWorkspace(record.task.workspace_provider).checkpoint(
             record.task.workspace,
             message,
             [RESULTS_TSV_RELATIVE_PATH],

@@ -3,14 +3,15 @@
 from dataclasses import dataclass
 from typing import Protocol
 
-from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
 from goal_plus.domain.search import FrozenSpec
 from goal_plus.ports.state import RunRecord
 
 
 @dataclass(frozen=True)
 class InternalAgentRun:
-    host: AgentHostKind
+    agent_harness: AgentHarnessKind
+    runtime_provider: AgentRuntimeProvider
     accepts_work: bool
     verifier_enabled: bool
 

@@ -115,7 +115,7 @@ def test_missing_or_unreadable_tsv_returns_no_imported_rows(candidate, monkeypat
 
 
 def test_thinkthread_reader_never_reads_local_tsv(candidate):
-    candidate.task.workspace_backend = "thinkthread"
+    candidate.task.workspace_provider = "thinkthread"
     candidate.results_ledger = [entry(1)]
     (candidate.task.workspace / "results.tsv").write_text(
         "commit\tmetric\tstatus\thypothesis\nother\t9\tpass\tlocal\n"

@@ -22,7 +22,7 @@ Annotation Artifact View 应由后续 Circle 类场景单独验收。
 
 ## 前置条件
 
-需要 Linux、Pi、匹配当前支持基线的 ThinkThread Runtime，以及由本 checkout 生成的
+需要 Linux、Pi、接口兼容的 ThinkThread Runtime，以及由本 checkout 生成的
 `goal-plus-pi` Profile：
 
 ```bash
@@ -31,8 +31,8 @@ cd /path/to/muyuan/plugins/goal-plus
 tt profile show goal-plus-pi
 ```
 
-安装和 preflight 只要有任一 release、protocol、fingerprint、Profile 或 delegated
-capability 不匹配，ThinkThread Search 就会 fail closed；本例不允许 fallback 到其他 backend。
+release、protocol 声明或 fingerprint 偏离已测基线时只警告；Profile 结构、实际接口或
+delegated capability 不满足合同则拒绝执行。本例不允许回退到其他工作区实现。
 
 ## 准备一次性 Root
 
@@ -74,8 +74,8 @@ tt run --profile goal-plus-pi --fs "$PWD/workspace"
 `/goal-plus` 命令，让每个 Child 只接收 Host 生成的 candidate initial message。
 
 prompt 使用 `mode=probe`，因为两个预置候选各自提交一次有效 Evidence 后，编排目标已经完成，
-不应继续花时间探索。整个 Goal 最长 10 分钟，worker 最长 2 分钟，并为 selection、apply、
-终态审计和 report 保留 3 分钟；这些上限不会改变 verifier 标准。
+不应继续花时间探索。整个 Goal 最长 10 分钟，Main 在 deadline 内完成 selection、apply、
+终态审计和 report；候选无需等待固定时长，这个上限不改变 verifier 标准。
 
 ## 验收
 

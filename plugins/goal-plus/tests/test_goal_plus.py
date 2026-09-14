@@ -31,25 +31,29 @@ def test_gate_does_not_apply_goal_policy_to_foreign_tool_names(tmp_path, paused)
     record = runtime.start_from_host_command(
         "Identity fixture", invocation=_codex_invocation("identity-start"),
     )
-    runtime.activate_session(record.goal_plus_id, {"host": "codex", "session_id": "session-test"})
+    runtime.activate_session(record.goal_plus_id, {"agent_harness": "codex", "session_id": "session-test"})
     if paused:
         runtime.control_from_host_command(record.goal_plus_id, invocation=_codex_invocation(
             "identity-pause", action="pause",
         ))
-    for action in ("search_create", "search_prepare_recovery", "goal_plus_set_status", "bash"):
+    for action in ("goal_plus_search_create", "goal_plus_search_prepare_recovery", "goal_plus_set_status", "bash"):
         gate = runtime.gate(record.goal_plus_id, event="pre_tool_use", context={
             "tool_name": f"mcp__foreign__{action}", "input": {"run_id": "run_external"},
         })
         assert gate.decision == "allow", gate.reason
     owned = runtime.gate(record.goal_plus_id, event="pre_tool_use", context={
-        "tool_name": "mcp__goal_plus__search_create", "input": {"goal_plus_id": record.goal_plus_id},
+        "tool_name": "mcp__goal_plus__goal_plus_search_create", "input": {"goal_plus_id": record.goal_plus_id},
     })
-    assert owned.decision == "block"
+    assert owned.decision == ("block" if paused else "allow")
 
 
 def test_checker_task_name_does_not_bypass_goal_gate(tmp_path):
     runtime = FileGoalPlusRuntime(tmp_path / ".gp")
-    record = runtime.create_goal("Complete intake before editing")
+    record = runtime.create_goal(
+        "Complete the independent review before editing",
+        policy={"final_check": {"mode": "required"}},
+    )
+    runtime.prepare_final_check(record.goal_plus_id, "codex")
     result = runtime.gate(record.goal_plus_id, event="pre_tool_use", context={
         "tool_name": "write", "task_name": "goal_plus_final_check_external",
     })
@@ -64,7 +68,7 @@ def _codex_invocation(
     session_id: str = "session-test",
 ) -> GoalPlusHostCommandInvocation:
     return GoalPlusHostCommandInvocation(
-        host="codex",
+        agent_harness="codex",
         transport="codex_user_prompt_submit",
         command="$goal-plus",
         action=action,
@@ -163,15 +167,12 @@ def test_create_goal_plus_record_writes_state_and_event(tmp_path) -> None:
         "Improve the README examples\n\n"
         + EXPLORATION_MODE_LINES["autonomous"]
     )
-    assert "在现有工作区恢复每个已完成候选" in record.raw_goal
-    assert "分数或排名不能导致替换" in record.raw_goal
-    assert "冻结的 worker budget" in record.raw_goal
-    assert "15 分钟" not in record.raw_goal
-    assert "1 小时" not in record.raw_goal
+    assert record.command_config.mode is None
     assert record.status == "active"
-    assert record.phase == "intake"
+    assert record.phase == "goal"
+    assert record.triage is None
     assert not hasattr(record, "mode_hint")
-    assert record.next_action.kind == "record_triage"  # type: ignore[union-attr]
+    assert record.next_action.kind == "execute_goal"  # type: ignore[union-attr]
     assert record.entrypoint_status == "legacy_unverified"
 
     loaded = runtime.status(record.goal_plus_id)
@@ -246,7 +247,7 @@ def test_legacy_unverified_goal_cannot_authorize_search_bootstrap(tmp_path) -> N
 def test_host_command_invocation_rejects_wrong_host_prefix() -> None:
     with pytest.raises(ValidationError, match="requires the \\$ command prefix"):
         GoalPlusHostCommandInvocation(
-            host="codex",
+            agent_harness="codex",
             transport="codex_user_prompt_submit",
             command="/goal-plus",
             action="start",
@@ -259,7 +260,7 @@ def test_host_command_invocation_rejects_wrong_host_prefix() -> None:
 
 def test_host_command_invocation_accepts_explicit_resume_action() -> None:
     assert GoalPlusHostCommandInvocation(
-            host="codex",
+            agent_harness="codex",
             transport="codex_user_prompt_submit",
             command="$goal-plus",
             action="resume",
@@ -278,12 +279,12 @@ def test_native_session_continuation_state_machine(tmp_path) -> None:
     )
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-test"},
+        {"agent_harness": "codex", "session_id": "session-test"},
     )
 
     codex_start = runtime.handle_host_session_event(
         record.goal_plus_id,
-        host="codex",
+        agent_harness="codex",
         session_id="session-test",
         event="session_start",
         delivery="next_user_turn",
@@ -294,7 +295,7 @@ def test_native_session_continuation_state_machine(tmp_path) -> None:
 
     interrupted = runtime.handle_host_session_event(
         record.goal_plus_id,
-        host="codex",
+        agent_harness="codex",
         session_id="session-test",
         event="interrupt",
         delivery="next_user_turn",
@@ -306,7 +307,7 @@ def test_native_session_continuation_state_machine(tmp_path) -> None:
 
     resumed_by_user = runtime.handle_host_session_event(
         record.goal_plus_id,
-        host="codex",
+        agent_harness="codex",
         session_id="session-test",
         event="user_turn",
         delivery="next_user_turn",
@@ -318,7 +319,7 @@ def test_native_session_continuation_state_machine(tmp_path) -> None:
 
     pi_auto = runtime.handle_host_session_event(
         record.goal_plus_id,
-        host="codex",
+        agent_harness="codex",
         session_id="session-test",
         event="session_start",
         delivery="auto",
@@ -328,7 +329,7 @@ def test_native_session_continuation_state_machine(tmp_path) -> None:
 
     mismatch = runtime.handle_host_session_event(
         record.goal_plus_id,
-        host="codex",
+        agent_harness="codex",
         session_id="session-other",
         event="session_start",
         delivery="auto",
@@ -346,12 +347,12 @@ def test_paused_headless_session_fails_closed(tmp_path) -> None:
     )
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-test", "state": "paused"},
+        {"agent_harness": "codex", "session_id": "session-test", "state": "paused"},
     )
 
     decision = runtime.handle_host_session_event(
         record.goal_plus_id,
-        host="codex",
+        agent_harness="codex",
         session_id="session-test",
         event="session_start",
         delivery="auto",
@@ -361,7 +362,7 @@ def test_paused_headless_session_fails_closed(tmp_path) -> None:
     assert decision.decision == "wait_for_user"
 
 
-@pytest.mark.parametrize("host", ["codex", "pi-rpc"])
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
 @pytest.mark.parametrize(
     "state,status,event,interaction,decision",
     [
@@ -380,12 +381,12 @@ def test_paused_headless_session_fails_closed(tmp_path) -> None:
     ],
 )
 def test_native_continuation_host_parity(
-    tmp_path, host, state, status, event, interaction, decision,
+    tmp_path, agent_harness, state, status, event, interaction, decision,
 ) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".gp")
     record = runtime.create_goal(raw_goal="Read the original README")
     record = runtime.activate_session(
-        record.goal_plus_id, {"host": host, "session_id": "native-id", "state": state},
+        record.goal_plus_id, {"agent_harness": agent_harness, "session_id": "native-id", "state": state},
     )
     # Seed domain preconditions, independent of status-transition prerequisites.
     record = record.model_copy(update={"status": status})
@@ -395,7 +396,7 @@ def test_native_continuation_host_parity(
     runtime.state.write_goal(record)
     for _ in range(2):
         outcome = runtime.handle_host_session_event(
-            record.goal_plus_id, host=host, session_id="native-id", event=event,
+            record.goal_plus_id, agent_harness=agent_harness, session_id="native-id", event=event,
             delivery="auto", interaction=interaction,
         )
         assert outcome.decision == decision
@@ -417,8 +418,7 @@ def test_create_goal_normalizes_explicit_exploration_mode(tmp_path) -> None:
         "Determine whether approach A is viable\n\n"
         + EXPLORATION_MODE_LINES["probe"]
     )
-    assert "恢复同一个候选" in record.raw_goal
-    assert "分数或排名不能导致替换" in record.raw_goal
+    assert record.command_config.mode == "probe"
     with pytest.raises(ValueError, match="unsupported Goal Plus exploration mode"):
         runtime.create_goal("mode=fast Try approach A")
 
@@ -427,7 +427,7 @@ def test_host_command_config_is_typed_persisted_and_removed_from_goal(tmp_path) 
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
 
     record = runtime.start_from_host_command(
-        "max_parallel=2 max_duration_seconds=300 workspace_backend=git_worktree "
+        "max_parallel=2 max_duration_seconds=300 workspace_provider=git_worktree "
         "promotion_mode=artifact_only strategy=agent_guided inner_agent=common "
         "Optimize latency",
         invocation=_codex_invocation("codex:test:config"),
@@ -438,7 +438,7 @@ def test_host_command_config_is_typed_persisted_and_removed_from_goal(tmp_path) 
     assert record.command_config.model_dump(exclude_none=True) == {
         "max_parallel": 2,
         "max_duration_seconds": 300,
-        "workspace_backend": "git_worktree",
+        "workspace_provider": "git_worktree",
         "promotion_mode": "artifact_only",
         "strategy": "agent_guided",
         "inner_agent": "common",
@@ -502,7 +502,7 @@ def test_edit_preserves_goal_deadline_from_original_creation(tmp_path) -> None:
         "max_duration_seconds=300 Optimize latency",
         invocation=_codex_invocation("codex:test:deadline-start"),
     )
-    runtime.activate_session(record.goal_plus_id, {"host": "codex", "session_id": "session-test"})
+    runtime.activate_session(record.goal_plus_id, {"agent_harness": "codex", "session_id": "session-test"})
     deadline = record.outer_deadline_at
 
     edited = runtime.edit_from_host_command(
@@ -535,7 +535,7 @@ def test_partial_command_config_only_constrains_search_fields_user_supplied(
     search_spec = _complete_search_spec()
     search_spec["budget"]["max_parallel"] = 2
     search_spec["workspace"] = {
-        "backend": "git_worktree",
+        "provider": "git_worktree",
         "promotion_mode": "apply",
     }
     search_spec["strategy"] = {"name": "random"}
@@ -555,7 +555,7 @@ def test_partial_command_config_only_constrains_search_fields_user_supplied(
 
     assert saved.spec_draft is not None
     assert saved.spec_draft.search_spec is not None
-    assert saved.spec_draft.search_spec.workspace.backend == "git_worktree"
+    assert saved.spec_draft.search_spec.workspace.provider == "git_worktree"
     assert saved.spec_draft.search_spec.strategy.name == "random"
 
 
@@ -573,7 +573,7 @@ def test_empty_command_config_leaves_search_fields_open_if_main_routes_to_search
     search_spec = _complete_search_spec()
     search_spec["budget"]["max_parallel"] = 3
     search_spec["workspace"] = {
-        "backend": "git_worktree",
+        "provider": "git_worktree",
         "promotion_mode": "apply",
     }
     search_spec["strategy"] = {"name": "agent_guided"}
@@ -594,7 +594,7 @@ def test_empty_command_config_leaves_search_fields_open_if_main_routes_to_search
     assert saved.spec_draft is not None
     assert saved.spec_draft.search_spec is not None
     assert saved.spec_draft.search_spec.budget.max_parallel == 3
-    assert saved.spec_draft.search_spec.workspace.backend == "git_worktree"
+    assert saved.spec_draft.search_spec.workspace.provider == "git_worktree"
     assert saved.spec_draft.search_spec.strategy.name == "agent_guided"
 
 
@@ -604,7 +604,7 @@ def test_search_command_config_may_remain_unused_when_main_finishes_in_goal_mode
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
 
     record = runtime.start_from_host_command(
-        "max_parallel=2 workspace_backend=git_worktree "
+        "max_parallel=2 workspace_provider=git_worktree "
         "promotion_mode=artifact_only strategy=random "
         "inner_agent=common "
         "annotator=unused/annotator workers=unused/a,unused/b "
@@ -631,7 +631,7 @@ def test_search_command_config_may_remain_unused_when_main_finishes_in_goal_mode
     assert completed.status == "complete"
     assert completed.command_config.model_dump(exclude_none=True) == {
         "max_parallel": 2,
-        "workspace_backend": "git_worktree",
+        "workspace_provider": "git_worktree",
         "promotion_mode": "artifact_only",
         "strategy": "random",
         "inner_agent": "common",
@@ -793,9 +793,12 @@ def test_update_goal_creates_revision_and_supersedes_pending_check(tmp_path) -> 
     assert updated.goal_revisions[-1].raw_goal == updated.raw_goal
     assert updated.final_checks[0].check_id == request["check"]["check_id"]
     assert updated.final_checks[0].status == "superseded"
-    assert updated.phase == "intake"
+    assert updated.phase == "goal"
     assert updated.triage is None
-    assert updated.next_action.kind == "record_triage"  # type: ignore[union-attr]
+    assert updated.next_action.kind == "execute_goal"  # type: ignore[union-attr]
+    assert runtime.gate(
+        record.goal_plus_id, event="pre_tool_use", context={"tool_name": "edit"},
+    ).decision == "allow"
     with pytest.raises(RuntimeError, match="revision conflict"):
         runtime.update_goal(
             record.goal_plus_id,
@@ -811,15 +814,6 @@ def test_required_final_check_blocks_stop_and_completes_only_after_pass(tmp_path
         source_path=".",
         policy={"final_check": {"mode": "required"}},
     )
-    runtime.record_triage(
-        record.goal_plus_id,
-        {
-            "is_optimization": False,
-            "confidence": "high",
-            "recommended_phase": "goal",
-        },
-    )
-
     gate = runtime.gate(record.goal_plus_id, event="stop", context={})
     assert gate.decision == "block"
     assert "独立最终检查" in gate.continuation_prompt
@@ -829,12 +823,9 @@ def test_required_final_check_blocks_stop_and_completes_only_after_pass(tmp_path
     first = runtime.prepare_final_check(record.goal_plus_id, "codex")
     resumed = runtime.prepare_final_check(record.goal_plus_id, "codex")
     assert resumed["check"]["check_id"] == first["check"]["check_id"]
-    assert resumed["launch"]["task_name"] == first["launch"]["task_name"]
-    assert first["launch"]["tool"] == "spawn_agent"
-    assert first["launch"]["fork_turns"] == "none"
-    assert first["launch"]["agent_type"] == "default"
-    assert "fallback_agent_type" not in first["launch"]
-    assert "goal_plus_submit_final_check" in first["launch"]["message"]
+    assert resumed["launch"] == first["launch"]
+    assert first["launch"] == {"tool": "goal_plus_run_final_check", "goal_plus_id": record.goal_plus_id,
+                               "check_id": first["check"]["check_id"], "goal_revision": record.goal_revision}
 
     failed = runtime.submit_final_check(
         record.goal_plus_id,
@@ -847,15 +838,10 @@ def test_required_final_check_blocks_stop_and_completes_only_after_pass(tmp_path
     )
     assert failed.status == "active"
     assert failed.next_action.kind == "address_final_check_findings"  # type: ignore[union-attr]
-    assert runtime.gate(
-        record.goal_plus_id,
-        event="subagent_stop",
-        context={"agent_type": "default", "task_name": first["launch"]["task_name"]},
-    ).decision == "allow"
 
     second = runtime.prepare_final_check(record.goal_plus_id, "codex")
     assert second["check"]["check_id"] != first["check"]["check_id"]
-    assert second["launch"]["task_name"] != first["launch"]["task_name"]
+    assert second["launch"]["check_id"] != first["launch"]["check_id"]
     completed = runtime.submit_final_check(
         record.goal_plus_id,
         check_id=second["check"]["check_id"],
@@ -906,16 +892,9 @@ def test_final_checker_receives_only_git_tracked_task_local_skills(tmp_path) -> 
         },
     )
 
-    message = runtime.prepare_final_check(record.goal_plus_id, "codex")["launch"][
-        "message"
-    ]
-    listing = message.split("task_local_skill_paths:\n", 1)[1].split("\n\n", 1)[0]
-
-    assert listing == "- .agents/skills/precision-guard/SKILL.md"
-    assert ".codex/skills" not in listing
-    assert "plugins/goal-plus/skills" not in listing
-    assert "untracked" not in listing
-    assert "唯一可用作验收约束" in message
+    runtime.prepare_final_check(record.goal_plus_id, "codex")
+    inputs = runtime.goal_completion.artifacts.final_check_inputs(runtime.state.read_goal(record.goal_plus_id))
+    assert list(inputs.task_skill_paths) == [".agents/skills/precision-guard/SKILL.md"]
 
 
 def test_interrupted_final_check_requires_fresh_host_review(tmp_path) -> None:
@@ -934,8 +913,7 @@ def test_interrupted_final_check_requires_fresh_host_review(tmp_path) -> None:
         },
     )
     first = runtime.prepare_final_check(record.goal_plus_id, "pi")
-    assert first["launch"]["tool"] == "pi_goal_plus_run_final_check"
-    assert first["launch"]["role"] == "final-checker"
+    assert first["launch"]["tool"] == "goal_plus_run_final_check"
 
     interrupted = runtime.submit_final_check(
         record.goal_plus_id,
@@ -974,7 +952,7 @@ def test_pending_final_checker_can_stop_without_blocking_parent_cleanup(tmp_path
     gate = runtime.gate(
         record.goal_plus_id,
         event="subagent_stop",
-        context={"agent_type": "goal_plus_final_checker"},
+        context={"goal_plus_subagent_role": "final_checker"},
     )
     assert gate.decision == "allow"
 
@@ -1011,13 +989,13 @@ def test_goal_update_keeps_old_search_result_historical(tmp_path) -> None:
     )
     late = runtime.record_search_result(record.goal_plus_id, "run_001")
     assert late.goal_revision == 2
-    assert late.phase == "intake"
+    assert late.phase == "goal"
     assert late.linked_search is None
     assert late.search_tasks[0].result_recorded_at is not None
 
 
 @pytest.mark.pi
-def test_pi_final_check_launch_is_foreground_stateless_and_revision_bound(tmp_path) -> None:
+def test_final_check_launch_is_revision_bound(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".gp")
     record = runtime.create_goal(
         "Verify the Pi delivery",
@@ -1034,12 +1012,8 @@ def test_pi_final_check_launch_is_foreground_stateless_and_revision_bound(tmp_pa
     )
     request = runtime.prepare_final_check(record.goal_plus_id, "pi")
     launch = request["launch"]
-    assert launch["tool"] == "pi_goal_plus_run_final_check"
-    assert launch["role"] == "final-checker"
-    assert launch["session_id"] == request["check"]["check_id"]
-    assert launch["budget_control"]["max_runtime_seconds"] == 300
-    assert "goal_plus_submit_final_check" in launch["prompt"]
-    assert "```goal_plus_report_lifecycle" not in launch["prompt"]
+    assert launch == {"tool": "goal_plus_run_final_check", "goal_plus_id": record.goal_plus_id,
+                      "check_id": request["check"]["check_id"], "goal_revision": 1}
 
     runtime.update_goal(
         record.goal_plus_id,
@@ -1167,22 +1141,23 @@ def test_ready_spec_draft_requires_complete_search_spec_at_save_boundary(tmp_pat
     assert runtime.status(record.goal_plus_id).spec_draft is None
 
 
-def test_initial_search_ready_spec_autonomously_allows_freeze(tmp_path) -> None:
+@pytest.mark.parametrize("record_triage", [False, True])
+def test_initial_search_ready_spec_autonomously_allows_freeze(tmp_path, record_triage) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("Optimize kernel latency")
-    triaged = runtime.record_triage(
-        record.goal_plus_id,
-        GoalPlusTriage(
-            is_optimization=True,
-            confidence="high",
-            recommended_phase="search",
-            identified_at="initial",
-            scenario="latency-optimization",
-            reasons=["latency benchmark exists"],
-        ),
-    )
-    assert triaged.next_action.kind == "draft_initial_search_spec"  # type: ignore[union-attr]
-    assert "user confirmation" not in triaged.next_action.description  # type: ignore[union-attr]
+    if record_triage:
+        triaged = runtime.record_triage(
+            record.goal_plus_id,
+            GoalPlusTriage(
+                is_optimization=True,
+                confidence="high",
+                recommended_phase="search",
+                identified_at="initial",
+                scenario="latency-optimization",
+                reasons=["latency benchmark exists"],
+            ),
+        )
+        assert triaged.next_action.kind == "draft_initial_search_spec"  # type: ignore[union-attr]
 
     draft = runtime.save_spec_draft(
         record.goal_plus_id,
@@ -1199,6 +1174,11 @@ def test_initial_search_ready_spec_autonomously_allows_freeze(tmp_path) -> None:
         ),
     )
     assert draft.next_action.kind == "freeze_search_spec"  # type: ignore[union-attr]
+    assert draft.phase == "spec_discovery"
+    before_completion = _goal_domain_state(runtime.status(record.goal_plus_id))
+    with pytest.raises(RuntimeError, match="Search completion requires"):
+        runtime.set_status(record.goal_plus_id, status="complete")
+    assert _goal_domain_state(runtime.status(record.goal_plus_id)) == before_completion
 
     for tool_name in ("bash", "write", "edit"):
         discovery_tool = runtime.gate(
@@ -1216,7 +1196,7 @@ def test_initial_search_ready_spec_autonomously_allows_freeze(tmp_path) -> None:
         record.goal_plus_id,
         event="pre_tool_use",
         context={
-            "tool_name": "search_freeze_spec",
+            "tool_name": "goal_plus_search_freeze_spec",
             "tool_input": {"goal_plus_id": record.goal_plus_id},
         },
     )
@@ -1226,7 +1206,7 @@ def test_initial_search_ready_spec_autonomously_allows_freeze(tmp_path) -> None:
         record.goal_plus_id,
         event="pre_tool_use",
         context={
-            "tool_name": "search_freeze_spec",
+            "tool_name": "goal_plus_search_freeze_spec",
             "tool_input": {"goal_plus_id": record.goal_plus_id},
         },
     )
@@ -1267,7 +1247,7 @@ def test_in_progress_search_discovery_uses_same_autonomous_admission(tmp_path) -
         record.goal_plus_id,
         event="pre_tool_use",
         context={
-            "tool_name": "search_freeze_spec",
+            "tool_name": "goal_plus_search_freeze_spec",
             "tool_input": {"goal_plus_id": record.goal_plus_id},
         },
     )
@@ -1384,7 +1364,7 @@ def test_pre_tool_use_enforces_goal_and_linked_run_ownership(tmp_path) -> None:
     gate = runtime.gate(
         record.goal_plus_id,
         event="pre_tool_use",
-        context={"tool_name": "search_promote", "input": {"run_id": "run_001"}},
+        context={"tool_name": "goal_plus_search_promote", "input": {"run_id": "run_001"}},
     )
 
     assert gate.decision == "allow"
@@ -1393,7 +1373,7 @@ def test_pre_tool_use_enforces_goal_and_linked_run_ownership(tmp_path) -> None:
     wrong_run = runtime.gate(
         record.goal_plus_id,
         event="pre_tool_use",
-        context={"tool_name": "search_promote", "input": {"run_id": "run_other"}},
+        context={"tool_name": "goal_plus_search_promote", "input": {"run_id": "run_other"}},
     )
     wrong_allocations = [
         runtime.gate(
@@ -1402,8 +1382,8 @@ def test_pre_tool_use_enforces_goal_and_linked_run_ownership(tmp_path) -> None:
             context={"tool_name": tool_name, "input": {"run_id": "run_other"}},
         )
         for tool_name in (
-            "search_list_allocation_decisions",
-            "search_apply_allocation_decision",
+            "goal_plus_search_list_allocation_decisions",
+            "goal_plus_search_apply_allocation_decision",
         )
     ]
     wrong_goal = runtime.gate(
@@ -1530,7 +1510,7 @@ def test_link_search_run_rejects_missing_or_mismatched_runtime_run(tmp_path) -> 
     domain_before = _goal_domain_state(record)
     events_before = runtime.list_events(record.goal_plus_id)
 
-    with pytest.raises(FileNotFoundError, match="Call search_create"):
+    with pytest.raises(FileNotFoundError, match="Call goal_plus_search_create"):
         runtime.link_search_run(record.goal_plus_id, "spec_abc", "run_0001")
     assert _goal_domain_state(runtime.status(record.goal_plus_id)) == domain_before
     assert runtime.list_events(record.goal_plus_id) == events_before
@@ -1645,11 +1625,15 @@ def test_record_search_result_reserves_final_report_paths_without_generating_fil
     assert not html_report_path.exists()
 
     request = runtime.prepare_final_check(record.goal_plus_id, "codex")
-    projection = request["launch"]["message"].split(
+    from goal_plus.application.goal_final_check_launch import final_check_prompt
+
+    current = runtime.state.read_goal(record.goal_plus_id)
+    prompt = final_check_prompt(current, current.final_checks[-1], runtime.goal_completion.artifacts.final_check_inputs(current))
+    projection = prompt.split(
         "```goal_plus_report_lifecycle\n", 1,
     )[1].split("\n```", 1)[0]
     assert json.loads(projection) == {
-        "generation_tool": "search_report",
+        "generation_tool": "goal_plus_search_report",
         "generation_gate": "linked_goals_terminal",
         "reserved_outputs": [{
             "run_id": "run_001",
@@ -1678,7 +1662,7 @@ def test_record_search_result_rejects_unpromoted_run(tmp_path) -> None:
     domain_before = _goal_domain_state(runtime.status(record.goal_plus_id))
     events_before = runtime.list_events(record.goal_plus_id)
 
-    with pytest.raises(RuntimeError, match="search_promote"):
+    with pytest.raises(RuntimeError, match="goal_plus_search_promote"):
         runtime.record_search_result(
             record.goal_plus_id,
             run_id="run_001",
@@ -1753,7 +1737,7 @@ def test_record_search_result_requires_default_provider_native_apply(
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match="search_apply_promotion"):
+    with pytest.raises(RuntimeError, match="goal_plus_search_apply_promotion"):
         runtime.record_search_result(
             record.goal_plus_id,
             run_id="run_001",
@@ -1768,14 +1752,15 @@ def test_pre_tool_use_blocks_search_before_high_confidence_spec(tmp_path) -> Non
     gate = runtime.gate(
         record.goal_plus_id,
         event="pre_tool_use",
-        context={"tool_name": "search_freeze_spec"},
+        context={"tool_name": "goal_plus_search_freeze_spec"},
     )
 
     assert gate.decision == "block"
-    assert "冻结 spec draft" in gate.reason
+    assert "GoalPlusOwnershipMismatch" in gate.reason
 
 
-def test_pre_tool_use_blocks_mutation_before_triage(tmp_path) -> None:
+@pytest.mark.parametrize("tool_name", ["bash", "shell", "exec_command", "apply_patch", "write", "edit"])
+def test_ordinary_goal_allows_tools_without_triage(tmp_path, tool_name) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("Tidy docs wording")
     domain_before = _goal_domain_state(record)
@@ -1784,19 +1769,37 @@ def test_pre_tool_use_blocks_mutation_before_triage(tmp_path) -> None:
     gate = runtime.gate(
         record.goal_plus_id,
         event="pre_tool_use",
-        context={"tool_name": "bash"},
+        context={"tool_name": tool_name},
     )
 
-    assert gate.decision == "block"
-    assert "使用变更类工具前" in gate.reason
-    assert "判断原始目标" in gate.reason
+    assert gate.decision == "allow"
+    assert gate.reason is None
     persisted = runtime.status(record.goal_plus_id)
     events_after = runtime.list_events(record.goal_plus_id)
     assert _goal_domain_state(persisted) == domain_before
     assert persisted.hook_counters == {"pre_tool_use": 1}
     assert events_after[:-1] == events_before
-    assert events_after[-1]["event_type"] == "gate_blocked"
+    assert events_after[-1]["event_type"] == "gate_allowed"
     assert events_after[-1]["payload"]["event"] == "pre_tool_use"
+
+
+def test_ordinary_goal_completes_without_triage_or_search(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".gp")
+    record = runtime.start_from_host_command(
+        "Fix a bug", invocation=_codex_invocation("ordinary-start"),
+    )
+    assert record.phase == "goal"
+    assert runtime.gate(record.goal_plus_id, event="stop", context={}).decision == "block"
+
+    completed = runtime.set_status(
+        record.goal_plus_id, status="complete", evidence=[{"kind": "tests", "passed": True}],
+    )
+    assert completed.status == "complete"
+    assert completed.triage is None
+    assert completed.spec_draft is None
+    assert completed.search_tasks == []
+    assert runtime.gate(record.goal_plus_id, event="stop", context={}).decision == "allow"
+    assert not any(event["event_type"] == "triage_recorded" for event in runtime.list_events(record.goal_plus_id))
 
 
 def test_goal_mode_allows_mutation_after_triage(tmp_path) -> None:
@@ -1821,8 +1824,7 @@ def test_goal_mode_allows_mutation_after_triage(tmp_path) -> None:
     assert gate.decision == "allow"
 
 
-@pytest.mark.pi
-def test_pre_tool_use_blocks_pi_worker_launch_before_search_ready(tmp_path) -> None:
+def test_pre_tool_use_blocks_candidate_preparation_before_search_ready(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("Optimize kernel latency")
     runtime.record_triage(
@@ -1839,15 +1841,14 @@ def test_pre_tool_use_blocks_pi_worker_launch_before_search_ready(tmp_path) -> N
     gate = runtime.gate(
         record.goal_plus_id,
         event="pre_tool_use",
-        context={"tool_name": "pi_search_pool_open"},
+        context={"tool_name": "search_start_agent_session"},
     )
 
     assert gate.decision == "block"
-    assert "冻结 spec draft" in gate.reason
+    assert "GoalPlusOwnershipMismatch" in gate.reason
 
 
-@pytest.mark.pi
-def test_pre_tool_use_blocks_pi_pool_continue_before_search_ready(tmp_path) -> None:
+def test_pre_tool_use_blocks_candidate_continuation_before_search_ready(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("Optimize kernel latency")
     runtime.record_triage(
@@ -1864,11 +1865,11 @@ def test_pre_tool_use_blocks_pi_pool_continue_before_search_ready(tmp_path) -> N
     gate = runtime.gate(
         record.goal_plus_id,
         event="pre_tool_use",
-        context={"tool_name": "pi_search_pool_continue"},
+        context={"tool_name": "search_continue_agent_session"},
     )
 
     assert gate.decision == "block"
-    assert "冻结 spec draft" in gate.reason
+    assert "GoalPlusOwnershipMismatch" in gate.reason
 
 
 def test_pre_tool_use_accepts_camel_case_tool_name(tmp_path) -> None:
@@ -1878,8 +1879,8 @@ def test_pre_tool_use_accepts_camel_case_tool_name(tmp_path) -> None:
     gate = runtime.gate(
         record.goal_plus_id,
         event="pre_tool_use",
-        context={"toolName": "search_freeze_spec"},
+        context={"toolName": "goal_plus_search_freeze_spec"},
     )
 
     assert gate.decision == "block"
-    assert "冻结 spec draft" in gate.reason
+    assert "GoalPlusOwnershipMismatch" in gate.reason

@@ -159,7 +159,8 @@ def task_details(
                 session.selected_model.model if session.selected_model else None
             ),
             "model_provenance": session.model_provenance,
-            "host": session.host,
+            "agent_harness": session.agent_harness,
+            "runtime_provider": session.runtime_provider,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
             "provider": execution.get("provider"),
@@ -202,7 +203,7 @@ def task_details(
             "activity": activity,
             "errors": observation.get("errors") or [],
         }
-        raw_dispatches = session.host_handle.metadata.get("dispatches")
+        raw_dispatches = session.session_handle.metadata.get("dispatches")
         dispatches = raw_dispatches if isinstance(raw_dispatches, list) else []
         if not dispatches:
             session_payloads.append(
@@ -211,7 +212,7 @@ def task_details(
                     "timeline_session_id": session.agent_session_id,
                     "dispatch_index": 1,
                     "dispatch_count": 1,
-                    "process_pid": session.host_handle.metadata.get("process_pid"),
+                    "process_pid": session.session_handle.metadata.get("process_pid"),
                 }
             )
             continue
@@ -264,7 +265,7 @@ def task_details(
             processed_tokens, cost_usd = pi_dispatch_usage(dispatch.get("usage"))
             timed_out = bool(dispatch.get("timed_out"))
             runner_failed = bool(dispatch.get("runner_failed"))
-            terminal_state = (
+            terminal_state = dispatch.get("state") or (
                 "failed" if runner_failed else "timed_out" if timed_out else "completed"
             )
             session_payloads.append(
@@ -275,6 +276,8 @@ def task_details(
                     ),
                     "dispatch_index": index,
                     "dispatch_count": len(dispatches),
+                    "native_session_id": dispatch.get("native_session_id"),
+                    "invocation_id": dispatch.get("invocation_id"),
                     "process_pid": dispatch.get("process_pid"),
                     "terminal_state": terminal_state,
                     "started_at": start_at or base_payload["started_at"],
@@ -324,7 +327,7 @@ def task_details(
             "objective": frozen.spec.objective,
             "metric_name": frozen.spec.metric_name,
             "metric_direction": frozen.spec.metric_direction,
-            "workspace_backend": frozen.spec.workspace.backend,
+            "workspace_provider": frozen.spec.workspace.provider,
             "source_artifact_ref": (
                 frozen.source_artifact_ref.model_dump(mode="json")
                 if frozen.source_artifact_ref is not None

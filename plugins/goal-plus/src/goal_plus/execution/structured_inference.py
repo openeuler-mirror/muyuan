@@ -62,9 +62,9 @@ class StructuredInference:
     ) -> StructuredInferenceResult:
         if self._active is not None:
             raise RuntimeError("inference process still active or cleanup pending")
-        if request.host not in {"codex", "pi-rpc"}:
-            raise ValueError(f"unsupported one-shot inference host {request.host!r}")
-        if (request.host == "pi-rpc") != (request.pi_tools is not None):
+        if request.agent_harness not in {"codex", "pi"} or request.runtime_provider != "direct":
+            raise ValueError(f"unsupported one-shot inference host {request.agent_harness!r}")
+        if (request.agent_harness == "pi") != (request.pi_tools is not None):
             raise ValueError("Pi inference requires its authorized tool bundle; Codex does not accept one")
         started_at = self.clock.timestamp()
         started = time.monotonic()
@@ -74,7 +74,7 @@ class StructuredInference:
             output_path = directory / "output.json"
             environment = os.environ.copy()
             options: dict[str, Any] = {}
-            if request.host == "codex":
+            if request.agent_harness == "codex":
                 (directory / "AGENTS.md").write_text(request.instructions, encoding="utf-8")
                 schema_path = directory / "output.schema.json"
                 schema_path.write_text(json.dumps(strict_output_schema(request.output_schema)), encoding="utf-8")
@@ -116,7 +116,7 @@ class StructuredInference:
                 gate = launch.enter_context(ProcessLaunchGate()) if registration is not None else None
                 if gate is not None:
                     command = gate.command(command)
-                    options.update(start_new_session=True, pass_fds=gate.pass_fds)
+                    options.update(pass_fds=gate.pass_fds)
                 process = self.popen(
                     command, stdin=prompt_input, text=True, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, env=environment, **options,
@@ -125,16 +125,6 @@ class StructuredInference:
                 try:
                     if registration is not None:
                         self._registration = registration
-                        self._active.own_process_group(
-                            remember=lambda witness: (
-                                registration.remember(self._registration_token, witness)
-                                if registration.remember is not None and self._registration_token is not None else None
-                            ),
-                            recall=lambda: (
-                                registration.recall(self._registration_token)
-                                if registration.recall is not None and self._registration_token is not None else None
-                            ),
-                        )
                         self._registration_token = registration.register(process.pid)
                         gate.release()
                     outcome = self._active.wait(
@@ -155,8 +145,8 @@ class StructuredInference:
             payload = None
             output_error = None
             if outcome.state == "process_exited":
-                message = pi_assistant_message(outcome.stdout) if request.host == "pi-rpc" else None
-                if request.host == "codex" or process.returncode == 0:
+                message = pi_assistant_message(outcome.stdout) if request.agent_harness == "pi" else None
+                if request.agent_harness == "codex" or process.returncode == 0:
                     parsed_usage = usage(outcome.stdout, message)
                 if process.returncode == 0 and output_path.exists():
                     try:
@@ -176,7 +166,7 @@ class StructuredInference:
             output_text=output_text, payload=payload, output_error=output_error,
             assistant_message=message, usage=parsed_usage,
             invocation=InferenceInvocation(
-                invocation_id=f"invocation_{uuid.uuid4().hex}", host=request.host,
+                invocation_id=f"invocation_{uuid.uuid4().hex}", agent_harness=request.agent_harness,
                 model=request.model, reasoning_effort=request.reasoning_effort,
                 started_at=started_at, completed_at=self.clock.timestamp(),
                 elapsed_seconds=max(0.0, time.monotonic() - started),

@@ -3,9 +3,11 @@
 from pathlib import Path
 
 from goal_plus.application.goal_authorization import GoalAuthorization
-from goal_plus.domain.agents import NativeAgentKind, search_worker_host
+from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.domain.search import BootstrapVerification, FrozenSpec, SearchSpec
 from goal_plus.domain.serialization import canonical_json, sha256_text
+from goal_plus.domain.goal_authorization import validate_search_command_config
+from goal_plus.ports.goal_authorization import GoalToolTarget
 from goal_plus.ports.clock import Clock
 from goal_plus.ports.search_bootstrap import (
     BootstrapVerifiers,
@@ -40,17 +42,22 @@ class SearchBootstrap:
         verifier_artifacts: list[Path],
         *,
         goal_plus_id: str | None = None,
-        native_host: NativeAgentKind | None = None,
+        agent_harness: AgentHarnessKind | None = None,
     ) -> FrozenSpec:
+        goal_revision = None
         if goal_plus_id is not None:
-            goal_host = self.authorization.search_native_host(goal_plus_id)
-            if native_host is not None and native_host != goal_host:
+            goal = self.authorization.require_active_target(
+                GoalToolTarget("goal_plus_search_freeze_spec", goal_plus_id=goal_plus_id)
+            )
+            validate_search_command_config(goal.command_config, spec)
+            goal_revision = goal.goal_revision
+            goal_host = self.authorization.search_agent_harness(goal_plus_id)
+            if agent_harness is not None and agent_harness != goal_host:
                 raise ValueError("Search native host must match its Main Goal session")
-            native_host = goal_host
-        if native_host is None:
+            agent_harness = goal_host
+        if agent_harness is None:
             raise ValueError("Search freeze requires a trusted native host")
-        worker_host = search_worker_host(native_host, spec.workspace.backend)
-        inputs = self.source.prepare(spec, verifier_artifacts, worker_host=worker_host)
+        inputs = self.source.prepare(spec, verifier_artifacts, agent_harness=agent_harness)
         spec, source_root = inputs.spec, inputs.source_root
         supplemental_enabled, supplemental_required = (
             inputs.supplemental_enabled,
@@ -67,11 +74,11 @@ class SearchBootstrap:
         workspace_capacity_estimate = inputs.workspace_capacity_estimate
         source_artifact_ref = inputs.source_artifact_ref
         origin_verification: BootstrapVerification | None = None
-        if spec.workspace.backend == "git_worktree":
+        if spec.workspace.provider == "git_worktree":
             origin_verification = self.verifiers.run_bootstrap_verifiers(
                 spec=spec,
                 workspace=source_root,
-                backend=spec.workspace.backend,
+                workspace_provider=spec.workspace.provider,
                 phase="origin",
                 verifier_hashes=verifier_hashes,
                 log_dir=inputs.origin_log_dir,
@@ -108,7 +115,7 @@ class SearchBootstrap:
                 update={"source_artifact_ref": source_artifact_after}
             )
             source_artifact_ref = source_artifact_after
-        elif spec.workspace.backend != "thinkthread":
+        elif spec.workspace.provider != "thinkthread":
             self.verifiers.preflight_ranking_verifiers(spec, device_inventory)
 
         spec_payload = spec.model_dump(mode="json")
@@ -120,7 +127,9 @@ class SearchBootstrap:
             canonical_json(
                 {
                     "goal_plus_id": goal_plus_id,
-                    "native_host": native_host,
+                    "goal_revision": goal_revision,
+                    "agent_harness": agent_harness,
+                    "runtime_provider": inputs.runtime_provider,
                     "spec": spec_payload,
                     "verifiers": verifier_hashes,
                     "source_artifact_ref": (
@@ -144,7 +153,9 @@ class SearchBootstrap:
             frozen_spec_id=frozen_spec_id,
             spec_hash=spec_hash,
             goal_plus_id=goal_plus_id,
-            native_host=native_host,
+            goal_revision=goal_revision,
+            agent_harness=agent_harness,
+            runtime_provider=inputs.runtime_provider,
             spec=spec,
             supplemental_evaluation_enabled=supplemental_enabled,
             supplemental_evaluation_required=supplemental_required,

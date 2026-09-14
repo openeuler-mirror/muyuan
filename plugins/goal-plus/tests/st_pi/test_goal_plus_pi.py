@@ -20,15 +20,15 @@ INSTALL_HINT = (
 )
 AUDIT_PROMPT = (
     "请只读审计当前分支的 Pi native Goal Plus 改造是否完整。范围限定为 "
-    "assets/pi/extensions/goal-plus.ts、assets/pi/skills/goal-plus/SKILL.md、docs/pi.md、"
+    "assets/pi/extensions/goal-plus.ts、assets/goal-plus-instructions.txt、docs/pi.md、"
     "tests/test_pi_assets.py。重点检查：/goal-plus 命令、session_start 状态恢复、"
     "before_agent_start 上下文注入、tool_call pre-tool gate、agent_end stop gate、"
     "terminal stats 输出。不要修改文件。最后给出结论，并把 Goal Plus 状态设为 complete。"
 )
 STOP_GATE_INTERCEPTION_PROMPT = (
     "验证 native Pi Goal Plus 的 Stop gate 会拦截尚未完成的 Goal。不要修改任何文件，"
-    "不要进入 Search Mode，也不要启动 worker。严格分成两个 assistant turn：第一轮只完成"
-    "必要的 triage，然后输出精确标记 FIRST_TURN_ATTEMPTED_STOP；第一轮禁止调用 "
+    "不要进入 Search Mode，也不要启动 worker。严格分成两个 assistant turn：第一轮直接"
+    "输出精确标记 FIRST_TURN_ATTEMPTED_STOP；第一轮禁止调用 "
     "goal_plus_set_status，并在输出标记后正常结束，让 Goal 保持 active。收到 Goal Plus 自动"
     "发送的 stop continuation 后，第二轮确认 README.md 存在，调用 goal_plus_set_status 将"
     "状态设为 complete，并输出精确标记 SECOND_TURN_AFTER_HOOK。"
@@ -52,7 +52,7 @@ MULTI_SEARCH_PROMPT = (
     "max_parallel=1 且不设置已弃用的 max_parallel，worker budget 为 "
     "max_runtime_seconds=60、max_turns=4、"
     "on_exceed=interrupt，只允许候选修改 solution.cpp。每次都必须分别完成 "
-    "search_freeze_spec、search_create、goal_plus_link_search_run、candidate verifier、"
+    "goal_plus_search_freeze_spec、goal_plus_search_create、goal_plus_link_search_run、candidate verifier、"
     "selection、report、promotion 和 goal_plus_record_search_result。第一次结果记录后不要"
     "结束 Goal Plus，继续创建并链接第二个不同 run_id。只有两个 search task 都完成后，"
     "才把 Goal Plus 状态设为 complete。"
@@ -71,7 +71,7 @@ SPEC_REVISION_FIRST_PROMPT = (
 SPEC_REVISION_SECOND_GOAL = (
     "继续同一个 Goal Plus 记录，工作区仍是 {workspace}。使用 "
     ".goal-plus-verifiers/strict_score.py 在同一 candidate.txt 上最大化 score，"
-    "并说明第一版只能证明相对改进，不能证明已经达到更深目标。随后重新 triage、保存"
+    "并说明第一版只能证明相对改进，不能证明已经达到更深目标。随后保存"
     "新的高置信 spec draft、冻结新的 frozen spec，并以相同的 Pi 单候选预算完成第二个"
     "完整 Search run。两轮必须使用不同 frozen_spec_id 和 run_id；第二轮完成后才把"
     " Goal Plus 状态设为 complete。"
@@ -181,7 +181,6 @@ def _assert_goal_plus_jsonl_is_clean(session_path: Path) -> None:
 
     entries = _read_jsonl(session_path)
     triage_calls = _tool_calls(entries, "goal_plus_record_triage")
-    assert triage_calls
     for call in triage_calls:
         arguments = call.get("arguments") or {}
         assert "triage" in arguments
@@ -273,7 +272,7 @@ def test_goal_plus_exact_command_can_start_and_complete_goal_plus(
     assert record["entrypoint_status"] == "host_verified"
     assert len(record["host_command_invocations"]) == 1
     invocation = record["host_command_invocations"][0]
-    assert invocation["host"] == "pi"
+    assert invocation["agent_harness"] == "pi"
     assert invocation["transport"] == "pi_extension_command"
     assert invocation["command"] == "/goal-plus"
     assert invocation["action"] == "start"
@@ -597,7 +596,7 @@ def test_goal_plus_busy_pause_duplicate_resume_and_clear(st_pi_run_root: Path) -
 
 
 @pytest.mark.st_pi
-def test_goal_plus_print_prompt_jsonl_has_typed_triage(
+def test_goal_plus_print_prompt_completes_without_triage(
     st_pi_run_root: Path,
 ) -> None:
     search_root = st_pi_run_root / ".gp"
@@ -625,17 +624,13 @@ def test_goal_plus_print_prompt_jsonl_has_typed_triage(
     assert record["status"] == "complete"
     events = _goal_events(search_root, record["goal_plus_id"])
     event_types = [event["event_type"] for event in events]
-    assert event_types[:2] == ["created", "triage_recorded"]
+    assert event_types[0] == "created"
+    assert "triage_recorded" not in event_types
     assert "status_changed" in event_types
     assert "spec_draft_saved" not in event_types
     assert "search_linked" not in event_types
-    triage = next(
-        event["payload"]
-        for event in events
-        if event["event_type"] == "triage_recorded"
-    )
-    assert triage["is_optimization"] is False
-    assert triage["recommended_phase"] == "goal"
+    assert record["phase"] == "goal"
+    assert record["triage"] is None
     _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
 
 
@@ -728,13 +723,13 @@ def test_goal_plus_with_final_check_runs_pi_reviewer(
     assert record["entrypoint_status"] == "host_verified"
     assert len(record["host_command_invocations"]) == 1
     invocation = record["host_command_invocations"][0]
-    assert invocation["host"] == "pi"
+    assert invocation["agent_harness"] == "pi"
     assert invocation["transport"] == "pi_extension_command"
     assert invocation["command"] == "/goal-plus-with-final-check"
     assert invocation["action"] == "start"
     assert record["policy"]["final_check"]["mode"] == "required"
     assert record["goal_revision"] == 1
-    assert record["final_checks"][-1]["checker_host"] == "pi"
+    assert record["final_checks"][-1]["checker_harness"] == "pi"
     assert record["final_checks"][-1]["status"] == "passed"
     event_types = [
         event["event_type"]
@@ -755,7 +750,7 @@ def test_goal_plus_print_autonomously_enters_search(
     shutil.copytree(
         ROOT / "examples" / "edgebench-ad-placement" / "workspace-template",
         source,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".tmp"),
     )
     subprocess.run(["git", "init", "-q"], cwd=source, check=True)
     git_commit_all(source, "isolated native Search baseline")
@@ -764,8 +759,6 @@ def test_goal_plus_print_autonomously_enters_search(
     session_dir.mkdir(parents=True, exist_ok=True)
     command = [
         *_pi_base_command(session_dir, "st-pi-goal-plus-autonomous-search"),
-        "--skill",
-        str(ROOT / "assets" / "pi" / "skills" / "goal-plus" / "SKILL.md"),
         "-p",
         "/goal-plus " + AUTONOMOUS_OPTIMIZATION_PROMPT.replace(
             "examples/edgebench-ad-placement/workspace-template", str(source)
@@ -800,17 +793,9 @@ def test_goal_plus_print_autonomously_enters_search(
     assert record["status"] == "complete"
     events = _goal_events(search_root, record["goal_plus_id"])
     event_types = [event["event_type"] for event in events]
-    assert "triage_recorded" in event_types
     assert "spec_draft_saved" in event_types
     assert "frozen_verifier_confirmed" not in event_types
     assert "search_linked" in event_types
-    triage = next(
-        event["payload"]
-        for event in events
-        if event["event_type"] == "triage_recorded"
-    )
-    assert triage["is_optimization"] is True
-    assert triage["recommended_phase"] in {"spec_discovery", "search"}
     draft = next(
         event["payload"]
         for event in events
@@ -833,7 +818,7 @@ def test_goal_plus_print_autonomously_enters_search(
     frozen = json.loads(
         (search_root / "specs" / run_record["frozen_spec_id"] / "frozen_spec.json").read_text()
     )
-    assert frozen["native_host"] == "pi"
+    assert frozen["agent_harness"] == "pi"
     assert "worker_host" not in frozen["spec"]["strategy"]
     worker_sessions = sorted(
         (search_root / "runs" / linked["run_id"] / "agent_sessions").glob("agent_*.json")
@@ -841,8 +826,8 @@ def test_goal_plus_print_autonomously_enters_search(
     assert worker_sessions
     for session_path in worker_sessions:
         session = json.loads(session_path.read_text(encoding="utf-8"))
-        assert session["host"] == "pi-rpc"
-        metadata = session["host_handle"]["metadata"]
+        assert session["agent_harness"] == "pi"
+        metadata = session["session_handle"]["metadata"]
         assert metadata["continuation"] == "native_session"
         assert metadata.get("runner_failed") is not True
         assert metadata["raw_logging"] is False
@@ -864,7 +849,7 @@ def test_circle_packing_git_common_agent_apply(
         source_examples / "circle-packing",
         examples_root / "circle-packing",
         ignore=shutil.ignore_patterns(
-            ".gp", "workspace", "__pycache__", "*.pyc"
+            ".gp", "workspace", "__pycache__", "*.pyc", ".tmp"
         ),
     )
     example = examples_root / "circle-packing-git-apply"
@@ -872,7 +857,7 @@ def test_circle_packing_git_common_agent_apply(
         source_examples / "circle-packing-git-apply",
         example,
         ignore=shutil.ignore_patterns(
-            ".gp", "workspace", "__pycache__", "*.pyc"
+            ".gp", "workspace", "__pycache__", "*.pyc", ".tmp"
         ),
     )
     prepared = subprocess.run(
@@ -890,8 +875,6 @@ def test_circle_packing_git_common_agent_apply(
     prompt = Path(__file__).with_name("circle-common-prompt.txt").read_text(encoding="utf-8")
     command = [
         *_pi_base_command(session_dir, "st-pi-circle-git-common"),
-        "--skill",
-        str(ROOT / "assets" / "pi" / "skills" / "goal-plus" / "SKILL.md"),
         "-p",
         prompt,
     ]
@@ -929,7 +912,7 @@ def test_circle_packing_git_common_agent_apply(
         ).read_text(encoding="utf-8")
     )
     assert frozen["spec"]["workspace"] == {
-        "backend": "git_worktree",
+        "workspace_provider": "git_worktree",
         "promotion_mode": "apply",
     }
     assert frozen["spec"]["strategy"]["inner_agent"] == "common"
@@ -974,8 +957,8 @@ def test_circle_packing_git_common_agent_apply(
         launch = session["launch"]
         assert "普通 Search 候选 agent" in launch["prompt"]
         assert "worker_agent_type" not in launch
-        metadata = session["host_handle"]["metadata"]
-        assert metadata["runtime_start"]["active_non_builtin_tools"] == ["search_get_agent_context"]
+        metadata = session["session_handle"]["metadata"]
+        assert metadata["runtime_start"]["active_non_builtin_tools"] == ["goal_plus_search_get_agent_context"]
         successful_tools = [
             entry["message"]["toolName"]
             for entry in _read_jsonl(Path(metadata["session_file"]))
@@ -983,8 +966,8 @@ def test_circle_packing_git_common_agent_apply(
             and entry["message"].get("role") == "toolResult"
             and entry["message"].get("isError") is False
         ]
-        assert "search_run_verifier" in successful_tools
-        assert successful_tools.index("search_get_agent_context") < successful_tools.index("search_run_verifier")
+        assert "goal_plus_search_run_verifier" in successful_tools
+        assert successful_tools.index("goal_plus_search_get_agent_context") < successful_tools.index("goal_plus_search_run_verifier")
         assert session["counters"]["verifier_runs"] == metadata["dispatch_count"]
 
     workspace = example / "workspace"
@@ -1160,7 +1143,7 @@ def test_goal_plus_print_revises_goal_and_frozen_spec_after_first_result(
     assert verifier_names == ["simple_score.py", "strict_score.py"]
     events = _goal_events(search_root, record["goal_plus_id"])
     assert [event["event_type"] for event in events].count("goal_updated") == 1
-    assert [event["event_type"] for event in events].count("triage_recorded") == 2
+    assert [event["event_type"] for event in events].count("spec_draft_saved") >= 2
     _assert_goal_plus_jsonl_is_clean(_session_file(session_dir))
 
 

@@ -39,7 +39,7 @@ class CandidateCheckpoints:
             artifact_ref = ArtifactRef(
                 kind="git_commit",
                 id=iteration.git_head,
-                provider=record.task.workspace_backend,
+                provider=record.task.workspace_provider,
             )
         if artifact_ref is None:
             raise RuntimeError("run best iteration has no artifact identity")

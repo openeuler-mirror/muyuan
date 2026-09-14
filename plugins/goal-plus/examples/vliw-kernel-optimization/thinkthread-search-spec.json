@@ -27,11 +27,10 @@
     "name": "agent_guided",
     "orchestration_mode": "parallel_loops",
     "inner_agent": "autoresearch",
-    "worker_budget": {"max_runtime_seconds": 150, "max_turns": 6, "on_exceed": "interrupt"},
     "evidence_annotator": {"timeout_seconds": 300},
-    "config": {"closeout_reserve_seconds": 240, "global_evidence_mode": "manual"}
+    "config": {"global_evidence_mode": "manual"}
   },
-  "workspace": {"backend": "thinkthread", "promotion_mode": "artifact_only"},
+  "workspace": {"provider": "thinkthread", "promotion_mode": "artifact_only"},
   "constraints": {
     "suggested_batch_size": 2,
     "baseline_cycles": 147734,

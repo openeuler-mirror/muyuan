@@ -2,11 +2,44 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 pytest_plugins = ["pytester"]
+
+
+def test_isolated_pi_config_preserves_model_inventory_without_user_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.st.conftest import isolated_pi_config
+
+    source = tmp_path / "agent"
+    source.mkdir()
+    inventory = {"models": [{"provider": "fixture", "id": "new-model"}]}
+    (source / "models-store.json").write_text(json.dumps(inventory))
+    (source / "auth.json").write_text("{}")
+    (source / "models.json").write_text("{}")
+    (source / "settings.json").write_text(json.dumps({
+        "defaultModel": "new-model", "packages": ["unrelated-user-package"],
+    }))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(source))
+
+    fixture = isolated_pi_config.__wrapped__(monkeypatch)
+    target = next(fixture)
+    try:
+        assert target != source
+        assert json.loads((target / "models-store.json").read_text()) == inventory
+        assert json.loads((target / "settings.json").read_text()) == {"defaultModel": "new-model"}
+        for name in ("auth.json", "models.json", "models-store.json"):
+            assert (target / name).stat().st_mode & 0o777 == 0o600
+        (target / "models-store.json").write_text("{}")
+        assert json.loads((source / "models-store.json").read_text()) == inventory
+    finally:
+        fixture.close()
+    assert not target.exists()
+    assert source.is_dir()
 
 
 @pytest.fixture
@@ -23,7 +56,7 @@ def gated_suite(pytester: pytest.Pytester) -> pytest.Pytester:
             st_pi_thinkthread: ThinkThread
             st_future: future system test
             fast: host-free test
-            linux_procfs: Linux process observation
+            thinkthread_linux: ThinkThread Linux runtime
         """
     )
     pytester.makeconftest(
@@ -99,7 +132,7 @@ def test_selection_without_opt_in_never_checks_or_runs_hosts(
     ("expression", "checks"),
     [
         ("st_codex", ["codex"]),
-        ("st_pi_rpc", ["pi-rpc"]),
+        ("st_pi_rpc", ["pi"]),
         ("st_pi", ["pi"]),
         ("st_pi_thinkthread", ["tt", "pi", "node"]),
         ("not st and not st_pi", []),
@@ -155,7 +188,7 @@ def test_new_system_marker_is_gated_outside_host_directories(
 
 
 @pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_linux_procfs_marker_gates_fixtures_only_on_other_platforms(
+def test_thinkthread_linux_marker_gates_fixtures_only_on_other_platforms(
     gated_suite: pytest.Pytester, platform: str,
 ) -> None:
     conftest = gated_suite.path / "conftest.py"
@@ -175,7 +208,7 @@ def test_linux_procfs_marker_gates_fixtures_only_on_other_platforms(
         def observed_process():
             Path("process-observed.txt").touch()
 
-        @pytest.mark.linux_procfs
+        @pytest.mark.thinkthread_linux
         def test_process(observed_process): pass
 
         def test_pure(): pass

@@ -12,7 +12,7 @@ Git history 或 `results.tsv`。`copy` 仍是显式的 artifact-only 兼容路�
 
 ```text
 MainAgent
-  |  SearchSpec(source_path, edit surface, verifier, backend)
+  |  SearchSpec(source_path, edit surface, verifier, workspace_provider)
   v
 freeze -----------------------------------------------------------+
   |                                                               |
@@ -58,10 +58,10 @@ freeze -----------------------------------------------------------+
 ### 固定生命周期，可替换后端
 
 Search 保持同一个 `new -> search -> apply` 控制语义：建立 baseline、创建 candidate、
-checkpoint、验证、结算、选择和发布。Git candidate 的文件操作由 `WorkspaceProvider`
-实现。ThinkThread candidate 的 Child、Session、message、snapshot checkpoint 和 continuation
-由 Pi host pool 实现；runtime 仍拥有 spec、Evidence、selection、publication 和 `.gp/`
-状态。两条路径不能互相 fallback。
+checkpoint、验证、结算、选择和发布。Git candidate 文件操作经本地 workspace/artifact 窄接口
+执行。ThinkThread candidate 的 Child、Session、message 和 continuation 经共同 session actor
+与 TT adapter 执行，snapshot checkpoint 经 provider port 固定。runtime 仍拥有 spec、Evidence、
+selection、publication 和 `.gp/` 状态。两条路径不能互相 fallback。
 
 `AgentSessionRecord` 只是 context/provenance handle。Git worktree、Pi RPC 进程或 ThinkThread
 Child 的实际生命周期始终属于对应 host，不进入 Search runtime 的 supervisor 边界。
@@ -104,18 +104,18 @@ snapshot 构造 filtered publication snapshot `P`，再使用稳定 RequestId �
 
 ### Freeze 与 New：验证 source 并固定身份
 
-`source_path`、verifier 命令、编辑范围和 workspace backend 由 MainAgent 写入 SearchSpec。
-runtime 不从目录结构猜测 candidate root，也不会在 backend 不匹配或 preflight 失败时降级。
+`source_path`、verifier 命令、编辑范围和 workspace provider 由 MainAgent 写入 SearchSpec。
+runtime 不从目录结构猜测 candidate root，也不会在 workspace_provider 不匹配或 preflight 失败时降级。
 
 Git + Git 在 freeze 时要求 clean Git `HEAD`，hash-pin verifier artifact，并在 origin
-执行一次完整 process-verifier suite。`search_create` 再次确认 source commit 未改变，随后
+执行一次完整 process-verifier suite。`goal_plus_search_create` 再次确认 source commit 未改变，随后
 只建立 `c001`，在真实 worktree 运行 relocation verifier。通过后才创建其余 candidate；
 失败会 abort run，并保留诊断 Evidence。
 
 ThinkThread 在 freeze 时校验 `source_path` 可表示为当前 Root 的逻辑 `source_subdir`，并固定
-SearchSpec 与 verifier artifact。`search_create` 校验受支持的 Runtime release、Agent Control
-protocol、Agent POSIX contract fingerprint、Root direct filesystem 和 delegated Child
-capability，然后在短暂写入边界捕获 Root-owned `S0`。origin verifier 对 `S0` 执行 exact
+SearchSpec 与 verifier artifact。`goal_plus_search_create` 校验 Root direct filesystem 和 delegated Child
+capability；Runtime release、Agent Control protocol 与 Agent POSIX fingerprint 偏离已测基线时
+只警告，实际接口调用仍须满足合同。通过后在短暂写入边界捕获 Root-owned `S0`。origin verifier 对 `S0` 执行 exact
 snapshot `fs.run(writes="discard")`；失败会 abort run，且不会启动 candidate。
 
 ThinkThread Child 只接收逻辑 `source_subdir`，不会获得 Root 的本地绝对路径。每个 candidate
@@ -136,7 +136,7 @@ Git worker iteration 的事务为：
 
 ThinkThread worker iteration 的事务为：
 
-1. Child 调用 `search_run_verifier`；AutoResearch-Git binding 先由 trusted extension 提交 private
+1. Child 调用 `goal_plus_search_run_verifier`；AutoResearch-Git binding 先由 trusted extension 提交 private
    attempt，`common` 不执行 inner Git 操作。
 2. 等待 Child Agent ready，并确认 accepted request、dispatch 和 registration 身份。
 3. 用 `fs.branch.snapshot` 固定 current private branch，比较 `S0` 与该 attempt snapshot，并校验允许
@@ -147,8 +147,8 @@ ThinkThread worker iteration 的事务为：
    ledger，并把 Child branch reset 到 post-settlement snapshot；`common` 直接使用 outer snapshot
    settlement。
 6. 持久化 public `ArtifactRef(kind="fs_snapshot", provider="thinkthread")`、verifier result 和
-   disposition，再发布 `candidate_ready`。需要继续时唤醒同一个 Child/Session/branch；全局停止条件
-   成立后关闭 pool。
+   disposition，并将 typed feedback 写入准确 invocation 结果。Main 决定继续时显式 wake
+   同一个 Child/Session/branch；收尾时通过共同 session 工具停止执行并释放资源。
 
 只有已结算的 worker iteration 才能成为 Evidence。stale dispatch acknowledgement、未知 nonce、
 未 ready Child、live branch 或不匹配的 snapshot 都不能发布 candidate completion。
@@ -165,7 +165,7 @@ fallback；超过字节上限时，内联 `actual_diff`、`candidate_diff` 为�
 annotator 必须读取完整 Artifact View。Annotation 不运行命令、代码、测试或 verifier，也不为读取
 派生、patch 或删除 snapshot；private paths 保留在原 snapshot 中，由 Artifact View 读取授权拒绝。
 
-`search_select` 先关闭 queue 并推进 generation，再 interrupt retained Child。已经 claim 的旧
+`goal_plus_search_select` 先关闭 queue 并推进 generation，再 interrupt retained Child。已经 claim 的旧
 task 即使迟到提交，也不能越过 generation fence 发布 Annotation Evidence。
 
 ### Apply：乐观发布与恢复
@@ -189,6 +189,109 @@ ThinkThread 不提供自动 rebase 或三方合并。冲突后的人工整合或
 artifact；不得使用 `fs.replace` 覆盖 live Root。
 
 ---
+
+## Git 与 Candidate-Local Best
+
+新 `git_worktree` run 不再删除 source 的 `.git` 后重新初始化。Runtime 对真实 Git source
+创建 run-local bare mirror，保留完整 refs、commit history 和对象，再从启动 HEAD 建立
+baseline ref 与各 candidate worktree。`source_path` 位于 repository 子目录时，worktree 仍是
+完整 repository，worker cwd 和 edit surface 则保持相对于该 source 子目录。
+
+Git-backed source 的规范输入是 clean `HEAD`。`goal_plus_search_freeze_spec` 在 origin verifier 前检查
+整个 repository，验证后再次检查并把 HEAD 固定为 `source_artifact_ref`；`goal_plus_search_create` 在写入
+run 前复检 clean 状态和准确 commit。
+
+Freeze、create 和 apply 共用 Git 状态检查，范围为整个 source repository，排除 `.gp`、
+`.search`、`.tmp` 等 runtime-noise。其余 staged、unstaged 或 non-ignored untracked 变更，
+以及 Git 状态读取错误，均阻止当前操作。过滤只作用于状态读取，源码和 Git ignore 配置保持原样。
+Freeze/create 对源码变更返回 `DirtySourceWorkspace`；创建 run 时若 clean HEAD 与冻结 commit
+不一致，则返回 `FrozenSourceChanged`。需要以当前目录状态作为输入时，使用 `copy + artifact_only`。
+
+run-local mirror 以 frozen commit 建立 baseline。`goal_plus_search_start_batch` 先物化 `c001`，确认其 HEAD
+与 frozen artifact 一致，并在该 logical workspace 重跑 process verifier；只有通过后才创建
+剩余 candidate。该 relocation gate 专门阻止 origin 路径能运行、worktree 路径却失效的合同。
+
+Evidence 中的 commit 表示 verifier 实际读取的完整 Git tree，不是相对于初始源码的
+patch。Runtime 分别记录：
+
+- `attempt_base_git_head`：尝试前的 settled HEAD；
+- `git_head`：verifier 实际验证的 attempt commit；
+- `attempt_changed_files`：用于 annotation 的 `base..attempt` 净变化；
+- `changed_files`：相对于原始 source 的最终 artifact 变化，用于策略检查和 promotion。
+
+Runtime 会在验证前提交所有 candidate-controlled 修改，并要求 artifact worktree
+干净。candidate 可以包含多个手工 commit；annotation 使用完整
+`settled-base..attempt` 范围，而不是只查看最后一个 commit。
+
+每次 process-verifier 尝试都会永久记录在 canonical `.gp` ledger。严格改善和同分分别以
+`keep`、`retain` 更新 candidate-local 最新最佳。只有 `discard` 或 `failure` 时，Runtime 才把
+代码恢复到此前最佳版本。内置 `autoresearch` binding 还请求 trusted adapter 管理的
+`results.tsv` 兼容投影，因此它的物理历史为：
+
+```text
+keep:     settled -> attempt -> ledger
+retain:   settled -> equal-score attempt -> ledger
+discard:  settled -> attempt -> restore-best -> ledger
+```
+
+attempt、恢复和 ledger commit 都保持在 candidate-private Git 历史中。因此下一轮始终从
+candidate-local best
+规划，而 Global Evidence 仍保留好、差和失败的全部尝试。`common` binding 不请求该投影：
+keep/retain 后直接以 attempt commit 继续，discard/failure 后以 restore commit 继续，不创建
+`results.tsv` 或额外 ledger commit。一个 candidate 的回滚不会改变 peer 工作区，也不会修改
+peer 的判断。
+
+在 ThinkThread 中，public `IterationRecord.artifact_ref` 仍是 verifier 实际读取的 quiescent
+attempt snapshot，public Git compatibility fields 保持 `null`。private attempt commit 和
+post-settlement ledger commit 只保存在 Child snapshot 与 `inner_agent_state` 中；settled Child
+branch 指向 post-settlement snapshot。Annotation Artifact View、changed-file validation 和
+publication 一律过滤 `.git`、`.gp`、`.search`、`.tmp` 与任意层级的 `results.tsv`。
+
+最终 promotion 不改写或压缩 candidate branch。Runtime 以 run baseline 为 parent、以 selected
+artifact 的允许产品文件为 tree，另行创建一个 squash publication commit；`results.tsv`、`.gp`、
+`.tmp` 和 Git metadata 不进入该提交。`goal_plus_search_apply_promotion` 把这一个提交 cherry-pick
+回原 repository，因此产品历史保持单提交，而完整 autoresearch running history 仍留在 run-local refs。
+`workspace.promotion_mode` 默认是 `apply`，Goal Plus 在 apply 完成前拒绝记录 Search result；
+只有受保护 source、只读 template 或测试 fixture 显式使用 `artifact_only`。
+
+freeze 还会持久化 `workspace_capacity_estimate`。它同时区分当前 source scope、有效
+materialized source、整个 repository 的每-node checkout、`max_parallel` 个 node 合计和共享
+object store；因此 Git 子目录任务不会错误地只按子目录估算，也不会简单使用 `du cwd × K`。
+保守上界和目标文件系统可用空间共同产生 `fits_available_space`，并进入 monitor/report。
+
+### Task-local Skill 与 Reference
+
+任务局部 Skill 仍属于 source baseline，而不是共享平面。runtime 自动发现 source Git
+index 中的 `.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；
+freeze 持久化发现结果，launch/context 向每个 candidate 提供清单；candidate
+通过 `task_skill_paths` 获得自己 worktree 的绝对路径。无需额外 spec 配置或逐文件 Skill
+哈希；Git baseline 决定内容。worker 只加载明确列出的 task-local Skill，不扫描
+parent/global/plugin 或 peer worktree。
+
+`git_worktree` 后端下，各 candidate 共享一个 Git common directory。窄、单文件证据可以
+从自己的工作区查看 peer Evidence commit：
+
+```bash
+git show <commit>:<allowed-file>
+git diff HEAD <commit> -- <allowed-file>
+```
+
+改动较大或需要浏览完整实现时，candidate 调用 `goal_plus_search_reference_open`。runtime 把 root-owned
+Evidence identity checkout 到当前 worker 唯一、稳定的 detached reference worktree：
+
+```text
+candidate workspace/       # 当前 worker 的实现工作区
+ref-workspace/             # 当前 worker 的参考 checkout
+```
+
+worker 直接使用普通文件和命令工具查看返回路径。再次调用会丢弃 ref-workspace 的本地变化，
+并把同一目录切到新的 Evidence commit；不会创建第二个 reference 目录，也不要求 worker
+close。candidate 的实现修改始终留在自己的 workspace，不访问 peer 活动 workspace。
+ThinkThread 的完整 target/peer 阅读由独立 retained Annotation Child 的 immutable Artifact View
+工具提供；candidate 不获得 sibling live branch 或 Annotation 工具。
+
+最终 promotion artifact 虽然是
+相对于 source 生成的 patch，但这不会改变 Evidence commit 代表完整代码树的语义。
 
 ## Outer Provider 对照
 
@@ -231,7 +334,7 @@ process、network、system call 或 credential。ThinkThread 只有在 exact Pro
 ## 资源所有权与 cleanup
 
 ThinkThread Child、branch、snapshot 和 durable request 都记录 Root/Session/run ownership。
-pool close 只 interrupt 或 drain 自己创建的 candidate 与 Annotation Child；不会删除 Root、
+session/scope close 只停止自己登记的 candidate 与 Annotation Child；不会删除 Root、
 其他 run 或用户管理的 ThinkThread 资源。
 
 报告持久化后，cleanup 才回收不再被引用的资源。以下 snapshot 必须继续 pinned：
@@ -240,7 +343,7 @@ pool close 只 interrupt 或 drain 自己创建的 candidate 与 Annotation Chil
 - prepared publication；
 - `awaiting_main_integration` 的 base/publication pair；
 - `recovering`/`needs_recovery` 的 durable request anchors；
-- active pool、Annotation Child、其他 active run 或外部 owner 仍依赖的 snapshot。
+- active session、Annotation Child、其他 active run 或外部 owner 仍依赖的 snapshot。
 
 cleanup 的 provider response 不确定时记录 `needs_recovery`，不能假设资源已删除。已完成且无 pin
 的 snapshot 可以回收，包括 verifier-backed Evidence snapshot；pending integration 和 recovery
@@ -264,7 +367,7 @@ ThinkThread 使用独立 private Child/Session/branch，并从同一个 `S0` 开
 ### 受控阅读
 
 candidate 不获得 peer active workspace、Root live tree 或 Annotation tools。Annotation Child
-只能读取 task 授权的 immutable target/peer snapshots，所有命令写入均被丢弃。
+只能通过授权只读工具读取 task 的 immutable target/peer snapshots，不开放命令执行。
 
 ### 可审计发布
 
@@ -277,6 +380,6 @@ promotion 从 selected artifact 和 original baseline 派生，过滤到 allowed
 ## 相关文档
 
 - [Shared Plane](shared-plane.md) 说明 Evidence、settlement、selection 和端到端 Search flow。
-- [API](api.md) 列出 host 可用的 pool、Artifact View 和 promotion tools。
+- [API](api.md) 列出 host 可用的 session、Artifact View 和 promotion tools。
 - [Agent Host Adapters](agent-host-adapters.md) 说明 Codex、Pi RPC 与 Pi + ThinkThread 的
   launch/continue/budget mapping。

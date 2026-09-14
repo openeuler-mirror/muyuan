@@ -8,20 +8,20 @@ Child-private Git、物理 `results.tsv`、多轮 outer snapshot settlement、�
 两个实现作为只读提示公开，避免模型偶然性掩盖编排问题：
 
 - c001 使用 5 x 6 矩形格，预期 `sum_radii` 约为 2.166664；
-- c002 使用 5/4 交错六角格，预期 `sum_radii` 约为 2.43893。
+- c002 使用 5/4 交错六角格，预期 `sum_radii` 约为 2.438964。
 
 ```text
 Pi /goal-plus in Root
   -> one K=2 ThinkThread plan
      -> c001 rectangular.py -> verify -> feedback -> continue same Child
      -> c002 staggered.py   -> verify -> feedback -> continue same Child
-  -> select c002 -> apply to Root -> Root verifier
+  -> select best verified iteration -> apply to Root -> Root verifier
   -> terminal reports and host cleanup
 ```
 
 ## 前置条件
 
-需要 Linux、Pi、匹配支持基线的 ThinkThread Runtime，以及当前 checkout 生成的
+需要 Linux、Pi、支持所需接口的 ThinkThread Agent Runtime，以及当前 checkout 生成的
 `goal-plus-pi` Profile：
 
 ```bash
@@ -30,8 +30,9 @@ cd /path/to/muyuan/plugins/goal-plus
 tt profile show goal-plus-pi
 ```
 
-Profile、protocol、fingerprint 或 delegated capability 任一不匹配时必须 fail closed。本例不允许
-fallback 到其他 worker host 或 workspace backend。
+版本、protocol 声明或 fingerprint 偏离已测基线时只警告；Profile 结构、实际接口与
+delegated capability 必须通过检查。本例不允许
+回退到其他执行托管方式或工作区实现；agent 身份始终是 Pi。
 
 ## 准备一次性 Root
 
@@ -64,16 +65,22 @@ tt run --profile goal-plus-pi --fs "$PWD/workspace"
 
 随后在 Root TUI 完整粘贴 [`pi-goal-prompt.md`](pi-goal-prompt.md)。不要使用
 `tt run -- -p ...` 传入 Root prompt；追加的 agent 参数会被 `profile="self"` candidate Child
-继承。Goal 最长 20 分钟，candidate lease 最长 3 分钟，并预留 5 分钟完成 annotation、selection、
-apply、审计和报告。
+继承。探索预算为 20 分钟；Main 根据返回的 Evidence 决定是否继续。预算耗尽后不再
+启动新探索，只允许已有合同规定的收尾；已提交结果的结算、publication、审计和资源清理
+可能需要额外时间，详见[预算与收尾](../../docs/runtime-logic.md#预算与收尾)。
 
 首轮只复制各自的 hint 并立即提交正式 verifier；数值优化留到同一个 Child 的后续 continuation。
-完整采用示例 SearchSpec，保留 Annotation 配置与收尾预留时间。
+完整采用示例 SearchSpec，保留 Annotation 配置。
 
 使用 GLM Flash 时，在上述 `tt run` 命令末尾追加
 `-- --model zai/glm-5.3-flash --thinking low`，让 Pi 选择模型；TT 自身的 `--model` 使用另一份
 模型注册表。显式指定 `--state-root` 时，目录必须在 Profile 的 checkout 读取授权范围之外，
 例如通过 `mktemp -d /tmp/goal-plus-circle-tt.XXXXXX` 创建，再将路径传给 `tt run`。
+
+基础 session 诊断默认采集；需要额外统计请求和返回大小时，在启动命令前增加
+`GOAL_PLUS_DEBUG=1`。结束后使用
+[session 分析](../../docs/debugging-runtime.md#分析工具描述与调用失败) 对照实际请求中的
+MCP 描述、参数 schema、工具错误与修正。此开关仅用于诊断，不是示例启动前置条件。
 
 ## 验收
 
@@ -88,9 +95,9 @@ apply、审计和报告。
 - Goal Plus 为 `complete`，恰好一个 run、一个 K=2 plan 和两个 candidate；
 - FrozenSpec 明确记录 `inner_agent=autoresearch`，TT binding 使用 Pi Search worker prompt；
 - c001/c002 均得到有效 verifier 分数，并在全局停止条件允许时 continuation 同一个 candidate；
-- canonical history 位于 `.gp`，Evidence 是 exact TT snapshot；每个 AutoResearch Child 另有
+- canonical history 位于 Pi Session-private Goal Plus root，Evidence 是 exact TT snapshot；每个 AutoResearch Child 另有
   independent private `.git` 和物理 `results.tsv`，但二者不成为公共 Evidence identity；
-- c002 被选择，乐观 `fs.apply` 为 `applied`，Root 复验 valid 且得分至少 2.4；
+- 选择实际最高有效分数的 iteration，乐观 `fs.apply` 为 `applied`，Root 复验 valid 且得分至少 2.4；
 - `report.md`、`report.html` 存在，完成卡显示 `Cleanup complete`。
 
 Child 隔离、完整 Annotation Artifact View、peer comparison、provider resource ownership 和

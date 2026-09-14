@@ -62,7 +62,7 @@ def test_codex_goal_plus_revises_goal_and_frozen_spec_after_first_result(
             f"Use source_path={str(workspace)!r}. The host entrypoint already created "
             "the Goal Plus record; never call goal_plus_create or goal_plus_update_goal. "
             "For the first SearchSpec, use metric_name=score, direction=maximize, "
-            "workspace.backend=copy, process verifier "
+            "workspace.provider=copy, process verifier "
             ".goal-plus-verifiers/simple_score.py, no promotion verifiers, and allow only "
             "candidate.txt. Use strategy.name=random, "
             "inner_agent=autoresearch, "
@@ -75,7 +75,7 @@ def test_codex_goal_plus_revises_goal_and_frozen_spec_after_first_result(
             "revise_goal because a large relative improvement under the simple capped proxy "
             "does not prove the deeper objective. Do not edit the goal yourself. Set Goal "
             "Plus status to needs_user with a next action requesting exact $goal-plus edit, "
-            "then stop without generating search_report."
+            "then stop without generating goal_plus_search_report."
         ),
         scenario="codex_goal_plus_spec_revision_first",
         timeout=1200,

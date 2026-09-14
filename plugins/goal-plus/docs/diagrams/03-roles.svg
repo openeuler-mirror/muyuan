@@ -60,7 +60,7 @@
 
   <rect x="495" y="671" width="410" height="174" class="box host"/>
   <text x="519" y="711" class="heading">Pi process / RPC driver</text>
-  <text x="519" y="748">Pool / Worker：进程身份与 RPC session</text>
+  <text x="519" y="748">Session：原生调用与 generation</text>
   <text x="519" y="780">内部单次推理：角色工具与 schema</text>
   <text x="519" y="819" class="sub">Host asset 只装配该角色的有限能力</text>
 

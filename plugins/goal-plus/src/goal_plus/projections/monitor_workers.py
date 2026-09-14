@@ -54,7 +54,7 @@ def project_candidate(inputs: MonitorCandidateInputs) -> dict[str, Any]:
         "base_candidate_id": candidate.task.base_candidate_id,
         "agent_session_count": len(candidate_sessions),
         "process_dispatch_count": sum(
-            int(session.host_handle.metadata.get("dispatch_count") or 1)
+            int(session.session_handle.metadata.get("dispatch_count") or 1)
             for session in candidate_sessions
         ),
         "verifier_count": len(candidate.iterations),
@@ -152,7 +152,7 @@ def project_session(
     }
     warnings, subagents = [], []
     candidate = inputs.candidate
-    metadata = session.host_handle.metadata
+    metadata = session.session_handle.metadata
     time_advisory = inputs.time_advisory
     observability = inputs.observation
     execution = (
@@ -235,7 +235,8 @@ def project_session(
         {
             "agent_session_id": session.agent_session_id,
             "candidate_id": session.candidate_id,
-            "host": session.host,
+            "agent_harness": session.agent_harness,
+            "runtime_provider": session.runtime_provider,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
             "attempt_count": dispatch_count,
@@ -269,8 +270,6 @@ def project_session(
             "failure_stage": metadata.get("failure_stage"),
             "error_type": metadata.get("error_type"),
             "error": metadata.get("error"),
-            "soft_closeout_seconds": metadata.get("soft_closeout_seconds"),
-            "soft_closeout_sent": bool(metadata.get("soft_closeout_sent")),
             "time_advisory_sent": time_advisory is not None,
             "time_advisory": time_advisory,
             "raw_logging": bool(metadata.get("raw_logging")),

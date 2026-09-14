@@ -402,9 +402,9 @@ limit. For the checked-in Pi prompt, the task reaches terminal status within 60
 minutes, candidate work stops by 50 minutes, and each worker lease is at most
 40 minutes.
 
-Save a high-confidence `goal_plus_save_spec_draft` only after the generated
+Submit the SearchSpec through `goal_plus_search_freeze_spec` only after the generated
 ranking command succeeds on the source workspace with a finite metric and all
-open questions are resolved. Immediately before `search_freeze_spec`, validate
+open questions are resolved. Immediately before freezing, validate
 the final `_task/operator_request.json` again against the canonical
 `examples/ascendc-direct-search/request.schema.json` with the JSON Schema
 validator and stop on any validation error. Freeze the generated verifier,

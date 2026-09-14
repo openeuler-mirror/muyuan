@@ -6,7 +6,7 @@ from goal_plus.domain.goal_commands import (
 from pathlib import Path
 from typing import Any
 
-from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.domain.goal import (
     GoalPlusActiveSession,
     GoalPlusFinalCheckerHost,
@@ -74,11 +74,11 @@ class FileGoalPlusRuntime:
         self,
         goal_plus_id: str,
         *,
-        host: str,
+        agent_harness: str,
         usage: dict[str, Any],
         started_at: str | None = None,
     ) -> dict[str, Any]:
-        return self.observations.record(goal_plus_id, host=host,
+        return self.observations.record(goal_plus_id, agent_harness=agent_harness,
             usage=normalize_pi_usage(usage, scope="orchestrator_session"), started_at=started_at)
 
     def start_from_host_command(
@@ -165,7 +165,7 @@ class FileGoalPlusRuntime:
         self,
         goal_plus_id: str,
         *,
-        host: AgentHostKind,
+        agent_harness: AgentHarnessKind,
         session_id: str,
         event: GoalPlusHostSessionEvent,
         delivery: GoalPlusHostSessionDelivery,
@@ -173,7 +173,7 @@ class FileGoalPlusRuntime:
     ) -> GoalPlusHostSessionDecision:
         return self.goal_control.handle_host_session_event(
             goal_plus_id,
-            host=host,
+            agent_harness=agent_harness,
             session_id=session_id,
             event=event,
             delivery=delivery,
@@ -298,9 +298,9 @@ class FileGoalPlusRuntime:
     def prepare_final_check(
         self,
         goal_plus_id: str,
-        checker_host: GoalPlusFinalCheckerHost,
+        checker_harness: GoalPlusFinalCheckerHost,
     ) -> dict[str, Any]:
-        return self.goal_completion.prepare_final_check(goal_plus_id, checker_host)
+        return self.goal_completion.prepare_final_check(goal_plus_id, checker_harness)
 
     def submit_final_check(
         self,
@@ -312,6 +312,7 @@ class FileGoalPlusRuntime:
         findings: list[dict[str, Any]] | None = None,
         evidence: list[dict[str, Any]] | None = None,
         checker_metadata: dict[str, Any] | None = None,
+        *, native_session_id: str | None = None,
     ) -> GoalPlusRecord:
         return self.goal_completion.submit_final_check(
             goal_plus_id,
@@ -322,6 +323,7 @@ class FileGoalPlusRuntime:
             findings,
             evidence,
             checker_metadata,
+            native_session_id=native_session_id,
         )
 
     def set_status(

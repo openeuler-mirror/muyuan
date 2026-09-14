@@ -28,7 +28,7 @@ def binding():
             candidate_id="c001",
             run_id="run_test",
             workspace=Path("/unmaterialized"),
-            workspace_backend="git_worktree",
+            workspace_provider="git_worktree",
             hypothesis="visible task",
             allowed_files=["main.py"],
             denied_files=["verify.py"],

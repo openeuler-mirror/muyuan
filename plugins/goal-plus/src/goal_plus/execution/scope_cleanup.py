@@ -34,8 +34,7 @@ class ScopeCleanup:
             if scope.get("state") == "closed":
                 return dict(scope)
             scope["state"] = "closing"
-            if scope.get("close_reason") != "owner_process_exited":
-                scope["close_reason"] = reason
+            scope["close_reason"] = reason
             scope.setdefault("close_requested_at", self.clock.timestamp())
             self.state.write(scope)
         # Fence admission before waiting for another cleanup, without holding scope.lock.
@@ -54,19 +53,17 @@ class ScopeCleanup:
         snapshots: list[dict[str, Any]] = []
         errors: list[str] = []
         codex_active_count = 0
-        process_count, process_errors = self.processes.stop(
+        self.processes.release(
             scope_id=scope_id,
-            timeout_seconds=timeout_seconds,
         )
-        errors.extend(process_errors)
         for attachment in scope_attachments(scope):
-            closed, pool_errors = self.services.close_pools(
+            closed, session_errors = self.services.close_sessions(
                 attachment=attachment,
                 scope_id=scope_id,
                 timeout_seconds=timeout_seconds,
             )
             snapshots.extend(closed)
-            errors.extend(pool_errors)
+            errors.extend(session_errors)
             if attachment.kind == "search_run":
                 errors.extend(
                     self.services.close_drainers(
@@ -74,21 +71,18 @@ class ScopeCleanup:
                         timeout_seconds=timeout_seconds,
                     )
                 )
-        if scope.get("host") == "codex":
-            if scope.get("close_reason") == "owner_process_exited":
-                self.codex.finish_after_owner_exit(scope_id=scope_id)
-            else:
-                active_agents = active_codex_agents(
-                    self.snapshot(scope_id=scope_id)
+        if scope.get("agent_harness") == "codex":
+            active_agents = active_codex_agents(
+                self.snapshot(scope_id=scope_id)
+            )
+            codex_active_count = len(active_agents)
+            if active_agents:
+                errors.append(
+                    "codex:active_agents:"
+                    + ",".join(str(item["agent_id"]) for item in active_agents)
                 )
-                codex_active_count = len(active_agents)
-                if active_agents:
-                    errors.append(
-                        "codex:active_agents:"
-                        + ",".join(str(item["agent_id"]) for item in active_agents)
-                    )
 
-        active_count = process_count + codex_active_count + sum(
+        active_count = codex_active_count + sum(
             int(item.get("active_count") or 0) for item in snapshots
         )
         with self.state.lock(scope_id):
@@ -123,21 +117,19 @@ class ScopeCleanup:
             raise PermissionError(
                 f"execution scope {scope_id} does not own Search run {run_id}"
             )
-        snapshots, errors = self.services.close_pools(
+        snapshots, errors = self.services.close_sessions(
             attachment=attachment,
             scope_id=scope_id,
             timeout_seconds=timeout_seconds,
         )
-        process_count, process_errors = self.processes.stop(
+        self.processes.release(
             scope_id=scope_id,
-            timeout_seconds=timeout_seconds,
             attachment=attachment,
             kind="candidate",
         )
-        errors.extend(process_errors)
         scope = self.snapshot(scope_id=scope_id)
         codex_active_count = 0
-        if scope.get("host") == "codex":
+        if scope.get("agent_harness") == "codex":
             active_agents = active_codex_agents(scope, attachment=attachment)
             codex_active_count = len(active_agents)
             if active_agents:
@@ -145,9 +137,9 @@ class ScopeCleanup:
                     "codex:active_agents:"
                     + ",".join(str(item["agent_id"]) for item in active_agents)
                 )
-            if not self.services.codex_run_is_quiescent(run_id):
+            if not self.services.codex_run_is_quiescent(run_id, scope=scope):
                 errors.append(f"codex:run_not_quiescent:{run_id}")
-        active_count = process_count + codex_active_count + sum(
+        active_count = codex_active_count + sum(
             int(item.get("active_count") or 0) for item in snapshots
         )
         if errors or active_count:
@@ -155,7 +147,7 @@ class ScopeCleanup:
                 f"Search run {run_id} did not become quiescent: "
                 f"active_count={active_count}, errors={errors}"
             )
-        return {"run_id": run_id, "active_count": 0, "pools": snapshots}
+        return {"run_id": run_id, "active_count": 0, "sessions": snapshots}
 
     def _fence_run(
         self, *, scope_id: str, attachment: ScopeAttachment

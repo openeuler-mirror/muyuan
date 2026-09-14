@@ -80,7 +80,7 @@ def test_codex_native_child_hooks_preserve_main_binding(
         (
             f"$goal-plus {raw_goal} "
             "Record Goal Mode triage and upsert one required route=subagent work item whose "
-            "objective is to call the logical goal-plus MCP search_create once with "
+            "objective is to call the logical goal-plus MCP goal_plus_search_create once with "
             f"frozen_spec_id='{probe_spec_id}', confirm the expected missing-spec runtime "
             "error, and then return the exact marker native-child-hook-isolation. Execute "
             "the normal dispatch, spawn_agent with fork_turns=none, bind, wait, result, and "
@@ -113,7 +113,7 @@ def test_codex_native_child_hooks_preserve_main_binding(
     child_text = child_transcript.read_text(encoding="utf-8")
     assert record["goal_plus_id"] not in child_text
     assert "goal_plus_context_role=search_candidate" not in child_text
-    [probe_result] = _nested_tool_attempt_outputs(child_transcript, "search_create")
+    [probe_result] = _nested_tool_attempt_outputs(child_transcript, "goal_plus_search_create")
     probe_text = json.dumps(probe_result, ensure_ascii=False)
     assert "GoalPlusRoleDenied" in probe_text
 

@@ -13,15 +13,14 @@ pytestmark = pytest.mark.pi
 
 def test_pi_package_exports_the_supported_user_assets() -> None:
     expected = {
-        "assets/pi/prompts/goal-plus.md",
-        "assets/pi/skills/goal-plus/SKILL.md",
         "assets/pi/extensions/goal-plus.ts",
     }
     assert all((ROOT / path).is_file() for path in expected)
 
     package = json.loads((ROOT / "assets/pi/package.json").read_text(encoding="utf-8"))
     assert package["pi"]["extensions"] == ["assets/pi/extensions/goal-plus.ts"]
-    assert package["pi"]["skills"] == ["assets/pi/skills/goal-plus/SKILL.md"]
+    assert "skills" not in package["pi"]
+    assert not (ROOT / "assets/pi/prompts/goal-plus.md").exists()
     direct_extension_files = sorted(
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / "assets" / "pi" / "extensions").iterdir()
@@ -33,18 +32,16 @@ def test_pi_package_exports_the_supported_user_assets() -> None:
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / "assets" / "pi" / "skills").glob("*/SKILL.md")
     )
-    assert skill_files == ["assets/pi/skills/goal-plus/SKILL.md"]
+    assert skill_files == []
 
 
 def test_pi_search_recovery_tools_are_registered_only_for_main() -> None:
     text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
     main = text.split("const mainTools = [", 1)[1].split("];", 1)[0]
     worker = text.split("const workerTools = [", 1)[1].split("];", 1)[0]
-    for name in ("search_recovery_status", "search_prepare_recovery", "search_recover_candidate"):
+    for name in ("goal_plus_search_recovery_status", "goal_plus_search_prepare_recovery", "goal_plus_search_recover_candidate"):
         assert f'"{name}"' in main
         assert f'"{name}"' not in worker
-        schemas = (ROOT / "assets/pi/extensions/lib/goal-plus-schemas.ts").read_text(encoding="utf-8")
-        assert f"{name}: Type.Object" in schemas
 
 
 def test_pi_thinkthread_worker_activates_context_from_logical_root() -> None:
@@ -77,34 +74,26 @@ def test_pi_thinkthread_annotation_activates_only_read_tools() -> None:
         "] as const;", 1
     )[0]
 
-    assert '"thinkthread_annotation_next"' in tool_names
-    assert '"thinkthread_artifact_view_list"' in tool_names
-    assert '"thinkthread_artifact_view_stat"' in tool_names
-    assert '"thinkthread_artifact_view_pread"' in tool_names
-    assert '"thinkthread_artifact_view_diff"' in tool_names
-    assert '"thinkthread_annotation_submit"' in tool_names
+    assert '"goal_plus_thinkthread_annotation_next"' in tool_names
+    assert '"goal_plus_thinkthread_artifact_view_list"' in tool_names
+    assert '"goal_plus_thinkthread_artifact_view_stat"' in tool_names
+    assert '"goal_plus_thinkthread_artifact_view_pread"' in tool_names
+    assert '"goal_plus_thinkthread_artifact_view_diff"' in tool_names
+    assert '"goal_plus_thinkthread_annotation_submit"' in tool_names
     assert "artifact_view_run" not in text
 
 
-def test_pi_verifier_kicks_internal_agents_through_native_host_path() -> None:
+def test_pi_verifier_kicks_internal_agents_through_agent_harness_path() -> None:
     text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
 
-    assert 'name === "search_run_verifier"' in text
+    assert 'name === "goal_plus_search_run_verifier"' in text
     assert '"goal_plus_host_kick_internal_agents"' in text
     assert "{ run_id: runId }" in text
 
 
-def test_pi_allocation_apply_requests_retired_candidate_cancellation() -> None:
+def test_pi_allocation_uses_shared_host_cancellation() -> None:
     text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
-    runtime_tool = text.split("function registerRuntimeTool(", 1)[1].split(
-        "function activateWorkerContext(", 1
-    )[0]
-
-    interrupt = runtime_tool.index("host_execution_scope_interrupt_allocation")
-    apply = runtime_tool.index("const result = isThinkThreadWorker")
-    assert interrupt < apply
-    assert 'receipt.details.status === "rejected"' in runtime_tool
-    assert "active_count !== 0" not in runtime_tool[interrupt:apply]
+    assert "host_execution_scope_interrupt_allocation" not in text
     assert "workerAllocationDecisionId" not in text
 
 
@@ -128,53 +117,31 @@ def test_pi_model_preflight_uses_native_registry_concurrently() -> None:
     )
     assert "await probePiModels(ctx, resolved?.models ?? [])" in text
     assert "const references: Array<string | undefined> = [];" in text
-    assert 'name === "search_freeze_spec"' in runtime_tool
+    assert 'name === "goal_plus_search_freeze_spec"' in runtime_tool
     assert "await probePiSearchSpecModels(ctx, forwardedParams)" in runtime_tool
     assert 'model_pattern: `${ctx.model.provider}/${ctx.model.id}`' in text
     assert "native_agent_config: nativeAgentConfig" in text
-    assert "inheritPiNativeAgentConfig(launch, nativeAgentConfig)" in text
 
 
-def test_pi_search_bootstrap_requires_goal_plus_id() -> None:
-    text = (ROOT / "assets/pi/extensions/lib/goal-plus-schemas.ts").read_text(encoding="utf-8")
+def test_pi_search_bootstrap_requires_goal_plus_id(tmp_path) -> None:
+    from goal_plus.mcp_client import mcp_manifest
 
-    freeze_schema = text.split("\tsearch_freeze_spec: Type.Object(", 1)[1].split(
-        "\tsearch_create: Type.Object(", 1
-    )[0]
-    create_schema = text.split("\tsearch_create: Type.Object(", 1)[1].split(
-        "\tsearch_status: Type.Object(", 1
-    )[0]
-
-    assert "goal_plus_id: Type.String()" in freeze_schema
-    assert "goal_plus_id: Type.String()" in create_schema
+    schemas = {tool["name"]: tool["inputSchema"] for tool in mcp_manifest(tmp_path / ".gp")["tools"]}
+    assert "goal_plus_id" in schemas["goal_plus_search_freeze_spec"]["required"]
+    assert "goal_plus_id" in schemas["goal_plus_search_create"]["required"]
 
 
-def test_pi_priority_replace_schema_owns_its_parameters() -> None:
-    text = (ROOT / "assets/pi/extensions/lib/goal-plus-schemas.ts").read_text(
-        encoding="utf-8"
-    )
-    policy = text.split("export const PriorityReplacePolicySpec", 1)[1].split(
-        "export const CandidateProposal", 1
-    )[0]
+def test_pi_loads_shared_allocation_schema(tmp_path) -> None:
+    from goal_plus.mcp_client import mcp_manifest
 
-    assert "AdaptiveAllocationSpec" not in text
-    assert 'Type.Literal("priority_replace/v1")' in policy
-    assert 'Type.Literal("latest_record_values/v1")' in policy
-    assert 'Type.Literal("progress_trend/v1")' in policy
-    assert "minItems: 1, uniqueItems: true" in policy
-    assert "minimum: 0, maximum: 1" in policy
-
-
-def test_pi_strategy_schema_derives_llm_verifier_enablement() -> None:
-    text = (ROOT / "assets/pi/extensions/lib/goal-plus-schemas.ts").read_text(
-        encoding="utf-8"
-    )
-    strategy = text.split("export const StrategySpec", 1)[1].split(
-        "export const WorkspaceSpec", 1
-    )[0]
-
-    assert "LlmVerifierSpec" not in text
-    assert "verifier:" not in strategy
+    manifest = mcp_manifest(tmp_path / ".gp")
+    freeze = next(tool for tool in manifest["tools"] if tool["name"] == "goal_plus_search_freeze_spec")
+    strategy = freeze["inputSchema"]["properties"]["spec"]["properties"]["strategy"]["properties"]
+    assert "verifier" not in strategy and "search_scheduler" not in strategy
+    policy = next(item for item in strategy["allocation"]["anyOf"] if item.get("type") == "object")
+    assert set(policy["properties"]) == {"policy", "features", "switch_margin"}
+    assert policy["properties"]["switch_margin"]["minimum"] == 0
+    assert policy["properties"]["switch_margin"]["maximum"] == 1
 
 
 def test_pi_package_manifest_exports_only_the_user_integration() -> None:
@@ -184,7 +151,6 @@ def test_pi_package_manifest_exports_only_the_user_integration() -> None:
     assert "pi-package" in package["keywords"]
     assert package["pi"] == {
         "extensions": ["assets/pi/extensions/goal-plus.ts"],
-        "skills": ["assets/pi/skills/goal-plus/SKILL.md"],
     }
 
 
@@ -193,14 +159,6 @@ def test_pyproject_exposes_pi_console_scripts() -> None:
         "project"
     ]["scripts"]
 
-    assert scripts["goal-plus-pi-worker"] == "goal_plus.pi_worker:main"
+    assert "goal-plus-pi-worker" not in scripts
+    assert "goal-plus-pi-pool" not in scripts
     assert scripts["goal-plus-pi-tool"] == "goal_plus.pi_tool:main"
-
-
-def test_pi_compatibility_prompt_delegates_to_the_skill() -> None:
-    prompt = (ROOT / "assets" / "pi" / "prompts" / "goal-plus.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert "/skill:goal-plus" in prompt
-    assert "$ARGUMENTS" in prompt

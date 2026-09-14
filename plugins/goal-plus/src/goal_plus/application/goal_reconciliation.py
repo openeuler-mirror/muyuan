@@ -68,7 +68,7 @@ class GoalReconciliation:
                     elif not current:
                         step = "start_fresh_worker"
                     elif not any(
-                        s["host_handle"]["metadata"].get("bound_at") for s in current
+                        s["session_handle"]["metadata"].get("bound_at") for s in current
                     ):
                         step = "reconcile_launch_then_bind"
                     elif candidate["fresh_recovery_evidence"]:
@@ -119,7 +119,7 @@ class GoalReconciliation:
         return (
             "Search reconciliation:\n"
             + json.dumps(agenda, ensure_ascii=False)
-            + "\n按 next_step 推进；用 search_recovery_status 按需读取 checkpoint 和 host session。"
+            + "\n按 next_step 推进；用 goal_plus_search_recovery_status 按需读取 checkpoint 和 host session。"
             "先处理最新用户消息，每轮重读 goal_plus_status；非 Search 工作后仍继续此清单。"
         )
 

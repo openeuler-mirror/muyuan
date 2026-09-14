@@ -172,7 +172,7 @@ class CandidateSettlement:
                 attempt_artifact_ref = ArtifactRef(
                     kind="git_commit",
                     id=attempt.git_head,
-                    provider=record.task.workspace_backend,
+                    provider=record.task.workspace_provider,
                 )
             attempt_base_artifact_ref = pre_attempt_settled_artifact_ref
             if (
@@ -182,7 +182,7 @@ class CandidateSettlement:
                 attempt_base_artifact_ref = ArtifactRef(
                     kind="git_commit",
                     id=pre_attempt_settled_head,
-                    provider=record.task.workspace_backend,
+                    provider=record.task.workspace_provider,
                 )
             if attempt.git_head is not None:
                 settlement_artifact_identity = attempt.git_head
@@ -296,7 +296,7 @@ class CandidateSettlement:
                                 ),
                             }
                         }
-                        if record.task.workspace_backend == "thinkthread"
+                        if record.task.workspace_provider == "thinkthread"
                         else {}
                     ),
                 },
@@ -343,7 +343,7 @@ class CandidateSettlement:
                 )
             iteration.disposition = disposition
 
-            is_thinkthread = record.task.workspace_backend == "thinkthread"
+            is_thinkthread = record.task.workspace_provider == "thinkthread"
             rollback_target_artifact_ref: ArtifactRef | None = None
             restored_artifact_ref: ArtifactRef | None = None
             if disposition in {"keep", "retain"}:
@@ -362,7 +362,7 @@ class CandidateSettlement:
                     rollback_target_artifact_ref = ArtifactRef(
                         kind="git_commit",
                         id=prior_best.git_head,
-                        provider=record.task.workspace_backend,
+                        provider=record.task.workspace_provider,
                     )
                 if rollback_target_artifact_ref is None:
                     raise RuntimeError("candidate rollback has no restoration target")

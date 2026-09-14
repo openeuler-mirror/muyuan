@@ -15,7 +15,7 @@ class ProviderReferenceWorkspace:
         clean = False
         if root is not None:
             clean = GitReferences(
-                reference.workspace_backend
+                reference.workspace_provider
             ).remove_reference(source.task.workspace, reference.artifact_ref, root)
         return available, clean
 
@@ -23,5 +23,5 @@ class ProviderReferenceWorkspace:
         self, source: CandidateRecord, artifact: ArtifactRef, destination: Path
     ) -> Path:
         return GitReferences(
-            source.task.workspace_backend
+            source.task.workspace_provider
         ).materialize_reference(source.task.workspace, artifact, destination)

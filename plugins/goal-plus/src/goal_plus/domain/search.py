@@ -20,10 +20,10 @@ from pydantic import (
 
 from goal_plus.domain.adaptive.models import ExpansionSource, PriorityReplacePolicySpec
 from goal_plus.domain.agents import (
-    AgentHostHandle,
-    AgentHostKind,
-    NativeAgentKind,
-    search_worker_host,
+    AgentSessionHandle,
+    AgentHarnessKind,
+    AgentRuntimeProvider,
+    validate_search_execution,
     ModelSpec,
     SelectedModel,
     WorkerBudget,
@@ -38,7 +38,7 @@ from goal_plus.domain.artifacts import (
     ArtifactRef,
     ExecutionScope,
     WorkspaceAccess,
-    WorkspaceBackend,
+    WorkspaceProvider,
     WorkspaceCapacityEstimate,
     WorkspaceOperationTiming,
     WorkspaceSpec,
@@ -136,13 +136,6 @@ class StrategySpec(SearchModel):
             "to an explicit value."
         ),
     )
-    worker_agent_type: str | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description=(
-            "Legacy Codex-native role override. New specs must use inner_agent."
-        ),
-    )
     worker_budget: WorkerBudget | None = None
     worker_launch: WorkerLaunchOptions | None = None
     evidence_annotator: EvidenceAnnotatorSpec = Field(
@@ -166,7 +159,7 @@ class StrategySpec(SearchModel):
             raise ValueError("strategy name must be non-empty")
         return value
 
-    @field_validator("inner_agent", "worker_agent_type")
+    @field_validator("inner_agent")
     @classmethod
     def inner_agent_fields_must_be_nonempty(
         cls,
@@ -320,9 +313,9 @@ class SearchSpec(SearchModel):
     def strategy_extension_constraints_are_valid(self) -> "SearchSpec":
         if (
             self.strategy.allocation is not None
-            and self.workspace.backend != "git_worktree"
+            and self.workspace.provider != "git_worktree"
         ):
-            raise ValueError("adaptive allocation requires workspace.backend=git_worktree")
+            raise ValueError("adaptive allocation requires workspace.provider=git_worktree")
         return self
 
 
@@ -361,7 +354,7 @@ class BootstrapVerifierResult(SearchModel):
 
 class BootstrapVerification(SearchModel):
     phase: Literal["origin", "workspace_relocation"]
-    backend: WorkspaceBackend
+    workspace_provider: WorkspaceProvider
     passed: bool
     aggregate_score: float | None = None
     verifier_results: list[BootstrapVerifierResult] = Field(default_factory=list)
@@ -384,7 +377,9 @@ class FrozenSpec(SearchModel):
     frozen_spec_id: str
     spec_hash: str
     goal_plus_id: str | None = None
-    native_host: NativeAgentKind
+    goal_revision: int | None = Field(default=None, ge=1)
+    agent_harness: AgentHarnessKind
+    runtime_provider: AgentRuntimeProvider
     spec: SearchSpec
     supplemental_evaluation_enabled: bool = False
     supplemental_evaluation_required: bool = False
@@ -397,13 +392,18 @@ class FrozenSpec(SearchModel):
     device_inventory: dict[str, DevicePoolInventory] = Field(default_factory=dict)
     created_at: str
 
-    @property
-    def worker_host(self) -> AgentHostKind:
-        return search_worker_host(self.native_host, self.spec.workspace.backend)
+    @model_validator(mode="before")
+    @classmethod
+    def require_complete_frozen_protocol(cls, value: Any) -> Any:
+        if isinstance(value, dict) and isinstance(value.get("spec"), dict):
+            workspace = value["spec"].get("workspace")
+            if not isinstance(workspace, dict) or "provider" not in workspace:
+                raise ValueError("frozen spec requires explicit workspace.provider")
+        return value
 
     @model_validator(mode="after")
-    def native_host_supports_workspace(self) -> "FrozenSpec":
-        search_worker_host(self.native_host, self.spec.workspace.backend)
+    def agent_harness_supports_workspace(self) -> "FrozenSpec":
+        validate_search_execution(self.agent_harness, self.runtime_provider, self.spec.workspace.provider)
         return self
 
 class CandidateTask(SearchModel):
@@ -416,7 +416,7 @@ class CandidateTask(SearchModel):
     hypothesis: str
     execution_scope: ExecutionScope = "native_root"
     workspace: Path
-    workspace_backend: WorkspaceBackend = "copy"
+    workspace_provider: WorkspaceProvider = "copy"
     workspace_branch: str | None = None
     workspace_base_revision: str | None = None
     workspace_managed_root: Path | None = None
@@ -467,7 +467,7 @@ class CandidateTask(SearchModel):
         if "execution_scope" not in payload:
             payload["execution_scope"] = (
                 "thinkthread_private"
-                if payload.get("workspace_backend") == "thinkthread"
+                if payload.get("workspace_provider") == "thinkthread"
                 else "native_root"
             )
         return payload
@@ -476,12 +476,12 @@ class CandidateTask(SearchModel):
     def execution_scope_matches_workspace(self) -> "CandidateTask":
         expected = (
             "thinkthread_private"
-            if self.workspace_backend == "thinkthread"
+            if self.workspace_provider == "thinkthread"
             else "native_root"
         )
         if self.execution_scope != expected:
             raise ValueError(
-                f"workspace backend {self.workspace_backend!r} requires "
+                f"workspace provider {self.workspace_provider!r} requires "
                 f"execution_scope={expected!r}"
             )
         return self
@@ -566,14 +566,22 @@ class CandidateRecovery(SearchModel):
         return self
 
 
+class CandidateRunRequest(SearchModel):
+    call_id: str = Field(min_length=1)
+    fingerprint: str
+    target_session_id: str | None = None
+
+
 class AgentSessionRecord(SearchModel):
     agent_session_id: str
     run_id: str
     candidate_id: str
     execution_generation: int = Field(default=0, ge=0)
-    host: AgentHostKind = "codex"
+    run_requests: list[CandidateRunRequest] = Field(default_factory=list)
+    agent_harness: AgentHarnessKind = "codex"
+    runtime_provider: AgentRuntimeProvider = "direct"
     execution_scope: ExecutionScope = "native_root"
-    host_handle: AgentHostHandle = Field(default_factory=AgentHostHandle)
+    session_handle: AgentSessionHandle = Field(default_factory=AgentSessionHandle)
     created_at: str
     updated_at: str
     directive: dict[str, Any] = Field(default_factory=dict)
@@ -594,13 +602,13 @@ class AgentSessionRecord(SearchModel):
 
     @model_validator(mode="before")
     @classmethod
-    def infer_legacy_execution_scope(cls, value: Any) -> Any:
+    def resolve_execution_scope(cls, value: Any) -> Any:
         if not isinstance(value, dict) or "execution_scope" in value:
             return value
         payload = dict(value)
         payload["execution_scope"] = (
             "thinkthread_private"
-            if payload.get("host") == "thinkthread"
+            if payload.get("runtime_provider") == "thinkthread"
             else "native_root"
         )
         return payload
@@ -608,12 +616,16 @@ class AgentSessionRecord(SearchModel):
     @model_validator(mode="after")
     def execution_scope_matches_host(self) -> "AgentSessionRecord":
         expected = (
-            "thinkthread_private" if self.host == "thinkthread" else "native_root"
+            "thinkthread_private" if self.runtime_provider == "thinkthread" else "native_root"
         )
         if self.execution_scope != expected:
             raise ValueError(
-                f"agent host {self.host!r} requires execution_scope={expected!r}"
+                f"agent host {self.agent_harness!r} requires execution_scope={expected!r}"
             )
+        if (self.agent_harness, self.runtime_provider) != (
+            self.session_handle.agent_harness, self.session_handle.runtime_provider
+        ):
+            raise ValueError("session handle must match agent harness and runtime provider")
         return self
 
 

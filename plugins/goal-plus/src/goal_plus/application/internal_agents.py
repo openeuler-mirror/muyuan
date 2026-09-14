@@ -12,7 +12,8 @@ class InternalAgentWork:
         run = self._source.read_run(run_id)
         frozen = self._source.read_frozen_spec(run.frozen_spec_id)
         return InternalAgentRun(
-            host=frozen.worker_host,
+            agent_harness=frozen.agent_harness,
+            runtime_provider=frozen.runtime_provider,
             accepts_work=not run.invalidated_at and run.state in WORKER_ITERATION_RUN_STATES,
             verifier_enabled=frozen.spec.strategy.requires_llm_verifier,
         )

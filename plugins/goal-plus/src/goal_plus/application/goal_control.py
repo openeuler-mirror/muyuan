@@ -1,7 +1,7 @@
 """Host-authorized control and session transitions."""
 
 from __future__ import annotations
-from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.agents import AgentHarnessKind
 
 
 from goal_plus.domain.goal import (
@@ -167,7 +167,7 @@ class GoalControl:
         self,
         goal_plus_id: str,
         *,
-        host: AgentHostKind,
+        agent_harness: AgentHarnessKind,
         session_id: str,
         event: GoalPlusHostSessionEvent,
         delivery: GoalPlusHostSessionDelivery,
@@ -186,7 +186,7 @@ class GoalControl:
                 session_state = "terminal"
                 reason = "goal_terminal"
             elif (
-                active is None or active.host != host or active.session_id != session_id
+                active is None or active.agent_harness != agent_harness or active.session_id != session_id
             ):
                 reason = "session_mismatch"
             elif active.state in {"stale", "detached"}:
@@ -212,7 +212,7 @@ class GoalControl:
                         goal_plus_id,
                         "session_paused",
                         {
-                            "host": host,
+                            "agent_harness": agent_harness,
                             "session_id": session_id,
                             "reason": stop_reason,
                         },
@@ -246,7 +246,7 @@ class GoalControl:
                 goal_plus_id,
                 "session_continuation_decided",
                 {
-                    "host": host,
+                    "agent_harness": agent_harness,
                     "event": event,
                     "delivery": delivery,
                     "interaction": interaction,
@@ -283,7 +283,7 @@ class GoalControl:
                 if (
                     existing is not None
                     and existing.session_id == data.get("session_id")
-                    and existing.host == data.get("host")
+                    and existing.agent_harness == data.get("agent_harness")
                 ):
                     data.setdefault("attached_at", existing.attached_at)
                 else:

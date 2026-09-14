@@ -94,7 +94,7 @@ class CandidateContext:
         results_path = self.ledger.ensure(frozen, record)
         if not initialized:
             self.state.write_candidate(session.run_id, record)
-        private = record.task.workspace_backend == "thinkthread"
+        private = record.task.workspace_provider == "thinkthread"
         workspace_status = (
             [] if private else self.inspection.git_status(record.task.workspace)
         )
@@ -135,7 +135,7 @@ class CandidateContext:
 
 def project_candidate_context(inputs: CandidateContextInputs) -> dict[str, Any]:
     session, frozen, candidate_record = inputs.session, inputs.frozen, inputs.candidate
-    is_thinkthread = candidate_record.task.workspace_backend == "thinkthread"
+    is_thinkthread = candidate_record.task.workspace_provider == "thinkthread"
     workspace_ledger_projection, results_tsv = (
         inputs.ledger_projection,
         inputs.results_path,
@@ -149,7 +149,7 @@ def project_candidate_context(inputs: CandidateContextInputs) -> dict[str, Any]:
             or previous.agent_session_id == session.agent_session_id
         ):
             continue
-        metadata = previous.host_handle.metadata
+        metadata = previous.session_handle.metadata
         same_generation = previous.execution_generation == session.execution_generation
         progress_handoff = metadata.get("progress_handoff") if same_generation else None
         if isinstance(progress_handoff, dict):
@@ -177,7 +177,7 @@ def project_candidate_context(inputs: CandidateContextInputs) -> dict[str, Any]:
                 ),
             }
         )
-    dispatch_count = session.host_handle.metadata.get("dispatch_count")
+    dispatch_count = session.session_handle.metadata.get("dispatch_count")
     dispatch_count = dispatch_count if isinstance(dispatch_count, int) else 0
     continuation_mode = session.launch.get("continuation")
     is_native_session_resume = (
@@ -280,6 +280,7 @@ def project_candidate_context(inputs: CandidateContextInputs) -> dict[str, Any]:
     if task.share_out_dir is not None:
         context["tool_family_catalog"] = inputs.tool_catalog
     if is_thinkthread:
-        context["host"] = session.host
+        context["agent_harness"] = session.agent_harness
+        context["runtime_provider"] = session.runtime_provider
         context["workspace_access"] = task.workspace_access.model_dump(mode="json")
     return context

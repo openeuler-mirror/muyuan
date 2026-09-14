@@ -11,7 +11,7 @@ from goal_plus.domain.artifact_paths import (
 from goal_plus.domain.artifacts import (
     ArtifactRef,
     ReferenceWorkspaceAccess,
-    WorkspaceBackend,
+    WorkspaceProvider,
 )
 from goal_plus.infrastructure.artifacts.git import (
     git_changed_files,
@@ -118,11 +118,11 @@ class ProviderArtifactReader:
         artifact: ArtifactRef,
         destination: Path,
         *,
-        backend: WorkspaceBackend,
+        workspace_provider: WorkspaceProvider,
     ) -> ReferenceWorkspaceAccess:
-        if backend == "thinkthread":
+        if workspace_provider == "thinkthread":
             return thinkthread_artifact_view(artifact)
-        provider = GitReferences(backend)
+        provider = GitReferences(workspace_provider)
         if destination.exists():
             provider.remove_reference(workspace, artifact, destination)
         return provider.open_artifact_view(workspace, artifact, destination)

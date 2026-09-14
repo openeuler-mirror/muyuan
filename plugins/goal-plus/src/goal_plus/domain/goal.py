@@ -14,8 +14,8 @@ from pydantic import (
     model_validator,
 )
 
-from goal_plus.domain.agents import AgentHostKind
-from goal_plus.domain.artifacts import WorkspaceBackend
+from goal_plus.domain.agents import AgentHarnessKind
+from goal_plus.domain.artifacts import WorkspaceProvider
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.search import SearchSpecDraft
 
@@ -174,7 +174,7 @@ class GoalPlusCommandConfig(SearchModel):
     max_duration_seconds: int | None = Field(
         default=None, gt=0, exclude_if=lambda value: value is None
     )
-    workspace_backend: WorkspaceBackend | None = Field(
+    workspace_provider: WorkspaceProvider | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
     promotion_mode: Literal["apply", "artifact_only"] | None = Field(
@@ -222,10 +222,16 @@ class GoalPlusGoalRevision(SearchModel):
     created_at: str
 
 
+class GoalPlusFinalCheckerIdentity(SearchModel):
+    goal_plus_id: str = Field(min_length=1)
+    check_id: str = Field(min_length=1)
+    goal_revision: int = Field(ge=1)
+
+
 class GoalPlusFinalCheck(SearchModel):
     check_id: str = Field(min_length=1)
     goal_revision: int = Field(ge=1)
-    checker_host: GoalPlusFinalCheckerHost
+    checker_harness: GoalPlusFinalCheckerHost
     status: GoalPlusFinalCheckStatus = "pending"
     requested_phase: GoalPlusPhase
     requested_at: str
@@ -256,7 +262,10 @@ class GoalPlusSpecDraft(SearchModel):
     promotion_rule: str = Field(min_length=1)
     confidence: GoalPlusConfidence
     origin: GoalPlusDiscoveryOrigin | None = None
-    open_questions: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(
+        default_factory=list,
+        description="Unresolved evaluation-contract questions. Use an empty list once resolved; do not retain resolved answers here.",
+    )
 
     @field_serializer("search_spec")
     def serialize_search_spec(
@@ -270,7 +279,13 @@ class GoalPlusSpecDraft(SearchModel):
 class GoalPlusSpecDraftInput(GoalPlusSpecDraft):
     """Strict tool-input shape; persisted legacy drafts remain backward-readable."""
 
-    search_spec: SearchSpecDraft
+    search_spec: SearchSpecDraft = Field(
+        description=(
+            "The executable SearchSpec being prepared. Put process_verifiers, promotion_verifiers, "
+            "strategy, workspace, budget, constraints and root_hypotheses inside this object. "
+            "The enclosing draft contains discovery notes and confidence, not these execution settings."
+        ),
+    )
 
 
 class GoalPlusLinkedSearch(SearchModel):
@@ -317,7 +332,7 @@ class GoalPlusWorkItem(SearchModel):
 
 
 class GoalPlusActiveSession(SearchModel):
-    host: AgentHostKind
+    agent_harness: AgentHarnessKind
     session_id: str = Field(min_length=1)
     transcript_path: str | None = None
     tool_use_id: str | None = None
@@ -357,7 +372,7 @@ class GoalPlusHostSessionDecision(SearchModel):
 class GoalPlusHostCommandInvocation(SearchModel):
     """Immutable evidence that a supported host command authorized one action."""
 
-    host: GoalPlusEntrypointHost
+    agent_harness: GoalPlusEntrypointHost
     transport: Literal["codex_user_prompt_submit", "pi_extension_command"]
     command: Literal[
         "$goal-plus",
@@ -382,15 +397,15 @@ class GoalPlusHostCommandInvocation(SearchModel):
         expected_transport = {
             "codex": "codex_user_prompt_submit",
             "pi": "pi_extension_command",
-        }[self.host]
+        }[self.agent_harness]
         if self.transport != expected_transport:
             raise ValueError(
-                f"Goal Plus host {self.host} requires transport {expected_transport}"
+                f"Goal Plus host {self.agent_harness} requires transport {expected_transport}"
             )
-        expected_prefix = "$" if self.host == "codex" else "/"
+        expected_prefix = "$" if self.agent_harness == "codex" else "/"
         if not self.command.startswith(expected_prefix):
             raise ValueError(
-                f"Goal Plus host {self.host} requires the {expected_prefix} command prefix"
+                f"Goal Plus host {self.agent_harness} requires the {expected_prefix} command prefix"
             )
         if self.action != "start" and self.command not in {
             "$goal-plus",
@@ -400,6 +415,18 @@ class GoalPlusHostCommandInvocation(SearchModel):
         if self.resume_expectation is not None and self.action != "resume":
             raise ValueError("resume_expectation is only valid for resume")
         return self
+
+
+class GoalSearchCreateRequest(SearchModel):
+    request_id: str = Field(min_length=1)
+    frozen_spec_id: str
+    source_run_id: str | None = None
+    fingerprint: str
+    run_id: str
+    goal_revision: int = Field(ge=1)
+    control_version: int = Field(ge=0)
+    state: Literal["prepared", "creating", "created", "linked", "failed"] = "prepared"
+    error: str | None = None
 
 
 class GoalPlusRecord(SearchModel):
@@ -412,7 +439,7 @@ class GoalPlusRecord(SearchModel):
     outer_deadline_at: str | None = None
     status: GoalPlusStatus = "active"
     control: GoalPlusControl = Field(default_factory=GoalPlusControl)
-    phase: GoalPlusPhase = "intake"
+    phase: GoalPlusPhase = "goal"
     policy: dict[str, Any] = Field(default_factory=dict)
     goal_revision: int = Field(default=1, ge=1)
     goal_revisions: list[GoalPlusGoalRevision] = Field(default_factory=list)
@@ -421,6 +448,7 @@ class GoalPlusRecord(SearchModel):
     spec_draft: GoalPlusSpecDraft | None = None
     work_items: list[GoalPlusWorkItem] = Field(default_factory=list)
     search_tasks: list[GoalPlusLinkedSearch] = Field(default_factory=list)
+    search_create_requests: list[GoalSearchCreateRequest] = Field(default_factory=list)
     linked_search: GoalPlusLinkedSearch | None = None
     next_action: GoalPlusNextAction | None = None
     active_session: GoalPlusActiveSession | None = None
