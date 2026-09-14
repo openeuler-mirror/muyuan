@@ -1,11 +1,12 @@
 ---
 name: pypto-task-preparation
-description: Guide the Main Agent in preparing a PyPTO generation or optimization workspace from a pypto-lib file or URL, preserving the upstream validation contract and providing task-local kernel guidance for implementation workers.
+description: Guide the Main Agent in preparing a PyPTO generation workspace from Torch/Hugging Face model code or pypto-lib, or an optimization workspace from an existing PyPTO implementation, with a validation contract and task-local kernel guidance.
 ---
 
 # PyPTO Task Preparation
 
-供 Main Agent 在任务准备阶段读取，将用户指定的 pypto-lib 算子构造成仓库外的独立任务目录。
+供 Main Agent 在任务准备阶段读取，将用户指定的 Torch 模型或 pypto-lib 算子构造成
+仓库外的独立任务目录。Torch 来源可以是 Hugging Face 模型代码与配置，不要求已有 PyPTO 实现。
 生成任务从空 kernel 开始，优化任务保留已有 PyPTO 实现作为 baseline。
 目录合同和命令示例见 [工作区准备](references/workspaces.md)。
 
@@ -17,9 +18,10 @@ description: Guide the Main Agent in preparing a PyPTO generation or optimizatio
 
 1. 把 URL 定位到明确的 checkout、commit 和文件，检查该文件及实际依赖。已有可用环境优先复用；
    不更新共享 checkout、不修改他人环境。实际路径和设备配置记录在生成的任务目录，不写入本 skill。
-2. 从上游测试入口识别 kernel 签名、Torch golden、输入构造、编译平台、rank 数及全部比较器。
+2. 从源码及已有测试识别计算入口、Torch reference、输入输出、状态和执行配置；复用已有验收合同，
+   缺少时由 Main 根据用户目标设计比较器与精度标准。
    特别检查 `Out` / `InOut`、cache/state、动态维度和 import 时的 TP/EP specialization。
-   不自行缩小模型或放宽精度；CPU simulator 的耗时不能作为 NPU 性能。
+   仅按用户授权缩小模型，不放宽已确定的精度标准；CPU simulator 的耗时不能作为 NPU 性能。
 3. 明确验收平台。CPU simulator 只验证编译与正确性；性能优化需真实设备、固定计时口径和 baseline。
    从可用任务环境获取 `sys.executable`，保留 venv 路径；准备检查、process 和 promotion verifier
    均使用这个 Python 的绝对路径。Goal Plus 会将裸 `python` / `python3` 绑定到插件解释器，
@@ -27,6 +29,11 @@ description: Guide the Main Agent in preparing a PyPTO generation or optimizatio
    最小编译、执行检查，再构造完整输入；具体要求见[接入 Goal Plus](references/workspaces.md#接入-goal-plus)。
 
 ## 生成任务
+
+空 PyPTO entry 使用 `raise NotImplementedError(...)` 明确表示尚未实现；不要仅返回参数或构造
+不含计算 task 的可编译函数。按来源选择以下准备路径，再执行共同的验收与交付。
+
+### pypto-lib 来源
 
 1. 核对 checkout/commit、reference/input/entry、specialization 和许可证实际路径后，阅读并运行
    [extract_reference.py](scripts/extract_reference.py)，提取函数依赖、空 kernel 签名和来源清单。
@@ -41,6 +48,19 @@ description: Guide the Main Agent in preparing a PyPTO generation or optimizatio
    Torch reference bitwise 对齐、错误和缺失输出拒绝，以及上游 PyPTO 实现通过新 verifier。
    `--reference-only` 仅用于单独排查 reference，不作为完整校验的必经前置步骤。
    另运行任务 `verify.py` 确认空实现失败。上游答案只在准备检查进程中使用，不写入交付 workspace。
+
+### Torch / Hugging Face 来源
+
+1. 固定模型代码、配置及实际依赖版本。用户要求 tiny 模型时，缩小层数、维度等配置并保持
+   head、expert、并行度等结构关系合法；保留目标计算逻辑，记录配置差异。随机权重任务不下载
+   预训练权重，固定初始化和输入种子，让 Torch 与 PyPTO 使用同一份权重、输入和初始状态。
+2. 以原 Torch 实现为 oracle，构造任务级 reference、输入和空 PyPTO 入口。推理任务使用 eval
+   模式；涉及 prefill/decode 时，验收包含 prefill 后连续 decode 的输出和 cache/state 更新，
+   两端分别维护状态，避免互相污染。配置、权重映射和验收标准在搜索前固定。
+3. 先跑通 Torch reference，检查验收器接受正确结果、拒绝错误或缺失的输出及状态，再确认空
+   PyPTO 实现失败。没有上游 PyPTO 答案时不要求上游解对照；生成后仍须实际编译、执行并与
+   Torch 比较。现有提取和对照脚本面向 pypto-lib，不直接用于 HF 模型；Main 编写最小任务级
+   适配，接口适合时复用 verifier 模板，不扩展通用模型转换框架。
 
 ## 优化任务
 
