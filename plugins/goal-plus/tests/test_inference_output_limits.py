@@ -206,14 +206,12 @@ def test_invalid_capture_budget_still_reaps_owned_process(limit):
         process.wait(timeout=5)
 
 
-@pytest.mark.parametrize("role", ["annotation", "scheduler"])
 @pytest.mark.parametrize("host", ["codex", "pi-rpc"])
 @pytest.mark.parametrize("source", ["transcript", "result"])
-def test_roles_reject_overflow_through_their_existing_output_error_contract(
-    tmp_path, monkeypatch, role, host, source,
+def test_annotation_rejects_overflow_through_its_output_error_contract(
+    tmp_path, monkeypatch, host, source,
 ):
     import goal_plus.evidence_annotator as annotation
-    import goal_plus.adaptive_search.scheduler as scheduler
     import goal_plus.execution.inference_output as result_module
     import goal_plus.execution.process_output as output_module
 
@@ -226,8 +224,7 @@ def test_roles_reject_overflow_through_their_existing_output_error_contract(
 
     def popen(command, **options):
         output = (command[command.index("--output-last-message") + 1] if host == "codex" else
-                  options["env"]["GOAL_PLUS_PI_ANNOTATION_OUTPUT" if role == "annotation"
-                                 else "GOAL_PLUS_PI_SCHEDULER_OUTPUT"])
+                  options["env"]["GOAL_PLUS_PI_ANNOTATION_OUTPUT"])
         event = {"type": "message_end", "message": {"role": "assistant", "stopReason": "stop"}}
         script = (
             "import os,sys; from pathlib import Path; "
@@ -244,25 +241,14 @@ def test_roles_reject_overflow_through_their_existing_output_error_contract(
 
     monitor_path = tmp_path / "monitor.json"
     try:
-        error = annotation.AnnotationOutputError if role == "annotation" else scheduler.SchedulerExecutionOutputError
-        with pytest.raises(error, match="OutputLimitExceeded"):
-            if role == "annotation":
-                monkeypatch.setattr(subprocess, "Popen", popen)
-                worker = annotation.CodexEvidenceAnnotator() if host == "codex" else annotation.PiEvidenceAnnotator()
-                worker.annotate({
-                    "actual_diff": "+return lookup[key]", "comparison_basis": [],
-                    "annotator": {"host": host, "model": "test-model", "reasoning_effort": "low", "timeout_seconds": 5},
-                    "_annotation_monitor_path": str(monitor_path),
-                })
-            else:
-                worker = scheduler.CodexSchedulerExecutor if host == "codex" else scheduler.PiSchedulerExecutor
-                worker(popen=popen).execute(scheduler.SchedulerExecutionRequest(
-                    profile=scheduler.ResolvedSchedulerProfile(
-                        host=host, model="test-model", reasoning_effort="low", timeout_seconds=5,
-                    ),
-                    instructions="Evaluate.", prompt="Input.", output_schema={"type": "object"},
-                    identity={"run_id": "run_one"}, monitor_path=monitor_path,
-                ))
+        with pytest.raises(annotation.AnnotationOutputError, match="OutputLimitExceeded"):
+            monkeypatch.setattr(subprocess, "Popen", popen)
+            worker = annotation.CodexEvidenceAnnotator() if host == "codex" else annotation.PiEvidenceAnnotator()
+            worker.annotate({
+                "actual_diff": "+return lookup[key]", "comparison_basis": [],
+                "annotator": {"host": host, "model": "test-model", "reasoning_effort": "low", "timeout_seconds": 5},
+                "_annotation_monitor_path": str(monitor_path),
+            })
         assert processes[0].poll() is not None
         assert json.loads(monitor_path.read_text())["state"] == "failed"
     finally:

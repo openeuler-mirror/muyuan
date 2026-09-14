@@ -1,23 +1,20 @@
-"""Validate and record Decisions; reconcile only Allocation-owned fields."""
+"""Persist deterministic Allocation plans without mutating candidate state."""
 
 from typing import Literal
 
+from goal_plus.application.verifier import verifier_subject
 from goal_plus.domain.adaptive.models import (
     AllocationDecision,
-    AllocationProposal,
-    AllocationReplacement,
-    AllocationTrigger,
+    AllocationExpansion,
+    AllocationPlan,
     ExpansionSource,
-    RewardedSource,
+    compute_allocation_plan,
+    compute_feature_view,
 )
-from goal_plus.domain.search import FrozenSpec
-from goal_plus.ports.allocation import (
-    AllocationCandidateProjection,
-    AllocationIterationProjection,
-    AllocationState,
-)
+from goal_plus.domain.serialization import canonical_json, sha256_text
+from goal_plus.domain.verifier import verifier_subject_identity
+from goal_plus.ports.allocation import AllocationState
 from goal_plus.ports.clock import Clock
-from goal_plus.ports.state import RunRecord
 
 
 class AllocationDecisions:
@@ -25,291 +22,176 @@ class AllocationDecisions:
         self.state = state
         self.clock = clock
 
-    @staticmethod
-    def _advance_decision_index(
-        run: RunRecord,
-        decisions: list[AllocationDecision],
-    ) -> None:
-        indices: list[int] = []
-        for decision in decisions:
-            prefix, separator, suffix = decision.decision_id.rpartition("_")
-            if separator and prefix == "allocation" and suffix.isdigit():
-                indices.append(int(suffix))
-        if indices:
-            run.next_allocation_decision_index = max(
-                run.next_allocation_decision_index,
-                max(indices) + 1,
-            )
-
-    def _reconcile_decision_locked(
-        self,
-        run: RunRecord,
-        decision: AllocationDecision,
-    ) -> None:
-        """Idempotently project one durable Decision onto mutable lane records."""
-
-        records = self.state.read_candidates(run.run_id)
-        by_id = {item.candidate_id: item for item in records}
-        trigger_record = by_id.get(decision.trigger_candidate_id)
-        trigger_iteration = (
-            next(
-                (
-                    item
-                    for item in trigger_record.iterations
-                    if item.iteration == decision.trigger_iteration
-                ),
-                None,
-            )
-            if trigger_record is not None
-            else None
-        )
-        if (
-            trigger_iteration is None
-            or trigger_iteration.git_head != decision.trigger_commit
-        ):
-            raise ValueError("allocation Decision trigger no longer matches settlement")
-
-        changed_ids = {decision.trigger_candidate_id}
-        for replacement in decision.replacements:
-            retired = by_id.get(replacement.retire_candidate_id)
-            if retired is None:
-                raise ValueError("allocation Decision retire candidate is unavailable")
-            if retired.retired_by_decision_id not in {None, decision.decision_id}:
-                raise ValueError("candidate was retired by another allocation Decision")
-            retired.allocation_eligibility = "retired"
-            retired.retired_by_decision_id = decision.decision_id
-            changed_ids.add(retired.candidate_id)
-
-        for candidate_id in changed_ids:
-            record = by_id[candidate_id]
-            is_trigger = candidate_id == decision.trigger_candidate_id
-            self.state.write_candidate_projection(
-                run.run_id,
-                AllocationCandidateProjection(
-                    candidate_id=record.candidate_id,
-                    eligibility=record.allocation_eligibility,
-                    retired_by_decision_id=record.retired_by_decision_id,
-                    iterations=(
-                        (
-                            AllocationIterationProjection(
-                                iteration=trigger_iteration.iteration,
-                                decision_id=decision.decision_id,
-                                error=None,
-                            ),
-                        )
-                        if is_trigger
-                        else ()
-                    ),
-                    report_decision=decision if is_trigger else None,
-                ),
-            )
-        self.state.write_decision_index(run.run_id, run.next_allocation_decision_index)
-
-    def _create_decision_locked(
-        self,
-        run: RunRecord,
-        frozen: FrozenSpec,
-        trigger: AllocationTrigger,
-        draft: AllocationProposal,
-        rewarded_sources: list[RewardedSource],
-    ) -> AllocationDecision | None:
-        decisions = self.state.load_allocation_decisions(run.run_id)
-        self._advance_decision_index(run, decisions)
-        existing = next(
-            (
-                decision
-                for decision in decisions
-                if decision.schedule_task_id == trigger.schedule_task_id
-            ),
-            None,
-        )
-        if existing is not None:
-            if (
-                existing.trigger_candidate_id != trigger.candidate_id
-                or existing.trigger_iteration != trigger.iteration
-                or existing.trigger_commit != trigger.commit
-            ):
-                raise ValueError("existing Decision does not match allocation trigger")
-            self._reconcile_decision_locked(run, existing)
-            return existing
-        if frozen.spec.strategy.search_scheduler is None:
-            return None
-
-        records = self.state.read_candidates(run.run_id)
-        by_id = {item.candidate_id: item for item in records}
-        trigger_record = by_id.get(trigger.candidate_id)
-        trigger_iteration = (
-            next(
-                (
-                    item
-                    for item in trigger_record.iterations
-                    if item.iteration == trigger.iteration
-                ),
-                None,
-            )
-            if trigger_record is not None
-            else None
-        )
-        if (
-            trigger_iteration is None
-            or trigger_iteration.settlement_id != trigger.settlement_id
-            or trigger_iteration.git_head != trigger.commit
-        ):
-            raise ValueError("allocation trigger does not match settled iteration")
-        reserved = set(trigger.reserved_candidate_ids)
-        rewarded_by_node = {
-            (source.candidate_id, source.iteration): source
-            for source in rewarded_sources
-        }
-        replacements: list[AllocationReplacement] = []
-        for item in draft.replacements:
-            if item.new_candidate_id not in reserved:
-                raise ValueError("scheduler used an unreserved candidate id")
-            retired = by_id.get(item.retire_candidate_id)
-            source_record = by_id.get(item.source_candidate_id)
-            if retired is None or retired.allocation_eligibility != "eligible":
-                raise ValueError(
-                    "scheduler selected an ineligible retirement candidate"
-                )
-            if source_record is None:
-                raise ValueError("scheduler selected an unavailable source candidate")
-            source_iteration = next(
-                (
-                    iteration
-                    for iteration in source_record.iterations
-                    if iteration.iteration == item.source_iteration
-                ),
-                None,
-            )
-            rewarded_source = rewarded_by_node.get(
-                (item.source_candidate_id, item.source_iteration)
-            )
-            expected_node_id = (
-                f"{source_record.candidate_id}/iteration-{item.source_iteration:04d}"
-            )
-            if (
-                source_iteration is None
-                or source_iteration.git_head is None
-                or source_iteration.artifact_hash is None
-                or item.source_node_id != expected_node_id
-                or rewarded_source is None
-                or rewarded_source.node_id != expected_node_id
-                or rewarded_source.settlement_id != source_iteration.settlement_id
-            ):
-                raise ValueError(
-                    "scheduler source node is not bound to a completed reward"
-                )
-            source_depth = source_record.task.allocation_depth
-            replacements.append(
-                AllocationReplacement(
-                    retire_candidate_id=item.retire_candidate_id,
-                    new_candidate_id=item.new_candidate_id,
-                    source=ExpansionSource(
-                        candidate_id=source_record.candidate_id,
-                        iteration=source_iteration.iteration,
-                        node_id=expected_node_id,
-                        settled_commit=(
-                            source_iteration.workspace_git_head_after_settlement
-                            or source_iteration.ledger_git_head
-                            or source_iteration.git_head
-                        ),
-                        score=source_iteration.score,
-                        artifact_hash=source_iteration.artifact_hash,
-                        allocation_depth=source_depth,
-                    ),
-                    rationale=item.rationale,
-                    exploration_direction=item.exploration_direction,
-                    worker_budget=item.worker_budget,
-                )
-            )
-
-        eligible_count = sum(
-            item.allocation_eligibility == "eligible" for item in records
-        )
-        projected_eligible = (
-            eligible_count
-            - len({item.retire_candidate_id for item in replacements})
-            + len(replacements)
-        )
-        if projected_eligible > frozen.spec.budget.max_parallel:
-            raise ValueError("scheduler decision would exceed budget.max_parallel")
-
-        decision_id = f"allocation_{run.next_allocation_decision_index:04d}"
-        run.next_allocation_decision_index += 1
-        decision = AllocationDecision(
-            decision_id=decision_id,
-            run_id=run.run_id,
-            schedule_task_id=trigger.schedule_task_id,
-            trigger_candidate_id=trigger.candidate_id,
-            trigger_iteration=trigger.iteration,
-            trigger_commit=trigger.commit,
-            rationale=draft.rationale,
-            replacements=replacements,
-            created_at=self.clock.timestamp(),
-        )
-        self.state.write_allocation_decision(decision)
-        self._reconcile_decision_locked(run, decision)
-        return decision
-
     def record(
-        self,
-        run_id: str,
-        trigger: AllocationTrigger,
-        draft: AllocationProposal,
-        rewarded_sources: list[RewardedSource],
+        self, run_id: str, plan: AllocationPlan
     ) -> AllocationDecision | None:
+        """Validate and durably record one deterministic policy result."""
+
         with self.state.lock_run(run_id):
             run = self.state.read_run(run_id)
             frozen = self.state.read_frozen_spec(run.frozen_spec_id)
-            if not trigger.reserved_candidate_ids:
-                return None
-            try:
-                return self._create_decision_locked(
-                    run,
-                    frozen,
-                    trigger,
-                    draft,
-                    rewarded_sources,
+            spec = frozen.spec.strategy.allocation
+            if spec is None:
+                raise RuntimeError("allocation decisions require strategy.allocation")
+            if plan.policy_id != spec.policy:
+                raise ValueError("allocation plan policy does not match FrozenSpec")
+            snapshot = self.state.load_search_snapshot(
+                run_id, plan.based_on_snapshot_revision
+            )
+            if (
+                snapshot.run_id != run_id
+                or snapshot.frozen_spec_id != frozen.frozen_spec_id
+                or snapshot.policy_id != spec.policy
+            ):
+                raise ValueError("allocation plan snapshot does not match the run")
+            expected = compute_allocation_plan(
+                snapshot,
+                compute_feature_view(snapshot, spec.features),
+                policy=spec,
+            )
+            if expected is None or expected != plan:
+                raise ValueError(
+                    "allocation plan is not the deterministic result for its snapshot"
                 )
-            except Exception as exc:
-                record = self.state.read_candidate(
-                    run_id,
-                    trigger.candidate_id,
-                )
-                trigger_iteration = next(
+            decision_id = f"allocation_{plan.plan_hash[:24]}"
+            recorded = self.state.load_allocation_decisions(run_id)
+            existing = next(
+                (
                     item
-                    for item in record.iterations
-                    if item.iteration == trigger.iteration
-                )
-                trigger_iteration.allocation_decision_error = (
-                    f"{type(exc).__name__}: {exc}"
-                )
-                self.state.write_candidate_projection(
-                    run_id,
-                    AllocationCandidateProjection(
-                        candidate_id=record.candidate_id,
-                        eligibility=record.allocation_eligibility,
-                        retired_by_decision_id=record.retired_by_decision_id,
-                        iterations=(
-                            AllocationIterationProjection(
-                                iteration=trigger_iteration.iteration,
-                                decision_id=trigger_iteration.allocation_decision_id,
-                                error=trigger_iteration.allocation_decision_error,
-                            ),
-                        ),
-                    ),
-                )
+                    for item in recorded
+                    if item.decision_id == decision_id
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing.plan_hash != plan.plan_hash:
+                    raise ValueError("allocation decision identity collision")
+                return existing
+            if any(item.status == "pending" for item in recorded):
                 return None
+
+            candidates = {
+                item.candidate_id: item
+                for item in self.state.read_candidates(run_id)
+            }
+            expansions: list[AllocationExpansion] = []
+            for index, intent in enumerate(plan.expansions, start=1):
+                source = candidates.get(intent.source_candidate_id)
+                if source is None:
+                    raise ValueError("allocation source candidate is unavailable")
+                snapshot_candidate = next(
+                    (
+                        item
+                        for item in snapshot.candidates
+                        if item.candidate_id == intent.source_candidate_id
+                    ),
+                    None,
+                )
+                snapshot_node = next(
+                    (
+                        item
+                        for item in (
+                            snapshot_candidate.nodes if snapshot_candidate else []
+                        )
+                        if item.iteration == intent.source_iteration
+                        and item.settlement_id == intent.source_settlement_id
+                        and item.node_id == intent.source_node_id
+                        and item.verifier_record_id
+                        == intent.source_verifier_record_id
+                    ),
+                    None,
+                )
+                if snapshot_node is None:
+                    raise ValueError(
+                        "allocation source does not match its immutable score row"
+                    )
+                iteration = next(
+                    (
+                        item
+                        for item in source.iterations
+                        if item.iteration == intent.source_iteration
+                        and item.settlement_id == intent.source_settlement_id
+                    ),
+                    None,
+                )
+                expected_node_id = (
+                    f"{source.candidate_id}/iteration-{intent.source_iteration:04d}"
+                )
+                if (
+                    iteration is None
+                    or iteration.settlement_receipt is None
+                    or intent.source_node_id != expected_node_id
+                ):
+                    raise ValueError(
+                        "allocation source no longer matches settled Evidence"
+                    )
+                receipt = iteration.settlement_receipt
+                if (
+                    receipt.run_id != run_id
+                    or receipt.candidate_id != source.candidate_id
+                    or snapshot_node.verifier_subject_hash
+                    != verifier_subject_identity(
+                        verifier_subject(frozen, source, iteration)
+                    )
+                ):
+                    raise ValueError(
+                        "allocation source receipt does not match its score row"
+                    )
+                expansion_body = {
+                    "plan_hash": plan.plan_hash,
+                    "index": index,
+                    "direction_key": intent.direction_key,
+                    "source_node_id": intent.source_node_id,
+                }
+                expansions.append(
+                    AllocationExpansion(
+                        expansion_id=(
+                            "expansion_"
+                            + sha256_text(canonical_json(expansion_body))[:24]
+                        ),
+                        source=ExpansionSource(
+                            candidate_id=source.candidate_id,
+                            iteration=iteration.iteration,
+                            settlement_id=receipt.settlement_id,
+                            node_id=expected_node_id,
+                            verifier_record_id=intent.source_verifier_record_id,
+                            attempt_artifact_ref=receipt.attempt_artifact_ref,
+                            attempt_artifact_hash=receipt.attempt_artifact_hash,
+                            ledger_artifact_ref=receipt.ledger_artifact_ref,
+                            allocation_depth=source.task.allocation_depth,
+                        ),
+                        direction_key=intent.direction_key,
+                        rationale=intent.rationale,
+                        worker_budget=intent.worker_budget,
+                    )
+                )
+            decision = AllocationDecision(
+                decision_id=decision_id,
+                run_id=run_id,
+                based_on_snapshot_revision=plan.based_on_snapshot_revision,
+                feature_hash=plan.feature_hash,
+                policy_id=plan.policy_id,
+                plan_hash=plan.plan_hash,
+                retire_candidate_ids=plan.retire_candidate_ids,
+                expansions=expansions,
+                reason_codes=plan.reason_codes,
+                created_at=self.clock.timestamp(),
+            )
+            self.state.write_allocation_decision(decision)
+            return decision
 
     def list(
         self,
         run_id: str,
-        status: Literal["pending", "applied"] | None = None,
+        status: Literal[
+            "pending", "applied", "superseded", "terminal_error"
+        ]
+        | None = None,
     ) -> list[AllocationDecision]:
         run = self.state.read_run(run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
-        if frozen.spec.strategy.search_scheduler is None:
-            raise RuntimeError("allocation decisions require strategy.search_scheduler")
+        if frozen.spec.strategy.allocation is None:
+            raise RuntimeError("allocation decisions require strategy.allocation")
         decisions = self.state.load_allocation_decisions(run_id)
         if status is not None:
             decisions = [item for item in decisions if item.status == status]

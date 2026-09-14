@@ -155,7 +155,7 @@ class CandidateCreation:
             )
         if frozen.spec.strategy.orchestration_mode == "adaptive_search":
             instructions.append(
-                "Adaptive Search 已启用：只有 search_run_verifier 返回非空 allocation_decision 才停止编辑并向 Main 交接；scheduler_status=pending 或空 decision 时继续当前循环。不要自行计算 reward、应用 decision 或启动派生 worker。"
+                "Adaptive Search 已启用：LLM Verifier backlog 不阻塞当前 lane，按正常 candidate 循环继续。只有 runtime 或 host 明确拒绝、fence 或中断当前 lane 时才收尾；不要轮询 Verifier task 或 AllocationDecision，也不要自行评分、分配资源或启动派生 worker。"
             )
         if frozen.supplemental_evaluation_enabled:
             instructions.append(
@@ -188,15 +188,6 @@ class CandidateCreation:
                 ]
             )
         instructions.extend(proposal.instructions)
-        if frozen.spec.strategy.orchestration_mode == "adaptive_search":
-            instructions.append(
-                "Adaptive Search scheduler 已启用：仅就 Scheduler 调度而言，只有 "
-                "search_run_verifier 返回非空 allocation_decision 时才停止编辑并返回父 agent；"
-                "scheduler_status=pending 或空 decision 都不要求等待或停止。若未触发 "
-                "candidate_task 的其他停止条件，继续当前自主循环。不要自行计算 reward、"
-                "应用 decision 或启动派生 worker。"
-            )
-
         hypothesis = proposal.hypothesis or proposal.intent or f"候选 {candidate_id}"
         selected_model = (
             source_record.task.selected_model

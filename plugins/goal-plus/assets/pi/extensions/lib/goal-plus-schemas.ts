@@ -198,13 +198,25 @@ export const WorkerBudget = Type.Object(
 	{ additionalProperties: false },
 );
 
-export const SearchSchedulerSpec = Type.Object(
+export const SelectionSpec = Type.Object(
 	{
-		model: Type.String({ minLength: 1 }),
-		reasoning_effort: Type.String({ minLength: 1 }),
-		timeout_seconds: PositiveInteger,
-		reward: Type.String({ minLength: 1 }),
-		allocation: Type.String({ minLength: 1 }),
+		ranking_keys: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
+		ranking_tolerance: Type.Optional(Type.Array(Type.Number({ minimum: 0 }), { minItems: 1 })),
+	},
+	{ additionalProperties: false },
+);
+
+export const PriorityReplacePolicySpec = Type.Object(
+	{
+		policy: Type.Optional(Type.Literal("priority_replace/v1")),
+		features: Type.Optional(Type.Array(
+			Type.Union([
+				Type.Literal("latest_record_values/v1"),
+				Type.Literal("progress_trend/v1"),
+			]),
+			{ minItems: 1, uniqueItems: true },
+		)),
+		switch_margin: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
 	},
 	{ additionalProperties: false },
 );
@@ -265,7 +277,8 @@ export const StrategySpec = Type.Object(
 		worker_launch: Type.Optional(Type.Union([WorkerLaunch, Type.Null()])),
 		evidence_annotator: Type.Optional(EvidenceAnnotator),
 		models: Type.Optional(Type.Array(ModelSpec)),
-		search_scheduler: Type.Optional(Type.Union([SearchSchedulerSpec, Type.Null()])),
+		selection: Type.Optional(SelectionSpec),
+		allocation: Type.Optional(Type.Union([PriorityReplacePolicySpec, Type.Null()])),
 		config: Type.Optional(LooseObject),
 	},
 	{ additionalProperties: false },
@@ -905,7 +918,7 @@ export const RuntimeToolDescriptions: Record<string, string> = {
 	goal_plus_record_work_event:
 		"按实际发生记录带 attempt/generation fencing 的 subagent 派发、绑定、消息、结果和主 Agent 决定；首次 dispatch 自动创建记录。",
 	goal_plus_save_spec_draft:
-		"保存发现的 SearchSpec draft。spec_draft 顶层只接受 baseline、metric、correctness_gate、edit_surface、verifier_artifacts、search_spec、promotion_rule、confidence、origin 和 open_questions；candidate_acceptance、constraints、root_hypotheses、strategy、workspace 等 SearchSpec 字段必须放在 spec_draft.search_spec。固定候选使用 orchestration_mode=parallel_loops；明确需要 runtime reward/allocation 时改用 orchestration_mode=adaptive_search 并设置非 null 的 search_scheduler。max_parallel 是实时并发上限；可选 max_candidates 是累计唯一 candidate 上限，null 表示不限制。",
+		"保存发现的 SearchSpec draft。spec_draft 顶层只接受 baseline、metric、correctness_gate、edit_surface、verifier_artifacts、search_spec、promotion_rule、confidence、origin 和 open_questions；candidate_acceptance、constraints、root_hypotheses、strategy、workspace 等 SearchSpec 字段必须放在 spec_draft.search_spec。固定候选使用 orchestration_mode=parallel_loops；selection.ranking_keys 包含 quality_score 时自动启用 LLM 局部评估；需要动态资源分配时改用 orchestration_mode=adaptive_search，并配置确定性 allocation，该模式也会自动启用 LLM-Verifier。allocation policy 版本管理动态追加的评分规则。max_parallel 是实时并发上限；可选 max_candidates 是累计唯一 candidate 上限，null 表示不限制。",
 	goal_plus_set_status:
 		"根据真实证据设置 Goal Plus 状态。当前优化/Search revision 必须先通过 goal_plus_record_search_result 记录已提升且已按需 apply 的结果，才能设置 complete；没有 verified candidate 且固定 deadline 已阻止继续工作时应记录 blocked，不得声称完成。",
 	search_freeze_spec:
@@ -931,7 +944,7 @@ export const RuntimeToolDescriptions: Record<string, string> = {
 	search_list_allocation_decisions:
 		"仅当当前 FrozenSpec 使用 orchestration_mode=adaptive_search 时，只读列出其持久化 allocation decisions；不启动、停止或继续 host worker。",
 	search_apply_allocation_decision:
-		"仅当当前 FrozenSpec 使用 orchestration_mode=adaptive_search 且 runtime 已返回准确 decision 时，整批幂等应用其剪枝与派生：预检全部 action，保留 Evidence，物化所有派生 workspace，并创建 native session provenance。Pi 主 agent 只在足够执行配额内原样启动全部返回 candidate。",
+		"仅当当前 FrozenSpec 使用 orchestration_mode=adaptive_search 且 runtime 已返回准确 decision 时调用。Pi extension 先按 candidate 向所有退休目标发送一次物理中止请求，以宿主接受回执作为边界，不等待或复查退出、不关闭 sibling 或 pool；随后整批幂等应用剪枝与派生，保留 Evidence，物化所有派生 workspace，并创建 native session provenance。Pi 主 agent 只在足够执行配额内原样启动全部返回 candidate。",
 	search_invalidate_run:
 		"主 agent 确认 verifier 契约、覆盖范围、确定性、目标对齐或基础设施失败后，原子地隔离该 run。随后中断每个 host worker，等待 active worker 数归零，修复并重新冻结，再使用 source_run_id 创建后继项。",
 	search_report:

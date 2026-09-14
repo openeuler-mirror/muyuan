@@ -22,3 +22,9 @@ def outer_deadline_epoch(value: str | None) -> float | None:
     if numeric > 10_000_000_000:
         numeric /= 1000
     return numeric
+
+
+def timestamp_epoch(value: str | None) -> float | None:
+    """Parse a persisted UTC timestamp without reading a system clock."""
+
+    return outer_deadline_epoch(value)

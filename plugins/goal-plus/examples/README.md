@@ -93,10 +93,10 @@ language and reserve explicit closeout time.
 Set `budget.max_parallel` for `parallel_loops` runs. It is the initial number of
 long-lived candidate lanes.
 Each candidate workspace is a long-lived lane, not a disposable attempt.
-Scheduler-driven replacement instead uses `orchestration_mode="adaptive_search"`,
-a non-null `search_scheduler`, and a Git worktree. `budget.max_parallel` is its live
-candidate limit; optional `budget.max_candidates` bounds cumulative unique candidates,
-while `null` leaves that cumulative count unbounded.
+Deterministic replacement instead uses `orchestration_mode="adaptive_search"`,
+an automatically enabled one-call Verifier, policy-owned allocation scores, and a Git worktree.
+`budget.max_parallel` is its live candidate limit; optional `budget.max_candidates`
+bounds cumulative unique candidates, while `null` leaves that cumulative count unbounded.
 
 普通 prompt 使用当前 Host 已选择的模型和 Goal Plus 默认值，不固定 `main`、
 `annotator` 或 `workers`。Circle Packing 的 Codex prompt 是唯一的多模型路由示例：两个

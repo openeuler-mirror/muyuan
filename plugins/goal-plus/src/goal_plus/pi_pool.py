@@ -14,14 +14,12 @@ from typing import Any, Callable, Literal
 
 from goal_plus.agent_pool import WorkerPoolEvent
 from goal_plus.candidate_host import candidate_host_queries
-from goal_plus.application.internal_agents import InternalAgentWork
 from goal_plus.execution import process_identity as inspection
 from goal_plus.execution.managed_process import ManagedProcess
 from goal_plus.execution.launch_gate import ProcessLaunchGate
 from goal_plus.execution.python_command import module_arguments
 from goal_plus.execution.process_resources import OwnedProcess, stop_processes
 from goal_plus.ports.process_identity import ProcessWitness
-from goal_plus.infrastructure.state.candidate_queries import FileCandidateQueries
 from goal_plus.pi_driver import run_pi_search_candidate
 from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json, write_json
 from goal_plus.infrastructure.clock import utc_timestamp
@@ -771,13 +769,9 @@ def _event_from_job(
         worker_budget.get(field) is not None
         for field in ("min_runtime_seconds", "min_verifier_runs")
     )
-    lease_released_by_allocation = (
-        isinstance(lease, dict)
-        and lease.get("release_reason") == "allocation_decision"
-    )
     lease_unsatisfied = (lease_required or lease is not None) and not (
         isinstance(lease, dict) and lease.get("satisfied") is True
-    ) and not lease_released_by_allocation
+    )
     kind: Literal["candidate_ready", "failed", "interrupted", "timed_out"]
     if status == "completed" and not lease_unsatisfied:
         kind = "candidate_ready"
@@ -860,6 +854,112 @@ def wait_any_pi_search_pool(
                 "state": snapshot["state"],
             }
         time.sleep(min(poll_interval_seconds, max(0.0, deadline - time.monotonic())))
+
+
+def interrupt_pi_search_candidate(
+    *,
+    root_dir: Path | str,
+    pool_id: str,
+    candidate_id: str,
+) -> dict[str, Any]:
+    """Send one cancellation signal to a candidate without waiting for exit."""
+    _safe_identifier(candidate_id, label="candidate_id")
+    with exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
+        pool = _load_pool(root_dir, pool_id)
+        jobs = _reconcile_jobs_locked(root_dir, pool)
+        matching_jobs = [
+            job for job in jobs if job.get("candidate_id") == candidate_id
+        ]
+        selected: list[tuple[str, OwnedProcess]] = []
+        inspection_errors: list[str] = []
+        requested_at = utc_timestamp()
+        for job in matching_jobs:
+            if job.get("status") not in ACTIVE_JOB_STATES:
+                continue
+            try:
+                process = _job_process(root_dir, pool_id, job)
+            except inspection.ProcessInspectionUnavailable as exc:
+                inspection_errors.append(str(exc))
+                continue
+            if process is None:
+                inspection_errors.append(
+                    f"Pi candidate {candidate_id} has no confirmable worker process"
+                )
+                continue
+            process.remember = (
+                lambda witness, job_id=job["job_id"]: _remember_job_process(
+                    root_dir, pool_id, job_id, witness,
+                )
+            )
+            job["interrupt_requested_at"] = requested_at
+            _write_job(root_dir, pool_id, job)
+            selected.append((str(job["job_id"]), process))
+
+    if inspection_errors:
+        return {
+            "pool_id": pool_id,
+            "candidate_id": candidate_id,
+            "status": "rejected",
+            "errors": inspection_errors,
+            "interrupted_job_ids": [],
+            "state": pool["state"],
+        }
+
+    signal_errors: list[str] = []
+    accepted_job_ids: list[str] = []
+    for job_id, process in selected:
+        try:
+            process.send(signal.SIGTERM)
+        except ProcessLookupError:
+            accepted_job_ids.append(job_id)
+        except (PermissionError, inspection.ProcessInspectionUnavailable) as exc:
+            signal_errors.append(f"{type(exc).__name__}: {exc}")
+        else:
+            accepted_job_ids.append(job_id)
+    if signal_errors:
+        return {
+            "pool_id": pool_id,
+            "candidate_id": candidate_id,
+            "status": "rejected",
+            "errors": signal_errors,
+            "interrupted_job_ids": [],
+            "state": pool["state"],
+        }
+
+    interrupted_job_ids: list[str] = []
+    with exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
+        pool = _load_pool(root_dir, pool_id)
+        for job_id in accepted_job_ids:
+            job = _load_job(root_dir, pool_id, job_id)
+            if job.get("status") in ACTIVE_JOB_STATES:
+                job.update(
+                    {
+                        "status": "interrupted",
+                        "finished_at": utc_timestamp(),
+                        "error": {
+                            "stage": "supervisor",
+                            "error_type": "CandidateInterrupted",
+                            "message": (
+                                "Pi candidate cancellation was accepted by the host"
+                            ),
+                        },
+                    }
+                )
+                _write_job(root_dir, pool_id, job)
+            interrupted_job_ids.append(job_id)
+        return {
+            "pool_id": pool_id,
+            "candidate_id": candidate_id,
+            "status": (
+                "accepted"
+                if interrupted_job_ids
+                else "already_terminal"
+                if matching_jobs
+                else "not_found"
+            ),
+            "interrupted_job_ids": interrupted_job_ids,
+            "state": pool["state"],
+        }
 
 
 def close_pi_search_pool(
@@ -969,7 +1069,6 @@ def run_pool_worker(
                 or request.get("execution_scope_id") != pool.get("execution_scope_id")
             ):
                 return 1
-        search_scheduler_enabled = InternalAgentWork(FileCandidateQueries(root_dir)).inspect(str(request["run_id"])).scheduler_enabled
         try:
             worker_budget = dict(request["worker_budget"])
             configured_min_runtime_seconds = int(
@@ -1128,18 +1227,6 @@ def run_pool_worker(
                 runtime_complete = elapsed >= min_runtime_seconds
                 verifier_complete = verifier_runs >= min_verifier_runs
                 lease_satisfied = runtime_complete and verifier_complete
-                final_score_report = result.get("final_score_report")
-                allocation_decision = (
-                    final_score_report.get("allocation_decision")
-                    if search_scheduler_enabled
-                    and isinstance(final_score_report, dict)
-                    else None
-                )
-                if isinstance(allocation_decision, dict) and allocation_decision.get(
-                    "decision_id"
-                ):
-                    release_reason = "allocation_decision"
-                    break
                 if elapsed >= max_runtime_seconds:
                     release_reason = "max_runtime_reached"
                     break
@@ -1192,11 +1279,6 @@ def run_pool_worker(
                     "agent_session_ids": agent_session_ids,
                     "session_refreshes": session_refreshes,
                     "pending_session_refresh_reason": refresh_next_reason,
-                    "allocation_decision_id": (
-                        allocation_decision.get("decision_id")
-                        if isinstance(allocation_decision, dict)
-                        else None
-                    ),
                 },
             }
         except _PoolWorkerInterrupted:
@@ -1220,6 +1302,8 @@ def run_pool_worker(
         except BaseException as exc:
             with exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
                 job = _load_job(root_dir, pool_id, job_id)
+                if job.get("status") == "interrupted":
+                    return 130
                 job.update(
                     {
                         "status": "failed",
@@ -1235,11 +1319,13 @@ def run_pool_worker(
             return 1
 
         with exclusive_file_lock(_pool_lock_path(root_dir, pool_id)):
-            write_json(_job_dir(root_dir, pool_id, job_id) / "result.json", result)
             job = _load_job(root_dir, pool_id, job_id)
+            if job.get("status") == "interrupted":
+                return 130
+            write_json(_job_dir(root_dir, pool_id, job_id) / "result.json", result)
             terminal_status = (
                 "completed"
-                if lease_satisfied or release_reason == "allocation_decision"
+                if lease_satisfied
                 else "timed_out"
                 if release_reason == "max_runtime_reached"
                 else "interrupted"

@@ -32,13 +32,17 @@ def codex_agent_is_terminal(status: Any) -> bool:
 
 
 def active_codex_agents(
-    scope: ScopeRecord, *, attachment: ScopeAttachment | None = None
+    scope: ScopeRecord,
+    *,
+    attachment: ScopeAttachment | None = None,
+    candidate_id: str | None = None,
 ) -> list[ScopeAgentRecord]:
     return [
         item
         for item in scope.get("codex_agents", [])
         if item.get("status") == "active"
         and (attachment is None or item.get("run_id") == attachment.identity)
+        and (candidate_id is None or item.get("candidate_id") == candidate_id)
     ]
 
 
@@ -56,10 +60,22 @@ class CodexScopeRegistry:
         attachment: ScopeAttachment | None = None,
         tool_use_id: str | None = None,
         parent_session_id: str | None = None,
+        candidate_id: str | None = None,
+        agent_session_id: str | None = None,
+        execution_generation: int | None = None,
     ) -> None:
         """Persist a native child before launch; pending registration remains a cleanup obligation."""
         if not agent_id:
             raise ValueError("agent_id is required")
+        candidate_binding = (
+            candidate_id,
+            agent_session_id,
+            execution_generation,
+        )
+        if any(value is not None for value in candidate_binding) and not all(
+            value is not None for value in candidate_binding
+        ):
+            raise ValueError("Codex candidate registration requires complete identity")
         with self.state.lock(scope_id):
             scope = self.state.read(scope_id)
             if scope.get("host") != "codex":
@@ -100,6 +116,17 @@ class CodexScopeRegistry:
                         "agent_id": agent_id,
                         "label": label,
                         "run_id": attachment.identity if attachment is not None else None,
+                        **(
+                            {
+                                "candidate_id": candidate_id,
+                                "agent_session_id": agent_session_id,
+                                "execution_generation": execution_generation,
+                            }
+                            if candidate_id is not None
+                            and agent_session_id is not None
+                            and execution_generation is not None
+                            else {}
+                        ),
                         "status": "active",
                         "registered_at": now,
                         "updated_at": now,
@@ -117,6 +144,12 @@ class CodexScopeRegistry:
             else:
                 current["label"] = label
                 current["run_id"] = (attachment.identity if attachment is not None else None) or current.get("run_id")
+                if candidate_id is not None:
+                    current["candidate_id"] = candidate_id
+                if agent_session_id is not None:
+                    current["agent_session_id"] = agent_session_id
+                if execution_generation is not None:
+                    current["execution_generation"] = execution_generation
                 current["updated_at"] = now
                 if current.get("status") == "pending_registration":
                     current["status"] = "active"

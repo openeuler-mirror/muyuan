@@ -1,16 +1,20 @@
 """Typed candidate host queries and launch preparation, without host execution."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from goal_plus.domain.agents import (
     AgentHostKind,
     WorkspaceLedgerProjection,
     WORKSPACE_LEDGER_PROJECTION_NONE,
 )
 from goal_plus.domain.search import AgentSessionRecord, FrozenSpec
-from goal_plus.domain.adaptive.models import ScheduleTask
 from goal_plus.ports.state import RunRecord, CandidateRecord
+
+if TYPE_CHECKING:
+    from goal_plus.domain.adaptive.models import AllocationDecision
 
 
 @dataclass(frozen=True)
@@ -81,7 +85,6 @@ class ThinkThreadContinuation:
 
 
 class CandidateHostSource(Protocol):
-    def load_schedule_task(self, run_id: str, candidate_id: str, iteration: int) -> ScheduleTask | None: ...
     def read_agent_session_ids(self) -> list[str]: ...
     def read_run(self, run_id: str) -> RunRecord: ...
     def read_frozen_spec(self, frozen_spec_id: str) -> FrozenSpec: ...
@@ -91,6 +94,7 @@ class CandidateHostSource(Protocol):
     def read_agent_session(
         self, agent_session_id: str, run_id: str | None = None
     ) -> AgentSessionRecord: ...
+    def load_allocation_decisions(self, run_id: str) -> list[AllocationDecision]: ...
 
 
 class PrepareContinuation(Protocol):

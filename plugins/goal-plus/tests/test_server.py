@@ -331,30 +331,18 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
         "parallel_loops",
         "adaptive_search",
     }
-    scheduler_schema = next(
+    assert "verifier" not in strategy["properties"]
+    selection = strategy["properties"]["selection"]["properties"]
+    assert set(selection) == {"ranking_keys", "ranking_tolerance"}
+    allocation_schema = next(
         item
-        for item in strategy["properties"]["search_scheduler"]["anyOf"]
+        for item in strategy["properties"]["allocation"]["anyOf"]
         if item.get("type") == "object"
     )
-    scheduler = scheduler_schema["properties"]
-    assert set(scheduler) == {
-        "model",
-        "reasoning_effort",
-        "timeout_seconds",
-        "reward",
-        "allocation",
+    assert set(allocation_schema["properties"]) == {
+        "policy", "features", "switch_margin"
     }
-    assert set(scheduler_schema["required"]) == {
-        "model",
-        "reasoning_effort",
-        "timeout_seconds",
-        "reward",
-        "allocation",
-    }
-    assert "default" not in scheduler["timeout_seconds"]
-    assert scheduler["reward"]["type"] == "string"
-    assert "enabled" not in scheduler
-    assert "script_path" not in scheduler
+    assert "search_scheduler" not in strategy["properties"]
 
     budget = spec_schema["properties"]["budget"]["properties"]
     assert "初始创建并实际并行工作" in budget["max_parallel"]["description"]

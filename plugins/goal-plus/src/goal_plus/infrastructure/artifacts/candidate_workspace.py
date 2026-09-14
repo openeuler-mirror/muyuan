@@ -86,7 +86,7 @@ class FileCandidateWorkspaceCreation:
             run_id=run.run_id,
             candidate_id=request.candidate_id,
             base_revision=(
-                request.expansion_source.settled_commit
+                request.expansion_source.attempt_artifact_ref.id
                 if request.expansion_source is not None
                 else frozen.source_artifact_ref.id
                 if frozen.source_artifact_ref is not None

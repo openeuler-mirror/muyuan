@@ -33,7 +33,7 @@ Adapter 返回的 launch payload 是权威启动说明。main agent 只传递当
 Search runtime 不承担 worker supervisor 职责。`search_start_agent_session`
 创建的是 context/provenance handle，不代表 worker 已经启动或仍然存活。
 
-同一边界也适用于 Evidence Annotation 和 Adaptive Scheduler。两者继承
+同一边界也适用于 Evidence Annotation 和 LLM Verifier。两者继承
 `FrozenSpec.native_host` 记录的 Main Agent 身份，不接受独立 host 选择；
 Codex hook 或 Pi extension 从当前 native host 进程唤醒 run-scoped queue，
 内部子进程完整继承该进程配置。持久 profile 只记录 host/model/reasoning/timeout 和
@@ -46,9 +46,9 @@ launcher 写入的 host provenance，shared runtime/MCP 不提供备用启动路
 Pi 的可信 host command 只接受冻结的 Pi RPC 或 TT driver，TT 的 Root/capability 校验仍在
 原 driver 执行，不因此开启 Codex+TT 或 Adaptive+TT。
 
-Search selection 只提交领域终态和 Annotation queue fence。模型关闭由 host pump 和既有
-scope cleanup 执行；清理失败保留句柄及错误，后续 host 调用重试。Annotation 完成后只尝试
-唤醒 Scheduler，回调失败不回滚已发布结果。`annotation_host.py` 直接装配 typed 用例，
+Search selection 只提交领域终态和内部 queue fence。模型关闭由 host pump 和既有
+scope cleanup 执行；清理失败保留句柄及错误，后续 host 调用重试。Annotation 与 Verifier
+分别消费自己的可靠队列，任一回调失败都不回滚已提交的 hard settlement。`annotation_host.py` 直接装配 typed 用例，
 TT annotator 不再通过 candidate `SearchHostService` 构造完整 Runtime 或读取私有 store。
 这些模块合同已有受控测试；真实 callback、native 退出联动仍需开发者显式要求的 ST 证据。
 
@@ -202,7 +202,7 @@ schema；没有指定模型时，保留 host 原生继承行为。模型目录�
 tool 能转发所有可选字段。
 
 模型目录也不证明真实推理可用。现有 Goal command 与 `search_freeze_spec` host gate 只收集显式
-worker、annotator 和 scheduler override，按模型去重后并发发送最小 `hi` 请求；任一请求失败就
+worker 和 annotator override，按模型去重后并发发送最小 `hi` 请求；任一请求失败就
 在启动 agent 前 fail closed。没有显式 override 时不 probe，因为 Main 当前 turn 已经是当前模型
 可用的证据。Codex probe 只通过原生 `codex exec -m MODEL` 切换模型；Pi probe 使用 extension
 持有的 native model 对象和 `modelRegistry.complete()`。Pi 未显式覆盖的 child 从 host-local
@@ -242,7 +242,7 @@ Search record，也不改变 `AgentSessionRecord` 的 provenance 语义。Pi ext
 `execution_scope_id`；Codex hook 使用 native session 和 collaboration task identity，模型不能覆盖
 scope 归属。
 
-Scope、本地 Annotation/Scheduler drainer 和 Pi pool wrapper 共用平台进程检查。Linux 读取
+Scope、本地 Annotation/Verifier drainer 和 Pi pool wrapper 共用平台进程检查。Linux 读取
 `/proc` 的启动 ticks；macOS 通过 `libproc` 读取 PID、微秒级启动时间、进程组和退出状态，
 通过 `sysctl` 读取本次 boot UUID 与完整 argv（不返回环境变量）。两端都不要求额外安装服务。
 启动 token 是平台不透明值；drainer 核对精确 module、root、run 和 generation 参数，并在
@@ -262,7 +262,7 @@ Guardian 持续补充观察，执行器在 reap 前保存成员，重试关闭�
 Execution 不构造 store。未知组不从历史 PGID 猜测归属，
 没有 witness 的历史记录不原地补造身份。独立 drainer/pool wrapper 同样在放行前保存启动
 witness，kick/reconciliation/close 的已核验观察由各自 worker/pool 锁保护并合并保存。
-Annotation/Scheduler drainer 在同一 admission 锁内额外登记 scope 的 internal process；该登记
+Annotation/Verifier drainer 在同一 admission 锁内额外登记 scope 的 internal process；该登记
 先于目标命令放行。空队列退场只移除 single-flight worker 记录，不移除 scope 资源。
 Guardian 继续观测其成员，确认静默后才完成资源；scope close 能清理已退出队列的 drainer。
 无 scope 的独立调用不创建或猜测 Goal/scope；注册 callback 离开 admission 后失效。
@@ -291,7 +291,7 @@ Pi RPC、Pi pool wrapper、两类 drainer、scope 内的一次性推理及 guard
 不加载工作区 Python 启动脚本，并恢复原 Popen 的 SIGPIPE 等信号语义；目标命令仍继承
 原 native environment。Guardian 也在 scope 文件写入后才开始读取，不再抢先发现文件缺失。
 
-Bootstrap 为已有 scope 的 Annotation/Scheduler 装配窄 `ProcessRegistration`。推理拥有
+Bootstrap 为已有 scope 的 Annotation/Verifier 装配窄 `ProcessRegistration`。推理拥有
 独立组，登记成功才启动；正常退出也清理同组后代，组长 reap 前先保存成员身份见证，只有
 资源关闭后才完成 scope token。Scope process 记录增加可选 `kind=internal`，只用于资源
 选择；原 candidate 记录不变。Candidate-only fence 不拒绝或停止内部推理；内部队列关闭
@@ -299,7 +299,7 @@ Bootstrap 为已有 scope 的 Annotation/Scheduler 装配窄 `ProcessRegistratio
 调用保留既有组继承，不为其猜测或创建 Goal/scope。Guardian 自身丢失由既有 host 恢复入口
 补启动。真实宿主验证按具体行为选择最小场景，本地进程回归不替代原生生命周期证据。
 
-Annotation/Scheduler 的共同一次性 CLI 路径使用有界 pipe collector：stdout/stderr 各最多
+Annotation/Verifier 的共同一次性 CLI 路径使用有界 pipe collector：stdout/stderr 各最多
 8 MiB 原始字节，每次读取最多 64 KiB。超过边界会停止并回收直接子进程，返回
 `ProcessOutputLimitExceeded`，不将截断 transcript 解析为完整 usage 或接受已有结果文件。
 结构化结果按 2 MiB 字节上限读取，超过时返回 `InferenceOutputLimitExceeded`；拒绝
@@ -333,6 +333,9 @@ Goal 与 Search run；磁盘仍保存原 run_ids/run_id，公开宿主参数保�
 登记要求 Search attachment。
 
 - `search_select` 前 interrupt/drain scope-owned candidate，并要求 `active_count=0`；
+- Adaptive Decision 应用前按 candidate identity 向退休目标发送一次物理中止请求，并以宿主接受
+  回执作为边界，不等待或复查退出；该操作不 fence 整个 run、不关闭 pool 或 sibling。Codex 使用
+  原生 `interrupt_agent`，Pi 使用 host-local 的单 job/Child 中止；
 - selection 关闭 Annotation queue 和 publication generation 后立即终止 annotator；required
   supplemental evaluation 未完成时 selection 保持 blocked 且 queue 保持 open；
 - Pi `agent_end(aborted)`、`session_shutdown`、owner PID 消失和 Codex interrupted Stop 关闭 scope；
@@ -340,8 +343,8 @@ Goal 与 Search run；磁盘仍保存原 run_ids/run_id，公开宿主参数保�
   completion-unknown 和未解析的 mutation intent 保留恢复证据；
 - scope 关闭后拒绝迟到的 pool continuation 和 Annotation drainer launch。
 
-`search_select` 前的 run fence 只禁止新的 candidate work。若 required Annotation 尚未完成，
-同一 open owner scope 仍允许 host 启动内部 Annotation/Scheduler backlog；完整 scope close 才同时
+`search_select` 前的 run fence 只禁止新的 candidate work。若 required Annotation 或 Verifier task 尚未完成，
+同一 open owner scope 仍允许 host 启动内部 Annotation/Verifier backlog；完整 scope close 才同时
 禁止两类 launch。这样 selection 可以安全重试，而不会为了补 Annotation 重新开放 candidate lane。
 
 Owner cleanup 只停止活计算，故意不更新 Goal/Search 状态。本合同不定义 resume、scope 接管或

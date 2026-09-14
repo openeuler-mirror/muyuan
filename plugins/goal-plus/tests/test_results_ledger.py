@@ -3,7 +3,7 @@
 import pytest
 
 from goal_plus.domain.evidence import IterationRecord, ResultLedgerEntry
-from goal_plus.domain.results_ledger import ledger_at_revision
+from goal_plus.domain.results_ledger import ledger_at_revision, ledger_through_iteration
 from goal_plus.domain.search import CandidateTask
 from goal_plus.infrastructure.state.results_ledger import (
     read_candidate_results_ledger,
@@ -152,3 +152,27 @@ def test_unknown_ledger_revision_cannot_inherit_all_rows():
         ledger_at_revision(entries, "current", "unrelated")
     assert entries[0].model_dump() == before
     assert ledger_at_revision([], "initial", "initial") == []
+
+
+def test_settlement_selection_returns_lineage_through_exact_iteration():
+    entries = [
+        entry(1).model_copy(
+            update={"source_run_id": "run_parent", "source_candidate_id": "c001"}
+        ),
+        entry(1).model_copy(update={"source_candidate_id": "c001"}),
+        entry(2).model_copy(update={"source_candidate_id": "c001"}),
+        entry(1).model_copy(update={"source_candidate_id": "c002"}),
+    ]
+
+    selected = ledger_through_iteration(entries, "run_test", "c001", 2)
+
+    assert [
+        (item.source_run_id, item.source_candidate_id, item.iteration)
+        for item in selected
+    ] == [
+        ("run_parent", "c001", 1),
+        ("run_test", "c001", 1),
+        ("run_test", "c001", 2),
+    ]
+    with pytest.raises(RuntimeError, match="settlement is not present"):
+        ledger_through_iteration(entries, "run_test", "c003", 1)

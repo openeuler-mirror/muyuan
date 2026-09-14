@@ -475,7 +475,9 @@ class SearchTools:
     def search_list_allocation_decisions(
         self,
         run_id: str,
-        status: Literal["pending", "applied"] | None = None,
+        status: Literal[
+            "pending", "applied", "superseded", "terminal_error"
+        ] | None = None,
     ) -> list[dict[str, Any]]:
         self._require_target("search_list_allocation_decisions", run_id=run_id)
         return [

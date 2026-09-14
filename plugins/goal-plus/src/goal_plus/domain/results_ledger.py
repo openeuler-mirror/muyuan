@@ -34,6 +34,31 @@ def ledger_at_revision(
     return [entry.model_copy(deep=True) for entry in entries[: matching_index + 1]]
 
 
+def ledger_through_iteration(
+    entries: list[ResultLedgerEntry],
+    source_run_id: str,
+    source_candidate_id: str,
+    iteration: int,
+) -> list[ResultLedgerEntry]:
+    """Return the exact ledger prefix through one candidate settlement."""
+
+    matching_index = next(
+        (
+            index
+            for index, entry in enumerate(entries)
+            if entry.source_run_id == source_run_id
+            and entry.source_candidate_id == source_candidate_id
+            and entry.iteration == iteration
+        ),
+        None,
+    )
+    if matching_index is None:
+        raise RuntimeError(
+            "expansion source settlement is not present in candidate ledger"
+        )
+    return [entry.model_copy(deep=True) for entry in entries[: matching_index + 1]]
+
+
 def render_results_tsv(
     entries: list[ResultLedgerEntry],
     metric_name: str,

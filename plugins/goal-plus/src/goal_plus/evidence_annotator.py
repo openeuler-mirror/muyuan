@@ -626,8 +626,6 @@ def drain_evidence_annotations(
 ) -> int:
     """Describe pending Evidence serially, optionally settling bounded retries."""
     from goal_plus.bootstrap import build_annotation_services
-    from goal_plus.internal_agents import annotation_completion_published
-
     workflow, admission, _, context_builder = build_annotation_services(root_dir)
     published = 0
 
@@ -676,7 +674,7 @@ def drain_evidence_annotations(
                             selected_annotator.annotate(context)
                         )
                         completion = workflow.complete(task, result=result)
-                        if annotation_completion_published(root_dir, run_id, completion):
+                        if completion.published:
                             published += 1
                     except Exception as exc:
                         if not isinstance(
@@ -686,8 +684,7 @@ def drain_evidence_annotations(
                             exc = PermanentAnnotationError(
                                 f"{type(exc).__name__}: {exc}"
                             )
-                        completion = workflow.complete(task, error=exc)
-                        annotation_completion_published(root_dir, run_id, completion)
+                        workflow.complete(task, error=exc)
                         _append_log(
                             root_dir,
                             run_id,
@@ -710,12 +707,6 @@ def drain_evidence_annotations(
         finally:
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
-            try:
-                from goal_plus.internal_agents import wake_scheduler_after_annotation
-
-                wake_scheduler_after_annotation(root_dir, run_id)
-            except Exception:
-                pass
 
 
 def main(argv: list[str] | None = None) -> int:

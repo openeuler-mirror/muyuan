@@ -55,7 +55,6 @@ let activeGoalPlusId = process.env.GOAL_PLUS_ID;
 let cachedGoalStatus: GoalPlusStatusPayload | undefined;
 let continuationCount = 0;
 let workerContinuationCount = 0;
-let workerAllocationDecisionId: string | undefined;
 let workerRegistrationSent = false;
 let workerSdkModulePromise: Promise<any> | undefined;
 let workerSdkClientPromise: Promise<any> | undefined;
@@ -1571,9 +1570,6 @@ async function probePiSearchSpecModels(
 		if (isRecord(strategy.evidence_annotator)) {
 			references.push(stringFrom(strategy.evidence_annotator.model));
 		}
-		if (isRecord(strategy.search_scheduler)) {
-			references.push(stringFrom(strategy.search_scheduler.model));
-		}
 	}
 	await probePiModelReferences(ctx, references);
 }
@@ -1975,18 +1971,20 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 			const startEntryCount = ctx.sessionManager.getEntries().length;
 			const canPersistPiState = canPersistGoalState(ctx);
 			let forwardedParams = params as Record<string, unknown>;
+			let executionScopeId: string | undefined;
 			if (role === "main" && name === "search_freeze_spec") {
 				await probePiSearchSpecModels(ctx, forwardedParams);
 			}
 			if (role === "main") {
 				const runId = stringFrom(forwardedParams.run_id);
-				if (runId && ["search_start_agent_session", "pi_search_pool_open", "thinkthread_search_pool_open", "search_select"].includes(name)) {
+				if (runId && ["search_start_agent_session", "pi_search_pool_open", "thinkthread_search_pool_open", "search_apply_allocation_decision", "search_select"].includes(name)) {
 					const scopeId = await ensureExecutionScope(
 						pi,
 						ctx,
 						runId,
 						currentPiNativeAgentConfig(pi, ctx),
 					);
+					executionScopeId = scopeId;
 					if (name === "pi_search_pool_open" || name === "thinkthread_search_pool_open") {
 						forwardedParams = { ...forwardedParams, execution_scope_id: scopeId };
 					}
@@ -1999,6 +1997,21 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 							throw new Error(String((isRecord(quiet.details) && quiet.details.error) || `Search run ${runId} still has active workers`));
 						}
 					}
+				}
+			}
+			if (role === "main" && name === "search_apply_allocation_decision") {
+				const runId = stringFrom(forwardedParams.run_id);
+				const decisionId = stringFrom(forwardedParams.decision_id);
+				if (!runId || !decisionId || !executionScopeId) {
+					throw new Error("Adaptive allocation interruption requires run, Decision, and execution scope identity");
+				}
+				const receipt = await runJsonCli(pi, commandCtx, "host_execution_scope_interrupt_allocation", {
+					scope_id: executionScopeId,
+					run_id: runId,
+					decision_id: decisionId,
+				});
+				if (!isRecord(receipt.details) || receipt.details.ok === false || receipt.details.status === "rejected") {
+					throw new Error(String((isRecord(receipt.details) && receipt.details.error) || `Allocation Decision ${decisionId} cancellation was rejected`));
 				}
 			}
 			const result = isThinkThreadWorker
@@ -2024,12 +2037,6 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 			}
 			if (name === "search_get_agent_context") {
 				activateWorkerContext(pi, result.details, registered, true);
-			}
-			if (role === "worker" && name === "search_run_verifier" && isRecord(result.details)) {
-				const decision = result.details.allocation_decision;
-				if (isRecord(decision) && typeof decision.decision_id === "string") {
-					workerAllocationDecisionId = decision.decision_id;
-				}
 			}
 			return result;
 		},
@@ -2974,7 +2981,6 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.hasPendingMessages()) return;
 		if (role === "worker") {
 			if (lengthWithoutToolCall) return;
-			if (workerAllocationDecisionId) return;
 			if (
 				isThinkThreadWorker
 				&& latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"

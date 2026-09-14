@@ -5,7 +5,12 @@ from pathlib import Path
 
 from goal_plus.infrastructure.state.candidate_queries import FileCandidateQueries
 
-from goal_plus.domain.adaptive.models import AllocationDecision
+from goal_plus.domain.adaptive.models import (
+    AdaptiveReconciliationRecord,
+    AllocationDecision,
+    SearchSnapshot,
+    adaptive_reconciliation_identity,
+)
 from goal_plus.domain.evidence import ResultLedgerEntry
 from goal_plus.domain.search import SearchPlan
 from goal_plus.infrastructure.state.files import (
@@ -14,7 +19,6 @@ from goal_plus.infrastructure.state.files import (
     write_json,
 )
 from goal_plus.infrastructure.state.results_ledger import read_candidate_results_ledger, read_results_tsv
-from goal_plus.ports.allocation import AllocationCandidateProjection
 from goal_plus.ports.allocation_apply import AllocationMaterializationProjection
 from goal_plus.ports.state import CandidateRecord
 
@@ -29,6 +33,20 @@ def allocation_decision_path(run_dir: Path | str, decision_id: str) -> Path:
 
 def allocation_decision_paths(run_dir: Path | str) -> list[Path]:
     return sorted(allocation_decision_dir(run_dir).glob("allocation_*.json"))
+
+
+def search_snapshot_path(run_dir: Path | str, snapshot_revision: str) -> Path:
+    return Path(run_dir) / "adaptive-snapshots" / f"{snapshot_revision}.json"
+
+
+def adaptive_reconciliation_path(
+    run_dir: Path | str, verifier_record_id: str
+) -> Path:
+    return (
+        Path(run_dir)
+        / "adaptive-reconciliations"
+        / f"{adaptive_reconciliation_identity(verifier_record_id)}.json"
+    )
 
 
 def load_allocation_decision(
@@ -48,7 +66,66 @@ def load_allocation_decisions(run_dir: Path | str) -> list[AllocationDecision]:
     ]
 
 
+def load_search_snapshot(
+    run_dir: Path | str, snapshot_revision: str
+) -> SearchSnapshot:
+    path = search_snapshot_path(run_dir, snapshot_revision)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"adaptive search snapshot not found: {snapshot_revision}"
+        )
+    return SearchSnapshot.model_validate(load_json(path))
+
+
 class FileAllocationState(FileCandidateQueries):
+    def lock_adaptive_reconciliation(
+        self, run_id: str
+    ) -> AbstractContextManager[None]:
+        return exclusive_file_lock(
+            self.run_dir(run_id) / "adaptive-reconciliations" / "reconcile.lock"
+        )
+
+    def load_adaptive_reconciliation(
+        self, run_id: str, verifier_record_id: str
+    ) -> AdaptiveReconciliationRecord | None:
+        path = adaptive_reconciliation_path(
+            self.run_dir(run_id), verifier_record_id
+        )
+        if not path.exists():
+            return None
+        return AdaptiveReconciliationRecord.model_validate(load_json(path))
+
+    def write_adaptive_reconciliation(
+        self, record: AdaptiveReconciliationRecord
+    ) -> None:
+        path = adaptive_reconciliation_path(
+            self.run_dir(record.run_id), record.verifier_record_id
+        )
+        if path.exists():
+            existing = AdaptiveReconciliationRecord.model_validate(load_json(path))
+            immutable_fields = (
+                "reconciliation_id",
+                "run_id",
+                "task_id",
+                "verifier_record_id",
+                "snapshot_revision",
+                "plan_hash",
+            )
+            if any(
+                getattr(existing, field) != getattr(record, field)
+                for field in immutable_fields
+            ):
+                raise RuntimeError("adaptive reconciliation identity collision")
+            if existing.state == "completed" and existing != record:
+                raise RuntimeError("completed adaptive reconciliation is immutable")
+            if existing.state == "completed":
+                return
+        elif record.state != "prepared":
+            raise RuntimeError(
+                "adaptive reconciliation must be prepared before completion"
+            )
+        write_json(path, record.model_dump(mode="json"))
+
     def load_allocation_decision(
         self,
         run_id: str,
@@ -73,6 +150,22 @@ class FileAllocationState(FileCandidateQueries):
             decision.model_dump(mode="json"),
         )
 
+    def write_search_snapshot(self, snapshot: SearchSnapshot) -> None:
+        path = search_snapshot_path(
+            self.run_dir(snapshot.run_id), snapshot.snapshot_revision
+        )
+        if path.exists():
+            existing = SearchSnapshot.model_validate(load_json(path))
+            if existing != snapshot:
+                raise RuntimeError("immutable SearchSnapshot identity collision")
+            return
+        write_json(path, snapshot.model_dump(mode="json"))
+
+    def load_search_snapshot(
+        self, run_id: str, snapshot_revision: str
+    ) -> SearchSnapshot:
+        return load_search_snapshot(self.run_dir(run_id), snapshot_revision)
+
     def lock_run(self, run_id: str) -> AbstractContextManager[None]:
         return exclusive_file_lock(self.run_dir(run_id) / "run.lock")
 
@@ -87,17 +180,17 @@ class FileAllocationState(FileCandidateQueries):
         return self.read_candidate(run_id, candidate_id)
 
     def write_retirement(
-        self, run_id: str, projection: AllocationCandidateProjection
+        self, run_id: str, candidate_id: str, decision_id: str
     ) -> None:
-        record = self.read_candidate(run_id, projection.candidate_id)
+        record = self.read_candidate(run_id, candidate_id)
         if (
             not record.results_ledger
             and record.results_ledger_artifact_ref is None
             and record.results_ledger_git_head is None
         ):
             record.results_ledger = read_results_tsv(record)
-        record.allocation_eligibility = projection.eligibility
-        record.retired_by_decision_id = projection.retired_by_decision_id
+        record.allocation_eligibility = "retired"
+        record.retired_by_decision_id = decision_id
         directory = self.candidate_dir(run_id, record.candidate_id)
         write_json(directory / "candidate.json", record.model_dump(mode="json"))
         write_json(directory / "task.json", record.task.model_dump(mode="json"))
@@ -115,29 +208,7 @@ class FileAllocationState(FileCandidateQueries):
     def read_source_ledger(self, source: CandidateRecord) -> list[ResultLedgerEntry]:
         return read_candidate_results_ledger(source)
 
-    def write_decision_index(self, run_id: str, next_decision_index: int) -> None:
+    def write_candidate_index(self, run_id: str, next_candidate_index: int) -> None:
         run = self.read_run(run_id)
-        run.next_allocation_decision_index = next_decision_index
+        run.next_candidate_index = next_candidate_index
         write_json(self.run_dir(run_id) / "run.json", run.model_dump(mode="json"))
-
-    def write_candidate_projection(
-        self, run_id: str, projection: AllocationCandidateProjection
-    ) -> None:
-        record = self.read_candidate(run_id, projection.candidate_id)
-        record.allocation_eligibility = projection.eligibility
-        record.retired_by_decision_id = projection.retired_by_decision_id
-        iterations = {item.iteration: item for item in record.iterations}
-        for projected in projection.iterations:
-            iteration = iterations[projected.iteration]
-            iteration.allocation_decision_id = projected.decision_id
-            iteration.allocation_decision_error = projected.error
-        if projection.report_decision is not None and record.score_report is not None:
-            record.score_report.allocation_decision = projection.report_decision
-        write_json(
-            self.candidate_dir(run_id, projection.candidate_id) / "candidate.json",
-            record.model_dump(mode="json"),
-        )
-        write_json(
-            self.candidate_dir(run_id, projection.candidate_id) / "task.json",
-            record.task.model_dump(mode="json"),
-        )

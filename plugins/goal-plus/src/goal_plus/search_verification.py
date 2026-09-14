@@ -1,4 +1,4 @@
-"""Host-driven verifier and Scheduler barriers for Search state workflows."""
+"""Host-driven hard-verifier requests for Search state workflows."""
 
 from collections.abc import Callable, Generator
 from typing import TypeVar

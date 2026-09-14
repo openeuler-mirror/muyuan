@@ -11,10 +11,7 @@ from goal_plus._version import __version__
 
 from goal_plus.agent_hosts import collect_host_observability
 
-from goal_plus.infrastructure.state.scheduler_views import (
-    load_search_scheduler_views,
-    load_schedule_task_view,
-)
+from goal_plus.infrastructure.state.verifier_views import load_search_verifier_views
 
 from goal_plus.infrastructure.state.goal import FileGoalQueries
 
@@ -38,6 +35,7 @@ from goal_plus.infrastructure.state.files import load_json
 
 from goal_plus.infrastructure.state.search_run import FileSearchRunState
 from goal_plus.ports.report import ReportTaskInputs
+from goal_plus.ports.report import SearchVerifierViews
 from goal_plus.projections.report_tasks import task_details
 from goal_plus.projections.report_html import REPORT_SCHEMA_VERSION
 from goal_plus.projections.report_statistics import (
@@ -87,7 +85,7 @@ def _report_iteration_payload(
     candidate_id: str,
     iteration: IterationRecord,
     *,
-    search_scheduler_enabled: bool,
+    verifier_views: SearchVerifierViews | None,
 ) -> dict[str, Any]:
     annotation_path = (
         run_dir
@@ -114,22 +112,6 @@ def _report_iteration_payload(
         if annotation is not None and annotation.state == "completed"
         else None
     )
-    schedule_task = (
-        load_schedule_task_view(
-            run_dir,
-            candidate_id,
-            iteration.iteration,
-        )
-        if search_scheduler_enabled
-        else None
-    )
-    if schedule_task is not None and (
-        schedule_task.run_id != run_id
-        or schedule_task.candidate_id != candidate_id
-        or schedule_task.iteration != iteration.iteration
-        or schedule_task.attempt_commit != iteration.git_head
-    ):
-        raise RuntimeError("ScheduleTask does not match iteration")
     if view is not None and (
         view.run_id != run_id
         or view.candidate_id != candidate_id
@@ -205,24 +187,39 @@ def _report_iteration_payload(
         "shared_tool_staged_entries": list(iteration.shared_tool_staged_entries),
         "shared_tool_publish_status": iteration.shared_tool_publish_status,
     }
-    if search_scheduler_enabled:
+    if verifier_views is not None:
+        verifier_task = next(
+            (
+                task
+                for task in verifier_views.verifier_tasks
+                if task.subject.candidate_id == candidate_id
+                and task.subject.iteration == iteration.iteration
+                and task.subject.settlement_id == iteration.settlement_id
+                and task.subject.settlement.attempt_artifact_hash
+                == iteration.artifact_hash
+            ),
+            None,
+        )
+        verifier_record = next(
+            (
+                record
+                for record in verifier_views.verifier_records
+                if verifier_task is not None and record.task_id == verifier_task.task_id
+            ),
+            None,
+        )
         payload.update(
             {
-                "scheduler_reward": (
-                    schedule_task.output.reward.model_dump(mode="json")
-                    if schedule_task is not None and schedule_task.output is not None
+                "verifier_task": (
+                    verifier_task.model_dump(mode="json")
+                    if verifier_task is not None
                     else None
                 ),
-                "schedule_task": (
-                    schedule_task.model_dump(mode="json")
-                    if schedule_task is not None
+                "verifier_record": (
+                    verifier_record.model_dump(mode="json")
+                    if verifier_record is not None
                     else None
                 ),
-                "scheduler_status": iteration.scheduler_status,
-                "schedule_task_id": iteration.schedule_task_id,
-                "scheduler_error": iteration.scheduler_error,
-                "allocation_decision_id": iteration.allocation_decision_id,
-                "allocation_decision_error": iteration.allocation_decision_error,
             }
         )
     return payload
@@ -246,7 +243,8 @@ def _task_details(
     candidates = state.read_candidates(run_id)
     sessions = state.read_agent_sessions(run_id)
     run_dir = state.run_dir(run_id)
-    scheduler_enabled = frozen.spec.strategy.search_scheduler is not None
+    verifier_enabled = frozen.spec.strategy.requires_llm_verifier
+    verifier_views = load_search_verifier_views(run_dir) if verifier_enabled else None
     inputs = ReportTaskInputs(
         run=run,
         frozen=frozen,
@@ -254,16 +252,14 @@ def _task_details(
         sessions=sessions,
         plans=state.read_plans(run_id),
         observations={s.agent_session_id: _collect_observability(s) for s in sessions},
-        scheduler_views=load_search_scheduler_views(run_dir)
-        if scheduler_enabled
-        else None,
+        verifier_views=verifier_views,
         iterations={
             (c.candidate_id, i.iteration): _report_iteration_payload(
                 run_dir,
                 run_id,
                 c.candidate_id,
                 i,
-                search_scheduler_enabled=scheduler_enabled,
+                verifier_views=verifier_views,
             )
             for c in candidates
             for i in c.iterations

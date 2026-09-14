@@ -35,10 +35,10 @@ In the new Codex thread, paste the complete contents of
 the `$goal-plus` skill, lifecycle hooks, and MCP server; the target itself has
 no project-local `.codex/` configuration.
 
-For direct runtime validation, [`workspace-template/search-scheduler-spec.json`](workspace-template/search-scheduler-spec.json)
-freezes the marginal-value `evidence_llm_value/v3` reward policy and
-`value_guided_replace/v2` allocation policy against the same maintained
-workspace; completed `ScheduleTask` records remain the reward index.
+For direct runtime validation, [`workspace-template/verifier-adaptive-spec.json`](workspace-template/verifier-adaptive-spec.json)
+enables the fixed LLM-Verifier quality rules and freezes progressive-tolerance
+Selection plus the deterministic
+`priority_replace/v1` Allocation policy against the same maintained workspace.
 
 ## Run with Pi
 

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,12 +22,52 @@ from goal_plus.host_scope import (
     finish_codex_agent,
     finish_execution_process,
     internal_agent_run_admission,
+    interrupt_allocation_candidates,
     register_codex_agent,
     register_execution_process,
     restore_execution_scope_guardians,
     run_accepts_host_launch,
     run_accepts_internal_agent_launch,
 )
+
+
+def test_allocation_interrupt_delegates_to_exact_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "goal_plus.infrastructure.state.allocation."
+        "FileAllocationState.load_allocation_decision",
+        lambda _state, _run_id, _decision_id: SimpleNamespace(
+            status="pending",
+            retire_candidate_ids=["c001", "c003"],
+        ),
+    )
+
+    def interrupt(**kwargs):
+        calls.append(kwargs)
+        return {
+            "run_id": kwargs["run_id"],
+            "candidate_id": kwargs["candidate_id"],
+            "status": "accepted",
+            "resources": [],
+        }
+
+    monkeypatch.setattr("goal_plus.host_scope.interrupt_run_candidate", interrupt)
+
+    receipt = interrupt_allocation_candidates(
+        root_dir=tmp_path / ".gp",
+        scope_id="scope_test",
+        run_id="run_test",
+        decision_id="allocation_test",
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["rejected_candidate_ids"] == []
+    assert [item["candidate_id"] for item in calls] == ["c001", "c003"]
+    assert all(item["run_id"] == "run_test" for item in calls)
+    assert all(item["scope_id"] == "scope_test" for item in calls)
 
 
 @pytest.mark.host_process

@@ -152,14 +152,6 @@ def search_spec_codex_model_targets(
                 reasoning_effort=(annotator.get("reasoning_effort") or default_effort),
             )
         )
-    scheduler = strategy.get("search_scheduler")
-    if isinstance(scheduler, dict):
-        targets.append(
-            codex_model_target(
-                scheduler.get("model"),
-                reasoning_effort=(scheduler.get("reasoning_effort") or default_effort),
-            )
-        )
     return deduplicate_codex_model_targets(targets)
 
 

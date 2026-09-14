@@ -22,22 +22,22 @@
 | 名词 | 通俗含义 | 在 Goal Plus 中的具体职责 |
 | --- | --- | --- |
 | Settlement | 正式结算，也就是一次验证的正式记账 | 把精确代码版本、verifier 结果、分数与本轮处理结论记录下来，提交候选状态，并更新 ledger/best 等投影。通过和失败都需要结算；不是“宣告整个目标完成”，后续异步任务失败也不能撤销已经记下的硬分。 |
-| Scheduler | 搜索策略调度，判断后续探索是否值得继续 | 在 Adaptive Search 中读取已结算结果，计算 reward（探索价值）、提出是否替换候选的 flag，并在允许的 confirmation 条件下产出 Decision 草案。它管理自己的调度任务，不是操作系统进程调度器，也不直接启动、杀掉 candidate。 |
-| Allocation | 候选分配与替换，让合法调度建议落地 | 校验 Decision，预检容量、来源和归属，安排旧候选退出与派生候选准备，记录应用进度以支持幂等恢复。它处理候选/lane 的安排，不等于分配内存或 GPU；模型进程仍由 Host 启动。 |
+| LLM Verifier | 对一个已结算 artifact 做局部质量评估 | 通过一个可靠 task 和一次结构化调用生成包含质量与可选 allocation scores 的不可变 record。它不比较最终候选、不停止搜索、不退休 lane，也不创建 Decision。 |
+| Allocation | 通过确定性策略安排候选分配与替换 | 从不可变 Snapshot 计算并校验 Decision，预检容量、来源和归属，安排旧候选退出与派生候选准备，记录应用进度以支持幂等恢复。模型进程仍由 Host 启动。 |
 | Publication | 把选中的搜索结果变成可交付产物 | 准备 patch、commit 或 TT publication snapshot，按合同完成独立验证，导出供 Main 使用或在授权后应用到源工作区。它不是“发布到公网”；应用冲突可以保留交付物并等待 Main 集成。 |
 | DTO | Data Transfer Object，数据传递对象 | 跨模块传递的一份有明确字段的数据。例如“请求 ID、目标代码版本、执行结果”。它装数据，不负责启动进程或选择业务状态转换；可以用 dataclass/Pydantic 等表达，不要求新增 DTO 基类。 |
 | Ports | 模块对外声明的能力接口 | 例如“读取这两个版本的差异”或“应用这个已登记的 publication intent”。接口说明允许什么输入、返回什么结果；Git/TT 等 adapter 负责真正实现。这里的 port 不是 TCP/HTTP 的网络端口。 |
-| Drainer | 后台队列驱动器 | 有 Annotation/Scheduler 待办时，启动或唤醒受管的后台处理，驱动队列消费，并处理重复唤醒、执行归属和退出重扫等机械工作。具体任务能否领取、如何重试、何时完成仍由各业务 owner 决定；它不判断候选好坏，也不监督全部 candidate。 |
+| Drainer | 后台队列驱动器 | 有 Annotation/LLM Verifier 待办时，启动或唤醒受管的后台处理，驱动队列消费，并处理重复唤醒、执行归属和退出重扫等机械工作。具体任务能否领取、如何重试、何时完成仍由各业务 owner 决定；它不选择 winner，也不监督全部 candidate。 |
 | Binding | 把角色接到具体配置和实现上 | R2 中指为一个角色选定执行驱动、模型配置、能力实现并完成接线，例如 Annotation 使用 Pi 单次推理并接入只读 Artifact View。它不是基类，也不是永久执行许可；实际 native handle/session 的归属绑定在后续执行阶段完成。 |
 | Capability | 角色被授予的有限能力 | 说明允许哪些操作，例如读取授权版本的差异、修改自己的 allowed files 或提交验证请求。它不等于底层 SDK 的全部方法。只读角色不能因为底层实现会执行 shell，就自动获得 shell 工具。 |
 
 举例：某候选改了一版代码，verifier 测出分数 0.82。**Settlement** 把该版本和 0.82 正式
-记下来；启用 Adaptive 时，后续 **Scheduler** 分析是否值得继续这条探索路线；若形成合法的
-替换决定，**Allocation** 准备新候选，Host 再启动它。Search 收尾选中结果后，
+记下来；**LLM Verifier** 对该精确版本生成完整局部评估记录；启用 Adaptive 时，确定性
+**Allocation** 从全局 Snapshot 判断是否替换 lane 并准备新候选，Host 再启动它。Search 收尾选中结果后，
 **Publication** 将它整理成可交付产物，并按授权导出或应用。
 
 这些步骤之间，**DTO 是传递的数据，Ports 是允许调用的能力，adapter 是能力的具体实现**。
-Annotation/Scheduler 的后台待办由 **Drainer** 驱动，但判断、结算和替换规则不归 Drainer。
+Annotation/LLM Verifier 的后台待办由 **Drainer** 驱动，但选择、结算和替换规则不归 Drainer。
 这段例子描述各职责的衔接，不表示每次结算都必须触发候选替换。
 
 ## 01 职责边界
@@ -72,14 +72,15 @@ Search 主线是冻结合同、创建候选、准备 session、Host 执行、精
 Candidate/Session 用例返回 launch 输入，Host 启动实际 worker。每轮的 ArtifactRef、verifier
 结果和硬分绑定；先完整提交 authoritative Candidate/Evidence，再更新相关派生投影。
 
-Annotation 与 Scheduler 属于结算后的工作。Adaptive 模式下，Annotation 进入 completed 或
-terminal_error 后才创建 ScheduleTask；弱依赖表示 Annotation 失败也能继续调度，不表示可以
-忽略它的终态。普通 iteration 不同步等待这些模型任务。触发 confirmation 时，用例封住该
-lane 的后续执行，直到对应任务结算；不在 Search runtime 里加入模型等待循环。
+Annotation 与 LLM Verifier 属于结算后的工作。单一 Verifier task 与 Annotation 各自可靠执行；
+Verifier 的一次结构化调用同时生成 `quality_score` 和可选 `allocation_scores`。普通 iteration 不同步
+等待模型任务，Verifier backlog 也不参与 candidate admission。只有 AllocationPolicy 生成的 pending
+retirement Decision 才 fence 对应 lane；Search runtime 不加入模型等待循环。
 
-ScheduleTask 持有 reward/flag/草案输出，Allocation owner 校验并持久化 Decision、预检和应用
-替换。AdaptiveSearch 只协调这些模块，不是另一个 supervisor，也不需要新增 Reward Agent。
-固定 lanes 继续原候选；Adaptive 可能准备派生候选，实际启动仍归 Host。
+Adaptive reconciliation 从不可变 records 构建 Snapshot，纯 FeaturePipeline/AllocationPolicy 产生
+逻辑 plan，Allocation owner 重算后持久化唯一 Decision、预检并应用替换。LLM Verifier 的任务、
+记录和 drainer 独立于 AdaptiveSearch；AdaptiveSearch 只暴露 Decision 查询与 apply，不是另一个
+supervisor。固定 lanes 继续原候选；Adaptive 可能准备派生候选，实际启动仍归 Host。
 
 收尾要求可信静默事实与 exact selected artifact。Promotion 有独立 Evidence；TT 验证的是从
 基线加授权产品改动形成的 publication snapshot，不能直接把 candidate snapshot 当作待应用
@@ -109,8 +110,8 @@ ScheduleTask 持有 reward/flag/草案输出，Allocation owner 校验并持久�
 也不能为了统一装配，再把完整 Runtime/provider/host 服务包交给每个 agent。
 
 统一接入的单位是角色的合同和所需能力，而不是一套统一任务状态机。Candidate、Annotation、
-Scheduler 和 Final-check 分别保留自己的授权、任务领取、结果验收与恢复责任。
-Final-check 属于 Goal；Scheduler 属于 Search 的异步研究，二者不能共用一个业务队列 owner。
+LLM Verifier 和 Final-check 分别保留自己的授权、任务领取、结果验收与恢复责任。
+Final-check 属于 Goal；LLM Verifier 属于 Search 的异步局部评估，二者不能共用一个业务队列 owner。
 
 装配端解析冻结配置、可信 native model/thinking 事实和已支持组合，再投影角色所需能力。
 未启用的工具不出现在模型合同中；执行工具白名单必须来自同一能力依据。只读消费者不应拿到
@@ -158,9 +159,10 @@ Snapshot cleanup 根据持久 ownership 和 pins 决定；Host cleanup 根据登
 | --- | --- | --- |
 | Goal revision/control、dispatch、final-check | 对应 Goal 用例；host 提供可信 session/command | Main 提判断；Search 通过授权后的 Goal link 协作 |
 | FrozenSpec/run/candidate/session | 各 Search 用例与 candidate/session owner | Host 消费 launch 输入、绑定真实 handle，不用 session 记录猜 liveness |
-| Verifier Evidence / hard score | 唯一硬结算 owner；verifier adapter 只执行冻结验证 | Annotation/Scheduler/查询只读已结算事实，不回写硬分 |
-| AnnotationTask / ScheduleTask | 各自 admission/claim/completion/retry owner | Host 执行一次任务并交回结果；失败不撤销硬结算 |
-| AllocationDecision / applied 投影 | Allocation owner | Scheduler 提草案；candidate creation 负责被授权的物化与 session 准备 |
+| Verifier Evidence / hard score | 唯一硬结算 owner；hard verifier adapter 只执行冻结验证 | Annotation/LLM Verifier/查询只读已结算事实，不回写硬分 |
+| AnnotationTask / VerifierTask / VerifierRecord | 各自 admission/claim/completion/retry 或不可变 record owner | Host 执行一次任务并交回结果；失败不撤销硬结算 |
+| SearchSnapshot / FeatureView | Adaptive 纯计算与只读装配 | 可删除并从权威记录重建，不修改 candidate 或 verifier record |
+| AllocationDecision / applied 投影 | Allocation owner | 确定性 policy 产生逻辑 plan；candidate creation 负责被授权的物化与 session 准备 |
 | Selection / Promotion / apply outcome | 各 publication 用例 | Adapter 返回协议事实；Host 提静默事实；都不能自行宣布业务通过 |
 | Pool baseline intent | TT pool owner | 共用 Request 协议给出观察，不写 pool 文件 |
 | Provider mutation journal | Mutation journal owner | 具体操作 adapter 使用原 intent；Request 组件不决定重新执行 |
@@ -180,7 +182,7 @@ Snapshot cleanup 根据持久 ownership 和 pins 决定；Host cleanup 根据登
 | A4 | Search 不监督模型生命周期 | Host driver 到 Execution 的真实接线；用例无 wait loop/具体 store 逃生口 |
 | F1–F5 | 授权、冻结、启动、验证连续绑定 | Goal owner、FrozenSpec、candidate/session/generation、launch 和 exact artifact 的关联 |
 | F6 | 硬结算有唯一提交锚点 | Candidate/Evidence 提交及投影恢复；异步失败/迟到输出不能回写硬分 |
-| F7 | 异步职责和 confirmation 语义准确 | Annotation 终态弱依赖、ScheduleTask 输出、Decision owner、lane gate 的实际路径 |
+| F7 | 异步职责和确定性 allocation 语义准确 | 单一 Verifier FIFO、Snapshot/Policy、Decision owner 与唯一 lane gate 的实际路径 |
 | F8–F9 | Search 发布和 Goal 终态分别验收 | 静默事实、selected/publication Evidence、apply/pending、独立审查、报告与通知 |
 | R1–R3 | 角色只能获得被授予的能力 | 确定性配置解析、模型可见工具与执行白名单、执行前身份和预算复核 |
 | R4–R5 | 共用机制且结果仍归角色 owner | 至少两个真实消费者、旧机械副本退出、精确 claim/generation 校验 |

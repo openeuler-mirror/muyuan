@@ -7,17 +7,16 @@ from pathlib import Path
 from goal_plus.domain.search import AgentSessionRecord, FrozenSpec, SearchPlan
 from goal_plus.domain.adaptive.models import (
     AllocationDecision,
-    ScheduleTask,
-    SchedulerRewardRecord,
 )
+from goal_plus.domain.verifier import VerifierRecord, VerifierTask
 from goal_plus.ports.state import CandidateRecord, RunRecord
 from goal_plus.domain.evidence import ResultLedgerEntry
 
 
 @dataclass(frozen=True)
-class SearchSchedulerViews:
-    schedule_tasks: tuple[ScheduleTask, ...]
-    reward_records: tuple[SchedulerRewardRecord, ...]
+class SearchVerifierViews:
+    verifier_tasks: tuple[VerifierTask, ...]
+    verifier_records: tuple[VerifierRecord, ...]
     allocation_decisions: tuple[AllocationDecision, ...]
 
 
@@ -29,7 +28,7 @@ class ReportTaskInputs:
     candidates: list[CandidateRecord]
     sessions: list[AgentSessionRecord]
     observations: dict[str, dict[str, Any]]
-    scheduler_views: SearchSchedulerViews | None
+    verifier_views: SearchVerifierViews | None
     iterations: dict[tuple[str, int], dict[str, Any]]
 
 

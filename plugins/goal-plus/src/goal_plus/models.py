@@ -26,6 +26,14 @@ from goal_plus.domain.annotation import (
     SupplementalDimension as SupplementalDimension,
     SupplementalEvaluation as SupplementalEvaluation,
 )
+from goal_plus.domain.adaptive.models import (
+    AllocationDecision as AllocationDecision,
+    AllocationExpansion as AllocationExpansion,
+    AllocationPlan as AllocationPlan,
+    ExpansionSource as ExpansionSource,
+    PriorityReplacePolicySpec as PriorityReplacePolicySpec,
+    SearchSnapshot as SearchSnapshot,
+)
 from goal_plus.domain.artifacts import (
     ArtifactKind as ArtifactKind,
     ArtifactRef as ArtifactRef,
@@ -134,6 +142,20 @@ from goal_plus.domain.search import (
     VerifierCommand as VerifierCommand,
     VerifierInvalidationReason as VerifierInvalidationReason,
     VerifierRole as VerifierRole,
+)
+from goal_plus.domain.selection import (
+    SelectionSpec as SelectionSpec,
+)
+from goal_plus.domain.verifier import (
+    VerifierRecord as VerifierRecord,
+    VerifierSubject as VerifierSubject,
+    VerifierTask as VerifierTask,
+)
+from goal_plus.domain.settlement import (
+    RollbackReceipt as RollbackReceipt,
+    SettlementDisposition as SettlementDisposition,
+    SettlementEvidence as SettlementEvidence,
+    SettlementReceipt as SettlementReceipt,
 )
 from goal_plus.domain.shared_tools import (
     SharedDirSpec as SharedDirSpec,

@@ -14,12 +14,12 @@
 | 安装、快速开始和文档索引 | [README.md](README.md) |
 | 命令、状态、续跑、暂停及恢复设计 | [运行逻辑](docs/runtime-logic.md)，注意区分当前实现与目标设计 |
 | Search 架构、Evidence、selection 和 promotion | [共享平面](docs/shared-plane.md) |
-| Adaptive Search 与 Search Scheduler | [Adaptive Search](docs/adaptive-search.md) |
+| LLM Verifier 的评估、数据与队列合同 | [LLM Verifier](docs/llm-verifier.md) |
+| 极简选择、Adaptive allocation 与 Monitor feature plugin | [Adaptive Search](docs/adaptive-search.md) |
 | Main delegation 与轻量 dispatch 记录 | [Ultra 编排](docs/ultra.md) |
 | MCP 与 Pi-local tool 合同 | [API](docs/api.md) |
 | Codex/Pi 共同边界 | [Agent Host Adapters](docs/agent-host-adapters.md) |
 | Codex 或 Pi 的安装与宿主行为 | [Codex](docs/codex.md)、[Pi](docs/pi.md) |
-| Monitor feature plugin | [Feature Plugins](docs/feature-plugins.md) |
 | 状态、日志和 report 排障 | [Runtime 调试](docs/debugging-runtime.md) |
 | Checkout 开发与安装刷新 | [开发指南](docs/development.md) |
 | SearchSpec 示例 | [Examples](examples/README.md) |
@@ -54,8 +54,9 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `infrastructure/artifacts/` | Git/Copy/TT immutable diff 与 Artifact View I/O；共用 bounded capture/进程组清理在 `infrastructure/process_output.py`，不启动模型 |
 | `workspaces.py`、`infrastructure/artifacts/reader.py` | 前者分离本地创建、LocalGitWorkspace、GitReferences 和 GitPublication，能力不互相继承；后者接线本地 View 与 TT immutable handle；不恢复全能 WorkspaceProvider/factory 或 TT/Copy 假方法 |
 | `application/search_context.py` | 只读解析 run 链接的 Goal revision 文本和有效 deadline；不替代 Goal/session 授权 gate |
-| `application/scheduler.py`、`application/scheduler_context.py`、`application/scheduler_lanes.py` | Scheduler admission/reservation、claim、completion/retry、confirmation output gate、只读 context、顺序消费和 lane barrier；不执行模型或持久化 AllocationDecision |
-| `application/allocation.py`、`ports/allocation.py` | Decision 提案校验、记录、退休/trigger 投影与计数恢复；不读取 Scheduler task、不物化 workspace 或启动 agent |
+| `application/verifier.py`、`ports/verifier.py` | 单一 Verifier task 的 admission、claim、completion/retry、完整不可变 record 与精确 subject identity；不停止搜索、选择 winner 或执行 allocation |
+| `application/adaptive_snapshot.py`、`domain/adaptive/deterministic.py` | 从权威事实构建不可变 Snapshot，并执行无 I/O FeaturePipeline 与 AllocationPolicy；不写 candidate 或启动 agent |
+| `application/allocation.py`、`ports/allocation.py` | 重算并校验确定性 plan，持久化唯一 canonical Decision；不物化 workspace 或启动 agent |
 | `application/allocation_preparation.py` | 同一 run 锁内整批预检 Goal/run、settled source/ledger、容量、child/session；返回值仅供锁内消费，不写入或物化 |
 | `application/allocation_apply.py`、`ports/candidate_creation.py` | Allocation retirement、applied 提交、物化计数和 session 重放；调用窄 candidate creation 用例，不持有 Runtime 或监督 worker |
 | `domain/results_ledger.py`、`infrastructure/state/results_ledger.py` | 纯 ledger revision 前缀选择与既有 canonical/legacy TSV 解码；读取不落盘修复 |
@@ -67,12 +68,12 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `application/search_bootstrap.py`、`application/search_run.py` | Freeze、初始 run/plan/batch、invalidation 与显式 device lease 提交/释放；配置、workspace、verifier 和持久化由 bootstrap 接线，不回调 Runtime |
 | `infrastructure/search_configuration.py`、`artifacts/source_repository.py`、`artifacts/search_source.py`、`artifacts/thinkthread_baseline.py` | 分别负责确定性 host/model/policy 配置、只读 source 检查、FreezeInputs 和 TT baseline；用例注入 SourceInspection、SearchRunBindings、BaselinePreparation，不能恢复全能 SearchSource |
 | `application/candidate_creation.py`、`application/candidate_sessions.py` | 候选任务/物化与 session identity、预算、代际、绑定和续跑；返回 host launch 输入，不监督 worker |
-| `application/adaptive_admission.py`、`application/search_research.py` | 前者共用已完成 decision 投影与 candidate admission；后者为 successor/history 提供有界持久研究查询，不读取 transcript |
-| `application/candidate_verification.py`、`application/thinkthread_verification.py` | 本地/TT attempt admission、exact artifact 和 verifier 调用；promotion Evidence 独立，不启动模型；Runtime 入口保留 verifier 锁与 host Scheduler barrier |
-| `application/candidate_settlement.py`、`application/settlement_policy.py` | 两种后端共用唯一硬结算；完整 candidate 提交后才更新 Annotation/Scheduler、best 和 session 投影，异步失败不撤销 Evidence |
+| `application/adaptive_admission.py`、`application/search_research.py` | 前者只按 pending retirement 执行 candidate admission，不读取 Verifier backlog；后者为 successor/history 提供有界持久研究查询，不读取 transcript |
+| `application/candidate_verification.py`、`application/thinkthread_verification.py` | 本地/TT attempt admission、exact artifact 和 hard verifier 调用；promotion Evidence 独立，不启动模型；LLM Verifier backlog 不阻塞 worker iteration |
+| `application/candidate_settlement.py`、`application/settlement_policy.py` | 两种后端共用唯一硬结算；完整 candidate 提交后才幂等入队 Annotation/LLM Verifier 并更新 best/session 投影，不把异步任务状态写回 Evidence |
 | `application/candidate_recovery.py`、`application/candidate_checkpoints.py` | generation fence、host approval、checkpoint 恢复和派生状态修复；provider I/O 经窄 port，不控制 worker、不重置预算 |
 | `application/candidate_artifacts.py`、`application/shared_tools.py` | edit-surface/artifact 与保留 ledger 的恢复；Shared Tool stage/copy/catalog、结算、advisory 和精确 Tool View 验收 |
-| `application/selection.py`、`application/promotion.py`、`application/thinkthread_publication.py` | 精确 selected/publication、独立 promotion Evidence 与提交；本地验证请求由 host driver 执行原 verifier/Scheduler barrier，不在用例内等待模型 |
+| `application/selection.py`、`domain/selection.py`、`application/promotion.py`、`application/thinkthread_publication.py` | 精确 score source、逐级容差 winner、selected/publication 与独立 promotion Evidence；必要 Verifier task pending 时显式等待，不调用 LLM 比较 |
 | `application/publication_apply.py`、`application/publication_notifications.py` | 授权 apply、同请求恢复、pending integration 和持久通知；provider I/O 经窄 publication port |
 | `ports/publication.py`、`infrastructure/artifacts/publication.py`、`thinkthread_publication.py` | 按 local prepare/apply、TT snapshot intent/物化、独立 verifier 和 apply 分离能力；adapter 编码 wire/解码结果，用例核验 request/artifact 并提交状态；Publication State 按消费者裁剪，不提供任意 mutation 入口 |
 | `application/references.py`、`application/artifact_lifecycle.py` | Reference 授权与生命周期；snapshot ownership、跨 run/provider/publication pins 和可重试清理，host 状态仅作清理事实 |
@@ -87,7 +88,7 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `execution/managed_process.py`、`execution/process_output.py`、`ports/process.py` | 共用本地进程等待、TERM/KILL、异常退出清理、有界完整 pipe capture 与 operational outcome；回收组长前保留成员身份，超限不解析截断结果；host 经窄 ProcessRegistration 登记/完成资源，角色保留 active fence 检查时点与错误分类 |
 | `execution/launch_gate.py` | 共用继承管道的登记后 exec 放行；Pi RPC、drainer、scope 内推理和 guardian 未登记时不会运行目标命令，启动者丢失则 EOF 退出；不读取领域状态或决定 admission |
 | `execution/structured_inference.py`、`execution/inference_output.py`、`ports/inference.py` | 共用原生 Codex/Pi 一次性 CLI、schema、授权 Pi 工具包装配、输出读取与 invocation 观测；角色保留结果验收和 usage 口径；不构造业务用例、处理 TT Child 或接管 native candidate |
-| `infrastructure/inference_bindings.py`、`ports/inference.py` | Annotation/Scheduler 声明有限角色能力；可信 adapter 统一生成 Pi schema、扩展及白名单，无授权 View 则不装配读取工具；PiInferenceTools 仅是 adapter 到 Execution 的传输 DTO |
+| `infrastructure/inference_bindings.py`、`ports/inference.py` | Annotation/LLM Verifier 声明有限角色能力；可信 adapter 统一生成 Pi schema、扩展及白名单，无授权 View 则不装配读取工具；PiInferenceTools 仅是 adapter 到 Execution 的传输 DTO |
 | `execution/drainer.py`、`ports/drainer.py`、`infrastructure/state/drainer.py` | 共用 detached worker 的 single flight、启动登记、generation 归属、退出重扫与有界关闭；放行前经限 admission 期间使用的 callback 独立登记 scope 资源，队列退场不完成资源；任务领取/重试/并发和可信 scope admission 仍由各自 owner 决定 |
 | `execution/process_identity.py`、`execution/process_identity_darwin.py`、`ports/process_identity.py` | 只读 Linux procfs/macOS libproc 与 sysctl/group snapshot、drainer/Pi pool 共用精确 argv 检查与既有 recovery ps identity；核验结果直接携带启动身份；未知观测不授权停止或替换，两个 token 格式不互相猜测转换 |
 | `execution/process_resources.py`、`ports/process_identity.py` | scope/drainer/Pi pool wrapper/Pi RPC/已登记推理共用单进程和专用组的身份复核、成员观测及有界 TERM/KILL；各资源 owner 通过窄 callback 保存/恢复 boot/member witness，已观测逃逸成员仍按身份停止；不构造 store，清理失败不完成 scope token；未观测逃逸后代不在现有追踪保证内 |
@@ -102,17 +103,17 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `goal_plus.py`、`application/goal_observation.py` | 前者为 Goal 公共薄入口；后者保存宿主已归一化的用量观测，写入经 typed State |
 | `codex_hook_input.py`、`codex_models.py` | Codex 原生输入/turn 解码、模型事实与显式 override preflight；不拥有 Goal 状态转换 |
 | `assets/pi/extensions/lib/goal-plus-schemas.ts`、`goal-plus-transport.ts` | Pi tool schema 与 CLI/capability transport；主 extension 保留唯一注册入口和可信 host 事实 |
-| `runtime.py`、`bootstrap.py` | 前者保留 Search 公共入口与本地 verifier/Scheduler barrier；后者装配窄用例，`SearchServices` 仅供 facade 接线，不传入用例或充当全能 port |
+| `runtime.py`、`bootstrap.py` | 前者保留 Search 公共入口并分别调用 LLM Verifier 与 Adaptive facade；后者装配窄用例，`SearchServices` 仅供 facade 接线，不传入用例或充当全能 port |
 | `application/candidate_context.py`、`search_queries.py`、`evidence_reads.py` | 授权 session 的 context/ledger 初始化、只读 history/查询，以及保留 reconciliation/读取计数的 Evidence 用例；不启动模型 |
 | `ports/search_inspection.py`、`ports/monitor.py`、`projections/monitor_workers.py` | 分离只读查询与 context 初始化写入，定义候选 context/Monitor 已采集输入；候选/session 投影不读取文件或执行状态恢复 |
 | `application/report.py`、`ports/report.py` | 终态 gate、typed 报告输入与输出/cleanup/刷新次序；未完整解码的历史 Goal 链接仍参与终态 gate |
 | `infrastructure/monitor_inputs.py`、`report_inputs.py`、`report_output.py` | canonical 状态与已有 host observation 取数、文件输出和资产装配；不通过 Runtime 或展示恢复领域状态 |
-| `infrastructure/state/scheduler_views.py` | Monitor/report 共用 ScheduleTask/Decision 只读装配，保留严格读取与跳过损坏记录两种既有语义；Adaptive facade 不私读这些文件 |
+| `infrastructure/state/verifier_views.py` | Monitor/report 共用 VerifierTask/Record/Decision 只读装配；展示投影不驱动执行，Adaptive facade 不私读状态文件 |
 | `projections/` | 纯统计、publication/context 展示、timeline 与 MD/HTML；显式时钟和已采集输入，缺失值保持 unavailable，不执行 I/O |
-| `adaptive_search/adaptive_search.py` | Adaptive settlement/barrier 的统一 facade 与模块协调 |
-| `adaptive_search/scheduler.py` | Scheduler 公共 facade、barrier 错误日志、按 candidate 并发消费与原生推理的角色适配；领域状态经 Application/typed queries 访问，不构造 Search Runtime；CLI/监控/等待/drainer 与身份检查已共用，scope 推理登记由 bootstrap 装配，不因 candidate-only fence 误停内部推理 |
+| `adaptive_search/adaptive_search.py` | Adaptive Decision 查询与 apply 的统一 facade，不复制 Verifier 或 Allocation 领域状态机 |
+| `llm_verifier.py` | 单一 Verifier task 的原生结构化推理 drainer，一次调用生成 quality 与可选 allocation scores；只完成局部评估并触发可恢复 reconcile，不选择、停止或直接执行 allocation |
 | `adaptive_search/allocation.py` | Allocation 公共 facade 与结果序列化；Decision、预检和 apply 状态归 Application |
-| `domain/adaptive/policies.py` | 版本化 reward/allocation policy 与纯 context builder；旧入口仅 re-export |
+| `domain/adaptive/policies.py` | 版本化 FeatureProvider/allocation policy 的纯计算 re-export，不读取状态、时钟、host 或 workspace |
 | `tools.py` | Codex/Pi 共用 facade 和 caller 前置条件 |
 | `server.py`、`pi_tool.py` | MCP/Pi 参数转换、调用和序列化 |
 | `agent_hosts.py`、Pi pool/worker | 声明性 HostBinding、模型目录、candidate launch/continue 和只读 observation 分别暴露；pool/worker 保留 budget、interrupt 和 host-local 状态，不恢复 AgentHostAdapter 全能对象 |
@@ -126,7 +127,7 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | Runtime 生成的 `candidate_task` | Candidate edit surface、环境和已启用能力的可见合同 |
 | Skill/prompt | 用户意图、评价设计、技术方向等必须由模型判断的工作 |
 
-`runtime.py` 仅根据 orchestration mode 调用 `AdaptiveSearch` facade，不重复实现其调度与分配
+`runtime.py` 仅根据 orchestration mode 调用 `AdaptiveSearch` facade，不重复实现其评估与分配
 逻辑。Adaptive Search 的具体行为合同见 [Adaptive Search](docs/adaptive-search.md)。
 
 ## 实现原则

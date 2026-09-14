@@ -797,7 +797,7 @@ def _render_timeline(
 
 
 def _render_shared_evidence_view(task: dict[str, Any]) -> str:
-    scheduler_enabled = "allocation_decisions" in task
+    verifier_enabled = "verifier_tasks" in task
     local_rows = [
         {
             **iteration,
@@ -1085,39 +1085,24 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
                 f"<strong>{escape_html(score)}</strong>"
                 f'<div class="evidence-score-kind">{escape_html(item.get("score_kind"))}</div>'
             )
-        reward = item.get("scheduler_reward")
-        schedule_task = item.get("schedule_task")
-        reward_copy = "Not observed"
-        if isinstance(reward, dict):
-            attempt_reward = reward.get("reward")
-            reward_copy = (
-                f"reward {numeric_value(attempt_reward, digits=3)}"
-                f" | uct {numeric_value(reward.get('uct'), digits=3)}"
+        verifier_record = item.get("verifier_record")
+        verifier_copy = "Not observed"
+        if isinstance(verifier_record, dict):
+            verifier_copy = (
+                f"quality {numeric_value(verifier_record.get('quality_score'), digits=3)}"
             )
-            if item.get("allocation_decision_id"):
-                reward_copy += f" | {format_text(item.get('allocation_decision_id'))}"
-            elif item.get("allocation_decision_error"):
-                reward_copy += " | scheduler plan error"
-        if isinstance(schedule_task, dict):
-            output = schedule_task.get("output") or {}
-            flag = output.get("allocation_flag")
-            flag_label = (
-                "reschedule"
-                if flag is True
-                else "continue"
-                if flag is False
-                else "pending"
+            allocation_scores = verifier_record.get("allocation_scores")
+            if isinstance(allocation_scores, dict):
+                verifier_copy += "".join(
+                    f" | {name} {numeric_value(value, digits=3)}"
+                    for name, value in sorted(allocation_scores.items())
+                )
+        elif isinstance(item.get("verifier_task"), dict):
+            verifier_copy = (
+                f"Verifier {item['verifier_task'].get('state') or 'unknown'}"
             )
-            value_summary = (
-                f"Scheduler {schedule_task.get('state') or 'unknown'}"
-                f" | flag {flag_label}"
-            )
-            if isinstance(reward, dict):
-                reward_copy += f" | {value_summary}"
-            else:
-                reward_copy = value_summary
-        reward_cell = (
-            f'<td class="mono">{escape_html(reward_copy)}</td>' if scheduler_enabled else ""
+        verifier_cell = (
+            f'<td class="mono">{escape_html(verifier_copy)}</td>' if verifier_enabled else ""
         )
         rows.append(
             f'<tr class="{escape(" ".join(row_classes), quote=True)}"'
@@ -1129,7 +1114,7 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
             f'<td class="mono"><strong>{escape_html(candidate_id)}</strong></td>'
             f'<td class="mono">{escape_html(item.get("iteration"))}</td>'
             f'<td class="mono">{score_copy}</td>'
-            f"{reward_cell}"
+            f"{verifier_cell}"
             f"<td>{render_status(disposition)}</td>"
             f'<td><div class="evidence-copy">{escape_html(attempt)}</div></td>'
             f'<td>{view_copy}{view_error}{monitor_copy}<div class="evidence-view-meta">{render_status(view_state)}</div></td>'
@@ -1166,7 +1151,7 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
         '<div class="table-scroll evidence-view-scroll">'
         '<table class="evidence-view-table"><thead><tr>'
         "<th>Time</th><th>Candidate</th><th>Iteration</th><th>Score</th>"
-        f"{'<th>Reward / allocation</th>' if scheduler_enabled else ''}"
+        f"{'<th>Quality / adaptive metrics</th>' if verifier_enabled else ''}"
         "<th>Settlement</th><th>Worker attempt</th><th>Objective View</th>"
         "<th>Toolization Review</th><th>Published Tool View</th>"
         "<th>Tool Adoption Summary</th><th>Revision</th>"
@@ -1189,23 +1174,23 @@ def _render_candidates(task: dict[str, Any]) -> str:
     candidates = task.get("candidates") or []
     if not candidates:
         return "<p>No candidates were persisted.</p>"
-    scheduler_enabled = "allocation_decisions" in task
+    verifier_enabled = "verifier_tasks" in task
     rows = []
     for candidate in candidates:
-        current_value = candidate.get("latest_scheduler_reward") or {}
-        scheduler_cells = ""
-        if scheduler_enabled:
-            scheduler_cells = (
+        current_value = candidate.get("latest_verifier_record") or {}
+        verifier_cells = ""
+        if verifier_enabled:
+            verifier_cells = (
                 f"<td>{render_status(candidate.get('allocation_eligibility') or 'eligible')}</td>"
                 f'<td class="mono">{escape_html(candidate.get("allocation_depth"))}</td>'
                 f'<td class="mono">{escape_html((candidate.get("expansion_source") or {}).get("candidate_id"))}</td>'
-                f'<td class="mono">{escape_html(numeric_value(current_value.get("reward")))}</td>'
+                f'<td class="mono">{escape_html(numeric_value(current_value.get("quality_score")))}</td>'
             )
         rows.append(
             f'<tr class="{"selected-row" if candidate.get("selected") else ""}">'
             f'<td class="mono"><strong>{escape_html(candidate.get("candidate_id"))}</strong></td>'
             f"<td>{render_status('selected' if candidate.get('selected') else candidate.get('status'))}</td>"
-            f"{scheduler_cells}"
+            f"{verifier_cells}"
             f'<td class="mono">{escape_html(numeric_value(candidate.get("score")))}</td>'
             f'<td class="mono">{escape_html(numeric_value(candidate.get("best_score")))}</td>'
             f"<td>{escape_html(candidate.get('process_passed'))}</td>"
@@ -1215,14 +1200,14 @@ def _render_candidates(task: dict[str, Any]) -> str:
             f"<td>{escape_html(candidate.get('hypothesis'))}</td>"
             "</tr>"
         )
-    scheduler_headers = ""
-    if scheduler_enabled:
-        scheduler_headers = (
-            "<th>Allocation</th><th>Depth</th><th>Source</th><th>Latest reward</th>"
+    verifier_headers = ""
+    if verifier_enabled:
+        verifier_headers = (
+            "<th>Allocation</th><th>Depth</th><th>Source</th><th>Latest quality</th>"
         )
     return (
         '<div class="table-scroll"><table><thead><tr>'
-        f"<th>Candidate</th><th>Status</th>{scheduler_headers}"
+        f"<th>Candidate</th><th>Status</th>{verifier_headers}"
         "<th>Final score</th><th>Best score</th><th>Process pass</th>"
         "<th>Iterations</th><th>Sessions</th><th>Changed files</th><th>Hypothesis</th>"
         f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"

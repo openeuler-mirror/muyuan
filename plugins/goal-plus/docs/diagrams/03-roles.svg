@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1515" viewBox="0 0 1400 1515" role="img" aria-labelledby="title desc">
   <title id="title">Goal Plus 角色接入：有限能力、可信装配与不同执行驱动</title>
-  <desc id="desc">Candidate、Annotation、Scheduler、Final-check 具有独立业务合同。可信装配端解析有限能力，分别绑定 Codex native、Pi process RPC 和 ThinkThread Child。共用机械组件，不合并任务状态或生命周期。</desc>
+  <desc id="desc">Candidate、Annotation、LLM Verifier、Final-check 具有独立业务合同。可信装配端解析有限能力，分别绑定 Codex native、Pi process RPC 和 ThinkThread Child。共用机械组件，不合并任务状态或生命周期。</desc>
   <defs>
     <style>
       text{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#202b33;font-size:18px;letter-spacing:0}.title{font-size:32px;font-weight:700}.sub{font-size:17px;fill:#596873}.heading{font-size:22px;font-weight:700}.label{font-size:17px;font-weight:700}.box{rx:6;stroke-width:1.5}.business{fill:#edf8f5;stroke:#70aea2}.host{fill:#f9eff3;stroke:#bd899e}.pure{fill:#f1f5fd;stroke:#8ca6cd}.state{fill:#fff8e8;stroke:#c4a866}.neutral{fill:#f5f7f8;stroke:#b0bdc4}.flow{fill:none;stroke:#087b70;stroke-width:2.5;marker-end:url(#arrow)}
@@ -27,18 +27,18 @@
   <text x="398" y="326" class="sub">没有 shell / 项目执行 / verifier</text>
 
   <rect x="712" y="155" width="312" height="192" class="box business"/>
-  <text x="734" y="193" class="heading">Scheduler</text>
-  <text x="734" y="229">task / claim / lane barrier</text>
-  <text x="734" y="261">已采集的紧凑研究 context</text>
-  <text x="734" y="293">reward / flag / Decision 草案</text>
-  <text x="734" y="326" class="sub">不独立持有第二份 reward 账本</text>
+  <text x="734" y="193" class="heading">LLM Verifier</text>
+  <text x="734" y="229">task / claim / exact subject</text>
+  <text x="734" y="261">immutable artifact / hard evidence</text>
+  <text x="734" y="293">quality / allocation score records</text>
+  <text x="734" y="326" class="sub">不停止搜索或执行 Allocation</text>
 
   <rect x="1048" y="155" width="312" height="192" class="box business"/>
   <text x="1070" y="193" class="heading">Final-check</text>
   <text x="1070" y="229">Goal revision / 审查 attempt</text>
   <text x="1070" y="261">目标、结果与允许的审查材料</text>
   <text x="1070" y="293">独立结论交回 Goal owner</text>
-  <text x="1070" y="326" class="sub">不借用 Search Scheduler 状态机</text>
+  <text x="1070" y="326" class="sub">不借用 LLM Verifier task queue</text>
 
   <path d="M196 347V416" class="flow"/><path d="M532 347V416" class="flow"/>
   <path d="M868 347V416" class="flow"/><path d="M1204 347V416" class="flow"/>
@@ -84,10 +84,10 @@
     <text x="40" y="40" class="glossary-title">名词速查 / 本图中的职责含义</text>
     <text x="40" y="82" class="term">Settlement · 正式结算 / 验证记账</text>
     <text x="40" y="110">把本次验证与精确代码版本一起记入正式结果；失败也记。</text>
-    <text x="40" y="147" class="term">Scheduler · 搜索策略调度</text>
-    <text x="40" y="175">依据已结算结果计算探索价值，提出是否替换候选的建议。</text>
+    <text x="40" y="147" class="term">LLM Verifier · 局部质量评估</text>
+    <text x="40" y="175">对精确结算对象生成不可变质量或扩展指标；不执行分配。</text>
     <text x="40" y="212" class="term">Allocation · 候选分配与替换</text>
-    <text x="40" y="240">校验建议、安排候选替换并准备新工作区；不启动模型。</text>
+    <text x="40" y="240">重放快照和确定性策略，安排候选替换并准备新工作区。</text>
     <text x="40" y="277" class="term">Publication · 结果交付</text>
     <text x="40" y="305">把选定结果做成可交付产物；按合同验证后导出或授权应用。</text>
     <text x="730" y="82" class="term">DTO · Data Transfer Object / 数据传递对象</text>

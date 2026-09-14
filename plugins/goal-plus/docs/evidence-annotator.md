@@ -17,7 +17,7 @@ Evidence Annotator 与 Search candidate、main agent 和宿主 worker 的边界�
 | Evidence Annotator | 通过授权 Artifact View 检查固化 Evidence，生成客观描述和可选补充评价 |
 | candidate worker | 读取可见 Global Evidence，自主选择后续方向，不等待 View |
 | main agent | 观察 Evidence、执行全局停止、选择和 promotion；不调度 annotation 内容 |
-| Codex/Pi worker host | candidate worker 与内部 annotator/scheduler 的启动、续跑、deadline 和 interrupt |
+| Codex/Pi worker host | candidate worker 与内部 annotator/Verifier 的启动、续跑、deadline 和 interrupt |
 
 Evidence Annotator 不创建 `AgentSessionRecord`，不占用 candidate lane，也不进入 Codex
 agent registry 或 Pi host pool。它有独立的 run-scoped drainer 进程。普通 verifier、选择和
@@ -25,8 +25,8 @@ promotion 不等待这个进程；若冻结 run 要求 supplemental evaluation�
 AnnotationTask 成功发布补充评价前保持 `selection_blocked`。
 
 带 `agent_session_id` 的 worker process-verifier 调用会创建 annotation task。启用
-Adaptive Search 时，parent process verification 也会创建 annotation task，以满足 ScheduleTask
-的 Evidence View 前置关系；promotion verification 不会创建 View。
+Adaptive Search 时，parent process verification 也会创建 annotation task；Annotation 与
+Verifier task 独立推进，不构成 Allocation 前置依赖。promotion verification 不会创建 View。
 
 ## 端到端流程
 

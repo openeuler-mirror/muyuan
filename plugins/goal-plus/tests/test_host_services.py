@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 from goal_plus import host_services
-from goal_plus import internal_agents
 from goal_plus.annotation_host import AnnotationHostService
 from goal_plus.application.annotation import AnnotationWorkflow
 from goal_plus.application.annotation_admission import AnnotationAdmission
@@ -56,11 +55,6 @@ def _annotation_queue(*, revision: int) -> EvidenceAnnotationQueue:
 def test_annotation_claim_reloads_queue_and_preserves_task_binding(monkeypatch) -> None:
     task = _annotation_task()
     finished: list[tuple[EvidenceAnnotationTask, Exception | None]] = []
-    wakeups: list[str] = []
-    monkeypatch.setattr(
-        internal_agents, "wake_scheduler_after_annotation",
-        lambda root, run_id: wakeups.append(run_id),
-    )
 
     class FakeWorkflow(AnnotationWorkflow):
         def __init__(self) -> None:
@@ -122,22 +116,13 @@ def test_annotation_claim_reloads_queue_and_preserves_task_binding(monkeypatch) 
     error = RuntimeError("turn ended")
     assert service.finish_annotation_task(task, error=error) is False
     assert finished == [(task, error)]
-    assert wakeups == [task.run_id]
 
 
 @pytest.mark.parametrize("accepted,published", [(False, False), (True, False), (True, True)])
-def test_annotation_completion_only_wakes_host_after_accepted_transition(
+def test_annotation_completion_returns_publication_state_without_cross_queue_wake(
     accepted: bool, published: bool,
     monkeypatch,
 ) -> None:
-    wakeups = []
-
-    def wake(root, run_id: str) -> None:
-        wakeups.append(run_id)
-        raise RuntimeError("host launch unavailable")
-
-    monkeypatch.setattr(internal_agents, "wake_scheduler_after_annotation", wake)
-
     workflow = SimpleNamespace(complete=lambda *_args, **_kwargs: AnnotationCompletion(
             accepted=accepted, published=published,
         ))
@@ -147,7 +132,6 @@ def test_annotation_completion_only_wakes_host_after_accepted_transition(
     )
     service = AnnotationHostService(Path(".gp"))
     assert service.finish_annotation_task(_annotation_task()) is published
-    assert wakeups == (["run_test"] if accepted else [])
 
 
 def test_thinkthread_host_modules_do_not_call_runtime_private_methods() -> None:

@@ -49,5 +49,6 @@ Codex 由 host 在首轮前选择 `max`，并使用 `spawn_agent`、`wait_agent`
 或其他 harness 使用自己的 worker API，并上报同样的轻量生命周期事件。
 
 可选的 `orchestration` monitor 只是这些记录和事件的只读投影。它不启动、不等待、不通信、
-不重试，也不监督 worker。字段见 [Feature Plugin](feature-plugins.md)，host 细节见
+不重试，也不监督 worker。字段见
+[Monitor Feature Plugin](adaptive-search.md#monitor-feature-plugin)，host 细节见
 [Codex](codex.md) 和 [Pi](pi.md)，工具合同见 [API](api.md)。

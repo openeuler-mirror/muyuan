@@ -4,7 +4,6 @@ from pathlib import Path
 
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.domain.agents import NativeAgentKind, search_worker_host
-from goal_plus.domain.adaptive.policies import resolve_search_scheduler_policies
 from goal_plus.domain.search import BootstrapVerification, FrozenSpec, SearchSpec
 from goal_plus.domain.serialization import canonical_json, sha256_text
 from goal_plus.ports.clock import Clock
@@ -112,16 +111,6 @@ class SearchBootstrap:
         elif spec.workspace.backend != "thinkthread":
             self.verifiers.preflight_ranking_verifiers(spec, device_inventory)
 
-        scheduler_config = spec.strategy.search_scheduler
-
-        scheduler_policies = (
-            resolve_search_scheduler_policies(
-                reward=scheduler_config.reward,
-                allocation=scheduler_config.allocation,
-            )
-            if scheduler_config is not None
-            else None
-        )
         spec_payload = spec.model_dump(mode="json")
         device_inventory_payload = {
             pool_id: inventory.model_dump(mode="json")
@@ -133,11 +122,6 @@ class SearchBootstrap:
                     "goal_plus_id": goal_plus_id,
                     "native_host": native_host,
                     "spec": spec_payload,
-                    "search_scheduler_policies": (
-                        scheduler_policies.model_dump(mode="json")
-                        if scheduler_policies is not None
-                        else None
-                    ),
                     "verifiers": verifier_hashes,
                     "source_artifact_ref": (
                         source_artifact_ref.model_dump(mode="json")
@@ -162,7 +146,6 @@ class SearchBootstrap:
             goal_plus_id=goal_plus_id,
             native_host=native_host,
             spec=spec,
-            search_scheduler_policies=scheduler_policies,
             supplemental_evaluation_enabled=supplemental_enabled,
             supplemental_evaluation_required=supplemental_required,
             verifier_hashes=verifier_hashes,

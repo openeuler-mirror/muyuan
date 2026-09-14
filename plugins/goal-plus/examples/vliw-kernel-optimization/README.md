@@ -120,7 +120,7 @@ git status --short -- workspace-template
 [TT Pi prompt](pi-thinkthread-goal-prompt.md)。该变体保留只读模板与 artifact_only，
 采用两个 TT + AutoResearch candidate、150 秒 lease、15 分钟 Goal 预算和 4 分钟收尾预留。
 目标是同一 candidate/Child 多轮结算，同时观察 Annotation、exact artifact、publication 和清理。
-它不运行 Adaptive Scheduler/Allocation，不能作为这些组件的真实覆盖。
+它不运行 LLM Verifier/Adaptive Allocation，不能作为这些组件的真实覆盖。
 
 从本示例目录启动受支持的 Profile，state root 必须在 checkout 读取授权范围之外：
 

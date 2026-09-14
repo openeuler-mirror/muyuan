@@ -13,13 +13,13 @@ from pydantic import (
     model_validator,
 )
 
-from goal_plus.domain.adaptive.models import (
-    AllocationDecision,
-    ScheduleTaskState,
-)
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.search import VerifierRole
+from goal_plus.domain.settlement import (
+    SettlementDisposition,
+    SettlementReceipt,
+)
 from goal_plus.domain.shared_tools import (
     SharedToolPublishStatus,
     SharedToolRecord,
@@ -28,7 +28,7 @@ from goal_plus.domain.shared_tools import (
     ToolizationDecision,
 )
 
-IterationDisposition = Literal["keep", "retain", "discard", "failure"]
+IterationDisposition = SettlementDisposition
 
 
 class VerifierResult(SearchModel):
@@ -92,18 +92,6 @@ class ScoreReport(SearchModel):
     toolization_advisories: list[ToolizationAdvisory] = Field(
         default_factory=list,
         exclude_if=lambda value: not value,
-    )
-    scheduler_status: ScheduleTaskState | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-    schedule_task_id: str | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-    allocation_decision: AllocationDecision | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
     )
 
 
@@ -181,23 +169,7 @@ class IterationRecord(SearchModel):
     metrics: dict[str, Any] = Field(default_factory=dict)
     log_paths: list[str] = Field(default_factory=list)
     disposition: IterationDisposition | None = None
-    schedule_task_id: str | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-    scheduler_status: ScheduleTaskState | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-    scheduler_error: str | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-    allocation_decision_id: str | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-    allocation_decision_error: str | None = Field(
+    settlement_receipt: SettlementReceipt | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
@@ -242,6 +214,26 @@ class IterationRecord(SearchModel):
             elif errors:
                 payload["shared_tool_publish_status"] = "snapshot_error"
         return payload
+
+    @model_validator(mode="after")
+    def settlement_receipt_matches_iteration(self) -> "IterationRecord":
+        receipt = self.settlement_receipt
+        if receipt is None:
+            return self
+        if (
+            self.settlement_id != receipt.settlement_id
+            or self.iteration != receipt.iteration
+            or self.artifact_ref != receipt.attempt_artifact_ref
+            or self.attempt_base_artifact_ref != receipt.attempt_base_artifact_ref
+            or self.artifact_hash != receipt.attempt_artifact_hash
+            or self.score != receipt.evidence.hard_score
+            or self.process_passed != receipt.evidence.process_passed
+            or self.disposition != receipt.disposition
+            or self.workspace_artifact_after_settlement
+            != receipt.ledger_artifact_ref
+        ):
+            raise ValueError("settlement receipt does not match iteration Evidence")
+        return self
 
 
 class ResultLedgerEntry(SearchModel):

@@ -32,7 +32,9 @@ from goal_plus.thinkthread_pool import (
     _write_job,
     close_pool,
     continue_pool,
+    interrupt_candidate,
     open_pool,
+    snapshot_pool,
     validate_root,
     wait_any,
 )
@@ -1487,6 +1489,88 @@ def test_close_interrupts_and_removes_only_pool_resources(tmp_path: Path) -> Non
     assert {item["state"] for item in closed["cleanup"]} == {"removed"}
     assert [item["thinkthreadId"] for item in client.children] == ["tt-unrelated"]
     assert {item["state"] for item in client.branches.values()} == {"removed"}
+
+
+def test_interrupt_candidate_stops_only_target_and_preserves_pool_resources(
+    tmp_path: Path,
+) -> None:
+    client = StatefulAgentPosix()
+    opened = open_pool(
+        root_dir=tmp_path / ".gp",
+        run_id="run_retire",
+        candidates=candidates(2),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    receipt = interrupt_candidate(
+        root_dir=tmp_path / ".gp",
+        pool_id=opened["pool_id"],
+        candidate_id="c001",
+        client=client,  # type: ignore[arg-type]
+    )
+    snapshot = snapshot_pool(
+        root_dir=tmp_path / ".gp",
+        pool_id=opened["pool_id"],
+    )
+
+    assert receipt["status"] == "accepted"
+    assert receipt["state"] == "open"
+    assert {job["candidate_id"]: job["status"] for job in snapshot["jobs"]} == {
+        "c001": "interrupted",
+        "c002": "running",
+    }
+    assert [
+        params
+        for operation, params in client.operations
+        if operation == "thinkthread.signal"
+    ] == [{"id": "tt-child-1", "signal": "INT"}]
+    assert {item["state"] for item in client.branches.values()} == {"attached"}
+    assert {item["thinkthreadId"] for item in client.children} == {
+        "tt-child-1",
+        "tt-child-2",
+    }
+
+
+def test_interrupt_candidate_does_not_wait_for_terminal_child_observation(
+    tmp_path: Path,
+) -> None:
+    class StubbornAgentPosix(StatefulAgentPosix):
+        def invoke(self, operation, params=None, **kwargs):
+            normalized = dict(params or {})
+            if operation == "thinkthread.signal":
+                self.operations.append((operation, normalized))
+                return {}
+            if operation == "thinkthread.wait":
+                self.operations.append((operation, normalized))
+                raise AgentPosixBridgeError(
+                    "wait timed out",
+                    error={"response": {"error": {"code": "WaitTimeout"}}},
+                )
+            return super().invoke(operation, normalized, **kwargs)
+
+    client = StubbornAgentPosix()
+    opened = open_pool(
+        root_dir=tmp_path / ".gp",
+        run_id="run_retire",
+        candidates=candidates(1),
+        client=client,  # type: ignore[arg-type]
+    )
+
+    receipt = interrupt_candidate(
+        root_dir=tmp_path / ".gp",
+        pool_id=opened["pool_id"],
+        candidate_id="c001",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert receipt["status"] == "accepted"
+    assert snapshot_pool(
+        root_dir=tmp_path / ".gp",
+        pool_id=opened["pool_id"],
+    )["jobs"][0]["status"] == "interrupted"
+    assert not any(
+        operation == "thinkthread.wait" for operation, _params in client.operations
+    )
 
 
 def test_close_recovers_lost_cleanup_responses_and_is_idempotent(

@@ -45,7 +45,7 @@ def test_procfs_paths_stay_in_platform_owners():
 
 @pytest.mark.parametrize("module", HOST_CANDIDATE_MODULES)
 def test_candidate_hosts_do_not_pierce_search_state(module):
-    tree = ast.parse((PACKAGE / module).read_text())
+    tree = ast.parse((PACKAGE / module).read_text(encoding="utf-8"))
     forbidden = {
         "_load_run", "_load_frozen_spec", "_load_candidate_record", "_load_candidate_records",
         "_load_agent_session_by_id", "_load_agent_sessions", "_candidate_worker_budget",
@@ -124,7 +124,13 @@ def boundary_errors(source: str, module: str, layer: str) -> list[str]:
                     )
                 )
             )
-            if node.attr in IO_MEMBERS - {"cwd"} or cwd_method:
+            score_resolution = (
+                module == "goal_plus.domain.selection" and node.attr == "resolve"
+            )
+            if (
+                node.attr in IO_MEMBERS - {"cwd"}
+                and not score_resolution
+            ) or cwd_method:
                 errors.append(f"I/O member: {node.attr}")
             if isinstance(node.value, ast.Name):
                 owner = imports.get(node.value.id, node.value.id)
@@ -142,7 +148,7 @@ def test_migrated_layers_have_only_inward_dependencies(layer: str) -> None:
         module = "goal_plus." + ".".join(path.relative_to(PACKAGE).with_suffix("").parts)
         errors.extend(
             f"{path.relative_to(PACKAGE)}: {error}"
-            for error in boundary_errors(path.read_text(), module, layer)
+            for error in boundary_errors(path.read_text(encoding="utf-8"), module, layer)
         )
     assert not errors, "\n".join(errors)
 
@@ -195,9 +201,9 @@ modules = [
     'goal_plus.application.annotation_admission', 'goal_plus.application.search_context',
     'goal_plus.application.annotation_context', 'goal_plus.application.artifact_availability',
     'goal_plus.ports.annotation_context', 'goal_plus.ports.artifacts',
-    'goal_plus.ports.scheduler', 'goal_plus.ports.clock', 'goal_plus.application.scheduler',
-    'goal_plus.application.scheduler_context', 'goal_plus.ports.scheduler_context',
-    'goal_plus.application.scheduler_lanes', 'goal_plus.ports.scheduler_lanes',
+    'goal_plus.ports.verifier', 'goal_plus.ports.adaptive',
+    'goal_plus.ports.clock', 'goal_plus.application.verifier',
+    'goal_plus.application.adaptive_snapshot',
     'goal_plus.application.allocation', 'goal_plus.ports.allocation',
     'goal_plus.application.candidate_execution',
     'goal_plus.domain.goal_authorization', 'goal_plus.ports.goal_authorization',
@@ -243,18 +249,18 @@ def test_production_callers_use_canonical_helpers_and_models() -> None:
         "_evidence_annotation_context", "_open_evidence_artifact_views",
         "_evidence_comparison_peers",
         "_claim_schedule_task", "_finish_schedule_task", "_ScheduleTaskStore",
-        "_validate_task_output",
+        "_validate_task_output", "kick_schedule_tasks",
         "_tool_ownership_error", "_tool_input_run_id", "_search_run_owner",
         "_record_for_host_invocation", "_nonterminal_records", "_require_control_session",
         "_read_results_tsv", "_candidate_results_ledger", "_source_ledger_at_revision",
         "_assert_run_not_invalidated",
         "_materialize_candidate_record", "_AllocationRuntimePort",
         "_kick_evidence_annotator", "_drain_evidence_annotations",
-        "on_evidence_annotation_terminal", "kick_schedule_tasks", "_close_run_annotations",
+        "on_evidence_annotation_terminal", "_close_run_annotations",
         "_message_payload", "_response_payload", "_response_hash", "_interrupt_child", "_turn_terminal",
     }
     for path in PACKAGE.rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Attribute):
                 assert node.attr not in retired_annotation_members, path
             elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
@@ -267,19 +273,28 @@ def test_production_callers_use_canonical_helpers_and_models() -> None:
                     assert not moved_helpers.intersection(a.name for a in node.names), path
 
 
-def test_scheduler_execution_does_not_access_private_domain_storage() -> None:
-    tree = ast.parse((PACKAGE / "adaptive_search/scheduler.py").read_text())
-    retired = {
-        "_load_run", "_write_run", "_load_frozen_spec", "_load_candidate_record",
-        "_load_candidate_records", "_write_candidate_record", "_run_transaction",
-        "_evidence_task_context", "_outer_deadline_epoch",
+def test_verifier_execution_does_not_import_adaptive_implementations() -> None:
+    tree = ast.parse(
+        (PACKAGE / "llm_verifier.py").read_text(encoding="utf-8")
+    )
+    adaptive_implementations = {
+        "goal_plus.adaptive_search",
+        "goal_plus.application.adaptive_reconciliation",
+        "goal_plus.application.adaptive_snapshot",
+        "goal_plus.application.allocation",
+        "goal_plus.infrastructure.state.allocation",
     }
-    assert not [node.attr for node in ast.walk(tree)
-                if isinstance(node, ast.Attribute) and node.attr in retired]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            assert node.module not in adaptive_implementations
+        if isinstance(node, ast.Import):
+            assert not adaptive_implementations.intersection(
+                alias.name for alias in node.names
+            )
 
 
 def test_search_execution_authorization_does_not_construct_goal_runtime() -> None:
-    tree = ast.parse((PACKAGE / "runtime.py").read_text())
+    tree = ast.parse((PACKAGE / "runtime.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             assert node.module != "goal_plus.goal_plus"
@@ -288,7 +303,9 @@ def test_search_execution_authorization_does_not_construct_goal_runtime() -> Non
 
 
 def test_allocation_facade_does_not_rebuild_preflight_from_private_runtime_queries() -> None:
-    tree = ast.parse((PACKAGE / "adaptive_search/allocation.py").read_text())
+    tree = ast.parse(
+        (PACKAGE / "adaptive_search/allocation.py").read_text(encoding="utf-8")
+    )
     retired = {
         "_run_transaction", "_load_run", "_load_frozen_spec", "_load_plan",
         "_load_candidate_records", "_load_agent_sessions", "_assert_worker_iteration_allowed",
@@ -301,9 +318,9 @@ def test_allocation_facade_does_not_rebuild_preflight_from_private_runtime_queri
 def test_runtime_cannot_import_internal_agent_execution() -> None:
     dependencies = {
         "goal_plus.evidence_annotator", "goal_plus.thinkthread_annotation",
-        "goal_plus.internal_agents", "goal_plus.adaptive_search.scheduler",
+        "goal_plus.internal_agents", "goal_plus.llm_verifier",
     }
-    tree = ast.parse((PACKAGE / "runtime.py").read_text())
+    tree = ast.parse((PACKAGE / "runtime.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             assert node.module not in dependencies
@@ -312,11 +329,11 @@ def test_runtime_cannot_import_internal_agent_execution() -> None:
 
 
 @pytest.mark.parametrize("module", [
-    "internal_agents.py", "evidence_annotator.py", "adaptive_search/scheduler.py",
+    "internal_agents.py", "evidence_annotator.py", "llm_verifier.py",
     "annotation_host.py", "thinkthread_annotation.py",
 ])
 def test_internal_agent_host_paths_do_not_construct_search_runtime(module) -> None:
-    tree = ast.parse((PACKAGE / module).read_text())
+    tree = ast.parse((PACKAGE / module).read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             assert node.module != "goal_plus.runtime"

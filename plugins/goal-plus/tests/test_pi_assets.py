@@ -23,14 +23,14 @@ def test_pi_package_exports_the_supported_user_assets() -> None:
     assert package["pi"]["extensions"] == ["assets/pi/extensions/goal-plus.ts"]
     assert package["pi"]["skills"] == ["assets/pi/skills/goal-plus/SKILL.md"]
     direct_extension_files = sorted(
-        str(path.relative_to(ROOT))
+        path.relative_to(ROOT).as_posix()
         for path in (ROOT / "assets" / "pi" / "extensions").iterdir()
         if path.suffix in {".js", ".ts"}
     )
     assert direct_extension_files == package["pi"]["extensions"]
     assert (ROOT / "assets/pi/extensions/lib/goal-plus-progress.ts").is_file()
     skill_files = sorted(
-        str(path.relative_to(ROOT))
+        path.relative_to(ROOT).as_posix()
         for path in (ROOT / "assets" / "pi" / "skills").glob("*/SKILL.md")
     )
     assert skill_files == ["assets/pi/skills/goal-plus/SKILL.md"]
@@ -94,6 +94,20 @@ def test_pi_verifier_kicks_internal_agents_through_native_host_path() -> None:
     assert "{ run_id: runId }" in text
 
 
+def test_pi_allocation_apply_requests_retired_candidate_cancellation() -> None:
+    text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
+    runtime_tool = text.split("function registerRuntimeTool(", 1)[1].split(
+        "function activateWorkerContext(", 1
+    )[0]
+
+    interrupt = runtime_tool.index("host_execution_scope_interrupt_allocation")
+    apply = runtime_tool.index("const result = isThinkThreadWorker")
+    assert interrupt < apply
+    assert 'receipt.details.status === "rejected"' in runtime_tool
+    assert "active_count !== 0" not in runtime_tool[interrupt:apply]
+    assert "workerAllocationDecisionId" not in text
+
+
 def test_pi_model_preflight_uses_native_registry_concurrently() -> None:
     text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
     preflight = text.split("async function probePiModels(", 1)[1].split(
@@ -133,6 +147,34 @@ def test_pi_search_bootstrap_requires_goal_plus_id() -> None:
 
     assert "goal_plus_id: Type.String()" in freeze_schema
     assert "goal_plus_id: Type.String()" in create_schema
+
+
+def test_pi_priority_replace_schema_owns_its_parameters() -> None:
+    text = (ROOT / "assets/pi/extensions/lib/goal-plus-schemas.ts").read_text(
+        encoding="utf-8"
+    )
+    policy = text.split("export const PriorityReplacePolicySpec", 1)[1].split(
+        "export const CandidateProposal", 1
+    )[0]
+
+    assert "AdaptiveAllocationSpec" not in text
+    assert 'Type.Literal("priority_replace/v1")' in policy
+    assert 'Type.Literal("latest_record_values/v1")' in policy
+    assert 'Type.Literal("progress_trend/v1")' in policy
+    assert "minItems: 1, uniqueItems: true" in policy
+    assert "minimum: 0, maximum: 1" in policy
+
+
+def test_pi_strategy_schema_derives_llm_verifier_enablement() -> None:
+    text = (ROOT / "assets/pi/extensions/lib/goal-plus-schemas.ts").read_text(
+        encoding="utf-8"
+    )
+    strategy = text.split("export const StrategySpec", 1)[1].split(
+        "export const WorkspaceSpec", 1
+    )[0]
+
+    assert "LlmVerifierSpec" not in text
+    assert "verifier:" not in strategy
 
 
 def test_pi_package_manifest_exports_only_the_user_integration() -> None:

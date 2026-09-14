@@ -224,7 +224,7 @@ class SearchQueries:
         mode = global_evidence_mode(frozen.spec.strategy.config)
         return mode == "auto"
 
-    def search_scheduler_enabled(self, run_id: str) -> bool:
+    def llm_verifier_enabled(self, run_id: str) -> bool:
         run = self.state.read_run(run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         return frozen.spec.strategy.orchestration_mode == "adaptive_search"

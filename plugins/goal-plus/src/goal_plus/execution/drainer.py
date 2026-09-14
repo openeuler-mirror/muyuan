@@ -18,7 +18,7 @@ from goal_plus.execution.managed_process import ManagedProcess
 from goal_plus.execution.launch_gate import ProcessLaunchGate
 from goal_plus.execution.python_command import module_arguments
 
-# Preserve the existing detached Annotation/Scheduler stop bounds.
+# Detached internal-agent shutdown grace period.
 KILL_GRACE_SECONDS = 1.0
 
 

@@ -12,8 +12,8 @@ PI_ANNOTATION_TOOL_NAME = "submit_evidence_annotation"
 PI_ARTIFACT_VIEW_LIST_TOOL_NAME = "artifact_view_list"
 PI_ARTIFACT_VIEW_READ_TOOL_NAME = "artifact_view_read"
 PI_ANNOTATION_OUTPUT_ENV = "GOAL_PLUS_PI_ANNOTATION_OUTPUT"
-PI_SCHEDULER_TOOL_NAME = "submit_scheduler_output"
-PI_SCHEDULER_OUTPUT_ENV = "GOAL_PLUS_PI_SCHEDULER_OUTPUT"
+PI_VERIFIER_TOOL_NAME = "submit_verifier_output"
+PI_VERIFIER_OUTPUT_ENV = "GOAL_PLUS_PI_VERIFIER_OUTPUT"
 
 
 def annotation_role_capabilities(artifact_views: list[dict[str, Any]]) -> InferenceRoleCapabilities:
@@ -27,6 +27,10 @@ def annotation_role_capabilities(artifact_views: list[dict[str, Any]]) -> Infere
     return InferenceRoleCapabilities("annotation", views)
 
 
+def verifier_role_capabilities() -> InferenceRoleCapabilities:
+    return InferenceRoleCapabilities("verifier")
+
+
 def build_pi_role_tools(
     capabilities: InferenceRoleCapabilities, *, output_schema: dict[str, Any],
 ) -> PiInferenceTools:
@@ -34,12 +38,12 @@ def build_pi_role_tools(
         tool, output_env = PI_ANNOTATION_TOOL_NAME, PI_ANNOTATION_OUTPUT_ENV
         label = "Submit Evidence Annotation"
         description = "Submit the final evidence annotation using the required schema."
-    elif capabilities.role == "scheduler":
+    elif capabilities.role == "verifier":
         if capabilities.artifact_views:
-            raise ValueError("scheduler cannot acquire Annotation Artifact Views")
-        tool, output_env = PI_SCHEDULER_TOOL_NAME, PI_SCHEDULER_OUTPUT_ENV
-        label = "Submit Scheduler Output"
-        description = "Submit the scheduler reward and allocation output using the required schema."
+            raise ValueError("verifier cannot acquire Annotation Artifact Views")
+        tool, output_env = PI_VERIFIER_TOOL_NAME, PI_VERIFIER_OUTPUT_ENV
+        label = "Submit Verifier Output"
+        description = "Submit the local verifier assessment using the required schema."
     else:
         raise ValueError(f"unsupported inference role: {capabilities.role}")
     views = {view.view_id: str(view.root) for view in capabilities.artifact_views}

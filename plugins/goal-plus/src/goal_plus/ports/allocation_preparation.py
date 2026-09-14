@@ -3,15 +3,20 @@
 from dataclasses import dataclass
 from typing import Protocol
 
-from goal_plus.domain.adaptive.models import AllocationDecision, AllocationReplacement
+from goal_plus.domain.adaptive.models import (
+    AllocationDecision,
+    AllocationExpansion,
+    SearchSnapshot,
+)
 from goal_plus.domain.evidence import ResultLedgerEntry
 from goal_plus.domain.search import AgentSessionRecord, FrozenSpec, SearchPlan
 from goal_plus.ports.state import CandidateRecord, RunRecord
 
 
 @dataclass(frozen=True)
-class PreparedAllocationReplacement:
-    replacement: AllocationReplacement
+class PreparedAllocationExpansion:
+    expansion: AllocationExpansion
+    retire_candidate_id: str
     source: CandidateRecord
     plan: SearchPlan
     results_ledger: list[ResultLedgerEntry]
@@ -22,7 +27,7 @@ class PreparedAllocation:
     run: RunRecord
     frozen: FrozenSpec
     decision: AllocationDecision
-    replacements: tuple[PreparedAllocationReplacement, ...]
+    expansions: tuple[PreparedAllocationExpansion, ...]
 
 
 class AllocationPreparationSource(Protocol):
@@ -31,6 +36,9 @@ class AllocationPreparationSource(Protocol):
     def load_allocation_decision(
         self, run_id: str, decision_id: str
     ) -> AllocationDecision: ...
+    def load_search_snapshot(
+        self, run_id: str, snapshot_revision: str
+    ) -> SearchSnapshot: ...
     def read_candidates(self, run_id: str) -> list[CandidateRecord]: ...
     def read_plan(self, run_id: str, plan_id: str) -> SearchPlan: ...
     def read_agent_sessions(self, run_id: str) -> list[AgentSessionRecord]: ...

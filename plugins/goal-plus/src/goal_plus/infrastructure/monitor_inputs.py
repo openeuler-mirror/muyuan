@@ -15,7 +15,6 @@ from goal_plus.projections.monitor import (
     numeric_value,
     observability_cost,
     parse_utc_timestamp,
-    project_scheduler,
     aggregate_search_tasks,
     snapshot_id_from_mutation,
     state_counts,
@@ -32,7 +31,7 @@ from goal_plus.agent_hosts import (
     collect_host_observability,
     resolve_inner_agent_binding,
 )
-from goal_plus.infrastructure.state.scheduler_views import load_search_scheduler_views
+from goal_plus.infrastructure.state.verifier_views import load_search_verifier_views
 from goal_plus.feature_plugins import collect_goal_monitor_features
 from goal_plus.infrastructure.state.goal import FileGoalQueries
 from goal_plus.host_observability import collect_codex_transcript_observability
@@ -862,7 +861,7 @@ def goal_plus_monitor_snapshot(
         frozen = FrozenSpec.model_validate(
             load_json(root / "specs" / run.frozen_spec_id / "frozen_spec.json")
         )
-        search_scheduler_enabled = frozen.spec.strategy.search_scheduler is not None
+        verifier_enabled = frozen.spec.strategy.requires_llm_verifier
         candidates = _load_candidates(run_path)
         sessions = _load_agent_sessions(run_path)
         plans = _load_plans(run_path)
@@ -944,6 +943,10 @@ def goal_plus_monitor_snapshot(
             "best_score": run.best_score,
             "selected_candidate_id": run.selected_candidate_id,
             "selected_score": run.selected_score,
+            "selected_hard_score": run.selected_hard_score,
+            "selected_quality_score": run.selected_quality_score,
+            "selection_trace": run.selection_trace,
+            "selection_exclusions": run.selection_exclusions,
             "selected_iteration": run.selected_iteration,
             "selected_git_head": run.selected_git_head,
             "promotion": (
@@ -989,26 +992,36 @@ def goal_plus_monitor_snapshot(
                 ],
             }
 
-        schedule_tasks_by_candidate: dict[str, list[Any]] = {}
-        scheduler_views = (
-            load_search_scheduler_views(
-                run_path,
-                skip_invalid_records=True,
-            )
-            if search_scheduler_enabled
+        verifier_tasks_by_candidate: dict[str, list[Any]] = {}
+        verifier_records_by_candidate: dict[str, list[Any]] = {}
+        verifier_views = (
+            load_search_verifier_views(run_path)
+            if verifier_enabled
             else None
         )
-        if scheduler_views is not None:
-            scheduler_payload, schedule_tasks_by_candidate = project_scheduler(
-                scheduler_views.schedule_tasks, now=now
+        if verifier_views is not None:
+            for task in verifier_views.verifier_tasks:
+                verifier_tasks_by_candidate.setdefault(
+                    task.candidate_id, []
+                ).append(task)
+            for record in verifier_views.verifier_records:
+                verifier_records_by_candidate.setdefault(
+                    record.subject.candidate_id, []
+                ).append(record)
+            task_states = state_counts(
+                [task.state for task in verifier_views.verifier_tasks]
             )
-            run_payload["scheduler"] = scheduler_payload
+            run_payload["llm_verifier"] = {
+                "tasks_total": len(verifier_views.verifier_tasks),
+                "task_states": task_states,
+                "records_total": len(verifier_views.verifier_records),
+            }
             allocation_decisions = [
                 item.model_dump(mode="json")
-                for item in scheduler_views.allocation_decisions
+                for item in verifier_views.allocation_decisions
             ]
-            replacement_counts = [
-                len(item.get("replacements") or []) for item in allocation_decisions
+            expansion_counts = [
+                len(item.get("expansions") or []) for item in allocation_decisions
             ]
             run_payload["allocation_decisions"] = {
                 "total": len(allocation_decisions),
@@ -1018,28 +1031,15 @@ def goal_plus_monitor_snapshot(
                 "applied": sum(
                     item.get("status") == "applied" for item in allocation_decisions
                 ),
-                "reserved_replacements": sum(replacement_counts),
-                "max_atomic_replacements": max(replacement_counts, default=0),
+                "superseded": sum(
+                    item.get("status") == "superseded" for item in allocation_decisions
+                ),
+                "terminal_error": sum(
+                    item.get("status") == "terminal_error" for item in allocation_decisions
+                ),
+                "expansions": sum(expansion_counts),
+                "max_atomic_expansions": max(expansion_counts, default=0),
                 "items": allocation_decisions,
-            }
-        rewards_by_candidate: dict[str, list[Any]] = {}
-        if scheduler_views is not None:
-            rewards = list(scheduler_views.reward_records)
-            for reward in rewards:
-                rewards_by_candidate.setdefault(reward.candidate_id, []).append(reward)
-            reward_values = [item.reward.reward for item in rewards]
-            run_payload["search_scheduler"] = {
-                "rewards": {
-                    "available": bool(rewards),
-                    "reward_count": len(rewards),
-                    "mean_reward": (
-                        sum(reward_values) / len(reward_values)
-                        if reward_values
-                        else 0.0
-                    ),
-                    "best_reward": max(reward_values) if reward_values else None,
-                    "candidate_count": len(rewards_by_candidate),
-                },
             }
 
         for candidate in candidates:
@@ -1105,9 +1105,9 @@ def goal_plus_monitor_snapshot(
                     candidate,
                     candidate_sessions,
                     frozen.spec.metric_direction,
-                    search_scheduler_enabled,
-                    rewards_by_candidate.get(candidate.candidate_id, []),
-                    schedule_tasks_by_candidate.get(candidate.candidate_id, []),
+                    verifier_enabled,
+                    verifier_records_by_candidate.get(candidate.candidate_id, []),
+                    verifier_tasks_by_candidate.get(candidate.candidate_id, []),
                     workspace_ledger_projection,
                     results_tsv,
                 )

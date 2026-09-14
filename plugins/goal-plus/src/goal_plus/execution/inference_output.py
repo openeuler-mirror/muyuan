@@ -7,7 +7,7 @@ import stat
 from typing import Any
 
 
-# Structured responses get the existing Scheduler prompt's 2 MiB budget;
+# Structured responses use a bounded 2 MiB payload budget;
 # event transcripts have a separate, larger limit in process_output.
 INFERENCE_RESULT_LIMIT_BYTES = 2 * 1024 * 1024
 

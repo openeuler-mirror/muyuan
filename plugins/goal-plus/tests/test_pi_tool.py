@@ -272,7 +272,7 @@ def test_pi_host_command_kicks_all_internal_agents(
         host: str,
     ) -> dict[str, bool]:
         calls.append((root, run_id, host))
-        return {"annotation_started": True, "scheduler_started": True}
+        return {"annotation_started": True, "verifier_started": True}
 
     monkeypatch.setattr(internal_agents, "kick_internal_agents", record)
     monkeypatch.setattr(
@@ -290,7 +290,7 @@ def test_pi_host_command_kicks_all_internal_agents(
         "ok": True,
         "run_id": "run_host_inherited",
         "annotation_started": True,
-        "scheduler_started": True,
+        "verifier_started": True,
     }
     assert calls == [(runtime_root, "run_host_inherited", "pi-rpc")]
     assert not capability.exists()
@@ -494,6 +494,40 @@ def test_pi_tool_dispatches_managed_pool_tools(
     if tool_name == "pi_search_pool_close":
         assert result["details"] == {"tool": "pi_search_pool_snapshot", "detail": True}
     assert calls == [{"root_dir": tmp_path / ".search", **expected}]
+
+
+def test_pi_tool_dispatches_allocation_cancellation_request(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def interrupt(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"status": "accepted"}
+
+    monkeypatch.setattr(
+        "goal_plus.host_scope.interrupt_allocation_candidates", interrupt
+    )
+    result = call_pi_tool(
+        tmp_path / ".search",
+        "host_execution_scope_interrupt_allocation",
+        {
+            "scope_id": "scope_1",
+            "run_id": "run_1",
+            "decision_id": "allocation_1",
+        },
+    )
+
+    assert result["status"] == "accepted"
+    assert calls == [
+        {
+            "root_dir": tmp_path / ".search",
+            "scope_id": "scope_1",
+            "run_id": "run_1",
+            "decision_id": "allocation_1",
+        }
+    ]
 
 
 @pytest.mark.parametrize(

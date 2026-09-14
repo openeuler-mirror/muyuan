@@ -30,7 +30,7 @@
         "--validate"
       ],
       "timeout_seconds": 60,
-      "resource_lock": "torch-cpu-search-scheduler"
+      "resource_lock": "torch-cpu-verifier"
     },
     {
       "name": "torch_cpu_tokens_per_second",
@@ -41,7 +41,7 @@
         "--rank"
       ],
       "timeout_seconds": 120,
-      "resource_lock": "torch-cpu-search-scheduler"
+      "resource_lock": "torch-cpu-verifier"
     }
   ],
   "promotion_verifiers": [
@@ -54,7 +54,7 @@
         "--validate"
       ],
       "timeout_seconds": 60,
-      "resource_lock": "torch-cpu-search-scheduler"
+      "resource_lock": "torch-cpu-verifier"
     }
   ],
   "budget": {
@@ -62,18 +62,29 @@
     "max_candidates": 4
   },
   "strategy": {
-    "name": "random",
+    "name": "agent_guided",
     "orchestration_mode": "adaptive_search",
     "worker_budget": {
       "max_runtime_seconds": 360,
       "on_exceed": "interrupt"
     },
-    "search_scheduler": {
-      "model": "bench-openai/gpt-5.6-sol",
-      "reasoning_effort": "low",
-      "timeout_seconds": 180,
-      "reward": "evidence_llm_value/v3 @prompt Pay particular attention to marginal throughput evidence and avoid rewarding repeated measurements.",
-      "allocation": "value_guided_replace/v2"
+    "selection": {
+      "ranking_keys": [
+        "quality_score",
+        "hard_score"
+      ],
+      "ranking_tolerance": [
+        0.05,
+        0.0
+      ]
+    },
+    "allocation": {
+      "policy": "priority_replace/v1",
+      "features": [
+        "latest_record_values/v1",
+        "progress_trend/v1"
+      ],
+      "switch_margin": 0.15
     },
     "config": {
       "seed": 20260819
@@ -81,6 +92,6 @@
   },
   "constraints": {
     "suggested_batch_size": 2,
-    "task_summary": "Optimize only model.py or serving.py. Keep PyTorch, OpenMP, MKL, and build thread counts at one. Use persisted scheduler Decisions exactly; retired candidates must not start another iteration."
+    "task_summary": "Optimize only model.py or serving.py. Keep PyTorch, OpenMP, MKL, and build thread counts at one. Apply only persisted deterministic AllocationDecisions; retired candidates must not start another iteration."
   }
 }

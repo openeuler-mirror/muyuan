@@ -10,7 +10,6 @@ import pytest
 from goal_plus.application.annotation import AnnotationWorkflow
 from goal_plus.application.annotation_admission import AnnotationAdmission
 from goal_plus.application.search_context import SearchContext
-from goal_plus.domain.adaptive.policies import resolve_search_scheduler_policies
 from goal_plus.domain.annotation import EvidenceAnnotationTask
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.goal import GoalPlusRecord
@@ -39,23 +38,16 @@ def frozen_spec(clock: Clock, *, adaptive: bool = False) -> FrozenSpec:
         ],
         "strategy": {"name": "random"},
     }
-    policies = None
     if adaptive:
-        reward, allocation = "evidence_llm_value/v3", "value_guided_replace/v2"
         data["strategy"].update(
             {
                 "orchestration_mode": "adaptive_search",
-                "search_scheduler": {
-                    "model": "gpt-5.2",
-                    "reasoning_effort": "low",
-                    "timeout_seconds": 90,
-                    "reward": reward,
-                    "allocation": allocation,
+                "selection": {
+                    "ranking_keys": ["quality_score", "hard_score"],
+                    "ranking_tolerance": [0.05, 0.0],
                 },
+                "allocation": {"policy": "priority_replace/v1"},
             }
-        )
-        policies = resolve_search_scheduler_policies(
-            reward=reward, allocation=allocation
         )
     return FrozenSpec(native_host="codex",
         frozen_spec_id="frozen_test",
@@ -64,7 +56,6 @@ def frozen_spec(clock: Clock, *, adaptive: bool = False) -> FrozenSpec:
         verifier_hashes={},
         frozen_verifier_paths={},
         created_at=clock.timestamp(),
-        search_scheduler_policies=policies,
     )
 
 

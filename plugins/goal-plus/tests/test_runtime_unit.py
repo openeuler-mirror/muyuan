@@ -14,8 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from goal_plus.agent_hosts import UnsupportedHostCapability
-import goal_plus.adaptive_search.scheduler as scheduler_module
-from goal_plus.internal_agents import wake_scheduler_after_annotation
+import goal_plus.llm_verifier as verifier_module
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.models import (
     CandidateProposal,
@@ -1166,7 +1165,7 @@ def test_select_records_recoverable_selection_blocked_state(tmp_path: Path) -> N
     blocked = runtime.search_run.state.read_run(run_id)
     assert blocked.state == "selection_blocked"
     assert blocked.budget_used["selection_blocked_reason"] == (
-        "no verifier-backed candidate iteration is eligible for selection"
+        "no hard-settled candidate iteration is eligible for selection"
     )
     recovery = runtime.redispatch_candidate(run_id, "c001")
     assert recovery.candidate_id == "c001"
@@ -1707,16 +1706,14 @@ def test_worker_instructions_match_enabled_capabilities(
     strategy = {"name": "random", "config": {"global_evidence_mode": mode}}
     if adaptive:
         strategy.update(
-                {
-                    "orchestration_mode": "adaptive_search",
-                    "worker_budget": {"max_runtime_seconds": 60},
-                    "search_scheduler": {
-                    "model": "scheduler-model",
-                    "reasoning_effort": "low",
-                    "timeout_seconds": 60,
-                    "reward": "evidence_llm_value/v3",
-                    "allocation": "value_guided_replace/v2",
+            {
+                "orchestration_mode": "adaptive_search",
+                "worker_budget": {"max_runtime_seconds": 60},
+                "selection": {
+                    "ranking_keys": ["quality_score", "hard_score"],
+                    "ranking_tolerance": [0.05, 0.0],
                 },
+                "allocation": {"policy": "priority_replace/v1"},
             }
         )
     data = spec_for(project, max_parallel=1).model_dump(mode="json")
@@ -1738,7 +1735,8 @@ def test_worker_instructions_match_enabled_capabilities(
     assert ("global_evidence_snapshot" in instructions) is (mode == "auto")
     assert ("search_get_evidence_detail" in instructions) is supplemental
     assert ("success_threshold" in instructions) is threshold
-    assert ("allocation_decision" in instructions) is adaptive
+    assert ("Verifier backlog 不阻塞当前 lane" in instructions) is adaptive
+    assert ("不要轮询 Verifier task 或 AllocationDecision" in instructions) is adaptive
 
 
 def test_promote_requires_search_runtime_selection(tmp_path: Path) -> None:
@@ -3398,7 +3396,7 @@ def test_plan_next_caps_batch_size_to_max_parallel(tmp_path: Path) -> None:
         runtime.plan_next(run_id, requested_k=4)
 
 
-def test_rolling_candidates_remains_scheduler_independent(
+def test_rolling_candidates_remains_llm_verifier_independent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3412,13 +3410,12 @@ def test_rolling_candidates_remains_scheduler_independent(
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     monkeypatch.setattr(
-        scheduler_module,
-        "kick_scheduler",
-        lambda *args, **kwargs: pytest.fail("rolling_candidates entered Search Scheduler"),
+        verifier_module,
+        "kick_verifier",
+        lambda *args, **kwargs: pytest.fail("rolling_candidates entered LLM Verifier"),
     )
 
-    assert runtime.search_scheduler_enabled(run_id) is False
-    wake_scheduler_after_annotation(runtime.root_dir, run_id)
+    assert runtime.llm_verifier_enabled(run_id) is False
 
 
 def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
@@ -3448,23 +3445,7 @@ def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
     with pytest.raises(RuntimeError, match="one initial SearchPlan"):
         runtime.plan_next(run_id, requested_k=1)
 
-    def reject_scheduler_call(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("default Search entered Search Scheduler execution")
-
-    for owner, method_name in (
-        (runtime.candidate_sessions.admission, "assert_candidate_execution_allowed"),
-        (runtime._adaptive_search, "resolve_scheduler_barrier"),
-        (runtime.settlement.lanes, "ensure_tasks_locked"),
-    ):
-        monkeypatch.setattr(
-            owner,
-            method_name,
-            reject_scheduler_call,
-        )
-
-    assert runtime.search_scheduler_enabled(run_id) is False
-    monkeypatch.setattr(scheduler_module, "kick_scheduler", reject_scheduler_call)
-    wake_scheduler_after_annotation(runtime.root_dir, run_id)
+    assert runtime.llm_verifier_enabled(run_id) is False
 
     with pytest.raises(RuntimeError, match="requires.*adaptive_search"):
         runtime.list_allocation_decisions(run_id)
@@ -3483,19 +3464,18 @@ def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
     )
     record = runtime.candidate_creation.state.read_candidate(run_id, tasks[0].candidate_id)
 
-    assert report.allocation_decision is None
-    assert record.iterations[-1].schedule_task_id is None
-    assert record.iterations[-1].allocation_decision_id is None
+    assert "allocation_decision" not in report.model_dump(mode="json")
+    assert "verifier_task_id" not in record.iterations[-1].model_dump(mode="json")
 
     snapshot = goal_plus_monitor_snapshot(runtime.root_dir, run_id=run_id)
-    assert "search_scheduler" not in snapshot["run"]
+    assert "llm_verifier" not in snapshot["run"]
     assert "allocation_decisions" not in snapshot["run"]
     assert "current_value_estimate" not in snapshot["candidates"][tasks[0].candidate_id]
 
     report_data = build_html_report_data(runtime.root_dir, run_id)
     [task_report] = report_data["search_tasks"]
     assert "allocation_decisions" not in task_report
-    assert "search_graph" not in task_report
+    assert "verifier_tasks" not in task_report
     assert "current_value_estimate" not in task_report["candidates"][0]
     assert "Reward / allocation" not in render_html_report(report_data)
 
@@ -3589,7 +3569,7 @@ def test_get_agent_context_has_only_authoritative_worker_fields(tmp_path: Path) 
         "workspace",
         "workspace_access",
         "orchestration_mode",
-        "search_scheduler_enabled",
+        "llm_verifier_enabled",
         "run_budget",
     ):
         assert forbidden not in context, f"get_agent_context must not return {forbidden}"
@@ -3958,7 +3938,19 @@ def test_run_verifier_reports_and_cleans_verifier_workspace_side_effect(
     assert not (workspace / ".goal-plus-verifiers/generated.bin").exists()
     assert report.disposition == "failure"
     assert (workspace / "initial_program.py").read_text(encoding="utf-8") == "VALUE = 0\n"
-    attempt = runtime.list_iterations(run_id, candidate_id)[0]["git_head"]
+    iteration = runtime.candidate_creation.state.read_candidate(
+        run_id, candidate_id
+    ).iterations[0]
+    receipt = iteration.settlement_receipt
+    assert receipt is not None
+    assert receipt.disposition == "failure"
+    assert receipt.attempt_artifact_ref == iteration.artifact_ref
+    assert receipt.rollback is not None
+    assert receipt.rollback.target_artifact_ref == iteration.attempt_base_artifact_ref
+    assert receipt.rollback.restored_artifact_ref == iteration.restored_to_artifact_ref
+    assert receipt.ledger_artifact_ref == iteration.workspace_artifact_after_settlement
+    attempt = iteration.git_head
+    assert attempt is not None
     assert subprocess.check_output(
         ["git", "show", f"{attempt}:initial_program.py"],
         cwd=workspace,
@@ -4955,7 +4947,7 @@ def test_select_uses_metric_direction_for_minimize(
     assert selection["selected_score"] == 0.1
 
 
-def test_select_does_not_reverify_duplicate_latest_artifact_option(
+def test_select_reuses_the_exact_best_artifact_without_reverification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = make_project(tmp_path)
@@ -4993,8 +4985,9 @@ def test_select_does_not_reverify_duplicate_latest_artifact_option(
 
     selection = runtime.select(run_id)
 
-    assert selection["selected_candidate_id"] == "c002"
-    assert calls == {"c001": 2, "c002": 2}
+    assert selection["selected_candidate_id"] == "c001"
+    assert selection["selection_evidence_source"] == "worker_bound"
+    assert calls == {"c001": 1, "c002": 1}
 
 
 def test_select_reuses_exact_worker_evidence_without_parent_verifier(
@@ -5366,6 +5359,7 @@ def test_legacy_tmp_results_tsv_migrates_and_backfills_missing_iterations(
         iteration.pop("ledger_git_head", None)
         iteration.pop("ledger_artifact_ref", None)
         iteration.pop("workspace_artifact_after_settlement", None)
+        iteration.pop("settlement_receipt", None)
         iteration.pop("hypothesis", None)
         iteration["summary"] = ""
     write_json(candidate_path, legacy_record)

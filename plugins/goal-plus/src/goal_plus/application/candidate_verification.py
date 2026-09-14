@@ -114,9 +114,8 @@ class CandidateVerification:
         if scope == "process" and (
             frozen.spec.strategy.orchestration_mode == "adaptive_search"
         ):
-            self.candidate_sessions.admission.reconcile_candidate_execution_allowed(
-                run_id,
-                candidate_id,
+            self.candidate_sessions.admission.assert_candidate_execution_allowed(
+                record,
                 "run_verifier",
             )
         if scope == "promotion":

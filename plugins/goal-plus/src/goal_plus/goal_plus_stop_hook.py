@@ -872,11 +872,10 @@ def _autoresearch_lease_stop_context(
     min_verifier_runs = int(evidence.get("min_verifier_runs") or 1)
     remaining_seconds = max(0.0, min_runtime_seconds - elapsed_seconds)
     infrastructure_stop = candidate_host_queries(search_root).requires_immediate_stop(session)
-    allocation_stop = False
-    if candidate_host_queries(search_root).uses_adaptive_search(session.run_id):
-        allocation_stop = candidate_host_queries(search_root).retired_by_allocation(
-            session.run_id, session.candidate_id,
-        )
+    allocation_decision_id = candidate_host_queries(
+        search_root
+    ).pending_retirement_decision_id(session.run_id, session.candidate_id)
+    allocation_stop = allocation_decision_id is not None
     verifier_complete = verifier_runs >= min_verifier_runs
     runtime_complete = remaining_seconds <= 0
     completion_complete = infrastructure_stop or allocation_stop or (
@@ -921,7 +920,7 @@ def _autoresearch_lease_stop_context(
                 "release_reason": (
                     "infrastructure_stop_and_report"
                     if infrastructure_stop
-                    else "allocation_decision"
+                    else "allocation_interrupt"
                     if allocation_stop
                     else "lease_satisfied"
                 ),
@@ -967,6 +966,7 @@ def _autoresearch_lease_stop_context(
         "search_candidate_required_verifier_runs": min_verifier_runs,
         "search_candidate_infrastructure_stop": infrastructure_stop,
         "search_candidate_allocation_stop": allocation_stop,
+        "search_candidate_allocation_decision_id": allocation_decision_id,
     }
 
 
@@ -2085,6 +2085,7 @@ def _prepare_codex_native_tool(search_root: Path, hook_input: dict[str, Any]) ->
         else:
             _claim_codex_main(search_root, goal.goal_plus_id, hook_input)
             goals.require_active_tool_target("host_execution_scope_open", {"goal_plus_id": goal.goal_plus_id})
+        candidate_session = None
         if attachment.kind == "search_run":
             run_id = attachment.require_search_run()
             goals.authorization.require_search_execution(run_id)
@@ -2101,6 +2102,7 @@ def _prepare_codex_native_tool(search_root: Path, hook_input: dict[str, Any]) ->
             )]
             if len(sessions) != 1:
                 raise RuntimeError("Codex launch requires an unambiguous candidate session binding")
+            candidate_session = sessions[0]
             queries.require_native_execution(
                 sessions[0].agent_session_id, now=time.time(),
                 spawn_input=hook_input_codec.tool_input(hook_input) if agent is None and tool == "spawn_agent" else None,
@@ -2116,6 +2118,21 @@ def _prepare_codex_native_tool(search_root: Path, hook_input: dict[str, Any]) ->
                 root_dir=search_root, scope_id=str(scope["scope_id"]),
                 agent_id=f"{parent['agent_id'] if parent else '/root'}/{label}", label=label,
                 run_id=attachment.identity, tool_use_id=call_id, parent_session_id=_session_id(hook_input),
+                candidate_id=(
+                    candidate_session.candidate_id
+                    if candidate_session is not None
+                    else None
+                ),
+                agent_session_id=(
+                    candidate_session.agent_session_id
+                    if candidate_session is not None
+                    else None
+                ),
+                execution_generation=(
+                    candidate_session.execution_generation
+                    if candidate_session is not None
+                    else None
+                ),
             )
             return
     prepare_codex_agent_tool(
@@ -2190,6 +2207,39 @@ def _close_codex_scope_for_stop(
         "确认它们全部终止后再次结束。"
         f" scope_id={closed.get('scope_id')}; cleanup_errors={errors}"
     )
+
+
+def _codex_allocation_active_targets(
+    search_root: Path,
+    scope: dict[str, Any],
+    *,
+    run_id: str,
+    decision_id: str,
+) -> list[str]:
+    from goal_plus.execution.codex_scope import active_codex_agents
+    from goal_plus.infrastructure.state.allocation import FileAllocationState
+    from goal_plus.ports.scope import ScopeAttachment
+
+    decision = FileAllocationState(search_root).load_allocation_decision(
+        run_id, decision_id
+    )
+    if decision.status not in {"pending", "applied"}:
+        raise RuntimeError(
+            f"allocation decision {decision_id} cannot interrupt candidates in "
+            f"status {decision.status}"
+        )
+    attachment = ScopeAttachment.from_id(run_id)
+    targets: list[str] = []
+    for candidate_id in decision.retire_candidate_ids:
+        targets.extend(
+            str(item.get("native_agent_id") or item["agent_id"])
+            for item in active_codex_agents(
+                scope,
+                attachment=attachment,
+                candidate_id=candidate_id,
+            )
+        )
+    return list(dict.fromkeys(targets))
 
 
 def _handle_pre_tool_use(
@@ -2267,6 +2317,7 @@ def _handle_pre_tool_use(
         "goal_plus_prepare_final_check",
         "goal_plus_record_work_event",
         "search_start_agent_session",
+        "search_apply_allocation_decision",
         "search_select",
         "spawn_agent",
     }
@@ -2300,6 +2351,28 @@ def _handle_pre_tool_use(
         )
         if logical_name == "spawn_agent":
             _prepare_codex_native_tool(search_root, hook_input)
+        if logical_name == "search_apply_allocation_decision":
+            if len(run_ids) != 1:
+                raise RuntimeError(
+                    "search_apply_allocation_decision requires exactly one run_id"
+                )
+            decision_id = hook_input_codec.tool_input(hook_input).get("decision_id")
+            if not isinstance(decision_id, str) or not decision_id:
+                raise RuntimeError(
+                    "search_apply_allocation_decision requires decision_id"
+                )
+            active_targets = _codex_allocation_active_targets(
+                search_root,
+                scope,
+                run_id=run_ids[0],
+                decision_id=decision_id,
+            )
+            if active_targets:
+                raise RuntimeError(
+                    "allocation retirement requires an accepted native "
+                    "interrupt_agent request before apply; targets="
+                    + ",".join(active_targets)
+                )
         if logical_name == "search_select":
             if len(run_ids) != 1:
                 raise RuntimeError("search_select requires exactly one run_id")

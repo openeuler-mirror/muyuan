@@ -14,7 +14,7 @@ def worker_result_summary(result: dict[str, Any] | None) -> dict[str, Any] | Non
         payload["lease"] = {key: result["lease"][key] for key in (
             "satisfied", "release_reason", "dispatch_count", "verifier_runs",
             "elapsed_seconds", "max_runtime_seconds", "min_runtime_seconds",
-            "min_verifier_runs", "allocation_decision_id", "pending_session_refresh_reason",
+            "min_verifier_runs", "pending_session_refresh_reason",
         ) if key in result["lease"]}
     return payload
 

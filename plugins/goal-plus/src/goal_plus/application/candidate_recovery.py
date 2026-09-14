@@ -8,6 +8,7 @@ from goal_plus.application.recovery_policy import (
 
 from typing import Callable
 from goal_plus.application.candidate_ranking import best_artifact_iteration_record
+from goal_plus.application.verifier import verifier_subject
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
     require_worker_iteration_state,
@@ -100,9 +101,8 @@ class CandidateRecoveryWorkflow:
         run = self.state.read_run(run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         if frozen.spec.strategy.orchestration_mode == "adaptive_search":
-            self.sessions.admission.reconcile_candidate_execution_allowed(
-                run_id,
-                candidate_id,
+            self.sessions.admission.assert_candidate_execution_allowed(
+                self.state.read_candidate(run_id, candidate_id),
                 "recover",
             )
         with self.state.lock_run(run_id):
@@ -265,6 +265,20 @@ class CandidateRecoveryWorkflow:
                 self.annotation_admission.create(
                     run.run_id, record.candidate_id, iteration.iteration
                 )
-            if frozen.spec.strategy.orchestration_mode == "adaptive_search":
-                self.settlement.settle_scheduler(run, frozen, record, iteration)
+            if (
+                frozen.spec.strategy.requires_llm_verifier
+                and iteration.settlement_id is not None
+                and iteration.artifact_hash is not None
+            ):
+                try:
+                    allocation = frozen.spec.strategy.allocation
+                    rules = allocation.verifier_rules() if allocation is not None else None
+                    self.settlement.verifier.ensure_assessment(
+                        verifier_subject(frozen, record, iteration),
+                        rules.policy_id if rules is not None else None,
+                        rules.score_names if rules is not None else [],
+                    )
+                except Exception:
+                    # Selection or candidate recovery can replay this enqueue.
+                    pass
         self.state.write_candidate(run.run_id, record)

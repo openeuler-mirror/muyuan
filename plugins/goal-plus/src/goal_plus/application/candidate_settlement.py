@@ -1,8 +1,8 @@
 """The single hard-settlement owner for local and provider-backed attempts."""
 
 from typing import Callable
+
 from goal_plus.application.candidate_ranking import best_artifact_iteration_record
-from goal_plus.ports.candidate_artifacts import CandidateArtifactState
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
     require_worker_iteration_state,
@@ -24,6 +24,11 @@ from goal_plus.domain.search import (
     FrozenSpec,
 )
 from goal_plus.domain.serialization import canonical_json, sha256_text
+from goal_plus.domain.settlement import (
+    RollbackReceipt,
+    SettlementEvidence,
+    SettlementReceipt,
+)
 from goal_plus.domain.shared_tools import (
     ToolAdoptionRecord,
     ToolizationDecision,
@@ -47,7 +52,8 @@ from goal_plus.application.shared_tools import SharedTools
 from goal_plus.application.annotation import AnnotationWorkflow
 from goal_plus.application.annotation_admission import AnnotationAdmission
 from goal_plus.application.goal_authorization import GoalAuthorization
-from goal_plus.application.scheduler_lanes import SchedulerLanes
+from goal_plus.application.verifier import VerifierWorkflow, verifier_subject
+from goal_plus.ports.candidate_artifacts import CandidateArtifactState
 from goal_plus.ports.candidate_settlement import CandidateSettlementState, InnerGitSettlement
 from goal_plus.ports.clock import Clock
 
@@ -65,7 +71,7 @@ class CandidateSettlement:
         shared_tools: SharedTools,
         annotation: AnnotationWorkflow,
         annotation_admission: AnnotationAdmission,
-        lanes: SchedulerLanes,
+        verifier: VerifierWorkflow,
         checkpoints: CandidateCheckpoints,
         persist_run: Callable[[RunRecord], None],
     ) -> None:
@@ -80,7 +86,11 @@ class CandidateSettlement:
             annotation,
             annotation_admission,
         )
-        self.lanes, self.checkpoints, self.persist_run = lanes, checkpoints, persist_run
+        self.verifier, self.checkpoints, self.persist_run = (
+            verifier,
+            checkpoints,
+            persist_run,
+        )
 
     def record(
         self,
@@ -157,11 +167,28 @@ class CandidateSettlement:
                 agent_session_id=agent_session_id,
             )
             created_at = self.clock.timestamp()
+            attempt_artifact_ref = attempt.artifact_ref
+            if attempt_artifact_ref is None and attempt.git_head is not None:
+                attempt_artifact_ref = ArtifactRef(
+                    kind="git_commit",
+                    id=attempt.git_head,
+                    provider=record.task.workspace_backend,
+                )
+            attempt_base_artifact_ref = pre_attempt_settled_artifact_ref
+            if (
+                attempt_base_artifact_ref is None
+                and pre_attempt_settled_head is not None
+            ):
+                attempt_base_artifact_ref = ArtifactRef(
+                    kind="git_commit",
+                    id=pre_attempt_settled_head,
+                    provider=record.task.workspace_backend,
+                )
             if attempt.git_head is not None:
                 settlement_artifact_identity = attempt.git_head
-            elif attempt.artifact_ref is not None:
+            elif attempt_artifact_ref is not None:
                 settlement_artifact_identity = canonical_json(
-                    attempt.artifact_ref.model_dump(mode="json")
+                    attempt_artifact_ref.model_dump(mode="json")
                 )
             else:
                 raise RuntimeError("settlement requires an immutable artifact")
@@ -230,8 +257,8 @@ class CandidateSettlement:
                 process_passed=report.process_passed,
                 git_head=attempt.git_head,
                 attempt_base_git_head=pre_attempt_settled_head,
-                artifact_ref=attempt.artifact_ref,
-                attempt_base_artifact_ref=pre_attempt_settled_artifact_ref,
+                artifact_ref=attempt_artifact_ref,
+                attempt_base_artifact_ref=attempt_base_artifact_ref,
                 provider_request_ids=list(provider_request_ids or []),
                 attempt_changed_files=attempt_changed_files,
                 artifact_clean=attempt.artifact_clean,
@@ -253,8 +280,8 @@ class CandidateSettlement:
                     "_candidate_attempt": {
                         "id": exact_attempt_id,
                         "artifact_ref": (
-                            attempt.artifact_ref.model_dump(mode="json")
-                            if attempt.artifact_ref is not None
+                            attempt_artifact_ref.model_dump(mode="json")
+                            if attempt_artifact_ref is not None
                             else None
                         ),
                     },
@@ -263,8 +290,8 @@ class CandidateSettlement:
                             "_thinkthread_settlement": {
                                 "key": exact_attempt_id,
                                 "snapshot_id": (
-                                    attempt.artifact_ref.id
-                                    if attempt.artifact_ref is not None
+                                    attempt_artifact_ref.id
+                                    if attempt_artifact_ref is not None
                                     else None
                                 ),
                             }
@@ -317,42 +344,44 @@ class CandidateSettlement:
             iteration.disposition = disposition
 
             is_thinkthread = record.task.workspace_backend == "thinkthread"
+            rollback_target_artifact_ref: ArtifactRef | None = None
+            restored_artifact_ref: ArtifactRef | None = None
             if disposition in {"keep", "retain"}:
                 best_iteration = iteration
             else:
-                target_artifact_ref = (
+                rollback_target_artifact_ref = (
                     prior_best.artifact_ref
                     if prior_best is not None
-                    else pre_attempt_settled_artifact_ref
+                    else attempt_base_artifact_ref
                 )
                 if (
-                    target_artifact_ref is None
+                    rollback_target_artifact_ref is None
                     and prior_best is not None
                     and prior_best.git_head is not None
                 ):
-                    target_artifact_ref = ArtifactRef(
+                    rollback_target_artifact_ref = ArtifactRef(
                         kind="git_commit",
                         id=prior_best.git_head,
                         provider=record.task.workspace_backend,
                     )
-                if target_artifact_ref is None:
+                if rollback_target_artifact_ref is None:
                     raise RuntimeError("candidate rollback has no restoration target")
                 iteration.restored_to_iteration = (
                     prior_best.iteration if prior_best is not None else None
                 )
                 iteration.restored_to_git_head = (
-                    target_artifact_ref.id
-                    if target_artifact_ref.kind == "git_commit"
+                    rollback_target_artifact_ref.id
+                    if rollback_target_artifact_ref.kind == "git_commit"
                     else None
                 )
                 restored_artifact_ref = (
-                    (settled_artifact_ref or target_artifact_ref)
+                    (settled_artifact_ref or rollback_target_artifact_ref)
                     if is_thinkthread
                     else self.artifacts.restore_candidate_artifact(
                         record,
                         frozen.spec.metric_name,
                         workspace_ledger_projection,
-                        target_artifact_ref,
+                        rollback_target_artifact_ref,
                         (
                             f"goal-plus restore {candidate_id} best after "
                             f"iteration {iteration_number}"
@@ -410,7 +439,8 @@ class CandidateSettlement:
             if (
                 best_iteration is None
                 and record.task.expansion_source is not None
-                and settled.artifact_hash != record.task.expansion_source.artifact_hash
+                and settled.artifact_hash
+                != record.task.expansion_source.attempt_artifact_hash
             ):
                 raise RuntimeError(
                     "derived candidate artifact does not match its initial incumbent"
@@ -422,7 +452,7 @@ class CandidateSettlement:
                 source_candidate_id=candidate_id,
                 iteration=iteration_number,
                 git_head=attempt.git_head,
-                artifact_ref=attempt.artifact_ref,
+                artifact_ref=attempt_artifact_ref,
                 metric_name=frozen.spec.metric_name,
                 score=report.aggregate_score,
                 status="pass" if report.process_passed else "fail",
@@ -452,6 +482,56 @@ class CandidateSettlement:
                     else None
                 )
                 record.results_ledger_artifact_ref = ledger_artifact_ref
+            if (
+                attempt_artifact_ref is None
+                or settled.artifact_ref is None
+                or ledger_artifact_ref is None
+            ):
+                raise RuntimeError("settlement receipt requires exact artifact references")
+            rollback = None
+            if rollback_target_artifact_ref is not None:
+                if restored_artifact_ref is None:
+                    raise RuntimeError("rollback settlement has no restoration receipt")
+                rollback = RollbackReceipt(
+                    target_artifact_ref=rollback_target_artifact_ref,
+                    restored_artifact_ref=restored_artifact_ref,
+                    restored_to_iteration=iteration.restored_to_iteration,
+                    restored_artifact_hash=settled.artifact_hash,
+                )
+            receipt = SettlementReceipt(
+                settlement_id=settlement_id,
+                run_id=run_id,
+                candidate_id=candidate_id,
+                iteration=iteration_number,
+                attempt_base_artifact_ref=attempt_base_artifact_ref,
+                attempt_artifact_ref=attempt_artifact_ref,
+                attempt_artifact_hash=attempt.artifact_hash,
+                evidence=SettlementEvidence(
+                    metric_name=frozen.spec.metric_name,
+                    hard_score=report.aggregate_score,
+                    process_passed=report.process_passed,
+                    changed_files=list(attempt.changed_files),
+                    attempt_changed_files=list(attempt_changed_files),
+                    touched_denied_files=attempt.touched_denied_files,
+                    changed_outside_allowed=attempt.changed_outside_allowed,
+                    artifact_clean=attempt.artifact_clean,
+                    artifact_status=list(attempt.artifact_status),
+                    failure_class=failure_class,
+                    metrics=dict(iteration.metrics),
+                    log_paths=list(iteration.log_paths),
+                ),
+                disposition=disposition,
+                rollback=rollback,
+                post_settlement_artifact_ref=settled.artifact_ref,
+                ledger_artifact_ref=ledger_artifact_ref,
+                created_at=created_at,
+            )
+            iteration = IterationRecord.model_validate(
+                {
+                    **iteration.model_dump(mode="python"),
+                    "settlement_receipt": receipt,
+                }
+            )
             if inner_git_settlement is not None:
                 prior_state = dict(record.inner_agent_state)
                 attempt_heads = dict(prior_state.get("attempt_git_heads") or {})
@@ -500,8 +580,6 @@ class CandidateSettlement:
                     "shared_tool_deduplicated_entries": iteration.shared_tool_deduplicated_entries,
                     "toolization_decision": iteration.toolization_decision,
                     "toolization_advisories": iteration.toolization_advisories,
-                    "scheduler_status": iteration.scheduler_status,
-                    "schedule_task_id": iteration.schedule_task_id,
                 }
             )
             record.status = "evaluated"
@@ -514,9 +592,7 @@ class CandidateSettlement:
                 record.promotion_evidence = None
             # Commit the complete settlement before any derived projection.
             self.state.write_candidate(run_id, record)
-            if agent_session_id is not None or (
-                frozen.spec.strategy.orchestration_mode == "adaptive_search"
-            ):
+            if agent_session_id is not None:
                 try:
                     self.annotation_admission.create(
                         run_id,
@@ -527,13 +603,18 @@ class CandidateSettlement:
                 except Exception:
                     # Annotation registration never invalidates settled Evidence.
                     pass
-            if frozen.spec.strategy.orchestration_mode == "adaptive_search":
-                self.settle_scheduler(
-                    run,
-                    frozen,
-                    record,
-                    iteration,
-                )
+            if frozen.spec.strategy.requires_llm_verifier:
+                try:
+                    allocation = frozen.spec.strategy.allocation
+                    rules = allocation.verifier_rules() if allocation is not None else None
+                    self.verifier.ensure_assessment(
+                        verifier_subject(frozen, record, iteration),
+                        rules.policy_id if rules is not None else None,
+                        rules.score_names if rules is not None else [],
+                    )
+                except Exception:
+                    # Queue recovery reconstructs the task from settled Evidence.
+                    pass
             if pending_tool_copies:
                 consumed = {item.receipt_id for item in pending_tool_copies}
                 record.pending_tool_copies = [
@@ -543,12 +624,6 @@ class CandidateSettlement:
                 ]
                 for item in pending_tool_copies:
                     self.shared_tools.publication.remove_inbox(item.inbox_path)
-            report = report.model_copy(
-                update={
-                    "scheduler_status": iteration.scheduler_status,
-                    "schedule_task_id": iteration.schedule_task_id,
-                }
-            )
             record.score_report = report
             self.state.write_candidate(run_id, record)
 
@@ -581,25 +656,3 @@ class CandidateSettlement:
                     )
                 )
             return report
-
-    def settle_scheduler(
-        self,
-        run: RunRecord,
-        frozen: FrozenSpec,
-        record: CandidateRecord,
-        iteration: IterationRecord,
-    ) -> None:
-        """Register a ScheduleTask once the settlement annotation is terminal."""
-
-        if frozen.spec.strategy.search_scheduler is None:
-            return
-        try:
-            tasks = self.lanes.ensure_tasks_locked(run, frozen, record)
-            task = tasks.get(iteration.iteration)
-            iteration.scheduler_status = task.state if task is not None else "pending"
-        except Exception as exc:
-            iteration.scheduler_status = "terminal_error"
-            iteration.scheduler_error = (
-                f"ScheduleTask registration failed: {type(exc).__name__}: {exc}"
-            )
-            return

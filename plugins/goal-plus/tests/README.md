@@ -24,7 +24,8 @@ python -m pytest --run-system-tests -n 0 -q tests/test_installation_system.py
 | Codex fast slice | `pytest -m codex -q` | Codex adapter, hooks, assets, pool contract |
 | Pi fast slice | `pytest -m pi -q` | Pi extension, driver, supervisor, assets |
 | Runtime-focused | `pytest tests/test_runtime_unit.py` | Search state machine without a host |
-| Adaptive Search-focused | `pytest tests/adaptive_search -q` | scheduler tasks, lazy allocation, runtime integration, and architecture boundaries |
+| LLM Verifier-focused | `pytest tests/test_llm_verifier.py -q` | task lifecycle, immutable records, structured output, prompt binding, and drainer replay |
+| Adaptive Search-focused | `pytest tests/adaptive_search -q` | deterministic allocation, reconciliation, snapshot, and recovery |
 | Real-host ST | `pytest --run-system-tests -n 0 -m "(st and (st_codex or st_pi_rpc or st_pi_thinkthread)) or st_pi" -v -s` | maintained native launch, hooks/events, worker lifecycle, final evidence |
 
 Default tests must never launch Codex or Pi. A host behavior claim requires
@@ -225,7 +226,7 @@ attempt/snapshot/Git identities, two ledger rows, frozen verifier scores, two
 Annotation Views, artifact-only publication, reports and cleanup are checked.
 Main planning is deterministic; this does not measure autonomous optimization or
 Main deadline handling. The annotator inspects immutable code; this single-lane
-case does not cover peer comparison or Adaptive Scheduler/Allocation.
+case does not cover peer comparison or LLM Verifier/Adaptive Allocation.
 
 `ST_PI_MODEL` and `ST_PI_THINKING` now also apply to the TT fixture through native
 Pi arguments, inherited by Children. `ST_THINKTHREAD_PRESERVE_ON_FAILURE=1`
@@ -239,7 +240,7 @@ in the checkout's parent directory.
 
 ### Pi Circle Role Checks
 
-With explicit developer authorization, Annotation and Scheduler can run on the
+With explicit developer authorization, Annotation and LLM Verifier can run on the
 same pinned Pi model without a native Main or candidate inference:
 
 ```bash
@@ -249,10 +250,10 @@ ST_PI_MODEL=zai/glm-5.3-flash ST_PI_THINKING=low \
 
 This test prepares a fresh Circle Git source, settles one deterministic change
 through the normal verifier, and drives real role adapters through claim,
-context, completion and reward consumption. Both processes register in a real
+context, completion and metric consumption. Both processes register in a real
 scope owned by pytest; cleanup runs on failure too. It verifies hard Evidence
 and exact artifacts remain unchanged. It does not cover native Main, candidate
-inference, detached drainer wakeups, allocation confirmation or TT Child recovery.
+inference, detached drainer wakeups, deterministic allocation or TT Child recovery.
 `ST_PI_ROLE_TIMEOUT` bounds each role invocation (default 180 seconds).
 
 Circle pool wait/continuation tests in `st/test_st_pi_rpc.py` also accept

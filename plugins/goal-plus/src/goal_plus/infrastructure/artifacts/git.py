@@ -1,4 +1,4 @@
-"""Git reads shared by settlement, Annotation and Scheduler."""
+"""Git reads shared by settlement, Annotation, and LLM Verifier."""
 
 import subprocess
 import threading

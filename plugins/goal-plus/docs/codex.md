@@ -157,7 +157,7 @@ $goal-plus mode=autonomous Deeply optimize the kernel.
 ```
 
 `mode=autonomous` 是默认模式，适合持续优化；`mode=probe` 用于较短的 feasibility/potential/blocker
-探测。该选择只会规范化到 `raw_goal` 最后一行，不是 scheduler state。
+探测。该选择只会规范化到 `raw_goal` 最后一行，不是 Search runtime state。
 
 ## Host 集成与所有权
 
@@ -289,7 +289,7 @@ shell 操作。
 Goal Plus 状态。
 
 成功的 `search_run_verifier` 返回后，Codex PostToolUse hook 从当前 Codex host 进程同时唤醒
-Annotation 和可选 Adaptive Scheduler queue。内部 `codex exec` 完整继承当前 host 配置，并携带
+Annotation 和可选 LLM Verifier queue。内部 `codex exec` 完整继承当前 host 配置，并携带
 launcher 写入的 host provenance；MCP server 不启动模型，也不需要配置服务认证变量。
 
 ## 模型选择
@@ -321,18 +321,22 @@ continuation 中保持不变。省略 `workers=` 和 `models=` 时，child 继�
 model catalog 只负责发现。若当前 `spawn_agent` schema 无法接收所选 model override，
 启动会明确失败。
 
-Goal command 和 `search_freeze_spec` hook 会收集显式 worker、annotator、scheduler model，按
+Goal command 和 `search_freeze_spec` hook 会收集显式 worker、annotator model，按
 model 去重后并发执行最小 `codex exec -m MODEL` 推理请求。检查只使用 Codex 原生 model switch，
 不解析或覆盖 provider；认证、endpoint 与其他外部配置由当前 Codex 环境原样继承。任一显式模型
 失败时，Goal 创建或 freeze 在 agent 启动前被拒绝。完全没有显式 model 时不 probe，当前 Main
 已经运行即为其模型可用的证据。
 
-`adaptive_search` run 要求显式配置同为 Codex host 的 `search_scheduler`，保持相同初始步骤，但
-verifier 结算后可能返回 runtime 拥有的 `allocation_decision`。确认 ScheduleTask 尚未结算时，
-runtime 拒绝继续对应 lane；main 不等待或自行启动 scheduler。main 不再继续已退休 worker，而是幂等应用准确 decision，把返回的
-派生 session launch payload 映射到 `spawn_agent`，并确保活跃数不超过 `max_parallel`。child
-从 decision 指定的 verifier-backed Git settlement 启动，并继承 run Evidence 和模型
-provenance；reward 不改变最终 hard-score selection。
+`adaptive_search` run 配置确定性 Allocation policy 后自动启用固定 LLM-Verifier；policy 版本同时
+管理动态追加的 allocation 评分规则。`parallel_loops` 则仅在 Selection 使用 `quality_score` 时启用。
+Verifier 使用当前 Codex host 的继承配置，没有独立 model override。未终态 Verifier task 只在
+run-scoped 队列中顺序积压，不阻塞对应 lane 的下一轮；main 不等待或自行解释 Verifier 输出。
+Decision 出现后，main 立即用原生 `interrupt_agent` 中止对应 live worker；成功回执后才幂等应用
+准确 Decision。apply hook 会按 candidate identity 拒绝尚未收到中止接受回执的调用，不使用 deadline
+soft closeout，也不等待或复查 worker 是否已经退出。main 把返回的派生 session launch payload 映射到
+`spawn_agent`，并确保活跃数不超过 `max_parallel`。child 从 Decision 指定的
+verifier-backed Git settlement 启动，并继承 run Evidence 和模型 provenance；Adaptive metric
+不覆盖最终 Selection 的冻结排序规则。
 
 ## Worker Deadline
 
@@ -397,7 +401,8 @@ artifact path，不包含 prompt、reasoning 或 tool payload 内容。
 
 普通 Ultra work 可以在 `goal_plus_monitor_snapshot` 中启用 `orchestration` feature plugin。它把
 work item、assignment/result/decision 和 Codex 原生 operation 投影为只读视图，但不会启动、
-等待或控制任何 thread。详见 [Monitor Feature Plugins](feature-plugins.md)。
+等待或控制任何 thread。详见
+[Monitor Feature Plugin](adaptive-search.md#monitor-feature-plugin)。
 
 Codex 优先读取 `SubagentStop.agent_transcript_path` 中的 canonical agent path，也接受 hook 直接提供的
 `task_name`。`spawn_agent` PostToolUse 保存 canonical task target；即使 interrupted worker 没有发出
