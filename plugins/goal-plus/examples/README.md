@@ -2,8 +2,8 @@
 
 本目录保存可直接运行、具有明确验收指标的用户示例，以及构造新任务的准备入口。
 测试专用 SearchSpec 位于 `tests/fixtures/`，协议诊断脚本位于 `scripts/`。
-需要从外部 PyPTO 算子构造新任务时，先使用
-[PyPTO Task Preparation](pypto/task-preparation/SKILL.md)，再从生成的独立任务目录启动宿主。
+从外部 PyPTO 算子生成实现可使用 [PyPTO Generate](pypto/generate/prompt.md)，
+由 Main 在同一 Goal 中完成任务准备、实现和验收。
 
 ## 从这里开始
 

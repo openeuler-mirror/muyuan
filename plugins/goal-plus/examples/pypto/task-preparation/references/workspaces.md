@@ -30,6 +30,27 @@ task/
 提取器保留 helper 的模块边界，避免不同模块的同名常量被混合；不复制上游 PyPTO kernel。
 任务说明、prompt 和 LICENSE 也随目录交付。环境、数据及编译产物不打包进模板。
 
+## 接入 Goal Plus
+
+以生成的 `task/` 为 Search `source_path`，实现、verifier 和 Git 跟踪的
+`.agents/skills/pypto-kernel/SKILL.md` 均位于其中；源码 checkout 与准备日志留在外层。
+Verifier 命令、edit surface 和 task-local skill 路径相对此 source 定义，能随 candidate 搬迁。
+
+在任务环境运行 `python -c 'import sys; print(sys.executable)'` 获取解释器绝对路径，
+不要解析 venv 软链接。用该解释器检查 `-I -c 'import pypto, simpler, torch, golden'`；
+冻结 verifier 不继承外部 `PYTHONPATH` 或用户 site-packages。所需依赖安装到任务环境，
+为 verifier 明确配置必要的编译器、工具链和动态库路径，不向插件环境安装任务依赖。
+在不依赖交互 shell 隐式配置的新进程中，使用上述环境先做导入和最小编译、执行检查，
+通过后再运行完整输入与 reference 校验；小型检查不替代完整验收。
+
+生成任务可将合法的编译或数值校验失败记为有限的 0 分，使空实现成为可搜索的起点；
+评分包装层只转换经过校验的任务结果，并保留诊断。缺依赖、启动失败、进程异常退出或
+缺少合法 JSON 结果应报错，不能兜底成 0 分；仅存在 `valid=false` 不足以判定为有效失败。
+最终验收仍使用严格的正确性 gate。
+
+冻结后核对 baseline 日志中的实际执行与预期一致，以及 `task_skill_paths` 包含 kernel skill，
+再创建 run、派发 worker。工具返回 freeze 成功不替代 Main 对验收合同和环境的检查。
+
 ## 提取示例
 
 在加载环境后执行下面命令，将标准输出作为 `apply_patch` 输入：
