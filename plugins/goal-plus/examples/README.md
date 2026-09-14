@@ -1,7 +1,9 @@
 # Goal Plus 示例
 
-本目录只保留可以直接运行、具有明确验收指标，并且展示不同 Goal Plus 能力的用户示例。
+本目录保存可直接运行、具有明确验收指标的用户示例，以及构造新任务的准备入口。
 测试专用 SearchSpec 位于 `tests/fixtures/`，协议诊断脚本位于 `scripts/`。
+需要从外部 PyPTO 算子构造新任务时，先使用
+[PyPTO Task Preparation](pypto/task-preparation/SKILL.md)，再从生成的独立任务目录启动宿主。
 
 ## 从这里开始
 
@@ -40,7 +42,7 @@ Child、Artifact View 和 cleanup 合同由真实 ThinkThread system test 覆盖
 | [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | 带模拟器正确性门禁的程序与调度优化 | Pi，8 分钟 | Python 标准库 |
 | [EdgeBench Ad Placement](edgebench-ad-placement/README.md) | 十个公开案例上的 C++ 编译与布局优化 | Pi，8 分钟 | C++17 编译器 |
 | [AscendC Direct Search](ascendc-direct-search/README.md) | 动态生成 NPU 优化任务 | Pi，60 分钟 | 目标 Ascend NPU 和参考资料 |
-| [PyPTO DeepSeek：CSA 与 MoE](pypto-deepseek/README.md) | 运行时拉取固定 commit 的两个独立多卡优化任务 | Pi、TT + Pi 或 Codex，2 并发，时限见 prompt | PyPTO/PTOAS/simpler、CANN、两张可用卡 |
+| [PyPTO 生成与优化](pypto/README.md) | 通用任务准备，以及 CSA、MoE 两个性能优化 case | 准备 skill；优化使用 Pi、TT + Pi 或 Codex，配置见 prompt | PyPTO 工具链；性能优化另需 CANN 和两张可用卡 |
 
 ## 工作区类型
 

@@ -9,9 +9,21 @@
 | CSA | `models/deepseek_v4_flash_dspark/decode_csa.py` | 人工已有约 20% 的优化，仅作背景，不是本例实测结果 |
 | MoE | `models/deepseek_v4_flash_mtp/moe.py` | 近期较难取得明显优化 |
 
+## 与生成任务的关系
+
+任务准备使用 [PyPTO Task Preparation](../task-preparation/SKILL.md)。版本、环境、输入、
+golden 和 task-local skill 的准备约定共用，任务起点和验收目标分别处理：
+
+- 本例是优化任务，保留已有 PyPTO 实现，测量真实设备性能；下方三个宿主的 prompt 保持此目标。
+- 从 Torch reference 生成实现时，使用 preparation skill 的生成流程，在仓库外构造空 kernel、
+  输入、reference 和 CPU verifier；不要直接使用本例要求 NPU 性能优化的 prompt。
+
+准备 skill 面向构造任务的 agent；任务目录里的 kernel skill 面向实际实现的 Main/worker。
+不把准备过程和上游答案一并注入 worker，也不将生成任务的正确性分数用于性能排名。
+
 ## 源码与环境
 
-本例只保存说明和 prompt，不内置源码，也没有准备脚本或预制 SearchSpec。
+本目录保存性能优化说明和 prompt，不内置源码或预制 SearchSpec。
 Main 在运行目录的 `third_party/pypto-lib/` 获取
 [hw-native-sys/pypto-lib](https://github.com/hw-native-sys/pypto-lib)，固定到
 `b5df050ef2a2e04706b722874f66eb955bd6b4e3`，核对 HEAD 后作为 baseline。
