@@ -597,6 +597,9 @@ final audit -> terminal status -> report。`promotion_mode="apply"` 尚未 appli
 fixture 停在 prepared publication；`goal_plus_search_report` 会拒绝 active 或 needs-user record，
 确保静态报告不会捕获中间态。
 
+`goal_plus_record_search_result` 始终预留该 run 的 `report.md` 与 `report.html`，不要求文件
+已经生成；模型传入的 `report_path` 不会覆盖 runtime 路径，外部评测回执也不是 Search 报告。
+
 `report.html` 汇总全部关联 Search task、candidate/session/verifier Evidence、main agent
 usage、metric gap 和独立时间线。worker
 bar 使用观测到的 host 起止时间，配置 budget 不会伪装成实际运行时长。安装 `report`

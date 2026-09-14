@@ -52,10 +52,6 @@ class FileGoalSearchArtifacts:
 
     def report_path(self, run_id: str, fallback: str | None) -> str:
         report_path = self.root_dir / "runs" / run_id / "report.md"
-        if report_path.exists():
-            return str(report_path.resolve())
-        if fallback is not None and Path(fallback).is_file():
-            return str(Path(fallback).resolve())
         return str(report_path.resolve())
 
     def html_report_path(self, run_id: str) -> str:

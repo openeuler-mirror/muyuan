@@ -1589,8 +1589,9 @@ def test_record_search_result_prefers_existing_runtime_artifact_paths(tmp_path) 
     assert final.linked_search.promotion_artifact_path == str(promotion_path.resolve())
 
 
+@pytest.mark.parametrize("receipt_exists", [False, True])
 def test_record_search_result_reserves_final_report_paths_without_generating_files(
-    tmp_path,
+    tmp_path, receipt_exists,
 ) -> None:
     root = tmp_path / ".search"
     runtime = FileGoalPlusRuntime(root)
@@ -1608,11 +1609,14 @@ def test_record_search_result_reserves_final_report_paths_without_generating_fil
         encoding="utf-8",
     )
 
+    receipt = tmp_path / "judge-receipt.json"
+    if receipt_exists:
+        receipt.write_text('{"valid": true}\n', encoding="utf-8")
     final = runtime.record_search_result(
         record.goal_plus_id,
         run_id="run_001",
         selected_candidate_id="c001",
-        report_path="/tmp/nonexistent-intermediate-report.md",
+        report_path=str(receipt),
         summary="c001 won",
     )
 
