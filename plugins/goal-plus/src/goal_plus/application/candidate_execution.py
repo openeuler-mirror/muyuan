@@ -38,6 +38,17 @@ def require_candidate_not_recovering(record: CandidateRecord) -> None:
         )
 
 
+def require_no_pending_verification(record: CandidateRecord) -> None:
+    pending = record.verification
+    if pending is not None:
+        reason = "VerifierInProgress" if pending.state == "running" else "VerifierRecoveryRequired"
+        raise RuntimeError(
+            f"{reason}: attempt {pending.attempt_id} remains active; "
+            "a client timeout does not cancel verification. Query search_get_agent_context; "
+            "do not edit or submit another attempt until it settles or is recovered."
+        )
+
+
 def require_current_session(
     session: AgentSessionRecord, record: CandidateRecord
 ) -> AgentSessionRecord:

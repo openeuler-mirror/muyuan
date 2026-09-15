@@ -14,10 +14,12 @@ from goal_plus.workspaces import UnsupportedWorkspaceCapability
 from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
 
-def make_search(tmp_path: Path):
+def make_search(tmp_path: Path, *, inner_agent=None):
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], agent_harness="codex")
+    spec = spec_for(project)
+    spec.strategy.inner_agent = inner_agent
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -155,12 +157,14 @@ def test_recover_initial_checkpoint_without_creating_another_candidate(tmp_path)
     assert runtime.recover_candidate(run_id, task.candidate_id, prepared.recovery_id) == restored
 
 
-def test_settled_point_restores_code_and_ledger_archiving_partial_files(tmp_path):
-    runtime, run_id, task = make_search(tmp_path)
+@pytest.mark.parametrize("inner_agent", ["autoresearch", "common"])
+def test_settled_point_restores_code_and_ledger_archiving_partial_files(tmp_path, inner_agent):
+    runtime, run_id, task = make_search(tmp_path, inner_agent=inner_agent)
     runtime.run_verifier(run_id, task.candidate_id)
     before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     code = (task.workspace / "initial_program.py").read_text()
-    ledger = (task.workspace / "results.tsv").read_text()
+    ledger_path = task.workspace / "results.tsv"
+    ledger = ledger_path.read_text() if ledger_path.exists() else None
     (task.workspace / "initial_program.py").write_text("partial second iteration")
     (task.workspace / "results.tsv").write_text("partial ledger write")
     (task.workspace / "untracked.tmp").write_text("save me")
@@ -170,7 +174,7 @@ def test_settled_point_restores_code_and_ledger_archiving_partial_files(tmp_path
     assert recovery.point.artifact_ref == before.iterations[-1].workspace_artifact_after_settlement
     runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
     assert (task.workspace / "initial_program.py").read_text() == code
-    assert (task.workspace / "results.tsv").read_text() == ledger
+    assert (ledger_path.read_text() if ledger_path.exists() else None) == ledger
     assert not (task.workspace / "untracked.tmp").exists()
     assert not (task.workspace / ".tmp" / "handoff.json").exists()
     after = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)

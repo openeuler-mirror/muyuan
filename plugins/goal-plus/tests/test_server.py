@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import threading
 from pathlib import Path
 
 from fastmcp import Client, FastMCP
@@ -11,6 +13,9 @@ from goal_plus import __version__
 import goal_plus.server as server_module
 from goal_plus.server import create_mcp
 from tests._fastmcp_helpers import tools_by_name
+from tests._runtime_helpers import create_candidate, make_project
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.tools import SearchTools
 
 
 def test_ready_spec_draft_returns_actionable_tool_error_without_state_change(tmp_path):
@@ -90,6 +95,88 @@ def test_cli_exposes_package_version(
 
     assert exc_info.value.code == 0
     assert capsys.readouterr().out.strip() == f"goal-plus {__version__}"
+
+
+@pytest.mark.parametrize("deferred,worker,auto", [
+    (False, True, True), (True, True, True), (True, True, False), (True, False, False),
+])
+def test_mcp_verifier_submit_and_wait_deliver_results(tmp_path, monkeypatch, deferred, worker, auto):
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    run_id, candidate_id, _ = create_candidate(runtime, make_project(tmp_path))
+    session = runtime.start_agent_session(run_id, candidate_id, {})
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    view_reads = []
+
+    def execute(command, **kwargs):
+        started.set()
+        assert release.wait(10)
+        return subprocess.CompletedProcess(command, 0, '{"combined_score":1}\n', "")
+
+    facade = SearchTools(runtime)
+    verify = facade.goal_plus_search_run_verifier
+
+    def complete(*args, **kwargs):
+        try:
+            return verify(*args, **kwargs)
+        finally:
+            if kwargs.get("attempt_id") is None:
+                finished.set()
+
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", execute)
+    if auto:
+        monkeypatch.setattr(runtime, "should_inject_global_evidence_after_verifier", lambda _: True)
+    monkeypatch.setattr(runtime, "get_global_evidence", lambda *args, **kwargs: view_reads.append(args) or [])
+    monkeypatch.setattr(facade, "goal_plus_search_run_verifier", complete)
+    monkeypatch.setattr(server_module, "SearchTools", lambda *args, **kwargs: facade)
+    monkeypatch.setattr(server_module, "VERIFIER_FAST_WAIT_SECONDS", 0 if deferred else 10)
+
+    async def check():
+        async with Client(create_mcp(runtime.root_dir)) as client:
+            if not deferred:
+                release.set()
+            try:
+                response = await client.call_tool("goal_plus_search_run_verifier", {
+                    "run_id": run_id, "candidate_id": candidate_id,
+                    "agent_session_id": session.agent_session_id if worker else None,
+                    "hypothesis": "One exact attempt",
+                })
+                result = json.loads(response.content[0].text)
+                if deferred:
+                    assert result["candidate_action"] == "wait_for_verifier"
+                    assert "aggregate_score" not in result
+                    assert await asyncio.to_thread(started.wait, 10)
+                    assert not finished.is_set()
+                    pending = runtime.candidate_creation.state.read_candidate(run_id, candidate_id).verification
+                    assert result["attempt_id"] == pending.attempt_id
+                    wait_args = {
+                        "run_id": run_id, "candidate_id": candidate_id,
+                        "attempt_id": pending.attempt_id,
+                        "agent_session_id": session.agent_session_id if worker else None,
+                        "timeout_seconds": 0,
+                    }
+                    response = await client.call_tool("goal_plus_search_run_verifier", wait_args)
+                    assert json.loads(response.content[0].text)["attempt_id"] == pending.attempt_id
+                    response = await client.call_tool("goal_plus_search_run_verifier", {**wait_args, "timeout_seconds": 0.01})
+                    assert json.loads(response.content[0].text)["state"] == "pending"
+                    invalid = await client.call_tool("goal_plus_search_run_verifier", {**wait_args, "timeout_seconds": -1}, raise_on_error=False)
+                    assert invalid.is_error
+                    assert not finished.is_set()
+                else:
+                    assert result["process_passed"] is True
+                    assert result["global_evidence_injected"] is True
+            finally:
+                release.set()
+                assert await asyncio.to_thread(finished.wait, 10)
+            if deferred:
+                response = await client.call_tool("goal_plus_search_run_verifier", wait_args)
+                result = json.loads(response.content[0].text)
+                assert result["attempt_id"] == pending.attempt_id
+                assert result["aggregate_score"] == 1
+                assert result.get("global_evidence_injected", False) is (worker and auto)
+            assert len(runtime.list_iterations(run_id, candidate_id)) == 1
+            assert len(view_reads) == int(worker and auto)
+
+    asyncio.run(check())
 
 
 def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:

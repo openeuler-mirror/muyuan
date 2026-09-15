@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import subprocess
+import threading
 from unittest.mock import Mock
 
 import pytest
@@ -34,7 +37,51 @@ from goal_plus.models import (
 )
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import GoalPlusTools, SearchTools, require_tool_role
-from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
+from tests._runtime_helpers import create_candidate, make_project, spec_for, start_host_verified_goal
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_wait_verifier_delivers_exact_attempt_without_resubmitting(tmp_path, monkeypatch, returncode):
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    run_id, candidate_id, _ = create_candidate(runtime, make_project(tmp_path))
+    session = runtime.start_agent_session(run_id, candidate_id)
+    tools = SearchTools(runtime)
+    started, release = threading.Event(), threading.Event()
+
+    def execute(command, **kwargs):
+        started.set()
+        assert release.wait(10)
+        return subprocess.CompletedProcess(command, returncode, '{"combined_score":1}\n', "")
+
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", execute)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(tools.goal_plus_search_run_verifier, run_id, candidate_id,
+                                 agent_session_id=session.agent_session_id, hypothesis="one attempt")
+        try:
+            assert started.wait(10)
+            before = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
+            args = dict(run_id=run_id, candidate_id=candidate_id, attempt_id=before.verification.attempt_id,
+                        agent_session_id=session.agent_session_id)
+            assert tools.goal_plus_search_run_verifier(**args)["state"] == "pending"
+            with pytest.raises(ValueError, match="VerifierAttemptUnavailable"):
+                tools.goal_plus_search_run_verifier(**{**args, "attempt_id": "unknown"})
+            with pytest.raises(ValueError, match="GoalPlusSessionMismatch"):
+                tools.goal_plus_search_run_verifier(**{**args, "candidate_id": "c999"})
+            with pytest.raises(ValueError, match="VerifierQueryInvalid"):
+                tools.goal_plus_search_run_verifier(**args, hypothesis="another attempt")
+            assert runtime.candidate_creation.state.read_candidate(run_id, candidate_id) == before
+        finally:
+            release.set()
+        report = future.result(timeout=10)
+        result = tools.goal_plus_search_run_verifier(**args)
+        assert result == report
+        with runtime.settlement.state.lock_verifier(run_id, candidate_id):
+            assert tools.goal_plus_search_run_verifier(**args)["state"] == "pending"
+        assert result["process_passed"] is (returncode == 0)
+        # A new facade must recover the result from state, not a server-local task cache.
+        assert SearchTools(FileSearchRuntime(runtime.root_dir)).goal_plus_search_run_verifier(**args) == result
+        iteration, = runtime.list_iterations(run_id, candidate_id)
+        assert iteration["hypothesis"] == "one attempt"
 
 
 def spec_dict() -> dict:
@@ -507,6 +554,7 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         agent_session_id="agent_001",
         hypothesis="try a fused path",
         toolization_decision=None,
+        on_submitted=None,
     )
     assert worker_verifier_report["aggregate_score"] == 1.0
     assert "global_evidence_injected" not in worker_verifier_report
@@ -518,6 +566,7 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         agent_session_id="agent_001",
         hypothesis="try a fused path",
         toolization_decision=None,
+        on_submitted=None,
     )
     iterations = tools.goal_plus_search_list_iterations("agent_001")["items"]
     assert len(iterations) == 2

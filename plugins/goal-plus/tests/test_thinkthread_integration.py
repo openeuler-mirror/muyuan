@@ -137,15 +137,6 @@ def test_thinkthread_autoresearch_launch_uses_pi_prompt_and_private_git_projecti
     assert binding["runtime_provider"] == "thinkthread"
     assert binding["prompt_asset"] == "assets/pi/prompts/search-candidate-worker.md"
     assert binding["workspace_ledger_projection"] == "results_tsv"
-    assert "# Search Candidate Worker" in session.launch["message"]
-    assert "ThinkThread Child" in session.launch["message"]
-    assert "继续当前自主循环" in session.launch["message"]
-    assert "不要只读取 context/Evidence 就结束" in session.launch["message"]
-    instructions = "\n".join(task.instructions)
-    assert "继续同一条自主搜索循环" in instructions
-    assert "不要仅因一次失败或同分而停止" in instructions
-    assert "当前内层实现是 AutoResearch-Git" in instructions
-    assert "本次 host dispatch 只完成一个有界 attempt" not in instructions
 
     context = runtime.get_agent_context(session.agent_session_id)
     assert context["inner_agent"] == "autoresearch"

@@ -155,6 +155,11 @@ runtime 从 run 创建到 promoted、aborted 或 failed 期间独占每个引用
 `GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR`；多个 runtime 进程或容器共享设备时，该变量必须指向
 同一个 host 共享目录，否则只能保证单个文件系统范围内不超售。
 
+ThinkThread verifier 使用相同锁目录和冻结 `resource_lock` 的精确字符串身份；相同资源串行，
+不同资源并行，不从 Root 的逻辑设备编号推断远端设备。执行结果未知时保留原 request 的持久
+占用，其他请求收到 `VerifierResourceNeedsRecovery`，原请求确认完成后释放。只有共享该目录
+且使用同一实际资源身份的控制器参与互斥；不约束外部任务或独立机器的资源使用。
+
 ## Candidate 循环
 
 新的 Codex/Pi spec 使用 `orchestration_mode="parallel_loops"`。一次 Search

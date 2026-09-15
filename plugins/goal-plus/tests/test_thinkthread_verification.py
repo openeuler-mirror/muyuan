@@ -1,6 +1,8 @@
 """Provider and settlement contracts, independent of native session orchestration."""
 
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import pytest
 
@@ -9,7 +11,10 @@ from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.thinkthread_agent_posix import AgentPosixBridgeError
 from tests._runtime_helpers import make_project
-from tests._thinkthread_candidates import bind_candidate, verify_candidate
+from tests._thinkthread_candidates import attempt_parameters, bind_candidate, verify_candidate
+from goal_plus.domain.evidence import CandidateAttemptAccepted
+from goal_plus.ports.thinkthread_verification import DeferredCandidateAttempt
+from goal_plus.tools import SearchTools
 from tests._thinkthread_sdk import IntegratedAgentPosix, thinkthread_spec
 
 
@@ -17,13 +22,15 @@ from tests._thinkthread_sdk import IntegratedAgentPosix, thinkthread_spec
 def prepared_candidates(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
-    def prepare(*, inner_agent="common", count=1):
+    def prepare(*, inner_agent="common", count=1, resource=None):
         project = make_project(tmp_path)
         sdk = IntegratedAgentPosix(project)
         monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: sdk)
         runtime = FileSearchRuntime(tmp_path.parent / (tmp_path.name + "-runtime"))
         spec = thinkthread_spec(project)
         spec.strategy.inner_agent = inner_agent
+        spec.process_verifiers[0].resource_lock = resource
+        monkeypatch.setenv("GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR", str(tmp_path / "locks"))
         frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="pi")
         run_id = runtime.create_run(frozen.frozen_spec_id)
         tasks = runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=count).plan_id)
@@ -35,6 +42,30 @@ def prepared_candidates(tmp_path, monkeypatch):
 
 def candidate_record(runtime, session):
     return runtime.candidate_creation.state.read_candidate(session.run_id, session.candidate_id)
+
+
+def test_common_verifier_queries_exact_tt_attempt_without_resubmitting(prepared_candidates):
+    runtime, sdk, [session] = prepared_candidates()
+    params = attempt_parameters(runtime, session)
+    submission = DeferredCandidateAttempt(**{key: value for key, value in params.items() if key != "hypothesis"},
+                                          request_id="request-1")
+    tools = SearchTools(runtime, candidate_attempt=submission)
+    args = {key: params[key] for key in ("run_id", "candidate_id", "agent_session_id")}
+    accepted = tools.goal_plus_search_run_verifier(**args, hypothesis=params["hypothesis"])
+    assert accepted["candidate_action"] == "end_turn"
+    tools = SearchTools(runtime, candidate_attempt=replace(
+        submission, prior=CandidateAttemptAccepted.model_validate(accepted),
+    ))
+    before = candidate_record(runtime, session)
+    operations = list(sdk.operations)
+    assert tools.goal_plus_search_run_verifier(**args, attempt_id=accepted["attempt_id"]) == accepted
+    with pytest.raises(ValueError, match="VerifierAttemptUnavailable"):
+        tools.goal_plus_search_run_verifier(**args, attempt_id="unknown")
+    assert candidate_record(runtime, session) == before
+    assert sdk.operations == operations
+    report = verify_candidate(runtime, sdk, session)
+    assert tools.goal_plus_search_run_verifier(**args, attempt_id=report.attempt_id) == report.model_dump(mode="json")
+    assert len(candidate_record(runtime, session).iterations) == 1
 
 
 @pytest.mark.parametrize("mismatch", ["child", "snapshot", "inner_git"])
@@ -118,7 +149,7 @@ def test_request_close_recovery_preserves_evidence_without_repeating_verifier(pr
 
 
 def test_definitive_verifier_failure_records_one_failed_attempt(prepared_candidates):
-    runtime, sdk, [session] = prepared_candidates()
+    runtime, sdk, [session, second] = prepared_candidates(count=2, resource="device")
     sdk.definitive_failure_once.add("fs.run")
     report = verify_candidate(runtime, sdk, session)
     assert report.process_passed is False
@@ -129,6 +160,75 @@ def test_definitive_verifier_failure_records_one_failed_attempt(prepared_candida
     record = candidate_record(runtime, session)
     assert len(record.iterations) == 1
     assert record.iterations[0].failure_class == "VerifierInfrastructureFailure"
+    assert verify_candidate(runtime, sdk, second).process_passed
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_verifier_execution_coordinates_resources(prepared_candidates, monkeypatch, shared):
+    from goal_plus.bootstrap import build_thinkthread_verifiers
+
+    runtime, sdk, sessions = prepared_candidates(count=2)
+    run = runtime.search_run.state.read_run(sessions[0].run_id)
+    frozen = runtime.search_run.state.read_frozen_spec(run.frozen_spec_id)
+    _, verifiers = build_thinkthread_verifiers(runtime.root_dir, runtime.verifiers)
+    first_entered, second_entered, release = threading.Event(), threading.Event(), threading.Event()
+    original = sdk.invoke
+    calls = []
+
+    def execute(method, params=None, **kwargs):
+        if method == "fs.run":
+            calls.append(params["requestId"])
+            if len(calls) == 1:
+                first_entered.set()
+                assert release.wait(10)
+            else:
+                second_entered.set()
+        return original(method, params, **kwargs)
+
+    monkeypatch.setattr(sdk, "invoke", execute)
+
+    def verify(index):
+        command = frozen.spec.process_verifiers[0].model_copy(update={
+            "resource_lock": "device" if shared or index == 0 else "another-device",
+        })
+        return verifiers.run_thinkthread_command(
+            client=sdk, run=run, frozen=frozen, candidate_id=sessions[index].candidate_id,
+            artifact_ref=run.source_artifact_ref, command=command, phase="candidate",
+            iteration=1, command_index=0,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(verify, 0)
+        try:
+            assert first_entered.wait(10)
+            second = executor.submit(verify, 1)
+            assert second_entered.wait(0.1 if shared else 10) is (not shared)
+        finally:
+            release.set()
+        assert first.result(timeout=10).passed
+        assert second.result(timeout=10).passed
+    assert len(set(calls)) == 2
+
+
+def test_unknown_verifier_holds_resource_until_exact_request_recovers(prepared_candidates):
+    from goal_plus.infrastructure.state.resource_locks import verifier_resource_lock
+
+    runtime, sdk, [first, second] = prepared_candidates(count=2, resource="device")
+    sdk.completion_unknown_once.add("fs.run")
+    sdk.request_status_completion_unknown_once.add("fs.run")
+    with pytest.raises((AgentPosixBridgeError, RuntimeError)):
+        verify_candidate(runtime, sdk, first)
+    before = [params for op, params in sdk.operations if op == "fs.run"]
+    with pytest.raises(RuntimeError, match="VerifierResourceNeedsRecovery"):
+        verify_candidate(runtime, sdk, second)
+    with pytest.raises(RuntimeError, match="VerifierResourceNeedsRecovery"):
+        with verifier_resource_lock("device"):
+            pytest.fail("local verifier entered an unresolved remote resource")
+    assert [params for op, params in sdk.operations if op == "fs.run"] == before
+    assert verify_candidate(runtime, sdk, first).process_passed
+    assert verify_candidate(runtime, sdk, second).process_passed
+    with verifier_resource_lock("device"):
+        pass
 
 
 def test_pending_candidate_request_does_not_block_another_candidate(prepared_candidates):

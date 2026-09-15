@@ -2,17 +2,19 @@ from __future__ import annotations
 
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from goal_plus.ports.candidate_creation import CandidateMaterialization
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
+    require_no_pending_verification,
 )
 
 from goal_plus.domain.artifacts import (
     ReferenceWorkspaceRecord,
 )
 from goal_plus.domain.evidence import (
+    PendingVerification,
     ScoreReport,
 )
 from goal_plus.domain.promotion import (
@@ -195,10 +197,13 @@ class FileSearchRuntime:
         agent_session_id: str | None = None,
         hypothesis: str | None = None,
         toolization_decision: ToolizationDecision | dict[str, Any] | None = None,
+        *, on_submitted: Callable[[PendingVerification], None] | None = None,
     ) -> ScoreReport:
         if scope not in {"process", "promotion"}:
             raise ValueError("verifier scope must be 'process' or 'promotion'")
-        with self.settlement.state.lock_verifier(run_id, candidate_id):
+        require_no_pending_verification(self.candidate_creation.state.read_candidate(run_id, candidate_id))
+        with self.settlement.state.lock_verifier(run_id, candidate_id, blocking=False):
+            require_no_pending_verification(self.candidate_creation.state.read_candidate(run_id, candidate_id))
             require_candidate_not_recovering(
                 self.candidate_creation.state.read_candidate(run_id, candidate_id)
             )
@@ -219,6 +224,7 @@ class FileSearchRuntime:
                 agent_session_id=agent_session_id,
                 hypothesis=hypothesis,
                 toolization_decision=toolization_decision,
+                on_submitted=on_submitted,
             )
             adaptive_search_enabled = False
             if scope == "process":
@@ -232,6 +238,20 @@ class FileSearchRuntime:
         ):
             self.evidence_reads.register_annotations(run_id)
         return report
+
+    def verifier_result(
+        self, run_id: str, candidate_id: str, attempt_id: str,
+        agent_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        # Validate identity before touching the settlement lock.
+        self.queries.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
+        try:
+            with self.settlement.state.lock_verifier(run_id, candidate_id, blocking=False):
+                return self.queries.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
+        except RuntimeError as exc:
+            if not str(exc).startswith("VerifierInProgress:"):
+                raise
+        return self.queries.verifier_result(run_id, candidate_id, attempt_id, agent_session_id, running=True)
 
     def report(self, run_id: str) -> Path:
         return self.reporter.report(run_id)

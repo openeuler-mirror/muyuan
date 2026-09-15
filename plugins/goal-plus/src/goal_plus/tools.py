@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.domain.goal_commands import GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED
 from goal_plus.domain.goal_authorization import GOAL_PLUS_ENTRYPOINT_REQUIRED
 from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
+from goal_plus.domain.evidence import PendingVerification
 from goal_plus.domain.search import (
     AgentSessionRecord,
     CandidateProposal,
@@ -386,8 +387,24 @@ class SearchTools:
         agent_session_id: str | None = None,
         hypothesis: str | None = None,
         toolization_decision: ToolizationDecision | dict[str, Any] | None = None,
+        *,
+        inject_evidence: bool = True,
+        on_submitted: Callable[[PendingVerification], None] | None = None,
+        attempt_id: str | None = None,
     ) -> dict[str, Any]:
-        self._require_target("goal_plus_search_run_verifier", run_id=run_id)
+        self._require_target("goal_plus_search_run_verifier", run_id=run_id, agent_session_id=agent_session_id)
+        if attempt_id is not None:
+            if not attempt_id or scope != "process" or hypothesis is not None or toolization_decision is not None or on_submitted is not None:
+                raise ValueError("VerifierQueryInvalid: provide only the process attempt identity")
+            result = (
+                self.runtime.thinkthread_verification.result(
+                    self.candidate_attempt, run_id, candidate_id, agent_session_id, attempt_id,
+                ) if self.candidate_attempt is not None else
+                self.runtime.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
+            )
+            return self.verifier_response(run_id, agent_session_id, result) if inject_evidence else result
+        if on_submitted is not None and not callable(on_submitted):
+            raise ValueError("on_submitted must be an internal callback")
         if self.candidate_attempt is not None:
             return self.runtime.thinkthread_verification.accept(
                 self.candidate_attempt, run_id=run_id, candidate_id=candidate_id,
@@ -401,9 +418,17 @@ class SearchTools:
             agent_session_id=agent_session_id,
             hypothesis=hypothesis,
             toolization_decision=toolization_decision,
+            on_submitted=on_submitted,
         )
         result = report.model_dump(mode="json")
-        if scope != "process" or agent_session_id is None:
+        if scope != "process" or not inject_evidence:
+            return result
+        return self.verifier_response(run_id, agent_session_id, result)
+
+    def verifier_response(
+        self, run_id: str, agent_session_id: str | None, result: dict[str, Any],
+    ) -> dict[str, Any]:
+        if agent_session_id is None or "aggregate_score" not in result:
             return result
         try:
             if not self.runtime.should_inject_global_evidence_after_verifier(run_id):

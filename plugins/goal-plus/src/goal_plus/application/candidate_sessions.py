@@ -5,6 +5,7 @@ from typing import Any, Literal
 from goal_plus.application.adaptive_admission import AdaptiveAdmission
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
+    require_no_pending_verification,
     require_current_session,
     require_session_execution,
     require_worker_iteration_state,
@@ -263,6 +264,7 @@ class CandidateSessions:
 
             candidate_record = self.state.read_candidate(run_id, candidate_id)
             require_candidate_not_recovering(candidate_record)
+            require_no_pending_verification(candidate_record)
             if replaced_agent_session_id is not None:
                 require_current_session(self.state.read_agent_session(replaced_agent_session_id), candidate_record)
                 if candidate_record.status not in {"created", "evaluated"}:
@@ -529,6 +531,7 @@ class CandidateSessions:
             session.run_id,
             session.candidate_id,
         )
+        require_no_pending_verification(candidate_record)
         if candidate_record.status not in {"created", "evaluated"}:
             raise RuntimeError(
                 f"cannot continue candidate in status {candidate_record.status}"

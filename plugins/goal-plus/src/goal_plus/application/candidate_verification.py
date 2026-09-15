@@ -13,6 +13,7 @@ from goal_plus.domain.artifacts import (
     ArtifactRef,
 )
 from goal_plus.domain.evidence import (
+    PendingVerification,
     ScoreReport,
     VerifierResult,
 )
@@ -34,6 +35,7 @@ from goal_plus.ports.state import (
     RunRecord,
 )
 from goal_plus.application.candidate_settlement import CandidateSettlement
+from goal_plus.application.settlement_policy import candidate_attempt_id
 from goal_plus.application.candidate_sessions import CandidateSessions
 from goal_plus.application.candidate_artifacts import CandidateArtifacts
 from goal_plus.application.candidate_ledger import CandidateLedger
@@ -86,6 +88,7 @@ class CandidateVerification:
         agent_session_id: str | None = None,
         hypothesis: str | None = None,
         toolization_decision: ToolizationDecision | dict[str, Any] | None = None,
+        *, on_submitted: Callable[[PendingVerification], None] | None = None,
     ) -> ScoreReport:
         """Subagent self-score with ``agent_session_id``; main final verify
         without it. Process calls record ranking iterations; promotion calls
@@ -222,35 +225,57 @@ class CandidateVerification:
                     "candidate attempt is not fully captured by its artifact"
                 )
 
+        if scope == "process":
+            pending = PendingVerification(
+                attempt_id=candidate_attempt_id(
+                    run_id=run_id, candidate_id=candidate_id,
+                    iteration=len(record.iterations) + 1, artifact_ref=attempt_artifact_ref,
+                ),
+                artifact_ref=attempt_artifact_ref,
+                started_at=self.clock.timestamp(),
+            )
+            with self.state.lock_run(run_id):
+                current = self.state.read_candidate(run_id, candidate_id)
+                current.verification = pending
+                self.state.write_candidate(run_id, current)
+            try:
+                if on_submitted is not None:
+                    on_submitted(pending)
+                with self.verifiers.workspace(record, attempt_artifact_ref) as task:
+                    verification_record = record.model_copy(update={"task": task})
+                    report = self._precheck_candidate(frozen, verification_record)
+                    if report is None:
+                        report = self.verifiers.run_commands(
+                            run, frozen, verification_record, frozen.spec.process_verifiers, scope
+                        )
+                    return self.settlement.record(
+                        run_id=run_id, candidate_id=candidate_id, frozen=frozen, report=report,
+                        attempt=state, pre_attempt_settled_head=pre_attempt_settled_head,
+                        pre_attempt_settled_artifact_ref=pre_attempt_artifact_ref,
+                        attempt_changed_files=attempt_changed_files, hypothesis=hypothesis,
+                        agent_session_id=agent_session_id, session=session,
+                        toolization_decision=normalized_toolization_decision,
+                        local_task=task,
+                    )
+            except BaseException as exc:
+                with self.state.lock_run(run_id):
+                    current = self.state.read_candidate(run_id, candidate_id)
+                    if (
+                        current.verification is not None
+                        and current.verification.attempt_id == pending.attempt_id
+                    ):
+                        current.verification.state = "needs_recovery"
+                        current.verification.error = f"{type(exc).__name__}: {exc}"
+                        self.state.write_candidate(run_id, current)
+                raise
+
         precheck = self._precheck_candidate(frozen, record)
         if precheck is not None:
             report = precheck
         else:
-            commands = (
-                frozen.spec.process_verifiers
-                if scope == "process"
-                else frozen.spec.promotion_verifiers
-            )
-            if not commands:
-                commands = frozen.spec.process_verifiers
+            commands = frozen.spec.promotion_verifiers or frozen.spec.process_verifiers
             report = self.verifiers.run_commands(
                 run, frozen, record, commands, scope
-            )
-
-        if scope == "process":
-            return self.settlement.record(
-                run_id=run_id,
-                candidate_id=candidate_id,
-                frozen=frozen,
-                report=report,
-                attempt=state,
-                pre_attempt_settled_head=pre_attempt_settled_head,
-                pre_attempt_settled_artifact_ref=pre_attempt_artifact_ref,
-                attempt_changed_files=attempt_changed_files,
-                hypothesis=hypothesis,
-                agent_session_id=agent_session_id,
-                session=session,
-                toolization_decision=normalized_toolization_decision,
             )
 
         if report.promotion_passed is None:

@@ -449,16 +449,22 @@ View。receipt 只用于报告“某个 View 是否在后续尝试前可见”�
 
 | 工具 | 调用方 | 用途 |
 | --- | --- | --- |
-| `goal_plus_search_run_verifier` | candidate worker / parent fallback | 提交准确 attempt，运行 process verifier 并结算 candidate-local best |
+| `goal_plus_search_run_verifier` | candidate worker / parent fallback | 提交准确 attempt；带 attempt_id 时查询或等待原结果 |
 | `goal_plus_search_stage_shared_tool` | candidate worker | 从 `.tmp/tool-drafts/` stage 新工具或 `tool_family_catalog` head 的实质 revision |
 | `goal_plus_search_copy_shared_tool` | candidate worker | 将 Tool View 绑定的 immutable snapshot 复制到本地 inbox，供阅读或自主复用 |
 
 worker 调用 process verifier 时必须提供一行客观
-`hypothesis`，说明实际实施的尝试。Git/Pi RPC 的 `goal_plus_search_run_verifier` 同步返回包含
-candidate-local `keep`、`retain`、`discard` 或 `failure` 的 `ScoreReport`。ThinkThread Message
+`hypothesis`，说明实际实施的尝试。本地 Codex/Pi 共用 MCP：提交不可变快照后短等，完成时返回包含
+candidate-local `keep`、`retain`、`discard` 或 `failure` 的 `ScoreReport`，未完成则返回 pending 和
+准确 attempt_id。通过同一工具带 attempt_id 继续等待，不再传 hypothesis、toolization_decision
+或 promotion scope；timeout_seconds 仅限制查询等待，范围为 0–60，默认 30，0 表示只查询。
+等待结束不会取消验证或启动新 attempt，worker 保持工作区不变直到结算。
+资源等待不消耗 verifier 执行 timeout；执行仍遵守冻结的时限。ThinkThread Message
 proxy 因 quiescent snapshot 约束先返回 `CandidateAttemptAccepted`，完整
 `CandidateAttemptFeedback` 在准确 invocation 完成结算时产生，并注入同一 retained Child 的下一次
-wake。两条路径都向 canonical `.gp` ledger 追加准确记录；只有 inner binding 声明
+wake。回执的 candidate_action 为 wait_for_verifier 时查询原 attempt，为 end_turn 时结束
+当前 turn 等待宿主反馈。TT 查询 accepted attempt 不重新封存或提交；结算后返回准确 ScoreReport。
+两条路径都向 canonical `.gp` ledger 追加准确记录；只有 inner binding 声明
 `workspace_ledger_projection="results_tsv"` 时才另写并提交 `workspace/results.tsv` 兼容投影，
 `common` 不生成该文件。ThinkThread AutoResearch-Git 的 context 返回逻辑路径 `results.tsv`，
 但文件实际位于 Child-private workspace，Root 不会物化本地 candidate 路径。它的 public
@@ -467,8 +473,8 @@ wake。两条路径都向 canonical `.gp` ledger 追加准确记录；只有 inn
 
 确定性的 verifier 失败也是 attempt 结果，不是缺失结果。Git workspace_provider 的 non-zero exit、timeout 和
 process start failure 都返回失败 `ScoreReport` 并写入带 `attempt_id` 的 iteration；TT 已确认的
-verifier/provider execution error 同样写失败 iteration。只有 provider completion outcome unknown
-才进入 `needs_recovery`，此时不能伪造成功或失败记录。
+verifier/provider execution error 同样写失败 iteration。执行结果未知或本地工作区无法同步时进入
+`needs_recovery`；前者不伪造成功或失败记录，后者保留已结算 Evidence。
 
 启用 `shared_dir` 后，worker 可以同时提交 `toolization_decision`。`staged`
 需要工具名和至少一个正向 signal，`not_applicable`

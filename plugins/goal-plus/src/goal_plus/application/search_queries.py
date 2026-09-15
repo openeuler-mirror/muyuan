@@ -147,6 +147,30 @@ class SearchQueries:
         session = self.sessions.session(agent_session_id)
         return self.list_iterations(session.run_id, session.candidate_id)
 
+    def verifier_result(
+        self, run_id: str, candidate_id: str, attempt_id: str,
+        agent_session_id: str | None = None, *, running: bool = False,
+    ) -> dict[str, Any]:
+        if agent_session_id is not None:
+            session = self.sessions.session(agent_session_id)
+            if (session.run_id, session.candidate_id) != (run_id, candidate_id):
+                raise ValueError("GoalPlusSessionMismatch: verifier target differs from candidate session")
+        record = self.state.read_candidate(run_id, candidate_id)
+        pending, report = record.verification, record.score_report
+        if pending is not None and pending.attempt_id != attempt_id:
+            pending = None
+        if report is not None and report.attempt_id == attempt_id and not running:
+            return report.model_copy(update={"verification": pending}).model_dump(mode="json")
+        if pending is None and (report is None or report.attempt_id != attempt_id):
+            raise ValueError("VerifierAttemptUnavailable: attempt is not pending or the latest result of this candidate")
+        state = "needs_recovery" if not running and pending is not None and pending.state == "needs_recovery" else "pending"
+        return {
+            "run_id": run_id, "candidate_id": candidate_id, "attempt_id": attempt_id,
+            "state": state,
+            "verification": pending.model_dump(mode="json") if pending is not None else None,
+            "candidate_action": "handoff_to_main" if state == "needs_recovery" else "wait_for_verifier",
+        }
+
     def current_process_evidence(
         self,
         run_id: str,

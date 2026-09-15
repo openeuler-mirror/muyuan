@@ -15,6 +15,7 @@ from goal_plus.domain.evidence import ScoreReport, VerifierResult
 from goal_plus.domain.search import FrozenSpec, VerifierCommand, VerifierRole
 from goal_plus.domain.serialization import canonical_json
 from goal_plus.infrastructure.state.files import write_text
+from goal_plus.infrastructure.state.resource_locks import verifier_resource_lock
 from goal_plus.ports.state import RunRecord
 from goal_plus.thinkthread_agent_posix import AgentPosixBridgeError, AgentPosixSdkClient
 from goal_plus.thinkthread_artifacts import (
@@ -164,18 +165,29 @@ class ThinkThreadVerifiers:
             f"{safe_verifier_name(command.name)}.log"
         )
         request_id: str | None = None
+        result = None
         try:
-            result, request_id = self.mutations.invoke_provider_mutation(
-                client=client,
-                run_id=run.run_id,
-                candidate_id=candidate_id,
-                method="fs.run",
-                operation="verifier_run",
-                identity=identity,
-                params=params,
-                timeout_seconds=float(command.timeout_seconds) + 5.0,
-                recovery_deadline=recovery_deadline,
-            )
+            request_id = self.mutations.thinkthread_request_id("verifier_run", run.run_id, identity)
+            definitive_error = None
+            with verifier_resource_lock(command.resource_lock, request_id=request_id):
+                try:
+                    result, request_id = self.mutations.invoke_provider_mutation(
+                        client=client,
+                        run_id=run.run_id,
+                        candidate_id=candidate_id,
+                        method="fs.run",
+                        operation="verifier_run",
+                        identity=identity,
+                        params=params,
+                        timeout_seconds=float(command.timeout_seconds) + 5.0,
+                        recovery_deadline=recovery_deadline,
+                    )
+                except AgentPosixBridgeError as exc:
+                    if exc.completion_unknown:
+                        raise
+                    definitive_error = exc
+            if definitive_error is not None:
+                raise definitive_error
             stdout, stderr = decode_fs_run_output(result)
             returncode, failure_class = self.thinkthread_exit_status(result)
         except AgentPosixBridgeError as exc:
@@ -201,6 +213,8 @@ class ThinkThreadVerifiers:
                 failure_class="VerifierInfrastructureFailure",
             )
         except (TypeError, ValueError) as exc:
+            if result is None:
+                raise
             metrics = {
                 "provider": "thinkthread",
                 "snapshot_id": artifact_ref.id,

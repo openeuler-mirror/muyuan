@@ -126,7 +126,7 @@ class HostCandidateLaunch:
             short_intent = "在同一 candidate 中完成下一个有界尝试"
             directive_text = (
                 "沿用当前 candidate、workspace、运行时上下文和 Evidence，完成一个新的"
-                "有界尝试；调用一次 goal_plus_search_run_verifier 后返回，不要自行开始下一轮。"
+                "有界尝试；通过 goal_plus_search_run_verifier 提交并按回执等待结果，不要自行开始下一轮。"
             )
         else:
             short_intent = "继续同一条自主候选循环"

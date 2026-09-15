@@ -205,7 +205,8 @@ Plus MCP，并由 runtime 在 `goal_plus_search_run_verifier` 边界形成 autho
    `goal_plus_search_stage_shared_tool`；否则记录具体排除项。
 5. 调用 `goal_plus_search_run_verifier`，用一句 `hypothesis` 描述实际完成的尝试，并在启用
    `shared_dir` 时传入 `toolization_decision`。
-6. Git/Pi RPC 同步收到 `ScoreReport`；ThinkThread 先收到 accepted receipt，并在同一 retained
+6. 本地 Codex/Pi 收到 `ScoreReport`，或在 pending 后通过 `goal_plus_search_run_verifier`
+   带原 attempt_id 等待准确结果；等待期间保持工作区不变。ThinkThread 先收到 end_turn 回执，结束 turn，并在同一 retained
    Child 的下一次 wake 中收到 authoritative feedback。收到 feedback 后，`autoresearch` 从已结算
    工作区继续下一轮；`common` 返回 handoff，由 main 决定是否 continuation 同一
    candidate/session。

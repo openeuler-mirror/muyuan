@@ -744,7 +744,7 @@ async function runThinkThreadWorkerToolSerial(
 	if ("_inner_git_attempt" in requestParams) {
 		throw new Error("ThinkThread private inner Git metadata is extension-owned");
 	}
-	if (name === "goal_plus_search_run_verifier" && workerInnerGitBinding) {
+	if (name === "goal_plus_search_run_verifier" && !requestParams.attempt_id && workerInnerGitBinding) {
 		if (!metadata.dispatchNonce) {
 			throw new Error("ThinkThread AutoResearch-Git attempt has no dispatch nonce");
 		}
@@ -759,7 +759,7 @@ async function runThinkThreadWorkerToolSerial(
 	const result = await requestWorkerTool(
 		client, parentId, metadata.agentSessionId, name, requestParams, signal,
 	);
-	if (name === "goal_plus_search_run_verifier") workerVerifierSubmitted = true;
+	if (name === "goal_plus_search_run_verifier" && isRecord(result) && result.state === "accepted") workerVerifierSubmitted = true;
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
 		details: result,
@@ -2822,7 +2822,7 @@ export default async function (pi: ExtensionAPI) {
 				pi.sendMessage(
 					{
 						customType: "goal-plus-thinkthread-missing-attempt",
-						content: "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成本轮修改，并使用当前 agent_session_id 恰好调用一次 goal_plus_search_run_verifier。不得只读取或总结后再次结束。",
+						content: "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成本轮修改，使用当前 agent_session_id 通过 goal_plus_search_run_verifier 提交一个 attempt，并按回执行动。",
 						display: false,
 						details: { dispatchNonce: workerActiveDispatchNonce },
 					},
