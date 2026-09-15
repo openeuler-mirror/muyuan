@@ -744,7 +744,7 @@ async function runThinkThreadWorkerToolSerial(
 	if ("_inner_git_attempt" in requestParams) {
 		throw new Error("ThinkThread private inner Git metadata is extension-owned");
 	}
-	if (name === "goal_plus_search_run_verifier" && workerInnerGitBinding) {
+	if (name === "goal_plus_search_run_verifier" && !requestParams.attempt_id && workerInnerGitBinding) {
 		if (!metadata.dispatchNonce) {
 			throw new Error("ThinkThread AutoResearch-Git attempt has no dispatch nonce");
 		}
@@ -759,7 +759,7 @@ async function runThinkThreadWorkerToolSerial(
 	const result = await requestWorkerTool(
 		client, parentId, metadata.agentSessionId, name, requestParams, signal,
 	);
-	if (name === "goal_plus_search_run_verifier") workerVerifierSubmitted = true;
+	if (name === "goal_plus_search_run_verifier" && isRecord(result) && result.state === "accepted") workerVerifierSubmitted = true;
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
 		details: result,
@@ -2021,7 +2021,7 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 				if (thinkThreadSupplementalEnabled) active.push("goal_plus_search_get_evidence_detail");
 				pi.setActiveTools(active);
 			}
-			if (!isThinkThreadWorker && ["goal_plus_search_run_verifier", "goal_plus_search_wait_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context", "goal_plus_search_select", "goal_plus_search_status", "goal_plus_search_invalidate_run", "goal_plus_search_report"].includes(name)) {
+			if (!isThinkThreadWorker && ["goal_plus_search_run_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context", "goal_plus_search_select", "goal_plus_search_status", "goal_plus_search_invalidate_run", "goal_plus_search_report"].includes(name)) {
 				const runId = stringFrom(forwardedParams.run_id)
 					?? (isRecord(result.details) ? stringFrom(result.details.run_id) : undefined);
 				if (runId) {
@@ -2115,7 +2115,6 @@ function activateWorkerContext(
 	]) {
 		registerRuntimeTool(pi, tool, registered);
 	}
-	if (!isThinkThreadWorker) registerRuntimeTool(pi, "goal_plus_search_wait_verifier", registered);
 	if (candidateTask.share_out_dir) {
 		registerRuntimeTool(pi, "goal_plus_search_stage_shared_tool", registered);
 		registerRuntimeTool(pi, "goal_plus_search_copy_shared_tool", registered);
@@ -2501,7 +2500,6 @@ export default async function (pi: ExtensionAPI) {
 		"goal_plus_search_start_batch",
 		"goal_plus_search_get_agent_observability",
 		"goal_plus_search_run_verifier",
-		"goal_plus_search_wait_verifier",
 		"goal_plus_search_list_allocation_decisions",
 		"goal_plus_search_apply_allocation_decision",
 		"goal_plus_search_select",
@@ -2824,7 +2822,7 @@ export default async function (pi: ExtensionAPI) {
 				pi.sendMessage(
 					{
 						customType: "goal-plus-thinkthread-missing-attempt",
-						content: "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成本轮修改，并使用当前 agent_session_id 恰好调用一次 goal_plus_search_run_verifier。不得只读取或总结后再次结束。",
+						content: "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成本轮修改，使用当前 agent_session_id 通过 goal_plus_search_run_verifier 提交一个 attempt，并按回执行动。",
 						display: false,
 						details: { dispatchNonce: workerActiveDispatchNonce },
 					},

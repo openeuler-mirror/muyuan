@@ -140,6 +140,24 @@ class ThinkThreadVerification:
                 "further writes; the exact ScoreReport will be injected into the next wake.",
             )
 
+    def result(
+        self, submission: DeferredCandidateAttempt, run_id: str, candidate_id: str,
+        agent_session_id: str | None, attempt_id: str,
+    ) -> dict[str, Any]:
+        if (run_id, candidate_id, agent_session_id) != (
+            submission.run_id, submission.candidate_id, submission.agent_session_id,
+        ):
+            raise PermissionError("ThinkThread verifier query does not match the bound invocation")
+        record = self._bound_candidate(
+            run_id, candidate_id, submission.agent_session_id,
+            submission.thinkthread_id, submission.branch_id,
+        )
+        if record.score_report is not None and record.score_report.attempt_id == attempt_id:
+            return record.score_report.model_dump(mode="json")
+        if submission.prior is not None and submission.prior.attempt_id == attempt_id:
+            return submission.prior.model_dump(mode="json")
+        raise ValueError("VerifierAttemptUnavailable: unknown verification attempt")
+
     def verify(
         self,
         *,

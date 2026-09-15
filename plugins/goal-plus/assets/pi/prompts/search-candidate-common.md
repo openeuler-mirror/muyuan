@@ -9,6 +9,7 @@ AutoResearch harness。
 本次任务。
 
 本次 dispatch 只完成一个有界 attempt：读取当前 settled 状态和必要 Evidence，自主分析一个
-具体方向，修改允许的 product 文件，然后使用当前 `agent_session_id` 调用一次
-`goal_plus_search_run_verifier`。收到 verifier 结果后，不要开始下一轮；更新简洁 handoff 并返回。
+具体方向，修改允许的 product 文件，然后使用当前 `agent_session_id` 通过
+`goal_plus_search_run_verifier` 提交一个 attempt，按回执等待结果。收到结果后，更新简洁
+handoff 并返回，不要开始下一轮。
 最终选择、报告、promotion 和是否 continuation 属于父 agent。

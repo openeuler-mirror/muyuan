@@ -15,7 +15,6 @@ from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_scope import ensure_execution_scope, register_execution_process, finish_execution_process
 from goal_plus.infrastructure.state.resource_locks import verifier_resource_lock
 from goal_plus.models import SearchSpec
-from goal_plus.paths import host_assets_root
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import SearchTools
 from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
@@ -44,7 +43,13 @@ def _tool_results(path, tool):
 
 
 def _response(item):
-    return json.loads(item["result"]["content"][0]["text"])
+    result = item.get("result")
+    if not isinstance(result, dict):
+        return {}
+    try:
+        return json.loads(result["content"][0]["text"])
+    except json.JSONDecodeError:
+        return {}  # Deliberately rejected duplicate submissions are plain-text errors.
 
 
 def _wait(process, condition, log_path, seconds):
@@ -59,8 +64,8 @@ def _wait(process, condition, log_path, seconds):
 
 
 def test_codex_pending_verifier_snapshot_and_recovery(st_project_root, st_log_dir, monkeypatch):
-    asset = json.loads((host_assets_root() / "assets/codex/mcp.json").read_text())
-    client_timeout = asset["mcpServers"]["goal-plus"]["tool_timeout_sec"]
+    query_wait_seconds = 30
+    client_timeout = query_wait_seconds * 2
     host_overhead_seconds = 180
     deadline_seconds = client_timeout + host_overhead_seconds
     monkeypatch.setenv("GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR", str(st_project_root / "locks"))
@@ -110,8 +115,8 @@ def test_codex_pending_verifier_snapshot_and_recovery(st_project_root, st_log_di
         "The controller deliberately holds the verifier resource lock. Wait for the tool response; "
         "do not cancel it. On pending, make exactly one duplicate "
         "goal_plus_search_run_verifier call to check VerifierInProgress. This duplicate is an intentional "
-        "negative test, not a new attempt. Then call goal_plus_search_wait_verifier with that attempt_id, "
-        "the current run/candidate/session IDs and timeout_seconds=30. Repeat wait while pending, "
+        "negative test, not a new attempt. Then call goal_plus_search_run_verifier with that attempt_id, "
+        f"the current run/candidate/session IDs and timeout_seconds={query_wait_seconds}. Repeat wait while pending, "
         "until the result has verification.state=needs_recovery. Report that state and stop. "
         "After submitting, do not edit any file, commit, restore, launch another agent, invoke nested "
         "CLIs, or change runtime/host configuration. Use native goal-plus MCP tools, not a shell client."
@@ -150,11 +155,11 @@ def test_codex_pending_verifier_snapshot_and_recovery(st_project_root, st_log_di
                 assert process.poll() is None, log_path
                 time.sleep(0.2)
             assert any(_response(item).get("attempt_id") == pending.attempt_id
-                       for item in _tool_results(log_path, "goal_plus_search_wait_verifier"))
+                       for item in _tool_results(log_path, "goal_plus_search_run_verifier"))
             (task.workspace / "initial_program.py").write_text("VALUE = 2\n")
             resources.close()
             _wait(process, lambda: any(_response(item).get("verification", {}).get("state") == "needs_recovery"
-                  for item in _tool_results(log_path, "goal_plus_search_wait_verifier")
+                  for item in _tool_results(log_path, "goal_plus_search_run_verifier")
                   if _response(item).get("verification")), log_path, host_overhead_seconds)
             process.wait(timeout=host_overhead_seconds)
             assert process.returncode == 0, log_path

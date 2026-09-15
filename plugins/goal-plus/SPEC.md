@@ -341,10 +341,13 @@ Candidate verifier 或结算派生投影的操作异常向调用方报错，不�
 session 和 generation gate，selection 从已结算 Evidence 重建 best。
 
 Process verifier 的提交和等待绑定准确 attempt 与不可变 artifact。同一 candidate 仅允许一个
-未结算验证；本地资源冲突按冻结声明互斥。MCP 短等后返回 pending，不取消后台验证，调用方通过有界
-wait 获取对应结果；等待不得重做验证或把其他 attempt 的结果作为本次结果，返回完成结果前
-必须完成硬结算。本地 Codex/Pi 共用 MCP 等待合同；LLM Verifier 异步处理已结算结果，不阻塞
-下一轮。ThinkThread 使用下一次 wake 反馈，其执行路径尚未接入本地资源锁。
+未结算验证；Codex/Pi、本地/ThinkThread 共用 `goal_plus_search_run_verifier`，省略 attempt_id
+提交，提供 attempt_id 则查询或有界等待原结果。等待超时不取消执行，不创建新 attempt。
+回执通过 candidate_action 指示等待或结束 turn；ThinkThread 在静默快照验证后通过下一次
+wake 反馈。完成结果必须已硬结算；LLM Verifier 独立异步处理已结算结果。
+本地与 ThinkThread 执行按冻结 resource_lock 在共享控制器锁目录内互斥，不同资源可并行。
+TT 执行结果未知时持久保留原 request 的资源占用，只允许准确请求恢复后释放；不伪造失败分数。
+该互斥不覆盖未接入同一锁目录的外部执行者，也不提供分布式资源调度。
 
 一次标准 run 按以下顺序执行：
 

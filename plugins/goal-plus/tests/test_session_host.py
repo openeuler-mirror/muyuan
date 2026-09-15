@@ -501,7 +501,7 @@ def test_candidate_catalog_omits_disabled_capabilities(hosted_candidate):
 
     root, _, _, _, _, session, _, _, _ = hosted_candidate
     names = asyncio.run(tools_by_name(create_mcp(root, caller_role="candidate", caller_agent_session_id=session.agent_session_id)))
-    assert "goal_plus_search_wait_verifier" in names
+    assert "goal_plus_search_run_verifier" in names
     assert not {"goal_plus_search_get_evidence_detail", "goal_plus_search_stage_shared_tool", "goal_plus_search_copy_shared_tool"} & names.keys()
 
 

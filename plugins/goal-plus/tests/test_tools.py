@@ -62,25 +62,24 @@ def test_wait_verifier_delivers_exact_attempt_without_resubmitting(tmp_path, mon
             before = runtime.candidate_creation.state.read_candidate(run_id, candidate_id)
             args = dict(run_id=run_id, candidate_id=candidate_id, attempt_id=before.verification.attempt_id,
                         agent_session_id=session.agent_session_id)
-            assert tools.goal_plus_search_wait_verifier(**args, timeout_seconds=0)["state"] == "pending"
-            assert tools.goal_plus_search_wait_verifier(**args, timeout_seconds=0.01)["state"] == "pending"
+            assert tools.goal_plus_search_run_verifier(**args)["state"] == "pending"
             with pytest.raises(ValueError, match="VerifierAttemptUnavailable"):
-                tools.goal_plus_search_wait_verifier(**{**args, "attempt_id": "unknown"}, timeout_seconds=0)
+                tools.goal_plus_search_run_verifier(**{**args, "attempt_id": "unknown"})
             with pytest.raises(ValueError, match="GoalPlusSessionMismatch"):
-                tools.goal_plus_search_wait_verifier(**{**args, "candidate_id": "c999"}, timeout_seconds=0)
-            with pytest.raises(ValueError, match="timeout_seconds"):
-                tools.goal_plus_search_wait_verifier(**args, timeout_seconds=float("nan"))
+                tools.goal_plus_search_run_verifier(**{**args, "candidate_id": "c999"})
+            with pytest.raises(ValueError, match="VerifierQueryInvalid"):
+                tools.goal_plus_search_run_verifier(**args, hypothesis="another attempt")
             assert runtime.candidate_creation.state.read_candidate(run_id, candidate_id) == before
         finally:
             release.set()
-        result = tools.goal_plus_search_wait_verifier(**args)
         report = future.result(timeout=10)
+        result = tools.goal_plus_search_run_verifier(**args)
         assert result == report
         with runtime.settlement.state.lock_verifier(run_id, candidate_id):
-            assert tools.goal_plus_search_wait_verifier(**args, timeout_seconds=0)["state"] == "pending"
+            assert tools.goal_plus_search_run_verifier(**args)["state"] == "pending"
         assert result["process_passed"] is (returncode == 0)
         # A new facade must recover the result from state, not a server-local task cache.
-        assert SearchTools(FileSearchRuntime(runtime.root_dir)).goal_plus_search_wait_verifier(**args) == result
+        assert SearchTools(FileSearchRuntime(runtime.root_dir)).goal_plus_search_run_verifier(**args) == result
         iteration, = runtime.list_iterations(run_id, candidate_id)
         assert iteration["hypothesis"] == "one attempt"
 

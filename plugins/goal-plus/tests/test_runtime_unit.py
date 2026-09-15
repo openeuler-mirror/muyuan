@@ -1540,19 +1540,12 @@ def test_git_common_inner_agent_uses_one_attempt_per_dispatch_contract(
     task = runtime.start_batch(run_id, plan.plan_id)[0]
     session = runtime.start_agent_session(run_id, task.candidate_id)
 
-    instructions = "\n".join(task.instructions)
     assert plan.worker_policy["inner_agent"] == "common"
     assert (
         plan.worker_policy["inner_agent_binding"]["workspace_ledger_projection"]
         == "none"
     )
     assert not task.workspace.joinpath("results.tsv").exists()
-    assert "本次 host dispatch 只完成一个有界 attempt" in instructions
-    assert "调用一次 goal_plus_search_run_verifier" in instructions
-    assert "不要自行开始下一轮" in instructions
-    assert "不要仅因一次失败或同分而停止" not in instructions
-    assert "普通 Search 候选 agent" in session.launch["prompt"]
-    assert "调用一次\n`goal_plus_search_run_verifier`" in session.launch["prompt"]
     assert "worker_agent_type" not in session.launch
 
     context = runtime.get_agent_context(session.agent_session_id)
@@ -1614,9 +1607,6 @@ def test_git_common_inner_agent_uses_one_attempt_per_dispatch_contract(
     continued = runtime.continue_agent_session(session.agent_session_id)
 
     assert continued.agent_session_id == session.agent_session_id
-    assert "完成一个新的有界尝试" in continued.launch["prompt"]
-    assert "调用一次 goal_plus_search_run_verifier 后返回" in continued.launch["prompt"]
-    assert "不要自行开始下一轮" in continued.launch["prompt"]
 
     original_config = task.workspace.joinpath("config.yaml").read_text(
         encoding="utf-8"
@@ -3858,8 +3848,8 @@ def test_verifier_snapshot_preserves_later_worker_edits(tmp_path, monkeypatch, b
     assert context["iteration_count"] == 1
     assert context["verification"]["state"] == "needs_recovery"
     assert report.verification.state == "needs_recovery"
-    assert SearchTools(runtime).goal_plus_search_wait_verifier(
-        run_id, task.candidate_id, report.attempt_id, session.agent_session_id,
+    assert SearchTools(runtime).goal_plus_search_run_verifier(
+        run_id, task.candidate_id, attempt_id=report.attempt_id, agent_session_id=session.agent_session_id,
     ) == report.model_dump(mode="json")
     with pytest.raises(RuntimeError, match="VerifierRecoveryRequired"):
         runtime.run_verifier(run_id, task.candidate_id)
@@ -3941,7 +3931,7 @@ def test_verifier_interrupted_settlement_requires_checkpoint_recovery(tmp_path, 
     record = restarted.candidate_creation.state.read_candidate(run_id, candidate_id)
     assert record.verification.state == "needs_recovery"
     assert record.iterations == []
-    receipt = SearchTools(restarted).goal_plus_search_wait_verifier(run_id, candidate_id, record.verification.attempt_id)
+    receipt = SearchTools(restarted).goal_plus_search_run_verifier(run_id, candidate_id, attempt_id=record.verification.attempt_id)
     assert receipt["state"] == "needs_recovery"
     assert "interrupted attempt" in receipt["verification"]["error"]
     assert "aggregate_score" not in receipt

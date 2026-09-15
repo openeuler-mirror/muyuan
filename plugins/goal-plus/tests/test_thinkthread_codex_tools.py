@@ -105,8 +105,8 @@ def test_remote_candidate_mcp_uses_shared_schema_and_rejects_peer_before_transpo
         async with Client(local) as first, Client(remote) as second:
             local_tools, remote_tools = await first.list_tools(), await second.list_tools()
             assert {tool.name: tool.inputSchema for tool in remote_tools} == {
-                tool.name: tool.inputSchema for tool in local_tools if tool.name != "goal_plus_search_wait_verifier"}
-            assert {tool.name for tool in remote_tools} == CANDIDATE_TOOL_NAMES - {"goal_plus_search_wait_verifier"}
+                tool.name: tool.inputSchema for tool in local_tools}
+            assert {tool.name for tool in remote_tools} == CANDIDATE_TOOL_NAMES
             result = await second.call_tool("goal_plus_search_get_agent_context", {"agent_session_id": "agent-1"})
             assert json.loads(result.content[0].text)["source"] == "parent"
             denied = await second.call_tool("goal_plus_search_get_agent_context", {"agent_session_id": "peer"}, raise_on_error=False)

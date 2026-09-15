@@ -45,6 +45,7 @@ class CandidateAttemptAccepted(SearchModel):
     """Durable acknowledgement for one deferred candidate verification attempt."""
 
     state: Literal["accepted"] = "accepted"
+    candidate_action: Literal["end_turn"] = "end_turn"
     attempt_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)

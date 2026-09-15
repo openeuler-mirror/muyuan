@@ -125,7 +125,7 @@ class CandidateCreation:
         if inner_agent == INNER_AGENT_COMMON:
             instructions.extend(
                 [
-                    "本次 host dispatch 只完成一个有界 attempt：分析当前状态、修改允许的 product 文件，并使用当前 agent_session_id 调用一次 goal_plus_search_run_verifier。",
+                    "本次 host dispatch 只完成一个有界 attempt：分析当前状态、修改允许的 product 文件，并使用当前 agent_session_id 通过 goal_plus_search_run_verifier 提交验证。",
                     "用一句话 hypothesis 描述实际完成的尝试；只有 verifier 返回结果会结算为正式 Evidence。收到结果后更新简洁 handoff 并返回，不要自行开始下一轮。",
                 ]
             )
@@ -136,10 +136,9 @@ class CandidateCreation:
                     "把候选思路当作初始假设，自主分析、修改、验证和转向；不要仅因一次失败或同分而停止。",
                 ]
             )
-        if frozen.spec.workspace.provider != "thinkthread":
-            instructions.append(
-                "验证返回 pending 时，保持工作区不变，使用返回的 attempt_id 调用 goal_plus_search_wait_verifier 等待准确结果；再次 pending 就继续等待，needs_recovery 时向 Main 交接。工具异常中断且没有 attempt_id 时，先通过 goal_plus_search_get_agent_context 核对 verification，不重复提交。"
-            )
+        instructions.append(
+            "提交验证后保持工作区不变，按回执 candidate_action 行动：wait_for_verifier 使用原 attempt_id 调用 goal_plus_search_run_verifier 等待；end_turn 结束当前 turn，等待宿主送回结果；handoff_to_main 向 Main 交接。工具异常且没有 attempt_id 时，通过 goal_plus_search_get_agent_context 核对 verification，不重复提交。"
+        )
         if process_environment:
             instructions.append(
                 "candidate_task.process_environment 是本 candidate 的进程环境；运行本地命令时显式应用这些变量。goal_plus_search_run_verifier 会自动使用同一环境。"

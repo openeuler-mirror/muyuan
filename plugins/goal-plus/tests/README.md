@@ -275,10 +275,11 @@ ST_CODEX_REASONING_EFFORT=low \
 ```
 
 The controller prepares one candidate through normal APIs and launches one native Codex worker
-against the checkout's MCP server. The production MCP timeout is unchanged. A controller-owned
-resource lock holds the submitted attempt beyond that timeout; native tool events must show a
+against the checkout's MCP server with a test-local 60-second client timeout and 30-second queries.
+The production configuration is unchanged. A controller-owned resource lock holds the submitted
+attempt beyond the test client's timeout; native tool events must show a
 `pending` response, readable attempt identity, and rejection of one deliberate duplicate submission.
-The worker then uses `goal_plus_search_wait_verifier` to await that exact attempt without reloading
+The worker then uses `goal_plus_search_run_verifier` to await that exact attempt without reloading
 context.
 The controller then changes the original workspace and releases the lock. The test checks exact
 snapshot scoring, one Evidence entry, preservation of the later edit, worker observation of
@@ -287,7 +288,7 @@ snapshot scoring, one Evidence entry, preservation of the later edit, worker obs
 This is a module ST, not an optimization E2E. Installed plugins/hooks are disabled only for the
 test worker, so it does not validate plugin discovery, Main orchestration, or native child hooks.
 It uses the configured Codex provider and `ST_CODEX_MODEL` (default `gpt-5.6-terra`), usually takes
-6-8 minutes, and writes native JSONL under `.tmp/st-logs/`. The test requires the development
+a few minutes, and writes native JSONL under the ST scratch log directory. The test requires the development
 Python environment and its console scripts on `PATH`; no host installation is changed.
 
 ### TT VLIW Retained Turns

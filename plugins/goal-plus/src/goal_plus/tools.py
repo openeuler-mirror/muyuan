@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import math
-import time
 from typing import Any, Callable, Literal
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
@@ -392,8 +390,19 @@ class SearchTools:
         *,
         inject_evidence: bool = True,
         on_submitted: Callable[[PendingVerification], None] | None = None,
+        attempt_id: str | None = None,
     ) -> dict[str, Any]:
-        self._require_target("goal_plus_search_run_verifier", run_id=run_id)
+        self._require_target("goal_plus_search_run_verifier", run_id=run_id, agent_session_id=agent_session_id)
+        if attempt_id is not None:
+            if not attempt_id or scope != "process" or hypothesis is not None or toolization_decision is not None or on_submitted is not None:
+                raise ValueError("VerifierQueryInvalid: provide only the process attempt identity")
+            result = (
+                self.runtime.thinkthread_verification.result(
+                    self.candidate_attempt, run_id, candidate_id, agent_session_id, attempt_id,
+                ) if self.candidate_attempt is not None else
+                self.runtime.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
+            )
+            return self.verifier_response(run_id, agent_session_id, result) if inject_evidence else result
         if on_submitted is not None and not callable(on_submitted):
             raise ValueError("on_submitted must be an internal callback")
         if self.candidate_attempt is not None:
@@ -438,23 +447,6 @@ class SearchTools:
         result["global_evidence_injected"] = True
         result["global_evidence_entry_count"] = len(snapshot)
         return result
-
-    def goal_plus_search_wait_verifier(
-        self, run_id: str, candidate_id: str, attempt_id: str,
-        agent_session_id: str | None = None, timeout_seconds: float = 30,
-        *, inject_evidence: bool = True,
-    ) -> dict[str, Any]:
-        if not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 60:
-            raise ValueError("timeout_seconds must be finite and between 0 and 60")
-        deadline = time.monotonic() + timeout_seconds
-        while True:
-            self._require_target("goal_plus_search_wait_verifier", run_id=run_id, agent_session_id=agent_session_id)
-            result = self.runtime.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
-            remaining = deadline - time.monotonic()
-            if result.get("state") != "pending" or remaining <= 0:
-                return self.verifier_response(run_id, agent_session_id, result) if inject_evidence else result
-            # Poll only the small durable receipt, at most once per second.
-            time.sleep(min(1.0, remaining))
 
     def goal_plus_search_list_iterations(
         self,

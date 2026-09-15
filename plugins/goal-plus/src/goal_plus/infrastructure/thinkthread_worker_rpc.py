@@ -121,7 +121,7 @@ def dispatch_worker_tool(
         root_dir, tool, params, caller_role="candidate", caller_agent_session_id=session_id,
         candidate_attempt=submission,
     )
-    if submission is not None:
+    if submission is not None and params.get("attempt_id") is None:
         accepted = CandidateAttemptAccepted.model_validate(result)
         if private_inner_git is not None:
             job["inner_git_attempt"] = private_inner_git

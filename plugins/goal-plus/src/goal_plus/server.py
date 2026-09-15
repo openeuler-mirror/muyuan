@@ -180,8 +180,6 @@ def create_mcp(
 
     def register_tool():
         def register(function):
-            if function.__name__ == "goal_plus_search_wait_verifier" and (candidate_attempt is not None or candidate_tool_call is not None):
-                return function
             if function.__name__ not in PUBLIC_TOOL_NAMES:
                 return function
             capability = CANDIDATE_CAPABILITIES.get(function.__name__)
@@ -665,6 +663,8 @@ def create_mcp(
         agent_session_id: str | None = None,
         hypothesis: str | None = None,
         toolization_decision: ToolizationDecision | None = None,
+        attempt_id: Annotated[str, Field(min_length=1)] | None = None,
+        timeout_seconds: Annotated[float, Field(ge=0, le=60, allow_inf_nan=False)] = 30,
     ) -> dict[str, Any]:
         """Subagent 带 `agent_session_id` 自评分；主流程最终验证不带它。
 
@@ -679,10 +679,24 @@ def create_mcp(
         `promotion` 只属于主流程。带
         `candidate_action="stop_and_report"` 的 `VerifierWorkspaceSideEffect` 是冻结
         verifier 的基础设施失败：worker 不能清理 verifier 输出或重试。
-        返回 accepted 时结束当前 turn，静默后验证，下一次 wake 交付结果。
-        process 调用可先返回 pending；使用返回的 attempt_id 调用 goal_plus_search_wait_verifier 等待准确结果。
+        未提供 attempt_id 时提交修改；提供时只查询或等待该 process attempt，不重新提交，
+        不再传 hypothesis 或 toolization_decision。timeout_seconds 限制查询等待，不取消验证。
+        未完成时按 candidate_action 操作：wait_for_verifier 使用原 attempt_id 调用本工具；
+        end_turn 结束当前 turn，由宿主在下一次 wake 交付结果。等待期间保持工作区不变。
         """
         loop = asyncio.get_running_loop()
+        if attempt_id is not None:
+            deadline = loop.time() + timeout_seconds
+            while True:
+                result = await asyncio.to_thread(
+                    tools.goal_plus_search_run_verifier, run_id, candidate_id, scope,
+                    agent_session_id, hypothesis, toolization_decision,
+                    attempt_id=attempt_id, inject_evidence=False,
+                )
+                remaining = deadline - loop.time()
+                if result.get("state") != "pending" or remaining <= 0:
+                    return await asyncio.to_thread(tools.verifier_response, run_id, agent_session_id, result)
+                await asyncio.sleep(min(1.0, remaining))
         submitted = loop.create_future()
         call = asyncio.create_task(asyncio.to_thread(
             tools.goal_plus_search_run_verifier, run_id, candidate_id, scope,
@@ -705,26 +719,8 @@ def create_mcp(
             "attempt_id": submitted.result().attempt_id,
             "verification": submitted.result().model_dump(mode="json"),
             "candidate_action": "wait_for_verifier",
-            "message": "保持工作区不变，使用 attempt_id 调用 goal_plus_search_wait_verifier 等待本次结果。",
+            "message": "保持工作区不变，使用原 attempt_id 调用 goal_plus_search_run_verifier 等待本次结果。",
         }
-
-    @register_tool()
-    @_debug_tool_response
-    async def goal_plus_search_wait_verifier(
-        run_id: str, candidate_id: str, attempt_id: str,
-        agent_session_id: str | None = None,
-        timeout_seconds: Annotated[float, Field(ge=0, le=60)] = 30,
-    ) -> dict[str, Any]:
-        """按 attempt_id 等待 process verifier；worker 携带自己的 agent_session_id。
-
-        返回原有 ScoreReport 或 pending/needs_recovery。pending 时可再次等待；
-        等待超时不取消验证，也不提交新 attempt。timeout_seconds=0 只查询。
-        """
-        result = await asyncio.to_thread(
-            tools.goal_plus_search_wait_verifier, run_id, candidate_id, attempt_id,
-            agent_session_id, timeout_seconds, inject_evidence=False,
-        )
-        return await asyncio.to_thread(tools.verifier_response, run_id, agent_session_id, result)
 
     @register_tool()
     @_debug_tool_response

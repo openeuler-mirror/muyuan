@@ -107,6 +107,12 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
                 "agent_session_id": session.agent_session_id, "hypothesis": "One exact change",
             }, request_id=f"req-{record['dispatch_index']}")
             assert accepted["state"] == "accepted"
+            queried = dispatch_worker_tool(root_dir, record, "goal_plus_search_run_verifier", {
+                "run_id": run_id, "candidate_id": task.candidate_id,
+                "agent_session_id": session.agent_session_id, "attempt_id": accepted["attempt_id"],
+                "timeout_seconds": 0,
+            }, request_id=f"query-{record['dispatch_index']}")
+            assert queried == accepted == record["attempt_request"]
             assert len(runtime.list_iterations(run_id, task.candidate_id)) == (
                 record["dispatch_index"] - (2 if reconnect == "stop_active" and record["dispatch_index"] > 1 else 1)
             )

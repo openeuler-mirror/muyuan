@@ -119,7 +119,8 @@ def test_mcp_verifier_submit_and_wait_deliver_results(tmp_path, monkeypatch, def
         try:
             return verify(*args, **kwargs)
         finally:
-            finished.set()
+            if kwargs.get("attempt_id") is None:
+                finished.set()
 
     monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", execute)
     if auto:
@@ -153,8 +154,12 @@ def test_mcp_verifier_submit_and_wait_deliver_results(tmp_path, monkeypatch, def
                         "agent_session_id": session.agent_session_id if worker else None,
                         "timeout_seconds": 0,
                     }
-                    response = await client.call_tool("goal_plus_search_wait_verifier", wait_args)
+                    response = await client.call_tool("goal_plus_search_run_verifier", wait_args)
                     assert json.loads(response.content[0].text)["attempt_id"] == pending.attempt_id
+                    response = await client.call_tool("goal_plus_search_run_verifier", {**wait_args, "timeout_seconds": 0.01})
+                    assert json.loads(response.content[0].text)["state"] == "pending"
+                    invalid = await client.call_tool("goal_plus_search_run_verifier", {**wait_args, "timeout_seconds": -1}, raise_on_error=False)
+                    assert invalid.is_error
                     assert not finished.is_set()
                 else:
                     assert result["process_passed"] is True
@@ -163,7 +168,7 @@ def test_mcp_verifier_submit_and_wait_deliver_results(tmp_path, monkeypatch, def
                 release.set()
                 assert await asyncio.to_thread(finished.wait, 10)
             if deferred:
-                response = await client.call_tool("goal_plus_search_wait_verifier", wait_args)
+                response = await client.call_tool("goal_plus_search_run_verifier", wait_args)
                 result = json.loads(response.content[0].text)
                 assert result["attempt_id"] == pending.attempt_id
                 assert result["aggregate_score"] == 1
@@ -202,7 +207,6 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
         "goal_plus_search_get_evidence_detail",
         "goal_plus_search_get_agent_observability",
         "goal_plus_search_run_verifier",
-        "goal_plus_search_wait_verifier",
         "goal_plus_search_list_iterations",
         "goal_plus_search_list_allocation_decisions",
         "goal_plus_search_apply_allocation_decision",
