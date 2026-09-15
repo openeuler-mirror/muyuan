@@ -15,15 +15,15 @@ def _candidate(
     tmp_path: Path,
     *,
     direction: str = "maximize",
-    backend: str = "copy",
+    workspace_provider: str = "copy",
 ) -> tuple[FileSearchRuntime, str, str, Path]:
     project = make_project(tmp_path)
     spec_data = spec_for(project, direction=direction).model_dump(mode="json")
-    spec_data["workspace"] = {"backend": backend}
+    spec_data["workspace"] = {"provider": workspace_provider}
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"], native_host="codex",
+        [project / "evaluator.py"], agent_harness="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -51,7 +51,7 @@ def test_process_verifier_settles_workspace_to_candidate_best(
     runtime, run_id, candidate_id, workspace = _candidate(
         tmp_path,
         direction=direction,
-        backend="git_worktree",
+        workspace_provider="git_worktree",
     )
     program = workspace / "initial_program.py"
 
@@ -181,7 +181,7 @@ def test_latest_run_level_equal_score_becomes_best(
     project = make_project(tmp_path)
     spec = spec_for(project, max_parallel=2)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)

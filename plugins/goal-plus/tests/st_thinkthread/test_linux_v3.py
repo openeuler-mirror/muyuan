@@ -13,6 +13,20 @@ from goal_plus.thinkthread_agent_posix import (
 pytestmark = [pytest.mark.st, pytest.mark.st_pi_thinkthread]
 
 
+@pytest.mark.parametrize("scenario", ["unified_session", "unified_session_cold", "unified_session_steering", "unified_session_active", "unified_session_controls"])
+def test_common_session_controls_drive_two_retained_child_attempts(run_thinkthread_scenario, scenario):
+    report = run_thinkthread_scenario(scenario)
+    assert report["native_session_id"].startswith("tt-")
+    assert len(set(report["invocations"])) == 2
+    assert report["scores"] == [1, 2]
+    assert report["cleanup_state"] == "closed"
+    assert report["root_unchanged"]
+    assert report["runtime_outside_snapshot"]
+    assert report["steering_verified"] == (scenario == "unified_session_steering")
+    assert report["controller_recovered_during_invocation"] == (scenario == "unified_session_active")
+    assert report["control_operations"] == (["interrupt", "stop"] if scenario == "unified_session_controls" else [])
+
+
 def test_pi_root_preflight_is_exact_and_starts_without_search(
     run_thinkthread_scenario: Callable[[str], dict[str, Any]],
 ) -> None:
@@ -96,9 +110,9 @@ def test_runtime_k2_uses_private_children_and_exact_snapshot_evidence(
     assert report["baseline_snapshot_id"].startswith("fsnap-")
     assert report["inner_agent"] == "common"
     assert report["inner_agent_binding"]["inner_agent_id"] == "common"
-    assert report["inner_agent_binding"]["worker_host"] == "thinkthread"
+    assert report["inner_agent_binding"]["runtime_provider"] == "thinkthread"
     assert report["inner_agent_binding"]["workspace_ledger_projection"] == "none"
-    assert report["event_candidates"] == ["c001", "c002"]
+    assert report["candidate_ids"] == ["c001", "c002"]
     assert report["root_solution"] == "0\n"
     assert len(report["candidates"]) == 2
     assert {item["score"] for item in report["candidates"].values()} == {1.0, 2.0}
@@ -119,7 +133,7 @@ def test_runtime_k2_uses_private_children_and_exact_snapshot_evidence(
     assert report["continuation"]["iteration_count"] == 2
     assert report["continuation"]["results_ledger_count"] == 2
     assert report["continuation"]["results_tsv"] is None
-    assert report["cleanup_states"] == ["removed", "removed"]
+    assert report["cleanup_state"] == "closed"
 
 
 def test_runtime_k2_autoresearch_uses_private_inner_git_and_outer_snapshot_evidence(
@@ -134,7 +148,7 @@ def test_runtime_k2_autoresearch_uses_private_inner_git_and_outer_snapshot_evide
     ]
     assert report["inner_agent"] == "autoresearch"
     assert report["inner_agent_binding"]["inner_agent_id"] == "autoresearch"
-    assert report["inner_agent_binding"]["worker_host"] == "thinkthread"
+    assert report["inner_agent_binding"]["runtime_provider"] == "thinkthread"
     assert report["inner_agent_binding"]["prompt_asset"] == (
         "assets/pi/prompts/search-candidate-worker.md"
     )
@@ -144,7 +158,7 @@ def test_runtime_k2_autoresearch_uses_private_inner_git_and_outer_snapshot_evide
     assert report["autoresearch_prompt_loaded"] is True
     assert report["inner_git_verified"] is True
     assert report["artifact_view_private_paths_filtered"] is True
-    assert report["event_candidates"] == ["c001", "c002"]
+    assert report["candidate_ids"] == ["c001", "c002"]
     assert {item["score"] for item in report["candidates"].values()} == {1.0, 2.0}
     for item in report["candidates"].values():
         assert item["artifact_ref"]["kind"] == "fs_snapshot"
@@ -162,7 +176,7 @@ def test_runtime_k2_autoresearch_uses_private_inner_git_and_outer_snapshot_evide
     assert report["continuation"]["score"] == 3.0
     assert report["continuation"]["disposition"] == "keep"
     assert report["root_solution"] == "0\n"
-    assert report["cleanup_states"] == ["removed", "removed"]
+    assert report["cleanup_state"] == "closed"
 
 
 def test_retained_annotation_child_uses_complete_snapshot_artifact_views(
@@ -174,17 +188,17 @@ def test_retained_annotation_child_uses_complete_snapshot_artifact_views(
     assert report["annotation_child_id"].startswith("tt-")
     assert report["peer_comparison_count"] == 1
     assert any(report["actual_diff_omitted"])
-    assert report["tool_counts"]["thinkthread_artifact_view_list"] >= 1
-    assert report["tool_counts"]["thinkthread_artifact_view_stat"] >= 1
-    assert report["tool_counts"]["thinkthread_artifact_view_pread"] >= 2
-    assert report["tool_counts"]["thinkthread_artifact_view_diff"] >= 1
+    assert report["tool_counts"]["goal_plus_thinkthread_artifact_view_list"] >= 1
+    assert report["tool_counts"]["goal_plus_thinkthread_artifact_view_stat"] >= 1
+    assert report["tool_counts"]["goal_plus_thinkthread_artifact_view_pread"] >= 2
+    assert report["tool_counts"]["goal_plus_thinkthread_artifact_view_diff"] >= 1
     assert "thinkthread_artifact_view_run" not in report["tool_counts"]
-    assert report["tool_counts"]["thinkthread_annotation_submit"] >= 2
+    assert report["tool_counts"]["goal_plus_thinkthread_annotation_submit"] >= 2
     assert report["published_submit_count"] == 2
     assert report["rejected_submit_count"] == (
-        report["tool_counts"]["thinkthread_annotation_submit"] - 2
+        report["tool_counts"]["goal_plus_thinkthread_annotation_submit"] - 2
     )
-    assert report["cleanup_states"] == ["removed", "removed"]
+    assert report["cleanup_state"] == "closed"
 
 
 def test_selection_cancels_claimed_annotation_and_rejects_late_result(
@@ -198,7 +212,7 @@ def test_selection_cancels_claimed_annotation_and_rejects_late_result(
         report["queue_generation_before"] + 1
     )
     assert report["late_result_published"] is False
-    assert report["cleanup_states"] == ["removed"]
+    assert report["cleanup_state"] == "closed"
 
 
 def test_publication_conflict_recovery_and_cleanup_matrix(

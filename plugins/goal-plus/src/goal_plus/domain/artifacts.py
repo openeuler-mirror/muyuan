@@ -19,7 +19,7 @@ from pydantic import (
 
 from goal_plus.domain.base import SearchModel
 
-WorkspaceBackend = Literal["copy", "git_worktree", "thinkthread"]
+WorkspaceProvider = Literal["copy", "git_worktree", "thinkthread"]
 
 
 ArtifactKind = Literal["git_commit", "fs_snapshot"]
@@ -48,7 +48,7 @@ class PublicationDependency(SearchModel):
 
 
 class WorkspaceSpec(SearchModel):
-    backend: WorkspaceBackend = "git_worktree"
+    provider: WorkspaceProvider = "git_worktree"
     promotion_mode: Literal["apply", "artifact_only"] = "apply"
     dependencies: list[PublicationDependency] = Field(
         default_factory=list,
@@ -61,7 +61,7 @@ class WorkspaceSpec(SearchModel):
     def copy_backend_defaults_to_artifact_only(cls, value: Any) -> Any:
         if not isinstance(value, dict):
             return value
-        if value.get("backend") != "copy" or "promotion_mode" in value:
+        if value.get("provider") != "copy" or "promotion_mode" in value:
             return value
         payload = dict(value)
         payload["promotion_mode"] = "artifact_only"
@@ -69,13 +69,13 @@ class WorkspaceSpec(SearchModel):
 
     @model_validator(mode="after")
     def copy_backend_cannot_apply_provider_native_promotion(self) -> "WorkspaceSpec":
-        if self.backend == "copy" and self.promotion_mode == "apply":
+        if self.provider == "copy" and self.promotion_mode == "apply":
             raise ValueError(
-                "workspace backend 'copy' requires promotion_mode='artifact_only'"
+                "workspace provider 'copy' requires promotion_mode='artifact_only'"
             )
-        if self.backend != "thinkthread" and self.dependencies:
+        if self.provider != "thinkthread" and self.dependencies:
             raise ValueError(
-                "workspace publication dependencies require backend='thinkthread'"
+                "workspace publication dependencies require provider='thinkthread'"
             )
         identities = [(item.path, item.scope) for item in self.dependencies]
         if len(identities) != len(set(identities)):
@@ -88,7 +88,7 @@ class WorkspaceCapacityEstimate(SearchModel):
     """Pre-materialization storage estimate for one frozen SearchSpec."""
 
     source_path: str
-    backend: WorkspaceBackend
+    workspace_provider: WorkspaceProvider
     basis: Literal[
         "git_tracked_checkout",
         "synthetic_git_checkout",
@@ -117,7 +117,7 @@ class ArtifactRef(SearchModel):
 
     kind: ArtifactKind
     id: str = Field(min_length=1)
-    provider: WorkspaceBackend
+    provider: WorkspaceProvider
 
     @model_validator(mode="after")
     def kind_matches_backend(self) -> "ArtifactRef":
@@ -165,7 +165,7 @@ class ReferenceWorkspaceRecord(SearchModel):
     source_iteration: int = Field(ge=1)
     artifact_ref: ArtifactRef
     display_name: str = Field(min_length=1)
-    workspace_backend: WorkspaceBackend
+    workspace_provider: WorkspaceProvider
     access: ReferenceWorkspaceAccess
     state: Literal["open", "closed"] = "open"
     integrity_status: Literal["clean", "contaminated", "unavailable"] = "clean"

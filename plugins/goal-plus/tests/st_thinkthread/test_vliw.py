@@ -18,4 +18,4 @@ def test_vliw_retained_candidate_settles_two_turns_and_annotations(run_thinkthre
     assert report["root_unchanged"] is True
     assert report["promotion_mode"] == "artifact_only"
     assert report["promotion_state"] == "prepared"
-    assert report["cleanup_states"] == ["removed"]
+    assert report["cleanup_state"] == "closed"

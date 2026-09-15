@@ -87,9 +87,24 @@ class SearchRun:
         self,
         frozen_spec_id: str,
         source_run_id: str | None = None,
+        *,
+        run_id: str | None = None,
     ) -> str:
         frozen = self.state.read_frozen_spec(frozen_spec_id)
-        self.bindings.validate_host_workspace_backend(frozen.spec, frozen.worker_host)
+        existing = None
+        if run_id is not None:
+            try:
+                existing = self.state.read_run(run_id)
+            except FileNotFoundError:
+                pass
+            if existing is not None:
+                if (existing.frozen_spec_id, existing.source_run_id) != (frozen_spec_id, source_run_id):
+                    raise RuntimeError("SearchCreateConflict: reserved run belongs to different inputs")
+                if existing.bootstrap_complete:
+                    return run_id
+                if existing.state not in {RunState.RUNNING, RunState.FAILED}:
+                    raise RuntimeError("SearchBootstrapFailed: reserved run cannot be resumed")
+        self.bindings.validate_host_workspace_provider(frozen.spec, frozen.agent_harness, frozen.runtime_provider)
         self.source.validate_clean_source_repository(frozen.spec)
         if frozen.source_artifact_ref is not None:
             current_source_artifact = self.source.current_artifact(frozen.spec)
@@ -116,7 +131,7 @@ class SearchRun:
             )
         baseline_source = (
             self.baseline.prepare_baseline(frozen.spec)
-            if frozen.spec.workspace.backend == "thinkthread"
+            if frozen.spec.workspace.provider == "thinkthread"
             else None
         )
         inherited_research = (
@@ -126,8 +141,8 @@ class SearchRun:
             if source_run_id
             else {}
         )
-        run_id = self.state.new_run_id(self.clock.now())
-        run = RunRecord(
+        run_id = run_id or self.state.new_run_id(self.clock.now())
+        run = existing or RunRecord(
             run_id=run_id,
             state=RunState.RUNNING,
             frozen_spec_id=frozen.frozen_spec_id,
@@ -141,11 +156,15 @@ class SearchRun:
             if baseline_source is not None
             else {},
         )
-        self.acquire_leases(run, frozen)
+        if existing is None:
+            self.acquire_leases(run, frozen)
+        elif run.state == RunState.FAILED:
+            run.state = RunState.RUNNING
+            self.acquire_leases(run, frozen)
         try:
-            self.state.initialize_run_layout(run_id, frozen.spec.workspace.backend)
+            self.state.initialize_run_layout(run_id, frozen.spec.workspace.provider)
             if baseline_source is not None:
-                baseline = baseline_source.capture(run)
+                baseline = run.source_artifact_ref or baseline_source.capture(run)
                 with self.state.lock_run(run_id):
                     run = self.state.read_run(run_id)
                     run.source_artifact_ref = baseline
@@ -153,7 +172,7 @@ class SearchRun:
                 baseline_report = baseline_source.verify(run, frozen, baseline)
                 bootstrap = BootstrapVerification(
                     phase="origin",
-                    backend="thinkthread",
+                    workspace_provider="thinkthread",
                     passed=baseline_report.process_passed,
                     aggregate_score=baseline_report.aggregate_score,
                     verifier_results=[
@@ -203,7 +222,22 @@ class SearchRun:
                     failed_run.state = RunState.FAILED
                     self.persist(failed_run)
             raise
+        with self.state.lock_run(run_id):
+            run = self.state.read_run(run_id)
+            run.bootstrap_complete = True
+            self.persist(run)
         return run_id
+
+    def fail_creation(self, run_id: str) -> None:
+        with self.state.lock_run(run_id):
+            try:
+                run = self.state.read_run(run_id)
+            except FileNotFoundError:
+                return
+            if run.candidates_total:
+                raise RuntimeError("cannot fail creation after candidate materialization")
+            run.state = RunState.FAILED
+            self.persist(run)
 
     def plan_next(self, run_id: str, requested_k: int = 4) -> SearchPlan:
         with self.state.lock_run(run_id):
@@ -225,7 +259,7 @@ class SearchRun:
 
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         spec = frozen.spec
-        self.candidate_sessions.constrain_budget(run_id, frozen, None)
+        self.candidate_sessions.constrain_budget(run_id, None)
         if self.state.read_plans(run_id):
             raise RuntimeError(
                 "Search permits one initial SearchPlan; resume or "
@@ -245,7 +279,7 @@ class SearchRun:
                     "selected_models size exceeds the remaining parallel budget"
                 )
         strategy = spec.strategy
-        self.bindings.validate_host_strategy(strategy, frozen.worker_host)
+        self.bindings.validate_host_strategy(strategy, frozen.agent_harness, frozen.runtime_provider)
         mode = self.bindings.strategy_mode(strategy)
 
         if mode in {"agent", "agent_guided", "default"}:
@@ -263,7 +297,7 @@ class SearchRun:
             )
 
         plan.worker_policy = self.bindings.normalize_worker_policy(
-            plan.strategy, plan.worker_policy, host=frozen.worker_host
+            plan.strategy, plan.worker_policy, agent_harness=frozen.agent_harness, runtime_provider=frozen.runtime_provider
         )
         plan.selected_models = selected_models
         plan.strategy_trace.setdefault("worker_policy", plan.worker_policy)
@@ -299,7 +333,7 @@ class SearchRun:
 
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         self.acquire_leases(run, frozen)
-        self.candidate_sessions.constrain_budget(run_id, frozen, None)
+        self.candidate_sessions.constrain_budget(run_id, None)
         plan = self.state.read_plan(run_id, plan_id)
         all_records = self.candidate_creation.state.read_candidates(run_id)
         plan_records = sorted(
@@ -433,7 +467,7 @@ class SearchRun:
     ) -> None:
         if (
             not self.candidate_creation.workspaces.requires_relocation(
-                frozen.spec.workspace.backend
+                frozen.spec.workspace.provider
             )
             or frozen.origin_verification is None
         ):
@@ -460,7 +494,7 @@ class SearchRun:
         ):
             verification = BootstrapVerification(
                 phase="workspace_relocation",
-                backend=frozen.spec.workspace.backend,
+                workspace_provider=frozen.spec.workspace.provider,
                 passed=False,
                 aggregate_score=0.0,
                 verifier_results=[
@@ -493,7 +527,7 @@ class SearchRun:
             verification = self.verifiers.run_bootstrap_verifiers(
                 spec=frozen.spec,
                 workspace=task.workspace,
-                backend=frozen.spec.workspace.backend,
+                workspace_provider=frozen.spec.workspace.provider,
                 phase="workspace_relocation",
                 verifier_hashes=frozen.verifier_hashes,
                 log_dir=self.state.relocation_log_dir(run.run_id),

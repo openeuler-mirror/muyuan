@@ -78,7 +78,7 @@ class CodexScopeRegistry:
             raise ValueError("Codex candidate registration requires complete identity")
         with self.state.lock(scope_id):
             scope = self.state.read(scope_id)
-            if scope.get("host") != "codex":
+            if scope.get("agent_harness") != "codex":
                 raise ValueError(f"execution scope {scope_id} is not a Codex scope")
             if scope.get("state") != "open":
                 raise RuntimeError(f"execution scope {scope_id} is not open")
@@ -262,7 +262,7 @@ class CodexScopeRegistry:
         """Fence a native wake and correlate observations before invoking the host tool."""
         with self.state.lock(scope_id):
             scope = self.state.read(scope_id)
-            if scope.get("host") != "codex":
+            if scope.get("agent_harness") != "codex":
                 raise ValueError("native agent tools require a Codex execution scope")
             if tool == "list_agents":
                 if not tool_use_id:
@@ -398,15 +398,6 @@ class CodexScopeRegistry:
             self.state.write(scope)
         return {"agents": accepted}
 
-    def finish_after_owner_exit(self, *, scope_id: str) -> None:
-        with self.state.lock(scope_id):
-            scope = self.state.read(scope_id)
-            now = self.clock.timestamp()
-            for agent in active_codex_agents(scope):
-                agent["status"] = "owner_process_exited"
-                agent["finished_at"] = now
-                agent["updated_at"] = now
-            self.state.write(scope)
 
     def for_agent(
         self,
@@ -419,7 +410,7 @@ class CodexScopeRegistry:
             scope
             for scope in self.state.records()
             if (
-                scope.get("host") == "codex"
+                scope.get("agent_harness") == "codex"
                 and any(
                     agent_id
                     in {
@@ -453,7 +444,7 @@ class CodexScopeRegistry:
         matches = [
             scope
             for scope in self.state.records()
-            if scope.get("host") == "codex"
+            if scope.get("agent_harness") == "codex"
             and any(
                 tool_use_id
                 in {item.get("spawn_tool_use_id"), item.get("wake_tool_use_id")}

@@ -5,7 +5,7 @@ proof that its caller owns the original native session.
 """
 
 from goal_plus.domain.goal import GoalPlusHostCommandInvocation, GoalPlusRecord
-from goal_plus.domain.agents import NativeAgentKind
+from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.domain.goal_authorization import (
     GOAL_PLUS_ENTRYPOINT_REQUIRED,
     GOAL_SCOPED_TOOL_SUFFIXES,
@@ -23,25 +23,25 @@ class GoalAuthorization:
     def __init__(self, source: GoalAuthorizationSource) -> None:
         self._source = source
 
-    def search_native_host(self, goal_plus_id: str) -> NativeAgentKind:
+    def search_agent_harness(self, goal_plus_id: str) -> AgentHarnessKind:
         record = self.require_active_target(
-            GoalToolTarget("search_freeze_spec", goal_plus_id=goal_plus_id)
+            GoalToolTarget("goal_plus_search_freeze_spec", goal_plus_id=goal_plus_id)
         )
         session = record.active_session
         if session is None or session.state != "attached":
             raise ValueError("Search requires an attached Main native host session")
-        if session.host == "codex":
-            native_host = "codex"
-        elif session.host == "pi-rpc":
-            native_host = "pi"
+        if session.agent_harness == "codex":
+            agent_harness = "codex"
+        elif session.agent_harness == "pi":
+            agent_harness = "pi"
         else:
             raise ValueError("Search Main native host must be codex or pi")
         if not any(
-            item.host == native_host and item.session_id == session.session_id
+            item.agent_harness == agent_harness and item.session_id == session.session_id
             for item in record.host_command_invocations
         ):
             raise ValueError("Search native host must match its verified Main invocation")
-        return native_host
+        return agent_harness
 
     def nonterminal_records(self) -> list[GoalPlusRecord]:
         records = [
@@ -76,7 +76,7 @@ class GoalAuthorization:
             record
             for record in self.nonterminal_records()
             if any(
-                item.host == invocation.host
+                item.agent_harness == invocation.agent_harness
                 and item.session_id == invocation.session_id
                 for item in record.host_command_invocations
             )
@@ -151,6 +151,41 @@ class GoalAuthorization:
             raise RuntimeError("GoalPlusOwnershipMismatch: execution scope run is not linked to Goal")
         return record
 
+    def require_main_search_session(
+        self, run_id: str, *, agent_harness: AgentHarnessKind, session_id: str,
+        execution: bool,
+    ) -> GoalPlusRecord:
+        """Check a host-supplied caller; read/cleanup never grants execution."""
+        owner = self.run_owner(run_id)
+        if owner is None:
+            raise PermissionError("GoalPlusOwnershipMismatch: session control requires a linked Search run")
+        record = self.require_main_goal_session(owner, agent_harness=agent_harness, session_id=session_id, execution=execution)
+        if execution:
+            self.require_active_target(GoalToolTarget("search_start_agent_session", run_id=run_id))
+            self.require_search_execution(run_id)
+        return record
+
+    def require_main_goal_session(
+        self, goal_plus_id: str, *, agent_harness: AgentHarnessKind, session_id: str, execution: bool,
+    ) -> GoalPlusRecord:
+        record = self._source.read_goal(goal_plus_id)
+        binding = record.active_session
+        if (
+            binding is None
+            or binding.agent_harness != agent_harness
+            or binding.session_id != session_id
+            or not any(
+                item.agent_harness == agent_harness and item.session_id == session_id
+                for item in record.host_command_invocations
+            )
+        ):
+            raise PermissionError("MainSessionMismatch: session control requires the owning native Main")
+        if execution:
+            self.require_active_target(GoalToolTarget("goal_plus_prepare_final_check", goal_plus_id=goal_plus_id))
+            if binding.state != "attached":
+                raise PermissionError("MainSessionMismatch: execution requires an attached native Main")
+        return record
+
     def ownership_error(
         self, record: GoalPlusRecord, target: GoalToolTarget
     ) -> str | None:
@@ -168,7 +203,7 @@ class GoalAuthorization:
             for suffix in LINKED_SEARCH_TOOL_SUFFIXES
         )
         is_successor_create = (
-            tool_matches(target.tool_name, "search_create")
+            tool_matches(target.tool_name, "goal_plus_search_create")
             and (target.source_run_id is not None or target.source_run_requested)
         )
         if not requires_linked_run and not is_successor_create:
@@ -202,8 +237,6 @@ class GoalAuthorization:
             matches = self._source.session_run_ids(target.agent_session_id)
             if len(matches) == 1:
                 return matches[0]
-        if target.pool_id is not None:
-            return self._source.pool_run_id(target.pool_id)
         return None
 
     def run_owner(self, run_id: str) -> str | None:
@@ -221,6 +254,8 @@ class GoalAuthorization:
             record = self._source.read_goal(goal_id)
             linked = [task for task in record.search_tasks if task.run_id == run_id]
             if not linked:
+                if any(item.run_id == run_id for item in record.search_create_requests):
+                    raise RuntimeError("SearchLinkRequired: Search creation has not been linked to its Goal")
                 continue
             allowed_control = {"active", "paused"} if settlement else {"active"}
             if (

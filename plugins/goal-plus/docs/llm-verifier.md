@@ -134,6 +134,12 @@ subject 和 policy 必须生成相同 task identity。
 
 完整 SearchSpec 示例见 [Adaptive Search 配置](adaptive-search.md#searchspec)。
 
+Verifier 的调用观测保存 `agent_harness=codex|pi` 和 `runtime_provider=direct`。模型与 reasoning
+继承可信当前宿主配置，Pi 使用 scope 中记录的 Main model/thinking；没有独立 model override。
+执行复用 StructuredInference、角色工具白名单、ProcessRegistration 和 drainer generation。
+Candidate 主动验证、返回后补验、恢复和 Selection 补建任务后由可信 host 唤醒队列。
+Selection readiness wait 不关闭内部队列；已完成 record 消费失败只重放消费，不重新评分。
+
 ## 数据合同
 
 ### SettlementReceipt

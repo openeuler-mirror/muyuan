@@ -1,7 +1,6 @@
 """Exercise the native inference API with controlled output and local processes."""
 
 import json
-import os
 import subprocess
 import sys
 from dataclasses import asdict, replace
@@ -11,36 +10,35 @@ import pytest
 
 from goal_plus.bootstrap import build_inference_registration, build_process_monitor, build_structured_inference
 from goal_plus.host_scope import ensure_execution_scope, execution_scope_snapshot
-from goal_plus.execution.process_identity import process_alive
 from goal_plus.execution.inference_output import pi_assistant_message, strict_output_schema
 from goal_plus.ports.inference import PiInferenceTools, StructuredInferenceRequest
 from goal_plus.ports.process_monitor import ProcessMonitorIdentity
 
 
-def request_for(host):
+def request_for(agent_harness):
     return StructuredInferenceRequest(
-        host=host, instructions="Evaluate input.", prompt="Input data.",
+        agent_harness=agent_harness, instructions="Evaluate input.", prompt="Input data.",
         output_schema={"type": "object", "properties": {"answer": {"type": "string", "default": "none"}}},
         model="test-provider/test-model", reasoning_effort="low", timeout_seconds=5,
         timeout_detail="inference timeout", cancellation_detail="inference closed",
         pi_tools=PiInferenceTools(
             names=("submit_output", "read_view"), extension="export default function() {}",
             output_env="TEST_INFERENCE_OUTPUT",
-        ) if host == "pi-rpc" else None,
+        ) if agent_harness == "pi" else None,
     )
 
 
 @pytest.mark.host_process
-@pytest.mark.parametrize("host", ["codex", "pi-rpc"])
-def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, monkeypatch, host):
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, monkeypatch, agent_harness):
     calls = []
     native_popen = subprocess.Popen
     monkeypatch.setenv("TEST_NATIVE_CONFIG", "host-only-value")
-    request = request_for(host)
+    request = request_for(agent_harness)
     root = tmp_path / ".gp"
     scope = ensure_execution_scope(
-        root_dir=root, host="codex" if host == "codex" else "pi", owner_pid=os.getpid(),
-        owner_session_id="inference", run_id="run_inference", start_guardian=False,
+        root_dir=root, agent_harness="codex" if agent_harness == "codex" else "pi",
+        owner_session_id="inference", run_id="run_inference",
     )
     registration = build_inference_registration(root, "run_inference", label="test-inference")
 
@@ -49,8 +47,8 @@ def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, 
         assert kwargs["stdin"].read() == request.prompt
         kwargs["stdin"].seek(0)
         assert kwargs["env"]["TEST_NATIVE_CONFIG"] == "host-only-value"
-        assert kwargs["start_new_session"] is True
-        if host == "codex":
+        assert "start_new_session" not in kwargs
+        if agent_harness == "codex":
             output_path = command[command.index("--output-last-message") + 1]
             schema = json.loads(Path(command[command.index("--output-schema") + 1]).read_text())
             assert schema["required"] == ["answer"]
@@ -74,20 +72,19 @@ def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, 
         script = (
             "import json,os,subprocess,sys\nfrom pathlib import Path\n"
             "scope=json.loads(Path(sys.argv[3]).read_text())\n"
-            "assert any(p['pid']==os.getpid() and p['kind']=='internal' and p['status']=='running' for p in scope['processes'])\n"
+            "assert any(p['pid']==os.getpid() and p['kind']=='internal' and p['status']=='registered' for p in scope['processes'])\n"
             "text=sys.stdin.read()\n"
             "Path(sys.argv[1]).write_text(json.dumps({'answer':text}))\n"
-            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
-            "event=json.loads(sys.argv[2]); event['test_child_pid']=child.pid\n"
+            "event=json.loads(sys.argv[2]); event['test_event']=True\n"
             "print(json.dumps(event))\n"
         )
         scope_path = root / "host-scopes" / scope["scope_id"] / "scope.json"
-        native_offset = command.index("codex" if host == "codex" else "pi")
+        native_offset = command.index("codex" if agent_harness == "codex" else "pi")
         return native_popen([
             *command[:native_offset], sys.executable, "-c", script, output_path, json.dumps(event), str(scope_path),
         ], **kwargs)
 
-    monitor = build_process_monitor(tmp_path / "monitor.json", ProcessMonitorIdentity(host=host))
+    monitor = build_process_monitor(tmp_path / "monitor.json", ProcessMonitorIdentity(agent_harness=agent_harness))
     result = build_structured_inference(popen=popen).execute(
         request, monitor=monitor, is_active=None, usage=lambda _stdout, _message: {"input_tokens": 2},
         registration=registration,
@@ -95,17 +92,16 @@ def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, 
     assert result.process.state == "process_exited"
     assert result.returncode == 0
     assert result.payload == {"answer": request.prompt}
-    assert not process_alive(json.loads(result.process.stdout)["test_child_pid"])
     assert execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])["processes"][0]["status"] == "finished"
     assert result.output_error is None
     assert result.usage == {"input_tokens": 2}
-    assert result.invocation.host == host
+    assert result.invocation.agent_harness == agent_harness
     assert result.invocation.model == request.model
     assert result.invocation.elapsed_seconds >= 0
     assert result.invocation.invocation_id.startswith("invocation_")
-    assert (result.assistant_message is not None) == (host == "pi-rpc")
+    assert (result.assistant_message is not None) == (agent_harness == "pi")
     command, kwargs = calls[0]
-    directory = Path(command[command.index("-C") + 1]) if host == "codex" else kwargs["cwd"]
+    directory = Path(command[command.index("-C") + 1]) if agent_harness == "codex" else kwargs["cwd"]
     assert not directory.exists()
     assert "host-only-value" not in json.dumps(asdict(result))
     assert request.output_schema["properties"]["answer"]["default"] == "none"
@@ -135,12 +131,12 @@ def test_output_observation_distinguishes_missing_invalid_and_valid_json(content
         assert result.payload == json.loads(content)
 
 
-@pytest.mark.parametrize("host", ["codex", "pi-rpc", "thinkthread"])
-def test_unsupported_host_or_mismatched_tool_bundle_cannot_launch(host):
+@pytest.mark.parametrize("agent_harness", ["codex", "pi", "thinkthread"])
+def test_unsupported_host_or_mismatched_tool_bundle_cannot_launch(agent_harness):
     request = request_for("codex")
     request = replace(
-        request, host=host,
-        pi_tools=PiInferenceTools(names=("submit",), extension="", output_env="OUTPUT") if host == "codex" else None,
+        request, agent_harness=agent_harness,
+        pi_tools=PiInferenceTools(names=("submit",), extension="", output_env="OUTPUT") if agent_harness == "codex" else None,
     )
 
     def unexpected_launch(*_args, **_kwargs):

@@ -4,7 +4,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Protocol, Any, Literal, Mapping
 from dataclasses import dataclass
-from goal_plus.domain.artifacts import ArtifactRef, WorkspaceBackend
+from goal_plus.domain.artifacts import ArtifactRef, WorkspaceProvider
 from goal_plus.domain.search import FrozenSpec
 from goal_plus.domain.evidence import ScoreReport
 from goal_plus.ports.state import RunRecord, CandidateRecord
@@ -47,7 +47,7 @@ class PublicationNotificationState(Protocol):
 
 @dataclass(frozen=True)
 class PreparedPromotion:
-    provider: WorkspaceBackend
+    provider: WorkspaceProvider
     strategy: Literal["legacy_patch", "squash_commit", "fs_apply"]
     base_artifact_ref: ArtifactRef
     selected_artifact_ref: ArtifactRef

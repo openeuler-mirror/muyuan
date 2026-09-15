@@ -15,7 +15,7 @@ from pydantic import (
 
 from goal_plus.domain.artifacts import (
     ArtifactRef,
-    WorkspaceBackend,
+    WorkspaceProvider,
     WorkspaceOperationTiming,
 )
 from goal_plus.domain.base import SearchModel
@@ -187,7 +187,7 @@ class PromotionRecord(SearchModel):
     promotion_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     candidate_id: str = Field(min_length=1)
-    provider: WorkspaceBackend
+    provider: WorkspaceProvider
     strategy: PromotionStrategy
     promotion_mode: Literal["apply", "artifact_only"] = "apply"
     state: PromotionState = "prepared"

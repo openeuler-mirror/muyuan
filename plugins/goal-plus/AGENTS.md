@@ -6,6 +6,12 @@
 
 ## 文档入口
 
+完整索引与内容归属见[文档地图](docs/README.md)。详细合同由最接近的专题维护，其他页面
+保留面向读者的摘要和链接；允许规格、接口与使用说明分层表达同一事实。正式文档只维护
+当前合同、使用说明与已知限制；临时计划、施工记账、审计清单和历史提案在工作完成后删除，
+不作为产品待办保留。测试证据绑定实际 build，放在提交或评审记录中；历史内容通过 Git 查看。
+迁移正文时先确认专题保留完整语义，不将历史计划写成当前能力。
+
 先读 [SPEC.md](SPEC.md) 了解稳定系统合同，再按改动范围选择文档：
 
 | 改动范围 | 文档 |
@@ -21,6 +27,7 @@
 | Codex/Pi 共同边界 | [Agent Host Adapters](docs/agent-host-adapters.md) |
 | Codex 或 Pi 的安装与宿主行为 | [Codex](docs/codex.md)、[Pi](docs/pi.md) |
 | 状态、日志和 report 排障 | [Runtime 调试](docs/debugging-runtime.md) |
+| 真实测试、长时间观察和日志摘要 | [现有观察脚本](docs/debugging-runtime.md#长时间观察)；先查 `scripts/`，复用 monitor 与 session audit |
 | Checkout 开发与安装刷新 | [开发指南](docs/development.md) |
 | SearchSpec 示例 | [Examples](examples/README.md) |
 | 测试层次、marker 和真实 host ST | [Tests](tests/README.md) |
@@ -51,7 +58,7 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `ports/` | 无 I/O 的组合存储 DTO 与执行输入输出；不拥有领域状态转换 |
 | `application/annotation.py`、`application/annotation_admission.py` | Annotation admission/reconciliation、claim、completion、retry、queue close、comparison/Artifact View references 和 Tool head reconciliation |
 | `application/annotation_context.py`、`ports/artifacts.py` | 从已结算输入构造 Annotation context，校验 exact artifact/历史 context/cleanup；窄读取接口不承担 worker 生命周期 |
-| `infrastructure/artifacts/` | Git/Copy/TT immutable diff 与 Artifact View I/O；共用 bounded capture/进程组清理在 `infrastructure/process_output.py`，不启动模型 |
+| `infrastructure/artifacts/` | Git/Copy/TT immutable diff 与 Artifact View I/O；共用 bounded capture/直接子进程收尾在 `infrastructure/process_output.py`，不启动模型 |
 | `workspaces.py`、`infrastructure/artifacts/reader.py` | 前者分离本地创建、LocalGitWorkspace、GitReferences 和 GitPublication，能力不互相继承；后者接线本地 View 与 TT immutable handle；不恢复全能 WorkspaceProvider/factory 或 TT/Copy 假方法 |
 | `application/search_context.py` | 只读解析 run 链接的 Goal revision 文本和有效 deadline；不替代 Goal/session 授权 gate |
 | `application/verifier.py`、`ports/verifier.py` | 单一 Verifier task 的 admission、claim、completion/retry、完整不可变 record 与精确 subject identity；不停止搜索、选择 winner 或执行 allocation |
@@ -63,7 +70,8 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `application/candidate_execution.py` | Run invalidation/state、candidate recovery 与 session generation/归属的共享纯 gate；不读取 host liveness 或解除 recovery fence |
 | `application/internal_agents.py`、`internal_agents.py` | 前者只读冻结 host/run admission policy；后者由可信 host callback 驱动队列、终态 cleanup 和重扫，不构造 Search Runtime |
 | `annotation_host.py` | Annotation 用例装配和完成后的 host callback；TT 直接使用 workflow/admission/context，不通过 candidate host service 访问状态 |
-| `application/candidate_host.py`、`application/candidate_queries.py` | Candidate launch 准备、归属/预算 gate、精确 launch task identity 和只读 host 查询；session 准备经窄 API，查询不授予执行权，host 不私读 Search store |
+| `application/candidate_host.py`、`application/candidate_queries.py` | Candidate launch 准备、归属/预算 gate、准确 native session handle 和只读 host 查询；session 准备经窄 API，查询不授予执行权，host 不私读 Search store |
+| `application/candidate_delivery.py` | 返回后按精确 Evidence/artifact 决定复用、跳过或补验；退休后不补验，不运行 worker，补验仍经原 Runtime verifier |
 | `domain/worker_policy.py`、`application/candidate_ledger.py` | 共用预算、环境与默认 inner-agent 纯规则；Application 拥有 ledger 继承、初始化和 projection，workspace I/O 经窄 port，不启动模型 |
 | `application/search_bootstrap.py`、`application/search_run.py` | Freeze、初始 run/plan/batch、invalidation 与显式 device lease 提交/释放；配置、workspace、verifier 和持久化由 bootstrap 接线，不回调 Runtime |
 | `infrastructure/search_configuration.py`、`artifacts/source_repository.py`、`artifacts/search_source.py`、`artifacts/thinkthread_baseline.py` | 分别负责确定性 host/model/policy 配置、只读 source 检查、FreezeInputs 和 TT baseline；用例注入 SourceInspection、SearchRunBindings、BaselinePreparation，不能恢复全能 SearchSource |
@@ -82,28 +90,32 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `ports/thinkthread_verification.py`、`infrastructure/verifiers/thinkthread_attempt.py` | Child/snapshot/inner Git 回包由 adapter 解码为具名事实；client 在 bootstrap/Runtime 绑定，用例只接收 ThinkThreadAttemptIO 并重核归属与 ledger，唯一结算 owner 不消费 SDK 字典 |
 | `domain/edit_surface.py`、`codex_file_tools.py` | 前者共用既有纯路径匹配；后者解析原生 patch 声明并按 typed candidate boundary 检查命名/真实目标，不解析模型 JS，也不声称 shell 沙箱 |
 | `application/goal_authorization.py`、`ports/goal_authorization.py` | Start replay/session admission、显式工具目标、scope attachment 和历史 Search 归属/执行许可；只读 typed source，不替代 host 可信 session 事实 |
-| `infrastructure/state/goal.py` | Goal/event 历史解码、session/pool 归属查询；不写入或修复 Goal 状态 |
+| `infrastructure/state/goal.py` | Goal/event 历史解码、session 归属查询；不写入或修复 Goal 状态，不恢复旧 pool 授权路径 |
 | `infrastructure/state/files.py`、`infrastructure/clock.py` | 共用 JSON 原子写、文件锁、文件哈希与系统时钟；不决定业务状态 |
 | `execution/process_monitor.py`、`ports/process_monitor.py`、`infrastructure/state/process_monitor.py` | 前者共用 process 诊断限频与事件摘要，Ports 定义纯 operational DTO，文件 adapter 原子写监控文档；不决定 task 重试、硬分或 host 存活 |
-| `execution/managed_process.py`、`execution/process_output.py`、`ports/process.py` | 共用本地进程等待、TERM/KILL、异常退出清理、有界完整 pipe capture 与 operational outcome；回收组长前保留成员身份，超限不解析截断结果；host 经窄 ProcessRegistration 登记/完成资源，角色保留 active fence 检查时点与错误分类 |
-| `execution/launch_gate.py` | 共用继承管道的登记后 exec 放行；Pi RPC、drainer、scope 内推理和 guardian 未登记时不会运行目标命令，启动者丢失则 EOF 退出；不读取领域状态或决定 admission |
+| `execution/managed_process.py`、`execution/process_output.py`、`ports/process.py` | 共用本地进程等待、TERM/KILL、异常退出清理、有界完整 pipe capture 与 operational outcome；不核验 PID 或进程组，超限不解析截断结果；host 经窄 ProcessRegistration 登记/完成资源，角色保留 active fence 检查时点与错误分类 |
+| `execution/launch_gate.py` | 共用继承管道的登记后 exec 放行；Pi RPC、drainer、scope 内推理 未登记时不会运行目标命令，启动者丢失则 EOF 退出；不读取领域状态或决定 admission |
+| `execution/session_rpc.py`、`execution/native_session.py`、`ports/session.py` | 共用有界 JSON-line 请求、EOF/reader 清理及 Codex app-server/Pi RPC session 操作；dynamic tool 回调经窄 bridge 并核对 native invocation，启动经 ProcessRegistration，完成不授予 candidate 权限或决定 Evidence 结算 |
+| `execution/session_control.py`、`ports/session.py` | 已授权 native actor 的幂等单次调用、准确结果、等待、消息、中断和停止；MCP 经可信 lookup 逐次核验归属，等待超时不取消执行，不自动续跑，不创建领域 session 或持久 session 数据库 |
+| `execution/thinkthread_session.py`、`ports/thinkthread_session.py`、`infrastructure/thinkthread_sessions.py` | 单 Child actor 的延迟创建、精确 Message 调用、steering 确认及 scope-local 资源 journal；独占 controller 接管只观察原调用，保留 deadline 与代际，不重发 spawn/wake；adapter 接共同 admission、工具桥与原 verifier/Annotation 回调，资源记录不授予领域执行权，不调用旧 pool |
+| `execution/pi_metrics.py`、`application/candidate_sessions.py` | 前者共用 Pi entries 增量与内容裁剪；后者按准确 native handle/invocation 将宿主观测写入既有 provenance，重复回包幂等；不以返回事实代替资源退出或改变 Evidence |
+| `session_host.py`、`goal_session_host.py`、`final_check_host.py`、`delegation_host.py`、`infrastructure/native_session_inputs.py` | 两端 MCP 的 native candidate/checker/delegation 启动、准确身份绑定、Main metadata 与 scope 接线和角色进程输入；candidate 调用共同 session/预算/delivery，GoalCompletion/GoalDispatch 接收各自结果，不在 Runtime 中监督 worker |
 | `execution/structured_inference.py`、`execution/inference_output.py`、`ports/inference.py` | 共用原生 Codex/Pi 一次性 CLI、schema、授权 Pi 工具包装配、输出读取与 invocation 观测；角色保留结果验收和 usage 口径；不构造业务用例、处理 TT Child 或接管 native candidate |
 | `infrastructure/inference_bindings.py`、`ports/inference.py` | Annotation/LLM Verifier 声明有限角色能力；可信 adapter 统一生成 Pi schema、扩展及白名单，无授权 View 则不装配读取工具；PiInferenceTools 仅是 adapter 到 Execution 的传输 DTO |
-| `execution/drainer.py`、`ports/drainer.py`、`infrastructure/state/drainer.py` | 共用 detached worker 的 single flight、启动登记、generation 归属、退出重扫与有界关闭；放行前经限 admission 期间使用的 callback 独立登记 scope 资源，队列退场不完成资源；任务领取/重试/并发和可信 scope admission 仍由各自 owner 决定 |
-| `execution/process_identity.py`、`execution/process_identity_darwin.py`、`ports/process_identity.py` | 只读 Linux procfs/macOS libproc 与 sysctl/group snapshot、drainer/Pi pool 共用精确 argv 检查与既有 recovery ps identity；核验结果直接携带启动身份；未知观测不授权停止或替换，两个 token 格式不互相猜测转换 |
-| `execution/process_resources.py`、`ports/process_identity.py` | scope/drainer/Pi pool wrapper/Pi RPC/已登记推理共用单进程和专用组的身份复核、成员观测及有界 TERM/KILL；各资源 owner 通过窄 callback 保存/恢复 boot/member witness，已观测逃逸成员仍按身份停止；不构造 store，清理失败不完成 scope token；未观测逃逸后代不在现有追踪保证内 |
+| `execution/drainer.py`、`ports/drainer.py`、`infrastructure/state/drainer.py` | 共用 detached worker 的 single flight、启动登记、generation 归属、退出重扫与显式 generation 撤销；放行前经限 admission 期间使用的 callback 独立登记 scope 资源，队列退场不完成资源；任务领取/重试/并发和可信 scope admission 仍由各自 owner 决定 |
 | `ports/scope.py`、`infrastructure/state/scope.py` | 前者定义 Goal/Search typed attachment、既有 host-local scope/agent/process DTO 与窄 State；后者保存原 JSON、scope/owner/cleanup 锁和枚举；attachment 的类型不授予领域执行权 |
 | `execution/codex_scope.py`、`execution/scope.py` | 原生 agent 的登记、spawn/wake invocation、代际观察与精确归属；共用 scope admission 和创建顺序选择，不构造 store 或调用 native agent |
-| `execution/scope_processes.py`、`execution/scope_cleanup.py` | Scope 进程登记、witness 合并/恢复、观测和停止，以及先 fence 后互斥的完整/candidate-only 关闭；经窄 host services 关闭 pool/drainer 和读取静默事实，不构造 store 或改写领域状态 |
-| `execution/scope_activation.py`、`execution/scope_guardian.py`、`host_scope.py` | Execution 拥有 owner 锁内的激活/替换、guardian 登记后启动与恢复及窄观察持续重试；激活/登记/admission/cleanup 使用 typed attachment，host 保留 service 接线、CLI 和公开薄入口；不重新激活 Goal/Search |
+| `execution/scope_processes.py`、`execution/scope_cleanup.py` | Scope 启动回执登记、完成和释放（不证明进程退出），以及先 fence 后互斥的完整/candidate-only 关闭；经窄 host services 关闭 session/drainer 和读取静默事实，不构造 store 或改写领域状态 |
+| `execution/scope_activation.py`、`host_scope.py` | Execution 按可信 native session/activation 激活 scope；激活/登记/admission/cleanup 使用 typed attachment，不读取进程表、不启动 guardian、不接管遗留进程；host 保留 service 接线和公开薄入口，不重新激活 Goal/Search |
 | `application/goal_revisions.py`、`goal_control.py`、`goal_dispatch.py` | Goal revision、可信 session/control 和实际 dispatch attempt 转换；复用 GoalAuthorization，保持入口锁、代际和幂等前态 |
 | `application/goal_search.py`、`goal_completion.py`、`goal_gate.py`、`goal_reconciliation.py` | Search link、终态审查、事件 gate 和当前 revision 的恢复 agenda；不启动 host 或构造 Search Runtime |
 | `domain/goal_commands.py`、`goal_policy.py`、`goal_closeout.py` | 命令结构与纯解析、时间/continuation 和 closeout 投影；时钟由调用方提供 |
 | `domain/worker_policy.py`、`domain/goal_authorization.py`、`application/goal_dispatch.py` | 分别拥有共用 worker model/count 解析、显式命令与 SearchSpec 匹配和 dispatch 结果摘要；不跨模块借用私有 helper |
 | `goal_plus.py`、`application/goal_observation.py` | 前者为 Goal 公共薄入口；后者保存宿主已归一化的用量观测，写入经 typed State |
 | `codex_hook_input.py`、`codex_models.py` | Codex 原生输入/turn 解码、模型事实与显式 override preflight；不拥有 Goal 状态转换 |
-| `assets/pi/extensions/lib/goal-plus-schemas.ts`、`goal-plus-transport.ts` | Pi tool schema 与 CLI/capability transport；主 extension 保留唯一注册入口和可信 host 事实 |
-| `runtime.py`、`bootstrap.py` | 前者保留 Search 公共入口并分别调用 LLM Verifier 与 Adaptive facade；后者装配窄用例，`SearchServices` 仅供 facade 接线，不传入用例或充当全能 port |
+| `assets/pi/extensions/lib/goal-plus-schemas.ts`、`goal-plus-transport.ts` | Pi/TT 专属 schema 与 CLI/capability transport；共同业务 schema 从 MCP 加载，主 extension 保留唯一注册入口和可信 host 事实 |
+| `runtime.py`、`bootstrap.py` | 前者保留 Search 公共入口与本地 verifier 锁；后者装配窄用例，`SearchServices` 仅供 facade 接线，不传入用例或充当全能 port |
+| `session_host.py`、`ports/allocation_apply.py`、`infrastructure/state/scope.py` | 可信 session host 保存准确 Decision/candidate/session/generation/call 的取消 intent/receipt，窄 proof port 供 Allocation apply 重核；接受取消不证明资源退出 |
 | `application/candidate_context.py`、`search_queries.py`、`evidence_reads.py` | 授权 session 的 context/ledger 初始化、只读 history/查询，以及保留 reconciliation/读取计数的 Evidence 用例；不启动模型 |
 | `ports/search_inspection.py`、`ports/monitor.py`、`projections/monitor_workers.py` | 分离只读查询与 context 初始化写入，定义候选 context/Monitor 已采集输入；候选/session 投影不读取文件或执行状态恢复 |
 | `application/report.py`、`ports/report.py` | 终态 gate、typed 报告输入与输出/cleanup/刷新次序；未完整解码的历史 Goal 链接仍参与终态 gate |
@@ -115,13 +127,14 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `adaptive_search/allocation.py` | Allocation 公共 facade 与结果序列化；Decision、预检和 apply 状态归 Application |
 | `domain/adaptive/policies.py` | 版本化 FeatureProvider/allocation policy 的纯计算 re-export，不读取状态、时钟、host 或 workspace |
 | `tools.py` | Codex/Pi 共用 facade 和 caller 前置条件 |
-| `server.py`、`pi_tool.py` | MCP/Pi 参数转换、调用和序列化 |
-| `agent_hosts.py`、Pi pool/worker | 声明性 HostBinding、模型目录、candidate launch/continue 和只读 observation 分别暴露；pool/worker 保留 budget、interrupt 和 host-local 状态，不恢复 AgentHostAdapter 全能对象 |
-| `infrastructure/worker_handoff.py`、`state/resource_locks.py`、`verifiers/output.py` | 分别共用 Pi workspace handoff、verifier/device 资源锁命名空间和本地/TT 有界日志；不从角色私有实现借用机制 |
-| `pi_pool.py` | Pool/job 索引、lease 和结果交付；启动身份登记后放行，同锁核验已提交 PID 与 request 归属后才执行；持久 witness 不进入公开 snapshot，按真实 wrapper 资源关闭，不用 task 终态代替退出；不接管 RPC 子进程的独立 session |
+| `server.py`、`mcp_client.py`、`pi_tool.py` | 共同 MCP schema/call、宿主绑定的角色与 candidate identity，以及 Pi bridge 参数转换和序列化；模型不能指定 transport 的 caller 身份 |
+| `ports/agent_hosts.py`、`ports/session.py`、`infrastructure/host_bindings.py` | 前两者声明宿主能力、窄 model/launch 接口和共同 session 控制 DTO；后者提供静态 capability 与 inner-agent 资产绑定，不加载执行器或授予执行权 |
+| `agent_hosts.py` | 具体模型目录、candidate launch/continue 转换和只读 observation 分别暴露；不恢复 AgentHostAdapter 全能对象或已删除的 Pi pool/driver/worker 编排 |
+| `state/resource_locks.py`、`verifiers/output.py` | 共用 verifier/device 资源锁命名空间和本地/TT 有界日志；不从角色私有实现借用机制 |
 | `execution/thinkthread_child.py`、`execution/thinkthread_rpc.py`、`ports/thinkthread.py` | Candidate/Annotation 共用 TT Child 归属、retained turn 静默、spawn/wake/interrupt/destroy 与 RPC hash/chunk/发送/游标消费；角色持有授权、request intent、过期/重传政策和 provider journal，SDK bridge 实现窄 transport port |
 | `execution/thinkthread_requests.py`、`ports/thinkthread_requests.py` | Pool baseline/provider mutations 共用 exact request 观察、关闭及 unknown 后有界确认；不写 journal、不重做 mutation，RequestNotFound 不证明操作成功，各 owner 保留 intent/重试/提交责任 |
-| `assets/pi/extensions/lib/goal-plus-thinkthread-rpc.ts` | Pi Worker 的独立 RPC 协议端点，处理请求重传、分块复核/重组与 ack；主 extension 保留可信 parent/session、角色工具集和 inner Git 归属，仅主 extension 注册工具 |
+| `assets/thinkthread-session-rpc.ts` | TT session 共用 RPC 协议端点，处理请求重传、分块复核/重组与 ack；宿主接线保留可信 parent/session、角色工具集和 inner Git 归属，仅主 extension 注册 Pi 工具 |
+| `infrastructure/thinkthread_codex_tools.py`、`assets/codex/thinkthread-worker-bridge.mts` | Codex Child 的受限 MCP/Message 转发；schema 与角色 gate 复用 server，身份来自原生 MCP metadata、SDK self 和 Parent Message；Child 不构造领域 store，不监督 TT execution |
 | Codex hook、Pi extension | 可信 command transport、session identity 和 host lifecycle 事实 |
 | `monitor.py`、`reporting.py` | Monitor 公开入口与报告适配入口；renderer 的纯实现位于 `projections/` |
 | Runtime 生成的 `candidate_task` | Candidate edit surface、环境和已启用能力的可见合同 |
@@ -147,7 +160,7 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 或执行前校验 identity、归属、artifact、容量、当前状态和幂等前态。AGENTS、SPEC、README、
 skill 和普通 prompt 可以解释规则，但不能成为确定性规则的唯一防线。
 
-例如，skill 只需告诉 candidate 在实质修改后调用 `search_run_verifier`。Host adapter 负责提供
+例如，skill 只需告诉 candidate 在实质修改后调用 `goal_plus_search_run_verifier`。Host adapter 负责提供
 可信的 session identity；shared facade/runtime 校验该 session 的 run/candidate 归属、workspace
 和 verifier 前态后才执行并记录 Evidence。不要把这些校验复述进 Codex、Pi 的 prompt，也不要
 让 host adapter 各自实现一套。
@@ -201,6 +214,8 @@ skill 和普通 prompt 可以解释规则，但不能成为确定性规则的唯
 3. 在 owner 边界内完成最小实现，并同步受影响的 facade、host asset 或 projection。
 4. 运行 focused test 和 default，再按影响范围选择 integration；真实 host ST/E2E 仅在
    开发者显式要求时运行，未运行的 lifecycle 验证记录为缺口。
+   启动长任务前先查[现有观察脚本](docs/debugging-runtime.md#长时间观察)，优先复用
+   `monitor_goal_plus.sh` 和 `check_session_instructions.py --recent`，缺少能力时扩展既有脚本。
 5. 系统不变量变化时更新 `SPEC.md`；用户可见合同变化时更新对应专项文档。
 6. 检查最终 diff，排除无关修改、生成状态和 credential。
 
@@ -211,10 +226,10 @@ Host asset 是可执行产品界面，不是装饰性文档。
 - 产品宿主资产只在 `assets/codex/`、`assets/pi/` 维护；安装器在 release 中生成
   Codex 发现入口及发布副本。源码不得恢复可自动发现的同名 skill、extension 或 marketplace。
   `AGENTS.md` 保留开发约定；`install.sh`、`uninstall.sh` 保留显式执行入口。
-- Codex 合同变化时检查 `assets/codex/skills/`、`assets/codex/agents/`、hook/config 模板及
+- Codex 合同变化时检查 `assets/goal-plus-instructions.txt`、`assets/codex/agents/`、hook/config 模板及
   `tests/test_codex_assets.py`。
-- Pi 合同变化时检查 `assets/pi/prompts/`、`assets/pi/skills/`、`assets/pi/extensions/`、worker/pool 及
-  `tests/test_pi_assets.py`。
+- Pi 合同变化时检查 `assets/pi/prompts/`、`assets/goal-plus-instructions.txt`、
+  `assets/pi/extensions/`、session adapter 及 `tests/test_pi_assets.py`。
 - 不要让任一 host asset 重新引用已删除的 runtime API。共同业务合同不得只在某一端修复。
 - `install.sh` 是唯一受支持的源码安装入口。安装行为变化时同步 `scripts/install.py`、安装测试
   和 [开发指南](docs/development.md)；不要静默替换另一 checkout 或删除用户管理的数据。
@@ -237,6 +252,9 @@ Pi checkout-local 开发和 Codex 正常 plugin 刷新的具体步骤见
 稳定 schema、窄的 reason token 和真正属于接口的文字。
 
 - 共同业务规则在 shared facade/runtime 层测试一次。
+- 统一 session 的 lifecycle 与共用传输独立测试；Codex/Pi 各测试自己的协议、身份与资源接线。
+  旧 Pi workflow 被替换后，删除失效步骤名/顺序断言；仍需保留的业务行为迁到共同 owner，
+  不为旧测试恢复专属编排。
 - MCP、Pi 和 Codex 各保留薄的入口、序列化及 host-specific 测试。
 - 默认 hook 测试用 `tests/_runtime_helpers.py` 的 `run_host_hook_inprocess` 进程内驱动
   `goal_plus_stop_hook.main()`；入口、进程隔离/退出或环境继承等依赖真实进程语义的测试
@@ -288,6 +306,18 @@ python -m pytest -m codex -q
 python -m pytest -m pi -q
 ```
 
+Agent 执行测试时直接使用以上命令；临时目录策略已默认生效，无需开发者手动设置：
+
+- `GOAL_PLUS_TEST_DEBUG` 未设置或为 `0` 时，成功测试在完整 teardown 后自动清理；
+  setup、测试正文或 teardown 失败时保留现场。排查失败优先检查已保留的目录。
+- 需要检查成功测试的产物时，Agent 自行对该次定向运行使用
+  `GOAL_PLUS_TEST_DEBUG=1 python -m pytest -q <test-node-or-file>`，无需开发者代跑。
+  调试开关只设在该次命令，不写入默认测试参数或全局环境；运行态 `GOAL_PLUS_DEBUG`
+  不控制测试保留。普通 pytest 目录仍按最近三轮轮转，长期排障证据需另存。
+- 遇到临时目录创建失败时检查容量和 inode（`df -h`、`df -i`）；inode 不足时，
+  为本次命令将 `TMPDIR` 和必要的 `GOAL_PLUS_ST_TMP` 指向数据盘上的独立目录后重跑。
+  具体保留范围与清理限制见[测试临时目录约定](tests/README.md#pytest-configuration)。
+
 真实 host ST 的命令与前置条件见 [Tests](tests/README.md)。环境不具备时明确记录未验证行为，
 不得把跳过描述成通过。默认测试使用 `pytest.ini` 的 32 workers 配置；小型环境覆盖并行度时
 不超过可用 CPU 的一半和 32 workers。真实 host ST 使用 `-n 0` 或 `-o addopts=''` 串行运行，
@@ -303,6 +333,11 @@ Markdown 改动必须运行 `markdownlint-cli2` 并检查受影响的相对链�
 2. Monitor 未投影所需字段时，再读取 `.gp/runs/<run_id>/` 中的准确记录。
 3. 只有分析 worker/host 行为时才查看 native transcript 或 raw log。
 4. 使用 `goal_plus_id`、`run_id`、`candidate_id`、`agent_session_id` 和 host handle 关联记录。
+
+长时间观察复用 `scripts/monitor_goal_plus.sh --once <runtime-root>`；需要最近宿主调用时，
+使用 `scripts/check_session_instructions.py --recent 6`，显式指定 session 和对应 build 的概要。
+正文按需加 `--include-content`，不要每次临时重写监控或日志解析器。命令示例见
+[Runtime 调试](docs/debugging-runtime.md#长时间观察)。这些只读脚本不负责调度或恢复。
 
 Report 是终态持久数据的静态投影，不是 live UI。生成顺序和恢复方法见
 [Runtime 调试](docs/debugging-runtime.md)。缺失的观测数据保持 unavailable，不从 transcript 猜测。

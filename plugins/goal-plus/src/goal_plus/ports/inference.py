@@ -30,7 +30,7 @@ class PiInferenceTools:
 
 @dataclass(frozen=True)
 class StructuredInferenceRequest:
-    host: Literal["codex", "pi-rpc"]
+    agent_harness: Literal["codex", "pi"]
     instructions: str
     prompt: str
     output_schema: dict[str, Any]
@@ -41,17 +41,19 @@ class StructuredInferenceRequest:
     cancellation_detail: str
     active_check: Literal["before_wait", "after_timeout"] = "before_wait"
     pi_tools: PiInferenceTools | None = None
+    runtime_provider: Literal["direct"] = "direct"
 
 
 @dataclass(frozen=True)
 class InferenceInvocation:
     invocation_id: str
-    host: Literal["codex", "pi-rpc"]
+    agent_harness: Literal["codex", "pi"]
     model: str | None
     reasoning_effort: str | None
     started_at: str
     completed_at: str
     elapsed_seconds: float
+    runtime_provider: Literal["direct"] = "direct"
 
 
 @dataclass(frozen=True)

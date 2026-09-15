@@ -7,30 +7,32 @@ from goal_plus.ports.scope import ScopeAttachment, ScopeHost, ScopeRecord
 
 
 PI_NATIVE_AGENT_CONFIG_FIELDS = frozenset({"model_pattern", "thinking_level"})
+CODEX_NATIVE_AGENT_CONFIG_FIELDS = frozenset({"model", "reasoning_effort"})
 
 
 def normalize_native_agent_config(
-    host: ScopeHost, native_agent_config: dict[str, Any] | None,
+    agent_harness: ScopeHost, native_agent_config: dict[str, Any] | None,
 ) -> dict[str, str] | None:
     if native_agent_config is None:
         return None
     if not isinstance(native_agent_config, dict):
         raise ValueError("native agent config must be an object")
-    if host != "pi":
-        raise ValueError("native agent config is only supported for the Pi host")
-    unknown = sorted(set(native_agent_config) - PI_NATIVE_AGENT_CONFIG_FIELDS)
+    fields = PI_NATIVE_AGENT_CONFIG_FIELDS if agent_harness == "pi" else CODEX_NATIVE_AGENT_CONFIG_FIELDS
+    label = "Pi" if agent_harness == "pi" else "Codex"
+    model_field = "model_pattern" if agent_harness == "pi" else "model"
+    unknown = sorted(set(native_agent_config) - fields)
     if unknown:
-        raise ValueError("unsupported Pi native agent config fields: " + ", ".join(unknown))
+        raise ValueError(f"unsupported {label} native agent config fields: " + ", ".join(unknown))
     normalized: dict[str, str] = {}
-    for name in PI_NATIVE_AGENT_CONFIG_FIELDS:
+    for name in fields:
         value = native_agent_config.get(name)
         if value is None:
             continue
         if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"Pi native agent config {name} must be non-empty")
+            raise ValueError(f"{label} native agent config {name} must be non-empty")
         normalized[name] = value.strip()
-    if "model_pattern" not in normalized:
-        raise ValueError("Pi native agent config requires model_pattern")
+    if model_field not in normalized:
+        raise ValueError(f"{label} native agent config requires {model_field}")
     return normalized
 
 

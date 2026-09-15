@@ -21,6 +21,15 @@ Goal Mode 完成；具备明确 metric 和 verifier 的优化任务进入 Search
 系统不负责理解 benchmark 的隐藏语义，也不保证公开 verifier 等价于外部官方评测。它也
 不是通用 worker supervisor；进程启动、等待、续跑和中断由 host 管理。
 
+GP 不读取操作系统进程表，不核验 PID/启动时间/boot identity/进程组，不提供 Linux/macOS
+进程身份适配，不启动 guardian，也不因 Main PID 消失而接管或清理遗留进程。
+进程生命周期由 agent/宿主负责；GP 仅控制自己当前持有的直接子进程和原生 session/Child 句柄。
+Scope 以可信 native session 和已授权 activation 为依据。启动日志的 PID 仅供诊断；
+registered/finished/released 分别表示登记、调用方报告完成和释放登记，不证明进程树已退出。
+后台消费者通过锁和 generation 领取、重扫和撤销，异常遗留 generation 须显式释放后重启。
+本地输出收集保持有界，不依赖停止后代来获得 EOF。Goal control、deadline、session generation、
+Evidence 和 publication 的业务 gate 保留；宿主未报告的执行丢失不由进程探测补造。
+
 ## 宿主安装身份
 
 正常 Codex/Pi 安装绑定经过验证的不可变代码 build、锁定依赖和受管 Python 解释器。
@@ -45,7 +54,39 @@ ThinkThread Profile 写入后的宿主或配置校验失败时，恢复原文件
 ThinkThread 独立升级不要求重装 Goal Plus。Runtime、Profile schema、SDK 协议版本和 contract
 fingerprint 偏离已测基线时仅警告；Profile 的可选协议声明不决定实际 Extension 握手。
 安装和运行仍校验所需配置结构、接口调用结果、Root/Child filesystem 与授权 capability。
+ThinkThread 的 Goal Plus runtime 目录必须位于 Root 附着文件树之外，使用受管 Profile 的
+原生 session 目录；baseline 捕获前拒绝位于 Root 内的自定义路径或指向它的软链接，
+不得把 Goal/session 私有状态作为 candidate snapshot 交付。
 Pi 开发 launcher 的预检查和工具调用使用开发 venv 的隔离 Python。
+两端不发布 Goal Plus 导航 skill。命令仍由宿主授权，公共导航来自 MCP instructions；
+删除 skill 不扩大 Main 或 candidate 的执行权限。
+
+### 上下文说明的事后检查
+
+检查以 session 所用 build 的概要原文为准，不读取模型私有思考或把助手复述当作加载证据。
+Codex 仅检查 rollout 中的工作上下文，排除 `guardian_history`；Main 的 compact hook
+重新注入公共概要，即使 Goal 已结束或不存在也不创建、恢复或授权 Goal。
+此诊断不参与 Goal 完成判定。Pi 默认在每次 inference
+turn 从宿主最终 system prompt 记录概要哈希和匹配布尔值到原生 custom entry，不保存完整 prompt；
+`GOAL_PLUS_SESSION_DIAGNOSTICS=0` 显式关闭新增 session 观测和归档，不关闭宿主原生历史或
+业务记录。检查器由用户手动调用，沿选定 session branch 消费观测，
+旧历史或关闭采集的历史缺少观测时报告 unavailable。
+缺少、损坏、版本不符的证据不得报告通过；记录中可见不等于模型实际遵循流程。
+
+默认情况下，Pi 在 provider request hook 记录本扩展注册的工具描述/schema 与该
+请求中的对应合同，并按 session 分支复用相同合同快照。观测不修改请求，不保存完整
+prompt、认证 header 或模型思考；它只证明该 hook 时点的可见内容，后续 hook 仍可能修改
+请求。离线 session 分析关联工具调用、原生工具错误和参数修正，不据此自动判断模型意图。
+缺少请求观测的旧历史只能与显式提供的 tools/list 参考合同比较，不能确认当时模型可见性。
+`GOAL_PLUS_DEBUG=1` 仅额外启用请求大小和 API 返回大小统计，不覆盖 session 采集的显式关闭。
+TT Child 在每次执行结束后通过原有 Message 通道发送压缩的增量诊断记录；Root 按已绑定的
+Child/session 身份收取并在删除资源前补收，存入 runtime 的 `host-logs/session-diagnostics/`。
+已发送游标保存在原生 custom entry，跨同一 session 的 Pi 进程重建延续增量，不作为业务恢复依据。
+归档保留 GP 工具调用及文本结果、provider 错误和诊断条目，过滤普通对话、模型思考、原生
+文件/命令工具正文与 compaction 摘要。Main 索引引用原生历史，不复制完整历史。
+诊断归档不授予执行权，不进入模型上下文，不改变结算或清理 gate；缺失批次、损坏记录和
+采集失败不得作为完整证据。突然退出前未送出的尾部不保证保留，外部删除 Root 后也不保证
+保留其 runtime；默认不外传或上传归档。
 
 ## 核心对象
 
@@ -82,7 +123,7 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 
 | 所有者 | 权限与职责 |
 | --- | --- |
-| Goal runtime | intake、host 授权、triage、dispatch identity、Search 归属、final check 和终态 |
+| Goal runtime | host 授权、Goal revision、dispatch identity、Search 归属、final check 和终态 |
 | Search runtime | freeze、workspace、verifier、Evidence、回滚、selection、promotion 和报告 |
 | LLM Verifier | settlement 后的局部质量与可选 adaptive metric；不停止、选择或分配 candidate |
 | Adaptive Search | Snapshot、纯 Feature/AllocationPolicy、AllocationDecision 和派生 candidate |
@@ -106,6 +147,73 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 “Runtime enforcement”指以上可执行边界共同形成的防御，不要求所有逻辑进入同一个
 `runtime.py`。同一领域规则只在共享 owner 中实现；Host adapter 只处理 host 独有事实，skill
 只描述模型判断和正常调用顺序。
+
+Pi 共享 Goal/Search 工具从 MCP tools/list 加载 description/schema，extension 在同一 runtime
+root 内复用标准 MCP stdio 连接，shutdown 时关闭；调用进入共同校验与实现，Pi/TT 专属
+宿主控制保留本地 schema。连接丢失不隐式重启其已托管执行。宿主可在 MCP 构造时绑定 caller
+role 与 candidate session identity，按角色限制工具可见性并校验每次调用的 session 参数。
+Main 的公共概要只维护在 `assets/goal-plus-instructions.txt`：Codex 的 MCP instructions
+和可信 Goal hook context 同源加载，Pi 从同一 MCP manifest 读取并在每轮 system prompt
+中加载；其他角色不注入 Main 概要。
+概要首行用不超过 250 字符的完整短句覆盖核心流程，后续补充解释；全文不超过 500 字符及
+1,000 UTF-8 字节。宿主截取首行时仍保留核心流程，安装和使用不要求选择版本。
+该绑定不出现在模型工具参数中，也不替代领域 owner 的归属、代际及当前执行状态 gate。
+Pi bridge 已使用该绑定；默认 Codex MCP 的可信角色事实仍由原生 hook 校验。
+受信任的 Codex app-server candidate 声明只收窄角色；原生 hook 必须同时核对当前代际的
+candidate session、app-server handle 和准确 native thread 才授予候选工具与文件修改权限。
+缺失或不匹配的绑定不能退回 Main 权限，也不能按模型参数猜测另一 candidate identity。
+
+统一 native session 控制使用宿主 MCP metadata 中的当前 Main thread identity；模型参数仅
+标识目标 candidate/session。run 和 message 必须匹配已授权 Goal 的当前 revision、attached Main、
+candidate generation 与有效 scope activation，并受已准备的 worker budget 和当前 deadline 约束。
+Worker budget 可省略；不强制最低探索时长、最低验证次数或提前收尾窗口。候选返回后由
+Main 判断是否继续，宿主不因返回过早而自动续跑。显式执行上限和 Goal deadline 仍生效，
+继续不会重置 Goal deadline。返回不生成 Evidence；未验证的修改仍不得选择或发布，
+verifier、RPC 与资源清理的操作超时独立保留。
+`goal_plus_session_run` 组合准备、打开、准确绑定及执行；后续调用默认复用当前 session。
+相同 call_id 与相同参数不重复执行或结算，冲突参数和旧 generation 请求被拒绝。
+活动调用不接受新的 call_id；steering 经 message。
+new_session 先确认旧资源清理，再隔离旧 generation；不回滚代码、Evidence 或累计预算。
+wait 超时不中断执行。
+pending Allocation Decision 原子封住退休目标的启动、续跑、redispatch、recover 和新 verifier
+admission；准确归属的 wait、interrupt、stop、close 仍可用，已进入硬结算的事务照常完成。
+公共 apply 经可信 session host 保存绑定 Decision/candidate/session/generation/call 的取消
+intent 与 receipt，再由 Allocation owner 重核并提交。接受回执可幂等复用，拒绝保持 pending，
+结果未知或已启动 session 的 controller 缺失要求恢复，不冒充取消成功。
+未知取消可在同一 controller 确认原 call 为 completed/interrupted 后通过同一 apply 请求恢复，
+只重放准确观察，不重发不确定的中断；failed 或缺失的调用事实不足以解除恢复要求。
+接受取消不证明退出，旧资源清理独立执行；退休后的返回不触发补验。
+派生 candidate 从记录的 exact attempt artifact
+物化，准备当前 session provenance，再经共同 session 启动。
+本地执行超时或 stop 只关闭宿主进程，不销毁持久原生 session。宿主仍保有准确调用记录时，
+下一次 run 在重新授权、确认旧资源清理后恢复同一 Codex/Pi session；不更换上下文、
+candidate generation 或 workspace，不重置预算、重复统计已观测用量或重放旧 call。
+缺少原生会话或恢复失败须明确报错，不自动退回新建 session。已结算 Evidence 保留。
+stop 封住当前 controller 的后续调用并停止执行；保留的 TT Child 只能经重新授权的显式
+run 恢复控制能力，确认旧调用回调退出且原 execution 已消失后才能继续。close 撤销重开能力
+并释放资源；失败的关闭可重试，不能绕过清理。TT interrupt 经准确 session/dispatch/Message
+控制请求转发原生 turn abort，宿主在活动 turn 内校验并确认；确认丢失不能宣称中断完成，
+不以平台信号请求成功代替原生中断事实。
+模型侧 session 准备回执只投影身份、工作区和模型来源；完整 launch 输入由宿主从持久
+session 读取。本地 Codex/Pi worker policy 使用共同 session 控制工具。
+Main 暂停后仍可读取并关闭自己持有的资源，不能借这些操作恢复执行；MCP 断连的取消不能
+跳过资源清理。本地控制器丢失后的 candidate 通过显式 Search recovery 恢复：先 fence 旧
+generation，核验准确 scope 资源已完成清理，再恢复 checkpoint 并启动新 session；
+不重连未知活跃执行，也不重放未完成调用。
+ThinkThread 的原生 Child 可在控制器进程丢失后继续存在。当前 Main 可通过同请求 session run
+接管同一 scope 中有准确调用日志且原控制器锁已释放的 Child：只观察原 Message、重试
+幂等结算及观测提交，保留原 call_id、dispatch、执行截止时间与候选代际，不重发 spawn/wake。
+无法确定实际执行身份时保持恢复要求，不猜测另一 Child 或把旧调用作为新调用执行。
+宿主返回的调用观测按准确 native handle 和 invocation 写入已有 session provenance，
+重复回包幂等，矛盾回包拒绝；不保存模型正文或改写 Evidence。用量采集缺失保持 unavailable，
+增量口径以最后成功观测为基线，不将最后一条助手消息冒充整次调用或累计 session 用量。
+调用返回状态与 scope 中的进程退出事实分别保留。
+
+最终检查通过共同 `goal_plus_run_final_check(goal_plus_id)` 准备、启动、等待并清理；宿主从
+当前 Main 的可信绑定及 scope 模型快照选择执行器。独立 checker 的 MCP 仅能读取所属 Goal
+和提交准确 check/revision 的结论，native session 由启动器绑定，提交时在 Goal 锁内重核
+control version。Codex 使用只读 sandbox，Pi 仅开放读取工具；模型返回的普通正文不构成
+通过证据，结构化 verdict 仍由 GoalCompletion 验收并决定终态。资源返回和退出分别处理。
 
 ## 授权边界
 
@@ -140,18 +248,31 @@ blocked 是显式可恢复停止，旧终态 blocked 迁移为 closed，不复�
 一条 Goal 的正常流程是：
 
 ```text
-                  /-> goal -----------------\
-intake -> triage                            -> final_audit -> [final_check] -> terminal
-                  \-> spec_discovery -> search /
+goal -------------------------------------> [final_check] -> terminal
+  \-> spec_discovery -> search -> final_audit -> [final_check] -> terminal
 ```
+
+创建目标和有效编辑后的新 revision 默认进入 `goal`，下一步为 `execute_goal`。
+普通 coding 无需调用 `goal_plus_record_triage`；缺少 triage 不得阻止正常工具使用、
+普通任务完成或按 policy 申请独立终审。用户明确要求 Search、并行/多 agent 协作、优化、
+多方案探索或比较时，Main 应进入 Search 准备；同一任务具备可评分目标、可执行 verifier、
+隔离 edit surface，且多 agent 探索互补方案有预期优化价值时，也应主动进入。评价合同不完整时
+先记录缺项并准备，而不是因默认 Goal 路径跳过；无法建立合同则向用户说明原因并继续可执行的
+普通工作。完整 SearchSpec 直接提交 freeze，或先按需记录分流判断和缺失条件。
+进入 Search 后仍须完成冻结、候选验证、selection、promotion 和所需 apply。
 
 `active` 表示仍可推进；`needs_user` 只用于确实缺少用户决定；`blocked` 是可恢复停止，
 `complete` 和 `abandoned` 是终态。Runtime 的 `next_action` 是当前 revision 的权威下一步，skill 不应自行
 维护第二套状态机。
 
-Main Agent 自主拆解普通任务并决定是否使用原生 subagent。Runtime 不要求预建执行计划或
-work DAG，只记录实际发生的 dispatch。Main 在调用 host 原生 spawn 前创建 dispatch attempt，
+Main Agent 自主拆解普通任务并决定是否使用 subagent。Runtime 不要求预建执行计划或
+work DAG，只记录实际发生的 dispatch。共同 `goal_plus_run_work_item` 创建 dispatch attempt，
 启动成功后绑定 handle；后续 message、result、rework 和终态必须携带当前 attempt identity。
+同一 work_item_id 的 result_ready 通过该工具在同一 native session 返工，结果由 Main 审查后
+记录 accepted。宿主在状态 owner 的锁内重新核验启动/返工的 Main identity 和 control version；
+已返回的 session 可保持空闲，其存在不代表任务仍在执行。MCP/scope 负责资源关闭；
+result_ready 在控制器丢失后可由再次运行该工具恢复同一原生会话，前提是准确登记的旧资源
+已完成清理。缺失记录或仍活跃的资源不授权恢复。Pi 专属 work-item 编排已移除。
 迟到的旧 generation 结果保留为 stale Evidence，但不能覆盖当前 attempt。具有确定 metric、
 可执行 verifier、隔离 edit surface，且并行探索有价值的任务适合 Search；合同不完整时先进入
 Spec Discovery。
@@ -159,9 +280,15 @@ Spec Discovery。
 模型可见的状态和变更回执必须使用显式投影，不能默认回放整个持久记录与审计历史。
 当前 control、revision、下一步动作、待审查结果和恢复身份保持可见；完整目标与草案按需
 读取，历史详情分页读取。变更回执保留本次操作的准确 attempt、Search 或 final-check identity。
-状态、Monitor 与 Pi pool snapshot 默认 `detail=false`；配置、成功结果明细和报告路径经
-`detail=true` 只读查询。写操作回执指向只读详情入口，不要求重复执行写操作。成功 pool close
-不回放已交付 job；错误、未交付结果、未完成清理与未知资源数始终保持可见。
+状态与 Monitor 默认 `detail=false`；配置、成功结果明细和报告路径经
+`detail=true` 只读查询。写操作回执指向只读详情入口，不要求重复执行写操作。
+Search freeze/plan/batch 和 publication 的默认回执保留后续操作需要的 ID、实际分配、
+输出位置、状态与异常，不回显完整 spec、CandidateTask 或 provider 记录。candidate 工作合同
+仍由 host/context 完整交付。Session 控制回执绑定准确 call/native invocation；wait 默认
+返回状态、错误及结果可用标记，`detail=true` 只读取得同一调用的完整正文和诊断。
+`completed` 不代表验证通过，Search Evidence 仍由原查询与 selection gate 判定。
+普通工作交付正文与独立 checker 的结构化 findings 保留，资源关闭不回放已交付结果。
+错误、未交付结果、未完成清理与未知资源数始终保持可见。
 Codex/Pi 共用这些返回合同；持久化、授权、Evidence 和恢复不因展示裁剪而改变。
 
 ## SearchSpec 与冻结
@@ -181,7 +308,7 @@ SearchSpec 合同覆盖：
 
 Freeze 与 run bootstrap 必须：
 
-1. 保存 draft 时校验 SearchSpec 与显式 host command config；
+1. freeze 准入校验完整 SearchSpec 与显式 host command config，不要求 ready draft；
 2. freeze 时固定 clean source identity 和 verifier artifact hash；
 3. freeze 时在 origin 执行 process verifier baseline；
 4. 创建 run 时确认 source identity 未变化；
@@ -196,6 +323,15 @@ JSON 对象读取，不能用 promotion verifier 的分数替代 process suite �
 FrozenSpec 创建后不可原地改写。评价合同有误时，使旧 run invalid，冻结新合同并创建
 successor run；不同合同的分数不得直接比较。
 
+FrozenSpec 绑定 Goal revision。模型侧 create 在副作用前保存 request_id 指纹、revision/control
+version 与预分配 run ID，分阶段恢复创建、bootstrap 和 Goal 关联。同请求返回原 run，参数冲突
+拒绝；未知 provider 结果通过原 journal 确认，不盲目重发。关联时重新核验 Goal 状态与 revision，
+未关联 run 不允许候选执行。失败请求保留可查询状态，旧 revision 请求不能关联到新 revision。
+
+模型可见工具统一使用 goal_plus_ 前缀，仅注册新名称。Main 目录稳定，worker/checker/annotator
+按角色及冻结能力可见；host gate 和创建/编辑拒绝入口不进入模型目录。宿主 namespace 必须精确
+匹配，其他插件的同名动作不获得授权。历史草稿仍可读，总 Goal 编辑仍由精确 host edit 命令授权。
+
 ## Search 生命周期
 
 单次尝试的 `failure` 是结算结果，不是 Goal 或 Search 的终态；它和其他 disposition 一样
@@ -206,8 +342,8 @@ session 和 generation gate，selection 从已结算 Evidence 重建 best。
 
 一次标准 run 按以下顺序执行：
 
-1. 使用当前 `goal_plus_id` 调用 `search_freeze_spec`
-2. 使用同一 `goal_plus_id` 调用 `search_create` 并链接当前 Goal revision
+1. 使用当前 `goal_plus_id` 调用 `goal_plus_search_freeze_spec`
+2. 使用同一 `goal_plus_id` 调用 `goal_plus_search_create` 并链接当前 Goal revision
 3. 创建一个 SearchPlan，一次性物化初始 candidate lanes
 4. Host 为每个 candidate 启动并绑定 native session
 5. Candidate 循环修改并调用权威 verifier
@@ -230,12 +366,28 @@ SearchSnapshot，经无 I/O FeaturePipeline 和 AllocationPolicy 生成唯一 ca
 AllocationExecutor 预检和幂等物化。`budget.max_parallel` 是实时活跃 candidate 上限；可选
 `max_candidates` 是累计物化上限。Candidate id 只在 Executor 应用 Decision 时分配。
 
-Agent 类型由 Goal 当前已授权、已绑定的 Main 原生会话确定，不属于 SearchSpec 可选配置。
-SearchSpec 不接受 `strategy.worker_host`、`strategy.worker_launch.agent_profile` 或内部角色的
-`host`。Freeze 在执行 verifier 或保存 FrozenSpec 前读取可信 Main 身份，记录
-`FrozenSpec.native_host=codex|pi`，并将其纳入 spec hash；执行驱动由该身份和工作区后端推导。
-Codex 仅支持本地 Copy/Git，Pi 支持本地 Copy/Git 或经 preflight 的 ThinkThread。
-无 Goal 的可信底层调用必须显式提供 native host，公开 MCP/Pi 工具不暴露该参数。
+Agent 身份使用 `AgentHarnessKind=codex|pi`，执行托管方式使用
+`AgentRuntimeProvider=direct|thinkthread`，工作区使用
+`WorkspaceProvider=copy|git_worktree|thinkthread`。SearchSpec 使用 `workspace.provider`，
+其他工作区 DTO 使用 `workspace_provider`；`ArtifactRef.provider` 保留精确 artifact identity。
+Freeze 从 Goal 当前已授权的 Main 会话取得 harness，由装配层解析 runtime provider，
+保存必填 `FrozenSpec.agent_harness`、`runtime_provider` 并一起纳入 spec hash。
+工作区不能改写 agent 身份；模型不能指定 caller 身份。支持 Codex/Pi + direct + Copy/Git，
+以及通过 Root/Profile/capability preflight 的 Pi + ThinkThread + TT workspace。
+Codex + ThinkThread、ThinkThread Adaptive Search 继续拒绝。
+
+Session、session_handle、角色 profile、worker policy 和调用观测分别表达 harness/provider；
+状态 owner 在执行或写入前核对冻结绑定、精确 handle、scope 和 generation。
+Candidate 与 Annotation 使用冻结绑定；LLM Verifier 复用 direct structured inference。
+Delegation 与最终 checker 保持直接启动。`strategy.inner_agent` 名称和行为不变，
+省略时 direct 默认 autoresearch、ThinkThread 默认 common，显式选择优先。
+
+用户仍只需 `$goal-plus <自然语言诉求>` 或 `/goal-plus <自然语言诉求>`。
+普通任务进入 Goal Mode；Main 在需要 Search 时准备评价合同，信息不足时继续原有澄清流程。
+新身份字段不增加用户必填配置。模型发现工具显式接收 `agent_harness` 和 `runtime_provider`。
+不保留旧字段 alias、双写或迁移。切换前使用旧 build 关闭活动资源并收尾旧记录，
+新 build 创建新记录；旧或未完整解码的记录不得被忽略而绕过授权和终态 gate。
+`.gp`、scope/resource journal 与安装目录布局保持不变，不自动刷新用户安装。
 
 Annotation 与 LLM Verifier 继承冻结的 Main Agent 类型，角色驱动按支持矩阵装配。
 Codex hook 或 Pi extension
@@ -277,7 +429,7 @@ Allocation runtime 不直接监督 worker。
 
 ## Candidate 合同
 
-Candidate 首次启动或 fresh session 恢复时，通过 `search_get_agent_context` 得到顶层目标、
+Candidate 首次启动或 fresh session 恢复时，通过 `goal_plus_search_get_agent_context` 得到顶层目标、
 metric 和 `candidate_task`；这些内容共同构成 worker 的完整运行合同，包括：
 
 - 当前 `run_id`、`candidate_id`、objective 和 metric；
@@ -298,7 +450,7 @@ Candidate 不应获得：
 - peer 的真实 workspace、transcript 或私有推理；
 - hidden evaluation、credential 或任意 host environment variable。
 
-本地命令只提供分析信息。`search_run_verifier(agent_session_id=...)` 是唯一形成正式 Evidence
+本地命令只提供分析信息。`goal_plus_search_run_verifier(agent_session_id=...)` 是唯一形成正式 Evidence
 并参与共享搜索的验证路径。Verifier settlement 后，runtime 以已结算 workspace 状态作为下一
 轮起点。
 
@@ -329,13 +481,20 @@ promotion evidence。失败的 promotion 不生成可应用结果。
 
 ## Host 与资源合同
 
-Codex 和 Pi 共用 Goal/Search 领域规则，但 lifecycle 实现不同：
+Codex 和 Pi 共用 Goal/Search 领域规则与 MCP session 控制；Codex adapter 使用 app-server，
+Pi adapter 使用原生 RPC，ThinkThread adapter 使用 retained Child 与 Message 协议。
+旧 Pi/TT pool 编排和模型工具已删除。Worker policy 的 `session_control` 声明共同七个控制
+工具；结果就绪和资源退出分别观察，scope journal 保存 TT Child 的准确资源身份。
+Monitor 的 `candidate_sessions` 只展示这些已采集资源状态，缺失记录不能证明关闭。
 
-- Codex 使用 native subagent、hook、wait/followup/interrupt；
-- Pi 使用 RPC worker 和 durable host-local pool。
-
-Host 返回的 launch payload 是权威映射输入。Runtime 不轮询 host 进程，不把 host liveness
+Host 持有的 launch payload 是权威映射输入。Runtime 不轮询 host 进程，不把 host liveness
 写进 Search 领域状态。`AgentSessionRecord` 只保存绑定、上下文和 provenance。
+候选启动输入不包含模型侧的 native spawn/followup 工具脚本；行为由 `inner_agent` 选择，
+不接受旧 `worker_agent_type`。候选 handle 使用 `external_id` 绑定原生 session，不接受
+task name 作为替代身份。Codex hook 只从可信启动声明与持久化的准确 app-server handle
+识别 candidate，不从 prompt、旧角色名或任务名授予 candidate 身份。恢复和 selection 静默
+依赖 scope 中准确 session/run 的进程资源退出，旧 terminal metadata 不作为退出证明。
+既有普通 native subagent 的 scope 跟踪与清理独立保留，不参与 candidate session 授权。
 
 设备资源由 host 通过受信任的 `GOAL_PLUS_DEVICE_POOLS` 注册。SearchSpec 只能引用 pool ID；
 runtime 为 lane 固定非敏感可见变量和设备，并通过共享 lease/resource lock 防止超售。不能让

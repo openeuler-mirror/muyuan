@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import tempfile
 from pathlib import Path
 
 import pytest
 
-
-ROOT = Path(__file__).resolve().parents[2]
+from tests._st_tmp import new_st_run_dir
 
 
 @pytest.hookimpl(trylast=True)
@@ -34,8 +32,9 @@ def pytest_collection_modifyitems(
 
 @pytest.fixture()
 def st_pi_run_root(request: pytest.FixtureRequest) -> Path:
-    base = ROOT / ".tmp" / "st-pi-runs"
-    base.mkdir(parents=True, exist_ok=True)
-    node = request.node.name.replace("::", "_").replace("[", "_").replace("]", "")
-    run_root = Path(tempfile.mkdtemp(prefix=f"{node}-", dir=base))
-    return run_root
+    """Temporary run root for a Pi ST scenario, under the ST scratch base.
+
+    Removed once the test finishes unless the run is kept for debugging; see
+    tests/_st_tmp.py for the base location and retention rules.
+    """
+    return new_st_run_dir(request, kind="st-pi-runs")

@@ -26,13 +26,13 @@ class LocalPublication:
     def native_promotion(self, run, record):
         return bool(
             run.source_artifact_ref is not None
-            and record.task.workspace_backend == "git_worktree"
+            and record.task.workspace_provider == "git_worktree"
             and run.source_repository is not None
         )
 
     def prepare_local(self, run, record, selected, changed):
-        if record.task.workspace_backend != "git_worktree":
-            raise UnsupportedWorkspaceCapability(record.task.workspace_backend, "prepare_promotion")
+        if record.task.workspace_provider != "git_worktree":
+            raise UnsupportedWorkspaceCapability(record.task.workspace_provider, "prepare_promotion")
         return GitPublication().prepare_promotion(
             run_dir=self.root_dir / "runs" / run.run_id,
             run_id=run.run_id,

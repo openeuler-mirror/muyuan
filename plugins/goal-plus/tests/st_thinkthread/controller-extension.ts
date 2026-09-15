@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +11,9 @@ export default function (pi: ExtensionAPI) {
 		if (process.env.GOAL_PLUS_PI_ROLE !== "main") return;
 		const config = join(ctx.cwd, CONFIG_NAME);
 		if (!existsSync(config)) return;
+		const settings = JSON.parse(readFileSync(config, "utf8"));
+		settings.native_session_id = ctx.sessionManager.getSessionId();
+		writeFileSync(config, JSON.stringify(settings));
 		const source = process.env.GOAL_PLUS_SOURCE_PATH;
 		const python = process.env.GOAL_PLUS_PYTHON;
 		if (!source || !python) {

@@ -183,8 +183,8 @@ class OrchestrationMonitorFeature:
                 item_payloads[work_item_id]["attempt"]["stale_results"] += 1
 
         execution = context.goal.policy.get("execution")
-        host = execution.get("host") if isinstance(execution, dict) else None
-        host = host if isinstance(host, dict) else {}
+        agent_harness = execution.get("host") if isinstance(execution, dict) else None
+        agent_harness = agent_harness if isinstance(agent_harness, dict) else {}
         statuses = Counter(item.status for item in items)
         semantics = Counter(event["semantic_event"] for event in interactions)
         operations = list(
@@ -196,16 +196,16 @@ class OrchestrationMonitorFeature:
         )
         return {
             "schema_version": 3,
-            "protocol": host.get("protocol"),
+            "protocol": agent_harness.get("protocol"),
             "host": {
-                key: host[key]
+                key: agent_harness[key]
                 for key in (
                     "host_id",
                     "native_reasoning_effort",
                     "enforcement",
                     "operations",
                 )
-                if key in host
+                if key in agent_harness
             },
             "semantic_contract": {
                 "assignment_fields": ["objective"],

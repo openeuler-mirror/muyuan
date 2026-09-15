@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 max_duration_seconds=480 workspace_backend=git_worktree promotion_mode=artifact_only strategy=agent_guided 优化只读 VLIW 模板，并把结果保存在 `.gp/`。
+/goal-plus max_parallel=2 max_duration_seconds=480 workspace_provider=git_worktree promotion_mode=artifact_only strategy=agent_guided 优化只读 VLIW 模板，并把结果保存在 `.gp/`。
 <!-- markdownlint-disable-file MD013 MD041 -->
 
 问题：当前 `solution.py` 为自定义 VLIW/SIMD 机器生成指令程序。必须保持所有公开案例
@@ -18,5 +18,5 @@ score adapter 或其他冻结输入，不要硬编码案例 seed，不要访问�
 最终报告需要给出选中结果的周期数和相对 `147734` 周期 baseline 的改进量；结束前确认
 `workspace-template/` 保持不变。
 
-时间约束：任务预算为 8 分钟，第 6 分钟开始收尾；单个 worker 最长运行 4 分钟。
+时间约束：整个任务最多 8 分钟。候选返回后，由 Main 根据已有 Evidence 判断是否继续。
 时间预算只控制探索与收尾，不改变正确结果的验收标准。

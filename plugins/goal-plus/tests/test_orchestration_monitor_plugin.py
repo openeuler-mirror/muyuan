@@ -94,14 +94,14 @@ def test_orchestration_plugin_normalizes_codex_and_pi(tmp_path: Path) -> None:
     codex = _snapshot(
         tmp_path / "codex" / ".gp",
         host_id="codex",
-        dispatch_operation="spawn_agent",
-        result_operation="wait_agent",
+        dispatch_operation="goal_plus_run_work_item",
+        result_operation="goal_plus_run_work_item",
     )["feature_plugins"]["orchestration"]
     pi = _snapshot(
         tmp_path / "pi" / ".gp",
         host_id="pi",
-        dispatch_operation="pi_goal_plus_run_work_item",
-        result_operation="goal-plus-pi-worker",
+        dispatch_operation="goal_plus_run_work_item",
+        result_operation="goal_plus_run_work_item",
     )["feature_plugins"]["orchestration"]
 
     [codex_item] = codex["dispatches"]
@@ -113,10 +113,8 @@ def test_orchestration_plugin_normalizes_codex_and_pi(tmp_path: Path) -> None:
         ("result", "subagent_to_main", "result"),
         ("decision", "main_to_subagent", "accepted"),
     ]
-    assert codex["summary"]["native_operations"] == ["spawn_agent", "wait_agent"]
-    assert pi["summary"]["native_operations"] == [
-        "pi_goal_plus_run_work_item",
-        "goal-plus-pi-worker",
+    assert codex["summary"]["native_operations"] == pi["summary"]["native_operations"] == [
+        "goal_plus_run_work_item",
     ]
     assert codex_item["worker"]["transcript_available"] is True
     assert codex_item["attempt"]["generation"] == 1

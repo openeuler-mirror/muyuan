@@ -20,7 +20,7 @@ def candidate_recovery_point(record: CandidateRecord) -> CandidateRecoveryPoint:
         if last is not None
         else record.results_ledger_artifact_ref
     )
-    if artifact is None or artifact.provider != record.task.workspace_backend:
+    if artifact is None or artifact.provider != record.task.workspace_provider:
         raise RuntimeError("RecoveryCheckpointUnavailable: no settled artifact")
     if last is not None and (
         last.ledger_artifact_ref != artifact

@@ -7,7 +7,7 @@ import pytest
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import (
-    AgentHostHandle,
+    AgentSessionHandle,
     AgentSessionRecord,
     ArtifactRef,
     CandidateProposal,
@@ -62,7 +62,7 @@ def spec_dict() -> dict:
 
 def frozen_spec(*, task_skill_paths: list[str] | None = None) -> FrozenSpec:
     spec = SearchSpec.model_validate(spec_dict())
-    return FrozenSpec(native_host="codex",
+    return FrozenSpec(runtime_provider="direct", agent_harness="codex",
         frozen_spec_id="spec_123",
         spec_hash="hash",
         spec=spec,
@@ -71,7 +71,7 @@ def frozen_spec(*, task_skill_paths: list[str] | None = None) -> FrozenSpec:
         task_skill_paths=task_skill_paths or [],
         workspace_capacity_estimate=WorkspaceCapacityEstimate(
             source_path="/tmp/source",
-            backend="git_worktree",
+            workspace_provider="git_worktree",
             basis="git_tracked_checkout",
             worktree_nodes=2,
             source_scope_files=3,
@@ -109,8 +109,8 @@ def goal_plus_record() -> GoalPlusRecord:
 
 def test_candidate_role_cannot_manage_adaptive_allocation() -> None:
     for tool_name in (
-        "search_list_allocation_decisions",
-        "search_apply_allocation_decision",
+        "goal_plus_search_list_allocation_decisions",
+        "goal_plus_search_apply_allocation_decision",
     ):
         with pytest.raises(PermissionError, match="GoalPlusRoleDenied"):
             require_tool_role(
@@ -129,14 +129,14 @@ def test_search_bootstrap_requires_active_host_verified_goal(tmp_path: Path) -> 
     spec = spec_for(project, max_parallel=1)
 
     with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
-        tools.search_freeze_spec(
+        tools.goal_plus_search_freeze_spec(
             "gp_missing", spec, [str(project / "evaluator.py")]
         )
     assert not (root / "specs").exists()
 
-    frozen_without_facade = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="codex")
+    frozen_without_facade = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
     with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired"):
-        tools.search_create("gp_missing", frozen_without_facade.frozen_spec_id)
+        tools.goal_plus_search_create("gp_missing", frozen_without_facade.frozen_spec_id, "create")
     assert not (root / "runs").exists()
 
     first = start_host_verified_goal(root, project)
@@ -147,22 +147,22 @@ def test_search_bootstrap_requires_active_host_verified_goal(tmp_path: Path) -> 
         invocation_id="codex:other:start",
     )
 
-    frozen = tools.search_freeze_spec(
+    frozen = tools.goal_plus_search_freeze_spec(
         first.goal_plus_id,
         spec,
         ["evaluator.py"],
     )
-    second_frozen = tools.search_freeze_spec(
+    second_frozen = tools.goal_plus_search_freeze_spec(
         second.goal_plus_id,
         spec,
         ["evaluator.py"],
     )
-    assert frozen["goal_plus_id"] == first.goal_plus_id
-    assert second_frozen["goal_plus_id"] == second.goal_plus_id
+    assert runtime.search_run.state.read_frozen_spec(frozen["frozen_spec_id"]).goal_plus_id == first.goal_plus_id
+    assert runtime.search_run.state.read_frozen_spec(second_frozen["frozen_spec_id"]).goal_plus_id == second.goal_plus_id
     assert frozen["frozen_spec_id"] != second_frozen["frozen_spec_id"]
     with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
-        tools.search_create(second.goal_plus_id, frozen["frozen_spec_id"])
-    created = tools.search_create(first.goal_plus_id, frozen["frozen_spec_id"])
+        tools.goal_plus_search_create(second.goal_plus_id, frozen["frozen_spec_id"], "create")
+    created = tools.goal_plus_search_create(first.goal_plus_id, frozen["frozen_spec_id"], "create")
     assert created["run_id"].startswith("run_")
 
 
@@ -177,13 +177,14 @@ def test_tool_facades_reject_targets_outside_active_goal(tmp_path: Path) -> None
     with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
         GoalPlusTools(goal_runtime).goal_plus_set_status("gp_9999", "complete")
     with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
-        SearchTools(FileSearchRuntime(root), goal_runtime).search_select(
+        SearchTools(FileSearchRuntime(root), goal_runtime).goal_plus_search_select(
             "run_unlinked"
         )
     with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
-        SearchTools(FileSearchRuntime(root), goal_runtime).search_create(
+        SearchTools(FileSearchRuntime(root), goal_runtime).goal_plus_search_create(
             record.goal_plus_id,
             "spec_missing",
+            "create",
             source_run_id="run_unlinked",
         )
 
@@ -200,23 +201,13 @@ def test_search_freeze_spec_resolves_source_relative_artifacts(
     spec = spec_dict()
     spec["source_path"] = str(tmp_path)
 
-    result = tools.search_freeze_spec("gp_0001", spec, ["evaluator.py"])
+    result = tools.goal_plus_search_freeze_spec("gp_0001", spec, ["evaluator.py"])
 
     spec_arg, paths_arg = runtime.freeze_spec.call_args.args
     assert isinstance(spec_arg, SearchSpec)
     assert paths_arg == [tmp_path / "evaluator.py"]
     assert runtime.freeze_spec.call_args.kwargs == {"goal_plus_id": "gp_0001"}
-    assert result["frozen_spec_id"] == "spec_123"
-    assert result["spec"]["process_verifiers"][0]["role"] == "ranking_signal"
-    assert result["task_skill_paths"] == []
-    assert result["task_skill_notice"] == (
-        "No Git-tracked task-local Skills found under .agents/skills."
-    )
-    assert result["workspace_capacity_notice"] == (
-        "Workspace preflight: source=100.0 B, materialized=80.0 B, nodes=2, "
-        "per_node=40.0 B, candidate_checkouts=80.0 B, shared_objects=20.0 B, "
-        "upper_bound=100.0 B, free=1000.0 B, fits=yes."
-    )
+    assert result == {"frozen_spec_id": "spec_123", "state": "frozen"}
 
 
 @pytest.mark.parametrize("artifact", ["../evaluator.py", "/tmp/evaluator.py"])
@@ -228,25 +219,23 @@ def test_search_freeze_spec_rejects_non_source_relative_artifacts(
     spec["source_path"] = str(tmp_path / "source")
 
     with pytest.raises(ValueError, match="source_path-relative"):
-        SearchTools(Mock(), Mock()).search_freeze_spec(
+        SearchTools(Mock(), Mock()).goal_plus_search_freeze_spec(
             "gp_0001", spec, [artifact]
         )
 
 
-def test_search_freeze_spec_lists_task_local_skills() -> None:
+def test_search_freeze_spec_does_not_echo_task_local_skills() -> None:
     runtime = Mock()
     runtime.freeze_spec.return_value = frozen_spec(
         task_skill_paths=[".agents/skills/review/SKILL.md"]
     )
 
-    result = SearchTools(runtime, Mock()).search_freeze_spec(
+    result = SearchTools(runtime, Mock()).goal_plus_search_freeze_spec(
         "gp_0001", spec_dict(), ["evaluator.py"]
     )
 
-    assert result["task_skill_notice"] == (
-        "Git-tracked task-local Skills visible from source: "
-        "review=.agents/skills/review/SKILL.md"
-    )
+    assert result == {"frozen_spec_id": "spec_123", "state": "frozen"}
+    assert runtime.freeze_spec.return_value.task_skill_paths == [".agents/skills/review/SKILL.md"]
 
 
 def test_search_tools_delegate_runtime_calls_with_models() -> None:
@@ -337,8 +326,8 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     )
     generic_bound_session = agent_session.model_copy(
         update={
-            "host": "codex",
-            "host_handle": AgentHostHandle(host="codex", task_name="search_agent_001"),
+            "agent_harness": "codex",
+            "session_handle": AgentSessionHandle(agent_harness="codex", external_id="native-session-001"),
         }
     )
     continued_session = generic_bound_session.model_copy(
@@ -384,7 +373,7 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     runtime.apply_allocation_decision.return_value = {
         "decision": {"decision_id": "allocation_0001", "status": "applied"},
         "candidate_tasks": [],
-        "agent_sessions": [],
+        "agent_sessions": [agent_session.model_dump(mode="json")],
     }
     runtime.select.return_value = {"selected_candidate_id": "c001"}
     runtime.report.return_value = Path("/tmp/report.md")
@@ -440,31 +429,28 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     )
     tools = SearchTools(runtime, Mock())
 
-    assert tools.search_create("gp_0001", "spec_123") == {"run_id": "run_1"}
-    invalidated = tools.search_invalidate_run(
+    invalidated = tools.goal_plus_search_invalidate_run(
         "run_1",
         "verifier_coverage_inadequate",
         "missing required case",
         [{"case": "edge"}],
     )
     assert invalidated["state"] == "aborted"
-    assert tools.search_status("run_1")["state"] == "running"
-    assert tools.search_list_history("run_1", top_n=3, sort_by="created") == {
+    assert tools.goal_plus_search_status("run_1")["state"] == "running"
+    assert tools.goal_plus_search_list_history("run_1", top_n=3, sort_by="created") == {
         "run_id": "run_1",
         "candidates": [],
+        "details": {"tool": "goal_plus_search_list_history", "detail": True},
     }
-    assert tools.search_plan_next("run_1", requested_k=1)["plan_id"] == "plan_001"
-    batch = tools.search_start_batch(
+    assert tools.goal_plus_search_plan_next("run_1", requested_k=1)["plan_id"] == "plan_001"
+    batch = tools.goal_plus_search_start_batch(
         "run_1",
         "plan_001",
         [{"intent": "try an independent approach"}],
     )
     assert batch[0]["candidate_id"] == "c001"
-    assert batch[0]["task_skill_notice"] == (
-        "Subagent c001 repository Skills: "
-        "review=/tmp/c001/.agents/skills/review/SKILL.md. "
-        "External Skills remain host-managed."
-    )
+    assert "instructions" not in batch[0]
+    assert runtime.start_batch.return_value[0].task_skill_paths
     assert tools.search_start_agent_session(
         "run_1",
         "c001",
@@ -476,37 +462,38 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         worker_budget={"max_turns": 16},
     )
     assert redispatched["agent_session_id"] == "agent_002"
-    assert redispatched["launch"]["agent_type"] == "search_candidate_agent_deep"
+    assert "launch" not in redispatched
     assert tools.search_bind_agent_handle(
         "agent_001",
-        {"host": "codex", "task_name": "search_agent_001"},
-    )["host_handle"]["task_name"] == "search_agent_001"
+        {"agent_harness": "codex", "external_id": "native-session-001"},
+    )["session_handle"]["external_id"] == "native-session-001"
     continued = tools.search_continue_agent_session("agent_001")
-    assert continued["launch"]["task_name"] == "search_agent_001"
-    assert tools.search_get_agent_context("agent_001") == {"agent_session_id": "agent_001"}
-    assert tools.search_get_global_evidence("agent_001")[0]["view"] == (
+    assert continued["agent_session_id"] == "agent_001"
+    assert "launch" not in continued
+    assert tools.goal_plus_search_get_agent_context("agent_001") == {"agent_session_id": "agent_001"}
+    assert tools.goal_plus_search_get_global_evidence("agent_001")[0]["view"] == (
         "Changed the candidate value."
     )
     runtime.stage_shared_tool.return_value = {
         "staged_name": "trace-helper",
         "staging_path": "/tmp/c001/.tmp/share-out/trace-helper",
     }
-    assert tools.search_stage_shared_tool(
+    assert tools.goal_plus_search_stage_shared_tool(
         "agent_001",
         "trace-helper",
         "Collect a bounded trace.",
         "trace.py:main",
         [".tmp/tool-drafts/trace.py"],
     )["staged_name"] == "trace-helper"
-    assert tools.search_get_evidence_detail("agent_001", "c001", 1)[
+    assert tools.goal_plus_search_get_evidence_detail("agent_001", "c001", 1)[
         "supplemental_evaluation"
     ]["summary"] == "Changed the candidate value."
     runtime.get_evidence_detail.assert_called_once_with("agent_001", "c001", 1)
-    assert tools.search_get_agent_observability("agent_001") == {
+    assert tools.goal_plus_search_get_agent_observability("agent_001") == {
         "agent_session_id": "agent_001",
         "source": "codex_session_jsonl",
     }
-    verifier_report = tools.search_run_verifier("run_1", "c001")
+    verifier_report = tools.goal_plus_search_run_verifier("run_1", "c001")
     assert verifier_report["aggregate_score"] == 1.0
     assert verifier_report["verifier_results"][0]["metrics"]["stderr_tail"] == (
         "candidate diagnostic"
@@ -514,7 +501,7 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     assert verifier_report["verifier_results"][0]["log_path"].endswith(
         "iteration-0001-score-a1b2c3d4.log"
     )
-    worker_verifier_report = tools.search_run_verifier(
+    worker_verifier_report = tools.goal_plus_search_run_verifier(
         "run_1",
         "c001",
         agent_session_id="agent_001",
@@ -532,41 +519,35 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         hypothesis="try a fused path",
         toolization_decision=None,
     )
-    iterations = tools.search_list_iterations("agent_001")
+    iterations = tools.goal_plus_search_list_iterations("agent_001")["items"]
     assert len(iterations) == 2
     assert iterations[0]["iteration"] == 1
     assert iterations[1]["score"] == 0.7
     runtime.list_agent_iterations.assert_called_once_with("agent_001")
-    assert tools.search_list_allocation_decisions("run_1", "pending") == []
+    assert tools.goal_plus_search_list_allocation_decisions("run_1", "pending") == {"items": [], "total": 0, "next_offset": None}
     runtime.list_allocation_decisions.assert_called_once_with("run_1", "pending")
-    applied = tools.search_apply_allocation_decision("run_1", "allocation_0001")
+    applied = tools.goal_plus_search_apply_allocation_decision("run_1", "allocation_0001")
     assert applied["decision"]["status"] == "applied"
+    assert applied["agent_sessions"][0]["agent_session_id"] == "agent_001"
+    assert "launch" not in applied["agent_sessions"][0]
+    assert runtime.apply_allocation_decision.return_value["agent_sessions"][0]["launch"]
     runtime.apply_allocation_decision.assert_called_once_with(
         "run_1", "allocation_0001"
     )
-    assert tools.search_select("run_1") == {"selected_candidate_id": "c001"}
-    assert tools.search_report("run_1") == {
+    assert tools.goal_plus_search_select("run_1") == {"selected_candidate_id": "c001"}
+    assert tools.goal_plus_search_report("run_1") == {
         "report_path": "/tmp/report.md",
         "html_report_path": "/tmp/report.html",
     }
-    assert tools.search_promote("run_1", "c001") == {
+    assert tools.goal_plus_search_promote("run_1", "c001") == {
         "artifact_path": "/tmp/c001.patch",
         "source_path": "/tmp/source/repository/task",
-        "apply_cwd": "/tmp/source/repository",
-        "apply_directory": "task",
         "promotion_id": "promotion_c001",
-        "provider": "git_worktree",
-        "strategy": "squash_commit",
         "promotion_mode": "apply",
         "apply_required": True,
         "state": "prepared",
-        "publication_artifact_ref": {
-            "kind": "git_commit",
-            "id": "publish123",
-            "provider": "git_worktree",
-        },
     }
-    assert tools.search_apply_promotion("run_1")["state"] == "applied"
+    assert tools.goal_plus_search_apply_promotion("run_1")["state"] == "applied"
     assert tools.search_main_agent_notifications("run_1") == {
         "run_id": "run_1",
         "notifications": [notification.model_dump(mode="json")],
@@ -579,7 +560,6 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     proposal_arg = runtime.start_batch.call_args.args[2][0]
     assert isinstance(proposal_arg, CandidateProposal)
     runtime.list_history.assert_called_once_with("run_1", top_n=3, sort_by="created")
-    runtime.create_run.assert_called_once_with("spec_123", source_run_id=None)
     runtime.invalidate_run.assert_called_once_with(
         "run_1",
         reason="verifier_coverage_inadequate",
@@ -600,7 +580,7 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     )
     runtime.bind_agent_handle.assert_called_once_with(
         agent_session_id="agent_001",
-        handle={"host": "codex", "task_name": "search_agent_001"},
+        handle={"agent_harness": "codex", "external_id": "native-session-001"},
     )
     runtime.continue_agent_session.assert_called_once_with(
         agent_session_id="agent_001",
@@ -639,7 +619,7 @@ def test_worker_verifier_injects_global_evidence_when_enabled() -> None:
     runtime.should_inject_global_evidence_after_verifier.return_value = True
     runtime.get_global_evidence.return_value = snapshot
 
-    result = SearchTools(runtime).search_run_verifier(
+    result = SearchTools(runtime).goal_plus_search_run_verifier(
         "run_1",
         "c001",
         agent_session_id="agent_001",
@@ -661,14 +641,14 @@ def test_thinkthread_context_injects_deferred_global_evidence_when_enabled() -> 
         "agent_session_id": "agent_001",
         "run_id": "run_1",
         "candidate_id": "c001",
-        "host": "thinkthread",
+        "agent_harness": "pi", "runtime_provider": "thinkthread",
         "iteration_count": 1,
     }
     snapshot = [{"candidate_id": "c001", "iteration": 1, "score": 2.0}]
     runtime.should_inject_global_evidence_after_verifier.return_value = True
     runtime.get_global_evidence.return_value = snapshot
 
-    result = SearchTools(runtime).search_get_agent_context("agent_001")
+    result = SearchTools(runtime).goal_plus_search_get_agent_context("agent_001")
 
     assert result["global_evidence_snapshot"] == snapshot
     assert result["global_evidence_injected"] is True
@@ -688,7 +668,7 @@ def test_worker_verifier_keeps_success_when_evidence_injection_fails() -> None:
     runtime.should_inject_global_evidence_after_verifier.return_value = True
     runtime.get_global_evidence.side_effect = RuntimeError("view unavailable")
 
-    result = SearchTools(runtime).search_run_verifier(
+    result = SearchTools(runtime).goal_plus_search_run_verifier(
         "run_1",
         "c001",
         agent_session_id="agent_001",
@@ -706,40 +686,28 @@ def test_parent_and_promotion_verifiers_do_not_inject_global_evidence() -> None:
     runtime.run_verifier.return_value = _successful_score_report()
     tools = SearchTools(runtime)
 
-    assert "global_evidence_injected" not in tools.search_run_verifier(
+    assert "global_evidence_injected" not in tools.goal_plus_search_run_verifier(
         "run_1", "c001"
     )
-    assert "global_evidence_injected" not in tools.search_run_verifier(
+    assert "global_evidence_injected" not in tools.goal_plus_search_run_verifier(
         "run_1", "c001", scope="promotion"
     )
     runtime.should_inject_global_evidence_after_verifier.assert_not_called()
 
 
-def test_search_create_uses_models_frozen_in_the_spec() -> None:
-    runtime = Mock()
-    runtime.create_run.return_value = "run_1"
-    tools = SearchTools(runtime, Mock())
-
-    assert tools.search_create("gp_0001", "spec_123") == {"run_id": "run_1"}
-    runtime.create_run.assert_called_once_with(
-        "spec_123",
-        source_run_id=None,
-    )
-
-
 def test_goal_plus_list_models_delegates_to_host_adapter() -> None:
     runtime = Mock()
     runtime.list_available_models.return_value = {
-        "host": "pi-rpc",
+        "agent_harness": "pi",
         "adapter_version": "pi-rpc-v1",
         "models": [{"model": "openai-codex/gpt-5.6-sol"}],
     }
     tools = SearchTools(runtime)
 
-    assert tools.goal_plus_list_models("pi-rpc", "sol") == (
+    assert tools.goal_plus_list_models("pi", "direct", "sol") == (
         runtime.list_available_models.return_value
     )
-    runtime.list_available_models.assert_called_once_with("pi-rpc", "sol")
+    runtime.list_available_models.assert_called_once_with("pi", "direct", "sol")
 
 
 def test_search_tools_expose_no_lifecycle_methods() -> None:
@@ -780,11 +748,12 @@ def test_goal_plus_tools_delegate_runtime_calls_with_models() -> None:
     runtime.record_search_result.return_value = linked
     runtime.prepare_final_check.return_value = {
         "goal_plus_id": "gp_0001",
-        "check": {"check_id": "fc_0001_r1_001"},
+        "goal_revision": 1,
+        "check": {"check_id": "fc_0001_r1_001", "status": "pending"},
         "launch": {"tool": "spawn_agent"},
     }
     runtime.submit_final_check.return_value = record.model_copy(update={"status": "complete", "final_checks": [
-        GoalPlusFinalCheck(check_id="fc_0001_r1_001", goal_revision=1, checker_host="codex",
+        GoalPlusFinalCheck(check_id="fc_0001_r1_001", goal_revision=1, checker_harness="codex",
                            requested_phase="final_check", requested_at=record.created_at),
     ]})
     runtime.set_status.return_value = record.model_copy(update={"status": "complete"})

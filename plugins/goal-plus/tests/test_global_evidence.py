@@ -33,7 +33,7 @@ def _search_with_candidates(
     *,
     strategy_updates: dict | None = None,
     metric_direction: str = "maximize",
-    native_host: str = "codex",
+    agent_harness: str = "codex",
 ) -> tuple[FileSearchRuntime, str, list[tuple[str, str, Path]]]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     project = make_project(tmp_path)
@@ -45,13 +45,13 @@ def _search_with_candidates(
         encoding="utf-8",
     )
     spec_data = spec_for(project, max_parallel=count).model_dump(mode="json")
-    spec_data["workspace"] = {"backend": "git_worktree"}
+    spec_data["workspace"] = {"provider": "git_worktree"}
     spec_data["metric_direction"] = metric_direction
     spec_data["strategy"].update(strategy_updates or {})
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"], native_host=native_host,
+        [project / "evaluator.py"], agent_harness=agent_harness,
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     search_plan = runtime.plan_next(run_id, requested_k=count)
@@ -97,7 +97,7 @@ def test_snapshot_cleanup_preserves_annotation_but_marks_artifact_removed() -> N
         "c001",
         iteration,
         view,
-        workspace_backend="thinkthread",
+        workspace_provider="thinkthread",
     )
     assert available["artifact_availability"] == "available"
     assert available["reference_available"] is True
@@ -107,7 +107,7 @@ def test_snapshot_cleanup_preserves_annotation_but_marks_artifact_removed() -> N
         "c001",
         iteration,
         view,
-        workspace_backend="thinkthread",
+        workspace_provider="thinkthread",
         provider_cleanup=[
             ProviderResourceCleanupRecord(
                 resource_id=artifact.id,
@@ -341,7 +341,7 @@ def test_post_verifier_injection_respects_global_evidence_mode(
             "VALUE = 1\n", encoding="utf-8"
         )
         reports.append(
-            SearchTools(runtime).search_run_verifier(
+            SearchTools(runtime).goal_plus_search_run_verifier(
                 run_id,
                 candidate_id,
                 agent_session_id=session_id,
@@ -594,7 +594,7 @@ def test_supplemental_policy_is_frozen_and_legacy_specs_default_disabled(
     ] is True
     disabled_frozen = runtime.freeze_spec(
         frozen.spec,
-        [Path(frozen.spec.source_path) / "evaluator.py"], native_host="codex",
+        [Path(frozen.spec.source_path) / "evaluator.py"], agent_harness="codex",
     )
     assert disabled_frozen.frozen_spec_id != frozen.frozen_spec_id
     assert disabled_frozen.supplemental_evaluation_enabled is False
@@ -719,13 +719,14 @@ def test_annotator_model_stays_native_default_while_reasoning_is_overridden(
 
     task = runtime.annotation.task(run_id, candidate_id, 1)
     assert task is not None and task.profile is not None
-    assert task.profile.host == "codex"
+    assert task.profile.agent_harness == "codex"
     assert task.profile.model is None
     assert task.profile.reasoning_effort == "low"
     assert task.profile.timeout_seconds == 90
     assert task.profile.configuration_source == "host_process"
     assert set(task.profile.model_dump(mode="json")) == {
-        "host",
+        "agent_harness",
+        "runtime_provider",
         "model",
         "reasoning_effort",
         "timeout_seconds",
@@ -761,7 +762,7 @@ def test_pi_annotator_uses_native_default_without_explicit_model(
     runtime, run_id, [candidate] = _search_with_candidates(
         tmp_path,
         1,
-        native_host="pi",
+        agent_harness="pi",
         strategy_updates={
             "worker_budget": {"max_runtime_seconds": 60},
             "worker_launch": {
@@ -782,14 +783,15 @@ def test_pi_annotator_uses_native_default_without_explicit_model(
     task = runtime.annotation.task(run_id, candidate_id, 1)
     assert task is not None and task.profile is not None
     assert task.state == "pending"
-    assert task.profile.host == "pi-rpc"
+    assert task.profile.agent_harness == "pi"
     assert task.profile.model is None
     assert task.profile.reasoning_effort == "high"
     assert task.profile.configuration_source == "host_process"
     context = runtime.annotation_context.build(run_id, candidate_id, 1)
     assert context["annotator"]["model"] is None
     assert set(context["annotator"]) == {
-        "host",
+        "agent_harness",
+        "runtime_provider",
         "model",
         "reasoning_effort",
         "timeout_seconds",
@@ -806,7 +808,7 @@ def test_internal_annotator_cannot_cross_worker_hosts(
             1,
             strategy_updates={
                 "worker_budget": {"max_runtime_seconds": 60},
-                "evidence_annotator": {"host": "codex"},
+                "evidence_annotator": {"agent_harness": "codex"},
             },
         )
 
@@ -823,7 +825,7 @@ def test_pi_annotator_leaves_unspecified_model_to_host_configuration(
     runtime, run_id, [candidate] = _search_with_candidates(
         tmp_path,
         1,
-        native_host="pi",
+        agent_harness="pi",
         strategy_updates={
             "worker_budget": {"max_runtime_seconds": 60},
         },
@@ -853,7 +855,7 @@ def test_pi_annotator_accepts_provider_qualified_model_without_provider_config(
     runtime, run_id, [candidate] = _search_with_candidates(
         tmp_path,
         1,
-        native_host="pi",
+        agent_harness="pi",
         strategy_updates={
             "worker_budget": {"max_runtime_seconds": 60},
             "worker_launch": {
@@ -875,7 +877,7 @@ def test_pi_annotator_accepts_provider_qualified_model_without_provider_config(
     task = runtime.annotation.task(run_id, candidate_id, 1)
     assert task is not None and task.profile is not None
     assert task.state == "pending"
-    assert task.profile.host == "pi-rpc"
+    assert task.profile.agent_harness == "pi"
     assert task.profile.model == annotator_config["model"]
     assert task.profile.reasoning_effort == "low"
 
@@ -938,7 +940,7 @@ def test_evidence_diff_includes_bounded_function_context(tmp_path: Path) -> None
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=1),
-        [project / "evaluator.py"], native_host="codex",
+        [project / "evaluator.py"], agent_harness="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -1005,12 +1007,12 @@ def test_evidence_diff_spans_all_manual_commits_in_attempt(tmp_path: Path) -> No
 def test_evidence_diff_omits_binary_payload(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     spec_data = spec_for(project, max_parallel=1).model_dump(mode="json")
-    spec_data["workspace"] = {"backend": "git_worktree"}
+    spec_data["workspace"] = {"provider": "git_worktree"}
     spec_data["edit_surface"]["allow"].append("checkpoint.bin")
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"], native_host="codex",
+        [project / "evaluator.py"], agent_harness="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)

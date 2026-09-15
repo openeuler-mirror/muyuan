@@ -135,9 +135,16 @@ class GoalSearch:
         goal_plus_id: str,
         frozen_spec_id: str,
         run_id: str,
+        *,
+        expected_revision: int | None = None,
+        expected_control_version: int | None = None,
     ) -> GoalPlusRecord:
         with self.state.lock_goal(goal_plus_id):
             current = self.state.read_goal(goal_plus_id)
+            if (current.status != "active"
+                or expected_revision is not None and current.goal_revision != expected_revision
+                or expected_control_version is not None and current.control.version != expected_control_version):
+                raise RuntimeError("SearchCreateStale: Goal changed before Search association")
             if current.control.state != "active":
                 raise RuntimeError(
                     "GoalPlusResumeRequired: task control does not permit new work"
@@ -150,7 +157,7 @@ class GoalSearch:
             search_run = self.artifacts.read_search(run_id)
             if search_run is None:
                 raise FileNotFoundError(
-                    f"search run not found: {run_id}. Call search_create and use its returned run_id."
+                    f"search run not found: {run_id}. Call goal_plus_search_create and use its returned run_id."
                 )
             actual_frozen_spec_id = search_run.frozen_spec_id
             if actual_frozen_spec_id != frozen_spec_id:
@@ -241,7 +248,7 @@ class GoalSearch:
                 raise RuntimeError(f"Search run state does not exist: {run_id}")
             if run_state.state != "promoted":
                 raise RuntimeError(
-                    "Call search_promote for the selected candidate before recording "
+                    "Call goal_plus_search_promote for the selected candidate before recording "
                     "the Goal Plus search result."
                 )
             if (
@@ -249,7 +256,7 @@ class GoalSearch:
                 and run_state.promotion_state != "applied"
             ):
                 raise RuntimeError(
-                    "Call search_apply_promotion before recording a Search result whose "
+                    "Call goal_plus_search_apply_promotion before recording a Search result whose "
                     "workspace.promotion_mode is 'apply'."
                 )
             runtime_selected_candidate_id = run_state.selected_candidate_id

@@ -95,7 +95,7 @@ class CandidateArtifacts:
             else ArtifactRef(
                 kind="git_commit",
                 id=revision,
-                provider=record.task.workspace_backend,
+                provider=record.task.workspace_provider,
             )
         )
         try:

@@ -131,7 +131,7 @@ class CandidateVerification:
             ):
                 raise RuntimeError(
                     "promotion verification requires the candidate and immutable "
-                    "artifact selected by search_select"
+                    "artifact selected by goal_plus_search_select"
                 )
 
         session: AgentSessionRecord | None = None
@@ -154,21 +154,12 @@ class CandidateVerification:
                     + 2 * self.verifiers.termination_grace_seconds
                     for command in frozen.spec.process_verifiers
                 )
-                closeout_seconds = max(
-                    0.0,
-                    float(
-                        frozen.spec.strategy.config.get("reserve_closeout_seconds", 0)
-                        or 0
-                    ),
-                )
                 remaining_seconds = outer_deadline - self.clock.now()
-                required_seconds = verifier_seconds + closeout_seconds
-                if remaining_seconds < required_seconds:
+                if remaining_seconds < verifier_seconds:
                     raise RuntimeError(
                         "VerifierDeadlineInsufficient: process verifier not started; "
                         f"{remaining_seconds:.1f}s remain, but the verifier suite may "
-                        f"use {verifier_seconds:.1f}s and closeout reserves "
-                        f"{closeout_seconds:.1f}s"
+                        f"use {verifier_seconds:.1f}s including process cleanup"
                     )
 
         results_were_initialized = bool(
@@ -183,7 +174,7 @@ class CandidateVerification:
             pre_attempt_artifact_ref = ArtifactRef(
                 kind="git_commit",
                 id=pre_attempt_settled_head,
-                provider=record.task.workspace_backend,
+                provider=record.task.workspace_provider,
             )
         if (
             pre_attempt_settled_head is None

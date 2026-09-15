@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 
-HostKind = Literal["codex", "pi-rpc"]
+HostKind = Literal["codex", "pi"]
 
 
 @dataclass(frozen=True)
@@ -29,8 +29,8 @@ HOSTS: dict[HostKind, StHost] = {
         model_env="ST_CODEX_MODEL",
         default_model="gpt-5.6-terra",
     ),
-    "pi-rpc": StHost(
-        kind="pi-rpc",
+    "pi": StHost(
+        kind="pi",
         marker="st_pi_rpc",
         display_name="Pi RPC",
         binary="pi",
@@ -38,7 +38,7 @@ HOSTS: dict[HostKind, StHost] = {
     ),
 }
 
-HOST_BY_MARKER = {host.marker: host for host in HOSTS.values()}
+HOST_BY_MARKER = {agent_harness.marker: agent_harness for agent_harness in HOSTS.values()}
 DEFAULT_ST_HOST: HostKind = "codex"
 ST_ACTIVE_ENV = "GOAL_PLUS_ST_ACTIVE"
 
@@ -52,8 +52,8 @@ def st_host_from_marker_names(marker_names: list[str] | set[str]) -> HostKind:
     return DEFAULT_ST_HOST
 
 
-def st_model_for_host(host: HostKind) -> str | None:
-    config = HOSTS[host]
+def st_model_for_host(agent_harness: HostKind) -> str | None:
+    config = HOSTS[agent_harness]
     return os.environ.get(config.model_env) or config.default_model
 
 

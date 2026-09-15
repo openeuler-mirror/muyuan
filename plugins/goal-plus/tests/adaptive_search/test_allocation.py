@@ -35,6 +35,7 @@ from goal_plus.infrastructure.state.allocation import FileAllocationState
 from goal_plus.infrastructure.state.files import write_json
 from goal_plus.infrastructure.state.goal import FileGoalQueries
 from goal_plus.infrastructure.state.verifier import FileVerifierState
+from goal_plus.infrastructure.state.scope import FileScopeState, FileAllocationCancellationProof
 from goal_plus.domain.verifier import (
     VerifierRecord,
     VerifierSubject,
@@ -201,7 +202,7 @@ def _allocation_state(tmp_path: Path, *, failed_source: bool = False):
                 plan_id="plan_test",
                 hypothesis="initial candidate",
                 workspace=tmp_path / candidate_id,
-                workspace_backend="git_worktree",
+                workspace_provider="git_worktree",
                 allowed_files=["main.py"],
                 denied_files=["verify.py"],
                 strategy_metadata={"slot": 1},
@@ -404,7 +405,7 @@ def test_apply_assigns_id_and_recovers_after_partial_retirement(
                 plan_id=request.plan.plan_id,
                 hypothesis=request.proposal.intent,
                 workspace=tmp_path / request.candidate_id,
-                workspace_backend="git_worktree",
+                workspace_provider="git_worktree",
                 allowed_files=["main.py"],
                 denied_files=["verify.py"],
                 expansion_source=request.expansion_source,
@@ -437,6 +438,7 @@ def test_apply_assigns_id_and_recovers_after_partial_retirement(
 
     application = AllocationApply(
         state=state,
+        cancellation=FileAllocationCancellationProof(FileScopeState(state.root_dir, clock)),
         preparation=AllocationPreparation(
             state, GoalAuthorization(FileGoalQueries(state.root_dir))
         ),
@@ -490,7 +492,7 @@ def test_completed_verifier_record_is_the_only_decision_trigger(
             },
             {
                 "invocation_id": f"invocation_{task.candidate_id}",
-                "backend": "codex",
+                "agent_harness": "codex",
                 "model": "test-model",
                 "started_at": clock.timestamp(),
                 "completed_at": clock.timestamp(),
@@ -539,7 +541,7 @@ def test_reconciliation_replays_completed_verifier_records(tmp_path: Path) -> No
                 },
                 {
                     "invocation_id": f"invocation_{task.candidate_id}",
-                    "backend": "codex",
+                    "agent_harness": "codex",
                     "model": "test-model",
                     "started_at": clock.timestamp(),
                     "completed_at": clock.timestamp(),
@@ -587,7 +589,7 @@ def test_prepared_reconciliation_replays_existing_decision(
         },
         {
             "invocation_id": "invocation_c001",
-            "backend": "codex",
+            "agent_harness": "codex",
             "model": "test-model",
             "started_at": clock.timestamp(),
             "completed_at": clock.timestamp(),
@@ -610,7 +612,7 @@ def test_prepared_reconciliation_replays_existing_decision(
         },
         {
             "invocation_id": "invocation_c002",
-            "backend": "codex",
+            "agent_harness": "codex",
             "model": "test-model",
             "started_at": clock.timestamp(),
             "completed_at": clock.timestamp(),
@@ -667,7 +669,7 @@ def test_uncompleted_verifier_record_cannot_trigger_snapshot(
         rationale="an uncompleted task cannot publish an allocation score row",
         invocation={
             "invocation_id": "invocation_unpersisted",
-            "backend": "codex",
+            "agent_harness": "codex",
             "model": "test-model",
             "started_at": clock.timestamp(),
             "completed_at": clock.timestamp(),
@@ -792,7 +794,7 @@ def test_snapshot_includes_failed_attempt_verifier_scores(
         },
         {
             "invocation_id": "invocation_failure",
-            "backend": "codex",
+            "agent_harness": "codex",
             "model": "test-model",
             "started_at": clock.timestamp(),
             "completed_at": clock.timestamp(),

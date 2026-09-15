@@ -18,15 +18,10 @@ from goal_plus.thinkthread_annotation import (
     close_thinkthread_annotation,
     service_thinkthread_annotation,
 )
-from goal_plus.thinkthread_pool import (
-    close_pool,
-    continue_thinkthread_search_pool,
-    open_thinkthread_search_pool,
-    wait_any,
-)
+from candidate_sessions import CandidateSessions, complete_scenario_goal
 
 
-EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "vliw-kernel-optimization"
+EXAMPLE = Path(os.environ["GOAL_PLUS_SOURCE_PATH"]) / "examples" / "vliw-kernel-optimization"
 
 
 def run_vliw_retained_turns(config: dict[str, Any]) -> dict[str, Any]:
@@ -38,7 +33,7 @@ def run_vliw_retained_turns(config: dict[str, Any]) -> dict[str, Any]:
     project = workspace / "workspace-template"
     shutil.copytree(
         EXAMPLE / "workspace-template", project,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".tmp"),
     )
     baseline_hash = hashlib.sha256((project / "solution.py").read_bytes()).hexdigest()
     payload = json.loads((EXAMPLE / "thinkthread-search-spec.json").read_text())
@@ -49,7 +44,7 @@ def run_vliw_retained_turns(config: dict[str, Any]) -> dict[str, Any]:
     runtime = FileSearchRuntime(runtime_root)
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(payload),
-        [path for path in project.rglob("*") if path.is_file() and path.name != "solution.py"], native_host="pi",
+        [path for path in project.rglob("*") if path.is_file() and path.name != "solution.py"], agent_harness="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -60,33 +55,26 @@ def run_vliw_retained_turns(config: dict[str, Any]) -> dict[str, Any]:
             "Edit only workspace-template/solution.py. Do not perform broad scheduling or vectorization.",
             "On the first turn allocate a dedicated tmp_val_addr scratch, compute the input-value address there before its load, and reuse it for the final value store, removing that store's redundant address add. Keep every other instruction unchanged.",
             "On the next retained wake do the analogous change for the input-index address using tmp_idx_addr; preserve the first turn's value-address optimization.",
-            "Use the injected authoritative feedback and results.tsv to distinguish the two turns. Submit search_run_verifier once after the change and end the turn immediately after accepted. Do not wait to optimize anything else.",
+            "Use the injected authoritative feedback and results.tsv to distinguish the two turns. Submit goal_plus_search_run_verifier once after the change and end the turn immediately after accepted. Do not wait to optimize anything else.",
         ],
     )])
-    opened = open_thinkthread_search_pool(root_dir=runtime_root, run_id=run_id, client=client)
-    pool_id = opened["pool_id"]
-    original = opened["jobs"][0]
+    workers = CandidateSessions(runtime, run_id, config)
     turns = []
     try:
         for turn in (1, 2):
-            if turn == 2:
-                continued = continue_thinkthread_search_pool(
-                    root_dir=runtime_root, pool_id=pool_id, candidate_id="c001", client=client,
-                )
-                job = continued["jobs"][0]
-                for key in ("thinkthread_id", "agent_session_id", "fs_branch_id"):
-                    assert job[key] == original[key], (key, original, job)
-                assert job["dispatch_index"] == turn
-                assert job["attempt_history"][0]["attempt_id"] == turns[0]["attempt_id"]
-            waited = wait_any(root_dir=runtime_root, pool_id=pool_id, timeout_seconds=240, client=client)
-            event = waited["event"]
-            assert event is not None and event["kind"] == "candidate_ready", waited
-            feedback = event["attempt_result"]
+            workers.start("c001", call_id=str(turn), prompt="Perform the assigned revision for this retained turn.")
+            result = workers.wait("c001", call_id=str(turn))
+            if turn == 1:
+                first_result = result
+            else:
+                assert result.native_session_id == first_result.native_session_id
+                assert result.invocation_id != first_result.invocation_id
+            feedback = json.loads(result.text)
             record = runtime.candidate_creation.state.read_candidate(run_id, "c001")
             iteration = record.iterations[-1]
             assert len(record.iterations) == len(record.results_ledger) == turn
             assert record.inner_agent_state["result_count"] == turn
-            assert iteration.agent_session_id == original["agent_session_id"]
+            assert iteration.agent_session_id == workers.sessions["c001"].agent_session_id
             assert iteration.process_passed and iteration.disposition == "keep"
             assert iteration.score == 147734 - 4096 * turn
             assert feedback["score_report"]["verifier_results"][0]["metrics"]["snapshot_id"] == iteration.artifact_ref.id
@@ -116,11 +104,13 @@ def run_vliw_retained_turns(config: dict[str, Any]) -> dict[str, Any]:
             assert task.view is not None and task.view.supplemental_evaluation is not None
             assert task.attempt_artifact_ref.id == turns[task.iteration - 1]["artifact_id"]
         settled = list(state.get("settled_requests", {}).values())
-        reads = [item for item in settled if item.get("tool") == "thinkthread_artifact_view_pread"]
+        reads = [item for item in settled if item.get("tool") == "goal_plus_thinkthread_artifact_view_pread"]
         assert reads, "Annotator did not inspect immutable code"
         annotation_child = state["thinkthread_id"]
+        workers.close_candidates()
         selected = runtime.select(run_id)
-        runtime.promote(run_id, "c001")
+        manifest = runtime.promote(run_id, "c001")
+        complete_scenario_goal(runtime, run_id, manifest)
         report = runtime.report(run_id)
         promotion = runtime.promotion_record(run_id)
         assert promotion.promotion_mode == "artifact_only" and promotion.state == "prepared"
@@ -128,7 +118,7 @@ def run_vliw_retained_turns(config: dict[str, Any]) -> dict[str, Any]:
         assert report.is_file() and report.with_suffix(".html").is_file()
         assert hashlib.sha256((project / "solution.py").read_bytes()).hexdigest() == baseline_hash
     finally:
-        closed = close_pool(root_dir=runtime_root, pool_id=pool_id, mode="interrupt", client=client)
+        closed = workers.close()
         close_thinkthread_annotation(root_dir=runtime_root, run_id=run_id, client=client)
     assert not client.invoke("thinkthread.list").get("children"), closed
     runtime.report(run_id)
@@ -141,12 +131,12 @@ def run_vliw_retained_turns(config: dict[str, Any]) -> dict[str, Any]:
         "schema_version": 1, "scenario": config["scenario"],
         "run_id": run_id, "root_id": root["thinkthreadId"],
         "model": config["model"], "thinking": config["thinking"],
-        "candidate_id": "c001", "child_id": original["thinkthread_id"],
-        "agent_session_id": original["agent_session_id"], "turns": turns,
+        "candidate_id": "c001", "child_id": first_result.native_session_id,
+        "agent_session_id": workers.sessions["c001"].agent_session_id, "turns": turns,
         "annotation_child_id": annotation_child, "annotations_completed": len(tasks),
         "immutable_reads": len(reads), "selection": selected,
         "promotion_state": promotion.state, "promotion_mode": promotion.promotion_mode,
         "root_unchanged": True, "report_path": str(report),
         "snapshot_cleanup_state": cleanup["state"],
-        "cleanup_states": [item["state"] for item in closed["cleanup"]],
+        "cleanup_state": closed["state"],
     }

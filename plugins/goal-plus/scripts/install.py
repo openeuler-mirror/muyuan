@@ -61,6 +61,14 @@ class ThinkThreadProfilePlan:
     path: Path
     content: str
     installed: bool
+    native_agent: str = "pi"
+
+
+@dataclass(frozen=True)
+class ThinkThreadCodexConfigPlan:
+    directory: Path
+    content: str
+    auth_source: Path | None
 
 
 @dataclass(frozen=True)
@@ -127,13 +135,13 @@ def _atomic_write(path: Path, content: str, *, mode: int = 0o644) -> None:
         raise
 
 
-def _thinkthread_profile_path() -> Path:
+def _thinkthread_profile_path(native_agent: str = "pi") -> Path:
     configured = os.environ.get("XDG_CONFIG_HOME")
     config_root = (
         Path(configured).expanduser() if configured else Path.home() / ".config"
     )
     return config_root.resolve() / "thinkthread" / "profiles" / (
-        f"{THINKTHREAD_PROFILE_NAME}.toml"
+        f"goal-plus-{native_agent}.toml"
     )
 
 
@@ -437,7 +445,9 @@ def _parse_thinkthread_profile(text: str, *, source: str) -> dict[str, Any]:
     return payload
 
 
-def _validate_base_thinkthread_profile(profile: dict[str, Any]) -> None:
+def _validate_base_thinkthread_profile(profile: dict[str, Any], *, native_agent: str = "pi") -> None:
+    if native_agent not in {"pi", "codex"}:
+        raise InstallError(f"unsupported ThinkThread native agent: {native_agent}")
     agent = profile.get("agent")
     extension = agent.get("extension") if isinstance(agent, dict) else None
     loader = extension.get("loader") if isinstance(extension, dict) else None
@@ -448,8 +458,8 @@ def _validate_base_thinkthread_profile(profile: dict[str, Any]) -> None:
             f"reported={profile.get('schemaVersion')!r}, expected={THINKTHREAD_PROFILE_SCHEMA}",
             file=sys.stderr,
         )
-    if not isinstance(agent, dict) or agent.get("name") != "pi":
-        raise InstallError("ThinkThread Profile 'pi' does not describe the Pi Agent")
+    if not isinstance(agent, dict) or agent.get("name") != native_agent:
+        raise InstallError(f"ThinkThread Profile does not describe the {native_agent} Agent")
     if not isinstance(loader, dict):
         raise InstallError("ThinkThread Pi Profile has no Agent Extension loader")
     if loader.get("protocolVersion") not in (None, THINKTHREAD_EXTENSION_PROTOCOL):
@@ -519,22 +529,24 @@ def _build_thinkthread_profile(
     bridge_path: Path | None = None,
     package_root: Path | None = None,
     runtime_python: Path | None = None,
+    codex_config_dir: Path | None = None,
 ) -> dict[str, Any]:
     package_root = package_root or ROOT
     # JSON provides a strict deep copy for the Profile's JSON-compatible TOML values.
     profile = json.loads(json.dumps(base))
     agent = profile.setdefault("agent", {})
     arguments = list(agent.get("args") or [])
-    _append_agent_argument(
-        arguments,
-        "--extension",
-        package_root / "assets/pi/extensions/goal-plus.ts",
-    )
-    _append_agent_argument(
-        arguments,
-        "--skill",
-        package_root / "assets/pi/skills/goal-plus/SKILL.md",
-    )
+    native_agent = agent.get("name")
+    _validate_base_thinkthread_profile(base, native_agent=native_agent)
+    if native_agent == "codex":
+        if codex_config_dir is None or not codex_config_dir.is_absolute():
+            raise InstallError("ThinkThread Codex requires its managed absolute source config directory")
+        # The native Extension consumes this exact source-config variable.
+        agent["configDirEnv"] = "CODEX_CONFIG_DIR"
+        agent["configDirDefault"] = str(codex_config_dir)
+        agent["configDirAccess"] = "read_only"
+    else:
+        _append_agent_argument(arguments, "--extension", package_root / "assets/pi/extensions/goal-plus.ts")
     agent["args"] = arguments
 
     python_prefix = runtime_python.parent.parent if runtime_python else Path(sys.prefix).expanduser().resolve()
@@ -577,7 +589,8 @@ def _build_thinkthread_profile(
             readable.append(str(path))
     environment["read"] = readable
 
-    session_runtime_root = "${PI_CODING_AGENT_SESSION_DIR}/goal-plus"
+    session_runtime_root = ("${CODEX_HOME}/goal-plus" if native_agent == "codex"
+                            else "${PI_CODING_AGENT_SESSION_DIR}/goal-plus")
     for role in ("root", "child"):
         role_environment = dict(environment.get(role) or {})
         role_environment.update(
@@ -586,14 +599,72 @@ def _build_thinkthread_profile(
                 "GOAL_PLUS_NODE": str(Path(resolved_node).expanduser().resolve()),
                 "GOAL_PLUS_ROOT": session_runtime_root,
                 "GOAL_PLUS_SOURCE_PATH": str(package_root.resolve()),
-                "GOAL_PLUS_PI_ROLE": "main" if role == "root" else "worker",
                 "GOAL_PLUS_AGENT_POSIX_SDK_ENTRY": str(resolved_sdk_entry),
             }
         )
+        if native_agent == "codex":
+            role_environment["GOAL_PLUS_THINKTHREAD_ROLE"] = "main" if role == "root" else "candidate"
+        else:
+            role_environment["GOAL_PLUS_PI_ROLE"] = "main" if role == "root" else "worker"
         if role == "root":
             role_environment["GOAL_PLUS_AGENT_POSIX_BRIDGE"] = str(resolved_bridge)
         environment[role] = role_environment
     return profile
+
+
+def _build_thinkthread_codex_config(
+    source: dict[str, Any], *, runtime_python: Path,
+) -> dict[str, Any]:
+    # Native model/provider configuration is shared; Root MCPs, plugins and instructions are not Child inputs.
+    fields = {"model", "model_provider", "model_providers", "model_reasoning_effort", "service_tier"}
+    config = json.loads(json.dumps({key: value for key, value in source.items() if key in fields}))
+    config["mcp_servers"] = {
+        "goal-plus": {
+            "command": str(runtime_python),
+            "args": ["-I", "-m", "goal_plus.server"],
+            "env_vars": [
+                "GOAL_PLUS_THINKTHREAD_ROLE", "GOAL_PLUS_ROOT", "GOAL_PLUS_NODE",
+                "GOAL_PLUS_AGENT_POSIX_SDK_ENTRY", "GOAL_PLUS_AGENT_POSIX_BRIDGE",
+                "THINKTHREAD_PARENT_ID", "THINKTHREAD_CONTROL_SOCKET", "THINKTHREAD_CONTROL_TOKEN",
+            ],
+            "startup_timeout_sec": 60,
+            "tool_timeout_sec": 180,
+        },
+    }
+    config["features"] = {"multi_agent": False}
+    return config
+
+
+def _plan_thinkthread_codex_config(package: Path, source: Path | None = None) -> ThinkThreadCodexConfigPlan:
+    source = source or _codex_config()
+    config_path = source / "config.toml"
+    config = tomllib.loads(config_path.read_text()) if config_path.is_file() else {}
+    projected = _build_thinkthread_codex_config(config, runtime_python=package.parent / "venv/bin/python")
+    content = "\n".join(_render_toml_table(projected)).rstrip() + "\n"
+    auth = (source / "auth.json").resolve() if (source / "auth.json").is_file() else None
+    identity = hashlib.sha256((content + str(auth)).encode()).hexdigest()
+    return ThinkThreadCodexConfigPlan(package.parent / "thinkthread-codex-config" / identity, content, auth)
+
+
+def _install_thinkthread_codex_config(plan: ThinkThreadCodexConfigPlan, *, dry_run: bool) -> None:
+    directory = plan.directory
+    marker = directory / ".goal-plus-owner.json"
+    ownership = {"source": str(ROOT.resolve()), "kind": "thinkthread-codex-config-v1"}
+    if directory.exists() and (not marker.is_file() or _read_json(marker) != ownership):
+        raise InstallError(f"refusing to replace an unowned ThinkThread Codex config: {directory}")
+    if dry_run:
+        print(f"Would prepare ThinkThread Codex config: {directory}")
+        return
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _atomic_write(marker, json.dumps(ownership) + "\n", mode=0o600)
+    _atomic_write(directory / "config.toml", plan.content, mode=0o600)
+    if plan.auth_source is not None:
+        target = directory / "auth.json"
+        if target.is_symlink() and target.resolve() == plan.auth_source:
+            return
+        if target.exists() or target.is_symlink():
+            raise InstallError(f"refusing to replace a different Codex auth binding: {target}")
+        target.symlink_to(plan.auth_source)
 
 
 def _managed_thinkthread_profile_source(path: Path) -> Path | None:
@@ -623,6 +694,8 @@ def _preflight_thinkthread_profile(
     sdk_entry: Path | None = None,
     package_root: Path | None = None,
     runtime_python: Path | None = None,
+    native_agent: str = "pi",
+    codex_config: ThinkThreadCodexConfigPlan | None = None,
 ) -> ThinkThreadProfilePlan:
     runtime_version = _run([executable, "--version"], capture=True).stdout.strip()
     if runtime_version != THINKTHREAD_RUNTIME_VERSION:
@@ -632,21 +705,24 @@ def _preflight_thinkthread_profile(
             file=sys.stderr,
         )
     raw_profile = _run(
-        [executable, "profile", "show", "pi"],
+        [executable, "profile", "show", native_agent],
         capture=True,
     ).stdout
-    base = _parse_thinkthread_profile(raw_profile, source="tt profile show pi")
-    _validate_base_thinkthread_profile(base)
-    content = _render_thinkthread_profile(
-        _build_thinkthread_profile(
+    base = _parse_thinkthread_profile(raw_profile, source=f"tt profile show {native_agent}")
+    _validate_base_thinkthread_profile(base, native_agent=native_agent)
+    profile = _build_thinkthread_profile(
             base,
             node_executable=node_executable,
             sdk_entry=sdk_entry,
             package_root=package_root,
             runtime_python=runtime_python,
+            codex_config_dir=codex_config.directory if codex_config is not None else None,
         )
-    )
-    path = (profile_path or _thinkthread_profile_path()).expanduser().resolve()
+    if codex_config is not None and codex_config.auth_source is not None:
+        profile["environment"]["read"].append(str(codex_config.auth_source))
+    content = _render_thinkthread_profile(profile)
+    path = (profile_path or (_thinkthread_profile_path() if native_agent == "pi"
+                             else _thinkthread_profile_path(native_agent))).expanduser().resolve()
     installed = False
     if path.exists():
         existing = path.read_text(encoding="utf-8")
@@ -670,6 +746,7 @@ def _preflight_thinkthread_profile(
         path=path,
         content=content,
         installed=installed,
+        native_agent=native_agent,
     )
 
 
@@ -693,14 +770,14 @@ def _install_thinkthread_profile(
         _atomic_write(plan.path, plan.content)
         try:
             rendered = _run(
-                [plan.executable, "profile", "show", THINKTHREAD_PROFILE_NAME],
+                [plan.executable, "profile", "show", f"goal-plus-{plan.native_agent}"],
                 capture=True,
             ).stdout
             installed = _parse_thinkthread_profile(
                 rendered,
                 source=f"tt profile show {THINKTHREAD_PROFILE_NAME}",
             )
-            _validate_base_thinkthread_profile(installed)
+            _validate_base_thinkthread_profile(installed, native_agent=plan.native_agent)
         except (Exception, KeyboardInterrupt) as exc:
             try:
                 if original is None:
@@ -715,7 +792,7 @@ def _install_thinkthread_profile(
             raise
     print(
         "ThinkThread integration is ready. Start a Root with: "
-        f"tt run --profile {THINKTHREAD_PROFILE_NAME} --fs <target-workspace>"
+        f"tt run --profile goal-plus-{plan.native_agent} --fs <target-workspace>"
     )
 
 
@@ -1320,8 +1397,6 @@ def _preflight_pi_dev(*, cwd: Path | None = None) -> None:
     root = ROOT.resolve()
     allowed_paths = {
         (root / "assets/pi/extensions/goal-plus.ts").resolve(),
-        (root / "assets/pi/skills/goal-plus").resolve(),
-        (root / "assets/pi/skills/goal-plus/SKILL.md").resolve(),
     }
     conflicts = [
         entry
@@ -1408,9 +1483,6 @@ def _render_pi_launcher(*, dev_dir: Path, pi_executable: str) -> str:
     extension = shlex.quote(
         str((ROOT / "assets/pi/extensions/goal-plus.ts").resolve())
     )
-    skill = shlex.quote(
-        str((ROOT / "assets/pi/skills/goal-plus/SKILL.md").resolve())
-    )
     installer = shlex.quote(str(Path(__file__).resolve()))
     return f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -1441,7 +1513,7 @@ export GOAL_PLUS_PI_DEV_ROOT="$goal_plus_root"
 export GOAL_PLUS_PYTHON="$goal_plus_venv/bin/python"
 export PATH="$goal_plus_venv/bin:$PATH"
 exec "$goal_plus_pi" --no-extensions --no-prompt-templates \
-  --extension {extension} --skill {skill} "$@"
+  --extension {extension} "$@"
 """
 
 
@@ -1476,6 +1548,8 @@ def _prepare_pi_dev(*, dev_dir: Path, pi_executable: str, dry_run: bool) -> None
     else:
         dev_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write(receipt_path, json.dumps(receipt, indent=2) + "\n")
+
+    _prepare_pi_mcp_dependencies(ROOT, dry_run=dry_run)
 
     if not python.is_file():
         _run([sys.executable, "-I", "-m", "venv", str(venv)], dry_run=dry_run)
@@ -1543,6 +1617,20 @@ def _prepare_pi_dev(*, dev_dir: Path, pi_executable: str, dry_run: bool) -> None
 
 def _codex_config() -> Path:
     return Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+
+
+def _codex_provider_env_vars() -> tuple[str, ...]:
+    """Forward only provider-declared credential names, never their values."""
+    path = _codex_config() / "config.toml"
+    config = tomllib.loads(path.read_text()) if path.is_file() else {}
+    names = {"OPENAI_API_KEY"}
+    for provider in config.get("model_providers", {}).values():
+        if provider.get("env_key"):
+            names.add(provider["env_key"])
+        names.update(provider.get("env_http_headers", {}).values())
+    if any(not isinstance(name, str) or not name or "=" in name or "\0" in name for name in names):
+        raise InstallError("Codex provider credential environment names are invalid")
+    return tuple(sorted(names))
 
 
 def _verify_codex_installation(codex: str, package: Path) -> None:
@@ -1637,20 +1725,26 @@ def _verify_pi_installation(pi: str, package: Path) -> None:
                    pi, str(_pi_agent_dir()), str(Path.cwd())], capture=True)
     try:
         resources = json.loads(result.stdout)
-        for field, suffix in (("extensions", "extensions/goal-plus.ts"),
-                              ("skills", "skills/goal-plus/SKILL.md")):
-            expected = (package / "assets/pi" / suffix).resolve()
+        for field in ("extensions", "skills"):
+            expected = {(package / "assets/pi/extensions/goal-plus.ts").resolve()} if field == "extensions" else set()
             actual = {Path(item["path"]).resolve() for item in resources[field]
                       if item["enabled"] and _pi_resource_is_goal_plus(Path(item["path"]))}
-            actual = {p / "SKILL.md" if p.is_dir() else p for p in actual}
-            if actual != {expected}:
+            if actual != expected:
                 raise InstallError(f"Pi {field} mismatch: expected {expected}; got {sorted(map(str, actual))}")
     except (ValueError, KeyError, TypeError) as exc:
         raise InstallError(f"Could not decode Pi resource inventory: {exc}") from exc
     managed_runtime.verify(package)
 
 
+def _prepare_pi_mcp_dependencies(package: Path, *, dry_run: bool) -> None:
+    _run([
+        _require_executable("npm"), "ci", "--ignore-scripts", "--no-audit", "--no-fund",
+        "--prefix", str(package / "assets/pi"),
+    ], dry_run=dry_run)
+
+
 def _install_pi(*, pi: str, package: Path, dry_run: bool, reinstall: bool = False) -> None:
+    _prepare_pi_mcp_dependencies(package, dry_run=dry_run)
     registrations = _pi_goal_plus_entries()
     entries = [entry for entry in registrations if entry.get("settings_path") is not None
                and entry.get("field", "packages") == "packages"]
@@ -1839,7 +1933,10 @@ def main(argv: list[str] | None = None) -> int:
             installed.extend(f"Pi: {entry['source']}" for entry in _pi_goal_plus_entries())
         if not _confirm_reinstall(installed, assume_yes=args.yes, dry_run=args.dry_run):
             return 0
-        package = managed_runtime.prepare(ROOT, dry_run=args.dry_run) if args.codex or args.pi else None
+        package = managed_runtime.prepare(
+            ROOT, dry_run=args.dry_run,
+            codex_env_vars=_codex_provider_env_vars() if args.codex else (),
+        ) if args.codex or args.pi else None
         thinkthread_sdk_plan = (
             _preflight_thinkthread_sdk(
                 node_executable=node,

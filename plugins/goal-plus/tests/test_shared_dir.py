@@ -78,7 +78,7 @@ def _shared_run(
     data["edit_surface"]["allow"].extend(
         f"extra_{index}.py" for index in range(extra_allowed_files)
     )
-    data["workspace"] = {"backend": "git_worktree"}
+    data["workspace"] = {"provider": "git_worktree"}
     data["shared_dir"] = {
         "enabled": enabled,
         "max_tools_per_iteration": max_tools,
@@ -91,7 +91,7 @@ def _shared_run(
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"], native_host="codex",
+        [project / "evaluator.py"], agent_harness="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -1693,7 +1693,7 @@ def test_shared_dir_is_disabled_by_default(tmp_path: Path) -> None:
     )
 
     candidate.write_program_value(1)
-    report = SearchTools(runtime).search_run_verifier(
+    report = SearchTools(runtime).goal_plus_search_run_verifier(
         run_id,
         candidate.candidate_id,
         agent_session_id=candidate.agent_session_id,

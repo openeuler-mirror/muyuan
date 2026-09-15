@@ -83,17 +83,22 @@ def start_host_verified_goal(
     *,
     session_id: str = "session-test",
     invocation_id: str = "codex:test:start",
-    native_host: str = "codex",
+    agent_harness: str = "codex",
+    required_final_check: bool = False,
+    raw_goal: str = "Test Goal Plus search",
 ) -> GoalPlusRecord:
-    command = "$goal-plus" if native_host == "codex" else "/goal-plus"
-    raw_input = f"{command} Test"
+    command = "$goal-plus" if agent_harness == "codex" else "/goal-plus"
+    if required_final_check:
+        command += "-with-final-check"
+    raw_input = f"{command} {raw_goal}"
     runtime = FileGoalPlusRuntime(root)
     record = runtime.start_from_host_command(
-        "Test Goal Plus search",
+        raw_goal,
         source_path=str(source_path),
+        policy={"final_check": {"mode": "required"}} if required_final_check else None,
         invocation=GoalPlusHostCommandInvocation(
-            host=native_host,
-            transport="codex_user_prompt_submit" if native_host == "codex" else "pi_extension_command",
+            agent_harness=agent_harness,
+            transport="codex_user_prompt_submit" if agent_harness == "codex" else "pi_extension_command",
             command=command,
             action="start",
             session_id=session_id,
@@ -106,7 +111,7 @@ def start_host_verified_goal(
     return runtime.activate_session(
         record.goal_plus_id,
         {
-            "host": "codex" if native_host == "codex" else "pi-rpc", "session_id": session_id,
+            "agent_harness": "codex" if agent_harness == "codex" else "pi", "session_id": session_id,
             "attached_at": record.created_at, "last_seen_at": record.updated_at,
         },
     )
@@ -151,7 +156,7 @@ def spec_for(project: Path, *, max_parallel: int = 4, direction: str = "maximize
                 }
             ],
             "strategy": {"name": "random"},
-            "workspace": {"backend": "copy"},
+            "workspace": {"provider": "copy"},
         }
     )
 
@@ -173,7 +178,7 @@ def create_candidate(
     *,
     direction: str = "maximize",
 ) -> tuple[str, str, Path]:
-    frozen = runtime.freeze_spec(spec_for(project, direction=direction), [project / "evaluator.py"], native_host="codex")
+    frozen = runtime.freeze_spec(spec_for(project, direction=direction), [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -201,16 +206,3 @@ def git_commit_all(workspace: Path, message: str) -> str:
     return subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=workspace, text=True
     ).strip()
-
-
-def process_is_running(pid: int) -> bool:
-    stat_path = Path(f"/proc/{pid}/stat")
-    if stat_path.exists():
-        fields = stat_path.read_text(encoding="utf-8").split()
-        if len(fields) > 2 and fields[2] == "Z":
-            return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True

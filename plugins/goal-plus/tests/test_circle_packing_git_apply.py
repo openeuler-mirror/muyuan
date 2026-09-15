@@ -40,13 +40,13 @@ def test_circle_packing_git_apply_prompts_bind_inner_agents() -> None:
 
         assert objective
         assert config.inner_agent == expected_inner_agent
-        assert config.workspace_backend == "git_worktree"
+        assert config.workspace_provider == "git_worktree"
         assert config.promotion_mode == "apply"
         assert '`source_path="workspace"' in body
         assert "回写到 `workspace/`" in body
         if name == "pi-goal-prompt-common.md":
             assert '`strategy.inner_agent` 设置为 `"common"`' in body
-            assert "调用一次 `search_run_verifier` 后返回" in body
+            assert "调用一次 `goal_plus_search_run_verifier` 后返回" in body
 
 
 def _git(workspace: Path, *arguments: str) -> str:
@@ -97,7 +97,7 @@ def test_circle_packing_git_workspace_applies_selected_commit(
     assert _git(source, "status", "--porcelain=v1", "--untracked-files=all") == ""
 
     spec = json.loads((EXAMPLE / "search-spec.json").read_text(encoding="utf-8"))
-    assert spec["strategy"]["config"]["closeout_reserve_seconds"] == 60
+    assert "worker_budget" not in spec["strategy"]
     spec["source_path"] = str(source)
     verifier = source / ".goal-plus-verifiers" / "circle_packing_score.py"
     monkeypatch.chdir(EXAMPLE)
@@ -105,14 +105,14 @@ def test_circle_packing_git_workspace_applies_selected_commit(
     start_host_verified_goal(root, source)
     tools = SearchTools(FileSearchRuntime(root))
 
-    frozen = tools.search_freeze_spec(
+    frozen = tools.goal_plus_search_freeze_spec(
         "gp_0001",
         spec,
         [str(verifier.relative_to(source))],
     )
-    run_id = tools.search_create("gp_0001", frozen["frozen_spec_id"])["run_id"]
-    plan = tools.search_plan_next(run_id, 2)
-    tasks = tools.search_start_batch(
+    run_id = tools.goal_plus_search_create("gp_0001", frozen["frozen_spec_id"], "initial")["run_id"]
+    plan = tools.goal_plus_search_plan_next(run_id, 2)
+    tasks = tools.goal_plus_search_start_batch(
         run_id,
         plan["plan_id"],
         proposals=[
@@ -121,7 +121,7 @@ def test_circle_packing_git_workspace_applies_selected_commit(
         ],
     )
 
-    improved_workspace = Path(tasks[0]["workspace"])
+    improved_workspace = tools.runtime.candidate_creation.state.read_candidate(run_id, tasks[0]["candidate_id"]).task.workspace
     improved_program = improved_workspace / "initial_program.py"
     improved_text = improved_program.read_text(encoding="utf-8")
     improved_text = improved_text.replace("0.28 * math.cos", "0.30 * math.cos")
@@ -137,25 +137,25 @@ def test_circle_packing_git_workspace_applies_selected_commit(
             task["candidate_id"],
             {"goal": "verify one Circle Packing candidate"},
         )
-        tools.search_get_agent_context(session["agent_session_id"])
-        reports[task["candidate_id"]] = tools.search_run_verifier(
+        context = tools.goal_plus_search_get_agent_context(session["agent_session_id"])
+        reports[task["candidate_id"]] = tools.goal_plus_search_run_verifier(
             run_id,
             task["candidate_id"],
             agent_session_id=session["agent_session_id"],
-            hypothesis=task["proposal"]["intent"],
+            hypothesis=context["candidate_task"]["hypothesis"],
         )
 
     assert reports[tasks[0]["candidate_id"]]["aggregate_score"] == pytest.approx(
         1.8712160818793184
     )
-    selected = tools.search_select(run_id)
+    selected = tools.goal_plus_search_select(run_id)
     assert selected["selected_candidate_id"] == tasks[0]["candidate_id"]
 
-    promoted = tools.search_promote(run_id, selected["selected_candidate_id"])
-    assert promoted["strategy"] == "squash_commit"
+    promoted = tools.goal_plus_search_promote(run_id, selected["selected_candidate_id"])
+    assert tools.runtime.promotion_record(run_id).strategy == "squash_commit"
     assert promoted["promotion_mode"] == "apply"
     assert promoted["apply_required"] is True
-    applied = tools.search_apply_promotion(run_id)
+    applied = tools.goal_plus_search_apply_promotion(run_id)
 
     assert applied["state"] == "applied"
     from goal_plus.reporting import build_html_report_data
@@ -164,9 +164,9 @@ def test_circle_packing_git_workspace_applies_selected_commit(
     projected = data["search_tasks"][0]["run"]
     assert projected["search_result"] == "passed"
     assert projected["publication_outcome"]["state"] == "applied"
-    assert projected["publication_outcome"]["publication_artifact_ref"] == applied["publication_artifact_ref"]
+    assert projected["publication_outcome"]["publication_artifact_ref"] == tools.runtime.promotion_record(run_id).publication_artifact_ref.model_dump(mode="json")
     assert data["snapshot"]["run"]["publication_outcome"] == projected["publication_outcome"]
-    assert applied["apply_result"]["method"] == "git_cherry_pick"
+    assert tools.runtime.promotion_record(run_id).apply_result["method"] == "git_cherry_pick"
     assert _git(source, "rev-list", "--count", f"{source_head}..HEAD") == "1"
     assert not (source / "results.tsv").exists()
     assert _score(source)["sum_radii"] == pytest.approx(1.8712160818793184)

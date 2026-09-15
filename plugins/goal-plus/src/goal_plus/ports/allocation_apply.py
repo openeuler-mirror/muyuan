@@ -11,6 +11,12 @@ from goal_plus.domain.search import AgentSessionRecord, CandidateTask
 from goal_plus.ports.state import CandidateRecord, RunRecord
 
 
+class AllocationCancellationProof(Protocol):
+    def require_accepted(
+        self, decision: AllocationDecision, sessions: list[AgentSessionRecord],
+    ) -> None: ...
+
+
 @dataclass(frozen=True)
 class AllocationMaterializationProjection:
     candidates_total: int

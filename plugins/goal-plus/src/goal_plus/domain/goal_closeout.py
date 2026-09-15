@@ -148,10 +148,7 @@ def mutation_block_reason(record: GoalPlusRecord) -> str:
 
 
 def is_final_checker_context(context: dict[str, Any]) -> bool:
-    return context.get("goal_plus_subagent_role") == "final_checker" or any(
-        context.get(key) == "goal_plus_final_checker"
-        for key in ("agent_type", "agentType")
-    )
+    return context.get("goal_plus_subagent_role") == "final_checker"
 
 
 def final_check_mode(record: GoalPlusRecord) -> str:

@@ -29,7 +29,7 @@ class CandidateRecoveryQueries:
             for session in self.sessions.read_agent_sessions(run_id)
             if session.candidate_id == record.candidate_id
             and session.execution_generation == record.execution_generation
-            and session.host_handle.metadata.get("bound_at")
+            and session.session_handle.metadata.get("bound_at")
         }
         return any(
             iteration.iteration > record.recovery.point.iteration
@@ -73,8 +73,8 @@ class CandidateRecoveryQueries:
                             mode="json",
                             include={
                                 "agent_session_id",
-                                "host",
-                                "host_handle",
+                                "agent_harness",
+                                "session_handle",
                                 "execution_generation",
                             },
                         )

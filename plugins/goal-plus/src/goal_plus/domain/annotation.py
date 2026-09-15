@@ -13,10 +13,10 @@ from pydantic import (
     model_validator,
 )
 
-from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider, validate_agent_execution
 from goal_plus.domain.artifacts import (
     ArtifactRef,
-    WorkspaceBackend,
+    WorkspaceProvider,
 )
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.shared_tools import (
@@ -42,11 +42,17 @@ class EvidenceAnnotatorSpec(SearchModel):
 
 
 class ResolvedEvidenceAnnotatorProfile(SearchModel):
-    host: AgentHostKind = "codex"
+    agent_harness: AgentHarnessKind = "codex"
+    runtime_provider: AgentRuntimeProvider = "direct"
     model: str | None = None
     reasoning_effort: str | None = None
     timeout_seconds: int = Field(gt=0, le=1800)
     configuration_source: Literal["host_process"] = "host_process"
+
+    @model_validator(mode="after")
+    def execution_is_supported(self) -> "ResolvedEvidenceAnnotatorProfile":
+        validate_agent_execution(self.agent_harness, self.runtime_provider)
+        return self
 
 
 EvaluationConfidence = Literal["high", "medium", "low"]
@@ -108,7 +114,7 @@ class EvidenceArtifactViewReference(SearchModel):
     candidate_id: str = Field(min_length=1)
     iteration: int = Field(ge=1)
     artifact_ref: ArtifactRef
-    workspace_backend: WorkspaceBackend
+    workspace_provider: WorkspaceProvider
     display_name: str = Field(min_length=1)
 
 

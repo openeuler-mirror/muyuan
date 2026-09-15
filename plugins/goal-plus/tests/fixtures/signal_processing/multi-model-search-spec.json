@@ -4,7 +4,7 @@
   "metric_direction": "maximize",
   "source_path": "tests/fixtures/signal_processing",
   "workspace": {
-    "backend": "git_worktree"
+    "provider": "git_worktree"
   },
   "edit_surface": {
     "allow": [

@@ -22,7 +22,6 @@ from goal_plus.execution.process_monitor import ProcessMonitor
 from goal_plus.execution.codex_scope import CodexScopeRegistry
 from goal_plus.execution.scope_activation import ScopeActivation
 from goal_plus.execution.scope_cleanup import ScopeCleanup
-from goal_plus.execution.scope_guardian import ScopeGuardianLauncher
 from goal_plus.execution.scope_processes import ScopeProcessRegistry
 from goal_plus.execution.structured_inference import StructuredInference
 from goal_plus.infrastructure.artifacts.reader import ProviderArtifactReader
@@ -30,7 +29,7 @@ from goal_plus.infrastructure.clock import SystemClock
 from goal_plus.infrastructure.state.allocation import FileAllocationState
 from goal_plus.infrastructure.state.annotation import FileAnnotationState
 from goal_plus.infrastructure.state.drainer import FileDrainerState
-from goal_plus.infrastructure.state.scope import FileScopeState
+from goal_plus.infrastructure.state.scope import FileAllocationCancellationProof, FileScopeState
 from goal_plus.infrastructure.state.goal import FileGoalQueries
 from goal_plus.infrastructure.state.verifier import FileVerifierState
 from goal_plus.infrastructure.state.search_context import FileSearchContextSource
@@ -71,22 +70,12 @@ def build_scope_cleanup(
     )
 
 
-def build_scope_guardian_launcher(root_dir: Path | str) -> ScopeGuardianLauncher:
-    return ScopeGuardianLauncher(
-        state=build_scope_state(root_dir),
-        root_dir=Path(root_dir).expanduser().resolve(),
-        source_root=Path(__file__).resolve().parents[1],
-    )
-
-
 def build_scope_activation(
-    root_dir: Path | str, services: ScopeCleanupServices
+    root_dir: Path | str
 ) -> ScopeActivation:
     return ScopeActivation(
         state=build_scope_state(root_dir),
         clock=SystemClock(),
-        cleanup=build_scope_cleanup(root_dir, services),
-        guardians=build_scope_guardian_launcher(root_dir),
     )
 
 
@@ -99,8 +88,6 @@ def build_detached_drainer(
     log_name: str,
     label: str,
 ) -> DetachedDrainer:
-    from goal_plus.execution import process_identity
-
     root = Path(root_dir).expanduser().resolve()
     return DetachedDrainer(
         state=FileDrainerState(root / "runs" / run_id / namespace, log_name),
@@ -110,13 +97,6 @@ def build_detached_drainer(
         source_root=Path(__file__).resolve().parents[1],
         label=label,
         clock=SystemClock(),
-        worker_identity=lambda pid, run, generation: process_identity.inspect_worker(
-            pid,
-            run,
-            generation,
-            module=module,
-            root_dir=root,
-        ),
     )
 
 
@@ -137,8 +117,6 @@ def build_inference_registration(
         execution_scope_for_run,
         finish_execution_process,
         register_execution_process,
-        remember_execution_process,
-        execution_process_witness,
     )
 
     if not root_dir or not run_id:
@@ -153,20 +131,10 @@ def build_inference_registration(
             scope_id=scope_id,
             run_id=run_id,
             pid=pid,
-            process_group_id=pid,
             label=label,
             kind="internal",
         ),
         finish=lambda token: finish_execution_process(
-            root_dir=root_dir, scope_id=scope_id, token=token
-        ),
-        remember=lambda token, witness: remember_execution_process(
-            root_dir=root_dir,
-            scope_id=scope_id,
-            token=token,
-            witness=witness,
-        ),
-        recall=lambda token: execution_process_witness(
             root_dir=root_dir, scope_id=scope_id, token=token
         ),
     )
@@ -438,6 +406,7 @@ def build_allocation_services(
         AllocationDecisions(state=state, clock=clock),
         AllocationApply(
             state=state,
+            cancellation=FileAllocationCancellationProof(build_scope_state(root_dir)),
             preparation=AllocationPreparation(state, authorization),
             materialize=materialize,
             start_session=start_session,

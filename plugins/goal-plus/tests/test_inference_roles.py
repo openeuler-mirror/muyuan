@@ -4,23 +4,35 @@ import json
 import os
 import shutil
 import subprocess
+import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import goal_plus.evidence_annotator as annotation
+import goal_plus.bootstrap as bootstrap
 from goal_plus.domain.verifier import verifier_result_schema
 from goal_plus.infrastructure.inference_bindings import build_pi_role_tools
 from goal_plus.ports.inference import InferenceArtifactView, InferenceRoleCapabilities
 
 
-def process_factory(host, mode, payload):
+def process_factory(agent_harness, mode, payload):
     class Process:
         pid = 123
         returncode = None
 
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            return self.returncode
+
         def __init__(self, command, **kwargs):
-            if host == "codex":
+            if agent_harness == "codex":
                 output = command[command.index("--output-last-message") + 1]
             else:
                 output = next(value for key, value in kwargs["env"].items() if key in {
@@ -29,6 +41,11 @@ def process_factory(host, mode, payload):
             self.output = Path(output)
 
         def communicate(self, input=None, timeout=None):
+            if mode == "timeout":
+                if self.returncode is not None:
+                    return "", ""
+                time.sleep(min(timeout, 0.01))
+                raise subprocess.TimeoutExpired("controlled-inference", timeout)
             self.returncode = 1 if mode in {"process_error", "transient_process_error"} else 0
             if mode != "missing":
                 self.output.write_bytes(
@@ -40,7 +57,7 @@ def process_factory(host, mode, payload):
                 message.update(stopReason="error", errorMessage="HTTP 503 unavailable")
             event = (
                 {"type": "turn.completed", "usage": {"input_tokens": 7, "output_tokens": 3}}
-                if host == "codex" else {"type": "message_end", "message": message}
+                if agent_harness == "codex" else {"type": "message_end", "message": message}
             )
             stderr = "HTTP 503 unavailable" if mode == "transient_process_error" else "invalid host configuration"
             return json.dumps(event), stderr if self.returncode else ""
@@ -48,17 +65,20 @@ def process_factory(host, mode, payload):
     return Process
 
 
-@pytest.mark.parametrize("host", ["codex", "pi-rpc"])
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
 @pytest.mark.parametrize("mode", ["valid", "missing", "invalid", "encoding", "process_error", "transient_process_error"])
-def test_annotation_role_output_and_failure_contracts(tmp_path, monkeypatch, host, mode, scripted_process_output):
+def test_annotation_role_output_and_failure_contracts(tmp_path, monkeypatch, agent_harness, mode, scripted_process_output):
     payload = {"description": "Changed lookup.", "supplemental_evaluation": None, "tool_views": []}
-    monkeypatch.setattr(subprocess, "Popen", process_factory(host, mode, payload))
+    build_inference = bootstrap.build_structured_inference
+    monkeypatch.setattr(bootstrap, "build_structured_inference", lambda: build_inference(
+        popen=process_factory(agent_harness, mode, payload),
+    ))
+    worker = annotation.CodexEvidenceAnnotator() if agent_harness == "codex" else annotation.PiEvidenceAnnotator()
     context = {
         "actual_diff": "+return lookup[key]", "comparison_basis": [],
-        "annotator": {"host": host, "model": "test-model", "reasoning_effort": "low", "timeout_seconds": 30},
+        "annotator": {"agent_harness": agent_harness, "model": "test-model", "reasoning_effort": "low", "timeout_seconds": 30},
         "_annotation_monitor_path": str(tmp_path / "monitor.json"),
     }
-    worker = annotation.CodexEvidenceAnnotator() if host == "codex" else annotation.PiEvidenceAnnotator()
     error = {
         "missing": annotation.AnnotationOutputError, "invalid": annotation.AnnotationOutputError,
         "encoding": annotation.AnnotationOutputError,
@@ -72,10 +92,68 @@ def test_annotation_role_output_and_failure_contracts(tmp_path, monkeypatch, hos
     else:
         with pytest.raises(error) as raised:
             worker.annotate(context)
-        expected = {} if host == "pi-rpc" and mode.endswith("process_error") else {"input_tokens": 7, "output_tokens": 3}
+        expected = {} if agent_harness == "pi" and mode.endswith("process_error") else {"input_tokens": 7, "output_tokens": 3}
         assert raised.value.usage == expected
     monitor = json.loads((tmp_path / "monitor.json").read_text())
     assert monitor["state"] == ("completed" if mode == "valid" else "failed")
+
+
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+@pytest.mark.parametrize("mode", ["valid", "missing", "invalid", "encoding", "process_error", "timeout"])
+def test_verifier_uses_shared_inference_and_registration(
+    tmp_path, monkeypatch, agent_harness, mode, scripted_process_output,
+):
+    from types import SimpleNamespace
+    from goal_plus.application.verifier import VerifierWorkflow
+    from goal_plus.infrastructure.clock import SystemClock
+    from goal_plus.infrastructure.state.verifier import FileVerifierState
+    from goal_plus.llm_verifier import LlmVerifier
+    from goal_plus.ports.process import ProcessRegistration
+    from tests.test_llm_verifier import subject
+
+    workflow = VerifierWorkflow(FileVerifierState(tmp_path), SystemClock())
+    workflow.ensure_assessment(subject())
+    task = workflow.claim_task("role-test", 60, run_id="run_1")
+    payload = {"quality_score": 0.8, "allocation_scores": None, "evidence_refs": [], "rationale": "Valid attempt"}
+    build_inference = bootstrap.build_structured_inference
+    monkeypatch.setattr(bootstrap, "build_structured_inference", lambda: build_inference(
+        popen=process_factory(agent_harness, mode, payload),
+    ))
+    worker = LlmVerifier(tmp_path)
+    if mode == "timeout":
+        execute = worker.inference.execute
+        monkeypatch.setattr(worker.inference, "execute", lambda request, **kwargs: execute(
+            replace(request, timeout_seconds=0.01), **kwargs,
+        ))
+    monkeypatch.setenv("GOAL_PLUS_INTERNAL_AGENT_HARNESS", agent_harness)
+    monkeypatch.setenv("GOAL_PLUS_CODEX_MODEL", "test-model")
+    monkeypatch.setenv("GOAL_PLUS_CODEX_REASONING_EFFORT", "low")
+    monkeypatch.setattr("goal_plus.host_scope.pi_native_agent_config_for_run",
+                        lambda **_: {"model_pattern": "test-model", "thinking_level": "low"})
+    resources = []
+    monkeypatch.setattr("goal_plus.bootstrap.build_inference_registration", lambda *a, **kw: ProcessRegistration(
+        register=lambda pid: resources.append(("registered", pid)) or "token",
+        finish=lambda token: resources.append(("finished", token)),
+    ))
+    worker.state = SimpleNamespace(
+        read_run=lambda _: SimpleNamespace(frozen_spec_id="frozen_1"),
+        read_frozen_spec=lambda _: SimpleNamespace(agent_harness=agent_harness),
+    )
+    monkeypatch.setattr(worker, "_prompt", lambda _: ("Exact test attempt", {}, None))
+    if mode == "valid":
+        result, invocation, usage = worker.execute(task)
+        assert result.model_dump() == payload
+        assert invocation.agent_harness == agent_harness
+        assert invocation.runtime_provider == "direct"
+        assert invocation.model == "test-model" and invocation.reasoning_effort == "low"
+        assert usage == {"input_tokens": 7, "output_tokens": 3}
+    else:
+        error = TimeoutError if mode == "timeout" else RuntimeError if mode == "process_error" else ValueError
+        with pytest.raises(error):
+            worker.execute(task)
+    assert resources == [("registered", 123), ("finished", "token")]
+    assert workflow.get_task(task.task_id).state == "running"
+    assert workflow.list_records("run_1") == []
 
 
 @pytest.mark.parametrize("role,with_views", [("annotation", True), ("annotation", False), ("verifier", False)])

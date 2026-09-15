@@ -13,7 +13,7 @@ from typing import Literal, Mapping
 from goal_plus.domain.artifacts import (
     ArtifactRef,
     ReferenceWorkspaceAccess,
-    WorkspaceBackend,
+    WorkspaceProvider,
     WorkspaceCapacityEstimate,
 )
 from goal_plus.ports.workspace_creation import WorkspaceMaterialization
@@ -42,11 +42,11 @@ GENERATED_SOURCE_FILES = {
 
 
 class UnsupportedWorkspaceCapability(RuntimeError):
-    def __init__(self, backend: WorkspaceBackend, capability: str) -> None:
-        self.backend = backend
+    def __init__(self, workspace_provider: WorkspaceProvider, capability: str) -> None:
+        self.workspace_provider = workspace_provider
         self.capability = capability
         super().__init__(
-            f"workspace backend {backend!r} does not implement capability "
+            f"workspace provider {workspace_provider!r} does not implement capability "
             f"{capability!r}"
         )
 
@@ -107,7 +107,7 @@ def list_source_files(root: Path) -> list[Path]:
 def estimate_workspace_capacity(
     *,
     source: Path,
-    backend: WorkspaceBackend,
+    workspace_provider: WorkspaceProvider,
     worktree_nodes: int,
     destination_root: Path,
 ) -> WorkspaceCapacityEstimate:
@@ -133,10 +133,10 @@ def estimate_workspace_capacity(
         "applies workspace exclusions.",
     ]
 
-    if backend == "thinkthread":
+    if workspace_provider == "thinkthread":
         return WorkspaceCapacityEstimate(
             source_path=str(source),
-            backend=backend,
+            workspace_provider=workspace_provider,
             basis="thinkthread_remote",
             worktree_nodes=worktree_nodes,
             source_scope_files=source_scope_files,
@@ -152,7 +152,7 @@ def estimate_workspace_capacity(
             ],
         )
 
-    layout = _git_source_layout(source) if backend == "git_worktree" else None
+    layout = _git_source_layout(source) if workspace_provider == "git_worktree" else None
     if layout is not None:
         repository_root, _source_subdir, source_head = layout
         checkout_files, checkout_bytes = _git_checkout_usage(
@@ -172,7 +172,7 @@ def estimate_workspace_capacity(
         )
         return WorkspaceCapacityEstimate(
             source_path=str(source),
-            backend=backend,
+            workspace_provider=workspace_provider,
             basis="git_tracked_checkout",
             worktree_nodes=worktree_nodes,
             source_scope_files=source_scope_files,
@@ -199,7 +199,7 @@ def estimate_workspace_capacity(
             ],
         )
 
-    if backend == "git_worktree":
+    if workspace_provider == "git_worktree":
         checkout_bytes = materialized_source_bytes
         checkout_files = materialized_source_files
         candidate_checkouts_bytes = checkout_bytes * worktree_nodes
@@ -220,7 +220,7 @@ def estimate_workspace_capacity(
         basis = "source_tree_copy"
         shared_object_store_bytes = None
         notes.append(
-            "The copy backend initializes an independent Git baseline in every "
+            "The copy workspace_provider initializes an independent Git baseline in every "
             "candidate; the upper bound allows one extra source-sized object copy "
             "per node."
         )
@@ -231,7 +231,7 @@ def estimate_workspace_capacity(
     )
     return WorkspaceCapacityEstimate(
         source_path=str(source),
-        backend=backend,
+        workspace_provider=workspace_provider,
         basis=basis,
         worktree_nodes=worktree_nodes,
         source_scope_files=source_scope_files,
@@ -248,27 +248,6 @@ def estimate_workspace_capacity(
         available_bytes=available_bytes,
         fits_available_space=fits,
         notes=notes,
-    )
-
-
-def format_workspace_capacity_notice(estimate: WorkspaceCapacityEstimate) -> str:
-    per_node = _format_bytes(estimate.checkout_bytes_per_node)
-    checkouts = _format_bytes(estimate.candidate_checkouts_bytes)
-    objects = _format_bytes(estimate.shared_object_store_bytes)
-    upper = _format_bytes(estimate.conservative_upper_bound_bytes)
-    free = _format_bytes(estimate.available_bytes)
-    fit = (
-        "yes"
-        if estimate.fits_available_space is True
-        else "no" if estimate.fits_available_space is False else "unknown"
-    )
-    return (
-        f"Workspace preflight: source={_format_bytes(estimate.source_scope_bytes)}, "
-        f"materialized={_format_bytes(estimate.materialized_source_bytes)}, "
-        f"nodes={estimate.worktree_nodes}, per_node={per_node}, "
-        f"candidate_checkouts={checkouts}, shared_objects={objects}, "
-        f"upper_bound={upper}, "
-        f"free={free}, fits={fit}."
     )
 
 
@@ -344,17 +323,6 @@ def _available_bytes(destination_root: Path) -> int | None:
         return shutil.disk_usage(probe).free
     except OSError:
         return None
-
-
-def _format_bytes(value: int | None) -> str:
-    if value is None:
-        return "unavailable"
-    amount = float(value)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if amount < 1024 or unit == "TiB":
-            return f"{amount:.1f} {unit}"
-        amount /= 1024
-    return f"{amount:.1f} TiB"
 
 
 def _looks_like_generated_source_artifact(path: Path) -> bool:
@@ -480,7 +448,7 @@ def initialize_workspace_git_baseline(workspace: Path) -> str | None:
 
 def _materialize_git_candidate_workspace(
     *,
-    backend: WorkspaceBackend,
+    workspace_provider: WorkspaceProvider,
     run_dir: Path,
     source: Path,
     workspace: Path,
@@ -489,12 +457,12 @@ def _materialize_git_candidate_workspace(
     base_workspace: Path | None = None,
     base_revision: str | None = None,
 ) -> WorkspaceMaterialization:
-    if backend == "copy":
+    if workspace_provider == "copy":
         copy_source_tree(base_workspace or source, workspace)
         revision = initialize_workspace_git_baseline(workspace)
         (workspace / ".tmp").mkdir(parents=True, exist_ok=True)
         return WorkspaceMaterialization(
-            backend="copy",
+            workspace_provider="copy",
             workspace=workspace,
             branch=None,
             base_revision=revision,
@@ -551,7 +519,7 @@ def _materialize_git_candidate_workspace(
         )
     (logical_workspace / ".tmp").mkdir(parents=True, exist_ok=True)
     return WorkspaceMaterialization(
-        backend="git_worktree",
+        workspace_provider="git_worktree",
         workspace=logical_workspace,
         branch=branch,
         base_revision=revision,
@@ -571,14 +539,14 @@ def _materialize_git_candidate_workspace(
 LiteralGitBackend = Literal["copy", "git_worktree"]
 
 
-def require_local_backend(backend: WorkspaceBackend, capability: str) -> LiteralGitBackend:
-    if backend not in {"copy", "git_worktree"}:
-        raise UnsupportedWorkspaceCapability(backend, capability)
-    return backend
+def require_local_backend(workspace_provider: WorkspaceProvider, capability: str) -> LiteralGitBackend:
+    if workspace_provider not in {"copy", "git_worktree"}:
+        raise UnsupportedWorkspaceCapability(workspace_provider, capability)
+    return workspace_provider
 
 
-def _require_scoped_repository(backend: LiteralGitBackend, workspace: Path) -> None:
-    if backend != "copy":
+def _require_scoped_repository(workspace_provider: LiteralGitBackend, workspace: Path) -> None:
+    if workspace_provider != "copy":
         return
     expected = workspace.resolve()
     try:
@@ -602,8 +570,8 @@ def _require_git_artifact(artifact_ref: ArtifactRef) -> None:
 
 
 class LocalGitWorkspace:
-    def __init__(self, backend: WorkspaceBackend) -> None:
-        self.backend = require_local_backend(backend, "local_workspace")
+    def __init__(self, workspace_provider: WorkspaceProvider) -> None:
+        self.workspace_provider = require_local_backend(workspace_provider, "local_workspace")
 
     def checkpoint(
         self,
@@ -612,7 +580,7 @@ class LocalGitWorkspace:
         pathspecs: list[str],
     ) -> ArtifactRef | None:
         try:
-            _require_scoped_repository(self.backend, workspace)
+            _require_scoped_repository(self.workspace_provider, workspace)
             _git_run(workspace, "add", "-A", "-f", "--", *pathspecs)
             staged = subprocess.run(
                 ["git", "diff", "--cached", "--quiet", "--", *pathspecs],
@@ -648,7 +616,7 @@ class LocalGitWorkspace:
         message: str,
     ) -> ArtifactRef:
         _require_git_artifact(artifact_ref)
-        _require_scoped_repository(self.backend, workspace)
+        _require_scoped_repository(self.workspace_provider, workspace)
         _git_run(
             workspace,
             "restore",
@@ -744,11 +712,11 @@ class LocalGitWorkspace:
 
     def current_artifact(self, workspace: Path) -> ArtifactRef | None:
         try:
-            _require_scoped_repository(self.backend, workspace)
+            _require_scoped_repository(self.workspace_provider, workspace)
             revision = _git_output(workspace, "rev-parse", "HEAD")
         except RuntimeError:
             return None
-        return ArtifactRef(kind="git_commit", id=revision, provider=self.backend)
+        return ArtifactRef(kind="git_commit", id=revision, provider=self.workspace_provider)
 
     def is_descendant(
         self,
@@ -758,7 +726,7 @@ class LocalGitWorkspace:
     ) -> bool:
         _require_git_artifact(base_artifact_ref)
         _require_git_artifact(target_artifact_ref)
-        _require_scoped_repository(self.backend, workspace)
+        _require_scoped_repository(self.workspace_provider, workspace)
         return _git_succeeds(
             workspace,
             "merge-base",
@@ -776,7 +744,7 @@ class LocalGitWorkspace:
     ) -> list[str]:
         _require_git_artifact(base_artifact_ref)
         _require_git_artifact(target_artifact_ref)
-        _require_scoped_repository(self.backend, workspace)
+        _require_scoped_repository(self.workspace_provider, workspace)
         result = subprocess.run(
             [
                 "git",
@@ -805,7 +773,7 @@ class LocalGitWorkspace:
         *,
         ignore_runtime_noise: bool = False,
     ) -> list[str]:
-        _require_scoped_repository(self.backend, workspace)
+        _require_scoped_repository(self.workspace_provider, workspace)
         try:
             return git_status(workspace, ignore_runtime_noise=ignore_runtime_noise)
         except RuntimeError:
@@ -813,8 +781,8 @@ class LocalGitWorkspace:
 
 
 class GitReferences:
-    def __init__(self, backend: WorkspaceBackend) -> None:
-        self.backend = require_local_backend(backend, "reference_workspace")
+    def __init__(self, workspace_provider: WorkspaceProvider) -> None:
+        self.workspace_provider = require_local_backend(workspace_provider, "reference_workspace")
 
     def materialize_reference(
         self,
@@ -823,7 +791,7 @@ class GitReferences:
         destination: Path,
     ) -> Path:
         _require_git_artifact(artifact_ref)
-        _require_scoped_repository(self.backend, source_workspace)
+        _require_scoped_repository(self.workspace_provider, source_workspace)
         source_root = Path(
             _git_output(source_workspace, "rev-parse", "--show-toplevel")
         ).resolve()
@@ -866,7 +834,7 @@ class GitReferences:
         destination: Path,
     ) -> bool:
         _require_git_artifact(artifact_ref)
-        _require_scoped_repository(self.backend, source_workspace)
+        _require_scoped_repository(self.workspace_provider, source_workspace)
         clean = False
         if destination.exists():
             try:
@@ -908,7 +876,7 @@ class GitReferences:
 
 
 class GitPublication:
-    backend: LiteralGitBackend = "git_worktree"
+    workspace_provider: LiteralGitBackend = "git_worktree"
 
     def prepare_promotion(
         self,
@@ -1016,14 +984,14 @@ class GitPublication:
                 "squash promotion requires the original source to remain a Git repository"
             )
         return PreparedPromotion(
-            provider=self.backend,
+            provider=self.workspace_provider,
             strategy="squash_commit",
             base_artifact_ref=base_artifact_ref,
             selected_artifact_ref=selected_artifact_ref,
             publication_artifact_ref=ArtifactRef(
                 kind="git_commit",
                 id=publication_commit,
-                provider=self.backend,
+                provider=self.workspace_provider,
             ),
             artifact_path=patch_path,
             source_repository=source_repository[0],
@@ -1121,7 +1089,7 @@ class GitPublication:
 
 def materialize_candidate_workspace(
     *,
-    backend: WorkspaceBackend,
+    workspace_provider: WorkspaceProvider,
     run_dir: Path,
     source: Path,
     workspace: Path,
@@ -1131,7 +1099,7 @@ def materialize_candidate_workspace(
     base_revision: str | None = None,
 ) -> WorkspaceMaterialization:
     return _materialize_git_candidate_workspace(
-        backend=require_local_backend(backend, "materialize_candidate"),
+        workspace_provider=require_local_backend(workspace_provider, "materialize_candidate"),
         run_dir=run_dir,
         source=source,
         workspace=workspace,
@@ -1257,7 +1225,7 @@ def _ensure_synthetic_worktree_repository(
     baseline_revision = initialize_workspace_git_baseline(staging)
     if baseline_revision is None:
         shutil.rmtree(staging, ignore_errors=True)
-        raise RuntimeError("git_worktree backend requires a non-empty source and Git")
+        raise RuntimeError("git_worktree workspace_provider requires a non-empty source and Git")
     _git_run(staging, "branch", "-M", baseline_branch)
     staging.replace(repository)
     return repository

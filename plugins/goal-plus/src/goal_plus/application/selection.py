@@ -290,7 +290,7 @@ class Selection:
             option_record = self.state.read_candidate(
                 run_id, option.record.candidate_id
             )
-            is_thinkthread = option_record.task.workspace_backend == "thinkthread"
+            is_thinkthread = option_record.task.workspace_provider == "thinkthread"
             if option.artifact_ref is not None and not is_thinkthread:
                 self.artifacts.restore_candidate_artifact(
                     option_record,
@@ -354,7 +354,7 @@ class Selection:
             and selected_artifact_ref.kind == "git_commit"
             else None
         )
-        if selected_record.task.workspace_backend == "thinkthread":
+        if selected_record.task.workspace_provider == "thinkthread":
             selected_artifact_hash = selected.iteration.artifact_hash
             if not selected_artifact_hash:
                 raise RuntimeError("selected ThinkThread Evidence has no artifact digest")
@@ -464,7 +464,7 @@ class Selection:
         options: list[_BaseOption] = []
         for record in records:
             current_artifact_hash = None
-            if record.task.workspace_backend != "thinkthread":
+            if record.task.workspace_provider != "thinkthread":
                 current_changed = self.artifacts.workspace.candidate_changed_files(
                     run, record
                 )
@@ -481,9 +481,9 @@ class Selection:
                 ):
                     continue
                 artifact_ref = iteration_artifact_ref(
-                    iteration, record.task.workspace_backend
+                    iteration, record.task.workspace_provider
                 )
-                if record.task.workspace_backend == "thinkthread":
+                if record.task.workspace_provider == "thinkthread":
                     if (
                         artifact_ref is None
                         or artifact_ref.kind != "fs_snapshot"

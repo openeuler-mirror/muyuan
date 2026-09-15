@@ -15,10 +15,10 @@ from tests.st.helpers.codex_runner import CodexRunner
 
 def test_st_host_markers_select_one_agent() -> None:
     assert HOST_BY_MARKER["st_codex"].kind == "codex"
-    assert HOST_BY_MARKER["st_pi_rpc"].kind == "pi-rpc"
+    assert HOST_BY_MARKER["st_pi_rpc"].kind == "pi"
 
     assert st_host_from_marker_names(["st", "st_codex"]) == "codex"
-    assert st_host_from_marker_names(["st", "st_pi_rpc"]) == "pi-rpc"
+    assert st_host_from_marker_names(["st", "st_pi_rpc"]) == "pi"
     assert st_host_from_marker_names(["st"]) == "codex"
 
     with pytest.raises(ValueError, match="multiple ST host markers"):
@@ -85,17 +85,6 @@ def test_link_host_assets_supports_maintained_hosts(tmp_path: Path) -> None:
 
 
 @pytest.mark.codex
-def test_codex_redispatch_prompt_names_required_runtime_evidence() -> None:
-    prompt = Path("tests/st/prompts/codex_redispatch.md").read_text(encoding="utf-8")
-
-    assert "gpt-5.6-terra" in prompt
-    assert "worker_host" not in prompt
-    assert "search_redispatch_candidate" in prompt
-    assert "two different agent_session_id" in prompt
-    assert "parent_watchdog" in prompt
-
-
-@pytest.mark.codex
 def test_codex_circle_packing_cycle_has_isolated_source_and_valid_layouts(tmp_path: Path) -> None:
     import json
     import subprocess
@@ -142,10 +131,13 @@ def test_st_scenario_cases_cover_codex() -> None:
 
 
 @pytest.mark.pi
-def test_pi_rpc_parallel_loop_cycle_is_selectable_by_marker() -> None:
-    from tests.st import test_st_pi_rpc
+def test_pi_rpc_common_session_is_selectable_by_marker() -> None:
+    from tests.st import test_st_session_host
 
-    test_func = test_st_pi_rpc.test_pi_rpc_parallel_loop_cycle
+    test_func = test_st_session_host.test_product_session_candidate_two_turns
     marker_names = {mark.name for mark in getattr(test_func, "pytestmark", [])}
-
-    assert {"st", "st_pi_rpc"} <= marker_names
+    assert "st" in marker_names
+    host_cases = next(mark.args[1] for mark in test_func.pytestmark
+                      if mark.name == "parametrize" and mark.args[0] == "agent_harness")
+    assert any("pi" in case.values and any(mark.name == "st_pi_rpc" for mark in case.marks)
+               for case in host_cases)

@@ -1,12 +1,27 @@
 """Exact provider-backed verification I/O without state transitions."""
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 from goal_plus.domain.artifacts import ArtifactRef
-from goal_plus.domain.evidence import IterationDisposition, ScoreReport
+from goal_plus.domain.evidence import CandidateAttemptAccepted, IterationDisposition, ScoreReport
 from goal_plus.domain.search import FrozenSpec, VerifierCommand
 from goal_plus.ports.state import RunRecord
 from goal_plus.ports.candidate_settlement import InnerGitSettlement
+
+
+@dataclass(frozen=True)
+class DeferredCandidateAttempt:
+    """Trusted Child invocation provenance, never part of model tool arguments."""
+
+    run_id: str
+    candidate_id: str
+    agent_session_id: str
+    thinkthread_id: str
+    branch_id: str
+    attempt_id: str
+    request_id: str
+    prior: CandidateAttemptAccepted | None = None
+    inner_git_attempt: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

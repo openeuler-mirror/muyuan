@@ -35,8 +35,8 @@ def git(workspace: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-@pytest.mark.parametrize("backend", ["copy", "git_worktree"])
-def test_git_reads_exact_commits_after_live_workspace_changes(tmp_path, backend):
+@pytest.mark.parametrize("workspace_provider", ["copy", "git_worktree"])
+def test_git_reads_exact_commits_after_live_workspace_changes(tmp_path, workspace_provider):
     git(tmp_path, "init", "-q")
     program = tmp_path / "main.py"
     program.write_text("VALUE = 1\n")
@@ -54,8 +54,8 @@ def test_git_reads_exact_commits_after_live_workspace_changes(tmp_path, backend)
     )
     comparison = ArtifactComparison(
         tmp_path,
-        ArtifactRef(kind="git_commit", provider=backend, id=base),
-        ArtifactRef(kind="git_commit", provider=backend, id=head),
+        ArtifactRef(kind="git_commit", provider=workspace_provider, id=base),
+        ArtifactRef(kind="git_commit", provider=workspace_provider, id=head),
     )
     assert reader.commit_available(tmp_path, base)
     assert not reader.commit_available(tmp_path, "absent-commit")

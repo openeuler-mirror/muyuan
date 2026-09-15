@@ -1,15 +1,11 @@
 """Git reads shared by settlement, Annotation, and LLM Verifier."""
 
 import subprocess
-import threading
 from pathlib import Path
-from typing import Any
 
 from goal_plus.infrastructure.process_output import (
-    OUTPUT_LIMIT_BYTES,
-    TERM_GRACE_SECONDS,
     BoundedOutput,
-    terminate_process_group,
+    capture_process,
 )
 from goal_plus.workspaces import IGNORED_NAMES, IGNORED_SUFFIXES
 
@@ -76,52 +72,10 @@ def git_output_bounded(
         cwd=workspace,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        start_new_session=True,
     )
     stdout = BoundedOutput(max_bytes + 1)
-    stderr = BoundedOutput(OUTPUT_LIMIT_BYTES)
-
-    def drain(stream: Any, capture: BoundedOutput) -> None:
-        try:
-            while True:
-                chunk = stream.read(8192)
-                if not chunk:
-                    return
-                capture.append(chunk)
-        except (OSError, ValueError):
-            pass
-
-    readers = [
-        threading.Thread(
-            target=drain,
-            args=(process.stdout, stdout),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=drain,
-            args=(process.stderr, stderr),
-            daemon=True,
-        ),
-    ]
-    for reader in readers:
-        reader.start()
-    returncode = process.wait()
-    for reader in readers:
-        reader.join(timeout=TERM_GRACE_SECONDS)
-    if any(reader.is_alive() for reader in readers):
-        terminate_process_group(process)
-        for reader in readers:
-            reader.join(timeout=TERM_GRACE_SECONDS)
-    for stream in (process.stdout, process.stderr):
-        if stream is not None and not stream.closed:
-            stream.close()
-    if returncode:
-        raise subprocess.CalledProcessError(
-            returncode,
-            command,
-            output=stdout.text(),
-            stderr=stderr.text(),
-        )
+    completed = capture_process(process, stdout=stdout)
+    completed.check_returncode()
     if stdout.truncated or len(stdout.data) > max_bytes:
         raise RuntimeError(f"annotation diff exceeds {max_bytes} bytes")
     return bytes(stdout.data).decode("utf-8", errors="replace")

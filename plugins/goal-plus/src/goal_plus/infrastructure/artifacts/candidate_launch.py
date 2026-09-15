@@ -8,7 +8,8 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     import tomli as tomllib
 from pathlib import Path
 from typing import Any
-from goal_plus.agent_hosts import candidate_inner_agent_binding, candidate_launch_adapter, host_binding
+from goal_plus.agent_hosts import candidate_launch_adapter
+from goal_plus.infrastructure.host_bindings import candidate_inner_agent_binding
 from goal_plus.application.candidate_creation import format_task_skill_listing
 from goal_plus.domain.agents import INNER_AGENT_COMMON
 from goal_plus.domain.search import AgentSessionRecord, FrozenSpec
@@ -100,10 +101,9 @@ class HostCandidateLaunch:
         )
         one_paragraph_idea = "; ".join(idea_lines)
 
-        adapter = candidate_launch_adapter(frozen.worker_host)
+        adapter = candidate_launch_adapter(frozen.agent_harness, frozen.runtime_provider)
         worker_budget = worker_budget_override
         return adapter.build_launch_payload(
-            native_agent_type=binding.native_agent_type,
             candidate_id=candidate_id,
             agent_session_id=agent_session_id,
             short_intent=short_intent,
@@ -111,13 +111,7 @@ class HostCandidateLaunch:
             worker_budget=worker_budget,
             worker_launch=self._candidate_worker_launch(frozen, candidate_record),
             root=str(self.root_dir),
-            cwd=str(candidate_record.task.workspace),
             worker_prompt=self._worker_prompt_for_binding(binding),
-            process_environment=(
-                candidate_record.task.process_environment
-                if host_binding(frozen.worker_host).capabilities.supports_process_environment
-                else None
-            ),
         )
 
     def continue_session(
@@ -132,7 +126,7 @@ class HostCandidateLaunch:
             short_intent = "在同一 candidate 中完成下一个有界尝试"
             directive_text = (
                 "沿用当前 candidate、workspace、运行时上下文和 Evidence，完成一个新的"
-                "有界尝试；调用一次 search_run_verifier 后返回，不要自行开始下一轮。"
+                "有界尝试；调用一次 goal_plus_search_run_verifier 后返回，不要自行开始下一轮。"
             )
         else:
             short_intent = "继续同一条自主候选循环"
@@ -141,27 +135,18 @@ class HostCandidateLaunch:
                 "探索下一个有证据支持的方向，并验证每项实质变更。"
             )
 
-        adapter = candidate_launch_adapter(session.host)
+        adapter = candidate_launch_adapter(session.agent_harness, session.runtime_provider)
         worker_budget = worker_budget_override
         return adapter.build_continue_payload(
-            native_agent_type=binding.native_agent_type,
             candidate_id=session.candidate_id,
             agent_session_id=session.agent_session_id,
-            external_id=session.host_handle.external_id,
-            task_name=session.host_handle.task_name,
+            external_id=session.session_handle.external_id,
             short_intent=short_intent,
             one_paragraph_idea=directive_text,
             root=str(self.root_dir),
-            cwd=str(candidate_record.task.workspace),
             worker_prompt=self._worker_prompt_for_binding(binding),
             worker_budget=worker_budget,
             worker_launch=self._candidate_worker_launch(frozen, candidate_record),
-            host_metadata=session.host_handle.metadata,
-            process_environment=(
-                candidate_record.task.process_environment
-                if host_binding(session.host).capabilities.supports_process_environment
-                else None
-            ),
         )
 
     def _worker_prompt_for_binding(
@@ -172,7 +157,7 @@ class HostCandidateLaunch:
         if binding.prompt_asset is None:
             return None
         prompt_path = repository_root / binding.prompt_asset
-        if binding.worker_host == "codex":
+        if binding.agent_harness == "codex":
             try:
                 payload = tomllib.loads(prompt_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:

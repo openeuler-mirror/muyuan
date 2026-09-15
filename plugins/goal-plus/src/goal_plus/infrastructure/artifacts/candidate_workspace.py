@@ -5,7 +5,7 @@ from pathlib import Path
 
 from goal_plus.domain.artifacts import (
     ArtifactRef,
-    WorkspaceBackend,
+    WorkspaceProvider,
     WorkspaceOperationTiming,
 )
 from goal_plus.domain.search import CandidateTask, FrozenSpec
@@ -42,16 +42,16 @@ class FileCandidateWorkspaceCreation:
     def __init__(self, root_dir: Path | str) -> None:
         self.root_dir = Path(root_dir)
 
-    def requires_relocation(self, backend: WorkspaceBackend) -> bool:
-        return backend == "git_worktree"
+    def requires_relocation(self, workspace_provider: WorkspaceProvider) -> bool:
+        return workspace_provider == "git_worktree"
 
     def current_artifact(self, task: CandidateTask) -> ArtifactRef | None:
-        return LocalGitWorkspace(task.workspace_backend).current_artifact(
+        return LocalGitWorkspace(task.workspace_provider).current_artifact(
             task.workspace
         )
 
     def status(self, task: CandidateTask) -> list[str]:
-        return LocalGitWorkspace(task.workspace_backend).status(
+        return LocalGitWorkspace(task.workspace_provider).status(
             task.workspace, ignore_runtime_noise=True
         )
 
@@ -59,7 +59,7 @@ class FileCandidateWorkspaceCreation:
         run, frozen = request.run, request.frozen
         run_dir = self.root_dir / "runs" / run.run_id
         workspace = run_dir / "workspace" / request.candidate_id
-        if frozen.spec.workspace.backend == "thinkthread":
+        if frozen.spec.workspace.provider == "thinkthread":
             baseline = run.source_artifact_ref
             if (
                 baseline is None
@@ -79,7 +79,7 @@ class FileCandidateWorkspaceCreation:
             )
         started_at, started = utc_timestamp(), time.perf_counter()
         materialization = materialize_candidate_workspace(
-            backend=frozen.spec.workspace.backend,
+            workspace_provider=frozen.spec.workspace.provider,
             run_dir=run_dir,
             source=Path(run.source_path),
             workspace=workspace,

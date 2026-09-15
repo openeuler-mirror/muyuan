@@ -24,7 +24,7 @@ def _codex_candidate(tmp_path: Path) -> tuple[FileSearchRuntime, str, str, str]:
         "on_exceed": "interrupt",
     }
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"], native_host="codex")
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -32,21 +32,12 @@ def _codex_candidate(tmp_path: Path) -> tuple[FileSearchRuntime, str, str, str]:
     return runtime, run_id, task.candidate_id, session.agent_session_id
 
 
-def test_codex_candidate_identity_accepts_canonical_agent_path(tmp_path: Path) -> None:
+def test_time_advisory_candidate_classification_uses_provenance(tmp_path: Path) -> None:
     runtime, run_id, _, agent_session_id = _codex_candidate(tmp_path)
     session = runtime.candidate_sessions.session(agent_session_id, run_id=run_id)
-    task_name = str(session.host_handle.task_name)
-    rebound = runtime.bind_agent_handle(
-        agent_session_id,
-        {"host": "codex", "task_name": f"/root/{task_name}"},
-    )
-
-    assert is_search_candidate_session(rebound) is True
-    # Candidate ownership is persisted by the runtime, not inferred from a
-    # display name or the optional native custom-agent type.
-    renamed = rebound.model_copy(update={
-        "launch": {"agent_type": "default", "task_name": "renamed"},
-        "host_handle": rebound.host_handle.model_copy(update={"task_name": "renamed"}),
+    assert is_search_candidate_session(session) is True
+    renamed = session.model_copy(update={
+        "session_handle": session.session_handle.model_copy(update={"nickname": "renamed"}),
     })
     assert is_search_candidate_session(renamed) is True
 

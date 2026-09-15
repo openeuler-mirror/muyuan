@@ -1,10 +1,10 @@
-/goal-plus mode=probe max_parallel=2 max_duration_seconds=600 workspace_backend=thinkthread promotion_mode=apply strategy=agent_guided 完整跑通当前 ThinkThread Root 中的猜数 Search smoke test。
+/goal-plus mode=probe max_parallel=2 max_duration_seconds=600 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided 完整跑通当前 ThinkThread Root 中的猜数 Search smoke test。
 
 问题：公开目标数是 1。只修改 `guess.py`，让它输出恰好一个整数；运行
-`python verify.py` 会输出 `guess_score=1-abs(1-输出值)`，分数越高越好。
+`python verify.py` 输出含 `guess_score` 的 JSON；分数为 `1-abs(1-输出值)`，越高越好。
 
 工作区合同：读取当前目录的 `search-spec.json` 作为权威 SearchSpec，并冻结
-`verify.py`。保持 spec 中的 ThinkThread backend 与 apply 模式，不得 fallback 到其他 backend。
+`verify.py`。保持 spec 中的 ThinkThread 工作区与 apply 模式，不得回退到其他工作区实现。
 
 为了只测编排而不测模型猜测，只运行一个 K=2 Search，并按顺序使用两个确定路线：c001 采用
 zero 路线，把 `guess.py` 完整写成 `print(0)`；c002 采用 immediate-exact 路线，把它完整写成

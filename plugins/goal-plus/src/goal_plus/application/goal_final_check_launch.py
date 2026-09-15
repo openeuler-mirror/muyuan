@@ -6,15 +6,11 @@ from goal_plus.domain.goal import GoalPlusRecord, GoalPlusFinalCheck
 from goal_plus.ports.goal_search import FinalCheckInputs
 
 
-def codex_final_check_task_name(check_id: str) -> str:
-    return f"goal_plus_final_check_{check_id}"
-
-
-def final_check_launch(
+def final_check_prompt(
     record: GoalPlusRecord,
     check: GoalPlusFinalCheck,
     inputs: FinalCheckInputs,
-) -> dict[str, Any]:
+) -> str:
     workspace = inputs.workspace
     task_skill_paths = inputs.task_skill_paths
     task_skill_listing = (
@@ -45,14 +41,14 @@ def final_check_launch(
     if report_targets:
         prompt += (
             "\n\nGoal Plus 系统报告的以下路径是预留输出，不表示文件已生成。"
-            "search_report 只允许在关联 Goal 达到终态后生成报告，因此本次 final-check "
+            "goal_plus_search_report 只允许在关联 Goal 达到终态后生成报告，因此本次 final-check "
             "应审计已结算的 Search、精确 promotion artifact 和其他实际交付物；"
             "不要把尚未进入生成阶段的系统报告视为缺失交付。此顺序仅适用于下列系统报告，"
             "不豁免用户要求的其他文件、报告或证据，也不代表搜索结果自动通过。\n"
             "```goal_plus_report_lifecycle\n"
             + json.dumps(
                 {
-                    "generation_tool": "search_report",
+                    "generation_tool": "goal_plus_search_report",
                     "generation_gate": "linked_goals_terminal",
                     "reserved_outputs": report_targets,
                 },
@@ -60,29 +56,15 @@ def final_check_launch(
             )
             + "\n```"
         )
-    if check.checker_host == "codex":
-        return {
-            "tool": "spawn_agent",
-            "task_name": codex_final_check_task_name(check.check_id),
-            "agent_type": "default",
-            "message": prompt,
-            "fork_turns": "none",
-        }
+    return prompt
+
+
+def final_check_launch(
+    record: GoalPlusRecord, check: GoalPlusFinalCheck,
+) -> dict[str, Any]:
     return {
-        "tool": "pi_goal_plus_run_final_check",
-        "role": "final-checker",
-        "root": str(inputs.root_dir),
-        "cwd": str(workspace),
-        "agent_session_id": check.check_id,
-        "session_id": check.check_id,
+        "tool": "goal_plus_run_final_check",
         "goal_plus_id": record.goal_plus_id,
         "goal_revision": record.goal_revision,
         "check_id": check.check_id,
-        "prompt": prompt,
-        "budget_control": {
-            "mode": "process_watchdog",
-            "max_runtime_seconds": 300,
-            "soft_closeout_seconds": 30,
-            "on_exceed": "interrupt",
-        },
     }

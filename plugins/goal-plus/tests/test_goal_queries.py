@@ -26,7 +26,6 @@ def test_absent_query_root_is_not_created(tmp_path):
     source = FileGoalQueries(root)
     assert source.goal_ids() == []
     assert source.session_run_ids("session") == []
-    assert source.pool_run_id("pool") is None
     assert source.read_events("gp_0001") == []
     assert not root.exists()
 
@@ -133,26 +132,4 @@ def test_session_index_uses_exact_durable_filename_and_does_not_guess_on_collisi
     source = FileGoalQueries(tmp_path)
     assert sorted(source.session_run_ids("shared")) == ["run-a", "run-b"]
     assert source.session_run_ids("missing") == []
-    assert snapshot(tmp_path) == before
-
-
-@pytest.mark.parametrize(
-    ("payload", "expected"),
-    [
-        ('{"run_id": "run-a"}', "run-a"),
-        ('{"run_id": 5}', None),
-        ("{}", None),
-        ("{", None),
-    ],
-)
-def test_pool_index_preserves_invalid_or_missing_reference_behavior(
-    tmp_path, payload, expected
-):
-    folder = tmp_path / "host-pools" / "pi" / "pool-a"
-    folder.mkdir(parents=True)
-    (folder / "pool.json").write_text(payload)
-    before = snapshot(tmp_path)
-    source = FileGoalQueries(tmp_path)
-    assert source.pool_run_id("pool-a") == expected
-    assert source.pool_run_id("pool") is None
     assert snapshot(tmp_path) == before

@@ -6,16 +6,16 @@ import os
 from pathlib import Path
 import signal
 import subprocess
-import tempfile
 import time
 
 import pytest
 
 from goal_plus.models import SearchSpec
+from goal_plus.execution.managed_process import ManagedProcess
+from goal_plus.host_scope import close_execution_scope
 from goal_plus.runtime import FileSearchRuntime
 from tests._runtime_helpers import make_project, spec_for
-from tests.st.helpers.codex_runner import CodexRunner
-from tests.st.hosts import ST_ACTIVE_ENV, link_host_assets
+from tests.st.hosts import ST_ACTIVE_ENV, st_model_for_host
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,36 +39,30 @@ def _stop(process):
         try:
             process.wait(timeout=20)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=10)
+            managed = ManagedProcess(process)
+            managed.close()
 
 
-@pytest.fixture(autouse=True)
-def _cleanup_owned_pools(st_project_root):
-    yield
-    from goal_plus.pi_pool import close_pi_search_pool
-
-    # The ST controller owns only its uniquely named temporary runtimes.
-    # Clean up live RPC jobs even when an assertion fails before native resume.
-    for path in st_project_root.glob("search-recovery-*/.gp/host-pools/pi/*/pool.json"):
-        root = path.parents[3]
-        close_pi_search_pool(root_dir=root, pool_id=path.parent.name,
-                             mode="interrupt", timeout_seconds=10, _allow_early_close=True)
-
-
-@pytest.mark.parametrize("host", [
+@pytest.mark.parametrize("agent_harness", [
     pytest.param("codex", marks=pytest.mark.st_codex),
-    pytest.param("pi-rpc", marks=pytest.mark.st_pi_rpc),
+    pytest.param("pi", marks=pytest.mark.st_pi_rpc),
 ])
-def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, host):
-    workspace = Path(tempfile.mkdtemp(prefix=f"search-recovery-{host}-", dir=st_project_root))
-    if host == "codex":
-        link_host_assets(workspace, ROOT)
+def test_native_main_resume_recovers_active_search(tmp_path, st_log_dir, agent_harness, isolated_pi_config, monkeypatch, request):
+    workspace = tmp_path / "recovery"
+    workspace.mkdir()
+    if agent_harness == "codex":
+        home = request.getfixturevalue("installed_codex_config")
+        skills = [path for path in (home / "plugins/cache").rglob("SKILL.md")
+                  if path.parent.name in {"goal-plus", "search", "goal-plus-with-final-check"}]
+        assert not skills
+    else:
+        monkeypatch.setenv("GOAL_PLUS_PI_DEV_ROOT", str(ROOT))
+        monkeypatch.setenv("GOAL_PLUS_PYTHON", str(ROOT / ".goal-plus-dev/venv/bin/python"))
     project = make_project(workspace)
     runtime = FileSearchRuntime(workspace / ".gp")
     data = spec_for(project, max_parallel=1).model_dump(mode="json")
     data["objective"] = (
-        "Exercise Search crash recovery. First call search_get_agent_context. "
+        "Exercise Search crash recovery. First call goal_plus_search_get_agent_context. "
         "If resume.recovery is null: run the process verifier once, then change "
         "initial_program.py to 'VALUE = 1 # RECOVERY_PARTIAL\\n' WITHOUT committing "
         "or verifying that change. Keep waiting with short sleep calls until the "
@@ -77,10 +71,10 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
         "VALUE = 0 without RECOVERY_PARTIAL, then run the process verifier once "
         "with hypothesis 'recovered settled baseline' and finish. Never create another candidate."
     )
-    data["strategy"].update({ "worker_budget": {"max_runtime_seconds": 180}})
+    data["strategy"].update({"inner_agent": "common", "worker_budget": {"max_runtime_seconds": 240}})
     data["workspace"]["promotion_mode"] = "artifact_only"
     spec = SearchSpec.model_validate(data)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], native_host="pi" if host in {"pi-rpc", "thinkthread", "pi"} else "codex")
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="pi" if agent_harness in {"pi", "thinkthread", "pi"} else "codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -89,11 +83,6 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
         "run_id": run_id, "frozen_spec_id": frozen.frozen_spec_id,
         "candidate_id": task.candidate_id, "spec": spec.model_dump(mode="json"),
     }))
-    launch_instruction = (
-        "Use search_start_agent_session, spawn_agent with its launch payload, then bind the native handle."
-        if host == "codex" else
-        "Use pi_search_pool_open for the existing candidate with final_verify=false."
-    )
     prompt = (
         "Exercise the native Main/Search recovery workflow within 900 seconds. "
         f"The test controller already created exactly one standalone Search run in {fixture}. "
@@ -101,7 +90,7 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
         "spec draft with the exact supplied spec and no open questions, then link the existing "
         "run using goal_plus_link_search_run. Do NOT freeze/create/plan/materialize another run "
         "or candidate. Start its one worker and let it follow the frozen objective. "
-        + launch_instruction + " Keep Main active while waiting; the controller will interrupt "
+        "Keep Main active while waiting; the controller will interrupt "
         "and resume this native session after the worker writes its partial attempt. "
         "After recovery has produced fresh verified Evidence from a fresh worker generation, "
         "finish selection, artifact-only promotion, record the Search result and generate its report, "
@@ -112,16 +101,26 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
         "do not patch code, write runtime state, or bypass missing tools with Python/shell scripts."
     )
     env = {**os.environ, ST_ACTIVE_ENV: "native_search_recovery", "GOAL_PLUS_ROOT": str(runtime.root_dir)}
-    if host == "codex":
-        runner = CodexRunner(workspace, st_log_dir)
-        initial_command = [*runner._build_base_cmd(), "--json", "$goal-plus " + prompt]
+    if agent_harness == "codex":
+        initial_command = ["codex", "exec", "--skip-git-repo-check", "--json",
+                           "--sandbox", "workspace-write", "-c", 'approval_policy="never"',
+                           "-c", 'model_reasoning_effort="low"',
+                           "-m", st_model_for_host(agent_harness), "$goal-plus " + prompt]
     else:
-        pi = os.environ.get("ST_PI_BINARY", str(ROOT / ".goal-plus-dev/bin/pi-goal-plus"))
-        pi_base = [pi, "--session-dir", str(workspace / "sessions")]
+        pi_base = ["pi", "--approve", "--session-dir", str(workspace / "sessions"),
+                   "--no-skills", "--no-context-files", "--no-extensions", "--thinking", "low",
+                   "-e", str(ROOT / "assets/pi/extensions/goal-plus.ts")]
         if os.environ.get("ST_PI_MODEL"):
             pi_base += ["--model", os.environ["ST_PI_MODEL"]]
-        initial_command = [*pi_base, "--session-id", "search-recovery-main", "-p", "--mode", "json", "/goal-plus " + prompt]
-    initial_log = st_log_dir / f"search-recovery-{host}-initial.log"
+        initial_command = [*pi_base, "-p", "--mode", "json", "/goal-plus " + prompt]
+    initial_log = st_log_dir / f"search-recovery-{agent_harness}-initial.log"
+    print(f"Native Main recovery evidence: {st_log_dir}", flush=True)
+
+    def cleanup():
+        return [close_execution_scope(root_dir=runtime.root_dir, scope_id=path.parent.name,
+                    reason="recovery ST controller stopped Main")
+                for path in (runtime.root_dir / "host-scopes").glob("scope_*/scope.json")]
+
     with initial_log.open("w") as log:
         process = subprocess.Popen(initial_command, cwd=workspace, env=env, stdout=log,
                                    stderr=subprocess.STDOUT, start_new_session=True)
@@ -131,31 +130,28 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
                 return (
                     len(candidate.iterations) == 1
                     and "RECOVERY_PARTIAL" in (task.workspace / "initial_program.py").read_text()
-                    and list((runtime.root_dir / "host-recovery/workers").glob("*.json"))
+                    and any(session.session_handle.metadata.get("transport") in {"app-server", "native-rpc"}
+                            for session in runtime.candidate_sessions.state.read_agent_sessions(run_id))
                 )
             _wait_for(process, partial_ready, initial_log)
         finally:
             _stop(process)
-    if host == "pi-rpc":
-        # A native Main interrupt alone leaves healthy Pi workers running.
-        # This fixture explicitly owns and interrupts the sole pool as well.
-        from goal_plus.pi_pool import close_pi_search_pool
-        for pool in (runtime.root_dir / "host-pools/pi").glob("*/pool.json"):
-            snapshot = close_pi_search_pool(root_dir=runtime.root_dir, pool_id=pool.parent.name,
-                                            mode="interrupt", timeout_seconds=10, _allow_early_close=True)
-            assert snapshot["active_count"] == 0
+            initial_cleanup = cleanup()
+            (st_log_dir / "initial-cleanup.json").write_text(json.dumps(initial_cleanup, indent=2))
+            assert all(item["state"] == "closed" for item in initial_cleanup)
     goal_path, = (runtime.root_dir / "goal-plus").glob("gp_*/goal.json")
     before = json.loads(goal_path.read_text())
     session_id = before["active_session"]["session_id"]
     before_candidate = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
-    resume_prompt = "$goal-plus resume" if host == "codex" else "/goal-plus resume"
-    if host == "codex":
+    resume_prompt = "$goal-plus resume" if agent_harness == "codex" else "/goal-plus resume"
+    if agent_harness == "codex":
         command = ["codex", "exec", "resume", "--skip-git-repo-check",
-                   "--dangerously-bypass-hook-trust", "--dangerously-bypass-approvals-and-sandbox",
-                   "--json", "-m", runner.model, session_id, resume_prompt]
+                   "-c", 'approval_policy="never"', "-c", 'sandbox_mode="workspace-write"',
+                   "-c", 'model_reasoning_effort="low"',
+                   "--json", "-m", st_model_for_host(agent_harness), session_id, resume_prompt]
     else:
         command = [*pi_base, "--session", session_id, "-p", "--mode", "json", resume_prompt]
-    resumed_log = st_log_dir / f"search-recovery-{host}-resumed.log"
+    resumed_log = st_log_dir / f"search-recovery-{agent_harness}-resumed.log"
     with resumed_log.open("w") as log:
         process = subprocess.Popen(command, cwd=workspace, env=env, stdout=log,
                                    stderr=subprocess.STDOUT, start_new_session=True)
@@ -176,6 +172,9 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
             after_candidate = _wait_for(process, recovered, resumed_log)
         finally:
             _stop(process)
+            final_cleanup = cleanup()
+            (st_log_dir / "final-cleanup.json").write_text(json.dumps(final_cleanup, indent=2))
+            assert all(item["state"] == "closed" for item in final_cleanup)
     after = json.loads(goal_path.read_text())
     assert after["goal_plus_id"] == before["goal_plus_id"]
     assert after["goal_revision"] == before["goal_revision"]
@@ -190,3 +189,5 @@ def test_native_main_resume_recovers_active_search(st_project_root, st_log_dir, 
     assert after_candidate.execution_generation == 1
     assert after_candidate.iterations[-1].agent_session_id != before_candidate.iterations[0].agent_session_id
     assert "RECOVERY_PARTIAL" not in (task.workspace / "initial_program.py").read_text()
+    (st_log_dir / "goal.json").write_text(json.dumps(after, indent=2))
+    (st_log_dir / "candidate.json").write_text(after_candidate.model_dump_json(indent=2))

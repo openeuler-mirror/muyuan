@@ -72,7 +72,7 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
             for result in verification.verifier_results
         )
         lines.append(
-            f"| `{verification.phase}` | `{verification.backend}` | "
+            f"| `{verification.phase}` | `{verification.workspace_provider}` | "
             f"`{verification.candidate_id or ''}` | {verification.passed} | "
             f"{'' if verification.aggregate_score is None else verification.aggregate_score} | "
             f"{markdown_cell(artifact.id if artifact is not None else '')} | "
@@ -159,7 +159,7 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
         results_path = (
             (record.task.workspace / RESULTS_TSV_RELATIVE_PATH)
             if workspace_ledger_projection == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
-            and record.task.workspace_backend != "thinkthread"
+            and record.task.workspace_provider != "thinkthread"
             else None
         )
         results_entries = inputs.ledgers[record.candidate_id]
@@ -169,7 +169,7 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
                 "; ThinkThread Child-private results.tsv projection"
                 if workspace_ledger_projection
                 == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
-                and record.task.workspace_backend == "thinkthread"
+                and record.task.workspace_provider == "thinkthread"
                 else ""
             )
             ledger_display = (
@@ -216,7 +216,7 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
                 ".gp canonical; ThinkThread Child-private results.tsv projection"
                 if workspace_ledger_projection
                 == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
-                and record.task.workspace_backend == "thinkthread"
+                and record.task.workspace_provider == "thinkthread"
                 else ".gp canonical"
             )
         else:
@@ -282,19 +282,19 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
         if include_handle:
             lines.extend(
                 [
-                    "| Session | Host | Handle | Candidate | Verifier Runs | Created | Updated |",
-                    "|---|---|---|---|---:|---|---|",
+                    "| Session | Harness | Runtime Provider | Handle | Candidate | Verifier Runs | Created | Updated |",
+                    "|---|---|---|---|---|---:|---|---|",
                 ]
             )
         else:
             lines.extend(
                 [
-                    "| Session | Host | Candidate | Verifier Runs | Created | Updated |",
-                    "|---|---|---|---:|---|---|",
+                    "| Session | Harness | Runtime Provider | Candidate | Verifier Runs | Created | Updated |",
+                    "|---|---|---|---|---:|---|---|",
                 ]
             )
         for session, handle in session_rows:
-            common = f"| `{session.agent_session_id}` | `{session.host}` | "
+            common = f"| `{session.agent_session_id}` | `{session.agent_harness}` | `{session.runtime_provider}` | "
             if include_handle:
                 display_handle = handle if handle != session.agent_session_id else ""
                 common += f"{markdown_cell(display_handle)} | "

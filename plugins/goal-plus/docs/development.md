@@ -1,38 +1,5 @@
 # Goal Plus 开发指南
 
-## 无 CI 的跨平台进程检查
-
-Linux 上也必须运行 macOS 合同测试。`test_process_identity_darwin.py` 使用受控内核字节驱动
-真实 Darwin adapter 和 scope 注册/关闭，禁止这条路径读取 `/proc`，校验微秒启动身份、
-argv 边界与环境排除、zombie 和清理结果；不需要 macOS 动态库或模型。
-架构检查限制 procfs 路径只出现在已知平台 owner，防止再次散落到通用 host 流程。
-这些测试也包含在默认 pytest 中。
-
-可选的 [pre-push hook](../scripts/git-hooks/pre-push) 在本机推送前运行短检查：
-
-```bash
-git config --local core.hooksPath plugins/goal-plus/scripts/git-hooks
-git push
-```
-
-从 Muyuan checkout 配置上述相对路径。已有自定义 hooksPath 时，将此脚本接入原 pre-push，
-不要覆盖原配置。脚本默认用 `uv run --frozen --extra dev --python 3.12` 准备开发环境；
-已有环境可设置 `GOAL_PLUS_TEST_PYTHON=/absolute/path/to/venv/bin/python`，避免重复准备。
-hook 不安装宿主资产、不调用模型；只允许推送当前 HEAD，并要求 Goal Plus 工作区干净，
-避免“未提交的修正让测试通过，实际推送的 commit 仍有问题”。推送其他分支前需切换过去。
-
-进程 API、scope、pool 或清理逻辑有改动时，再在真实 Mac 本地执行：
-
-```bash
-python -m pytest -o addopts= -q -m host_process
-python -m pytest -o addopts= -q tests/test_process_identity_darwin.py
-```
-
-使用 Python 3.12 开发环境；这组测试启动短生命周期本地进程，不调用 Codex/Pi 模型。
-Linux 模拟能检测分支遗漏和协议回归，不能证明 macOS 实际 ABI、权限或系统升级兼容性。
-Git hook 不随 clone 自动启用，且可被 `--no-verify` 绕过；没有远端检查时不能保证所有提交者
-都执行验证。依赖团队启用本地 hook，并为底层改动保留一次真实 Mac 证据。
-
 Goal Plus 由共享 Python runtime、Pi package 和 Codex plugin 组成。仓库只提供一个统一
 安装入口：`install.sh`。Codex 使用正常安装；Pi 另外提供 checkout-local 开发态，便于在不
 切换 Pi 账号配置的情况下测试当前源码。
@@ -46,7 +13,7 @@ Goal Plus 由共享 Python runtime、Pi package 和 Codex plugin 组成。仓库
 | --- | --- | --- | --- |
 | `./install.sh --codex` | 非 editable，受管 Python 3.12 独立 venv | 注册已验证的不可变 Codex plugin 副本 | 写正常 Codex marketplace/plugin 注册 |
 | `./install.sh --pi` | 非 editable，受管 Python 3.12 独立 venv | 注册已验证的不可变 Pi package 副本 | 写 Pi 用户 package 注册 |
-| `./install.sh --pi-dev` | editable，安装到 `.goal-plus-dev/venv` | launcher 显式加载当前 Pi extension 和 skill | 不修改 Pi 用户配置 |
+| `./install.sh --pi-dev` | editable，安装到 `.goal-plus-dev/venv` | launcher 显式加载当前 Pi extension | 不修改 Pi 用户配置 |
 
 `--pi` 和 `--pi-dev` 互斥；`--codex --pi` 与 `--codex --pi-dev` 都有效。
 安装入口通过 uv 自动取得受管 Python 3.12；没有 uv 时将固定版本的 uv 安装到专属
@@ -59,7 +26,16 @@ bootstrap 目录。无需激活 Conda/venv，`PYTHON` 不再选择安装目标�
 
 正常安装保存在 `${GOAL_PLUS_INSTALL_HOME:-~/.local/share/goal-plus}/releases/<build>/`：
 `package/` 保存源码及宿主资产快照，`venv/` 使用提交的 `uv.lock` 安装依赖。
+修改 `pyproject.toml` 的依赖声明（包括开发依赖）时，在源码目录运行
+`uv lock --no-config --managed-python --python 3.12`，将锁文件一起提交，并用
+`uv lock --check --no-config --managed-python --python 3.12` 验证。
+默认测试检查声明的依赖约束是否同步；完整锁文件一致性由 uv 检查。
+正常安装不选择开发依赖，但 `--locked` 仍检查整个项目，安装器不会自动改写锁文件。
 代码、资产、锁文件或来源路径变化会生成新的 build；固定的项目版本号不能代替 build。
+Codex 安装还从 `$CODEX_HOME/config.toml` 的 `model_providers` 读取 `env_key` 和
+`env_http_headers` 声明的变量名，加上 `OPENAI_API_KEY`，转发给负责启动原生 session 的
+MCP 服务。仅变量名进入受管 `.mcp.json` 和 build 指纹，不读取或保存密钥值；运行时由
+Codex 从启动环境传入。新增 provider 凭据变量后需重新安装以刷新白名单。
 Codex 缓存版本带有 build，安装后的 hook/MCP 使用 release 内 launcher 的绝对路径，
 因此已加载的启动命令不依赖会被 Codex 刷新清理的旧缓存；Pi extension 从自身包目录读取
 安装收据。两端都使用绝对 Python 路径、隔离模式及预期 build 校验，正常运行不从 `PATH`、
@@ -84,9 +60,12 @@ manifest、runtime 收据、解释器/build 标记、MCP 和 hooks；校验失�
 先结束相关进程并更新那些 checkout，再重跑安装器；安装器不删除任意旧 checkout。
 
 Pi 的 release `package.json` 从 `assets/pi/package.json` 生成，显式引用 `assets/pi/` 中的资源。
-安装后使用 Pi 自身的资源解析器检查实际启用的 extension、skill 和唯一 package 来源，再核验
+安装后使用 Pi 自身的资源解析器检查实际启用的 extension、无产品 skill 和唯一 package 来源，再核验
 Python build。缺失、禁用、重复或指向旧资源时安装失败并恢复原 settings；不调用模型。
 正常安装需要 npm 安装的 Pi CLI 及 Node.js，以便使用相同版本的资源解析器。
+Pi extension 使用标准 MCP SDK 保持 stdio 连接。`--pi` 在注册前、`--pi-dev` 在开发
+环境准备时，按 `assets/pi/package-lock.json` 执行 `npm ci --ignore-scripts`；依赖位于
+相应 package 的 `assets/pi/node_modules/`。依赖准备失败不修改既有 Pi 注册。
 
 已安装所选宿主时，安装器列出来源并询问 `Uninstall and reinstall ...? [y/N]`。
 输入 `y` 才继续，`n`、空输入或 EOF 取消且不修改注册。自动化可用 `--yes`：
@@ -111,12 +90,33 @@ TT Profile 从基础 `pi` Profile 整份生成，重装会覆盖受管文件中�
 断电或 SIGKILL 后的自动恢复。
 安装不会删除旧 release，旧会话可继续使用原版本；正常安装成功后源码 checkout 可以移动，
 后续从新位置安装可在提示中确认替换旧来源注册。可用 `GOAL_PLUS_UV` 指定 uv 的绝对路径。
+当前协议使用 `agent_harness`、`runtime_provider`、`workspace.provider` 和 `session_handle`，
+不接受旧身份字段、`workspace.backend` 或旧 handle 格式。切换前应由原不可变 release
+读取、收尾旧 run 并关闭其活动资源；新版本创建新记录。安装器不自动改写旧 `.gp` 状态或
+历史验收产物，也不删除用户状态。
 首次安装需要下载 Python 和依赖；`--dry-run` 不写 release 或宿主注册，但 shell 入口可能先准备
 执行检查所需的 uv/Python。
 
 安装器会先检查同名宿主资源。旧版 staging 安装或散落的同名 Pi asset 会使安装失败并显示
 冲突来源；普通 package 的来源不同可通过重装提示确认替换。Pi 的显式 `extensions`、`skills`
 配置也会被识别；卸载可以移除明确的 Goal Plus 资源注册，资源文件本身保留。
+
+## 卸载与版本清理
+
+从 Goal Plus checkout 显式选择要移除的组件：
+
+| 命令 | 范围 |
+| --- | --- |
+| `./uninstall.sh --codex` | 移除 Codex 注册与版本引用 |
+| `./uninstall.sh --pi` | 移除正常 Pi package 注册与版本引用 |
+| `./uninstall.sh --pi-dev` | 清理本 checkout 的开发环境 |
+| `./uninstall.sh --pi --thinkthread` | 移除 Pi 注册及经过 ownership marker 核验的受管 TT Profile |
+| `./uninstall.sh --runtime` | 清理无宿主引用的受管 release；先结束旧会话 |
+
+无参数卸载默认选择全部组件。宿主卸载会保留 release，供旧会话继续使用。
+ThinkThread Runtime、Root、状态目录和包由 ThinkThread 独立管理；Goal Plus 卸载器不会删除它们。
+旧 pip/Conda 环境、bootstrap uv/Python、目标 workspace 的 `.gp/` 和用户源码不属于 runtime 清理范围。
+跨 checkout 的正常宿主注册可以显式移除；TT Profile 仍须核验本 checkout ownership，不能照此覆盖。
 
 ## 开发 Pi 集成
 
@@ -148,15 +148,13 @@ registry 记录；它不包含 Pi 配置、模型或认证信息。已删除的�
 
 `set_env.sh` 不设置 `CODEX_HOME`、`PI_CODING_AGENT_DIR`，也不把 venv 的 `bin` 全局加入
 当前 shell。`pi-goal-plus` 启动时才临时设置 runtime `PATH`，验证 `goal_plus` 模块确实来自
-当前 checkout，然后通过 Pi 的 `--extension` 和 `--skill` 参数显式加载：
+当前 checkout，然后通过 Pi 的 `--extension` 参数显式加载：
 
 ```text
 assets/pi/extensions/goal-plus.ts
-assets/pi/skills/goal-plus/SKILL.md
 ```
 
-当前 Pi package 只有这一个面向用户的 skill。Search 是 Goal Plus 内部模式，不是第二个
-用户级 Pi skill。
+当前两端均不发布 Goal Plus skill；命令由宿主注册或识别，流程概要来自共同 MCP instructions。
 
 ### 从目标 workspace 启动
 
@@ -173,20 +171,20 @@ Pi 加载，也不会阻塞开发态。其他 Pi package、模型设置和认证
 
 ### Pi 开发循环
 
-1. 修改 `src/goal_plus/`、`assets/pi/extensions/`、`assets/pi/skills/` 或 `assets/pi/package.json`；
-2. 依赖或 `pyproject.toml` 变化时重跑 `./install.sh --pi-dev`；
+1. 修改 `src/goal_plus/`、`assets/pi/extensions/`、`assets/goal-plus-instructions.txt` 或 `assets/pi/package.json`；
+2. Python 或 `assets/pi/package-lock.json` 依赖变化时重跑 `./install.sh --pi-dev`；
 3. 运行对应自动测试；
 4. 结束旧 Pi 进程；
 5. 从目标 workspace 重新运行 `pi-goal-plus`；
 6. 执行一次真实的 `/goal-plus` 调用。
 
-Pi package、extension 或 skill 变更至少运行：
+Pi package、extension 或共同概要变更至少运行：
 
 ```bash
 python -m pytest -q tests/test_install.py tests/test_pi_assets.py
 ```
 
-涉及 worker、pool 或 RPC 时继续运行对应 `tests/test_pi_*.py`；只有具备 Pi credentials
+涉及 worker、session 或 RPC 时继续运行对应 `tests/test_pi_*.py`；只有具备 Pi credentials
 和所需 provider 时才运行 `tests/st_pi/`。
 
 ## 开发 Codex 集成
@@ -202,7 +200,7 @@ Codex 不再提供 `goal-plus@goal-plus-local`、cachebuster staging 或 checkou
 
 这会准备新的受管 runtime，并保留唯一的正常 plugin ID `goal-plus@goal-plus`。每次安装都会
 通过 `codex plugin add` 刷新 plugin 缓存，即使该插件已安装；不会仅因来源相同而跳过
-hooks/skills 更新。安装或代码更新后
+hooks/MCP 更新。安装或代码更新后
 新建 Codex thread；hook 内容变化时，在 `/hooks` 中重新检查并信任，再新建一个 thread。
 
 若旧开发安装仍存在，先显式删除注册：
@@ -217,8 +215,8 @@ codex plugin marketplace remove goal-plus-local
 
 ### 修改 Codex 资产
 
-`assets/codex/skills/` 是唯一 skill 源码；`hooks.json`、`mcp.json` 和 `plugin.json` 是发布模板。
-安装器在 release 中生成 `skills/`、`hooks/hooks.json`、`.mcp.json` 和 `.codex-plugin/plugin.json`。
+`assets/goal-plus-instructions.txt` 是共同流程概要；`hooks.json`、`mcp.json` 和 `plugin.json` 是发布模板。
+安装器在 release 中生成 `hooks/hooks.json`、`.mcp.json` 和 `.codex-plugin/plugin.json`，不发布 skill。
 不在源码生成同步副本，也不建立回指资产目录的自动发现 symlink。
 
 修改后重跑 `./install.sh --codex`，再使用新 thread 验证。至少运行：
@@ -261,11 +259,28 @@ Codex 使用受管的不可变 runtime；`pi-goal-plus` 使用自己的开发 ve
 | `src/goal_plus/**/*.py` | 重启 `pi-goal-plus` | 重跑安装器并新建 thread |
 | Python 依赖或 `pyproject.toml` | 重跑安装器并重启 | 重跑安装器并新建 thread |
 | `assets/pi/**` | 重启 `pi-goal-plus` | 无需更新 |
-| `assets/codex/skills/**` | 无需更新 | 重跑安装器、新建 thread |
+| `assets/goal-plus-instructions.txt` | 重新启动 | 重跑安装器、新建 thread |
 | Codex hook 或 plugin 资产 | 无需更新 | 重跑安装器、重新信任并新建 thread |
 
 Goal Plus 运行状态保存在目标 workspace 的 `.gp/` 中。并行开发即使宿主安装已经隔离，也要
 使用不同的目标目录或 Git worktree，避免不同进程写同一份运行状态。
+
+## 本地执行合同检查
+
+GP 不维护 Linux/macOS 进程身份适配。默认测试验证 scope admission、generation 释放、
+直接句柄控制和有界输出；架构守卫禁止重新引入系统进程表、PID 核验和 guardian。
+
+可选的 [pre-push hook](../scripts/git-hooks/pre-push) 运行这组短检查：
+
+```bash
+git config --local core.hooksPath plugins/goal-plus/scripts/git-hooks
+git push
+```
+
+已有自定义 hooksPath 时将脚本接入原 pre-push，不覆盖原配置。脚本默认使用
+uv 的 Python 3.12 开发环境，也可指定 GOAL_PLUS_TEST_PYTHON。
+它只检查当前 HEAD，要求 Goal Plus 工作区干净，不安装宿主或调用模型。
+不再要求 Mac 进程身份实测；原生 Codex/Pi/TT 行为仍按对应 ST 验证。
 
 ## 相关文档
 

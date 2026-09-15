@@ -11,7 +11,7 @@ from goal_plus.models import GoalPlusHostCommandInvocation
 
 def invocation(action, nonce="1", session="main", **extra):
     return GoalPlusHostCommandInvocation(
-        host="codex", transport="codex_user_prompt_submit", command="$goal-plus",
+        agent_harness="codex", transport="codex_user_prompt_submit", command="$goal-plus",
         action=action, session_id=session, native_entry_id=nonce,
         invocation_id=f"{action}:{nonce}",
         raw_input_sha256=hashlib.sha256(f"{action}:{nonce}".encode()).hexdigest(),
@@ -23,13 +23,13 @@ def invocation(action, nonce="1", session="main", **extra):
 def goal(tmp_path):
     runtime = FileGoalPlusRuntime(tmp_path / ".gp")
     record = runtime.start_from_host_command("max_duration_seconds=900 A task", invocation=invocation("start"))
-    runtime.activate_session(record.goal_plus_id, {"host": "codex", "session_id": "main"})
+    runtime.activate_session(record.goal_plus_id, {"agent_harness": "codex", "session_id": "main"})
     return runtime, record.goal_plus_id
 
 
 def event(runtime, goal_id, name, **extra):
     return runtime.handle_host_session_event(
-        goal_id, host="codex", session_id="main", event=name,
+        goal_id, agent_harness="codex", session_id="main", event=name,
         delivery="next_user_turn", interaction="headless", **extra,
     )
 
@@ -124,7 +124,7 @@ def test_resume_cannot_resolve_needs_user(goal):
 
 def test_native_restore_never_fires_a_turn(goal):
     runtime, goal_id = goal
-    result = runtime.handle_host_session_event(goal_id, host="codex", session_id="main", event="session_start", delivery="auto", interaction="interactive")
+    result = runtime.handle_host_session_event(goal_id, agent_harness="codex", session_id="main", event="session_start", delivery="auto", interaction="interactive")
     assert result.decision == "wait_for_user"
 
 
@@ -135,21 +135,6 @@ def test_continuation_yields_to_host_and_user_input(goal, context):
     assert runtime.status(goal_id).control.state == "active"
 
 
-def test_main_process_owner_reload_loss_and_competing_process(goal, monkeypatch):
-    from goal_plus.host_recovery import ProcessIdentity, claim_main_owner
-    runtime, goal_id = goal
-    identities = {11: ProcessIdentity(pid=11, started="first"), 22: ProcessIdentity(pid=22, started="second")}
-    monkeypatch.setattr("goal_plus.host_recovery.process_identity", identities.get)
-    claim_main_owner(runtime.root_dir, goal_id, "codex", "main", 11, restoring=False)
-    claim_main_owner(runtime.root_dir, goal_id, "codex", "main", 11, restoring=True)
-    assert runtime.status(goal_id).control.state == "active"
-    with pytest.raises(RuntimeError, match="MainAlreadyRunning"):
-        claim_main_owner(runtime.root_dir, goal_id, "codex", "main", 22, restoring=True)
-    del identities[11]
-    claim_main_owner(runtime.root_dir, goal_id, "codex", "main", 22, restoring=True)
-    assert runtime.status(goal_id).control.reason == "execution_lost"
-    assert event(runtime, goal_id, "user_turn").decision == "wait_for_user"
-    assert runtime.control_from_host_command(goal_id, invocation=invocation("resume")).control.state == "active"
 
 
 def test_automatic_resume_compare_and_set_cannot_override_user_pause(goal):
@@ -179,27 +164,6 @@ def test_owned_host_timeout_is_distinct_from_user_interrupt(goal):
         runtime.stop_for_host_retry(goal_id, expectation)
 
 
-def test_host_retry_interrupts_only_the_identity_checked_owned_process(goal):
-    import subprocess
-    import sys
-    from goal_plus.host_recovery import claim_main_owner, interrupt_main_for_retry
-
-    runtime, goal_id = goal
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    try:
-        claim_main_owner(runtime.root_dir, goal_id, "codex", "main", process.pid, restoring=False)
-        expectation = dict(goal_plus_id=goal_id, goal_revision=1, session_id="main", control_version=0)
-        with pytest.raises(RuntimeError, match="HostInterruptionRejected"):
-            interrupt_main_for_retry(runtime.root_dir, goal_id, {**expectation, "goal_revision": 2}, timeout_seconds=1)
-        assert process.poll() is None
-        ticket = interrupt_main_for_retry(runtime.root_dir, goal_id, expectation, timeout_seconds=1)
-        assert process.wait(timeout=3) != 0
-        assert ticket["control_version"] == 1
-        assert runtime.status(goal_id).control.reason == "harness_interruption"
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            process.wait(timeout=3)
 
 
 def test_automatic_resume_cannot_reinterpret_active_or_unknown_stop(goal):
@@ -238,7 +202,7 @@ def test_paused_task_rejects_new_dispatch_but_keeps_history_readable(goal):
     runtime.control_from_host_command(goal_id, invocation=invocation("pause"))
     with pytest.raises(RuntimeError, match="GoalPlusResumeRequired"):
         runtime.record_work_event(goal_id, "new", "dispatch", "must not start", host="codex")
-    assert runtime.gate(goal_id, "pre_tool_use", {"tool_name": "search_report"}).decision == "allow"
+    assert runtime.gate(goal_id, "pre_tool_use", {"tool_name": "goal_plus_search_report"}).decision == "allow"
 
 
 def test_main_reconciliation_survives_non_search_round_and_requires_new_evidence(tmp_path):

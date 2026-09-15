@@ -4,7 +4,6 @@ import os
 import selectors
 import subprocess
 import time
-from collections.abc import Callable
 
 # Per stream: cap one invocation's raw capture at 16 MiB across stdout/stderr.
 # Read windows match the existing deterministic capture's 64 KiB budget.
@@ -22,10 +21,8 @@ class ProcessOutputLimitExceeded(ValueError):
 class ProcessOutput:
     def __init__(
         self, process: subprocess.Popen[str], *, limit_bytes: int | None = None,
-        before_reap: Callable[[], object] | None = None,
     ) -> None:
         self.process = process
-        self.before_reap = before_reap
         self.limit = PROCESS_OUTPUT_LIMIT_BYTES if limit_bytes is None else limit_bytes
         if isinstance(self.limit, bool) or not isinstance(self.limit, int) or self.limit <= 0:
             raise ValueError("process output limit must be a positive integer")
@@ -78,8 +75,6 @@ class ProcessOutput:
                 buffer.extend(chunk[:available])
                 if len(chunk) > available:
                     raise ProcessOutputLimitExceeded(key.data, self.limit, *self._snapshot())
-        if self.before_reap is not None:
-            self.before_reap()
         try:
             self.process.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:

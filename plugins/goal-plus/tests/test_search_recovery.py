@@ -7,7 +7,7 @@ import tarfile
 import pytest
 
 from goal_plus.runtime import FileSearchRuntime
-from goal_plus.host_recovery import approve_recovery, observe_worker
+from goal_plus.host_recovery import approve_recovery
 from goal_plus.tools import SearchTools
 from goal_plus.models import ArtifactRef, CandidateTask, RunState, SearchSpec
 from goal_plus.workspaces import UnsupportedWorkspaceCapability
@@ -17,15 +17,37 @@ from tests._runtime_helpers import make_project, spec_for, start_host_verified_g
 def make_search(tmp_path: Path):
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
     return runtime, run_id, task
 
 
+def native_recovery_resource(runtime, session, monkeypatch, *, status="finished"):
+    scope = {
+        "scope_id": "scope_recovery", "agent_harness": "codex",
+        "processes": [{
+            "label": f"native-session:{session.agent_session_id}",
+            "run_id": session.run_id, "kind": "candidate", "status": status,
+        }],
+    }
+    runtime.bind_agent_handle(session.agent_session_id, {
+        "external_id": "native-worker",
+        "metadata": {"transport": "app-server", "scope_id": scope["scope_id"]},
+    })
+
+    def snapshot(*, root_dir, scope_id):
+        assert root_dir == runtime.root_dir
+        assert scope_id == scope["scope_id"]
+        return scope
+
+    monkeypatch.setattr("goal_plus.host_scope.execution_scope_snapshot", snapshot)
+    return scope
+
+
 @pytest.mark.parametrize("tool", [
-    "search_recovery_status", "search_prepare_recovery", "search_recover_candidate",
+    "goal_plus_search_recovery_status", "goal_plus_search_prepare_recovery", "goal_plus_search_recover_candidate",
 ])
 @pytest.mark.parametrize("old_revision", [False, True])
 def test_recovery_facade_requires_current_goal_run_before_side_effects(tmp_path, tool, old_revision):
@@ -41,9 +63,9 @@ def test_recovery_facade_requires_current_goal_run_before_side_effects(tmp_path,
         goal = goals.update_goal(goal.goal_plus_id, "Revised task", expected_revision=1)
     tools = SearchTools(runtime, goal_runtime=goals)
     args = {"run_id": run_id}
-    if tool != "search_recovery_status":
+    if tool != "goal_plus_search_recovery_status":
         args["candidate_id"] = task.candidate_id
-    if tool == "search_recover_candidate":
+    if tool == "goal_plus_search_recover_candidate":
         args["recovery_id"] = recovery.recovery_id
     before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
@@ -59,10 +81,10 @@ def test_recovery_facade_requires_current_goal_run_before_side_effects(tmp_path,
 
 def test_recovery_status_exposes_unsettled_workspace_without_mutation(tmp_path):
     runtime, run_id, task = make_search(tmp_path)
-    before = runtime.search_recovery_status(run_id)["candidates"][0]
+    before = runtime.goal_plus_search_recovery_status(run_id)["candidates"][0]
     assert before["unsettled_workspace_changes"] is False
     (task.workspace / "initial_program.py").write_text("VALUE = 9 # unsettled\n")
-    changed = runtime.search_recovery_status(run_id)["candidates"][0]
+    changed = runtime.goal_plus_search_recovery_status(run_id)["candidates"][0]
     assert changed["unsettled_workspace_changes"] is True
     assert changed["checkpoint"] == before["checkpoint"]
     assert changed["recovery"] is None
@@ -87,13 +109,13 @@ def test_restored_or_main_only_evidence_cannot_bypass_fresh_worker_closeout(tmp_
     with pytest.raises(RuntimeError, match="SearchRecoveryIncomplete"):
         runtime.select(run_id)
     runtime.run_verifier(run_id, task.candidate_id)  # Main is not a recovered worker.
-    assert runtime.search_recovery_status(run_id)["candidates"][0]["fresh_recovery_evidence"] is False
+    assert runtime.goal_plus_search_recovery_status(run_id)["candidates"][0]["fresh_recovery_evidence"] is False
     with pytest.raises(RuntimeError, match="SearchRecoveryIncomplete"):
         runtime.select(run_id)
     worker = runtime.start_agent_session(run_id, task.candidate_id)
     runtime.bind_agent_handle(worker.agent_session_id, {"external_id": "fresh"})
     runtime.run_verifier(run_id, task.candidate_id, agent_session_id=worker.agent_session_id, hypothesis="fresh worker proof")
-    assert runtime.search_recovery_status(run_id)["candidates"][0]["fresh_recovery_evidence"] is True
+    assert runtime.goal_plus_search_recovery_status(run_id)["candidates"][0]["fresh_recovery_evidence"] is True
     runtime.select(run_id)
 
 
@@ -101,11 +123,10 @@ def test_finalization_can_select_existing_settlement_without_launching_worker(tm
     runtime, run_id, task = make_search(tmp_path)
     original = runtime.start_agent_session(run_id, task.candidate_id)
     runtime.bind_agent_handle(original.agent_session_id, {"external_id": "original"})
-    observe_worker(runtime.root_dir, original, os.getpid())
+    native_recovery_resource(runtime, original, monkeypatch)
     runtime.run_verifier(run_id, task.candidate_id, agent_session_id=original.agent_session_id, hypothesis="original worker evidence")
     recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
-    monkeypatch.setattr("goal_plus.host_recovery.process_identity", lambda _: None)
-    SearchTools(runtime).search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    SearchTools(runtime).goal_plus_search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
     monkeypatch.setattr(runtime.search_context, "outer_deadline", lambda _: "2000-01-01T00:00:00Z")
     runtime.select(run_id)
     assert len(runtime.candidate_sessions.state.read_agent_sessions(run_id)) == 1  # No new worker after cutoff.
@@ -120,7 +141,7 @@ def test_recover_initial_checkpoint_without_creating_another_candidate(tmp_path)
     goals = FileGoalPlusRuntime(runtime.root_dir)
     goal = goals.require_host_verified_active_goal()
     goals.link_search_run(goal.goal_plus_id, runtime.search_run.state.read_run(run_id).frozen_spec_id, run_id)
-    snapshot = call_pi_tool(runtime.root_dir, "search_recovery_status", {"run_id": run_id})
+    snapshot = call_pi_tool(runtime.root_dir, "goal_plus_search_recovery_status", {"run_id": run_id})
     assert snapshot["run_id"] == run_id
     assert snapshot["candidates"][0]["checkpoint"]["iteration"] == 0
     original = (task.workspace / "initial_program.py").read_text()
@@ -160,19 +181,18 @@ def test_settled_point_restores_code_and_ledger_archiving_partial_files(tmp_path
         assert backup.extractfile("untracked.tmp").read() == b"save me"
 
 
-@pytest.mark.host_process
 def test_prepare_fences_old_sessions_and_requires_host_quiescence(tmp_path, monkeypatch):
     from goal_plus.candidate_host import candidate_host_queries
     from goal_plus.host_scope import (
-        _codex_run_is_durably_quiescent, close_run_candidates, ensure_execution_scope,
+        _codex_run_is_durably_quiescent,
     )
 
     runtime, run_id, task = make_search(tmp_path)
     session = runtime.start_agent_session(run_id, task.candidate_id)
-    observe_worker(runtime.root_dir, session, os.getpid())
+    scope = native_recovery_resource(runtime, session, monkeypatch, status="running")
     recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
     assert runtime.prepare_candidate_recovery(run_id, task.candidate_id) == recovery
-    assert not _codex_run_is_durably_quiescent(runtime.root_dir, run_id)
+    assert not _codex_run_is_durably_quiescent(runtime.root_dir, run_id, scope=scope)
     for call in (
         lambda: candidate_host_queries(runtime.root_dir).require_native_execution(session.agent_session_id, now=0.0),
         lambda: runtime.get_agent_context(session.agent_session_id),
@@ -184,15 +204,15 @@ def test_prepare_fences_old_sessions_and_requires_host_quiescence(tmp_path, monk
         with pytest.raises(RuntimeError, match="StaleAgentSession|CandidateRecoveryRequired"):
             call()
     tools = SearchTools(runtime)
-    with pytest.raises(RuntimeError, match="RecoveryWorkerStillRunning"):
-        tools.search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    with pytest.raises(RuntimeError, match="RecoverySessionNotReleased"):
+        tools.goal_plus_search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
     with pytest.raises(RuntimeError, match="RecoveryHostQuiescenceRequired"):
         runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
-    monkeypatch.setattr("goal_plus.host_recovery.process_identity", lambda _: None)
-    tools.search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
-    assert _codex_run_is_durably_quiescent(runtime.root_dir, run_id)
+    scope["processes"][0]["status"] = "finished"
+    tools.goal_plus_search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    assert _codex_run_is_durably_quiescent(runtime.root_dir, run_id, scope=scope)
     fresh = runtime.start_agent_session(run_id, task.candidate_id)
-    assert not _codex_run_is_durably_quiescent(runtime.root_dir, run_id)
+    assert not _codex_run_is_durably_quiescent(runtime.root_dir, run_id, scope=scope)
     assert fresh.execution_generation == 1
     assert fresh.agent_session_id != session.agent_session_id
     assert runtime.start_agent_session(run_id, task.candidate_id) == fresh
@@ -201,16 +221,6 @@ def test_prepare_fences_old_sessions_and_requires_host_quiescence(tmp_path, monk
         runtime.get_agent_context(session.agent_session_id)
     with pytest.raises(RuntimeError, match="StaleAgentSession"):
         runtime.bind_agent_handle(session.agent_session_id, {"metadata": {"status": "completed"}})
-    scope = ensure_execution_scope(
-        root_dir=runtime.root_dir, host="codex", owner_session_id="restored-main",
-        owner_pid=os.getpid(), run_id=run_id, start_guardian=False,
-    )
-    with pytest.raises(RuntimeError, match="run_not_quiescent"):
-        close_run_candidates(root_dir=runtime.root_dir, scope_id=scope["scope_id"], run_id=run_id)
-    runtime.bind_agent_handle(fresh.agent_session_id, {"metadata": {"status": "completed"}})
-    assert close_run_candidates(
-        root_dir=runtime.root_dir, scope_id=scope["scope_id"], run_id=run_id,
-    )["active_count"] == 0
 
 
 def test_missing_host_observation_is_not_treated_as_exit(tmp_path):
@@ -254,7 +264,7 @@ def test_unsupported_recovery_provider_fails_before_fencing(tmp_path, monkeypatc
     runtime, run_id, task = make_search(tmp_path)
     before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     def unsupported(record):
-        raise UnsupportedWorkspaceCapability(record.task.workspace_backend, "recover")
+        raise UnsupportedWorkspaceCapability(record.task.workspace_provider, "recover")
 
     monkeypatch.setattr(runtime.recovery.workspace, "require_recoverable", unsupported)
     with pytest.raises(UnsupportedWorkspaceCapability, match="recover"):
@@ -271,7 +281,7 @@ def test_provider_neutral_recovery_accepts_snapshot_identity(tmp_path, monkeypat
     task_payload.update(
         {
             "execution_scope": "thinkthread_private",
-            "workspace_backend": "thinkthread",
+            "workspace_provider": "thinkthread",
             "workspace_provider_handle": {"child_id": "child-1"},
             "workspace_access": {
                 "logical_root": ".",
@@ -308,7 +318,7 @@ def test_provider_neutral_recovery_accepts_snapshot_identity(tmp_path, monkeypat
 def test_recovery_does_not_rollback_other_lanes_or_budget(tmp_path):
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     first, peer = runtime.start_batch(run_id, plan.plan_id)
@@ -369,39 +379,30 @@ def test_terminal_run_cannot_be_recovered(tmp_path, state):
     assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
 
 
-@pytest.mark.host_process
-def test_codex_quiescence_observation_must_follow_this_recovery(tmp_path):
-    from goal_plus.host_recovery import observe_codex_registry
-    from goal_plus.host_scope import ensure_execution_scope, execution_scope_snapshot, register_codex_agent
-
+@pytest.mark.parametrize("mismatch", ["transport", "agent_harness", "missing", "run", "label", "kind", "running"])
+def test_recovery_requires_exact_registered_session_resource(tmp_path, monkeypatch, mismatch):
     runtime, run_id, task = make_search(tmp_path)
     session = runtime.start_agent_session(run_id, task.candidate_id)
-    scope = ensure_execution_scope(
-        root_dir=runtime.root_dir, host="codex", owner_session_id="main",
-        owner_pid=os.getpid(), run_id=run_id, start_guardian=False,
-    )
-    canonical = f"/root/{session.launch['task_name']}"
-    register_codex_agent(
-        root_dir=runtime.root_dir, scope_id=scope["scope_id"], agent_id=canonical,
-        label=session.launch["task_name"], run_id=run_id,
-    )
-    scope = execution_scope_snapshot(root_dir=runtime.root_dir, scope_id=scope["scope_id"])
-    observe_worker(runtime.root_dir, session, os.getpid())
-    payload = {"agents": [{"agent_name": canonical, "agent_status": {"completed": "done"}}]}
-    observe_codex_registry(runtime.root_dir, [session], payload, scope=scope)
+    scope = native_recovery_resource(runtime, session, monkeypatch)
+    if mismatch == "transport":
+        runtime.bind_agent_handle(session.agent_session_id, {"metadata": {"transport": "legacy"}})
+    elif mismatch == "agent_harness":
+        scope["agent_harness"] = "pi"
+    elif mismatch == "missing":
+        scope["processes"] = []
+    else:
+        field, value = {
+            "run": ("run_id", "another-run"), "label": ("label", "native-session:peer"),
+            "kind": ("kind", "internal"), "running": ("status", "running"),
+        }[mismatch]
+        scope["processes"][0][field] = value
     recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
-    with pytest.raises(RuntimeError, match="RecoveryWorkerStillRunning"):
+    before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    reason = "RecoverySessionNotReleased" if mismatch == "running" else "RecoveryHostObservationMissing"
+    with pytest.raises(RuntimeError, match=reason):
         approve_recovery(runtime.root_dir, recovery)
-    observation_path = runtime.root_dir / "host-recovery" / "workers" / f"{session.agent_session_id}.json"
-    before = observation_path.read_bytes()
-    observe_codex_registry(runtime.root_dir, [session], payload, scope={**scope, "owner_pid": os.getppid()})
-    unrelated = {"agents": [{"agent_name": f"/other/{session.launch['task_name']}", "agent_status": {"completed": "done"}}]}
-    with pytest.raises(RuntimeError, match="not uniquely owned"):
-        observe_codex_registry(runtime.root_dir, [session], unrelated, scope=scope)
-    assert observation_path.read_bytes() == before
-    observe_codex_registry(runtime.root_dir, [session], payload, scope=scope)
-    approve_recovery(runtime.root_dir, recovery)
-    assert runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id).state == "restored"
+    assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
+    assert not (runtime.root_dir / "host-recovery/approvals").exists()
 
 
 def test_verifier_finishing_after_prepare_cannot_settle_or_fail_run(tmp_path, monkeypatch):
@@ -431,8 +432,8 @@ def test_git_worktree_recovery_preserves_source_and_external_symlink_target(tmp_
     source_head = git_commit(tmp_path, "source baseline")
     runtime = FileSearchRuntime(tmp_path / ".gp")
     data = spec_for(project).model_dump(mode="json")
-    data["workspace"] = {"backend": "git_worktree", "promotion_mode": "artifact_only"}
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"], native_host="codex")
+    data["workspace"] = {"provider": "git_worktree", "promotion_mode": "artifact_only"}
+    frozen = runtime.freeze_spec(SearchSpec.model_validate(data), [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -450,21 +451,42 @@ def test_git_worktree_recovery_preserves_source_and_external_symlink_target(tmp_
     assert git_output(tmp_path, "rev-parse", "HEAD") == source_head
 
 
-def test_real_process_exit_is_required_before_host_approval(tmp_path):
+@pytest.mark.host_process
+def test_recovery_requires_explicit_release_even_after_process_exit(tmp_path):
     import subprocess
     import sys
+    from goal_plus.bootstrap import build_scope_process_registry
+    from goal_plus.host_scope import ensure_execution_scope
+    from goal_plus.ports.scope import ScopeAttachment
 
     runtime, run_id, task = make_search(tmp_path)
     session = runtime.start_agent_session(run_id, task.candidate_id)
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    scope = ensure_execution_scope(
+        root_dir=runtime.root_dir, agent_harness="codex", owner_session_id="main",
+         run_id=run_id,
+    )
+    registry = build_scope_process_registry(runtime.root_dir)
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True,
+    )
     try:
-        observe_worker(runtime.root_dir, session, process.pid)
+        registry.register(
+            scope_id=scope["scope_id"], pid=process.pid,
+            label=f"native-session:{session.agent_session_id}", attachment=ScopeAttachment("search_run", run_id),
+        )
+        runtime.bind_agent_handle(session.agent_session_id, {
+            "external_id": "native-worker",
+            "metadata": {"transport": "app-server", "scope_id": scope["scope_id"]},
+        })
         recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
-        with pytest.raises(RuntimeError, match="RecoveryWorkerStillRunning"):
+        with pytest.raises(RuntimeError, match="RecoverySessionNotReleased"):
             approve_recovery(runtime.root_dir, recovery)
     finally:
         process.terminate()
         process.wait(timeout=5)
+    with pytest.raises(RuntimeError, match="RecoverySessionNotReleased"):
+        approve_recovery(runtime.root_dir, recovery)
+    registry.release(scope_id=scope["scope_id"])
     approve_recovery(runtime.root_dir, recovery)
     assert runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id).state == "restored"
 
@@ -475,30 +497,27 @@ def test_codex_fenced_worker_cannot_use_tools_but_can_stop(tmp_path):
 
     runtime, run_id, task = make_search(tmp_path)
     session = runtime.start_agent_session(run_id, task.candidate_id)
+    runtime.bind_agent_handle(session.agent_session_id, {
+        "external_id": "native-worker", "metadata": {"transport": "app-server"},
+    })
     runtime.prepare_candidate_recovery(run_id, task.candidate_id)
     payload = {
-        "agent_id": "native-worker", "agent_type": "search_candidate_agent",
-        "tool_name": "search_get_agent_context",
+        "session_id": "native-worker", "tool_name": "mcp__goal-plus__goal_plus_search_get_agent_context",
         "tool_input": {"agent_session_id": session.agent_session_id},
     }
-    result = _run_hook(tmp_path, runtime.root_dir, {**payload, "hook_event_name": "PreToolUse"})
-    decision = json.loads(result.stdout)["hookSpecificOutput"]
-    assert decision["permissionDecision"] == "deny"
-    assert "StaleAgentSession" in decision["permissionDecisionReason"]
-    # Replacing the model-supplied ID cannot move the same native worker to a
-    # newer generation: the first trusted identity mapping remains pinned.
+    env = {"GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID": session.agent_session_id}
+    for requested in (session.agent_session_id, "invented-fresh-session"):
+        result = _run_hook(tmp_path, runtime.root_dir, {
+            **payload, "hook_event_name": "PreToolUse", "tool_input": {"agent_session_id": requested},
+        }, **env)
+        assert json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
     record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
-    from goal_plus.goal_plus_stop_hook import _search_candidate_agent_session_id
-    assert _search_candidate_agent_session_id(runtime.root_dir, {
-        **payload, "tool_input": {"agent_session_id": "invented-fresh-session"},
-    }) == session.agent_session_id
     assert record.execution_generation == 1
-    result = _run_hook(tmp_path, runtime.root_dir, {**payload, "hook_event_name": "SubagentStop"})
-    assert result.returncode == 0
-    assert not result.stdout
+    result = _run_hook(tmp_path, runtime.root_dir, {**payload, "hook_event_name": "Stop"}, **env)
+    assert result.returncode == 0 and not result.stdout
 
 
-@pytest.mark.parametrize("tool", ["search_recovery_status", "search_prepare_recovery", "search_recover_candidate"])
+@pytest.mark.parametrize("tool", ["goal_plus_search_recovery_status", "goal_plus_search_prepare_recovery", "goal_plus_search_recover_candidate"])
 def test_codex_child_cannot_request_main_owned_recovery(tmp_path, tool):
     import json
     from tests.test_codex_goal_plus_hooks import _run_hook
@@ -521,7 +540,7 @@ def test_shared_recovery_gate_checks_goal_run_ownership(tmp_path, input_key):
         run_id="owned", goal_revision=goal.goal_revision, linked_at=goal.created_at,
     )]
     runtime.state.write_goal(goal)
-    context = {"tool_name": "search_prepare_recovery", input_key: {"run_id": "other"}}
+    context = {"tool_name": "goal_plus_search_prepare_recovery", input_key: {"run_id": "other"}}
     assert "SearchRecoveryOwnershipRequired" in runtime.gate(goal.goal_plus_id, "pre_tool_use", context).reason
     # Even a valid link cannot grant recovery to an already ended Goal.
     goal.status = "complete"
@@ -530,27 +549,12 @@ def test_shared_recovery_gate_checks_goal_run_ownership(tmp_path, input_key):
     assert runtime.gate(goal.goal_plus_id, "pre_tool_use", context).decision == "block"
 
 
-def test_pi_pool_may_stop_fenced_lane_before_closeout(tmp_path, monkeypatch):
-    from goal_plus.pi_pool import _assert_active_pool_close_allowed
-
-    runtime, run_id, task = make_search(tmp_path)
-    runtime.start_agent_session(run_id, task.candidate_id)
-    monkeypatch.setenv("GOAL_PLUS_OUTER_DEADLINE_AT", "2099-01-01T00:00:00Z")
-    pool = {"pool_id": "recovery-pool", "run_id": run_id}
-    jobs = [{"candidate_id": task.candidate_id, "status": "running"}]
-    with pytest.raises(RuntimeError, match="outside the closeout reserve"):
-        _assert_active_pool_close_allowed(runtime.root_dir, pool, jobs)
-    runtime.prepare_candidate_recovery(run_id, task.candidate_id)
-    _assert_active_pool_close_allowed(runtime.root_dir, pool, jobs)
-    with pytest.raises(RuntimeError, match="outside the closeout reserve"):
-        _assert_active_pool_close_allowed(runtime.root_dir, pool, [*jobs, {"candidate_id": "peer", "status": "running"}])
-
-
-def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_path):
+@pytest.mark.parametrize("retirement_pending", [False, True])
+def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_path, retirement_pending):
     project = make_project(tmp_path)
     payload = spec_for(project, max_parallel=1).model_dump(mode="json")
     payload["budget"]["max_candidates"] = 2
-    payload["workspace"] = {"backend": "git_worktree"}
+    payload["workspace"] = {"provider": "git_worktree"}
     payload["strategy"].update(
         {
             "orchestration_mode": "adaptive_search",
@@ -558,14 +562,14 @@ def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_pa
                 "ranking_keys": ["quality_score", "hard_score"],
                 "ranking_tolerance": [0.05, 0.0],
             },
-            "allocation": {"policy": "priority_replace/v1"},
+            "allocation": {"policy": "priority_replace/v1", "features": ["latest_record_values/v1"], "switch_margin": 0},
         }
     )
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(payload),
         [project / "evaluator.py"],
-        native_host="codex",
+        agent_harness="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -576,6 +580,28 @@ def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_pa
     verifier_tasks = runtime.list_verifier_tasks(run_id)
     assert len(verifier_tasks) == 1
     recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    if retirement_pending:
+        from goal_plus.application.verifier import VerifierWorkflow
+        from goal_plus.bootstrap import build_verifier_record_consumer
+        from goal_plus.infrastructure.clock import SystemClock
+        from goal_plus.infrastructure.state.verifier import FileVerifierState
+        from tests.test_llm_verifier import invocation
+
+        workflow = VerifierWorkflow(FileVerifierState(runtime.root_dir), SystemClock())
+        claimed = workflow.claim_task("recovery-test", 60, run_id=run_id)
+        completed = workflow.complete_task(claimed.task_id, {
+            "quality_score": 0.8,
+            "allocation_scores": {"progress_reward": 0.8, "allocation_utility": 0.8},
+            "rationale": "A settled source for replacement",
+        }, invocation())
+        build_verifier_record_consumer(runtime.root_dir, verifier=workflow).on_verifier_record_completed(completed)
+        [decision] = runtime.list_allocation_decisions(run_id, "pending")
+        assert decision.retire_candidate_ids == [task.candidate_id]
+        before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+        with pytest.raises(RuntimeError, match="pending allocation"):
+            runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+        assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
+        return
     runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
     restored = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     assert restored.iterations == record.iterations
@@ -605,10 +631,9 @@ def test_unsettled_shared_publication_does_not_survive_as_a_family_head(tmp_path
     manager = SharedDirManager(restarted.search_run.state.run_dir(run_id))
     assert len(manager.pending_tool_ids()) == 1
     session = restarted.candidate_sessions.session(worker.agent_session_id)
-    observe_worker(restarted.root_dir, session, os.getpid())
+    native_recovery_resource(restarted, session, monkeypatch)
     recovery = restarted.prepare_candidate_recovery(run_id, worker.candidate_id)
-    monkeypatch.setattr("goal_plus.host_recovery.process_identity", lambda _: None)
-    SearchTools(restarted).search_recover_candidate(run_id, worker.candidate_id, recovery.recovery_id)
+    SearchTools(restarted).goal_plus_search_recover_candidate(run_id, worker.candidate_id, recovery.recovery_id)
     assert not manager.pending_tool_ids()
     assert not manager.tool_family_catalog(max_published_versions_per_family=2)
     archive = restarted.candidate_creation.state.candidate_dir(run_id, worker.candidate_id) / "recoveries" / recovery.recovery_id / "unsettled-shared-tools.json"

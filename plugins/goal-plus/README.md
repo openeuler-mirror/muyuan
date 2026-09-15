@@ -41,7 +41,7 @@ editing this checkout does not automatically load its plugin resources.
 It validates the built-in Pi Profile and generates the `goal-plus-pi` Profile;
 it never installs, upgrades, or removes ThinkThread itself. Start the protected
 Root with `tt run --profile goal-plus-pi --fs <target-workspace>`. From that
-Root, `workspace_backend=thinkthread` runs Pi Search candidates in independent
+Root, `workspace_provider=thinkthread` runs Pi Search candidates in independent
 private Children, verifies exact snapshots, and publishes through optimistic
 `fs.apply`. Codex does not support the ThinkThread worker host.
 
@@ -72,6 +72,8 @@ Uninstallation never deletes target workspace `.gp/` records or
 reverts promoted changes. `--thinkthread` removes only this checkout's generated
 `goal-plus-pi` Profile; it never deletes a ThinkThread Runtime, Root, or state.
 
+## Start a Goal
+
 Start a goal in Pi:
 
 ```text
@@ -82,7 +84,7 @@ Start a goal in Pi:
 /goal-plus max_parallel=2 promotion_mode=artifact_only Optimize this read-only template.
 ```
 
-The equivalent Codex entry uses the installed skill:
+The equivalent Codex entry uses the exact host command:
 
 ```text
 $goal-plus Fix this bug and verify the test suite.
@@ -113,11 +115,9 @@ and control commands remain bound to the session that owns their Goal.
 
 The exact Goal Plus host commands above are the only create/edit authority
 boundary. Natural-language requests, automatic skill loading, direct MCP calls,
-and the generic Pi CLI facade cannot create or edit a Goal Plus record. The legacy
-`goal_plus_create` and `goal_plus_update_goal` MCP names remain as deny-only
-tombstones so cached clients receive an explicit `GoalPlusEntrypointRequired`
-error without mutating `.gp` state. Native resume never creates or revises a
-Goal Plus task; `$goal-plus edit` or `/goal-plus edit` remains required for that.
+and the generic Pi CLI facade cannot create or edit a Goal Plus record.
+Both hosts load shared workflow guidance from MCP instructions; no Goal Plus
+navigation skills are installed. Tool authorization is described in [API](docs/api.md).
 
 Leading `key=value` command configuration is parsed and persisted separately
 from the natural-language goal. The first non-config token starts the goal.
@@ -127,18 +127,19 @@ the supported keys.
 
 One request starts an autonomous run. The agent decides whether Goal Mode is
 enough or a frozen verifier makes parallel Search useful; entering Search does
-not require an extra approval step. `mode=autonomous` (the default) gives
-every initial candidate substantial, renewable same-workspace exploration leases;
-`mode=probe` asks for short feasibility probes first. The explicit mode is
-recorded in `command_config`; its operational guidance remains in the final line
-of `raw_goal`, not as Search runtime state.
+not require an extra approval step. `mode=autonomous` (the default) guides continued
+exploration; `mode=probe` prioritizes bounded feasibility checks. After each candidate
+returns, Main decides whether to continue from durable Evidence and the user's
+explicit limits. Continuation reuses the candidate and session. There is no minimum
+worker duration or mandatory early closeout window, and a wait timeout does not
+complete the Goal or automatically start another turn.
 
 ## Hosts
 
 | Host | Integration assets | Entry | Search worker path |
 | --- | --- | --- | --- |
-| Pi | installed Pi package | `/goal-plus` or `pi -p "/goal-plus ..."` | durable Pi RPC pool; see [Pi](docs/pi.md) |
-| Codex | installed plugin | `$goal-plus` skill prompt | fixed parallel loops with native same-worker continuation; hooks include `UserPromptSubmit`, `Interrupt`, `PreToolUse`, and `SubagentStop`; see [Codex](docs/codex.md) |
+| Pi | installed Pi package | `/goal-plus` or `pi -p "/goal-plus ..."` | shared session tools over Pi RPC; see [Pi](docs/pi.md) |
+| Codex | installed plugin | `$goal-plus` host command | shared session tools over Codex app-server; see [Codex](docs/codex.md) |
 
 Start an installed Codex plugin from the workspace you want to change:
 
@@ -160,7 +161,7 @@ required or forced. In both
 hosts, the main agent is the already-running session selected at launch or with
 `/model`; Goal Plus cannot switch it, and `main=` is not a supported command
 configuration key. See the
-[Torch CPU example](examples/model-optimize/README.md) for
+[Circle Packing example](examples/circle-packing/README.md) for
 complete Codex and Pi commands with ready-to-paste prompts.
 
 Host differences and strategy coverage are summarized in
@@ -172,16 +173,22 @@ inside the supported ThinkThread path is Pi.
 
 | Main Agent | Workspace backend | Candidate driver | Annotation driver | LLM Verifier / Adaptive allocation |
 | --- | --- | --- | --- | --- |
-| Codex | `git_worktree` / `copy` | Native subagent | Codex CLI | Codex CLI; allocation requires Git worktree |
-| Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI; allocation requires Git worktree |
+| Codex | `git_worktree` / `copy` | Codex app-server | Codex CLI | Codex CLI; Git worktree only |
+| Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI; Git worktree only |
 | Pi | `thinkthread` | TT Pi Child | TT Pi Child | Not supported |
 | Codex | `thinkthread` | Not supported | Not supported | Not supported |
 
-`workspace.backend` identifies the workspace provider. Agent identity comes from
-the authorized Main session and is recorded as `FrozenSpec.native_host`; it is
-not a SearchSpec option. Runtime derives each role's driver from this identity
-and the workspace backend. Core quality and optional adaptive metrics use separate
-Verifier records; deterministic code owns winner selection and allocation.
+`workspace.provider` identifies the workspace provider. Agent identity comes from
+the authorized Main session and is recorded as `FrozenSpec.agent_harness`.
+Assembly separately freezes `runtime_provider=direct|thinkthread`. These fields
+require no additional user setup: start with `$goal-plus <request>` or
+`/goal-plus <request>`. Main prepares a Search contract only when needed.
+Quality and optional allocation scores share one LLM Verifier call. Selection and
+allocation use deterministic policies.
+
+This protocol does not migrate old records. Before switching builds, use the old
+build to close active resources and finish its records; create new records with
+the new build. Installation and `.gp` layouts are preserved.
 
 ## Mental Model
 
@@ -202,12 +209,12 @@ Verifier records; deterministic code owns winner selection and allocation.
   confirmation fences the run before all host workers are stopped and a
   successor spec/run is created.
 
-New Pi/Codex Search uses fixed parallel loops: create the initial candidates
-once, validate every completion, update the verifier-backed global best, and
-resume that same candidate while no global stop condition is true. Main does
-not choose later technical directions or replace low-scoring candidates.
-Slower workers do not block completed work from being evaluated. See
-[Shared Plane](docs/shared-plane.md).
+The default `parallel_loops` mode creates fixed candidate lanes. Main reviews
+each returned result and decides whether to continue that same candidate;
+candidates choose their own technical direction. Scores do not trigger replacement.
+Git worktree runs may explicitly use [Adaptive Search](docs/adaptive-search.md)
+for Scheduler-proposed replacement. See [Shared Plane](docs/shared-plane.md)
+for the common workflow and Evidence contract.
 
 For Git worktrees, freezing first runs the process-verifier suite once in the
 clean origin and pins that exact commit. Batch startup then verifies the same
@@ -233,47 +240,25 @@ promotion stays retryable in `ready_to_promote` and emits no patch.
 
 | Need | Read |
 | --- | --- |
+| Complete index and content ownership | [Documentation Map](docs/README.md) |
 | Stable product and runtime contract | [System Specification](SPEC.md) |
-| Architecture, shared Evidence, rollback, and end-to-end flow | [Shared Plane](docs/shared-plane.md) |
-| Framework layers, ownership, role capabilities, and glossary | [Architecture Diagrams](docs/architecture.md) |
-| LLM Verifier data, evaluation, and queue contract | [LLM Verifier](docs/llm-verifier.md) |
-| Minimal selection, Adaptive allocation, and monitor projections | [Adaptive Search](docs/adaptive-search.md) |
-| Current MCP and Pi-local tools | [API](docs/api.md) |
-| Host capability comparison | [Agent Host Adapters](docs/agent-host-adapters.md) |
-| Ultra work orchestration | [Ultra Orchestration](docs/ultra.md) |
-| Lightweight Search progress UX and rollout plan | [Progress UX](docs/usability-progress.md) |
+| Host commands and configuration | [Codex](docs/codex.md), [Pi](docs/pi.md), [API](docs/api.md) |
+| Install, update, uninstall, and checkout development | [Development](docs/development.md) |
 | Runtime and host logs | [Debugging](docs/debugging-runtime.md) |
-| Checkout development, plugin refresh, and multi-developer isolation | [Development](docs/development.md) |
 | Specs and runnable examples | [Examples](examples/README.md) |
 | Tests and real-host evidence | [Tests](tests/README.md) |
-| Git and ThinkThread workspace, artifact, and publication architecture | [ThinkThread and Git Architecture](docs/workspace-sandbox-arch.md) |
 
 Benchmark-specific tasks, evaluators, campaigns, and comparison evidence are
 not part of this isolated runtime directory.
 
 ## Workspace and Sandbox Architecture
 
-Goal Plus separates the outer workspace provider from the inner-agent behavior.
-The Git outer provider creates candidate worktrees and commit Evidence;
-ThinkThread captures one Root-owned baseline, gives every Pi candidate a private
-COW Child, and settles attempts as immutable snapshot Evidence. Both outer
-providers support the AutoResearch-Git adapter and the MCP-aware
-one-attempt-per-dispatch `common` adapter. The compatibility configuration ID
-`inner_agent=autoresearch` resolves to AutoResearch-Git: Git outer workspaces use
-their candidate branch, while ThinkThread creates an independent Child-private
-Git repository with physical `results.tsv`. `common` has neither inner-agent Git
-history nor a workspace ledger projection. In every combination `.gp` remains
-canonical, and only the outer provider's `git_commit` or `fs_snapshot` is public
-Evidence.
-
-Git outer workspaces are available in Codex and Pi. ThinkThread Search is available only
-from the installed Pi `goal-plus-pi` Profile after interface, Root capability,
-and delegated Child capability preflight. Version and fingerprint differences
-produce warnings; compatible ThinkThread upgrades do not require reinstalling Goal Plus. It
-includes K-way private Children, exact snapshot verification, retained
-Annotation Artifact Views, filtered publication, optimistic apply, durable
-recovery, and owned-resource cleanup. Copy remains an explicit artifact-only
-compatibility path.
+Goal Plus separates workspace isolation from inner-agent behavior. Git worktrees
+produce commit Evidence; Pi ThinkThread Children produce snapshot Evidence.
+`autoresearch` maintains candidate-local Git history, while `common` relies on
+the outer artifact and canonical runtime ledger. Copy is an explicit artifact-only
+path. Git worktrees are not a security sandbox; supported combinations and
+provider guarantees are defined in the workspace document below.
 
 See [ThinkThread and Git Workspace Architecture](docs/workspace-sandbox-arch.md) for
 the `new -> search -> apply` ASCII flow, design invariants, and the Git/TT

@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { PiMcpConnection } from "./goal-plus-mcp.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -26,6 +27,7 @@ export interface CommandInvocation {
 
 export interface CommandRuntimeContext {
 	cwd: string;
+	nativeSessionId?: string;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -95,7 +97,47 @@ export function commandFailure(
 	};
 }
 
-export async function runJsonCli(pi: ExtensionAPI, ctx: CommandRuntimeContext, tool: string, args: Record<string, unknown>) {
+const mcpConnections = new Map<string, Promise<{ connection: PiMcpConnection; manifest: Awaited<ReturnType<PiMcpConnection["open"]>> }>>();
+const sharedTools = new Set<string>();
+
+function mcpConnection(ctx: CommandRuntimeContext) {
+	const root = resolve(ctx.cwd, runtimeRoot);
+	let pending = mcpConnections.get(root);
+	if (!pending) {
+		const invocation = projectModuleInvocation(ctx, "goal-plus-pi-tool", "goal_plus.pi_tool");
+		pending = (async () => {
+			const { PiMcpConnection } = await import("./goal-plus-mcp.ts");
+			const connection = new PiMcpConnection(invocation.command, [
+				...invocation.argsPrefix, "--root", root, "host_mcp_serve",
+			], ctx.cwd);
+			const manifest = await connection.open();
+			for (const tool of manifest.tools) sharedTools.add(tool.name);
+			return { connection, manifest };
+		})();
+		mcpConnections.set(root, pending);
+	}
+	return pending;
+}
+
+export async function closeMcpConnections() {
+	const pending = [...mcpConnections.values()];
+	mcpConnections.clear();
+	sharedTools.clear();
+	const results = await Promise.allSettled(pending.map(async value => (await value).connection.close()));
+	for (const result of results) {
+		if (result.status === "rejected") throw result.reason;
+	}
+}
+
+export async function runJsonCli(pi: ExtensionAPI, ctx: CommandRuntimeContext, tool: string, args: Record<string, unknown>, signal?: AbortSignal) {
+	// Protected TT Children use Root Message RPC and only obtain schemas locally.
+	const rootMessageOnly = Boolean(process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY) && (process.env.GOAL_PLUS_PI_ROLE || "main") !== "main";
+	if (!rootMessageOnly && (tool === "host_mcp_manifest" || sharedTools.has(tool))) {
+		const { connection, manifest } = await mcpConnection(ctx);
+		return tool === "host_mcp_manifest"
+			? { content: [{ type: "text" as const, text: JSON.stringify(manifest) }], details: manifest }
+			: connection.call(tool, args, signal, ctx.nativeSessionId);
+	}
 	const invocation = projectModuleInvocation(ctx, "goal-plus-pi-tool", "goal_plus.pi_tool");
 	const result = await pi.exec(invocation.command, [
 		...invocation.argsPrefix,
@@ -125,10 +167,6 @@ export async function runHostCommandCli(
 	tool: "goal_plus_host_start" | "goal_plus_host_edit" | "goal_plus_host_control" | "goal_plus_host_session_event" | "goal_plus_host_kick_internal_agents",
 	args: Record<string, unknown>,
 ) {
-	args = { ...args, owner_pid: process.pid };
-	if (typeof args.goal_plus_id === "string") {
-		args.execution_scope_owner_session_id = `${args.goal_plus_id}:${ctx.cwd}`;
-	}
 	const invocation = projectModuleInvocation(ctx, "goal-plus-pi-tool", "goal_plus.pi_tool");
 	const capabilityToken = randomUUID();
 	const capabilityRoot = isAbsolute(runtimeRoot) ? runtimeRoot : join(ctx.cwd, runtimeRoot);

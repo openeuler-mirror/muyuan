@@ -241,10 +241,11 @@ class FileSearchRuntime:
 
     def list_available_models(
         self,
-        host: Literal["codex", "pi-rpc"],
+        agent_harness: Literal["codex", "pi"],
+        runtime_provider: Literal["direct", "thinkthread"],
         query: str | None = None,
     ) -> dict[str, Any]:
-        return self.models.list_available_models(host, query=query)
+        return self.models.list_available_models(agent_harness, runtime_provider, query=query)
 
     def freeze_spec(
         self,
@@ -252,10 +253,10 @@ class FileSearchRuntime:
         verifier_artifacts: list[Path],
         *,
         goal_plus_id: str | None = None,
-        native_host: Literal["codex", "pi"] | None = None,
+        agent_harness: Literal["codex", "pi"] | None = None,
     ) -> FrozenSpec:
         return self.search_bootstrap.freeze(
-            spec, verifier_artifacts, goal_plus_id=goal_plus_id, native_host=native_host
+            spec, verifier_artifacts, goal_plus_id=goal_plus_id, agent_harness=agent_harness
         )
 
     def materialize_candidate(
@@ -358,7 +359,7 @@ class FileSearchRuntime:
     ) -> CandidateRecovery:
         return self.recovery.recover_candidate(run_id, candidate_id, recovery_id)
 
-    def search_recovery_status(self, run_id: str) -> dict[str, Any]:
+    def goal_plus_search_recovery_status(self, run_id: str) -> dict[str, Any]:
         return self.recovery.queries.status(run_id)
 
     def verify_thinkthread_candidate_attempt(

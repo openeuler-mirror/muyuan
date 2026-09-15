@@ -119,6 +119,7 @@ class RunRecord(SearchModel):
     run_id: str
     state: RunState
     frozen_spec_id: str
+    bootstrap_complete: bool = False
     source_path: str
     source_repository: Path | None = None
     source_subdir: str = "."
@@ -195,7 +196,7 @@ class CandidateRecord(SearchModel):
     def recovery_matches_candidate(self) -> "CandidateRecord":
         if self.recovery is not None and (
             self.recovery.generation != self.execution_generation
-            or self.recovery.point.artifact_ref.provider != self.task.workspace_backend
+            or self.recovery.point.artifact_ref.provider != self.task.workspace_provider
         ):
             raise ValueError("recovery generation/provider must match the candidate")
         return self

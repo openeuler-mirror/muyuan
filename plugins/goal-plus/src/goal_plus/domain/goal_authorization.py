@@ -20,50 +20,49 @@ GOAL_PLUS_ENTRYPOINT_REQUIRED = (
     "are not permitted."
 )
 SEARCH_RECOVERY_TOOL_SUFFIXES = (
-    "search_recovery_status",
-    "search_prepare_recovery",
-    "search_recover_candidate",
+    "goal_plus_search_recovery_status",
+    "goal_plus_search_prepare_recovery",
+    "goal_plus_search_recover_candidate",
 )
 GOAL_SCOPED_TOOL_SUFFIXES = (
-    "search_freeze_spec",
-    "search_create",
+    "goal_plus_search_freeze_spec",
+    "goal_plus_search_create",
     "goal_plus_record_triage",
     "goal_plus_record_work_event",
     "goal_plus_save_spec_draft",
     "goal_plus_link_search_run",
     "goal_plus_record_search_result",
     "goal_plus_prepare_final_check",
+    "goal_plus_run_final_check",
+    "goal_plus_run_work_item",
     "goal_plus_submit_final_check",
     "goal_plus_set_status",
     "goal_plus_gate",
 )
 LINKED_SEARCH_TOOL_SUFFIXES = (
-    "search_invalidate_run",
+    "goal_plus_session_run",
+    "goal_plus_session_message",
+    "goal_plus_search_invalidate_run",
     *SEARCH_RECOVERY_TOOL_SUFFIXES,
-    "search_plan_next",
-    "search_start_batch",
+    "goal_plus_search_plan_next",
+    "goal_plus_search_start_batch",
     "search_start_agent_session",
     "search_redispatch_candidate",
     "search_bind_agent_handle",
     "search_continue_agent_session",
-    "search_get_agent_context",
-    "search_get_global_evidence",
-    "search_reference_open",
-    "search_stage_shared_tool",
-    "search_copy_shared_tool",
-    "search_get_evidence_detail",
-    "search_run_verifier",
-    "search_list_iterations",
-    "search_list_allocation_decisions",
-    "search_apply_allocation_decision",
-    "search_select",
-    "search_promote",
-    "search_apply_promotion",
-    "pi_search_pool_open",
-    "pi_search_pool_wait_any",
-    "pi_search_pool_snapshot",
-    "pi_search_pool_continue",
-    "pi_search_pool_close",
+    "goal_plus_search_get_agent_context",
+    "goal_plus_search_get_global_evidence",
+    "goal_plus_search_reference_open",
+    "goal_plus_search_stage_shared_tool",
+    "goal_plus_search_copy_shared_tool",
+    "goal_plus_search_get_evidence_detail",
+    "goal_plus_search_run_verifier",
+    "goal_plus_search_list_iterations",
+    "goal_plus_search_list_allocation_decisions",
+    "goal_plus_search_apply_allocation_decision",
+    "goal_plus_search_select",
+    "goal_plus_search_promote",
+    "goal_plus_search_apply_promotion",
 )
 
 
@@ -91,14 +90,14 @@ def require_control_session(
     record: GoalPlusRecord, invocation: GoalPlusHostCommandInvocation
 ) -> None:
     active = record.active_session
-    host = "pi-rpc" if invocation.host == "pi" else invocation.host
+    agent_harness = invocation.agent_harness
     historical_access = invocation.action == "summary" or (
         invocation.action == "edit" and record.status == "complete"
     )
     if (
         active is None
         or active.session_id != invocation.session_id
-        or active.host != host
+        or active.agent_harness != agent_harness
         or active.state == "stale"
         or (active.state == "detached" and not historical_access)
     ):
@@ -122,7 +121,7 @@ def validate_search_command_config(
 ) -> None:
     checks = {
         "max_parallel": (config.max_parallel, spec.budget.max_parallel),
-        "workspace_backend": (config.workspace_backend, spec.workspace.backend),
+        "workspace_provider": (config.workspace_provider, spec.workspace.provider),
         "promotion_mode": (config.promotion_mode, spec.workspace.promotion_mode),
         "strategy": (config.strategy, spec.strategy.name),
         "inner_agent": (config.inner_agent, spec.strategy.inner_agent),

@@ -1,9 +1,9 @@
 """Stable public schema imports; each definition has one canonical owner."""
 
 from goal_plus.domain.agents import (
-    AgentHostHandle as AgentHostHandle,
-    AgentHostKind as AgentHostKind,
-    NativeAgentKind as NativeAgentKind,
+    AgentSessionHandle as AgentSessionHandle,
+    AgentHarnessKind as AgentHarnessKind,
+    AgentRuntimeProvider as AgentRuntimeProvider,
     ModelSpec as ModelSpec,
     SelectedModel as SelectedModel,
     WorkerBudget as WorkerBudget,
@@ -43,7 +43,7 @@ from goal_plus.domain.artifacts import (
     ReferenceWorkspaceRecord as ReferenceWorkspaceRecord,
     WorkspaceAccess as WorkspaceAccess,
     WorkspaceAccessKind as WorkspaceAccessKind,
-    WorkspaceBackend as WorkspaceBackend,
+    WorkspaceProvider as WorkspaceProvider,
     WorkspaceCapacityEstimate as WorkspaceCapacityEstimate,
     WorkspaceOperationOutcome as WorkspaceOperationOutcome,
     WorkspaceOperationTiming as WorkspaceOperationTiming,

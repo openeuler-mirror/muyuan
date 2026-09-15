@@ -450,13 +450,7 @@ def test_ultra_concurrent_lazy_dispatches_are_serialized(
 def test_ultra_assets_use_native_hosts_without_dag_planning() -> None:
     core = (ROOT / "src" / "goal_plus" / "goal_plus.py").read_text(encoding="utf-8")
     server = (ROOT / "src" / "goal_plus" / "server.py").read_text(encoding="utf-8")
-    codex = (ROOT / "assets" / "codex" / "skills" / "goal-plus" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
     pi = (ROOT / "assets" / "pi" / "extensions" / "goal-plus.ts").read_text(encoding="utf-8")
-    pi_worker = (ROOT / "src" / "goal_plus" / "pi_worker.py").read_text(
-        encoding="utf-8"
-    )
     docs = (ROOT / "docs" / "ultra.md").read_text(encoding="utf-8")
 
     work_item = models.GoalPlusWorkItem.model_fields
@@ -468,22 +462,12 @@ def test_ultra_assets_use_native_hosts_without_dag_planning() -> None:
     assert "upsert_work_items" not in core
     assert "goal_plus_upsert_work_items" not in server
     assert "goal-plus-ultra-v1" in json.dumps(models.GoalPlusExecutionPolicy.model_json_schema())
-    assert "spawn_agent" in codex
-    assert 'fork_turns="none"' in codex
-    assert "`bind`" in codex
     assert 'pi.setThinkingLevel("xhigh")' not in pi
     assert "pi.getThinkingLevel()" in pi
     assert 'main_reasoning_effort: "host_selected"' in pi
-    assert "const nativeAgentConfig = currentPiNativeAgentConfig(pi, ctx);" in pi
-    assert "inheritPiNativeAgentConfig(launch, nativeAgentConfig)" in pi
     assert 'observedThinking === "off"' not in pi
-    assert 'name: "pi_goal_plus_run_work_item"' in pi
-    assert 'native_operation: "pi_goal_plus_run_work_item"' in pi
-    assert 'native_operation: "goal-plus-pi-worker"' in pi
+    assert '"goal_plus_run_work_item"' in pi
+    assert "pi_goal_plus_run_work_item" not in pi
     schemas = (ROOT / "assets/pi/extensions/lib/goal-plus-schemas.ts").read_text(encoding="utf-8")
-    assert "task: Type.String" in schemas
-    assert 'executionMode: "concurrent"' in pi
-    assert 'role: "ordinary"' in pi
-    assert "goal_plus_work_item" in pi
-    assert '"bind"' in pi_worker
+    assert "pi_goal_plus_run_work_item" not in schemas
     assert "deepseek-harness" in docs

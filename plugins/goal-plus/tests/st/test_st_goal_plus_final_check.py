@@ -35,11 +35,7 @@ def test_codex_goal_plus_required_final_checker_smoke(
         (
             "$goal-plus-with-final-check "
             f"{raw_goal}\n\n"
-            "The host entrypoint already created the required-final-check record. "
-            "Record Goal Mode triage, inspect the file read-only, then call "
-            "goal_plus_prepare_final_check(checker_host='codex'). Launch the exact returned "
-            "foreground reviewer payload, wait for it, and do not submit the verdict on its "
-            "behalf. Finish only after goal_plus_status reports complete."
+            "Finish only after the independent review has passed."
         ),
         scenario="codex_goal_plus_final_check",
         timeout=600,
@@ -54,13 +50,13 @@ def test_codex_goal_plus_required_final_checker_smoke(
     assert record["entrypoint_status"] == "host_verified", result.log_path
     assert len(record["host_command_invocations"]) == 1, result.log_path
     invocation = record["host_command_invocations"][0]
-    assert invocation["host"] == "codex", result.log_path
+    assert invocation["agent_harness"] == "codex", result.log_path
     assert invocation["transport"] == "codex_user_prompt_submit", result.log_path
     assert invocation["command"] == "$goal-plus-with-final-check", result.log_path
     assert invocation["action"] == "start", result.log_path
     assert record["policy"]["final_check"]["mode"] == "required"
     assert record["goal_revision"] == 1
-    assert record["final_checks"][-1]["checker_host"] == "codex"
+    assert record["final_checks"][-1]["checker_harness"] == "codex"
     assert record["final_checks"][-1]["status"] == "passed"
 
 

@@ -21,7 +21,7 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | --- | --- |
 | 仅 Codex | `./install.sh --codex` |
 | 仅 Pi | `./install.sh --pi` |
-| ThinkThread 中的 Pi（no-Search Root） | `./install.sh --pi --thinkthread` |
+| Pi + ThinkThread Search | `./install.sh --pi --thinkthread` |
 | Pi 开发态 | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | 查看 Pi 开发环境及空间占用 | `./install.sh --env-show` |
 
@@ -34,9 +34,9 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 
 `--thinkthread` 要求机器上已经独立安装受支持的 ThinkThread Runtime。它会验证内置 Pi Profile
 并生成 `goal-plus-pi` Profile，但绝不安装、升级或删除 ThinkThread 本身。使用
-`tt run --profile goal-plus-pi --fs <目标-workspace>` 启动 protected Root。当前这条路径支持
-no-Search 示例；ThinkThread Search 所需的 Agent POSIX bridge 与 fingerprint preflight 仍是明确的
-集成 TODO。
+`tt run --profile goal-plus-pi --fs <目标-workspace>` 启动 protected Root。
+在 Root 内使用 `workspace_provider=thinkthread`，即可在独立 private Child 中运行 Pi Search、
+验证精确 snapshot，并通过乐观 `fs.apply` 发布结果。Codex 尚不支持 ThinkThread worker host。
 
 Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus，然后再新建一个
 线程。Pi 开发态通过 `pi-goal-plus` 启动，不修改 Pi 认证或全局配置。
@@ -61,6 +61,8 @@ Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus
 `.gp/` 记录，也不会回退已经提升的修改。`--thinkthread` 只删除当前 checkout 生成的
 `goal-plus-pi` Profile，绝不删除 ThinkThread Runtime、Root 或 state。
 
+## 启动目标
+
 在 Pi 中启动目标：
 
 ```text
@@ -68,15 +70,17 @@ Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus
 /goal-plus 在不改变正确性的前提下，用两小时优化 p95 延迟。
 /goal-plus mode=probe 先确认向量化是否可行。
 /goal-plus mode=autonomous 深度优化这个 kernel。
+/goal-plus max_parallel=2 promotion_mode=artifact_only 优化这个只读模板。
 ```
 
-Codex 使用已安装的 skill 入口：
+Codex 使用精确宿主命令：
 
 ```text
 $goal-plus 修复这个 bug 并验证测试套件。
 $goal-plus 在不改变正确性的前提下，用两小时优化 p95 延迟。
 $goal-plus mode=probe 先确认向量化是否可行。
 $goal-plus mode=autonomous 深度优化这个 kernel。
+$goal-plus max_parallel=2 promotion_mode=artifact_only 优化这个只读模板。
 ```
 
 开头连续的 `key=value` 是强类型命令配置；第一个非配置 token 开始就是自然语言目标。
@@ -100,17 +104,22 @@ clear 永久撤权但保留历史。完整合同与验证边界见[运行逻辑]
 新的原生 session 使用精确 start 命令时会创建独立 Goal，即使同一 workspace 的其他 session
 仍有未终态 Goal；edit、resume 和其他控制命令始终只作用于本 session 绑定的 Goal。
 
+上述精确宿主命令是创建/编辑目标的唯一授权入口。自然语言请求、skill 自动加载、直接 MCP
+调用和通用 Pi CLI facade 都不能创建或编辑 Goal。两端从共同 MCP instructions 加载流程概要，
+不安装 Goal Plus 导航 skill。工具授权见 [API](docs/api.md)。
+
 一次请求会启动自主运行。agent 自己判断 Goal Mode 是否足够，或冻结 verifier 后
 并行 Search 是否更有价值；进入 Search 不需要额外确认。`mode=autonomous`（默认）
-允许给每个初始 candidate worker 较长且可续的探索 lease；`mode=probe` 先做短时可行性
-探测。该探索模式只会作为规范化说明写入 `raw_goal` 最后一行，不是新的调度状态。
+指导持续探索；`mode=probe` 优先安排有界可行性检查。候选返回后，Main 根据持久 Evidence
+和用户明确给定的上限判断是否继续，继续时复用候选和 session。
+没有最低 worker 时长或强制提前收尾窗口；wait 超时不代表 Goal 完成，也不自动启动下一轮。
 
 ## 宿主
 
 | 宿主 | 集成资产 | 入口 | Search worker 路径 |
 | --- | --- | --- | --- |
-| Pi | 已安装 Pi package | `/goal-plus` 或 `pi -p "/goal-plus ..."` | 持久化 Pi RPC pool；参阅 [Pi](docs/pi.md) |
-| Codex | 已安装 plugin | `$goal-plus` skill 提示 | 固定 parallel loops 与原生同 worker continuation；参阅 [Codex](docs/codex.md) |
+| Pi | 已安装 Pi package | `/goal-plus` 或 `pi -p "/goal-plus ..."` | Pi RPC 上的共同 session 工具；参阅 [Pi](docs/pi.md) |
+| Codex | 已安装 plugin | `$goal-plus` 宿主命令 | Codex app-server 上的共同 session 工具；参阅 [Codex](docs/codex.md) |
 
 安装 Codex plugin 后，从要修改的 workspace 启动：
 
@@ -123,13 +132,14 @@ codex -m <main-model> -c model_reasoning_effort=max
 
 ```bash
 cd <目标-workspace>
-pi --model <provider/main-model> --thinking max
+pi --model <provider/main-model> --thinking xhigh
 ```
 
 然后在 Codex 中提交 `$goal-plus <目标>`，或在 Pi 中提交 `/goal-plus <目标>`。
+Pi 保留已选 thinking；复杂任务可选 `xhigh`，它不是强制值。
 两个宿主的 main agent 都是已经运行的会话，应在启动时或通过 `/model` 预先选择；
-Goal Plus 不能切换它，`main=` 也不是受支持的命令配置。[Torch CPU
-示例](examples/model-optimize/README.md)提供了完整的 Codex/Pi 启动命令和
+Goal Plus 不能切换它，`main=` 也不是受支持的命令配置。
+[Circle Packing 示例](examples/circle-packing/README.md)提供了完整的 Codex/Pi 启动命令和
 可直接粘贴的 prompt。
 
 宿主差异和策略覆盖见 [Agent Host Adapters](docs/agent-host-adapters.md)。
@@ -139,15 +149,19 @@ Child 执行基础设施；当前受支持的 ThinkThread 路径内运行的 Age
 
 | Main Agent | 工作区后端 | Candidate 驱动 | Annotation 驱动 | LLM Verifier / Adaptive Allocation |
 | --- | --- | --- | --- | --- |
-| Codex | `git_worktree` / `copy` | 原生 subagent | Codex CLI | Codex CLI；仅 Git worktree 支持 |
+| Codex | `git_worktree` / `copy` | Codex app-server | Codex CLI | Codex CLI；仅 Git worktree 支持 |
 | Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI；仅 Git worktree 支持 |
 | Pi | `thinkthread` | TT Pi Child | TT Pi Child | 当前不支持 |
 | Codex | `thinkthread` | 当前不支持 | 当前不支持 | 当前不支持 |
 
-`workspace.backend` 表示工作区 provider。Agent 身份来自已授权的 Main 会话，记录为
-`FrozenSpec.native_host`，不属于 SearchSpec 可选配置；runtime 根据该身份和工作区后端
-确定各角色的执行驱动。
-LLM Verifier 只评估精确 settlement；最终选择和 Adaptive Allocation 由确定性策略完成。
+`workspace.provider` 表示工作区实现。Agent 身份来自已授权 Main 会话，记录为
+`FrozenSpec.agent_harness`；装配层独立固定 `runtime_provider=direct|thinkthread`。
+这些字段不增加用户配置：仍可直接使用 `$goal-plus <诉求>` 或 `/goal-plus <诉求>`，
+Main 仅在需要时准备 Search 合同，信息不足时继续原有澄清流程。
+LLM Verifier 同次生成质量及可选 allocation 评分；选择和分配由确定性策略执行。
+
+此次协议不迁移旧记录。切换前使用旧 build 关闭活动资源并收尾旧记录，新 build 创建新记录；
+安装和 `.gp` 目录布局保持不变。
 
 ## 心智模型
 
@@ -164,10 +178,10 @@ LLM Verifier 只评估精确 settlement；最终选择和 Adaptive Allocation �
 - 一个 **verifier concern** 只是 worker 的建议；只有 main agent 能确认。确认后先封锁
   当前 run，再停止全部宿主 worker，并创建新的 spec/run。
 
-Search 使用固定 parallel loops：初始 candidate 只创建一次；任意 worker 完成后，
-main 只校验结果、刷新 verifier-backed best，并在全局停止条件未满足时续跑同一个
-candidate。main 不选择后续技术方向，也不会按分数替换 candidate。完整流程见
-[Shared Plane](docs/shared-plane.md)。
+默认 `parallel_loops` 使用固定 candidate lane。Main 审查每次返回并决定是否继续同一候选，
+后续技术方向由 candidate 选择，分数不触发替换。Git worktree 可显式选择
+[Adaptive Search](docs/adaptive-search.md)，由 Scheduler 提出候选替换。
+共同流程与 Evidence 合同见 [Shared Plane](docs/shared-plane.md)。
 
 Git worktree 模式在 freeze 时先直接在 clean origin 中运行一次 process-verifier suite，
 并固定该 commit。batch 启动时先在 `c001` 中重复同一验证，通过后才创建其余 lane 或启动
@@ -191,32 +205,23 @@ Selected Git Head 和 Artifact Hash，之后才生成可被 Git 应用的 Patch�
 
 | 需求 | 文档 |
 | --- | --- |
+| 完整索引与内容归属 | [文档地图](docs/README.md) |
 | 稳定的产品与 runtime 合同 | [系统规格](SPEC.md) |
-| 架构、共享 Evidence、回滚和端到端流程 | [Shared Plane](docs/shared-plane.md) |
-| 框架分层、状态职责、角色能力与名词解释 | [架构图集](docs/architecture.md) |
-| LLM Verifier 的数据、评估与队列合同 | [LLM Verifier](docs/llm-verifier.md) |
-| 极简选择、Adaptive allocation 与监控投影 | [Adaptive Search](docs/adaptive-search.md) |
-| 当前 MCP 与 Pi 本地工具 | [API](docs/api.md) |
-| 宿主能力对比 | [Agent Host Adapters](docs/agent-host-adapters.md) |
-| Ultra 工作编排 | [Ultra Orchestration](docs/ultra.md) |
-| 运行时与宿主日志 | [Debugging](docs/debugging-runtime.md) |
-| Checkout 开发、plugin 刷新与多开发者隔离 | [Development](docs/development.md) |
+| 宿主命令与配置 | [Codex](docs/codex.md)、[Pi](docs/pi.md)、[API](docs/api.md) |
+| 安装、更新、卸载与 checkout 开发 | [开发指南](docs/development.md) |
+| 运行时与宿主日志 | [调试指南](docs/debugging-runtime.md) |
 | spec 与可运行示例 | [Examples](examples/README.md) |
 | 测试与真实宿主证据 | [Tests](tests/README.md) |
-| Git 与 ThinkThread workspace、artifact 和发布架构 | [ThinkThread 与 Git 架构](docs/workspace-sandbox-arch.md) |
 
 Benchmark 专用任务、evaluator、campaign 和对比证据不属于这个隔离的 runtime
 目录。
 
 ## Workspace 与 Sandbox 架构
 
-Goal Plus 将 outer workspace provider 与 inner-agent 行为分开。Git outer provider 创建
-candidate worktree 和 commit Evidence，inner agent 可以选择多轮 `autoresearch`，或者每次
-派发完成一个 attempt 的 MCP-aware `common`。ThinkThread 为每个 Pi candidate 提供 private
-COW Child，并使用 immutable snapshot Evidence。
-
-Git outer workspace 已可用于 Codex/Pi。ThinkThread Search 只在受支持的 Pi Profile 中启用。
-Copy 保留为显式 artifact-only 兼容路径。
+Goal Plus 将工作区隔离与 inner-agent 行为分开。Git worktree 产生 commit Evidence，
+Pi ThinkThread Child 产生 snapshot Evidence。`autoresearch` 维护候选本地 Git 历史，
+`common` 依赖 outer artifact 与 canonical runtime ledger。Copy 是显式 artifact-only 路径。
+Git worktree 不是安全沙箱；支持组合和 provider 保证由下方的工作区专题定义。
 
 `new -> search -> apply` ASCII 主流程、设计不变量和 Git/TT 行为对照见
 [ThinkThread 与 Git Workspace 架构](docs/workspace-sandbox-arch.md)。

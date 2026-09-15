@@ -25,6 +25,7 @@ def test_native_install_reinstall_uninstall(tmp_path):
            "GOAL_PLUS_INSTALL_STATE_DIR": str(tmp_path / "state"),
            "PI_CODING_AGENT_DIR": str(agent), "GOAL_PLUS_INSTALL_HOME": str(tmp_path / "managed")}
     def run(args, *, input=None, environment=None, cwd=ROOT):
+        __tracebackhide__ = True
         result = subprocess.run(args, cwd=cwd, env=environment or env, input=input,
                                 capture_output=True, text=True, timeout=300)
         assert result.returncode == 0, result.stdout + result.stderr
@@ -126,11 +127,17 @@ const result = await discoverAndLoadExtensions(
 );
 assert.deepEqual(result.errors, []);
 assert.equal(result.extensions.length, 1);
-assert(result.extensions[0].tools.has("goal_plus_status"));
-const transport = await import(pathToFileURL(join(packageRoot, "assets/pi/extensions/lib/goal-plus-transport.ts")));
-const invocation = transport.projectModuleInvocation({cwd: process.cwd()}, "goal-plus-pi-tool", "goal_plus.pi_tool");
-assert.equal(invocation.command, python);
-const tool = spawnSync(invocation.command, [...invocation.argsPrefix, "--help"], {encoding: "utf8"});
-assert.equal(tool.status, 0, tool.stdout + tool.stderr);
-assert.match(tool.stdout, /usage:/);
+try {
+  assert(result.extensions[0].tools.has("goal_plus_status"));
+  const transport = await import(pathToFileURL(join(packageRoot, "assets/pi/extensions/lib/goal-plus-transport.ts")));
+  const invocation = transport.projectModuleInvocation({cwd: process.cwd()}, "goal-plus-pi-tool", "goal_plus.pi_tool");
+  assert.equal(invocation.command, python);
+  const tool = spawnSync(invocation.command, [...invocation.argsPrefix, "--help"], {encoding: "utf8"});
+  assert.equal(tool.status, 0, tool.stdout + tool.stderr);
+  assert.match(tool.stdout, /usage:/);
+} finally {
+  for (const handler of result.extensions[0].handlers.get("session_shutdown") ?? []) {
+    await handler({type: "session_shutdown", reason: "test_finished"}, {cwd: process.cwd()});
+  }
+}
 '''

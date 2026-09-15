@@ -13,8 +13,8 @@ host 负责原生 worker 的启动、等待、通信、中断和日志。Goal Pl
 
 ## Subagent 记录
 
-Main 在调用 host 原生 spawn 前记录 `dispatch`。首次使用某个 `work_item_id` 时，runtime
-从 summary 创建一条轻量记录：
+Main 使用共同 `goal_plus_run_work_item` 派发普通任务。启动器通过 GoalDispatch 记录
+`dispatch`；首次使用某个 `work_item_id` 时，从任务 summary 创建轻量记录：
 
 ```text
 dispatch -> launching -> bind -> active -> result -> result_ready
@@ -23,6 +23,10 @@ dispatch -> launching -> bind -> active -> result -> result_ready
 `accepted` 表示 Main 已检查并采用结果；`rework` 表示继续要求同一个已绑定 worker 修正，
 并产生新的 attempt/generation。这些记录不是全局计划，也不会阻塞无关工作。没有派发
 subagent 的 Main-only 任务可以没有任何记录。
+
+MCP controller 丢失后，已处于 `result_ready` 的工作项可再次调用同一工具返工。
+启动器先核验准确 scope 资源已 finished/stopped，再 resume 原生 session 并新建 attempt；
+资源仍活跃、记录缺失或原生会话无法恢复时明确拒绝或记录启动失败，不接管未知执行。
 
 `dispatch` 只生成 attempt identity 和 launch TTL，不代表 worker 已启动。原生启动成功后
 才能记录 `bind`；`bind`、`message`、`result` 和 `failed` 必须携带当前 `attempt_id` 与
@@ -43,10 +47,11 @@ Search 继续使用自己的 SearchSpec、run、candidate、verifier 和 promoti
 Ultra host 使用 `goal-plus-ultra-v1` protocol。`spawn`、`wait` 和 `observe` 是必需能力，
 `send` 和 `interrupt` 是可选的原生能力。每个 host 记录实际 reasoning 档位和约束责任方。
 
-Codex 由 host 在首轮前选择 `max`，并使用 `spawn_agent`、`wait_agent` 和 `followup_task`
-等原生协作工具。Pi 保留 Main 提交 `/goal-plus` 时已选择的 thinking 档位，复杂任务推荐
-`xhigh`；`pi_goal_plus_run_work_item` 接收完整任务并运行隔离的 Pi RPC child。`deepseek-harness`
-或其他 harness 使用自己的 worker API，并上报同样的轻量生命周期事件。
+Codex/Pi 的共同 MCP 入口继承当前 Main 的模型与 reasoning/thinking 快照，分别启动
+app-server/RPC session。工具等待本次结果，保留 session 供同一 work_item_id 的返工复用，
+并按新 attempt/generation 记录结果；Main 检查后记录 accepted。MCP 关闭或 scope cleanup
+负责关闭资源。新入口尚不自动接管断连后不可用的 native controller。
+`deepseek-harness` 或其他 harness 使用自己的 worker API，并上报同样的轻量生命周期事件。
 
 可选的 `orchestration` monitor 只是这些记录和事件的只读投影。它不启动、不等待、不通信、
 不重试，也不监督 worker。字段见

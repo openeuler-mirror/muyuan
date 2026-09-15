@@ -18,7 +18,7 @@ from goal_plus.infrastructure.inference_bindings import (
 from goal_plus.ports.inference import StructuredInferenceRequest, StructuredInferenceResult
 from goal_plus.execution.process_monitor import MONITOR_TAIL_CHARS, ProcessMonitor
 from goal_plus.ports.process_monitor import ProcessMonitorIdentity
-from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.domain.annotation import (
     AnnotationError as AnnotationError,
     AnnotationOutputError as AnnotationOutputError,
@@ -191,7 +191,7 @@ def _annotation_process_monitor(context: dict[str, Any]) -> ProcessMonitor:
         ProcessMonitorIdentity(
             run_id=context.get("run_id"), candidate_id=context.get("candidate_id"),
             iteration=context.get("iteration"), attempt=context.get("_annotation_attempt"),
-            host=profile.get("host") or "codex", model=profile.get("model"),
+            agent_harness=profile.get("agent_harness") or "codex", model=profile.get("model"),
             reasoning_effort=profile.get("reasoning_effort"),
             timeout_seconds=profile.get("timeout_seconds"),
         ),
@@ -216,7 +216,7 @@ def _process_failure_detail(stdout: str, stderr: str) -> str:
 def _annotation_inference_output(
     result: StructuredInferenceResult, context: dict[str, Any],
 ) -> EvidenceAnnotationResult:
-    host = result.invocation.host
+    agent_harness = result.invocation.agent_harness
     usage = result.usage
     if result.process.state == "output_limit_exceeded":
         raise AnnotationOutputError(result.stop_detail)
@@ -228,10 +228,10 @@ def _annotation_inference_output(
         detail = _process_failure_detail(result.process.stdout, result.process.stderr)
         error_type = TransientAnnotationError if CodexEvidenceAnnotator._transient_process_failure(detail) else PermanentAnnotationError
         raise error_type(
-            f"{'codex exec' if host == 'codex' else 'pi'} exited {result.returncode}: {detail}",
-            usage=usage if host == "codex" else None,
+            f"{'codex exec' if agent_harness == 'codex' else 'pi'} exited {result.returncode}: {detail}",
+            usage=usage if agent_harness == "codex" else None,
         )
-    if host == "pi-rpc":
+    if agent_harness == "pi":
         message = result.assistant_message
         if message is None:
             raise AnnotationOutputError("pi did not emit an assistant annotation")
@@ -241,7 +241,7 @@ def _annotation_inference_output(
             error_type = TransientAnnotationError if CodexEvidenceAnnotator._transient_process_failure(detail) else PermanentAnnotationError
             raise error_type(detail, usage=usage)
     if result.output_text is None and result.output_error is None:
-        detail = "codex exec did not write an annotation" if host == "codex" else f"pi did not call {PI_ANNOTATION_TOOL_NAME}"
+        detail = "codex exec did not write an annotation" if agent_harness == "codex" else f"pi did not call {PI_ANNOTATION_TOOL_NAME}"
         raise AnnotationOutputError(detail, usage=usage)
     try:
         if result.output_text is None:
@@ -250,7 +250,7 @@ def _annotation_inference_output(
         output = EvidenceAnnotationOutput.model_validate_json(result.output_text)
     except (OSError, ValueError) as exc:
         raise AnnotationOutputError(
-            f"{'codex exec' if host == 'codex' else 'pi'} wrote invalid annotation output: {exc}", usage=usage,
+            f"{'codex exec' if agent_harness == 'codex' else 'pi'} wrote invalid annotation output: {exc}", usage=usage,
         ) from exc
     try:
         validate_supplemental_output(
@@ -307,7 +307,7 @@ def kick_evidence_annotator(
     root_dir: Path | str,
     run_id: str,
     *,
-    host: AgentHostKind,
+    agent_harness: AgentHarnessKind,
 ) -> bool:
     """Ensure one run-scoped drainer is active without waiting for inference."""
     if _disabled():
@@ -327,9 +327,9 @@ def kick_evidence_annotator(
         if not eligible:
             return False
         task = workflow.task(run_id, *eligible[0])
-        if task is None or task.profile is None or task.profile.host != host:
+        if task is None or task.profile is None or task.profile.agent_harness != agent_harness:
             return False
-        if host == "thinkthread":
+        if task.profile.runtime_provider == "thinkthread":
             from goal_plus.thinkthread_annotation import kick_thinkthread_annotation
 
             state = kick_thinkthread_annotation(root_dir=root_dir, run_id=run_id)
@@ -339,7 +339,7 @@ def kick_evidence_annotator(
         ) as register_process:
             return _drainer(root_dir, run_id).start(
                 has_work=lambda: bool(admission.eligible(run_id)),
-                environment=lambda: inherited_host_environment(host),
+                environment=lambda: inherited_host_environment(agent_harness),
                 register_process=register_process,
             )
     except Exception as exc:
@@ -455,7 +455,7 @@ class CodexEvidenceAnnotator:
         reasoning_effort = config.get("reasoning_effort") or os.environ.get(CODEX_REASONING_EFFORT_ENV)
         monitor = _annotation_process_monitor(context)
         request = StructuredInferenceRequest(
-            host="codex", instructions=self._AGENTS_INSTRUCTIONS, prompt=self._prompt(context),
+            agent_harness="codex", instructions=self._AGENTS_INSTRUCTIONS, prompt=self._prompt(context),
             output_schema=_strict_annotation_output_schema(), model=str(model) if model else None,
             reasoning_effort=str(reasoning_effort) if reasoning_effort else None,
             timeout_seconds=timeout, timeout_detail=f"annotation process timed out after {timeout:.3f} seconds",
@@ -556,7 +556,7 @@ class PiEvidenceAnnotator:
                 f"{PI_ARTIFACT_VIEW_READ_TOOL_NAME} 检查已授权 workspace。\n"
             )
         request = StructuredInferenceRequest(
-            host="pi-rpc", instructions=instructions, prompt=_annotation_prompt(context),
+            agent_harness="pi", instructions=instructions, prompt=_annotation_prompt(context),
             output_schema=_strict_annotation_output_schema(),
             model=str(config["model"]) if config.get("model") else None,
             reasoning_effort=str(config["reasoning_effort"]) if config.get("reasoning_effort") else None,
@@ -582,18 +582,20 @@ class HostEvidenceAnnotator:
         self._active: CodexEvidenceAnnotator | PiEvidenceAnnotator | None = None
 
     def annotate(self, context: dict[str, Any]) -> EvidenceAnnotationResult:
-        host = str((context.get("annotator") or {}).get("host") or "codex")
-        require_inherited_host(host)  # type: ignore[arg-type]
-        if host == "codex":
+        agent_harness = str((context.get("annotator") or {}).get("agent_harness") or "codex")
+        if (context.get("annotator") or {}).get("runtime_provider") != "direct":
+            raise PermanentAnnotationError("local annotation requires direct runtime provider")
+        require_inherited_host(agent_harness)  # type: ignore[arg-type]
+        if agent_harness == "codex":
             selected: CodexEvidenceAnnotator | PiEvidenceAnnotator = (
                 CodexEvidenceAnnotator()
             )
-        elif host == "pi-rpc":
+        elif agent_harness == "pi":
             selected = PiEvidenceAnnotator()
         else:
             # ThinkThread annotations are drained by thinkthread_annotation.py;
             # they must never fall through to this process-local runner.
-            raise PermanentAnnotationError(f"unsupported annotation host {host!r}")
+            raise PermanentAnnotationError(f"unsupported annotation host {agent_harness!r}")
         self._active = selected
         try:
             return selected.annotate(context)
@@ -652,6 +654,8 @@ def drain_evidence_annotations(
 
         try:
             while True:
+                if not drainer.is_current(generation):
+                    return published
                 eligible = admission.eligible(run_id)
                 next_item = eligible[0] if eligible else None
                 if next_item is not None:

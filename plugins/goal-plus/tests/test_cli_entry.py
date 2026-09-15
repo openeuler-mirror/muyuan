@@ -7,6 +7,7 @@ event, so importing the dispatcher must never pull in the MCP server stack.
 from __future__ import annotations
 
 import os
+import asyncio
 import json
 import subprocess
 import sys
@@ -106,3 +107,81 @@ def test_cli_rejects_unknown_flags(tmp_path: Path) -> None:
     completed = _run(["--definitely-not-a-flag"], cwd=tmp_path)
 
     assert completed.returncode != 0
+
+
+@pytest.mark.parametrize("role", ["main", "candidate", "ordinary"])
+def test_cli_mcp_uses_host_role_and_shared_overview(tmp_path: Path, role: str) -> None:
+    from fastmcp import Client
+    from fastmcp.client.transports import StdioTransport
+
+    root = tmp_path / "runtime"
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GOAL_PLUS_")}
+    environment["PYTHONPATH"] = str(SRC)
+    if role == "candidate":
+        environment.update({
+            "GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID": "bound-candidate",
+            "GOAL_PLUS_SEARCH_ROOT": str(root),
+        })
+    elif role == "ordinary":
+        environment.update({"GOAL_PLUS_CODEX_ORDINARY_ROLE": "ordinary", "GOAL_PLUS_SEARCH_ROOT": str(root)})
+
+    async def exercise():
+        transport = StdioTransport(
+            command=sys.executable, args=["-m", "goal_plus.cli", "--root", str(tmp_path / "cli-root")],
+            env=environment, cwd=str(tmp_path),
+        )
+        async with Client(transport, timeout=20) as client:
+            names = {tool.name for tool in await client.list_tools()}
+            overview = client.initialize_result.instructions if client.initialize_result is not None else client.instructions
+            if role == "main":
+                expected = (ROOT / "assets/goal-plus-instructions.txt").read_text().strip()
+                assert overview == expected
+                summary, supplement = overview.split("\n", 1)
+                # Codex ToolsState keeps only the first line, up to 250 characters.
+                assert 0 < len(summary) <= 250
+                assert supplement.strip() and len(overview) <= 500
+                # Plugin namespace descriptions are capped by UTF-8 bytes.
+                assert len(overview.encode("utf-8")) <= 1000
+                assert "goal_plus_session_run" in names
+                assert "goal_plus_search_select" in names
+            elif role == "ordinary":
+                assert not overview
+                assert not names
+            else:
+                assert not overview
+                assert "goal_plus_session_run" not in names
+                assert "goal_plus_search_select" not in names
+                result = await client.call_tool("goal_plus_search_get_agent_context", {
+                    "agent_session_id": "foreign-candidate",
+                }, raise_on_error=False)
+                assert result.is_error and "GoalPlusSessionMismatch" in result.content[0].text
+
+    asyncio.run(exercise())
+    if role == "candidate":
+        assert not (tmp_path / "cli-root").exists()
+
+
+def test_codex_candidate_factory_uses_host_declared_root(tmp_path, monkeypatch):
+    from goal_plus import server
+
+    root = tmp_path / "host-root"
+    monkeypatch.setenv("GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID", "candidate")
+    monkeypatch.setenv("GOAL_PLUS_SEARCH_ROOT", str(root))
+    monkeypatch.setattr(server, "create_host_mcp", lambda root_dir, **kwargs: (root_dir, kwargs))
+    assert server.create_codex_mcp(tmp_path / "other-root") == (str(root), {
+        "agent_harness": "codex", "caller_role": "candidate", "caller_agent_session_id": "candidate",
+        "caller_final_check": None,
+    })
+
+
+@pytest.mark.parametrize("root", [None, "relative/runtime"])
+def test_candidate_cli_requires_host_declared_absolute_root(tmp_path, monkeypatch, root):
+    monkeypatch.setenv("GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID", "candidate")
+    if root is None:
+        monkeypatch.delenv("GOAL_PLUS_SEARCH_ROOT", raising=False)
+    else:
+        monkeypatch.setenv("GOAL_PLUS_SEARCH_ROOT", root)
+    completed = _run(["--root", str(tmp_path / "model-root")], cwd=tmp_path)
+    assert completed.returncode != 0
+    assert "host-declared absolute runtime root" in completed.stderr
+    assert not (tmp_path / "model-root").exists()

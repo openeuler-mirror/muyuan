@@ -20,7 +20,7 @@ from goal_plus.ports.goal_authorization import GoalToolTarget
 STAMP = "2026-09-05T00:00:00Z"
 
 
-@pytest.mark.parametrize("action", ["search_create", "search_prepare_recovery", "goal_plus_gate", "bash"])
+@pytest.mark.parametrize("action", ["goal_plus_search_create", "goal_plus_search_prepare_recovery", "goal_plus_gate", "bash"])
 def test_tool_matching_preserves_foreign_registration(action):
     assert tool_matches(action, action)  # Dedicated internal dispatcher.
     assert tool_matches(f"mcp__goal_plus__{action}", action)
@@ -30,13 +30,13 @@ def test_tool_matching_preserves_foreign_registration(action):
     assert not tool_matches(f"mcp__goal_plus_extra__{action}", action)
 
 
-def invocation(nonce="start-a", *, host="codex", session="main-a", action="start"):
+def invocation(nonce="start-a", *, agent_harness="codex", session="main-a", action="start"):
     return GoalPlusHostCommandInvocation(
-        host=host,
+        agent_harness=agent_harness,
         transport="pi_extension_command"
-        if host == "pi"
+        if agent_harness == "pi"
         else "codex_user_prompt_submit",
-        command="/goal-plus" if host == "pi" else "$goal-plus",
+        command="/goal-plus" if agent_harness == "pi" else "$goal-plus",
         action=action,
         session_id=session,
         invocation_id=nonce,
@@ -60,7 +60,6 @@ def goal(goal_id="gp_0001", **updates):
 class MemoryGoals:
     records: dict[str, GoalPlusRecord] = field(default_factory=dict)
     sessions: dict[str, list[str]] = field(default_factory=dict)
-    pools: dict[str, str] = field(default_factory=dict)
 
     def goal_ids(self):
         return list(self.records)
@@ -74,9 +73,6 @@ class MemoryGoals:
     def session_run_ids(self, agent_session_id):
         return self.sessions.get(agent_session_id, [])
 
-    def pool_run_id(self, pool_id):
-        return self.pools.get(pool_id)
-
 
 @pytest.fixture
 def authorization():
@@ -88,7 +84,6 @@ def authorization():
             "gp_0001": goal(),
         },
         sessions={"session-a": ["run-a"], "ambiguous": ["run-a", "run-b"]},
-        pools={"pool-b": "run-b"},
     )
     before = {key: record.model_dump_json() for key, record in source.records.items()}
     yield GoalAuthorization(source)
@@ -101,19 +96,17 @@ def authorization():
     ("inputs", "expected"),
     [
         (
-            {"run_id": "run-a", "agent_session_id": "ambiguous", "pool_id": "pool-b"},
+            {"run_id": "run-a", "agent_session_id": "ambiguous"},
             "gp_0001",
         ),
-        ({"agent_session_id": "session-a", "pool_id": "pool-b"}, "gp_0001"),
-        ({"agent_session_id": "ambiguous", "pool_id": "pool-b"}, "gp_0002"),
-        ({"pool_id": "pool-b"}, "gp_0002"),
+        ({"agent_session_id": "session-a"}, "gp_0001"),
     ],
 )
 def test_durable_targets_resolve_without_a_unique_active_goal(
     authorization, inputs, expected
 ):
     record = authorization.require_active_target(
-        GoalToolTarget.from_input("search_select", inputs)
+        GoalToolTarget.from_input("goal_plus_search_select", inputs)
     )
     assert record.goal_plus_id == expected
 
@@ -123,6 +116,8 @@ def test_durable_targets_resolve_without_a_unique_active_goal(
     [
         {},
         {"agent_session_id": "ambiguous"},
+        {"agent_session_id": "ambiguous", "pool_id": "pool-b"},
+        {"pool_id": "pool-b"},
         {"run_id": "standalone"},
         {"pool_id": "missing"},
         {"run_id": 1},
@@ -133,11 +128,11 @@ def test_durable_targets_resolve_without_a_unique_active_goal(
 def test_unknown_ambiguous_and_foreign_targets_are_rejected(authorization, inputs):
     with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
         authorization.require_active_target(
-            GoalToolTarget.from_input("search_select", inputs)
+            GoalToolTarget.from_input("goal_plus_search_select", inputs)
         )
 
 
-@pytest.mark.parametrize("tool", ["search_freeze_spec", "search_create"])
+@pytest.mark.parametrize("tool", ["goal_plus_search_freeze_spec", "goal_plus_search_create"])
 @pytest.mark.parametrize("prefix", ["", "mcp__goal_plus__", "mcp__goal-plus__"])
 def test_bootstrap_requires_explicit_goal_even_with_a_unique_owner(tool, prefix):
     service = GoalAuthorization(MemoryGoals(records={"gp_0001": goal()}))
@@ -167,7 +162,7 @@ def test_bootstrap_requires_explicit_goal_even_with_a_unique_owner(tool, prefix)
 )
 def test_successor_create_validates_non_none_source(authorization, source, allowed):
     target = GoalToolTarget.from_input(
-        "search_create",
+        "goal_plus_search_create",
         {
             "goal_plus_id": "gp_0001",
             "source_run_id": source,
@@ -182,7 +177,7 @@ def test_successor_create_validates_non_none_source(authorization, source, allow
 
 def test_target_normalization_does_not_silently_strip_identity():
     target = GoalToolTarget.from_input(
-        "search_create",
+        "goal_plus_search_create",
         {
             "goal_plus_id": " gp_0001 ",
             "run_id": "",
@@ -196,7 +191,7 @@ def test_target_normalization_does_not_silently_strip_identity():
 
 
 def test_direct_typed_successor_reference_requires_ownership(authorization):
-    target = GoalToolTarget("search_create", goal_plus_id="gp_0001", source_run_id="run-b")
+    target = GoalToolTarget("goal_plus_search_create", goal_plus_id="gp_0001", source_run_id="run-b")
     with pytest.raises(RuntimeError, match="GoalPlusOwnershipMismatch"):
         authorization.require_active_target(target)
 
@@ -217,7 +212,7 @@ def test_target_requires_active_verified_goal(updates, reason):
     service = GoalAuthorization(MemoryGoals(records={record.goal_plus_id: record}))
     with pytest.raises(RuntimeError, match=reason):
         service.require_active_target(
-            GoalToolTarget("search_freeze_spec", goal_plus_id="gp_0001")
+            GoalToolTarget("goal_plus_search_freeze_spec", goal_plus_id="gp_0001")
         )
     assert record.model_dump_json() == before
 
@@ -228,18 +223,18 @@ def test_missing_explicit_goal_preserves_entrypoint_error_when_no_nonterminal_re
     )
     with pytest.raises(RuntimeError, match="GoalPlusEntrypointRequired.*none"):
         service.require_active_target(
-            GoalToolTarget("search_create", goal_plus_id="missing")
+            GoalToolTarget("goal_plus_search_create", goal_plus_id="missing")
         )
 
 
 @pytest.mark.parametrize(
     ("tool", "allowed"),
     [
-        ("search_recovery_status", False),
-        ("search_prepare_recovery", False),
-        ("search_recover_candidate", False),
-        ("search_get_global_evidence", True),
-        ("search_create", True),
+        ("goal_plus_search_recovery_status", False),
+        ("goal_plus_search_prepare_recovery", False),
+        ("goal_plus_search_recover_candidate", False),
+        ("goal_plus_search_get_global_evidence", True),
+        ("goal_plus_search_create", True),
     ],
 )
 def test_historical_ownership_does_not_authorize_current_revision_recovery(
@@ -306,7 +301,7 @@ def test_start_conflicts_are_scoped_to_host_and_session(status):
     assert service.require_start(invocation()).goal_plus_id == record.goal_plus_id
     with pytest.raises(RuntimeError, match="native host session already owns"):
         service.require_start(invocation("new-request"))
-    assert service.require_start(invocation("pi-request", host="pi")) is None
+    assert service.require_start(invocation("pi-request", agent_harness="pi")) is None
     assert service.require_start(invocation("other-session", session="main-b")) is None
     assert record.model_dump_json() == before
 
@@ -332,18 +327,18 @@ def test_invocation_replay_prefers_nonterminal_then_latest_historical_record():
         ("detached", "active", "edit", False),
     ],
 )
-@pytest.mark.parametrize("host", ["codex", "pi"])
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
 def test_control_requires_original_session_with_narrow_historical_access(
     session_state,
     status,
     action,
     allowed,
-    host,
+    agent_harness,
 ):
     record = goal(
         status=status,
         active_session=GoalPlusActiveSession(
-            host="pi-rpc" if host == "pi" else host,
+            agent_harness="pi" if agent_harness == "pi" else agent_harness,
             session_id="main-a",
             state=session_state,
             attached_at=STAMP,
@@ -351,7 +346,7 @@ def test_control_requires_original_session_with_narrow_historical_access(
         ),
     )
     before = record.model_dump_json()
-    command = invocation(host=host, action=action)
+    command = invocation(agent_harness=agent_harness, action=action)
     if allowed:
         require_control_session(record, command)
     else:
@@ -359,6 +354,49 @@ def test_control_requires_original_session_with_narrow_historical_access(
             require_control_session(record, command)
     with pytest.raises(RuntimeError, match="attached original native session"):
         require_control_session(
-            record, invocation(host=host, action=action, session="foreign")
+            record, invocation(agent_harness=agent_harness, action=action, session="foreign")
         )
     assert record.model_dump_json() == before
+
+
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+def test_main_search_session_control_rechecks_owner_and_execution(agent_harness):
+    record = goal(
+        host_command_invocations=[invocation(agent_harness=agent_harness)],
+        active_session=GoalPlusActiveSession(
+            agent_harness="pi" if agent_harness == "pi" else "codex", session_id="main-a",
+            state="attached", attached_at=STAMP, last_seen_at=STAMP,
+        ),
+    )
+    source = MemoryGoals(records={record.goal_plus_id: record})
+    authorization = GoalAuthorization(source)
+
+    def check(**kwargs):
+        return authorization.require_main_search_session(
+            kwargs.pop("run_id", "run-a"),
+            **{"agent_harness": agent_harness, "session_id": "main-a", "execution": True, **kwargs},
+        )
+
+    before = record.model_dump_json()
+    assert check() == record
+    for changes in (
+        {"session_id": "peer"}, {"agent_harness": "pi" if agent_harness == "codex" else "codex"},
+        {"run_id": "unlinked"},
+    ):
+        for execution in (False, True):
+            with pytest.raises(PermissionError):
+                check(**changes, execution=execution)
+    assert record.model_dump_json() == before
+
+    for changes in (
+        {"control": GoalPlusControl(state="paused")},
+        {"goal_revision": record.goal_revision + 1},
+        {"active_session": record.active_session.model_copy(update={"state": "detached"})},
+    ):
+        stopped = record.model_copy(update=changes, deep=True)
+        source.records[record.goal_plus_id] = stopped
+        before = stopped.model_dump_json()
+        assert check(execution=False) == stopped
+        with pytest.raises((RuntimeError, PermissionError)):
+            check()
+        assert stopped.model_dump_json() == before

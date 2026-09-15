@@ -1,42 +1,22 @@
 """Read-only candidate admission, session binding and settled-result projections."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any
 
 from goal_plus.application.candidate_execution import (
     require_current_session,
-    require_run_not_invalidated,
     require_worker_iteration_state,
 )
 from goal_plus.application.search_context import SearchContext
 from goal_plus.domain.search import AgentSessionRecord, CandidateRecovery
 from goal_plus.domain.time import outer_deadline_epoch
-from goal_plus.domain.worker_policy import (
-    candidate_worker_budget,
-    normalize_worker_budget_override,
-)
 from goal_plus.ports.candidate_host import CandidateFileWriteBoundary, CandidateHostSource
-
-
-@dataclass(frozen=True)
-class CandidateLeaseContext:
-    outer_deadline: float | None
-    reserve_seconds: float
-    invalidated: bool
-    recovering_candidates: frozenset[str]
 
 
 class CandidateHostQueries:
     def __init__(self, source: CandidateHostSource, context: SearchContext) -> None:
         self.source = source
         self.context = context
-
-    def worker_host(self, run_id: str) -> str:
-        run = self.source.read_run(run_id)
-        return self.source.read_frozen_spec(
-            run.frozen_spec_id
-        ).worker_host
 
     def uses_adaptive_search(self, run_id: str) -> bool:
         try:
@@ -76,25 +56,6 @@ class CandidateHostQueries:
             None,
         )
 
-    def pi_pool_limit(self, run_id: str, max_parallel: int | None) -> int:
-        run = self.source.read_run(run_id)
-        require_run_not_invalidated(run, "open or submit Pi pool work")
-        frozen = self.source.read_frozen_spec(run.frozen_spec_id)
-        if frozen.worker_host != "pi-rpc":
-            raise ValueError(
-                "Pi worker pools require a Pi Main with a local workspace backend; "
-                f"got {frozen.worker_host!r}"
-            )
-        frozen_limit = int(frozen.spec.budget.max_parallel)
-        selected = frozen_limit if max_parallel is None else int(max_parallel)
-        if selected <= 0:
-            raise ValueError("max_parallel must be > 0")
-        if selected > frozen_limit:
-            raise ValueError(
-                f"max_parallel {selected} exceeds frozen Search limit {frozen_limit}"
-            )
-        return selected
-
     def validate_candidate(self, run_id: str, candidate_id: str) -> None:
         record = self.source.read_candidate(run_id, candidate_id)
         if record.status not in {"created", "evaluated"}:
@@ -112,74 +73,45 @@ class CandidateHostQueries:
                 f"decision {pending_decision_id} retires this lane"
             )
 
-    def worker_budget(
-        self,
-        run_id: str,
-        candidate_id: str,
-        worker_host: str,
-        override: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        run = self.source.read_run(run_id)
-        frozen = self.source.read_frozen_spec(run.frozen_spec_id)
+    def retirement_fenced(self, run_id: str, candidate_id: str) -> bool:
         record = self.source.read_candidate(run_id, candidate_id)
-        budget = normalize_worker_budget_override(
-            worker_host=worker_host,
-            worker_budget={
-                **(candidate_worker_budget(frozen, record.task) or {}),
-                **(override or {}),
-            },
-        )
-        assert budget is not None
-        return budget
-
-    def lease_context(self, run_id: str) -> CandidateLeaseContext:
-        run = self.source.read_run(run_id)
-        frozen = self.source.read_frozen_spec(run.frozen_spec_id)
-        config = frozen.spec.strategy.config
-        return CandidateLeaseContext(
-            outer_deadline=outer_deadline_epoch(self.context.outer_deadline(run_id)),
-            reserve_seconds=float(
-                config.get("closeout_reserve_seconds")
-                or config.get("reserve_closeout_seconds")
-                or 0
-            ),
-            invalidated=bool(run.invalidated_at),
-            recovering_candidates=frozenset(
-                candidate.candidate_id
-                for candidate in self.source.read_candidates(run_id)
-                if candidate.recovery is not None
-                and candidate.recovery.state != "restored"
-            ),
-        )
+        return record.allocation_eligibility != "eligible" or self.pending_retirement_decision_id(run_id, candidate_id) is not None
 
     def sessions(
-        self, run_id: str, candidate_id: str | None = None, host: str | None = None
+        self, run_id: str, candidate_id: str | None = None, agent_harness: str | None = None
     ) -> list[AgentSessionRecord]:
         return [
             item
             for item in self.source.read_agent_sessions(run_id)
             if (candidate_id is None or item.candidate_id == candidate_id)
-            and (host is None or item.host == host)
+            and (agent_harness is None or item.agent_harness == agent_harness)
         ]
 
     def session(
-        self, agent_session_id: str, run_id: str | None = None
+        self, agent_session_id: str, run_id: str | None = None,
+        *, native_session_id: str | None = None,
     ) -> AgentSessionRecord:
+        from goal_plus.application.candidate_execution import require_session_execution
+
         session = self.source.read_agent_session(agent_session_id, run_id)
+        run = self.source.read_run(session.run_id)
+        require_session_execution(session, self.source.read_frozen_spec(run.frozen_spec_id))
+        if native_session_id is not None and session.session_handle.external_id != native_session_id:
+            raise PermissionError("native session handle no longer belongs to this controller")
         return require_current_session(
             session, self.source.read_candidate(session.run_id, session.candidate_id)
         )
 
-    def launch_task_session(self, task_name: str, *, host: str) -> AgentSessionRecord | None:
-        """Resolve a recorded launch identity; callers must still check admission."""
-        matches = [
-            session for identity in self.source.read_agent_session_ids()
-            if (session := self.source.read_agent_session(identity)).host == host
-            and session.launch.get("task_name") == task_name
-        ]
-        if len(matches) > 1:
-            raise RuntimeError("native task name does not identify a unique candidate session")
-        return matches[0] if matches else None
+    def current_session(self, run_id: str, candidate_id: str) -> AgentSessionRecord | None:
+        candidate = self.source.read_candidate(run_id, candidate_id)
+        session = next((item for item in reversed(self.sessions(run_id, candidate_id))
+                        if item.execution_generation == candidate.execution_generation), None)
+        return self.session(session.agent_session_id, run_id) if session is not None else None
+
+
+    def process_environment(self, agent_session_id: str) -> dict[str, str]:
+        session = self.session(agent_session_id)
+        return dict(self.source.read_candidate(session.run_id, session.candidate_id).task.process_environment)
 
     def find_session(self, agent_session_id: str) -> AgentSessionRecord | None:
         """Historical host observation only; this does not grant execution admission."""
@@ -190,23 +122,9 @@ class CandidateHostQueries:
 
     def require_native_execution(
         self, agent_session_id: str, *, now: float,
-        spawn_input: Mapping[str, object] | None = None,
+        native_session_id: str | None = None,
     ) -> AgentSessionRecord:
-        session = self.session(agent_session_id)
-        if spawn_input is not None:
-            if session.host != "codex" or session.launch.get("tool") != "spawn_agent":
-                raise RuntimeError("native spawn requires a recorded Codex spawn launch")
-            # Codex uses its default role when agent_type is omitted.
-            spawn_input = {"agent_type": "default", **spawn_input}
-            mismatches = [
-                field for field in (
-                    "task_name", "agent_type", "fork_turns",
-                    "model", "reasoning_effort", "service_tier",
-                )
-                if spawn_input.get(field) != session.launch.get(field)
-            ]
-            if mismatches:
-                raise RuntimeError("native launch contract mismatch: " + ", ".join(mismatches))
+        session = self.session(agent_session_id, native_session_id=native_session_id)
         run = self.source.read_run(session.run_id)
         require_worker_iteration_state(run, "wake native candidate")
         self.validate_candidate(session.run_id, session.candidate_id)
@@ -260,39 +178,3 @@ class CandidateHostQueries:
         ):
             return report.model_dump(mode="json")
         return None
-
-    def verifier_snapshot(self, run_id: str, candidate_id: str) -> dict[str, Any]:
-        empty = {
-            "count": 0,
-            "best_iteration": None,
-            "best_score": None,
-            "best_git_head": None,
-        }
-        try:
-            record = self.source.read_candidate(run_id, candidate_id)
-        except (OSError, ValueError):
-            return empty
-        valid = [
-            item
-            for item in record.iterations
-            if item.process_passed is True
-            and not item.touched_denied_files
-            and not item.changed_outside_allowed
-            and item.score is not None
-        ]
-        direction = "maximize"
-        try:
-            run = self.source.read_run(run_id)
-            direction = self.source.read_frozen_spec(
-                run.frozen_spec_id
-            ).spec.metric_direction
-        except (OSError, ValueError):
-            pass
-        chooser = min if direction == "minimize" else max
-        best = chooser(valid, key=lambda item: float(item.score), default=None)
-        return {
-            "count": len(record.iterations),
-            "best_iteration": best.iteration if best else None,
-            "best_score": best.score if best else None,
-            "best_git_head": best.git_head if best else None,
-        }

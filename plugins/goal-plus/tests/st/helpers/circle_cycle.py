@@ -11,6 +11,7 @@ import subprocess
 import pytest
 
 from goal_plus.host_observability import discover_codex_session_file
+from goal_plus.host_scope import close_execution_scope
 from goal_plus.models import AgentSessionRecord, GoalPlusRecord
 from goal_plus.monitor import goal_plus_monitor_snapshot
 
@@ -33,24 +34,28 @@ def _initialize_git(path: Path) -> None:
 
 def prepare_circle(project: Path, model: str, reasoning_effort: str) -> dict[str, str]:
     source = project / "source"
-    shutil.copytree(ROOT / "tests/st/fixtures/circle_packing", source)
+    shutil.copytree(
+        ROOT / "tests/st/fixtures/circle_packing",
+        source,
+        ignore=shutil.ignore_patterns(".tmp"),
+    )
     shutil.copytree(
         ROOT / "examples/circle-packing-thinkthread-apply/candidate-hints",
         source / "candidate-hints",
+        ignore=shutil.ignore_patterns(".tmp"),
     )
     (source / ".gitignore").write_text("__pycache__/\n*.pyc\n")
     spec = json.loads((source / "spec.json").read_text())
     spec["source_path"] = str(source)
     spec["edit_surface"]["deny"] += ["spec.json", "candidate-hints/**", ".gitignore"]
-    spec["workspace"] = {"backend": "git_worktree", "promotion_mode": "artifact_only"}
+    spec["workspace"] = {"provider": "git_worktree", "promotion_mode": "artifact_only"}
     spec["strategy"] = {
         "name": "agent_guided", "orchestration_mode": "parallel_loops",
          "inner_agent": "common",
-        "worker_budget": {"max_runtime_seconds": 180, "max_turns": 6, "on_exceed": "interrupt"},
         "worker_launch": {"model": model, "reasoning_effort": reasoning_effort},
         "evidence_annotator": { "model": model,
                                "reasoning_effort": reasoning_effort, "timeout_seconds": 300},
-        "config": {"global_evidence_mode": "manual", "closeout_reserve_seconds": 240},
+        "config": {"global_evidence_mode": "manual"},
     }
     (source / "spec.json").write_text(json.dumps(spec, indent=2) + "\n")
     hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -80,12 +85,18 @@ def assert_circle_state(
     assert len(sessions) == 2
     by_candidate = {session.candidate_id: session for session in sessions}
     assert set(by_candidate) == {"c001", "c002"}
-    assert by_candidate["c001"].launch["tool"] == "followup_task"
     native_ids = set()
     for candidate_id, expected_sums in (
         ("c001", [2.166664066666667, 2.4389636673796344]),
         ("c002", [2.4389636673796344]),
     ):
+        session = by_candidate[candidate_id]
+        assert session.session_handle.metadata["transport"] == "app-server"
+        dispatches = session.session_handle.metadata["dispatches"]
+        assert len(dispatches) == len(expected_sums)
+        assert {item["native_session_id"] for item in dispatches} == {session.session_handle.external_id}
+        assert len({item["invocation_id"] for item in dispatches}) == len(expected_sums)
+        assert all(item["state"] == "completed" for item in dispatches)
         record = json.loads((run_dir / "candidates" / candidate_id / "candidate.json").read_text())
         iterations = record["iterations"]
         # Parent completion verification may add evidence; require the actual worker turns.
@@ -128,6 +139,13 @@ def run_circle_cycle(runner, project: Path) -> None:
     model = runner.model
     baseline_hashes = prepare_circle(project, model, runner.reasoning_effort or "low")
     prompt = (ROOT / "tests/st/prompts/codex_circle_packing_cycle.md").read_text()
-    result = runner.run_streaming(prompt, scenario="codex_circle_packing_cycle", timeout=1500)
-    assert not result.timed_out and result.returncode == 0, result.log_path
-    assert_circle_state(project, model, baseline_hashes, runner.reasoning_effort or "low")
+    try:
+        result = runner.run_streaming(prompt, scenario="codex_circle_packing_cycle", timeout=1500)
+        assert not result.timed_out and result.returncode == 0, result.log_path
+        assert (runner.log_dir / "codex_circle_packing_cycle.final.md").read_text().strip()
+        assert_circle_state(project, model, baseline_hashes, runner.reasoning_effort or "low")
+    finally:
+        root = project / ".gp"
+        cleanup = [close_execution_scope(root_dir=root, scope_id=path.parent.name, reason="Circle ST finished")
+                   for path in (root / "host-scopes").glob("scope_*/scope.json")]
+        (runner.log_dir / "cleanup.json").write_text(json.dumps(cleanup, indent=2))

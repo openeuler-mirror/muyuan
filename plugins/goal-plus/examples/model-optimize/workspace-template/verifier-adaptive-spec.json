@@ -4,7 +4,7 @@
   "metric_direction": "maximize",
   "source_path": "examples/model-optimize/workspace-template",
   "workspace": {
-    "backend": "git_worktree"
+    "provider": "git_worktree"
   },
   "edit_surface": {
     "allow": [

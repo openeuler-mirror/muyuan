@@ -77,8 +77,10 @@ class VerifierLease(SearchModel):
 
 class VerifierInvocationRecord(SearchModel):
     invocation_id: str = Field(min_length=1)
-    backend: str = Field(min_length=1)
+    agent_harness: Literal["codex", "pi"]
+    runtime_provider: Literal["direct"] = "direct"
     model: str = Field(min_length=1)
+    reasoning_effort: str | None = None
     started_at: str
     completed_at: str
     elapsed_seconds: float = Field(ge=0, allow_inf_nan=False)

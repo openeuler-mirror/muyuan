@@ -4,7 +4,7 @@ from pathlib import Path
 import time
 import uuid
 
-from goal_plus.domain.artifacts import WorkspaceBackend
+from goal_plus.domain.artifacts import WorkspaceProvider
 from goal_plus.domain.search import SearchPlan
 from goal_plus.infrastructure.state.candidate_queries import FileCandidateQueries
 from goal_plus.infrastructure.state.files import (
@@ -42,10 +42,10 @@ class FileSearchRunState(FileCandidateQueries):
             plan.model_dump(mode="json"),
         )
 
-    def initialize_run_layout(self, run_id: str, backend: WorkspaceBackend) -> None:
+    def initialize_run_layout(self, run_id: str, workspace_provider: WorkspaceProvider) -> None:
         directories = [
             "candidates",
-            *(["workspace"] if backend != "thinkthread" else []),
+            *(["workspace"] if workspace_provider != "thinkthread" else []),
             "plans",
             "agent_sessions",
         ]

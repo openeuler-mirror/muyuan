@@ -12,7 +12,6 @@
     "verification",
     "optimization"
   ],
-  "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Goal Plus",

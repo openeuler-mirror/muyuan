@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any
 
 
+CODEX_CANDIDATE_SESSION_ENV = "GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID"
+CODEX_ORDINARY_ROLE_ENV = "GOAL_PLUS_CODEX_ORDINARY_ROLE"
+
+
 def codex_turn_event(hook_input: dict[str, Any]) -> dict[str, Any] | None:
     """Read the exact Codex turn that emitted this hook."""
     transcript = transcript_path(hook_input)

@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from goal_plus.agent_hosts import candidate_inner_agent_binding, collect_host_observability
+from goal_plus.agent_hosts import collect_host_observability
+from goal_plus.infrastructure.host_bindings import candidate_inner_agent_binding
 from goal_plus.infrastructure.artifacts.git import git_changed_files
 from goal_plus.ports.search_configuration import WorkerPolicyBinding
 from goal_plus.infrastructure.artifacts.source_repository import SourceRepository
@@ -29,7 +30,7 @@ class HostSearchInspection:
         return candidate_inner_agent_binding(frozen, task).inner_agent_id
 
     def normalize_worker_policy(self, frozen):
-        return self.bindings.normalize_worker_policy(frozen.spec.strategy, host=frozen.worker_host)
+        return self.bindings.normalize_worker_policy(frozen.spec.strategy, agent_harness=frozen.agent_harness, runtime_provider=frozen.runtime_provider)
 
     def observability(self, session):
         return collect_host_observability(session)

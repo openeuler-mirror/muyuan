@@ -1,4 +1,4 @@
-$goal-plus max_parallel=2 max_duration_seconds=600 workspace_backend=git_worktree promotion_mode=artifact_only strategy=agent_guided inner_agent=autoresearch annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-luna 优化只读 Circle Packing 模板，并把结果保存在 `.gp/`。
+$goal-plus max_parallel=2 max_duration_seconds=600 workspace_provider=git_worktree promotion_mode=artifact_only strategy=agent_guided inner_agent=autoresearch annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-luna 优化只读 Circle Packing 模板，并把结果保存在 `.gp/`。
 <!-- markdownlint-disable-file MD013 MD041 -->
 
 问题：当前程序需要在单位正方形内放置恰好 26 个互不重叠的圆，并尽可能增大
@@ -20,4 +20,4 @@ publication 回写到 `workspace-template/`；候选、Evidence、publication �
 `workspace-template/` 保持不变。
 
 时间约束：整个 Goal Plus 任务预算为 10 分钟。不要在用户目标之外另行设置候选停止时间
-或探索 timeout；由冻结 SearchSpec 和 Host 合同管理 worker lease 与必要收尾。
+或最低探索时长；候选返回后由 Main 根据 Evidence 判断是否继续，并在 deadline 内完成交付。

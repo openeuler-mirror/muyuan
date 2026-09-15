@@ -34,7 +34,7 @@ vliw-kernel-optimization/
 运行后会新增被 Git 忽略的 `.gp/`，其中保存候选 Evidence、publication、
 `report.md` 和 `report.html`。`workspace-template/` 应保持不变。
 
-`git_worktree` backend 会校验包含该模板的外层 Git 仓库是否干净。开始运行前应处理
+`git_worktree` 工作区实现会校验包含该模板的外层 Git 仓库是否干净。开始运行前应处理
 staged、unstaged 或未忽略的 untracked 文件；`.gp/` 本身已被忽略，不会造成判脏。
 
 ## 检查本地 baseline
@@ -68,8 +68,7 @@ pi
 然后完整粘贴 [`pi-goal-prompt.md`](pi-goal-prompt.md)。
 
 prompt 不固定 `main`、`annotator` 或 `workers`，直接使用 Pi 当前选中的模型和已安装的
-Goal Plus 默认值。任务预算为 8 分钟，第 6 分钟开始收尾，单个 worker 最长运行
-4 分钟。
+Goal Plus 默认值。整个任务最多 8 分钟；候选返回后由 Main 判断是否继续。
 
 ## 工作区合同
 
@@ -79,7 +78,7 @@ Goal Plus 默认值。任务预算为 8 分钟，第 6 分钟开始收尾，单�
 
 - `source_path="workspace-template"`；
 - 两个长期候选通道；
-- `workspace_backend=git_worktree`；
+- `workspace_provider=git_worktree`；
 - `promotion_mode=artifact_only`；
 - 只允许修改 `solution.py`；
 - 使用 `.goal-plus-verifiers/vliw_score.py` 最小化 `cycles`。
@@ -118,7 +117,7 @@ git status --short -- workspace-template
 
 使用 [TT SearchSpec](thinkthread-search-spec.json) 和
 [TT Pi prompt](pi-thinkthread-goal-prompt.md)。该变体保留只读模板与 artifact_only，
-采用两个 TT + AutoResearch candidate、150 秒 lease、15 分钟 Goal 预算和 4 分钟收尾预留。
+采用两个 TT + AutoResearch candidate 和 15 分钟 Goal 上限；Main 根据 Evidence 判断续跑。
 目标是同一 candidate/Child 多轮结算，同时观察 Annotation、exact artifact、publication 和清理。
 它不运行 LLM Verifier/Adaptive Allocation，不能作为这些组件的真实覆盖。
 

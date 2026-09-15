@@ -16,18 +16,18 @@ class GoalObservation:
         self,
         goal_plus_id: str,
         *,
-        host: str,
+        agent_harness: str,
         usage: dict[str, Any],
         started_at: str | None = None,
     ) -> dict[str, Any]:
         with self.state.lock_goal(goal_plus_id):
             self.state.read_goal(goal_plus_id)
-            if host != "pi":
+            if agent_harness != "pi":
                 raise ValueError("only Pi orchestrator usage is recorded by this path")
             observation = {
                 "schema_version": OBSERVABILITY_SCHEMA_VERSION,
                 "source": "pi_goal_stats",
-                "host": host,
+                "agent_harness": agent_harness,
                 "started_at": started_at,
                 "ended_at": self.clock.timestamp(),
                 "usage": usage,

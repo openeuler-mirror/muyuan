@@ -15,56 +15,52 @@ from pydantic import (
 
 from goal_plus.domain.base import SearchModel
 
-AgentHostKind = Literal["codex", "pi-rpc", "thinkthread"]
-NativeAgentKind = Literal["codex", "pi"]
+AgentHarnessKind = Literal["codex", "pi"]
+AgentRuntimeProvider = Literal["direct", "thinkthread"]
 
 
-def search_worker_host(native_host: NativeAgentKind, workspace_backend: str) -> AgentHostKind:
-    if native_host not in {"codex", "pi"}:
-        raise ValueError("Search requires a trusted native host: codex or pi")
-    if workspace_backend == "thinkthread":
-        if native_host != "pi":
-            raise ValueError("Codex does not support ThinkThread Search")
-        return "thinkthread"
-    return "codex" if native_host == "codex" else "pi-rpc"
+def validate_agent_execution(
+    agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider,
+) -> None:
+    if agent_harness == "codex" and runtime_provider == "thinkthread":
+        raise ValueError("Codex does not support ThinkThread Search")
+    if (agent_harness, runtime_provider) not in EXECUTION_INNER_AGENT_DEFAULTS:
+        raise ValueError("unsupported agent harness/runtime provider combination")
 
 
-class AgentHostHandle(SearchModel):
-    host: AgentHostKind = "codex"
+def validate_search_execution(
+    agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider,
+    workspace_provider: str,
+) -> None:
+    validate_agent_execution(agent_harness, runtime_provider)
+    supported = {"thinkthread"} if runtime_provider == "thinkthread" else {"copy", "git_worktree"}
+    if workspace_provider not in supported:
+        raise ValueError("workspace provider does not match agent runtime provider")
+
+
+class AgentSessionHandle(SearchModel):
+    agent_harness: AgentHarnessKind = "codex"
+    runtime_provider: AgentRuntimeProvider = "direct"
     external_id: str | None = None
-    task_name: str | None = None
     nickname: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def execution_is_supported(self) -> "AgentSessionHandle":
+        validate_agent_execution(self.agent_harness, self.runtime_provider)
+        return self
 
 
 class WorkerBudget(SearchModel):
     max_runtime_seconds: int | None = Field(default=None, gt=0)
     max_turns: int | None = Field(default=None, gt=0)
     on_exceed: Literal["interrupt"] = "interrupt"
-    min_runtime_seconds: int | None = Field(default=None, gt=0)
-    min_verifier_runs: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def require_runtime_or_turn_limit(self) -> "WorkerBudget":
         if self.max_runtime_seconds is None and self.max_turns is None:
             raise ValueError(
                 "worker_budget requires max_runtime_seconds or max_turns"
-            )
-        if (
-            self.min_runtime_seconds is not None
-            and self.max_runtime_seconds is None
-        ):
-            raise ValueError(
-                "worker_budget.min_runtime_seconds requires max_runtime_seconds"
-            )
-        if (
-            self.min_runtime_seconds is not None
-            and self.max_runtime_seconds is not None
-            and self.min_runtime_seconds >= self.max_runtime_seconds
-        ):
-            raise ValueError(
-                "worker_budget.min_runtime_seconds must be less than "
-                "max_runtime_seconds"
             )
         return self
 
@@ -117,6 +113,11 @@ class SelectedModel(SearchModel):
 
 INNER_AGENT_AUTORESEARCH = "autoresearch"
 INNER_AGENT_COMMON = "common"
+EXECUTION_INNER_AGENT_DEFAULTS: dict[tuple[AgentHarnessKind, AgentRuntimeProvider], str] = {
+    ("codex", "direct"): INNER_AGENT_AUTORESEARCH,
+    ("pi", "direct"): INNER_AGENT_AUTORESEARCH,
+    ("pi", "thinkthread"): INNER_AGENT_COMMON,
+}
 WorkspaceLedgerProjection = Literal["none", "results_tsv"]
 WORKSPACE_LEDGER_PROJECTION_NONE: WorkspaceLedgerProjection = "none"
 WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV: WorkspaceLedgerProjection = "results_tsv"

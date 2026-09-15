@@ -7,7 +7,7 @@ from typing import Protocol
 from goal_plus.domain.artifacts import (
     ArtifactRef,
     ReferenceWorkspaceAccess,
-    WorkspaceBackend,
+    WorkspaceProvider,
 )
 
 
@@ -46,5 +46,5 @@ class ArtifactReader(Protocol):
         artifact: ArtifactRef,
         destination: Path,
         *,
-        backend: WorkspaceBackend,
+        workspace_provider: WorkspaceProvider,
     ) -> ReferenceWorkspaceAccess: ...

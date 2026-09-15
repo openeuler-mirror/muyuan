@@ -27,34 +27,7 @@ def _stop_hook_events(search_root: Path) -> list[dict]:
     ]
 
 
-_OWNER_PID_CACHE: int | None = False
-
-
-def _codex_owner_pid_cached() -> int | None:
-    """Walk the parent chain once per test process; the pytest parent tree
-    never changes and each uncached walk costs a ``ps`` subprocess per hop."""
-    global _OWNER_PID_CACHE
-    if _OWNER_PID_CACHE is False:
-        from goal_plus.host_recovery import codex_owner_pid
-        _OWNER_PID_CACHE = codex_owner_pid()
-    return _OWNER_PID_CACHE
-
-
 def _run_hook(tmp_path: Path, search_root: Path, hook_input: dict | None = None, **env):
-    # These fixtures bypass the native start hook; install their live owner.
-    from goal_plus.host_recovery import claim_main_owner
-    owner = _codex_owner_pid_cached()
-    if owner:
-        runtime = FileGoalPlusRuntime(search_root)
-        for path in runtime.goals_dir.glob("gp_*/goal.json"):
-            try:
-                record = runtime.status(path.parent.name)
-            except (ValueError, OSError):
-                # Corrupt-state tests must exercise the hook's own failure path.
-                continue
-            binding = record.active_session
-            if binding and binding.state == "attached" and not runtime.is_terminal(record) and not (search_root / "host-recovery/mains" / f"{record.goal_plus_id}.json").exists():
-                claim_main_owner(search_root, record.goal_plus_id, binding.host, binding.session_id, owner, restoring=False)
     run_env = {
         **os.environ,
         "GOAL_PLUS_SEARCH_ROOT": str(search_root),
@@ -149,7 +122,7 @@ def test_stop_hook_blocks_active_goal_mode_for_full_goal_audit(tmp_path: Path) -
     runtime.activate_session(
         record.goal_plus_id,
         {
-            "host": "codex",
+            "agent_harness": "codex",
             "session_id": "session-current",
             "transcript_path": "/tmp/current.jsonl",
         },
@@ -211,7 +184,7 @@ def test_stop_hook_records_allowed_terminal_goal(tmp_path: Path) -> None:
     record = runtime.create_goal("Optimize model throughput")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "codex", "session_id": "session-terminal"},
+        {"agent_harness": "codex", "session_id": "session-terminal"},
     )
     runtime.set_status(
         record.goal_plus_id,
@@ -308,7 +281,7 @@ def test_stop_hook_can_target_explicit_goal_id(tmp_path: Path) -> None:
     runtime = FileGoalPlusRuntime(search_root)
     first = runtime.create_goal("Optimize kernel")
     second = runtime.create_goal("Tidy docs")
-    runtime.activate_session(first.goal_plus_id, {"host": "codex", "session_id": "explicit-main"})
+    runtime.activate_session(first.goal_plus_id, {"agent_harness": "codex", "session_id": "explicit-main"})
     runtime.record_triage(
         second.goal_plus_id,
         {
@@ -432,7 +405,7 @@ def test_stop_hook_blocks_only_current_bound_session(tmp_path: Path) -> None:
     runtime.activate_session(
         record.goal_plus_id,
         {
-            "host": "codex",
+            "agent_harness": "codex",
             "session_id": "session-a",
             "transcript_path": "/tmp/session-a.jsonl",
         },
@@ -459,7 +432,8 @@ def test_stop_hook_blocks_only_current_bound_session(tmp_path: Path) -> None:
     assert same_session.returncode == 0
     payload = json.loads(same_session.stdout)
     assert payload["decision"] == "block"
-    assert "判断原始目标" in payload["reason"]
+    assert "goal_plus_set_status" in payload["reason"]
+    assert runtime.status(record.goal_plus_id).next_action.kind == "execute_goal"
 
 
 def test_stop_hook_disable_env_allows_without_gate_event(tmp_path: Path) -> None:

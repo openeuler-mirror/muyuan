@@ -38,18 +38,10 @@
   "strategy": {
     "name": "agent_guided",
     "orchestration_mode": "parallel_loops",
-    "inner_agent": "autoresearch",
-    "config": {
-      "closeout_reserve_seconds": 60
-    },
-    "worker_budget": {
-      "max_runtime_seconds": 180,
-      "max_turns": 8,
-      "on_exceed": "interrupt"
-    }
+    "inner_agent": "autoresearch"
   },
   "workspace": {
-    "backend": "git_worktree",
+    "provider": "git_worktree",
     "promotion_mode": "apply"
   },
   "constraints": {

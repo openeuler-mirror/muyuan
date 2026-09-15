@@ -10,7 +10,7 @@ from goal_plus.ports.state import CandidateRecord
 
 
 def read_results_tsv(record: CandidateRecord) -> list[ResultLedgerEntry]:
-    if record.task.workspace_backend == "thinkthread":
+    if record.task.workspace_provider == "thinkthread":
         return list(record.results_ledger)
     paths = (
         record.task.workspace / RESULTS_TSV_RELATIVE_PATH,

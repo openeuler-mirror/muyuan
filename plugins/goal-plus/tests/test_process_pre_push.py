@@ -39,7 +39,7 @@ def test_platform_push_gate(tmp_path, case):
     )
     if case in ("pass", "failed_tests"):
         assert result.returncode == (17 if case == "failed_tests" else 0)
-        assert "tests/test_process_identity_darwin.py" in log.read_text().splitlines()
+        assert "tests/test_process_cleanup.py" in log.read_text().splitlines()
         assert "addopts=" in log.read_text().splitlines()
     else:
         assert result.returncode == (0 if case == "delete" else 1)

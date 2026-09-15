@@ -47,21 +47,15 @@
     "name": "agent_guided",
     "orchestration_mode": "parallel_loops",
     "inner_agent": "autoresearch",
-    "worker_budget": {
-      "max_runtime_seconds": 180,
-      "max_turns": 6,
-      "on_exceed": "interrupt"
-    },
     "evidence_annotator": {
       "timeout_seconds": 900
     },
     "config": {
-      "closeout_reserve_seconds": 300,
       "global_evidence_mode": "manual"
     }
   },
   "workspace": {
-    "backend": "thinkthread",
+    "provider": "thinkthread",
     "promotion_mode": "apply"
   },
   "constraints": {

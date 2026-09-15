@@ -3,21 +3,19 @@
 from typing import ContextManager, Literal, Protocol, TextIO
 
 from goal_plus.domain.base import SearchModel
-from goal_plus.ports.process_identity import ProcessWitness
 
 
 class DrainerRecord(SearchModel):
     generation: str
     pid: int
     started_at: str
-    witness: ProcessWitness | None = None
 
 
 class DrainerStopResult(SearchModel):
     generation: str
     pid: int
     started_at: str
-    status: Literal["stale", "stopped"]
+    status: Literal["released"]
     finished_at: str | None = None
 
 

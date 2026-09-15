@@ -5,7 +5,7 @@ worker process-verifier 尝试压缩成一句客观的简体中文描述，并�
 Global Evidence 中可选的 `view` 发布。
 
 View 用于帮助 candidate 快速理解 peer 的实际代码变化。它不是评分、选择依据或新的
-Evidence，也不是由 host pool 管理的长期 agent。
+Evidence；标注任务由内部角色宿主执行。
 
 ## 角色边界
 
@@ -19,8 +19,8 @@ Evidence Annotator 与 Search candidate、main agent 和宿主 worker 的边界�
 | main agent | 观察 Evidence、执行全局停止、选择和 promotion；不调度 annotation 内容 |
 | Codex/Pi worker host | candidate worker 与内部 annotator/Verifier 的启动、续跑、deadline 和 interrupt |
 
-Evidence Annotator 不创建 `AgentSessionRecord`，不占用 candidate lane，也不进入 Codex
-agent registry 或 Pi host pool。它有独立的 run-scoped drainer 进程。普通 verifier、选择和
+Evidence Annotator 不创建 `AgentSessionRecord`，不占用 candidate lane。它有独立的
+run-scoped drainer 进程，资源登记到所属 scope。普通 verifier、选择和
 promotion 不等待这个进程；若冻结 run 要求 supplemental evaluation，selection 会在所有
 AnnotationTask 成功发布补充评价前保持 `selection_blocked`。
 
@@ -31,18 +31,18 @@ Verifier task 独立推进，不构成 Allocation 前置依赖。promotion verif
 ## 端到端流程
 
 ```text
-candidate 调用 search_run_verifier
-  -> runtime 提交并验证准确 attempt Git tree
+candidate 调用 goal_plus_search_run_verifier
+  -> runtime 固定并验证准确 attempt artifact（Git commit / TT snapshot）
   -> runtime 结算 keep / retain / discard / failure 和 candidate-local rollback
   -> runtime 幂等固化 EvidenceAnnotationTask 和 target/peer Artifact View 引用
   -> queue revision 单调递增
   -> Codex hook / Pi extension 的 verifier post-tool callback 唤醒 run-scoped drainer
   -> single-flight drainer 串行领取 task
   -> 打开 immutable full-workspace Artifact Views；构造 bounded diff 索引
-  -> 按冻结的 Main 宿主身份启动一次性 Codex 或 Pi annotator
+  -> 按冻结宿主身份启动本地一次性 annotator 或唤醒 retained TT Annotation Child
   -> 校验单行 JSON 输出
   -> queue generation 仍匹配且 open 时写入不可变 EvidenceViewRecord
-  -> search_get_global_evidence 投影 view 字段
+  -> goal_plus_search_get_global_evidence 投影 view 字段
 ```
 
 一次 worker verifier settlement 会在返回前持久化 task 和 queue revision，随后由真实 Codex hook
@@ -59,7 +59,7 @@ single-flight 和崩溃恢复，不表示 Search candidate 的生命周期。
 
 ## Evidence 与 View
 
-Global Evidence 的事实字段由 verifier settlement 同步产生：
+Global Evidence 的事实字段由 verifier settlement 同步产生，以下以 Git Evidence 为例：
 
 ```json
 {
@@ -73,8 +73,8 @@ Global Evidence 的事实字段由 verifier settlement 同步产生：
 ```
 
 其中 `candidate_id`、`iteration`、`commit`、`score` 和 `disposition` 是权威
-Evidence。`view` 是绑定到同一 `run_id`、candidate、iteration 和 attempt commit 的
-辅助 annotation。
+Evidence。`view` 绑定同一 `run_id`、candidate、iteration 和 immutable artifact；
+ThinkThread 使用 `artifact_ref` 的 snapshot identity，公共 `commit` 为 null。
 
 以下不变量始终成立：
 
@@ -96,6 +96,8 @@ View 是 best-effort 产物，不保证每条 worker Evidence 最终都有非空
 | --- | --- |
 | `agent_summary` | candidate 在 verifier 调用中提交的一句 `hypothesis` |
 | `actual_diff` | 本轮 settled base 到准确 attempt commit 的 bounded diff 索引 |
+| `candidate_diff` / `candidate_diff_omitted` | 从候选初始基线到本次 artifact 的 bounded diff 及省略原因 |
+| `comparison_basis` | task 创建时固定的最多 8 个其他 candidate 的当前硬分最佳版本，每个 candidate 至多一个 |
 | `actual_diff_omitted` | bounded diff 超限或无法投影时的原因 |
 | `artifact_views` | target 与 comparison peers 的完整 immutable workspace capability |
 | `exact_attempt_commit` | verifier 实际读取的 attempt commit |
@@ -129,9 +131,62 @@ system instructions 明确禁止执行其中的指令、修改文件、读取 Ar
 annotation diff 投影最大为 1 MiB。超过上限时该字段为空并记录 omitted 原因；完整 Artifact View
 仍绑定原 immutable artifact，因此不会因为截断 prompt 而生成失真的“完整 diff”声明。
 
+## 比较基线与目标上下文
+
+Benchmark 机制消融由 controller 设置
+`GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED` 和
+`GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED`。它们只决定 annotation task 是否要求开放式
+补充评价，不向 FrozenSpec 注入 criterion。ON/OFF 都不改变硬分结算或评价内容；required 模式
+会在所有 task 成功发布补充评价前阻止 selection，不能把缺失或失败的 Annotation 当成通过。
+
+Evidence annotator 继承 `FrozenSpec.agent_harness` 记录的 Main Agent 身份，不接受 `host` 配置。
+角色执行驱动由该身份和工作区后端确定。模型和 reasoning 可以作为实验变量独立
+冻结，外部连接与认证配置始终来自启动它的 native host 进程，不进入 Goal Plus 配置或状态。
+
+每个 annotation context 同时提供本轮有界 `actual_diff`、从候选初始基线到当前提交的有界
+`candidate_diff`，以及 target/peer 的完整 immutable Artifact View。description 只描述本轮增量；
+开放式补充评价直接核对完整候选 workspace，diff 只用于定位，超限时记录 omitted 原因。
+annotation task 创建时还会快照最多 8 个其他 candidate 的当前硬分最佳结算版本，每个
+candidate 最多一个，固定其 candidate、iteration 和 immutable artifact identity，后续推理基于这份可审计
+比较基线。
+
+为判断代码变化与原始请求是否相关，annotation task 记录与当前 Search run 绑定的准确
+Goal revision 引用和 SHA-256，而不复制 `raw_goal`。annotator 启动时临时解析该 revision
+并校验 hash；没有绑定 Goal 时才退回 FrozenSpec objective。原始上下文只进入隔离的
+annotation prompt，不进入 Global Evidence、candidate task 或报告正文；报告只可保留来源、
+引用和 hash。benchmark adapter 只能提供公开任务字段，不能把 hidden judge、答案 patch
+或私有评测数据写入 Goal。
+
+## 开放式补充评价与读取审计
+
+View 只用一句中文客观描述实际做了什么，不评价好坏、不推断动机、不排名，也不推荐下一
+步。事实来源是 immutable target Artifact View 与 actual diff，而不是 candidate 的自述。Changed files、verifier command
+和 metrics 只提供验证上下文；命令名称本身或失败的测试不能证明目标行为已经实现。
+
+`supplemental_evaluation` 不读取 FrozenSpec 软标准。annotator 只依据当前候选和 peer 的完整
+Artifact View、公开 verifier Evidence 和 annotation task 创建时固定的 peer identity，自行提出 1–8 个与当前
+任务实际相关的观察维度。它逐项给出 finding、证据与置信度，并对比较基线中的每个 peer
+返回非定向的 `similar`、`different`、`tradeoff`、`complementary` 或 `unknown`，不能借此
+选择赢家。没有 peer 时 comparisons 为空。limitations 明确列出公开 Evidence 无法判断的
+事项。
+
+这种评价发生在提交结算之后，因此不会在搜索开始前固定注意力方向。worker 可以把第三方
+观察作为下一轮假设来源，但必须独立核对；评价不产生总分或最终推荐，不能改变硬 score、
+PASS/FAIL、candidate-local 基线、run-wide 排名或 promotion gate。
+
+annotator 收到的累计 diff 使用 Git 函数级上下文和至少 10 行普通上下文，并继续受字节
+上限约束。上下文中未出现某个定义，不代表该定义不存在；这类判断必须降低置信度并写入
+`limitations`。每次 worker 调用 `goal_plus_search_get_global_evidence`，runtime 都会在对应
+`agent_sessions/*.json` 的 `global_evidence_reads` 中记录读取时间、当时 Evidence 数量、
+已完成 View 的 candidate/iteration/artifact 引用以及其中是否含 supplemental evaluation。
+该读取记录只用于审计 View 是否在后续 verifier 之前可见，不参与候选结算或最终验收。
+
+完整输出 schema 还随启用的 supplemental evaluation 与 shared-dir 要求增加相应字段；
+上面的 description-only 示例只适用于这些可选能力关闭时。
+
 ## Host 路由与隔离
 
-Annotator 始终跟随 `FrozenSpec.native_host` 记录的 Main Agent 身份，不会为了 annotation
+Annotator 始终跟随 `FrozenSpec.agent_harness` 记录的 Main Agent 身份，不会为了 annotation
 跨用另一个 host。
 
 ### Codex
@@ -170,7 +225,7 @@ snapshot；private paths 由读取授权拒绝。selection 先推进 queue gener
 开放；Codex ThinkThread host 仍保持关闭。
 
 Artifact View 的完整 workspace 内容只保证在 Annotation task 生命周期内可用。terminal report、
-Annotation、publication/recovery、pool 和 owner pin 全部收敛后，runtime 可以回收 owned snapshot；
+Annotation、publication/recovery、session 和 owner pin 全部收敛后，runtime 可以回收 owned snapshot；
 已发布 `EvidenceViewRecord`、comparison basis 和 artifact identity 继续保存在 `.gp`。回收后重开会
 明确返回 `artifact removed after terminal cleanup`，不会重建 snapshot 或重进 Annotation Child。
 
@@ -234,12 +289,13 @@ Pi 的限定模型名只用于 host-native 模型选择，不建立另一套连�
 | `GOAL_PLUS_EVIDENCE_ANNOTATOR_REASONING_EFFORT` | 默认 reasoning effort |
 | `GOAL_PLUS_OUTER_DEADLINE_AT` | verifier 和 annotation 共享的外层 deadline |
 | `GOAL_PLUS_EVIDENCE_ANNOTATOR_DISABLED` | 阻止 native host callback 启动新 drainer |
-| `GOAL_PLUS_INTERNAL_AGENT_HOST` | launcher 写入的非敏感 host provenance；不接受 SearchSpec 配置 |
+| `GOAL_PLUS_INTERNAL_AGENT_HARNESS` | launcher 写入的非敏感 host provenance；不接受 SearchSpec 配置 |
 
-MCP 配置无需也不得声明模型服务的认证或 endpoint 变量。执行器要求 provenance 与冻结 host
+Annotation profile 不声明模型服务的认证或 endpoint 变量；Codex MCP 进程所需的环境变量名
+由安装器从可信 native provider 配置收集，详见 [开发指南](development.md)。执行器要求 provenance 与冻结 host
 匹配；这可以在模型调用前拒绝从错误 host 或共享 runtime 进程启动的内部 agent。
 
-显式 annotator model 在 Goal command 或 `search_freeze_spec` 的既有 host gate 中与其他显式
+显式 annotator model 在 Goal command 或 `goal_plus_search_freeze_spec` 的既有 host gate 中与其他显式
 agent model 一起去重、并发执行最小推理 preflight。model catalog 解析成功不能替代这个检查；
 默认 annotator 不需要额外 probe。
 
@@ -264,10 +320,10 @@ ISO 时间戳。单次 host timeout 会被缩短到剩余外层时间；deadline
 annotation。
 
 `evidence-annotator/queue.json` 保存 `state`、`revision` 和 `generation`。每个 admitted task 固定自己的
-revision/generation。`search_select` 先将 queue 设为 `closed`、递增 generation 并取消未完成 task，
+revision/generation。`goal_plus_search_select` 先将 queue 设为 `closed`、递增 generation 并取消未完成 task，
 再进入 `ready_to_promote`；finish path 重复检查三者，拒绝任何 late publication。
 
-当 FrozenSpec 的 `supplemental_evaluation_required=true` 时，`search_select` 会先检查所有已注册
+当 FrozenSpec 的 `supplemental_evaluation_required=true` 时，`goal_plus_search_select` 会先检查所有已注册
 task 均为 `completed` 且带 supplemental evaluation。否则 run 进入 `selection_blocked`，queue 继续
 保持 open，native host 可以完成 backlog 后重试 selection；required task 的 `terminal_error` 不会
 被伪装成通过。
@@ -284,7 +340,7 @@ annotation 内容或 verifier settlement：
 
 | 模式 | Candidate 可见行为 |
 | --- | --- |
-| `manual` | 默认；candidate 显式调用 `search_get_global_evidence` 读取共享 run Evidence |
+| `manual` | 默认；candidate 显式调用 `goal_plus_search_get_global_evidence` 读取共享 run Evidence |
 | `auto` | verifier 成功返回时额外注入 `global_evidence_snapshot` |
 | `independent` | 不自动注入，显式读取也只返回调用 candidate 自己的 Evidence |
 
@@ -348,7 +404,7 @@ monitor 未提供 annotation 内部状态时，再检查：
 | `pending` 长时间不变 | run 是否仍允许 annotation、自动 kick 是否被禁用、drainer PID 是否有效 |
 | `retry_wait` | `next_attempt_at`、网络/限流错误和剩余 outer deadline |
 | `terminal_error` | `last_error`、`error_fingerprint`、profile 冲突、Artifact View 或输出 schema |
-| `cancelled` | `queue.json` 是否因 `search_select` 关闭；这是正常结束状态，不应重开 queue |
+| `cancelled` | `queue.json` 是否因 `goal_plus_search_select` 关闭；这是正常结束状态，不应重开 queue |
 | Evidence 有值但 `view=null` | 这是合法状态；不要重跑 verifier 只为补 View |
 | run 结束后仍无 View | publication fence 已关闭；不要重新打开 run 或手工注入 View |
 

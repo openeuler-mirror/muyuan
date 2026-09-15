@@ -68,9 +68,9 @@ def _collect_observability(session: AgentSessionRecord) -> dict[str, Any]:
                 "started_at": session.created_at,
                 "ended_at": session.updated_at,
                 "duration_seconds": None,
-                "timed_out": bool(session.host_handle.metadata.get("timed_out")),
+                "timed_out": bool(session.session_handle.metadata.get("timed_out")),
                 "runner_failed": bool(
-                    session.host_handle.metadata.get("runner_failed")
+                    session.session_handle.metadata.get("runner_failed")
                 ),
             },
             "usage": {},

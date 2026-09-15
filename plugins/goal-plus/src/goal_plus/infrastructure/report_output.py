@@ -72,11 +72,11 @@ class FileReportQueries(FileSearchRunState):
             existing_ledgers={
                 r.task.workspace / RESULTS_TSV_RELATIVE_PATH
                 for r in records
-                if r.task.workspace_backend != "thinkthread"
+                if r.task.workspace_provider != "thinkthread"
                 and (r.task.workspace / RESULTS_TSV_RELATIVE_PATH).is_file()
             },
             handles={
-                s.agent_session_id: self.research.display_host_handle(s)
+                s.agent_session_id: self.research.display_session_handle(s)
                 for s in sessions
             },
         )

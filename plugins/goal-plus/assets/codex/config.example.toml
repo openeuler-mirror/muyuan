@@ -3,6 +3,10 @@ command = "bash"
 args = ["/absolute/managed/package/scripts/run-runtime.sh", "--root", ".gp"]
 env_vars = [
   "CODEX_HOME",
+  "GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID",
+  "GOAL_PLUS_FINAL_CHECK_IDENTITY",
+  "GOAL_PLUS_CODEX_ORDINARY_ROLE",
+  "GOAL_PLUS_SEARCH_ROOT",
   "GOAL_PLUS_DEBUG",
   "PI_CODING_AGENT_DIR",
   "GOAL_PLUS_OUTER_DEADLINE_AT",
@@ -13,6 +17,7 @@ env_vars = [
   "GOAL_PLUS_EVIDENCE_ANNOTATOR_REASONING_EFFORT",
 ]
 startup_timeout_sec = 10
-tool_timeout_sec = 300
+# Maximum ordinary task runtime (3600s) plus native startup (60s).
+tool_timeout_sec = 3660
 enabled = true
 default_tools_approval_mode = "approve"

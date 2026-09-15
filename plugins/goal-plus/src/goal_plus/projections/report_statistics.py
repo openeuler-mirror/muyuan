@@ -617,7 +617,7 @@ def build_loop_agent_statistics(
             if isinstance(candidate_id, str) and candidate_id:
                 candidates[(run_id, candidate_id)] = candidate
         for session in task.get("sessions") or []:
-            if session.get("host") != "codex":
+            if session.get("agent_harness") != "codex":
                 continue
             agent_session_id = session.get("agent_session_id")
             candidate_id = session.get("candidate_id")

@@ -10,7 +10,7 @@ from goal_plus import pi_tool, server
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-@pytest.mark.parametrize("tool", ["goal_plus_status", "search_get_agent_context"])
+@pytest.mark.parametrize("tool", ["goal_plus_status", "goal_plus_search_get_agent_context"])
 def test_mcp_response_size_is_opt_in_and_counts_utf8(
     tmp_path, monkeypatch, capsys, enabled, tool,
 ):

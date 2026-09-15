@@ -1,105 +1,88 @@
-"""Local process-group regressions; no native model or historical scope state."""
+"""Direct handles are local; historical PIDs never authorize process control."""
 
 import os
-import select
-import signal
 import subprocess
 import sys
-from types import SimpleNamespace
+import time
 
 import pytest
 
-from goal_plus import pi_worker
-from goal_plus.execution import managed_process
 from goal_plus.execution.managed_process import ManagedProcess
-from goal_plus.ports.process_identity import ProcessStopOutcome
+from goal_plus.infrastructure.process_output import capture_process
+from goal_plus.host_scope import (
+    ensure_execution_scope,
+    register_execution_process,
+    execution_scope_snapshot,
+    close_execution_scope,
+    assert_execution_scope_open,
+)
 
 
-@pytest.mark.host_process
-@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
-@pytest.mark.parametrize("leader_exited", [False, True])
-def test_pi_cleanup_stops_group_members_after_the_leader_exits(leader_exited):
-    leader = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"], process_group=0,
+def test_scope_activation_and_release_never_inspect_or_signal_pids(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(os, "kill", lambda *_: pytest.fail("unexpected PID access"))
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda *_a, **_k: pytest.fail("unexpected supervisor")
     )
-    member = None
-    try:
-        # Direct test children share one group so the test can reap both processes.
-        member = subprocess.Popen(
-            [
-                sys.executable, "-c",
-                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                "print('ready', flush=True); time.sleep(60)",
-            ],
-            process_group=leader.pid, stdout=subprocess.PIPE, text=True,
+    scope = ensure_execution_scope(
+        root_dir=tmp_path,
+        agent_harness="pi",
+        owner_session_id="native",
+        run_id="run_test",
+    )
+    token = register_execution_process(
+        root_dir=tmp_path, scope_id=scope["scope_id"], pid=999999999, label="host-owned"
+    )
+    assert not {"owner_pid", "owner_start_token", "guardian_pid"} & scope.keys()
+    record = execution_scope_snapshot(root_dir=tmp_path, scope_id=scope["scope_id"])[
+        "processes"
+    ][0]
+    assert record["token"] == token and record["status"] == "registered"
+    assert not {"witness", "start_token", "process_group_id"} & record.keys()
+    closed = close_execution_scope(
+        root_dir=tmp_path, scope_id=scope["scope_id"], reason="host_close"
+    )
+    assert closed["state"] == "closed"
+    assert closed["processes"][0]["status"] == "released"
+    with pytest.raises(RuntimeError, match="not open"):
+        assert_execution_scope_open(
+            root_dir=tmp_path, scope_id=scope["scope_id"], run_id="run_test"
         )
-        assert select.select([member.stdout], [], [], 10)[0]
-        assert member.stdout.readline().strip() == "ready"
-        managed = ManagedProcess(leader, term_timeout=0.05, kill_timeout=1)
-        managed.own_process_group()
-        if leader_exited:
-            leader.terminate()
-            leader.wait(timeout=5)
-        managed.terminate()
-        assert member.wait(timeout=5) == -signal.SIGKILL
-        assert leader.poll() is not None
-    finally:
-        for process in (member, leader):
-            if process is not None:
-                if process.poll() is None:
-                    process.kill()
-                process.wait(timeout=5)
-                if process.stdout is not None:
-                    process.stdout.close()
 
 
-@pytest.mark.host_process
-@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
-def test_pi_cleanup_accepts_an_empty_group_and_repeated_stop():
-    process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+def test_close_uses_only_its_direct_child_handle():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
-        managed = ManagedProcess(process)
-        managed.own_process_group()
-        assert process.wait(timeout=5) == 0
-        managed.terminate()
-        managed.terminate()
-        assert process.returncode == 0
+        managed = ManagedProcess(child)
+        managed.close()
+        managed.close()
+        assert child.returncode is not None
+        assert unrelated.poll() is None
     finally:
+        for process in (child, unrelated):
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+
+
+def test_output_capture_does_not_wait_for_an_external_pipe_writer():
+    read_fd, write_fd = os.pipe()
+    process = subprocess.Popen(
+        [sys.executable, "-c", "print('complete')"],
+        stdout=write_fd,
+        stderr=subprocess.PIPE,
+    )
+    process.stdout = os.fdopen(read_fd, "rb")
+    try:
+        started = time.monotonic()
+        result = capture_process(process, timeout=2)
+        assert result.returncode == 0
+        assert result.stdout == "complete\n"
+        assert time.monotonic() - started < 2
+    finally:
+        os.close(write_fd)
         if process.poll() is None:
             process.kill()
         process.wait(timeout=5)
-
-
-@pytest.mark.parametrize("errors", [("group ownership denied",), ()])
-def test_pi_cleanup_propagates_group_failure_without_leader_only_fallback(monkeypatch, errors):
-    monkeypatch.setattr(
-        managed_process, "stop_processes",
-        lambda *args, **kwargs: (ProcessStopOutcome(stopped=False, errors=errors),),
-    )
-    managed = ManagedProcess(SimpleNamespace(pid=123))
-    managed._process_group = object()
-    with pytest.raises(RuntimeError, match="process_group_cleanup_failed"):
-        managed.terminate()
-
-
-def test_pi_cleanup_retains_the_bounded_wait_after_kill(monkeypatch):
-    def wait(*, timeout):
-        assert timeout == pi_worker.PROCESS_STOP_TIMEOUT_SECONDS == 5
-        raise subprocess.TimeoutExpired("owned-process", timeout)
-
-    def stop(resources, *, term_timeout, kill_timeout):
-        assert term_timeout == kill_timeout == pi_worker.PROCESS_STOP_TIMEOUT_SECONDS
-        return (ProcessStopOutcome(stopped=True),)
-
-    monkeypatch.setattr(
-        managed_process, "stop_processes", stop,
-    )
-    process = SimpleNamespace(pid=123, poll=lambda: None, wait=wait)
-    managed = ManagedProcess(
-        process, term_timeout=pi_worker.PROCESS_STOP_TIMEOUT_SECONDS,
-        kill_timeout=pi_worker.PROCESS_STOP_TIMEOUT_SECONDS,
-    )
-    managed._process_group = object()
-
-    with pytest.raises(subprocess.TimeoutExpired):
-        managed.terminate()

@@ -15,7 +15,7 @@ def _search_with_two_candidates(
     tmp_path: Path,
     *,
     global_evidence_mode: str = "auto",
-    workspace_backend: str = "git_worktree",
+    workspace_provider: str = "git_worktree",
 ) -> tuple[FileSearchRuntime, str, list[tuple[str, str, Path]]]:
     project = make_project(tmp_path)
     (project / "evaluator.py").write_text(
@@ -26,14 +26,14 @@ def _search_with_two_candidates(
         encoding="utf-8",
     )
     data = spec_for(project, max_parallel=2).model_dump(mode="json")
-    data["workspace"] = {"backend": workspace_backend}
+    data["workspace"] = {"provider": workspace_provider}
     data["strategy"]["config"] = {
         "global_evidence_mode": global_evidence_mode,
     }
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"], native_host="codex",
+        [project / "evaluator.py"], agent_harness="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -68,7 +68,7 @@ def test_reference_workspace_is_exact_browsable_and_reused(
         "VALUE = 1\n",
         encoding="utf-8",
     )
-    tools.search_run_verifier(
+    tools.goal_plus_search_run_verifier(
         run_id,
         source_id,
         agent_session_id=source_session,
@@ -76,14 +76,14 @@ def test_reference_workspace_is_exact_browsable_and_reused(
     )
     [evidence] = [
         item
-        for item in tools.search_get_global_evidence(requester_session)
+        for item in tools.goal_plus_search_get_global_evidence(requester_session)
         if item["candidate_id"] == source_id
     ]
     assert evidence["reference_available"] is True
     assert evidence["artifact_ref"]["kind"] == "git_commit"
     assert evidence["artifact_ref"]["provider"] == "git_worktree"
 
-    opened = tools.search_reference_open(
+    opened = tools.goal_plus_search_reference_open(
         requester_session,
         source_id,
         evidence["iteration"],
@@ -110,14 +110,14 @@ def test_reference_workspace_is_exact_browsable_and_reused(
         "VALUE = 2\n",
         encoding="utf-8",
     )
-    tools.search_run_verifier(
+    tools.goal_plus_search_run_verifier(
         run_id,
         source_id,
         agent_session_id=source_session,
         hypothesis="Set a later candidate value",
     )
-    second_iteration = tools.search_list_iterations(source_session)[-1]["iteration"]
-    reopened = tools.search_reference_open(
+    second_iteration = tools.goal_plus_search_list_iterations(source_session)["items"][-1]["iteration"]
+    reopened = tools.goal_plus_search_reference_open(
         requester_session,
         source_id,
         second_iteration,
@@ -129,7 +129,7 @@ def test_reference_workspace_is_exact_browsable_and_reused(
         ["git", "rev-parse", "HEAD"], cwd=root, text=True
     ).strip() == reopened["artifact_ref"]["id"]
     assert len(list(root.parent.iterdir())) == 1
-    context = tools.search_get_agent_context(requester_session)
+    context = tools.goal_plus_search_get_agent_context(requester_session)
     assert len(context["reference_workspaces"]) == 1
     assert context["reference_workspaces"][0]["artifact_ref"] == reopened["artifact_ref"]
 
@@ -156,7 +156,7 @@ def test_independent_evidence_cannot_open_peer_reference(tmp_path: Path) -> None
 def test_copy_backend_uses_the_same_reference_contract(tmp_path: Path) -> None:
     runtime, run_id, candidates = _search_with_two_candidates(
         tmp_path,
-        workspace_backend="copy",
+        workspace_provider="copy",
     )
     source_id, source_session, source_workspace = candidates[0]
     requester_id, requester_session, requester_workspace = candidates[1]

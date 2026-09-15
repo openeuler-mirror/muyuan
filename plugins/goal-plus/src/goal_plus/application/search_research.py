@@ -16,11 +16,10 @@ class SearchResearch:
     def __init__(self, source: CandidateHostSource) -> None:
         self.source = source
 
-    def display_host_handle(self, session: AgentSessionRecord) -> str:
+    def display_session_handle(self, session: AgentSessionRecord) -> str:
         return (
-            session.host_handle.external_id
-            or session.host_handle.task_name
-            or session.host_handle.nickname
+            session.session_handle.external_id
+            or session.session_handle.nickname
             or ""
         )
 
@@ -46,7 +45,7 @@ class SearchResearch:
         for session in reversed(self.source.read_agent_sessions(run_id)):
             if session.candidate_id != candidate_id:
                 continue
-            metadata = session.host_handle.metadata or {}
+            metadata = session.session_handle.metadata or {}
             progress = metadata.get("progress_handoff")
             if not isinstance(progress, dict):
                 continue
@@ -470,9 +469,10 @@ class SearchResearch:
             {
                 "agent_session_id": session.agent_session_id,
                 "candidate_id": session.candidate_id,
-                "host": session.host,
-                "host_handle": session.host_handle.model_dump(mode="json"),
-                "host_handle_display": self.display_host_handle(session),
+                "agent_harness": session.agent_harness,
+            "runtime_provider": session.runtime_provider,
+                "session_handle": session.session_handle.model_dump(mode="json"),
+                "session_handle_display": self.display_session_handle(session),
                 "created_at": session.created_at,
                 "updated_at": session.updated_at,
                 "directive": session.directive,

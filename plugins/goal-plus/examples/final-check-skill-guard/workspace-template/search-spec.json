@@ -40,7 +40,7 @@
     }
   },
   "workspace": {
-    "backend": "git_worktree",
+    "provider": "git_worktree",
     "promotion_mode": "artifact_only"
   },
   "constraints": {

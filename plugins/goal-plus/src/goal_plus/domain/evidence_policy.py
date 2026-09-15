@@ -3,7 +3,7 @@
 import math
 
 from goal_plus.domain.annotation import EvidenceComparisonReference
-from goal_plus.domain.artifacts import ArtifactRef, WorkspaceBackend
+from goal_plus.domain.artifacts import ArtifactRef, WorkspaceProvider
 from goal_plus.domain.evidence import IterationRecord
 
 
@@ -27,7 +27,7 @@ def artifact_iteration_eligible(iteration: IterationRecord) -> bool:
 
 def iteration_artifact_ref(
     iteration: IterationRecord,
-    workspace_backend: WorkspaceBackend,
+    workspace_provider: WorkspaceProvider,
 ) -> ArtifactRef | None:
     if iteration.artifact_ref is not None:
         return iteration.artifact_ref
@@ -36,21 +36,21 @@ def iteration_artifact_ref(
     return ArtifactRef(
         kind="git_commit",
         id=iteration.git_head,
-        provider=workspace_backend,
+        provider=workspace_provider,
     )
 
 
 def iteration_matches_evidence_reference(
     iteration: IterationRecord,
     reference: EvidenceComparisonReference,
-    workspace_backend: WorkspaceBackend,
+    workspace_provider: WorkspaceProvider,
 ) -> bool:
     return bool(
         iteration.iteration == reference.iteration
         and (reference.commit is None or iteration.git_head == reference.commit)
         and (
             reference.artifact_ref is None
-            or iteration_artifact_ref(iteration, workspace_backend)
+            or iteration_artifact_ref(iteration, workspace_provider)
             == reference.artifact_ref
         )
     )

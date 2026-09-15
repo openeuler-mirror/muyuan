@@ -136,7 +136,7 @@ def test_annotation_completion_returns_publication_state_without_cross_queue_wak
 
 def test_thinkthread_host_modules_do_not_call_runtime_private_methods() -> None:
     package = Path(host_services.__file__).parent
-    for name in ("thinkthread_pool.py", "thinkthread_annotation.py"):
+    for name in ("thinkthread_annotation.py",):
         source = (package / name).read_text(encoding="utf-8")
         assert "runtime._" not in source
         assert "FileSearchRuntime._" not in source

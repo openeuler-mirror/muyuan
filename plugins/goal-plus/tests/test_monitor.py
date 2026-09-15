@@ -55,7 +55,7 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     first, second = runtime.start_batch(run_id, plan.plan_id)
@@ -63,21 +63,19 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     event_log = runtime_root / "host-logs" / "pi-rpc-agent.jsonl"
     session_file = runtime_root / "host-logs" / "pi-rpc-session.jsonl"
     event_log.parent.mkdir(parents=True, exist_ok=True)
-    event_log.write_text('{"type":"tool_call","name":"search_run_verifier"}\n', encoding="utf-8")
+    event_log.write_text('{"type":"tool_call","name":"goal_plus_search_run_verifier"}\n', encoding="utf-8")
     session_file.write_text('{"type":"message","role":"assistant"}\n', encoding="utf-8")
 
     runtime.bind_agent_handle(
         session.agent_session_id,
         {
-            "host": "pi-rpc",
+            "agent_harness": "pi",
             "external_id": session.agent_session_id,
             "metadata": {
                 "event_log": str(event_log),
                 "session_file": str(session_file),
                 "timed_out": False,
                 "runner_failed": False,
-                "soft_closeout_seconds": 45,
-                "soft_closeout_sent": True,
                 "time_advisory_sent": True,
                 "time_advisory": {
                     "remaining_seconds": 30,
@@ -121,7 +119,7 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
             },
         },
     )
-    SearchTools(runtime).search_run_verifier(
+    SearchTools(runtime).goal_plus_search_run_verifier(
         run_id,
         first.candidate_id,
         agent_session_id=session.agent_session_id,
@@ -145,7 +143,7 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
             "candidate_id": first.candidate_id,
             "iteration": 1,
             "attempt": 1,
-            "host": "pi-rpc",
+            "agent_harness": "pi",
             "model": "gpt-5.6-sol",
             "state": "running",
             "started_at": "2026-01-01T00:00:00Z",
@@ -188,16 +186,15 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     assert snapshot["strategy"] == {
         "name": "random",
         "max_parallel": frozen.spec.budget.max_parallel,
-        "workspace_backend": frozen.spec.workspace.backend,
+        "workspace_provider": frozen.spec.workspace.provider,
         "promotion_mode": frozen.spec.workspace.promotion_mode,
         "worker_budget": frozen.spec.strategy.worker_budget.model_dump(mode="json"),
         "worker_launch": None,
         "models": [],
-        "native_host": "pi",
+        "agent_harness": "pi",
         "orchestration_mode": "parallel_loops",
-        "worker_host": "pi-rpc",
+        "runtime_provider": "direct",
         "inner_agent": "autoresearch",
-        "legacy_worker_agent_type": None,
         "latest_plan": {
             "plan_id": plan.plan_id,
             "status": "started",
@@ -230,8 +227,6 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
     assert subagent["context"]["tokens"] == 12345
     assert subagent["usage_total"]["costTotal"] == 0.18
     assert subagent["duration_seconds"] == 12.5
-    assert subagent["soft_closeout_seconds"] == 45
-    assert subagent["soft_closeout_sent"] is True
     assert subagent["time_advisory_sent"] is True
     assert subagent["time_advisory"]["remaining_seconds"] == 30
     assert subagent["raw_logging"] is False
@@ -275,7 +270,7 @@ def test_pi_terminal_finalize_reports_combines_worker_annotator_and_main_usage(
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     search = FileSearchRuntime(runtime_root)
-    frozen = search.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
+    frozen = search.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = search.create_run(frozen.frozen_spec_id)
     plan = search.plan_next(run_id, requested_k=1)
     [candidate] = search.start_batch(run_id, plan.plan_id)
@@ -283,7 +278,7 @@ def test_pi_terminal_finalize_reports_combines_worker_annotator_and_main_usage(
     search.bind_agent_handle(
         session.agent_session_id,
         {
-            "host": "pi-rpc",
+            "agent_harness": "pi",
             "external_id": session.agent_session_id,
             "metadata": {
                 "pi_metrics": {
@@ -299,7 +294,7 @@ def test_pi_terminal_finalize_reports_combines_worker_annotator_and_main_usage(
             },
         },
     )
-    SearchTools(search).search_run_verifier(
+    SearchTools(search).goal_plus_search_run_verifier(
         run_id,
         candidate.candidate_id,
         agent_session_id=session.agent_session_id,
@@ -382,7 +377,7 @@ def test_goal_plus_monitor_snapshot_does_not_attach_unlinked_latest_run(
     goal = goal_runtime.create_goal("Analyze a model optimization target")
 
     search_runtime = FileSearchRuntime(runtime_root)
-    frozen = search_runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
+    frozen = search_runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], agent_harness="pi")
     unrelated_run_id = search_runtime.create_run(frozen.frozen_spec_id)
 
     snapshot = goal_plus_monitor_snapshot(
@@ -409,7 +404,7 @@ def test_goal_plus_monitor_snapshot_keeps_session_and_candidate_verifier_counts_
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
@@ -441,7 +436,7 @@ def test_goal_plus_monitor_snapshot_aggregates_multiple_search_tasks(
     goal_runtime = FileGoalPlusRuntime(runtime_root)
     goal = goal_runtime.create_goal("Run two verifier-backed searches")
     search_runtime = FileSearchRuntime(runtime_root)
-    frozen = search_runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
+    frozen = search_runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], agent_harness="pi")
 
     first_run_id = search_runtime.create_run(frozen.frozen_spec_id)
     search_runtime.plan_next(first_run_id, requested_k=1)
@@ -474,7 +469,8 @@ def test_goal_plus_monitor_snapshot_aggregates_multiple_search_tasks(
     assert snapshot["search_tasks"][1]["started_rounds_total"] == 1
     assert snapshot["search_tasks"][1]["strategy"] == {
         "name": "random",
-        "worker_host": "pi-rpc",
+        "agent_harness": "pi",
+        "runtime_provider": "direct",
     }
     aggregate = snapshot["search_task_aggregate"]
     assert {
@@ -526,7 +522,7 @@ def test_goal_plus_monitor_snapshot_is_exposed_to_mcp_and_pi_facade(tmp_path: Pa
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     mcp = create_mcp(tmp_path / ".search")
     tools = asyncio.run(tools_by_name(mcp))
@@ -534,7 +530,7 @@ def test_goal_plus_monitor_snapshot_is_exposed_to_mcp_and_pi_facade(tmp_path: Pa
     assert "goal_plus_monitor_snapshot" in tools
     assert "run_id" in tools["goal_plus_monitor_snapshot"].parameters["properties"]
     assert "goal_plus_id" in tools["goal_plus_monitor_snapshot"].parameters["properties"]
-    assert "search_get_agent_observability" in tools
+    assert "goal_plus_search_get_agent_observability" in tools
 
     result = call_pi_tool(
         runtime_root,
@@ -554,20 +550,19 @@ def test_goal_plus_monitor_snapshot_is_exposed_to_mcp_and_pi_facade(tmp_path: Pa
 
 def test_goal_plus_monitor_snapshot_projects_host_execution_scope(
     tmp_path: Path,
-    scope_owner,
-) -> None:
+    ) -> None:
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], native_host="pi")
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     scope = ensure_execution_scope(
         root_dir=runtime_root,
-        host="pi",
+        agent_harness="pi",
         owner_session_id="monitor-owner",
-        owner_pid=os.getpid(),
+
         run_id=run_id,
-        start_guardian=False,
+
     )
     close_execution_scope(
         root_dir=runtime_root,
@@ -579,7 +574,7 @@ def test_goal_plus_monitor_snapshot_projects_host_execution_scope(
 
     assert snapshot["execution_scope"] == {
         "scope_id": scope["scope_id"],
-        "host": "pi",
+        "agent_harness": "pi",
         "owner_session_id": "monitor-owner",
         "state": "closed",
         "active_count": 0,
@@ -593,7 +588,7 @@ def test_goal_plus_monitor_snapshot_projects_host_execution_scope(
     session = runtime.start_agent_session(run_id, task.candidate_id)
     observability = call_pi_tool(
         runtime_root,
-        "search_get_agent_observability",
+        "goal_plus_search_get_agent_observability",
         {"agent_session_id": session.agent_session_id},
     )
-    assert observability["host"] == "pi-rpc"
+    assert observability["agent_harness"] == "pi"

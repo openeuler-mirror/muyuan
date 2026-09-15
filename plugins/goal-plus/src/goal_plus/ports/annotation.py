@@ -16,7 +16,7 @@ from goal_plus.domain.annotation import (
     ToolViewOutput,
 )
 from goal_plus.domain.evidence import IterationRecord
-from goal_plus.domain.artifacts import WorkspaceBackend
+from goal_plus.domain.artifacts import WorkspaceProvider
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.search import FrozenSpec
 from goal_plus.domain.shared_tools import SharedToolRecord
@@ -48,7 +48,7 @@ class ThinkThreadAnnotationDispatch:
 @dataclass(frozen=True)
 class AnnotationCandidateEvidence:
     candidate_id: str
-    workspace_backend: WorkspaceBackend
+    workspace_provider: WorkspaceProvider
     iterations: list[IterationRecord]
 
 

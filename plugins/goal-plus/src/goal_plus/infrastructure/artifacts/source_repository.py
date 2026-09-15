@@ -10,7 +10,7 @@ from goal_plus.workspaces import LocalGitWorkspace, git_status
 
 class SourceRepository:
     def current_artifact(self, spec: SearchSpec) -> ArtifactRef | None:
-        return LocalGitWorkspace(spec.workspace.backend).current_artifact(
+        return LocalGitWorkspace(spec.workspace.provider).current_artifact(
             Path(spec.source_path)
         )
 
@@ -32,7 +32,7 @@ class SourceRepository:
             return []
 
     def validate_clean_source_repository(self, spec: SearchSpec) -> None:
-        if spec.workspace.backend != "git_worktree":
+        if spec.workspace.provider != "git_worktree":
             return
 
         source = Path(spec.source_path).resolve()
@@ -44,8 +44,8 @@ class SourceRepository:
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
-                "SourceGitPreflightFailed: Git is required for workspace backend "
-                f"{spec.workspace.backend!r}"
+                "SourceGitPreflightFailed: Git is required for workspace provider "
+                f"{spec.workspace.provider!r}"
             ) from exc
         except subprocess.CalledProcessError:
             # Plain directories keep the existing synthetic Git baseline path.
@@ -65,12 +65,12 @@ class SourceRepository:
         remaining = len(status) - preview_limit
         suffix = f"; ... and {remaining} more" if remaining > 0 else ""
         raise ValueError(
-            "DirtySourceWorkspace: workspace backend "
-            f"{spec.workspace.backend!r} requires a clean Git HEAD, but "
+            "DirtySourceWorkspace: workspace provider "
+            f"{spec.workspace.provider!r} requires a clean Git HEAD, but "
             f"{repository} has {len(status)} staged, unstaged, or non-ignored "
             f"untracked path(s): {preview}{suffix}. Commit, stash, remove, or "
             "ignore those paths before freezing the SearchSpec. To intentionally "
-            "snapshot the current filesystem, use workspace.backend='copy' with "
+            "snapshot the current filesystem, use workspace.provider='copy' with "
             "promotion_mode='artifact_only'."
         )
 
@@ -79,7 +79,7 @@ class SourceRepository:
         spec: SearchSpec,
         artifact_entries: list[tuple[Path, str]],
     ) -> None:
-        if spec.workspace.backend != "git_worktree":
+        if spec.workspace.provider != "git_worktree":
             return
         source = Path(spec.source_path).resolve()
         try:

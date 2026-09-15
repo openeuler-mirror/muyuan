@@ -10,7 +10,6 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -24,585 +23,37 @@ from goal_plus.models import EvidenceViewRecord, SearchSpec, SupplementalEvaluat
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.pi_tool import call_pi_tool
 from goal_plus.runtime import FileSearchRuntime
-from goal_plus.infrastructure.verifiers.thinkthread_attempt import ProviderThinkThreadAttempt
 from goal_plus.thinkthread_artifacts import ThinkThreadSnapshotReader
-from goal_plus.thinkthread_agent_posix import AgentPosixBridgeError
 from goal_plus.thinkthread_annotation import (
     ANNOTATION_TOOLS,
     _process_message,
     annotation_snapshot,
     close_thinkthread_annotation,
     kick_thinkthread_annotation_service,
+    kick_thinkthread_annotation,
     serve_thinkthread_annotation,
     service_thinkthread_annotation,
 )
-from goal_plus.thinkthread_pool import (
-    _load_job,
-    _write_job,
-    close_pool,
-    continue_pool,
-    open_thinkthread_search_pool,
-    wait_any,
-)
-from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
+from tests._runtime_helpers import make_project, start_host_verified_goal
+from tests._thinkthread_sdk import IntegratedAgentPosix, thinkthread_spec
+from tests._thinkthread_candidates import bind_candidate, verify_candidate, close_candidate
 
 
-def fs_path(path: str) -> dict[str, str]:
-    return {
-        "utf8": path,
-        "bytesBase64": base64.b64encode(path.encode()).decode("ascii"),
-    }
 
 
 def test_thinkthread_annotation_rpc_allowlist_is_read_only() -> None:
     assert ANNOTATION_TOOLS == {
-        "thinkthread_annotation_next",
-        "thinkthread_artifact_view_list",
-        "thinkthread_artifact_view_stat",
-        "thinkthread_artifact_view_pread",
-        "thinkthread_artifact_view_diff",
-        "thinkthread_annotation_submit",
+        "goal_plus_thinkthread_annotation_next",
+        "goal_plus_thinkthread_artifact_view_list",
+        "goal_plus_thinkthread_artifact_view_stat",
+        "goal_plus_thinkthread_artifact_view_pread",
+        "goal_plus_thinkthread_artifact_view_diff",
+        "goal_plus_thinkthread_annotation_submit",
     }
 
 
-class IntegratedAgentPosix:
-    def __init__(self, project: Path) -> None:
-        self.project = project
-        self.operations: list[tuple[str, dict[str, Any]]] = []
-        self.request_status: dict[str, dict[str, Any]] = {}
-        self.children: list[dict[str, Any]] = []
-        self.branches: dict[str, dict[str, Any]] = {}
-        self.messages: dict[str, list[dict[str, Any]]] = {}
-        self.sent: list[dict[str, Any]] = []
-        self.snapshot_index = 0
-        self.snapshots: set[str] = set()
-        self.completion_unknown_once: set[str] = set()
-        self.completion_unknown_before_once: set[str] = set()
-        self.request_status_completion_unknown_once: set[str] = set()
-        self.close_failure_once: set[str] = set()
-        self.definitive_failure_once: set[str] = set()
-        self.forced_verifier_scores: list[float] = []
-        self.inner_git_settlement_completion_unknown_once = False
-
-    def preflight(self) -> dict[str, Any]:
-        return {"controlProtocolVersion": 2}
-
-    def self_view(self) -> dict[str, Any]:
-        return {
-            "thinkthreadId": "tt-root",
-            "parentThinkthreadId": None,
-            "capabilities": [
-                {"id": "thinkthread.child", "version": 1},
-                {"id": "thinkthread.message", "version": 1},
-                {"id": "thinkthread.fs.self", "version": 1},
-                {"id": "thinkthread.fs", "version": 1},
-            ],
-            "profiles": [
-                {
-                    "alias": "self",
-                    "agent": "pi",
-                    "allowedDerivations": [
-                        {"session": "fresh", "fs": "private_branch"}
-                    ],
-                    "allowedCapabilities": [
-                        {"id": "thinkthread.message", "version": 1},
-                        {"id": "thinkthread.fs.self", "version": 1},
-                    ],
-                    "allowedModels": [],
-                }
-            ],
-        }
-
-    def snapshot_diff_all(
-        self,
-        base_snapshot_id: str,
-        target_snapshot_id: str,
-    ) -> list[dict[str, Any]]:
-        self.operations.append(
-            (
-                "fs.snapshot.diff.all",
-                {
-                    "baseSnapshotId": base_snapshot_id,
-                    "targetSnapshotId": target_snapshot_id,
-                },
-            )
-        )
-        if base_snapshot_id == target_snapshot_id:
-            return []
-        return [{"path": fs_path("project/initial_program.py"), "kind": "modified"}]
-
-    def snapshot_read_file(
-        self,
-        snapshot_id: str,
-        path: str,
-        *,
-        max_bytes: int,
-    ) -> bytes:
-        content = self._file(snapshot_id, path)
-        if len(content) > max_bytes:
-            raise ValueError("file exceeds max_bytes")
-        return content
-
-    def snapshot_readdir_all(
-        self,
-        snapshot_id: str,
-        path: str,
-    ) -> list[dict[str, Any]]:
-        self.operations.append(
-            ("fs.snapshot.readdir.all", {"snapshotId": snapshot_id, "path": path})
-        )
-        assert path in {".", "project"}
-        entries = []
-        for name in ("evaluator.py", "initial_program.py"):
-            full_path = f"project/{name}"
-            content = self._file(snapshot_id, full_path)
-            entries.append(
-                {
-                    "path": fs_path(full_path),
-                    "kind": "file",
-                    "mode": 0o644,
-                    "len": len(content),
-                }
-            )
-        return entries
-
-    def child(self, child_id: str) -> dict[str, Any]:
-        return next(item for item in self.children if item["thinkthreadId"] == child_id)
-
-    def finish(self, child_id: str) -> None:
-        child = self.child(child_id)
-        child["executionState"] = "absent"
-        child["agentState"] = "ready"
-        child["lastWakeOutcome"] = {
-            "messageId": child["initialMessageId"],
-            "outcome": "completed",
-        }
-        child["completion"] = {"reason": "completed"}
-
-    def enqueue(self, child_id: str, payload: dict[str, Any]) -> None:
-        messages = self.messages.setdefault(child_id, [])
-        messages.append(
-            {
-                "messageId": f"msg-worker-{child_id}-{len(messages) + 1}",
-                "senderThinkthreadId": child_id,
-                "recipientThinkthreadId": "tt-root",
-                "text": json.dumps(payload, separators=(",", ":")),
-                "truncated": False,
-            }
-        )
-
-    def _file(self, snapshot_id: str, path: str) -> bytes:
-        if path == "project/evaluator.py":
-            return (self.project / "evaluator.py").read_bytes()
-        if path == "project/initial_program.py":
-            value = (
-                0
-                if snapshot_id == "fsnap-S0"
-                else 3
-                if snapshot_id == "fsnap-P"
-                else int(snapshot_id.rsplit("-", 1)[1])
-            )
-            return f"VALUE = {value}\n".encode()
-        raise AssertionError((snapshot_id, path))
-
-    def _record_request(
-        self,
-        operation: str,
-        params: dict[str, Any],
-        result: dict[str, Any],
-    ) -> dict[str, Any]:
-        request_id = str(params["requestId"])
-        self.request_status[request_id] = {
-            "requestId": request_id,
-            "method": operation,
-            "state": "succeeded",
-            "result": result,
-        }
-        if operation in self.completion_unknown_once:
-            self.completion_unknown_once.remove(operation)
-            raise AgentPosixBridgeError(
-                f"{operation} response lost",
-                error={"delivery": "completion_unknown"},
-            )
-        return result
-
-    def invoke(
-        self,
-        operation: str,
-        params: dict[str, Any] | None = None,
-        **_: Any,
-    ) -> dict[str, Any]:
-        normalized = dict(params or {})
-        self.operations.append((operation, normalized))
-        if operation in self.completion_unknown_before_once:
-            self.completion_unknown_before_once.remove(operation)
-            raise AgentPosixBridgeError(
-                f"{operation} completion unknown",
-                error={"delivery": "completion_unknown"},
-            )
-        if operation in self.definitive_failure_once:
-            self.definitive_failure_once.remove(operation)
-            request_id = str(normalized["requestId"])
-            self.request_status[request_id] = {
-                "requestId": request_id,
-                "method": operation,
-                "state": "failed",
-                "error": {
-                    "code": "FsRunRejected",
-                    "message": "verifier execution rejected",
-                    "retryable": False,
-                },
-            }
-            raise AgentPosixBridgeError(
-                f"{operation} definitively failed",
-                error={
-                    "rejection": {
-                        "error": {
-                            "code": "FsRunRejected",
-                            "message": "verifier execution rejected",
-                            "retryable": False,
-                        }
-                    }
-                },
-            )
-        if operation == "fs.stat":
-            return {
-                "kind": "direct",
-                "state": "attached",
-                "storage": {
-                    "activeRequestCount": 0,
-                    "activeRequestLimit": 32,
-                    "snapshotCount": self.snapshot_index,
-                    "pendingSnapshotCreations": 0,
-                    "snapshotLimit": 1024,
-                },
-            }
-        if operation == "fs.snapshot.create":
-            self.snapshot_index += 1
-            self.snapshots.add("fsnap-S0")
-            return self._record_request(
-                operation,
-                normalized,
-                {"snapshotId": "fsnap-S0", "ownerThinkthreadId": "tt-root"},
-            )
-        if operation == "fs.request.status":
-            status = dict(self.request_status[str(normalized["requestId"])])
-            method = str(status.get("method") or "")
-            if method in self.request_status_completion_unknown_once:
-                self.request_status_completion_unknown_once.remove(method)
-                raise AgentPosixBridgeError(
-                    f"{method} status response lost",
-                    error={"delivery": "completion_unknown"},
-                )
-            return status
-        if operation == "fs.request.close":
-            request_id = str(normalized["requestId"])
-            method = str(self.request_status[request_id]["method"])
-            if method in self.close_failure_once:
-                self.close_failure_once.remove(method)
-                raise AgentPosixBridgeError(
-                    f"{method} request close failed",
-                    error={
-                        "rejection": {
-                            "error": {
-                                "code": "FsRequestCloseFailed",
-                                "message": "request close failed",
-                                "retryable": False,
-                            }
-                        }
-                    },
-                )
-            return {}
-        if operation == "fs.run":
-            if normalized.get("writes") == "snapshot":
-                argv = normalized["invocation"]["argv"]
-                iteration = int(argv[argv.index("--iteration") + 1])
-                attempt_head = str(argv[argv.index("--attempt-git-head") + 1])
-                restore_head = (
-                    str(argv[argv.index("--restore-git-head") + 1])
-                    if "--restore-git-head" in argv
-                    else None
-                )
-                self.snapshot_index += 1
-                target_snapshot = f"fsnap-{self.snapshot_index}"
-                self.snapshots.add(target_snapshot)
-                payload = {
-                    "ok": True,
-                    "protocol": "goal-plus.inner-git.v1",
-                    "adapter": "autoresearch-git",
-                    "attempt_git_head": attempt_head,
-                    "ledger_git_head": f"{1000 + iteration:040x}",
-                    "baseline_git_head": "b" * 40,
-                    "result_count": iteration,
-                    "restored_to_git_head": restore_head,
-                }
-                stdout = json.dumps(payload).encode() + b"\n"
-                if self.inner_git_settlement_completion_unknown_once:
-                    self.inner_git_settlement_completion_unknown_once = False
-                    self.completion_unknown_once.add(operation)
-                return self._record_request(
-                    operation,
-                    normalized,
-                    {
-                        "exit": {"kind": "code", "code": 0},
-                        "outputChunks": [
-                            {
-                                "sequence": 0,
-                                "stream": "stdout",
-                                "dataBase64": base64.b64encode(stdout).decode("ascii"),
-                            }
-                        ],
-                        "outputTruncated": False,
-                        "retainedOutputBytes": len(stdout),
-                        "observedOutputBytes": len(stdout),
-                        "runKey": f"inner-git-{iteration}",
-                        "targetSnapshotId": target_snapshot,
-                        "metrics": {},
-                    },
-                )
-            snapshot_id = str(normalized["snapshotId"])
-            score = self.forced_verifier_scores.pop(0) if self.forced_verifier_scores else (
-                0
-                if snapshot_id == "fsnap-S0"
-                else 3
-                if snapshot_id == "fsnap-P"
-                else int(snapshot_id.rsplit("-", 1)[1])
-            )
-            stdout = json.dumps({"combined_score": score}).encode() + b"\n"
-            result = {
-                "exit": {"kind": "code", "code": 0},
-                "outputChunks": [
-                    {
-                        "sequence": 0,
-                        "stream": "stdout",
-                        "dataBase64": base64.b64encode(stdout).decode("ascii"),
-                    }
-                ],
-                "outputTruncated": False,
-                "retainedOutputBytes": len(stdout),
-                "observedOutputBytes": len(stdout),
-                "runKey": f"run-{snapshot_id}",
-                "metrics": {},
-            }
-            return self._record_request(operation, normalized, result)
-        if operation == "fs.snapshot.stat":
-            path = str(normalized["path"])
-            content = self._file(str(normalized["snapshotId"]), path)
-            return {
-                "path": fs_path(path),
-                "kind": "file",
-                "mode": 0o644,
-                "len": len(content),
-            }
-        if operation == "fs.snapshot.pread":
-            content = self._file(
-                str(normalized["snapshotId"]), str(normalized["path"])
-            )
-            offset = int(normalized["offset"])
-            chunk = content[offset : offset + int(normalized["length"])]
-            return {
-                "offset": offset,
-                "dataBase64": base64.b64encode(chunk).decode("ascii"),
-                "bytesRead": len(chunk),
-                "eof": offset + len(chunk) >= len(content),
-            }
-        if operation == "thinkthread.list":
-            return {"children": [dict(item) for item in self.children]}
-        if operation == "thinkthread.spawn":
-            index = len(self.children) + 1
-            child_id = f"tt-child-{index}"
-            branch_id = f"fsbranch-child-{index}"
-            result = {
-                "thinkthreadId": child_id,
-                "capabilities": [{"id": "thinkthread.message", "version": 1}],
-                "fs": {"kind": "private", "fsBranchId": branch_id},
-                "initialMessageId": f"msg-child-{index}",
-            }
-            self.children.append(
-                {
-                    **result,
-                    "parentThinkthreadId": "tt-root",
-                    "agentState": "running",
-                    "executionState": "running",
-                    "lastWakeOutcome": None,
-                    "completion": None,
-                }
-            )
-            self.branches[branch_id] = {
-                "branchId": branch_id,
-                "thinkthreadId": child_id,
-                "baseSnapshotId": normalized["fsSnapshotId"],
-                "controlGeneration": 0,
-                "state": "attached",
-            }
-            self.messages[child_id] = []
-            if operation in self.completion_unknown_once:
-                self.completion_unknown_once.remove(operation)
-                registration_nonce = str(normalized["initialMessage"]).split(
-                    "registration_nonce=", 1
-                )[1].split(";", 1)[0]
-                self.enqueue(
-                    child_id,
-                    {
-                        "protocol": "goal-plus.thinkthread.v3",
-                        "type": "registration",
-                        "registration_nonce": registration_nonce,
-                    },
-                )
-                raise AgentPosixBridgeError(
-                    "spawn response lost",
-                    error={"delivery": "completion_unknown"},
-                )
-            return result
-        if operation == "thinkthread.get":
-            try:
-                return dict(self.child(str(normalized["id"])))
-            except StopIteration as exc:
-                raise AgentPosixBridgeError(
-                    "Child not found",
-                    error={
-                        "rejection": {
-                            "error": {
-                                "code": "ThinkThreadNotFound",
-                                "message": "Child not found",
-                                "retryable": False,
-                            }
-                        }
-                    },
-                ) from exc
-        if operation == "message.receive":
-            child_id = str(normalized["senderThinkthreadId"])
-            after = int(str(normalized.get("after") or "0"))
-            messages = self.messages[child_id][after:]
-            return {
-                "messages": [dict(item) for item in messages],
-                "nextCursor": str(after + len(messages)),
-                "hasMore": False,
-            }
-        if operation == "message.send":
-            self.sent.append(normalized)
-            if normalized.get("wake") is True:
-                child = self.child(str(normalized["recipientThinkthreadId"]))
-                child["executionState"] = "running"
-                child["agentState"] = "running"
-                child["lastWakeOutcome"] = None
-                if operation in self.completion_unknown_once:
-                    self.completion_unknown_once.remove(operation)
-                    dispatch_nonce = str(normalized["text"]).split(
-                        "dispatch_nonce=", 1
-                    )[1].split(";", 1)[0].split(".", 1)[0]
-                    self.enqueue(
-                        str(normalized["recipientThinkthreadId"]),
-                        {
-                            "protocol": "goal-plus.thinkthread.v3",
-                            "type": "dispatch_ack",
-                            "dispatch_nonce": dispatch_nonce,
-                        },
-                    )
-                    raise AgentPosixBridgeError(
-                        "wake response lost",
-                        error={"delivery": "completion_unknown"},
-                    )
-            return {"messageId": f"msg-root-{len(self.sent)}"}
-        if operation == "thinkthread.signal":
-            child = self.child(str(normalized["id"]))
-            child["executionState"] = "absent"
-            child["agentState"] = "ready"
-            return {}
-        if operation == "thinkthread.wait":
-            return {"child": dict(self.child(str(normalized["id"])))}
-        if operation == "fs.branch.snapshot":
-            self.snapshot_index += 1
-            snapshot_id = f"fsnap-{self.snapshot_index}"
-            result = {
-                "snapshotId": snapshot_id,
-                "createdFromBranchId": normalized["branchId"],
-            }
-            self.snapshots.add(snapshot_id)
-            return self._record_request(operation, normalized, result)
-        if operation == "workflow.fs.snapshot.patchBytes":
-            self.snapshots.add("fsnap-P")
-            return self._record_request(
-                "fs.snapshot.patch",
-                normalized,
-                {
-                    "snapshot": {
-                        "snapshotId": "fsnap-P",
-                        "ownerThinkthreadId": "tt-root",
-                    },
-                    "changedPaths": len(normalized["mutations"]),
-                    "changedBytes": sum(
-                        len(base64.b64decode(item.get("dataBase64", "")))
-                        for item in normalized["mutations"]
-                        if item["kind"] == "put_file"
-                    ),
-                },
-            )
-        if operation == "fs.apply":
-            return self._record_request(
-                operation,
-                normalized,
-                {
-                    "status": "applied",
-                    "baseSnapshotId": normalized["baseSnapshotId"],
-                    "targetSnapshotId": normalized["targetSnapshotId"],
-                    "changedPaths": 1,
-                    "changedBytes": len(b"VALUE = 3\n"),
-                },
-            )
-        if operation == "fs.branch.stat":
-            return dict(self.branches[str(normalized["branchId"])])
-        if operation == "fs.branch.reset":
-            branch = self.branches[str(normalized["branchId"])]
-            branch["baseSnapshotId"] = normalized["toSnapshotId"]
-            branch["controlGeneration"] += 1
-            if operation in self.completion_unknown_once:
-                self.completion_unknown_once.remove(operation)
-                raise AgentPosixBridgeError(
-                    "branch reset response lost",
-                    error={"delivery": "completion_unknown"},
-                )
-            return dict(branch)
-        if operation == "fs.branch.remove":
-            branch = self.branches[str(normalized["branchId"])]
-            branch["state"] = "removed"
-            branch["controlGeneration"] += 1
-            if operation in self.completion_unknown_once:
-                self.completion_unknown_once.remove(operation)
-                raise AgentPosixBridgeError(
-                    "branch removal response lost",
-                    error={"delivery": "completion_unknown"},
-                )
-            return dict(branch)
-        if operation == "thinkthread.destroy":
-            child_id = str(normalized["id"])
-            self.children = [
-                item for item in self.children if item["thinkthreadId"] != child_id
-            ]
-            if operation in self.completion_unknown_once:
-                self.completion_unknown_once.remove(operation)
-                raise AgentPosixBridgeError(
-                    "destroy response lost",
-                    error={"delivery": "completion_unknown"},
-                )
-            return {}
-        if operation == "fs.snapshot.remove":
-            snapshot_id = str(normalized["snapshotId"])
-            self.snapshots.discard(snapshot_id)
-            return self._record_request(operation, normalized, {})
-        raise AssertionError(operation)
 
 
-def thinkthread_spec(project: Path) -> SearchSpec:
-    payload = spec_for(project, max_parallel=2).model_dump(mode="json")
-    payload["strategy"].update(
-        {
-            "worker_budget": {"max_runtime_seconds": 60},
-            "worker_launch": {},
-        }
-    )
-    payload["workspace"] = {"backend": "thinkthread", "promotion_mode": "apply"}
-    return SearchSpec.model_validate(payload)
 
 
 @pytest.mark.parametrize("executable", ["python", "python3"])
@@ -647,8 +98,8 @@ def test_thinkthread_verifier_uses_runtime_python_before_host_resolution(
     spec = thinkthread_spec(project)
     arguments = ["a b", "$(touch unexpected)", "X=value"]
     spec.process_verifiers[0].command = [executable, "evaluator.py", *arguments]
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(spec, [evaluator], native_host="pi")
+    runtime = FileSearchRuntime(tmp_path.parent / (tmp_path.name + "-session-runtime"))
+    frozen = runtime.freeze_spec(spec, [evaluator], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     run = runtime.search_run.state.read_run(run_id)
     assert run.workspace_bootstrap_verification.aggregate_score == 42
@@ -665,14 +116,14 @@ def test_thinkthread_autoresearch_launch_uses_pi_prompt_and_private_git_projecti
     project = make_project(tmp_path)
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
+    runtime = FileSearchRuntime(tmp_path.parent / (tmp_path.name + "-session-runtime"))
     payload = thinkthread_spec(project).model_dump(mode="json")
     payload["budget"]["max_parallel"] = 1
     payload["strategy"]["inner_agent"] = "autoresearch"
 
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(payload),
-        [project / "evaluator.py"], native_host="pi",
+        [project / "evaluator.py"], agent_harness="pi",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -683,7 +134,7 @@ def test_thinkthread_autoresearch_launch_uses_pi_prompt_and_private_git_projecti
     assert frozen.spec.strategy.inner_agent == "autoresearch"
     assert binding["inner_agent_id"] == "autoresearch"
     assert binding["adapter_version"] == "builtin-autoresearch-git-v1"
-    assert binding["worker_host"] == "thinkthread"
+    assert binding["runtime_provider"] == "thinkthread"
     assert binding["prompt_asset"] == "assets/pi/prompts/search-candidate-worker.md"
     assert binding["workspace_ledger_projection"] == "results_tsv"
     assert "# Search Candidate Worker" in session.launch["message"]
@@ -704,285 +155,10 @@ def test_thinkthread_autoresearch_launch_uses_pi_prompt_and_private_git_projecti
     assert not task.workspace.exists()
 
 
-def test_thinkthread_autoresearch_settles_private_git_around_outer_snapshots(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    payload = thinkthread_spec(project).model_dump(mode="json")
-    payload["budget"]["max_parallel"] = 1
-    payload["strategy"]["inner_agent"] = "autoresearch"
-    frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(payload),
-        [project / "evaluator.py"], native_host="pi",
-    )
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    [task] = runtime.start_batch(
-        run_id,
-        runtime.plan_next(run_id, requested_k=1).plan_id,
-    )
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-    durable_job = _load_job(runtime.root_dir, opened["pool_id"], str(job["job_id"]))
-    spawn = next(
-        params
-        for operation, params in client.operations
-        if operation == "thinkthread.spawn"
-    )
-    assert "goal_plus_inner_git_binding=" in spawn["initialMessage"]
-    assert durable_job["inner_git_binding"]["adapter"] == "autoresearch-git"
-    assert durable_job["inner_git_binding"]["source_subdir"] == "project"
-
-    client.forced_verifier_scores = [5.0, 1.0]
-    first_receipt = submit_candidate_attempt(runtime, opened, job, client)
-    client.finish(str(job["thinkthread_id"]))
-    first = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )["event"]
-    assert first["kind"] == "candidate_ready"
-    assert first["attempt_result"]["attempt_id"] == first_receipt["attempt_id"]
-    assert first["attempt_result"]["attempt_artifact_ref"] == {
-        "kind": "fs_snapshot",
-        "id": "fsnap-2",
-        "provider": "thinkthread",
-    }
-    assert first["attempt_result"]["workspace_artifact_after_attempt"]["id"] == (
-        "fsnap-3"
-    )
-    first_record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
-    assert first_record.iterations[0].git_head is None
-    assert first_record.iterations[0].ledger_git_head is None
-    assert first_record.iterations[0].artifact_ref.id == "fsnap-2"
-    assert first_record.iterations[0].ledger_artifact_ref.id == "fsnap-3"
-    assert first_record.results_ledger[0].git_head is None
-    assert first_record.results_ledger_artifact_ref.id == "fsnap-3"
-    assert first_record.inner_agent_state["result_count"] == 1
-
-    monitor = goal_plus_monitor_snapshot(runtime.root_dir, run_id=run_id)
-    projected = monitor["candidates"][task.candidate_id]["results_tsv"]
-    assert projected["path"] == "results.tsv"
-    assert projected["scope"] == "thinkthread_child_private"
-    assert projected["exists"] is True
-    assert projected["last_updated_at"] is None
-    assert projected["size_bytes"] is None
-    assert projected["row_count"] == 1
-
-    continued = continue_pool(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        candidate_id=task.candidate_id,
-        message="Try a lower-scoring follow-up",
-        max_runtime_seconds=60,
-        client=client,  # type: ignore[arg-type]
-    )
-    continued_job = continued["jobs"][0]
-    wake = next(
-        params
-        for operation, params in reversed(client.operations)
-        if operation == "message.send" and params.get("wake") is True
-    )
-    assert "goal_plus_inner_git_binding=" in wake["text"]
-    assert "authoritative" in wake["text"]
-    second_receipt = submit_candidate_attempt(
-        runtime,
-        opened,
-        continued_job,
-        client,
-        hypothesis="try a worse value",
-    )
-    client.finish(str(job["thinkthread_id"]))
-    second = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )["event"]
-    assert second["attempt_result"]["attempt_id"] == second_receipt["attempt_id"]
-    assert second["attempt_result"]["score_report"]["disposition"] == "discard"
-    assert second["attempt_result"]["attempt_artifact_ref"]["id"] == "fsnap-4"
-    assert second["attempt_result"]["workspace_artifact_after_attempt"]["id"] == (
-        "fsnap-5"
-    )
-
-    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
-    assert [item.artifact_ref.id for item in record.iterations] == [
-        "fsnap-2",
-        "fsnap-4",
-    ]
-    assert [item.ledger_artifact_ref.id for item in record.iterations] == [
-        "fsnap-3",
-        "fsnap-5",
-    ]
-    assert [item.disposition for item in record.iterations] == ["keep", "discard"]
-    discarded_receipt = record.iterations[1].settlement_receipt
-    assert discarded_receipt is not None
-    assert discarded_receipt.attempt_artifact_ref.id == "fsnap-4"
-    assert discarded_receipt.rollback is not None
-    assert discarded_receipt.rollback.target_artifact_ref.id == "fsnap-2"
-    assert discarded_receipt.rollback.restored_artifact_ref.id == "fsnap-5"
-    assert all(item.git_head is None for item in record.iterations)
-    assert all(item.git_head is None for item in record.results_ledger)
-    assert record.results_ledger_artifact_ref.id == "fsnap-5"
-    assert record.inner_agent_state["result_count"] == 2
-    assert record.inner_agent_state["attempt_git_heads"] == {
-        "1": f"{1:040x}",
-        "2": f"{2:040x}",
-    }
-    assert set(runtime.artifact_lifecycle.owned_snapshots(run_id)) == {
-        "fsnap-S0",
-        "fsnap-2",
-        "fsnap-3",
-        "fsnap-4",
-        "fsnap-5",
-    }
-    settlement_runs = [
-        params
-        for operation, params in client.operations
-        if operation == "fs.run" and params.get("writes") == "snapshot"
-    ]
-    assert len(settlement_runs) == 2
-    assert "--restore-git-head" not in settlement_runs[0]["invocation"]["argv"]
-    second_argv = settlement_runs[1]["invocation"]["argv"]
-    restore_index = second_argv.index("--restore-git-head")
-    assert second_argv[restore_index + 1] == f"{1:040x}"
-    assert client.branches[str(job["fs_branch_id"])]["baseSnapshotId"] == "fsnap-5"
 
 
-def test_thinkthread_autoresearch_recovers_inner_git_settlement_exactly_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    payload = thinkthread_spec(project).model_dump(mode="json")
-    payload["budget"]["max_parallel"] = 1
-    payload["strategy"]["inner_agent"] = "autoresearch"
-    frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(payload),
-        [project / "evaluator.py"], native_host="pi",
-    )
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=1).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-    submit_candidate_attempt(runtime, opened, job, client)
-    client.inner_git_settlement_completion_unknown_once = True
-    client.request_status_completion_unknown_once.add("fs.run")
-    client.finish(str(job["thinkthread_id"]))
-
-    unresolved = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert unresolved["event"] is None
-    pending = unresolved["pool"]["jobs"][0]
-    assert pending["status"] == "needs_recovery"
-    assert pending["recovery"]["stage"] == "attempt_verification"
-
-    recovered = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert recovered["event"]["kind"] == "candidate_ready"
-    record = runtime.candidate_creation.state.read_candidate(run_id, str(job["candidate_id"]))
-    assert len(record.iterations) == 1
-    assert len(record.results_ledger) == 1
-    assert record.inner_agent_state["result_count"] == 1
-    settlement_calls = [
-        params
-        for operation, params in client.operations
-        if operation == "fs.run" and params.get("writes") == "snapshot"
-    ]
-    assert len(settlement_calls) == 1
-    settlement = next(
-        item
-        for item in record.provider_mutations
-        if item.operation == "inner_git_settlement"
-    )
-    assert settlement.state == "closed"
 
 
-@pytest.mark.parametrize("mismatch", ["child", "snapshot", "inner_git"])
-def test_attempt_rejects_mismatched_typed_provider_facts_before_settlement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mismatch: str,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    payload = thinkthread_spec(project).model_dump(mode="json")
-    payload["budget"]["max_parallel"] = 1
-    payload["strategy"]["inner_agent"] = "autoresearch"
-    frozen = runtime.freeze_spec(SearchSpec.model_validate(payload), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    [task] = runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=1).plan_id)
-    opened = open_thinkthread_search_pool(root_dir=runtime.root_dir, run_id=run_id, client=client)
-    job = _load_job(runtime.root_dir, opened["pool_id"], opened["jobs"][0]["job_id"])
-    client.finish(job["thinkthread_id"])
-    method = {"child": "read_child", "snapshot": "capture", "inner_git": "settle_inner_git"}[mismatch]
-    original = getattr(ProviderThinkThreadAttempt, method)
-
-    def wrong_facts(self, *args, **kwargs):
-        result = original(self, *args, **kwargs)
-        if mismatch == "child":
-            return replace(result, parent_thinkthread_id="tt-other-root")
-        if mismatch == "snapshot":
-            return replace(result, branch_id="fsbranch-other")
-        return replace(result, settlement=replace(result.settlement, baseline_git_head="c" * 40))
-
-    monkeypatch.setattr(ProviderThinkThreadAttempt, method, wrong_facts)
-    params = dict(
-        run_id=run_id, candidate_id=task.candidate_id,
-        agent_session_id=job["agent_session_id"], thinkthread_id=job["thinkthread_id"],
-        branch_id=job["fs_branch_id"], hypothesis="Verify exact provider facts",
-        attempt_id="attempt-typed-facts", io=runtime.thinkthread_attempt_io(client),
-        inner_git_attempt={
-            "protocol": "goal-plus.inner-git.v1", "adapter": "autoresearch-git",
-            "attempt_git_head": f"{1:040x}", "baseline_git_head": "b" * 40,
-            "result_count_before": 0,
-        },
-    )
-    before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
-    with pytest.raises((PermissionError, RuntimeError), match="mismatch"):
-        runtime.thinkthread_verification.verify(**params)
-    rejected = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
-    assert rejected.iterations == before.iterations
-    assert rejected.results_ledger == before.results_ledger
-    assert rejected.score_report == before.score_report
-    assert rejected.inner_agent_state == before.inner_agent_state
-
-    monkeypatch.setattr(ProviderThinkThreadAttempt, method, original)
-    report = runtime.thinkthread_verification.verify(**params)
-    assert report.process_passed is True
-    settled = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
-    assert len(settled.iterations) == len(settled.results_ledger) == 1
-    assert sum(op == "fs.branch.snapshot" for op, _ in client.operations) == 1
-    assert sum(op == "fs.run" and p.get("writes") == "snapshot" for op, p in client.operations) == 1
 
 
 def annotation_request(
@@ -1064,181 +240,90 @@ def test_thinkthread_annotation_rpc_rejects_execution_before_provider_call(
     assert client.operations == []
 
 
-def submit_candidate_attempt(
-    runtime: FileSearchRuntime,
-    opened: dict[str, Any],
-    job: dict[str, Any],
-    client: IntegratedAgentPosix,
-    *,
-    hypothesis: str | None = None,
-) -> dict[str, Any]:
-    current = _load_job(runtime.root_dir, opened["pool_id"], str(job["job_id"]))
-    child_id = str(current["thinkthread_id"])
-    if not isinstance(current.get("registered_at"), str):
-        client.enqueue(
-            child_id,
-            {
-                "protocol": "goal-plus.thinkthread.v3",
-                "type": "registration",
-                "registration_nonce": current["registration_nonce"],
-            },
-        )
-    request_id = f"req-attempt-{current['job_id']}-{current['dispatch_index']}"
-    params: dict[str, Any] = {
-        "run_id": current["run_id"],
-        "candidate_id": current["candidate_id"],
-        "scope": "process",
-        "agent_session_id": current["agent_session_id"],
-        "hypothesis": hypothesis
-        or f"Verify candidate dispatch {current['dispatch_index']}",
-    }
-    if isinstance(current.get("inner_git_binding"), dict):
-        record = runtime.candidate_creation.state.read_candidate(
-            str(current["run_id"]),
-            str(current["candidate_id"]),
-        )
-        params["_inner_git_attempt"] = {
-            "protocol": "goal-plus.inner-git.v1",
-            "adapter": "autoresearch-git",
-            "attempt_git_head": f"{int(current['dispatch_index']):040x}",
-            "baseline_git_head": "b" * 40,
-            "result_count_before": len(record.results_ledger),
-        }
-    client.enqueue(
-        child_id,
-        annotation_request(
-            current,
-            request_id,
-            "search_run_verifier",
-            params,
-        ),
-    )
-    waiting = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=str(opened["pool_id"]),
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert waiting["event"] is None
-    receipt = response_for(client, request_id)["result"]
-    assert receipt["state"] == "accepted"
-    assert receipt["request_id"] == request_id
-    assert receipt["attempt_id"].startswith("attempt_")
-    return receipt
 
 
-def test_completed_accepted_attempt_settles_before_expired_deadline_interrupt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=1).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-    receipt = submit_candidate_attempt(runtime, opened, job, client)
-    client.finish(str(job["thinkthread_id"]))
-    expired = _load_job(
-        runtime.root_dir,
-        str(opened["pool_id"]),
-        str(job["job_id"]),
-    )
-    expired["deadline_unix"] = 0
-    _write_job(runtime.root_dir, str(opened["pool_id"]), expired)
-
-    settled = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=str(opened["pool_id"]),
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert settled["event"]["kind"] == "candidate_ready"
-    assert settled["event"]["attempt_result"]["attempt_id"] == receipt["attempt_id"]
-    assert settled["event"]["attempt_result"]["attempt_iteration"] == 1
-    assert not any(
-        operation == "thinkthread.signal" for operation, _params in client.operations
-    )
-    record = runtime.candidate_creation.state.read_candidate(run_id, str(job["candidate_id"]))
-    assert len(record.iterations) == 1
-    assert len(record.results_ledger) == 1
 
 
 def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
+    from goal_plus.host_scope import ensure_execution_scope, close_execution_scope
+    from goal_plus.session_host import NativeCandidateHost
+
     monkeypatch.chdir(tmp_path)
     project = make_project(tmp_path)
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
     monkeypatch.setattr(
-        "goal_plus.thinkthread_pool.AgentPosixSdkClient",
+        "goal_plus.infrastructure.thinkthread_sessions.AgentPosixSdkClient",
         lambda: client,
     )
+    monkeypatch.setattr("goal_plus.thinkthread_annotation.AgentPosixSdkClient", lambda: client)
     monkeypatch.setenv("GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED", "1")
-    root_dir = tmp_path / ".gp"
+    root_dir = tmp_path.parent / (tmp_path.name + "-session-runtime")
     spec_payload = thinkthread_spec(project).model_dump(mode="json")
     spec_payload["budget"]["max_parallel"] = 1
     spec_payload["strategy"]["config"]["global_evidence_mode"] = "auto"
-    start_host_verified_goal(root_dir, project, native_host="pi")
+    start_host_verified_goal(root_dir, project, agent_harness="pi")
     goal = FileGoalPlusRuntime(root_dir).require_host_verified_active_goal()
 
     frozen = call_pi_tool(
         root_dir,
-        "search_freeze_spec",
+        "goal_plus_search_freeze_spec",
         {
             "goal_plus_id": goal.goal_plus_id,
             "spec": spec_payload,
             "verifier_artifact_paths": ["evaluator.py"],
         },
     )
-    assert frozen["spec"]["strategy"]["config"]["global_evidence_mode"] == "auto"
+    assert FileSearchRuntime(root_dir).search_run.state.read_frozen_spec(
+        frozen["frozen_spec_id"]
+    ).spec.strategy.config["global_evidence_mode"] == "auto"
     run_id = call_pi_tool(
         root_dir,
-        "search_create",
+        "goal_plus_search_create",
         {
+            "request_id": "initial",
             "goal_plus_id": goal.goal_plus_id,
             "frozen_spec_id": frozen["frozen_spec_id"],
         },
     )["run_id"]
-    call_pi_tool(
-        root_dir,
-        "goal_plus_link_search_run",
-        {
-            "goal_plus_id": goal.goal_plus_id,
-            "frozen_spec_id": frozen["frozen_spec_id"],
-            "run_id": run_id,
-        },
-    )
     plan = call_pi_tool(
         root_dir,
-        "search_plan_next",
+        "goal_plus_search_plan_next",
         {"run_id": run_id, "requested_k": 1},
     )
     tasks = call_pi_tool(
         root_dir,
-        "search_start_batch",
+        "goal_plus_search_start_batch",
         {"run_id": run_id, "plan_id": plan["plan_id"]},
     )
     candidate_id = tasks[0]["candidate_id"]
-    opened = call_pi_tool(
-        root_dir,
-        "thinkthread_search_pool_open",
-        {"run_id": run_id, "candidate_ids": [candidate_id], "max_parallel": 1},
+    agent_session_id = FileSearchRuntime(root_dir).start_agent_session(run_id, candidate_id).agent_session_id
+    scope = ensure_execution_scope(
+        root_dir=root_dir, agent_harness="pi", owner_session_id=goal.active_session.session_id,
+         run_id=run_id,
+        activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
     )
-    job = _load_job(root_dir, opened["pool_id"], opened["jobs"][0]["job_id"])
-    child_id = job["thinkthread_id"]
-    agent_session_id = job["agent_session_id"]
+    agent_harness = NativeCandidateHost(root_dir, agent_harness="pi", caller=lambda: goal.active_session.session_id)
+
+    def cleanup():
+        agent_harness.shutdown()
+        closed = close_execution_scope(root_dir=root_dir, scope_id=scope["scope_id"], reason="test finished")
+        assert closed["state"] == "closed", closed
+
+    request.addfinalizer(cleanup)
+    agent_harness.open(agent_session_id)
+    control = agent_harness(agent_session_id, "wake")
+    control.wake("one attempt", call_id="first", timeout=30)
+    deadline = time.monotonic() + 5
+    while control.wait("first", timeout=0).native_session_id is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    child_id = control.session.native_session_id
+    job = control.session.record
     client.enqueue(
         child_id,
         {
@@ -1250,19 +335,19 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
 
     initial_requests = {
         "req-context-initial": (
-            "search_get_agent_context",
+            "goal_plus_search_get_agent_context",
             {"agent_session_id": agent_session_id},
         ),
         "req-evidence-initial": (
-            "search_get_global_evidence",
+            "goal_plus_search_get_global_evidence",
             {"agent_session_id": agent_session_id},
         ),
         "req-iterations-initial": (
-            "search_list_iterations",
+            "goal_plus_search_list_iterations",
             {"agent_session_id": agent_session_id},
         ),
         "req-verifier": (
-            "search_run_verifier",
+            "goal_plus_search_run_verifier",
             {
                 "run_id": run_id,
                 "candidate_id": candidate_id,
@@ -1284,19 +369,17 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
             child_id,
             annotation_request(job, request_id, tool, params),
         )
-    waiting = call_pi_tool(
-        root_dir,
-        "thinkthread_search_pool_wait_any",
-        {"pool_id": opened["pool_id"], "timeout_seconds": 0},
-    )
-    assert waiting["event"] is None
+    wait_for_response(client, "req-verifier", timeout_seconds=5)
+    assert control.wait("first", timeout=0).state == "running"
+    monkeypatch.setenv("GOAL_PLUS_PI_ROLE", "worker")
+    monkeypatch.setenv("GOAL_PLUS_AGENT_SESSION_ID", agent_session_id)
     assert response_for(client, "req-context-initial")["result"] == call_pi_tool(
         root_dir,
-        "search_get_agent_context",
+        "goal_plus_search_get_agent_context",
         {"agent_session_id": agent_session_id},
     )
     assert response_for(client, "req-evidence-initial")["result"] == []
-    assert response_for(client, "req-iterations-initial")["result"] == []
+    assert response_for(client, "req-iterations-initial")["result"] == {"items": [], "total": 0, "next_offset": None}
     verifier_receipt = response_for(client, "req-verifier")["result"]
     assert verifier_receipt["state"] == "accepted"
     assert verifier_receipt["request_id"] == "req-verifier"
@@ -1309,14 +392,10 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     assert "global_evidence_snapshot" not in verifier_receipt
 
     client.finish(child_id)
-    settled = call_pi_tool(
-        root_dir,
-        "thinkthread_search_pool_wait_any",
-        {"pool_id": opened["pool_id"], "timeout_seconds": 0},
-    )
-    assert settled["event"]["kind"] == "candidate_ready"
-    attempt_result = settled["event"]["attempt_result"]
-    assert attempt_result == settled["pool"]["jobs"][0]["attempt_result"]
+    settled = control.wait("first", timeout=10)
+    assert settled.state == "completed", settled
+    attempt_result = json.loads(settled.result.text)
+    assert attempt_result == control.session.record["attempt_result"]
     assert attempt_result["attempt_id"] == verifier_receipt["attempt_id"]
     assert attempt_result["attempt_iteration"] == 1
     assert attempt_result["score_report"]["attempt_iteration"] == 1
@@ -1357,50 +436,25 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
             }
         )
     )
-    call_pi_tool(
-        root_dir,
-        "thinkthread_search_pool_continue",
-        {"pool_id": opened["pool_id"], "candidate_id": candidate_id},
-    )
-    wake = next(
-        item
-        for item in reversed(client.sent)
-        if item.get("wake") is True and item.get("recipientThinkthreadId") == child_id
-    )
-    assert "Goal Plus candidate attempt feedback (authoritative JSON):" in wake["text"]
-    assert wake["text"].count(
-        "Goal Plus candidate attempt feedback (authoritative JSON):"
-    ) == 1
-    assert f'"attempt_id":"{verifier_receipt["attempt_id"]}"' in wake["text"]
-    assert '"attempt_iteration":1' in wake["text"]
-    assert (
-        json.dumps(
-            attempt_result,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        in wake["text"]
-    )
-    assert "# Search Candidate Common Agent" not in wake["text"]
-    assert wake["text"].index(
-        "Goal Plus candidate attempt feedback (authoritative JSON):"
-    ) < wake["text"].index("ThinkThread Goal Plus dispatch:")
-    assert wake["text"].endswith(
-        "不得只读取 context/Evidence、只总结上一轮或不提交 verifier 就结束本次 wake。"
-    )
+    control.wake("continue", call_id="second", timeout=30)
+    deadline = time.monotonic() + 5
+    while not any(item.get("wake") is True and item.get("recipientThinkthreadId") == child_id for item in client.sent):
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert control.session.native_session_id == child_id
+    assert job["dispatch_index"] == 2
 
     continued_requests = {
         "req-context-continued": (
-            "search_get_agent_context",
+            "goal_plus_search_get_agent_context",
             {"agent_session_id": agent_session_id},
         ),
         "req-evidence-continued": (
-            "search_get_global_evidence",
+            "goal_plus_search_get_global_evidence",
             {"agent_session_id": agent_session_id},
         ),
         "req-detail-continued": (
-            "search_get_evidence_detail",
+            "goal_plus_search_get_evidence_detail",
             {
                 "agent_session_id": agent_session_id,
                 "candidate_id": candidate_id,
@@ -1408,7 +462,7 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
             },
         ),
         "req-iterations-continued": (
-            "search_list_iterations",
+            "goal_plus_search_list_iterations",
             {"agent_session_id": agent_session_id},
         ),
     }
@@ -1417,16 +471,12 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
             child_id,
             annotation_request(job, request_id, tool, params),
         )
-    call_pi_tool(
-        root_dir,
-        "thinkthread_search_pool_wait_any",
-        {"pool_id": opened["pool_id"], "timeout_seconds": 0},
-    )
+    wait_for_response(client, "req-iterations-continued", timeout_seconds=5)
 
     continued_context = response_for(client, "req-context-continued")["result"]
     assert continued_context == call_pi_tool(
         root_dir,
-        "search_get_agent_context",
+        "goal_plus_search_get_agent_context",
         {"agent_session_id": agent_session_id},
     )
     assert continued_context["recent_iterations"][-1]["iteration"] == 1
@@ -1447,7 +497,7 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     proxy_evidence = response_for(client, "req-evidence-continued")["result"]
     assert proxy_evidence == call_pi_tool(
         root_dir,
-        "search_get_global_evidence",
+        "goal_plus_search_get_global_evidence",
         {"agent_session_id": agent_session_id},
     )
     assert [(item["candidate_id"], item["iteration"]) for item in proxy_evidence] == [
@@ -1458,7 +508,7 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     assert detail_response["ok"] is True, detail_response
     assert detail_response["result"] == call_pi_tool(
         root_dir,
-        "search_get_evidence_detail",
+        "goal_plus_search_get_evidence_detail",
         {
             "agent_session_id": agent_session_id,
             "candidate_id": candidate_id,
@@ -1467,7 +517,7 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     )
     assert response_for(client, "req-iterations-continued")["result"] == call_pi_tool(
         root_dir,
-        "search_list_iterations",
+        "goal_plus_search_list_iterations",
         {"agent_session_id": agent_session_id},
     )
 
@@ -1488,160 +538,17 @@ def wait_for_response(
     raise AssertionError(f"timed out waiting for annotation response {request_id}")
 
 
-def test_completed_runtime_turn_without_attempt_fails_closed(
+
+
+
+
+
+
+def test_annotation_service_leaves_process_groups_to_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-
-    client.finish(str(job["thinkthread_id"]))
-    waiting = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert waiting["event"] is None
-    pending = _load_job(runtime.root_dir, opened["pool_id"], str(job["job_id"]))
-    assert pending["status"] == "running"
-    assert pending["awaiting_candidate_attempt"]["dispatch_nonce"] == (
-        pending["dispatch_nonce"]
-    )
-    pending["deadline_unix"] = time.time() - 1
-    _write_job(runtime.root_dir, opened["pool_id"], pending)
-    result = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert result["event"]["kind"] == "failed"
-    failed = next(
-        item
-        for item in result["pool"]["jobs"]
-        if item["candidate_id"] == job["candidate_id"]
-    )
-    assert failed["error"]["error_code"] == "MissingCandidateAttempt"
-    assert runtime.candidate_creation.state.read_candidate(
-        run_id, str(job["candidate_id"])
-    ).iterations == []
-
-
-def test_completed_wake_waits_for_quiescence_after_provider_retry_window(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-    submit_candidate_attempt(runtime, opened, job, client)
-    client.finish(str(job["thinkthread_id"]))
-    child = client.child(str(job["thinkthread_id"]))
-    child["lastWakeOutcome"]["finishedAtMs"] = time.time() * 1000
-
-    still_quieting = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert still_quieting["event"] is None
-    assert still_quieting["pool"]["jobs"][0]["status"] == "running"
-
-    child["lastWakeOutcome"]["finishedAtMs"] -= 21_000
-    settled = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert settled["event"]["kind"] == "candidate_ready"
-
-
-def test_child_dispatch_error_is_preserved_in_failed_event(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-    durable = _load_job(runtime.root_dir, opened["pool_id"], str(job["job_id"]))
-    client.enqueue(
-        str(job["thinkthread_id"]),
-        {
-            "protocol": "goal-plus.thinkthread.v3",
-            "type": "dispatch_error",
-            "dispatch_nonce": durable["dispatch_nonce"],
-            "error_type": "Error",
-            "message": "private Git initialization failed",
-        },
-    )
-    client.finish(str(job["thinkthread_id"]))
-
-    result = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert result["event"]["kind"] == "failed"
-    assert result["event"]["error"] == {
-        "stage": "worker_start",
-        "message": "private Git initialization failed",
-        "error_code": "ChildDispatchError",
-        "error_type": "Error",
-        "completion_unknown": False,
-    }
-    failed = next(
-        item
-        for item in result["pool"]["jobs"]
-        if item["candidate_id"] == job["candidate_id"]
-    )
-    assert failed["error"] == result["event"]["error"]
-
-
-def test_annotation_service_retries_when_root_denies_new_session(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root_dir = tmp_path / ".gp"
+    root_dir = tmp_path.parent / (tmp_path.name + "-session-runtime")
     run_id = "run_sandboxed"
     service_root = (
         root_dir / "host-pools" / "thinkthread-annotations" / run_id
@@ -1658,8 +565,6 @@ def test_annotation_service_retries_when_root_denies_new_session(
 
     def launch(_command: list[str], **options: Any) -> Process:
         launches.append(options)
-        if len(launches) == 1:
-            raise PermissionError(1, "Operation not permitted")
         return Process()
 
     monkeypatch.setattr(
@@ -1671,22 +576,20 @@ def test_annotation_service_retries_when_root_denies_new_session(
         root_dir=root_dir,
         run_id=run_id,
     )
-    assert [launch["start_new_session"] for launch in launches] == [True, False]
+    assert len(launches) == 1
+    assert "start_new_session" not in launches[0]
     service = json.loads((service_root / "service.json").read_text(encoding="utf-8"))
     assert service["pid"] == 4321
-    assert service["start_new_session"] is False
-    assert "retrying without a new session" in (
-        service_root / "service.log"
-    ).read_text(encoding="utf-8")
+    assert "start_new_session" not in service
 
 
-@pytest.mark.parametrize("previous_status", ["exited", "stopped", "running", None])
+@pytest.mark.parametrize("previous_status", ["exited", "released", "running", None])
 def test_annotation_service_restarts_from_terminal_record_in_protected_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     previous_status: str | None,
 ) -> None:
-    root_dir = tmp_path / ".gp"
+    root_dir = tmp_path.parent / (tmp_path.name + "-session-runtime")
     run_id = "run_retained_annotation"
     service_root = root_dir / "host-pools" / "thinkthread-annotations" / run_id
     service_root.mkdir(parents=True)
@@ -1713,7 +616,7 @@ def test_annotation_service_restarts_from_terminal_record_in_protected_root(
     monkeypatch.setattr("goal_plus.thinkthread_annotation.subprocess.Popen", launch)
 
     restarted = kick_thinkthread_annotation_service(root_dir=root_dir, run_id=run_id)
-    terminal = previous_status in {"exited", "stopped"}
+    terminal = previous_status in {"exited", "released"}
     assert restarted is terminal
     current = json.loads((service_root / "service.json").read_text(encoding="utf-8"))
     if terminal:
@@ -1733,7 +636,7 @@ def test_closed_annotation_service_does_not_recheck_terminal_pid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root_dir = tmp_path / ".gp"
+    root_dir = tmp_path.parent / (tmp_path.name + "-session-runtime")
     run_id = "run_already_stopped"
     service_root = (
         root_dir / "host-pools" / "thinkthread-annotations" / run_id
@@ -1749,7 +652,7 @@ def test_closed_annotation_service_does_not_recheck_terminal_pid(
                 "run_id": run_id,
                 "generation": "generation-1",
                 "pid": 4321,
-                "status": "stopped",
+                "status": "released",
                 "finished_at": "2026-09-04T12:48:23Z",
             }
         ),
@@ -1760,7 +663,7 @@ def test_closed_annotation_service_does_not_recheck_terminal_pid(
         raise AssertionError("terminal annotation service PID was rechecked")
 
     monkeypatch.setattr(
-        "goal_plus.thinkthread_annotation._process_matches_service",
+        "goal_plus.thinkthread_annotation.os.kill",
         unexpected_process_check,
     )
 
@@ -1772,7 +675,7 @@ def test_closed_annotation_service_does_not_recheck_terminal_pid(
 
     assert closed == {"run_id": run_id, "status": "closed"}
     service = json.loads((service_root / "service.json").read_text(encoding="utf-8"))
-    assert service["status"] == "stopped"
+    assert service["status"] == "released"
     assert service["finished_at"] == "2026-09-04T12:48:23Z"
 
 
@@ -1784,24 +687,15 @@ def test_annotation_service_reclaims_expired_turn_and_response(
     project = make_project(tmp_path)
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
+    runtime = FileSearchRuntime(tmp_path.parent / (tmp_path.name + "-session-runtime"))
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    candidate_child = str(opened["jobs"][0]["thinkthread_id"])
-    submit_candidate_attempt(runtime, opened, opened["jobs"][0], client)
-    client.finish(candidate_child)
-    assert wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=str(opened["pool_id"]),
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )["event"]["kind"] == "candidate_ready"
+    sessions = [bind_candidate(runtime, client, run_id, candidate_id)
+                for candidate_id in ["c001"]]
+    for session in sessions:
+        verify_candidate(runtime, client, session)
+    kick_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
 
     state = annotation_snapshot(root_dir=runtime.root_dir, run_id=run_id)
     assert state is not None
@@ -1817,7 +711,7 @@ def test_annotation_service_reclaims_expired_turn_and_response(
     expiring_request = annotation_request(
         state,
         "req-expiring-next",
-        "thinkthread_annotation_next",
+        "goal_plus_thinkthread_annotation_next",
         {"run_id": run_id},
         deadline_unix_ms=int(time.time() * 1000) + 60_000,
     )
@@ -1897,12 +791,8 @@ def test_annotation_service_reclaims_expired_turn_and_response(
         "acknowledged_after_expiry_at"
     )
 
-    close_pool(
-        root_dir=runtime.root_dir,
-        pool_id=str(opened["pool_id"]),
-        mode="interrupt",
-        client=client,  # type: ignore[arg-type]
-    )
+    for session in sessions:
+        close_candidate(client, session)
     closed = close_thinkthread_annotation(
         root_dir=runtime.root_dir,
         run_id=run_id,
@@ -1919,25 +809,15 @@ def test_annotation_service_handles_rpc_after_model_pause_without_main_poll(
     project = make_project(tmp_path)
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
+    runtime = FileSearchRuntime(tmp_path.parent / (tmp_path.name + "-session-runtime"))
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    first_child = str(opened["jobs"][0]["thinkthread_id"])
-    submit_candidate_attempt(runtime, opened, opened["jobs"][0], client)
-    client.finish(first_child)
-    ready = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=str(opened["pool_id"]),
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert ready["event"]["kind"] == "candidate_ready"
+    sessions = [bind_candidate(runtime, client, run_id, candidate_id)
+                for candidate_id in ["c001"]]
+    for session in sessions:
+        verify_candidate(runtime, client, session)
+    kick_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
 
     state = annotation_snapshot(root_dir=runtime.root_dir, run_id=run_id)
     assert state is not None
@@ -1955,7 +835,7 @@ def test_annotation_service_handles_rpc_after_model_pause_without_main_poll(
         annotation_request(
             state,
             "req-delayed-next",
-            "thinkthread_annotation_next",
+            "goal_plus_thinkthread_annotation_next",
             {"run_id": run_id},
         ),
     )
@@ -1984,7 +864,7 @@ def test_annotation_service_handles_rpc_after_model_pause_without_main_poll(
         annotation_request(
             current,
             "req-delayed-read",
-            "thinkthread_artifact_view_pread",
+            "goal_plus_thinkthread_artifact_view_pread",
             {
                 "view_id": target_view,
                 "path": "project/initial_program.py",
@@ -2003,7 +883,7 @@ def test_annotation_service_handles_rpc_after_model_pause_without_main_poll(
         annotation_request(
             current,
             "req-delayed-submit",
-            "thinkthread_annotation_submit",
+            "goal_plus_thinkthread_annotation_submit",
             {
                 "description": "The immutable target contains the settled value.",
                 "supplemental_evaluation": None,
@@ -2022,12 +902,8 @@ def test_annotation_service_handles_rpc_after_model_pause_without_main_poll(
         runtime.annotation.task(run_id, "c001", 1).state == "completed"
     )
 
-    close_pool(
-        root_dir=runtime.root_dir,
-        pool_id=str(opened["pool_id"]),
-        mode="interrupt",
-        client=client,  # type: ignore[arg-type]
-    )
+    for session in sessions:
+        close_candidate(client, session)
     closed = close_thinkthread_annotation(
         root_dir=runtime.root_dir,
         run_id=run_id,
@@ -2053,26 +929,19 @@ def test_runtime_owned_s0_k2_exact_snapshot_settlement_and_selection(
         }
     )
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
+    runtime = FileSearchRuntime(tmp_path.parent / (tmp_path.name + "-session-runtime"))
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)
 
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert opened["baseline_snapshot_id"] == "fsnap-S0"
+    sessions = [bind_candidate(runtime, client, run_id, task.candidate_id) for task in tasks]
     assert len([op for op, _ in client.operations if op == "fs.snapshot.create"]) == 1
-    spawn_params = [params for op, params in client.operations if op == "thinkthread.spawn"]
-    assert len(spawn_params) == 2
-    assert {item["fsSnapshotId"] for item in spawn_params} == {"fsnap-S0"}
-    assert len({item["thinkthread_id"] for item in opened["jobs"]}) == 2
-    assert len({item["fs_branch_id"] for item in opened["jobs"]}) == 2
-    sessions = runtime.candidate_sessions.state.read_agent_sessions(run_id)
-    assert len({item.agent_session_id for item in sessions}) == 2
+    spawns = [params for op, params in client.operations if op == "thinkthread.spawn"]
+    assert len(spawns) == 2
+    assert {item["fsSnapshotId"] for item in spawns} == {"fsnap-S0"}
+    assert len({session.session_handle.external_id for session in sessions}) == 2
+    assert len({session.session_handle.metadata["fs_branch_id"] for session in sessions}) == 2
     assert all(not task.workspace.exists() for task in tasks)
     for session in sessions:
         context = runtime.get_agent_context(session.agent_session_id)
@@ -2081,21 +950,8 @@ def test_runtime_owned_s0_k2_exact_snapshot_settlement_and_selection(
         assert context["workspace_access"]["logical_root"] == "."
         assert context["workspace_access"]["native_cwd"] is None
         assert context["workspace_access"]["source_subdir"] == "project"
-
-    for item in opened["jobs"]:
-        submit_candidate_attempt(runtime, opened, item, client)
-    for item in opened["jobs"]:
-        client.finish(str(item["thinkthread_id"]))
-    events = [
-        wait_any(
-            root_dir=runtime.root_dir,
-            pool_id=opened["pool_id"],
-            timeout_seconds=0,
-            client=client,  # type: ignore[arg-type]
-        )["event"]
-        for _ in range(2)
-    ]
-    assert {item["kind"] for item in events} == {"candidate_ready"}
+        assert verify_candidate(runtime, client, session).process_passed
+    kick_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
     branch_snapshots = [
         params for op, params in client.operations if op == "fs.branch.snapshot"
     ]
@@ -2136,7 +992,7 @@ def test_runtime_owned_s0_k2_exact_snapshot_settlement_and_selection(
         annotation_request(
             annotation,
             "req-claim-before-selection",
-            "thinkthread_annotation_next",
+            "goal_plus_thinkthread_annotation_next",
             {"run_id": run_id},
         ),
     )
@@ -2154,12 +1010,8 @@ def test_runtime_owned_s0_k2_exact_snapshot_settlement_and_selection(
     assert claimed_task is not None
     assert claimed_task.attempts == 1
 
-    close_pool(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        mode="drain",
-        client=client,  # type: ignore[arg-type]
-    )
+    for session in sessions:
+        close_candidate(client, session)
     selection = runtime.select(run_id)
     assert selection["selected_candidate_id"] == "c002"
     queue = runtime.annotation.queue(run_id)
@@ -2238,7 +1090,8 @@ def test_runtime_owned_s0_k2_exact_snapshot_settlement_and_selection(
     assert snapshot["search_tasks"][0]["publication_result"] == "applied"
     pending_cleanup = snapshot["run"]["host_cleanup"]
     assert pending_cleanup["state"] == "pending"
-    assert pending_cleanup["candidate_pools"]["complete"] is True
+    # This provider fixture supplies no host scope resource observations.
+    assert pending_cleanup["candidate_sessions"]["complete"] is False
     assert pending_cleanup["annotation"]["state"] == "closed"
     assert pending_cleanup["annotation"]["service_complete"] is True
     assert pending_cleanup["annotation"]["complete"] is True
@@ -2250,6 +1103,10 @@ def test_runtime_owned_s0_k2_exact_snapshot_settlement_and_selection(
     assert str(runtime.root_dir) not in cleanup_json
     assert snapshot["search_tasks"][0]["host_cleanup"] == pending_cleanup
     client.completion_unknown_once.add("fs.snapshot.remove")
+    goals = FileGoalPlusRuntime(runtime.root_dir)
+    goal_id = goals.authorization.run_owner(run_id)
+    goals.record_search_result(goal_id, run_id, selected_candidate_id="c002", promotion_artifact_path=str(manifest))
+    goals.set_status(goal_id, "complete")
     report = FileSearchRuntime(runtime.root_dir).report(run_id)
     report_text = report.read_text(encoding="utf-8")
     html_text = report.with_suffix(".html").read_text(encoding="utf-8")
@@ -2291,13 +1148,13 @@ def test_runtime_owned_s0_k2_exact_snapshot_settlement_and_selection(
         for item in monitor["run"]["artifact_availability"]
     } == {"fsnap-S0", "fsnap-2", "fsnap-3", "fsnap-P"}
     completed_cleanup = monitor["run"]["host_cleanup"]
-    assert completed_cleanup["state"] == "complete"
-    assert completed_cleanup["candidate_pools"]["complete"] is True
+    assert completed_cleanup["state"] == "pending"
+    assert completed_cleanup["candidate_sessions"]["complete"] is False
     assert completed_cleanup["annotation"]["complete"] is True
     assert completed_cleanup["snapshots"]["states"] == {"removed": 4}
     assert completed_cleanup["snapshots"]["complete"] is True
     assert completed_cleanup["final_artifacts"]["complete"] is True
-    assert completed_cleanup["blockers"] == []
+    assert completed_cleanup["blockers"] == ["candidate_sessions:not_closed"]
 
     removed_task = runtime.annotation.task(run_id, "c001", 1)
     assert removed_task is not None
@@ -2314,437 +1171,16 @@ def test_runtime_owned_s0_k2_exact_snapshot_settlement_and_selection(
     ) == remove_call_count
 
 
-@pytest.mark.parametrize("operation", ["fs.branch.snapshot", "fs.run"])
-def test_settlement_recovers_provider_journal_without_duplicate_iteration(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    operation: str,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-    client.completion_unknown_once.add(operation)
-    client.request_status_completion_unknown_once.add(operation)
-    submit_candidate_attempt(runtime, opened, job, client)
-    client.finish(str(job["thinkthread_id"]))
-
-    unresolved = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert unresolved["event"] is None
-    unresolved_job = next(
-        item
-        for item in unresolved["pool"]["jobs"]
-        if item["candidate_id"] == job["candidate_id"]
-    )
-    assert unresolved_job["status"] == "needs_recovery"
-    assert unresolved_job["recovery"]["stage"] == "attempt_verification"
-    assert unresolved_job["recovery"]["state"] == "outcome_unknown"
-    assert unresolved["pool"]["active_count"] == 2
-
-    recovered = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert recovered["event"]["kind"] == "candidate_ready"
-    assert recovered["event"]["candidate_id"] == job["candidate_id"]
-    recovered_job = next(
-        item
-        for item in recovered["pool"]["jobs"]
-        if item["candidate_id"] == job["candidate_id"]
-    )
-    assert recovered_job["status"] == "ready"
-    assert recovered_job["recovery"] is None
-    assert recovered_job["error"] is None
-    operation_calls = [item for item in client.operations if item[0] == operation]
-    if operation == "fs.run":
-        operation_calls = [
-            item for item in operation_calls if item[1]["snapshotId"] != "fsnap-S0"
-        ]
-    assert len(operation_calls) == 1
-    record = runtime.candidate_creation.state.read_candidate(run_id, str(job["candidate_id"]))
-    assert len(record.iterations) == 1
-    assert record.iterations[0].metrics["_candidate_attempt"]["id"] == (
-        recovered_job["attempt_result"]["attempt_id"]
-    )
-    mutation = next(
-        item
-        for item in record.provider_mutations
-        if item.operation
-        == ("branch_snapshot" if operation == "fs.branch.snapshot" else "verifier_run")
-    )
-    assert mutation.state == "closed"
-
-    duplicate = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert duplicate["event"] is None
-    assert len(runtime.candidate_creation.state.read_candidate(run_id, str(job["candidate_id"])).iterations) == 1
 
 
-def test_candidate_request_close_recovery_does_not_repeat_verifier(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-    client.close_failure_once.add("fs.run")
-    submit_candidate_attempt(runtime, opened, job, client)
-    client.finish(str(job["thinkthread_id"]))
-
-    ready = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert ready["event"]["kind"] == "candidate_ready"
-    record = runtime.candidate_creation.state.read_candidate(run_id, str(job["candidate_id"]))
-    verifier = next(
-        item for item in record.provider_mutations if item.operation == "verifier_run"
-    )
-    assert verifier.state == "succeeded"
-    assert verifier.close_state == "needs_recovery"
-    verifier_calls = len(
-        [
-            item
-            for item in client.operations
-            if item[0] == "fs.run" and item[1]["snapshotId"] != "fsnap-S0"
-        ]
-    )
-
-    reconciled = runtime.reconcile_thinkthread_request_closes(
-        run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert reconciled == {"closed": [verifier.request_id], "needs_recovery": []}
-    recovered = runtime.candidate_creation.state.read_candidate(run_id, str(job["candidate_id"]))
-    recovered_verifier = next(
-        item
-        for item in recovered.provider_mutations
-        if item.operation == "verifier_run"
-    )
-    assert recovered_verifier.state == "closed"
-    assert recovered_verifier.close_state == "closed"
-    assert len(
-        [
-            item
-            for item in client.operations
-            if item[0] == "fs.run" and item[1]["snapshotId"] != "fsnap-S0"
-        ]
-    ) == verifier_calls
 
 
-def test_definitive_thinkthread_verifier_error_records_attempt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-    receipt = submit_candidate_attempt(runtime, opened, job, client)
-    client.definitive_failure_once.add("fs.run")
-    client.finish(str(job["thinkthread_id"]))
-
-    result = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert result["event"]["kind"] == "candidate_ready"
-    feedback = result["event"]["attempt_result"]
-    assert feedback["attempt_id"] == receipt["attempt_id"]
-    assert feedback["score_report"]["process_passed"] is False
-    assert feedback["score_report"]["disposition"] == "failure"
-    verifier = feedback["score_report"]["verifier_results"][0]
-    assert verifier["failure_class"] == "VerifierInfrastructureFailure"
-    assert verifier["metrics"]["error_code"] == "FsRunRejected"
-    record = runtime.candidate_creation.state.read_candidate(run_id, str(job["candidate_id"]))
-    assert len(record.iterations) == 1
-    assert record.iterations[0].failure_class == "VerifierInfrastructureFailure"
 
 
-def test_unresolved_settlement_does_not_block_another_ready_lane(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    first_job, second_job = opened["jobs"]
-    client.completion_unknown_once.add("fs.branch.snapshot")
-    client.request_status_completion_unknown_once.add("fs.branch.snapshot")
-    submit_candidate_attempt(runtime, opened, first_job, client)
-    client.finish(str(first_job["thinkthread_id"]))
-    unresolved = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    first_record = runtime.candidate_creation.state.read_candidate(
-        run_id, str(first_job["candidate_id"])
-    )
-    snapshot_mutation = next(
-        item
-        for item in first_record.provider_mutations
-        if item.operation == "branch_snapshot"
-    )
-    pending_status = client.request_status[snapshot_mutation.request_id]
-    succeeded_result = dict(pending_status["result"])
-    pending_status["state"] = "accepted"
-    pending_status.pop("result")
-    submit_candidate_attempt(runtime, opened, second_job, client)
-    client.finish(str(second_job["thinkthread_id"]))
-
-    other_ready = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert unresolved["event"] is None
-    assert other_ready["event"]["kind"] == "candidate_ready"
-    assert other_ready["event"]["candidate_id"] == second_job["candidate_id"]
-    first_snapshot = next(
-        item
-        for item in other_ready["pool"]["jobs"]
-        if item["candidate_id"] == first_job["candidate_id"]
-    )
-    assert first_snapshot["status"] == "needs_recovery"
-    assert first_snapshot["recovery"]["state"] == "outcome_unknown"
-
-    pending_status["state"] = "succeeded"
-    pending_status["result"] = succeeded_result
-    recovered = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert recovered["event"]["candidate_id"] == first_job["candidate_id"]
-    assert recovered["pool"]["active_count"] == 0
 
 
-def test_settlement_recovery_definitive_failure_becomes_terminal(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-    client.completion_unknown_once.add("fs.branch.snapshot")
-    client.request_status_completion_unknown_once.add("fs.branch.snapshot")
-    submit_candidate_attempt(runtime, opened, job, client)
-    client.finish(str(job["thinkthread_id"]))
-    wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    record = runtime.candidate_creation.state.read_candidate(run_id, str(job["candidate_id"]))
-    mutation = next(
-        item for item in record.provider_mutations if item.operation == "branch_snapshot"
-    )
-    client.request_status[mutation.request_id] = {
-        "requestId": mutation.request_id,
-        "method": "fs.branch.snapshot",
-        "state": "failed",
-        "error": {
-            "code": "FsSnapshotFailed",
-            "message": "snapshot could not be completed",
-            "retryable": False,
-        },
-    }
-
-    failed = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-
-    assert failed["event"]["kind"] == "failed"
-    failed_job = next(
-        item
-        for item in failed["pool"]["jobs"]
-        if item["candidate_id"] == job["candidate_id"]
-    )
-    assert failed_job["status"] == "failed"
-    assert failed_job["recovery"]["state"] == "failed"
-    assert failed_job["error"]["error_code"] == "FsSnapshotFailed"
 
 
-def test_discard_reset_recovers_before_and_after_provider_mutation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    client = IntegratedAgentPosix(project)
-    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=2).plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    job = opened["jobs"][0]
-    child_id = str(job["thinkthread_id"])
-    submit_candidate_attempt(runtime, opened, job, client)
-    client.finish(child_id)
-    first = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert first["event"]["kind"] == "candidate_ready"
-
-    continued = continue_pool(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        candidate_id=str(job["candidate_id"]),
-        message="Try a lower-scoring follow-up",
-        max_runtime_seconds=60,
-        client=client,  # type: ignore[arg-type]
-    )
-    continued_job = next(
-        item
-        for item in continued["jobs"]
-        if item["candidate_id"] == job["candidate_id"]
-    )
-    submit_candidate_attempt(runtime, opened, continued_job, client)
-    durable_job = _load_job(
-        runtime.root_dir,
-        opened["pool_id"],
-        str(continued_job["job_id"]),
-    )
-    client.snapshot_index = 0
-    child = client.child(child_id)
-    child["executionState"] = "absent"
-    child["agentState"] = "ready"
-    child["lastWakeOutcome"] = {
-        "messageId": durable_job["active_message_id"],
-        "outcome": "completed",
-    }
-    child["completion"] = {"reason": "completed"}
-    client.completion_unknown_before_once.add("fs.branch.reset")
-
-    unresolved = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert unresolved["event"] is None
-    unresolved_job = next(
-        item
-        for item in unresolved["pool"]["jobs"]
-        if item["candidate_id"] == job["candidate_id"]
-    )
-    assert unresolved_job["status"] == "needs_recovery"
-    assert unresolved_job["recovery"]["stage"] == "attempt_verification"
-    record = runtime.candidate_creation.state.read_candidate(run_id, str(job["candidate_id"]))
-    assert len(record.iterations) == 2
-    assert record.iterations[-1].disposition == "discard"
-
-    client.completion_unknown_once.add("fs.branch.reset")
-    recovered = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert recovered["event"]["kind"] == "candidate_ready"
-    assert recovered["event"]["candidate_id"] == job["candidate_id"]
-    feedback = recovered["event"]["attempt_result"]
-    assert feedback["attempt_iteration"] == 2
-    assert feedback["score_report"]["disposition"] == "discard"
-    assert feedback["attempt_artifact_ref"] != feedback[
-        "workspace_artifact_after_attempt"
-    ]
-    assert len(
-        runtime.candidate_creation.state.read_candidate(run_id, str(job["candidate_id"])).iterations
-    ) == 2
-    assert len(
-        [item for item in client.operations if item[0] == "fs.branch.reset"]
-    ) == 2
-    assert client.branches[str(job["fs_branch_id"])]["baseSnapshotId"] == "fsnap-2"
 
 
 def test_annotation_spawn_wake_and_close_recover_without_duplicate_dispatch(
@@ -2755,31 +1191,18 @@ def test_annotation_spawn_wake_and_close_recover_without_duplicate_dispatch(
     project = make_project(tmp_path)
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
+    runtime = FileSearchRuntime(tmp_path.parent / (tmp_path.name + "-session-runtime"))
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     tasks = runtime.start_batch(
         run_id,
         runtime.plan_next(run_id, requested_k=2).plan_id,
     )
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-
+    sessions = [bind_candidate(runtime, client, run_id, task.candidate_id) for task in tasks]
+    verify_candidate(runtime, client, sessions[0])
     client.completion_unknown_once.add("thinkthread.spawn")
-    first_child = str(opened["jobs"][0]["thinkthread_id"])
-    submit_candidate_attempt(runtime, opened, opened["jobs"][0], client)
-    client.finish(first_child)
-    first = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert first["event"]["candidate_id"] == tasks[0].candidate_id
-    recovered_at_boundary = annotation_snapshot(root_dir=runtime.root_dir, run_id=run_id)
+    kick_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
+    recovered_at_boundary = service_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
     assert recovered_at_boundary is not None
     assert recovered_at_boundary["status"] == "running"
     assert (
@@ -2829,19 +1252,12 @@ def test_annotation_spawn_wake_and_close_recover_without_duplicate_dispatch(
     assert ready is not None and ready["status"] == "ready"
 
     client.completion_unknown_once.add("message.send")
-    second_child = str(opened["jobs"][1]["thinkthread_id"])
-    submit_candidate_attempt(runtime, opened, opened["jobs"][1], client)
-    client.finish(second_child)
-    second = wait_any(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        timeout_seconds=0,
-        client=client,  # type: ignore[arg-type]
-    )
-    assert second["event"]["candidate_id"] == tasks[1].candidate_id
-    recovered_wake_at_boundary = annotation_snapshot(
+    verify_candidate(runtime, client, sessions[1])
+    kick_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
+    recovered_wake_at_boundary = service_thinkthread_annotation(
         root_dir=runtime.root_dir,
         run_id=run_id,
+        client=client,
     )
     assert recovered_wake_at_boundary is not None
     assert recovered_wake_at_boundary["status"] == "running"
@@ -2876,12 +1292,8 @@ def test_annotation_spawn_wake_and_close_recover_without_duplicate_dispatch(
     assert after_stale_ack is not None
     assert after_stale_ack["status"] == "running"
 
-    close_pool(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        mode="interrupt",
-        client=client,  # type: ignore[arg-type]
-    )
+    for session in sessions:
+        close_candidate(client, session)
     client.completion_unknown_before_once.add("fs.branch.remove")
     unresolved_close = close_thinkthread_annotation(
         root_dir=runtime.root_dir,
@@ -2916,28 +1328,16 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
     project = make_project(tmp_path)
     client = IntegratedAgentPosix(project)
     monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], native_host="pi")
+    runtime = FileSearchRuntime(tmp_path.parent / (tmp_path.name + "-session-runtime"))
+    frozen = runtime.freeze_spec(thinkthread_spec(project), [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     runtime.start_batch(run_id, plan.plan_id)
-    opened = open_thinkthread_search_pool(
-        root_dir=runtime.root_dir,
-        run_id=run_id,
-        client=client,  # type: ignore[arg-type]
-    )
-    for item in opened["jobs"]:
-        submit_candidate_attempt(runtime, opened, item, client)
-    for item in opened["jobs"]:
-        client.finish(str(item["thinkthread_id"]))
-    for _ in range(2):
-        result = wait_any(
-            root_dir=runtime.root_dir,
-            pool_id=opened["pool_id"],
-            timeout_seconds=0,
-            client=client,  # type: ignore[arg-type]
-        )
-        assert result["event"]["kind"] == "candidate_ready"
+    sessions = [bind_candidate(runtime, client, run_id, candidate_id)
+                for candidate_id in [record.candidate_id for record in runtime.candidate_creation.state.read_candidates(run_id)]]
+    for session in sessions:
+        verify_candidate(runtime, client, session)
+    kick_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
 
     annotation_mutations_before = sum(
         operation
@@ -2972,7 +1372,7 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
         annotation_request(
             state,
             "req-next-1",
-            "thinkthread_annotation_next",
+            "goal_plus_thinkthread_annotation_next",
             {"run_id": run_id},
         ),
     )
@@ -2994,7 +1394,7 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
         annotation_request(
             state,
             "req-submit-1",
-            "thinkthread_annotation_submit",
+            "goal_plus_thinkthread_annotation_submit",
                 {
                     "description": "First snapshot is a valid isolated implementation.",
                     "supplemental_evaluation": {
@@ -3028,7 +1428,7 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
         annotation_request(
             current,
             "req-next-2",
-            "thinkthread_annotation_next",
+            "goal_plus_thinkthread_annotation_next",
             {"run_id": run_id},
         ),
     )
@@ -3053,17 +1453,17 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
     for request_id, tool, params in (
         (
             "req-list",
-            "thinkthread_artifact_view_list",
+            "goal_plus_thinkthread_artifact_view_list",
             {"view_id": target_id, "path": "project"},
         ),
         (
             "req-stat",
-            "thinkthread_artifact_view_stat",
+            "goal_plus_thinkthread_artifact_view_stat",
             {"view_id": target_id, "path": "project/initial_program.py"},
         ),
         (
             "req-read",
-            "thinkthread_artifact_view_pread",
+            "goal_plus_thinkthread_artifact_view_pread",
             {
                 "view_id": target_id,
                 "path": "project/initial_program.py",
@@ -3073,7 +1473,7 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
         ),
         (
             "req-diff",
-            "thinkthread_artifact_view_diff",
+            "goal_plus_thinkthread_artifact_view_diff",
             {"base_view_id": peer_id, "target_view_id": target_id},
         ),
     ):
@@ -3094,7 +1494,7 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
     second_submit_request = annotation_request(
         current,
         "req-submit-2",
-        "thinkthread_annotation_submit",
+        "goal_plus_thinkthread_annotation_submit",
         {
             "description": "Second snapshot improves the target and differs from its peer.",
             "supplemental_evaluation": {
@@ -3189,7 +1589,7 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
     truncated = annotation_request(
         current,
         "req-truncated",
-        "thinkthread_annotation_next",
+        "goal_plus_thinkthread_annotation_next",
         {"run_id": run_id},
     )
     client.enqueue(child_id, truncated)
@@ -3209,7 +1609,7 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
     malformed = annotation_request(
         current,
         "req-bad-hash",
-        "thinkthread_annotation_next",
+        "goal_plus_thinkthread_annotation_next",
         {"run_id": run_id},
     )
     malformed["content_sha256"] = "0" * 64
@@ -3221,12 +1621,8 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
             client=client,  # type: ignore[arg-type]
         )
 
-    close_pool(
-        root_dir=runtime.root_dir,
-        pool_id=opened["pool_id"],
-        mode="drain",
-        client=client,  # type: ignore[arg-type]
-    )
+    for session in sessions:
+        close_candidate(client, session)
     runtime.select(run_id)
     monkeypatch.setattr("goal_plus.thinkthread_annotation.AgentPosixSdkClient", lambda: client)
     kick_pi_internal_agents(runtime.root_dir, run_id)

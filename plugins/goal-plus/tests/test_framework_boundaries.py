@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "goal_plus"
 HOST_CANDIDATE_MODULES = (
     "host_services.py", "host_scope.py", "host_recovery.py", "goal_plus_stop_hook.py",
-    "pi_pool.py", "pi_driver.py", "pi_worker.py", "thinkthread_pool.py",
+    "session_host.py",
 )
 PURE_MODULES = {
     "__future__", "base64", "collections", "contextlib", "dataclasses", "datetime", "enum", "hashlib", "json",
@@ -28,19 +29,22 @@ IO_MEMBERS = {
 }
 
 
-def test_procfs_paths_stay_in_platform_owners():
-    # ThinkThread's legacy service is supported only on its Linux runtime.
-    owners = {"execution/process_identity.py", "thinkthread_annotation.py"}
+def test_no_platform_process_inspection():
     violations = []
     for path in PACKAGE.rglob("*.py"):
-        if path.relative_to(PACKAGE).as_posix() in owners:
-            continue
         for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and (
-                node.value == "/proc" or node.value.startswith("/proc/")
+            if isinstance(node, ast.Attribute) and (
+                node.attr in {"killpg", "getpgid", "getpgrp"}
+                or node.attr == "kill" and isinstance(node.value, ast.Name) and node.value.id == "os"
             ):
                 violations.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
-    assert not violations, "procfs access must stay in the platform owner: " + ", ".join(violations)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and (
+                node.value == "/proc" or node.value.startswith("/proc/") or "libproc" in node.value or node.value == "sysctl"
+            ):
+                violations.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
+    assert not violations, "platform process inspection is not supported: " + ", ".join(violations)
+    for name in ("process_identity", "process_identity_darwin", "process_resources", "scope_guardian"):
+        assert not (PACKAGE / "execution" / f"{name}.py").exists()
 
 
 @pytest.mark.parametrize("module", HOST_CANDIDATE_MODULES)
@@ -213,6 +217,7 @@ modules = [
     'goal_plus.application.allocation_apply', 'goal_plus.ports.allocation_apply',
     'goal_plus.ports.candidate_creation',
     'goal_plus.application.internal_agents', 'goal_plus.ports.internal_agents',
+    'goal_plus.ports.agent_hosts', 'goal_plus.ports.session',
 ]
 for name in modules:
     for value in vars(importlib.import_module(name)).values():
@@ -228,7 +233,33 @@ from goal_plus import FileSearchRuntime
 assert FileSearchRuntime.__module__ == 'goal_plus.runtime'
 """
     result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30,
+        env={**os.environ, "PYTHONPATH": str(PACKAGE.parent)},
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_host_bindings_resolve_without_loading_execution_adapters() -> None:
+    script = """
+import sys
+from goal_plus.infrastructure.host_bindings import execution_binding, resolve_inner_agent_binding
+for host, provider in (('codex', 'direct'), ('pi', 'direct'), ('pi', 'thinkthread')):
+    binding = execution_binding(host, provider)
+    inner = resolve_inner_agent_binding(host, 'common', provider)
+    assert inner.agent_harness == host
+    assert inner.host_adapter_version == binding.adapter_version
+    assert inner.continuation_mode == "native_session"
+    assert inner.workspace_ledger_projection == 'none'
+for name in sys.modules:
+    assert not name.startswith((
+        'goal_plus.agent_hosts', 'goal_plus.execution', 'goal_plus.runtime',
+        'goal_plus.pi_pool', 'goal_plus.pi_worker', 'goal_plus.host_observability',
+        'goal_plus.thinkthread_agent_posix',
+    )), name
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30,
+        env={**os.environ, "PYTHONPATH": str(PACKAGE.parent)},
     )
     assert result.returncode == 0, result.stderr
 
@@ -267,6 +298,14 @@ def test_production_callers_use_canonical_helpers_and_models() -> None:
                 assert node.name not in retired_annotation_members, path
             if isinstance(node, ast.ImportFrom):
                 assert node.module != "goal_plus.models", path
+                assert node.module != "goal_plus.agent_pool", path
+                if node.module == "goal_plus.agent_hosts":
+                    assert not {
+                        "AgentExecutionBinding", "AgentExecutionCapabilities", "HostModelCatalog",
+                        "CandidateLaunchAdapter", "UnsupportedHostCapability",
+                        "host_binding", "resolve_inner_agent_binding",
+                        "candidate_inner_agent_binding", "portable_strategy_mode",
+                    }.intersection(a.name for a in node.names), path
                 if path.name == "thinkthread_annotation.py":
                     assert node.module != "goal_plus.thinkthread_pool", path
                 if node.module == "goal_plus.runtime":

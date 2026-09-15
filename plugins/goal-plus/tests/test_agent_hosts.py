@@ -6,11 +6,16 @@ import pytest
 
 import goal_plus.agent_hosts as agent_hosts
 from goal_plus.agent_hosts import (
+    host_model_catalog, candidate_launch_adapter,
+)
+from goal_plus.domain.agents import (
     INNER_AGENT_AUTORESEARCH,
     INNER_AGENT_COMMON,
-    UnsupportedHostCapability,
-    host_binding, host_model_catalog, candidate_launch_adapter,
-    portable_strategy_mode,
+)
+from goal_plus.domain.worker_policy import portable_strategy_mode
+from goal_plus.ports.agent_hosts import UnsupportedHostCapability
+from goal_plus.infrastructure.host_bindings import (
+    execution_binding,
     resolve_inner_agent_binding,
 )
 
@@ -31,28 +36,27 @@ def test_json_line_reader_skips_noise_until_matching_response() -> None:
 
 
 def test_host_binding_returns_all_supported_hosts() -> None:
-    assert host_binding("codex").name == "codex"
-    assert host_binding("pi-rpc").name == "pi-rpc"
-    thinkthread = host_binding("thinkthread")
-    assert thinkthread.name == "thinkthread"
-    assert thinkthread.capabilities.supported_workspace_backends == frozenset(
+    assert execution_binding("codex").agent_harness == "codex"
+    assert execution_binding("pi").agent_harness == "pi"
+    thinkthread = execution_binding("pi", "thinkthread")
+    assert thinkthread.agent_harness == "pi" and thinkthread.runtime_provider == "thinkthread"
+    assert thinkthread.capabilities.supported_workspace_providers == frozenset(
         {"thinkthread"}
     )
-    assert thinkthread.capabilities.supported_workspace_backends == {"thinkthread"}
+    assert thinkthread.capabilities.supported_workspace_providers == {"thinkthread"}
     assert thinkthread.adapter_version == "thinkthread-v3-pi"
     assert thinkthread.capabilities.search_enabled is True
     assert thinkthread.capabilities.disabled_reason is None
-    assert thinkthread.capabilities.pool.open_tool == "thinkthread_search_pool_open"
-    assert thinkthread.capabilities.pool.wait_tool == "thinkthread_search_pool_wait_any"
-    assert thinkthread.capabilities.pool.continuation_mode == "native_session"
-    assert thinkthread.capabilities.pool.recovery_mode == "supervisor_persisted"
-    assert host_binding("codex").capabilities.supports_model_discovery
-    assert host_binding("pi-rpc").capabilities.supports_model_discovery
-    assert host_binding("codex").capabilities.supported_inner_agents == {
+    assert thinkthread.capabilities.session_control.run_tool == "goal_plus_session_run"
+    assert thinkthread.capabilities.session_control.wait_tool == "goal_plus_session_wait"
+    assert thinkthread.capabilities.session_control == execution_binding("pi").capabilities.session_control
+    assert execution_binding("codex").capabilities.supports_model_discovery
+    assert execution_binding("pi").capabilities.supports_model_discovery
+    assert execution_binding("codex").capabilities.supported_inner_agents == {
         INNER_AGENT_AUTORESEARCH,
         INNER_AGENT_COMMON,
     }
-    assert host_binding("pi-rpc").capabilities.supported_inner_agents == {
+    assert execution_binding("pi").capabilities.supported_inner_agents == {
         INNER_AGENT_AUTORESEARCH,
         INNER_AGENT_COMMON,
     }
@@ -63,57 +67,52 @@ def test_host_binding_returns_all_supported_hosts() -> None:
 
 
 def test_inner_agent_binding_separates_logical_adapter_from_native_role() -> None:
-    common = resolve_inner_agent_binding("pi-rpc", INNER_AGENT_COMMON)
+    common = resolve_inner_agent_binding("pi", INNER_AGENT_COMMON)
     assert common.inner_agent_id == "common"
     assert common.prompt_asset == "assets/pi/prompts/search-candidate-common.md"
     assert common.adapter_version == "builtin-common-v1"
-    assert common.native_agent_type is None
     assert common.workspace_ledger_projection == "none"
 
-    legacy_codex = resolve_inner_agent_binding(
+    codex = resolve_inner_agent_binding(
         "codex",
         INNER_AGENT_AUTORESEARCH,
-        legacy_native_agent_type="search_candidate_agent_deep",
     )
-    assert legacy_codex.prompt_asset == "assets/codex/agents/search_candidate_agent.toml"
-    assert legacy_codex.native_agent_type == "search_candidate_agent_deep"
-    assert legacy_codex.workspace_ledger_projection == "results_tsv"
+    assert codex.prompt_asset == "assets/codex/agents/search_candidate_agent.toml"
+    assert codex.workspace_ledger_projection == "results_tsv"
 
     thinkthread_autoresearch = resolve_inner_agent_binding(
-        "thinkthread", INNER_AGENT_AUTORESEARCH
+        "pi", INNER_AGENT_AUTORESEARCH, "thinkthread"
     )
     assert (
         thinkthread_autoresearch.prompt_asset
         == "assets/pi/prompts/search-candidate-worker.md"
     )
-    assert thinkthread_autoresearch.native_agent_type is None
     assert thinkthread_autoresearch.adapter_version == "builtin-autoresearch-git-v1"
     assert thinkthread_autoresearch.continuation_mode == "native_session"
     assert thinkthread_autoresearch.workspace_ledger_projection == "results_tsv"
 
     with pytest.raises(UnsupportedHostCapability, match="inner_agent='custom'"):
-        resolve_inner_agent_binding("pi-rpc", "custom")
+        resolve_inner_agent_binding("pi", "custom")
 
 
 def test_host_observation_and_discovery_do_not_receive_launch_capabilities(monkeypatch):
     from types import SimpleNamespace
 
-    session = SimpleNamespace(host="codex")
+    session = SimpleNamespace(agent_harness="codex", runtime_provider="direct")
     monkeypatch.setattr(agent_hosts, "collect_codex_observability", lambda value: {"available": value is session})
     assert agent_hosts.collect_host_observability(session) == {"available": True}
-    for host in ("codex", "pi-rpc", "thinkthread"):
-        catalog = host_model_catalog(host)
-        launch = candidate_launch_adapter(host)
+    for agent_harness, runtime_provider in (("codex", "direct"), ("pi", "direct"), ("pi", "thinkthread")):
+        catalog = host_model_catalog(agent_harness, runtime_provider)
+        launch = candidate_launch_adapter(agent_harness, runtime_provider)
         assert not hasattr(catalog, "build_launch_payload")
         assert not hasattr(launch, "list_available_models")
-        assert not hasattr(host_binding(host), "collect_observability")
+        assert not hasattr(execution_binding(agent_harness, runtime_provider), "collect_observability")
 
 
 def test_thinkthread_adapter_payload_is_complete_for_pi_profile() -> None:
-    adapter = candidate_launch_adapter("thinkthread")
+    adapter = candidate_launch_adapter("pi", "thinkthread")
 
     launch = adapter.build_launch_payload(
-        native_agent_type=None,
         candidate_id="c001",
         agent_session_id="agent-run-001",
         short_intent="try",
@@ -121,7 +120,7 @@ def test_thinkthread_adapter_payload_is_complete_for_pi_profile() -> None:
         worker_budget={"max_runtime_seconds": 60},
         worker_launch={ "model": "provider/model"},
     )
-    assert launch["tool"] == "thinkthread_child"
+    assert launch["transport"] == "thinkthread"
     assert launch["profile"] == "self"
     assert launch["fs"] == "private"
     assert launch["capabilities"] == ["thinkthread.message"]
@@ -129,11 +128,9 @@ def test_thinkthread_adapter_payload_is_complete_for_pi_profile() -> None:
     assert "agent_session_id=agent-run-001" in launch["message"]
 
     continued = adapter.build_continue_payload(
-        native_agent_type=None,
         candidate_id="c001",
         agent_session_id="agent-run-001",
         external_id="tt-child-1",
-        task_name=None,
         short_intent="continue",
         one_paragraph_idea="next attempt",
         worker_budget={"max_runtime_seconds": 60},
@@ -226,7 +223,7 @@ def test_pi_adapter_lists_models_from_native_rpc(monkeypatch: pytest.MonkeyPatch
     )
     monkeypatch.setattr(agent_hosts.ManagedProcess, "terminate", lambda self: None)
 
-    models = host_model_catalog("pi-rpc").list_available_models("terra")
+    models = host_model_catalog("pi").list_available_models("terra")
 
     assert models == [
         {
@@ -259,31 +256,27 @@ def test_portable_strategy_mode_classifies_all_builtin_aliases() -> None:
 
 
 @pytest.mark.codex
-def test_codex_adapter_builds_foreground_spawn_payload() -> None:
+def test_codex_adapter_builds_session_input() -> None:
     adapter = candidate_launch_adapter("codex")
 
     payload = adapter.build_launch_payload(
-        native_agent_type=None,
         candidate_id="cand-0001",
         agent_session_id="agent-0001",
         short_intent="try",
         one_paragraph_idea="try",
     )
 
-    assert payload["tool"] == "spawn_agent"
-    assert payload["agent_type"] == "default"
-    assert payload["fork_turns"] == "none"
-    assert payload["task_name"] == "search_agent_0001"
+    assert payload["transport"] == "app-server"
+    assert not {"tool", "agent_type", "fork_turns", "task_name"}.intersection(payload)
     assert "agent_session_id=agent-0001" in payload["message"]
     assert "assigned_worker_budget=host 默认值" in payload["message"]
 
 
 @pytest.mark.codex
-def test_codex_launch_maps_candidate_contract_to_builtin_default_role() -> None:
+def test_codex_launch_embeds_candidate_contract() -> None:
     adapter = candidate_launch_adapter("codex")
 
     payload = adapter.build_launch_payload(
-        native_agent_type="search_candidate_agent",
         candidate_id="c001",
         agent_session_id="agent-0001",
         short_intent="try",
@@ -291,30 +284,12 @@ def test_codex_launch_maps_candidate_contract_to_builtin_default_role() -> None:
     )
 
     message = payload["message"]
-    # Codex's built-in default role has no config layer, so it preserves the
-    # inherited parent model. The project search role would reload config after
-    # inheritance and can clear a runtime-only model before tier validation.
-    assert payload["agent_type"] == "default"
+    assert payload["transport"] == "app-server"
     assert "候选 worker，不是搜索编排器" in message
-    assert "search_get_agent_context" in message
+    assert "goal_plus_search_get_agent_context" in message
     assert "candidate_task" in message
-    assert "search_run_verifier" not in message
-    assert "search_get_global_evidence" not in message
-
-
-@pytest.mark.codex
-def test_codex_launch_preserves_explicit_nondefault_agent_type() -> None:
-    adapter = candidate_launch_adapter("codex")
-
-    payload = adapter.build_launch_payload(
-        native_agent_type="search_candidate_agent_deep",
-        candidate_id="c001",
-        agent_session_id="agent-0001",
-        short_intent="try",
-        one_paragraph_idea="try",
-    )
-
-    assert payload["agent_type"] == "search_candidate_agent_deep"
+    assert "goal_plus_search_run_verifier" not in message
+    assert "goal_plus_search_get_global_evidence" not in message
 
 
 @pytest.mark.codex
@@ -323,7 +298,6 @@ def test_codex_launch_embeds_contract_and_continue_is_compact() -> None:
     worker_prompt = "FULL WORKER CONTRACT: write .tmp/handoff.json before returning."
 
     launch = adapter.build_launch_payload(
-        native_agent_type="search_candidate_agent",
         candidate_id="c001",
         agent_session_id="agent-0001",
         short_intent="try",
@@ -331,11 +305,9 @@ def test_codex_launch_embeds_contract_and_continue_is_compact() -> None:
         worker_prompt=worker_prompt,
     )
     continued = adapter.build_continue_payload(
-        native_agent_type="search_candidate_agent",
         candidate_id="c001",
         agent_session_id="agent-0001",
-        external_id=None,
-        task_name=launch["task_name"],
+        external_id="bound-native-thread",
         short_intent="continue",
         one_paragraph_idea="continue",
         worker_prompt=worker_prompt,
@@ -352,7 +324,6 @@ def test_codex_adapter_maps_native_worker_launch_options() -> None:
     adapter = candidate_launch_adapter("codex")
 
     payload = adapter.build_launch_payload(
-        native_agent_type=None,
         candidate_id="cand-0001",
         agent_session_id="agent-0001",
         short_intent="try",
@@ -369,12 +340,11 @@ def test_codex_adapter_maps_native_worker_launch_options() -> None:
     assert payload["service_tier"] == "priority"
 
 
-@pytest.mark.codex
-def test_codex_adapter_builds_watchdog_budget_payload() -> None:
-    adapter = candidate_launch_adapter("codex")
+@pytest.mark.parametrize("agent_harness,runtime_provider", [("codex", "direct"), ("pi", "direct"), ("pi", "thinkthread")])
+def test_candidate_launch_preserves_explicit_session_budget(agent_harness, runtime_provider) -> None:
+    adapter = candidate_launch_adapter(agent_harness, runtime_provider)
 
     payload = adapter.build_launch_payload(
-        native_agent_type=None,
         candidate_id="cand-0001",
         agent_session_id="agent-0001",
         short_intent="try",
@@ -387,98 +357,18 @@ def test_codex_adapter_builds_watchdog_budget_payload() -> None:
     )
 
     assert payload["budget_control"] == {
-        "mode": "parent_watchdog",
+        "mode": "session_control",
         "max_runtime_seconds": 600,
-        "initial_wait_timeout_ms": 555000,
-        "soft_closeout_seconds": 45,
-        "closeout_tool": "send_message",
-        "closeout_target": "search_agent_0001",
-        "closeout_message": (
-            "Worker 的截止时间临近。停止启动新工作；如有需要，最后运行一次 "
-            "search_run_verifier，更新 .tmp/handoff.json，并返回简洁摘要。"
-        ),
-        "final_wait_timeout_ms": 45000,
         "on_exceed": "interrupt",
-        "interrupt_tool": "interrupt_agent",
-        "interrupt_target": "search_agent_0001",
         "max_turns_hint": 8,
     }
 
 
-@pytest.mark.codex
-def test_codex_adapter_rejects_budget_too_short_for_native_waits() -> None:
-    adapter = candidate_launch_adapter("codex")
-
-    with pytest.raises(ValueError, match="two native wait intervals"):
-        adapter.build_launch_payload(
-            native_agent_type=None,
-            candidate_id="cand-0001",
-            agent_session_id="agent-0001",
-            short_intent="try",
-            one_paragraph_idea="try",
-            worker_budget={
-                "max_runtime_seconds": 19,
-                "on_exceed": "interrupt",
-            },
-        )
-
-
-@pytest.mark.codex
-def test_codex_adapter_separates_autoresearch_lease_from_parent_watchdog() -> None:
-    adapter = candidate_launch_adapter("codex")
-
-    payload = adapter.build_launch_payload(
-        native_agent_type=None,
-        candidate_id="cand-0001",
-        agent_session_id="agent-0001",
-        short_intent="try",
-        one_paragraph_idea="try",
-        worker_budget={
-            "min_runtime_seconds": 300,
-            "min_verifier_runs": 1,
-            "max_runtime_seconds": 420,
-            "on_exceed": "interrupt",
-        },
-    )
-
-    control = payload["budget_control"]
-    assert control["autoresearch_lease"] == {
-        "mode": "subagent_stop",
-        "min_runtime_seconds": 300,
-        "min_verifier_runs": 1,
-        "start_event": "native_child_session",
-        "release_before_parent_closeout": True,
-    }
-    assert control["initial_wait_timeout_ms"] == 375000
-    assert control["final_wait_timeout_ms"] == 45000
-    assert 300 < control["initial_wait_timeout_ms"] / 1000 < 420
-
-
-@pytest.mark.codex
-def test_codex_adapter_rejects_lease_overlapping_parent_closeout() -> None:
-    adapter = candidate_launch_adapter("codex")
-
-    with pytest.raises(ValueError, match="before the parent watchdog soft-closeout"):
-        adapter.build_launch_payload(
-            native_agent_type=None,
-            candidate_id="cand-0001",
-            agent_session_id="agent-0001",
-            short_intent="try",
-            one_paragraph_idea="try",
-            worker_budget={
-                "min_runtime_seconds": 360,
-                "max_runtime_seconds": 400,
-                "on_exceed": "interrupt",
-            },
-        )
-
-
 @pytest.mark.pi
 def test_pi_rpc_adapter_builds_worker_payload() -> None:
-    adapter = candidate_launch_adapter("pi-rpc")
+    adapter = candidate_launch_adapter("pi")
 
     payload = adapter.build_launch_payload(
-        native_agent_type=None,
         candidate_id="c001",
         agent_session_id="agent_0001",
         short_intent="try",
@@ -489,67 +379,51 @@ def test_pi_rpc_adapter_builds_worker_payload() -> None:
             "on_exceed": "interrupt",
         },
         root="/tmp/project/.search",
-        cwd="/tmp/project/.search/runs/run_1/candidates/c001/workspace",
-        worker_prompt="first call search_get_agent_context",
-        process_environment={"TEST_VISIBLE_DEVICES": "5"},
+        worker_prompt="first call goal_plus_search_get_agent_context",
     )
 
-    assert payload["tool"] == "pi_rpc_worker"
+    assert payload["transport"] == "native-rpc"
     assert payload["agent_session_id"] == "agent_0001"
     assert payload["candidate_id"] == "c001"
-    assert payload["root"] == "/tmp/project/.search"
-    assert payload["cwd"].endswith("/c001/workspace")
-    assert "session_dir" not in payload
     assert payload["continuation"] == "native_session"
-    assert payload["session_persistence"] == "cross_process"
-    assert payload["environment"] == {"TEST_VISIBLE_DEVICES": "5"}
-    assert "search_get_agent_context" in payload["prompt"]
+    assert "goal_plus_search_get_agent_context" in payload["prompt"]
     assert "agent_session_id=agent_0001" in payload["prompt"]
     assert "assigned_worker_budget={'max_runtime_seconds': 600" in payload["prompt"]
     assert payload["budget_control"] == {
-        "mode": "pi_rpc_process_watchdog",
-        "continuation": "native_session",
+        "mode": "session_control",
         "max_runtime_seconds": 600,
         "max_turns_hint": 8,
-        "soft_closeout_seconds": 45,
         "on_exceed": "interrupt",
     }
 
 
-@pytest.mark.pi
-def test_pi_rpc_adapter_exposes_supervisor_autoresearch_lease() -> None:
-    adapter = candidate_launch_adapter("pi-rpc")
+@pytest.mark.parametrize("agent_harness,runtime_provider", [("pi", "direct"), ("pi", "thinkthread")])
+def test_native_launch_does_not_prescribe_removed_pool_workflow(agent_harness, runtime_provider) -> None:
+    adapter = candidate_launch_adapter(agent_harness, runtime_provider)
 
     payload = adapter.build_launch_payload(
-        native_agent_type=None,
         candidate_id="c001",
         agent_session_id="agent_0001",
         short_intent="try",
         one_paragraph_idea="try",
         worker_budget={
-            "min_runtime_seconds": 300,
-            "min_verifier_runs": 2,
             "max_runtime_seconds": 420,
             "on_exceed": "interrupt",
         },
     )
 
-    assert payload["budget_control"]["autoresearch_lease"] == {
-        "mode": "pool_supervisor",
-        "min_runtime_seconds": 300,
-        "min_verifier_runs": 2,
-        "start_event": "initial_pool_dispatch",
-        "cumulative_across_dispatches": True,
-    }
-    assert payload["budget_control"]["soft_closeout_seconds"] == 120
+    control = payload["budget_control"]
+    assert control["max_runtime_seconds"] == 420
+    assert control["on_exceed"] == "interrupt"
+    assert "autoresearch_lease" not in control
+    assert "soft_closeout_seconds" not in control
 
 
 @pytest.mark.pi
 def test_pi_rpc_adapter_maps_native_worker_launch_options() -> None:
-    adapter = candidate_launch_adapter("pi-rpc")
+    adapter = candidate_launch_adapter("pi")
 
     payload = adapter.build_launch_payload(
-        native_agent_type=None,
         candidate_id="c001",
         agent_session_id="agent_0001",
         short_intent="try",
@@ -566,84 +440,58 @@ def test_pi_rpc_adapter_maps_native_worker_launch_options() -> None:
 
 @pytest.mark.pi
 def test_pi_rpc_adapter_builds_cross_process_native_session_continuation() -> None:
-    adapter = candidate_launch_adapter("pi-rpc")
+    adapter = candidate_launch_adapter("pi")
 
     payload = adapter.build_continue_payload(
-        native_agent_type=None,
         candidate_id="c001",
         agent_session_id="agent_0001",
         external_id="agent_0001",
-        task_name=None,
         short_intent="continue",
         one_paragraph_idea="continue from runtime context",
         root="/tmp/project/.search",
-        cwd="/tmp/project/.search/runs/run_1/candidates/c001/workspace",
-        worker_prompt="first call search_get_agent_context",
-        host_metadata={
-            "pi_metrics": {
-                "final_last_entry_id": "entry_7",
-                "final_entry_count": 7,
-                "usage_total": {"input": 120},
-                "duration_seconds": 3.5,
-                "started_at": "2026-07-19T00:00:00Z",
-            }
-        },
-        process_environment={"TEST_VISIBLE_DEVICES": "5"},
+        worker_prompt="first call goal_plus_search_get_agent_context",
     )
 
     assert payload["agent_session_id"] == "agent_0001"
     assert payload["session_id"] == "agent_0001"
     assert payload["continuation"] == "native_session"
-    assert payload["session_persistence"] == "cross_process"
-    assert payload["environment"] == {"TEST_VISIBLE_DEVICES": "5"}
-    assert payload["metrics_baseline"] == {
-        "last_entry_id": "entry_7",
-        "entry_count": 7,
-        "usage_total": {"input": 120},
-        "duration_seconds": 3.5,
-        "started_at": "2026-07-19T00:00:00Z",
-    }
     assert "continue_existing_agent_session=true" in payload["prompt"]
-    assert "first call search_get_agent_context" not in payload["prompt"]
+    assert "first call goal_plus_search_get_agent_context" not in payload["prompt"]
     assert "沿用已加载的运行时上下文和 Evidence" in payload["prompt"]
     assert "不改变 frozen inner-agent binding" in payload["prompt"]
     assert "deadline" not in payload["prompt"]
 
 
 @pytest.mark.codex
-def test_codex_continue_uses_followup_task_with_watchdog() -> None:
+def test_codex_continue_uses_bound_session_and_explicit_budget() -> None:
     adapter = candidate_launch_adapter("codex")
 
     payload = adapter.build_continue_payload(
-        native_agent_type="search_candidate_agent",
         candidate_id="cand_0001",
         agent_session_id="agent_0001",
-        external_id=None,
-        task_name="search_agent_0001",
+        external_id="bound-native-thread",
         short_intent="continue",
         one_paragraph_idea="continue",
         worker_budget={"max_runtime_seconds": 900, "on_exceed": "interrupt"},
     )
 
-    assert payload["tool"] == "followup_task"
-    assert payload["target"] == "search_agent_0001"
+    assert payload["transport"] == "app-server"
+    assert payload["native_session_id"] == "bound-native-thread"
     assert "continue_existing_agent_session=true" in payload["message"]
     assert "指令：continue" in payload["message"]
     assert payload["budget_control"]["max_runtime_seconds"] == 900
-    assert payload["budget_control"]["interrupt_target"] == "search_agent_0001"
+    assert payload["budget_control"]["mode"] == "session_control"
 
 
 @pytest.mark.codex
 def test_codex_continue_requires_a_bound_native_handle() -> None:
     adapter = candidate_launch_adapter("codex")
 
-    with pytest.raises(UnsupportedHostCapability, match="bound task name"):
+    with pytest.raises(UnsupportedHostCapability, match="bound native session id"):
         adapter.build_continue_payload(
-            native_agent_type="search_candidate_agent",
             candidate_id="cand_0001",
             agent_session_id="agent_0001",
             external_id=None,
-            task_name=None,
             short_intent="continue",
             one_paragraph_idea="continue",
         )

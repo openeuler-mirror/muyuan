@@ -4,7 +4,7 @@ from __future__ import annotations
 import subprocess
 import uuid
 from pathlib import Path
-from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.agents import AgentHarnessKind, validate_search_execution
 from goal_plus.domain.search import SearchSpec, VerifierCommand
 from goal_plus.ports.search_bootstrap import FreezeInputs
 from goal_plus.infrastructure.artifacts.source_repository import SourceRepository
@@ -133,7 +133,9 @@ class FileFreezeSource:
         self.root_dir = Path(root_dir)
         self.configuration, self.repository = configuration, repository
 
-    def prepare(self, spec: SearchSpec, verifier_artifacts: list[Path], *, worker_host: AgentHostKind) -> FreezeInputs:
+    def prepare(self, spec: SearchSpec, verifier_artifacts: list[Path], *, agent_harness: AgentHarnessKind) -> FreezeInputs:
+        runtime_provider = "thinkthread" if spec.workspace.provider == "thinkthread" else "direct"
+        validate_search_execution(agent_harness, runtime_provider, spec.workspace.provider)
         supplemental_enabled = supplemental_evaluation_enabled()
         supplemental_required = supplemental_evaluation_required()
         if supplemental_required and not supplemental_enabled:
@@ -141,12 +143,12 @@ class FileFreezeSource:
                 f"{SUPPLEMENTAL_EVALUATION_REQUIRED_ENV}=1 requires "
                 f"{SUPPLEMENTAL_EVALUATION_ENABLED_ENV}=1"
             )
-        spec = self.configuration.normalize_inner_agent_spec(spec, worker_host)
-        self.configuration.validate_host_workspace_backend(spec, worker_host)
-        self.configuration.validate_inner_agent_binding(spec.strategy, worker_host)
+        spec = self.configuration.normalize_inner_agent_spec(spec, agent_harness, runtime_provider)
+        self.configuration.validate_host_workspace_provider(spec, agent_harness, runtime_provider)
+        self.configuration.validate_inner_agent_binding(spec.strategy, agent_harness, runtime_provider)
         spec = _normalize_verifier_cwds_for_candidate_workspace(spec)
         spec = self.configuration.apply_global_evidence_mode_from_environment(spec)
-        spec = self.configuration.normalize_strategy_models(spec, worker_host)
+        spec = self.configuration.normalize_strategy_models(spec, agent_harness, runtime_provider)
         self.configuration.validate_strategy_config(spec.strategy)
         device_inventory = self.configuration.resolve_device_inventory(
             spec.device_pools,
@@ -154,7 +156,7 @@ class FileFreezeSource:
         )
         source_root = Path(spec.source_path).resolve()
         self.repository.validate_clean_source_repository(spec)
-        if spec.workspace.backend == "thinkthread":
+        if spec.workspace.provider == "thinkthread":
             thinkthread_source_relative_path(source_root)
             if spec.shared_dir.enabled:
                 raise ValueError(
@@ -163,7 +165,7 @@ class FileFreezeSource:
                 )
         workspace_capacity_estimate = estimate_workspace_capacity(
             source=source_root,
-            backend=spec.workspace.backend,
+            workspace_provider=spec.workspace.provider,
             worktree_nodes=spec.budget.max_parallel,
             destination_root=self.root_dir,
         )
@@ -215,10 +217,11 @@ class FileFreezeSource:
 
         source_artifact_ref = (
             LocalGitWorkspace("git_worktree").current_artifact(source_root)
-            if spec.workspace.backend == "git_worktree"
+            if spec.workspace.provider == "git_worktree"
             else None
         )
         return FreezeInputs(
+            runtime_provider,
             spec,
             source_root,
             supplemental_enabled,

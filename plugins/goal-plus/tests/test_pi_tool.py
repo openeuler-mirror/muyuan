@@ -27,18 +27,17 @@ def test_pi_scope_tool_records_current_native_agent_config(tmp_path: Path) -> No
     root = tmp_path / ".gp"
     goals = FileGoalPlusRuntime(root)
     invocation = GoalPlusHostCommandInvocation(
-        host="pi", transport="pi_extension_command", command="/goal-plus", action="start",
+        agent_harness="pi", transport="pi_extension_command", command="/goal-plus", action="start",
         session_id="pi-main", native_entry_id="1", invocation_id="pi:start",
         raw_input_sha256=hashlib.sha256(b"/goal-plus Test").hexdigest(), invoked_at="2026-09-06T00:00:00Z",
     )
     goal = goals.start_from_host_command("Test", invocation=invocation)
-    goals.activate_session(goal.goal_plus_id, {"host": "pi-rpc", "session_id": "pi-main"})
+    goals.activate_session(goal.goal_plus_id, {"agent_harness": "pi", "session_id": "pi-main"})
     args = {
-            "host": "pi",
+            "agent_harness": "pi",
             "goal_plus_id": goal.goal_plus_id,
             "native_session_id": "pi-main",
             "owner_session_id": "pi-main",
-            "owner_pid": os.getpid(),
             "run_id": goal.goal_plus_id,
             "native_agent_config": {
                 "model_pattern": "native-main/example-model",
@@ -113,7 +112,7 @@ def test_pi_host_command_control_path_creates_verified_record(tmp_path: Path) ->
             "raw_goal": raw_goal,
             "source_path": ".",
             "invocation": {
-                "host": "pi",
+                "agent_harness": "pi",
                 "transport": "pi_extension_command",
                 "command": "/goal-plus",
                 "action": "start",
@@ -132,9 +131,22 @@ def test_pi_host_command_control_path_creates_verified_record(tmp_path: Path) ->
     assert result["raw_goal"].startswith("Test Pi config")
     assert result["command_config"]["max_parallel"] == 2
     assert result["command_config"]["promotion_mode"] == "artifact_only"
-    assert result["active_session"]["host"] == "pi-rpc"
+    assert result["active_session"]["agent_harness"] == "pi"
     assert result["active_session"]["session_id"] == "pi:test"
     assert result["active_session"]["state"] == "attached"
+    assert result["phase"] == "goal"
+    assert result["next_action"]["kind"] == "execute_goal"
+    assert result["triage"] is None
+    gate = call_pi_tool(
+        tmp_path / ".gp",
+        "goal_plus_gate",
+        {
+            "goal_plus_id": result["goal_plus_id"],
+            "event": "pre_tool_use",
+            "context": {"tool_name": "edit", "tool_input": {"path": "fix.py"}},
+        },
+    )
+    assert gate["decision"] == "allow"
     assert not capability.exists()
 
 
@@ -159,7 +171,7 @@ def test_pi_host_command_starts_independent_goals_for_different_sessions(
                     "raw_goal": f"task {index}",
                     "source_path": ".",
                     "invocation": {
-                        "host": "pi",
+                        "agent_harness": "pi",
                         "transport": "pi_extension_command",
                         "command": "/goal-plus",
                         "action": "start",
@@ -189,7 +201,7 @@ def test_pi_host_session_event_uses_native_session_identity(tmp_path: Path) -> N
     record = runtime.create_goal("Continue in the same native Pi session")
     runtime.activate_session(
         record.goal_plus_id,
-        {"host": "pi-rpc", "session_id": "pi-session-1"},
+        {"agent_harness": "pi", "session_id": "pi-session-1"},
     )
 
     token = "00000000-0000-4000-8000-000000000003"
@@ -269,15 +281,15 @@ def test_pi_host_command_kicks_all_internal_agents(
         root: Path | str,
         run_id: str,
         *,
-        host: str,
+        agent_harness: str,
     ) -> dict[str, bool]:
-        calls.append((root, run_id, host))
+        calls.append((root, run_id, agent_harness))
         return {"annotation_started": True, "verifier_started": True}
 
     monkeypatch.setattr(internal_agents, "kick_internal_agents", record)
     monkeypatch.setattr(
         internal_agents, "kick_pi_internal_agents",
-        lambda root, run_id: internal_agents.kick_internal_agents(root, run_id, host="pi-rpc"),
+        lambda root, run_id: internal_agents.kick_internal_agents(root, run_id, agent_harness="pi"),
     )
     result = call_pi_host_command(
         runtime_root,
@@ -292,24 +304,27 @@ def test_pi_host_command_kicks_all_internal_agents(
         "annotation_started": True,
         "verifier_started": True,
     }
-    assert calls == [(runtime_root, "run_host_inherited", "pi-rpc")]
+    assert calls == [(runtime_root, "run_host_inherited", "pi")]
     assert not capability.exists()
 
 
-def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path) -> None:
+def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path, monkeypatch) -> None:
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
-    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex")
+    frozen = runtime.freeze_spec(spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
     session = runtime.start_agent_session(run_id, task.candidate_id)
     _link_run(runtime_root, project, frozen.frozen_spec_id, run_id)
 
+    monkeypatch.setenv("GOAL_PLUS_PI_ROLE", "worker")
+    monkeypatch.setenv("GOAL_PLUS_AGENT_SESSION_ID", session.agent_session_id)
+
     context = call_pi_tool(
         runtime_root,
-        "search_get_agent_context",
+        "goal_plus_search_get_agent_context",
         {"agent_session_id": session.agent_session_id},
     )
     assert context["candidate_task"]["workspace"] == str(task.workspace)
@@ -318,14 +333,14 @@ def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path) -> None:
 
     assert call_pi_tool(
         runtime_root,
-        "search_get_global_evidence",
+        "goal_plus_search_get_global_evidence",
         {"agent_session_id": session.agent_session_id},
     ) == []
 
     (task.workspace / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
     report = call_pi_tool(
         runtime_root,
-        "search_run_verifier",
+        "goal_plus_search_run_verifier",
         {
             "run_id": run_id,
             "candidate_id": task.candidate_id,
@@ -337,10 +352,10 @@ def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path) -> None:
 
     iterations = call_pi_tool(
         runtime_root,
-        "search_list_iterations",
+        "goal_plus_search_list_iterations",
         {"agent_session_id": session.agent_session_id},
     )
-    assert iterations[0]["agent_session_id"] == session.agent_session_id
+    assert iterations["items"][0]["agent_session_id"] == session.agent_session_id
 
 
 def test_pi_worker_tools_are_scoped_to_their_agent_session(
@@ -352,7 +367,7 @@ def test_pi_worker_tools_are_scoped_to_their_agent_session(
     runtime = FileSearchRuntime(runtime_root)
     frozen = runtime.freeze_spec(
         spec_for(project, max_parallel=2),
-        [project / "evaluator.py"], native_host="codex",
+        [project / "evaluator.py"], agent_harness="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -365,7 +380,7 @@ def test_pi_worker_tools_are_scoped_to_their_agent_session(
 
     context = call_pi_tool(
         runtime_root,
-        "search_get_agent_context",
+        "goal_plus_search_get_agent_context",
         {"agent_session_id": own.agent_session_id},
     )
     assert context["candidate_id"] == tasks[0].candidate_id
@@ -373,11 +388,11 @@ def test_pi_worker_tools_are_scoped_to_their_agent_session(
     with pytest.raises(PermissionError, match="GoalPlusSessionMismatch"):
         call_pi_tool(
             runtime_root,
-            "search_get_agent_context",
+            "goal_plus_search_get_agent_context",
             {"agent_session_id": peer.agent_session_id},
         )
     with pytest.raises(PermissionError, match="GoalPlusRoleDenied"):
-        call_pi_tool(runtime_root, "search_select", {"run_id": run_id})
+        call_pi_tool(runtime_root, "goal_plus_search_select", {"run_id": run_id})
 
 
 def test_pi_main_cannot_submit_final_check(
@@ -399,7 +414,7 @@ def test_pi_main_cannot_submit_final_check(
         )
 
 
-def test_pi_tool_stages_explicit_candidate_drafts(tmp_path: Path) -> None:
+def test_pi_tool_stages_explicit_candidate_drafts(tmp_path: Path, monkeypatch) -> None:
     project = make_project(tmp_path)
     runtime_root = tmp_path / ".search"
     runtime = FileSearchRuntime(runtime_root)
@@ -407,7 +422,7 @@ def test_pi_tool_stages_explicit_candidate_drafts(tmp_path: Path) -> None:
     data["shared_dir"] = {"enabled": True}
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(data),
-        [project / "evaluator.py"], native_host="codex",
+        [project / "evaluator.py"], agent_harness="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=1)
@@ -415,12 +430,14 @@ def test_pi_tool_stages_explicit_candidate_drafts(tmp_path: Path) -> None:
     session = runtime.start_agent_session(run_id, task.candidate_id)
     _link_run(runtime_root, project, frozen.frozen_spec_id, run_id)
     source = task.workspace / ".tmp" / "tool-drafts" / "trace.py"
+    monkeypatch.setenv("GOAL_PLUS_PI_ROLE", "worker")
+    monkeypatch.setenv("GOAL_PLUS_AGENT_SESSION_ID", session.agent_session_id)
     source.parent.mkdir(parents=True)
     source.write_text("print('trace')\n", encoding="utf-8")
 
     staged = call_pi_tool(
         runtime_root,
-        "search_stage_shared_tool",
+        "goal_plus_search_stage_shared_tool",
         {
             "agent_session_id": session.agent_session_id,
             "name": "trace-helper",
@@ -434,163 +451,15 @@ def test_pi_tool_stages_explicit_candidate_drafts(tmp_path: Path) -> None:
     assert Path(staged["staging_path"], "trace.py").is_file()
 
 
-@pytest.mark.parametrize(
-    ("tool_name", "function_name", "arguments", "expected"),
-    [
-        (
-            "pi_search_pool_open",
-            "open_pi_search_pool",
-            {"run_id": "run_1", "candidate_ids": ["c001"], "max_parallel": 1},
-            {"run_id": "run_1", "candidate_ids": ["c001"], "worker_budgets": None, "final_verify": True, "max_parallel": 1},
-        ),
-        (
-            "pi_search_pool_wait_any",
-            "wait_any_pi_search_pool",
-            {"pool_id": "pool_1", "timeout_seconds": 5},
-            {"pool_id": "pool_1", "timeout_seconds": 5},
-        ),
-        (
-            "pi_search_pool_snapshot",
-            "snapshot_pi_search_pool",
-            {"pool_id": "pool_1"},
-            {"pool_id": "pool_1", "run_id": None},
-        ),
-        (
-            "pi_search_pool_continue",
-            "continue_pi_search_pool",
-            {"pool_id": "pool_1", "candidate_id": "c001"},
-            {"pool_id": "pool_1", "candidate_id": "c001", "worker_budget": None, "final_verify": True},
-        ),
-        (
-            "pi_search_pool_close",
-            "close_pi_search_pool",
-            {"pool_id": "pool_1", "mode": "drain", "timeout_seconds": 5},
-            {"pool_id": "pool_1", "mode": "drain", "timeout_seconds": 5},
-        ),
-    ],
-)
-def test_pi_tool_dispatches_managed_pool_tools(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    tool_name: str,
-    function_name: str,
-    arguments: dict[str, Any],
-    expected: dict[str, Any],
-) -> None:
-    calls: list[dict[str, Any]] = []
-
-    def fake(**kwargs: Any) -> dict[str, Any]:
-        calls.append(kwargs)
-        return {"ok": True}
-
-    monkeypatch.setattr(f"goal_plus.pi_tool.{function_name}", fake)
-    monkeypatch.setattr(
-        FileGoalPlusRuntime,
-        "require_active_tool_target",
-        lambda *_args, **_kwargs: None,
-    )
-    result = call_pi_tool(tmp_path / ".search", tool_name, arguments)
-    assert result["ok"] is True
-    if tool_name == "pi_search_pool_close":
-        assert result["details"] == {"tool": "pi_search_pool_snapshot", "detail": True}
-    assert calls == [{"root_dir": tmp_path / ".search", **expected}]
+@pytest.mark.parametrize("action", ["open", "wait_any", "snapshot", "continue", "close"])
+@pytest.mark.parametrize("prefix", ["pi", "thinkthread"])
+def test_pi_tool_rejects_removed_pool_entrypoints(tmp_path: Path, action: str, prefix: str) -> None:
+    root = tmp_path / ".gp"
+    with pytest.raises(ValueError, match="unsupported pi tool"):
+        call_pi_tool(root, f"{prefix}_search_pool_{action}", {"run_id": "run_1"})
+    assert not root.exists()
 
 
-def test_pi_tool_dispatches_allocation_cancellation_request(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    calls: list[dict[str, Any]] = []
-
-    def interrupt(**kwargs: Any) -> dict[str, Any]:
-        calls.append(kwargs)
-        return {"status": "accepted"}
-
-    monkeypatch.setattr(
-        "goal_plus.host_scope.interrupt_allocation_candidates", interrupt
-    )
-    result = call_pi_tool(
-        tmp_path / ".search",
-        "host_execution_scope_interrupt_allocation",
-        {
-            "scope_id": "scope_1",
-            "run_id": "run_1",
-            "decision_id": "allocation_1",
-        },
-    )
-
-    assert result["status"] == "accepted"
-    assert calls == [
-        {
-            "root_dir": tmp_path / ".search",
-            "scope_id": "scope_1",
-            "run_id": "run_1",
-            "decision_id": "allocation_1",
-        }
-    ]
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "function_name", "arguments", "expected"),
-    [
-        (
-            "thinkthread_search_pool_open",
-            "open_thinkthread_search_pool",
-            {"run_id": "run_1", "candidate_ids": ["c001"], "max_parallel": 1},
-            {
-                "run_id": "run_1",
-                "candidate_ids": ["c001"],
-                "worker_budgets": None,
-                "max_parallel": 1,
-            },
-        ),
-        (
-            "thinkthread_search_pool_wait_any",
-            "wait_any_thinkthread_search_pool",
-            {"pool_id": "pool_1", "timeout_seconds": 5},
-            {"pool_id": "pool_1", "timeout_seconds": 5},
-        ),
-        (
-            "thinkthread_search_pool_snapshot",
-            "snapshot_thinkthread_search_pool",
-            {"pool_id": "pool_1"},
-            {"pool_id": "pool_1", "run_id": None},
-        ),
-        (
-            "thinkthread_search_pool_continue",
-            "continue_thinkthread_search_pool",
-            {"pool_id": "pool_1", "candidate_id": "c001"},
-            {
-                "pool_id": "pool_1",
-                "candidate_id": "c001",
-                "worker_budget": None,
-            },
-        ),
-        (
-            "thinkthread_search_pool_close",
-            "close_thinkthread_search_pool",
-            {"pool_id": "pool_1", "mode": "drain", "timeout_seconds": 5},
-            {"pool_id": "pool_1", "mode": "drain", "timeout_seconds": 5},
-        ),
-    ],
-)
-def test_pi_tool_dispatches_thinkthread_pool_tools(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    tool_name: str,
-    function_name: str,
-    arguments: dict[str, Any],
-    expected: dict[str, Any],
-) -> None:
-    calls: list[dict[str, Any]] = []
-
-    def fake(**kwargs: Any) -> dict[str, Any]:
-        calls.append(kwargs)
-        return {"ok": True}
-
-    monkeypatch.setattr(f"goal_plus.pi_tool.{function_name}", fake)
-    assert call_pi_tool(tmp_path / ".search", tool_name, arguments) == {"ok": True}
-    assert calls == [{"root_dir": tmp_path / ".search", **expected}]
 
 
 @pytest.mark.parametrize(

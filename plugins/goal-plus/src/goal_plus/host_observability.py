@@ -22,12 +22,12 @@ from goal_plus.ports.observability import OBSERVABILITY_SCHEMA_VERSION
 CODEX_ACTIVITY_SCHEMA_VERSION = 1
 
 _CODEX_ACTIVITY_TOOL_CATEGORIES = {
-    "search_get_agent_context": "context",
+    "goal_plus_search_get_agent_context": "context",
     "search_get_global_plan": "global_evidence",
-    "search_get_global_evidence": "global_evidence",
-    "search_get_evidence_detail": "global_evidence",
+    "goal_plus_search_get_global_evidence": "global_evidence",
+    "goal_plus_search_get_evidence_detail": "global_evidence",
     "search_submit_iteration_plan": "iteration_plan",
-    "search_run_verifier": "verifier",
+    "goal_plus_search_run_verifier": "verifier",
 }
 _CODEX_ACTIVITY_TOOL_NAME_PATTERN = re.compile(
     r"(?:^|__)"
@@ -89,7 +89,7 @@ def _pi_runtime_start_payload(
     return {
         "source": "pi_session_entry" if snapshot else "unavailable",
         "agent": _string(snapshot.get("agent")),
-        "host": _string(snapshot.get("host")) or default_host,
+        "agent_harness": _string(snapshot.get("agent_harness")) or default_host,
         "mode": _string(snapshot.get("mode")),
         "project_trusted": (
             snapshot.get("project_trusted")
@@ -136,7 +136,7 @@ def _pi_runtime_start_payload(
 
 
 def _base_observability(session: AgentSessionRecord) -> dict[str, Any]:
-    metadata = session.host_handle.metadata
+    metadata = session.session_handle.metadata
     timed_out = bool(metadata.get("timed_out"))
     runner_failed = bool(metadata.get("runner_failed"))
     terminal_state = _string(metadata.get("terminal_state"))
@@ -149,13 +149,13 @@ def _base_observability(session: AgentSessionRecord) -> dict[str, Any]:
         "agent_session_id": session.agent_session_id,
         "run_id": session.run_id,
         "candidate_id": session.candidate_id,
-        "host": session.host,
+        "agent_harness": session.agent_harness,
+        "runtime_provider": session.runtime_provider,
         "source": "host_metadata",
         "identity": {
             "native_session_id": None,
-            "external_id": session.host_handle.external_id,
-            "task_name": session.host_handle.task_name,
-            "nickname": session.host_handle.nickname,
+            "external_id": session.session_handle.external_id,
+            "nickname": session.session_handle.nickname,
         },
         "execution": {
             "provider": _string(metadata.get("provider")),
@@ -210,7 +210,7 @@ def _base_observability(session: AgentSessionRecord) -> dict[str, Any]:
         "runtime_start": _pi_runtime_start_payload(
             metadata.get("runtime_start"),
             error=metadata.get("runtime_start_error"),
-            default_host=session.host,
+            default_host=session.agent_harness,
         ),
         "errors": [],
     }
@@ -220,7 +220,7 @@ def _base_observability(session: AgentSessionRecord) -> dict[str, Any]:
 
 def collect_pi_observability(session: AgentSessionRecord) -> dict[str, Any]:
     payload = _base_observability(session)
-    metadata = session.host_handle.metadata
+    metadata = session.session_handle.metadata
     metrics = metadata.get("pi_metrics")
     if not isinstance(metrics, dict):
         return payload
@@ -230,7 +230,7 @@ def collect_pi_observability(session: AgentSessionRecord) -> dict[str, Any]:
         payload["runtime_start"] = _pi_runtime_start_payload(
             runtime_start,
             error=metrics.get("runtime_start_error"),
-            default_host=session.host,
+            default_host=session.agent_harness,
         )
 
     execution = payload["execution"]
@@ -335,16 +335,15 @@ def discover_codex_session_file(
     *,
     codex_home: Path | None = None,
 ) -> Path | None:
-    """Find a native Codex subagent rollout without mutating runtime state."""
-    bound = _string(session.host_handle.metadata.get("session_file"))
+    """Find the bound native Codex rollout without mutating runtime state."""
+    bound = _string(session.session_handle.metadata.get("session_file"))
     if bound:
         path = Path(bound).expanduser()
         if path.is_file():
             return path
 
-    expected_task = session.host_handle.task_name
-    expected_id = session.host_handle.external_id
-    if not expected_task and not expected_id:
+    expected_id = session.session_handle.external_id
+    if not expected_id:
         return None
     root = _codex_sessions_root(codex_home)
     if not root.exists():
@@ -359,14 +358,8 @@ def discover_codex_session_file(
                 meta = read_codex_session_meta(path)
                 if meta is None:
                     continue
-                agent_path = _codex_agent_path(meta)
-                task_matches = bool(
-                    expected_task
-                    and agent_path
-                    and Path(agent_path).name == Path(expected_task).name
-                )
                 id_matches = bool(expected_id and meta.get("id") == expected_id)
-                if not task_matches and not id_matches:
+                if not id_matches:
                     continue
                 mtime = path.stat().st_mtime
                 distance = abs(mtime - created_epoch) if created_epoch is not None else 0.0
@@ -731,7 +724,7 @@ def collect_codex_transcript_observability(
     parsed = _parse_codex_session(path, since=since)
     return {
         "schema_version": OBSERVABILITY_SCHEMA_VERSION,
-        "host": "codex",
+        "agent_harness": "codex",
         "source": "codex_session_jsonl",
         "identity": {"native_session_id": parsed["session_id"]},
         "execution": {

@@ -4,7 +4,7 @@ from typing import Literal, Protocol
 
 from pydantic import Field
 
-from goal_plus.domain.agents import AgentHostKind
+from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
 from goal_plus.domain.base import SearchModel
 
 
@@ -18,7 +18,8 @@ class ProcessMonitorIdentity(SearchModel):
     candidate_id: str | None = None
     iteration: int | None = None
     attempt: int | None = None
-    host: AgentHostKind = "codex"
+    agent_harness: AgentHarnessKind = "codex"
+    runtime_provider: AgentRuntimeProvider = "direct"
     model: str | None = None
     reasoning_effort: str | None = None
     timeout_seconds: int | float | None = None

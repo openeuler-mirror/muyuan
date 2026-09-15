@@ -32,7 +32,7 @@ codex
 
 In the new Codex thread, paste the complete contents of
 [`codex-goal-prompt.md`](codex-goal-prompt.md). The installed plugin supplies
-the `$goal-plus` skill, lifecycle hooks, and MCP server; the target itself has
+the `$goal-plus` host-command entry, lifecycle hooks, and MCP server; the target itself has
 no project-local `.codex/` configuration.
 
 For direct runtime validation, [`workspace-template/verifier-adaptive-spec.json`](workspace-template/verifier-adaptive-spec.json)
@@ -56,11 +56,14 @@ Neither prompt pins `main`, `annotator`, or `workers`; each uses the active host
 model and the installed Goal Plus defaults. The dedicated explicit Terra/Luna
 model-routing demonstration is the Circle Packing Codex prompt. Goal Plus
 discovers the verifier, metric, edit surface, Search strategy, and host-specific
-worker launch from the example directory; no checked-in SearchSpec is required.
+worker launch from the example directory; these prompts do not require a checked-in
+SearchSpec. The scheduler spec above is a separate direct-runtime reference.
 Both ready-to-paste prompts require the entire Goal Plus task, including final
 validation and promotion/reporting, to reach a terminal status within 10 minutes
 of Goal Plus creation. Candidate work stops at 8 minutes, leaving 2 minutes for
-closeout, and each worker lease is capped at 6 minutes.
+closeout, and each worker execution is capped at 6 minutes. These are explicit
+requirements of this reference example, not Goal Plus default time policies.
+This example is not included in the maintained automated or hardware test suites.
 
 Run Goal Plus from `model-optimize/`, not from `workspace-template/`. Search
 candidates edit isolated worktrees under the ignored `.gp/` directory. The

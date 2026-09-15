@@ -39,6 +39,15 @@ def test_build_changes_with_code_or_dependency_lock_not_working_state(managed, t
     assert managed.fingerprint(root) != second
 
 
+def test_provider_environment_names_are_part_of_immutable_build(managed, tmp_path, monkeypatch):
+    root = source(tmp_path)
+    first = managed.fingerprint(root, codex_env_vars=("MODEL_TOKEN", "HEADER_TOKEN"))
+    assert managed.fingerprint(root, codex_env_vars=("HEADER_TOKEN", "MODEL_TOKEN")) == first
+    monkeypatch.setenv("MODEL_TOKEN", "local-secret-value")
+    assert managed.fingerprint(root, codex_env_vars=("MODEL_TOKEN", "HEADER_TOKEN")) == first
+    assert managed.fingerprint(root, codex_env_vars=("ANOTHER_TOKEN",)) != first
+
+
 def test_failed_preparation_leaves_existing_host_binding_and_release(managed, tmp_path, monkeypatch):
     root = source(tmp_path)
     old = managed.home() / "releases/old/package"
@@ -109,12 +118,14 @@ def test_shell_bootstrap_ignores_shell_python(entrypoint, tmp_path):
 
 def test_prepared_build_has_matching_manifest_receipt_and_interpreter(managed, tmp_path, monkeypatch):
     root = source(tmp_path)
-    (root / "assets/codex/skills").mkdir(parents=True)
+    (root / "assets/codex").mkdir(parents=True)
     (root / "assets/codex/plugin.json").write_text('{"version":"0.1.0"}')
     template = root / "assets/codex/marketplace.json"
     template.parent.mkdir(parents=True, exist_ok=True)
-    (root / "assets/codex/skills/SKILL.md").write_text("fixture")
     template.write_bytes((Path(__file__).parents[1] / "assets/codex/marketplace.json").read_bytes())
+    (root / "assets/codex/mcp.json").write_text(json.dumps({
+        "mcpServers": {"goal-plus": {"args": ["launcher"], "env_vars": ["CODEX_HOME"]}},
+    }))
     before = managed.fingerprint(root)
     marketplace = json.loads(template.read_text())
     marketplace["interface"]["displayName"] = "Updated Goal Plus"
@@ -133,14 +144,20 @@ def test_prepared_build_has_matching_manifest_receipt_and_interpreter(managed, t
         package = Path(argv[0]).parents[2] / "package"
         return subprocess.CompletedProcess(argv, 0, stdout=(package / "src/goal_plus/_installation.json").read_text())
     monkeypatch.setattr(managed.subprocess, "run", run)
-    package = managed.prepare(root)
+    monkeypatch.setenv("MODEL_TOKEN", "local-secret-value")
+    package = managed.prepare(root, codex_env_vars=("MODEL_TOKEN",))
+    assert not list(package.parent.rglob("SKILL.md"))
+    assert not (package.parent / "skills").exists()
     receipt = managed.read_receipt(package)
     assert not (root / ".agents/plugins/marketplace.json").exists()
     assert json.loads((package / ".agents/plugins/marketplace.json").read_text()) == marketplace
     assert json.loads((package / ".codex-plugin/plugin.json").read_text())["version"] == "0.1.0+" + receipt["build"]
     assert (package / ".goal-plus-build").read_text().strip() == receipt["build"]
     assert (package / ".goal-plus-python").read_text().strip() == receipt["python"]
-    assert managed.prepare(root) == package
+    mcp = (package / ".mcp.json").read_text()
+    assert json.loads(mcp)["mcpServers"]["goal-plus"]["env_vars"] == ["CODEX_HOME", "MODEL_TOKEN"]
+    assert "local-secret-value" not in mcp
+    assert managed.prepare(root, codex_env_vars=("MODEL_TOKEN",)) == package
     assert sum(call[0] == "/explicit/uv" for call in calls) == 1
 
 

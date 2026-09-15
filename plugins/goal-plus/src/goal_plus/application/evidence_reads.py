@@ -12,7 +12,7 @@ from goal_plus.domain.annotation import (
 )
 from goal_plus.domain.artifacts import (
     ArtifactRef,
-    WorkspaceBackend,
+    WorkspaceProvider,
 )
 from goal_plus.domain.evidence import (
     IterationRecord,
@@ -33,7 +33,7 @@ def global_evidence_entry(
     iteration: IterationRecord,
     view: EvidenceViewRecord | None,
     discoverable_tool_ids: set[str] | None = None,
-    workspace_backend: WorkspaceBackend = "git_worktree",
+    workspace_provider: WorkspaceProvider = "git_worktree",
     provider_cleanup: list[ProviderResourceCleanupRecord] | None = None,
 ) -> dict[str, Any]:
     tool_views = {
@@ -44,7 +44,7 @@ def global_evidence_entry(
         artifact_ref = ArtifactRef(
             kind="git_commit",
             id=iteration.git_head,
-            provider=workspace_backend,
+            provider=workspace_provider,
         )
     availability = artifact_availability(
         artifact_ref,
@@ -313,7 +313,7 @@ class EvidenceReads:
                 iteration.created_at,
                 record.candidate_id,
                 iteration,
-                record.task.workspace_backend,
+                record.task.workspace_provider,
             )
             for record in self.state.read_candidates(run_id)
             for iteration in record.iterations
@@ -327,7 +327,7 @@ class EvidenceReads:
             )
         )
         result = []
-        for _, candidate_id, iteration, workspace_backend in evidence:
+        for _, candidate_id, iteration, workspace_provider in evidence:
             task = self.annotation.task(run_id, candidate_id, iteration.iteration)
             view = task.view if task is not None and task.state == "completed" else None
             if view is not None and (
@@ -348,7 +348,7 @@ class EvidenceReads:
                     iteration,
                     view,
                     discoverable_tool_ids,
-                    workspace_backend,
+                    workspace_provider,
                     run.provider_cleanup,
                 )
             )

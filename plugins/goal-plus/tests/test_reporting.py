@@ -316,7 +316,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     project = make_project(tmp_path)
     root = tmp_path / ".search"
     search = FileSearchRuntime(root)
-    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
+    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"], agent_harness="codex")
 
     first_run = search.create_run(frozen.frozen_spec_id)
     search.plan_next(first_run, requested_k=1)
@@ -325,7 +325,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     second_plan = search.plan_next(second_run, requested_k=1)
     [candidate] = search.start_batch(second_run, second_plan.plan_id)
     session = search.start_agent_session(second_run, candidate.candidate_id)
-    SearchTools(search).search_run_verifier(
+    SearchTools(search).goal_plus_search_run_verifier(
         second_run,
         candidate.candidate_id,
         agent_session_id=session.agent_session_id,
@@ -442,7 +442,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
             "candidate_id": candidate.candidate_id,
             "iteration": 1,
             "attempt": 1,
-            "host": "pi-rpc",
+            "agent_harness": "pi",
             "model": "gpt-5.6-sol",
             "state": "completed",
             "started_at": "2026-01-01T00:00:00Z",
@@ -520,7 +520,7 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
     )
     goals.record_orchestrator_usage(
         goal.goal_plus_id,
-        host="pi",
+        agent_harness="pi",
         usage={
             "assistantMessages": 2,
             "toolCalls": 3,
@@ -815,7 +815,7 @@ def test_loop_agent_statistics_distinguish_productive_and_stalled_tails() -> Non
 
     sessions = [
         {
-            "host": "codex",
+            "agent_harness": "codex",
             "agent_session_id": "agent_c001",
             "candidate_id": "c001",
             "activity": {
@@ -826,13 +826,13 @@ def test_loop_agent_statistics_distinguish_productive_and_stalled_tails() -> Non
             },
         },
         {
-            "host": "codex",
+            "agent_harness": "codex",
             "agent_session_id": "agent_c002",
             "candidate_id": "c002",
             "activity": {"available": True, "events": []},
         },
         {
-            "host": "codex",
+            "agent_harness": "codex",
             "agent_session_id": "agent_c003",
             "candidate_id": "c003",
             "activity": {
@@ -843,7 +843,7 @@ def test_loop_agent_statistics_distinguish_productive_and_stalled_tails() -> Non
             },
         },
         {
-            "host": "codex",
+            "agent_harness": "codex",
             "agent_session_id": "agent_c004",
             "candidate_id": "c004",
             "activity": {
@@ -1206,7 +1206,7 @@ def test_html_report_data_keeps_search_tasks_and_rounds_separate(
     project = make_project(tmp_path)
     root = tmp_path / ".search"
     search = FileSearchRuntime(root)
-    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"], native_host="codex")
+    frozen = search.freeze_spec(spec_for(project), [project / "evaluator.py"], agent_harness="codex")
     runs = [search.create_run(frozen.frozen_spec_id) for _ in range(2)]
     for run_id in runs:
         search.plan_next(run_id, requested_k=1)
@@ -1231,9 +1231,12 @@ def test_html_report_data_keeps_search_tasks_and_rounds_separate(
     assert data["snapshot"]["search_task_aggregate"]["planning_rounds_total"] == 2
 
 
-def test_pi_native_session_resume_renders_distinct_process_dispatches(
-    tmp_path: Path,
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+def test_native_session_resume_renders_distinct_invocations(
+    tmp_path: Path, agent_harness: str,
 ) -> None:
+    from goal_plus.ports.session import SessionInvocationObservation, SessionInvocationResult
+
     project = make_project(tmp_path)
     root = tmp_path / ".search"
     search = FileSearchRuntime(root)
@@ -1247,79 +1250,30 @@ def test_pi_native_session_resume_renders_distinct_process_dispatches(
     }
     frozen = search.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"], native_host="pi",
+        [project / "evaluator.py"], agent_harness=agent_harness,
     )
     run_id = search.create_run(frozen.frozen_spec_id)
     plan = search.plan_next(run_id, requested_k=1)
     candidate = search.start_batch(run_id, plan.plan_id)[0]
     session = search.start_agent_session(run_id, candidate.candidate_id)
 
-    def bind_dispatch(
-        *,
-        pid: int,
-        start_at: str,
-        end_at: str,
-        last_entry_id: str,
-        entry_count: int,
-        cumulative_input: int,
-    ) -> None:
-        search.bind_agent_handle(
+    search.bind_agent_handle(session.agent_session_id, {
+        "external_id": "native-thread",
+        "metadata": {"transport": "app-server" if agent_harness == "codex" else "native-rpc"},
+    })
+
+    def record_dispatch(invocation, start_at, end_at):
+        search.candidate_sessions.record_native_invocation(
             session.agent_session_id,
-            {
-                "host": "pi-rpc",
-                "external_id": session.agent_session_id,
-                "metadata": {
-                    "process_pid": pid,
-                    "continuation": "native_session",
-                    "pi_metrics": {
-                        "scope": "session_cumulative_incremental",
-                        "dispatch_started_at": start_at,
-                        "dispatch_ended_at": end_at,
-                        "dispatch_duration_seconds": 10.0,
-                        "started_at": "2026-07-19T00:00:00Z",
-                        "ended_at": end_at,
-                        "duration_seconds": entry_count * 10.0,
-                        "final_last_entry_id": last_entry_id,
-                        "final_entry_count": entry_count,
-                        "usage_delta": {
-                            "assistantMessages": 1,
-                            "input": 10,
-                            "output": 2,
-                            "cacheRead": 3,
-                            "cacheWrite": 0,
-                            "costTotal": 0.01,
-                        },
-                        "usage_total": {
-                            "assistantMessages": entry_count,
-                            "input": cumulative_input,
-                            "output": entry_count * 2,
-                            "cacheRead": entry_count * 3,
-                            "cacheWrite": 0,
-                            "costTotal": entry_count * 0.01,
-                        },
-                    },
-                },
-            },
+            SessionInvocationResult(
+                "native-thread", invocation, "completed", "", {"input": 10, "output": 2},
+                observation=SessionInvocationObservation(start_at, end_at, 10.0),
+                agent_harness=agent_harness, runtime_provider="direct"),
         )
 
-    bind_dispatch(
-        pid=111,
-        start_at="2026-07-19T00:00:00Z",
-        end_at="2026-07-19T00:00:10Z",
-        last_entry_id="entry_1",
-        entry_count=1,
-        cumulative_input=10,
-    )
-    continued = search.continue_agent_session(session.agent_session_id)
-    assert continued.launch["metrics_baseline"]["last_entry_id"] == "entry_1"
-    bind_dispatch(
-        pid=222,
-        start_at="2026-07-19T00:00:20Z",
-        end_at="2026-07-19T00:00:30Z",
-        last_entry_id="entry_2",
-        entry_count=2,
-        cumulative_input=20,
-    )
+    record_dispatch("turn-1", "2026-07-19T00:00:00Z", "2026-07-19T00:00:10Z")
+    search.continue_agent_session(session.agent_session_id)
+    record_dispatch("turn-2", "2026-07-19T00:00:20Z", "2026-07-19T00:00:30Z")
     _write_stop_hook_event(
         root,
         "hook_resume",
@@ -1378,7 +1332,8 @@ def test_pi_native_session_resume_renders_distinct_process_dispatches(
         for event in task["timeline"]["events"]
         if event["kind"] == "worker_session"
     ]
-    assert [event["process_pid"] for event in worker_events] == [111, 222]
+    assert [item["invocation_id"] for item in task["sessions"]] == ["turn-1", "turn-2"]
+    assert {item["native_session_id"] for item in task["sessions"]} == {"native-thread"}
     assert [event["attempt_index"] for event in worker_events] == [1, 2]
     assert all(event["attempt_count"] == 2 for event in worker_events)
     assert [event["score"] for event in worker_events] == [0.0, 9.0]
@@ -1500,7 +1455,7 @@ def test_report_candidate_final_score_uses_settled_best_after_failure(
     root = tmp_path / ".search"
     search = FileSearchRuntime(root)
     frozen = search.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], native_host="codex"
+        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
     )
     run_id = search.create_run(frozen.frozen_spec_id)
     plan = search.plan_next(run_id, requested_k=1)

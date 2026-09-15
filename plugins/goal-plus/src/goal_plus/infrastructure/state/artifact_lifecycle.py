@@ -38,18 +38,12 @@ class FileArtifactLifecycleState(FileCandidateQueries):
         path = self.run_dir(run_id) / "report.md"
         return path.is_file() and path.with_suffix(".html").is_file()
 
-    def pool_states(self, run_id: str) -> list[tuple[str, str]]:
-        pool_root = self.root_dir / "host-pools" / "thinkthread"
+    def session_resource_states(self, run_id: str) -> list[tuple[str, str]]:
         blockers: list[tuple[str, str]] = []
-        for path in sorted(pool_root.glob("*/pool.json")):
-            try:
-                pool = load_json(path)
-            except (OSError, ValueError, json.JSONDecodeError):
-                continue
-            if pool.get("run_id") != run_id:
-                continue
-            state = str(pool.get("state") or "unknown")
-            blockers.append((path.parent.name, state))
+        for path in sorted((self.root_dir / "host-scopes").glob("*/thinkthread-sessions/*.json")):
+            resource = load_json(path)
+            if resource.get("run_id") == run_id:
+                blockers.append((path.stem, str(resource.get("cleanup_state") or "open")))
         return blockers
 
     def annotation_state(self, run_id: str) -> str | None:

@@ -1,26 +1,25 @@
 # Pi
 
-Pi 以可安装 package 的形式提供一个面向用户的 `goal-plus` skill 和一个 extension，底层复用共享 Goal
-Plus runtime。它不修改 Pi core，也不暴露独立的用户级 `search` skill；开发 checkout
+Pi 以可安装 package 的形式提供一个 extension，底层复用共享 Goal
+Plus runtime。它不修改 Pi core，不发布 Goal Plus skill；开发 checkout
 可以通过隔离的开发启动器直接加载同一组 asset。
 
 ## Execution Scope
 
-Pi main 在第一次启动 Goal Plus worker、Search pool 或 final checker 时惰性创建 host-local
+Pi main 在第一次启动 Goal Plus candidate、delegation 或 final checker session 时惰性创建 host-local
 Execution Scope。`execution_scope_id` 由 extension 内部传递，不是模型工具参数。
 
-用户 abort 当前 agent 时，`agent_end` 的 `stopReason=aborted` 会 interrupt scope；quit、reload、
-new、resume 或 fork 导致 extension teardown 时，`session_shutdown` 关闭旧 scope。独立 guardian
-同时监视 owner PID，因此 SIGTERM/SIGKILL 不依赖 shutdown handler。关闭只停止活计算，不恢复、
-接管或改变 `.gp` 中的 Goal/Search 状态。
-运行中的 guardian 会对 `closing/cleanup_failed` 持续重试，直到持久化关闭；Main 未退出但
-已经请求关闭时也适用。它不解除 scope fence，不自动重启已丢失的 guardian 进程。
+用户 abort 当前 agent 时，agent_end 的 stopReason=aborted 会 interrupt scope；
+session_shutdown 关闭旧 scope。GP 不监测 owner PID，不启动 guardian；
+未送达退出事件时，进程生命周期由 Pi/ThinkThread 和 agent 负责。
+关闭不恢复、接管或改变 Goal/Search 状态。
 
-本地 pool wrapper 与 scope/drainer 共用 Linux `/proc` 身份检查和有界组停止。Pool close
-须返回 `state=closed` 才表示已核验 wrapper 资源退出，job 的 `active_count=0` 不替代这一点；
-不可读身份或无归属依据的旧进程组会保留关闭失败。RPC 独立组也通过共同驱动核验和停止，
-仅清理成功后完成 scope token；跨重启资源责任仍有未完成项，具体边界见
-[Host Adapters](agent-host-adapters.md#main-owner-生命周期)。
+ThinkThread 受管 Profile 将 `GOAL_PLUS_ROOT` 放在原生 session 目录中，位于 Root
+附着文件树之外。自定义 runtime 路径也必须满足此隔离条件；放在 workspace 内的目录
+会在 baseline 捕获前被拒绝，以防 Goal/session 状态进入 Child 的 snapshot。
+Scope 按可信 native session 和业务 activation 授权。本地资源日志只记录登记、完成和释放，
+不核验进程身份或进程组；session 的操作超时、准确 handle 和 generation gate 保留。
+具体合同见 [Host Adapters](agent-host-adapters.md#main-owner-生命周期)。
 
 ## 安装与快速开始
 
@@ -33,10 +32,9 @@ cd <Muyuan checkout>/plugins/goal-plus
 ./install.sh --pi
 ```
 
-安装器通过 uv 准备受管 Python 3.12 和锁定依赖，验证 build 后注册不可变 Pi package 副本。
-Extension 从自己的包目录读取解释器与 build，不从 Conda、`PATH` 或目标 workspace 加载代码。
-同一来源的更新创建新版本；其他来源或散落的同名 extension/skill 会报出冲突并停止。
-`./install.sh --runtime-info` 可检查安装身份；正常安装后不依赖原 checkout 持续存在。
+正常安装注册不可变 Pi package，使用受管 Python 和固定 build。已有正常来源可在安装器
+`[y/N]` 提示中确认替换；散落的同名资源仍须处理冲突。完整来源与更新合同见
+[开发指南](development.md#安装模式)，安装身份使用 `./install.sh --runtime-info` 查询。
 
 正常安装后可以从目标 workspace 启动交互会话，或直接提交一次 prompt：
 
@@ -44,14 +42,8 @@ Extension 从自己的包目录读取解释器与 build，不从 Conda、`PATH` 
 pi -p "/goal-plus inspect this repository"
 ```
 
-移除 Pi 集成：
-
-```bash
-./uninstall.sh --pi
-```
-
-关闭旧会话且其他宿主不再引用运行时后，运行 `./uninstall.sh --runtime` 清理未引用的受管版本。
-旧 pip/Conda 安装不被自动修改。
+卸载使用 `./uninstall.sh --pi`；release 清理与组件范围见
+[卸载说明](development.md#卸载与版本清理)。
 
 ### ThinkThread protected Search Root
 
@@ -67,7 +59,7 @@ tt profile show goal-plus-pi
 安装器校验 Profile 结构、Root direct filesystem 和 Child COW filesystem，然后生成用户级
 `goal-plus-pi` Profile。Runtime、Profile schema、SDK 协议版本或 fingerprint 偏离已测基线时仅
 警告；可选的 Extension 协议声明可以省略，实际握手由 ThinkThread 校验。Profile 显式加载本
-次安装副本的 Goal Plus extension/skill，以只读方式开放该副本及其受管 Python environment，并将
+次安装副本的 Goal Plus extension，以只读方式开放该副本及其受管 Python environment，并将
 Node/Python runtime prefix 及解释器软链接链目标一并加入 `[environment].read`，
 verifier 的裸 `python` / `python3` 直接使用该受管 venv 的绝对解释器路径。
 安装器再将 `GOAL_PLUS_ROOT` 延迟解析到每个 Pi native
@@ -83,38 +75,25 @@ tt run --profile goal-plus-pi --fs <target-workspace>
 Root 内只有精确 Pi host command 能启动 Goal Plus。显式选择 ThinkThread workspace：
 
 ```text
-/goal-plus workspace_backend=thinkthread max_parallel=2 <可度量目标>
+/goal-plus workspace_provider=thinkthread max_parallel=2 <可度量目标>
 ```
 
 对应 SearchSpec 使用 `orchestration_mode="parallel_loops"` 和
-`workspace.backend="thinkthread"`；Pi 身份从 Main 会话解析，不另填 host/profile。
-普通 Pi 进程继续使用 `pi-rpc + git_worktree`；两条路径不能混用，也不能在 preflight
+`workspace.provider="thinkthread"`；Pi 身份从 Main 会话解析，不另填 host/profile。
+普通 Pi 进程继续使用 `pi + direct + git_worktree`；两条路径不能混用，也不能在 preflight
 失败时 fallback。Codex 尚不支持 ThinkThread worker host。
 
-ThinkThread 可独立升级，接口兼容时无需重装 Goal Plus 或 SDK。Runtime 在启动 candidate 前
-校验 Root direct filesystem 和 delegated Child capability；SDK 协议版本与 contract fingerprint
-差异只给出 warning，接口调用和结果仍须满足实际合同。每个 initial
-candidate 从同一个 Root-owned `S0` 启动独立 Pi Child/Session/private branch；Child 只拿到
-逻辑 `source_subdir`，不会得到可访问的 Root 本地路径。worker turn 结束且 Agent ready 后，
-controller 固定 private branch snapshot，并让 process verifier 对同一个 immutable snapshot
-执行 `fs.run(writes="discard")`。只有该 verifier-backed snapshot 能进入 Evidence 和 selection。
-Child 调用 `search_run_verifier` 后先收到带稳定 `attempt_id` 的 `accepted` receipt，并立即结束
-当前 turn；Root 完成 snapshot、`ScoreReport` 记录和必要的 branch reset 后，把同一份 typed
-feedback 同时放入 `candidate_ready` 和该 retained Child 的下一次 wake。accepted 本身不是
-verifier 结果；没有 accepted attempt 就结束的 runtime-integrated turn 会 fail closed。
+ThinkThread 可独立升级；已测版本或 fingerprint 差异只警告，Root/Child 的实际接口与能力
+仍须满足合同。每个 candidate 使用 private Child/Session/branch，公共 Evidence 绑定准确
+snapshot。冻结、verifier、inner Git、publication 冲突及同 RequestId 恢复见
+[Workspace 架构](workspace-sandbox-arch.md)；独立只读 Annotation Child 见
+[Evidence Annotator](evidence-annotator.md#pi)。
 
-ThinkThread Evidence annotator 是每个 run 保留的独立 Child。它只激活 annotation RPC 和
-`list/stat/pread/diff` Artifact View 工具；candidate 工具与 annotation 工具双向隔离。Annotation
-不运行命令或 verifier，也不为读取创建、patch 或删除 snapshot。
-超限 diff 不进入 prompt，annotator 必须从 target/peer immutable snapshot 读取完整内容；
-selection 会先推进 queue generation，再 interrupt annotator，因此迟到结果不能发布。
-
-`search_promote` 从 `S0` 与 selected snapshot 生成只包含允许路径的 publication snapshot，
-`search_apply_promotion` 使用稳定 RequestId 和 `safe_content_v1` 乐观 `fs.apply`。Root 只修改
-publication delta 外路径时保留该修改并 apply；changed path 或声明的 dependency 变化会原子
-转为 `awaiting_main_integration` 并生成 durable pending artifact。响应状态不确定时保持
-`recovering/needs_recovery`，不发送成功或普通失败通知；重启后仍以同一 RequestId 查询并收敛。
-报告持久化后，cleanup 只删除本 run 所有且无 Evidence/publication/recovery pin 的资源。
+Main 使用共同 session 工具。accepted receipt 不等于 verifier 结果；控制器确认准确 Message
+静默并完成结算后，typed feedback 才进入调用结果和下一次 wake。controller 丢失后的接管只
+观察原调用，不重发模型任务。turn interrupt 要求准确控制确认和本轮静默；stop 保留 Child
+供显式 open 重新授权，close 释放资源。详细身份、deadline 与控制边界见
+[Agent Host Adapters](agent-host-adapters.md#统一运行模型)。
 
 对称卸载命令是 `./uninstall.sh --pi --thinkthread`：`--thinkthread` 只删除当前 checkout 生成的
 `goal-plus-pi` Profile。它绝不删除 ThinkThread Runtime、Root 或 state；这些资源由 ThinkThread
@@ -131,21 +110,9 @@ cd <target-workspace>
 pi-goal-plus
 ```
 
-开发安装在 `.goal-plus-dev/venv` 中 editable 安装当前 checkout，并生成
-`.goal-plus-dev/bin/pi-goal-plus`。`set_env.sh` 只把这个 launcher 目录加入 `PATH`，不会修改
-`PI_CODING_AGENT_DIR`、`CODEX_HOME` 或认证信息；launcher 自己临时加入 venv 的 `bin`，再用
-`--extension` 和 `--skill` 显式加载当前 checkout。
-
-`./install.sh --env-show` 会只读列出安装器已登记及当前 Git worktree 中的 Pi 开发环境、
-源码 commit、状态、单项与总空间占用。
-
-开发态不注册全局 Pi package。若当前用户或目标项目显式引用同一 `assets/pi/` extension/skill，
-Pi 会按绝对资源路径去重。旧式源码根目录 package 注册需先移除；来自其他 checkout 或复制
-路径的 Goal Plus 仍会让安装和每次启动停止并列出冲突。
-断链的旧式 loose-resource symlink 不会被 Pi 加载，也不会阻塞开发态。遇到真实冲突时先显式
-`pi remove <reported-source>`，再运行 `pi-goal-plus`。`--pi` 和 `--pi-dev` 不能同时使用。
-
-正常安装和开发安装都只暴露一个面向用户的 `goal-plus` Pi skill。
+editable 环境、launcher、资源冲突与刷新步骤见
+[Pi 开发指南](development.md#开发-pi-集成)。`--pi` 与 `--pi-dev` 不能同时使用。
+正常和开发安装均不发布 Goal Plus skill；命令由 extension 注册，导航来自共同 MCP instructions。
 
 #### Progress UI 开发预览
 
@@ -161,7 +128,9 @@ GOAL_PLUS_UI_PREVIEW=active \
 在该 session 中使用 `/goal-plus-ui-preview active`、`/goal-plus-ui-preview complete`、
 `/goal-plus-ui-preview result` 或 `/goal-plus-ui-preview clear` 切换状态。`result` 会用 Circle Packing
 的真实样例数值追加一张终态完成卡，不需要运行模型、verifier 或完整 Goal Plus 流程；普通 session
-不注册该命令。体验目标和字段语义见 [Lightweight Search Progress UX](usability-progress.md)。
+不注册该命令。运行中 widget 仅支持上述预览，不会自动刷新真实 Search 进度。
+真实任务在终态时根据 Monitor 与宿主用量观测生成结果卡；运行中可通过
+`goal_plus_monitor_snapshot` 查询进度，字段见 [API](api.md#handoff-与-observability)。
 
 也可以在交互式 Pi 中直接使用：
 
@@ -172,7 +141,10 @@ GOAL_PLUS_UI_PREVIEW=active \
 ```
 
 `/goal-plus edit` 和 `/goal-plus-with-final-check` 与 Codex 使用同一套 goal revision 语义。
-required final check 由独立、只读的 Pi RPC reviewer 执行。
+required final check 由共同 `goal_plus_run_final_check` 启动独立 Pi RPC reviewer。
+启动器继承当前 Main 的模型快照，登记 scope 资源并绑定准确 check/revision/native session。
+Pi 的工具白名单包含 `read`、`goal_plus_status`、`goal_plus_submit_final_check`；不开放编辑或
+shell。结构化提交仍由共同 GoalCompletion 验收，普通正文不能完成 Goal，返回后关闭原生资源。
 
 这些大小写精确的 slash command 是唯一创建/编辑入口。自然语言请求、skill/prompt 自动加载、
 直接 MCP 调用和通用 `goal-plus-pi-tool` 不能创建或编辑 Goal Plus。extension 通过未注册为模型 tool 的
@@ -189,7 +161,7 @@ provider error 和自动重试会沿用该绑定；最终异常或用户 abort �
 不同 session、fork、detached/stale 不继承执行权。摘要、pause、clear 及完整合同见
 [运行逻辑](runtime-logic.md)。开发安装的 `pi-goal-plus` 支持相同参数。
 新的 Pi session 可用 `/goal-plus <完整目标>` 在同一 workspace 创建独立 Goal；其他 session 的
-未终态 Goal 不会阻止创建。Search bootstrap 的 `search_freeze_spec` 和 `search_create` 必须传入
+未终态 Goal 不会阻止创建。Search bootstrap 的 `goal_plus_search_freeze_spec` 和 `goal_plus_search_create` 必须传入
 当前 session 绑定的 `goal_plus_id`，extension 会在执行前核对该归属。
 
 ## Pi 与 Codex 的差异
@@ -215,7 +187,7 @@ Goal Plus 启动的 ordinary、final-checker 和 Search candidate `pi-rpc` 子�
 各自 `session_start` 写入同一结构。wrapper 在发送第一条模型 prompt 前从该
 native session 读回快照，写入 host event log 的 `goal_plus_runtime_start` 事件、
 handle `metadata.runtime_start` 和 `pi_metrics.runtime_start`。
-`search_get_agent_observability` 将其投影为 `runtime_start`；快照缺失时保留
+`goal_plus_search_get_agent_observability` 将其投影为 `runtime_start`；快照缺失时保留
 `source="unavailable"` 和错误原因，不从 main session 继承或推断。headless worker 不弹出
 不可见的 TUI 通知，运行中排障可直接查看对应
 `.gp/host-logs/pi-rpc-<agent_session_id>.jsonl`。
@@ -228,14 +200,14 @@ endpoint 配置。显式限定的 annotator model 只改变 host-native 模型�
 不等待这些进程，同一次 annotator turn 也会生成 shared-dir Tool View。完整生命周期见
 [共享平面](shared-plane.md#global-evidence)。
 
-Pi driver 补做 final verifier 或复用已结算 Evidence 后，也从 host 收尾路径重扫内部任务，
+共同候选宿主补做 final verifier 或复用已结算 Evidence 后，也从 host 收尾路径重扫内部任务，
 不依赖已结束的 worker 再调用工具。唤醒错误单独记录，不撤销硬结算或将成功 verifier 改为
 失败。Adaptive 的 parent 补验可以生成内部 Annotation/Verifier 输入，但不成为 peer
 Global Evidence；monitor snapshot 仍只读，不承担唤醒。
 
 main turn 结束时，仍为 active 的 Goal Plus record 会携带完整 raw goal 和 elapsed-time context
-继续执行。Pi 只有在 agent 写入终态后才停止；worker watchdog 到期只是一次 dispatch event，
-不代表 goal 完成。
+继续执行；用户暂停或清除后不再续跑。单次 worker 返回或执行超时不代表 Goal 完成，
+终态仍由领域 gate 核验持久证据。
 
 进入终态时，Pi extension 会在 `agent_settled` 后静默通过只读 monitor 读取持久化结果，
 再写入唯一一条可展开的 Goal Plus 完成卡。模型不需要为了最终展示再次调用 monitor；
@@ -252,10 +224,9 @@ monitor 不可用时，卡片降级到终态、当前会话耗时和 main 用量
 它是 custom entry，不是 LLM message，不会触发另一个 assistant turn，也
 不再额外发送一份重复的统计通知。
 
-Search worker 是由 host-local durable pool 监督的 Pi RPC 进程。每个 wrapper 通过
-`goal-plus-pi-worker` 启动前台 `pi --mode rpc` 子进程；native session 位于
-`.gp/host-sessions/pi/`，pool 状态位于 `.gp/host-pools/pi/`。进程可以重启，但 candidate workspace
-和 native session 提供连续性。
+Search worker 由共同 session 宿主启动 `pi --mode rpc` 子进程，资源经 scope 登记后放行；
+native session 位于 `.gp/host-sessions/pi/`。旧 Pi pool/driver/worker 与专属 CLI 已删除。
+切换前须由旧安装关闭旧活跃 pool；历史文件保留，新版本不接管旧 pool 执行。
 
 ## 普通 Goal Mode
 
@@ -263,11 +234,13 @@ Search worker 是由 host-local durable pool 监督的 Pi RPC 进程。每个 wr
 `/goal-plus` 时已经选择的 thinking 档位并记录实际 level，不会强制改档。复杂任务推荐 `xhigh`，
 但当前模型不支持 `xhigh` 或用户选择其他档位时仍正常运行。
 
-实际派发普通 subagent 时，Main 把完整任务直接传给 `pi_goal_plus_run_work_item`。该工具继承
+实际派发普通 subagent 时，Main 把完整任务直接传给共同 `goal_plus_run_work_item`。该工具继承
 Main 当前 thinking，懒创建 attempt，启动隔离的 Pi RPC child，仅在 RPC `get_state` 握手和
 请求的模型/thinking 设置成功后绑定 session，
 等待 child 完成，并用同一个 `attempt_id` 和 `generation` 提交 result。多个相互独立的 tool call
-可以并发执行；复用已返回的 id 会记录 rework 并恢复原 session。
+可以并发执行；复用已返回的 id 会记录 rework 并继续当前 native session。新入口不自动接管
+断连后的活跃 controller；`result_ready` 的冷恢复须先证明旧准确资源已退出，再恢复同一
+native session，详见 [Ultra](ultra.md)。
 
 Pi wrapper 只拥有 native launch/wait。main 仍负责 acceptance、rework、integration、Search routing
 和 completion。完整轻量记录协议见 [Ultra Orchestration](ultra.md)。
@@ -276,27 +249,26 @@ Search promotion 后，Pi 用 `goal_plus_record_search_result` 登记“搜索�
 检查实际应用的 diff 和整体测试。最终状态 evidence 另行登记“补丁应用完成并验收”。这两项只是
 收尾证据边界，不创建 DAG 或额外运行时阶段。
 
-## Search Pool 流程
+## Search Session 流程
 
 Pi Search 使用 `strategy.orchestration_mode="parallel_loops"` 和固定的初始 lane：
 
 1. 只规划并物化一次初始 candidate；
-2. 调用 `pi_search_pool_open(..., max_parallel=<frozen limit>)`；
-3. 用 `pi_search_pool_wait_any` 等待任意终态 event；
-4. 收到 `candidate_ready` 后结算 verifier-backed best；若全局停止条件尚未满足，对同一 candidate
-   调用 `pi_search_pool_continue`；
-5. main turn 中断后，用 `pi_search_pool_snapshot(run_id=...)` 重新发现 pool；
-6. 结束时调用 `pi_search_pool_close`，再 select 和 promote；默认 promotion mode 必须 apply，
+2. 用 `goal_plus_session_run` 准备候选并执行，保存返回的 session/call identity；
+3. 用 `goal_plus_session_wait` 读取准确调用结果；
+4. 检查持久 Evidence，若需继续探索，对同一 candidate 再次 run；
+5. controller 丢失后，按 [Search 恢复](search-recovery.md) 核验旧资源退出并恢复 checkpoint；
+6. 结束时调用 `goal_plus_session_close`，再 select 和 promote；默认 promotion mode 必须 apply，
    只有显式 `artifact_only` 才保留 publication；
 7. 记录 Search result，完成 raw-goal audit，设置 Goal Plus 终态，并为每个已记录 run 生成一次 final
    report。
 
-supervisor 只维护初始固定 candidate，不提供 submit/refill，也不会因为低分或没有提升替换 candidate。
-`candidate_ready` 必须同时满足 minimum lease 已释放、handle 已绑定且 durable Evidence 已落盘；
-`timed_out`、`interrupted` 和 `failed` 都不能作为 ready candidate 继续。
-
-driver 复用匹配的 worker Evidence，不创建重复的 parent process iteration。只有 workspace 已改变但缺少
-worker Evidence 时，parent 才补做 final verifier；未改变的 workspace 不会增加 baseline iteration。
+本地 Pi 不再注册 `pi_search_pool_*` 模型工具。共同 session 不自动循环；Main 决定继续，
+Application 核验预算、当前 generation 与归属。调用返回不代表 verifier 成功或进程已退出。
+共同 delivery 用例复用精确 artifact 对应的 Evidence；有实质修改但缺少 Evidence 时由宿主
+调用原 verifier 补验，结算后唤醒内部队列，未修改的 workspace 不增加 baseline iteration。
+Pi ThinkThread 也使用共同 session 控制，底层单 Child actor 负责准确 Message、retained wake
+和资源退出；旧 Child pool 已删除。Codex ThinkThread 尚未完成真实宿主验收。
 
 ## 模型与 Worker Spec
 
@@ -308,8 +280,6 @@ worker Evidence 时，parent 才补做 final verifier；未改变的 workspace �
     "name": "random",
     "orchestration_mode": "parallel_loops",
     "worker_budget": {
-      "min_runtime_seconds": 500,
-      "min_verifier_runs": 1,
       "max_runtime_seconds": 600,
       "max_turns": 8,
       "on_exceed": "interrupt"
@@ -318,10 +288,10 @@ worker Evidence 时，parent 才补做 final verifier；未改变的 workspace �
 }
 ```
 
-`max_runtime_seconds` 必填。`max_turns` 只是 prompt 提示。可选 `min_runtime_seconds` 和
-`min_verifier_runs` 由 pool wrapper 累计执行：Pi turn 提前结束时，会在同一 slot/worktree 恢复相同
-native session，并只获得剩余上限预算。达到 hard deadline 前，runner 发送一次 closeout steer；
-基础设施故障、pool close 或外层 closeout 会停止自动续跑。
+共同 session 的每次调用由 Application 按请求额度、准备好的 worker 上限和当前 Goal
+deadline 限制。`max_turns` 仍是 prompt 提示；返回后是否继续由 Main 决定，不自动启动下一轮。
+`worker_budget` 可省略。没有最低探索时长/次数或提前 closeout；显式上限和 Goal deadline
+仍生效，verifier/RPC 的操作超时独立保留。
 
 命令可分别选择 Evidence annotator 和 Search worker 模型：
 
@@ -350,13 +320,14 @@ Goal Plus 命令配置；新命令填写它会在创建记录前失败。
 /goal-plus max_parallel=4 workers=openai-codex/gpt-5.6-terra*1,openai-codex/gpt-5.6-sol*3 optimize ...
 ```
 
-Goal Plus 通过 `goal_plus_list_models(host="pi-rpc")` 调用 Pi RPC `get_available_models`。短 ID
+Goal Plus 通过 `goal_plus_list_models(agent_harness="pi", runtime_provider="direct")`
+调用 Pi RPC `get_available_models`。短 ID
 只有在唯一匹配时才会接受。没有 count 的条目按 round-robin 分配；`A*1,B*3` 会生成显式
 count，且总数必须等于 `max_parallel`。`models=` 是 `workers=` 的兼容别名，两者不能同时出现。最终
 `selected_models` 对每个 candidate/native session 不可变；同时省略 `workers=` 和 `models=` 时
 继承当前 Main 的 exact native model 与 thinking。
 
-`/goal-plus` command 和 `search_freeze_spec` extension gate 只收集显式 worker、annotator
+`/goal-plus` command 和 `goal_plus_search_freeze_spec` extension gate 只收集显式 worker、annotator
 model。匹配当前 Main 的显式引用直接使用 `ctx.model` 对象，其他引用从 native registry
 唯一解析；随后按模型去重，通过一次 `Promise.all` 并发调用 `ctx.modelRegistry.complete()` 发送
 最小 `hi` 请求。任一失败时在 agent 启动前拒绝创建或 freeze。没有显式 model 时完全不 probe，
@@ -368,20 +339,20 @@ provider 配置。catalog 可发现不等于真实推理可用。
 
 ## Worker 上下文与恢复
 
-candidate worker 初始只注册 `search_get_agent_context`。取得 runtime contract 后再注册
+candidate worker 初始只注册 `goal_plus_search_get_agent_context`。取得 runtime contract 后再注册
 Global Evidence、reference、verifier 和完整 iteration history 工具；只有启用 supplemental
-evaluation 或 `shared_dir` 时才分别注册 detail 或共享工具。`search_reference_open` 返回当前
+evaluation 或 `shared_dir` 时才分别注册 detail 或共享工具。`goal_plus_search_reference_open` 返回当前
 worker 唯一的
 reference checkout 路径；worker 直接用普通文件和命令工具查看，再次调用时同一目录切到新的
 Evidence commit。
 
-`search_get_agent_context` 返回有界的 best/recent 摘要、权威 ID、精简 `candidate_task` 和
+`goal_plus_search_get_agent_context` 返回有界的 best/recent 摘要、权威 ID、精简 `candidate_task` 和
 `.gp` ledger 来源；只有 inner binding 请求 workspace projection 时才返回 `results.tsv` 路径。
 内置 `inner_agent=autoresearch` 即 AutoResearch-Git：Git outer 使用 candidate worktree
 repository，ThinkThread outer 使用 Child-private independent repository；两者都有物理
 `results.tsv`。`inner_agent=common` 不启用这套 inner history，也不返回该路径。
 只有确实需要旧 verifier 的完整细节时，才调用可能很大的
-`search_list_iterations`。
+`goal_plus_search_list_iterations`。
 
 `candidate_task.acceptance` 只包含 FrozenSpec `candidate_acceptance` 中显式声明的稳定验收
 条件；objective 和 metric 位于 context 顶层，`constraints` 不会投影给 worker。
@@ -396,8 +367,8 @@ runtime 正式 verifier 因而使用同一设备映射。设备快照只能来�
 worker 始终把 `context.candidate_task.workspace` 作为文件与 shell 操作的显式 cwd，不依赖
 wrapper 启动目录。Pi worker 进程使用 `--no-context-files`，不会额外加载仓库级
 `AGENTS.md`/`CLAUDE.md`。任务局部 Skill 无需 spec 配置：runtime 只发现 source Git 已跟踪的
-`.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；在 freeze 的
-`task_skill_notice` 和 launch prompt 中明确列出，
+`.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；发现结果持久化，
+在 launch prompt 中明确列出，
 并通过 `candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。worker 完整读取这份
 清单，不扫描 parent/global/plugin 或其他 candidate 中的 Skill。
 
@@ -410,9 +381,8 @@ manual 模式下，worker 在第一次修改前读取 Global Evidence，之后�
 extension 从 session 恢复 workspace 和已启用能力的最小投影，不把完整 context 再次注入模型；
 完整 worker contract 和已加载 Evidence 仍由持久 session 保留。
 
-如果 assistant response 以 `stopReason="length"` 结束且没有 tool call，worker-local extension
-不再续接该上下文。driver 会返回 refresh signal，由 pool supervisor 为同一 candidate 和 workspace
-创建 fresh native session 与新的 `agent_session_id`；Git 修改和 durable Evidence 继续保留。
+模型因上下文限制结束时，host 保存本次调用观测；共同 controller 不自动创建替代 session。
+需要刷新时由 Main 沿显式 Search 恢复入口核验旧资源退出和 checkpoint，保留 durable Evidence。
 
 无法恢复 native session 时，handoff、candidate Git state 和 `.gp` verifier history
 是持久恢复依据。main 只发送中性 continuation directive，不替 worker 选择技术方向。
@@ -420,7 +390,7 @@ extension 从 session 恢复 workspace 和已启用能力的最小投影，不�
 ## 工具、Observability 与日志
 
 `goal-plus-pi-tool` 是 Pi 本地 JSON CLI facade，与 MCP 暴露相同的 GoalPlusTools/SearchTools，
-并提供 host-local pool 操作。只读 monitor 示例：
+共同 session 操作也通过同一 MCP 合同接线，不提供旧 pool 操作。只读 monitor 示例：
 
 ```bash
 goal-plus-pi-tool goal_plus_monitor_snapshot \
@@ -430,13 +400,13 @@ goal-plus-pi-tool goal_plus_monitor_snapshot \
 ```
 
 `goal_plus_monitor_snapshot` 不启动、等待或停止 worker。
-`search_get_agent_observability(agent_session_id)` 返回与 Codex 相同的归一化 schema；Pi 将
+`goal_plus_search_get_agent_observability(agent_session_id)` 返回与 Codex 相同的归一化 schema；Pi 将
 `pi_metrics` 中的 model、thinking level、duration、usage/cost、context 和 log/session path
 投影到该结构。当已产生 token 但 Pi 因缺少单价而返回零费用时，归一化结果将 cost 保留为未知，
 不影响运行状态。
 
 普通 Ultra work 可以启用 `orchestration` feature plugin。Pi wrapper 会把
-`pi_goal_plus_run_work_item` 和 `goal-plus-pi-worker` 保存为 namespaced event metadata；plugin
+共同 `goal_plus_run_work_item` 保存为 namespaced event metadata；plugin
 将其投影成与 Codex 相同的 task/result/main-decision 结构，但不会改变 Pi RPC process ownership。
 详见 [Monitor Feature Plugin](adaptive-search.md#monitor-feature-plugin)。
 
@@ -472,8 +442,8 @@ pytest -m pi -q
 真实 host smoke test：
 
 ```bash
-ST_PI_CYCLE_WORKER_SECONDS=120 \
-  pytest --run-system-tests -n 0 -m "st and st_pi_rpc" -k managed_pool_wait_any -v -s -rs
+pytest --run-system-tests -n 0 -m "st and st_pi_rpc" \
+  tests/st/test_st_session_host.py -v -s -rs
 ```
 
-该场景启动两个独立 Pi RPC worker，通过 `run_id` 重新发现 pool，观察 wait-any completion，并正常 drain。
+该场景通过共同 MCP 验证同 session 两轮候选交付、冷恢复、精确 Evidence 和资源关闭。

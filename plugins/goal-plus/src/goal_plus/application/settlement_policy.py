@@ -118,4 +118,13 @@ def previous_best_score(
     if candidate_best_score is not None:
         return candidate_best_score
     source = record.task.expansion_source
-    return source.score if source is not None else None
+    if source is None:
+        return None
+    return next((
+        entry.score for entry in record.results_ledger
+        if entry.source_run_id == record.task.run_id
+        and entry.source_candidate_id == source.candidate_id
+        and entry.iteration == source.iteration
+        and entry.artifact_ref == source.attempt_artifact_ref
+        and entry.status == "pass"
+    ), None)
