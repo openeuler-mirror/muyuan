@@ -1,6 +1,8 @@
 # 工作区准备
 
-从本 skill 目录执行脚本，先激活安装了匹配版本 PyPTO、simpler、Torch 和 golden harness 的环境。
+本页脚本与模板面向 pypto-lib；Torch/HF 来源按 [skill](../SKILL.md#torch--hugging-face-来源)
+构造任务级适配，沿用下述 source、环境与验收约定。
+使用现有脚本时，先激活安装了匹配版本 PyPTO、simpler、Torch 和 golden harness 的环境。
 路径参数按本机实际位置填写。输出使用仓库外的新目录；已有任务和实验数据不覆盖。
 
 ## 任务类型
@@ -38,6 +40,7 @@ Verifier 命令、edit surface 和 task-local skill 路径相对此 source 定�
 
 在任务环境运行 `python -c 'import sys; print(sys.executable)'` 获取解释器绝对路径，
 不要解析 venv 软链接。用该解释器检查 `-I -c 'import pypto, simpler, torch, golden'`；
+自定义任务按实际 verifier 依赖调整导入检查。
 冻结 verifier 不继承外部 `PYTHONPATH` 或用户 site-packages。所需依赖安装到任务环境，
 为 verifier 明确配置必要的编译器、工具链和动态库路径，不向插件环境安装任务依赖。
 在不依赖交互 shell 隐式配置的新进程中，使用上述环境先做导入和最小编译、执行检查，
