@@ -78,7 +78,7 @@ def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug, diagnos
         assert diagnostics == []
 
 
-def _run_env_script(tmp_path, script_env):
+def _run_env_script(tmp_path, script_env, timeout=20):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required to exercise the Pi extension")
@@ -94,7 +94,7 @@ def _run_env_script(tmp_path, script_env):
         env={**{key: value for key, value in os.environ.items()
                 if not key.startswith(("GOAL_PLUS_", "THINKTHREAD_"))},
              **script_env},
-        text=True, capture_output=True, timeout=20,
+        text=True, capture_output=True, timeout=timeout,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return result
@@ -144,6 +144,34 @@ def test_pi_abort_notifies_user_of_paused_goal(tmp_path):
         "GOAL_PLUS_PI_ABORT_NOTIFY_TEST": "1",
     })
     assert "abort notify checks passed" in result.stdout
+
+
+@pytest.mark.ui
+def test_pi_live_progress_refreshes_surfaces_at_turn_boundaries(tmp_path):
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": "main",
+        "GOAL_PLUS_PI_PROGRESS_TEST": "1",
+    })
+    assert "live progress checks passed" in result.stdout
+
+
+@pytest.mark.ui
+def test_pi_search_progress_frame_follows_the_search_run(tmp_path):
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": "main",
+        "GOAL_PLUS_PI_SEARCH_PROGRESS_TEST": "1",
+    }, timeout=40)
+    assert "search progress checks passed" in result.stdout
+
+
+@pytest.mark.ui
+def test_pi_ui_demo_walks_the_search_run_lifecycle(tmp_path):
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": "main",
+        "GOAL_PLUS_UI_DEMO": "1",
+        "GOAL_PLUS_PI_DEMO_TEST": "1",
+    }, timeout=60)
+    assert "ui demo checks passed" in result.stdout
 
 
 @pytest.mark.parametrize("sdk_mode", ["compatible", "parent", "capability", "interface"])
@@ -213,6 +241,9 @@ const mocks = {
       globalThis.calls.push({name, args});
       let details = name === "goal_plus_gate"
         ? {decision: "block", reason: "fixture phase gate"} : globalThis.status;
+      if (name === "goal_plus_monitor_snapshot" && globalThis.monitorSnapshot) {
+        details = globalThis.monitorSnapshot;
+      }
       if (globalThis.workReceiptTest) {
         if (name === "goal_plus_gate") details = {decision: "allow"};
         if (name === "host_execution_scope_open") details = {scope_id: "scope-test"};
@@ -254,10 +285,11 @@ const pi = {
   sendMessage() {}, sendUserMessage() {}, appendEntry() {}, getThinkingLevel() {return "medium";},
 };
 const ctx = {cwd, mode: "interactive", hasUI: false, isIdle: () => true,
-  isProjectTrusted: () => true,
+  isProjectTrusted: () => true, hasPendingMessages: () => false,
   sessionManager: {getEntries: () => [], isPersisted: () => false, getSessionId: () => "pi-test"},
   model: {provider: "fixture", id: "fixture-model"},
-  ui: {notify() {}, setStatus() {}, setWidget() {}},
+  ui: {notify() {}, setStatus() {}, setWidget() {}, setWorkingMessage() {},
+    theme: {fg: (_color, text) => text, bg: (_color, text) => text}},
 };
 await register(pi);
 if (process.env.GOAL_PLUS_PI_ROLE === 'main') {
@@ -393,6 +425,186 @@ if (process.env.GOAL_PLUS_PI_ABORT_NOTIFY_TEST === "1") {
   assert.ok(notice.content.includes("gp_0001") && notice.content.includes("已暂停"));
   assert.ok(notice.display === true);
   console.log("abort notify checks passed");
+  process.exit(0);
+}
+if (process.env.GOAL_PLUS_PI_PROGRESS_TEST === "1") {
+  globalThis.workReceiptTest = true;
+  globalThis.monitorSnapshot = {
+    ok: true,
+    goal_plus: {goal_plus_id: "gp_0001", status: "active",
+      created_at: "2026-09-16T10:00:00.000Z", updated_at: "2026-09-16T10:02:06.000Z",
+      current_search_run_id: "run_1"},
+    search_tasks: [{run_id: "run_1", is_current: true, state: "active",
+      candidates_total: 2, candidates_evaluated: 2, verifier_runs_total: 4,
+      best_candidate_id: "c001", best_score: 1.93276,
+      statistics: {scores: {metric_name: "sum_radii", direction: "maximize",
+        baseline: 1.79835, best: 1.93276}, selection: {promotion_verified: false}}}],
+    candidates: {
+      c001: {candidate_id: "c001", status: "running", verifier_count: 2,
+        best_iteration_score: 1.93276, last_score: 1.8,
+        last_verifier_at: new Date(Date.now() - 45_000).toISOString(),
+        avg_round_seconds: 600},
+      c002: {candidate_id: "c002", status: "running", verifier_count: 2,
+        best_iteration_score: 1.90144, last_score: 1.87,
+        last_verifier_at: new Date(Date.now() - 41_000).toISOString(),
+        avg_round_seconds: 300},
+    },
+    subagents: [],
+  };
+  const statuses = new Map(), widgets = new Map();
+  globalThis.status = {...globalThis.status, current_search_run_id: "run_1"};
+  globalThis.working = [];
+  ctx.ui.setStatus = (key, value) => { value === undefined ? statuses.delete(key) : statuses.set(key, value); };
+  ctx.ui.setWidget = (key, lines) => { lines === undefined ? widgets.delete(key) : widgets.set(key, lines); };
+  ctx.ui.setWorkingMessage = message => { globalThis.working.push(message ?? null); };
+  pi.sendMessage = () => {}; pi.sendUserMessage = () => {};
+  await commands.get("goal-plus").handler("fixture", ctx);
+  await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
+  await events.get("agent_settled")({}, ctx);
+  // The whole summary lives in the widget; the footer slot and loader row stay free.
+  assert.equal(statuses.size, 0, "the progress summary must not use the footer status slot");
+  assert.equal(globalThis.working.length, 0, "the progress summary must not use the working row");
+  assert.equal(widgets.size, 1, "a settled non-terminal turn must render the progress widget");
+  const lines = [...widgets.values()][0];
+  assert.ok(lines[0].includes("SEARCH ACTIVE") && lines[0].includes("sum_radii"), lines[0]);
+  assert.ok(lines.some(line => line.includes("Lanes 2/2 evaluated")));
+  assert.ok(lines.some(line => line.includes("7.5% better")));
+  const c001line = lines.find(line => line.includes("c001"));
+  assert.ok(c001line.includes("running"), c001line);
+  assert.ok(c001line.includes("best 1.9328"), c001line);
+  assert.ok(c001line.includes("last 1.8"), c001line);
+  assert.ok(!c001line.includes("sum_radii"), "the metric belongs to the header, not every lane");
+  assert.ok(/round 00:[45]\d/.test(c001line), c001line);
+  assert.ok(/next ~09:[0-2]\d/.test(c001line), c001line);
+  // Pause through the control command flips the widget to blocked.
+  globalThis.status = {...globalThis.status, control: {state: "paused", reason: "user_pause", version: 2}};
+  await commands.get("goal-plus").handler("pause", ctx);
+  assert.ok([...widgets.values()][0].some(line => line.includes("SEARCH BLOCKED")));
+  // Clear removes the widget.
+  await commands.get("goal-plus").handler("clear", ctx);
+  assert.equal(widgets.size, 0);
+  console.log("live progress checks passed");
+  process.exit(0);
+}
+if (process.env.GOAL_PLUS_PI_SEARCH_PROGRESS_TEST === "1") {
+  const statuses = new Map(), widgets = new Map();
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const snapshot = state => ({
+    ok: true,
+    goal_plus: {goal_plus_id: "gp_0001", status: "active",
+      created_at: "2026-09-16T10:00:00.000Z", updated_at: "2026-09-16T10:02:06.000Z",
+      current_search_run_id: state === null ? undefined : "run_1"},
+    search_tasks: state === null ? [] : [{run_id: "run_1", is_current: true, state,
+      candidates_total: 2, candidates_evaluated: 1, verifier_runs_total: 1,
+      best_candidate_id: "c001", best_score: 1.9,
+      statistics: {scores: {metric_name: "sum_radii", direction: "maximize",
+        baseline: 1.8, best: 1.9}, selection: {promotion_verified: false}}}],
+    candidates: state === null ? {} : {
+      c001: {candidate_id: "c001", status: "evaluated", verifier_count: 1,
+        best_iteration_score: 1.9, last_score: 1.9,
+        last_verifier_at: new Date(Date.now() - 30_000).toISOString(),
+        avg_round_seconds: 120},
+    },
+    subagents: [],
+  });
+  globalThis.workReceiptTest = true;
+  let renders = 0;
+  ctx.ui.setStatus = (key, value) => { value === undefined ? statuses.delete(key) : statuses.set(key, value); };
+  ctx.ui.setWidget = (key, lines) => {
+    if (lines === undefined) { widgets.delete(key); return; }
+    renders += 1;
+    widgets.set(key, lines);
+  };
+  ctx.ui.setWorkingMessage = () => {};
+  pi.sendMessage = () => {}; pi.sendUserMessage = () => {};
+  // A Goal that is not exploring a Search run must not create the frame.
+  globalThis.status = {...globalThis.status, current_search_run_id: undefined};
+  globalThis.monitorSnapshot = snapshot(null);
+  await commands.get("goal-plus").handler("fixture", ctx);
+  await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
+  await events.get("agent_settled")({}, ctx);
+  assert.equal(widgets.size, 0, "a Goal without a Search run must not show the frame");
+  // An in-progress Search run shows the frame at the turn boundary.
+  globalThis.status = {...globalThis.status, current_search_run_id: "run_1"};
+  globalThis.monitorSnapshot = snapshot("running");
+  await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
+  await events.get("agent_settled")({}, ctx);
+  assert.equal(widgets.size, 1, "an in-progress Search run must show the frame");
+  {
+    const lines = [...widgets.values()][0];
+    assert.ok(lines.some(line => line.includes("Lanes 1/2 evaluated · Verify 1 · Best 1.9")), lines.join("\n"));
+    assert.ok(lines[0].includes("sum_radii"), lines[0]);
+  }
+  assert.equal(statuses.size, 0, "the frame must not use the footer status slot");
+  // The lanes live in the detailed monitor projection; the slim summary omits them.
+  assert.ok(calls.some(call => call.name === "goal_plus_monitor_snapshot"
+    && call.args && call.args.detail === true), "the surfaces must read the detailed snapshot");
+  // A failed read is not evidence that the run finished: keep the frame and keep
+  // retrying until a read succeeds again.
+  const rendersBeforeFailure = renders;
+  globalThis.monitorSnapshot = {ok: false};
+  await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
+  await events.get("agent_settled")({}, ctx);
+  assert.equal(widgets.size, 1, "a failed read must not clear the surfaces");
+  globalThis.monitorSnapshot = snapshot("running");
+  const recoverDeadline = Date.now() + 9_000;
+  while (renders === rendersBeforeFailure && Date.now() < recoverDeadline) await wait(200);
+  assert.ok(renders > rendersBeforeFailure, "the interval must keep retrying after a failed read");
+  // A finished Search run keeps the frame during the hide delay, then clears it.
+  globalThis.monitorSnapshot = snapshot("promoted");
+  await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
+  await events.get("agent_settled")({}, ctx);
+  assert.equal(widgets.size, 1, "the frame must survive the finished Search run until the hide delay");
+  const hideDeadline = Date.now() + 15_000;
+  while (widgets.size > 0 && Date.now() < hideDeadline) await wait(200);
+  assert.equal(widgets.size, 0, "the frame must disappear after the Search run finished");
+  await events.get("session_shutdown")({reason: "test"}, ctx);
+  console.log("search progress checks passed");
+  process.exit(0);
+}
+if (process.env.GOAL_PLUS_PI_DEMO_TEST === "1") {
+  const frames = [];
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const lane = (lines, id) => lines.find(item => item.includes(id)) ?? "";
+  const notifications = [];
+  let pending;
+  ctx.ui.setStatus = () => {};
+  ctx.ui.setWidget = (key, value) => {
+    if (value === undefined) { pending = undefined; return; }
+    pending = {lines: value};
+    frames.push(pending);
+  };
+  ctx.ui.setWorkingMessage = () => {};
+  ctx.ui.notify = (message, level) => notifications.push({message, level});
+  const waitFor = async (predicate, what, timeoutMs) => {
+    const until = Date.now() + timeoutMs;
+    while (!predicate() && Date.now() < until) await wait(100);
+    assert.ok(predicate(), `${what} must happen; frames=${frames.length} visible=${pending !== undefined}`);
+  };
+  await events.get("session_start")({}, ctx);
+  // No Search run yet: nothing is shown.
+  assert.equal(frames.length, 0, "the frame must not exist before a Search run starts");
+  await waitFor(() => frames.length >= 1, "the frame at Search start", 4000);
+  assert.ok(frames[0].lines[0].includes("SEARCH ACTIVE"), frames[0].lines[0]);
+  assert.ok(frames[0].lines.some(line => line.includes("Lanes 0/4 evaluated · Verify 0 · Best --")),
+    frames[0].lines.join("\n"));
+  // Inside the refresh interval the surfaces stay untouched.
+  await wait(4000);
+  assert.equal(frames.length, 1, "the frame must not re-render inside the refresh interval");
+  await waitFor(() => frames.length >= 2, "the interval refresh", 8000);
+  const refreshed = frames[frames.length - 1];
+  assert.ok(refreshed.lines[0].includes("SELECTING"), refreshed.lines[0]);
+  assert.ok(refreshed.lines.some(line => line.includes("Lanes 3/4 evaluated · Verify 7 · Best 1.9123")),
+    refreshed.lines.join("\n"));
+  assert.ok(lane(refreshed.lines, "c001").includes("best 1.9123"), lane(refreshed.lines, "c001"));
+  assert.ok(lane(refreshed.lines, "c004").includes("created"), lane(refreshed.lines, "c004"));
+  // The finished Search run keeps the last frame for the hide delay, then clears it.
+  assert.notEqual(pending, undefined, "the finished Search run must keep the frame");
+  await waitFor(() => pending === undefined, "the hide after the Search run", 12000);
+  assert.ok(frames.every(frame => !lane(frame.lines, "c004").includes("evaluated")), "c004 must never settle");
+  assert.ok(notifications.some(item => item.message.includes("Search run finished")), JSON.stringify(notifications));
+  await events.get("session_shutdown")({reason: "test"}, ctx);
+  console.log("ui demo checks passed");
   process.exit(0);
 }
 if (process.env.GOAL_PLUS_PI_WORK_RECEIPT_TEST === "1") {

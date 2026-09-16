@@ -398,6 +398,39 @@ def test_goal_plus_monitor_snapshot_does_not_attach_unlinked_latest_run(
     assert unrelated_run_id is not None
 
 
+def test_goal_plus_monitor_snapshot_projects_candidate_round_timing(
+    tmp_path: Path,
+) -> None:
+    project = make_project(tmp_path)
+    runtime_root = tmp_path / ".search"
+    runtime = FileSearchRuntime(runtime_root)
+    frozen = runtime.freeze_spec(_pi_rpc_spec(project), [project / "evaluator.py"], agent_harness="pi")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+    runtime.run_verifier(
+        run_id,
+        task.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="first round",
+    )
+    runtime.run_verifier(
+        run_id,
+        task.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="second round",
+    )
+
+    snapshot = goal_plus_monitor_snapshot(root_dir=runtime_root, run_id=run_id)
+    candidate = snapshot["candidates"][task.candidate_id]
+
+    assert candidate["verifier_count"] == 2
+    assert candidate["last_verifier_at"] is not None
+    assert candidate["avg_round_seconds"] is not None
+    assert candidate["avg_round_seconds"] >= 0.0
+
+
 def test_goal_plus_monitor_snapshot_keeps_session_and_candidate_verifier_counts_separate(
     tmp_path: Path,
 ) -> None:

@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 from goal_plus.ports.monitor import MonitorCandidateInputs, MonitorSessionInputs
 from goal_plus.projections.monitor import (
@@ -7,6 +8,24 @@ from goal_plus.projections.monitor import (
     observability_cost,
     project_evidence_reads,
 )
+
+
+def _avg_round_seconds(iterations: list[Any]) -> float | None:
+    """Mean interval between consecutive settled verifier iterations."""
+    timestamps: list[float] = []
+    for item in iterations:
+        try:
+            parsed = datetime.fromisoformat(item.created_at.replace("Z", "+00:00"))
+        except (AttributeError, ValueError):
+            return None
+        timestamps.append(parsed.timestamp())
+    intervals = [
+        later - earlier for earlier, later in zip(timestamps, timestamps[1:])
+        if later >= earlier
+    ]
+    if not intervals:
+        return None
+    return sum(intervals) / len(intervals)
 
 
 def project_candidate(inputs: MonitorCandidateInputs) -> dict[str, Any]:
@@ -62,6 +81,7 @@ def project_candidate(inputs: MonitorCandidateInputs) -> dict[str, Any]:
         "last_disposition": (last_iteration.disposition if last_iteration else None),
         "last_verifier_at": last_iteration.created_at if last_iteration else None,
         "last_git_head": last_iteration.git_head if last_iteration else None,
+        "avg_round_seconds": _avg_round_seconds(candidate.iterations),
         "best_iteration": best_iteration.iteration if best_iteration else None,
         "best_iteration_score": best_iteration.score if best_iteration else None,
         "best_iteration_at": best_iteration.created_at if best_iteration else None,

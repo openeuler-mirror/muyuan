@@ -17,7 +17,9 @@ import {
 	PI_COMPLETION_PREVIEW,
 	PI_PROGRESS_PREVIEWS,
 	type GoalPlusCandidateCompletion,
+	type GoalPlusCandidateProgress,
 	type GoalPlusCompletionView,
+	type GoalPlusProgressState,
 	type GoalPlusProgressView,
 	type GoalPlusUsageSummary,
 } from "./lib/goal-plus-progress.ts";
@@ -52,7 +54,6 @@ const WORKER_CONTEXT_ENTRY_TYPE = "goal-plus-worker-context";
 const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
 const GOAL_PLUS_RUNTIME_ENTRY_TYPE = "goal-plus-runtime-start";
 const GOAL_PLUS_COMMAND_CONTEXT_TYPE = "goal-plus-command-context";
-const GOAL_PLUS_PROGRESS_STATUS_KEY = "goal-plus-progress";
 const GOAL_PLUS_PROGRESS_WIDGET_KEY = "goal-plus-progress";
 let workspaceRoot: string | undefined;
 let sawContext = false;
@@ -1014,6 +1015,8 @@ function restoreGoalState(ctx: ExtensionContext) {
 function activateGoal(pi: ExtensionAPI, details: unknown, startEntryCount?: number, persist = true) {
 	const id = goalPlusIdFrom(details);
 	if (!id) return;
+	// A real Goal owns the live surfaces; stop any running UI demo.
+	stopPiProgressDemo?.();
 	if (id !== activeGoalPlusId || !activeGoalStartedAt) {
 		activeGoalStartedAt = new Date().toISOString();
 		activeGoalStartEntryCount = startEntryCount ?? activeGoalStartEntryCount;
@@ -1172,13 +1175,9 @@ function usageSummaryFromMonitor(value: unknown): GoalPlusUsageSummary | undefin
 	};
 }
 
-function candidateCompletionsFromMonitor(
-	snapshot: Record<string, unknown> | undefined,
-	selectedCandidateId: string | undefined,
-): GoalPlusCandidateCompletion[] {
-	if (!snapshot || !isRecord(snapshot.candidates)) return [];
+function candidateModelMapFromMonitor(snapshot: Record<string, unknown> | undefined): Map<string, string> {
 	const modelByCandidate = new Map<string, string>();
-	if (Array.isArray(snapshot.subagents)) {
+	if (snapshot && Array.isArray(snapshot.subagents)) {
 		for (const subagent of snapshot.subagents.filter(isRecord)) {
 			const candidateId = stringFrom(subagent.candidate_id);
 			const observability = isRecord(subagent.observability) ? subagent.observability : undefined;
@@ -1187,6 +1186,47 @@ function candidateCompletionsFromMonitor(
 			if (candidateId && model) modelByCandidate.set(candidateId, model);
 		}
 	}
+	return modelByCandidate;
+}
+
+function progressCandidatesFromMonitor(
+	snapshot: Record<string, unknown> | undefined,
+): GoalPlusCandidateProgress[] {
+	if (!snapshot || !isRecord(snapshot.candidates)) return [];
+	const modelByCandidate = candidateModelMapFromMonitor(snapshot);
+	const nowMs = Date.now();
+	return Object.values(snapshot.candidates)
+		.filter(isRecord)
+		.map((candidate) => {
+			const candidateId = stringFrom(candidate.candidate_id) ?? "unknown";
+			const avgRoundSeconds = optionalNumberFrom(candidate.avg_round_seconds);
+			const lastVerifierMs = Date.parse(stringFrom(candidate.last_verifier_at) ?? "");
+			const roundElapsedSeconds = Number.isFinite(lastVerifierMs)
+				? Math.max(0, (nowMs - lastVerifierMs) / 1000)
+				: undefined;
+			const nextResultSeconds = avgRoundSeconds !== undefined && roundElapsedSeconds !== undefined
+				? Math.max(0, avgRoundSeconds - roundElapsedSeconds)
+				: undefined;
+			return {
+				candidateId,
+				model: modelByCandidate.get(candidateId),
+				verifierCount: numberFrom(candidate.verifier_count),
+				bestScore: optionalNumberFrom(candidate.best_iteration_score)
+					?? optionalNumberFrom(candidate.last_score),
+				status: stringFrom(candidate.status) || undefined,
+				lastScore: optionalNumberFrom(candidate.last_score),
+				roundElapsedSeconds,
+				nextResultSeconds,
+			};
+		});
+}
+
+function candidateCompletionsFromMonitor(
+	snapshot: Record<string, unknown> | undefined,
+	selectedCandidateId: string | undefined,
+): GoalPlusCandidateCompletion[] {
+	if (!snapshot || !isRecord(snapshot.candidates)) return [];
+	const modelByCandidate = candidateModelMapFromMonitor(snapshot);
 	return Object.values(snapshot.candidates)
 		.filter(isRecord)
 		.map((candidate) => {
@@ -1260,6 +1300,202 @@ function buildGoalCompletionView(
 		workerUsage,
 		candidates: candidateCompletionsFromMonitor(snapshot, selectedCandidateId),
 	};
+}
+
+function buildGoalProgressView(
+	status: GoalPlusStatusPayload,
+	snapshot: Record<string, unknown> | undefined,
+): GoalPlusProgressView {
+	const goal = snapshot && isRecord(snapshot.goal_plus) ? snapshot.goal_plus : undefined;
+	const task = monitorSearchTask(snapshot);
+	const statistics = task && isRecord(task.statistics) ? task.statistics : undefined;
+	const scores = statistics && isRecord(statistics.scores) ? statistics.scores : undefined;
+	const selection = statistics && isRecord(statistics.selection) ? statistics.selection : undefined;
+	const goalStatus = stringFrom(goal?.status) ?? status.status;
+	const taskState = stringFrom(task?.state);
+	const state: GoalPlusProgressState = status.control?.state === "paused" || goalStatus === "blocked"
+		? "blocked"
+		: isTerminalStatus(goalStatus)
+			? "complete"
+			: taskState === "selecting" || taskState === "promoted"
+				? "selecting"
+				: task
+					? "active"
+					: "preparing";
+	const selectedCandidateId = stringFrom(task?.selected_candidate_id);
+	return {
+		state,
+		elapsedSeconds: goalElapsedSeconds(snapshot),
+		metricName: stringFrom(scores?.metric_name),
+		metricDirection: scores?.direction === "minimize" ? "minimize" : scores?.direction === "maximize" ? "maximize" : undefined,
+		baselineScore: optionalNumberFrom(scores?.baseline),
+		bestCandidateId: stringFrom(task?.best_candidate_id) || undefined,
+		bestScore: optionalNumberFrom(scores?.best) ?? optionalNumberFrom(task?.best_score),
+		selectedCandidateId: selectedCandidateId || undefined,
+		promotionPassed: selection?.promotion_verified === true,
+		candidatesTotal: optionalNumberFrom(task?.candidates_total) ?? 0,
+		lanesEvaluated: optionalNumberFrom(task?.candidates_evaluated) ?? 0,
+		verifierRunsTotal: optionalNumberFrom(task?.verifier_runs_total) ?? 0,
+		candidates: progressCandidatesFromMonitor(snapshot),
+	};
+}
+
+async function readMonitorSnapshot(
+	pi: ExtensionAPI, ctx: CommandRuntimeContext, status: GoalPlusStatusPayload,
+): Promise<Record<string, unknown> | undefined> {
+	try {
+		// The slim monitor summary omits search_tasks/candidates; the surfaces need
+		// the detailed projection.
+		const monitor = await runJsonCli(pi, ctx, "goal_plus_monitor_snapshot", {
+			goal_plus_id: status.goal_plus_id ?? activeGoalPlusId,
+			run_id: status.current_search_run_id ?? undefined,
+			detail: true,
+		});
+		if (isRecord(monitor.details) && monitor.details.ok !== false) return monitor.details;
+	} catch {
+		// Live progress is advisory; the next turn boundary retries with fresh state.
+	}
+	return undefined;
+}
+
+// The live surfaces exist only while a Search run is being explored: they appear
+// when the run starts (or when a session resumes into one), refresh on a fixed
+// interval, and disappear shortly after the run stops being in progress.
+const SEARCH_PROGRESS_REFRESH_MS = 5000;
+const SEARCH_PROGRESS_HIDE_DELAY_MS = 5000;
+
+// A failed or incomplete read is "unknown": it must never hide the surfaces or
+// stop the retry loop, because only an authoritative read may end a Search run.
+type SearchProgressPhase = "running" | "blocked" | "finished" | "unknown";
+let searchProgressPoll: ReturnType<typeof setInterval> | undefined;
+let searchProgressHide: ReturnType<typeof setTimeout> | undefined;
+let searchProgressPhaseShown: SearchProgressPhase | undefined;
+let searchProgressChecking = false;
+
+function progressDebug(event: string, details: Record<string, unknown>): void {
+	if (process.env.GOAL_PLUS_DEBUG !== "1") return;
+	try {
+		console.error(JSON.stringify({ event, ...details }));
+	} catch {
+		// Diagnostics cannot change progress handling.
+	}
+}
+
+function stopSearchProgressPoll(): void {
+	if (searchProgressPoll !== undefined) clearInterval(searchProgressPoll);
+	searchProgressPoll = undefined;
+}
+
+function cancelSearchProgressHide(): void {
+	if (searchProgressHide !== undefined) clearTimeout(searchProgressHide);
+	searchProgressHide = undefined;
+}
+
+function scheduleSearchProgressHide(ctx: ExtensionContext): void {
+	if (searchProgressHide !== undefined) return;
+	searchProgressHide = setTimeout(() => {
+		searchProgressHide = undefined;
+		clearPiProgress(ctx);
+	}, SEARCH_PROGRESS_HIDE_DELAY_MS);
+}
+
+function ensureSearchProgressPoll(pi: ExtensionAPI, ctx: ExtensionContext): void {
+	if (searchProgressPoll !== undefined) return;
+	searchProgressPoll = setInterval(() => { void checkSearchProgress(pi, ctx); }, SEARCH_PROGRESS_REFRESH_MS);
+}
+
+function searchProgressPhase(
+	status: GoalPlusStatusPayload,
+	snapshot: Record<string, unknown> | undefined,
+): SearchProgressPhase {
+	if (status.control?.state === "paused" || status.status === "blocked") return "blocked";
+	const runId = stringFrom(status.current_search_run_id);
+	if (!runId) return "finished";
+	const task = monitorSearchTask(snapshot);
+	if (!task || task.is_current !== true || stringFrom(task.run_id) !== runId) return "unknown";
+	const runState = stringFrom(task.state);
+	return runState === "promoted" || runState === "aborted" || runState === "failed"
+		? "finished"
+		: "running";
+}
+
+function applySearchProgress(
+	ctx: ExtensionContext,
+	status: GoalPlusStatusPayload,
+	snapshot: Record<string, unknown> | undefined,
+): void {
+	const phase = searchProgressPhase(status, snapshot);
+	progressDebug("goal_plus_progress_phase", {
+		phase,
+		run_id: stringFrom(status.current_search_run_id),
+		visible: searchProgressPhaseShown !== undefined,
+	});
+	if (phase === "finished") {
+		stopSearchProgressPoll();
+		if (searchProgressPhaseShown !== undefined) scheduleSearchProgressHide(ctx);
+		return;
+	}
+	if (phase === "unknown") {
+		// Keep whatever is on screen; the interval retries with fresh state.
+		cancelSearchProgressHide();
+		return;
+	}
+	cancelSearchProgressHide();
+	showPiProgress(ctx, buildGoalProgressView(status, snapshot));
+	searchProgressPhaseShown = phase;
+	if (phase === "blocked") {
+		// A blocked Goal is not exploring; keep the blocked frame briefly, then hide.
+		stopSearchProgressPoll();
+		scheduleSearchProgressHide(ctx);
+	}
+}
+
+function observeSearchProgress(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	status: GoalPlusStatusPayload,
+	snapshot: Record<string, unknown> | undefined,
+): void {
+	if (progressPreviewMode || progressDemoMode) return;
+	progressDebug("goal_plus_progress_read", {
+		source: stringFrom((status.details as Record<string, unknown> | undefined)?.tool),
+		goal_plus_id: stringFrom(status.goal_plus_id),
+		goal_status: stringFrom(status.status),
+		phase: stringFrom(status.phase),
+		control: stringFrom(status.control?.state),
+		run_id: stringFrom(status.current_search_run_id),
+		snapshot_ok: snapshot?.ok,
+		snapshot_keys: snapshot ? Object.keys(snapshot).slice(0, 12).join(",") : undefined,
+		snapshot_tasks: Array.isArray(snapshot?.search_tasks) ? snapshot.search_tasks.length : undefined,
+		snapshot_error: stringFrom(snapshot?.error),
+	});
+	applySearchProgress(ctx, status, snapshot);
+	const phase = searchProgressPhase(status, snapshot);
+	if (phase === "running" || phase === "unknown") ensureSearchProgressPoll(pi, ctx);
+}
+
+async function checkSearchProgress(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	if (role !== "main" || !activeGoalPlusId || progressPreviewMode || progressDemoMode) return;
+	if (searchProgressChecking) return;
+	searchProgressChecking = true;
+	try {
+		const commandCtx = commandContextFrom(ctx);
+		const status = await refreshActiveGoal(pi, commandCtx, false);
+		if (!status?.goal_plus_id) {
+			stopSearchProgressPoll();
+			if (searchProgressPhaseShown !== undefined) scheduleSearchProgressHide(ctx);
+			return;
+		}
+		observeSearchProgress(pi, ctx, status, await readMonitorSnapshot(pi, commandCtx, status));
+	} catch (error) {
+		// A failed read must not clear the surfaces or stop the retry loop.
+		progressDebug("goal_plus_progress_read_failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		if (searchProgressPhaseShown !== undefined) ensureSearchProgressPoll(pi, ctx);
+	} finally {
+		searchProgressChecking = false;
+	}
 }
 
 function appendGoalStats(
@@ -1341,19 +1577,169 @@ function monitorSnapshotPresentation(value: unknown): { status: string; lines: s
 
 function showPiProgress(ctx: ExtensionContext, view: GoalPlusProgressView): void {
 	const presentation = buildPiProgressPresentation(view);
-	const lines = presentation.lines.map((line, index) => {
-		if (index === 0) return ctx.ui.theme.fg(view.state === "complete" ? "success" : "accent", line);
-		if (line.startsWith("Next  ")) return ctx.ui.theme.fg("muted", line);
-		return line;
+	const accent: "success" | "error" | "accent" = view.state === "complete"
+		? "success" : view.state === "blocked" ? "error" : "accent";
+	const bar = ctx.ui.theme.fg(accent, "▌");
+	const lines = presentation.lines.map((line) => {
+		if (line === presentation.lines[0]) return `${bar} ${ctx.ui.theme.fg(accent, line)}`;
+		if (line.includes("% better")) return `${bar} ${ctx.ui.theme.fg("success", line)}`;
+		if (line.includes("% worse")) return `${bar} ${ctx.ui.theme.fg("error", line)}`;
+		if (line.startsWith("Lanes ") || line.startsWith("Selected ")) return `${bar} ${line}`;
+		if (view.bestCandidateId && line.startsWith(view.bestCandidateId)) {
+			return `${bar} ${ctx.ui.theme.fg("accent", line)}`;
+		}
+		if (line.includes("running")) return `${bar} ${line}`;
+		return `${bar} ${ctx.ui.theme.fg("dim", line)}`;
 	});
-	const statusColor = view.state === "complete" ? "success" : view.state === "blocked" ? "error" : "accent";
-	ctx.ui.setStatus(GOAL_PLUS_PROGRESS_STATUS_KEY, ctx.ui.theme.fg(statusColor, presentation.status));
+	// One surface only: the widget above the editor. The footer status slot and the
+	// streaming loader row would just duplicate the same summary.
 	ctx.ui.setWidget(GOAL_PLUS_PROGRESS_WIDGET_KEY, lines);
 }
 
 function clearPiProgress(ctx: ExtensionContext): void {
-	ctx.ui.setStatus(GOAL_PLUS_PROGRESS_STATUS_KEY, undefined);
+	stopPiProgressDemo?.();
+	stopSearchProgressPoll();
+	cancelSearchProgressHide();
+	searchProgressPhaseShown = undefined;
 	ctx.ui.setWidget(GOAL_PLUS_PROGRESS_WIDGET_KEY, undefined);
+}
+
+const progressDemoMode = process.env.GOAL_PLUS_UI_DEMO?.trim() === "1";
+const PI_PROGRESS_DEMO_TICK_MS = 1000;
+let stopPiProgressDemo: (() => void) | undefined;
+
+type PiProgressDemoLane = {
+	candidateId: string;
+	model: string;
+	rounds: Array<{atMs: number; score: number}>;
+};
+
+function startPiProgressDemo(pi: ExtensionAPI, ctx: ExtensionContext): void {
+	stopPiProgressDemo?.();
+	clearPiProgress(ctx);
+	const startedAtMs = Date.now();
+	// The demo only covers the Search run: no frame exists before it starts, it
+	// shows two frames a production refresh interval apart, and it disappears on
+	// the production hide delay after the run finishes. The scripted timeline is
+	// relative to the first rendered frame, so a delayed timer cannot squeeze it.
+	const runCreatedAtMs = 1000;
+	const selectionAtMs = 4000;
+	const runningFrames = 2;
+	let originMs: number | undefined;
+	let renderedFrames = 0;
+	let nextRefreshAtMs = runCreatedAtMs;
+	const lanes: PiProgressDemoLane[] = [
+		{candidateId: "c001", model: "openai-codex/gpt-5.6-terra", rounds: [
+			{atMs: 900, score: 1.8041},
+			{atMs: 1800, score: 1.792},
+			{atMs: 3800, score: 1.9123},
+		]},
+		{candidateId: "c002", model: "openai-codex/gpt-5.6-luna", rounds: [
+			{atMs: 1200, score: 1.8352},
+			{atMs: 3000, score: 1.841},
+		]},
+		{candidateId: "c003", model: "openai-codex/gpt-5.6-terra", rounds: [
+			{atMs: 500, score: 1.8901},
+			{atMs: 2500, score: 1.8955},
+		]},
+		// c004 stays without a settled verifier result, so the lanes never finish
+		// together.
+		{candidateId: "c004", model: "openai-codex/gpt-5.6-luna", rounds: []},
+	];
+	let timer: ReturnType<typeof setInterval> | undefined;
+	let announced = false;
+	const stop = () => {
+		if (timer !== undefined) clearInterval(timer);
+		stopPiProgressDemo = undefined;
+	};
+	const render = () => {
+		const elapsedMs = Date.now() - startedAtMs;
+		if (elapsedMs < runCreatedAtMs) return;
+		const timelineOriginMs = (originMs ??= elapsedMs);
+		const demoElapsedMs = elapsedMs - timelineOriginMs;
+		const finished = renderedFrames >= runningFrames;
+		if (!finished && elapsedMs < nextRefreshAtMs) return;
+		nextRefreshAtMs = elapsedMs + SEARCH_PROGRESS_REFRESH_MS;
+		if (!finished) renderedFrames += 1;
+		const candidates: Record<string, Record<string, unknown>> = {};
+		let bestCandidateId: string | undefined;
+		let bestScore: number | undefined;
+		let verifierRuns = 0;
+		let evaluated = 0;
+		for (const lane of lanes) {
+			const settled = lane.rounds.filter((round) => demoElapsedMs >= round.atMs);
+			const last = settled[settled.length - 1];
+			const scores = settled.map((round) => round.score);
+			const best = scores.length > 0 ? Math.max(...scores) : undefined;
+			if (last) evaluated += 1;
+			if (best !== undefined && (bestScore === undefined || best > bestScore)) {
+				bestScore = best;
+				bestCandidateId = lane.candidateId;
+			}
+			verifierRuns += scores.length;
+			const intervalCount = settled.length - 1;
+			candidates[lane.candidateId] = {
+				candidate_id: lane.candidateId,
+				// A lane stays "created" until its first settled verifier result.
+				status: last ? "evaluated" : "created",
+				verifier_count: scores.length,
+				best_iteration_score: best,
+				last_score: last?.score,
+				// Pinned to the settlement instant so the round timer advances and the
+				// next-result estimate converges between settlements.
+				last_verifier_at: last ? new Date(timelineOriginMs + last.atMs).toISOString() : undefined,
+				avg_round_seconds: intervalCount > 0
+					? (settled[settled.length - 1].atMs - settled[0].atMs) / intervalCount / 1000
+					: undefined,
+			};
+		}
+		const demoStatus: GoalPlusStatusPayload = {
+			goal_plus_id: "gp_demo",
+			status: "active",
+			control: {state: "active", version: 1},
+			current_search_run_id: "run_demo",
+		};
+		const snapshot = {
+			ok: true,
+			goal_plus: {
+				goal_plus_id: "gp_demo",
+				status: "active",
+				created_at: new Date(startedAtMs).toISOString(),
+				updated_at: new Date().toISOString(),
+				current_search_run_id: "run_demo",
+			},
+			search_tasks: [{
+				run_id: "run_demo",
+				is_current: true,
+				state: finished ? "promoted" : demoElapsedMs >= selectionAtMs ? "selecting" : "running",
+				candidates_total: lanes.length,
+				candidates_evaluated: evaluated,
+				verifier_runs_total: verifierRuns,
+				best_candidate_id: bestCandidateId,
+				best_score: bestScore,
+				statistics: {
+					scores: {metric_name: "sum_radii", direction: "maximize", baseline: 1.798_348_5, best: bestScore},
+					selection: {promotion_verified: finished},
+				},
+			}],
+			candidates,
+			subagents: lanes.map((lane) => ({
+				candidate_id: lane.candidateId,
+				observability: {execution: {model: lane.model}},
+			})),
+		};
+		if (finished && !announced) {
+			announced = true;
+			ctx.ui.notify(
+				`Goal Plus UI demo: the Search run finished; the frame hides in ${SEARCH_PROGRESS_HIDE_DELAY_MS / 1000}s.`,
+				"info",
+			);
+		}
+		applySearchProgress(ctx, demoStatus, snapshot);
+	};
+	timer = setInterval(render, PI_PROGRESS_DEMO_TICK_MS);
+	stopPiProgressDemo = stop;
+	render();
 }
 
 function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
@@ -1896,6 +2282,15 @@ async function controlGoalPlus(
 		goalPlusSessionAuthorized = status.control?.state === "active";
 		activateGoal(pi, status, undefined, canPersistGoalState(ctx));
 	}
+	if (role === "main") {
+		if (action === "clear") {
+			clearPiProgress(ctx);
+		} else {
+			observeSearchProgress(
+				pi, ctx, status, await readMonitorSnapshot(pi, commandContextFrom(ctx), status),
+			);
+		}
+	}
 	pi.sendMessage({ customType: "goal-plus-control", content: `Goal Plus ${action}: ${status.goal_plus_id}, status=${status.status}, control=${status.control?.state}, reason=${status.control?.reason ?? "none"}`, display: true });
 	if (action !== "resume") return undefined;
 	// An already running native turn will reach agent_end with the new control
@@ -1946,6 +2341,13 @@ function registerGoalPlusTool<TParams extends TSchema>(pi: ExtensionAPI, definit
 			const denied = workspaceGuard(event, ctx, "goal-plus") || await mainGate(event, ctx, "goal-plus");
 			if (denied?.block) throw new Error(denied.reason);
 			const result = await definition.execute(toolCallId, params, signal, onUpdate, ctx);
+			// Creating the Search run links it to the Goal; surface it right away
+			// instead of waiting for the next turn boundary. The interval keeps
+			// retrying even if this first read fails.
+			if (definition.name === "goal_plus_search_create") {
+				ensureSearchProgressPoll(pi, ctx);
+				void checkSearchProgress(pi, ctx);
+			}
 			if (process.env.GOAL_PLUS_DEBUG === "1") {
 				try {
 					console.error(JSON.stringify({
@@ -2314,6 +2716,7 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 		goalPlusSessionAuthorized = false;
 		if (persist) persistGoalState(pi);
 		notifyPausedGoal(pi, "执行丢失");
+		await checkSearchProgress(pi, ctx);
 		return;
 	}
 	if (stopReason === "aborted") {
@@ -2324,12 +2727,18 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 		goalPlusSessionAuthorized = false;
 		if (persist) persistGoalState(pi);
 		notifyPausedGoal(pi, "用户中断");
+		await checkSearchProgress(pi, ctx);
 		return;
 	}
 	if (ctx.hasPendingMessages()) return;
 	const commandCtx = commandContextFrom(ctx);
 	const usage = collectGoalUsageFromEntries(ctx.sessionManager.getEntries() as unknown[]);
 	const status = await refreshActiveGoal(pi, commandCtx, persist);
+	if (!isTerminalStatus(status?.status) && status?.goal_plus_id) {
+		// Turn boundary: keep the Search-run surfaces current for the still-running Goal.
+		observeSearchProgress(pi, ctx, status, await readMonitorSnapshot(pi, commandCtx, status));
+		return;
+	}
 	if (isTerminalStatus(status?.status)) {
 		await closeExecutionScope(pi, commandCtx, "goal_plus_terminal");
 		let snapshot: Record<string, unknown> | undefined;
@@ -2649,6 +3058,10 @@ export default async function (pi: ExtensionAPI) {
 			showPiProgress(ctx, PI_PROGRESS_PREVIEWS[progressPreviewMode]);
 			return;
 		}
+		if (role === "main" && progressDemoMode) {
+			startPiProgressDemo(pi, ctx);
+			return;
+		}
 		restoreGoalState(ctx);
 		if (role !== "main" || !activeGoalPlusId) return;
 		const commandCtx = commandContextFrom(ctx);
@@ -2673,6 +3086,7 @@ export default async function (pi: ExtensionAPI) {
 					return;
 				}
 			if (!status?.goal_plus_id) return;
+			observeSearchProgress(pi, ctx, status, await readMonitorSnapshot(pi, commandCtx, status));
 			const interaction = piHostInteraction(ctx);
 			await runPiHostSessionEvent(
 				pi,
@@ -2892,6 +3306,9 @@ export default async function (pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", async (event, ctx) => {
 		stopWorkerSteering?.();
+		stopPiProgressDemo?.();
+		stopSearchProgressPoll();
+		cancelSearchProgressHide();
 		try {
 			if (role === "main") await closeExecutionScope(pi, commandContextFrom(ctx), `pi_session_shutdown:${event.reason}`);
 		} finally {

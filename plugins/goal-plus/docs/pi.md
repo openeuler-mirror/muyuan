@@ -128,9 +128,37 @@ GOAL_PLUS_UI_PREVIEW=active \
 在该 session 中使用 `/goal-plus-ui-preview active`、`/goal-plus-ui-preview complete`、
 `/goal-plus-ui-preview result` 或 `/goal-plus-ui-preview clear` 切换状态。`result` 会用 Circle Packing
 的真实样例数值追加一张终态完成卡，不需要运行模型、verifier 或完整 Goal Plus 流程；普通 session
-不注册该命令。运行中 widget 仅支持上述预览，不会自动刷新真实 Search 进度。
-真实任务在终态时根据 Monitor 与宿主用量观测生成结果卡；运行中可通过
-`goal_plus_monitor_snapshot` 查询进度，字段见 [API](api.md#handoff-与-observability)。
+不注册该命令。
+
+动态演示（走真实渲染管线、无需 Goal 或模型）：
+
+```bash
+GOAL_PLUS_UI_DEMO=1 pi
+```
+
+session 打开后立即播放一段约 12 秒的脚本时间线，只演示 Search run 的进度 widget：run 启动前没有
+任何 widget，run 创建时出现，按真实刷新间隔更新一次（各 lane 在互不相同的时刻结算，其中一条
+始终没有 settled 结果），run 结束后再保留 5 秒然后消失。任何真实 Goal 启动、
+`/goal-plus` clear 或 session 退出都会停止演示。
+
+实时进度表面只在 Search run 进行期间存在，不做 Goal 全局展示：
+
+- Search run 启动时出现。创建 run 的 `goal_plus_search_create` 返回后立即渲染；Pi 重启恢复、
+  显式 resume 或 `/goal-plus` 控制命令时，只要该 run 仍在进行也会渲染。
+- 只要 run 仍在进行，每 5 秒重新读取一次只读状态并刷新编辑器上方的 widget：首行是
+  `Goal Plus  <状态>  <已用时长> · <metric>`，之后依次是 lanes/verify/best、baseline 提升，
+  以及每 lane 一行 `id · 模型 · 状态 · best/last 分数 · 当前轮已跑时长 · 预计下一轮结算剩余
+  （由该 lane 平均轮间隔外推）· verify 次数`。全部内容只占这一个 widget：不写状态栏槽，也不
+  改模型流式输出期间的 loader 行，避免同一份摘要重复出现。
+- run 结束（`promoted`/`aborted`/`failed`，或 Goal 已没有当前 run）后停止刷新，widget 再显示 5 秒
+  然后清除；Goal 暂停/阻塞时先渲染红色 `SEARCH BLOCKED`，同样在 5 秒后清除。
+- 状态或 monitor 读取失败、或快照里暂时没有该 run 时不算结束：已显示的 widget 保持不变，5 秒轮询
+  继续重试，只有权威读取确认 run 已结束才清除。`GOAL_PLUS_DEBUG=1` 会输出
+  `goal_plus_progress_read` 与 `goal_plus_progress_phase` 诊断。
+- 没有正在进行的 Search run（例如 Goal 只做普通工作、或 run 已结束）时不显示这个 widget；Goal 终态
+  由终态结果卡表示。数据来自只读 `goal_plus_status` 与 `goal_plus_monitor_snapshot`（后者用
+  `detail=true`，slim summary 不含 `search_tasks`/`candidates`），
+  字段见 [API](api.md#handoff-与-observability)。
 
 也可以在交互式 Pi 中直接使用：
 
