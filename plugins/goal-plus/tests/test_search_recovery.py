@@ -585,7 +585,8 @@ def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_pa
                 "ranking_keys": ["quality_score", "hard_score"],
                 "ranking_tolerance": [0.05, 0.0],
             },
-            "allocation": {"policy": "priority_replace/v1", "features": ["latest_record_values/v1"], "switch_margin": 0},
+            "verifier": {"scores": ["progress_reward", "allocation_utility"]},
+            "allocation": {"policy": "swe_search_uct/v1"},
         }
     )
     runtime = FileSearchRuntime(tmp_path / ".gp")
@@ -605,7 +606,6 @@ def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_pa
     recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
     if retirement_pending:
         from goal_plus.application.verifier import VerifierWorkflow
-        from goal_plus.bootstrap import build_verifier_record_consumer
         from goal_plus.infrastructure.clock import SystemClock
         from goal_plus.infrastructure.state.verifier import FileVerifierState
         from tests.test_llm_verifier import invocation
@@ -614,10 +614,14 @@ def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_pa
         claimed = workflow.claim_task("recovery-test", 60, run_id=run_id)
         completed = workflow.complete_task(claimed.task_id, {
             "quality_score": 0.8,
-            "allocation_scores": {"progress_reward": 0.8, "allocation_utility": 0.8},
-            "rationale": "A settled source for replacement",
-        }, invocation())
-        build_verifier_record_consumer(runtime.root_dir, verifier=workflow).on_verifier_record_completed(completed)
+            "scores": {"progress_reward": 0.8, "allocation_utility": 0.8},
+            "score_rationales": {
+                "quality_score": "A correct implementation",
+                "progress_reward": "A measured improvement",
+                "allocation_utility": "A settled source for replacement",
+            },
+        }, invocation(), worker_id=claimed.lease.worker_id, attempt=claimed.attempts)
+        runtime.accept_verifier_record(completed, execute=lambda *_args: None)
         [decision] = runtime.list_allocation_decisions(run_id, "pending")
         assert decision.retire_candidate_ids == [task.candidate_id]
         before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)

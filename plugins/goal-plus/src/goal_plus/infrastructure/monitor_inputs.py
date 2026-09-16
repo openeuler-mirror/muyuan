@@ -1012,6 +1012,9 @@ def goal_plus_monitor_snapshot(
                 "pending": sum(
                     item.get("status") == "pending" for item in allocation_decisions
                 ),
+                "interrupted": sum(
+                    item.get("status") == "interrupted" for item in allocation_decisions
+                ),
                 "applied": sum(
                     item.get("status") == "applied" for item in allocation_decisions
                 ),

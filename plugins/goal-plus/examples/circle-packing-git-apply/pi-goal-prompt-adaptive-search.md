@@ -21,11 +21,10 @@ strategy:
   selection:
     ranking_keys: [quality_score, hard_score]
     ranking_tolerance: [0.05, 0.0]
+  verifier:
+    scores: [progress_reward, allocation_utility]
   allocation:
-    features:
-      - latest_record_values/v1
-      - progress_trend/v1
-    switch_margin: 0.15
+    policy: swe_search_uct/v1
 ```
 
 `adaptive_search` 会由 runtime 自动启用 LLM-Verifier，并使用 policy 声明的

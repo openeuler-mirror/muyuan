@@ -18,7 +18,9 @@ from pydantic import (
     model_validator,
 )
 
-from goal_plus.domain.adaptive.models import ExpansionSource, PriorityReplacePolicySpec
+from goal_plus.domain.adaptive.models import ExpansionSource
+from goal_plus.domain.adaptive.policy import AllocationPolicySpec
+from goal_plus.domain.verifier import VerifierSpec
 from goal_plus.domain.agents import (
     AgentSessionHandle,
     AgentHarnessKind,
@@ -150,7 +152,8 @@ class StrategyOptions(SearchModel):
         exclude_if=lambda value: not value,
     )
     selection: SelectionSpec = Field(default_factory=SelectionSpec)
-    allocation: PriorityReplacePolicySpec | None = Field(
+    verifier: VerifierSpec | None = Field(default=None, exclude_if=lambda value: value is None)
+    allocation: AllocationPolicySpec | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
@@ -188,12 +191,20 @@ class StrategyOptions(SearchModel):
             )
         if self.allocation is not None and not adaptive_search:
             raise ValueError("strategy.allocation requires adaptive_search")
+        if adaptive_search and self.verifier is None:
+            raise ValueError("adaptive_search requires explicit strategy.verifier scores")
+        if self.allocation is not None and not set(
+            self.allocation.required_score_keys
+        ).issubset(self.verifier.scores):
+            raise ValueError("strategy.verifier scores do not satisfy allocation policy requirements")
+        if self.verifier is not None and self.orchestration_mode == "rolling_candidates":
+            raise ValueError("strategy.verifier requires parallel_loops or adaptive_search")
         return self
 
     @property
     def requires_llm_verifier(self) -> bool:
         return (
-            self.orchestration_mode == "adaptive_search"
+            self.verifier is not None
             or "quality_score" in self.selection.ranking_keys
         )
 
@@ -453,6 +464,7 @@ class FrozenSpec(SearchModel):
     def agent_harness_supports_workspace(self) -> "FrozenSpec":
         validate_search_execution(self.agent_harness, self.runtime_provider, self.spec.workspace.provider)
         return self
+
 
 class CandidateTask(SearchModel):
     run_id: str

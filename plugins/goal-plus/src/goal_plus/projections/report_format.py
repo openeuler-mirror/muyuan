@@ -125,6 +125,7 @@ def status_class(value: Any) -> str:
         "failed",
         "failure",
         "aborted",
+        "abandoned",
         "blocked",
         "timed_out",
         "timeout",

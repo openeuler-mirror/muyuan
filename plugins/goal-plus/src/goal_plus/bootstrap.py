@@ -10,7 +10,6 @@ from goal_plus.ports.thinkthread_verification import ThinkThreadAttemptIO
 
 from goal_plus.application.allocation import AllocationDecisions
 from goal_plus.application.allocation_apply import AllocationApply
-from goal_plus.application.allocation_preparation import AllocationPreparation
 from goal_plus.application.annotation import AnnotationWorkflow
 from goal_plus.application.annotation_admission import AnnotationAdmission
 from goal_plus.application.annotation_context import AnnotationContextBuilder
@@ -29,7 +28,7 @@ from goal_plus.infrastructure.clock import SystemClock
 from goal_plus.infrastructure.state.allocation import FileAllocationState
 from goal_plus.infrastructure.state.annotation import FileAnnotationState
 from goal_plus.infrastructure.state.drainer import FileDrainerState
-from goal_plus.infrastructure.state.scope import FileAllocationCancellationProof, FileScopeState
+from goal_plus.infrastructure.state.scope import FileScopeState
 from goal_plus.infrastructure.state.goal import FileGoalQueries
 from goal_plus.infrastructure.state.verifier import FileVerifierState
 from goal_plus.infrastructure.state.search_context import FileSearchContextSource
@@ -41,7 +40,6 @@ from goal_plus.ports.candidate_creation import (
 from goal_plus.ports.process_monitor import ProcessMonitorIdentity
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.scope import ScopeCleanupServices, ScopeState
-from goal_plus.ports.verifier import VerifierRecordConsumer
 from goal_plus.thinkthread_agent_posix import AgentPosixSdkClient
 
 
@@ -158,6 +156,13 @@ def build_internal_agent_work(root_dir: Path | str) -> InternalAgentWork:
     return InternalAgentWork(FileAnnotationState(root_dir))
 
 
+def build_settlement_verifier(root_dir):
+    from goal_plus.application.settlement_verifier import SettlementVerifier
+    from goal_plus.infrastructure.state.candidate_queries import FileCandidateQueries
+    return SettlementVerifier(workflow=VerifierWorkflow(FileVerifierState(root_dir), SystemClock()),
+        artifacts=ProviderArtifactReader(AgentPosixSdkClient), source=FileCandidateQueries(root_dir))
+
+
 def build_goal_authorization(
     root_dir: Path | str,
 ) -> tuple[GoalAuthorization, FileGoalQueries]:
@@ -257,7 +262,8 @@ def build_candidate_recovery(root_dir, *, settlement, sessions, context):
         context=context,
         candidate_ledger=settlement.candidate_ledger,
         shared_tools=settlement.shared_tools,
-        settlement=settlement,
+        checkpoints=settlement.checkpoints,
+        persist_run=settlement.persist_run,
     )
 
 
@@ -269,9 +275,6 @@ def build_candidate_settlement(
     artifacts,
     ledger,
     shared_tools,
-    annotation,
-    admission,
-    verifier,
     persist_run,
 ):
     from goal_plus.application.candidate_checkpoints import CandidateCheckpoints
@@ -290,11 +293,9 @@ def build_candidate_settlement(
         artifacts=artifacts,
         candidate_ledger=ledger,
         shared_tools=shared_tools,
-        annotation=annotation,
-        annotation_admission=admission,
-        verifier=verifier,
         checkpoints=checkpoints,
         persist_run=persist_run,
+        verifier_submission=build_settlement_verifier(root_dir),
     )
     return settlement, checkpoints
 
@@ -317,7 +318,14 @@ def build_publication_notifications(root_dir, persist_run):
     )
 
 
-def build_selection(*, settlement, recovery, verifier):
+def build_selection(
+    *,
+    settlement,
+    recovery,
+    annotation,
+    annotation_admission,
+    verifier,
+):
     from goal_plus.application.selection import Selection
 
     return Selection(
@@ -326,8 +334,8 @@ def build_selection(*, settlement, recovery, verifier):
         artifacts=settlement.artifacts,
         candidate_ledger=settlement.candidate_ledger,
         checkpoints=settlement.checkpoints,
-        annotation=settlement.annotation,
-        annotation_admission=settlement.annotation_admission,
+        annotation=annotation,
+        annotation_admission=annotation_admission,
         authorization=settlement.authorization,
         verifier=verifier,
         persist_run=settlement.persist_run,
@@ -403,8 +411,7 @@ def build_allocation_services(
         AllocationDecisions(state=state, clock=clock),
         AllocationApply(
             state=state,
-            cancellation=FileAllocationCancellationProof(build_scope_state(root_dir)),
-            preparation=AllocationPreparation(state, authorization),
+            authorization=authorization,
             materialize=materialize,
             start_session=start_session,
             clock=clock,
@@ -706,25 +713,6 @@ from goal_plus.application.report import Report
 from goal_plus.application.verifier import VerifierWorkflow
 
 
-def build_verifier_record_consumer(
-    root_dir: Path | str,
-    *,
-    verifier: VerifierWorkflow,
-) -> VerifierRecordConsumer:
-    from goal_plus.application.adaptive_reconciliation import (
-        AdaptiveDecisionReconciliation,
-    )
-    from goal_plus.application.adaptive_snapshot import AdaptiveSnapshotBuilder
-
-    state = FileAllocationState(root_dir)
-    return AdaptiveDecisionReconciliation(
-        state=state,
-        verifier=verifier,
-        snapshots=AdaptiveSnapshotBuilder(state=state, verifier=verifier),
-        decisions=AllocationDecisions(state=state, clock=SystemClock()),
-    )
-
-
 # This assembly result is consumed only by the public facade, never by a use case.
 @dataclass(frozen=True)
 class SearchServices:
@@ -806,9 +794,6 @@ def build_search_services(root_dir: Path) -> SearchServices:
         artifacts=artifacts,
         ledger=candidate_ledger,
         shared_tools=shared_tools,
-        annotation=annotation,
-        admission=annotation_admission,
-        verifier=verifier,
         persist_run=search_run.persist,
     )
     recovery = build_candidate_recovery(
@@ -829,7 +814,11 @@ def build_search_services(root_dir: Path) -> SearchServices:
         mutations=provider_mutations,
     )
     selection = build_selection(
-        settlement=settlement, recovery=recovery, verifier=verifier
+        settlement=settlement,
+        recovery=recovery,
+        annotation=annotation,
+        annotation_admission=annotation_admission,
+        verifier=verifier,
     )
     notifications = build_publication_notifications(root_dir, search_run.persist)
     promotion, publication_apply = build_publication(
@@ -847,7 +836,9 @@ def build_search_services(root_dir: Path) -> SearchServices:
         provider_mutations,
         search_run.persist,
     )
+    from goal_plus.application.adaptive_snapshot import AdaptiveSnapshotBuilder
     adaptive_search = AdaptiveSearch(
+        snapshots=AdaptiveSnapshotBuilder(state=FileAllocationState(root_dir)),
         allocation=AllocationExecutor(
             *build_allocation_services(
                 root_dir,

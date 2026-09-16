@@ -275,8 +275,9 @@ model 去重后并发执行最小 `codex exec -m MODEL` 推理请求。检查只
 Verifier 使用当前 Codex host 的继承配置，没有独立 model override。未终态 Verifier task 只在
 run-scoped 队列中顺序积压，不阻塞对应 lane 的下一轮；main 不等待或自行解释 Verifier 输出。
 Decision 出现后，Main 调用 `goal_plus_search_apply_allocation_decision`；可信 session host
-先中断准确归属的 session/generation/call，保存取消回执，再由 Allocation owner 重核并幂等 apply。
-拒绝保持 pending，结果未知要求恢复；接受回执不代表资源已经退出，旧 session 仍需关闭。
+先完成 Executor 预检与 retirement fence，再中断准确归属的 session/generation/call，保存取消回执，
+再由 Allocation owner 重核并幂等 apply。
+拒绝保持 prepared，结果未知要求恢复；接受回执不代表资源已经退出，旧 session 仍需关闭。
 Main 随后通过 `goal_plus_session_run` 启动派生 candidate，公共回执不包含完整 launch payload。
 child 从 Decision 指定的
 verifier-backed Git settlement 启动，并继承 run Evidence 和模型 provenance；Adaptive metric

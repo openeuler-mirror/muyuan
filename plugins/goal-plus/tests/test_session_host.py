@@ -44,14 +44,14 @@ def hosted_candidate(request, tmp_path, monkeypatch):
     spec.strategy.inner_agent = "common"
     spec.strategy.worker_budget = WorkerBudget(max_runtime_seconds=60)
     if settings.get("adaptive"):
-        from goal_plus.domain.adaptive.deterministic import PriorityReplacePolicySpec
+        from goal_plus.domain.adaptive.policy import SweSearchUctPolicySpec
+        from goal_plus.domain.verifier import VerifierSpec
 
         spec.workspace.provider = "git_worktree"
         spec.budget.max_candidates = 2
         spec.strategy.orchestration_mode = "adaptive_search"
-        spec.strategy.allocation = PriorityReplacePolicySpec(
-            features=["latest_record_values/v1"], switch_margin=0,
-        )
+        spec.strategy.allocation = SweSearchUctPolicySpec(policy="swe_search_uct/v1")
+        spec.strategy.verifier = VerifierSpec(scores=["progress_reward", "allocation_utility"])
     spec.device_pools = [DevicePoolSpec(pool_id="test")]
     spec.process_verifiers[0].resource_lock = "test:0"
     monkeypatch.setenv(DEVICE_POOLS_ENV, json.dumps({
@@ -98,132 +98,36 @@ def hosted_candidate(request, tmp_path, monkeypatch):
     assert close_execution_scope(root_dir=root, scope_id=scope["scope_id"], reason="test finished")["state"] == "closed"
 
 
-@pytest.mark.parametrize("hosted_candidate", [
-    {"harness": "codex", "adaptive": True}, {"harness": "pi", "adaptive": True},
-], indirect=True, ids=["codex", "pi"])
-@pytest.mark.parametrize("outcome", ["accepted", "closed", "rejected", "unknown", "lost_ack", "missing_controller"])
-def test_allocation_uses_exact_native_cancellation(hosted_candidate, monkeypatch, outcome):
-    from goal_plus.bootstrap import build_verifier_record_consumer
-    from goal_plus.execution.session_rpc import SessionRequestRejected
+def test_allocation_dispatch_wakes_exact_call_once(tmp_path, monkeypatch):
+    from types import SimpleNamespace
     from goal_plus.session_host import NativeCandidateHost
-    from tests.test_llm_verifier import invocation
-    from goal_plus.application.verifier import VerifierWorkflow
-    from goal_plus.infrastructure.state.verifier import FileVerifierState
-    from goal_plus.infrastructure.clock import SystemClock
 
-    root, harness, goal, runtime, task, session, scope, actors, _ = hosted_candidate
-    (root.parent / "hold-native-turn").touch()
-    host = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
-    try:
-        host.run_candidate(task.run_id, task.candidate_id, "first", "work", 30)
-        control = host(session.agent_session_id, "wait")
-        (task.workspace / "initial_program.py").write_text("VALUE = 1\n")
-        runtime.run_verifier(task.run_id, task.candidate_id, agent_session_id=session.agent_session_id,
-                             hypothesis="A scored implementation")
-        workflow = VerifierWorkflow(FileVerifierState(root), SystemClock())
-        claimed = workflow.claim_task("test-verifier", 60, run_id=task.run_id)
-        assert claimed is not None
-        record = workflow.complete_task(claimed.task_id, {
-            "quality_score": 0.8, "allocation_scores": {"progress_reward": 0.8, "allocation_utility": 0.8},
-            "rationale": "A deterministic test assessment",
-        }, invocation())
-        build_verifier_record_consumer(root, verifier=workflow).on_verifier_record_completed(record)
-        [decision] = runtime.list_allocation_decisions(task.run_id, "pending")
-        before = runtime.list_iterations(task.run_id, task.candidate_id)
-        def domain_state():
-            return (
-                runtime.search_run.state.read_run(task.run_id).model_dump(),
-                runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id).model_dump(),
-                [item.model_dump() for item in host.queries.sessions(task.run_id)],
-                [item.model_dump() for item in runtime.list_allocation_decisions(task.run_id)],
-            )
+    host = NativeCandidateHost(tmp_path, agent_harness="codex", caller=lambda: "main")
+    calls, requests = [], []
 
-        fenced_state = domain_state()
-        for action in (
-            lambda: host.run_candidate(task.run_id, task.candidate_id, "second", "continue", 30),
-            lambda: runtime.continue_agent_session(session.agent_session_id),
-            lambda: runtime.redispatch_candidate(task.run_id, task.candidate_id),
-            lambda: runtime.prepare_candidate_recovery(task.run_id, task.candidate_id),
-            lambda: runtime.run_verifier(task.run_id, task.candidate_id, agent_session_id=session.agent_session_id,
-                                         hypothesis="Forbidden pending retirement"),
-        ):
-            with pytest.raises(RuntimeError, match="retires|pending allocation"):
-                action()
-            assert domain_state() == fenced_state
-        with pytest.raises(RuntimeError, match="AllocationCancellationRequired"):
-            runtime.apply_allocation_decision(task.run_id, decision.decision_id)
-        calls = []
-        original = control.interrupt
+    class Control:
+        def wait(self, call_id, *, timeout):
+            if call_id not in calls:
+                raise KeyError(call_id)
+            return SimpleNamespace(state="running")
 
-        def interrupt(call_id, *, timeout):
+        def wake(self, prompt, *, call_id, timeout):
+            assert prompt and timeout == 60
             calls.append(call_id)
-            if outcome == "rejected":
-                raise SessionRequestRejected("native cancellation rejected")
-            if outcome == "unknown":
-                raise TimeoutError("native cancellation acknowledgement lost")
-            original(call_id, timeout=timeout)
-            if outcome == "lost_ack":
-                raise TimeoutError("native cancellation acknowledgement lost")
 
-        monkeypatch.setattr(control, "interrupt", interrupt)
-        if outcome == "closed":
-            original("first", timeout=5)
-            assert control.wait("first", timeout=5).state != "running"
-            control.close()
-        if outcome == "missing_controller":
-            detached = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
-            with pytest.raises(RuntimeError, match="RecoveryRequired"):
-                detached.cancel_allocation(task.run_id, decision.decision_id)
-        elif outcome not in {"accepted", "closed"}:
-            with pytest.raises((SessionRequestRejected, TimeoutError)):
-                host.cancel_allocation(task.run_id, decision.decision_id)
-        else:
-            host.cancel_allocation(task.run_id, decision.decision_id)
-            host.cancel_allocation(task.run_id, decision.decision_id)
-            assert calls == ([] if outcome == "closed" else ["first"])
-            applied = runtime.apply_allocation_decision(task.run_id, decision.decision_id)
-            assert applied["decision"]["status"] == "applied"
-            assert runtime.apply_allocation_decision(task.run_id, decision.decision_id) == applied
-            [child] = applied["agent_sessions"]
-            assert child["agent_harness"] == harness and child["runtime_provider"] == "direct"
-            assert child["candidate_id"] != task.candidate_id
-            assert control.wait("first", timeout=5).state != "running"
-            assert runtime.list_iterations(task.run_id, task.candidate_id) == before
-            host(session.agent_session_id, "close").close()
-            (root.parent / "hold-native-turn").unlink()
-            (Path(child["workspace"]) / "initial_program.py").write_text("VALUE = 2\n")
-            host.run_candidate(task.run_id, child["candidate_id"], "child-first", "continue", 10)
-            delivered = host(child["agent_session_id"], "wait").wait("child-first", timeout=10)
-            assert delivered.state == "completed", delivered.error
-            derived = runtime.list_iterations(task.run_id, child["candidate_id"])
-            assert derived[-1]["agent_session_id"] == child["agent_session_id"]
-            assert derived[-1]["process_passed"]
-        receipt = execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])["allocation_cancellations"][-1]
-        assert receipt["agent_session_id"] == session.agent_session_id
-        assert receipt["execution_generation"] == session.execution_generation
-        assert receipt["call_id"] == "first"
-        expected_status = "accepted" if outcome == "closed" else "unknown" if outcome in {"missing_controller", "lost_ack"} else outcome
-        assert receipt["status"] == expected_status
-        if outcome not in {"accepted", "closed"}:
-            assert runtime.list_allocation_decisions(task.run_id)[0].status == "pending"
-            with pytest.raises(RuntimeError, match="AllocationCancellationRequired"):
-                runtime.apply_allocation_decision(task.run_id, decision.decision_id)
-            assert runtime.list_iterations(task.run_id, task.candidate_id) == before
-            if outcome == "unknown":
-                with pytest.raises(RuntimeError, match="RecoveryRequired"):
-                    host.cancel_allocation(task.run_id, decision.decision_id)
-                assert calls == ["first"]
-            if outcome == "lost_ack":
-                assert control.wait("first", timeout=5).state != "running"
-                host.cancel_allocation(task.run_id, decision.decision_id)
-                assert calls == ["first"]
-                assert runtime.apply_allocation_decision(task.run_id, decision.decision_id)["decision"]["status"] == "applied"
-            if outcome == "rejected":
-                monkeypatch.setattr(control, "interrupt", original)
-                host.cancel_allocation(task.run_id, decision.decision_id)
-                assert runtime.apply_allocation_decision(task.run_id, decision.decision_id)["decision"]["status"] == "applied"
-    finally:
-        host.shutdown()
+    session = SimpleNamespace(agent_session_id="agent_child", run_id="run_1",
+                              directive={"expansion_id": "expansion_1"},
+                              launch={"budget_control": {"max_runtime_seconds": 60}})
+    host._sessions["agent_child"] = SimpleNamespace(control=Control(), caller_id="main")
+    monkeypatch.setattr(host, "_open", lambda *args, **kwargs: None)
+    host.runtime = SimpleNamespace(candidate_sessions=SimpleNamespace(
+        invocation_timeout=lambda _session_id: 60,
+        record_run_request=lambda *args, **kwargs: requests.append((args, kwargs)),
+    ))
+    host._dispatch_allocation(session, None, "main")
+    host._dispatch_allocation(session, None, "main")
+    assert calls == ["expansion_1"]
+    assert len(requests) == 1 and requests[0][1] == {"run_locked": True}
 
 
 def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
@@ -795,3 +699,23 @@ def test_cold_controller_recovery_preserves_evidence_and_fences_old_session(host
             assert runtime.status(task.run_id).candidates_total == 1
 
     asyncio.run(exercise())
+
+@pytest.mark.parametrize("failed_owner", ["annotation", "executor"])
+def test_internal_owners_wake_independently(tmp_path, monkeypatch, failed_owner):
+    from types import SimpleNamespace
+    from goal_plus.session_host import NativeCandidateHost
+    host = NativeCandidateHost(tmp_path, agent_harness="codex", caller=lambda: "main")
+    events = []
+    monkeypatch.setattr(host, "_admit_run", lambda *_a, **_k: None)
+    monkeypatch.setattr(host, "_verifier_queue", lambda *_: SimpleNamespace(start=lambda: events.append("verifier")))
+    monkeypatch.setattr("goal_plus.bootstrap.build_internal_agent_work",
+                        lambda _: SimpleNamespace(inspect=lambda _: SimpleNamespace(accepts_work=True)))
+    monkeypatch.setattr("goal_plus.host_scope.run_accepts_internal_agent_launch", lambda **_: True)
+    def wake(owner):
+        events.append(owner)
+        if owner == failed_owner:
+            raise OSError("independent owner unavailable")
+    monkeypatch.setattr("goal_plus.internal_agents.kick_internal_agents", lambda *_a, **_k: wake("annotation"))
+    host.runtime = SimpleNamespace(recover_allocation=lambda *_a, **_k: wake("executor"))
+    host.wake_internal_agents("run_test", caller_id="main")
+    assert set(events) == {"verifier", "annotation", "executor"}

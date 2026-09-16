@@ -25,8 +25,8 @@ python -m pytest --run-system-tests -n 0 -q tests/test_installation_system.py
 | Pi fast slice | `pytest -m pi -q` | Pi extension, native protocol, metrics, assets |
 | Progress UI slice | `pytest -m ui -q` | Pi progress widget (5s refresh/hide waits) and the hidden Main continuation |
 | Runtime-focused | `pytest tests/test_runtime_unit.py` | Search state machine without a host |
-| LLM Verifier-focused | `pytest tests/test_llm_verifier.py -q` | task lifecycle, immutable records, structured output, prompt binding, and drainer replay |
-| Adaptive Search-focused | `pytest tests/adaptive_search -q` | deterministic allocation, reconciliation, snapshot, and recovery |
+| LLM Verifier-focused | `pytest tests/test_llm_verifier.py -q` | task lifecycle, immutable records, structured output, prompt binding, and FIFO terminal delivery |
+| Adaptive Search-focused | `pytest tests/adaptive_search -q` | deterministic allocation, record-driven snapshot, and execution recovery |
 | Real-host ST | `pytest --run-system-tests -n 0 -m "(st and (st_codex or st_pi_rpc or st_pi_thinkthread)) or st_pi" -v -s` | maintained native launch, hooks/events, worker lifecycle, final evidence |
 
 Default tests must never launch Codex or Pi. A host behavior claim requires
@@ -144,7 +144,7 @@ Its Pi `circle_example_plain`, `circle_example_llm`, and `circle_example_adaptiv
 cases read the public Git apply prompts verbatim and retain their 300-second Goal
 budgets, with a 1200-second external watchdog. The separate
 `circle_example_replacement` case freezes a 900-second Goal, two lanes, three total
-candidates, `latest_record_values/v1` and zero switch margin; it requires an applied
+candidates, and `swe_search_uct/v1`; it requires an applied
 Decision and a derived native candidate with real Evidence. Run each case serially
 with `--run-system-tests -n 0 -s`. Build, session, scoring, selection, publication
 and cleanup evidence is written to the test log directory.
@@ -385,7 +385,26 @@ independent publication verification, apply and report. Its 900-second Goal budg
 includes Main setup and closeout; `ST_PI_SEARCH_TIMEOUT` defaults to 1200 seconds
 for that test's external watchdog. The user-facing optimization example is separate.
 
-### Module Boundaries
+### Core Search Test Design
+
+Verifier and Adaptive Search tests are organized around owner contracts, not
+a catalog of speculative failures. The focused suite keeps one or two
+representative cases per durable boundary:
+
+| Owner | Stable behavior covered |
+| --- | --- |
+| Settlement + Verifier | current submission, immutable complete/failed record, FIFO terminal delivery, bounded local prompt |
+| AdaptiveSearch + Snapshot | one terminal record appends one snapshot, no-policy path, exact lineage and rollback boundary |
+| Policy + Algorithms | fixed policy version, deterministic ranking and compatible alternatives, UCT view and pruning |
+| AllocationExecutor | durable Decision, run-lock cancellation/materialization/dispatch, ranked fallback, same-identity recovery, selected retirement fence |
+| Host wiring | independently wakes Verifier, Annotation and Executor; no owner failure suppresses another |
+
+Do not add a test merely for a hypothetical timeout, lease, callback ordering, or
+host exception. Add a fault branch only when it changes one of these durable
+contracts or reproduces an observed incident. Prefer one representative
+recovery case over a matrix of transport-specific variants.
+
+## Module Boundaries
 
 Session unification tests follow the owning layer, not the former Pi workflow:
 

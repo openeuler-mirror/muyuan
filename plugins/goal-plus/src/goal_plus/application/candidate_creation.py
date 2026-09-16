@@ -85,6 +85,16 @@ class CandidateCreation:
                 f"{materialization.base_revision!r} does not match frozen source "
                 f"artifact {frozen.source_artifact_ref.id!r}"
             )
+        if expansion_source is not None and (
+            materialization.base_revision
+            != expansion_source.attempt_artifact_ref.id
+            or materialization.workspace_provider
+            != expansion_source.attempt_artifact_ref.provider
+        ):
+            raise RuntimeError(
+                "ExpansionSourceChanged: materialized candidate base does not "
+                "match the selected expansion artifact"
+            )
         if (
             run.source_artifact_ref is None
             and materialization.base_revision is not None
@@ -405,26 +415,48 @@ class CandidateCreation:
         policy or worker lifecycle. Source coordinates are returned on request.run.
         """
         run, frozen, candidate_id = request.run, request.frozen, request.candidate_id
-        task = self.prepare_task(
-            run=run,
-            frozen=frozen,
-            candidate_id=candidate_id,
-            plan=request.plan,
-            proposal=request.proposal,
-            slot=request.slot,
-            expansion_source=request.expansion_source,
-            source_record=request.source_record,
-        )
-        record = CandidateRecord(
-            candidate_id=candidate_id,
-            status="created",
-            task=task,
-            results_ledger=(
-                request.results_ledger
-                if request.results_ledger is not None
-                else self.ledger.inherited(run, task)
-            ),
-        )
+        try:
+            record = self.state.read_candidate(run.run_id, candidate_id)
+        except FileNotFoundError:
+            task = self.prepare_task(
+                run=run,
+                frozen=frozen,
+                candidate_id=candidate_id,
+                plan=request.plan,
+                proposal=request.proposal,
+                slot=request.slot,
+                expansion_source=request.expansion_source,
+                source_record=request.source_record,
+            )
+            record = CandidateRecord(
+                candidate_id=candidate_id,
+                status="created",
+                task=task,
+                results_ledger=(
+                    request.results_ledger
+                    if request.results_ledger is not None
+                    else self.ledger.inherited(run, task)
+                ),
+            )
+        else:
+            if (record.task.expansion_source != request.expansion_source
+                or record.task.proposal is None
+                or record.task.proposal.metadata.get("allocation_decision_id") != request.proposal.metadata.get("allocation_decision_id")):
+                raise RuntimeError("candidate materialization identity collision")
+            if record.initial_attempt_base_artifact_ref is not None:
+                record.allocation_eligibility = "eligible"
+                record.retired_by_decision_id = None
+                self.state.write_candidate(run.run_id, record)
+                return record
+        record.allocation_eligibility = "eligible"
+        record.retired_by_decision_id = None
+        # Persist the exact parent/child identity before workspace or ledger
+        # mutation. Recovery can then resume from ExpansionSource after either
+        # side effect fails.
+        self.state.write_candidate(run.run_id, record)
         self.ledger.ensure(frozen, record)
+        record.initial_attempt_base_artifact_ref = (
+            record.results_ledger_artifact_ref
+        )
         self.state.write_candidate(run.run_id, record)
         return record

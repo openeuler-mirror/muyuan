@@ -8,6 +8,7 @@ from goal_plus.domain.goal_commands import GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED
 from goal_plus.domain.goal_authorization import GOAL_PLUS_ENTRYPOINT_REQUIRED
 from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
 from goal_plus.domain.evidence import PendingVerification
+from goal_plus.domain.adaptive.models import AllocationDecisionStatus
 from goal_plus.domain.search import (
     AgentSessionRecord,
     CandidateProposal,
@@ -489,7 +490,7 @@ class SearchTools:
     def goal_plus_search_list_allocation_decisions(
         self,
         run_id: str,
-        status: Literal["pending", "applied", "superseded", "terminal_error"] | None = "pending",
+        status: AllocationDecisionStatus | None = None,
         offset: int = 0,
         limit: int = GOAL_HISTORY_DEFAULT_LIMIT,
     ) -> dict[str, Any]:
@@ -503,9 +504,11 @@ class SearchTools:
         self,
         run_id: str,
         decision_id: str,
+        *,
+        apply,
     ) -> dict[str, Any]:
         self._require_target("goal_plus_search_apply_allocation_decision", run_id=run_id)
-        applied = self.runtime.apply_allocation_decision(run_id, decision_id)
+        applied = apply(run_id, decision_id)
         return {
             **applied,
             "agent_sessions": [

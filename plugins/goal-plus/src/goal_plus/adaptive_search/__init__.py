@@ -3,21 +3,26 @@
 from goal_plus.adaptive_search.adaptive_search import AdaptiveSearch
 from goal_plus.domain.adaptive.models import (
     AllocationDecision,
+    AllocationDecisionStatus,
     AllocationPlan,
     ExpansionSource,
-    PriorityReplacePolicySpec,
     SearchSnapshot,
-    compute_allocation_plan,
-    compute_feature_view,
+)
+
+from goal_plus.domain.adaptive.policy import (
+    AllocationPolicySpec,
+    SweSearchUctPolicySpec,
+    evaluate_allocation_policy,
 )
 
 __all__ = [
-    "AllocationDecision",
-    "AllocationPlan",
     "AdaptiveSearch",
+    "AllocationDecision",
+    "AllocationDecisionStatus",
+    "AllocationPlan",
+    "AllocationPolicySpec",
     "ExpansionSource",
-    "PriorityReplacePolicySpec",
     "SearchSnapshot",
-    "compute_allocation_plan",
-    "compute_feature_view",
+    "SweSearchUctPolicySpec",
+    "evaluate_allocation_policy",
 ]

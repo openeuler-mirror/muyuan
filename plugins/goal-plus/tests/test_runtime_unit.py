@@ -16,7 +16,6 @@ import pytest
 from pydantic import ValidationError
 
 from goal_plus.ports.agent_hosts import UnsupportedHostCapability
-import goal_plus.llm_verifier as verifier_module
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.models import (
     CandidateProposal,
@@ -329,7 +328,13 @@ def test_git_freeze_verifies_origin_and_first_candidate_before_search(
     assert run.workspace_bootstrap_verification.candidate_id == "c001"
     assert run.workspace_bootstrap_verification.passed is True
     assert run.workspace_bootstrap_verification.aggregate_score == 3.5
-    assert all(not record.iterations for record in runtime.candidate_creation.state.read_candidates(run_id))
+    records = runtime.candidate_creation.state.read_candidates(run_id)
+    assert all(not record.iterations for record in records)
+    assert all(
+        record.initial_attempt_base_artifact_ref
+        == record.results_ledger_artifact_ref
+        for record in records
+    )
     monitor = goal_plus_monitor_snapshot(runtime.root_dir, run_id=run_id)
     assert monitor["run"]["source_artifact_ref"] == frozen.source_artifact_ref.model_dump(
         mode="json"
@@ -1811,7 +1816,8 @@ def test_worker_instructions_match_enabled_capabilities(
                     "ranking_keys": ["quality_score", "hard_score"],
                     "ranking_tolerance": [0.05, 0.0],
                 },
-                "allocation": {"policy": "priority_replace/v1"},
+                "verifier": {"scores": ["progress_reward", "allocation_utility"]},
+                "allocation": {"policy": "swe_search_uct/v1"},
             }
         )
     data = spec_for(project, max_parallel=1).model_dump(mode="json")
@@ -3392,7 +3398,6 @@ def test_plan_next_caps_batch_size_to_max_parallel(tmp_path: Path) -> None:
 
 def test_rolling_candidates_remains_llm_verifier_independent(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = make_project(tmp_path)
     spec_data = spec_for(project).model_dump(mode="json")
@@ -3403,12 +3408,6 @@ def test_rolling_candidates_remains_llm_verifier_independent(
         [project / "evaluator.py"], agent_harness="codex",
     )
     run_id = runtime.create_run(frozen.frozen_spec_id)
-    monkeypatch.setattr(
-        verifier_module,
-        "kick_verifier",
-        lambda *args, **kwargs: pytest.fail("rolling_candidates entered LLM Verifier"),
-    )
-
     assert runtime.llm_verifier_enabled(run_id) is False
 
 
@@ -3444,7 +3443,12 @@ def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
     with pytest.raises(RuntimeError, match="requires.*adaptive_search"):
         runtime.list_allocation_decisions(run_id)
     with pytest.raises(RuntimeError, match="requires.*adaptive_search"):
-        runtime.apply_allocation_decision(run_id, "allocation_0001")
+        runtime.apply_allocation_decision(
+            run_id,
+            "allocation_0001",
+            cancel=lambda _decision: pytest.fail("must not cancel"),
+            dispatch=lambda *_args: pytest.fail("must not dispatch"),
+        )
 
     session = runtime.start_agent_session(run_id, tasks[0].candidate_id)
     assert "expansion_action_context" not in runtime.get_agent_context(
@@ -3698,6 +3702,11 @@ def test_git_worktree_start_batch_recovers_after_materialization_before_record(
     tasks = runtime.start_batch(run_id, plan.plan_id)
     assert [task.candidate_id for task in tasks] == ["c001"]
     assert runtime.status(run_id).candidates_total == 1
+    record = runtime.candidate_creation.state.read_candidate(run_id, "c001")
+    assert (
+        record.initial_attempt_base_artifact_ref
+        == record.results_ledger_artifact_ref
+    )
     assert (
         runtime.candidate_creation.state.candidate_dir(run_id, "c001") / "task.json"
     ).is_file()

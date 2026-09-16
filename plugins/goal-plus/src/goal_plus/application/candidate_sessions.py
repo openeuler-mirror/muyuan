@@ -1,6 +1,7 @@
 """Candidate session identity, provenance and launch admission."""
 
 import math
+from contextlib import nullcontext
 from typing import Any, Literal
 from goal_plus.application.adaptive_admission import AdaptiveAdmission
 from goal_plus.application.candidate_execution import (
@@ -106,6 +107,7 @@ class CandidateSessions:
         directive: dict[str, Any] | str | None = None,
         *,
         worker_budget: dict[str, Any] | None = None,
+        run_locked: bool = False,
     ) -> AgentSessionRecord:
         """Create a context/provenance handle and host-native launch payload.
 
@@ -119,6 +121,7 @@ class CandidateSessions:
             directive=directive,
             worker_budget_override=worker_budget,
             reuse_initial=True,
+            run_locked=run_locked,
         )
 
     def prepare_invocation(
@@ -151,11 +154,11 @@ class CandidateSessions:
             raise ValueError("no native session belongs to the requested candidate")
         return self.continue_agent_session(sessions[-1].agent_session_id, worker_budget=worker_budget)
 
-    def record_run_request(self, agent_session_id: str, call_id: str, fingerprint: str) -> None:
+    def record_run_request(self, agent_session_id: str, call_id: str, fingerprint: str, *, run_locked: bool = False) -> None:
         from goal_plus.domain.search import CandidateRunRequest
 
         session = self.state.read_agent_session(agent_session_id)
-        with self.state.lock_run(session.run_id):
+        with nullcontext() if run_locked else self.state.lock_run(session.run_id):
             session = self.state.read_agent_session(agent_session_id)
             candidate = self.state.read_candidate(session.run_id, session.candidate_id)
             require_current_session(session, candidate)
@@ -240,6 +243,7 @@ class CandidateSessions:
         directive: dict[str, Any] | str | None,
         worker_budget_override: dict[str, Any] | None = None,
         reuse_initial: bool = False,
+        run_locked: bool = False,
         replaced_agent_session_id: str | None = None,
         run_request: tuple[str, str] | None = None,
     ) -> AgentSessionRecord:
@@ -250,7 +254,7 @@ class CandidateSessions:
                 self.state.read_candidate(run_id, candidate_id),
                 "start_session",
             )
-        with self.state.lock_run(run_id):
+        with nullcontext() if run_locked else self.state.lock_run(run_id):
             run = self.state.read_run(run_id)
             if run.state not in {
                 RunState.RUNNING,
@@ -607,12 +611,17 @@ class CandidateSessions:
         )
         return effective
 
-    def invocation_timeout(self, agent_session_id: str, requested: float) -> float:
+    def invocation_timeout(self, agent_session_id: str, requested: float | None = None) -> float:
         """Bound a native invocation by its prepared budget and current Goal deadline."""
-        if not math.isfinite(requested) or requested <= 0:
-            raise ValueError("invocation timeout must be finite and positive")
         session = self.session(agent_session_id)
         maximum = (session.launch.get("budget_control") or {}).get("max_runtime_seconds")
+        if requested is None:
+            deadline = outer_deadline_epoch(self.context.outer_deadline(session.run_id))
+            requested = maximum if maximum is not None else (
+                deadline - self.clock.now() if deadline is not None else None
+            )
+        if requested is None or not math.isfinite(requested) or requested <= 0:
+            raise ValueError("invocation requires a finite positive budget or Goal deadline")
         effective = min(requested, maximum) if maximum is not None else requested
         budget = self.constrain_budget(
             session.run_id, {"max_runtime_seconds": math.ceil(effective)},

@@ -113,7 +113,7 @@ def test_public_catalog_has_one_search_spec_and_no_removed_aliases(tmp_path):
     assert all(name.startswith("goal_plus_") for name in tools)
     assert sum('"process_verifiers"' in json.dumps(tool.parameters) for tool in tools.values()) == 1
     assert {"run_id", "candidate_id", "call_id", "prompt", "timeout_seconds"} == set(tools["goal_plus_session_run"].parameters["required"])
-    assert tools["goal_plus_search_list_allocation_decisions"].parameters["properties"]["status"]["default"] == "pending"
+    assert tools["goal_plus_search_list_allocation_decisions"].parameters["properties"]["status"]["default"] is None
     for name in ("goal_plus_session_open", "goal_plus_session_wake", "goal_plus_session_start",
                  "goal_plus_create", "goal_plus_update_goal", "goal_plus_gate", "goal_plus_save_spec_draft",
                  "goal_plus_link_search_run", "goal_plus_prepare_final_check",
@@ -467,13 +467,31 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
         "parallel_loops",
         "adaptive_search",
     }
-    assert "verifier" not in strategy["properties"]
+    assert "verifier" in strategy["properties"]
     selection = strategy["properties"]["selection"]["properties"]
     assert set(selection) == {"ranking_keys", "ranking_tolerance"}
-    assert selection["ranking_keys"]["items"]["enum"] == ["hard_score", "quality_score"]
-    allocation_schema = strategy["properties"]["allocation"]
-    assert set(allocation_schema["properties"]) == {
-        "features", "switch_margin"
+    allocation_policy_set = next(
+        item
+        for item in strategy["properties"]["allocation"]["anyOf"]
+        if "oneOf" in item
+    )
+    assert allocation_policy_set["discriminator"]["propertyName"] == "policy"
+    assert allocation_policy_set["required"] == ["policy"]
+    policies = {
+        item["properties"]["policy"]["const"]: item
+        for item in allocation_policy_set["oneOf"]
+    }
+    assert set(policies) == {"swe_search_uct/v1"}
+    swe_parameters = policies["swe_search_uct/v1"]["properties"]["parameters"]
+    assert set(swe_parameters["properties"]) == {
+        "exploration_weight",
+        "early_depth_bonus_weight",
+        "early_depth_bonus_decay",
+        "late_depth_penalty_weight",
+        "low_reward_threshold",
+        "low_reward_streak",
+        "max_children_per_node",
+        "max_depth",
     }
     assert "config" not in strategy["properties"]
     assert strategy["properties"]["global_evidence_mode"]["anyOf"][0]["enum"] == [

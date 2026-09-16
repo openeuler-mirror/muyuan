@@ -1091,11 +1091,11 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
             verifier_copy = (
                 f"quality {numeric_value(verifier_record.get('quality_score'), digits=3)}"
             )
-            allocation_scores = verifier_record.get("allocation_scores")
-            if isinstance(allocation_scores, dict):
+            scores = verifier_record.get("scores")
+            if isinstance(scores, dict):
                 verifier_copy += "".join(
                     f" | {name} {numeric_value(value, digits=3)}"
-                    for name, value in sorted(allocation_scores.items())
+                    for name, value in sorted(scores.items())
                 )
         elif isinstance(item.get("verifier_task"), dict):
             verifier_copy = (

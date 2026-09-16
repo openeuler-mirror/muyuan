@@ -36,7 +36,7 @@ Execution 只操作当前持有的直接句柄，Scope 负责 session/activation
 | Publication | 把选中的搜索结果变成可交付产物 | 准备 patch、commit 或 TT publication snapshot，按合同完成独立验证，导出供 Main 使用或在授权后应用到源工作区。它不是“发布到公网”；应用冲突可以保留交付物并等待 Main 集成。 |
 | DTO | Data Transfer Object，数据传递对象 | 跨模块传递的一份有明确字段的数据。例如“请求 ID、目标代码版本、执行结果”。它装数据，不负责启动进程或选择业务状态转换；可以用 dataclass/Pydantic 等表达，不要求新增 DTO 基类。 |
 | Ports | 模块对外声明的能力接口 | 例如“读取这两个版本的差异”或“应用这个已登记的 publication intent”。接口说明允许什么输入、返回什么结果；Git/TT 等 adapter 负责真正实现。这里的 port 不是 TCP/HTTP 的网络端口。 |
-| Drainer | 后台队列驱动器 | 有 Annotation/LLM Verifier 待办时，启动或唤醒受管的后台处理，驱动队列消费，并处理重复唤醒、执行归属和退出重扫等机械工作。具体任务能否领取、如何重试、何时完成仍由各业务 owner 决定；它不选择 winner，也不监督全部 candidate。 |
+| Drainer | 后台队列驱动器 | 有 Annotation 待办时，启动或唤醒对应的受管后台处理，并处理重复唤醒、执行归属和退出重扫等机械工作。具体任务能否领取、如何重试、何时完成仍由各业务 owner 决定；它不选择 winner，也不监督全部 candidate。 |
 | Binding | 把角色接到具体配置和实现上 | R2 中指为一个角色选定执行驱动、模型配置、能力实现并完成接线，例如 Annotation 使用 Pi 单次推理并接入只读 Artifact View。它不是基类，也不是永久执行许可；实际 native handle/session 的归属绑定在后续执行阶段完成。 |
 | Capability | 角色被授予的有限能力 | 说明允许哪些操作，例如读取授权版本的差异、修改自己的 allowed files 或提交验证请求。它不等于底层 SDK 的全部方法。只读角色不能因为底层实现会执行 shell，就自动获得 shell 工具。 |
 
@@ -82,14 +82,20 @@ Candidate/Session 用例返回 launch 输入，Host 启动实际 worker。每轮
 结果和硬分绑定；先完整提交 authoritative Candidate/Evidence，再更新相关派生投影。
 
 Annotation 与 LLM Verifier 属于结算后的工作。单一 Verifier task 与 Annotation 各自可靠执行；
-Verifier 的一次结构化调用同时生成 `quality_score` 和可选 `allocation_scores`。普通 iteration 不同步
-等待模型任务，Verifier backlog 也不参与 candidate admission。只有 AllocationPolicy 生成的 pending
-retirement Decision 才 fence 对应 lane；Search runtime 不加入模型等待循环。
+Verifier 的一次结构化调用同时生成 `quality_score` 和独立配置的可选 `scores`。普通 iteration 不同步
+等待模型任务，Verifier backlog 也不参与 candidate admission。只有 Executor 已选定的未完成
+retirement 目标才 fence 对应 lane；Search runtime 不加入模型等待循环。
 
-Adaptive reconciliation 从不可变 records 构建 Snapshot，纯 FeaturePipeline/AllocationPolicy 产生
-逻辑 plan，Allocation owner 重算后持久化唯一 Decision、预检并应用替换。LLM Verifier 的任务、
-记录和 drainer 独立于 AdaptiveSearch；AdaptiveSearch 只暴露 Decision 查询与 apply，不是另一个
-supervisor。固定 lanes 继续原候选；Adaptive 可能准备派生候选，实际启动仍归 Host。
+硬结算提交 SettlementReceipt 与单次不可变评估输入，再推入 Verifier 队列。Verifier 不读取
+历史搜索或 allocation，只拥有评分规则、串行推理和重试。Policy 声明与评估语义独立，
+FrozenSpec 分别冻结两者的配置；Record 携带指标 key，Policy 声明并核对所需指标 key。
+
+可信 host 持有 VerifierQueue。完整得分或最终失败写不可变 Record 后，队列同步交付
+AdaptiveSearch 的单一入口：追加 Snapshot，调用确定性 Policy，计算 Plan 或正常退出。
+AllocationExecutor 在 run.lock 内执行已持久化 Decision 的淘汰及按序派生/派发，
+不重算策略；完整父子身份支持同 Decision 恢复。持久 Decision 是交接边界，执行失败不回传
+Verifier；Executor 自行按序恢复，未知结果阻止后续执行但不阻塞评分。
+不再有 Adaptive reconciler、prepared journal 或 Snapshot 计算锁。
 
 收尾要求可信静默事实与 exact selected artifact。Promotion 有独立 Evidence；TT 验证的是从
 基线加授权产品改动形成的 publication snapshot，不能直接把 candidate snapshot 当作待应用
@@ -171,7 +177,7 @@ Snapshot cleanup 根据持久 ownership 和 pins 决定；Host cleanup 根据登
 | FrozenSpec/run/candidate/session | 各 Search 用例与 candidate/session owner | Host 消费 launch 输入、绑定真实 handle，不用 session 记录猜 liveness |
 | Verifier Evidence / hard score | 唯一硬结算 owner；hard verifier adapter 只执行冻结验证 | Annotation/LLM Verifier/查询只读已结算事实，不回写硬分 |
 | AnnotationTask / VerifierTask / VerifierRecord | 各自 admission/claim/completion/retry 或不可变 record owner | Host 执行一次任务并交回结果；失败不撤销硬结算 |
-| SearchSnapshot / FeatureView | Adaptive 纯计算与只读装配 | 可删除并从权威记录重建，不修改 candidate 或 verifier record |
+| SearchSnapshot / UctTreeView | Snapshot 由权威记录重建；UCT view 仅由 Policy 临时重建 | 不持久化 visits/value/rank，不修改 candidate 或 verifier record |
 | AllocationDecision / applied 投影 | Allocation owner | 确定性 policy 产生逻辑 plan；candidate creation 负责被授权的物化与 session 准备 |
 | Selection / Promotion / apply outcome | 各 publication 用例 | Adapter 返回协议事实；Host 提静默事实；都不能自行宣布业务通过 |
 | Baseline snapshot / source handle | Search bootstrap 与 provider mutation journal | Candidate 消费冻结的准确 baseline，不重新捕获 |

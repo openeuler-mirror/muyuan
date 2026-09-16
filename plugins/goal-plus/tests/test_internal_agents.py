@@ -1,11 +1,14 @@
-"""Host pump policy for annotation and verifier queues."""
+"""Shared pump policy; native session hosts own Verifier queues."""
 
 from types import SimpleNamespace
 
 import pytest
 
-from goal_plus import evidence_annotator, host_scope, internal_agents
-from goal_plus import llm_verifier as verifier
+from goal_plus import (
+    evidence_annotator,
+    host_scope,
+    internal_agents,
+)
 from goal_plus.application.internal_agents import InternalAgentWork
 from goal_plus.domain.search import RunState
 from goal_plus.infrastructure.state.allocation import FileAllocationState
@@ -40,12 +43,6 @@ def pump(tmp_path, monkeypatch):
         evidence_annotator,
         "kick_evidence_annotator",
         lambda root, run_id, *, agent_harness: calls.append(("annotation", run_id, agent_harness))
-        or True,
-    )
-    monkeypatch.setattr(
-        verifier,
-        "kick_verifier",
-        lambda root, run_id, *, agent_harness: calls.append(("verifier", run_id, agent_harness))
         or True,
     )
     monkeypatch.setattr(
@@ -96,12 +93,12 @@ def test_internal_work_query_is_read_only(pump, state):
     assert json_state(pump) == before
 
 
-def test_host_callback_scans_annotation_and_verifier_queues(pump):
+def test_host_callback_scans_internal_work_queues(pump):
     assert kick(pump) == {
         "annotation_started": True,
-        "verifier_started": True,
+        "verifier_started": False,
     }
-    assert [item[0] for item in pump.calls] == ["annotation", "verifier"]
+    assert [item[0] for item in pump.calls] == ["annotation"]
 
 
 def test_foreign_host_is_rejected_without_mutation(pump):

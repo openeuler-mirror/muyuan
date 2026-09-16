@@ -19,6 +19,10 @@ node_modules/
 
 *.log
 
+# Local design notes intentionally retained outside version control.
+/plugins/goal-plus/docs/policy-algorithm-library-design.md
+/plugins/goal-plus/docs/evaluation-steering-framework.md
+
 # Local secrets and credentials
 credentials/
 secrets/

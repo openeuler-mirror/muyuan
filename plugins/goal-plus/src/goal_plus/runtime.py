@@ -45,7 +45,10 @@ from goal_plus.thinkthread_agent_posix import (
 )
 
 if TYPE_CHECKING:
-    from goal_plus.adaptive_search import AllocationDecision
+    from goal_plus.adaptive_search import (
+        AllocationDecision,
+        AllocationDecisionStatus,
+    )
     from goal_plus.domain.verifier import (
         VerifierRecord,
         VerifierTask,
@@ -133,20 +136,24 @@ class FileSearchRuntime:
     def list_allocation_decisions(
         self,
         run_id: str,
-        status: Literal[
-            "pending", "applied", "superseded", "terminal_error"
-        ] | None = None,
+        status: AllocationDecisionStatus | None = None,
     ) -> list[AllocationDecision]:
         self.queries.require_adaptive_search(run_id)
         return self._adaptive_search.list_allocation_decisions(run_id, status)
 
-    def apply_allocation_decision(
-        self,
-        run_id: str,
-        decision_id: str,
-    ) -> dict[str, Any]:
+    def accept_verifier_record(self, record, *, execute) -> None:
+        frozen = self.queries.source.read_frozen_spec(record.subject.frozen_spec_id)
+        if frozen.spec.strategy.allocation is not None:
+            self._adaptive_search.accept_verifier_record(record,
+                policy=frozen.spec.strategy.allocation, max_parallel=frozen.spec.budget.max_parallel,
+                execute=execute)
+
+    def recover_allocation(self, run_id: str, *, cancel, dispatch):
+        return self._adaptive_search.recover_allocation(run_id, cancel=cancel, dispatch=dispatch)
+
+    def apply_allocation_decision(self, run_id: str, decision_id: str, *, cancel, dispatch):
         self.queries.require_adaptive_search(run_id)
-        return self._adaptive_search.apply_allocation_decision(run_id, decision_id)
+        return self._adaptive_search.apply_allocation_decision(run_id, decision_id, cancel=cancel, dispatch=dispatch)
 
     def current_process_evidence(
         self,

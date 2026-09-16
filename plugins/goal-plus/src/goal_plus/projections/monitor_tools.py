@@ -32,7 +32,8 @@ def monitor_tool_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
             "tasks_total", "task_states", "records_total",
         ))
         payload["run"]["allocation_decisions"] = _fields(run.get("allocation_decisions"), (
-            "total", "pending", "applied", "superseded", "terminal_error", "expansions",
+            "total", "pending", "interrupted", "applied", "superseded",
+            "terminal_error", "expansions",
         ))
         payload["run"]["promotion"] = _fields(run.get("promotion"), (
             "state", "promotion_mode", "error",

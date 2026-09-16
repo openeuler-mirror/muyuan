@@ -48,9 +48,11 @@ def kick_internal_agents(
 ) -> dict[str, bool]:
     """Kick every internal-agent queue from a trusted native host callback."""
 
-    from goal_plus.llm_verifier import kick_verifier
     from goal_plus.evidence_annotator import kick_evidence_annotator
-    from goal_plus.bootstrap import build_annotation_services, build_internal_agent_work
+    from goal_plus.bootstrap import (
+        build_annotation_services,
+        build_internal_agent_work,
+    )
     from goal_plus.host_scope import close_run_internal_agents, run_accepts_internal_agent_launch
 
     work = build_internal_agent_work(root_dir).inspect(run_id)
@@ -67,20 +69,15 @@ def kick_internal_agents(
         return idle
     if not run_accepts_internal_agent_launch(root_dir=root_dir, run_id=run_id):
         return idle
-    _, admission, _, _ = build_annotation_services(root_dir)
-    admission.ensure(run_id)
+    _, annotation_admission, _, _ = build_annotation_services(root_dir)
+    annotation_admission.ensure(run_id)
 
+    annotation_started = kick_evidence_annotator(root_dir, run_id, agent_harness=agent_harness)
+    # Verifier consumption belongs to the native session host that owns cancellation/dispatch.
+    verifier_started = False
     return {
-        "annotation_started": kick_evidence_annotator(
-            root_dir,
-            run_id,
-            agent_harness=agent_harness,
-        ),
-        "verifier_started": work.verifier_enabled and kick_verifier(
-            root_dir,
-            run_id,
-            agent_harness=agent_harness,
-        ),
+        "annotation_started": annotation_started,
+        "verifier_started": verifier_started,
     }
 
 

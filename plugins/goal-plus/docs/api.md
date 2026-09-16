@@ -328,40 +328,39 @@ Candidate/Annotation 使用冻结绑定；LLM Verifier、delegation 和 final ch
 旧 build 负责关闭活动资源并收尾旧记录，新 build 创建新记录，不能手工补写 `.gp` 身份。
 新字段由可信接线补齐；自然语言启动不增加必填参数。
 
-An `adaptive_search` run requires `strategy.allocation` and a Git worktree, and
-automatically runs the LLM Verifier. Outside Adaptive Search, including `quality_score`
-in `strategy.selection.ranking_keys` enables the same verifier. The allocation policy
-version owns the additional LLM scoring rules. It
+An `adaptive_search` run requires `strategy.allocation`, explicit `strategy.verifier`
+and a Git worktree. `strategy.verifier.scores` selects independently registered metric
+keys (UCT requires `progress_reward` and `allocation_utility`). Outside Adaptive
+Search, `verifier: {}` enables quality assessment; extra metrics may be selected without
+allocation. Including `quality_score` in selection also enables basic quality assessment.
+An adaptive run
 still has one initial plan, but may replace a retired lane through persisted
 runtime decisions. `budget.max_parallel` is the live candidate limit; optional
 `budget.max_candidates` limits cumulative unique candidates, while `null` is
 unbounded and any finite value must be at least `max_parallel`.
 
-After hard settlement, the runtime idempotently persists one `VerifierTask`.
-The reliable asynchronous drainer uses one structured LLM call to produce one
-immutable `VerifierRecord` bound to the exact candidate, iteration, settlement,
-commit and artifact hash. Adaptive mode includes every metric defined by the frozen policy
-under `allocation_scores`; minimal mode requires that field to be `null`. Missing signals remain explicitly
-`pending`, `terminal_error`, or `unavailable`, never numeric zero.
+Settlement persists one immutable submission containing the current iteration's
+facts, identity and diff. The host-owned Verifier queue serializes inference,
+retries incomplete output internally, and writes one immutable terminal Record:
+complete scores or final failure without scores. FrozenSpec keeps separate verifier
+and policy declarations. Verifier returns `quality_score`, generic `scores`,
+and `score_contract_hash`; score keys uniquely identify their semantics,
+and policies declare required keys.
 
-Adaptive reconciliation builds an immutable `SearchSnapshot`, runs the frozen
-pure FeaturePipeline and `priority_replace/v1` policy, and persists the resulting
-canonical `AllocationDecision`. The LLM does not return a winner, allocation flag,
-or executable plan. Candidate ids are assigned only when the Executor applies a
-pending Decision. Apply revalidates the Snapshot, exact settled source, retire
-eligibility, capacity and budget under the run lock, and is recoverable after a
-partial retirement, materialization or session write.
+Each terminal Record synchronously triggers AdaptiveSearch's public entry:
+append Snapshot, compute a deterministic Plan, persist Decision, then invoke
+AllocationExecutor. Policy errors refuse a decision. The Executor does not rerun
+policy or evaluation. Under run.lock it retires the target and tries ranked
+expansion sources, preserving exact parent/child/session identity for recovery.
+Successful execution includes native dispatch; callers must not launch the
+returned sessions again. Unknown dispatch retains the original identity and
+blocks terminal delivery until resolved. There are no prepare/ack or reconciliation APIs.
 
-Verifier tasks accumulate in the run-scoped reliable queue and are consumed one
-at a time without blocking candidate start or continuation. Final `goal_plus_search_select`
-resolves every configured ranking source for the exact subject and uses inclusive progressive tolerances.
-Pending required scores wait; unavailable scores exclude an option; an empty pool
-becomes `selection_blocked` without runtime fallback. Hard integrity and promotion
-gates remain mandatory even when `hard_score` is not a ranking key.
+The queue acknowledges delivery before claiming its next task. Model retries and
+consumer failures do not overwrite completed scores. Candidate iterations remain
+asynchronous. Final Selection waits for required scores, excludes unavailable
+options, and reports selection_blocked for an empty pool without changing policy.
 
-The main agent lists and applies the exact pending Decision and launches every
-returned session payload; it does not author a replacement. Retirement neither
-cancels Evidence generation nor removes settled results from Global Evidence.
 Hidden-answer QA benchmarks must not use this feedback path: gold-derived
 correctness, reward, or allocation is an answer oracle. Keep only public format
 validation worker-visible and score all final answers externally.

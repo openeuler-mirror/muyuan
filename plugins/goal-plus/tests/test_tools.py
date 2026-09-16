@@ -758,7 +758,9 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     runtime.list_agent_iterations.assert_called_once_with("agent_001")
     assert tools.goal_plus_search_list_allocation_decisions("run_1", "pending") == {"items": [], "total": 0, "next_offset": None}
     runtime.list_allocation_decisions.assert_called_once_with("run_1", "pending")
-    applied = tools.goal_plus_search_apply_allocation_decision("run_1", "allocation_0001")
+    applied = tools.goal_plus_search_apply_allocation_decision(
+        "run_1", "allocation_0001", apply=runtime.apply_allocation_decision
+    )
     assert applied["decision"]["status"] == "applied"
     assert applied["agent_sessions"][0]["agent_session_id"] == "agent_001"
     assert "launch" not in applied["agent_sessions"][0]

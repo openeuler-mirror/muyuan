@@ -852,7 +852,8 @@ def test_strategy_spec_derives_llm_verifier_requirement() -> None:
     )
     adaptive = StrategySpec(
         orchestration_mode="adaptive_search",
-        allocation={"policy": "priority_replace/v1"},
+        verifier={"scores": ["progress_reward", "allocation_utility"]},
+        allocation={"policy": "swe_search_uct/v1"},
     )
 
     assert hard_only.requires_llm_verifier is False
@@ -878,11 +879,12 @@ def test_strategy_spec_derives_llm_verifier_requirement() -> None:
                 "ranking_tolerance": [0.0],
             },
         )
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        StrategySpec.model_validate({"verifier": {}})
+    explicit = StrategySpec.model_validate({"verifier": {}})
+    assert explicit.requires_llm_verifier
+    assert explicit.allocation is None
 
 
-def test_adaptive_verifier_rules_are_owned_by_frozen_policy(tmp_path: Path) -> None:
+def test_adaptive_policy_spec_excludes_verifier_semantics(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     spec_data = spec_for(project).model_dump(mode="json")
     spec_data["workspace"] = {"provider": "git_worktree"}
@@ -895,19 +897,12 @@ def test_adaptive_verifier_rules_are_owned_by_frozen_policy(tmp_path: Path) -> N
         "ranking_keys": ["quality_score", "hard_score"],
         "ranking_tolerance": [0.05, 0.0],
     }
-    spec_data["strategy"]["allocation"] = {"policy": "priority_replace/v1"}
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"], agent_harness="codex",
-    )
-    assert frozen.spec.strategy.allocation is not None
-    rules = frozen.spec.strategy.allocation.verifier_rules()
-    assert rules.policy_id == "priority_replace/v1"
-    assert rules.score_names == [
-        "progress_reward",
-        "allocation_utility",
-    ]
+    spec_data["strategy"]["verifier"] = {"scores": ["progress_reward", "allocation_utility"]}
+    spec_data["strategy"]["allocation"] = {"policy": "swe_search_uct/v1"}
+    spec = SearchSpec.model_validate(spec_data)
+    assert spec.strategy.allocation is not None
+    assert spec.strategy.allocation.policy == "swe_search_uct/v1"
+    assert "verifier_score_contract" not in FrozenSpec.model_fields
 
 
 def test_strategy_spec_accepts_worker_budget() -> None:

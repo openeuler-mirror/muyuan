@@ -11,7 +11,10 @@ from goal_plus.application.candidate_execution import require_run_not_invalidate
 from goal_plus.application.candidate_ledger import CandidateLedger
 from goal_plus.application.candidate_recovery import CandidateRecoveryWorkflow
 from goal_plus.application.goal_authorization import GoalAuthorization
-from goal_plus.application.verifier import VerifierWorkflow, verifier_subject
+from goal_plus.application.verifier import (
+    VerifierWorkflow,
+)
+from goal_plus.application.settlement_verifier import verifier_subject
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.evidence import IterationRecord, ScoreReport
 from goal_plus.domain.evidence_policy import (
@@ -90,13 +93,9 @@ class _QualityScoreSource:
     def __init__(
         self,
         *,
-        allocation_policy_id: str | None,
-        allocation_score_names: list[str],
         tasks: list[VerifierTask],
         records: list[VerifierRecord],
     ) -> None:
-        self.allocation_policy_id = allocation_policy_id
-        self.allocation_score_names = allocation_score_names
         self.tasks = tasks
         self.records = records
 
@@ -112,9 +111,7 @@ class _QualityScoreSource:
         matching_tasks = [
             task
             for task in self.tasks
-            if task.allocation_policy_id == self.allocation_policy_id
-            and task.allocation_score_names == self.allocation_score_names
-            and task.subject.candidate_id == subject.candidate_id
+            if task.subject.candidate_id == subject.candidate_id
             and task.subject.iteration == subject.iteration
             and task.subject.settlement_id == subject.settlement_id
             and task.subject.settlement.attempt_artifact_hash
@@ -122,12 +119,16 @@ class _QualityScoreSource:
             and verifier_subject_identity(task.subject)
             == subject.verifier_subject_hash
         ]
+        if not matching_tasks and not any(
+            task.subject.settlement_id == subject.settlement_id for task in self.tasks
+        ):
+            return ScoreResolution.pending("verifier submission awaits admission")
         if len(matching_tasks) != 1:
-            return ScoreResolution.unavailable("exact verifier task is missing")
+            return ScoreResolution.unavailable("exact verifier task is missing or inconsistent")
         task = matching_tasks[0]
         if task.state in {"pending", "running", "retry_wait"}:
             return ScoreResolution.pending(f"verifier task is {task.state}")
-        if task.state == "terminal_error":
+        if task.state == "abandoned":
             return ScoreResolution.unavailable("verifier task failed terminally")
         if task.state != "completed" or task.output_record_id is None:
             return ScoreResolution.unavailable("verifier task is not completed")
@@ -143,8 +144,8 @@ class _QualityScoreSource:
         record = output_records[0]
         if (
             record.task_id != task.task_id
-            or record.allocation_policy_id != self.allocation_policy_id
             or record.subject != task.subject
+            or record.score_contract_hash != task.score_contract.contract_hash
         ):
             return ScoreResolution.unavailable(
                 "authoritative VerifierRecord identity does not match its task"
@@ -178,11 +179,9 @@ class Selection:
             annotation,
             annotation_admission,
         )
-        self.authorization, self.verifier, self.persist_run = (
-            authorization,
-            verifier,
-            persist_run,
-        )
+        self.authorization = authorization
+        self.verifier = verifier
+        self.persist_run = persist_run
 
     def select(
         self, run_id: str
@@ -215,7 +214,6 @@ class Selection:
                 "no hard-settled candidate iteration is eligible for selection",
             )
             raise RuntimeError("no verified candidates available for selection")
-        self._ensure_verifier_tasks(frozen, base_options)
 
         selection_spec = frozen.spec.strategy.selection
         domain_options = [
@@ -231,15 +229,7 @@ class Selection:
             "hard_score": _HardScoreSource(frozen.spec.metric_direction),
         }
         if "quality_score" in selection_spec.ranking_keys:
-            allocation = frozen.spec.strategy.allocation
-            rules = allocation.verifier_rules() if allocation is not None else None
             score_sources["quality_score"] = _QualityScoreSource(
-                allocation_policy_id=rules.policy_id if rules is not None else None,
-                allocation_score_names=(
-                    rules.score_names
-                    if rules is not None
-                    else []
-                ),
                 tasks=self.verifier.list_tasks(run_id),
                 records=self.verifier.list_records(run_id),
             )
@@ -434,20 +424,6 @@ class Selection:
             "best_candidate_id": run.best_candidate_id,
             "best_score": run.best_score,
         }
-
-    def _ensure_verifier_tasks(
-        self, frozen: FrozenSpec, options: list[_BaseOption]
-    ) -> None:
-        if not frozen.spec.strategy.requires_llm_verifier:
-            return
-        allocation = frozen.spec.strategy.allocation
-        rules = allocation.verifier_rules() if allocation is not None else None
-        for option in options:
-            self.verifier.ensure_assessment(
-                verifier_subject(frozen, option.record, option.iteration),
-                rules.policy_id if rules is not None else None,
-                rules.score_names if rules is not None else [],
-            )
 
     def _mark_selection_blocked(self, run_id: str, reason: str) -> None:
         run = self.state.read_run(run_id)

@@ -38,7 +38,7 @@ no project-local `.codex/` configuration.
 For direct runtime validation, [`workspace-template/verifier-adaptive-spec.json`](workspace-template/verifier-adaptive-spec.json)
 enables the fixed LLM-Verifier quality rules and freezes progressive-tolerance
 Selection plus the deterministic
-`priority_replace/v1` Allocation policy against the same maintained workspace.
+`swe_search_uct/v1` Allocation policy against the same maintained workspace.
 
 ## Run with Pi
 

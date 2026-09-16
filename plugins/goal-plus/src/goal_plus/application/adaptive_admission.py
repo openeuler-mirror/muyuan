@@ -33,14 +33,15 @@ class AdaptiveAdmission:
         frozen = self.source.read_frozen_spec(run.frozen_spec_id)
         if frozen.spec.strategy.orchestration_mode != "adaptive_search":
             return
-        pending_retirements = {
+        active_retirements = {
             candidate_id
             for decision in self.source.load_allocation_decisions(record.task.run_id)
-            if decision.status == "pending"
-            for candidate_id in decision.retire_candidate_ids
+            if decision.status in {"pending", "interrupted"}
+            for candidate_id in [decision.selected_retirement]
+            if candidate_id is not None
         }
-        if candidate_id in pending_retirements:
+        if candidate_id in active_retirements:
             raise RuntimeError(
                 f"cannot {operation} candidate {candidate_id}: "
-                "a pending allocation decision retires this lane"
+                "an active allocation decision retires this lane"
             )

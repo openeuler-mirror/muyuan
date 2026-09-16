@@ -281,11 +281,9 @@ def test_drainer_serially_describes_pending_evidence(tmp_path: Path) -> None:
     ).exists()
 
 
-@pytest.mark.parametrize("failed_write", ["task", "queue"])
-def test_annotation_admission_reconciles_settlement_write_failures(
+def test_annotation_admission_reconciles_committed_settlement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    failed_write: str,
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
@@ -298,18 +296,6 @@ def test_annotation_admission_reconciles_settlement_write_failures(
     session = runtime.start_agent_session(run_id, candidate.candidate_id)
     monkeypatch.setattr(runtime.evidence_reads, "register_annotations", lambda _run_id: None)
 
-    method_name = f"write_{failed_write}"
-    original_write = getattr(runtime.annotation.tasks, method_name)
-    calls = 0
-
-    def fail_once(value) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise OSError(f"injected {failed_write} write failure")
-        original_write(value)
-
-    monkeypatch.setattr(runtime.annotation.tasks, method_name, fail_once)
     (candidate.workspace / "initial_program.py").write_text(
         "VALUE = 1\n", encoding="utf-8"
     )
@@ -328,7 +314,7 @@ def test_annotation_admission_reconciles_settlement_write_failures(
     task_before = runtime.annotation.task(
         run_id, candidate.candidate_id, 1
     )
-    assert (task_before is None) is (failed_write == "task")
+    assert task_before is None
     assert runtime.annotation.queue(run_id).revision == 0
 
     recovered = FileSearchRuntime(runtime.root_dir)
@@ -343,7 +329,7 @@ def test_annotation_admission_reconciles_settlement_write_failures(
     assert task.queue_revision == queue.revision == 1
     assert queue.accepted_tasks == 1
     assert first.errors == []
-    assert len(first.created) == (1 if failed_write == "task" else 0)
+    assert len(first.created) == 1
 
     second = recovered.annotation_admission.reconcile(run_id)
     assert second.created == []

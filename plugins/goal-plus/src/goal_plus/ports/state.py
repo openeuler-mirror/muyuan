@@ -207,6 +207,7 @@ class CandidateRecord(SearchModel):
     results_ledger: list[ResultLedgerEntry] = Field(default_factory=list)
     results_ledger_git_head: str | None = None
     results_ledger_artifact_ref: ArtifactRef | None = None
+    initial_attempt_base_artifact_ref: ArtifactRef | None = None
     execution_generation: int = Field(default=0, ge=0)
     recovery: CandidateRecovery | None = None
     verification: PendingVerification | None = None

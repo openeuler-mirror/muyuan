@@ -16,6 +16,7 @@ from pydantic import Field, TypeAdapter
 from goal_plus._version import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
+from goal_plus.domain.adaptive.models import AllocationDecisionStatus
 from goal_plus.domain.search import CandidateProposal
 from goal_plus.domain.search_input import SearchSpecInput
 from goal_plus.tool_schema import compact_tool_schema
@@ -781,13 +782,13 @@ def create_mcp(
     @_debug_tool_response
     def goal_plus_search_list_allocation_decisions(
         run_id: str,
-        status: Literal["pending", "applied", "superseded", "terminal_error"] | None = "pending",
+        status: AllocationDecisionStatus | None = None,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=GOAL_HISTORY_MAX_LIMIT)] = GOAL_HISTORY_DEFAULT_LIMIT,
     ) -> dict[str, Any]:
         """仅当 FrozenSpec 使用 adaptive_search 时读取持久化资源分配决策。
 
-        该工具只读，不启动、继续或中断任何 host worker。默认只返回 pending；status=null 返回全部决策。
+        该工具只读；未传 status 时返回全部决策。Main 可显式恢复 interrupted Decision。
         """
         return tools.goal_plus_search_list_allocation_decisions(run_id, status, offset, limit)
 
@@ -799,14 +800,14 @@ def create_mcp(
     ) -> dict[str, Any]:
         """仅当 FrozenSpec 使用 adaptive_search 时幂等应用准确决策。
 
-        runtime 预检全部 expansion，保留退休候选 Evidence，物化派生 workspace 并准备
-        session provenance。可信 session host 提交准确取消回执后才可 apply。
-        将返回的 agent_sessions 交给 goal_plus_session_run 启动派生候选。
+        Executor 在 run lock 内完成准确 host 取消、派生物化和 native session dispatch，
+        并持久化完整 Decision/candidate/session identity。
         """
         if session_launcher is None:
             raise PermissionError("allocation apply requires a trusted session host")
-        session_launcher.cancel_allocation(run_id, decision_id)
-        return tools.goal_plus_search_apply_allocation_decision(run_id, decision_id)
+        return tools.goal_plus_search_apply_allocation_decision(
+            run_id, decision_id, apply=session_launcher.apply_allocation_decision
+        )
 
     @register_tool()
     @_debug_tool_response

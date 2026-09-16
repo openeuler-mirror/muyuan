@@ -43,7 +43,7 @@ class CandidateHostQueries:
             )
         return False
 
-    def pending_retirement_decision_id(
+    def active_retirement_decision_id(
         self, run_id: str, candidate_id: str
     ) -> str | None:
         if not self.uses_adaptive_search(run_id):
@@ -52,8 +52,8 @@ class CandidateHostQueries:
             (
                 decision.decision_id
                 for decision in self.source.load_allocation_decisions(run_id)
-                if decision.status == "pending"
-                and candidate_id in decision.retire_candidate_ids
+                if decision.status in {"pending", "interrupted"}
+                and candidate_id == decision.selected_retirement
             ),
             None,
         )
@@ -66,18 +66,18 @@ class CandidateHostQueries:
             )
         if record.allocation_eligibility != "eligible":
             raise RuntimeError(f"cannot dispatch retired candidate {candidate_id}")
-        pending_decision_id = self.pending_retirement_decision_id(
+        active_decision_id = self.active_retirement_decision_id(
             run_id, candidate_id
         )
-        if pending_decision_id is not None:
+        if active_decision_id is not None:
             raise RuntimeError(
-                f"cannot dispatch candidate {candidate_id}: pending allocation "
-                f"decision {pending_decision_id} retires this lane"
+                f"cannot dispatch candidate {candidate_id}: active allocation "
+                f"decision {active_decision_id} retires this lane"
             )
 
     def retirement_fenced(self, run_id: str, candidate_id: str) -> bool:
         record = self.source.read_candidate(run_id, candidate_id)
-        return record.allocation_eligibility != "eligible" or self.pending_retirement_decision_id(run_id, candidate_id) is not None
+        return record.allocation_eligibility != "eligible" or self.active_retirement_decision_id(run_id, candidate_id) is not None
 
     def sessions(
         self, run_id: str, candidate_id: str | None = None, agent_harness: str | None = None

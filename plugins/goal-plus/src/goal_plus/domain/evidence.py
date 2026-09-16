@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from goal_plus.domain.verifier import VerifierSubmission
+
 from pathlib import Path
 from typing import (
     Any,
@@ -144,6 +146,7 @@ class CandidateAttemptFeedback(SearchModel):
 
 
 class IterationRecord(SearchModel):
+    verifier_submission: VerifierSubmission | None = None
     iteration: int
     settlement_sequence: int = Field(default=0, ge=0)
     settlement_id: str | None = Field(

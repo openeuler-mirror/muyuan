@@ -404,6 +404,13 @@ class SearchRun:
             )
             for record in plan_records:
                 self.candidate_ledger.ensure(frozen, record)
+                if (
+                    record.initial_attempt_base_artifact_ref is None
+                    and not record.iterations
+                ):
+                    record.initial_attempt_base_artifact_ref = (
+                        record.results_ledger_artifact_ref
+                    )
                 self.candidate_creation.state.write_candidate(run_id, record)
         for index, proposal in enumerate(
             candidate_proposals[len(plan_records) :], start=len(plan_records) + 1
@@ -435,6 +442,9 @@ class SearchRun:
                     task=task,
                 )
             self.candidate_ledger.ensure(frozen, record)
+            record.initial_attempt_base_artifact_ref = (
+                record.results_ledger_artifact_ref
+            )
             self.candidate_creation.state.write_candidate(run_id, record)
 
         if tasks:
