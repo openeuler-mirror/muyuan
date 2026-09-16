@@ -9,6 +9,16 @@ from goal_plus.infrastructure.clock import SystemClock
 from tests._thinkthread_sdk import StatefulAgentPosix
 
 
+@pytest.mark.parametrize("harness,signals", [("pi", ["INT"]), ("codex", ["TERM"])])
+def test_interrupt_signal_sequence_matches_harness(harness, signals):
+    sdk = StatefulAgentPosix()
+    sdk.invoke("thinkthread.spawn", {"initialMessage": "resource test"})
+    child = ChildDriver(sdk, SystemClock(), agent_harness=harness).interrupt("tt-child-1", 1)
+    assert child["executionState"] == "absent"
+    sent = [params for operation, params in sdk.operations if operation == "thinkthread.signal"]
+    assert [params["signal"] for params in sent] == signals
+
+
 @pytest.mark.parametrize("lost", [False, True])
 def test_release_is_owned_confirmed_and_idempotent(lost):
     sdk = StatefulAgentPosix()

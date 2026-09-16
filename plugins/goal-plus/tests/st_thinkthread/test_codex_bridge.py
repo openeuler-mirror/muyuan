@@ -31,10 +31,17 @@ def test_native_codex_child_uses_mcp_across_two_retained_turns(thinkthread_root,
     package = Path(environment["GOAL_PLUS_SOURCE_PATH"])
     python = Path(environment["GOAL_PLUS_PYTHON"])
     installer.managed_runtime.verify(package)
-    config = replace(installer._plan_thinkthread_codex_config(package), directory=state_root.parent / "codex-config")
+    # ST_CODEX_PROFILE overlays a Codex NAME.config.toml layer (provider, model and
+    # catalog) for non-default model runs, e.g. ST_CODEX_PROFILE=deepseek.
+    codex_profile = os.environ.get("ST_CODEX_PROFILE") or None
+    config = replace(
+        installer._plan_thinkthread_codex_config(package, profile=codex_profile),
+        directory=state_root.parent / "codex-config",
+    )
     content = tomllib.loads(config.content)
-    content["model"] = os.environ.get("ST_CODEX_MODEL", "gpt-5.6-terra")
-    content["model_reasoning_effort"] = "low"
+    if codex_profile is None:
+        content["model"] = os.environ.get("ST_CODEX_MODEL", "gpt-5.6-terra")
+        content["model_reasoning_effort"] = os.environ.get("ST_CODEX_REASONING_EFFORT", "low")
     # The Root starts this MCP during discovery; no prompt is appended to Child invocations.
     probe = Path(__file__).with_name("codex_bridge_probe.py").resolve()
     content["mcp_servers"]["bridge-probe"] = {

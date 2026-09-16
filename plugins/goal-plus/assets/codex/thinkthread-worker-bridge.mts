@@ -32,9 +32,17 @@ export async function workerBinding(client: any, parentId: string) {
         cursor = page.nextCursor;
     } while (true);
     if (!latest) throw new Error("Child has no retained Goal Plus dispatch");
-    if (latest.thinkthreadRole === "annotator") throw new Error("Annotation requires its own role binding");
     return latest;
 }
+
+const ANNOTATION_TOOLS = new Set([
+    "goal_plus_thinkthread_annotation_next",
+    "goal_plus_thinkthread_artifact_view_list",
+    "goal_plus_thinkthread_artifact_view_stat",
+    "goal_plus_thinkthread_artifact_view_pread",
+    "goal_plus_thinkthread_artifact_view_diff",
+    "goal_plus_thinkthread_annotation_submit",
+]);
 
 export async function workerOperation(client: any, parentId: string, request: any) {
     const binding = await workerBinding(client, parentId);
@@ -43,9 +51,17 @@ export async function workerOperation(client: any, parentId: string, request: an
         throw new Error("MCP candidate binding does not match the current Parent dispatch");
     }
     const {name, arguments: args} = request.params;
+    const annotator = binding.thinkthreadRole === "annotator";
+    if (annotator !== ANNOTATION_TOOLS.has(name)) {
+        throw new Error(annotator
+            ? `ThinkThread Annotation Child tool is not allowed: ${name}`
+            : `ThinkThread Candidate Child annotation tool is not allowed: ${name}`);
+    }
     if (typeof name !== "string" || !args || typeof args !== "object" || Array.isArray(args)
-        || args.agent_session_id !== binding.agentSessionId) {
-        throw new Error("MCP tool arguments do not match the bound candidate");
+        || (annotator ? "agent_session_id" in args : args.agent_session_id !== binding.agentSessionId)) {
+        throw new Error(annotator
+            ? "MCP annotation arguments must not select a session"
+            : "MCP tool arguments do not match the bound candidate");
     }
     for (const payload of [
         {type: "registration", registration_nonce: binding.registrationNonce},

@@ -44,6 +44,108 @@ def child_actor():
     actor.close()
 
 
+@pytest.fixture
+def codex_actor():
+    sdk, clock = StatefulAgentPosix(), SystemClock()
+    record, saved, settled, bound = {}, [], [], []
+
+    def receive(state):
+        child = sdk.child(state["thinkthread_id"])
+        message = state.get("active_message_id") or (
+            sdk.sent[-1]["messageId"] if sdk.sent else "msg-initial-1"
+        )
+        state.setdefault("acknowledged_messages", {})[state["dispatch_nonce"]] = message
+        child.update(agentState="ready", lastWakeOutcome={
+            "messageId": message, "outcome": "completed", "finishedAtUnixMs": (time.time() - TURN_QUIESCENCE_SECONDS) * 1000,
+        })
+
+    def settle(state):
+        settled.append(state["active_message_id"])
+        return "exact-result"
+
+    actor = ThinkThreadSession(
+        ThinkThreadSessionInput("tt-root", "fsnap-baseline", agent_harness="codex"),
+        ChildDriver(sdk, clock, agent_harness="codex"), clock, record,
+        ThinkThreadSessionHooks(
+            nullcontext, lambda state: saved.append(deepcopy(state)), bound.append, receive, settle,
+        ),
+    )
+    yield actor, sdk, record, saved, settled, bound
+    actor.close()
+
+
+def test_codex_reaps_stopped_child_and_respawns_from_baseline(codex_actor):
+    actor, sdk, record, _, _, bound = codex_actor
+    control = NativeSessionControl(actor)
+    control.wake("attempt 1", call_id="1", timeout=10)
+    assert control.wait("1", timeout=5).state == "completed"
+    assert actor.native_session_id == "tt-child-1"
+    control.close()
+    assert sdk.child("tt-child-1")["executionState"] == "absent"
+    actor.reopen()
+    control = NativeSessionControl(actor)
+    try:
+        control.wake("attempt 2", call_id="2", timeout=10)
+        outcome = control.wait("2", timeout=5)
+        assert outcome.state == "completed"
+        assert outcome.native_session_id == "tt-child-2"
+        assert outcome.result.agent_harness == "codex"
+        assert record["thinkthread_id"] == "tt-child-2"
+        assert record["fs_branch_id"] == "fsbranch-child-2"
+        assert "replaced_thinkthread_id" not in record
+        spawns = [params for operation, params in sdk.operations if operation == "thinkthread.spawn"]
+        assert [params["fsSnapshotId"] for params in spawns] == ["fsnap-baseline"] * 2
+        assert sdk.branches["fsbranch-child-1"]["state"] == "removed"
+        assert sum(operation == "thinkthread.destroy" for operation, _ in sdk.operations) == 1
+        signals = [params for operation, params in sdk.operations if operation == "thinkthread.signal"]
+        assert all(params["signal"] == "TERM" for params in signals)
+        assert [binding.child_id for binding in bound] == ["tt-child-1", "tt-child-2"]
+    finally:
+        control.close()
+
+
+def test_codex_retired_child_respawns_from_settled_snapshot(codex_actor):
+    actor, sdk, record, _, _, bound = codex_actor
+    control = NativeSessionControl(actor)
+    try:
+        control.wake("attempt 1", call_id="1", timeout=10)
+        assert control.wait("1", timeout=5).state == "completed"
+        assert sdk.child("tt-child-1")["executionState"] == "running"
+        # A diverging settlement cannot reset the retained Codex branch; it retires
+        # the Child and records the settled snapshot as the exact respawn point.
+        record["child_retired"] = True
+        record["spawn_snapshot_id"] = "fsnap-settled-1"
+        control.wake("attempt 2", call_id="2", timeout=10)
+        outcome = control.wait("2", timeout=5)
+        assert outcome.state == "completed"
+        assert outcome.native_session_id == "tt-child-2"
+        assert "child_retired" not in record
+        spawns = [params for operation, params in sdk.operations if operation == "thinkthread.spawn"]
+        assert spawns[-1]["fsSnapshotId"] == "fsnap-settled-1"
+        assert sdk.branches["fsbranch-child-1"]["state"] == "removed"
+        assert sum(operation == "thinkthread.destroy" for operation, _ in sdk.operations) == 1
+        assert [binding.child_id for binding in bound] == ["tt-child-1", "tt-child-2"]
+    finally:
+        control.close()
+
+
+def test_codex_retained_child_still_wakes_without_replacement(codex_actor):
+    actor, sdk, record, _, settled, bound = codex_actor
+    control = NativeSessionControl(actor)
+    try:
+        for number in (1, 2):
+            control.wake(f"attempt {number}", call_id=str(number), timeout=10)
+            outcome = control.wait(str(number), timeout=5)
+            assert outcome.state == "completed"
+            assert outcome.native_session_id == "tt-child-1"
+        assert settled == ["msg-initial-1", "msg-wake-1"]
+        assert sum(operation == "thinkthread.spawn" for operation, _ in sdk.operations) == 1
+        assert not any(operation == "thinkthread.signal" for operation, _ in sdk.operations)
+        assert [binding.child_id for binding in bound] == ["tt-child-1"]
+    finally:
+        control.close()
+
+
 def test_common_controller_retains_child_for_two_exact_calls(child_actor):
     actor, sdk, record, saved, settled = child_actor
     assert actor.native_session_id is None

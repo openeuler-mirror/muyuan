@@ -3,6 +3,7 @@
 import math
 from typing import Any
 
+from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.execution.thinkthread_rpc import MESSAGE_RECEIVE_LIMIT, registration_matches
 from goal_plus.ports.clock import Clock
 from goal_plus.ports.thinkthread import (
@@ -14,9 +15,13 @@ TURN_QUIESCENCE_SECONDS = 20.0
 
 
 class ChildDriver:
-    def __init__(self, client: ThinkThreadClient, clock: Clock) -> None:
+    def __init__(
+        self, client: ThinkThreadClient, clock: Clock,
+        agent_harness: AgentHarnessKind = "pi",
+    ) -> None:
         self.client = client
         self.clock = clock
+        self.agent_harness = agent_harness
 
     @staticmethod
     def binding(
@@ -125,7 +130,11 @@ class ChildDriver:
         return None
 
     def interrupt(self, child_id: str, timeout_seconds: float) -> dict[str, Any] | None:
-        for signal in ("INT", "TERM"):
+        # A Codex Child never reaches absent on INT; waiting for it would burn the
+        # whole timeout. Its hard stop is TERM, after which the Child cannot be
+        # rewoken, so TERM is only sent where the Child is meant to stop for good.
+        signals = ("TERM",) if self.agent_harness == "codex" else ("INT", "TERM")
+        for signal in signals:
             try:
                 self.client.invoke("thinkthread.signal", {"id": child_id, "signal": signal})
             except AgentPosixBridgeError as exc:

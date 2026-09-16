@@ -221,8 +221,8 @@ ThinkThread 使用独立的 retained Annotation Child。它通过 Agent POSIX RP
 snapshot 的 `list/stat/pread/diff` Artifact View；candidate 与 annotator tool set 双向隔离，命令
 执行和 verifier 工具不会激活。读取直接针对原 immutable snapshot，不创建、patch 或删除派生
 snapshot；private paths 由读取授权拒绝。selection 先推进 queue generation，再 interrupt Child，
-因此迟到提交不能发布。该路径不会读取 Root live tree，当前只对安装的 Pi ThinkThread Profile
-开放；Codex ThinkThread host 仍保持关闭。
+因此迟到提交不能发布。该路径不会读取 Root live tree，对已安装的 Pi 与 Codex ThinkThread
+Profile 均开放。
 
 Artifact View 的完整 workspace 内容只保证在 Annotation task 生命周期内可用。terminal report、
 Annotation、publication/recovery、session 和 owner pin 全部收敛后，runtime 可以回收 owned snapshot；

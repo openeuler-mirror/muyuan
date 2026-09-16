@@ -39,6 +39,11 @@ _EXECUTION_BINDINGS: dict[tuple[AgentHarnessKind, AgentRuntimeProvider], AgentEx
             {INNER_AGENT_AUTORESEARCH, INNER_AGENT_COMMON}
         ),
     )),
+    ("codex", "thinkthread"): AgentExecutionBinding("codex", "thinkthread", "thinkthread-v3-codex", AgentExecutionCapabilities(
+        search_enabled=True,
+        supported_workspace_providers=frozenset({"thinkthread"}),
+        supported_inner_agents=frozenset({INNER_AGENT_COMMON}),
+    )),
     ("pi", "thinkthread"): AgentExecutionBinding("pi", "thinkthread", "thinkthread-v3-pi", AgentExecutionCapabilities(
         search_enabled=True,
         supported_workspace_providers=frozenset({"thinkthread"}),

@@ -22,8 +22,9 @@ def fs_path(path: str) -> dict[str, str]:
 
 
 class IntegratedAgentPosix:
-    def __init__(self, project: Path) -> None:
+    def __init__(self, project: Path, *, agent: str = "pi") -> None:
         self.project = project
+        self.agent = agent
         self.operations: list[tuple[str, dict[str, Any]]] = []
         self.request_status: dict[str, dict[str, Any]] = {}
         self.children: list[dict[str, Any]] = []
@@ -57,7 +58,7 @@ class IntegratedAgentPosix:
             "profiles": [
                 {
                     "alias": "self",
-                    "agent": "pi",
+                    "agent": self.agent,
                     "allowedDerivations": [
                         {"session": "fresh", "fs": "private_branch"}
                     ],
@@ -570,6 +571,7 @@ class StatefulAgentPosix:
     def __init__(self) -> None:
         self.operations: list[tuple[str, dict[str, object]]] = []
         self.children: list[dict[str, object]] = []
+        self.spawn_index = 0
         self.messages: dict[str, list[dict[str, object]]] = {}
         self.branches: dict[str, dict[str, object]] = {}
         self.request_results: dict[str, dict[str, object]] = {}
@@ -715,7 +717,8 @@ class StatefulAgentPosix:
         if operation == "thinkthread.list":
             return {"children": list(self.children)}
         if operation == "thinkthread.spawn":
-            index = len(self.children) + 1
+            self.spawn_index += 1
+            index = self.spawn_index
             child_id = f"tt-child-{index}"
             branch_id = f"fsbranch-child-{index}"
             result: dict[str, object] = {

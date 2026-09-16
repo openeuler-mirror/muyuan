@@ -103,18 +103,18 @@ freeze/launch 前 fail closed。
 
 ## Codex 与 Pi 的能力对比
 
-| 能力 | Codex | Pi RPC | Pi + ThinkThread |
-| --- | --- | --- | --- |
-| 启动 | 共同 session run → app-server | 共同 session run → Pi RPC | 共同 session run 登记并创建 private Child |
-| Candidate 进程环境 | 宿主把冻结 `process_environment` 注入候选进程 | 同一宿主输入接线 | 由 ThinkThread Profile/Runtime 控制，不接受 candidate process environment |
-| 等待 | `goal_plus_session_wait` | 同一工具 | 同一工具 |
-| 续跑 | `goal_plus_session_run` 复用 native session | 同一工具 | 同一工具，复用 Child/Session/branch |
-| Deadline | Application 预算 gate + 宿主执行限时 | 同一接线 | parent/controller watchdog |
-| 恢复 | `.gp` checkpoint/generation + scope 资源核验 | 同一恢复用例 | scope 资源日志、原 call_id/Message、独占 controller lease |
-| Goal gate | 精确 `$goal-plus...` + hooks | 精确 `/goal-plus...` + extension events | 同 Pi gate + exact Profile preflight |
-| 模型发现 | app-server `model/list` | Pi RPC model catalog | Profile/default 或显式 provider/model |
-| Observability | native JSONL + metadata | `pi_metrics` + metadata | TT IDs + durable snapshot/request IDs |
-| Workspace | `copy`、`git_worktree` | `copy`、`git_worktree` | `thinkthread` |
+| 能力 | Codex | Pi RPC | Pi + ThinkThread | Codex + ThinkThread |
+| --- | --- | --- | --- | --- |
+| 启动 | 共同 session run → app-server | 共同 session run → Pi RPC | 共同 session run 登记并创建 private Child | 同 Pi + ThinkThread |
+| Candidate 进程环境 | 宿主把冻结 `process_environment` 注入候选进程 | 同一宿主输入接线 | 由 ThinkThread Profile/Runtime 控制，不接受 candidate process environment | 同 Pi + ThinkThread |
+| 等待 | `goal_plus_session_wait` | 同一工具 | 同一工具 | 同一工具 |
+| 续跑 | `goal_plus_session_run` 复用 native session | 同一工具 | 同一工具，复用 Child/Session/branch | 同一工具；TERM 后 Child 不可复用，恢复走 destroy + respawn |
+| Deadline | Application 预算 gate + 宿主执行限时 | 同一接线 | parent/controller watchdog | 同 Pi + ThinkThread |
+| 恢复 | `.gp` checkpoint/generation + scope 资源核验 | 同一恢复用例 | scope 资源日志、原 call_id/Message、独占 controller lease | 同 Pi + ThinkThread，复用受 Child 不可复用约束 |
+| Goal gate | 精确 `$goal-plus...` + hooks | 精确 `/goal-plus...` + extension events | 同 Pi gate + exact Profile preflight | Codex gate + exact Profile preflight；managed config 无 hooks，TT Root 无 Stop-hook 续跑 |
+| 模型发现 | app-server `model/list` | Pi RPC model catalog | Profile/default 或显式 provider/model | Profile 默认模型，不支持显式 override |
+| Observability | native JSONL + metadata | `pi_metrics` + metadata | TT IDs + durable snapshot/request IDs | 同 Pi + ThinkThread |
+| Workspace | `copy`、`git_worktree` | `copy`、`git_worktree` | `thinkthread` | `thinkthread` |
 
 本地候选的进程环境和工作目录由 `native_candidate_input` 从已授权 session/task 构造，
 不在 Pi launch 中另存 worker 交接副本。Pi entries 增量由存活的原生 session actor 采集，
@@ -122,8 +122,8 @@ freeze/launch 前 fail closed。
 
 当前可移植 planner 为 `agent_guided`（含 `agent`、`default`）和 `random`（含
 `random_mode`）。Codex/Pi RPC 的普通运行使用固定初始并行循环；Git worktree 可选
-`adaptive_search`。ThinkThread 只支持 Pi Profile 和 `parallel_loops`；Codex
-仍不声明 ThinkThread capability。harness/runtime/workspace 组合不匹配或 Profile preflight 失败时 runtime 在
+`adaptive_search`。ThinkThread（Pi 与 Codex Profile）只支持 `parallel_loops`，Codex
+ThinkThread 继承 Profile 默认模型。harness/runtime/workspace 组合不匹配或 Profile preflight 失败时 runtime 在
 freeze/create 边界 fail closed。
 
 Codex Goal Plus startup 仍只接受精确 `$goal-plus...` 的 `UserPromptSubmit` 授权，并在

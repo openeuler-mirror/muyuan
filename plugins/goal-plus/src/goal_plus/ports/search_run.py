@@ -4,6 +4,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, Protocol
 
+from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.domain.artifacts import ArtifactRef, WorkspaceProvider
 from goal_plus.domain.evidence import ScoreReport
 from goal_plus.domain.search import (
@@ -48,7 +49,9 @@ class PreparedBaseline(Protocol):
 
 
 class BaselinePreparation(Protocol):
-    def prepare_baseline(self, spec: SearchSpec) -> PreparedBaseline: ...
+    def prepare_baseline(
+        self, spec: SearchSpec, *, agent_harness: AgentHarnessKind = "pi"
+    ) -> PreparedBaseline: ...
 
 
 class DeviceLeaseReservation(Protocol):

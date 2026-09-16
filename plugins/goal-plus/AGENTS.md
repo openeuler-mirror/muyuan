@@ -237,9 +237,12 @@ Host asset 是可执行产品界面，不是装饰性文档。
   和 [开发指南](docs/development.md)；不要静默替换另一 checkout 或删除用户管理的数据。
 - `./install.sh --pi --thinkthread` 验证 ThinkThread Pi 所需配置和接口，并为受保护的
   Pi Search Root 写入 Goal Plus 管理的 Profile，不安装、升级或删除 ThinkThread。
+  `./install.sh --codex --thinkthread` 以相同边界为 Codex 写出 `goal-plus-codex` Profile。
   release、protocol、Profile schema 和 fingerprint 差异只警告，不阻止兼容底座独立升级；
-  实际接口和 delegated capability 仍须通过检查。Codex ThinkThread 在具备等价真实 host
-  覆盖前保持不支持。卸载器只能在
+  实际接口和 delegated capability 仍须通过检查。Codex ThinkThread Search 已完成真实宿主
+  验收，支持范围与剩余缺口见 [Codex 支持范围与验证](docs/codex.md#支持范围与验证)；
+  TT Root 内的 Ultra delegation、final check 与显式 `workers=` 模型 override 保持不支持。
+  卸载器只能在
   复核 ownership marker 后移除该 Profile，不得删除 ThinkThread Runtime、Root、状态目录或包。
 
 Pi checkout-local 开发和 Codex 正常 plugin 刷新的具体步骤见

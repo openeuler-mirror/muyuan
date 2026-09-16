@@ -356,10 +356,30 @@ RUST_LOG=debug codex -c log_dir=./.codex-log
 
 ## 支持范围与验证
 
-Codex 支持本地 `git_worktree` / `copy`，尚不支持 ThinkThread Search。
-TT Codex Child 加载 stdio MCP 时存在首次任务留在输入框、未开始执行的启动提交问题，
-该现象可在不加载 Goal Plus 的独立复现中出现。具体 TT/Codex 内部归因尚未确认；
-纯 TT Codex 可以运行不代表 Goal Plus 集成已完成验收，产品 capability gate 保持关闭。
+Codex 支持本地 `git_worktree` / `copy`，并支持 `agent_harness=codex` +
+`runtime_provider=thinkthread` 的 ThinkThread Search（经 `./install.sh --codex --thinkthread`
+安装 `goal-plus-codex` Profile）。TT 0.1.0-21 修复了 Codex Child 加载 stdio MCP 后
+首条任务停留在输入框、未开始执行的启动提交问题；Goal Plus 集成已完成真实宿主验收。
+
+已验证范围：TT 子模块矩阵（managed profile、wake 续跑、signal 中断语义、fs
+branch/snapshot 生命周期、消息分块重组、并发 Child、hook 隔离、annotator 角色）与
+缩减版 circle 验收（并行 candidate、Annotation Evidence、selection、apply、cleanup）。
+
+模型切换：`./install.sh --codex --thinkthread --codex-profile <name>` 会把用户
+`CODEX_HOME` 下的 `NAME.config.toml` 顶层覆盖层（`model`、`model_provider`、
+`model_providers`、`model_reasoning_effort`、`service_tier`、`model_catalog_json`）
+投影进受管 TT Codex 配置，使 Child 以非默认模型运行，例如 DeepSeek 的
+`deepseek-flash`（原生 Responses API，无需协议转换）；不指定时仍投影 base config
+的默认模型，原 GPT/sub2api 管线不受影响。覆盖层对 `model_providers` 等嵌套表按
+键合并，保留 base 中其它 provider 定义。`model_catalog_json` 会规范化为解析后的
+真实路径并加入 Profile read 白名单；系统 CA bundle（RHEL/Oracle 系的
+`/etc/pki/.../tls-ca-bundle.pem` 等）同样加入白名单——沙箱内 `/etc/ssl` 符号链接
+目标未挂载，缺少该白名单时 HTTPS provider 会以连接失败静默重试。
+
+TT Codex 下不支持/未验证：显式 `workers=` 模型 override（TT spawn 要求精确
+`provider/model` 引用，首版继承 profile 默认模型）；`reasoning_effort`/`service_tier`
+（TT 拒绝，freeze 前报错）；TT Codex Root 内的 Ultra delegation 与独立 final check；
+Stop-hook 续跑（`$goal-plus resume` 不可用）。
 
 Codex 支持以下可移植内置策略：
 

@@ -22,6 +22,7 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | 仅 Codex | `./install.sh --codex` |
 | 仅 Pi | `./install.sh --pi` |
 | Pi + ThinkThread Search | `./install.sh --pi --thinkthread` |
+| Codex + ThinkThread Search | `./install.sh --codex --thinkthread` |
 | Pi 开发态 | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | 查看 Pi 开发环境及空间占用 | `./install.sh --env-show` |
 
@@ -32,11 +33,14 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 产品资产位于 `assets/codex/`、`assets/pi/`，编辑源码不会自动加载该插件的运行时资源。
 `--dry-run` 不修改宿主注册或 release；shell bootstrap 可能先下载运行检查所需的 uv/Python。
 
-`--thinkthread` 要求机器上已经独立安装受支持的 ThinkThread Runtime。它会验证内置 Pi Profile
-并生成 `goal-plus-pi` Profile，但绝不安装、升级或删除 ThinkThread 本身。使用
-`tt run --profile goal-plus-pi --fs <目标-workspace>` 启动 protected Root。
-在 Root 内使用 `workspace_provider=thinkthread`，即可在独立 private Child 中运行 Pi Search、
-验证精确 snapshot，并通过乐观 `fs.apply` 发布结果。Codex 尚不支持 ThinkThread worker host。
+`--thinkthread` 要求机器上已经独立安装受支持的 ThinkThread Runtime。它会验证内置宿主
+Profile 并生成 `goal-plus-pi` 或 `goal-plus-codex` Profile，但绝不安装、升级或删除
+ThinkThread 本身。使用 `tt run --profile goal-plus-pi --fs <目标-workspace>` 启动
+protected Root（Codex 用 `--profile goal-plus-codex`）。
+在 Root 内使用 `workspace_provider=thinkthread`，即可在独立 private Child 中运行 Search、
+验证精确 snapshot，并通过乐观 `fs.apply` 发布结果。TT Codex 继承 Profile 默认模型；
+搭配 `--codex-profile <name>` 可切换到用户覆盖层定义的非默认模型（如 DeepSeek），
+显式 `workers=` override 与 TT Root Stop-hook 续跑暂不支持。
 
 Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus，然后再新建一个
 线程。Pi 开发态通过 `pi-goal-plus` 启动，不修改 Pi 认证或全局配置。
@@ -153,7 +157,7 @@ Child 执行基础设施；当前受支持的 ThinkThread 路径内运行的 Age
 | Codex | `git_worktree` / `copy` | Codex app-server | Codex CLI | Codex CLI；仅 Git worktree 支持 |
 | Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI；仅 Git worktree 支持 |
 | Pi | `thinkthread` | TT Pi Child | TT Pi Child | 当前不支持 |
-| Codex | `thinkthread` | 当前不支持 | 当前不支持 | 当前不支持 |
+| Codex | `thinkthread` | TT Codex Child | TT Codex Child | 当前不支持 |
 
 `workspace.provider` 表示工作区实现。Agent 身份来自已授权 Main 会话，记录为
 `FrozenSpec.agent_harness`；装配层独立固定 `runtime_provider=direct|thinkthread`。

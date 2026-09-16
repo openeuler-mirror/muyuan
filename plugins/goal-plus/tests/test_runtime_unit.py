@@ -602,39 +602,42 @@ def test_create_run_ignores_runtime_state_inside_source_repository(
     assert runtime.status(run_id).run_id == run_id
 
 
-def test_freeze_spec_rejects_thinkthread_before_verifier_preflight(
+@pytest.mark.codex
+def test_freeze_spec_accepts_codex_thinkthread_host_without_creating_run(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec_data = spec_for(project).model_dump(mode="json")
     spec_data["workspace"] = {"provider": "thinkthread"}
-    with pytest.raises(
-        ValueError,
-        match="Codex does not support ThinkThread",
-    ):
-        runtime.freeze_spec(
-            SearchSpec.model_validate(spec_data),
-            [project / "evaluator.py"], agent_harness="codex",
-        )
 
-    assert not runtime.specs_dir.exists()
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(spec_data),
+        [project / "evaluator.py"], agent_harness="codex",
+    )
+
+    assert frozen.runtime_provider == "thinkthread"
+    assert frozen.spec.workspace.provider == "thinkthread"
+    assert frozen.agent_harness == "codex"
+    assert frozen.spec.strategy.worker_launch is None
+    assert runtime.specs_dir.exists()
     assert not runtime.runs_dir.exists()
 
 
-def test_create_run_rechecks_existing_thinkthread_frozen_spec(tmp_path: Path) -> None:
+def test_create_run_rechecks_inconsistent_frozen_spec_execution(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], agent_harness="codex")
     frozen_path = runtime.specs_dir / frozen.frozen_spec_id / "frozen_spec.json"
     payload = load_json(frozen_path)
     payload["spec"]["workspace"] = {"provider": "thinkthread"}
-    payload["runtime_provider"] = "thinkthread"
     write_json(frozen_path, payload)
 
     with pytest.raises(
         ValueError,
-        match="Codex does not support ThinkThread",
+        match="workspace provider does not match agent runtime provider",
     ):
         runtime.create_run(frozen.frozen_spec_id)
 

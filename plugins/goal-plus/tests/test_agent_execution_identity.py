@@ -83,8 +83,6 @@ def test_workspace_rejects_old_protocol(old_field):
 
 def test_roles_reject_unsupported_runtime_providers():
     with pytest.raises(ValidationError):
-        ResolvedEvidenceAnnotatorProfile(agent_harness="codex", runtime_provider="thinkthread", timeout_seconds=30)
-    with pytest.raises(ValidationError):
         VerifierInvocationRecord(
             invocation_id="test", agent_harness="pi", runtime_provider="thinkthread",
             model="test", started_at="before", completed_at="after", elapsed_seconds=1,
@@ -120,7 +118,6 @@ def test_protocol_does_not_expose_mixed_agent_identities():
 
 
 @pytest.mark.parametrize("harness,runtime,workspace", [
-    ("codex", "thinkthread", "thinkthread"),
     ("pi", "direct", "thinkthread"),
     ("pi", "thinkthread", "git_worktree"),
     ("pi", "thinkthread", "copy"),

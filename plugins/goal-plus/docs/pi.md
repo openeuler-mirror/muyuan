@@ -284,7 +284,8 @@ Application 核验预算、当前 generation 与归属。调用返回不代表 v
 共同 delivery 用例复用精确 artifact 对应的 Evidence；有实质修改但缺少 Evidence 时由宿主
 调用原 verifier 补验，结算后唤醒内部队列，未修改的 workspace 不增加 baseline iteration。
 Pi ThinkThread 也使用共同 session 控制，底层单 Child actor 负责准确 Message、retained wake
-和资源退出；旧 Child pool 已删除。Codex ThinkThread 尚未完成真实宿主验收。
+和资源退出；旧 Child pool 已删除。Codex ThinkThread 已完成真实宿主验收，支持范围见
+[Codex 支持范围与验证](codex.md#支持范围与验证)。
 
 ## 模型与 Worker Spec
 

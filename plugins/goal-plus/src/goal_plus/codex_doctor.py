@@ -643,6 +643,93 @@ def _check_packaged_assets(source_root: Path) -> CheckResult:
     )
 
 
+THINKTHREAD_PROFILE_MARKER = "# Managed by Goal Plus: thinkthread-profile-v1"
+THINKTHREAD_CONFIG_OWNERSHIP_KIND = "thinkthread-codex-config-v1"
+
+
+def _read_json_quietly(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _check_thinkthread() -> CheckResult:
+    """Read-only inspection of the optional ThinkThread Codex candidate mode."""
+    from goal_plus.thinkthread import AGENT_POSIX_CONTRACT_FINGERPRINT
+
+    name = "thinkthread.installation"
+    missing_tools = [tool for tool in ("tt", "codex", "node") if shutil.which(tool) is None]
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config").expanduser()
+    profile_path = config_root / "thinkthread" / "profiles" / "goal-plus-codex.toml"
+    if not profile_path.is_file():
+        return CheckResult(
+            name,
+            "info",
+            "ThinkThread Codex candidates are not installed (optional mode).",
+            {
+                "missing_executables": missing_tools,
+                "fix": "Run `./install.sh --codex --thinkthread` to enable ThinkThread candidates.",
+            },
+        )
+    warnings: list[str] = []
+    details: dict[str, Any] = {"profile": str(profile_path)}
+    if missing_tools:
+        warnings.append("missing executables: " + ", ".join(missing_tools))
+    try:
+        text = profile_path.read_text(encoding="utf-8")
+        profile = tomllib.loads(text)
+    except (OSError, ValueError) as exc:
+        return CheckResult(name, "fail", f"ThinkThread Codex Profile is unreadable: {exc}", details)
+    if not text.startswith(THINKTHREAD_PROFILE_MARKER + "\n"):
+        warnings.append("profile fingerprint marker is missing")
+    agent = profile.get("agent")
+    agent = agent if isinstance(agent, dict) else {}
+    environment = profile.get("environment")
+    environment = environment if isinstance(environment, dict) else {}
+    root_environment = environment.get("root")
+    root_environment = root_environment if isinstance(root_environment, dict) else {}
+    if agent.get("configDirEnv") != "CODEX_CONFIG_DIR" or agent.get("configDirAccess") != "read_only":
+        warnings.append("profile does not bind the managed read-only Codex config")
+    config_dir = agent.get("configDirDefault")
+    if isinstance(config_dir, str):
+        details["config_dir"] = config_dir
+        ownership = _read_json_quietly(
+            Path(config_dir).expanduser() / ".goal-plus-owner.json"
+        )
+        if not isinstance(ownership, dict) or ownership.get("kind") != THINKTHREAD_CONFIG_OWNERSHIP_KIND:
+            warnings.append("managed Codex config ownership marker is missing")
+    else:
+        warnings.append("profile has no managed Codex config directory")
+    source = root_environment.get("GOAL_PLUS_SOURCE_PATH")
+    if isinstance(source, str):
+        details["source"] = source
+    data_root = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share").expanduser()
+    receipt_path = (
+        data_root / "goal-plus" / "thinkthread-agent-posix"
+        / AGENT_POSIX_CONTRACT_FINGERPRINT / "installation.json"
+    )
+    receipt = _read_json_quietly(receipt_path)
+    if not isinstance(receipt, dict):
+        warnings.append("Agent POSIX SDK receipt is missing")
+    elif receipt.get("contract_fingerprint") != AGENT_POSIX_CONTRACT_FINGERPRINT:
+        warnings.append("Agent POSIX SDK fingerprint differs from the supported contract")
+    if warnings:
+        return CheckResult(
+            name,
+            "warn",
+            "ThinkThread Codex candidates are installed with warnings: " + "; ".join(warnings),
+            details,
+        )
+    return CheckResult(
+        name,
+        "pass",
+        "ThinkThread Codex candidates are installed and owned by Goal Plus.",
+        details,
+    )
+
+
+
 def collect_report(
     *,
     project_root: Path | None = None,
@@ -672,6 +759,7 @@ def collect_report(
             installation=installation,
         ),
         _check_models(skip=skip_model_check),
+        _check_thinkthread(),
         CheckResult(
             "codex.session_reload",
             "info",

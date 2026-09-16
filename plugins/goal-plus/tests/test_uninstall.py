@@ -328,7 +328,7 @@ def test_goal_plus_thinkthread_profile_plan_removes_only_current_checkout(
     monkeypatch.setattr(
         uninstaller.install_support,
         "_thinkthread_profile_path",
-        lambda: path,
+        lambda native_agent="pi": path,
     )
     monkeypatch.setattr(
         uninstaller.install_support,
@@ -352,7 +352,7 @@ def test_goal_plus_thinkthread_profile_plan_refuses_another_checkout(
     monkeypatch.setattr(
         uninstaller.install_support,
         "_thinkthread_profile_path",
-        lambda: path,
+        lambda native_agent="pi": path,
     )
     monkeypatch.setattr(
         uninstaller.install_support,
@@ -611,7 +611,7 @@ def test_execute_removes_only_owned_goal_plus_thinkthread_profile(
         pi_dev_registry_path=None,
         remove_runtime=False,
         notes=(),
-        goal_plus_thinkthread_profile_path=profile,
+        goal_plus_thinkthread_profile_paths=(profile,),
     )
 
     uninstaller._execute(plan, dry_run=False)

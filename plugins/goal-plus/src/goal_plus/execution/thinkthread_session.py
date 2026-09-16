@@ -69,6 +69,42 @@ class ThinkThreadSession:
             self.native_session_id, self.record["fs_branch_id"], self.record.get("active_message_id"),
         ))
         self._domain_bound = True
+        if self.record.pop("replaced_thinkthread_id", None) is not None:
+            self._save()
+
+    def _reap_dead_child(self) -> None:
+        """Destroy a stopped Codex Child; its next invocation respawns from the last settled snapshot."""
+        if self.config.agent_harness != "codex":
+            return
+        replaced = self.record.get("replaced_thinkthread_id")
+        if self.native_session_id is None:
+            if isinstance(replaced, dict):
+                self.driver.release(
+                    replaced["thinkthread_id"], root_id=self.config.root_id,
+                    branch_id=replaced["fs_branch_id"], timeout=CHILD_STOP_TIMEOUT_SECONDS,
+                )
+            return
+        child = self._observe()
+        retired = self.record.get("child_retired") is True
+        if child is not None and child.get("executionState") != "absent" and not retired:
+            return
+        # A Codex Child stays running while retained; once absent (or retired by a
+        # diverging settlement) it can never be rewoken, so the only exact
+        # continuation is a fresh Child on a new branch.
+        replaced = {
+            "thinkthread_id": self.native_session_id,
+            "fs_branch_id": self.record["fs_branch_id"],
+        }
+        self.record["replaced_thinkthread_id"] = replaced
+        self.record.pop("child_retired", None)
+        self._save()
+        self.driver.release(
+            replaced["thinkthread_id"], root_id=self.config.root_id,
+            branch_id=replaced["fs_branch_id"], timeout=CHILD_STOP_TIMEOUT_SECONDS,
+        )
+        self.record.update(thinkthread_id=None, fs_branch_id=None, active_message_id=None)
+        self._domain_bound = False
+        self._save()
 
     def _recover_spawn(self, *, bind_domain: bool = True) -> bool:
         matches = self.driver.recovery_matches(
@@ -92,6 +128,7 @@ class ThinkThreadSession:
         with self.hooks.admission():
             if self._closing.is_set():
                 raise RuntimeError("ThinkThread session is closing")
+            self._reap_dead_child()
             if self.native_session_id is None:
                 children = self.driver.client.invoke("thinkthread.list").get("children")
                 if not isinstance(children, list):
@@ -103,7 +140,7 @@ class ThinkThreadSession:
                 self._save()
                 params = {
                     "profile": "self", "fs": "private",
-                    "fsSnapshotId": self.config.baseline_snapshot_id,
+                    "fsSnapshotId": self.record.get("spawn_snapshot_id") or self.config.baseline_snapshot_id,
                     "capabilities": ["thinkthread.message"], "initialMessage": message,
                 }
                 if self.config.model is not None:
@@ -175,7 +212,7 @@ class ThinkThreadSession:
         text = self.hooks.settle(self.record) if state == "completed" else ""
         result = SessionInvocationResult(
             self.native_session_id, message_id, state, text,
-            agent_harness="pi", runtime_provider="thinkthread",
+            agent_harness=self.config.agent_harness, runtime_provider="thinkthread",
             error=error,
             observation=SessionInvocationObservation(
                 self.record["started_at"], self.clock.timestamp(),
@@ -211,7 +248,7 @@ class ThinkThreadSession:
                 self._save()
             message = (
                 prompt + f"\n\nThinkThread Goal Plus dispatch: protocol={PROTOCOL}; "
-                f"registration_nonce={self.record['registration_nonce']}; dispatch_nonce={nonce}.\n"
+                f"registration_nonce={self.record['registration_nonce']}; dispatch_nonce={nonce}."
             )
             with self._lock:
                 self._start(message)

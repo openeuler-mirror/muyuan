@@ -456,8 +456,10 @@ class PiRpcCandidateLaunch:
 
 
 class ThinkThreadModelCatalog:
-    name: AgentHarnessKind = "pi"
     runtime_provider: AgentRuntimeProvider = "thinkthread"
+
+    def __init__(self, agent_harness: AgentHarnessKind = "pi") -> None:
+        self.name = agent_harness
 
     def list_available_models(
         self,
@@ -513,8 +515,10 @@ class ThinkThreadModelCatalog:
 
 
 class ThinkThreadCandidateLaunch:
-    name: AgentHarnessKind = "pi"
     runtime_provider: AgentRuntimeProvider = "thinkthread"
+
+    def __init__(self, agent_harness: AgentHarnessKind = "pi") -> None:
+        self.name = agent_harness
 
     @staticmethod
     def _validate_worker_launch(
@@ -667,14 +671,14 @@ _CANDIDATE_LAUNCH: dict[AgentHarnessKind, CandidateLaunchAdapter] = {
 def host_model_catalog(agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> HostModelCatalog:
     validate_agent_execution(agent_harness, runtime_provider)
     if runtime_provider == "thinkthread":
-        return ThinkThreadModelCatalog()
+        return ThinkThreadModelCatalog(agent_harness)
     return _MODEL_CATALOGS[agent_harness]
 
 
 def candidate_launch_adapter(agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider = "direct") -> CandidateLaunchAdapter:
     validate_agent_execution(agent_harness, runtime_provider)
     if runtime_provider == "thinkthread":
-        return ThinkThreadCandidateLaunch()
+        return ThinkThreadCandidateLaunch(agent_harness)
     return _CANDIDATE_LAUNCH[agent_harness]
 
 
@@ -686,11 +690,11 @@ def thinkthread_host_client():
 def _collect_thinkthread_observability(
     session: AgentSessionRecord,
 ) -> dict[str, Any]:
-    _require_execution_enabled("pi", "thinkthread")
+    _require_execution_enabled(session.agent_harness, "thinkthread")
     child_id = session.session_handle.external_id
     if not child_id:
         return {
-            "agent_harness": "pi",
+            "agent_harness": session.agent_harness,
             "runtime_provider": "thinkthread",
             "available": False,
             "reason": "agent session is not bound to a ThinkThread Child",
@@ -699,14 +703,14 @@ def _collect_thinkthread_observability(
         child = thinkthread_host_client().invoke("thinkthread.get", {"id": child_id})
     except Exception as exc:
         return {
-            "agent_harness": "pi",
+            "agent_harness": session.agent_harness,
             "runtime_provider": "thinkthread",
             "available": False,
             "reason": str(exc),
             "error_code": getattr(exc, "code", None),
         }
     return {
-        "agent_harness": "pi",
+        "agent_harness": session.agent_harness,
         "runtime_provider": "thinkthread",
         "available": True,
         "thinkthread_id": child.get("thinkthreadId"),

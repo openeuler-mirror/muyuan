@@ -24,6 +24,36 @@ def test_codex_tt_entry_requires_the_trusted_child_binding(monkeypatch):
         create_codex_mcp()
 
 
+def test_codex_tt_entry_dispatches_the_annotator_role(monkeypatch):
+    monkeypatch.setenv("GOAL_PLUS_THINKTHREAD_ROLE", "annotator")
+    calls = []
+    monkeypatch.setattr("goal_plus.infrastructure.thinkthread_codex_tools.create_thinkthread_annotator_mcp",
+                        lambda: calls.append("annotator_binding") or "annotator_mcp")
+    assert create_codex_mcp() == "annotator_mcp"
+    assert calls == ["annotator_binding"]
+
+
+def test_codex_candidate_mcp_routes_children_by_dispatch_role(monkeypatch):
+    # thinkthread.spawn carries no per-child env, so Children sharing the TT profile
+    # environment are told apart only by their retained dispatch message.
+    from goal_plus.infrastructure import thinkthread_codex_tools as tools
+
+    calls = []
+    monkeypatch.setattr(tools, "_worker_bridge_transport", lambda: object())
+    monkeypatch.setattr(tools, "_annotator_mcp", lambda transport, session: calls.append(("annotator", session)))
+    monkeypatch.setattr(tools, "_child_mcp", lambda transport, session: calls.append(("candidate", session)))
+    for role in (None, "candidate"):
+        monkeypatch.setattr(tools, "_child_binding", lambda transport: ("agent-1", role))
+        tools.create_thinkthread_candidate_mcp()
+        assert calls.pop() == ("candidate", "agent-1")
+    monkeypatch.setattr(tools, "_child_binding", lambda transport: ("annotator-run_1", "annotator"))
+    tools.create_thinkthread_candidate_mcp()
+    assert calls.pop() == ("annotator", "annotator-run_1")
+    monkeypatch.setattr(tools, "_child_binding", lambda transport: ("agent-1", "checker"))
+    with pytest.raises(PermissionError, match="unknown dispatch role"):
+        tools.create_thinkthread_candidate_mcp()
+
+
 def test_codex_tt_main_checks_actual_root_before_opening_domain_state(tmp_path, monkeypatch):
     from tests._thinkthread_sdk import IntegratedAgentPosix
 
@@ -39,9 +69,17 @@ def test_codex_tt_main_checks_actual_root_before_opening_domain_state(tmp_path, 
     monkeypatch.setattr(sdk, "self_view", lambda: view)
     monkeypatch.setattr("goal_plus.infrastructure.thinkthread_codex_tools.AgentPosixSdkClient", lambda: sdk)
     calls = []
+    root_mcp = type(
+        "RootMcp",
+        (),
+        {
+            "instructions": "base",
+            "tool": lambda self: (lambda function: function),
+        },
+    )()
     monkeypatch.setattr("goal_plus.server.create_host_mcp",
-                        lambda root, **kwargs: calls.append((root, kwargs)) or "root_mcp")
-    assert create_codex_mcp() == "root_mcp"
+                        lambda root, **kwargs: calls.append((root, kwargs)) or root_mcp)
+    assert create_codex_mcp() is root_mcp
     assert calls == [(runtime, {"agent_harness": "codex", "caller_role": "main"})]
     calls.clear()
     for field, value in [("parentThinkthreadId", "parent"), ("capabilities", [])]:
@@ -86,6 +124,167 @@ def test_codex_tt_main_rejects_conflicting_roles_and_runtime_paths(tmp_path, mon
     monkeypatch.setenv(CODEX_CANDIDATE_SESSION_ENV, "agent-1")
     with pytest.raises(PermissionError, match="conflicting"):
         create_codex_mcp()
+
+
+def test_codex_tt_main_projects_thinkthread_execution_identity(tmp_path, monkeypatch):
+    from tests._thinkthread_sdk import IntegratedAgentPosix
+    from goal_plus.infrastructure.thinkthread_codex_tools import (
+        THINKTHREAD_MAIN_INSTRUCTIONS,
+        create_thinkthread_main_mcp,
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("GOAL_PLUS_ROOT", str(tmp_path / "session-runtime"))
+    sdk = IntegratedAgentPosix(workspace)
+    view = sdk.self_view()
+    view["profiles"][0]["agent"] = "codex"
+    monkeypatch.setattr(sdk, "self_view", lambda: view)
+    monkeypatch.setattr("goal_plus.infrastructure.thinkthread_codex_tools.AgentPosixSdkClient", lambda: sdk)
+
+    server = create_thinkthread_main_mcp()
+
+    base = (Path(__file__).resolve().parents[1] / "assets/goal-plus-instructions.txt").read_text(encoding="utf-8").strip()
+    assert server.instructions == base + "\n" + THINKTHREAD_MAIN_INSTRUCTIONS
+    for projection in (
+        'agent_harness="codex"',
+        'runtime_provider="thinkthread"',
+        'workspace.provider="thinkthread"',
+    ):
+        assert projection in server.instructions
+    # Direct mains receive only the shared asset, never the ThinkThread projection.
+    assert THINKTHREAD_MAIN_INSTRUCTIONS not in base
+    # The projection stays within the 500 character / 1000 byte budget.
+    assert len(THINKTHREAD_MAIN_INSTRUCTIONS) <= 500
+    assert len(THINKTHREAD_MAIN_INSTRUCTIONS.encode("utf-8")) <= 1000
+
+
+def test_codex_tt_main_host_start_creates_activates_and_replays_goal(tmp_path, monkeypatch):
+    from tests._thinkthread_sdk import IntegratedAgentPosix
+    from goal_plus.goal_plus import FileGoalPlusRuntime
+    from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_main_mcp
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    runtime_root = tmp_path / "session-runtime"
+    monkeypatch.setenv("GOAL_PLUS_ROOT", str(runtime_root))
+    sdk = IntegratedAgentPosix(workspace)
+    view = sdk.self_view()
+    view["profiles"][0]["agent"] = "codex"
+    monkeypatch.setattr(sdk, "self_view", lambda: view)
+    monkeypatch.setattr("goal_plus.infrastructure.thinkthread_codex_tools.AgentPosixSdkClient", lambda: sdk)
+
+    server = create_thinkthread_main_mcp()
+
+    async def scenario():
+        async with Client(server) as client:
+            tools = {tool.name for tool in await client.list_tools()}
+            assert "goal_plus_host_start" in tools
+            started = await client.call_tool(
+                "goal_plus_host_start", {"raw_goal": "Optimize the toy project"},
+                meta={"threadId": "tt-main-session"},
+            )
+            payload = json.loads(started.content[0].text)
+            assert payload["status"] == "active"
+            assert payload["entrypoint_status"] == "host_verified"
+            replay = await client.call_tool(
+                "goal_plus_host_start", {"raw_goal": "Optimize the toy project"},
+                meta={"threadId": "tt-main-session"},
+            )
+            assert json.loads(replay.content[0].text)["goal_plus_id"] == payload["goal_plus_id"]
+            assert [item.name for item in (runtime_root / "goal-plus").iterdir()] == [payload["goal_plus_id"]]
+            conflicting = await client.call_tool(
+                "goal_plus_host_start", {"raw_goal": "A different goal"},
+                meta={"threadId": "tt-main-session"}, raise_on_error=False,
+            )
+            assert conflicting.is_error
+            assert "nonterminal" in conflicting.content[0].text
+            anonymous = await client.call_tool(
+                "goal_plus_host_start", {"raw_goal": "No thread identity"}, raise_on_error=False,
+            )
+            assert anonymous.is_error
+            return payload["goal_plus_id"]
+
+    goal_plus_id = asyncio.run(scenario())
+    record = FileGoalPlusRuntime(runtime_root).status(goal_plus_id)
+    invocation = record.host_command_invocations[0]
+    assert invocation.agent_harness == "codex"
+    assert invocation.transport == "codex_user_prompt_submit"
+    assert invocation.command == "$goal-plus"
+    assert invocation.action == "start"
+    assert invocation.session_id == "tt-main-session"
+    assert invocation.invocation_id.startswith("codex-tt:")
+    assert record.active_session.session_id == "tt-main-session"
+    assert record.active_session.metadata["authorized_by"] == "thinkthread_main_mcp"
+    assert record.active_session.metadata["host_invocation_id"] == invocation.invocation_id
+
+
+def test_codex_tt_main_close_scopes_closes_terminal_goal_scopes(tmp_path, monkeypatch):
+    from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
+    from tests._thinkthread_sdk import IntegratedAgentPosix
+    from goal_plus.goal_plus import FileGoalPlusRuntime
+    from goal_plus.host_scope import ensure_execution_scope, execution_scope_for_run
+    from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_main_mcp
+    from goal_plus.runtime import FileSearchRuntime
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    runtime_root = tmp_path / "session-runtime"
+    monkeypatch.setenv("GOAL_PLUS_ROOT", str(runtime_root))
+    sdk = IntegratedAgentPosix(workspace)
+    view = sdk.self_view()
+    view["profiles"][0]["agent"] = "codex"
+    monkeypatch.setattr(sdk, "self_view", lambda: view)
+    monkeypatch.setattr("goal_plus.infrastructure.thinkthread_codex_tools.AgentPosixSdkClient", lambda: sdk)
+
+    project = make_project(tmp_path)
+    goal = start_host_verified_goal(runtime_root, project, session_id="tt-main-session")
+    runtime = FileSearchRuntime(runtime_root)
+    frozen = runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], agent_harness="codex")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    goal_runtime = FileGoalPlusRuntime(runtime_root)
+    goal_runtime.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
+    scope = ensure_execution_scope(
+        root_dir=runtime_root, agent_harness="codex",
+        owner_session_id="tt-main-session", run_id=run_id,
+    )
+    assert scope["state"] == "open"
+    server = create_thinkthread_main_mcp()
+
+    async def scenario():
+        async with Client(server) as client:
+            tools = {tool.name for tool in await client.list_tools()}
+            assert "goal_plus_host_close_scopes" in tools
+            premature = await client.call_tool(
+                "goal_plus_host_close_scopes", {"goal_plus_id": goal.goal_plus_id},
+                meta={"threadId": "tt-main-session"}, raise_on_error=False,
+            )
+            assert premature.is_error and "terminal" in premature.content[0].text
+            stranger = await client.call_tool(
+                "goal_plus_host_close_scopes", {"goal_plus_id": goal.goal_plus_id},
+                meta={"threadId": "tt-other-session"}, raise_on_error=False,
+            )
+            assert stranger.is_error and "active session" in stranger.content[0].text
+            goal_runtime.set_status(goal.goal_plus_id, "abandoned", reason="test complete")
+            closed = await client.call_tool(
+                "goal_plus_host_close_scopes", {"goal_plus_id": goal.goal_plus_id},
+                meta={"threadId": "tt-main-session"},
+            )
+            payload = json.loads(closed.content[0].text)
+            assert payload["status"] == "abandoned"
+            assert [item["state"] for item in payload["scopes"]] == ["closed"]
+            assert payload["scopes"][0]["run_id"] == run_id
+            replay = await client.call_tool(
+                "goal_plus_host_close_scopes", {"goal_plus_id": goal.goal_plus_id},
+                meta={"threadId": "tt-main-session"},
+            )
+            assert json.loads(replay.content[0].text)["scopes"][0]["state"] == "closed"
+
+    asyncio.run(scenario())
+    assert execution_scope_for_run(root_dir=runtime_root, run_id=run_id)["state"] == "closed"
 
 
 def test_remote_candidate_mcp_uses_shared_schema_and_rejects_peer_before_transport(tmp_path, monkeypatch):
@@ -214,4 +413,112 @@ export class AgentPosixClient {
             changed = await client.call_tool("goal_plus_search_get_agent_context", {"agent_session_id": "agent-1"},
                                              meta={"threadId": "peer"}, raise_on_error=False)
             assert changed.is_error
+    asyncio.run(scenario())
+
+
+def test_codex_worker_binding_gates_annotation_tools_by_role():
+    module = Path(__file__).resolve().parents[1] / "assets/codex/thinkthread-worker-bridge.mts"
+    checked = subprocess.run(["node", "--input-type=module", "-e", '''
+import assert from "node:assert/strict";
+const {workerBinding, workerOperation} = await import(process.argv[1]);
+const nonce = "11111111-2222-3333-4444-555555555555";
+const make = (dispatch) => {
+    const sent = [];
+    const client = {async invoke(method, params) {
+        if (method === "self") return {thinkthreadId: "child", parentThinkthreadId: "parent",
+            capabilities: [{id: "thinkthread.message"}]};
+        if (method === "message.receive") return {messages: [{text: dispatch, senderThinkthreadId: "parent",
+            recipientThinkthreadId: "child", messageId: "dispatch", truncated: false}],
+            nextCursor: "done", hasMore: false};
+        sent.push(params); return {messageId: "sent"};
+    }};
+    return {client, sent};
+};
+const annotator = make(`goal_plus_thinkthread_role=annotator; agent_session_id=annotator-run_1; registration_nonce=${nonce}; dispatch_nonce=${nonce}.`);
+const binding = await workerBinding(annotator.client, "parent");
+assert.equal(binding.agentSessionId, "annotator-run_1");
+assert.equal(binding.thinkthreadRole, "annotator");
+await assert.rejects(workerOperation(annotator.client, "parent", {operation: "call",
+    params: {agent_session_id: "annotator-run_1", name: "goal_plus_search_run_verifier",
+        arguments: {agent_session_id: "annotator-run_1"}}}), /Annotation Child tool is not allowed/);
+await assert.rejects(workerOperation(annotator.client, "parent", {operation: "call",
+    params: {agent_session_id: "annotator-run_1", name: "goal_plus_thinkthread_annotation_next",
+        arguments: {agent_session_id: "annotator-run_1"}}}), /must not select a session/);
+assert.deepEqual(annotator.sent, []);
+const candidate = make(`agent_session_id=agent-1; registration_nonce=${nonce}; dispatch_nonce=${nonce}.`);
+await assert.rejects(workerOperation(candidate.client, "parent", {operation: "call",
+    params: {agent_session_id: "agent-1", name: "goal_plus_thinkthread_annotation_next", arguments: {}}}),
+    /Candidate Child annotation tool is not allowed/);
+assert.deepEqual(candidate.sent, []);
+''', module.as_uri()], text=True, capture_output=True, timeout=10)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+def test_codex_annotator_mcp_exposes_only_annotation_tools_and_forwards(tmp_path, monkeypatch):
+    from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_annotator_mcp
+
+    sdk = tmp_path / "sdk.mjs"
+    sdk.write_text('''
+import {createHash} from "node:crypto";
+const nonce = "11111111-2222-3333-4444-555555555555";
+export class AgentPosixClient {
+    static fromEnv() {return new AgentPosixClient();}
+    async invoke(method, params) {
+        if (method === "self") return {thinkthreadId: "child", parentThinkthreadId: "parent",
+            capabilities: [{id: "thinkthread.message"}]};
+        if (method === "message.send") {
+            const payload = JSON.parse(params.text);
+            if (payload.type === "request") this.request = payload;
+            return {messageId: "sent"};
+        }
+        if (method !== "message.receive") throw Error(method);
+        if (!this.request) return {messages: [{senderThinkthreadId: "parent", recipientThinkthreadId: "child",
+            messageId: "dispatch", truncated: false,
+            text: `goal_plus_thinkthread_role=annotator; agent_session_id=annotator-run_1; registration_nonce=${nonce}; dispatch_nonce=${nonce}.`}],
+            nextCursor: "dispatch", hasMore: false};
+        const content = {ok: true, result: {tool: this.request.tool, params: this.request.params}};
+        const canonical = value => Array.isArray(value) ? value.map(canonical)
+            : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+        const response_json = JSON.stringify(canonical(content));
+        return {messages: [{senderThinkthreadId: "parent", truncated: false,
+            text: JSON.stringify({protocol: "goal-plus.thinkthread.v3", type: "response_chunk",
+                request_id: this.request.request_id, chunk_index: 0, chunk_count: 1,
+                data_base64: Buffer.from(response_json).toString("base64"),
+                chunk_sha256: createHash("sha256").update(response_json).digest("hex"),
+                response_sha256: createHash("sha256").update(response_json).digest("hex")})}],
+            nextCursor: "response", hasMore: false};
+    }
+}
+''')
+    monkeypatch.setenv("GOAL_PLUS_AGENT_POSIX_SDK_ENTRY", str(sdk))
+    monkeypatch.setenv("THINKTHREAD_PARENT_ID", "parent")
+    server = create_thinkthread_annotator_mcp()
+
+    async def scenario():
+        async with Client(server) as client:
+            tools = await client.list_tools()
+            assert {tool.name for tool in tools} == {
+                "goal_plus_thinkthread_annotation_next",
+                "goal_plus_thinkthread_artifact_view_list",
+                "goal_plus_thinkthread_artifact_view_stat",
+                "goal_plus_thinkthread_artifact_view_pread",
+                "goal_plus_thinkthread_artifact_view_diff",
+                "goal_plus_thinkthread_annotation_submit",
+            }
+            absent = await client.call_tool("goal_plus_thinkthread_annotation_next", {}, raise_on_error=False)
+            assert absent.is_error
+            claimed = await client.call_tool("goal_plus_thinkthread_annotation_next", {}, meta={"threadId": "native"})
+            assert json.loads(claimed.content[0].text) == {
+                "tool": "goal_plus_thinkthread_annotation_next", "params": {}}
+            viewed = await client.call_tool("goal_plus_thinkthread_artifact_view_pread",
+                                            {"view_id": "view-1", "path": "initial_program.py"}, meta={"threadId": "native"})
+            assert json.loads(viewed.content[0].text) == {
+                "tool": "goal_plus_thinkthread_artifact_view_pread",
+                "params": {"view_id": "view-1", "path": "initial_program.py", "offset": 0, "length": 65536}}
+            submitted = await client.call_tool("goal_plus_thinkthread_annotation_submit",
+                                               {"description": "candidate changed the value"}, meta={"threadId": "native"})
+            assert json.loads(submitted.content[0].text) == {
+                "tool": "goal_plus_thinkthread_annotation_submit",
+                "params": {"description": "candidate changed the value",
+                           "supplemental_evaluation": None, "tool_views": []}}
     asyncio.run(scenario())

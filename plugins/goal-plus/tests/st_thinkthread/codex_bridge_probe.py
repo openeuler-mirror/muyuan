@@ -39,7 +39,8 @@ def run_probe(report_path: Path) -> None:
             filename = f"round-{index}.txt"
             prompt = (
                 "This is a minimal MCP transport check. Call the Goal Plus MCP tool "
-                "goal_plus_search_get_agent_context with agent_session_id=agent-probe. "
+                "goal_plus_search_get_agent_context with the exact agent_session_id value "
+                "from the trailing metadata line. "
                 f"Write exactly the returned probe_token to {filename}, then finish. "
                 "Use the MCP tool directly; do not run Python or Node to call it. "
                 "No verifier or other Goal Plus operation is needed.\n"
@@ -138,4 +139,4 @@ def run_probe(report_path: Path) -> None:
 if __name__ == "__main__":
     if os.environ.get("GOAL_PLUS_THINKTHREAD_ROLE") == "main":
         threading.Thread(target=run_probe, args=(Path.cwd() / ".codex-bridge-report.json",), daemon=True).start()
-    FastMCP("native-codex-bridge-probe").run(transport="stdio")
+    FastMCP("native-codex-bridge-probe").run(transport="stdio", show_banner=False)

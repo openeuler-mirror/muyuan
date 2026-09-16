@@ -55,7 +55,7 @@ class UninstallPlan:
     pi_dev_registry_path: Path | None
     remove_runtime: bool
     notes: tuple[str, ...]
-    goal_plus_thinkthread_profile_path: Path | None = None
+    goal_plus_thinkthread_profile_paths: tuple[Path, ...] = ()
     goal_plus_thinkthread_sdk_path: Path | None = None
     pi_resources: tuple[dict[str, Any], ...] = ()
 
@@ -69,7 +69,7 @@ class UninstallPlan:
                 bool(self.pi_resources),
                 self.pi_dev_dir is not None,
                 self.pi_dev_registry_path is not None,
-                self.goal_plus_thinkthread_profile_path is not None,
+                bool(self.goal_plus_thinkthread_profile_paths),
                 self.goal_plus_thinkthread_sdk_path is not None,
                 self.remove_runtime,
             )
@@ -194,17 +194,20 @@ def _pi_dev_plan(dev_dir: Path) -> tuple[Path | None, Path | None, list[str]]:
     return remove_dev_dir, remove_registry, notes
 
 
-def _goal_plus_thinkthread_profile_plan() -> tuple[Path | None, list[str]]:
-    path = install_support._thinkthread_profile_path()
+def _goal_plus_thinkthread_profile_plan(
+    *,
+    native_agent: str = "pi",
+) -> tuple[Path | None, list[str]]:
+    path = install_support._thinkthread_profile_path(native_agent)
+    label = f"Goal Plus ThinkThread {native_agent} Profile"
     if not path.exists():
-        return None, [f"Goal Plus ThinkThread Profile is not installed: {path}"]
+        return None, [f"{label} is not installed: {path}"]
     source = install_support._managed_thinkthread_profile_source(path)
     if source == ROOT.resolve():
         return path, []
     detail = f"managed by {source}" if source is not None else "not Goal Plus-managed"
     raise UninstallError(
-        "refusing to remove Goal Plus ThinkThread Profile because it is "
-        f"{detail}: {path}"
+        f"refusing to remove {label} because it is {detail}: {path}"
     )
 
 
@@ -265,13 +268,17 @@ def _build_plan(
     if remove_pi_dev:
         remove_dev_dir, remove_registry, dev_notes = _pi_dev_plan(dev_dir)
 
-    owned_thinkthread_profile: Path | None = None
+    owned_thinkthread_profiles: list[Path] = []
     owned_thinkthread_sdk: Path | None = None
     thinkthread_notes: list[str] = []
     if remove_thinkthread:
-        owned_thinkthread_profile, thinkthread_notes = (
-            _goal_plus_thinkthread_profile_plan()
-        )
+        for native_agent in ("pi", "codex"):
+            owned_profile, profile_notes = _goal_plus_thinkthread_profile_plan(
+                native_agent=native_agent,
+            )
+            if owned_profile is not None:
+                owned_thinkthread_profiles.append(owned_profile)
+            thinkthread_notes.extend(profile_notes)
         owned_thinkthread_sdk, sdk_notes = _goal_plus_thinkthread_sdk_plan()
         thinkthread_notes.extend(sdk_notes)
 
@@ -293,8 +300,12 @@ def _build_plan(
         notes=tuple(
             (*codex_notes, *pi_notes, *dev_notes, *thinkthread_notes, *runtime_notes)
         ),
-        goal_plus_thinkthread_profile_path=owned_thinkthread_profile,
-        goal_plus_thinkthread_sdk_path=owned_thinkthread_sdk,
+        goal_plus_thinkthread_profile_paths=(
+            tuple(owned_thinkthread_profiles) if remove_thinkthread else ()
+        ),
+        goal_plus_thinkthread_sdk_path=(
+            owned_thinkthread_sdk if remove_thinkthread else None
+        ),
     )
 
 
@@ -313,11 +324,8 @@ def _print_plan(plan: UninstallPlan, *, dry_run: bool) -> None:
         print(f"- Pi development environment: {plan.pi_dev_dir}")
     if plan.pi_dev_registry_path is not None:
         print(f"- Pi development registry: {plan.pi_dev_registry_path}")
-    if plan.goal_plus_thinkthread_profile_path is not None:
-        print(
-            "- Goal Plus ThinkThread Profile: "
-            f"{plan.goal_plus_thinkthread_profile_path}"
-        )
+    for profile_path in plan.goal_plus_thinkthread_profile_paths:
+        print(f"- Goal Plus ThinkThread Profile: {profile_path}")
     if plan.goal_plus_thinkthread_sdk_path is not None:
         print(f"- Goal Plus Agent POSIX SDK: {plan.goal_plus_thinkthread_sdk_path}")
     if plan.remove_runtime:
@@ -356,22 +364,17 @@ def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
         _run([plan.pi_executable, "remove", source], dry_run=dry_run)
     install_support._remove_pi_resource_registrations(list(plan.pi_resources), dry_run=dry_run)
 
-    if plan.goal_plus_thinkthread_profile_path is not None:
+    for profile_path in plan.goal_plus_thinkthread_profile_paths:
         if dry_run:
-            print(
-                "+ remove Goal Plus ThinkThread Profile",
-                plan.goal_plus_thinkthread_profile_path,
-            )
+            print("+ remove Goal Plus ThinkThread Profile", profile_path)
         else:
-            source = install_support._managed_thinkthread_profile_source(
-                plan.goal_plus_thinkthread_profile_path
-            )
+            source = install_support._managed_thinkthread_profile_source(profile_path)
             if source != ROOT.resolve():
                 raise UninstallError(
                     "Goal Plus ThinkThread Profile ownership changed before removal: "
-                    f"{plan.goal_plus_thinkthread_profile_path}"
+                    f"{profile_path}"
                 )
-            plan.goal_plus_thinkthread_profile_path.unlink()
+            profile_path.unlink()
 
     if plan.goal_plus_thinkthread_sdk_path is not None:
         if dry_run:
@@ -411,8 +414,8 @@ def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
             print("Preserved Pi runtime binding: loose or shared Goal Plus resources remain.")
         else:
             managed_runtime.unbind("pi", install_support._pi_agent_dir(), dry_run=dry_run)
-    if plan.goal_plus_thinkthread_profile_path is not None:
-        managed_runtime.unbind("thinkthread", plan.goal_plus_thinkthread_profile_path, dry_run=dry_run)
+    for profile_path in plan.goal_plus_thinkthread_profile_paths:
+        managed_runtime.unbind("thinkthread", profile_path, dry_run=dry_run)
     if plan.remove_runtime:
         managed_runtime.cleanup(dry_run=dry_run)
 
@@ -443,8 +446,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--thinkthread",
         action="store_true",
         help=(
-            "Remove only this checkout's goal-plus-pi Profile; never remove "
-            "ThinkThread Runtime, Roots, or state."
+            "Remove only this checkout's goal-plus-pi/goal-plus-codex Profile; "
+            "never remove ThinkThread Runtime, Roots, or state."
         ),
     )
     parser.add_argument(

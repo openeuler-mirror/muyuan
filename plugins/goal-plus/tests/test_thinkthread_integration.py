@@ -146,6 +146,97 @@ def test_thinkthread_autoresearch_launch_uses_pi_prompt_and_private_git_projecti
     assert not task.workspace.exists()
 
 
+def _bound_thinkthread_candidate(tmp_path, monkeypatch, agent_harness):
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path)
+    client = IntegratedAgentPosix(project, agent=agent_harness)
+    monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: client)
+    root = tmp_path.parent / (tmp_path.name + "-session-runtime")
+    goal = start_host_verified_goal(root, project, agent_harness=agent_harness)
+    runtime = FileSearchRuntime(root)
+    frozen = runtime.freeze_spec(
+        thinkthread_spec(project), [project / "evaluator.py"], agent_harness=agent_harness,
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    FileGoalPlusRuntime(root).link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+    runtime.candidate_sessions.bind_thinkthread_candidate(
+        run_id=run_id, candidate_id=task.candidate_id, agent_session_id=session.agent_session_id,
+        thinkthread_id="tt-child-1", branch_id="fsbranch-child-1",
+    )
+    return runtime, run_id, task, session
+
+
+def test_thinkthread_codex_binding_replaces_child_and_branch_atomically(tmp_path, monkeypatch) -> None:
+    runtime, run_id, task, session = _bound_thinkthread_candidate(tmp_path, monkeypatch, "codex")
+    bound = runtime.candidate_sessions.bind_thinkthread_candidate(
+        run_id=run_id, candidate_id=task.candidate_id, agent_session_id=session.agent_session_id,
+        thinkthread_id="tt-child-2", branch_id="fsbranch-child-2",
+    )
+    handle = bound.task.workspace_provider_handle
+    assert handle["thinkthread_id"] == "tt-child-2"
+    assert handle["branch_id"] == "fsbranch-child-2"
+    refreshed = runtime.candidate_sessions.session(session.agent_session_id)
+    assert refreshed.session_handle.agent_harness == "codex"
+    assert refreshed.session_handle.external_id == "tt-child-2"
+    assert refreshed.session_handle.metadata["fs_branch_id"] == "fsbranch-child-2"
+    rebound = runtime.candidate_sessions.bind_thinkthread_candidate(
+        run_id=run_id, candidate_id=task.candidate_id, agent_session_id=session.agent_session_id,
+        thinkthread_id="tt-child-2", branch_id="fsbranch-child-2",
+    )
+    assert rebound.task.workspace_provider_handle == handle
+    with pytest.raises(RuntimeError, match="changed its Child binding"):
+        runtime.candidate_sessions.bind_thinkthread_candidate(
+            run_id=run_id, candidate_id=task.candidate_id, agent_session_id=session.agent_session_id,
+            thinkthread_id="tt-child-2", branch_id="fsbranch-child-3",
+        )
+    stale = runtime.start_agent_session(run_id, task.candidate_id)
+    assert stale.agent_session_id == session.agent_session_id
+
+
+def test_thinkthread_pi_binding_never_replaces_child(tmp_path, monkeypatch) -> None:
+    runtime, run_id, task, session = _bound_thinkthread_candidate(tmp_path, monkeypatch, "pi")
+    rebound = runtime.candidate_sessions.bind_thinkthread_candidate(
+        run_id=run_id, candidate_id=task.candidate_id, agent_session_id=session.agent_session_id,
+        thinkthread_id="tt-child-1", branch_id="fsbranch-child-1",
+    )
+    assert rebound.task.workspace_provider_handle["thinkthread_id"] == "tt-child-1"
+    with pytest.raises(RuntimeError, match="changed its Child binding"):
+        runtime.candidate_sessions.bind_thinkthread_candidate(
+            run_id=run_id, candidate_id=task.candidate_id, agent_session_id=session.agent_session_id,
+            thinkthread_id="tt-child-2", branch_id="fsbranch-child-2",
+        )
+
+
+def test_thinkthread_codex_replacement_session_takes_over_binding(tmp_path, monkeypatch) -> None:
+    runtime, run_id, task, session = _bound_thinkthread_candidate(tmp_path, monkeypatch, "codex")
+    replacement = runtime.candidate_sessions.replace_session(
+        session.agent_session_id, call_id="call-replace", fingerprint="f" * 64,
+    )
+    assert replacement.agent_session_id != session.agent_session_id
+    assert replacement.execution_generation == session.execution_generation + 1
+    assert replacement.session_handle.external_id is None
+    bound = runtime.candidate_sessions.bind_thinkthread_candidate(
+        run_id=run_id, candidate_id=task.candidate_id,
+        agent_session_id=replacement.agent_session_id,
+        thinkthread_id="tt-child-2", branch_id="fsbranch-child-2",
+    )
+    handle = bound.task.workspace_provider_handle
+    assert handle["thinkthread_id"] == "tt-child-2"
+    assert handle["branch_id"] == "fsbranch-child-2"
+    assert handle["agent_session_id"] == replacement.agent_session_id
+    refreshed = runtime.candidate_sessions.session(replacement.agent_session_id)
+    assert refreshed.session_handle.external_id == "tt-child-2"
+    with pytest.raises(RuntimeError, match="StaleAgentSession"):
+        runtime.candidate_sessions.bind_thinkthread_candidate(
+            run_id=run_id, candidate_id=task.candidate_id,
+            agent_session_id=session.agent_session_id,
+            thinkthread_id="tt-child-3", branch_id="fsbranch-child-3",
+        )
+
+
 
 
 
@@ -1193,6 +1284,11 @@ def test_annotation_spawn_wake_and_close_recover_without_duplicate_dispatch(
     verify_candidate(runtime, client, sessions[0])
     client.completion_unknown_once.add("thinkthread.spawn")
     kick_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
+    annotation_spawn = [
+        params for operation, params in client.operations if operation == "thinkthread.spawn"
+    ][-1]
+    assert "env" not in annotation_spawn, "thinkthread.spawn carries no per-child env"
+    assert "goal_plus_thinkthread_role=annotator" in annotation_spawn["initialMessage"]
     recovered_at_boundary = service_thinkthread_annotation(root_dir=runtime.root_dir, run_id=run_id, client=client)
     assert recovered_at_boundary is not None
     assert recovered_at_boundary["status"] == "running"

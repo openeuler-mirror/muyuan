@@ -77,13 +77,16 @@ def test_unbound_freeze_requires_trusted_host(tmp_path):
         runtime.freeze_spec(spec_for(project), [])
 
 
-def test_codex_cannot_freeze_thinkthread_workspace(tmp_path):
+def test_codex_goal_freezes_thinkthread_workspace_with_default_inner_agent(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     project = make_project(tmp_path)
     root = tmp_path / ".gp"
     goal = start_host_verified_goal(root, project)
     payload = spec_for(project).model_dump(mode="json")
     payload["workspace"] = {"provider": "thinkthread"}
-    with pytest.raises(ValueError, match="Codex.*ThinkThread"):
-        FileSearchRuntime(root).freeze_spec(
-            SearchSpec.model_validate(payload), [], goal_plus_id=goal.goal_plus_id
-        )
+    frozen = FileSearchRuntime(root).freeze_spec(
+        SearchSpec.model_validate(payload), [], goal_plus_id=goal.goal_plus_id
+    )
+    assert frozen.agent_harness == "codex"
+    assert frozen.runtime_provider == "thinkthread"
+    assert frozen.spec.strategy.inner_agent == "common"
