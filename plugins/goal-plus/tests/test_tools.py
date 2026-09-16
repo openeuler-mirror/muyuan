@@ -168,6 +168,95 @@ def test_candidate_role_cannot_manage_adaptive_allocation() -> None:
             )
 
 
+def test_user_interrupted_goal_keeps_settlement_and_read_tools_available(
+    tmp_path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    root = tmp_path / ".gp"
+    goal = start_host_verified_goal(root, project)
+    runtime = FileSearchRuntime(root)
+    goal_runtime = FileGoalPlusRuntime(root)
+    frozen = runtime.freeze_spec(
+        spec_for(project, max_parallel=1),
+        [project / "evaluator.py"],
+        goal_plus_id=goal.goal_plus_id,
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    goal_runtime.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+    goal_runtime.record_work_event(
+        goal.goal_plus_id, "item-a", "dispatch", "delegate work",
+        host="codex",
+    )
+    item = next(
+        item
+        for item in goal_runtime.status(goal.goal_plus_id).work_items
+        if item.work_item_id == "item-a"
+    )
+    goal_runtime.handle_host_session_event(
+        goal.goal_plus_id,
+        agent_harness="codex",
+        session_id="session-test",
+        event="interrupt",
+        delivery="next_user_turn",
+        interaction="interactive",
+    )
+    assert goal_runtime.status(goal.goal_plus_id).control.state == "paused"
+    tools = SearchTools(runtime, goal_runtime)
+    goal_tools = GoalPlusTools(goal_runtime)
+
+    def execute(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, '{"combined_score": 1}\n', "")
+
+    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", execute)
+
+    # The gate keeps these settlement/read tools available while paused; the
+    # tool layer must agree instead of rejecting with a resume error.
+    assert tools.goal_plus_search_recovery_status(run_id)["run_id"] == run_id
+    assert tools.goal_plus_search_list_iterations(session.agent_session_id)["total"] >= 0
+    receipt = goal_tools.goal_plus_record_work_event(
+        goal.goal_plus_id,
+        "item-a",
+        "failed",
+        "worker reported failure while paused",
+        attempt_id=item.attempt_id,
+        generation=item.generation,
+    )
+    assert receipt["work_item"]["status"] == "failed"
+    report = tools.goal_plus_search_run_verifier(
+        run_id,
+        task.candidate_id,
+        agent_session_id=session.agent_session_id,
+        hypothesis="settle verifier evidence while paused",
+    )
+    assert report["process_passed"] is True
+
+
+def test_settlement_target_still_rejects_terminal_and_unverified_goals(
+    tmp_path,
+) -> None:
+    project = make_project(tmp_path)
+    root = tmp_path / ".gp"
+    goal = start_host_verified_goal(root, project)
+    goal_runtime = FileGoalPlusRuntime(root)
+    goal_runtime.handle_host_session_event(
+        goal.goal_plus_id,
+        agent_harness="codex",
+        session_id="session-test",
+        event="interrupt",
+        delivery="next_user_turn",
+        interaction="interactive",
+    )
+    goal_runtime.set_status(goal.goal_plus_id, "abandoned", reason="done testing")
+    tools = GoalPlusTools(goal_runtime)
+    with pytest.raises(RuntimeError, match="GoalPlusTerminal"):
+        tools.goal_plus_record_work_event(
+            goal.goal_plus_id, "item-a", "failed", "terminal goals reject settlement"
+        )
+
+
 def test_search_bootstrap_requires_active_host_verified_goal(tmp_path: Path) -> None:
     root = tmp_path / ".gp"
     project = make_project(tmp_path)

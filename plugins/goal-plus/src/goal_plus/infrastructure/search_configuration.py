@@ -367,7 +367,8 @@ class SearchConfiguration:
             "session_control": adapter.capabilities.session_control.as_dict(),
             "reason": (
                 "Main 调用 goal_plus_session_run 执行 candidate，"
-                "goal_plus_session_wait 获取结果；后续 run 默认复用当前 session，"
+                "goal_plus_session_wait 获取结果（短超时、分轮等待）；"
+                "后续 run 默认复用当前 session，"
                 "收尾调用 goal_plus_session_close。launch payload 由宿主内部消费。"
             ),
         }

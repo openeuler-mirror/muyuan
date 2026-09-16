@@ -78,6 +78,28 @@ def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug, diagnos
         assert diagnostics == []
 
 
+def _run_env_script(tmp_path, script_env):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to exercise the Pi extension")
+    supported = subprocess.run(
+        [node, "--input-type=module", "-e", "import {registerHooks} from 'node:module';"],
+        capture_output=True,
+    )
+    if supported.returncode:
+        pytest.skip("Node with synchronous module hooks is required")
+    result = subprocess.run(
+        [node, "--experimental-strip-types", "--input-type=module", "-e", SCRIPT,
+         str(ROOT / "assets/pi/extensions/goal-plus.ts"), str(tmp_path)],
+        env={**{key: value for key, value in os.environ.items()
+                if not key.startswith(("GOAL_PLUS_", "THINKTHREAD_"))},
+             **script_env},
+        text=True, capture_output=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result
+
+
 def _run_context_script(tmp_path, sdk_mode=None):
     node = shutil.which("node")
     if node is None:
@@ -105,6 +127,23 @@ def _run_context_script(tmp_path, sdk_mode=None):
 def test_pi_command_context_and_shared_work_item_forwarding(tmp_path):
     result = _run_context_script(tmp_path)
     assert "work receipt checks passed" in result.stdout
+
+
+def test_pi_gate_distinguishes_paused_goal_from_unauthorized(tmp_path):
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": "main",
+        "GOAL_PLUS_ID": "gp_0001",
+        "GOAL_PLUS_PI_PAUSED_GATE_TEST": "1",
+    })
+    assert "paused gate checks passed" in result.stdout
+
+
+def test_pi_abort_notifies_user_of_paused_goal(tmp_path):
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": "main",
+        "GOAL_PLUS_PI_ABORT_NOTIFY_TEST": "1",
+    })
+    assert "abort notify checks passed" in result.stdout
 
 
 @pytest.mark.parametrize("sdk_mode", ["compatible", "parent", "capability", "interface"])
@@ -337,6 +376,25 @@ for (const action of ["open", "wait_any", "snapshot", "continue", "close"]) {
   assert.equal(tools.has(`pi_search_pool_${action}`), false);
   assert.equal(tools.has(`thinkthread_search_pool_${action}`), false);
 }
+if (process.env.GOAL_PLUS_PI_ABORT_NOTIFY_TEST === "1") {
+  globalThis.workReceiptTest = true;
+  const notices = [];
+  pi.sendMessage = message => notices.push(message);
+  pi.sendUserMessage = () => {};
+  await commands.get("goal-plus").handler("fixture", ctx);
+  assert.ok(notices.some(item => item.customType === "goal-plus-created"),
+    "host start must authorize the session first");
+  notices.length = 0;
+  await events.get("agent_end")(
+    {messages: [{role: "assistant", stopReason: "aborted", content: []}]}, ctx);
+  await events.get("agent_settled")({}, ctx);
+  const notice = notices.find(item => item.customType === "goal-plus-control");
+  assert.ok(notice, "abort must send a user-visible paused notice");
+  assert.ok(notice.content.includes("gp_0001") && notice.content.includes("已暂停"));
+  assert.ok(notice.display === true);
+  console.log("abort notify checks passed");
+  process.exit(0);
+}
 if (process.env.GOAL_PLUS_PI_WORK_RECEIPT_TEST === "1") {
   globalThis.workReceiptTest = true;
   globalThis.status.phase = "goal";
@@ -407,6 +465,19 @@ if (process.env.GOAL_PLUS_PI_ROLE !== "main") {
     }
   }
   console.log("ownership checks passed");
+  process.exit(0);
+}
+if (process.env.GOAL_PLUS_PI_PAUSED_GATE_TEST === "1") {
+  globalThis.status = {...globalThis.status,
+    control: {state: "paused", reason: "user_interrupt", version: 2}};
+  await assert.rejects(() => call("goal_plus_search_create"),
+    /GoalPlusResumeRequired: Goal Plus gp_0001 is paused \(reason=user_interrupt\).*\/goal-plus resume/);
+  await call("goal_plus_status"); // Read-only tools remain available while paused.
+  globalThis.status = {...globalThis.status,
+    control: {state: "active", version: 3}, status: "complete"};
+  await assert.rejects(() => call("goal_plus_search_create"),
+    /GoalPlusTerminal: Goal Plus gp_0001 is finished \(status=complete\)/);
+  console.log("paused gate checks passed");
   process.exit(0);
 }
 const readOnly = new Set(["goal_plus_search_recovery_status", "goal_plus_status",

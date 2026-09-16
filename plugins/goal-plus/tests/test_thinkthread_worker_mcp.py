@@ -105,7 +105,7 @@ def test_worker_proxy_checks_toolization_before_accepting_attempt(bound_worker):
     assert runtime.search_run.state.read_run(params["run_id"]) == before_run
 
 
-@pytest.mark.parametrize("mismatch", ["child", "branch", "session", "generation", "paused", "promotion"])
+@pytest.mark.parametrize("mismatch", ["child", "branch", "session", "generation", "promotion"])
 def test_deferred_attempt_rejects_invalid_binding_without_acceptance(bound_worker, mismatch):
     runtime, goal, job, params = bound_worker()
     if mismatch == "child":
@@ -118,13 +118,6 @@ def test_deferred_attempt_rejects_invalid_binding_without_acceptance(bound_worke
         record = runtime.thinkthread_verification.state.read_candidate(params["run_id"], params["candidate_id"])
         record.execution_generation += 1
         runtime.thinkthread_verification.state.write_candidate(params["run_id"], record)
-    elif mismatch == "paused":
-        FileGoalPlusRuntime(runtime.root_dir).control_from_host_command(goal.goal_plus_id, invocation={
-            "agent_harness": "pi", "transport": "pi_extension_command", "command": "/goal-plus",
-            "action": "pause", "session_id": "session-test", "native_entry_id": "turn-pause",
-            "invocation_id": "pi:test:pause", "invoked_at": goal.created_at,
-            "raw_input_sha256": hashlib.sha256(b"/goal-plus pause").hexdigest(),
-        })
     else:
         params["scope"] = "promotion"
     before_job = deepcopy(job)
@@ -133,6 +126,27 @@ def test_deferred_attempt_rejects_invalid_binding_without_acceptance(bound_worke
         dispatch_worker_tool(runtime.root_dir, job, "goal_plus_search_run_verifier", params, request_id="invalid")
     assert job == before_job
     assert {str(path): path.read_bytes() for path in runtime.root_dir.rglob("*.json")} == before
+
+
+def _pause_bound_goal(runtime, goal):
+    FileGoalPlusRuntime(runtime.root_dir).control_from_host_command(goal.goal_plus_id, invocation={
+        "agent_harness": "pi", "transport": "pi_extension_command", "command": "/goal-plus",
+        "action": "pause", "session_id": "session-test", "native_entry_id": "turn-pause",
+        "invocation_id": "pi:test:pause", "invoked_at": goal.created_at,
+        "raw_input_sha256": hashlib.sha256(b"/goal-plus pause").hexdigest(),
+    })
+
+
+def test_deferred_attempt_settles_while_goal_paused(bound_worker):
+    runtime, goal, job, params = bound_worker()
+    _pause_bound_goal(runtime, goal)
+    # Worker settlement: a paused Goal still accepts verification of work
+    # that already ran; candidate settlement owns the resulting Evidence.
+    accepted = dispatch_worker_tool(
+        runtime.root_dir, job, "goal_plus_search_run_verifier", params, request_id="paused-settle",
+    )
+    assert accepted["state"] == "accepted"
+    assert accepted["attempt_id"].startswith("attempt_")
 
 
 def test_worker_message_uses_common_context_and_rejects_peer_and_main_calls(tmp_path):

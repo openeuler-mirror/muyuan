@@ -16,6 +16,7 @@ from goal_plus.domain.goal import (
 
 from goal_plus.domain.goal_authorization import (
     is_terminal_goal,
+    stopped_goal_message,
 )
 
 from goal_plus.domain.search import (
@@ -53,9 +54,7 @@ class GoalSearch:
         with self.state.lock_goal(goal_plus_id):
             current = self.state.read_goal(goal_plus_id)
             if current.control.state != "active":
-                raise RuntimeError(
-                    "GoalPlusResumeRequired: task control does not permit new work"
-                )
+                raise RuntimeError(stopped_goal_message(current))
             parsed = (
                 triage
                 if isinstance(triage, GoalPlusTriage)
@@ -85,9 +84,7 @@ class GoalSearch:
         with self.state.lock_goal(goal_plus_id):
             current = self.state.read_goal(goal_plus_id)
             if current.control.state != "active":
-                raise RuntimeError(
-                    "GoalPlusResumeRequired: task control does not permit new work"
-                )
+                raise RuntimeError(stopped_goal_message(current))
             parsed = (
                 spec_draft
                 if isinstance(spec_draft, GoalPlusSpecDraft)
@@ -146,9 +143,7 @@ class GoalSearch:
                 or expected_control_version is not None and current.control.version != expected_control_version):
                 raise RuntimeError("SearchCreateStale: Goal changed before Search association")
             if current.control.state != "active":
-                raise RuntimeError(
-                    "GoalPlusResumeRequired: task control does not permit new work"
-                )
+                raise RuntimeError(stopped_goal_message(current))
             if not run_id.startswith("run_") or any(
                 not (character.isalnum() or character in {"_", "-"})
                 for character in run_id

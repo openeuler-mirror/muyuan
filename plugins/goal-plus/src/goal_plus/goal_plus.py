@@ -103,9 +103,11 @@ class FileGoalPlusRuntime:
         self,
         tool_name: str,
         tool_input: dict[str, Any],
+        *,
+        settlement: bool = False,
     ) -> GoalPlusRecord:
         return self.authorization.require_active_target(
-            GoalToolTarget.from_input(tool_name, tool_input)
+            GoalToolTarget.from_input(tool_name, tool_input), settlement=settlement
         )
 
     @staticmethod

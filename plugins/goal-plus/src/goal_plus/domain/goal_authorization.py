@@ -70,6 +70,45 @@ def is_terminal_goal(record: GoalPlusRecord) -> bool:
     return record.status in TERMINAL_STATUSES or record.control.state == "closed"
 
 
+def stopped_goal_message(record: GoalPlusRecord) -> str:
+    """Explain why a stopped Goal rejects work, with the model's next step.
+
+    Gate rejections must carry the authoritative persisted facts (control
+    state/reason, status) plus an actionable instruction, so the model can
+    relay the recovery step to the user without guessing internal logic.
+    """
+    if record.control.state == "paused":
+        reason = record.control.reason or "explicit_pause"
+        status_note = (
+            f", status={record.status}" if record.status != "active" else ""
+        )
+        return (
+            f"GoalPlusResumeRequired: Goal Plus {record.goal_plus_id} is paused "
+            f"(control=paused, reason={reason}{status_note}). Only an explicit "
+            "host resume command in the original native session can restart "
+            "it. Tell the user to run the Goal Plus resume command, then retry."
+        )
+    if is_terminal_goal(record):
+        return (
+            f"GoalPlusTerminal: Goal Plus {record.goal_plus_id} is finished "
+            f"(status={record.status}, control={record.control.state}). It "
+            "cannot accept new work; read-only history tools remain available. "
+            "Start a new task with the host start command if needed."
+        )
+    if record.status == "blocked":
+        return (
+            f"GoalPlusResumeRequired: Goal Plus {record.goal_plus_id} is "
+            "stopped (status=blocked). An explicit host resume command in the "
+            "original native session opens one retry with the recorded next "
+            "action."
+        )
+    return (
+        f"GoalPlusUserInputRequired: Goal Plus {record.goal_plus_id} is "
+        f"waiting for user input (status={record.status}). Ask the user for "
+        "the pending answer instead of using unrelated input."
+    )
+
+
 def has_host_invocation(record: GoalPlusRecord, invocation_id: str) -> bool:
     return any(
         invocation.invocation_id == invocation_id

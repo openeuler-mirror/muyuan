@@ -13,6 +13,7 @@ from goal_plus.domain.goal import (
 from goal_plus.domain.goal_authorization import (
     GOAL_PLUS_ENTRYPOINT_REQUIRED as GOAL_PLUS_ENTRYPOINT_REQUIRED,
     is_terminal_goal,
+    stopped_goal_message,
 )
 
 
@@ -81,7 +82,8 @@ class GoalDispatch:
                 raise RuntimeError("work events require an active Goal Plus record")
             if event == "dispatch" and record.control.state != "active":
                 raise RuntimeError(
-                    "GoalPlusResumeRequired: stopped tasks cannot dispatch new work"
+                    stopped_goal_message(record)
+                    + " Stopped tasks cannot dispatch new work."
                 )
             if event not in WORK_EVENT_ALLOWED_STATUSES:
                 raise ValueError(f"unknown work event: {event}")

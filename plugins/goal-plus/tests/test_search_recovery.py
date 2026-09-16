@@ -92,6 +92,24 @@ def test_recovery_status_exposes_unsettled_workspace_without_mutation(tmp_path):
     assert changed["recovery"] is None
 
 
+def test_recovery_status_slim_by_default_and_full_with_detail(tmp_path):
+    runtime, run_id, task = make_search(tmp_path)
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    slim = runtime.goal_plus_search_recovery_status(run_id)["candidates"][0]
+    assert set(slim["sessions"][0]) == {
+        "agent_session_id", "agent_harness", "execution_generation", "bound",
+    }
+    assert slim["sessions"][0]["agent_session_id"] == session.agent_session_id
+    assert set(slim["recovery"]) == {
+        "recovery_id", "state", "generation", "fenced_session_ids", "restored_at",
+    }
+    assert slim["recovery"]["recovery_id"] == recovery.recovery_id
+    detailed = runtime.goal_plus_search_recovery_status(run_id, detail=True)["candidates"][0]
+    assert "session_handle" in detailed["sessions"][0]
+    assert set(detailed["recovery"]) >= set(slim["recovery"]) | {"point", "created_at"}
+
+
 def test_recovery_cannot_launch_worker_after_original_deadline(tmp_path, monkeypatch):
     runtime, run_id, task = make_search(tmp_path)
     recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)

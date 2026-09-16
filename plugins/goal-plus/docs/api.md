@@ -30,6 +30,9 @@ wait 的 timeout 只控制读取等待，不延长额度、不取消执行。
 `goal_plus_session_wait` 默认返回准确状态与错误，`detail=true` 才读取正文和诊断；
 completed 表示调用返回，不能代替 verifier 通过。Search Evidence 用
 `goal_plus_search_list_history` 查询；已注入的 Evidence 无需机械重复读取。
+wait 的 `timeout_seconds` 上限为 300 秒：用户输入只能在 turn 边界交付，单次长阻塞
+会锁死用户唯一的插话出口。结果未就绪时使用短等待或结束当前 turn，由宿主 Stop
+continuation 重新点火；需要向活动调用插话时改用 `goal_plus_session_message`。
 
 `goal_plus_session_interrupt` 中断指定轮次，随后仍需确认结果；stop 停止执行，
 close 关闭 controller 和资源并保留历史及 artifact。Main 暂停后仍可读取与清理。
@@ -39,6 +42,13 @@ TT 的同请求 run 可通过准确调用日志接管原 Message，只观察与�
 不改变 deadline 或 generation。Codex TT 仍不支持，见 [Codex 支持范围](codex.md#支持范围与验证)。
 TT interrupt/message 通过准确控制通道取得原生确认；确认超时不能声明执行已停止。
 恢复流程见 [Search 一致性恢复](search-recovery.md)，Main 控制合同见 [运行逻辑](runtime-logic.md)。
+
+## 错误返回
+
+gate 类拒绝消息携带权威持久状态（control state/reason、status）与恢复指引：
+暂停返回 `GoalPlusResumeRequired`（含 reason 与 resume 命令提示），终态返回
+`GoalPlusTerminal`，等待用户输入返回 `GoalPlusUserInputRequired`。模型应把消息中的
+恢复步骤直接转述给用户，而不是猜测内部失败原因；只读历史工具在终态下仍可用。
 
 Main 概要来自同一份 [instructions](../assets/goal-plus-instructions.txt)：
 Codex 经 MCP 和可信 Goal hook context 接收，
@@ -368,7 +378,7 @@ catalog discovery 不是 inference preflight；现有 host gate 会对本次 spe
 | --- | --- | --- |
 | `goal_plus_search_get_agent_context` | candidate worker | 加载精简的权威 candidate contract 与恢复数据 |
 | `goal_plus_search_get_agent_observability` | main/monitor | 读取单个 session 的归一化 model、timing、usage、artifact 和 handoff Evidence |
-| `goal_plus_search_recovery_status` | main | 只读列出 run 各 lane 的完整 checkpoint、generation、恢复事务与旧 session |
+| `goal_plus_search_recovery_status` | main | 只读列出 run 各 lane 的 checkpoint、generation、恢复事务与 session 概要；`detail=true` 附完整 session_handle 与恢复记录 |
 | `goal_plus_search_prepare_recovery` | main | 固定 checkpoint、隔离旧 generation，返回幂等 recovery ID；不改工作区 |
 | `goal_plus_search_recover_candidate` | main | 宿主静默核验后，通过 provider 恢复 checkpoint；不 spawn 或重置预算 |
 

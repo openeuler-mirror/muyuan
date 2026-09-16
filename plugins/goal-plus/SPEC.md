@@ -237,7 +237,9 @@ Main 后续操作、candidate 操作和终态 report
 
 同一原生 session 正常运行时，普通用户消息优先处理，然后继续原任务。明确中断或执行丢失将
 control 标为 paused；普通聊天、原生 session_start 均不解锁。正常 steering 不当作中断。
-pause 禁止后续续跑和新派发，不强杀当前 turn；clear 永久撤权且保留历史。
+pause 禁止后续续跑和新派发，不强杀当前 turn；paused 下已关联 run 的结算类工具
+（verifier 提交、恢复/迭代读取、work event 与 final check 提交）仍允许完成已运行工作，
+clear 永久撤权且保留历史。
 blocked 是显式可恢复停止，旧终态 blocked 迁移为 closed，不复活历史。paused/blocked 下 edit
 不激活；有效编辑 complete 可产生新 revision。不同 session、fork、detached/stale 和已结束任务
 不继承执行权。resume 保留原 deadline、累计用量及 Search 身份。

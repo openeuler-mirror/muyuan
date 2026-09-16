@@ -97,7 +97,12 @@ class CandidateVerification:
         with self.state.lock_run(run_id):
             run = self.state.read_run(run_id)
             if scope == "process":
-                self.authorization.require_search_execution(run.run_id)
+                # Worker settlement: a paused Goal still accepts verification
+                # of work that already ran; candidate settlement is the
+                # authority for the resulting Evidence.
+                self.authorization.require_search_execution(
+                    run.run_id, settlement=True
+                )
                 require_worker_iteration_state(run, "run verifier")
             else:
                 require_run_not_invalidated(run, "run verifier")

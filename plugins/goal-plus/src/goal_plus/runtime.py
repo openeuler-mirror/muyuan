@@ -379,8 +379,8 @@ class FileSearchRuntime:
     ) -> CandidateRecovery:
         return self.recovery.recover_candidate(run_id, candidate_id, recovery_id)
 
-    def goal_plus_search_recovery_status(self, run_id: str) -> dict[str, Any]:
-        return self.recovery.queries.status(run_id)
+    def goal_plus_search_recovery_status(self, run_id: str, *, detail: bool = False) -> dict[str, Any]:
+        return self.recovery.queries.status(run_id, detail=detail)
 
     def verify_thinkthread_candidate_attempt(
         self,

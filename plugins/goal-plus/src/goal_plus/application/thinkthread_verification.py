@@ -104,7 +104,7 @@ class ThinkThreadVerification:
             raise ValueError("worker process verifier requires a non-empty hypothesis")
         with self.state.lock_run(run_id):
             run = self.state.read_run(run_id)
-            self.authorization.require_search_execution(run_id)
+            self.authorization.require_search_execution(run_id, settlement=True)
             require_worker_iteration_state(run, "accept ThinkThread attempt")
             record = self._bound_candidate(
                 run_id, candidate_id, submission.agent_session_id,
@@ -177,7 +177,9 @@ class ThinkThreadVerification:
 
         with self.state.lock_run(run_id):
             run = self.state.read_run(run_id)
-            self.authorization.require_search_execution(run.run_id)
+            self.authorization.require_search_execution(
+                run.run_id, settlement=True
+            )
             require_worker_iteration_state(run, "verify ThinkThread attempt")
             frozen = self.state.read_frozen_spec(run.frozen_spec_id)
             normalized_toolization_decision = (
