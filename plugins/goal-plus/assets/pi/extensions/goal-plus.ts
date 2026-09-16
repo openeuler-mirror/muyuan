@@ -54,12 +54,17 @@ const WORKER_CONTEXT_ENTRY_TYPE = "goal-plus-worker-context";
 const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
 const GOAL_PLUS_RUNTIME_ENTRY_TYPE = "goal-plus-runtime-start";
 const GOAL_PLUS_COMMAND_CONTEXT_TYPE = "goal-plus-command-context";
+const GOAL_PLUS_MUST_CONTINUE_TYPE = "goal-plus-must-continue";
 const GOAL_PLUS_PROGRESS_WIDGET_KEY = "goal-plus-progress";
 let workspaceRoot: string | undefined;
 let sawContext = false;
 let workerGeneration: { runId: string; candidateId: string; generation: number } | undefined;
 let activeGoalPlusId = process.env.GOAL_PLUS_ID;
 let cachedGoalStatus: GoalPlusStatusPayload | undefined;
+let goalContextFullKey: string | undefined;
+// The turn started by goal-plus-must-continue already carries phase/next action, so
+// it skips the per-turn reminder. Consumed once, on the next agent start.
+let pendingMustContinueTurn = false;
 let continuationCount = 0;
 let workerContinuationCount = 0;
 let workerRegistrationSent = false;
@@ -1053,6 +1058,7 @@ function clearActiveGoalState(pi: ExtensionAPI, persist: boolean): void {
 	stagedPublicationNotifications.splice(0);
 	presentedPublicationNotifications.clear();
 	cachedGoalStatus = undefined;
+	goalContextFullKey = undefined;
 	goalPlusSessionAuthorized = false;
 	if (persist) persistGoalState(pi);
 }
@@ -1740,6 +1746,27 @@ function startPiProgressDemo(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	timer = setInterval(render, PI_PROGRESS_DEMO_TICK_MS);
 	stopPiProgressDemo = stop;
 	render();
+}
+
+// The full context (goal text, command config, final-check policy) is only worth
+// its tokens on the first turn of a session, after a compaction, or when the Goal
+// revision/control changes. Other turns get the compact status line and read the
+// rest through goal_plus_status when they need it.
+function buildGoalPlusBriefContext(status: GoalPlusStatusPayload): string {
+	const action = status.next_action;
+	const lines = [
+		"[GOAL PLUS ACTIVE]",
+		`goal_plus_id: ${status.goal_plus_id ?? activeGoalPlusId ?? "unknown"}`,
+		`status: ${status.status ?? "unknown"} · control: ${status.control?.state ?? "unknown"}`
+			+ ` · phase: ${status.phase ?? "unknown"} · revision: ${status.goal_revision ?? 1}`,
+		action
+			? `next_action: ${action.kind ?? "unknown"}（required=${action.required === false ? "false" : "true"}）`
+				+ ` — ${action.description ?? ""}`
+			: "next_action: 未记录",
+		"完整目标、命令配置和 final check policy 只在首轮、压缩后或 revision 变化时注入；"
+			+ "需要时用 goal_plus_status(detail=true) 读取，并每轮读取 control、next_action 和 reconciliation。",
+	];
+	return lines.join("\n");
 }
 
 function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
@@ -2673,11 +2700,15 @@ async function queueMainGoalContinuation(pi: ExtensionAPI, ctx: ExtensionContext
 	if (details.decision === "block") {
 		continuationCount += 1;
 		if (canPersistGoalState(ctx)) persistGoalState(pi);
+		// The runtime owns the continuation text: it carries only the rules that
+		// exist nowhere else, while the goal data comes from the per-turn context.
+		pendingMustContinueTurn = true;
 		pi.sendMessage(
 			{
-				customType: "goal-plus-stop-continuation",
-				content: details.continuation_prompt || details.reason || "Goal Plus 仍处于 active。继续下一项必需 action。",
-				display: true,
+				customType: GOAL_PLUS_MUST_CONTINUE_TYPE,
+				content: details.continuation_prompt || details.reason
+					|| "Goal Plus 仍处于 active。继续下一项必需 action。",
+				display: false,
 				details: { goal_plus_id: activeGoalPlusId, continuationCount,
 					goal_revision: details.goal_revision, control_version: details.control_version,
 					session_id: details.session_id, request_id: randomUUID() },
@@ -3104,7 +3135,7 @@ export default async function (pi: ExtensionAPI) {
 		const status = await refreshActiveGoal(pi, commandContextFrom(ctx), false);
 		const messages = event.messages;
 		const isRequest = (message: unknown) => isRecord(message) && message.role === "custom"
-			&& [GOAL_PLUS_COMMAND_CONTEXT_TYPE, "goal-plus-stop-continuation"].includes(String(message.customType));
+			&& [GOAL_PLUS_COMMAND_CONTEXT_TYPE, GOAL_PLUS_MUST_CONTINUE_TYPE].includes(String(message.customType));
 		const stale = (message: unknown) => {
 			if (!isRequest(message) || !isRecord(message) || !isRecord(message.details)) return false;
 			const d = message.details;
@@ -3146,10 +3177,19 @@ export default async function (pi: ExtensionAPI) {
 			? await publicationNotificationContext(pi, commandCtx, runId, true)
 			: { ok: true, notificationIds: [] };
 		if (publication.content && persist) persistGoalState(pi);
+		const goalContextKey = status
+			? `${status.goal_plus_id ?? ""}:${status.goal_revision ?? 0}:${status.control?.version ?? 0}`
+			: undefined;
+		const needsFullGoalContext = goalContextKey !== undefined && goalContextFullKey !== goalContextKey;
+		const continuationTurn = pendingMustContinueTurn;
+		pendingMustContinueTurn = false;
 		const goalContext = goalPlusSessionAuthorized && status && !isTerminalStatus(status.status)
 			&& status.control?.state === "active"
-			? buildGoalPlusContext(status)
+			? needsFullGoalContext
+				? buildGoalPlusContext(status)
+				: continuationTurn ? undefined : buildGoalPlusBriefContext(status)
 			: undefined;
+		if (goalContext && needsFullGoalContext) goalContextFullKey = goalContextKey;
 		const content = [publication.content, goalContext].filter((item): item is string => Boolean(item));
 		if (content.length === 0) return { systemPrompt };
 		return {
@@ -3303,6 +3343,14 @@ export default async function (pi: ExtensionAPI) {
 	});
 	pi.on("agent_settled", async (_event, ctx) => {
 		await settleMainGoal(pi, ctx);
+	});
+	// Compaction rebuilds the model context, so the next turn re-injects the full
+	// Goal context instead of the compact status line.
+	pi.on("session_before_compact", () => {
+		goalContextFullKey = undefined;
+	});
+	pi.on("session_compact", () => {
+		goalContextFullKey = undefined;
 	});
 	pi.on("session_shutdown", async (event, ctx) => {
 		stopWorkerSteering?.();

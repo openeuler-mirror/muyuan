@@ -160,6 +160,19 @@ session 打开后立即播放一段约 12 秒的脚本时间线，只演示 Sear
   `detail=true`，slim summary 不含 `search_tasks`/`candidates`），
   字段见 [API](api.md#handoff-与-observability)。
 
+Main turn 结束而 Goal 仍未终态时，stop gate 会拒绝停止并注入一条 **不在 transcript 显示** 的
+`goal-plus-must-continue`。它的正文由共享 runtime（`application/goal_gate.py`）生成，只保留终态与
+超时判定规则和当前 next action（约 600 字符，不再重复目标、时间上下文、policy、派发和
+reconciliation）；Codex 的 Stop hook 用同一份文本。
+
+完整目标、命令配置、final check policy 与 reconciliation 由 Pi 的 `goal-plus-native-context` 提供：
+**只在 session 首轮、压缩后或 revision/control 变化时注入完整版本**，其余每轮只注入精简状态行
+（id/phase/revision/next action + 需要时读 `goal_plus_status`）；由 `goal-plus-must-continue`
+点火的那一轮已自带 phase/next action，因此跳过这条精简提醒。Codex 在
+`SessionStart(source=compact)` 后同样会重注 goal context，两种宿主都保证压缩后目标仍可见。记录真实
+终态或 `/goal-plus pause|clear` 后不再注入；candidate 侧的续跑是另一条独立的
+`goal-plus-worker-continuation`。
+
 也可以在交互式 Pi 中直接使用：
 
 ```text

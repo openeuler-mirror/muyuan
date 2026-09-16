@@ -23,7 +23,7 @@ python -m pytest --run-system-tests -n 0 -q tests/test_installation_system.py
 | Example slice | `pytest -m example -q` | `examples/*` fixtures drive real generated assets |
 | Codex fast slice | `pytest -m codex -q` | Codex adapter, hooks, assets, native session contract |
 | Pi fast slice | `pytest -m pi -q` | Pi extension, native protocol, metrics, assets |
-| Progress UI slice | `pytest -m ui -q` | Pi progress surfaces and the scripted UI demo, including their 5s refresh/hide waits |
+| Progress UI slice | `pytest -m ui -q` | Pi progress widget, scripted UI demo (5s refresh/hide waits), and the hidden Main continuation |
 | Runtime-focused | `pytest tests/test_runtime_unit.py` | Search state machine without a host |
 | LLM Verifier-focused | `pytest tests/test_llm_verifier.py -q` | task lifecycle, immutable records, structured output, prompt binding, and drainer replay |
 | Adaptive Search-focused | `pytest tests/adaptive_search -q` | deterministic allocation, reconciliation, snapshot, and recovery |

@@ -40,7 +40,6 @@ from goal_plus.domain.goal_closeout import (
     continuation_prompt,
 )
 from goal_plus.application.goal_reconciliation import GoalReconciliation
-from goal_plus.domain.goal_time import elapsed_seconds, format_elapsed
 
 
 class GoalGate:
@@ -250,49 +249,34 @@ class GoalGate:
         )
 
     def _stop_audit_prompt(self, record: GoalPlusRecord) -> str:
-        checked_at = self.clock.timestamp()
-        elapsed = format_elapsed(elapsed_seconds(record.created_at, self.clock.now()))
+        """Compact stop continuation: only the rules that live nowhere else.
+
+        The full raw goal, command config, policy and reconciliation are already
+        delivered by each host while the Goal is active (Pi: per-turn native
+        context, Codex: UserPromptSubmit goal context), so re-sending them on
+        every stop attempt only burns tokens.
+        """
         action = record.next_action
         action_text = action.description if action else "没有记录下一步 action。"
         final_check_text = (
-            "该目标修订版必须通过独立最终检查；调用 goal_plus_run_final_check 并审查结论。"
+            "该 revision 需要独立最终检查：调用 goal_plus_run_final_check 并审查结论。\n"
             if final_check_mode(record) == "required"
-            else "policy 不要求独立最终检查。"
-        )
-        active_items = [
-            item
-            for item in record.work_items
-            if item.goal_revision == record.goal_revision
-            and item.status in {"launching", "active"}
-        ]
-        execution_text = (
-            ", ".join(f"{item.work_item_id}={item.status}" for item in active_items)
-            if active_items
-            else "无活跃 subagent 派发。"
+            else ""
         )
         return (
-            "Goal Plus 仍处于 active。顶层 agent 只有在记录真实终态后才能停止。\n\n"
-            "该修订版的完整原始目标：\n"
-            "---\n"
-            f"{record.raw_goal}\n"
-            "---\n\n"
-            "时间上下文：\n"
-            f"- created_at_utc: {record.created_at}\n"
-            f"- checked_at_utc: {checked_at}\n"
-            f"- elapsed: {elapsed}\n\n"
-            f"当前 phase：{record.phase}\n"
+            f"Goal Plus {record.goal_plus_id} 仍处于 active（phase={record.phase}，"
+            f"revision={record.goal_revision}）。顶层 agent 只有在记录真实终态后才能停止。\n\n"
             f"当前 next action：{action_text}\n"
-            f"编排 policy：{record.policy.get('execution', DEFAULT_EXECUTION_POLICY)}\n"
-            f"活跃 subagent 派发：{execution_text}\n"
-            f"最终检查 policy：{final_check_text}\n\n"
-            "对照持久证据审计完整原始目标中的每项要求。如果原始目标包含时间限制，使用上述"
-            "时间戳进行判断：只要仍有可用时间且目标未完成，就继续工作；达到或超过时间条件时，"
+            f"{final_check_text}"
+            "完整原始目标、命令配置、时间上下文和 reconciliation 见本 session 的 Goal Plus "
+            "context；缺失时用 goal_plus_status(detail=true) 读取。\n\n"
+            "对照持久证据审计完整原始目标中的每项要求。如果原始目标包含时间限制，使用 status "
+            "中的时间戳进行判断：只要仍有可用时间且目标未完成，就继续工作；达到或超过时间条件时，"
             "停止新增工作、保留最佳持久结果并完成必需审计。时间条件不覆盖已经完成的结果终态："
             "若必需工作、验证、提升和审计已经完成，即使实际收尾晚于预设也使用 complete，并在"
-            "evidence 中分别记录预设时间和实际完成收尾时间；不要输出 late，也不要仅因超出预设"
+            " evidence 中分别记录预设时间和实际完成收尾时间；不要输出 late，也不要仅因超出预设"
             "而使用 blocked。blocked 只表示仍缺少外部输入、权限、资源或状态变化，导致任务确实"
             "无法继续。如果没有时间限制，继续到目标满足，或出现这种真实阻塞。单次 worker 或"
-            "probe 返回不代表 Goal Plus 任务完成。停止前，使用 complete、blocked 或 abandoned"
-            "调用 goal_plus_set_status，并提供真实原因和证据。\n\n"
-            + self.reconciliation.reconciliation_context(record.goal_plus_id)
+            " probe 返回不代表 Goal Plus 任务完成。停止前，使用 complete、blocked 或 abandoned"
+            "调用 goal_plus_set_status，并提供真实原因和证据。"
         )

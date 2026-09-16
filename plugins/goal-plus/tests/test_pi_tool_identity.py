@@ -165,6 +165,15 @@ def test_pi_search_progress_frame_follows_the_search_run(tmp_path):
 
 
 @pytest.mark.ui
+def test_pi_continuation_and_goal_context_are_compact(tmp_path):
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": "main",
+        "GOAL_PLUS_PI_CONTINUATION_TEST": "1",
+    })
+    assert "continuation checks passed" in result.stdout
+
+
+@pytest.mark.ui
 def test_pi_ui_demo_walks_the_search_run_lifecycle(tmp_path):
     result = _run_env_script(tmp_path, {
         "GOAL_PLUS_PI_ROLE": "main",
@@ -240,7 +249,9 @@ const mocks = {
       if (name === "host_mcp_manifest") return {details: globalThis.mcpManifest};
       globalThis.calls.push({name, args});
       let details = name === "goal_plus_gate"
-        ? {decision: "block", reason: "fixture phase gate"} : globalThis.status;
+        ? {decision: "block", reason: "fixture phase gate",
+           continuation_prompt: "fixture continuation prompt"}
+        : globalThis.status;
       if (name === "goal_plus_monitor_snapshot" && globalThis.monitorSnapshot) {
         details = globalThis.monitorSnapshot;
       }
@@ -560,6 +571,49 @@ if (process.env.GOAL_PLUS_PI_SEARCH_PROGRESS_TEST === "1") {
   assert.equal(widgets.size, 0, "the frame must disappear after the Search run finished");
   await events.get("session_shutdown")({reason: "test"}, ctx);
   console.log("search progress checks passed");
+  process.exit(0);
+}
+if (process.env.GOAL_PLUS_PI_CONTINUATION_TEST === "1") {
+  const sent = [];
+  ctx.ui.setStatus = () => {};
+  ctx.ui.setWidget = () => {};
+  ctx.ui.setWorkingMessage = () => {};
+  pi.sendMessage = (message, options) => sent.push({message, options});
+  pi.sendUserMessage = () => {};
+  await commands.get("goal-plus").handler("fixture", ctx);
+  sent.length = 0;
+  // The full goal context is injected once, then only the compact status line.
+  const first = await events.get("before_agent_start")({prompt: "first", systemPrompt: "sys"}, ctx);
+  assert.ok(first.message.content.includes("原始目标"), first.message.content);
+  assert.ok(first.message.content.includes("中文"), first.message.content);
+  const second = await events.get("before_agent_start")({prompt: "second", systemPrompt: "sys"}, ctx);
+  assert.ok(!second.message.content.includes("原始目标"), second.message.content);
+  assert.ok(second.message.content.includes("goal_plus_status(detail=true)"), second.message.content);
+  assert.ok(second.message.content.includes("next_action"), second.message.content);
+  // Compaction rebuilds the model context: the next turn re-injects the full goal.
+  await events.get("session_compact")({}, ctx);
+  const third = await events.get("before_agent_start")({prompt: "third", systemPrompt: "sys"}, ctx);
+  assert.ok(third.message.content.includes("原始目标"), third.message.content);
+  // A refused stop carries the runtime continuation verbatim, not a second copy of
+  // the goal, and stays out of the transcript.
+  await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
+  const continuation = sent.find(item => item.message.customType === "goal-plus-must-continue");
+  assert.ok(continuation, "a refused stop must inject the continuation");
+  assert.equal(continuation.message.display, false, "the continuation must not print in the transcript");
+  assert.equal(continuation.options.deliverAs, "followUp");
+  assert.equal(continuation.options.triggerTurn, true);
+  assert.equal(continuation.message.content, "fixture continuation prompt");
+  assert.ok(!continuation.message.content.includes("中文"));
+  assert.ok(sent.every(item => item.message.customType !== "goal-plus-stop-continuation"));
+  // The continuation turn carries the same phase/next action, so it skips the
+  // per-turn reminder; the following normal turn gets it again.
+  const continuationTurn = await events.get("before_agent_start")({prompt: "continue", systemPrompt: "sys"}, ctx);
+  assert.equal(continuationTurn.message, undefined, "the continuation turn must not repeat the reminder");
+  const laterTurn = await events.get("before_agent_start")({prompt: "later", systemPrompt: "sys"}, ctx);
+  assert.ok(laterTurn.message, "a normal turn keeps the compact reminder");
+  assert.ok(laterTurn.message.content.includes("next_action"), laterTurn.message.content);
+  assert.ok(!laterTurn.message.content.includes("原始目标"), laterTurn.message.content);
+  console.log("continuation checks passed");
   process.exit(0);
 }
 if (process.env.GOAL_PLUS_PI_DEMO_TEST === "1") {

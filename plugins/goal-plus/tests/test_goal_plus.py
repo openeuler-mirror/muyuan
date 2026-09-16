@@ -1051,14 +1051,17 @@ def test_goal_like_triage_blocks_stop_until_terminal_status(tmp_path) -> None:
 
     gate = runtime.gate(updated.goal_plus_id, event="stop", context={})
     assert gate.decision == "block"
-    assert "该修订版的完整原始目标" in gate.continuation_prompt
-    assert "Tidy docs wording" in gate.continuation_prompt
-    assert "created_at_utc" in gate.continuation_prompt
-    assert "checked_at_utc" in gate.continuation_prompt
-    assert "elapsed:" in gate.continuation_prompt
+    assert "仍处于 active" in gate.continuation_prompt
+    assert "当前 next action" in gate.continuation_prompt
+    assert "goal_plus_status" in gate.continuation_prompt
+    assert "时间戳" in gate.continuation_prompt
     assert "即使实际收尾晚于预设也使用 complete" in gate.continuation_prompt
     assert "不要仅因超出预设而使用 blocked" in gate.continuation_prompt
     assert "goal_plus_set_status" in gate.continuation_prompt
+    # The goal/config data is delivered by each host's per-turn context; the
+    # continuation only carries the rules, so it must stay small.
+    assert "Tidy docs wording" not in gate.continuation_prompt
+    assert len(gate.continuation_prompt) < 800
 
 
 def test_spec_discovery_stop_gate_blocks_with_next_action(tmp_path) -> None:
@@ -1081,7 +1084,7 @@ def test_spec_discovery_stop_gate_blocks_with_next_action(tmp_path) -> None:
 
     assert gate.decision == "block"
     assert gate.phase == "spec_discovery"
-    assert "Goal Plus 仍处于 active" in gate.continuation_prompt
+    assert "仍处于 active" in gate.continuation_prompt
     assert "baseline command" in gate.continuation_prompt
 
 
