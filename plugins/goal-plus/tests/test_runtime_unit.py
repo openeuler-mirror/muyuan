@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import json
 import os
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -3918,7 +3919,12 @@ def test_pending_verifier_is_visible_and_does_not_queue_another_attempt(tmp_path
     assert handoff.read_text() == '{"status":"waiting"}'
 
 
-@pytest.mark.parametrize("interruption", ["submitted", "executing", "reported", "committed"])
+@pytest.mark.parametrize("interruption", [
+    "submitted", "executing", "reported", "committed",
+    pytest.param(signal.SIGINT, id="sigint"),
+    pytest.param(signal.SIGTERM, id="sigterm"),
+    pytest.param(signal.SIGKILL, id="sigkill"),
+])
 def test_verifier_interrupted_attempt_resumes_without_rollback(tmp_path, monkeypatch, interruption):
     runtime = FileSearchRuntime(tmp_path / ".search")
     run_id, candidate_id, workspace = create_candidate(runtime, make_project(tmp_path))
@@ -3928,18 +3934,41 @@ def test_verifier_interrupted_attempt_resumes_without_rollback(tmp_path, monkeyp
     def interrupted(*args, **kwargs):
         raise RuntimeError("interrupted attempt")
 
-    if interruption == "executing":
+    expected_error = "interrupted attempt"
+    if isinstance(interruption, signal.Signals):
+        execute = runtime.verifiers.execute_verifier_process
+
+        def signalled(command, **kwargs):
+            return execute(["python", "-c", (
+                "import os, sys; "
+                "print('{\"combined_score\": 999}', flush=True); "
+                "print('interrupted verifier diagnostic', file=sys.stderr, flush=True); "
+                f"os.kill(os.getpid(), {int(interruption)})"
+            )], **kwargs)
+
+        monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", signalled)
+        expected_error = "VerifierInterrupted"
+    elif interruption == "executing":
         monkeypatch.setattr(runtime.verifiers, "run_commands", interrupted)
     elif interruption == "reported":
         monkeypatch.setattr(runtime.settlement, "record", interrupted)
     elif interruption == "committed":
         monkeypatch.setattr(runtime.settlement, "persist_run", interrupted)
-    with pytest.raises(RuntimeError, match="interrupted attempt"):
+    with pytest.raises(RuntimeError, match=expected_error):
         runtime.run_verifier(run_id, candidate_id, agent_session_id=session.agent_session_id,
                              hypothesis="original hypothesis",
                              on_submitted=interrupted if interruption == "submitted" else None)
     restarted = FileSearchRuntime(runtime.root_dir)
     record = restarted.candidate_creation.state.read_candidate(run_id, candidate_id)
+    if interruption not in {"reported", "committed"}:
+        assert record.verification.state == "needs_recovery"
+        assert record.verification_request.report is None
+        assert record.score_report is None
+        assert record.iterations == record.results_ledger == []
+    if isinstance(interruption, signal.Signals):
+        log_dir = restarted.candidate_creation.state.candidate_dir(run_id, candidate_id) / "logs/process"
+        log_path, = log_dir.glob("*.log")
+        assert "interrupted verifier diagnostic" in log_path.read_text()
     attempt_id = record.score_report.attempt_id if interruption == "committed" else record.verification.attempt_id
     artifact = record.score_report.attempt_artifact_ref if interruption == "committed" else record.verification.artifact_ref
     (workspace / "initial_program.py").write_text("VALUE = 4\n")
@@ -3947,6 +3976,16 @@ def test_verifier_interrupted_attempt_resumes_without_rollback(tmp_path, monkeyp
     (workspace / ".tmp/local-result.txt").write_text("unsubmitted result")
     if interruption in {"reported", "committed"}:
         monkeypatch.setattr(restarted.verifiers, "run_commands", lambda *a, **k: pytest.fail("repeated completed verifier"))
+    executions = []
+    if isinstance(interruption, signal.Signals):
+        execute = restarted.verifiers.execute_verifier_process
+
+        def resumed(command, **kwargs):
+            executions.append(kwargs["cwd"])
+            assert (kwargs["cwd"] / "initial_program.py").read_text() == "VALUE = 3\n"
+            return execute(command, **kwargs)
+
+        monkeypatch.setattr(restarted.verifiers, "execute_verifier_process", resumed)
     facade = SearchTools(restarted)
     result = facade.goal_plus_search_run_verifier(run_id, candidate_id, attempt_id=attempt_id, retry=True)
     assert result["attempt_id"] == attempt_id
@@ -3965,6 +4004,8 @@ def test_verifier_interrupted_attempt_resumes_without_rollback(tmp_path, monkeyp
     assert facade.goal_plus_search_run_verifier(run_id, candidate_id, attempt_id=attempt_id, retry=True) == result
     assert restarted.candidate_creation.state.read_candidate(run_id, candidate_id) == after
     assert restarted.candidate_sessions.session(session.agent_session_id).counters["verifier_runs"] == 1
+    if isinstance(interruption, signal.Signals):
+        assert len(executions) == 1
     monkeypatch.undo()
     assert restarted.run_verifier(run_id, candidate_id, agent_session_id=session.agent_session_id,
                                   hypothesis="next local version").process_passed

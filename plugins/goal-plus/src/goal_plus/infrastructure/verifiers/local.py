@@ -788,6 +788,18 @@ class LocalVerifiers:
                         pass_fds=tuple(fd for fd in (execution_lock, resource_lease) if fd is not None),
                     )
             elapsed = time.perf_counter() - start
+            if completed.returncode < 0:
+                log_path.write_text(
+                    bounded_verifier_log(
+                        f"returncode: {completed.returncode}\n\n"
+                        f"## stdout\n{completed.stdout}\n## stderr\n{completed.stderr}"
+                    ),
+                    encoding="utf-8",
+                )
+                raise RuntimeError(
+                    f"VerifierInterrupted: {command.name} terminated by signal "
+                    f"{-completed.returncode}; see {log_path}"
+                )
             metrics = self.parse_metrics(completed.stdout)
             metrics.setdefault("returncode", completed.returncode)
             metrics.setdefault("elapsed_seconds", elapsed)

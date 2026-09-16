@@ -363,6 +363,8 @@ TT 执行结果未知时持久保留原 request 的资源占用，只允许准�
 在原不可变快照上继续验证或幂等补齐结算，保留当前 workspace、Evidence 归属和累计预算。
 存活的直接 verifier 子进程持有候选与资源锁，控制器丢失不授权重复执行。只有无法核验提交
 记录或恢复 artifact 时才需要 Main 决定 checkpoint；完整失败结果不作为中断自动重试。
+本地 verifier 被信号终止不构成评价结果：保留诊断日志与未结算 intent，retry 在原快照上
+重跑，不生成失败 Evidence。正常退出的失败和配置 timeout 仍按原合同结算。
 
 本地 intent 固定 artifact、工具输入与消费回执。完整 iteration、分数及 ledger 原子提交后，
 才发布工具索引或清理输入。正常执行与 resume 共用幂等 reconciliation，不重复计分或改变

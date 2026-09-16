@@ -41,6 +41,7 @@ workspace，不要求原对话能加载，也不回滚 checkpoint；宿主错误
 完整 ScoreReport 在结算前保存。使用 `goal_plus_search_run_verifier(attempt_id=..., retry=true)`
 续接：有完整结果则只补结算，否则在原快照上重跑冻结 verifier，仍受 timeout 和剩余预算约束。
 完整的 Timeout/失败结果不重评；输入缺失、不一致或 workspace 历史脱离原 artifact 时拒绝并保留现场。
+本地 verifier 被信号终止时只保留日志，不生成评分结果；resume 按原 attempt 重跑验证。
 
 Retry 保留原 attempt、session、generation 和预算，只产生一条 Evidence 与 ledger。当前代码、
 暂存修改和 scratch 不回滚，Git 历史连接已结算 artifact；仅 `results_tsv` binding 同步受管 ledger。
