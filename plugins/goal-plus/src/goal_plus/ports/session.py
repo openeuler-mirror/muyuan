@@ -63,6 +63,7 @@ class NativeSessionInput:
     instructions: str | None = None
     configuration: dict[str, Any] = field(default_factory=dict)
     runtime_provider: Literal["direct"] = "direct"
+    metrics_baseline: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ class SessionInvocationObservation:
     ended_at: str
     duration_seconds: float
     pi_metrics: dict[str, Any] | None = None
+    metrics_baseline: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

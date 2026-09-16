@@ -656,6 +656,7 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
         hypothesis="try a fused path",
         toolization_decision=None,
         on_submitted=None,
+        attempt_id=None,
     )
     iterations = tools.goal_plus_search_list_iterations("agent_001")["items"]
     assert len(iterations) == 2

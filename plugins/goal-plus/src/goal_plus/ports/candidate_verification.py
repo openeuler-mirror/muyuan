@@ -32,4 +32,5 @@ class CandidateVerifiers(Protocol):
         record: CandidateRecord,
         commands: list[VerifierCommand],
         scope: Literal["process", "promotion"],
+        *, execution_lock: int | None = None,
     ) -> ScoreReport: ...

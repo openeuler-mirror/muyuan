@@ -261,7 +261,8 @@ def create_mcp(
 
                 Reuse call_id for identical retries. Later calls reuse the current session;
                 new_session closes idle resources and dispatches a new generation. Active calls
-                accept steering through message. Unknown local execution requires explicit recovery.
+                accept steering through message. After an MCP restart, use a new call_id to continue
+                the same native session and workspace; checkpoint recovery is a separate explicit action.
                 The frozen budget and Goal deadline bound the execution allowance.
                 """
                 return await asyncio.to_thread(
@@ -286,6 +287,7 @@ def create_mcp(
             Wait with a short timeout (<= SESSION_WAIT_MAX_SECONDS); when the result is not ready yet, end the
             turn and let the host Stop continuation re-ignite you instead of blocking a single turn. User input
             is only delivered at turn boundaries, and goal_plus_session_message can steer an active invocation.
+            A restarted MCP cannot replay old call history; continue with session_run and a new call_id.
             """
             if timeout_seconds > SESSION_WAIT_MAX_SECONDS:
                 raise ValueError(
@@ -425,7 +427,7 @@ def create_mcp(
     @register_tool()
     @_debug_tool_response
     def goal_plus_search_prepare_recovery(run_id: str, candidate_id: str) -> dict[str, Any]:
-        """固定中断 candidate 的结算恢复点并隔离旧 generation，返回 recovery_id。
+        """显式放弃 candidate 当前现场，固定结算恢复点并隔离旧 generation，返回 recovery_id。
 
         随后由 host 停止并确认旧 worker 结束，再调用 goal_plus_search_recover_candidate。
         """
@@ -685,6 +687,7 @@ def create_mcp(
         hypothesis: str | None = None,
         toolization_decision: ToolizationDecision | None = None,
         attempt_id: Annotated[str, Field(min_length=1)] | None = None,
+        retry: bool = False,
         timeout_seconds: Annotated[float, Field(ge=0, le=60, allow_inf_nan=False)] = 30,
     ) -> dict[str, Any]:
         """Subagent 带 `agent_session_id` 自评分；主流程最终验证不带它。
@@ -704,9 +707,11 @@ def create_mcp(
         不再传 hypothesis 或 toolization_decision。timeout_seconds 限制查询等待，不取消验证。
         未完成时按 candidate_action 操作：wait_for_verifier 使用原 attempt_id 调用本工具；
         end_turn 结束当前 turn，由宿主在下一次 wake 交付结果。等待期间保持工作区不变。
+        本地 attempt 中断且执行锁已释放时，使用原 attempt_id 和 retry=true 恢复验证与结算；
+        复用完整结果或重验原提交快照，保留当前 workspace，不额外创建 iteration 或回滚 checkpoint。
         """
         loop = asyncio.get_running_loop()
-        if attempt_id is not None:
+        if attempt_id is not None and not retry:
             deadline = loop.time() + timeout_seconds
             while True:
                 result = await asyncio.to_thread(
@@ -723,6 +728,7 @@ def create_mcp(
             tools.goal_plus_search_run_verifier, run_id, candidate_id, scope,
             agent_session_id, hypothesis, toolization_decision,
             inject_evidence=False,
+            attempt_id=attempt_id, retry=retry,
             on_submitted=lambda pending: loop.call_soon_threadsafe(submitted.set_result, pending),
         ))
         verifier_calls.add(call)

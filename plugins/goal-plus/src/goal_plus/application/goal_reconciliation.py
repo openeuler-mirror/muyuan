@@ -54,15 +54,13 @@ class GoalReconciliation:
             candidates = []
             for candidate in state["candidates"]:
                 recovery = candidate["recovery"]
-                current = [
-                    s
-                    for s in candidate["sessions"]
-                    if s["execution_generation"] == candidate["generation"]
-                ]
-                step = "inspect_host_execution"
-                if candidate.get("unsettled_workspace_changes"):
-                    step = "inspect_worker_then_recover_unsettled_attempt_if_stopped"
+                step = "continue_candidate"
                 if recovery:
+                    current = [
+                        s
+                        for s in candidate["sessions"]
+                        if s["execution_generation"] == candidate["generation"]
+                    ]
                     if recovery["state"] != "restored":
                         step = "stop_old_execution_then_restore"
                     elif not current:
@@ -73,6 +71,8 @@ class GoalReconciliation:
                         step = "continue_search"
                     else:
                         step = "await_fresh_evidence"
+                elif verification := candidate.get("verification"):
+                    step = "inspect_verifier_execution" if verification["state"] == "running" else "retry_verifier_attempt"
                 candidates.append({**candidate, "next_step": step})
             runs.append(
                 {
@@ -117,7 +117,9 @@ class GoalReconciliation:
         return (
             "Search reconciliation:\n"
             + json.dumps(agenda, ensure_ascii=False)
-            + "\n按 next_step 推进；用 goal_plus_search_recovery_status 按需读取 checkpoint 和 host session。"
+            + "\n按 next_step 推进；continue_candidate 使用 goal_plus_session_run 和新的 call_id。"
+            "该入口自行启动或续接同一 candidate，并保留原 workspace。"
+            "仅已有 recovery_id 的显式 checkpoint 事务使用 Search recovery 工具。"
             "先处理最新用户消息，每轮重读 goal_plus_status；非 Search 工作后仍继续此清单。"
         )
 

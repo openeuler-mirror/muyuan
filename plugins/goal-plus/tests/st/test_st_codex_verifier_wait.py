@@ -179,9 +179,11 @@ def test_codex_pending_verifier_snapshot_and_recovery(st_project_root, st_log_di
     assert iteration.artifact_ref == pending.artifact_ref
     assert (task.workspace / "initial_program.py").read_text() == "VALUE = 2\n"
     assert record.verification.state == "needs_recovery"
-    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
-    SearchTools(runtime).goal_plus_search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    SearchTools(runtime).goal_plus_search_run_verifier(
+        run_id, task.candidate_id, attempt_id=pending.attempt_id, retry=True,
+    )
     restored = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     assert restored.verification is None
     assert restored.iterations == record.iterations
-    assert (task.workspace / "initial_program.py").read_text() == "VALUE = 1\n"
+    assert restored.recovery is None
+    assert (task.workspace / "initial_program.py").read_text() == "VALUE = 2\n"

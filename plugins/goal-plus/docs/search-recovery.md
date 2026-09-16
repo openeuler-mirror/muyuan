@@ -2,9 +2,10 @@
 
 ## 功能概览
 
-Main 按[运行逻辑](runtime-logic.md)恢复会话并获准继续原任务后，可以将中断的 Search
-candidate 恢复到最后一次完整结算的位置，再启动新的 worker 执行代际（generation）。
-恢复沿用原 `run_id`、`candidate_id`、FrozenSpec、已结算 Evidence 和预算，不创建另一轮搜索。
+Main 按[运行逻辑](runtime-logic.md)恢复会话并获准继续原任务后，正常路径始终继续原 Search
+candidate 的 native session 和 workspace。宿主控制器重建从持久绑定恢复，保留未验证修改。
+需要明确放弃当前现场时，可恢复到最后一次完整结算的位置，再启动新的 worker 执行代际
+（generation）。两种操作均沿用原 `run_id`、`candidate_id`、FrozenSpec、Evidence 和预算。
 
 这是内部 Search 操作，不是用户命令；与主任务 `goal-plus resume` 不是同一层。
 Search 恢复不要求 Main 或 worker 执行 `git reset --hard`。
@@ -15,10 +16,12 @@ workspace provider 实现。
 
 | 当前情况 | 处理方式 |
 | --- | --- |
-| Main 恢复后，原 worker 仍健康运行 | 重连并观察，不回滚其工作区 |
+| 原 worker 仍运行 | 原控制器继续观察；新控制器取得执行 lease 后才能启动 |
 | 原 worker 已完成，工作区和上下文完整 | 正常 native continuation；仅需 fresh context 时使用 redispatch |
-| 本地执行超时或 stop，宿主仍保有调用记录且旧资源已确认清理 | 新 call 直接 run，内部恢复原生 session；不回滚工作区 |
-| Worker 丢失、半次修改残留或结算中途退出 | 准备一致性恢复、确认旧执行停止、恢复完整结算点、启动新 generation |
+| 本地执行超时、stop 或 MCP 重建，旧资源已确认清理 | 新 call 直接 run，恢复原生 session 并保留未验证修改 |
+| 原 native session 无法加载 | 报告宿主错误；Main 可显式 new_session 接手原 workspace |
+| verifier / settlement 未完成 | 等待结算或恢复对应 attempt，再允许 worker 继续 |
+| Main 明确选择恢复完整 checkpoint | 准备一致性恢复、确认旧执行停止、恢复完整结算点、启动新 generation |
 | Goal 绑定失效、session/fork 不匹配、旧 revision 的 run | 不授予恢复执行权 |
 | Run 已结束或 invalidated，candidate 已退休 | 拒绝恢复，不通过重启重新打开 |
 | 缺少完整 checkpoint、provider 不支持、worker 存活情况未知 | 明确报错并保留现场，不猜测安全性 |
@@ -31,7 +34,44 @@ candidate 的工作区恢复。Main 根据最新用户消息、共享平面和�
 恢复事务完成但新 worker 尚未启动，仍属于 Main 的待办；当前先做非 Search 工作时可以先做，
 之后回到关联 Search 再继续同一事务。仅完成 restore 不代表 worker 已重启或原任务已完成。
 
-## 恢复流程
+## 原地续接
+
+普通 reconciliation 只给出 `continue_candidate`。Main 使用 `goal_plus_session_run` 和新的
+`call_id` 继续原 candidate；Host 自行复用已有控制器，或从持久 session 的 native handle、
+scope 绑定和用量基线重建控制器。两条路径共用
+身份、generation、预算和 pending verification 检查，并核验旧执行资源清理。
+原生进程持有跨 MCP 生命周期的独占执行 lease；旧进程仍在运行时，新控制器明确拒绝启动。
+旧进程退出、lease 释放后，新控制器可确认并收束遗留 resource 记录，再恢复同一 session。
+`released` 本身仍不证明进程退出。持久化的 verification `running` 只表示尚未结算；Main 先检查
+原 attempt，结果查询在结算锁仍被持有时返回 pending，锁已释放但 attempt 未结算时
+返回 needs_recovery。只读恢复待办不根据持久状态推断进程存活。
+GP 不通过历史 PID 接管未知进程；无法确认资源清理时保留现场并报告错误。
+
+控制器重建不重放旧调用。旧 `call_id` 的完整结果不可用时报告
+`SessionCallHistoryUnavailable`，Main 读取 candidate/Evidence 后以新 call 继续，不准备
+checkpoint recovery。
+未验证代码和本地文件保留，但只有正式 verifier 结算才产生 Evidence。
+
+原对话无法加载时，`goal_plus_session_run(new_session=true)` 在清理后隔离旧 generation，
+直接建立新对话接手同一 workspace。它不要求成功加载旧对话，也不恢复 checkpoint。
+宿主恢复请求的错误仍原样报告；鉴权、配置或临时 API 故障不触发自动新建对话。
+
+## 验证事务续接
+
+本地 attempt 的不可变快照、提交归属、hypothesis 和结算输入在返回提交回执前一起落盘。
+执行完成的完整 ScoreReport 在结算前持久化。确认 attempt 中断后，使用
+`goal_plus_search_run_verifier(attempt_id=..., retry=true)` 继续原事务：完整结果可复用时只补结算，
+否则在原快照上重跑冻结 verifier。执行锁仍被旧 verifier 持有时拒绝重复执行；排队等待和
+执行中的直接子进程均受原有锁保护，控制器退出不立即撤销存活 verifier 的锁。
+
+续接保留原 attempt、session 归属、generation 和预算，重复请求只对应一条 Evidence 与 ledger。
+当前 workspace 的代码、暂存修改和本地 scratch 保留，Git 历史连接已结算 artifact；声明了
+`results_tsv` 的 binding 同步 runtime 管理的 ledger 文件，其他文件不按 keep/rollback 结果重置。
+后续本地修改仍需下一次正式验证。已经完整结算的 Timeout 或失败结果不会被当作中断而重新评分。
+重新执行仍受冻结 timeout 和剩余预算限制；缺少或不一致的提交记录、快照无法读取、工作区历史
+脱离提交 artifact 时明确报错并保留现场，由 Main 决定是否使用显式 checkpoint。
+
+## 显式 Checkpoint 恢复
 
 1. Main 读取 `goal_plus_search_recovery_status(run_id)`，取得每条 lane 的 checkpoint、generation、
    恢复事务与旧 session 概要（`detail=true` 才附带完整 session_handle 与 host metadata）；
@@ -126,7 +166,8 @@ ThinkThread 合同测试仅验证 `fs_snapshot` 和 provider handle 可穿过公
 确定性测试见 [test_search_recovery.py](../tests/test_search_recovery.py)，覆盖初始/已结算
 checkpoint、结算中途退出、恢复重试、旧代际、进程观测、源仓库/其他 lane 保护及 provider 合同。
 共同 controller 重建场景见 [test_st_session_host.py](../tests/st/test_st_session_host.py) 的
-`cold_recovery`：保留 Evidence，恢复同一 candidate 并启动新 generation。
+`host_restart`：保留本地未验证修改，以新 call 续接同一 native session 和 generation，
+再生成下一条 Evidence。`cold_recovery` 单独覆盖显式 checkpoint 回滚和新 generation。
 Main 场景见 [test_st_search_recovery.py](../tests/st/test_st_search_recovery.py)：Main 原生
 session 中断后恢复同一 run/candidate，从完整结算点启动新 worker 并产生下一条 Evidence。
 测试命令和前置条件见 [Tests](../tests/README.md)。

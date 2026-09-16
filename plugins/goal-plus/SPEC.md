@@ -185,10 +185,17 @@ intent 与 receipt，再由 Allocation owner 重核并提交。接受回执可�
 接受取消不证明退出，旧资源清理独立执行；退休后的返回不触发补验。
 派生 candidate 从记录的 exact attempt artifact
 物化，准备当前 session provenance，再经共同 session 启动。
-本地执行超时或 stop 只关闭宿主进程，不销毁持久原生 session。宿主仍保有准确调用记录时，
-下一次 run 在重新授权、确认旧资源清理后恢复同一 Codex/Pi session；不更换上下文、
+本地执行超时、stop 或控制器重建不销毁持久原生 session。下一次新 call 的 run
+在重新授权并取得该 session 的独占执行 lease 后恢复同一 Codex/Pi session；不更换上下文、
 candidate generation 或 workspace，不重置预算、重复统计已观测用量或重放旧 call。
-缺少原生会话或恢复失败须明确报错，不自动退回新建 session。已结算 Evidence 保留。
+控制器重建从持久 session 读取 native handle 和用量基线。旧 call 的完整结果不可用时
+明确报告，不重放原调用；Main 检查领域状态后以新 call_id 继续。
+执行 lease 由 native 进程持有到退出；旧进程仍存活时拒绝第二个控制器。新控制器取得 lease
+后可确认遗留 scope resource 已结束；released 本身仍不作为停止证明。
+恢复待办不将 verification 的持久 running 当作执行存活；结果查询依据结算锁区分
+仍被执行方持有的 attempt 与锁已释放的未结算 attempt，后者要求恢复。
+缺少原生会话或恢复失败须明确报错，不自动退回新建 session；显式 new_session 可在
+旧资源清理后直接接手原 workspace，无需先加载旧对话。已结算 Evidence 保留。
 stop 封住当前 controller 的后续调用并停止执行；保留的 TT Child 只能经重新授权的显式
 run 恢复控制能力，确认旧调用回调退出且原 execution 已消失后才能继续。close 撤销重开能力
 并释放资源；失败的关闭可重试，不能绕过清理。TT interrupt 经准确 session/dispatch/Message
@@ -197,9 +204,10 @@ run 恢复控制能力，确认旧调用回调退出且原 execution 已消失�
 模型侧 session 准备回执只投影身份、工作区和模型来源；完整 launch 输入由宿主从持久
 session 读取。本地 Codex/Pi worker policy 使用共同 session 控制工具。
 Main 暂停后仍可读取并关闭自己持有的资源，不能借这些操作恢复执行；MCP 断连的取消不能
-跳过资源清理。本地控制器丢失后的 candidate 通过显式 Search recovery 恢复：先 fence 旧
-generation，核验准确 scope 资源已完成清理，再恢复 checkpoint 并启动新 session；
-不重连未知活跃执行，也不重放未完成调用。
+跳过资源清理。本地控制器丢失后的普通续接保留 workspace，包括未验证的修改；
+pending verifier/settlement 仍阻止执行，须先结算或恢复对应 attempt。
+只有 Main 明确放弃当前现场时，显式 Search checkpoint recovery 才隔离旧 generation、归档现场并恢复 checkpoint；
+普通续接不重连未知活跃执行，也不重放未完成调用。
 ThinkThread 的原生 Child 可在控制器进程丢失后继续存在。当前 Main 可通过同请求 session run
 接管同一 scope 中有准确调用日志且原控制器锁已释放的 Child：只观察原 Message、重试
 幂等结算及观测提交，保留原 call_id、dispatch、执行截止时间与候选代际，不重发 spawn/wake。
@@ -350,6 +358,11 @@ wake 反馈。完成结果必须已硬结算；LLM Verifier 独立异步处理�
 本地与 ThinkThread 执行按冻结 resource_lock 在共享控制器锁目录内互斥，不同资源可并行。
 TT 执行结果未知时持久保留原 request 的资源占用，只允许准确请求恢复后释放；不伪造失败分数。
 该互斥不覆盖未接入同一锁目录的外部执行者，也不提供分布式资源调度。
+
+本地未结算 attempt 的提交输入与完整 verifier 结果持久化。中断后按原 attempt ID 显式 retry，
+在原不可变快照上继续验证或幂等补齐结算，保留当前 workspace、Evidence 归属和累计预算。
+存活的直接 verifier 子进程持有候选与资源锁，控制器丢失不授权重复执行。只有无法核验提交
+记录或恢复 artifact 时才需要 Main 决定 checkpoint；完整失败结果不作为中断自动重试。
 
 一次标准 run 按以下顺序执行：
 
@@ -526,7 +539,7 @@ Snapshot revision 与 plan hash，因而可以从进程中断以及“Decision �
 补充 monitor 未投影的字段，transcript 用于排查 host 行为；二者都不能取代持久领域状态。
 不得手工修改 `.gp/` 来跨过 gate。
 
-Search 一致性恢复以最后一次完整结算的 `ArtifactRef` 与 ledger 为 checkpoint；无完整结算时
+显式 checkpoint 恢复以最后一次完整结算的 `ArtifactRef` 与 ledger 为 checkpoint；无完整结算时
 使用初始 checkpoint。准备恢复先隔离旧 execution generation，宿主确认旧执行静默后，才由
 workspace provider 恢复受管理的 candidate 工作区。恢复事务必须幂等，不重置 run/candidate
 身份、Goal revision、预算或已结算 Evidence；旧代际迟到结果不得结算。恢复后使用新 worker

@@ -360,6 +360,7 @@ def test_complete_settlement_survives_crash_before_best_projection(tmp_path, mon
     monkeypatch.setattr("goal_plus.application.candidate_settlement.update_best_seen", lambda *_: (_ for _ in ()).throw(SystemExit("projection crash")))
     with pytest.raises(SystemExit, match="projection crash"):
         runtime.run_verifier(run_id, task.candidate_id)
+    monkeypatch.undo()
     restarted = FileSearchRuntime(runtime.root_dir)
     record = restarted.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     assert len(record.iterations) == 1

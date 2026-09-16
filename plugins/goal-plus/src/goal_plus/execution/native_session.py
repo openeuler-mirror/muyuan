@@ -5,6 +5,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 import threading
 import time
 from typing import Any
@@ -22,6 +23,7 @@ class CodexSession:
         self, config: NativeSessionInput, registration: ProcessRegistration, *, timeout: float,
         tool_bridge: SessionToolBridge | None = None,
         resume_from: "CodexSession | None" = None,
+        execution_lock: Path | None = None,
     ) -> None:
         if config.agent_harness != "codex" or config.runtime_provider != "direct":
             raise ValueError("Codex session requires the Codex host")
@@ -35,7 +37,7 @@ class CodexSession:
         self._completed: dict[str, dict[str, Any]] = {}
         self._messages: dict[str, list[str]] = {}
         self._usage: dict[str, Any] = {}
-        self._usage_baseline: dict[str, Any] = dict(resume_from._usage_baseline) if resume_from else {}
+        self._usage_baseline = dict(resume_from._usage_baseline if resume_from else config.metrics_baseline)
         self._output_bytes = 0
         self._receiving = False
         self._announced_turn_id: str | None = None
@@ -46,7 +48,9 @@ class CodexSession:
         self._tool_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="codex-session-tools")
         self._callbacks: set[Future] = set()
         self._closing = False
-        self.rpc = SessionRpcProcess(config.process, registration, self._event)
+        self.rpc = SessionRpcProcess(
+            config.process, registration, self._event, execution_lock=execution_lock,
+        )
         deadline = time.monotonic() + timeout
         try:
             self._request("initialize", {
@@ -252,6 +256,7 @@ class CodexSession:
                     str(completed["error"]) if completed.get("error") else None,
                     SessionInvocationObservation(
                         started_at, datetime.now(timezone.utc).isoformat(), time.monotonic() - started,
+                        metrics_baseline=dict(self._usage_baseline),
                     ),
                     agent_harness="codex", runtime_provider="direct",
                 )
@@ -308,7 +313,7 @@ class CodexSession:
 class PiSession:
     def __init__(
         self, config: NativeSessionInput, registration: ProcessRegistration, *, timeout: float,
-        resume_from: "PiSession | None" = None,
+        resume_from: "PiSession | None" = None, execution_lock: Path | None = None,
     ) -> None:
         if config.agent_harness != "pi" or config.runtime_provider != "direct":
             raise ValueError("Pi session requires the Pi host")
@@ -324,7 +329,7 @@ class PiSession:
         self._control_lock = threading.Lock()
         self._interrupted = False
         self._error: str | None = None
-        self._metrics_baseline: dict[str, Any] = dict(resume_from._metrics_baseline) if resume_from else {}
+        self._metrics_baseline = dict(resume_from._metrics_baseline if resume_from else config.metrics_baseline)
         command = list(config.process.command)
         if config.model is not None:
             command.extend(["--model", config.model])
@@ -332,6 +337,7 @@ class PiSession:
             command.extend(["--append-system-prompt", config.instructions])
         self.rpc = SessionRpcProcess(
             replace(config.process, command=tuple(command)), registration, self._event,
+            execution_lock=execution_lock,
         )
         deadline = time.monotonic() + timeout
         try:
@@ -434,7 +440,7 @@ class PiSession:
                 str(text.get("text") or ""),
                 {"scope": metrics["usage_delta_scope"], **metrics["usage_delta"]} if metrics["usage_delta"] is not None else {},
                 self._error,
-                SessionInvocationObservation(started_at, ended_at, duration, metrics),
+                SessionInvocationObservation(started_at, ended_at, duration, metrics, dict(self._metrics_baseline)),
                 agent_harness="pi", runtime_provider="direct",
             )
         except BaseException:

@@ -36,7 +36,23 @@ from goal_plus.domain.search import (
     RunState,
     VerifierInvalidationReason,
 )
-from goal_plus.domain.shared_tools import ToolCopyReceipt
+from goal_plus.domain.shared_tools import ToolCopyReceipt, ToolizationDecision
+from goal_plus.ports.candidate_artifacts import CandidateArtifactState
+
+
+class LocalVerificationRequest(SearchModel):
+    """Private replay input; the public acknowledgement remains PendingVerification."""
+
+    frozen_spec_id: str
+    execution_generation: int
+    iteration: int = Field(ge=1)
+    attempt: CandidateArtifactState
+    base_artifact_ref: ArtifactRef
+    changed_files: list[str]
+    agent_session_id: str | None
+    hypothesis: str | None
+    toolization_decision: ToolizationDecision | None
+    report: ScoreReport | None = None
 
 
 class ProviderMutationRecord(SearchModel):
@@ -191,6 +207,7 @@ class CandidateRecord(SearchModel):
     execution_generation: int = Field(default=0, ge=0)
     recovery: CandidateRecovery | None = None
     verification: PendingVerification | None = None
+    verification_request: LocalVerificationRequest | None = None
     inner_agent_state: dict[str, Any] = Field(default_factory=dict)
     provider_mutations: list[ProviderMutationRecord] = Field(default_factory=list)
 

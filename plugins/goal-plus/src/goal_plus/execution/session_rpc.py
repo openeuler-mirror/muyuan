@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -149,13 +150,13 @@ class SessionRpcConnection:
 class SessionRpcProcess:
     def __init__(
         self, config: SessionProcessInput, registration: ProcessRegistration,
-        on_event: Callable[[dict[str, Any]], None],
+        on_event: Callable[[dict[str, Any]], None], *, execution_lock: Path | None = None,
     ) -> None:
         self._registration = registration
         self._token: str | None = None
         self._closed = False
         self._close_lock = threading.Lock()
-        with ProcessLaunchGate() as gate:
+        with ProcessLaunchGate(execution_lock) as gate:
             self.process = subprocess.Popen(
                 gate.command(config.command), pass_fds=gate.pass_fds,
                 cwd=config.cwd, env=config.environment,

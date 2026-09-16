@@ -2,7 +2,9 @@
 
 from typing import Any, Callable, Literal
 from goal_plus.domain.edit_surface import path_matches
+from goal_plus.domain.agents import WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
 from goal_plus.application.candidate_execution import (
+    require_candidate_not_recovering,
     require_run_not_invalidated,
     require_worker_iteration_state,
 )
@@ -32,6 +34,7 @@ from goal_plus.domain.shared_tools import (
 )
 from goal_plus.ports.state import (
     CandidateRecord,
+    LocalVerificationRequest,
     RunRecord,
 )
 from goal_plus.application.candidate_settlement import CandidateSettlement
@@ -89,6 +92,7 @@ class CandidateVerification:
         hypothesis: str | None = None,
         toolization_decision: ToolizationDecision | dict[str, Any] | None = None,
         *, on_submitted: Callable[[PendingVerification], None] | None = None,
+        execution_lock: int | None = None,
     ) -> ScoreReport:
         """Subagent self-score with ``agent_session_id``; main final verify
         without it. Process calls record ranking iterations; promotion calls
@@ -155,20 +159,7 @@ class CandidateVerification:
                     )
 
         if scope == "process":
-            outer_deadline = outer_deadline_epoch(self.context.outer_deadline(run_id))
-            if outer_deadline is not None:
-                verifier_seconds = sum(
-                    float(command.timeout_seconds)
-                    + 2 * self.verifiers.termination_grace_seconds
-                    for command in frozen.spec.process_verifiers
-                )
-                remaining_seconds = outer_deadline - self.clock.now()
-                if remaining_seconds < verifier_seconds:
-                    raise RuntimeError(
-                        "VerifierDeadlineInsufficient: process verifier not started; "
-                        f"{remaining_seconds:.1f}s remain, but the verifier suite may "
-                        f"use {verifier_seconds:.1f}s including process cleanup"
-                    )
+            self._require_verifier_budget(run_id, frozen)
 
         results_were_initialized = bool(
             record.results_ledger_artifact_ref or record.results_ledger_git_head
@@ -242,37 +233,16 @@ class CandidateVerification:
             with self.state.lock_run(run_id):
                 current = self.state.read_candidate(run_id, candidate_id)
                 current.verification = pending
+                current.verification_request = LocalVerificationRequest(
+                    frozen_spec_id=frozen.frozen_spec_id,
+                    execution_generation=record.execution_generation,
+                    iteration=len(record.iterations) + 1,
+                    attempt=state, base_artifact_ref=pre_attempt_artifact_ref,
+                    changed_files=attempt_changed_files, agent_session_id=agent_session_id,
+                    hypothesis=hypothesis, toolization_decision=normalized_toolization_decision,
+                )
                 self.state.write_candidate(run_id, current)
-            try:
-                if on_submitted is not None:
-                    on_submitted(pending)
-                with self.verifiers.workspace(record, attempt_artifact_ref) as task:
-                    verification_record = record.model_copy(update={"task": task})
-                    report = self._precheck_candidate(frozen, verification_record)
-                    if report is None:
-                        report = self.verifiers.run_commands(
-                            run, frozen, verification_record, frozen.spec.process_verifiers, scope
-                        )
-                    return self.settlement.record(
-                        run_id=run_id, candidate_id=candidate_id, frozen=frozen, report=report,
-                        attempt=state, pre_attempt_settled_head=pre_attempt_settled_head,
-                        pre_attempt_settled_artifact_ref=pre_attempt_artifact_ref,
-                        attempt_changed_files=attempt_changed_files, hypothesis=hypothesis,
-                        agent_session_id=agent_session_id, session=session,
-                        toolization_decision=normalized_toolization_decision,
-                        local_task=task,
-                    )
-            except BaseException as exc:
-                with self.state.lock_run(run_id):
-                    current = self.state.read_candidate(run_id, candidate_id)
-                    if (
-                        current.verification is not None
-                        and current.verification.attempt_id == pending.attempt_id
-                    ):
-                        current.verification.state = "needs_recovery"
-                        current.verification.error = f"{type(exc).__name__}: {exc}"
-                        self.state.write_candidate(run_id, current)
-                raise
+            return self._execute(run, frozen, current, on_submitted=on_submitted, execution_lock=execution_lock)
 
         precheck = self._precheck_candidate(frozen, record)
         if precheck is not None:
@@ -309,6 +279,135 @@ class CandidateVerification:
             self.persist_run(run)
 
         return report
+
+    def resume(
+        self, run_id: str, candidate_id: str, attempt_id: str,
+        *, on_submitted: Callable[[PendingVerification], None] | None = None,
+        execution_lock: int | None = None,
+    ) -> ScoreReport:
+        """Called under the candidate verifier lock, never against live workspace bytes."""
+        run = self.state.read_run(run_id)
+        self.authorization.require_search_execution(run_id, settlement=True)
+        require_worker_iteration_state(run, "resume verifier")
+        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+        record = self.state.read_candidate(run_id, candidate_id)
+        request = record.verification_request
+        if record.score_report is not None and record.score_report.attempt_id == attempt_id:
+            with self.state.lock_run(run_id):
+                record = self.state.read_candidate(run_id, candidate_id)
+                require_candidate_not_recovering(record)
+                if record.verification is not None:
+                    if record.verification.attempt_id != attempt_id:
+                        raise RuntimeError("VerifierInProgress: another attempt is pending")
+                    self.artifacts.workspace.publish_settlement(
+                        record.task, record.score_report.attempt_artifact_ref,
+                        record.results_ledger_artifact_ref, preserve_workspace=True,
+                        ledger_projection=self.candidate_ledger.projection(frozen, record) == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV,
+                    )
+                    record.verification = None
+                    record.score_report.verification = None
+                    self.state.write_candidate(run_id, record)
+                self.settlement.reconcile(run, frozen, record)
+            return record.score_report
+        if request is None or record.verification is None:
+            raise RuntimeError("VerifierReplayUnavailable: submitted verification input is missing")
+        if record.status not in {"created", "evaluated"}:
+            raise RuntimeError(f"cannot resume verifier in candidate status {record.status}")
+        if frozen.spec.strategy.orchestration_mode == "adaptive_search":
+            self.candidate_sessions.admission.assert_candidate_execution_allowed(record, "run_verifier")
+        if (
+            request.frozen_spec_id != frozen.frozen_spec_id
+            or request.execution_generation != record.execution_generation
+            or request.iteration != len(record.iterations) + 1
+            or request.base_artifact_ref != record.results_ledger_artifact_ref
+            or request.attempt.artifact_ref != record.verification.artifact_ref
+            or attempt_id != candidate_attempt_id(
+                run_id=run_id, candidate_id=candidate_id, iteration=request.iteration,
+                artifact_ref=request.attempt.artifact_ref,
+            )
+        ):
+            raise RuntimeError("VerifierReplayUnavailable: submitted verification identity is inconsistent")
+        if request.agent_session_id is not None:
+            self.candidate_sessions.session(request.agent_session_id, run_id=run_id)
+        if request.report is None:
+            self._require_verifier_budget(run_id, frozen)
+            self.authorization.require_search_execution(run_id)
+        return self._execute(run, frozen, record, preserve_workspace=True, on_submitted=on_submitted, execution_lock=execution_lock)
+
+    def _execute(
+        self, run: RunRecord, frozen: FrozenSpec, record: CandidateRecord,
+        *, preserve_workspace: bool = False,
+        on_submitted: Callable[[PendingVerification], None] | None = None,
+        execution_lock: int | None = None,
+    ) -> ScoreReport:
+        pending, request = record.verification, record.verification_request
+        assert pending is not None and request is not None
+        run_id, candidate_id = run.run_id, record.candidate_id
+        try:
+            with self.state.lock_run(run_id):
+                record = self.state.read_candidate(run_id, candidate_id)
+                require_candidate_not_recovering(record)
+                if record.execution_generation != request.execution_generation or record.verification != pending:
+                    raise RuntimeError("StaleAgentSession: verification identity changed")
+                record.verification = pending.model_copy(update={"state": "running", "error": None})
+                self.state.write_candidate(run_id, record)
+            if on_submitted is not None:
+                on_submitted(record.verification)
+            with self.verifiers.workspace(record, pending.artifact_ref) as task:
+                verification_record = record.model_copy(update={"task": task})
+                actual = self.artifacts.candidate_artifact_state(run, frozen, verification_record)
+                if actual.artifact_hash != request.attempt.artifact_hash:
+                    raise RuntimeError("VerifierReplayUnavailable: submitted artifact hash differs")
+                self.artifacts.apply_candidate_artifact_state(verification_record, request.attempt)
+                report = request.report
+                if report is None:
+                    report = self._precheck_candidate(frozen, verification_record)
+                    if report is None:
+                        report = self.verifiers.run_commands(
+                            run, frozen, verification_record, frozen.spec.process_verifiers, "process",
+                            execution_lock=execution_lock,
+                        )
+                    with self.state.lock_run(run_id):
+                        current = self.state.read_candidate(run_id, candidate_id)
+                        if current.execution_generation != request.execution_generation:
+                            raise RuntimeError("StaleAgentSession: verification generation changed")
+                        request.report = report
+                        current.verification_request = request
+                        self.state.write_candidate(run_id, current)
+                return self.settlement.record(
+                    run_id=run_id, candidate_id=candidate_id, frozen=frozen, report=report,
+                    attempt=request.attempt, pre_attempt_settled_head=(
+                        request.base_artifact_ref.id if request.base_artifact_ref.kind == "git_commit" else None
+                    ), pre_attempt_settled_artifact_ref=request.base_artifact_ref,
+                    attempt_changed_files=request.changed_files, hypothesis=request.hypothesis,
+                    agent_session_id=request.agent_session_id, session=(
+                        self.candidate_sessions.session(request.agent_session_id, run_id=run_id)
+                        if request.agent_session_id is not None else None
+                    ), toolization_decision=request.toolization_decision,
+                    attempt_id=pending.attempt_id, local_task=task, preserve_workspace=preserve_workspace,
+                )
+        except BaseException as exc:
+            with self.state.lock_run(run_id):
+                current = self.state.read_candidate(run_id, candidate_id)
+                if current.verification is not None and current.verification.attempt_id == pending.attempt_id:
+                    current.verification.state = "needs_recovery"
+                    current.verification.error = f"{type(exc).__name__}: {exc}"
+                    self.state.write_candidate(run_id, current)
+            raise
+
+    def _require_verifier_budget(self, run_id: str, frozen: FrozenSpec) -> None:
+        deadline = outer_deadline_epoch(self.context.outer_deadline(run_id))
+        if deadline is None:
+            return
+        needed = sum(float(c.timeout_seconds) + 2 * self.verifiers.termination_grace_seconds
+                     for c in frozen.spec.process_verifiers)
+        remaining = deadline - self.clock.now()
+        if remaining < needed:
+            raise RuntimeError(
+                "VerifierDeadlineInsufficient: process verifier not started; "
+                f"{remaining:.1f}s remain, but the verifier suite may "
+                f"use {needed:.1f}s including process cleanup"
+            )
 
     def _precheck_candidate(
         self,

@@ -309,7 +309,7 @@ worker。
 
 ## 续跑与恢复
 
-当前 controller 可用时，Main 继续同一 session：
+Main 使用共同入口继续同一 candidate：
 
 ```text
 goal_plus_session_run(run_id, candidate_id, new_call_id, prompt, timeout_seconds)
@@ -318,9 +318,10 @@ goal_plus_session_run(run_id, candidate_id, new_call_id, prompt, timeout_seconds
 后续任务保持技术方向中性，并沿用 frozen inner-agent binding：`autoresearch` 继续自主循环，
 `common` 只完成下一个有界 attempt。
 
-Controller 或原生进程丢失时，通过显式 Search recovery 核验旧 generation 和资源已关闭，
-再恢复 checkpoint 并准备新 session；需要 fresh context 的 redispatch 也须经过当前 admission。
-恢复保留同一 candidate 的 workspace、Git state、verifier history 和 handoff，不能重放未知活跃调用。
+Controller 或原生进程退出后，host 取得独占执行 lease，从持久绑定恢复原 session，
+保留当前 workspace、未验证修改、Evidence 和预算。原 session 无法加载时，Main 可显式
+使用 `new_session=true` 建立新对话接手现场。明确放弃现场时才使用
+[checkpoint 恢复](search-recovery.md)。
 
 ## Observability 与日志
 

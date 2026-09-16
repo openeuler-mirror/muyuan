@@ -18,14 +18,17 @@ Codex 只识别已注册的 Goal Plus MCP namespace，其他插件的同名动�
 `goal_plus_session_run(run_id, candidate_id, call_id, prompt, timeout_seconds, new_session=false)`
 内部准备领域 session、打开 native session、绑定准确身份并执行一轮任务，立即返回
 session/call identity、实际状态及错误。后续 run 默认复用当前 session；worker 在一轮内自主工作。
-本地调用超时或 stop 后，若宿主仍持有准确调用记录并确认旧进程清理完成，下一次 run
+本地调用超时、stop 或 MCP 重启后，宿主核验旧执行资源清理完成，下一次新 call 的 run
 内部恢复同一个 Codex/Pi 原生会话；保留上下文、candidate generation、Evidence 和预算。
 这不需要 `new_session=true`，也不重放旧调用；新一轮使用新的 call_id。
 同一 candidate 的相同 call_id 与相同参数返回原调用状态，参数冲突或旧 generation 请求被拒绝。
+控制器重建后旧 call 的完整结果不可用时返回 `SessionCallHistoryUnavailable`；
+Main 读取 candidate/Evidence 状态后使用新 call_id 继续，不重发原操作。
 已有活动调用时拒绝不同 call_id，steering 使用 `goal_plus_session_message`，不排队或自动中断。
 
 `new_session=true` 先关闭空闲旧资源并确认清理，再隔离旧 generation、创建新 session。
-已有代码、Evidence 和累计预算保留。冻结 worker budget 和 Goal deadline 限制整轮执行额度；
+已有代码、Evidence 和累计预算保留。原 native session 无法加载时也可使用该入口，
+直接接手包含未验证修改的 workspace。冻结 worker budget 和 Goal deadline 限制整轮执行额度；
 wait 的 timeout 只控制读取等待，不延长额度、不取消执行。
 `goal_plus_session_wait` 默认返回准确状态与错误，`detail=true` 才读取正文和诊断；
 completed 表示调用返回，不能代替 verifier 通过。Search Evidence 用
@@ -37,7 +40,8 @@ continuation 重新点火；需要向活动调用插话时改用 `goal_plus_sess
 `goal_plus_session_interrupt` 中断指定轮次，随后仍需确认结果；stop 停止执行，
 close 关闭 controller 和资源并保留历史及 artifact。Main 暂停后仍可读取与清理。
 TT stop 后，下一次 run 可在重新授权、确认原调用退出后重开 retained Child。
-本地 controller 丢失且执行结果未知时必须显式 Search recovery，不自动重放；
+本地 controller 重建读取持久 native handle 和用量基线；未完成验证须先结算或恢复，
+普通未提交修改保留，显式 checkpoint recovery 才回滚 workspace。
 TT 的同请求 run 可通过准确调用日志接管原 Message，只观察与完成原结算，不重发 spawn/wake，
 不改变 deadline 或 generation。Codex TT 仍不支持，见 [Codex 支持范围](codex.md#支持范围与验证)。
 TT interrupt/message 通过准确控制通道取得原生确认；确认超时不能声明执行已停止。
@@ -485,6 +489,9 @@ wake。回执的 candidate_action 为 wait_for_verifier 时查询原 attempt，�
 process start failure 都返回失败 `ScoreReport` 并写入带 `attempt_id` 的 iteration；TT 已确认的
 verifier/provider execution error 同样写失败 iteration。执行结果未知或本地工作区无法同步时进入
 `needs_recovery`；前者不伪造成功或失败记录，后者保留已结算 Evidence。
+本地 attempt 可用同一工具传 `attempt_id` 和 `retry=true` 恢复：复用已完成结果或重验提交快照，
+幂等结算并保留当前 workspace。仍在执行时拒绝重复启动；记录不足时明确报错，由 Main 决定
+是否恢复 checkpoint。ThinkThread 仍由 retained attempt owner 恢复，不使用本地 retry 参数。
 
 启用 `shared_dir` 后，worker 可以同时提交 `toolization_decision`。`staged`
 需要工具名和至少一个正向 signal，`not_applicable`

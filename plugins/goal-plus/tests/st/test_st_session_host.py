@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 import pytest
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
@@ -20,8 +21,8 @@ from tests.st.hosts import st_model_for_host
 
 
 @pytest.mark.st
-@pytest.mark.parametrize("recover", [False, True, "timeout_resume"],
-                         ids=["same_session", "cold_recovery", "timeout_resume"])
+@pytest.mark.parametrize("recover", [False, True, "timeout_resume", "host_restart"],
+                         ids=["same_session", "cold_recovery", "timeout_resume", "host_restart"])
 @pytest.mark.parametrize("agent_harness", [
     pytest.param("codex", marks=pytest.mark.st_codex),
     pytest.param("pi", marks=pytest.mark.st_pi_rpc),
@@ -122,8 +123,39 @@ def test_product_session_candidate_two_turns(tmp_path, st_log_dir, agent_harness
                     interrupted_calls.append(interrupted)
                     assert interrupted["state"] == "failed" and "TimeoutError" in interrupted["error"]
                     assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
+                elif value == 2 and recover == "host_restart":
+                    before = record.model_copy(deep=True)
+                    ready = task.workspace / ".tmp/local-ready"
+                    await call("run", {
+                        "run_id": run_id, "candidate_id": task.candidate_id, "call_id": "local-probe",
+                        "timeout_seconds": timeout,
+                        "prompt": "Set VALUE = 2 in initial_program.py. Test it locally with Python. "
+                                  "Do not call the verifier or commit yet. After the local test passes, "
+                                  "write .tmp/local-ready containing the result, then run sleep 120.",
+                    })
+                    async with asyncio.timeout(timeout):
+                        while not ready.exists():
+                            await asyncio.sleep(1)
+                    local_result = ready.read_text()
+                    async with Client(create_host_mcp(root, agent_harness=agent_harness, caller_role="main")) as competing:
+                        with pytest.raises(ToolError, match="SessionExecutionActive"):
+                            await competing.call_tool("goal_plus_session_run", {
+                                "run_id": run_id, "candidate_id": task.candidate_id, "call_id": "competing",
+                                "prompt": "Continue", "timeout_seconds": timeout,
+                            }, meta={"threadId": goal.active_session.session_id})
+                    await stack.aclose()
+                    assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id).iterations == before.iterations
+                    assert (task.workspace / "initial_program.py").read_text().strip() == "VALUE = 2"
+                    client = await stack.enter_async_context(Client(
+                        create_host_mcp(root, agent_harness=agent_harness, caller_role="main"), timeout=timeout + 60,
+                    ))
+                    assert ready.read_text() == local_result
+                    with pytest.raises(ToolError, match="SessionCallHistoryUnavailable"):
+                        await call("wait", {"session_id": active.agent_session_id, "call_id": "local-probe"})
                 prompt = f"Set VALUE = {value} in initial_program.py, run your verifier, report the score and stop."
-                if recover == "timeout_resume":
+                if recover == "host_restart" and value == 2:
+                    prompt = "Inspect the preserved local result in .tmp/local-ready and existing code, run your verifier, report the score and stop."
+                if recover in {"timeout_resume", "host_restart"}:
                     prompt += (f" Remember this conversation-only token: {memory_token}. Do not write it to files."
                                if value == 1 else " Include the conversation-only token from our first turn in your reply.")
                 opened = await call("run", {
@@ -144,7 +176,7 @@ def test_product_session_candidate_two_turns(tmp_path, st_log_dir, agent_harness
                     assert record.iterations[0] == before.iterations[0]
                     assert record.results_ledger[0] == before.results_ledger[0]
                     assert not (task.workspace / "results.tsv").exists()
-                    if recover == "timeout_resume":
+                    if recover in {"timeout_resume", "host_restart"}:
                         assert record.execution_generation == before.execution_generation
                         assert results[0]["native_session_id"] == result["native_session_id"]
                         detailed = await call("wait", {"session_id": active.agent_session_id, "call_id": "2", "detail": True})
@@ -177,7 +209,7 @@ def test_product_session_candidate_two_turns(tmp_path, st_log_dir, agent_harness
     assert snapshot["processes"] and all(item["status"] in SCOPE_PROCESS_TERMINAL_STATUSES for item in snapshot["processes"])
     candidates = [item for item in snapshot["processes"] if item["kind"] == "candidate"]
     assert candidates and all(item["status"] == "finished" for item in candidates)
-    if recover == "timeout_resume":
+    if recover in {"timeout_resume", "host_restart"}:
         assert len(candidates) == 2 and candidates[0]["pid"] != candidates[1]["pid"]
     assert snapshot["cleanup"]["active_count"] == 0
     assert not snapshot["cleanup"]["errors"]

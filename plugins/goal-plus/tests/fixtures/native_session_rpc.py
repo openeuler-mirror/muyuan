@@ -26,6 +26,9 @@ def save_state():
         state_path.write_text(json.dumps({"turn": turn, "entries": entries}))
 
 
+save_state()
+
+
 def emit(value):
     print(json.dumps(value), flush=True)
 

@@ -141,8 +141,8 @@ reconciliation，执行有界工作后再次判断。Main 可先做非 Search �
 
 | 持久状态 | 下一步 |
 | --- | --- |
-| 未发生 recovery | 核对宿主执行事实；健康 worker 不恢复 |
-| worker 已停止且有未结算改动 | 从共享状态中的 unsettled_workspace_changes 识别，恢复完整 checkpoint 后再执行 |
+| 未发生显式 recovery | `continue_candidate`：用新的 call_id 调用 session run，由 host 启动或续接同一 candidate；旧执行仍持有 lease 时等待 |
+| verifier / settlement 未完成 | 先检查原 attempt；确认仍在执行时等待，否则恢复，再允许 worker 执行 |
 | prepared / restoring | 继续同一 recovery_id，停止并观察旧 worker，再恢复固定 checkpoint |
 | restored、没有当前 generation session | 创建幂等 fresh session |
 | 已分配 session、未确认绑定 | 核对实际 native task/进程，确认 launch 后绑定，不能盲目重复启动 |
@@ -160,9 +160,9 @@ reconciliation，执行有界工作后再次判断。Main 可先做非 Search �
         |                         |
         +-------------------------+
         v
- inspect host worker -- healthy --> observe / continue
+ continue same native session and workspace
         |
-        v lost or inconsistent
+        v explicit decision to discard current workspace
  prepare fixed checkpoint; fence generation N
         |
  host stop + observe quiescence

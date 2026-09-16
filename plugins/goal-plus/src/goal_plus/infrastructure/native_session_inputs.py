@@ -41,6 +41,8 @@ def native_candidate_input(
     native_session_id = session.session_handle.external_id if resume else None
     if resume and not native_session_id:
         raise ValueError("candidate continuation requires an exact native session handle")
+    dispatches = session.session_handle.metadata.get("dispatches") or []
+    metrics_baseline = dict(dispatches[-1].get("metrics_baseline") or {}) if resume and dispatches else {}
     environment = {**_native_environment(root), **process_environment}
     if agent_harness == "codex":
         environment["GOAL_PLUS_SEARCH_ROOT"] = str(root)
@@ -55,6 +57,7 @@ def native_candidate_input(
             reasoning_effort=launch.get("reasoning_effort") or main_config.get("reasoning_effort"),
             native_session_id=native_session_id,
             configuration=configuration,
+            metrics_baseline=metrics_baseline,
         )
     extension = host_assets_root() / "assets/pi/extensions/goal-plus.ts"
     if not extension.is_file():
@@ -76,6 +79,7 @@ def native_candidate_input(
         model=launch.get("model_pattern") or main_config["model_pattern"],
         reasoning_effort=launch.get("thinking_level") or main_config.get("thinking_level"),
         native_session_id=native_session_id,
+        metrics_baseline=metrics_baseline,
     )
 
 

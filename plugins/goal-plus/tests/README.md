@@ -283,7 +283,9 @@ The worker then uses `goal_plus_search_run_verifier` to await that exact attempt
 context.
 The controller then changes the original workspace and releases the lock. The test checks exact
 snapshot scoring, one Evidence entry, preservation of the later edit, worker observation of
-`needs_recovery`, and checkpoint recovery after native process exit.
+`needs_recovery`, and same-attempt retry after native process exit, preserving the later edit.
+The shared MCP integration test also interrupts a real verifier controller while queued and while
+executing, checks inherited execution locks, and resumes the exact snapshot without checkpoint rollback.
 
 This is a module ST, not an optimization E2E. Installed plugins/hooks are disabled only for the
 test worker, so it does not validate plugin discovery, Main orchestration, or native child hooks.

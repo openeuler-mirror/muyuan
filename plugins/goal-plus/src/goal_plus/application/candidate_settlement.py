@@ -9,6 +9,7 @@ from goal_plus.application.candidate_execution import (
 )
 from goal_plus.domain.agents import (
     WORKSPACE_LEDGER_PROJECTION_NONE,
+    WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV,
 )
 from goal_plus.domain.artifacts import (
     ArtifactRef,
@@ -114,6 +115,7 @@ class CandidateSettlement:
         settled_artifact_ref: ArtifactRef | None = None,
         inner_git_settlement: InnerGitSettlement | None = None,
         local_task: CandidateTask | None = None,
+        preserve_workspace: bool = False,
     ) -> ScoreReport:
         with self.state.lock_run(run_id):
             run = self.state.read_run(run_id)
@@ -593,6 +595,8 @@ class CandidateSettlement:
                 synchronized = self.artifacts.workspace.publish_settlement(
                     worker_task, attempt.artifact_ref,
                     record.results_ledger_artifact_ref or settled.artifact_ref,
+                    preserve_workspace=preserve_workspace,
+                    ledger_projection=workspace_ledger_projection == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV,
                 )
                 if synchronized:
                     record.verification = None
@@ -673,3 +677,33 @@ class CandidateSettlement:
                     )
                 )
             return report
+
+    def reconcile(self, run: RunRecord, frozen: FrozenSpec, record: CandidateRecord) -> None:
+        """Replay projections from durable Evidence without another hard settlement."""
+        records = self.state.read_candidates(run.run_id)
+        for candidate in records:
+            best = best_artifact_iteration_record(candidate, frozen.spec.metric_direction)
+            if best is not None and candidate.score_report is not None:
+                report = candidate.score_report.model_copy(update={"aggregate_score": best.score, "disposition": best.disposition})
+                if update_best_seen(run, frozen.spec, report):
+                    self.checkpoints.write_best(run, frozen.spec, candidate, best)
+        run.candidates_evaluated = sum(c.status == "evaluated" for c in records)
+        self.persist_run(run)
+        for session in self.candidate_sessions.state.read_agent_sessions(run.run_id):
+            if session.candidate_id == record.candidate_id:
+                session.counters["verifier_runs"] = sum(i.agent_session_id == session.agent_session_id for i in record.iterations)
+                self.candidate_sessions.state.write_agent_session(session)
+        for iteration in record.iterations:
+            if iteration.agent_session_id is not None or frozen.spec.strategy.orchestration_mode == "adaptive_search":
+                self.annotation_admission.create(run.run_id, record.candidate_id, iteration.iteration)
+            if frozen.spec.strategy.requires_llm_verifier and iteration.settlement_id is not None and iteration.artifact_hash is not None:
+                try:
+                    allocation = frozen.spec.strategy.allocation
+                    rules = allocation.verifier_rules() if allocation is not None else None
+                    self.verifier.ensure_assessment(
+                        verifier_subject(frozen, record, iteration),
+                        rules.policy_id if rules is not None else None,
+                        rules.score_names if rules is not None else [],
+                    )
+                except Exception:
+                    pass

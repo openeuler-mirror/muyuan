@@ -113,6 +113,7 @@ class LocalVerifiers:
         capture_output: bool,
         timeout: int,
         check: bool,
+        pass_fds: tuple[int, ...] = (),
     ) -> subprocess.CompletedProcess[str]:
         if not text or not capture_output:
             raise ValueError("verifier processes require text capture")
@@ -123,6 +124,7 @@ class LocalVerifiers:
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            pass_fds=pass_fds,
         )
         completed = capture_process(process, timeout=timeout)
         if check:
@@ -668,6 +670,7 @@ class LocalVerifiers:
         record: CandidateRecord,
         commands: list[VerifierCommand],
         scope: str,
+        *, execution_lock: int | None = None,
     ) -> ScoreReport:
         verifier_phase: Literal["candidate", "promotion"] = (
             "candidate" if scope == "process" else "promotion"
@@ -680,6 +683,7 @@ class LocalVerifiers:
                 record,
                 command,
                 verifier_phase,
+                execution_lock=execution_lock,
             )
             results.append(result)
             if result.failure_class == "VerifierWorkspaceSideEffect":
@@ -724,6 +728,7 @@ class LocalVerifiers:
         record: CandidateRecord,
         command: VerifierCommand,
         verifier_phase: Literal["candidate", "promotion"],
+        *, execution_lock: int | None = None,
     ) -> VerifierResult:
         if command.command[0] == "goal-plus-internal":
             start = time.perf_counter()
@@ -761,7 +766,7 @@ class LocalVerifiers:
         )
         start = time.perf_counter()
         try:
-            with verifier_resource_lock(resource):
+            with verifier_resource_lock(resource) as resource_lease:
                 with tempfile.TemporaryDirectory(
                     prefix="goal-plus-verifier-command-"
                 ) as verifier_tmp:
@@ -780,6 +785,7 @@ class LocalVerifiers:
                         capture_output=True,
                         timeout=command.timeout_seconds,
                         check=False,
+                        pass_fds=tuple(fd for fd in (execution_lock, resource_lease) if fd is not None),
                     )
             elapsed = time.perf_counter() - start
             metrics = self.parse_metrics(completed.stdout)
