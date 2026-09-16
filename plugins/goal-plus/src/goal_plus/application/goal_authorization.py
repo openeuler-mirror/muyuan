@@ -13,6 +13,7 @@ from goal_plus.domain.goal_authorization import (
     SEARCH_RECOVERY_TOOL_SUFFIXES,
     has_host_invocation,
     is_terminal_goal,
+    stopped_goal_message,
     tool_matches,
 )
 from goal_plus.ports.goal_authorization import GoalAuthorizationSource, GoalToolTarget
@@ -93,6 +94,15 @@ class GoalAuthorization:
     def require_unique_active(self) -> GoalPlusRecord:
         """Preserve the explicit legacy query; never use it to infer a target."""
         nonterminal = self.nonterminal_records()
+        if len(nonterminal) == 1 and (
+            nonterminal[0].entrypoint_status == "host_verified"
+            and nonterminal[0].host_command_invocations
+            and (
+                nonterminal[0].status != "active"
+                or nonterminal[0].control.state != "active"
+            )
+        ):
+            raise RuntimeError(stopped_goal_message(nonterminal[0]))
         if (
             len(nonterminal) != 1
             or nonterminal[0].status != "active"
@@ -106,7 +116,9 @@ class GoalAuthorization:
             )
         return nonterminal[0]
 
-    def require_active_target(self, target: GoalToolTarget) -> GoalPlusRecord:
+    def require_active_target(
+        self, target: GoalToolTarget, *, settlement: bool = False
+    ) -> GoalPlusRecord:
         goal_plus_id = target.goal_plus_id
         if goal_plus_id is None:
             run_id = self.target_run_id(target)
@@ -127,12 +139,22 @@ class GoalAuthorization:
                 "GoalPlusOwnershipMismatch: tool goal_plus_id does not identify "
                 "a Goal Plus record"
             ) from exc
+        allowed_control = {"active", "paused"} if settlement else {"active"}
         if (
-            record.status != "active"
-            or record.control.state != "active"
+            record.control.state not in allowed_control
+            or is_terminal_goal(record)
+            or (not settlement and record.status != "active")
             or record.entrypoint_status != "host_verified"
             or not record.host_command_invocations
         ):
+            if (
+                record.entrypoint_status == "host_verified"
+                and record.host_command_invocations
+            ):
+                # A host-verified record that stopped carries its own
+                # authoritative reason; do not misreport it as an
+                # entrypoint violation.
+                raise RuntimeError(stopped_goal_message(record))
             raise RuntimeError(
                 f"{GOAL_PLUS_ENTRYPOINT_REQUIRED} Active host-verified record: "
                 f"{record.goal_plus_id}."
@@ -266,6 +288,18 @@ class GoalAuthorization:
                     task.goal_revision == record.goal_revision for task in linked
                 )
             ):
+                if not any(
+                    task.goal_revision == record.goal_revision for task in linked
+                ):
+                    raise RuntimeError(
+                        "GoalPlusResumeRequired: linked Search run belongs to "
+                        f"an old Goal revision (run_id={run_id}, current "
+                        f"revision={record.goal_revision}). Do not reuse "
+                        "old-revision runs; create a new Search for the "
+                        "current revision."
+                    )
                 raise RuntimeError(
-                    "GoalPlusResumeRequired: linked Search is stopped or belongs to an old revision"
+                    stopped_goal_message(record)
+                    + f" Run {run_id} remains linked; its settled Evidence "
+                    "is preserved."
                 )

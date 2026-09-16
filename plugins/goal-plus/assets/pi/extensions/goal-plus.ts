@@ -2199,6 +2199,28 @@ async function mainGate(event: ToolCallEvent, ctx: ExtensionContext, owner: Tool
 	if (role !== "main") return undefined;
 	const requiresAuthorization = requiresGoalPlusAuthorization(event.toolName, owner);
 	if (requiresAuthorization && !goalPlusSessionAuthorized) {
+		// An interrupt or explicit pause also clears the in-memory
+		// authorization flag; distinguish that from a session that was never
+		// authorized so the model can relay the real recovery step to the
+		// user instead of a misleading entrypoint error.
+		if (activeGoalPlusId) {
+			const status = await refreshActiveGoal(
+				piForGate, commandContextFrom(ctx), false,
+			);
+			const control = status?.control;
+			if (control?.state === "paused") {
+				return {
+					block: true,
+					reason: `GoalPlusResumeRequired: Goal Plus ${activeGoalPlusId} is paused (reason=${control.reason || "explicit_pause"}). This session's Goal Plus authorization was cleared by the interrupt or pause; only the user can resume it by running /goal-plus resume. Read-only status tools remain available.`,
+				};
+			}
+			if (status && isTerminalStatus(status.status)) {
+				return {
+					block: true,
+					reason: `GoalPlusTerminal: Goal Plus ${activeGoalPlusId} is finished (status=${status.status}). It cannot accept new work; start a new task with /goal-plus if needed.`,
+				};
+			}
+		}
 		return {
 			block: true,
 			reason: "GoalPlusEntrypointRequired: this Pi session was not authorized by exact /goal-plus or /goal-plus edit input and is not the resumed native session.",
@@ -2262,6 +2284,17 @@ async function queueMainGoalContinuation(pi: ExtensionAPI, ctx: ExtensionContext
 	}
 }
 
+function notifyPausedGoal(pi: ExtensionAPI, cause: string) {
+	if (!activeGoalPlusId) return;
+	pi.sendMessage(
+		{
+			customType: "goal-plus-control",
+			content: `Goal Plus ${activeGoalPlusId} 已暂停（${cause}）。继续执行需 /goal-plus resume；Main 仍可读取状态并转述恢复步骤。`,
+			display: true,
+		},
+	);
+}
+
 async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 	if (suppressedContinuationAbort) {
 		suppressedContinuationAbort = false;
@@ -2279,6 +2312,7 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 		await runPiHostSessionEvent(pi, ctx, "execution_lost", "next_user_turn", piHostInteraction(ctx));
 		goalPlusSessionAuthorized = false;
 		if (persist) persistGoalState(pi);
+		notifyPausedGoal(pi, "执行丢失");
 		return;
 	}
 	if (stopReason === "aborted") {
@@ -2288,6 +2322,7 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 		);
 		goalPlusSessionAuthorized = false;
 		if (persist) persistGoalState(pi);
+		notifyPausedGoal(pi, "用户中断");
 		return;
 	}
 	if (ctx.hasPendingMessages()) return;

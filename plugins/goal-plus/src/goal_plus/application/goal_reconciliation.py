@@ -67,9 +67,7 @@ class GoalReconciliation:
                         step = "stop_old_execution_then_restore"
                     elif not current:
                         step = "start_fresh_worker"
-                    elif not any(
-                        s["session_handle"]["metadata"].get("bound_at") for s in current
-                    ):
+                    elif not any(s.get("bound") for s in current):
                         step = "reconcile_launch_then_bind"
                     elif candidate["fresh_recovery_evidence"]:
                         step = "continue_search"

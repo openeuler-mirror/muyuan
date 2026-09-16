@@ -58,9 +58,13 @@ class SearchTools:
         self.goal_runtime = goal_runtime
         self.candidate_attempt = candidate_attempt
 
-    def _require_target(self, tool_name: str, **tool_input: Any) -> None:
+    def _require_target(
+        self, tool_name: str, *, settlement: bool = False, **tool_input: Any
+    ) -> None:
         if self.goal_runtime is not None:
-            self.goal_runtime.require_active_tool_target(tool_name, tool_input)
+            self.goal_runtime.require_active_tool_target(
+                tool_name, tool_input, settlement=settlement
+            )
 
     def _require_search_bootstrap(
         self,
@@ -154,9 +158,11 @@ class SearchTools:
     def goal_plus_search_status(self, run_id: str) -> dict[str, Any]:
         return self.runtime.status(run_id).model_dump(mode="json")
 
-    def goal_plus_search_recovery_status(self, run_id: str) -> dict[str, Any]:
-        self._require_target("goal_plus_search_recovery_status", run_id=run_id)
-        return self.runtime.goal_plus_search_recovery_status(run_id)
+    def goal_plus_search_recovery_status(self, run_id: str, detail: bool = False) -> dict[str, Any]:
+        self._require_target(
+            "goal_plus_search_recovery_status", settlement=True, run_id=run_id
+        )
+        return self.runtime.goal_plus_search_recovery_status(run_id, detail=detail)
 
     def goal_plus_search_prepare_recovery(self, run_id: str, candidate_id: str) -> dict[str, Any]:
         self._require_target("goal_plus_search_prepare_recovery", run_id=run_id)
@@ -392,7 +398,12 @@ class SearchTools:
         on_submitted: Callable[[PendingVerification], None] | None = None,
         attempt_id: str | None = None,
     ) -> dict[str, Any]:
-        self._require_target("goal_plus_search_run_verifier", run_id=run_id, agent_session_id=agent_session_id)
+        self._require_target(
+            "goal_plus_search_run_verifier",
+            settlement=True,
+            run_id=run_id,
+            agent_session_id=agent_session_id,
+        )
         if attempt_id is not None:
             if not attempt_id or scope != "process" or hypothesis is not None or toolization_decision is not None or on_submitted is not None:
                 raise ValueError("VerifierQueryInvalid: provide only the process attempt identity")
@@ -456,6 +467,7 @@ class SearchTools:
     ) -> dict[str, Any]:
         self._require_target(
             "goal_plus_search_list_iterations",
+            settlement=True,
             agent_session_id=agent_session_id,
         )
         return history_page(self.runtime.list_agent_iterations(agent_session_id), offset, limit)
@@ -568,10 +580,13 @@ class GoalPlusTools:
     def __init__(self, runtime: FileGoalPlusRuntime) -> None:
         self.runtime = runtime
 
-    def _require_target(self, tool_name: str, goal_plus_id: str) -> None:
+    def _require_target(
+        self, tool_name: str, goal_plus_id: str, *, settlement: bool = False
+    ) -> None:
         self.runtime.require_active_tool_target(
             tool_name,
             {"goal_plus_id": goal_plus_id},
+            settlement=settlement,
         )
 
     def goal_plus_create(
@@ -655,7 +670,9 @@ class GoalPlusTools:
         generation: int | None = None,
         launch_ttl_seconds: int = 120,
     ) -> dict[str, Any]:
-        self._require_target("goal_plus_record_work_event", goal_plus_id)
+        self._require_target(
+            "goal_plus_record_work_event", goal_plus_id, settlement=True
+        )
         record = self.runtime.record_work_event(
             goal_plus_id,
             work_item_id,
@@ -753,9 +770,12 @@ class GoalPlusTools:
         findings: list[dict[str, Any]] | None = None,
         evidence: list[dict[str, Any]] | None = None,
         checker_metadata: dict[str, Any] | None = None,
-        *, native_session_id: str | None = None,
+        *,
+        native_session_id: str | None = None,
     ) -> dict[str, Any]:
-        self._require_target("goal_plus_submit_final_check", goal_plus_id)
+        self._require_target(
+            "goal_plus_submit_final_check", goal_plus_id, settlement=True
+        )
         record = self.runtime.submit_final_check(
             goal_plus_id,
             check_id=check_id,

@@ -34,8 +34,11 @@ def test_dispatch_rejects_revoked_native_main_without_mutation(tmp_path, event, 
         }))
     before = runtime.state.read_goal(goal.goal_plus_id).model_dump()
     events = runtime.list_events(goal.goal_plus_id)
+    # A stopped Goal reports its authoritative pause reason instead of a
+    # misleading entrypoint error; a paused-then-resumed Goal is rejected by
+    # session identity.
     with pytest.raises(PermissionError if resumed else RuntimeError,
-                       match="MainSessionMismatch" if resumed else "GoalPlusEntrypointRequired"):
+                       match="MainSessionMismatch" if resumed else "GoalPlusResumeRequired.*reason=user_pause"):
         runtime.goal_dispatch.record_work_event(
             goal.goal_plus_id, "task", event, "Revoked execution.", host="codex", native_main=caller,
         )

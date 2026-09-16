@@ -115,7 +115,9 @@ def test_legacy_terminal_import_keeps_historical_search_authority_without_writes
     authorization = GoalAuthorization(source)
     assert authorization.nonterminal_records() == []
     assert authorization.run_owner("old-run") == record.goal_plus_id
-    with pytest.raises(RuntimeError, match="GoalPlusResumeRequired"):
+    with pytest.raises(
+        RuntimeError, match="GoalPlusTerminal.*settled Evidence is preserved"
+    ):
         authorization.require_search_execution("old-run", settlement=True)
     assert snapshot(tmp_path) == before
 

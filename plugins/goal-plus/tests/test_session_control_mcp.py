@@ -67,6 +67,22 @@ def test_control_requires_trusted_main_binding(tmp_path, role):
         )
 
 
+def test_wait_rejects_timeout_above_turn_boundary_cap(tmp_path):
+    def reject_lookup(session_id, operation):
+        raise AssertionError("cap must be checked before touching the session control")
+
+    mcp = create_mcp(tmp_path / ".gp", caller_role="main", session_controls=reject_lookup)
+
+    async def exercise():
+        async with Client(mcp) as client:
+            with pytest.raises(Exception, match="must be <= 300"):
+                await client.call_tool("goal_plus_session_wait", {
+                    "session_id": "owned", "call_id": "one", "timeout_seconds": 301,
+                })
+
+    asyncio.run(exercise())
+
+
 def test_wait_does_not_block_another_control_request(tmp_path, controlled_session):
     control, _ = controlled_session("interrupt")
     mcp = create_mcp(tmp_path / ".gp", caller_role="main", session_controls=lambda *_: control)

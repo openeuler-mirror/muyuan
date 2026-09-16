@@ -17,6 +17,7 @@ from goal_plus.domain.goal_authorization import (
     GOAL_SCOPED_TOOL_SUFFIXES,
     LINKED_SEARCH_TOOL_SUFFIXES,
     SEARCH_RECOVERY_TOOL_SUFFIXES,
+    stopped_goal_message,
     tool_matches,
 )
 from goal_plus.domain.tool_identity import goal_plus_tool_name
@@ -109,7 +110,7 @@ class GoalGate:
                         record,
                         event,
                         "block",
-                        reason="GoalPlusResumeRequired: this task is stopped; only an explicit host resume can restart it.",
+                        reason=stopped_goal_message(record),
                     )
                 return self._record_gate(record, event, "allow")
             if event == "pre_tool_use" and any(

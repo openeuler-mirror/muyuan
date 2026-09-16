@@ -199,9 +199,12 @@ def test_direct_typed_successor_reference_requires_ownership(authorization):
 @pytest.mark.parametrize(
     ("updates", "reason"),
     [
-        ({"status": "blocked"}, "GoalPlusEntrypointRequired"),
-        ({"status": "complete"}, "GoalPlusEntrypointRequired"),
-        ({"control": GoalPlusControl(state="paused")}, "GoalPlusEntrypointRequired"),
+        ({"status": "blocked"}, "GoalPlusResumeRequired.*status=blocked"),
+        ({"status": "complete"}, "GoalPlusTerminal"),
+        (
+            {"control": GoalPlusControl(state="paused")},
+            "GoalPlusResumeRequired.*reason=explicit_pause",
+        ),
         ({"entrypoint_status": "legacy_unverified"}, "GoalPlusEntrypointRequired"),
         ({"host_command_invocations": []}, "GoalPlusEntrypointRequired"),
     ],
@@ -287,7 +290,9 @@ def test_execution_gate_preserves_settlement_and_historical_link_rules(
         if allowed:
             service.require_search_execution("run-a", settlement=finishing)
         else:
-            with pytest.raises(RuntimeError, match="GoalPlusResumeRequired"):
+            with pytest.raises(
+                RuntimeError, match="GoalPlus(?:ResumeRequired|Terminal)"
+            ):
                 service.require_search_execution("run-a", settlement=finishing)
         service.require_search_execution("standalone", settlement=finishing)
     assert record.model_dump_json() == before

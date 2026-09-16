@@ -44,6 +44,11 @@ if TYPE_CHECKING:
 
 VERIFIER_FAST_WAIT_SECONDS = 1.0
 
+# Turn-boundary responsiveness: Pi queues user input until the agent turn
+# ends; a single long wait blocks the only interruption path. 300s keeps
+# polling cheap while bounding how long a user can be locked out.
+SESSION_WAIT_MAX_SECONDS = 300.0
+
 
 def _json_text(value: Any) -> TextContent:
     return TextContent(
@@ -278,7 +283,18 @@ def create_mcp(
 
             Completed means the invocation returned, not that verification passed. Read Search results with
             goal_plus_search_list_history; detail=true retrieves the full invocation output and host diagnostics.
+            Wait with a short timeout (<= SESSION_WAIT_MAX_SECONDS); when the result is not ready yet, end the
+            turn and let the host Stop continuation re-ignite you instead of blocking a single turn. User input
+            is only delivered at turn boundaries, and goal_plus_session_message can steer an active invocation.
             """
+            if timeout_seconds > SESSION_WAIT_MAX_SECONDS:
+                raise ValueError(
+                    f"goal_plus_session_wait timeout_seconds must be <= "
+                    f"{int(SESSION_WAIT_MAX_SECONDS)}: a single long wait blocks the agent "
+                    "turn and prevents user input from being delivered at turn "
+                    "boundaries. Use short waits; when a result is not ready, end "
+                    "the turn and let the host Stop continuation re-ignite you."
+                )
             return session_call_receipt(await asyncio.to_thread(
                 lambda: session_controls(session_id, "wait").wait(call_id, timeout=timeout_seconds),
             ), detail=detail)
@@ -397,9 +413,14 @@ def create_mcp(
 
     @register_tool()
     @_debug_tool_response
-    def goal_plus_search_recovery_status(run_id: str) -> dict[str, Any]:
-        """读取各 candidate 的完整结算恢复点、generation 和 host session，不启动或回滚任何工作。"""
-        return tools.goal_plus_search_recovery_status(run_id)
+    def goal_plus_search_recovery_status(run_id: str, detail: bool = False) -> dict[str, Any]:
+        """读取各 candidate 的结算恢复点、generation 和 session 概要，用于恢复分诊；不启动或回滚任何工作。
+
+        默认只返回恢复决策所需字段（checkpoint、未结算变更、pending verification、
+        recovery 状态与 session 的绑定概要）；detail=true 才附带完整 session_handle
+        （含 progress handoff、host metadata）与完整 recovery 记录。
+        """
+        return tools.goal_plus_search_recovery_status(run_id, detail=detail)
 
     @register_tool()
     @_debug_tool_response

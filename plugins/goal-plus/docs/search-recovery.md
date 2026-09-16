@@ -34,7 +34,8 @@ candidate 的工作区恢复。Main 根据最新用户消息、共享平面和�
 ## 恢复流程
 
 1. Main 读取 `goal_plus_search_recovery_status(run_id)`，取得每条 lane 的 checkpoint、generation、
-   恢复事务及旧 host session；核对宿主的实际 worker 状态。
+   恢复事务与旧 session 概要（`detail=true` 才附带完整 session_handle 与 host metadata）；
+   核对宿主的实际 worker 状态。
 2. 对需要恢复的 candidate 调用 `goal_plus_search_prepare_recovery(run_id, candidate_id)`。
    Runtime 固定 checkpoint、持久化 `recovery_id`、增加 generation，隔离旧 session；不修改工作区。
 3. 通过共同 `goal_plus_session_close` 关闭旧执行；控制器已丢失时由 scope cleanup 清理。

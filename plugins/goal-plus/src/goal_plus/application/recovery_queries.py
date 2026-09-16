@@ -37,7 +37,7 @@ class CandidateRecoveryQueries:
             for iteration in record.iterations
         )
 
-    def status(self, run_id: str) -> dict[str, Any]:
+    def status(self, run_id: str, *, detail: bool = False) -> dict[str, Any]:
         validate_recovery_ids(run_id, "status")
         run = self.state.read_run(run_id)
         candidates = []
@@ -56,6 +56,49 @@ class CandidateRecoveryQueries:
                     )
                 except (RuntimeError, ValueError, OSError) as exc:
                     workspace_error = str(exc)
+            sessions = [
+                s for s in self.sessions.read_agent_sessions(run_id)
+                if s.candidate_id == record.candidate_id
+            ]
+            if detail:
+                session_receipts = [
+                    s.model_dump(
+                        mode="json",
+                        include={
+                            "agent_session_id",
+                            "agent_harness",
+                            "session_handle",
+                            "execution_generation",
+                        },
+                    )
+                    for s in sessions
+                ]
+                recovery = (
+                    record.recovery.model_dump(mode="json")
+                    if record.recovery else None
+                )
+            else:
+                # Recovery triage needs session identity and binding state, not
+                # host handles or progress handoffs; detail=true keeps those.
+                session_receipts = [
+                    {
+                        "agent_session_id": s.agent_session_id,
+                        "agent_harness": s.agent_harness,
+                        "execution_generation": s.execution_generation,
+                        "bound": bool(s.session_handle.metadata.get("bound_at")),
+                    }
+                    for s in sessions
+                ]
+                recovery = (
+                    record.recovery.model_dump(
+                        mode="json",
+                        include={
+                            "recovery_id", "state", "generation",
+                            "fenced_session_ids", "restored_at",
+                        },
+                    )
+                    if record.recovery else None
+                )
             candidates.append(
                 {
                     "candidate_id": record.candidate_id,
@@ -67,22 +110,8 @@ class CandidateRecoveryQueries:
                     "unsettled_workspace_changes": unsettled,
                     "workspace_inspection_error": workspace_error,
                     "fresh_recovery_evidence": self.has_fresh_evidence(run_id, record),
-                    "recovery": record.recovery.model_dump(mode="json")
-                    if record.recovery
-                    else None,
-                    "sessions": [
-                        s.model_dump(
-                            mode="json",
-                            include={
-                                "agent_session_id",
-                                "agent_harness",
-                                "session_handle",
-                                "execution_generation",
-                            },
-                        )
-                        for s in self.sessions.read_agent_sessions(run_id)
-                        if s.candidate_id == record.candidate_id
-                    ],
+                    "recovery": recovery,
+                    "sessions": session_receipts,
                 }
             )
         return {"run_id": run_id, "state": run.state, "candidates": candidates}
