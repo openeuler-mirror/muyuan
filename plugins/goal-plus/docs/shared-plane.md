@@ -276,6 +276,9 @@ discoverable head 的精确 `tool_id`/`snapshot_hash`。
 版本上限后仍可用新 pending 取代尚未完成 Tool View 的旧 pending。该限制按 family 生效，不使用
 run-wide 工具总数限制。
 
+工具回执随完整 iteration 提交，索引是提交后的幂等投影；新 revision admission 先补齐既有索引。
+重试不重置已处理的 family head，详见 [Search 一致性恢复](search-recovery.md)。
+
 `ToolizationDecision` 只是 `IterationRecord` 的普通事实。缺失、声明 staged 但 staging 为空，
 或声明 not_applicable 但 staging 非空会分别产生 advisory；这些字段只供 monitor/report，
 不改变 score、verifier disposition、selection 或 promotion。实际 staging inventory 与现有

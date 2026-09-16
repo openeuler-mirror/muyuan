@@ -1509,11 +1509,7 @@ def test_windows_share_out_junction_is_rejected_before_claim(tmp_path: Path) -> 
     assert share_out.exists()
     manager = SharedDirManager(runtime.search_run.state.run_dir(run_id))
     with pytest.raises(ValueError, match="must be a real directory"):
-        manager._claim_staging(
-            share_out,
-            candidate_id=producer.candidate_id,
-            iteration=2,
-        )
+        manager.capture_staging(share_out, manager.pending_dir / "junction-test")
     assert sentinel.read_text(encoding="utf-8") == "must remain\n"
     assert share_out.exists()
 
@@ -1579,7 +1575,7 @@ def test_path_entry_limit_stops_recursive_scan_and_restores_staging(
     assert (share_out / "score-helper" / "helper.py").is_file()
 
 
-def test_index_failure_restores_claimed_staging_without_publishing(
+def test_index_failure_replays_committed_tool_publication(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1587,21 +1583,112 @@ def test_index_failure_restores_claimed_staging_without_publishing(
     share_out = producer.share_out
     _write_tool(share_out)
 
-    def fail_index_update(self, tools):
+    def fail_index_update(self, tools, **kwargs):
         raise OSError("simulated index replace failure")
 
-    monkeypatch.setattr(SharedDirManager, "_append_index", fail_index_update)
-    report = _run_worker_verifier(
-        runtime,
-        run_id,
-        producer,
-        "Keep staged source recoverable if index publication fails",
+    with monkeypatch.context() as patch:
+        patch.setattr(SharedDirManager, "_append_index", fail_index_update)
+        with pytest.raises(OSError, match="index replace failure"):
+            _run_worker_verifier(runtime, run_id, producer, "Publish helper")
+    record = runtime.settlement.state.read_candidate(run_id, producer.candidate_id)
+    assert len(record.iterations) == 1
+    tools = record.iterations[0].shared_tools
+    assert len(tools) == 1
+    assert record.verification is not None
+    assert _shared_index(runtime, run_id)["tools"] == []
+    restarted = FileSearchRuntime(runtime.root_dir)
+    for _ in range(2):
+        report = restarted.run_verifier(
+            run_id, producer.candidate_id,
+            attempt_id=record.score_report.attempt_id,
+        )
+        assert report.process_passed is True
+    settled = restarted.settlement.state.read_candidate(run_id, producer.candidate_id)
+    assert settled.iterations == record.iterations
+    assert settled.results_ledger == record.results_ledger
+    assert settled.verification is None
+    assert _shared_index(runtime, run_id)["tools"] == [tools[0].model_dump(mode="json")]
+    assert not (share_out / "score-helper").exists()
+
+
+def test_uncommitted_tool_input_is_retained_for_exact_attempt_retry(tmp_path, monkeypatch):
+    runtime, run_id, [producer, _peer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    original_source = (producer.share_out / "score-helper" / "helper.py").read_text()
+    write_candidate = runtime.settlement.state.write_candidate
+
+    def interrupt_commit(run_id, record):
+        if record.iterations:
+            raise SystemExit("before settlement commit")
+        write_candidate(run_id, record)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.settlement.state, "write_candidate", interrupt_commit)
+        with pytest.raises(SystemExit, match="before settlement commit"):
+            _run_worker_verifier(runtime, run_id, producer, "Publish original helper")
+    record = runtime.settlement.state.read_candidate(run_id, producer.candidate_id)
+    assert record.iterations == []
+    assert _shared_index(runtime, run_id)["tools"] == []
+    manager = SharedDirManager(runtime.search_run.state.run_dir(run_id))
+    snapshots = list(manager.tools_dir.glob("sha256/*/*"))
+    assert len(snapshots) == 1
+    _write_tool(producer.share_out)
+    later = producer.share_out / "score-helper" / "helper.py"
+    later.write_text("# next attempt\n")
+    restarted = FileSearchRuntime(runtime.root_dir)
+    report = restarted.run_verifier(
+        run_id, producer.candidate_id,
+        attempt_id=record.verification.attempt_id,
     )
     assert report.process_passed is True
-    assert report.shared_tool_publish_status == "snapshot_error"
-    assert (share_out / "score-helper" / "helper.py").is_file()
-    assert runtime.get_global_evidence(peer.agent_session_id)[0]["shared_tools"] == []
-    assert _shared_index(runtime, run_id)["tools"] == []
+    settled = restarted.settlement.state.read_candidate(run_id, producer.candidate_id)
+    assert len(settled.iterations) == 1
+    tool = settled.iterations[0].shared_tools[0]
+    assert (tool.read_only_path / "helper.py").read_text() == original_source
+    assert list(manager.tools_dir.glob("sha256/*/*")) == snapshots
+    assert later.read_text() == "# next attempt\n"
+
+
+def test_committed_adoption_retries_inbox_cleanup(tmp_path, monkeypatch):
+    runtime, run_id, [producer, consumer] = _shared_run(tmp_path)
+    _write_tool(producer.share_out)
+    _run_worker_verifier(runtime, run_id, producer, "Publish helper")
+    _publish_pending_views(runtime, run_id)
+    tool = runtime.get_global_evidence(consumer.agent_session_id)[0]["shared_tools"][0]
+    runtime.copy_shared_tool(consumer.agent_session_id, tool["tool_id"], tool["snapshot_hash"])
+    before = runtime.settlement.state.read_candidate(run_id, consumer.candidate_id)
+    receipt = before.pending_tool_copies[0]
+
+    def interrupt_cleanup(path):
+        raise OSError("inbox cleanup interrupted")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.shared_tools.publication, "remove_inbox", interrupt_cleanup)
+        with pytest.raises(OSError, match="inbox cleanup interrupted"):
+            _run_worker_verifier(runtime, run_id, consumer, "Read copied helper")
+    record = runtime.settlement.state.read_candidate(run_id, consumer.candidate_id)
+    assert record.iterations[0].adopted_tools[0].receipt_id == receipt.receipt_id
+    restarted = FileSearchRuntime(runtime.root_dir)
+    for _ in range(2):
+        restarted.run_verifier(run_id, consumer.candidate_id,
+                               attempt_id=record.score_report.attempt_id)
+    settled = restarted.settlement.state.read_candidate(run_id, consumer.candidate_id)
+    assert settled.pending_tool_copies == []
+    assert not receipt.inbox_path.exists()
+    assert settled.iterations == record.iterations
+    assert settled.results_ledger == record.results_ledger
+    _run_worker_verifier(restarted, run_id, consumer, "Next attempt after cleanup")
+
+
+def test_reconciliation_keeps_latest_equal_score_settlement(tmp_path):
+    runtime, run_id, [first, second] = _shared_run(tmp_path)
+    older = _run_worker_verifier(runtime, run_id, second, "Earlier equal score")
+    latest = _run_worker_verifier(runtime, run_id, first, "Later equal score")
+    assert runtime.status(run_id).best_candidate_id == first.candidate_id
+    runtime.run_verifier(run_id, second.candidate_id, attempt_id=older.attempt_id)
+    assert runtime.status(run_id).best_candidate_id == first.candidate_id
+    best = json.loads((runtime.search_run.state.run_dir(run_id) / "best.json").read_text())
+    assert best["artifact_ref"] == latest.attempt_artifact_ref.model_dump(mode="json")
 
 
 def test_failed_verifier_uses_only_cheap_staging_inventory(
@@ -1737,7 +1824,7 @@ def test_disabled_shared_dir_verifier_skips_shared_tool_settlement(
         raise AssertionError("disabled shared-dir must not inspect or settle staging")
 
     monkeypatch.setattr(SharedDirManager, "inspect_staging", fail_shared_settlement)
-    monkeypatch.setattr(SharedDirManager, "settle_iteration", fail_shared_settlement)
+    monkeypatch.setattr(SharedDirManager, "prepare_iteration", fail_shared_settlement)
 
     report = _run_worker_verifier(runtime, run_id, candidate, "Verify without sharing")
 

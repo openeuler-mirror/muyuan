@@ -257,10 +257,7 @@ def build_candidate_recovery(root_dir, *, settlement, sessions, context):
         context=context,
         candidate_ledger=settlement.candidate_ledger,
         shared_tools=settlement.shared_tools,
-        checkpoints=settlement.checkpoints,
         settlement=settlement,
-        annotation_admission=settlement.annotation_admission,
-        persist_run=settlement.persist_run,
     )
 
 

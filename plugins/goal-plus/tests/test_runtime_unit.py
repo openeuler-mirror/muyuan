@@ -4261,6 +4261,9 @@ def test_checkpoint_write_error_preserves_settlement_and_peer_execution(tmp_path
     assert candidate.iterations[0].score == 9.0
     assert runtime.status(run_id).state == RunState.WAITING_FOR_WORKERS
     assert runtime.run_verifier(run_id, peer.candidate_id).disposition == "keep"
+    with pytest.raises(RuntimeError, match="VerifierRecoveryRequired"):
+        runtime.select(run_id)
+    runtime.run_verifier(run_id, task.candidate_id, attempt_id=candidate.score_report.attempt_id)
     selected = runtime.select(run_id)
     assert selected["selected_candidate_id"] == task.candidate_id
     assert selected["selected_score"] == 9.0

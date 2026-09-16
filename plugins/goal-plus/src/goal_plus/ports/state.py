@@ -52,6 +52,9 @@ class LocalVerificationRequest(SearchModel):
     agent_session_id: str | None
     hypothesis: str | None
     toolization_decision: ToolizationDecision | None
+    shared_tool_staging_dir: Path | None = None
+    shared_tool_capture_error: str | None = None
+    tool_copies: list[ToolCopyReceipt] = Field(default_factory=list)
     report: ScoreReport | None = None
 
 

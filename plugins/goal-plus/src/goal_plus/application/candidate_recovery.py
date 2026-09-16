@@ -6,7 +6,6 @@ from goal_plus.application.recovery_policy import (
 
 """Generation fencing and exact committed-checkpoint recovery."""
 
-from typing import Callable
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
     require_no_pending_verification,
@@ -18,20 +17,16 @@ from goal_plus.domain.results_ledger import (
 )
 from goal_plus.domain.search import (
     CandidateRecovery,
-    FrozenSpec,
 )
 from goal_plus.domain.time import outer_deadline_epoch
 from goal_plus.domain.agents import WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
 from goal_plus.ports.state import (
     CandidateRecord,
-    RunRecord,
 )
 from goal_plus.application.candidate_sessions import CandidateSessions
 from goal_plus.application.candidate_ledger import CandidateLedger
-from goal_plus.application.candidate_checkpoints import CandidateCheckpoints
 from goal_plus.application.candidate_settlement import CandidateSettlement
 from goal_plus.application.shared_tools import SharedTools
-from goal_plus.application.annotation_admission import AnnotationAdmission
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.application.search_context import SearchContext
 from goal_plus.ports.clock import Clock
@@ -51,10 +46,7 @@ class CandidateRecoveryWorkflow:
         context: SearchContext,
         candidate_ledger: CandidateLedger,
         shared_tools: SharedTools,
-        checkpoints: CandidateCheckpoints,
         settlement: CandidateSettlement,
-        annotation_admission: AnnotationAdmission,
-        persist_run: Callable[[RunRecord], None],
     ) -> None:
         self.queries = CandidateRecoveryQueries(state, workspace, sessions.state)
         self.state, self.clock, self.workspace = state, clock, workspace
@@ -63,16 +55,11 @@ class CandidateRecoveryWorkflow:
             authorization,
             context,
         )
-        self.candidate_ledger, self.shared_tools, self.checkpoints = (
+        self.candidate_ledger, self.shared_tools = (
             candidate_ledger,
             shared_tools,
-            checkpoints,
         )
-        self.settlement, self.annotation_admission, self.persist_run = (
-            settlement,
-            annotation_admission,
-            persist_run,
-        )
+        self.settlement = settlement
 
     def require_closeout(self, run_id: str, record: CandidateRecord) -> None:
         require_candidate_not_recovering(record)
@@ -215,30 +202,21 @@ class CandidateRecoveryWorkflow:
                 if preserved_files:
                     self.candidate_ledger.workspace.check(record, frozen.spec.metric_name)
                 # Tool-copy staging belonged to the interrupted, uncommitted attempt.
+                request = record.verification_request
+                if (
+                    request is not None
+                    and request.iteration > len(record.iterations)
+                    and request.shared_tool_staging_dir is not None
+                ):
+                    self.shared_tools.publication.archive_staging(
+                        run_id, candidate_id, request.shared_tool_staging_dir, recovery_id,
+                    )
                 record.pending_tool_copies = []
                 record.verification = None
-                self._reconcile_recovered_settlements(run, frozen, record)
+                record.verification_request = None
+                self.settlement.reconcile(run, frozen, record)
                 recovery.state = "restored"
                 recovery.restored_artifact_ref = restored
                 recovery.restored_at = self.clock.timestamp()
                 self.state.write_candidate(run_id, record)
                 return recovery
-
-    def _reconcile_recovered_settlements(
-        self, run: RunRecord, frozen: FrozenSpec, record: CandidateRecord
-    ) -> None:
-        """Repair derived state from committed Evidence, never rerun a verifier."""
-        if frozen.spec.shared_dir.enabled:
-            assert record.recovery is not None
-            self.shared_tools.publication.recover_candidate_publications(
-                run.run_id,
-                record.candidate_id,
-                {
-                    tool.tool_id
-                    for iteration in record.iterations
-                    for tool in iteration.shared_tools
-                },
-                record.recovery.recovery_id,
-            )
-        self.settlement.reconcile(run, frozen, record)
-        self.state.write_candidate(run.run_id, record)

@@ -632,7 +632,7 @@ def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_pa
     assert runtime.list_verifier_tasks(run_id) == verifier_tasks
 
 
-def test_unsettled_shared_publication_does_not_survive_as_a_family_head(tmp_path, monkeypatch):
+def test_checkpoint_archives_uncommitted_tool_input_without_publishing(tmp_path, monkeypatch):
     from goal_plus.shared_dir import SharedDirManager
     from tests.test_shared_dir import _shared_run, _write_tool
 
@@ -652,13 +652,14 @@ def test_unsettled_shared_publication_does_not_survive_as_a_family_head(tmp_path
                              agent_session_id=worker.agent_session_id, hypothesis="publish helper")
     restarted = FileSearchRuntime(runtime.root_dir)
     manager = SharedDirManager(restarted.search_run.state.run_dir(run_id))
-    assert len(manager.pending_tool_ids()) == 1
+    assert not manager.pending_tool_ids()
     session = restarted.candidate_sessions.session(worker.agent_session_id)
     native_recovery_resource(restarted, session, monkeypatch)
     recovery = restarted.prepare_candidate_recovery(run_id, worker.candidate_id)
     SearchTools(restarted).goal_plus_search_recover_candidate(run_id, worker.candidate_id, recovery.recovery_id)
     assert not manager.pending_tool_ids()
     assert not manager.tool_family_catalog(max_published_versions_per_family=2)
-    archive = restarted.candidate_creation.state.candidate_dir(run_id, worker.candidate_id) / "recoveries" / recovery.recovery_id / "unsettled-shared-tools.json"
-    assert archive.exists()
+    archive = restarted.candidate_creation.state.candidate_dir(run_id, worker.candidate_id) / "recoveries" / recovery.recovery_id / "shared-tool-input"
+    assert (archive / "score-helper" / "helper.py").is_file()
+    assert restarted.candidate_creation.state.read_candidate(run_id, worker.candidate_id).verification_request is None
     assert restarted.candidate_creation.state.read_candidate(run_id, worker.candidate_id).iterations == []

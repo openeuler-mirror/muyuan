@@ -60,6 +60,19 @@ def test_interrupted_verifier_process_resumes_through_mcp(tmp_path, monkeypatch,
             time.sleep(0.02)
         pytest.fail(f"verifier did not reach {stage} checkpoint")
 
+    def wait_result(result):
+        if result.get("state") != "pending":
+            return result
+
+        def query():
+            value = call_mcp_tool(runtime.root_dir, "goal_plus_search_run_verifier", {
+                "run_id": run_id, "candidate_id": task.candidate_id,
+                "attempt_id": result["attempt_id"],
+            })
+            return value if value.get("state") != "pending" else None
+
+        return wait_for(query)
+
     command = [sys.executable, "-c", (
         "import sys\nfrom goal_plus.runtime import FileSearchRuntime\n"
         "FileSearchRuntime(sys.argv[1]).run_verifier(sys.argv[2], sys.argv[3], "
@@ -90,8 +103,7 @@ def test_interrupted_verifier_process_resumes_through_mcp(tmp_path, monkeypatch,
             resources.close()
             wait_for(lambda: runtime.verifier_result(**args)["state"] == "needs_recovery")
             result = call_mcp_tool(runtime.root_dir, "goal_plus_search_run_verifier", {**args, "retry": True})
-            while result.get("state") == "pending":
-                result = call_mcp_tool(runtime.root_dir, "goal_plus_search_run_verifier", args)
+            result = wait_result(result)
             assert result["aggregate_score"] == 3
             assert result["attempt_id"] == pending.attempt_id
             assert record().iterations[0].artifact_ref == pending.artifact_ref
@@ -105,6 +117,7 @@ def test_interrupted_verifier_process_resumes_through_mcp(tmp_path, monkeypatch,
                 "run_id": run_id, "candidate_id": task.candidate_id,
                 "agent_session_id": session.agent_session_id, "hypothesis": "later local edit",
             })
+            next_result = wait_result(next_result)
             assert next_result["aggregate_score"] == 4
             assert len(record().iterations) == 2
         finally:

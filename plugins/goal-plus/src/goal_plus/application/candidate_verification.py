@@ -2,7 +2,6 @@
 
 from typing import Any, Callable, Literal
 from goal_plus.domain.edit_surface import path_matches
-from goal_plus.domain.agents import WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
     require_run_not_invalidated,
@@ -240,6 +239,14 @@ class CandidateVerification:
                     attempt=state, base_artifact_ref=pre_attempt_artifact_ref,
                     changed_files=attempt_changed_files, agent_session_id=agent_session_id,
                     hypothesis=hypothesis, toolization_decision=normalized_toolization_decision,
+                    shared_tool_staging_dir=(
+                        self.shared_tools.publication.staging_path(
+                            run_id, candidate_id, current.execution_generation, pending.attempt_id,
+                        )
+                        if frozen.spec.shared_dir.enabled and current.task.share_out_dir is not None
+                        else None
+                    ),
+                    tool_copies=list(current.pending_tool_copies),
                 )
                 self.state.write_candidate(run_id, current)
             return self._execute(run, frozen, current, on_submitted=on_submitted, execution_lock=execution_lock)
@@ -296,18 +303,9 @@ class CandidateVerification:
             with self.state.lock_run(run_id):
                 record = self.state.read_candidate(run_id, candidate_id)
                 require_candidate_not_recovering(record)
-                if record.verification is not None:
-                    if record.verification.attempt_id != attempt_id:
-                        raise RuntimeError("VerifierInProgress: another attempt is pending")
-                    self.artifacts.workspace.publish_settlement(
-                        record.task, record.score_report.attempt_artifact_ref,
-                        record.results_ledger_artifact_ref, preserve_workspace=True,
-                        ledger_projection=self.candidate_ledger.projection(frozen, record) == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV,
-                    )
-                    record.verification = None
-                    record.score_report.verification = None
-                    self.state.write_candidate(run_id, record)
-                self.settlement.reconcile(run, frozen, record)
+                if record.verification is not None and record.verification.attempt_id != attempt_id:
+                    raise RuntimeError("VerifierInProgress: another attempt is pending")
+                self.settlement.reconcile(run, frozen, record, preserve_workspace=True)
             return record.score_report
         if request is None or record.verification is None:
             raise RuntimeError("VerifierReplayUnavailable: submitted verification input is missing")
@@ -349,6 +347,15 @@ class CandidateVerification:
                 require_candidate_not_recovering(record)
                 if record.execution_generation != request.execution_generation or record.verification != pending:
                     raise RuntimeError("StaleAgentSession: verification identity changed")
+                if request.shared_tool_staging_dir is not None and request.shared_tool_capture_error is None:
+                    assert record.task.share_out_dir is not None
+                    try:
+                        self.shared_tools.publication.capture_staging(
+                            run_id, record.task.share_out_dir, request.shared_tool_staging_dir,
+                        )
+                    except ValueError as exc:
+                        request.shared_tool_capture_error = str(exc)
+                    record.verification_request = request
                 record.verification = pending.model_copy(update={"state": "running", "error": None})
                 self.state.write_candidate(run_id, record)
             if on_submitted is not None:

@@ -364,6 +364,10 @@ TT 执行结果未知时持久保留原 request 的资源占用，只允许准�
 存活的直接 verifier 子进程持有候选与资源锁，控制器丢失不授权重复执行。只有无法核验提交
 记录或恢复 artifact 时才需要 Main 决定 checkpoint；完整失败结果不作为中断自动重试。
 
+本地 intent 固定 artifact、工具输入与消费回执。完整 iteration、分数及 ledger 原子提交后，
+才发布工具索引或清理输入。正常执行与 resume 共用幂等 reconciliation，不重复计分或改变
+同分 best 的结算顺序。恢复与门禁见 [Search 一致性恢复](docs/search-recovery.md)。
+
 一次标准 run 按以下顺序执行：
 
 1. 使用当前 `goal_plus_id` 调用 `goal_plus_search_freeze_spec`
