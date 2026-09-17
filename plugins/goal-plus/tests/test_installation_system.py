@@ -79,7 +79,9 @@ def test_native_install_reinstall_uninstall(tmp_path):
     assert not list(bindings.glob("codex-*.json"))
     assert not json.loads(run(["codex", "plugin", "list", "--json"]))["installed"]
     stale_build = "stale-unreferenced-release"
-    stale_package = package.parent / stale_build / "package"
+    # The cleanup scans releases/ top-level directories; fabricate the stale
+    # release as a sibling of the pinned one, not nested inside it.
+    stale_package = package.parent.parent / stale_build / "package"
     stale_package.mkdir(parents=True)
     stale_receipt = {**json.loads((package / ".goal-plus-runtime.json").read_text()),
                      "build": stale_build, "package": str(stale_package)}
@@ -166,7 +168,13 @@ try {
   assert.match(tool.stdout, /usage:/);
 } finally {
   for (const handler of result.extensions[0].handlers.get("session_shutdown") ?? []) {
-    await handler({type: "session_shutdown", reason: "test_finished"}, {cwd: process.cwd()});
+    // Real Pi builds the extension context through ExtensionRunner with a
+    // sessionManager; the extension's shutdown path reads the native session
+    // id from it. Provide the same minimal shape here.
+    await handler(
+      {type: "session_shutdown", reason: "test_finished"},
+      {cwd: process.cwd(), sessionManager: {getSessionId: () => "pi-load-check"}},
+    );
   }
 }
 '''
