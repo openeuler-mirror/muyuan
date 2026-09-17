@@ -3241,10 +3241,10 @@ export default async function (pi: ExtensionAPI) {
 				return;
 			}
 			workerContinuationCount += 1;
-			// The plain "keep exploring" continuation turns into a short submit
-			// nudge once enough turns of this dispatch passed without any
-			// verifier submission.
-			const submitNudge = workerContinuationCount >= WORKER_SUBMIT_NUDGE_TURNS
+			// Every WORKER_SUBMIT_NUDGE_TURNS turns of this dispatch without any
+			// verifier submission, the "keep exploring" continuation is replaced
+			// once by a short submit nudge; the turns in between stay quiet.
+			const submitNudge = workerContinuationCount % WORKER_SUBMIT_NUDGE_TURNS === 0
 				&& !workerVerifierSubmitted;
 			const workerContinuationContent = submitNudge
 				? `本 dispatch 已进行 ${workerContinuationCount} 轮且尚无 verifier 提交。若有成型方案，建议立即用 goal_plus_search_run_verifier 提交验证；仅在还有实质新改进时继续探索。`
