@@ -97,8 +97,8 @@ Main 使用共同 session 工具。accepted receipt 不等于 verifier 结果；
 
 对称卸载命令是 `./uninstall.sh --pi --thinkthread`：`--thinkthread` 只删除当前 checkout 生成的
 `goal-plus-pi` Profile。它绝不删除 ThinkThread Runtime、Root 或 state；这些资源由 ThinkThread
-管理员独立管理。需要同时移除不再被其他 host 使用的 Goal Plus Python package 时，再显式增加
-`--runtime`。
+管理员独立管理。需要顺带清理不再被任何 host 引用的受管 release 时，再显式增加
+`--unused-runtime`；仍在使用的 release 会保留。
 
 ### Checkout 开发安装
 

@@ -58,6 +58,12 @@ def test_component_selection_supports_thinkthread(uninstaller: ModuleType) -> No
     assert uninstaller._selected_components(args) == frozenset({"thinkthread"})
 
 
+def test_component_selection_supports_unused_runtime(uninstaller: ModuleType) -> None:
+    args = uninstaller.build_parser().parse_args(["--unused-runtime"])
+
+    assert uninstaller._selected_components(args) == frozenset({"unused-runtime"})
+
+
 def test_codex_plan_removes_normal_registration_only(
     uninstaller: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -330,9 +336,7 @@ def test_goal_plus_thinkthread_profile_plan_removes_only_current_checkout(
         lambda _path: ROOT.resolve(),
     )
 
-    owned, notes = uninstaller._goal_plus_thinkthread_profile_plan(
-        require_owned=True
-    )
+    owned, notes = uninstaller._goal_plus_thinkthread_profile_plan()
 
     assert owned == path
     assert notes == []
@@ -357,7 +361,7 @@ def test_goal_plus_thinkthread_profile_plan_refuses_another_checkout(
     )
 
     with pytest.raises(uninstaller.UninstallError, match="refusing to remove"):
-        uninstaller._goal_plus_thinkthread_profile_plan(require_owned=True)
+        uninstaller._goal_plus_thinkthread_profile_plan()
 
 
 def test_goal_plus_thinkthread_sdk_plan_removes_only_current_checkout(
@@ -378,7 +382,7 @@ def test_goal_plus_thinkthread_sdk_plan_removes_only_current_checkout(
         lambda _path: ROOT.resolve(),
     )
 
-    owned, notes = uninstaller._goal_plus_thinkthread_sdk_plan(require_owned=True)
+    owned, notes = uninstaller._goal_plus_thinkthread_sdk_plan()
 
     assert owned == path
     assert notes == []
@@ -468,40 +472,31 @@ def test_build_plan_pi_dev_only_does_not_inspect_normal_hosts(
     assert plan.remove_runtime is False
 
 
-@pytest.mark.parametrize(
-    ("owned_codex", "owned_pi", "expected_host"),
-    [
-        (True, False, "Codex"),
-        (False, True, "Pi"),
-        (True, True, "Codex and Pi"),
-    ],
-)
-def test_runtime_removal_refuses_unselected_host_registrations(
+def test_unused_runtime_alone_skips_host_inspection(
     uninstaller: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    owned_codex: bool,
-    owned_pi: bool,
-    expected_host: str,
 ) -> None:
-    monkeypatch.setattr(uninstaller.shutil, "which", lambda name: f"/opt/bin/{name}")
     monkeypatch.setattr(
         uninstaller,
         "_codex_plan",
-        lambda _codex: (owned_codex, False, []),
+        lambda _codex: pytest.fail("Codex should not be inspected"),
     )
     monkeypatch.setattr(
         uninstaller,
         "_pi_sources",
-        lambda *_args, **_kwargs: ((str(ROOT),), []) if owned_pi else ((), []),
+        lambda *_args, **_kwargs: pytest.fail("Pi should not be inspected"),
     )
     monkeypatch.setattr(uninstaller, "_runtime_plan", lambda: (True, []))
 
-    with pytest.raises(uninstaller.UninstallError, match=expected_host):
-        uninstaller._build_plan(
-            tmp_path / "dev",
-            components=frozenset({"runtime"}),
-        )
+    plan = uninstaller._build_plan(
+        tmp_path / "dev",
+        components=frozenset({"unused-runtime"}),
+    )
+
+    assert plan.remove_runtime is True
+    assert plan.remove_codex_plugin is False
+    assert plan.pi_sources == ()
 
 
 def test_runtime_removal_allows_selected_host_registration(
@@ -517,15 +512,10 @@ def test_runtime_removal_allows_selected_host_registration(
     )
     monkeypatch.setattr(uninstaller, "_pi_sources", lambda *_args, **_kwargs: ((), []))
     monkeypatch.setattr(uninstaller, "_runtime_plan", lambda: (True, []))
-    monkeypatch.setattr(
-        uninstaller,
-        "_goal_plus_thinkthread_profile_plan",
-        lambda **_kwargs: (None, []),
-    )
 
     plan = uninstaller._build_plan(
         tmp_path / "dev",
-        components=frozenset({"codex", "runtime"}),
+        components=frozenset({"codex", "unused-runtime"}),
     )
 
     assert plan.remove_codex_plugin is True

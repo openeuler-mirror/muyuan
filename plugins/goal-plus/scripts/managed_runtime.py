@@ -213,21 +213,31 @@ def unbind(host: str, config: Path, *, dry_run: bool = False) -> None:
             binding_path(host, config).unlink(missing_ok=True)
 
 
+def _unreferenced_releases() -> list[Path]:
+    pinned = {Path(json.loads(p.read_text())["package"]).resolve().parent
+              for p in (home() / "bindings").glob("*.json")}
+    stale: list[Path] = []
+    for release in (home() / "releases").iterdir():
+        if release.is_symlink():
+            raise RuntimeError(f"Refusing symlink release: {release}")
+        if release.resolve() in pinned:
+            continue
+        receipt = read_receipt(release / "package")
+        if receipt is None or receipt["build"] != release.name or Path(receipt["package"]).resolve() != release / "package":
+            raise RuntimeError(f"Refusing unrecognized release: {release}")
+        stale.append(release)
+    return stale
+
+
 def cleanup(*, dry_run: bool = False) -> None:
-    if not (home() / "releases").exists():
+    releases = home() / "releases"
+    if not releases.exists():
         return
     if dry_run:
-        print(f"Would remove unreferenced managed releases in {home() / 'releases'}")
+        for release in _unreferenced_releases():
+            print(f"Would remove unreferenced release: {release.name}")
         return
     with locked():
-        pinned = {Path(json.loads(p.read_text())["package"]).resolve().parent
-                  for p in (home() / "bindings").glob("*.json")}
-        for release in (home() / "releases").iterdir():
-            if release.is_symlink():
-                raise RuntimeError(f"Refusing symlink release: {release}")
-            if release.resolve() in pinned:
-                continue
-            receipt = read_receipt(release / "package")
-            if receipt is None or receipt["build"] != release.name or Path(receipt["package"]).resolve() != release / "package":
-                raise RuntimeError(f"Refusing unrecognized release: {release}")
+        for release in _unreferenced_releases():
             shutil.rmtree(release)
+            print(f"Removed unreferenced release: {release.name}")

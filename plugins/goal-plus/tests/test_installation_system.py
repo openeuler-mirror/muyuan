@@ -72,13 +72,22 @@ def test_native_install_reinstall_uninstall(tmp_path):
     assert list(bindings.glob("pi-*.json"))
     assert not list(bindings.glob("codex-*.json"))
     assert not json.loads(run(["codex", "plugin", "list", "--json"]))["installed"]
+    stale_build = "stale-unreferenced-release"
+    stale_package = package.parent / stale_build / "package"
+    stale_package.mkdir(parents=True)
+    stale_receipt = {**json.loads((package / ".goal-plus-runtime.json").read_text()),
+                     "build": stale_build, "package": str(stale_package)}
+    (stale_package / ".goal-plus-runtime.json").write_text(json.dumps(stale_receipt))
+    run([str(ROOT / "uninstall.sh"), "--unused-runtime"])
+    assert package.exists()
+    assert not stale_package.parent.exists()
     run([str(ROOT / "uninstall.sh"), "--pi"])
     assert json.loads(settings.read_text())["packages"] == []
     assert json.loads(settings.read_text())["theme"] == "dark"
     assert package.exists()
     assert not list(bindings.glob("*.json"))
     run([str(ROOT / "uninstall.sh"), "--codex", "--pi"])
-    run([str(ROOT / "uninstall.sh"), "--runtime"])
+    run([str(ROOT / "uninstall.sh"), "--unused-runtime"])
     assert not package.exists()
     dev = tmp_path / "pi-dev"
     run([str(ROOT / "install.sh"), "--pi-dev", "--pi-dev-dir", str(dev)])

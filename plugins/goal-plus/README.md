@@ -58,7 +58,7 @@ does not modify Pi authentication or global configuration.
 | Pi registration | `./uninstall.sh --pi` |
 | Pi development environment | `./uninstall.sh --pi-dev` |
 | Goal Plus ThinkThread Profile | `./uninstall.sh --thinkthread` |
-| Unused managed releases | `./uninstall.sh --runtime` |
+| Unused managed releases | `./uninstall.sh --unused-runtime` |
 | Inspect the full plan | `./uninstall.sh --dry-run` |
 
 With a selector, the uninstaller removes only that component. Codex and normal Pi
@@ -66,8 +66,9 @@ registrations are removed regardless of their source checkout. A different sourc
 produces a warning and removal continues without confirmation; `--dry-run` only
 prints the plan. Local development directories retain their ownership checks.
 Normal host installations use the shared Python runtime, so removing one host preserves
-the runtime. Runtime removal fails closed while an unselected registration
-still needs it. Pi development uses its own managed environment.
+the runtime. `--unused-runtime` garbage-collects only releases that no host
+registration references, so it is safe to run at any time. Pi development uses
+its own managed environment.
 Uninstallation never deletes target workspace `.gp/` records or
 reverts promoted changes. `--thinkthread` removes only this checkout's generated
 `goal-plus-pi` Profile; it never deletes a ThinkThread Runtime, Root, or state.
