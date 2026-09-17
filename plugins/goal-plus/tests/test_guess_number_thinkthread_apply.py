@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from goal_plus.models import SearchSpec
+from goal_plus.domain.search_input import SearchSpecInput
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,9 +27,9 @@ def test_guess_number_thinkthread_apply_example_is_deterministic(
         capture_output=True,
         text=True,
     )
-    spec = SearchSpec.model_validate_json(
+    spec = SearchSpecInput.model_validate_json(
         destination.joinpath("search-spec.json").read_text(encoding="utf-8")
-    )
+    ).to_runtime_spec()
     assert spec.source_path == "."
     assert spec.budget.max_parallel == 2
     assert spec.strategy.orchestration_mode == "parallel_loops"

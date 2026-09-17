@@ -7,8 +7,11 @@ import threading
 from unittest.mock import Mock
 
 import pytest
+from pydantic import ValidationError
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.domain.search_input import SearchSpecInput
+from goal_plus.domain.search import BootstrapVerification
 from goal_plus.models import (
     AgentSessionHandle,
     AgentSessionRecord,
@@ -328,11 +331,17 @@ def test_tool_facades_reject_targets_outside_active_goal(tmp_path: Path) -> None
     assert not (root / "runs").exists()
 
 
+@pytest.mark.parametrize("with_baseline", [False, True])
 def test_search_freeze_spec_resolves_source_relative_artifacts(
-    tmp_path: Path,
+    tmp_path: Path, with_baseline: bool,
 ) -> None:
     runtime = Mock()
     runtime.freeze_spec.return_value = frozen_spec()
+    if with_baseline:
+        runtime.freeze_spec.return_value.origin_verification = BootstrapVerification(
+            phase="origin", workspace_provider="copy", passed=True,
+            aggregate_score=0.0, started_at="start", completed_at="end",
+        )
     tools = SearchTools(runtime, Mock())
     spec = spec_dict()
     spec["source_path"] = str(tmp_path)
@@ -343,7 +352,94 @@ def test_search_freeze_spec_resolves_source_relative_artifacts(
     assert isinstance(spec_arg, SearchSpec)
     assert paths_arg == [tmp_path / "evaluator.py"]
     assert runtime.freeze_spec.call_args.kwargs == {"goal_plus_id": "gp_0001"}
-    assert result == {"frozen_spec_id": "spec_123", "state": "frozen"}
+    assert result == {
+        "frozen_spec_id": "spec_123", "state": "frozen", "metric_name": "combined_score",
+        "baseline": {"evaluation_completed": True, "passed": True, "score": 0.0} if with_baseline else None,
+        "promotion_verifiers": [],
+    }
+
+
+@pytest.mark.parametrize("path,value", [
+    (("strategy", "models", 0, "provider"), "untrusted"),
+    (("strategy", "models", 0, "adapter_version"), "untrusted"),
+    (("strategy", "models", 0, "context_policy"), {}),
+    (("strategy", "worker_budget", "on_exceed"), "interrupt"),
+    (("shared_dir", "max_pending_revisions_per_family"), 1),
+    (("shared_dir", "max_tools_per_iteration"), 8),
+    (("shared_dir", "max_published_versions_per_family"), 3),
+    (("shared_dir", "max_files_per_iteration"), 8),
+    (("shared_dir", "max_path_entries_per_iteration"), 64),
+    (("shared_dir", "max_depth"), 4),
+    (("shared_dir", "max_bytes_per_iteration"), 1024),
+    (("budget", "max_tokens"), 1000),
+    (("process_verifiers", 0, "expected_outputs"), ["result.json"]),
+    (("promotion_verifiers", 0, "expected_outputs"), ["result.json"]),
+    (("strategy", "worker_launch", "model"), "gpt"),
+    (("strategy", "allocation", "policy"), "priority_replace/v1"),
+    (("strategy", "config"), {"global_evidence_mode": "auto"}),
+])
+def test_freeze_input_rejects_runtime_owned_fields(path, value):
+    runtime = Mock()
+    spec = spec_dict()
+    spec["strategy"] = {
+        "models": [{"model": "gpt"}], "worker_budget": {"max_turns": 4}, "worker_launch": {},
+        "orchestration_mode": "adaptive_search", "allocation": {},
+    }
+    spec["promotion_verifiers"] = [dict(spec["process_verifiers"][0])]
+    spec["shared_dir"] = {"enabled": True}
+    target = spec
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        SearchTools(runtime, Mock()).goal_plus_search_freeze_spec("gp_0001", spec, [])
+    runtime.freeze_spec.assert_not_called()
+
+
+def test_freeze_input_restores_internal_defaults_without_losing_choices():
+    runtime = Mock()
+    runtime.freeze_spec.return_value = frozen_spec()
+    spec = spec_dict()
+    spec["strategy"] = {
+        "models": [{"model": "gpt", "count": 1, "reasoning_effort": "high"}],
+        "worker_budget": {"max_runtime_seconds": 60},
+        "selection": {"ranking_keys": ["hard_score"], "ranking_tolerance": [0.1]},
+        "orchestration_mode": "adaptive_search", "allocation": {"switch_margin": 0.2},
+        "global_evidence_mode": "auto",
+    }
+    spec["shared_dir"] = {"enabled": True}
+    SearchTools(runtime, Mock()).goal_plus_search_freeze_spec("gp_0001", spec, [])
+
+    parsed = runtime.freeze_spec.call_args.args[0]
+    assert type(parsed) is SearchSpec
+    assert parsed.strategy.models[0].model == "gpt"
+    assert parsed.strategy.models[0].count == 1
+    assert parsed.strategy.models[0].reasoning_effort == "high"
+    assert parsed.strategy.models[0].provider is None
+    assert parsed.strategy.worker_budget.on_exceed == "interrupt"
+    assert parsed.strategy.selection.ranking_tolerance == [0.1]
+    assert parsed.strategy.allocation.policy == "priority_replace/v1"
+    assert parsed.strategy.allocation.switch_margin == 0.2
+    assert parsed.strategy.config == {"global_evidence_mode": "auto"}
+    assert parsed.shared_dir.enabled
+    from goal_plus.domain.shared_tools import SharedDirSpec
+
+    assert parsed.shared_dir == SharedDirSpec(enabled=True)
+    assert parsed.budget.max_tokens is None
+    assert parsed.process_verifiers[0].expected_outputs == []
+
+
+@pytest.mark.parametrize("mode", [None, "manual", "auto", "independent", "invalid"])
+def test_freeze_input_evidence_mode_is_explicit_or_left_to_runtime(mode):
+    spec = spec_dict()
+    spec["strategy"] = {"global_evidence_mode": mode}
+    if mode == "invalid":
+        with pytest.raises(ValidationError, match="global_evidence_mode"):
+            SearchSpecInput.model_validate(spec)
+    else:
+        parsed = SearchSpecInput.model_validate(spec).to_runtime_spec()
+        assert parsed.strategy.config == ({} if mode is None else {"global_evidence_mode": mode})
 
 
 @pytest.mark.parametrize("artifact", ["../evaluator.py", "/tmp/evaluator.py"])
@@ -370,7 +466,8 @@ def test_search_freeze_spec_does_not_echo_task_local_skills() -> None:
         "gp_0001", spec_dict(), ["evaluator.py"]
     )
 
-    assert result == {"frozen_spec_id": "spec_123", "state": "frozen"}
+    assert "task_skill_paths" not in result
+    assert "spec" not in result
     assert runtime.freeze_spec.return_value.task_skill_paths == [".agents/skills/review/SKILL.md"]
 
 

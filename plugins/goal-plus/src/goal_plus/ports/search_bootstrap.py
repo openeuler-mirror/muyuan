@@ -60,11 +60,11 @@ class BootstrapVerifiers(Protocol):
         device_inventory: dict[str, DevicePoolInventory],
         candidate_id: str | None = None,
     ) -> BootstrapVerification: ...
-    def preflight_ranking_verifiers(
+    def preflight_process_verifiers(
         self,
         spec: SearchSpec,
         device_inventory: dict[str, DevicePoolInventory],
-    ) -> None: ...
+    ) -> BootstrapVerification: ...
 
 
 class FrozenSpecState(Protocol):

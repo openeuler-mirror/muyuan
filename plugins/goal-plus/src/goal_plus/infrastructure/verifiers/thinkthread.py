@@ -75,7 +75,7 @@ class ThinkThreadVerifiers:
         kind = exit_status.get("kind")
         if kind == "code" and isinstance(exit_status.get("code"), int):
             code = int(exit_status["code"])
-            return code, None if code == 0 else "VerifierCommandFailed"
+            return code, None
         if kind == "signal" and isinstance(exit_status.get("signal"), int):
             return -int(exit_status["signal"]), "VerifierSignal"
         return {
@@ -252,6 +252,7 @@ class ThinkThreadVerifiers:
             ),
         )
         metrics = self.verifiers.parse_metrics(stdout)
+        score = self.verifiers.score_from_metrics(frozen.spec.metric_name, metrics)
         metrics.update(
             {
                 "returncode": returncode,
@@ -263,15 +264,19 @@ class ThinkThreadVerifiers:
                 "provider_metrics": dict(result.get("metrics") or {}),
             }
         )
-        passed = returncode == 0 and failure_class is None
+        failure_class = failure_class or self.verifiers.command_failure(
+            command.role, returncode, metrics, score,
+        )
+        if failure_class == "MissingNumericMetric":
+            metrics["expected_metric_name"] = frozen.spec.metric_name
         return VerifierResult(
             name=command.name,
             role=command.role,
-            passed=passed,
-            score=self.verifiers.score_from_metrics(frozen.spec.metric_name, metrics),
+            passed=failure_class is None,
+            score=score,
             metrics=metrics,
             log_path=log_path,
-            failure_class=None if passed else failure_class,
+            failure_class=failure_class,
         )
 
     def run_thinkthread_commands(
@@ -342,7 +347,7 @@ class ThinkThreadVerifiers:
             for item in results
         )
         score = self.verifiers.aggregate_score(frozen.spec.metric_name, results)
-        if not process_passed:
+        if not process_passed and phase != "origin":
             score = 0.0
         return ScoreReport(
             run_id=run.run_id,

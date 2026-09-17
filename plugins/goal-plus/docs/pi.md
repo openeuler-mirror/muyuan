@@ -281,8 +281,7 @@ Pi ThinkThread 也使用共同 session 控制，底层单 Child actor 负责准�
     "orchestration_mode": "parallel_loops",
     "worker_budget": {
       "max_runtime_seconds": 600,
-      "max_turns": 8,
-      "on_exceed": "interrupt"
+      "max_turns": 8
     }
   }
 }
@@ -322,7 +321,7 @@ Goal Plus 命令配置；新命令填写它会在创建记录前失败。
 
 Goal Plus 通过 `goal_plus_list_models(agent_harness="pi", runtime_provider="direct")`
 调用 Pi RPC `get_available_models`。短 ID
-只有在唯一匹配时才会接受。没有 count 的条目按 round-robin 分配；`A*1,B*3` 会生成显式
+只有在唯一匹配时才会接受。命令未写 count 时不固定各模型数量；spec 也省略 count 时按 round-robin 分配；`A*1,B*3` 会生成显式
 count，且总数必须等于 `max_parallel`。`models=` 是 `workers=` 的兼容别名，两者不能同时出现。最终
 `selected_models` 对每个 candidate/native session 不可变；同时省略 `workers=` 和 `models=` 时
 继承当前 Main 的 exact native model 与 thinking。

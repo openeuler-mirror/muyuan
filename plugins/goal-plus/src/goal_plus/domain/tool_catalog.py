@@ -3,6 +3,7 @@
 from typing import Literal
 
 SEARCH_TOOL_NAMES = {
+    "goal_plus_get_tool_schema",
     "goal_plus_list_models",
     "goal_plus_search_freeze_spec",
     "goal_plus_search_create",

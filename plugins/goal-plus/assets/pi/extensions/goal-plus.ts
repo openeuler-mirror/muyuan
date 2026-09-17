@@ -152,6 +152,7 @@ const MAIN_GATED_TOOLS = new Set([
 	"write",
 ]);
 const MAIN_READ_ONLY_RUNTIME_TOOLS = new Set([
+	"goal_plus_get_tool_schema",
 	"goal_plus_search_recovery_status",
 	"goal_plus_status",
 	"goal_plus_history",
@@ -2507,6 +2508,7 @@ export default async function (pi: ExtensionAPI) {
 	}
 
 	const mainTools = [
+		"goal_plus_get_tool_schema",
 		"goal_plus_session_run",
 		"goal_plus_session_wait",
 		"goal_plus_session_message",

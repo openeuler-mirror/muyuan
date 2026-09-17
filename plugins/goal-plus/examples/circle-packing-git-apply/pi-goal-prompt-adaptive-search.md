@@ -22,7 +22,6 @@ strategy:
     ranking_keys: [quality_score, hard_score]
     ranking_tolerance: [0.05, 0.0]
   allocation:
-    policy: priority_replace/v1
     features:
       - latest_record_values/v1
       - progress_trend/v1

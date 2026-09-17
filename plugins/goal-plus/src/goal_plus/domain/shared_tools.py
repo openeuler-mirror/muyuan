@@ -119,10 +119,12 @@ class ToolCopyReceipt(SearchModel):
     copied_at: str
 
 
-class SharedDirSpec(SearchModel):
+class SharedDirInput(SearchModel):
     enabled: bool = False
+
+
+class SharedDirSpec(SharedDirInput):
     max_tools_per_iteration: int = Field(default=16, gt=0, le=128)
-    max_pending_revisions_per_family: int = Field(default=1, ge=1, le=1)
     max_published_versions_per_family: int = Field(
         default=2,
         ge=1,
@@ -133,6 +135,7 @@ class SharedDirSpec(SearchModel):
     max_path_entries_per_iteration: int = Field(default=512, gt=0, le=8192)
     max_depth: int = Field(default=8, ge=1, le=32)
     max_bytes_per_iteration: int = Field(default=2 * 1024 * 1024, gt=0, le=64 * 1024 * 1024)
+    max_pending_revisions_per_family: int = Field(default=1, ge=1, le=1)
 
 
 ToolPublicationIntent = Literal[

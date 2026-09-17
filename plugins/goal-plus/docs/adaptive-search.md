@@ -49,7 +49,6 @@ strategy:
     ranking_keys: [quality_score, hard_score]
     ranking_tolerance: [0.05, 0.0]
   allocation:
-    policy: priority_replace/v1
     features:
       - latest_record_values/v1
       - progress_trend/v1
@@ -57,7 +56,8 @@ strategy:
 ```
 
 Adaptive 模式必须配置 `allocation`，当前实现要求 Git worktree backend，并自动启用 LLM-Verifier。
-`allocation.policy` 同时确定资源分配算法及 LLM-Verifier 动态追加的 allocation 评分规则。
+Runtime 固定 `allocation.policy=priority_replace/v1`，同时确定资源分配算法和
+LLM-Verifier 动态追加的 allocation 评分规则；Main 不填写 policy 版本。
 
 Freeze 固化 Selection key/tolerance/direction 以及具体 AllocationPolicy spec。运行中的 run 不接受
 这些配置变化。相同 FrozenSpec、权威输入和 policy 版本

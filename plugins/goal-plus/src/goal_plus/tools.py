@@ -14,6 +14,7 @@ from goal_plus.domain.search import (
     SearchSpec,
     VerifierInvalidationReason,
 )
+from goal_plus.domain.search_input import SearchSpecInput
 from goal_plus.domain.goal import (
     GoalPlusNextAction,
     GoalPlusSpecDraft,
@@ -85,7 +86,12 @@ class SearchTools:
         verifier_artifact_paths: list[str],
     ) -> dict[str, Any]:
         self._require_search_bootstrap("goal_plus_search_freeze_spec", goal_plus_id)
-        parsed_spec = spec if isinstance(spec, SearchSpec) else SearchSpec.model_validate(spec)
+        if isinstance(spec, SearchSpecInput):
+            parsed_spec = spec.to_runtime_spec()
+        elif isinstance(spec, SearchSpec):
+            parsed_spec = spec
+        else:
+            parsed_spec = SearchSpecInput.model_validate(spec).to_runtime_spec()
         source_path = Path(parsed_spec.source_path).expanduser().resolve()
         artifact_paths: list[Path] = []
         for value in verifier_artifact_paths:

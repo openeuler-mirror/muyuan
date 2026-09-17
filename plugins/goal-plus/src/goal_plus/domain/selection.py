@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Annotated, Literal, Protocol
 
 from pydantic import Field, field_validator, model_validator
 
@@ -12,28 +12,25 @@ from goal_plus.domain.base import SearchModel
 
 
 ScoreDirection = Literal["maximize", "minimize"]
+RankingKey = Literal["hard_score", "quality_score"]
 
 
 class SelectionSpec(SearchModel):
-    ranking_keys: list[str] = Field(default_factory=lambda: ["hard_score"], min_length=1)
-    ranking_tolerance: list[float] = Field(default_factory=lambda: [0.0], min_length=1)
+    ranking_keys: list[RankingKey] = Field(
+        default_factory=lambda: ["hard_score"], min_length=1,
+        json_schema_extra={"uniqueItems": True},
+        description="hard_score uses metric_name; quality_score uses LLM evaluation (not rolling_candidates). Not metric names.",
+    )
+    ranking_tolerance: list[Annotated[float, Field(ge=0, allow_inf_nan=False)]] = Field(
+        default_factory=lambda: [0.0], min_length=1,
+        description="Absolute tolerances, one per ranking_key in the same order.",
+    )
 
     @field_validator("ranking_keys")
     @classmethod
-    def ranking_keys_are_registered_and_unique(cls, value: list[str]) -> list[str]:
+    def ranking_keys_are_unique(cls, value: list[RankingKey]) -> list[RankingKey]:
         if len(value) != len(set(value)):
             raise ValueError("selection ranking_keys must be unique")
-        registered = {"hard_score", "quality_score"}
-        unknown = sorted(set(value) - registered)
-        if unknown:
-            raise ValueError("unknown selection ranking key: " + ", ".join(unknown))
-        return value
-
-    @field_validator("ranking_tolerance")
-    @classmethod
-    def tolerances_are_finite_and_nonnegative(cls, value: list[float]) -> list[float]:
-        if any(not math.isfinite(item) or item < 0 for item in value):
-            raise ValueError("selection tolerances must be finite and nonnegative")
         return value
 
     @model_validator(mode="after")

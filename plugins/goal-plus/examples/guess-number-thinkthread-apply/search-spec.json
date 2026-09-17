@@ -44,9 +44,7 @@
   "strategy": {
     "name": "agent_guided",
     "orchestration_mode": "parallel_loops",
-    "config": {
-      "global_evidence_mode": "manual"
-    }
+    "global_evidence_mode": "manual"
   },
   "workspace": {
     "provider": "thinkthread",

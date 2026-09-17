@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from goal_plus.runtime import FileSearchRuntime
-from tests._runtime_helpers import make_project, spec_with_strategy
+from goal_plus.domain.agents import WorkerLaunchDefaults
+from goal_plus.domain.search_input import SearchSpecInput
+from tests._runtime_helpers import make_project, spec_with_strategy, start_host_verified_goal
 
 
 def _available_models() -> list[dict[str, object]]:
@@ -55,7 +57,12 @@ def test_explicit_a1b3_models_bind_each_candidate_and_session(tmp_path: Path) ->
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     _stub_model_discovery(runtime)
-    frozen = runtime.freeze_spec(_models_spec(project), [project / "evaluator.py"], agent_harness="codex")
+    spec = SearchSpecInput.model_validate(_models_spec(project).model_dump(mode="json", exclude_defaults=True))
+    spec.strategy.worker_launch = WorkerLaunchDefaults(reasoning_effort="high", service_tier="priority")
+    spec.strategy.models[0].reasoning_effort = "low"
+    frozen = runtime.freeze_spec(spec.to_runtime_spec(), [project / "evaluator.py"], agent_harness="codex")
+    assert frozen.spec.strategy.models[0].provider == "deepseek"
+    assert frozen.spec.strategy.models[0].adapter_version == "codex-adapter-v1"
 
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=4)
@@ -75,6 +82,12 @@ def test_explicit_a1b3_models_bind_each_candidate_and_session(tmp_path: Path) ->
     assert session.selected_model is not None
     assert session.selected_model.model == expected[0]
     assert session.launch["model"] == expected[0]
+    assert session.launch["reasoning_effort"] == "low"
+    assert session.launch["service_tier"] == "priority"
+    other = runtime.start_agent_session(run_id, tasks[1].candidate_id)
+    assert other.launch["model"] == expected[1]
+    assert other.launch["reasoning_effort"] == "high"
+    assert other.launch["service_tier"] == "priority"
 
     runtime.bind_agent_handle(session.agent_session_id, {"external_id": "native-worker"})
     continued = runtime.continue_agent_session(session.agent_session_id)
@@ -98,6 +111,36 @@ def test_models_without_counts_balance_across_max_parallel(tmp_path: Path) -> No
         "deepseek/deepseek-v3",
         "openai/gpt-5.6",
     ]
+
+
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+@pytest.mark.parametrize("counts,error", [
+    ([None, None], None),
+    ([1, 3], None),
+    ([1, 2], "counts must sum"),
+    ([1, None], "count for every model or for none"),
+])
+def test_uncounted_command_accepts_valid_spec_allocation(tmp_path, agent_harness, counts, error):
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    _stub_model_discovery(runtime)
+    goal = start_host_verified_goal(
+        runtime.root_dir, project, agent_harness=agent_harness,
+        raw_goal="max_parallel=4 workers=deepseek-v3,gpt-5.6 Optimize score",
+    )
+    spec = _models_spec(project)
+    for model, count in zip(spec.strategy.models, counts, strict=True):
+        model.count = count
+    if error:
+        goal_path = runtime.root_dir / "goal-plus" / goal.goal_plus_id / "goal.json"
+        before = goal_path.read_bytes()
+        with pytest.raises(ValueError, match=error):
+            runtime.freeze_spec(spec, [project / "evaluator.py"], goal_plus_id=goal.goal_plus_id)
+        assert goal_path.read_bytes() == before
+        assert not list((runtime.root_dir / "specs").glob("*/frozen_spec.json"))
+    else:
+        frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], goal_plus_id=goal.goal_plus_id)
+        assert [model.count for model in frozen.spec.strategy.models] == counts
 
 
 def test_selected_models_require_full_initial_deployment(tmp_path: Path) -> None:

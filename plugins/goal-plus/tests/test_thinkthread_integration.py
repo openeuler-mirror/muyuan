@@ -254,9 +254,9 @@ def test_pi_facade_and_worker_message_proxy_preserve_search_contract(
     monkeypatch.setattr("goal_plus.thinkthread_annotation.AgentPosixSdkClient", lambda: client)
     monkeypatch.setenv("GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED", "1")
     root_dir = tmp_path.parent / (tmp_path.name + "-session-runtime")
-    spec_payload = thinkthread_spec(project).model_dump(mode="json")
+    spec_payload = thinkthread_spec(project).model_dump(mode="json", exclude_defaults=True)
     spec_payload["budget"]["max_parallel"] = 1
-    spec_payload["strategy"]["config"]["global_evidence_mode"] = "auto"
+    spec_payload["strategy"]["global_evidence_mode"] = "auto"
     start_host_verified_goal(root_dir, project, agent_harness="pi")
     goal = FileGoalPlusRuntime(root_dir).require_host_verified_active_goal()
 

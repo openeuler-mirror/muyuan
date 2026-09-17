@@ -200,8 +200,9 @@ def validate_search_command_config(
                     "explicit command config workers= must match SearchSpec "
                     "strategy.models in order"
                 )
-            if requested_count != configured_model.count:
+            if requested_count is not None and requested_count != configured_model.count:
                 raise ValueError(
-                    "explicit command config workers= counts must match SearchSpec "
-                    "strategy.models counts"
+                    f"explicit command config workers={requested_model}*{requested_count} "
+                    f"requires strategy.models count={requested_count}; "
+                    f"received {configured_model.count}"
                 )

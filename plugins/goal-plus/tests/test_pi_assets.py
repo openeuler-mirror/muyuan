@@ -138,8 +138,8 @@ def test_pi_loads_shared_allocation_schema(tmp_path) -> None:
     freeze = next(tool for tool in manifest["tools"] if tool["name"] == "goal_plus_search_freeze_spec")
     strategy = freeze["inputSchema"]["properties"]["spec"]["properties"]["strategy"]["properties"]
     assert "verifier" not in strategy and "search_scheduler" not in strategy
-    policy = next(item for item in strategy["allocation"]["anyOf"] if item.get("type") == "object")
-    assert set(policy["properties"]) == {"policy", "features", "switch_margin"}
+    policy = strategy["allocation"]
+    assert set(policy["properties"]) == {"features", "switch_margin"}
     assert policy["properties"]["switch_margin"]["minimum"] == 0
     assert policy["properties"]["switch_margin"]["maximum"] == 1
 

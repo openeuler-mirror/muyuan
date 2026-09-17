@@ -188,27 +188,15 @@ class SearchRun:
                 with self.state.lock_run(run_id):
                     run = self.state.read_run(run_id)
                     run.workspace_bootstrap_verification = bootstrap
-                    if not bootstrap.passed:
+                    if not bootstrap.evaluation_completed:
                         run.state = RunState.ABORTED
                     self.persist(run)
-                if not bootstrap.passed:
-                    failed = next(
-                        (
-                            item
-                            for item in bootstrap.verifier_results
-                            if not item.passed
-                        ),
-                        None,
-                    )
-                    detail = (
-                        f" {failed.name}: {failed.failure_class}."
-                        if failed is not None
-                        else ""
-                    )
+                if not bootstrap.evaluation_completed:
                     raise ValueError(
-                        "OriginVerifierFailed: process verifier suite did not pass "
-                        f"on ThinkThread baseline {baseline.id}.{detail}"
+                        "OriginVerifierFailed: process verifier suite did not complete "
+                        f"on ThinkThread baseline {baseline.id}.{bootstrap.failure_detail()}"
                     )
+                bootstrap.require_numeric_metric(frozen.spec.metric_name)
             if source_run_id:
                 with self.state.lock_run(source_run_id):
                     source_run = self.state.read_run(source_run_id)
@@ -473,7 +461,7 @@ class SearchRun:
         ):
             return
         if run.workspace_bootstrap_verification is not None:
-            if not run.workspace_bootstrap_verification.passed:
+            if not run.workspace_bootstrap_verification.evaluation_completed:
                 raise RuntimeError(
                     "WorkspaceRelocationVerifierFailed: the persisted candidate "
                     "workspace bootstrap verification did not pass"
@@ -584,7 +572,7 @@ class SearchRun:
                 )
 
         run.workspace_bootstrap_verification = verification
-        if verification.passed:
+        if verification.evaluation_completed:
             self.persist(run)
             return
 
@@ -596,21 +584,14 @@ class SearchRun:
         run.invalidated_at = self.clock.timestamp()
         run.invalidation_reason = "verifier_target_mismatch"
         run.invalidation_summary = (
-            "The verifier passed in origin but failed in the first materialized "
+            "The evaluation completed in origin but failed in the first materialized "
             "candidate workspace."
         )
         run.invalidation_evidence = [verification.model_dump(mode="json")]
         self.persist(run)
-        failed = next(
-            (result for result in verification.verifier_results if not result.passed),
-            None,
-        )
-        detail = (
-            f" {failed.name}: {failed.failure_class}." if failed is not None else ""
-        )
         raise RuntimeError(
             "WorkspaceRelocationVerifierFailed: verifier behavior in candidate "
-            f"{task.candidate_id} did not match origin.{detail}"
+            f"{task.candidate_id} did not match origin.{verification.failure_detail()}"
         )
 
     def _next_plan_id(self, run: RunRecord) -> str:

@@ -481,11 +481,14 @@ if (process.env.GOAL_PLUS_PI_PAUSED_GATE_TEST === "1") {
   process.exit(0);
 }
 const readOnly = new Set(["goal_plus_search_recovery_status", "goal_plus_status",
+  "goal_plus_get_tool_schema",
   "goal_plus_history",
   "goal_plus_monitor_snapshot", "goal_plus_list_models", "goal_plus_search_status",
   "goal_plus_search_list_history", "goal_plus_search_list_iterations", "goal_plus_search_get_agent_observability"]);
 const resourceControls = new Set(["goal_plus_session_wait", "goal_plus_session_interrupt",
   "goal_plus_session_stop", "goal_plus_session_close"]);
+assert(tools.has("goal_plus_get_tool_schema"));
+assert.equal(await events.get("tool_call")(event("goal_plus_get_tool_schema"), ctx), undefined);
 const ownMutations = [...tools.keys()].filter(name => !readOnly.has(name) && !resourceControls.has(name));
 for (const name of ownMutations) {
   await assert.rejects(() => call(name), /GoalPlusEntrypointRequired/);

@@ -255,7 +255,7 @@ $goal-plus inner_agent=autoresearch max_parallel=4 annotator=gpt-5.6-terra worke
 `workers=` 将一个或多个模型解析到 `strategy.models`。`models=` 是 `workers=` 的兼容别名，
 两者同时出现会报错。省略某个 role 时保留其正常 host default 或继承行为，不从另一个显式 role 推导。
 
-`max_parallel=4 workers=A,B` 按 A、B、A、B round-robin；
+`max_parallel=4 workers=A,B` 未固定各模型数量；spec 也省略 count 时按 A、B、A、B round-robin；
 `max_parallel=4 workers=A*1,B*3` 是显式 A1B3。Goal Plus 通过
 `goal_plus_list_models(agent_harness="codex", runtime_provider="direct")` 解析
 annotator 和 worker 名称，并在 freeze 时保存有序 `selected_models`。candidate 的 worker 模型在后续

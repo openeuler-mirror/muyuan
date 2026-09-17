@@ -25,13 +25,24 @@ class PolicyVerifierRules:
         return [name for name, _instructions in self.scores]
 
 
-class PriorityReplacePolicySpec(SearchModel):
-    policy: Literal["priority_replace/v1"] = "priority_replace/v1"
-    features: list[str] = Field(
+class PriorityReplaceInput(SearchModel):
+    features: list[Literal["latest_record_values/v1", "progress_trend/v1"]] = Field(
         default_factory=lambda: ["latest_record_values/v1", "progress_trend/v1"],
         min_length=1,
+        json_schema_extra={"uniqueItems": True},
     )
     switch_margin: float = Field(default=0.15, ge=0, le=1, allow_inf_nan=False)
+
+    @field_validator("features")
+    @classmethod
+    def features_are_unique(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("adaptive allocation features must be unique")
+        return value
+
+
+class PriorityReplacePolicySpec(PriorityReplaceInput):
+    policy: Literal["priority_replace/v1"] = "priority_replace/v1"
 
     def verifier_rules(self) -> PolicyVerifierRules:
         return PolicyVerifierRules(
@@ -56,17 +67,6 @@ class PriorityReplacePolicySpec(SearchModel):
                 ),
             ),
         )
-
-    @field_validator("features")
-    @classmethod
-    def features_are_supported_and_unique(cls, value: list[str]) -> list[str]:
-        supported = {"latest_record_values/v1", "progress_trend/v1"}
-        if len(value) != len(set(value)):
-            raise ValueError("adaptive allocation features must be unique")
-        unknown = sorted(set(value) - supported)
-        if unknown:
-            raise ValueError("unknown adaptive feature provider: " + ", ".join(unknown))
-        return value
 
 
 class SnapshotNode(SearchModel):

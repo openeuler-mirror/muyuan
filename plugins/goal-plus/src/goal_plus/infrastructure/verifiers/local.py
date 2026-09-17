@@ -54,17 +54,6 @@ VERIFIER_DIAGNOSTICS_ENV = "GOAL_PLUS_VERIFIER_DIAGNOSTICS_DIR"
 VERIFIER_RESOURCE_ENV = "GOAL_PLUS_VERIFIER_RESOURCE"
 
 
-def _verifier_output_tail_detail(stdout: str, stderr: str) -> str:
-    details = []
-    stdout_tail = stdout.strip()[-2000:]
-    stderr_tail = stderr.strip()[-2000:]
-    if stdout_tail:
-        details.append(f"Stdout tail: {stdout_tail}")
-    if stderr_tail:
-        details.append(f"Stderr tail: {stderr_tail}")
-    return " " + " ".join(details) if details else ""
-
-
 MAX_VERIFIER_FEEDBACK_CHARS = 4_000
 
 
@@ -213,17 +202,7 @@ class LocalVerifiers:
             result.passed or result.role == VerifierRole.DIAGNOSTIC_SIGNAL
             for result in results
         )
-        aggregate_score = next(
-            (
-                result.score
-                for result in results
-                if result.score is not None
-                and result.role != VerifierRole.ANTI_CHEAT_GATE
-            ),
-            None,
-        )
-        if not passed:
-            aggregate_score = 0.0
+        aggregate_score = self.aggregate_score(spec.metric_name, results)
         return BootstrapVerification(
             phase=phase,
             workspace_provider=workspace_provider,
@@ -280,7 +259,7 @@ class LocalVerifiers:
                 name=command.name,
                 role=command.role,
                 passed=known and not failures,
-                score=1.0 if known and not failures else 0.0,
+                score=None,
                 metrics={"hash_failures": failures},
                 failure_class=(
                     None
@@ -322,20 +301,12 @@ class LocalVerifiers:
                         check=False,
                     )
             metrics = self.parse_metrics(completed.stdout)
-            metrics.setdefault("returncode", completed.returncode)
-            metrics.setdefault("elapsed_seconds", time.perf_counter() - start)
-            metrics.update(self.verifier_diagnostics(diagnostics_dir))
             score = self.score_from_metrics(spec.metric_name, metrics)
-            missing_numeric_metric = (
-                completed.returncode == 0
-                and not self.has_verifier_error(metrics)
-                and command.role == VerifierRole.RANKING_SIGNAL
-                and score is None
-            )
-            passed = (
-                completed.returncode == 0
-                and not self.has_verifier_error(metrics)
-                and not missing_numeric_metric
+            metrics["returncode"] = completed.returncode
+            metrics["elapsed_seconds"] = time.perf_counter() - start
+            metrics.update(self.verifier_diagnostics(diagnostics_dir))
+            failure_class = self.command_failure(
+                command.role, completed.returncode, metrics, score,
             )
             log_path.write_text(
                 bounded_verifier_log(
@@ -357,17 +328,11 @@ class LocalVerifiers:
             return BootstrapVerifierResult(
                 name=command.name,
                 role=command.role,
-                passed=passed,
+                passed=failure_class is None,
                 score=score,
                 metrics=metrics,
                 log_path=log_path,
-                failure_class=(
-                    None
-                    if passed
-                    else "MissingNumericMetric"
-                    if missing_numeric_metric
-                    else "VerifierCommandFailed"
-                ),
+                failure_class=failure_class,
             )
         except subprocess.TimeoutExpired as exc:
             stdout = self.coerce_verifier_output(exc.stdout)
@@ -426,151 +391,32 @@ class LocalVerifiers:
                 }
         return failures
 
-    def preflight_ranking_verifiers(
+    def preflight_process_verifiers(
         self,
         spec: SearchSpec,
         device_inventory: dict[str, DevicePoolInventory],
-    ) -> None:
+    ) -> BootstrapVerification:
         source_root = Path(spec.source_path).resolve()
         source_workspace = source_root if source_root.is_dir() else source_root.parent
-        ranking_verifiers = [
-            command
-            for command in [*spec.process_verifiers, *spec.promotion_verifiers]
-            if command.role == VerifierRole.RANKING_SIGNAL
-        ]
-        process_environment = process_environment_for_index(
-            spec.device_pools,
-            device_inventory,
-            0,
-        )
-
-        with tempfile.TemporaryDirectory(
-            prefix="goal-plus-verifier-preflight-"
-        ) as preflight_root:
-            workspace = Path(preflight_root) / "workspace"
+        with tempfile.TemporaryDirectory(prefix="goal-plus-verifier-preflight-") as directory:
+            workspace = Path(directory) / "workspace"
             copy_source_tree(source_workspace, workspace)
             initialize_workspace_git_baseline(workspace)
-
-            if not any(
-                command.role == VerifierRole.RANKING_SIGNAL
-                for command in spec.process_verifiers
-            ):
-                baseline = self.run_bootstrap_verifiers(
-                    spec=spec,
-                    workspace=workspace,
-                    workspace_provider=spec.workspace.provider,
-                    phase="origin",
-                    verifier_hashes={},
-                    log_dir=self.runs_dir.parent / "bootstrap" / f"origin-{uuid.uuid4().hex[:12]}",
-                    source_artifact_ref=None,
-                    device_inventory=device_inventory,
+            before = self.hash_verifier_workspace(workspace)
+            baseline = self.run_bootstrap_verifiers(
+                spec=spec, workspace=workspace, workspace_provider=spec.workspace.provider,
+                phase="origin", verifier_hashes={},
+                log_dir=self.runs_dir.parent / "bootstrap" / f"origin-{uuid.uuid4().hex[:12]}",
+                source_artifact_ref=None, device_inventory=device_inventory,
+            )
+            side_effects = self.hash_changes(before, self.hash_verifier_workspace(workspace))
+            if side_effects:
+                raise ValueError(
+                    f"VerifierWorkspaceSideEffect: process suite changed disposable workspace: {side_effects}. "
+                    "Use GOAL_PLUS_VERIFIER_TMPDIR/TMPDIR for per-invocation outputs; "
+                    "verifiers may run concurrently."
                 )
-                if not baseline.passed:
-                    raise ValueError("OriginVerifierFailed: process verifier preflight did not pass")
-                baseline.require_numeric_metric(spec.metric_name)
-
-            for command in ranking_verifiers:
-                cwd = (workspace / command.cwd).resolve()
-                if not cwd.is_dir():
-                    raise ValueError(
-                        f"Ranking verifier '{command.name}' has a missing working "
-                        f"directory: {cwd}"
-                    )
-                if command.command[0] == "goal-plus-internal":
-                    raise ValueError(
-                        f"Ranking verifier '{command.name}' cannot use a "
-                        "goal-plus-internal command; use a process verifier that "
-                        "prints the numeric metric as JSON."
-                    )
-
-                workspace_before = self.hash_verifier_workspace(workspace)
-                resource = self.verifier_resource(
-                    command.resource_lock,
-                    spec.device_pools,
-                    device_inventory,
-                    process_environment,
-                )
-                try:
-                    with verifier_resource_lock(resource):
-                        with tempfile.TemporaryDirectory(
-                            prefix="goal-plus-verifier-command-"
-                        ) as verifier_tmp:
-                            verifier_tmp_path = Path(verifier_tmp)
-                            diagnostics_dir = verifier_tmp_path / "diagnostics"
-                            diagnostics_dir.mkdir()
-                            completed = self.execute_verifier_process(
-                                command.command,
-                                cwd=cwd,
-                                env=self.verifier_environment(
-                                    cwd,
-                                    verifier_tmp_path,
-                                    phase="freeze_preflight",
-                                    diagnostics_dir=diagnostics_dir,
-                                    resource=resource,
-                                    process_environment=process_environment,
-                                ),
-                                text=True,
-                                capture_output=True,
-                                timeout=command.timeout_seconds,
-                                check=False,
-                            )
-                except subprocess.TimeoutExpired as exc:
-                    stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-                    stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-                    detail = _verifier_output_tail_detail(stdout, stderr)
-                    raise ValueError(
-                        f"Ranking verifier '{command.name}' timed out during freeze "
-                        f"preflight after {command.timeout_seconds} seconds.{detail}"
-                    ) from exc
-                except OSError as exc:
-                    raise ValueError(
-                        f"Ranking verifier '{command.name}' could not start during "
-                        f"freeze preflight: {exc}"
-                    ) from exc
-
-                side_effects = self.hash_changes(
-                    workspace_before,
-                    self.hash_verifier_workspace(workspace),
-                )
-                if side_effects:
-                    raise ValueError(
-                        f"VerifierWorkspaceSideEffect: ranking verifier "
-                        f"'{command.name}' changed the disposable preflight "
-                        f"workspace: {side_effects}. Verifiers must keep the "
-                        "candidate workspace read-only. Put compiler products and "
-                        "temporary outputs in the per-invocation directory exposed "
-                        "through GOAL_PLUS_VERIFIER_TMPDIR/TMPDIR, or use Python "
-                        "tempfile.TemporaryDirectory(). Never use one fixed /tmp "
-                        "path because candidates may verify concurrently."
-                    )
-
-                if completed.returncode != 0:
-                    detail = _verifier_output_tail_detail(
-                        completed.stdout,
-                        completed.stderr,
-                    )
-                    raise ValueError(
-                        f"Ranking verifier '{command.name}' failed during freeze "
-                        f"preflight with exit code {completed.returncode}.{detail}"
-                    )
-
-                metrics = self.parse_metrics(completed.stdout)
-                if self.has_verifier_error(metrics):
-                    error_detail = str(metrics["error"])[-2000:]
-                    raise ValueError(
-                        f"Ranking verifier '{command.name}' reported an error "
-                        f"during freeze preflight: {error_detail}"
-                    )
-                score = self.score_from_metrics(spec.metric_name, metrics)
-                if score is None:
-                    example = canonical_json({spec.metric_name: 123.0})
-                    raise ValueError(
-                        f"Ranking verifier '{command.name}' exited successfully but "
-                        "emitted no finite numeric metric. The final non-empty stdout "
-                        f"line must be a JSON object such as: {example}. "
-                        "VerifierCommand.expected_outputs lists artifact paths only; "
-                        "it does not parse stdout."
-                    )
+            return baseline
 
     def verifier_environment(
         self,
@@ -578,7 +424,6 @@ class LocalVerifiers:
         temp_dir: Path,
         *,
         phase: Literal[
-            "freeze_preflight",
             "origin",
             "workspace_relocation",
             "candidate",
@@ -783,8 +628,9 @@ class LocalVerifiers:
                     )
             elapsed = time.perf_counter() - start
             metrics = self.parse_metrics(completed.stdout)
-            metrics.setdefault("returncode", completed.returncode)
-            metrics.setdefault("elapsed_seconds", elapsed)
+            score = self.score_from_metrics(frozen.spec.metric_name, metrics)
+            metrics["returncode"] = completed.returncode
+            metrics["elapsed_seconds"] = elapsed
             metrics.update(self.verifier_diagnostics(diagnostics_dir))
             side_effects = self.hash_changes(
                 workspace_before,
@@ -839,22 +685,12 @@ class LocalVerifiers:
                     log_path=log_path,
                     failure_class="VerifierWorkspaceSideEffect",
                 )
-            score = self.score_from_metrics(frozen.spec.metric_name, metrics)
-            has_verifier_error = self.has_verifier_error(metrics)
-            missing_numeric_metric = (
-                completed.returncode == 0
-                and not has_verifier_error
-                and command.role == VerifierRole.RANKING_SIGNAL
-                and score is None
+            failure_class = self.command_failure(
+                command.role, completed.returncode, metrics, score,
             )
-            if missing_numeric_metric:
+            if failure_class == "MissingNumericMetric":
                 metrics["expected_metric_name"] = frozen.spec.metric_name
-            passed = (
-                completed.returncode == 0
-                and not has_verifier_error
-                and not missing_numeric_metric
-            )
-            if not passed:
+            if failure_class is not None:
                 self.add_visible_verifier_feedback(
                     command,
                     metrics,
@@ -881,19 +717,11 @@ class LocalVerifiers:
             return VerifierResult(
                 name=command.name,
                 role=command.role,
-                passed=passed,
+                passed=failure_class is None,
                 score=score,
                 metrics=metrics,
                 log_path=log_path,
-                failure_class=(
-                    None
-                    if passed
-                    else (
-                        "MissingNumericMetric"
-                        if missing_numeric_metric
-                        else "VerifierCommandFailed"
-                    )
-                ),
+                failure_class=failure_class,
             )
         except subprocess.TimeoutExpired as exc:
             elapsed = max(0.0, time.perf_counter() - start)
@@ -1078,7 +906,7 @@ class LocalVerifiers:
             name=command.name,
             role=command.role,
             passed=not failures,
-            score=1.0 if not failures else 0.0,
+            score=None,
             metrics={"hash_failures": failures},
             failure_class=None if not failures else "FrozenVerifierModified",
         )
@@ -1096,31 +924,50 @@ class LocalVerifiers:
                 return parsed
         return {}
 
-    def has_verifier_error(self, metrics: dict[str, Any]) -> bool:
-        """Treat a non-null top-level error value as verifier failure."""
-        return metrics.get("error") is not None
-
     def score_from_metrics(
         self, metric_name: str, metrics: dict[str, Any]
     ) -> float | None:
-        for key in (metric_name, "combined_score", "score", "overall_score"):
-            value = metrics.get(key)
-            if isinstance(value, int | float) and not isinstance(value, bool):
-                score = float(value)
-                if math.isfinite(score):
-                    return score
+        value = metrics.get(metric_name)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            score = float(value)
+            if math.isfinite(score):
+                return score
+        return None
+
+    def command_failure(
+        self, role: VerifierRole, returncode: int | None,
+        metrics: dict[str, Any], score: float | None,
+    ) -> str | None:
+        outcome = metrics.get("outcome")
+        if "outcome" in metrics and outcome not in ("valid", "invalid", "error"):
+            return "InvalidVerifierOutcome"
+        if outcome == "invalid" and returncode in (0, 1):
+            if metrics.get("valid") is True:
+                return "InvalidVerifierOutcome"
+            if role == VerifierRole.RANKING_SIGNAL and score is None:
+                return "MissingNumericMetric"
+            return "CandidateRejected"
+        if returncode != 0 or metrics.get("error") is not None:
+            return "VerifierCommandFailed"
+        if outcome == "error":
+            return "VerifierCommandFailed"
+        if metrics.get("valid") is False:
+            return "InvalidVerifierOutcome"
+        if role == VerifierRole.RANKING_SIGNAL and score is None:
+            return "MissingNumericMetric"
         return None
 
     def aggregate_score(
-        self, metric_name: str, results: list[VerifierResult]
+        self, metric_name: str, results: list[VerifierResult] | list[BootstrapVerifierResult]
     ) -> float | None:
-        for result in results:
-            if result.score is not None and result.role != VerifierRole.ANTI_CHEAT_GATE:
-                return result.score
-            score = self.score_from_metrics(metric_name, result.metrics)
-            if score is not None:
-                return score
-        return None
+        ranking = [result for result in results if result.role == VerifierRole.RANKING_SIGNAL]
+        sources = ranking or [result for result in results if result.role not in {
+            VerifierRole.DIAGNOSTIC_SIGNAL, VerifierRole.ANTI_CHEAT_GATE,
+        }]
+        scores = [result.score for result in sources if result.score is not None]
+        if len(scores) > 1:
+            raise ValueError(f"AmbiguousNumericMetric: multiple verifiers emit {metric_name!r}; declare one ranking_signal")
+        return scores[0] if scores else None
 
     def frozen_hash_failures(
         self, frozen: FrozenSpec, workspace: Path

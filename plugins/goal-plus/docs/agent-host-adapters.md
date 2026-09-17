@@ -247,8 +247,9 @@ token，但不提供实际账单。Goal Plus 使用 `src/goal_plus/codex_pricing
 adapter 只投影同一份 session 上限。共同 session 不自动重派任务，是否再次 wake 由 Main
 决定。候选返回不授予 Evidence 或 promotion 成功，交付验收仍由共同 Application 执行。
 
-`strategy.worker_launch` 只保存 host 启动偏好。Codex 可映射 `model`、`reasoning_effort` 和
-`service_tier`；Pi 通过可信进程配置映射 model 和 thinking level。这些字段不属于 Search state。
+Main 通过 `strategy.models[]` 选择模型，`strategy.worker_launch` 只设全局
+`reasoning_effort`、`service_tier` 默认值，各模型的非空设置优先。Codex 映射模型与启动偏好；
+Pi 通过可信进程配置映射模型和 thinking level。
 
 ## Main owner 生命周期
 

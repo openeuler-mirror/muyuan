@@ -1,6 +1,6 @@
 /goal-plus mode=probe max_parallel=2 max_duration_seconds=1200 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided inner_agent=autoresearch 优化并应用当前工作区的 26 圆 Circle Packing 结果。
 
-完整采用当前目录的 `search-spec.json` 作为权威 SearchSpec，包括 `strategy.config`、
+完整采用当前目录的 `search-spec.json` 作为权威 SearchSpec，包括 `strategy.global_evidence_mode`、
 `strategy.evidence_annotator` 和 `constraints`，并冻结
 `.goal-plus-verifiers/circle_packing_score.py`。只修改 `initial_program.py`；保持 spec 中的
 ThinkThread 工作区、AutoResearch inner agent 与 apply 模式，不得回退到其他工作区实现或

@@ -85,25 +85,16 @@ class SearchBootstrap:
                 source_artifact_ref=source_artifact_ref,
                 device_inventory=device_inventory,
             )
-            if not origin_verification.passed:
-                failed = next(
-                    (
-                        result
-                        for result in origin_verification.verifier_results
-                        if not result.passed
-                    ),
-                    None,
-                )
-                detail = (
-                    f" {failed.name}: {failed.failure_class}."
-                    if failed is not None
-                    else ""
-                )
+        elif spec.workspace.provider != "thinkthread":
+            origin_verification = self.verifiers.preflight_process_verifiers(spec, device_inventory)
+        if origin_verification is not None:
+            if not origin_verification.evaluation_completed:
                 raise ValueError(
-                    "OriginVerifierFailed: process verifier suite did not pass "
-                    f"in source_path '{source_root}'.{detail}"
+                    "OriginVerifierFailed: process verifier suite did not complete "
+                    f"in source_path '{source_root}'.{origin_verification.failure_detail()}"
                 )
             origin_verification.require_numeric_metric(spec.metric_name)
+        if spec.workspace.provider == "git_worktree":
             self.repository.validate_clean_source_repository(spec)
             source_artifact_after = self.repository.current_artifact(spec)
             if source_artifact_after != source_artifact_ref:
@@ -115,8 +106,6 @@ class SearchBootstrap:
                 update={"source_artifact_ref": source_artifact_after}
             )
             source_artifact_ref = source_artifact_after
-        elif spec.workspace.provider != "thinkthread":
-            self.verifiers.preflight_ranking_verifiers(spec, device_inventory)
 
         spec_payload = spec.model_dump(mode="json")
         device_inventory_payload = {
