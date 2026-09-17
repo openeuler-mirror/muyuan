@@ -16,3 +16,5 @@ Search 要求：这是强制进入 Search Mode 的任务。
 满足 `valid=true`，圆的数量必须为 26，并最大化 `sum_radii`。
 选中结果必须通过 provider publication 回写到 `workspace/`；回写后从该源码仓库
 重新运行 verifier，并确认 Git worktree 干净。
+
+执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

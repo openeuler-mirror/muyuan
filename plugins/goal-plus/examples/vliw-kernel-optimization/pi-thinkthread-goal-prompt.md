@@ -20,3 +20,5 @@ cycles 的有效 exact artifact，完成 artifact_only promotion。不要 apply 
 完成 Search result、原始目标审查和 Goal complete，生成 MD/HTML 报告。报告注明 baseline
 147734、选中 cycles、各 lane 的实际迭代次数及未完成项。正常流程使用 monitor 和公开工具，
 不读取 session-private 内部文件；不要因为首轮有改善就提前关闭候选执行。
+
+执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

@@ -213,21 +213,38 @@ def unbind(host: str, config: Path, *, dry_run: bool = False) -> None:
             binding_path(host, config).unlink(missing_ok=True)
 
 
-def cleanup(*, dry_run: bool = False) -> None:
-    if not (home() / "releases").exists():
-        return
-    if dry_run:
-        print(f"Would remove unreferenced managed releases in {home() / 'releases'}")
-        return
-    with locked():
-        pinned = {Path(json.loads(p.read_text())["package"]).resolve().parent
-                  for p in (home() / "bindings").glob("*.json")}
-        for release in (home() / "releases").iterdir():
-            if release.is_symlink():
-                raise RuntimeError(f"Refusing symlink release: {release}")
-            if release.resolve() in pinned:
-                continue
+def _unreferenced_releases(*, strict: bool = True) -> list[Path]:
+    pinned = {Path(json.loads(p.read_text())["package"]).resolve().parent
+              for p in (home() / "bindings").glob("*.json")}
+    stale: list[Path] = []
+    for release in (home() / "releases").iterdir():
+        reason = "symlink release" if release.is_symlink() else None
+        if reason is None and release.resolve() in pinned:
+            continue
+        if reason is None:
             receipt = read_receipt(release / "package")
             if receipt is None or receipt["build"] != release.name or Path(receipt["package"]).resolve() != release / "package":
-                raise RuntimeError(f"Refusing unrecognized release: {release}")
+                reason = "unrecognized release"
+        if reason is None:
+            stale.append(release)
+        elif strict:
+            raise RuntimeError(f"Refusing {reason}: {release}")
+        else:
+            # An inspect-only dry run reports what it cannot understand instead
+            # of crashing; the real cleanup keeps refusing.
+            print(f"Skipping {reason}: {release.name}")
+    return stale
+
+
+def cleanup(*, dry_run: bool = False) -> None:
+    releases = home() / "releases"
+    if not releases.exists():
+        return
+    if dry_run:
+        for release in _unreferenced_releases(strict=False):
+            print(f"Would remove unreferenced release: {release.name}")
+        return
+    with locked():
+        for release in _unreferenced_releases():
             shutil.rmtree(release)
+            print(f"Removed unreferenced release: {release.name}")

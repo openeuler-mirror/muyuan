@@ -44,6 +44,35 @@ def test_pi_search_recovery_tools_are_registered_only_for_main() -> None:
         assert f'"{name}"' not in worker
 
 
+def test_pi_model_context_injections_are_ledger_registered() -> None:
+    """Every known model-context injection site pairs with a ledger registration."""
+    text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
+    # Context-participating custom messages plus the before_agent_start context.
+    injectors = {
+        "goal-plus-must-continue": "must_continue",
+        "goal-plus-publication-notification-delivery": "publication_notification",
+        "goal-plus-command-context": "goal_start",
+        "goal-plus-missing-attempt": "missing_attempt_nudge",
+        "goal-plus-worker-continuation": "worker_continuation",
+        "goal-plus-native-context": "goal_context_full",
+    }
+    registrations = text.count("appendInjectionObservation(")
+    assert registrations >= len(injectors) + 3  # full/brief/skipped, steer, transforms
+    for marker, kind in injectors.items():
+        assert f'"{marker}"' in text, kind
+    for literal in ("goal_context_full", "goal_context_brief", "goal_context_skipped",
+                    "must_continue", "worker_steer", "input_transform"):
+        assert f'"{literal}"' in text
+    # The submit nudges are code-owned, not prompt-owned: the stop nudge covers
+    # every worker provider, and long unsubmitted dispatches switch the
+    # continuation text to a submit nudge.
+    assert 'latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"' in text
+    assert "WORKER_SUBMIT_NUDGE_TURNS" in text
+    assert "submit_nudge" in text
+    archive = (ROOT / "assets/pi/extensions/lib/goal-plus-session-archive.ts").read_text(encoding="utf-8")
+    assert '"goal-plus-injection-observation"' in archive
+
+
 def test_pi_thinkthread_worker_activates_context_from_logical_root() -> None:
     text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
     activation = text.split("function activateWorkerContext(", 1)[1].split(

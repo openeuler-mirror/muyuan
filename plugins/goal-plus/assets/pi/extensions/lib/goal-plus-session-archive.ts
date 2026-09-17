@@ -10,6 +10,7 @@ import { sessionDiagnosticsEnabled } from "./goal-plus-session-diagnostics.ts";
 
 const observationTypes = new Set([
 	"goal-plus-instructions-observation", "goal-plus-tool-contracts", "goal-plus-provider-request",
+	"goal-plus-injection-observation",
 ]);
 const gpTool = (name: unknown) => typeof name === "string" && /^(goal_plus_|search_|thinkthread_)/.test(name);
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");

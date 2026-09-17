@@ -157,6 +157,30 @@ python scripts/check_session_instructions.py /path/to/runtime/host-logs/session-
 顶层概要检查仍可为 unavailable，应单独查看 `tool_analysis.status`。分析默认隐藏 GP 参数和
 结果正文；`--include-content` 才在报告中展开。索引和采集都不自动运行分析器或调用模型。
 
+### 注入台账
+
+扩展向模型上下文注入 Goal Plus 内容的每个位置（per-turn goal context 的 full/brief/skipped
+三分支、must-continue、publication 通知、start/edit/native continuation、worker continuation、
+TT missing-attempt、worker steering、stale 清理）都会先写一条
+`goal-plus-injection-observation` custom entry：kind、role、channel、目标 id、字符数、
+sha256 和启发式 token 估算（CJK 约 1 token/字符、ASCII 约 4 字符/token；注入正文本身不落盘）。
+条目随上述归档链路保留，注入是每 turn 一次性事件，无每推理成本。
+
+`check_session_instructions.py` 默认汇总 `injection_ledger`：按 role×kind 统计次数与估算
+token，并把每条注入关联到之前最近一次 provider 输入用量（即注入时上下文规模，例如
+"main 在 ~100k 上下文时注入一次 goal_context_full，估算 +407 tokens"）。三条健康规则
+会把报告降级为 missing：
+
+- `full_context_without_raw_goal`：goal_context_full 触发但载荷没有 raw_goal（节流触发、
+  补货失效，如 status 刷新未带 detail）；
+- `goal_context_skipped_on_prompt_turn`：prompt 路径 turn 被标为 continuation 而跳过注入。
+  must-continue 抑制标志已删除（followUp turn 由宿主路由天然绕过 before_agent_start），
+  该规则保留为防回归 tripwire；
+- `registered_injection_absent`：登记了 custom message 注入但分支上找不到对应消息。
+
+新增任何模型上下文注入必须先过 `appendInjectionObservation`
+（`assets/pi/extensions/lib/goal-plus-session-diagnostics.ts`），否则上述看护对该注入失效。
+
 ## 上下文占用检查
 
 现有 session 检查器支持 `--context`，离线统计所选 Pi 分支中实际观察到的 GP 工具

@@ -97,8 +97,8 @@ Main 使用共同 session 工具。accepted receipt 不等于 verifier 结果；
 
 对称卸载命令是 `./uninstall.sh --pi --thinkthread`：`--thinkthread` 只删除当前 checkout 生成的
 `goal-plus-pi` Profile。它绝不删除 ThinkThread Runtime、Root 或 state；这些资源由 ThinkThread
-管理员独立管理。需要同时移除不再被其他 host 使用的 Goal Plus Python package 时，再显式增加
-`--runtime`。
+管理员独立管理。需要顺带清理不再被任何 host 引用的受管 release 时，再显式增加
+`--unused-runtime`；仍在使用的 release 会保留。
 
 ### Checkout 开发安装
 
@@ -114,23 +114,39 @@ editable 环境、launcher、资源冲突与刷新步骤见
 [Pi 开发指南](development.md#开发-pi-集成)。`--pi` 与 `--pi-dev` 不能同时使用。
 正常和开发安装均不发布 Goal Plus skill；命令由 extension 注册，导航来自共同 MCP instructions。
 
-#### Progress UI 开发预览
+#### Progress UI 实时展示
 
-extension 可以在不创建 Goal Plus record、Search run、candidate workspace 或模型请求的情况下显示
-fixture-backed Search progress。这只是开发预览，不是 benchmark Evidence：
+实时进度表面只在 Search run 进行期间存在，不做 Goal 全局展示：
 
-```bash
-GOAL_PLUS_UI_PREVIEW=active \
-  pi --offline --no-session --no-extensions \
-  -e assets/pi/extensions/goal-plus.ts
-```
+- Search run 启动时出现。创建 run 的 `goal_plus_search_create` 返回后立即渲染；Pi 重启恢复、
+  显式 resume 或 `/goal-plus` 控制命令时，只要该 run 仍在进行也会渲染。
+- 只要 run 仍在进行，每 5 秒重新读取一次只读状态并刷新编辑器上方的 widget：首行是
+  `Goal Plus  <状态>  <已用时长> · <metric>`，之后依次是 lanes/verify/best、baseline 提升，
+  以及每 lane 一行 `id · 模型 · 状态 · best/last 分数 · 当前轮已跑时长 · 预计下一轮结算剩余
+  （由该 lane 平均轮间隔外推）· verify 次数`。全部内容只占这一个 widget：不写状态栏槽，也不
+  改模型流式输出期间的 loader 行，避免同一份摘要重复出现。
+- run 结束（`promoted`/`aborted`/`failed`，或 Goal 已没有当前 run）后停止刷新，widget 再显示 5 秒
+  然后清除；Goal 暂停/阻塞时先渲染红色 `SEARCH BLOCKED`，同样在 5 秒后清除。
+- 状态或 monitor 读取失败、或快照里暂时没有该 run 时不算结束：已显示的 widget 保持不变，5 秒轮询
+  继续重试，只有权威读取确认 run 已结束才清除。`GOAL_PLUS_DEBUG=1` 会输出
+  `goal_plus_progress_read` 与 `goal_plus_progress_phase` 诊断。
+- 没有正在进行的 Search run（例如 Goal 只做普通工作、或 run 已结束）时不显示这个 widget；Goal 终态
+  由终态结果卡表示。数据来自只读 `goal_plus_status` 与 `goal_plus_monitor_snapshot`（后者用
+  `detail=true`，slim summary 不含 `search_tasks`/`candidates`），
+  字段见 [API](api.md#handoff-与-observability)。
 
-在该 session 中使用 `/goal-plus-ui-preview active`、`/goal-plus-ui-preview complete`、
-`/goal-plus-ui-preview result` 或 `/goal-plus-ui-preview clear` 切换状态。`result` 会用 Circle Packing
-的真实样例数值追加一张终态完成卡，不需要运行模型、verifier 或完整 Goal Plus 流程；普通 session
-不注册该命令。运行中 widget 仅支持上述预览，不会自动刷新真实 Search 进度。
-真实任务在终态时根据 Monitor 与宿主用量观测生成结果卡；运行中可通过
-`goal_plus_monitor_snapshot` 查询进度，字段见 [API](api.md#handoff-与-observability)。
+Main turn 结束而 Goal 仍未终态时，stop gate 会拒绝停止并注入一条 **不在 transcript 显示** 的
+`goal-plus-must-continue`。它的正文由共享 runtime（`application/goal_gate.py`）生成，只保留终态与
+超时判定规则和当前 next action（约 600 字符，不再重复目标、时间上下文、policy、派发和
+reconciliation）；Codex 的 Stop hook 用同一份文本。
+
+完整目标、命令配置、final check policy 与 reconciliation 由 Pi 的 `goal-plus-native-context` 提供：
+**只在 session 首轮、压缩后或 revision/control 变化时注入完整版本**，其余每轮只注入精简状态行
+（id/phase/revision/next action + 需要时读 `goal_plus_status`）；由 `goal-plus-must-continue`
+点火的那一轮已自带 phase/next action，因此跳过这条精简提醒。Codex 在
+`SessionStart(source=compact)` 后同样会重注 goal context，两种宿主都保证压缩后目标仍可见。记录真实
+终态或 `/goal-plus pause|clear` 后不再注入；candidate 侧的续跑是另一条独立的
+`goal-plus-worker-continuation`。
 
 也可以在交互式 Pi 中直接使用：
 

@@ -50,13 +50,14 @@ Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus
 | Pi 注册 | `./uninstall.sh --pi` |
 | Pi 开发环境 | `./uninstall.sh --pi-dev` |
 | Goal Plus ThinkThread Profile | `./uninstall.sh --thinkthread` |
-| 未引用的受管版本 | `./uninstall.sh --runtime` |
+| 未引用的受管版本 | `./uninstall.sh --unused-runtime` |
 | 检查完整卸载计划 | `./uninstall.sh --dry-run` |
 
 指定选择器时，卸载器只移除对应组件。Codex 和普通 Pi 注册不要求来自当前 checkout；来源
 不同时打印警告并直接卸载，不询问确认。`--dry-run` 只展示计划，本地开发目录仍校验归属。
-正常宿主安装使用共享的 Python runtime，因此只卸载一个宿主时会保留 runtime；如果仍有
-未选择的宿主注册依赖它，runtime 卸载会拒绝执行。Pi 开发态使用独立的受管环境。
+正常宿主安装使用共享的 Python runtime，因此只卸载一个宿主时会保留 runtime；
+`--unused-runtime` 只清理没有任何宿主注册引用的 release，随时可以安全执行。
+Pi 开发态使用独立的受管环境。
 卸载始终不会删除目标 workspace 中的
 `.gp/` 记录，也不会回退已经提升的修改。`--thinkthread` 只删除当前 checkout 生成的
 `goal-plus-pi` Profile，绝不删除 ThinkThread Runtime、Root 或 state。

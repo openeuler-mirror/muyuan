@@ -111,7 +111,7 @@ TT Profile 从基础 `pi` Profile 整份生成，重装会覆盖受管文件中�
 | `./uninstall.sh --pi` | 移除正常 Pi package 注册与版本引用 |
 | `./uninstall.sh --pi-dev` | 清理本 checkout 的开发环境 |
 | `./uninstall.sh --pi --thinkthread` | 移除 Pi 注册及经过 ownership marker 核验的受管 TT Profile |
-| `./uninstall.sh --runtime` | 清理无宿主引用的受管 release；先结束旧会话 |
+| `./uninstall.sh --unused-runtime` | 清理无宿主引用的受管 release，使用中的 release 保留；先结束旧会话 |
 
 无参数卸载默认选择全部组件。宿主卸载会保留 release，供旧会话继续使用。
 ThinkThread Runtime、Root、状态目录和包由 ThinkThread 独立管理；Goal Plus 卸载器不会删除它们。
@@ -234,9 +234,10 @@ python -m pytest -q tests/test_install.py tests/test_codex_assets.py \
 切换正常 Codex 或 Pi 安装来源时，可以直接在新 checkout 运行 `./uninstall.sh --codex`
 或 `./uninstall.sh --pi`，再运行对应安装命令。卸载器按宿主注册识别 Goal Plus，来源不同只
 打印警告并继续移除，不询问确认；不需要回到旧 checkout。`--dry-run` 只展示计划。
-`--pi-dev`、`--thinkthread` 和 `--runtime` 仍使用各自的归属检查。
-宿主卸载仅移除对应注册与版本引用。结束旧会话后，使用 `./uninstall.sh --runtime` 清理
-不再被任何已登记宿主引用的 release；仍存在未选择的宿主注册时拒绝清理。
+`--pi-dev` 和 `--thinkthread` 仍使用各自的归属检查。
+宿主卸载仅移除对应注册与版本引用。结束旧会话后，使用 `./uninstall.sh --unused-runtime`
+清理不再被任何已登记宿主引用的 release；仍被引用的 release 会自动保留，
+宿主注册存在时也可以随时执行。
 旧的 pip/Conda 安装不会自动删除，也不再被正常宿主入口使用。bootstrap 的 uv/Python 保留供
 后续安装使用，目标 workspace 的 `.gp/` 不受影响。
 

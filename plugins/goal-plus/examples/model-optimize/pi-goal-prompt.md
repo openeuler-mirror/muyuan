@@ -29,3 +29,7 @@ the promotion patch under `.gp/`; do not apply it back to
 `workspace-template/`, and do not run `git apply` against the returned
 `source_path`. Before terminal settlement, confirm that `workspace-template/`
 remains unchanged.
+
+Cadence: once a candidate has a plan, make the edit and submit it to the
+verifier promptly; do not iterate internally for a long time without
+submitting.

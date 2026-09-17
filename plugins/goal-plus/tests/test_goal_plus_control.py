@@ -216,8 +216,15 @@ def test_main_reconciliation_survives_non_search_round_and_requires_new_evidence
     runtime.record_triage(goal.goal_plus_id, {"is_optimization": False, "confidence": "high", "recommended_phase": "goal"})
     for _ in range(2):
         gate = runtime.gate(goal.goal_plus_id, "stop", {})
+        assert gate.decision == "block"
+        # A pending recovery agenda is live state the model cannot recall, so
+        # the stop continuation re-embeds it (and it survives non-Search rounds
+        # in the reconciliation context the per-turn line points at).
         assert "start_fresh_worker" in gate.continuation_prompt
         assert recovery.recovery_id in gate.continuation_prompt
+        reconciliation = runtime.reconciliation_context(goal.goal_plus_id)
+        assert "start_fresh_worker" in reconciliation
+        assert recovery.recovery_id in reconciliation
     with pytest.raises(RuntimeError, match="SearchRecoveryIncomplete"):
         runtime.set_status(goal.goal_plus_id, "complete")
     worker = search.start_agent_session(run_id, candidate.candidate_id)

@@ -17,3 +17,6 @@ shared correctness contract, the baseline is measured, and all verifier
 artifacts are frozen. Then run the fixed candidate lanes, select and promote
 the best verifier-backed result, complete the Goal Plus audit, and report the
 final metric and artifact paths.
+
+Cadence: once a lane has a plan, make the edit and submit it to the verifier
+promptly; do not iterate internally for a long time without submitting.

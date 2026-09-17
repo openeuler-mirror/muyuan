@@ -91,6 +91,11 @@ def test_three_native_deltas_archive_and_replay(tmp_path, archive_messages):
     assert analysis["tool_analysis"]["summary"]["calls"] == 3
     assert analysis["tool_analysis"]["summary"]["requests"] == 3
     assert not analysis["errors"]
+    ledger = analysis["injection_ledger"]
+    assert ledger["status"] == "observed"
+    assert ledger["summary"] == [{"role": "worker", "kind": "worker_steer", "count": 3,
+                                   "est_tokens": 15, "raw_goal_present": {"true": 0, "false": 0}}]
+    assert ledger["errors"] == []
     assert len(analysis["tool_analysis"]["contracts"]) == 1
     assert "PRIVATE" not in json.dumps(analysis)
     batches = sorted(index["batches"].items(), key=lambda item: item[1]["sequence"])
@@ -185,6 +190,8 @@ for (let i = 0; i < 3; i++) {
   archive = new SessionArchive();
   append({type: 'custom', customType: 'goal-plus-provider-request', data: {version: 1,
     session_id: 'native-session', request_id: `request-${i}`, contracts_sha256: sha256, status: 'observed'}});
+  append({type: 'custom', customType: 'goal-plus-injection-observation', data: {version: 1,
+    session_id: 'native-session', kind: 'worker_steer', role: 'worker', channel: 'steer', est_tokens: 5, chars: 20}});
   append({type: 'message', message: {role: 'assistant', stopReason: 'toolUse', content: [
     {type: 'thinking', thinking: 'PRIVATE THINKING'}, {type: 'text', text: 'PRIVATE TEXT'},
     {type: 'toolCall', id: `call-${i}`, name: tool.name, arguments: {}},

@@ -1456,7 +1456,14 @@ def _handle_session_start(
             _goal_context(runtime.status(goal_id)),
         )
     elif hook_input.get("source") == "compact":
-        _emit_additional_context("SessionStart", _mcp_overview())
+        # Compaction may drop the goal text from the transcript, and the next
+        # turn can be a Stop continuation that no longer carries it.
+        # _goal_context already embeds the MCP overview; re-appending it here
+        # would duplicate the instructions on every compaction.
+        _emit_additional_context(
+            "SessionStart",
+            _goal_context(runtime.status(goal_id)),
+        )
 
 
 def _handle_interrupt(

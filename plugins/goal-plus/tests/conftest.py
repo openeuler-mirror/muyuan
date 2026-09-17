@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -47,6 +48,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     configure_test_tmp(config)
+    # On shared machines /tmp/goal-plus-verifier-locks belongs to whichever
+    # user created it first, so other users cannot allocate their lock
+    # namespace. Keep test locks inside the checkout instead (.tmp is
+    # gitignored); an exported value still wins.
+    os.environ.setdefault(
+        "GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR",
+        str(Path(__file__).resolve().parents[1] / ".tmp" / "verifier-locks"),
+    )
     if not config.getoption("run_system_tests"):
         return
     if os.environ.get(ST_ACTIVE_ENV):

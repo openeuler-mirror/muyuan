@@ -149,6 +149,8 @@ work event 保留 attempt/generation 与结果摘要；Search result 保留准�
 `goal_plus_monitor_snapshot` 默认返回进度计数、最佳/选中结果、审查队列、恢复动作、scope 和错误。
 成功 candidate/session 的逐项结果、配置、artifact 路径和历史诊断使用 `detail=true`；直接
 Python Monitor/dashboard 接口仍保留完整 snapshot。异常、违规、清理错误与未知活跃数不被隐藏。
+candidate 条目附带 `last_verifier_at` 与 `avg_round_seconds`（相邻两次结算 verifier 的平均
+间隔，少于两次结算时为 null），供运行中进度展示推算当前轮耗时与预计结算剩余。
 
 ### Host Command Config
 

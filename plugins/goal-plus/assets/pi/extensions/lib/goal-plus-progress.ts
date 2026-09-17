@@ -5,6 +5,12 @@ export interface GoalPlusCandidateProgress {
 	model?: string;
 	verifierCount: number;
 	bestScore?: number;
+	status?: string;
+	lastScore?: number;
+	/** How long the lane's current round has been running since its last settled verifier result. */
+	roundElapsedSeconds?: number;
+	/** Predicted seconds until the current round settles, from the lane's average round interval; an estimate. */
+	nextResultSeconds?: number;
 }
 
 export interface GoalPlusProgressView {
@@ -18,14 +24,12 @@ export interface GoalPlusProgressView {
 	selectedCandidateId?: string;
 	promotionPassed?: boolean;
 	candidatesTotal: number;
-	sessionsStarted: number;
+	lanesEvaluated: number;
 	verifierRunsTotal: number;
 	candidates: GoalPlusCandidateProgress[];
-	nextAction?: string;
 }
 
 export interface PiProgressPresentation {
-	status: string;
 	lines: string[];
 }
 
@@ -220,10 +224,6 @@ function shortModelName(model: string | undefined): string {
 	return leaf.replace(/^gpt-[0-9.]+-/, "");
 }
 
-function metricSuffix(metricName: string | undefined): string {
-	return metricName ? ` ${metricName}` : "";
-}
-
 function improvementLine(view: GoalPlusProgressView): string | undefined {
 	if (view.baselineScore === undefined || view.bestScore === undefined) return undefined;
 	const denominator = Math.abs(view.baselineScore);
@@ -238,25 +238,38 @@ function improvementLine(view: GoalPlusProgressView): string | undefined {
 	return `Baseline ${formatScore(view.baselineScore)} → Best ${formatScore(view.bestScore)} · ${change}`;
 }
 
-function candidateLine(candidate: GoalPlusCandidateProgress, metricName: string | undefined): string {
-	return `${candidate.candidateId} · ${shortModelName(candidate.model)} · ${formatScore(candidate.bestScore)}${metricSuffix(
-		metricName,
-	)} · ${candidate.verifierCount} verify`;
+function candidateLine(candidate: GoalPlusCandidateProgress): string {
+	const parts = [
+		candidate.candidateId,
+		candidate.model ? shortModelName(candidate.model) : undefined,
+		candidate.status,
+	];
+	if (candidate.lastScore !== undefined && candidate.bestScore !== undefined) {
+		parts.push(`best ${formatScore(candidate.bestScore)}`, `last ${formatScore(candidate.lastScore)}`);
+	} else {
+		parts.push(formatScore(candidate.bestScore));
+	}
+	if (candidate.roundElapsedSeconds !== undefined) {
+		parts.push(`round ${formatDuration(candidate.roundElapsedSeconds)}`);
+		if (candidate.nextResultSeconds !== undefined) {
+			parts.push(`next ~${formatDuration(candidate.nextResultSeconds)}`);
+		}
+	}
+	parts.push(`${candidate.verifierCount} verify`);
+	return parts.filter(Boolean).join(" · ");
 }
 
 export function buildPiProgressPresentation(view: GoalPlusProgressView): PiProgressPresentation {
-	const best = `best ${formatScore(view.bestScore)}`;
-	const statusPrefix = view.state === "complete" ? "GP complete" : view.state === "blocked" ? "GP blocked" : "GP search";
-	const status = `${statusPrefix} · ${view.sessionsStarted}/${view.candidatesTotal} lanes · ${view.verifierRunsTotal} verify · ${best}`;
+	const header = `Goal Plus  ${STATE_LABELS[view.state]}  ${formatDuration(view.elapsedSeconds)}`;
 	const lines = [
-		`Goal Plus  ${STATE_LABELS[view.state]}  ${formatDuration(view.elapsedSeconds)}`,
-		`Lanes ${view.sessionsStarted}/${view.candidatesTotal} started · Verify ${view.verifierRunsTotal} · Best ${formatScore(
+		view.metricName ? `${header} · ${view.metricName}` : header,
+		`Lanes ${view.lanesEvaluated}/${view.candidatesTotal} evaluated · Verify ${view.verifierRunsTotal} · Best ${formatScore(
 			view.bestScore,
-		)}${metricSuffix(view.metricName)}`,
+		)}`,
 	];
 	const improvement = improvementLine(view);
 	if (improvement) lines.push(improvement);
-	lines.push(...view.candidates.map((candidate) => candidateLine(candidate, view.metricName)));
+	lines.push(...view.candidates.map(candidateLine));
 	if (view.state === "complete") {
 		const selected = view.selectedCandidateId ?? view.bestCandidateId ?? "--";
 		const promotion = view.promotionPassed === true
@@ -265,115 +278,6 @@ export function buildPiProgressPresentation(view: GoalPlusProgressView): PiProgr
 				? "promotion failed"
 				: "promotion not observed";
 		lines.push(`Selected ${selected} · ${promotion}`);
-	} else if (view.nextAction) {
-		lines.push(`Next  ${view.nextAction}`);
 	}
-	return { status, lines };
+	return { lines };
 }
-
-export const PI_PROGRESS_PREVIEWS: Record<"active" | "complete", GoalPlusProgressView> = {
-	active: {
-		state: "active",
-		elapsedSeconds: 126,
-		metricName: "sum_radii",
-		metricDirection: "maximize",
-		baselineScore: 1.798_348_554_8,
-		bestCandidateId: "c001",
-		bestScore: 1.932_76,
-		candidatesTotal: 2,
-		sessionsStarted: 2,
-		verifierRunsTotal: 4,
-		candidates: [
-			{
-				candidateId: "c001",
-				model: "openai-codex/gpt-5.6-terra",
-				verifierCount: 2,
-				bestScore: 1.932_76,
-			},
-			{
-				candidateId: "c002",
-				model: "openai-codex/gpt-5.6-luna",
-				verifierCount: 2,
-				bestScore: 1.901_44,
-			},
-		],
-		nextAction: "continue candidate loops",
-	},
-	complete: {
-		state: "complete",
-		elapsedSeconds: 288,
-		metricName: "sum_radii",
-		metricDirection: "maximize",
-		baselineScore: 1.798_348_554_8,
-		bestCandidateId: "c002",
-		bestScore: 2.084_91,
-		selectedCandidateId: "c002",
-		promotionPassed: true,
-		candidatesTotal: 2,
-		sessionsStarted: 2,
-		verifierRunsTotal: 7,
-		candidates: [
-			{
-				candidateId: "c001",
-				model: "openai-codex/gpt-5.6-terra",
-				verifierCount: 3,
-				bestScore: 2.047_31,
-			},
-			{
-				candidateId: "c002",
-				model: "openai-codex/gpt-5.6-luna",
-				verifierCount: 4,
-				bestScore: 2.084_91,
-			},
-		],
-	},
-};
-
-export const PI_COMPLETION_PREVIEW: GoalPlusCompletionView = {
-	status: "complete",
-	elapsedSeconds: 410,
-	presetDurationSeconds: 300,
-	goalPlusId: "gp_0001",
-	searchTasksTotal: 1,
-	candidatesTotal: 2,
-	verifierRunsTotal: 2,
-	selectedCandidateId: "c002",
-	metricName: "sum_radii",
-	metricDirection: "maximize",
-	baselineScore: 1.798_348_554_770_476_5,
-	selectedScore: 1.884_679_985_631_205_8,
-	promotionPassed: true,
-	hostCleanupState: "complete",
-	reportPath: ".gp/runs/run_20260824_160752_22d09be6/report.md",
-	htmlReportPath: ".gp/runs/run_20260824_160752_22d09be6/report.html",
-	mainUsage: {
-		assistantMessages: 34,
-		toolCalls: 36,
-		processedTokens: 2_672_660,
-		costUsd: 0.9702,
-	},
-	workerUsage: {
-		assistantMessages: 15,
-		toolCalls: 16,
-		processedTokens: 367_826,
-		costUsd: 0.164_153_08,
-	},
-	candidates: [
-		{
-			candidateId: "c001",
-			model: "openai-codex/gpt-5.6-terra",
-			score: 0,
-			verifierCount: 1,
-			disposition: "failure",
-			selected: false,
-		},
-		{
-			candidateId: "c002",
-			model: "openai-codex/gpt-5.6-luna",
-			score: 1.884_679_985_631_205_8,
-			verifierCount: 1,
-			disposition: "keep",
-			selected: true,
-		},
-	],
-};

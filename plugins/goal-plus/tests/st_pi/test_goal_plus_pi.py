@@ -666,7 +666,7 @@ def test_goal_plus_print_stop_gate_intercepts_early_finish_and_continues(
     continuation_indexes = [
         index
         for index, entry in enumerate(entries)
-        if entry.get("customType") == "goal-plus-stop-continuation"
+        if entry.get("customType") == "goal-plus-must-continue"
     ]
     assert continuation_indexes, "Pi agent_end did not persist a stop continuation"
     continuation_index = continuation_indexes[0]

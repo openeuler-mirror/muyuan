@@ -14,3 +14,5 @@ zero 路线，把 `guess.py` 完整写成 `print(0)`；c002 采用 immediate-exa
 `python verify.py`，必须仍为 1，且 Root 的 `guess.py` 必须精确为 `print(1)` 加末尾换行。
 记录 Search result，完成原始目标审计，把 Goal Plus 标记为 complete，最后生成规范报告。正常
 完成流程只依据 monitor 与完成卡，不检查 ThinkThread 内部状态文件。
+
+执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

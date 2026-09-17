@@ -2,7 +2,11 @@ import { LooseObject, RuntimeToolSchemas, RuntimeToolDescriptions } from "./lib/
 import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, parseJsonObject, runJsonCli, runHostCommandCli, closeMcpConnections } from "./lib/goal-plus-transport.ts";
 import { THINKTHREAD_GOAL_PLUS_PROTOCOL, WorkerSteeringReceiver, dispatchMessageId, dispatchMetadata, requestWorkerTool } from "../../thinkthread-session-rpc.ts";
 import { toolOwner, type ToolOwner } from "./lib/goal-plus-tool-identity.ts";
-import { registerSessionDiagnostics, sessionDiagnosticsEnabled } from "./lib/goal-plus-session-diagnostics.ts";
+import {
+	appendInjectionObservation,
+	registerSessionDiagnostics,
+	sessionDiagnosticsEnabled,
+} from "./lib/goal-plus-session-diagnostics.ts";
 import { SessionArchive, sendDiagnosticMessages } from "./lib/goal-plus-session-archive.ts";
 import { parseArgs, type ExtensionAPI, type ExtensionContext, type ToolCallEvent, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
@@ -14,10 +18,10 @@ import { type TSchema, Type } from "typebox";
 import {
 	buildPiCompletionPresentation,
 	buildPiProgressPresentation,
-	PI_COMPLETION_PREVIEW,
-	PI_PROGRESS_PREVIEWS,
 	type GoalPlusCandidateCompletion,
+	type GoalPlusCandidateProgress,
 	type GoalPlusCompletionView,
+	type GoalPlusProgressState,
 	type GoalPlusProgressView,
 	type GoalPlusUsageSummary,
 } from "./lib/goal-plus-progress.ts";
@@ -34,13 +38,6 @@ let thinkThreadSupplementalEnabled = false;
 
 
 const workerContinueUntilMs = Number(process.env.GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS || "0");
-const progressPreviewMode = (() => {
-	const value = process.env.GOAL_PLUS_UI_PREVIEW?.trim().toLowerCase();
-	if (!value) return undefined;
-	if (value === "1" || value === "running") return "active";
-	if (value === "active" || value === "complete") return value;
-	return undefined;
-})();
 const modeArgIndex = process.argv.indexOf("--mode");
 const isPrintLikeInvocation =
 	process.argv.includes("-p") ||
@@ -52,15 +49,21 @@ const WORKER_CONTEXT_ENTRY_TYPE = "goal-plus-worker-context";
 const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
 const GOAL_PLUS_RUNTIME_ENTRY_TYPE = "goal-plus-runtime-start";
 const GOAL_PLUS_COMMAND_CONTEXT_TYPE = "goal-plus-command-context";
-const GOAL_PLUS_PROGRESS_STATUS_KEY = "goal-plus-progress";
+const GOAL_PLUS_MUST_CONTINUE_TYPE = "goal-plus-must-continue";
 const GOAL_PLUS_PROGRESS_WIDGET_KEY = "goal-plus-progress";
 let workspaceRoot: string | undefined;
 let sawContext = false;
 let workerGeneration: { runId: string; candidateId: string; generation: number } | undefined;
 let activeGoalPlusId = process.env.GOAL_PLUS_ID;
 let cachedGoalStatus: GoalPlusStatusPayload | undefined;
+let goalContextFullKey: string | undefined;
+
 let continuationCount = 0;
 let workerContinuationCount = 0;
+// Turn count of one dispatch without any verifier submission after which the
+// worker continuation becomes a short submit nudge. Eight rounds balances
+// leaving room to explore against burning a whole dispatch on unverified edits.
+const WORKER_SUBMIT_NUDGE_TURNS = 8;
 let workerRegistrationSent = false;
 let workerSdkModulePromise: Promise<any> | undefined;
 let workerSdkClientPromise: Promise<any> | undefined;
@@ -846,6 +849,8 @@ async function acknowledgeThinkThreadDispatch(
 		workerActiveDispatchNonce = metadata.dispatchNonce;
 		workerVerifierSubmitted = false;
 		workerMissingAttemptContinuationSent = false;
+		// The nudge turn count is per dispatch wake, not per worker process.
+		workerContinuationCount = 0;
 		workerInnerGitBinding = innerGitBindingFromContext(ctx, dispatchText);
 		workerInnerGitInitializedDispatch = undefined;
 	}
@@ -1028,9 +1033,11 @@ async function refreshActiveGoal(
 	pi: ExtensionAPI,
 	ctx: CommandRuntimeContext,
 	persist = true,
+	detail = false,
 ): Promise<GoalPlusStatusPayload | undefined> {
 	if (!activeGoalPlusId) return undefined;
-	const result = await runJsonCli(pi, ctx, "goal_plus_status", { goal_plus_id: activeGoalPlusId });
+	const result = await runJsonCli(pi, ctx, "goal_plus_status",
+		{ goal_plus_id: activeGoalPlusId, ...(detail ? { detail: true } : {}) });
 	const status = statusFrom(result.details);
 	if (!status?.goal_plus_id) return undefined;
 	cachedGoalStatus = status;
@@ -1050,19 +1057,26 @@ function clearActiveGoalState(pi: ExtensionAPI, persist: boolean): void {
 	stagedPublicationNotifications.splice(0);
 	presentedPublicationNotifications.clear();
 	cachedGoalStatus = undefined;
+	goalContextFullKey = undefined;
 	goalPlusSessionAuthorized = false;
 	if (persist) persistGoalState(pi);
 }
 
 function queuePublicationNotificationTurn(
 	pi: ExtensionAPI,
+	ctx: ExtensionContext,
 	runId: string,
 	notificationIds: string[],
 ): void {
+	const content = "处理本轮 native context 中的 Goal Plus publication 终态通知。不要恢复 Goal Plus，也不要调用 mutation tool。";
+	appendInjectionObservation(pi, ctx, {
+		kind: "publication_notification", role, channel: "follow_up", target_id: runId,
+		notification_count: notificationIds.length, content,
+	});
 	pi.sendMessage(
 		{
 			customType: "goal-plus-publication-notification-delivery",
-			content: "处理本轮 native context 中的 Goal Plus publication 终态通知。不要恢复 Goal Plus，也不要调用 mutation tool。",
+			content,
 			display: false,
 			details: {
 				run_id: runId,
@@ -1172,13 +1186,9 @@ function usageSummaryFromMonitor(value: unknown): GoalPlusUsageSummary | undefin
 	};
 }
 
-function candidateCompletionsFromMonitor(
-	snapshot: Record<string, unknown> | undefined,
-	selectedCandidateId: string | undefined,
-): GoalPlusCandidateCompletion[] {
-	if (!snapshot || !isRecord(snapshot.candidates)) return [];
+function candidateModelMapFromMonitor(snapshot: Record<string, unknown> | undefined): Map<string, string> {
 	const modelByCandidate = new Map<string, string>();
-	if (Array.isArray(snapshot.subagents)) {
+	if (snapshot && Array.isArray(snapshot.subagents)) {
 		for (const subagent of snapshot.subagents.filter(isRecord)) {
 			const candidateId = stringFrom(subagent.candidate_id);
 			const observability = isRecord(subagent.observability) ? subagent.observability : undefined;
@@ -1187,6 +1197,47 @@ function candidateCompletionsFromMonitor(
 			if (candidateId && model) modelByCandidate.set(candidateId, model);
 		}
 	}
+	return modelByCandidate;
+}
+
+function progressCandidatesFromMonitor(
+	snapshot: Record<string, unknown> | undefined,
+): GoalPlusCandidateProgress[] {
+	if (!snapshot || !isRecord(snapshot.candidates)) return [];
+	const modelByCandidate = candidateModelMapFromMonitor(snapshot);
+	const nowMs = Date.now();
+	return Object.values(snapshot.candidates)
+		.filter(isRecord)
+		.map((candidate) => {
+			const candidateId = stringFrom(candidate.candidate_id) ?? "unknown";
+			const avgRoundSeconds = optionalNumberFrom(candidate.avg_round_seconds);
+			const lastVerifierMs = Date.parse(stringFrom(candidate.last_verifier_at) ?? "");
+			const roundElapsedSeconds = Number.isFinite(lastVerifierMs)
+				? Math.max(0, (nowMs - lastVerifierMs) / 1000)
+				: undefined;
+			const nextResultSeconds = avgRoundSeconds !== undefined && roundElapsedSeconds !== undefined
+				? Math.max(0, avgRoundSeconds - roundElapsedSeconds)
+				: undefined;
+			return {
+				candidateId,
+				model: modelByCandidate.get(candidateId),
+				verifierCount: numberFrom(candidate.verifier_count),
+				bestScore: optionalNumberFrom(candidate.best_iteration_score)
+					?? optionalNumberFrom(candidate.last_score),
+				status: stringFrom(candidate.status) || undefined,
+				lastScore: optionalNumberFrom(candidate.last_score),
+				roundElapsedSeconds,
+				nextResultSeconds,
+			};
+		});
+}
+
+function candidateCompletionsFromMonitor(
+	snapshot: Record<string, unknown> | undefined,
+	selectedCandidateId: string | undefined,
+): GoalPlusCandidateCompletion[] {
+	if (!snapshot || !isRecord(snapshot.candidates)) return [];
+	const modelByCandidate = candidateModelMapFromMonitor(snapshot);
 	return Object.values(snapshot.candidates)
 		.filter(isRecord)
 		.map((candidate) => {
@@ -1262,6 +1313,227 @@ function buildGoalCompletionView(
 	};
 }
 
+function buildGoalProgressView(
+	status: GoalPlusStatusPayload,
+	snapshot: Record<string, unknown> | undefined,
+): GoalPlusProgressView {
+	const goal = snapshot && isRecord(snapshot.goal_plus) ? snapshot.goal_plus : undefined;
+	const task = monitorSearchTask(snapshot);
+	const statistics = task && isRecord(task.statistics) ? task.statistics : undefined;
+	const scores = statistics && isRecord(statistics.scores) ? statistics.scores : undefined;
+	const selection = statistics && isRecord(statistics.selection) ? statistics.selection : undefined;
+	const goalStatus = stringFrom(goal?.status) ?? status.status;
+	const taskState = stringFrom(task?.state);
+	const state: GoalPlusProgressState = status.control?.state === "paused" || goalStatus === "blocked"
+		? "blocked"
+		: isTerminalStatus(goalStatus)
+			? "complete"
+			: taskState === "selecting" || taskState === "promoted"
+				? "selecting"
+				: task
+					? "active"
+					: "preparing";
+	const selectedCandidateId = stringFrom(task?.selected_candidate_id);
+	return {
+		state,
+		elapsedSeconds: goalElapsedSeconds(snapshot),
+		metricName: stringFrom(scores?.metric_name),
+		metricDirection: scores?.direction === "minimize" ? "minimize" : scores?.direction === "maximize" ? "maximize" : undefined,
+		baselineScore: optionalNumberFrom(scores?.baseline),
+		bestCandidateId: stringFrom(task?.best_candidate_id) || undefined,
+		bestScore: optionalNumberFrom(scores?.best) ?? optionalNumberFrom(task?.best_score),
+		selectedCandidateId: selectedCandidateId || undefined,
+		promotionPassed: selection?.promotion_verified === true,
+		candidatesTotal: optionalNumberFrom(task?.candidates_total) ?? 0,
+		lanesEvaluated: optionalNumberFrom(task?.candidates_evaluated) ?? 0,
+		verifierRunsTotal: optionalNumberFrom(task?.verifier_runs_total) ?? 0,
+		candidates: progressCandidatesFromMonitor(snapshot),
+	};
+}
+
+async function readMonitorSnapshot(
+	pi: ExtensionAPI, ctx: CommandRuntimeContext, status: GoalPlusStatusPayload,
+): Promise<Record<string, unknown> | undefined> {
+	try {
+		// The slim monitor summary omits search_tasks/candidates; the surfaces need
+		// the detailed projection.
+		const monitor = await runJsonCli(pi, ctx, "goal_plus_monitor_snapshot", {
+			goal_plus_id: status.goal_plus_id ?? activeGoalPlusId,
+			run_id: status.current_search_run_id ?? undefined,
+			detail: true,
+		});
+		if (isRecord(monitor.details) && monitor.details.ok !== false) return monitor.details;
+	} catch {
+		// Live progress is advisory; the next turn boundary retries with fresh state.
+	}
+	return undefined;
+}
+
+// The live surfaces exist only while a Search run is being explored: they appear
+// when the run starts (or when a session resumes into one), refresh on a fixed
+// interval, and disappear shortly after the run stops being in progress.
+const SEARCH_PROGRESS_REFRESH_MS = 5000;
+const SEARCH_PROGRESS_HIDE_DELAY_MS = 5000;
+// Sustained unknown reads back off instead of burning two RPC round-trips
+// every 5s while idle; any authoritative read resets the cadence.
+const SEARCH_PROGRESS_IDLE_REFRESH_MS = 30000;
+const SEARCH_PROGRESS_UNKNOWN_STREAK = 3;
+// Only these RunStates still move on their own. selection_blocked,
+// ready_to_promote and the terminal states have settled - nothing changes
+// until Main acts again - so the idle poll stops and a turn boundary restarts
+// it if the run resumes. A future RunState lands here too, never in "running".
+const RUN_STATES_IN_PROGRESS = new Set(["frozen_spec", "running", "waiting_for_workers", "evaluating", "selecting"]);
+
+// A failed or incomplete read is "unknown": it must never hide the surfaces or
+// stop the retry loop, because only an authoritative read may end a Search run.
+type SearchProgressPhase = "running" | "blocked" | "finished" | "unknown";
+let searchProgressPoll: ReturnType<typeof setTimeout> | undefined;
+let searchProgressUnknownStreak = 0;
+let searchProgressHide: ReturnType<typeof setTimeout> | undefined;
+let searchProgressPhaseShown: SearchProgressPhase | undefined;
+let searchProgressChecking = false;
+
+function progressDebug(event: string, details: Record<string, unknown>): void {
+	if (process.env.GOAL_PLUS_DEBUG !== "1") return;
+	try {
+		console.error(JSON.stringify({ event, ...details }));
+	} catch {
+		// Diagnostics cannot change progress handling.
+	}
+}
+
+function stopSearchProgressPoll(): void {
+	if (searchProgressPoll !== undefined) clearTimeout(searchProgressPoll);
+	searchProgressPoll = undefined;
+	searchProgressUnknownStreak = 0;
+}
+
+function cancelSearchProgressHide(): void {
+	if (searchProgressHide !== undefined) clearTimeout(searchProgressHide);
+	searchProgressHide = undefined;
+}
+
+function scheduleSearchProgressHide(ctx: ExtensionContext): void {
+	if (searchProgressHide !== undefined) return;
+	searchProgressHide = setTimeout(() => {
+		searchProgressHide = undefined;
+		clearPiProgress(ctx);
+	}, SEARCH_PROGRESS_HIDE_DELAY_MS);
+}
+
+function ensureSearchProgressPoll(pi: ExtensionAPI, ctx: ExtensionContext): void {
+	if (searchProgressPoll !== undefined) return;
+	const idle = searchProgressUnknownStreak >= SEARCH_PROGRESS_UNKNOWN_STREAK;
+	searchProgressPoll = setTimeout(() => {
+		searchProgressPoll = undefined;
+		void checkSearchProgress(pi, ctx);
+	}, idle ? SEARCH_PROGRESS_IDLE_REFRESH_MS : SEARCH_PROGRESS_REFRESH_MS);
+}
+
+function searchProgressPhase(
+	status: GoalPlusStatusPayload,
+	snapshot: Record<string, unknown> | undefined,
+): SearchProgressPhase {
+	const runId = stringFrom(status.current_search_run_id);
+	// Without a Search run there is no Search surface, whatever the Goal's
+	// control state is: pausing a plain Goal must not render a blocked frame.
+	if (!runId) return "finished";
+	if (status.control?.state === "paused" || status.status === "blocked") return "blocked";
+	const task = monitorSearchTask(snapshot);
+	if (!task || task.is_current !== true || stringFrom(task.run_id) !== runId) return "unknown";
+	return RUN_STATES_IN_PROGRESS.has(stringFrom(task.state)) ? "running" : "finished";
+}
+
+function applySearchProgress(
+	ctx: ExtensionContext,
+	status: GoalPlusStatusPayload,
+	snapshot: Record<string, unknown> | undefined,
+): void {
+	const phase = searchProgressPhase(status, snapshot);
+	progressDebug("goal_plus_progress_phase", {
+		phase,
+		run_id: stringFrom(status.current_search_run_id),
+		visible: searchProgressPhaseShown !== undefined,
+	});
+	if (phase === "finished") {
+		stopSearchProgressPoll();
+		if (searchProgressPhaseShown !== undefined) scheduleSearchProgressHide(ctx);
+		return;
+	}
+	if (phase === "unknown") {
+		// Keep whatever is on screen; the interval retries with fresh state.
+		cancelSearchProgressHide();
+		return;
+	}
+	cancelSearchProgressHide();
+	showPiProgress(ctx, buildGoalProgressView(status, snapshot));
+	searchProgressPhaseShown = phase;
+	if (phase === "blocked") {
+		// A blocked Goal is not exploring; keep the blocked frame briefly, then hide.
+		stopSearchProgressPoll();
+		scheduleSearchProgressHide(ctx);
+	}
+}
+
+function observeSearchProgress(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	status: GoalPlusStatusPayload,
+	snapshot: Record<string, unknown> | undefined,
+): void {
+	progressDebug("goal_plus_progress_read", {
+		source: stringFrom((status.details as Record<string, unknown> | undefined)?.tool),
+		goal_plus_id: stringFrom(status.goal_plus_id),
+		goal_status: stringFrom(status.status),
+		phase: stringFrom(status.phase),
+		control: stringFrom(status.control?.state),
+		run_id: stringFrom(status.current_search_run_id),
+		snapshot_ok: snapshot?.ok,
+		snapshot_keys: snapshot ? Object.keys(snapshot).slice(0, 12).join(",") : undefined,
+		snapshot_tasks: Array.isArray(snapshot?.search_tasks) ? snapshot.search_tasks.length : undefined,
+		snapshot_error: stringFrom(snapshot?.error),
+	});
+	applySearchProgress(ctx, status, snapshot);
+	const phase = searchProgressPhase(status, snapshot);
+	searchProgressUnknownStreak = phase === "unknown" ? searchProgressUnknownStreak + 1 : 0;
+	if (phase === "running" || phase === "unknown") ensureSearchProgressPoll(pi, ctx);
+}
+
+async function checkSearchProgress(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	if (role !== "main" || !activeGoalPlusId) return;
+	if (searchProgressChecking) return;
+	searchProgressChecking = true;
+	try {
+		const commandCtx = commandContextFrom(ctx);
+		// Only an authoritative read may end the surfaces. A failure payload is
+		// not "the Goal is gone": it is unknown and keeps the retry loop alive.
+		const result = await runJsonCli(pi, commandCtx, "goal_plus_status", { goal_plus_id: activeGoalPlusId });
+		if (isRecord(result.details) && result.details.ok === false) {
+			progressDebug("goal_plus_progress_read_failed", { tool: "goal_plus_status" });
+			searchProgressUnknownStreak += 1;
+			if (searchProgressPhaseShown !== undefined) ensureSearchProgressPoll(pi, ctx);
+			return;
+		}
+		const status = statusFrom(result.details);
+		if (status?.goal_plus_id) {
+			cachedGoalStatus = status;
+			observeSearchProgress(pi, ctx, status, await readMonitorSnapshot(pi, commandCtx, status));
+			return;
+		}
+		stopSearchProgressPoll();
+		if (searchProgressPhaseShown !== undefined) scheduleSearchProgressHide(ctx);
+	} catch (error) {
+		// A failed read must not clear the surfaces or stop the retry loop.
+		progressDebug("goal_plus_progress_read_failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		searchProgressUnknownStreak += 1;
+		if (searchProgressPhaseShown !== undefined) ensureSearchProgressPoll(pi, ctx);
+	} finally {
+		searchProgressChecking = false;
+	}
+}
+
 function appendGoalStats(
 	pi: ExtensionAPI,
 	status: GoalPlusStatusPayload,
@@ -1281,27 +1553,6 @@ function appendGoalStats(
 		collapsedLineCount: presentation.collapsedLineCount,
 	});
 	return message;
-}
-
-function appendGoalCompletionPreview(pi: ExtensionAPI): void {
-	const presentation = buildPiCompletionPresentation(PI_COMPLETION_PREVIEW);
-	pi.appendEntry<GoalPlusStatsEntry>(GOAL_PLUS_STATS_ENTRY_TYPE, {
-		goal_plus_id: PI_COMPLETION_PREVIEW.goalPlusId,
-		status: PI_COMPLETION_PREVIEW.status,
-		startedAt: undefined,
-		endedAt: new Date().toISOString(),
-		usage: {
-			assistantMessages: PI_COMPLETION_PREVIEW.mainUsage.assistantMessages,
-			toolCalls: PI_COMPLETION_PREVIEW.mainUsage.toolCalls,
-			input: 0,
-			output: PI_COMPLETION_PREVIEW.mainUsage.processedTokens,
-			cacheRead: 0,
-			cacheWrite: 0,
-			cost: PI_COMPLETION_PREVIEW.mainUsage.costUsd,
-		},
-		message: presentation.lines.join("\n"),
-		collapsedLineCount: presentation.collapsedLineCount,
-	});
 }
 
 function monitorSnapshotPresentation(value: unknown): { status: string; lines: string[] } | undefined {
@@ -1341,19 +1592,51 @@ function monitorSnapshotPresentation(value: unknown): { status: string; lines: s
 
 function showPiProgress(ctx: ExtensionContext, view: GoalPlusProgressView): void {
 	const presentation = buildPiProgressPresentation(view);
-	const lines = presentation.lines.map((line, index) => {
-		if (index === 0) return ctx.ui.theme.fg(view.state === "complete" ? "success" : "accent", line);
-		if (line.startsWith("Next  ")) return ctx.ui.theme.fg("muted", line);
-		return line;
+	const accent: "success" | "error" | "accent" = view.state === "complete"
+		? "success" : view.state === "blocked" ? "error" : "accent";
+	const bar = ctx.ui.theme.fg(accent, "▌");
+	const lines = presentation.lines.map((line) => {
+		if (line === presentation.lines[0]) return `${bar} ${ctx.ui.theme.fg(accent, line)}`;
+		if (line.includes("% better")) return `${bar} ${ctx.ui.theme.fg("success", line)}`;
+		if (line.includes("% worse")) return `${bar} ${ctx.ui.theme.fg("error", line)}`;
+		if (line.startsWith("Lanes ") || line.startsWith("Selected ")) return `${bar} ${line}`;
+		if (view.bestCandidateId && line.startsWith(view.bestCandidateId)) {
+			return `${bar} ${ctx.ui.theme.fg("accent", line)}`;
+		}
+		if (line.includes("running")) return `${bar} ${line}`;
+		return `${bar} ${ctx.ui.theme.fg("dim", line)}`;
 	});
-	const statusColor = view.state === "complete" ? "success" : view.state === "blocked" ? "error" : "accent";
-	ctx.ui.setStatus(GOAL_PLUS_PROGRESS_STATUS_KEY, ctx.ui.theme.fg(statusColor, presentation.status));
+	// One surface only: the widget above the editor. The footer status slot and the
+	// streaming loader row would just duplicate the same summary.
 	ctx.ui.setWidget(GOAL_PLUS_PROGRESS_WIDGET_KEY, lines);
 }
 
 function clearPiProgress(ctx: ExtensionContext): void {
-	ctx.ui.setStatus(GOAL_PLUS_PROGRESS_STATUS_KEY, undefined);
+	stopSearchProgressPoll();
+	cancelSearchProgressHide();
+	searchProgressPhaseShown = undefined;
 	ctx.ui.setWidget(GOAL_PLUS_PROGRESS_WIDGET_KEY, undefined);
+}
+
+// The full context (goal text, command config, final-check policy) is only worth
+// its tokens on the first turn of a session, after a compaction, or when the Goal
+// revision/control changes. Other turns get the compact status line and read the
+// rest through goal_plus_status when they need it.
+function buildGoalPlusBriefContext(status: GoalPlusStatusPayload): string {
+	const action = status.next_action;
+	const lines = [
+		"[GOAL PLUS ACTIVE]",
+		`goal_plus_id: ${status.goal_plus_id ?? activeGoalPlusId ?? "unknown"}`,
+		`status: ${status.status ?? "unknown"} · control: ${status.control?.state ?? "unknown"}`
+			+ ` · phase: ${status.phase ?? "unknown"} · revision: ${status.goal_revision ?? 1}`,
+		action
+			? `next_action: ${action.kind ?? "unknown"}（required=${action.required === false ? "false" : "true"}）`
+				+ ` — ${action.description ?? ""}`
+			: "next_action: 未记录",
+		"完整目标、命令配置和 final check policy 只在首轮、压缩后或 revision 变化时注入；"
+			+ "需要时用 goal_plus_status(detail=true) 读取，并每轮读取 control、next_action 和 reconciliation。",
+	];
+	return lines.join("\n");
 }
 
 function buildGoalPlusContext(status: GoalPlusStatusPayload): string {
@@ -1896,6 +2179,15 @@ async function controlGoalPlus(
 		goalPlusSessionAuthorized = status.control?.state === "active";
 		activateGoal(pi, status, undefined, canPersistGoalState(ctx));
 	}
+	if (role === "main") {
+		if (action === "clear") {
+			clearPiProgress(ctx);
+		} else {
+			observeSearchProgress(
+				pi, ctx, status, await readMonitorSnapshot(pi, commandContextFrom(ctx), status),
+			);
+		}
+	}
 	pi.sendMessage({ customType: "goal-plus-control", content: `Goal Plus ${action}: ${status.goal_plus_id}, status=${status.status}, control=${status.control?.state}, reason=${status.control?.reason ?? "none"}`, display: true });
 	if (action !== "resume") return undefined;
 	// An already running native turn will reach agent_end with the new control
@@ -1906,6 +2198,8 @@ async function controlGoalPlus(
 
 function startGoalPlusMainTurn(
 	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	kind: "goal_start" | "goal_edit" | "native_continuation",
 	context: string,
 	deliverAsFollowUp: boolean,
 ) {
@@ -1923,6 +2217,13 @@ function startGoalPlusMainTurn(
 			request_id: randomUUID(),
 		},
 	};
+	appendInjectionObservation(pi, ctx, {
+		kind, role, channel: deliverAsFollowUp ? "follow_up" : "next_turn_user_message",
+		target_id: activeGoalPlusId,
+		goal_revision: cachedGoalStatus?.goal_revision,
+		control_version: cachedGoalStatus?.control?.version,
+		content: context,
+	});
 	if (deliverAsFollowUp) {
 		pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
 	} else {
@@ -1946,6 +2247,13 @@ function registerGoalPlusTool<TParams extends TSchema>(pi: ExtensionAPI, definit
 			const denied = workspaceGuard(event, ctx, "goal-plus") || await mainGate(event, ctx, "goal-plus");
 			if (denied?.block) throw new Error(denied.reason);
 			const result = await definition.execute(toolCallId, params, signal, onUpdate, ctx);
+			// Creating the Search run links it to the Goal; surface it right away
+			// instead of waiting for the next turn boundary. The interval keeps
+			// retrying even if this first read fails.
+			if (definition.name === "goal_plus_search_create") {
+				ensureSearchProgressPoll(pi, ctx);
+				void checkSearchProgress(pi, ctx);
+			}
 			if (process.env.GOAL_PLUS_DEBUG === "1") {
 				try {
 					console.error(JSON.stringify({
@@ -2271,11 +2579,22 @@ async function queueMainGoalContinuation(pi: ExtensionAPI, ctx: ExtensionContext
 	if (details.decision === "block") {
 		continuationCount += 1;
 		if (canPersistGoalState(ctx)) persistGoalState(pi);
+		// The runtime owns the continuation text: it carries only the rules that
+		// exist nowhere else, while the goal data comes from the per-turn context.
+		// The followUp turn itself bypasses before_agent_start in native Pi, so
+		// the next prompt-path turn keeps its per-turn reminder unconditionally.
+		const content = details.continuation_prompt || details.reason
+			|| "Goal Plus 仍处于 active。继续下一项必需 action。";
+		appendInjectionObservation(pi, ctx, {
+			kind: "must_continue", role, channel: "follow_up", target_id: activeGoalPlusId,
+			goal_revision: details.goal_revision, control_version: details.control_version,
+			continuation_count: continuationCount, content,
+		});
 		pi.sendMessage(
 			{
-				customType: "goal-plus-stop-continuation",
-				content: details.continuation_prompt || details.reason || "Goal Plus 仍处于 active。继续下一项必需 action。",
-				display: true,
+				customType: GOAL_PLUS_MUST_CONTINUE_TYPE,
+				content,
+				display: false,
 				details: { goal_plus_id: activeGoalPlusId, continuationCount,
 					goal_revision: details.goal_revision, control_version: details.control_version,
 					session_id: details.session_id, request_id: randomUUID() },
@@ -2314,6 +2633,7 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 		goalPlusSessionAuthorized = false;
 		if (persist) persistGoalState(pi);
 		notifyPausedGoal(pi, "执行丢失");
+		await checkSearchProgress(pi, ctx);
 		return;
 	}
 	if (stopReason === "aborted") {
@@ -2324,12 +2644,18 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 		goalPlusSessionAuthorized = false;
 		if (persist) persistGoalState(pi);
 		notifyPausedGoal(pi, "用户中断");
+		await checkSearchProgress(pi, ctx);
 		return;
 	}
 	if (ctx.hasPendingMessages()) return;
 	const commandCtx = commandContextFrom(ctx);
 	const usage = collectGoalUsageFromEntries(ctx.sessionManager.getEntries() as unknown[]);
 	const status = await refreshActiveGoal(pi, commandCtx, persist);
+	if (!isTerminalStatus(status?.status) && status?.goal_plus_id) {
+		// Turn boundary: keep the Search-run surfaces current for the still-running Goal.
+		observeSearchProgress(pi, ctx, status, await readMonitorSnapshot(pi, commandCtx, status));
+		return;
+	}
 	if (isTerminalStatus(status?.status)) {
 		await closeExecutionScope(pi, commandCtx, "goal_plus_terminal");
 		let snapshot: Record<string, unknown> | undefined;
@@ -2368,7 +2694,7 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 			if (publication.content) {
 				goalPlusSessionAuthorized = false;
 				if (persist) persistGoalState(pi);
-				queuePublicationNotificationTurn(pi, runId, publication.notificationIds);
+				queuePublicationNotificationTurn(pi, ctx, runId, publication.notificationIds);
 				return;
 			}
 		}
@@ -2456,7 +2782,7 @@ export default async function (pi: ExtensionAPI) {
 				}
 				if (request && ["summary", "pause", "resume", "clear"].includes(request.action)) {
 					const prompt = await controlGoalPlus(pi, ctx, request.action as "summary" | "pause" | "resume" | "clear");
-					if (prompt) startGoalPlusMainTurn(pi, prompt, false);
+					if (prompt) startGoalPlusMainTurn(pi, ctx, "native_continuation", prompt, false);
 					return;
 				}
 				if (!request || !request.rawGoal) {
@@ -2467,7 +2793,7 @@ export default async function (pi: ExtensionAPI) {
 				const prompt = request.action === "edit"
 						? await updateGoalPlusStart(pi, ctx, request.rawGoal)
 						: await createGoalPlusStart(pi, ctx, request.rawGoal);
-				if (prompt) startGoalPlusMainTurn(pi, prompt, deliverAsFollowUp);
+				if (prompt) startGoalPlusMainTurn(pi, ctx, request.action === "edit" ? "goal_edit" : "goal_start", prompt, deliverAsFollowUp);
 			},
 		});
 		pi.registerCommand("goal-plus-with-final-check", {
@@ -2479,32 +2805,9 @@ export default async function (pi: ExtensionAPI) {
 					return;
 				}
 				const prompt = await createGoalPlusStart(pi, ctx, rawGoal, true);
-				if (prompt) startGoalPlusMainTurn(pi, prompt, !ctx.isIdle());
+				if (prompt) startGoalPlusMainTurn(pi, ctx, "goal_start", prompt, !ctx.isIdle());
 			},
 		});
-		if (role === "main" && progressPreviewMode) {
-			pi.registerCommand("goal-plus-ui-preview", {
-				description: "预览 Goal Plus 进度或完成 UI，不创建 Goal Plus/Search run",
-				handler: async (args, ctx) => {
-					const mode = args.trim().toLowerCase() || "active";
-					if (mode === "clear") {
-						clearPiProgress(ctx);
-						ctx.ui.notify("Goal Plus progress preview cleared.", "info");
-						return;
-					}
-					if (mode === "result") {
-						clearPiProgress(ctx);
-						appendGoalCompletionPreview(pi);
-						return;
-					}
-					if (mode !== "active" && mode !== "complete") {
-						ctx.ui.notify("Usage: /goal-plus-ui-preview [active|complete|result|clear]", "error");
-						return;
-					}
-					showPiProgress(ctx, PI_PROGRESS_PREVIEWS[mode]);
-				},
-			});
-		}
 	}
 
 	const mainTools = [
@@ -2608,6 +2911,10 @@ export default async function (pi: ExtensionAPI) {
 		}
 		if (["summary", "pause", "resume", "clear"].includes(request.action)) {
 			const prompt = await controlGoalPlus(pi, ctx, request.action as "summary" | "pause" | "resume" | "clear");
+			if (prompt) appendInjectionObservation(pi, ctx, {
+				kind: "native_continuation", role, channel: "input_transform",
+				target_id: activeGoalPlusId, content: prompt,
+			});
 			return prompt ? { action: "transform", text: prompt, images: event.images } : { action: "handled" };
 		}
 		if (!request.rawGoal) {
@@ -2617,6 +2924,10 @@ export default async function (pi: ExtensionAPI) {
 		const prompt = request.action === "edit"
 				? await updateGoalPlusStart(pi, ctx, request.rawGoal)
 				: await createGoalPlusStart(pi, ctx, request.rawGoal, request.withFinalCheck);
+		if (prompt) appendInjectionObservation(pi, ctx, {
+			kind: request.action === "edit" ? "goal_edit" : "goal_start", role,
+			channel: "input_transform", target_id: activeGoalPlusId, content: prompt,
+		});
 		return prompt
 			? { action: "transform", text: prompt, images: event.images }
 			: { action: "handled" };
@@ -2645,10 +2956,6 @@ export default async function (pi: ExtensionAPI) {
 			activateWorkerContext(pi, entry?.data, registeredRuntimeTools, false);
 			return;
 		}
-		if (role === "main" && progressPreviewMode) {
-			showPiProgress(ctx, PI_PROGRESS_PREVIEWS[progressPreviewMode]);
-			return;
-		}
 		restoreGoalState(ctx);
 		if (role !== "main" || !activeGoalPlusId) return;
 		const commandCtx = commandContextFrom(ctx);
@@ -2665,7 +2972,7 @@ export default async function (pi: ExtensionAPI) {
 					}
 					if (publication.content) {
 						if (persist) persistGoalState(pi);
-						queuePublicationNotificationTurn(pi, runId, publication.notificationIds);
+						queuePublicationNotificationTurn(pi, ctx, runId, publication.notificationIds);
 						return;
 						}
 					}
@@ -2673,6 +2980,7 @@ export default async function (pi: ExtensionAPI) {
 					return;
 				}
 			if (!status?.goal_plus_id) return;
+			observeSearchProgress(pi, ctx, status, await readMonitorSnapshot(pi, commandCtx, status));
 			const interaction = piHostInteraction(ctx);
 			await runPiHostSessionEvent(
 				pi,
@@ -2687,10 +2995,18 @@ export default async function (pi: ExtensionAPI) {
 	});
 	pi.on("context", async (event, ctx) => {
 		if (role !== "main" || !activeGoalPlusId) return;
-		const status = await refreshActiveGoal(pi, commandContextFrom(ctx), false);
 		const messages = event.messages;
 		const isRequest = (message: unknown) => isRecord(message) && message.role === "custom"
-			&& [GOAL_PLUS_COMMAND_CONTEXT_TYPE, "goal-plus-stop-continuation"].includes(String(message.customType));
+			&& [GOAL_PLUS_COMMAND_CONTEXT_TYPE, GOAL_PLUS_MUST_CONTINUE_TYPE].includes(String(message.customType));
+		// Only cancel a stale, not-yet-run automatic request. Historical requests
+		// must never abort an ordinary user turn or an already running Main turn.
+		const lastInput = [...messages].reverse().find((message) => message.role === "user" || message.role === "assistant" || isRequest(message));
+		// This hook fires before every LLM call; a status round-trip is worth it
+		// only when a Goal Plus request is about to be consumed. Pruning
+		// historical requests reuses the turn's cached status.
+		const status = lastInput !== undefined && isRequest(lastInput)
+			? await refreshActiveGoal(pi, commandContextFrom(ctx), false)
+			: cachedGoalStatus;
 		const stale = (message: unknown) => {
 			if (!isRequest(message) || !isRecord(message) || !isRecord(message.details)) return false;
 			const d = message.details;
@@ -2699,10 +3015,14 @@ export default async function (pi: ExtensionAPI) {
 				|| d.control_version !== status.control?.version
 				|| (d.session_id !== undefined && d.session_id !== ctx.sessionManager.getSessionId());
 		};
-		// Only cancel a stale, not-yet-run automatic request. Historical requests
-		// must never abort an ordinary user turn or an already running Main turn.
-		const lastInput = [...messages].reverse().find((message) => message.role === "user" || message.role === "assistant" || isRequest(message));
 		if (lastInput && stale(lastInput)) {
+			const pruned = messages.filter((message) => stale(message)).length;
+			appendInjectionObservation(pi, ctx, {
+				kind: "context_prune", role, channel: "context_filter",
+				target_id: status?.goal_plus_id,
+				pruned,
+				reason: "stale_request_abort",
+			});
 			suppressedContinuationAbort = true;
 			ctx.abort();
 		}
@@ -2732,10 +3052,41 @@ export default async function (pi: ExtensionAPI) {
 			? await publicationNotificationContext(pi, commandCtx, runId, true)
 			: { ok: true, notificationIds: [] };
 		if (publication.content && persist) persistGoalState(pi);
+		const goalContextKey = status
+			? `${status.goal_plus_id ?? ""}:${status.goal_revision ?? 0}:${status.control?.version ?? 0}`
+			: undefined;
+		const needsFullGoalContext = goalContextKey !== undefined && goalContextFullKey !== goalContextKey;
+		// Full contexts are rare (first turn, post-compaction, revision/control
+		// change); only they pay the detail fetch that carries the raw goal, so
+		// ordinary turns keep the cheap status refresh and no goal tokens.
+		const fullStatus = needsFullGoalContext
+			? (await refreshActiveGoal(pi, commandCtx, persist, true)) ?? status
+			: status;
 		const goalContext = goalPlusSessionAuthorized && status && !isTerminalStatus(status.status)
 			&& status.control?.state === "active"
-			? buildGoalPlusContext(status)
+			? needsFullGoalContext
+				? buildGoalPlusContext(fullStatus)
+				: buildGoalPlusBriefContext(status)
 			: undefined;
+		if (goalContext && needsFullGoalContext) goalContextFullKey = goalContextKey;
+		// The injection ledger is the deterministic guardian of this cadence: the
+		// audit turns a full context without raw_goal into a reported defect
+		// instead of a silent prompt regression.
+		appendInjectionObservation(pi, ctx, {
+			kind: goalContext === undefined
+				? "goal_context_skipped"
+				: needsFullGoalContext ? "goal_context_full" : "goal_context_brief",
+			role, channel: "system_message", target_id: status?.goal_plus_id,
+			goal_revision: status?.goal_revision, control_version: status?.control?.version,
+			raw_goal_present: Boolean(fullStatus?.raw_goal),
+			needs_full: needsFullGoalContext,
+			...(goalContext !== undefined
+				? { content: goalContext }
+				: { reason: !goalPlusSessionAuthorized ? "not_authorized"
+					: !status ? "no_status"
+					: isTerminalStatus(status.status) ? "terminal"
+					: "control_inactive" }),
+		});
 		const content = [publication.content, goalContext].filter((item): item is string => Boolean(item));
 		if (content.length === 0) return { systemPrompt };
 		return {
@@ -2777,7 +3128,13 @@ export default async function (pi: ExtensionAPI) {
 		const parentId = process.env.THINKTHREAD_PARENT_ID!;
 		const receiver = new WorkerSteeringReceiver(client, parentId, workerSteeringIdentity,
 			() => !ctx.isIdle() && !ctx.signal?.aborted,
-			(prompt) => pi.sendUserMessage(prompt, { deliverAs: "steer" }), () => ctx.abort());
+			(prompt) => {
+				appendInjectionObservation(pi, ctx, {
+					kind: "worker_steer", role, channel: "steer",
+					target_id: workerSteeringIdentity.agentSessionId, content: prompt,
+				});
+				pi.sendUserMessage(prompt, { deliverAs: "steer" });
+			}, () => ctx.abort());
 		let stopped = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const poll = async () => {
@@ -2849,17 +3206,26 @@ export default async function (pi: ExtensionAPI) {
 		if (ctx.hasPendingMessages()) return;
 		if (role === "worker") {
 			if (lengthWithoutToolCall) return;
+			// A worker turn that ends without any accepted attempt gets one short
+			// "submit if you have a shaped plan" nudge - for every provider, not
+			// only ThinkThread - before the wake is allowed to end. One-shot per
+			// dispatch; submitting is still the model's judgment.
 			if (
-				isThinkThreadWorker
-				&& latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"
+				latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"
 				&& !workerVerifierSubmitted
 				&& !workerMissingAttemptContinuationSent
 			) {
 				workerMissingAttemptContinuationSent = true;
+				const missingAttemptContent = "本次 dispatch 尚未提交 accepted verifier attempt。若有成型方案，建议立即提交验证：如尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成修改，通过 goal_plus_search_run_verifier 提交一个 attempt，并按回执行动。";
+				appendInjectionObservation(pi, ctx, {
+					kind: "missing_attempt_nudge", role, channel: "follow_up",
+					target_id: workerSteeringIdentity?.agentSessionId,
+					dispatch_nonce: workerActiveDispatchNonce, content: missingAttemptContent,
+				});
 				pi.sendMessage(
 					{
-						customType: "goal-plus-thinkthread-missing-attempt",
-						content: "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成本轮修改，使用当前 agent_session_id 通过 goal_plus_search_run_verifier 提交一个 attempt，并按回执行动。",
+						customType: "goal-plus-missing-attempt",
+						content: missingAttemptContent,
 						display: false,
 						details: { dispatchNonce: workerActiveDispatchNonce },
 					},
@@ -2875,10 +3241,25 @@ export default async function (pi: ExtensionAPI) {
 				return;
 			}
 			workerContinuationCount += 1;
+			// Every WORKER_SUBMIT_NUDGE_TURNS turns of this dispatch without any
+			// verifier submission, the "keep exploring" continuation is replaced
+			// once by a short submit nudge; the turns in between stay quiet.
+			const submitNudge = workerContinuationCount % WORKER_SUBMIT_NUDGE_TURNS === 0
+				&& !workerVerifierSubmitted;
+			const workerContinuationContent = submitNudge
+				? `本 dispatch 已进行 ${workerContinuationCount} 轮且尚无 verifier 提交。若有成型方案，建议立即用 goal_plus_search_run_verifier 提交验证；仅在还有实质新改进时继续探索。`
+				: "继续当前 Candidate 会话。沿用已加载的运行时上下文和 Evidence；探索新方向。只有产物发生实质变化后才运行 verifier，不要重复验证未修改的产物。";
+			appendInjectionObservation(pi, ctx, {
+				kind: "worker_continuation", role, channel: "follow_up",
+				target_id: workerSteeringIdentity?.agentSessionId,
+				continuation_count: workerContinuationCount,
+				submit_nudge: submitNudge,
+				continue_until_ms: workerContinueUntilMs, content: workerContinuationContent,
+			});
 			pi.sendMessage(
 				{
 					customType: "goal-plus-worker-continuation",
-					content: "继续当前 Candidate 会话。沿用已加载的运行时上下文和 Evidence；探索新方向。只有产物发生实质变化后才运行 verifier，不要重复验证未修改的产物。",
+					content: workerContinuationContent,
 					display: false,
 					details: { workerContinuationCount, workerContinueUntilMs },
 				},
@@ -2890,8 +3271,18 @@ export default async function (pi: ExtensionAPI) {
 	pi.on("agent_settled", async (_event, ctx) => {
 		await settleMainGoal(pi, ctx);
 	});
+	// Compaction rebuilds the model context, so the next turn re-injects the full
+	// Goal context instead of the compact status line.
+	pi.on("session_before_compact", () => {
+		goalContextFullKey = undefined;
+	});
+	pi.on("session_compact", () => {
+		goalContextFullKey = undefined;
+	});
 	pi.on("session_shutdown", async (event, ctx) => {
 		stopWorkerSteering?.();
+		stopSearchProgressPoll();
+		cancelSearchProgressHide();
 		try {
 			if (role === "main") await closeExecutionScope(pi, commandContextFrom(ctx), `pi_session_shutdown:${event.reason}`);
 		} finally {

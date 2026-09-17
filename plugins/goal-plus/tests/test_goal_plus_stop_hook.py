@@ -141,11 +141,11 @@ def test_stop_hook_blocks_active_goal_mode_for_full_goal_audit(tmp_path: Path) -
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["decision"] == "block"
-    assert "该修订版的完整原始目标" in payload["reason"]
-    assert "Tidy docs wording" in payload["reason"]
-    assert "created_at_utc" in payload["reason"]
-    assert "checked_at_utc" in payload["reason"]
+    assert "仍处于 active" in payload["reason"]
+    assert "goal_plus_status" in payload["reason"]
     assert "goal_plus_set_status" in payload["reason"]
+    assert "Tidy docs wording" not in payload["reason"]
+    assert len(payload["reason"]) < 800
     assert runtime.list_events(record.goal_plus_id)[-1]["event_type"] == "gate_blocked"
 
     hook_event = _stop_hook_events(search_root)[0]

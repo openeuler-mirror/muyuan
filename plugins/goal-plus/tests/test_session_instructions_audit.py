@@ -65,6 +65,119 @@ def pi_message(entry_id, parent_id):
     return {"type": "message", "id": entry_id, "parentId": parent_id, "message": {"role": "assistant", "content": OVERVIEW}}
 
 
+def injection(entry_id, parent_id, data):
+    return {"type": "custom", "customType": module.INJECTION_OBSERVATION_TYPE, "id": entry_id,
+            "parentId": parent_id, "data": {"version": 1, "session_id": "pi-test", **data}}
+
+
+def delivered(entry_id, parent_id, custom_type):
+    return {"type": "custom_message", "customType": custom_type, "id": entry_id,
+            "parentId": parent_id, "content": "delivered", "display": False, "details": {}}
+
+
+def usage_message(entry_id, parent_id, usage):
+    return {"type": "message", "id": entry_id, "parentId": parent_id,
+            "message": {"role": "assistant", "content": [], "stopReason": "stop", "usage": usage}}
+
+
+def test_pi_injection_ledger_rolls_up_tokens_and_downgrades_missing_raw_goal(tmp_path):
+    records = [{"type": "session", "id": "pi-test"}, observation("a", None),
+        usage_message("b", "a", {"input": 90000, "cacheRead": 10000, "cacheWrite": 1}),
+        injection("c", "b", {"kind": "goal_context_full", "role": "main", "channel": "system_message",
+                             "est_tokens": 407, "chars": 812, "raw_goal_present": False}),
+        delivered("d", "c", "goal-plus-native-context"),
+        injection("e", "d", {"kind": "goal_context_brief", "role": "main", "channel": "system_message",
+                             "est_tokens": 31, "chars": 62, "raw_goal_present": False}),
+        delivered("f", "e", "goal-plus-native-context")]
+    report = audit(tmp_path, records, "pi")
+    ledger = report["injection_ledger"]
+    assert ledger["status"] == "observed"
+    assert [entry["context_tokens_at_injection"] for entry in ledger["entries"]] == [100001, 100001]
+    assert ledger["summary"] == [
+        {"role": "main", "kind": "goal_context_brief", "count": 1, "est_tokens": 31,
+         "raw_goal_present": {"true": 0, "false": 1}},
+        {"role": "main", "kind": "goal_context_full", "count": 1, "est_tokens": 407,
+         "raw_goal_present": {"true": 0, "false": 1}},
+    ]
+    assert ledger["errors"] == [{"line": 4, "reason": "full_context_without_raw_goal"}]
+    # The overview audit itself passed; the injection defect alone downgrades it.
+    assert report["status"] == "missing"
+    assert report["checks"] == [{"line": 3, "compaction": 0, "status": "present", "reason": "host_system_prompt_match"}]
+
+
+def test_pi_injection_ledger_healthy_cadence_stays_present(tmp_path):
+    records = [{"type": "session", "id": "pi-test"}, observation("a", None),
+        usage_message("b", "a", {"input": 100, "cacheRead": 0, "cacheWrite": 0}),
+        injection("c", "b", {"kind": "goal_context_full", "role": "main", "est_tokens": 900,
+                             "raw_goal_present": True}),
+        delivered("d", "c", "goal-plus-native-context"),
+        injection("e", "d", {"kind": "goal_context_brief", "role": "main", "est_tokens": 31,
+                             "raw_goal_present": False}),
+        delivered("f", "e", "goal-plus-native-context")]
+    report = audit(tmp_path, records, "pi")
+    assert report["status"] == "present"
+    assert report["injection_ledger"]["errors"] == []
+    assert report["injection_ledger"]["summary"][1]["raw_goal_present"] == {"true": 1, "false": 0}
+
+
+def test_pi_injection_ledger_flags_stale_continuation_and_absent_delivery(tmp_path):
+    records = [{"type": "session", "id": "pi-test"},
+        injection("a", None, {"kind": "goal_context_skipped", "role": "main", "reason": "continuation_turn"}),
+        injection("b", "a", {"kind": "must_continue", "role": "main", "est_tokens": 200}),
+        delivered("c", "b", "goal-plus-must-continue"),
+        # An input-transform injection becomes the user prompt itself: no
+        # custom message exists to find, so it must not be presence-checked.
+        injection("d", "c", {"kind": "goal_start", "role": "main", "channel": "input_transform", "est_tokens": 700}),
+        injection("e", "d", {"kind": "worker_continuation", "role": "worker", "est_tokens": 90}),
+        delivered("f", "e", "goal-plus-worker-continuation"),
+        injection("g", "f", {"kind": "missing_attempt_nudge", "role": "worker", "est_tokens": 80})]
+    ledger = audit(tmp_path, records, "pi")["injection_ledger"]
+    assert {item["reason"] for item in ledger["errors"]} == {
+        "goal_context_skipped_on_prompt_turn", "registered_injection_absent"}
+    absent = next(item for item in ledger["errors"] if item["reason"] == "registered_injection_absent")
+    assert absent == {"line": 8, "reason": "registered_injection_absent"}
+
+
+def test_pi_injection_ledger_rejects_malformed_entries(tmp_path):
+    records = [{"type": "session", "id": "pi-test"},
+        {"type": "custom", "customType": module.INJECTION_OBSERVATION_TYPE, "id": "a", "parentId": None, "data": {"version": 1}}]
+    ledger = audit(tmp_path, records, "pi")["injection_ledger"]
+    assert ledger["errors"] == [{"line": 2, "reason": "invalid_injection_observation"}]
+    assert ledger["entries"] == []
+
+
+def test_codex_injection_ledger_is_unavailable(tmp_path):
+    report = audit(tmp_path, [response("developer", OVERVIEW), response("assistant", "done")])
+    assert report["injection_ledger"] == {"status": "unavailable", "reason": "no_injection_observations"}
+
+
+def test_pi_archive_audit_keeps_overview_digest_across_batches(tmp_path):
+    """The batch loop must not shadow the overview digest it later compares against."""
+    digest = hashlib.sha256(OVERVIEW.encode()).hexdigest()
+    entries = [
+        {"id": "a", "parentId": None, "type": "custom", "customType": module.OBSERVATION_TYPE,
+         "data": {"version": 1, "session_id": "pi-test", "turn_index": 0,
+                  "expected_sha256": digest, "overview_present": True}},
+        {"id": "b", "parentId": "a", "type": "message", "message": {"role": "assistant", "content": "ok"}},
+    ]
+    batch = {"version": 1, "session_id": "pi-test", "stream_id": "s1", "sequence": 0,
+             "captured_at": "2026-01-01T00:00:00Z", "leaf_id": "b", "entries": entries}
+    content = hashlib.sha256(json.dumps(batch, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    directory = tmp_path / "host-logs/session-diagnostics/tt-child"
+    directory.mkdir(parents=True)
+    (directory / f"{content}.json").write_text(json.dumps(batch))
+    (directory / "index.json").write_text(json.dumps({
+        "version": 1, "source": "thinkthread_messages", "agent_harness": "pi",
+        "session_id": "pi-test", "identity": {}, "status": "recorded", "pending_batches": {},
+        "batches": {content: {"stream_id": "s1", "sequence": 0, "entries": len(entries),
+                              "compressed_bytes": 1, "decoded_bytes": 1,
+                              "captured_at": "2026-01-01T00:00:00Z", "content_sha256": content}},
+    }))
+    report = audit_session(directory, agent_harness="pi", overview=OVERVIEW)
+    assert report["status"] == "present"
+    assert report["checks"] == [{"line": 3, "compaction": 0, "status": "present", "reason": "host_system_prompt_match"}]
+
+
 def test_pi_branch_and_each_inference_observation(tmp_path):
     records = [{"type": "session", "id": "pi-test"}, observation("a", None), pi_message("b", "a"),
         {"type": "compaction", "id": "c", "parentId": "b"}, observation("d", "c"), pi_message("e", "d"),
