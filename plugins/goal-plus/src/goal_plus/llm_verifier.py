@@ -18,6 +18,8 @@ from goal_plus.domain.verifier import (
     VerifierTask,
     validate_scores,
     verifier_result_schema,
+    diagnostic_references,
+    validate_diagnostics,
 )
 from goal_plus.application.verifier import VerifierWorkflow
 from goal_plus.infrastructure.clock import SystemClock
@@ -142,6 +144,8 @@ class LlmVerifier:
             "artifact_manifest": receipt.evidence.attempt_changed_files,
             "bounded_artifact_diff": submission.artifact_diff,
         }
+        if task.score_contract.diagnostics is not None:
+            payload["diagnostic_references"] = diagnostic_references(task.input, task.subject)
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e")
         prompt = (
@@ -199,8 +203,10 @@ class LlmVerifier:
             reasoning = inherited.get("thinking_level")
         timeout = 900.0
         score_rules = task.score_contract.score_rules
-        output_schema = verifier_result_schema(score_rules)
+        output_schema = verifier_result_schema(score_rules, task.score_contract.diagnostics)
         instructions = self._evaluation_instructions(score_rules)
+        if task.score_contract.diagnostics is not None:
+            instructions += "\n\n" + task.score_contract.diagnostics.instructions
         pi_tools = None
         if agent_harness == "pi":
             instructions += (
@@ -279,6 +285,8 @@ class LlmVerifier:
             parsed.scores,
             task.score_contract.score_rules,
         )
+        validate_diagnostics(parsed.steering_findings, parsed.scores, task.score_contract,
+                             diagnostic_references(task.input, task.subject))
         monitor.observe(
             "completed",
             result,

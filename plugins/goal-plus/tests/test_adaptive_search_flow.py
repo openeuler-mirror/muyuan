@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from goal_plus.adaptive_search.adaptive_search import AdaptiveSearch
+from goal_plus.adaptive.search import AdaptiveSearch
 
 
 class Snapshots:
@@ -49,7 +49,7 @@ def test_failed_record_advances_snapshot_without_policy_or_execution(monkeypatch
     adaptive = AdaptiveSearch(allocation=allocation, snapshots=snapshots)
     record = SimpleNamespace(outcome="failed")
     monkeypatch.setattr(
-        "goal_plus.adaptive_search.adaptive_search.evaluate_allocation_policy",
+        "goal_plus.adaptive.search.evaluate_allocation_policy",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("failed records are not evaluated")
         ),
@@ -72,7 +72,7 @@ def test_policy_error_is_recorded_and_returns_normally(monkeypatch):
     allocation = Allocation()
     adaptive = AdaptiveSearch(allocation=allocation, snapshots=snapshots)
     monkeypatch.setattr(
-        "goal_plus.adaptive_search.adaptive_search.evaluate_allocation_policy",
+        "goal_plus.adaptive.search.evaluate_allocation_policy",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("deterministic policy failed")
         ),
@@ -97,7 +97,7 @@ def test_record_triggers_one_synchronous_executor_call(monkeypatch):
     adaptive = AdaptiveSearch(allocation=allocation, snapshots=snapshots)
     plan = SimpleNamespace(plan_hash="plan_1")
     monkeypatch.setattr(
-        "goal_plus.adaptive_search.adaptive_search.evaluate_allocation_policy",
+        "goal_plus.adaptive.search.evaluate_allocation_policy",
         lambda *_args, **_kwargs: plan,
     )
     executions = []
@@ -120,7 +120,35 @@ def test_durable_decision_prevents_policy_replay_and_executor_retry(monkeypatch)
     allocation = Allocation(decision)
     allocation.list = lambda _: [decision]
     adaptive = AdaptiveSearch(allocation=allocation, snapshots=snapshots)
-    monkeypatch.setattr("goal_plus.adaptive_search.adaptive_search.evaluate_allocation_policy",
+    monkeypatch.setattr("goal_plus.adaptive.search.evaluate_allocation_policy",
                         lambda *_a, **_k: pytest.fail("durable handoff must not recompute"))
     adaptive.accept_verifier_record(SimpleNamespace(outcome="completed"), **parameters(),
                                     execute=lambda *_: pytest.fail("Executor owns recovery"))
+
+
+def test_runtime_routes_record_through_real_search_queries_state(tmp_path, monkeypatch):
+    from goal_plus.runtime import FileSearchRuntime
+
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    assert not hasattr(runtime.queries, "source")
+    allocation = SimpleNamespace(policy="swe_search_uct/v1")
+    frozen = SimpleNamespace(spec=SimpleNamespace(
+        strategy=SimpleNamespace(allocation=allocation, steering=None),
+        budget=SimpleNamespace(max_parallel=2),
+    ))
+    monkeypatch.setattr(runtime.queries.state, "read_frozen_spec", lambda _: frozen)
+    received = []
+    runtime._adaptive_search = SimpleNamespace(
+        accept_verifier_record=lambda record, **kwargs: received.append((record, kwargs)))
+    record = SimpleNamespace(subject=SimpleNamespace(frozen_spec_id="frozen_1"))
+    execute = lambda *_: None
+
+    runtime.accept_verifier_record(record, execute=execute)
+
+    assert received == [(record, {
+        "policy": allocation,
+        "max_parallel": 2,
+        "execute": execute,
+        "steering_host": None,
+        "steering_policy": None,
+    })]

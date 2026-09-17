@@ -19,7 +19,10 @@ class StrategyInput(StrategyOptions):
         default=None, description="Omit for no limit; otherwise set at least one positive limit per worker.",
     )
     allocation: AllocationPolicySpec | None = Field(
-        default=None, description="Required only for adaptive_search; requires git_worktree.",
+        default=None, description=(
+            "Select a policy to enable adaptive_search; requires git_worktree. "
+            "Required verifier scores and policy parameter defaults are filled automatically."
+        ),
     )
     global_evidence_mode: Literal["manual", "auto", "independent"] | None = None
 

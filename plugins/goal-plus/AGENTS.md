@@ -20,8 +20,8 @@
 | 安装、快速开始和文档索引 | [README.md](README.md) |
 | 命令、状态、续跑、暂停及恢复设计 | [运行逻辑](docs/runtime-logic.md)，注意区分当前实现与目标设计 |
 | Search 架构、Evidence、selection 和 promotion | [共享平面](docs/shared-plane.md) |
-| LLM Verifier 的评估、数据与队列合同 | [LLM Verifier](docs/llm-verifier.md) |
-| 极简选择、Adaptive allocation 与 Monitor feature plugin | [Adaptive Search](docs/adaptive-search.md) |
+| Settlement、LLM Verifier、队列、评分合同与 Selection | [LLM Verifier](docs/llm-verifier.md) |
+| Adaptive Snapshot、Allocation、Steering 与 Host 接线 | [Adaptive Search](docs/adaptive-search.md) |
 | Main delegation 与轻量 dispatch 记录 | [Ultra 编排](docs/ultra.md) |
 | MCP 与 Pi-local tool 合同 | [API](docs/api.md) |
 | Codex/Pi 共同边界 | [Agent Host Adapters](docs/agent-host-adapters.md) |
@@ -121,9 +121,12 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `infrastructure/monitor_inputs.py`、`report_inputs.py`、`report_output.py` | canonical 状态与已有 host observation 取数、文件输出和资产装配；不通过 Runtime 或展示恢复领域状态 |
 | `infrastructure/state/verifier_views.py` | Monitor/report 共用 VerifierTask/Record/Decision 只读装配；展示投影不驱动执行，Adaptive facade 不私读状态文件 |
 | `projections/` | 纯统计、publication/context 展示、timeline 与 MD/HTML；显式时钟和已采集输入，缺失值保持 unavailable，不执行 I/O |
-| `adaptive_search/adaptive_search.py` | Record 单一入口：追加 Snapshot、Policy 决策、持久化 Decision 并调用 Executor；持久交接后不回传执行失败、不重算恢复，无独立锁或 reconciliation |
+| `adaptive/search.py` | Record 单一入口：追加 Snapshot，先计算 Allocation；仅无 Plan 时交给 Steering 纯策略，向所选 Executor 交接，不管理执行恢复 |
 | `llm_verifier.py` | 单次受限结构化推理与 run-scoped FIFO queue；终态通过注入 consumer 交付，不导入 Adaptive 内部组件 |
-| `adaptive_search/allocation.py` | Allocation 公共 facade 与结果序列化；无 prepare/ack 接口 |
+| `adaptive/allocation.py` | Allocation 公共 facade 与结果序列化；无 prepare/ack 接口 |
+| `adaptive/steering.py`、`application/steering_apply.py` | 前者接线纯策略、公开消息渲染与 trace；后者复核来源和准入、消耗发送机会并立即尝试一次消息，不扫描恢复或重发 |
+| `application/steering.py`、`domain/adaptive/search_diagnostic_guidance.py` | 前者校验不可变 submission、固定自身历史前缀及真实累计次数；后者只按诊断证据产生有限动作或 no-op，不解析 rationale、不读取 peer 或改动 Allocation |
+| `ports/steering.py`、`infrastructure/state/steering.py` | 窄 Host/查询/状态合同与单次尝试存储；缺少观察不授予再次发送权限，不拥有评估生命周期 |
 | `domain/adaptive/policy.py`、`domain/adaptive/policy_algorithms/` | 前者声明版本化 Policy、所需指标 key 并分派具体实现，后者为纯数值算法；Verifier 以唯一 key 注册唯一评分语义，算法不理解领域流程 |
 | `tools.py` | Codex/Pi 共用 facade 和 caller 前置条件 |
 | `server.py`、`mcp_client.py`、`pi_tool.py` | 共同 MCP schema/call、宿主绑定的角色与 candidate identity，以及 Pi bridge 参数转换和序列化；模型不能指定 transport 的 caller 身份 |

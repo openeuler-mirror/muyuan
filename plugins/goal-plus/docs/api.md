@@ -25,7 +25,8 @@ Codex 只识别已注册的 Goal Plus MCP namespace，其他插件的同名动�
 `strategy.models[]` 分配各模型席位；`worker_launch` 设置全局 model、reasoning_effort、
 service_tier 默认值，各席位的非空设置优先。
 `strategy.global_evidence_mode` 直接选择证据共享方式，不再接受任意 `strategy.config`；
-`allocation.policy` 由 runtime 固定，Main 只配置 features 和 switch_margin。
+`allocation.policy` 显式选择版本化资源分配策略，`parameters` 使用该版本的参数；
+`verifier.scores` 独立选择策略所需的评估指标，详见 [Adaptive Search](adaptive-search.md)。
 
 `goal_plus_session_run(run_id, candidate_id, call_id, prompt, timeout_seconds, new_session=false)`
 内部准备领域 session、打开 native session、绑定准确身份并执行一轮任务，立即返回

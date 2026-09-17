@@ -6,7 +6,11 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from goal_plus.ports.thinkthread_verification import ThinkThreadAttemptIO
+
+if TYPE_CHECKING:
+    from goal_plus.adaptive.steering import Steering
 
 from goal_plus.application.allocation import AllocationDecisions
 from goal_plus.application.allocation_apply import AllocationApply
@@ -419,6 +423,21 @@ def build_allocation_services(
     )
 
 
+def build_steering(root_dir: Path | str) -> Steering:
+    """Wire the versioned Steering strategy path and its executor."""
+    from goal_plus.adaptive.steering import Steering, SteeringExecutor
+    from goal_plus.candidate_host import candidate_host_queries
+    from goal_plus.infrastructure.state.steering import FileSteeringState
+    from goal_plus.application.steering import SteeringDiagnostics
+
+    authorization, _ = build_goal_authorization(root_dir)
+    return Steering(
+        diagnostics=SteeringDiagnostics(state=FileSteeringState(root_dir), clock=SystemClock()),
+        executor=SteeringExecutor(state=FileSteeringState(root_dir), authorization=authorization,
+                                  queries=candidate_host_queries(root_dir), clock=SystemClock()),
+    )
+
+
 def build_annotation_services(
     root_dir: Path | str,
 ) -> tuple[
@@ -705,7 +724,7 @@ from goal_plus.application.publication_notifications import PublicationNotificat
 from goal_plus.application.promotion import Promotion
 from goal_plus.application.publication_apply import PublicationApply
 from goal_plus.application.artifact_lifecycle import ArtifactLifecycle
-from goal_plus.adaptive_search import AdaptiveSearch
+from goal_plus.adaptive import AdaptiveSearch
 from goal_plus.application.candidate_context import CandidateContext
 from goal_plus.application.search_queries import SearchQueries
 from goal_plus.application.evidence_reads import EvidenceReads
@@ -753,8 +772,8 @@ class SearchServices:
     evidence_reads: EvidenceReads
 
 
-def build_search_services(root_dir: Path) -> SearchServices:
-    from goal_plus.adaptive_search.allocation import AllocationExecutor
+def build_search_services(root_dir: Path, *, steering: Steering | None = None) -> SearchServices:
+    from goal_plus.adaptive.allocation import AllocationExecutor
 
     goal_authorization, _ = build_goal_authorization(root_dir)
     (
@@ -838,6 +857,7 @@ def build_search_services(root_dir: Path) -> SearchServices:
     )
     from goal_plus.application.adaptive_snapshot import AdaptiveSnapshotBuilder
     adaptive_search = AdaptiveSearch(
+        steering=steering if steering is not None else build_steering(root_dir),
         snapshots=AdaptiveSnapshotBuilder(state=FileAllocationState(root_dir)),
         allocation=AllocationExecutor(
             *build_allocation_services(

@@ -22,13 +22,44 @@ strategy:
     ranking_keys: [quality_score, hard_score]
     ranking_tolerance: [0.05, 0.0]
   verifier:
-    scores: [progress_reward, allocation_utility]
+    scores:
+      - progress_reward
+      - allocation_utility
+      - correctness_gap
+      - validation_gap
+      - local_confounder_evidence
+      - discriminating_test_gap
+      - boundary_evidence_strength
   allocation:
     policy: swe_search_uct/v1
+  steering:
+    policy: search_diagnostic_guidance/v1
+    parameters:
+      correctness_gap_threshold: 0.6
+      validation_gap_threshold: 0.6
+      confounder_threshold: 0.7
+      test_gap_threshold: 0.7
+      boundary_probe_threshold: 0.4
+      boundary_confirmed_threshold: 0.9
+      cooldown_seconds: 30
+      max_steering_attempts_per_candidate: 4
+      max_steering_attempts_per_issue: 2
+      history_limit: 16
+    delivery:
+      mode: apply
+      rpc_timeout_seconds: 2
+      max_source_age_seconds: 60
 ```
 
 `adaptive_search` 会由 runtime 自动启用 LLM-Verifier，并使用 policy 声明的
-allocation 评分规则。不要添加独立的 verifier 开关。
+allocation 与 steering 评分规则。不要添加独立的 verifier 开关。AdaptiveSearch 仍先计算
+Allocation；只有当前 Record 没有产生 Allocation Plan 时，才允许 Steering 根据同一次评估的
+结构化诊断向当前活动 candidate 投递一次软建议。
+
+Steering 用于排除局部干扰、提出可证伪检验、识别严格重复并帮助暴露适用边界。它不修改
+目标、验收、预算或 edit surface，不透露淘汰倒计时，也不帮助低价值方向规避 Allocation
+淘汰。消息无回执时不会重发，过时或没有活动调用时会跳过；这里的阈值是示例配置，不代表
+经过 Circle Packing 收益标定的推荐值。
 
 验收：运行 `python workspace/.goal-plus-verifiers/circle_packing_score.py`。结果必须
 满足 `valid=true`，圆的数量必须为 26，并最大化 `sum_radii`。

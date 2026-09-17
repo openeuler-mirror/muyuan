@@ -333,8 +333,3 @@ def test_metric_registration_and_policy_requirements_are_independent():
     for scores in (["unknown"], [keys[0], keys[0]]):
         with pytest.raises(ValueError):
             VerifierSpec(scores=scores)
-    with pytest.raises(ValueError, match="explicit strategy.verifier"):
-        StrategySpec(orchestration_mode="adaptive_search", allocation={"policy": "swe_search_uct/v1"})
-    with pytest.raises(ValueError, match="policy requirements"):
-        StrategySpec(orchestration_mode="adaptive_search", verifier={},
-            allocation={"policy": "swe_search_uct/v1"})

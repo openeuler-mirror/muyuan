@@ -26,7 +26,7 @@ python -m pytest --run-system-tests -n 0 -q tests/test_installation_system.py
 | Progress UI slice | `pytest -m ui -q` | Pi progress widget (5s refresh/hide waits) and the hidden Main continuation |
 | Runtime-focused | `pytest tests/test_runtime_unit.py` | Search state machine without a host |
 | LLM Verifier-focused | `pytest tests/test_llm_verifier.py -q` | task lifecycle, immutable records, structured output, prompt binding, and FIFO terminal delivery |
-| Adaptive Search-focused | `pytest tests/adaptive_search -q` | deterministic allocation, record-driven snapshot, and execution recovery |
+| Adaptive Search-focused | `pytest tests/adaptive_search -q` | deterministic allocation, record-driven snapshot, allocation recovery, one-shot steering, diagnostic actions, shadow and atomic limits |
 | Real-host ST | `pytest --run-system-tests -n 0 -m "(st and (st_codex or st_pi_rpc or st_pi_thinkthread)) or st_pi" -v -s` | maintained native launch, hooks/events, worker lifecycle, final evidence |
 
 Default tests must never launch Codex or Pi. A host behavior claim requires

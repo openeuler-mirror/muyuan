@@ -470,12 +470,14 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     assert "verifier" in strategy["properties"]
     selection = strategy["properties"]["selection"]["properties"]
     assert set(selection) == {"ranking_keys", "ranking_tolerance"}
+    assert selection["ranking_keys"]["items"]["enum"] == ["hard_score", "quality_score"]
     allocation_policy_set = next(
         item
         for item in strategy["properties"]["allocation"]["anyOf"]
         if "oneOf" in item
     )
-    assert allocation_policy_set["discriminator"]["propertyName"] == "policy"
+    # FastMCP dereferencing drops the OpenAPI discriminator annotation;
+    # required policy and per-variant const still enforce version selection.
     assert allocation_policy_set["required"] == ["policy"]
     policies = {
         item["properties"]["policy"]["const"]: item

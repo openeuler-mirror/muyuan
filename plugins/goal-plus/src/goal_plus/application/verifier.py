@@ -6,7 +6,7 @@ from goal_plus.domain.time import timestamp_epoch
 from goal_plus.domain.verifier import (
     VerifierInput, VerifierInvocationRecord, VerifierLease, VerifierRecord,
     VerifierResult, VerifierScoreContract, VerifierSubject, VerifierTask,
-    VerifierTaskState, validate_scores,
+    VerifierTaskState, validate_scores, validate_diagnostics, diagnostic_references,
 )
 from goal_plus.ports.clock import Clock
 from goal_plus.ports.verifier import VerifierState
@@ -157,6 +157,8 @@ class VerifierWorkflow:
             self._require_current_claim(task, worker_id=worker_id, attempt=attempt)
             parsed = VerifierResult.model_validate(result)
             validate_scores(parsed.scores, task.score_contract.score_rules)
+            validate_diagnostics(parsed.steering_findings, parsed.scores, task.score_contract,
+                                 diagnostic_references(task.input, task.subject))
             record = VerifierRecord(**self._record_fields(task), **parsed.model_dump(),
                                     invocation=VerifierInvocationRecord.model_validate(invocation), usage=dict(usage or {}))
             self._terminal(task, record)

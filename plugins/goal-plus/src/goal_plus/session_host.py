@@ -13,6 +13,7 @@ from goal_plus.application.candidate_delivery import CandidateDelivery
 from goal_plus.bootstrap import build_scope_process_registry, build_scope_state
 from goal_plus.candidate_host import candidate_host_queries
 from goal_plus.domain.agents import AgentHarnessKind
+from goal_plus.domain.adaptive.models import SteeringTarget
 from goal_plus.domain.search import AgentSessionRecord
 from goal_plus.execution.native_session import CodexSession, PiSession
 from goal_plus.execution.scope import assert_scope_admission
@@ -80,6 +81,49 @@ class _HostedCandidate:
     scope_id: str
     control: NativeSessionControl
     unavailable_calls: frozenset[str] = frozenset()
+
+
+class _SteeringTransport:
+    """A queue owner's exact controller capability, without policy or retry logic."""
+
+    def __init__(self, host: "NativeCandidateHost", caller_id: str) -> None:
+        self.host, self.caller_id = host, caller_id
+
+    def _controller(self, session_id: str):
+        with self.host._lock:
+            hosted = self.host._sessions.get(session_id)
+            if self.host._closing or hosted is None or hosted.caller_id != self.caller_id:
+                return None
+            return hosted
+
+    def active_call(self, session: AgentSessionRecord) -> SteeringTarget | None:
+        hosted = self._controller(session.agent_session_id)
+        if hosted is None or hosted.run_id != session.run_id:
+            return None
+        call_id = hosted.control.current_call_id
+        if call_id is None:
+            return None
+        observed = hosted.control.wait(call_id, timeout=0)
+        if (observed.state != "running" or not observed.native_session_id
+                or observed.native_session_id != session.session_handle.external_id):
+            return None
+        return SteeringTarget(agent_session_id=session.agent_session_id,
+            execution_generation=session.execution_generation,
+            native_session_id=observed.native_session_id, call_id=call_id)
+
+    def message(self, target: SteeringTarget, text: str, *, timeout: float,
+                before_send: Callable[[], None]) -> None:
+        hosted = self._controller(target.agent_session_id)
+        if hosted is None:
+            raise PermissionError("steering controller unavailable")
+        session = self.host.admit(target.agent_session_id, self.caller_id, execution=True,
+            scope_id=hosted.scope_id, native_session_id=target.native_session_id)
+        if (session.execution_generation != target.execution_generation
+                or hosted.run_id != session.run_id
+                or hosted.control.session.native_session_id != target.native_session_id):
+            raise PermissionError("steering target changed")
+        before_send()
+        hosted.control.message(target.call_id, text, timeout=timeout)
 
 
 class _CandidateInvocation:
@@ -364,6 +408,7 @@ class NativeCandidateHost:
                 execute=lambda target_run_id, decision_id: self.apply_allocation_decision(
                     target_run_id, decision_id, caller_id=caller_id
                 ),
+                steering_host=_SteeringTransport(self, caller_id),
             ),
         )
         self._verifier_queues[run_id] = (caller_id, queue)

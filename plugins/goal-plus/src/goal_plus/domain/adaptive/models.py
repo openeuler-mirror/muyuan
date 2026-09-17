@@ -3,11 +3,134 @@
 from __future__ import annotations
 import math
 from typing import Literal
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from goal_plus.domain.agents import WorkerBudget
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.serialization import canonical_json, sha256_text
+from goal_plus.domain.verifier import VerifierSubject
+from goal_plus.domain.time import timestamp_epoch
+
+
+class SteeringPolicyIdentity(SearchModel):
+    model_config = ConfigDict(frozen=True)
+    policy: str = Field(min_length=1)
+    parameters_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class SteeringDeliverySpec(SearchModel):
+    model_config = ConfigDict(frozen=True)
+    rpc_timeout_seconds: float = Field(default=2, gt=0, allow_inf_nan=False)
+    max_source_age_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
+    mode: Literal["shadow", "apply"] = "apply"
+
+
+class SteeringLimits(SearchModel):
+    """Execution admission limits, independent of a diagnostic strategy's thresholds."""
+    model_config = ConfigDict(frozen=True)
+    cooldown_seconds: float = Field(ge=0, allow_inf_nan=False)
+    max_steering_attempts_per_candidate: int = Field(gt=0, strict=True)
+    max_steering_attempts_per_issue: int = Field(gt=0, strict=True)
+
+    @model_validator(mode="after")
+    def issue_limit_is_bounded(self):
+        if self.max_steering_attempts_per_issue > self.max_steering_attempts_per_candidate:
+            raise ValueError("issue limit cannot exceed candidate limit")
+        return self
+
+
+class SteeringMessage(SearchModel):
+    model_config = ConfigDict(frozen=True)
+    kind: Literal["candidate_message"] = "candidate_message"
+    text: str = Field(min_length=1)
+
+    @field_validator("text")
+    @classmethod
+    def text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("steering message must not be blank")
+        return value
+
+
+class SteeringDecision(SearchModel):
+    """One soft suggestion, not a recoverable work item."""
+
+    model_config = ConfigDict(frozen=True)
+    source_record_id: str = Field(min_length=1)
+    subject_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_id: str = Field(min_length=1)
+    message: SteeringMessage
+    reason_code: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    issue_key: str | None = None
+    evidence_revision: str | None = None
+    input_hash: str | None = None
+
+
+class SteeringTarget(SearchModel):
+    model_config = ConfigDict(frozen=True)
+    agent_session_id: str = Field(min_length=1)
+    execution_generation: int = Field(ge=0)
+    native_session_id: str = Field(min_length=1)
+    call_id: str = Field(min_length=1)
+
+
+class SteeringAttempt(SearchModel):
+    """A spent sending opportunity; missing observation never authorizes resending."""
+
+    schema_version: Literal[1] = 1
+    attempt_key: str = Field(pattern=r"^steering_[0-9a-f]{24}$")
+    source_record_id: str = Field(min_length=1)
+    source: VerifierSubject
+    policy: SteeringPolicyIdentity
+    delivery: SteeringDeliverySpec
+    target: SteeringTarget
+    message: SteeringMessage
+    message_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    renderer_version: str
+    consumed_at: str
+    observation: Literal["returned", "unknown", "not_sent"] | None = None
+    issue_key: str | None = None
+    evidence_revision: str | None = None
+    input_hash: str | None = None
+    action: str | None = None
+
+    @model_validator(mode="after")
+    def identity_matches_contents(self) -> "SteeringAttempt":
+        expected = steering_attempt_key(self.source_record_id, self.source, self.policy,
+                                        self.delivery, self.renderer_version)
+        if self.attempt_key != expected or self.message_hash != sha256_text(self.message.text):
+            raise ValueError("steering attempt identity or message hash mismatch")
+        return self
+
+
+def steering_attempt_key(record_id: str, subject: VerifierSubject,
+                         policy: SteeringPolicyIdentity, delivery: SteeringDeliverySpec,
+                         renderer_version: str) -> str:
+    # Match the existing Allocation/Snapshot 96-bit filename identity convention.
+    return "steering_" + sha256_text(canonical_json({
+        "record_id": record_id, "subject": subject.model_dump(mode="json"),
+        "policy": policy.model_dump(mode="json"), "delivery": delivery.model_dump(mode="json"),
+        "renderer_version": renderer_version,
+    }))[:24]
+
+
+def steering_limit_reason(usage: tuple[SteeringAttempt, ...], *, issue_key: str,
+                          evidence_revision: str, now: float,
+                          parameters: SteeringLimits) -> str | None:
+    # Full candidate history, not the bounded experiment window; unknown sends still count.
+    if len(usage) >= parameters.max_steering_attempts_per_candidate:
+        return "candidate_limit"
+    timestamps = [timestamp_epoch(item.consumed_at) for item in usage]
+    if any(value is None for value in timestamps):
+        return "invalid_usage"
+    if timestamps and now - max(timestamps) < parameters.cooldown_seconds:
+        return "cooldown"
+    issue_usage = [item for item in usage if item.issue_key == issue_key]
+    if any(item.evidence_revision == evidence_revision for item in issue_usage):
+        return "same_evidence_consumed"
+    if len(issue_usage) >= parameters.max_steering_attempts_per_issue:
+        return "issue_limit"
+    return None
 
 AllocationEligibility = Literal["eligible", "retired"]
 AllocationDecisionStatus = Literal["pending", "interrupted", "applied", "superseded", "terminal_error"]

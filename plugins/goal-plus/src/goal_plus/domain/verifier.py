@@ -6,7 +6,7 @@ import math
 import re
 from typing import Any, Literal, Sequence
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.serialization import canonical_json, sha256_text
@@ -50,6 +50,59 @@ class VerifierScoreRule(SearchModel):
         return self
 
 
+DIAGNOSTIC_SCORE_KEYS = (
+    "correctness_gap", "validation_gap", "local_confounder_evidence",
+    "discriminating_test_gap", "boundary_evidence_strength",
+)
+# Bounded single-claim diagnostics, not an executable proposal language.
+MAX_FINDING_TEXT = 1000
+MAX_FINDING_REFS = 16
+
+
+class DiagnosticClaim(SearchModel):
+    model_config = ConfigDict(frozen=True)
+    statement: str = Field(min_length=1, max_length=MAX_FINDING_TEXT)
+    scope_ref: str = Field(min_length=1, max_length=128)
+    evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=MAX_FINDING_REFS)
+
+
+class DiagnosticQuestion(DiagnosticClaim):
+    falsifying_observation: str = Field(min_length=1, max_length=MAX_FINDING_TEXT)
+
+
+class DiagnosticBoundary(DiagnosticClaim):
+    condition: str = Field(min_length=1, max_length=MAX_FINDING_TEXT)
+
+
+class SteeringFindings(SearchModel):
+    model_config = ConfigDict(frozen=True)
+    hypothesis: DiagnosticClaim | None
+    confounder: DiagnosticClaim | None
+    open_question: DiagnosticQuestion | None
+    boundary: DiagnosticBoundary | None
+
+
+class DiagnosticContract(SearchModel):
+    version: Literal["search_diagnostics/v1"] = "search_diagnostics/v1"
+    findings_schema: dict[str, Any]
+    instructions: str
+
+
+DIAGNOSTIC_INSTRUCTIONS = (
+    "Diagnose only the current exact attempt using diagnostic_references. Each finding is "
+    "at most one evidence-backed assessment, never a command, patch or proposed acceptance rule. "
+    "Use hypothesis or an acceptance:N reference for scope_ref; bind every finding to the "
+    "same principal claim/scope. Cite only supplied reference IDs. Omit unsupported findings. "
+    "A confounder is a local implementation/measurement defect invalidating the experiment, "
+    "not a failed hypothesis. An open question needs a concrete falsifying observation. "
+    "A boundary needs a limited condition and evidence from valid experiments; confounded "
+    "failures cannot establish that boundary. Missing confounder/open_question/boundary requires "
+    "zero local_confounder_evidence/discriminating_test_gap/boundary_evidence_strength respectively. "
+    "Unknown correctness is a validation gap, not proof of a correctness error. Do not predict "
+    "future scores, award survival, invent evidence, or issue retirement decisions."
+)
+
+
 # Registration belongs to the evaluator, independently of any consumer policy.
 VERIFIER_SCORE_RULES = {
     rule.name: rule
@@ -67,6 +120,25 @@ VERIFIER_SCORE_RULES = {
             "checkpoint: 0 means no worthwhile actionable next step and 1 means a "
             "clear high-value opportunity.",
         ),
+        VerifierScoreRule(name="correctness_gap", minimum=0, maximum=1,
+            instructions="0: no demonstrated unresolved correctness defect in supplied evidence; "
+            "1: clear violation of core acceptance. Intermediate values measure extent/severity, "
+            "not repairability. Missing evidence alone is not proof of error."),
+        VerifierScoreRule(name="validation_gap", minimum=0, maximum=1,
+            instructions="0: supplied validation covers stated acceptance; 1: core claims lack "
+            "relevant validation. Do not assume unprovided tests passed or promise future value."),
+        VerifierScoreRule(name="local_confounder_evidence", minimum=0, maximum=1,
+            instructions="0: no located local confounder; 1: direct evidence of a local implementation "
+            "or measurement defect preventing valid judgment of the principal hypothesis. "
+            "A disproved hypothesis is not a confounder. Requires confounder finding."),
+        VerifierScoreRule(name="discriminating_test_gap", minimum=0, maximum=1,
+            instructions="0: no concrete unanswered discriminating question; 1: an explicit "
+            "falsifiable question remains untested. Not predicted benefit or allocation utility. "
+            "Requires open_question finding."),
+        VerifierScoreRule(name="boundary_evidence_strength", minimum=0, maximum=1,
+            instructions="0: no supported boundary; 1: valid experiments or counterexamples "
+            "strongly establish a limitation under explicit conditions. Confounded failures "
+            "cannot establish a boundary. Requires boundary finding."),
     )
 }
 
@@ -89,6 +161,7 @@ class VerifierSpec(SearchModel):
 class VerifierScoreContract(SearchModel):
     schema_version: Literal[2] = 2
     score_rules: list[VerifierScoreRule] = Field(default_factory=list)
+    diagnostics: DiagnosticContract | None = Field(default=None, exclude_if=lambda value: value is None)
     contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @classmethod
@@ -101,6 +174,11 @@ class VerifierScoreContract(SearchModel):
             "schema_version": 2,
             "score_rules": [item.model_dump(mode="json") for item in score_rules],
         }
+        if set(DIAGNOSTIC_SCORE_KEYS).intersection(item.name for item in score_rules):
+            body["diagnostics"] = DiagnosticContract(
+                findings_schema=SteeringFindings.model_json_schema(),
+                instructions=DIAGNOSTIC_INSTRUCTIONS,
+            ).model_dump(mode="json")
         return cls(
             **body,
             contract_hash=sha256_text(canonical_json(body)),
@@ -111,6 +189,8 @@ class VerifierScoreContract(SearchModel):
         names = [item.name for item in self.score_rules]
         if len(names) != len(set(names)):
             raise ValueError("verifier score contract rules must be unique")
+        if bool(set(DIAGNOSTIC_SCORE_KEYS).intersection(names)) != (self.diagnostics is not None):
+            raise ValueError("diagnostic metrics require their frozen findings contract")
         body = self.model_dump(mode="json", exclude={"contract_hash"})
         if self.contract_hash != sha256_text(canonical_json(body)):
             raise ValueError("verifier score contract hash does not match its contents")
@@ -177,6 +257,7 @@ class VerifierResult(SearchModel):
     scores: dict[str, float] | None
     evidence_refs: list[str] = Field(default_factory=list)
     score_rationales: dict[str, str]
+    steering_findings: SteeringFindings | None = None
 
     @model_validator(mode="after")
     def scores_and_rationales_are_atomic(self) -> "VerifierResult":
@@ -278,6 +359,7 @@ class VerifierRecord(SearchModel):
     scores: dict[str, float] | None = None
     evidence_refs: list[str] = Field(default_factory=list)
     score_rationales: dict[str, str] = Field(default_factory=dict)
+    steering_findings: SteeringFindings | None = None
     invocation: VerifierInvocationRecord | None = None
     usage: dict[str, int | float] = Field(default_factory=dict)
     created_at: str
@@ -285,7 +367,8 @@ class VerifierRecord(SearchModel):
     @model_validator(mode="after")
     def scores_are_valid(self) -> "VerifierRecord":
         if self.outcome == "failed":
-            if not self.error or self.quality_score is not None or self.scores is not None or self.score_rationales:
+            if (not self.error or self.quality_score is not None or self.scores is not None
+                    or self.score_rationales or self.steering_findings is not None):
                 raise ValueError("failed verifier record requires an error and no partial scores")
             return self
         if self.quality_score is None or self.invocation is None or self.error is not None:
@@ -344,9 +427,17 @@ def validate_scores(
 
 def verifier_result_schema(
     score_rules: Sequence[VerifierScoreRule],
+    diagnostics: DiagnosticContract | None = None,
 ) -> dict[str, Any]:
     schema = VerifierResult.model_json_schema()
     properties = schema["properties"]
+    if diagnostics is None:
+        properties["steering_findings"] = {"type": "null"}
+    else:
+        frozen_schema = dict(diagnostics.findings_schema)
+        schema.setdefault("$defs", {}).update(frozen_schema.pop("$defs", {}))
+        properties["steering_findings"] = frozen_schema
+        schema.setdefault("required", []).append("steering_findings")
     if score_rules:
         properties["scores"] = {
             "type": "object",
@@ -379,7 +470,58 @@ def verifier_result_schema(
     return schema
 
 
+def diagnostic_references(submission: VerifierInput, subject: VerifierSubject) -> dict[str, str]:
+    """Closed references to immutable local inputs; no paths, URLs or peer material."""
+    receipt = subject.settlement
+    return {
+        "hypothesis": submission.hypothesis,
+        **{f"acceptance:{index}": text for index, text in enumerate(submission.candidate_acceptance)},
+        "diff": submission.artifact_diff,
+        "hard_evidence": canonical_json({
+            "process_passed": receipt.evidence.process_passed,
+            "hard_score": receipt.evidence.hard_score,
+            "disposition": receipt.disposition,
+        }),
+    }
+
+
+def validate_diagnostics(findings: SteeringFindings | None, scores: dict[str, float] | None,
+                         contract: VerifierScoreContract, references: dict[str, str]) -> None:
+    if contract.diagnostics is None:
+        if findings is not None:
+            raise ValueError("diagnostics are not enabled by the frozen contract")
+        return
+    if findings is None:
+        raise ValueError("diagnostics require complete findings, including explicit nulls")
+    claims = (findings.hypothesis, findings.confounder, findings.open_question, findings.boundary)
+    for claim in filter(None, claims):
+        if (not claim.statement.strip() or claim.scope_ref not in references
+                or not references[claim.scope_ref].strip()
+                or not (claim.scope_ref == "hypothesis" or claim.scope_ref.startswith("acceptance:"))
+                or any(ref not in references or not references[ref].strip() for ref in claim.evidence_refs)):
+            raise ValueError("diagnostic reference is outside the immutable input")
+        if findings.hypothesis is None or claim.scope_ref != findings.hypothesis.scope_ref:
+            raise ValueError("diagnostics must bind the same principal hypothesis scope")
+        if isinstance(claim, DiagnosticQuestion) and not claim.falsifying_observation.strip():
+            raise ValueError("diagnostic question needs a falsifying observation")
+        if isinstance(claim, DiagnosticBoundary) and not claim.condition.strip():
+            raise ValueError("diagnostic boundary needs an explicit condition")
+    for name, finding in (("local_confounder_evidence", findings.confounder),
+                          ("discriminating_test_gap", findings.open_question),
+                          ("boundary_evidence_strength", findings.boundary)):
+        if finding is None and (scores or {}).get(name, 0) != 0:
+            raise ValueError(f"{name} requires a supporting finding")
+
+
 __all__ = [
+    "DIAGNOSTIC_SCORE_KEYS",
+    "DiagnosticContract",
+    "DiagnosticClaim",
+    "DiagnosticQuestion",
+    "DiagnosticBoundary",
+    "SteeringFindings",
+    "diagnostic_references",
+    "validate_diagnostics",
     "QUALITY_CRITERIA",
     "QUALITY_INSTRUCTIONS",
     "VERIFIER_SCORE_RULES",

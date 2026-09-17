@@ -135,12 +135,14 @@ origin/relocation bootstrap result 单独保存在 FrozenSpec 和 RunRecord 中�
 全部写数量时按数量展开。每个 selected model 随 candidate 和原生 session 的续跑保持
 不变，但所有 lane 仍共享同一份 Global Evidence。
 
-### Adaptive Search allocation
+### Adaptive Search
 
 `strategy.orchestration_mode="adaptive_search"` 在 hard settlement 主流程上增加 LLM Verifier 评估和
-确定性资源分配。它要求 `workspace.provider="git_worktree"`、非空 `strategy.allocation` 和显式
-`strategy.verifier`。Verifier 通过 `scores` 独立选择注册指标 key，普通搜索同样可以启用；
-未配置时 Selection 使用 `quality_score` 仍启用基础质量评分。`budget.max_parallel` 是实时活跃 lane
+确定性资源分配或软引导。它要求 `workspace.provider="git_worktree"`，allocation 与 steering 至少
+配置一个。提供任一 policy 时自动选择 adaptive_search，冻结前合并所需评分 key 并展开参数
+默认值。Verifier 通过 `scores` 独立选择额外注册指标，普通搜索同样可以启用；
+没有 Adaptive policy 时，Selection 使用 `quality_score` 仍补齐并冻结基础 Verifier 配置。
+仅使用 hard_score 且没有 policy/verifier 配置时关闭 LLM-Verifier。`budget.max_parallel` 是实时活跃 lane
 上限，可选的 `budget.max_candidates` 是累计物化上限。
 
 Settlement 为当前提交幂等入队一个 `VerifierTask`，队列启动/恢复时重放已提交输入。
@@ -154,7 +156,8 @@ record 一旦写入就不可变。Evidence Annotation 是独立弱依赖，不�
 Settlement 保存单次事实、身份和 diff 并异步入队；Verifier 不读取历史评分或 allocation。
 其队列在完整得分或最终失败后写不可变 Record，完成同步交付后才启动下一项。
 AdaptiveSearch 的唯一 record 入口只从旧 Snapshot 和新 Record 追加历史得分，再由
-AllocationPolicy 计算包含淘汰备选、派生备选排序和兼容条件的 Plan。无计划或计算失败正常结束。
+AllocationPolicy 计算包含淘汰备选、派生备选排序和兼容条件的 Plan。无计划时可进入可选
+Steering；计算失败则拒绝决策并结束，两者都不会回到 Verifier 重评。
 
 AllocationExecutor 在 run.lock 内执行持久化 Decision，不重验评分、不重算 Policy。
 淘汰失败结束，派生明确失败或节点已占用则尝试下一项；未知派发只能恢复原 child/session。

@@ -1,4 +1,4 @@
-"""Allocation public execution interface."""
+"""Allocation public execution interface within Adaptive Search."""
 
 from goal_plus.application.allocation import AllocationDecisions
 from goal_plus.application.allocation_apply import AllocationApply

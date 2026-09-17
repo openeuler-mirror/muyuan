@@ -225,7 +225,7 @@ for name in modules:
             value.model_json_schema()
 for name in sys.modules:
     assert not name.startswith((
-        'goal_plus.runtime', 'goal_plus.adaptive_search', 'goal_plus.evidence_annotator',
+        'goal_plus.runtime', 'goal_plus.adaptive', 'goal_plus.evidence_annotator',
         'goal_plus.agent_hosts', 'goal_plus.infrastructure', 'goal_plus.thinkthread',
     )), name
 from goal_plus import FileSearchRuntime
@@ -316,7 +316,7 @@ def test_verifier_execution_does_not_import_adaptive_implementations() -> None:
         (PACKAGE / "llm_verifier.py").read_text(encoding="utf-8")
     )
     adaptive_implementations = {
-        "goal_plus.adaptive_search",
+        "goal_plus.adaptive",
         "goal_plus.application.adaptive_snapshot",
         "goal_plus.application.allocation",
         "goal_plus.domain.adaptive",
@@ -409,7 +409,7 @@ def test_search_execution_authorization_does_not_construct_goal_runtime() -> Non
 
 def test_allocation_facade_does_not_rebuild_preflight_from_private_runtime_queries() -> None:
     tree = ast.parse(
-        (PACKAGE / "adaptive_search/allocation.py").read_text(encoding="utf-8")
+        (PACKAGE / "adaptive/allocation.py").read_text(encoding="utf-8")
     )
     retired = {
         "_run_transaction", "_load_run", "_load_frozen_spec", "_load_plan",

@@ -163,9 +163,10 @@ def test_pi_loads_shared_allocation_schema(tmp_path) -> None:
     freeze = next(tool for tool in manifest["tools"] if tool["name"] == "goal_plus_search_freeze_spec")
     strategy = freeze["inputSchema"]["properties"]["spec"]["properties"]["strategy"]["properties"]
     assert "verifier" in strategy and "search_scheduler" not in strategy
-    verifier = next(item for item in strategy["verifier"]["anyOf"] if "properties" in item)
+    verifier = strategy["verifier"]
     assert set(verifier["properties"]["scores"]["items"]["enum"]) == {
-        "progress_reward", "allocation_utility"}
+        "progress_reward", "allocation_utility", "correctness_gap", "validation_gap",
+        "local_confounder_evidence", "discriminating_test_gap", "boundary_evidence_strength"}
     policy_set = next(
         item for item in strategy["allocation"]["anyOf"] if "oneOf" in item
     )

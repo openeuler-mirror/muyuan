@@ -45,7 +45,7 @@ from goal_plus.thinkthread_agent_posix import (
 )
 
 if TYPE_CHECKING:
-    from goal_plus.adaptive_search import (
+    from goal_plus.adaptive import (
         AllocationDecision,
         AllocationDecisionStatus,
     )
@@ -141,12 +141,13 @@ class FileSearchRuntime:
         self.queries.require_adaptive_search(run_id)
         return self._adaptive_search.list_allocation_decisions(run_id, status)
 
-    def accept_verifier_record(self, record, *, execute) -> None:
-        frozen = self.queries.source.read_frozen_spec(record.subject.frozen_spec_id)
-        if frozen.spec.strategy.allocation is not None:
+    def accept_verifier_record(self, record, *, execute, steering_host=None) -> None:
+        frozen = self.queries.state.read_frozen_spec(record.subject.frozen_spec_id)
+        if frozen.spec.strategy.allocation is not None or frozen.spec.strategy.steering is not None:
             self._adaptive_search.accept_verifier_record(record,
                 policy=frozen.spec.strategy.allocation, max_parallel=frozen.spec.budget.max_parallel,
-                execute=execute)
+                execute=execute, steering_host=steering_host,
+                steering_policy=frozen.spec.strategy.steering)
 
     def recover_allocation(self, run_id: str, *, cancel, dispatch):
         return self._adaptive_search.recover_allocation(run_id, cancel=cancel, dispatch=dispatch)

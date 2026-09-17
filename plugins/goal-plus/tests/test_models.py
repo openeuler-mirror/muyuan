@@ -858,6 +858,7 @@ def test_strategy_spec_derives_llm_verifier_requirement() -> None:
 
     assert hard_only.requires_llm_verifier is False
     assert minimal.requires_llm_verifier is True
+    assert minimal.verifier is not None and minimal.verifier.scores == []
     assert adaptive.requires_llm_verifier is True
 
     with pytest.raises(ValidationError, match="requires allocation"):
@@ -903,6 +904,110 @@ def test_adaptive_policy_spec_excludes_verifier_semantics(tmp_path: Path) -> Non
     assert spec.strategy.allocation is not None
     assert spec.strategy.allocation.policy == "swe_search_uct/v1"
     assert "verifier_score_contract" not in FrozenSpec.model_fields
+
+
+@pytest.mark.parametrize("verifier", [
+    None, {}, {"scores": ["progress_reward"]},
+    {"scores": ["validation_gap", "allocation_utility"]},
+])
+def test_freeze_input_completes_policy_scores_and_defaults(verifier) -> None:
+    from goal_plus.domain.search_input import SearchSpecInput
+
+    data = valid_spec_dict()
+    data["workspace"] = {"provider": "git_worktree"}
+    data["strategy"] = {"allocation": {"policy": "swe_search_uct/v1"}}
+    if verifier is not None:
+        data["strategy"]["verifier"] = verifier
+    parsed = SearchSpecInput.model_validate(data)
+    runtime = parsed.to_runtime_spec()
+    assert runtime.strategy.orchestration_mode == "adaptive_search"
+    assert runtime.strategy.requires_llm_verifier
+    expected = {"progress_reward", "allocation_utility", *(verifier or {}).get("scores", [])}
+    assert set(runtime.strategy.verifier.scores) == expected
+    assert len(runtime.strategy.verifier.scores) == len(expected)
+    assert runtime.strategy.allocation.parameters.exploration_weight == 0.01
+    assert runtime.strategy.allocation.parameters.max_depth == 20
+    # The persisted contract contains resolved values and survives reload unchanged.
+    frozen = FrozenSpec(
+        frozen_spec_id="spec_test", spec_hash="test", agent_harness="codex",
+        runtime_provider="direct", spec=runtime, verifier_hashes={},
+        frozen_verifier_paths={}, created_at="2026-09-17T00:00:00Z",
+    )
+    assert FrozenSpec.model_validate_json(frozen.model_dump_json()) == frozen
+    explicit = SearchSpecInput.model_validate({**data, "strategy": {
+        "orchestration_mode": "adaptive_search",
+        "verifier": runtime.strategy.verifier.model_dump(),
+        "allocation": runtime.strategy.allocation.model_dump(),
+    }})
+    assert explicit.to_runtime_spec().model_dump() == runtime.model_dump()
+    # User-owned input dictionaries are not changed by normalization.
+    assert "orchestration_mode" not in data["strategy"]
+    assert "parameters" not in data["strategy"]["allocation"]
+
+
+def test_policy_parameters_accept_partial_overrides_and_reject_invalid_values() -> None:
+    strategy = StrategySpec(allocation={"policy": "swe_search_uct/v1", "parameters": {"max_depth": 7}})
+    assert strategy.allocation.parameters.max_depth == 7
+    assert strategy.allocation.parameters.exploration_weight == 0.01
+    with pytest.raises(ValidationError):
+        StrategySpec(allocation={"policy": "swe_search_uct/v1", "parameters": {"max_depth": 0}})
+    with pytest.raises(ValidationError):
+        StrategySpec(allocation={"policy": "unknown/v1"})
+    for scores in (["unknown"], ["progress_reward", "progress_reward"]):
+        with pytest.raises(ValidationError):
+            StrategySpec(allocation={"policy": "swe_search_uct/v1"}, verifier={"scores": scores})
+
+
+@pytest.mark.parametrize("with_allocation", [False, True])
+def test_minimal_steering_configuration_enables_verifier(with_allocation) -> None:
+    from goal_plus.domain.search_input import SearchSpecInput
+    from goal_plus.domain.verifier import DIAGNOSTIC_SCORE_KEYS
+
+    data = valid_spec_dict()
+    data["workspace"] = {"provider": "git_worktree"}
+    data["strategy"] = {"steering": {"policy": "search_diagnostic_guidance/v1"}}
+    if with_allocation:
+        data["strategy"]["allocation"] = {"policy": "swe_search_uct/v1"}
+    runtime = SearchSpecInput.model_validate(data).to_runtime_spec()
+    strategy = runtime.strategy
+    assert strategy.orchestration_mode == "adaptive_search"
+    assert strategy.requires_llm_verifier
+    required = set(DIAGNOSTIC_SCORE_KEYS)
+    if with_allocation:
+        required.update(strategy.allocation.required_score_keys)
+    else:
+        assert strategy.allocation is None
+    assert set(strategy.verifier.scores) == required
+    assert strategy.steering.parameters.cooldown_seconds == 30
+    assert strategy.steering.delivery.mode == "apply"
+    assert SearchSpec.model_validate_json(runtime.model_dump_json()) == runtime
+
+
+def test_freeze_input_preserves_adaptive_policies_and_public_evidence_mode() -> None:
+    from goal_plus.domain.search_input import SearchSpecInput
+    from goal_plus.domain.verifier import DIAGNOSTIC_SCORE_KEYS
+    from tests.adaptive_search.test_diagnostic_guidance import policy
+
+    steering = policy("shadow")
+    data = valid_spec_dict()
+    data["workspace"] = {"provider": "git_worktree"}
+    data["strategy"] = {
+        "allocation": {"policy": "swe_search_uct/v1"},
+        "steering": steering.model_dump(mode="json"),
+        "global_evidence_mode": "independent",
+    }
+    parsed = SearchSpecInput.model_validate(data)
+    runtime = parsed.to_runtime_spec()
+    assert runtime.strategy.allocation == parsed.strategy.allocation
+    assert runtime.strategy.steering == steering
+    assert runtime.strategy.verifier == parsed.strategy.verifier
+    assert set(runtime.strategy.verifier.scores) == {"progress_reward", "allocation_utility", *DIAGNOSTIC_SCORE_KEYS}
+    assert runtime.strategy.config == {"global_evidence_mode": "independent"}
+    assert "config" not in type(parsed.strategy).model_fields
+
+    data["strategy"]["allocation"] = {"features": ["latest_record_values/v1"], "switch_margin": .15}
+    with pytest.raises(ValidationError):
+        SearchSpecInput.model_validate(data)
 
 
 def test_strategy_spec_accepts_worker_budget() -> None:

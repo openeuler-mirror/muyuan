@@ -38,8 +38,8 @@
 | Search 业务流程、Evidence、selection 主线 | [共享平面](shared-plane.md) | README 心智模型；API 的调用顺序和返回合同 |
 | 公共 session 操作、scope 与生命周期机制 | [Agent Host Adapters](agent-host-adapters.md) | API 保留工具合同；Codex/Pi 页保留协议及接线差异 |
 | Provider、immutable artifact、reference、publication | [Workspace 架构](workspace-sandbox-arch.md) | Shared Plane 保留流程摘要；API 保留参数与产物身份 |
-| 确定性 Selection、Snapshot 与 Allocation | [Adaptive Search](adaptive-search.md) | Shared Plane 说明适用模式；API 列工具和返回状态 |
-| LLM 质量评分、task 与 record | [LLM Verifier](llm-verifier.md) | Adaptive Search 说明分配指标消费者 |
+| Settlement、LLM 评分、task/record 与确定性 Selection | [LLM Verifier](llm-verifier.md) | Shared Plane 保留搜索收尾主线；Adaptive Search 只说明 Record 消费接口 |
+| Snapshot、Allocation、Steering 与 Host 接线 | [Adaptive Search](adaptive-search.md) | LLM Verifier 定义评分生产；API 列工具和返回状态 |
 | Annotation queue、View、supplemental evaluation | [Evidence Annotator](evidence-annotator.md) | API 保留字段及可见性；Shared Plane 保留它对搜索的作用 |
 | Candidate checkpoint recovery | [Search 恢复](search-recovery.md) | Runtime Logic 链接；与 TT controller 接管明确区分 |
 | 普通 delegation 的 attempt/rework/验收 | [Ultra](ultra.md) | API 保留工具合同；宿主页保留实际执行器行为 |

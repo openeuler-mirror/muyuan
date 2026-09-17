@@ -126,7 +126,7 @@ Codex/Pi host <---- launch / wait / continue / stop ---- candidate worker
 | Goal runtime | host 授权、Goal revision、dispatch identity、Search 归属、final check 和终态 |
 | Search runtime | freeze、workspace、verifier、Evidence、回滚、selection、promotion 和报告 |
 | LLM Verifier | settlement 后的局部质量与可选 adaptive metric；不停止、选择或分配 candidate |
-| Adaptive Search | Snapshot、确定性 AllocationPolicy、Plan 与唯一 Decision 入口 |
+| Adaptive Search | Snapshot、确定性 Allocation/Steering 互斥计算和对应 Executor 交接 |
 | AllocationExecutor | 持久化 Decision 的淘汰、按序派生、精确身份恢复与 run.lock |
 | Main Agent | 理解目标、设计验收合同、决定 delegation/Search、审查结果和全局收尾 |
 | Candidate worker | 在自己的合同和 workspace 内选择方向、修改、验证和提交 handoff |
@@ -392,7 +392,12 @@ candidate、iteration、settlement 和 artifact 的完整评分或失败 Verifie
 包含 `strategy.verifier.scores` 选择的已注册指标，无需启用 allocation；基础质量评估始终使用
 `quality_score`。FrozenSpec 分别固化指标 key 选择和 policy 版本/参数。Verifier 冻结自己的规则到
 task，Record 的评分 key 就是唯一得分身份；score contract hash 绑定规则，不充当指标版本。
-Adaptive 必须显式选择 policy 声明的输入指标；`swe_search_uct/v1` 消费 `progress_reward`
+公共策略配置在 Freeze 前补齐已启用 Allocation/Steering 声明的输入指标，保留用户额外选择的
+key；未知或重复 key 仍拒绝。提供 allocation 或 steering 时自动选择 adaptive_search；显式冲突模式仍拒绝。
+parameters 省略的字段使用 policy 版本已有默认值，完整配置参与冻结与 spec hash。
+没有 policy 时，Selection 使用 quality_score 也补齐基础 Verifier 配置。仅 hard_score Selection
+不需要模型；没有 policy、没有质量评分需求且未显式配置 verifier 时才关闭 LLM-Verifier。
+`swe_search_uct/v1` 消费 `progress_reward`
 与 `allocation_utility`，范围分别为 `[-1,1]` 与 `[0,1]`。Adaptive Search 核对所需评分 key，
 再构建不可变 SearchSnapshot，经无 I/O AllocationPolicy 及其固定的纯算法生成唯一
 canonical Decision，再由 AllocationExecutor 在 run.lock 内幂等淘汰、物化和派发。
@@ -449,8 +454,9 @@ task 自身的 verifier score contract、lease 与幂等前态；它不能返回
 AllocationPolicy 使用冻结参数执行
 纯计算。AdaptiveSearch 单次计算 Plan 并持久化 Decision；Executor 仅执行既定排序和条件，
 检查 source 身份、candidate 当前状态、容量及幂等前态，不重算策略。Verifier、annotation 或 allocation 失败不得撤销 hard settlement
-或绕过 promotion。评估与队列合同见 [LLM Verifier](docs/llm-verifier.md)，确定性选择和
-Allocation 合同见 [Adaptive Search](docs/adaptive-search.md)。
+或绕过 promotion。评估、队列和确定性 Selection 合同见
+[LLM Verifier](docs/llm-verifier.md)，Allocation、Steering 与 Host 接线合同见
+[Adaptive Search](docs/adaptive-search.md)。
 
 Policy Algorithm 只处理普通数值、序列和拓扑，不理解 Candidate 或生成 Plan。具体
 AllocationPolicy 独立拥有算法依赖、组合公式、缺失值规则及参数语义。
@@ -459,6 +465,21 @@ Policy 固化按优先级排列的淘汰和派生备选及兼容名单；已知�
 可从更强的历史 attempt 派生 replacement。当前唯一版本 `swe_search_uct/v1` 从 Snapshot lineage 临时重建 visits
 和 utility 回传均值，完整组合 exploitation、exploration、early bonus 与 late penalty，并用连续
 低 progress streak 做硬止损；所有派生 UCT 状态都不持久化。
+
+Steering 缺省关闭，首个版本为 search_diagnostic_guidance/v1；显式 strategy.steering 冻结
+策略参数及 shadow/apply delivery，可独立于 Allocation 启用。省略参数时展开 v1 默认值，delivery
+默认 apply。五项诊断指标由 Verifier 独立注册并由配置层自动补齐，仍在一次评估中通过
+通用 scores 输出，结构化 findings 与其引用检查属于同一 task 的原子完成合同。
+AdaptiveSearch 在未配置 Allocation 或 AllocationPolicy 返回 None 时计算 Steering；已有同 Snapshot 的
+AllocationDecision、计算失败或 Plan 执行失败均不回退。SteeringExecutor 独立复核来源、
+代际、退休与活动调用，在发送前登记一次性机会，再于 run.lock 外尝试 Host 消息。
+缺少回执、拒绝或崩溃不重发；允许登记后未送达，不保证候选消费。消息失败不改变评估交付，
+不撤销结算或修改资源分配。Host 不拥有策略协调；无消息恢复队列或扫描补发入口。
+诊断视图只读取自身有界结算历史，不读取私有 rationale 或 peer 状态；固定输入重放不增补事实。
+冷却、候选总次数、问题次数和同问题同证据抑制由发送前的锁内准入再次核验，登记后无论回执
+均计次，换动作或会话不解除占用。shadow 不发送、不取得发送许可，不能升级旧 trace 为待办。
+引导只促进纠错、可证伪检验、精确去重和边界暴露，不修改验收或保障存活；充分边界证据为
+no-op，Allocation 仍独立执行原止损和退休规则。
 
 Executor 在 run.lock 内按既定排名检查执行资格，持久化唯一 selected_retirement 后 fence 该候选，
 再由 host 按精确身份中止 live worker；只有中止确认为成功后才能物化和派发。
