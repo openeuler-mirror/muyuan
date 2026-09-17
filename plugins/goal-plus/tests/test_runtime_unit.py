@@ -2908,9 +2908,7 @@ def test_start_agent_session_returns_pi_rpc_launch_payload(tmp_path: Path) -> No
     assert task.workspace_access.bootstrap_required is False
     assert task.workspace_access.confinement == "soft_path"
     assert session.launch["session_id"] == session.agent_session_id
-    assert session.launch["budget_control"]["mode"] == "session_control"
-    assert session.launch["budget_control"]["max_runtime_seconds"] == 600
-    assert session.launch["budget_control"]["max_turns_hint"] == 8
+    assert session.launch["budget_control"] == {"max_runtime_seconds": 600}
     assert "goal_plus_search_get_agent_context" in session.launch["prompt"]
     assert str(task.workspace) not in session.launch["prompt"]
 
@@ -3011,12 +3009,7 @@ def test_redispatch_candidate_overrides_codex_worker_budget(tmp_path: Path) -> N
 
     assert redispatched.agent_session_id != first.agent_session_id
     assert redispatched.launch["transport"] == "app-server"
-    assert redispatched.launch["budget_control"] == {
-        "mode": "session_control",
-        "max_runtime_seconds": 30,
-        "on_exceed": "interrupt",
-        "max_turns_hint": 12,
-    }
+    assert redispatched.launch["budget_control"] == {"max_runtime_seconds": 30}
 
 
 @pytest.mark.codex
@@ -3047,12 +3040,7 @@ def test_codex_worker_budget_flows_to_session_launch_payload(tmp_path: Path) -> 
         "max_turns": 8,
         "on_exceed": "interrupt",
     }
-    assert session.launch["budget_control"] == {
-        "mode": "session_control",
-        "max_runtime_seconds": 600,
-        "on_exceed": "interrupt",
-        "max_turns_hint": 8,
-    }
+    assert session.launch["budget_control"] == {"max_runtime_seconds": 600}
 
 
 @pytest.mark.pi

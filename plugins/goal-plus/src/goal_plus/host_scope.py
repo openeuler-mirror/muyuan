@@ -65,23 +65,6 @@ def execution_scope_admission(
 
 
 @contextmanager
-def host_run_admission(
-    *, root_dir: Path | str, run_id: str
-) -> Iterator[dict[str, Any] | None]:
-    """Serialize an optional run-scoped launch against scope fencing."""
-    scope = execution_scope_for_run(root_dir=root_dir, run_id=run_id)
-    if scope is None:
-        yield None
-        return
-    with execution_scope_admission(
-        root_dir=root_dir,
-        scope_id=str(scope["scope_id"]),
-        run_id=run_id,
-    ) as admitted:
-        yield admitted
-
-
-@contextmanager
 def internal_agent_run_admission(
     *, root_dir: Path | str, run_id: str
 ) -> Iterator[dict[str, Any] | None]:

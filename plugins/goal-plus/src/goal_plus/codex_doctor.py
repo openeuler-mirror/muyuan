@@ -112,13 +112,6 @@ def _run(
     )
 
 
-def _version_tuple(text: str) -> tuple[int, int, int] | None:
-    match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)", text)
-    if match is None:
-        return None
-    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
-
-
 def _check_codex_version(codex_home: Path) -> CheckResult:
     executable = shutil.which("codex")
     if executable is None:

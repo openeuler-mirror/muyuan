@@ -356,12 +356,7 @@ def test_candidate_launch_preserves_explicit_session_budget(agent_harness, runti
         },
     )
 
-    assert payload["budget_control"] == {
-        "mode": "session_control",
-        "max_runtime_seconds": 600,
-        "on_exceed": "interrupt",
-        "max_turns_hint": 8,
-    }
+    assert payload["budget_control"] == {"max_runtime_seconds": 600}
 
 
 @pytest.mark.pi
@@ -389,12 +384,7 @@ def test_pi_rpc_adapter_builds_worker_payload() -> None:
     assert "goal_plus_search_get_agent_context" in payload["prompt"]
     assert "agent_session_id=agent_0001" in payload["prompt"]
     assert "assigned_worker_budget={'max_runtime_seconds': 600" in payload["prompt"]
-    assert payload["budget_control"] == {
-        "mode": "session_control",
-        "max_runtime_seconds": 600,
-        "max_turns_hint": 8,
-        "on_exceed": "interrupt",
-    }
+    assert payload["budget_control"] == {"max_runtime_seconds": 600}
 
 
 @pytest.mark.parametrize("agent_harness,runtime_provider", [("pi", "direct"), ("pi", "thinkthread")])
@@ -413,8 +403,7 @@ def test_native_launch_does_not_prescribe_removed_pool_workflow(agent_harness, r
     )
 
     control = payload["budget_control"]
-    assert control["max_runtime_seconds"] == 420
-    assert control["on_exceed"] == "interrupt"
+    assert control == {"max_runtime_seconds": 420}
     assert "autoresearch_lease" not in control
     assert "soft_closeout_seconds" not in control
 
@@ -479,8 +468,7 @@ def test_codex_continue_uses_bound_session_and_explicit_budget() -> None:
     assert payload["native_session_id"] == "bound-native-thread"
     assert "continue_existing_agent_session=true" in payload["message"]
     assert "指令：continue" in payload["message"]
-    assert payload["budget_control"]["max_runtime_seconds"] == 900
-    assert payload["budget_control"]["mode"] == "session_control"
+    assert payload["budget_control"] == {"max_runtime_seconds": 900}
 
 
 @pytest.mark.codex

@@ -32,15 +32,6 @@ def scored_records(
     ]
 
 
-def best_record(records: list[CandidateRecord], spec: SearchSpec) -> CandidateRecord:
-    reverse = spec.metric_direction == "maximize"
-    return sorted(
-        records,
-        key=lambda record: record_ranking_score(record, spec),
-        reverse=reverse,
-    )[0]  # type: ignore[arg-type,return-value]
-
-
 def top_records(
     records: list[CandidateRecord],
     spec: SearchSpec,

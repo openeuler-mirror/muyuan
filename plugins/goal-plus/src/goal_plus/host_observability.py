@@ -304,18 +304,6 @@ def _codex_sessions_root(codex_home: Path | None = None) -> Path:
     return base if base.name == "sessions" else base / "sessions"
 
 
-def _codex_agent_path(meta: dict[str, Any]) -> str | None:
-    direct = _string(meta.get("agent_path"))
-    if direct:
-        return direct
-    source = meta.get("source")
-    if not isinstance(source, dict):
-        return None
-    subagent = source.get("subagent")
-    spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
-    return _string(spawn.get("agent_path")) if isinstance(spawn, dict) else None
-
-
 def _codex_date_dirs(root: Path, created_at: str) -> list[Path]:
     epoch = _timestamp_epoch(created_at)
     if epoch is None:
