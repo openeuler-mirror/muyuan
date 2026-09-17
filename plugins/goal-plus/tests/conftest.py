@@ -15,29 +15,50 @@ from pathlib import Path
 
 import pytest
 
-# The suite must run on the same interpreter the managed release builds with
-# (.python-version, Python 3.12). Newer interpreters defer annotation
-# evaluation (PEP 649), which silently hides imports referenced only by
-# def-signature annotations - a regression class that shipped green on 3.14
-# and crashed the 3.12 runtime at class creation.
+# Environment auto-detection: any pytest invocation against this suite must
+# run in this checkout's uv-managed venv on the interpreter the managed
+# release builds with (.python-version, Python 3.12). Newer interpreters
+# defer annotation evaluation (PEP 649), which silently hides imports
+# referenced only by def-signature annotations - a regression class that
+# shipped green on 3.14 and crashed the 3.12 runtime at class creation.
+# A bare `pytest` picks whatever is first on PATH, so every mismatch fails
+# fast here with the complete recipe for building the isolated environment.
 _EXPECTED_PYTHON = (3, 12)
+_CHECKOUT = Path(__file__).resolve().parents[1]
+
+
+def _environment_failure(reason: str) -> "SystemExit":
+    return SystemExit(f"""\
+goal-plus test environment mismatch: {reason}
+
+The suite must run in this checkout's uv-managed venv on Python
+{'.'.join(map(str, _EXPECTED_PYTHON))} (same interpreter as the managed
+release; see .python-version). Build the isolated environment and rerun:
+
+    cd {_CHECKOUT}
+    uv sync
+    uv run pytest tests
+
+`uv sync` creates .venv with the pinned interpreter and the dev tools
+(pytest) in one step; always invoke tests through `uv run pytest`, never
+a bare `pytest` - it may resolve a foreign environment from PATH.
+""")
+
+
 if sys.version_info[:2] != _EXPECTED_PYTHON:
-    raise SystemExit(
-        f"goal-plus tests must run on Python {'.'.join(map(str, _EXPECTED_PYTHON))} "
-        f"(the managed release interpreter, see .python-version); "
-        f"got {sys.version.split()[0]}.\n"
-        "Rebuild the checkout environment with: uv sync && uv run pytest"
+    raise _environment_failure(
+        f"interpreter is {sys.version.split()[0]}, expected "
+        f"{'.'.join(map(str, _EXPECTED_PYTHON))}"
     )
 
-import goal_plus  # noqa: E402 (guard must run first)
+try:
+    import goal_plus  # noqa: E401 (guard reports the environment, not the import)
+except ImportError:
+    raise _environment_failure("goal_plus is not importable from this environment")
 
-_CHECKOUT_PACKAGE = Path(__file__).resolve().parents[1] / "src" / "goal_plus"
-if Path(goal_plus.__file__).resolve().parent != _CHECKOUT_PACKAGE.resolve():
-    raise SystemExit(
-        "pytest is not using this checkout's editable goal_plus "
-        f"(imported from {goal_plus.__file__}).\n"
-        "A foreign environment on PATH shadowed the project venv; "
-        "run tests with: uv run pytest"
+if Path(goal_plus.__file__).resolve().parent != (_CHECKOUT / "src" / "goal_plus").resolve():
+    raise _environment_failure(
+        f"goal_plus imported from {goal_plus.__file__}, not this checkout"
     )
 
 from tests._test_tmp import (
