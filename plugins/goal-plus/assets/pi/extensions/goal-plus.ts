@@ -57,9 +57,7 @@ let workerGeneration: { runId: string; candidateId: string; generation: number }
 let activeGoalPlusId = process.env.GOAL_PLUS_ID;
 let cachedGoalStatus: GoalPlusStatusPayload | undefined;
 let goalContextFullKey: string | undefined;
-// The turn started by goal-plus-must-continue already carries phase/next action, so
-// it skips the per-turn reminder. Consumed once, on the next agent start.
-let pendingMustContinueTurn = false;
+
 let continuationCount = 0;
 let workerContinuationCount = 0;
 let workerRegistrationSent = false;
@@ -1029,9 +1027,11 @@ async function refreshActiveGoal(
 	pi: ExtensionAPI,
 	ctx: CommandRuntimeContext,
 	persist = true,
+	detail = false,
 ): Promise<GoalPlusStatusPayload | undefined> {
 	if (!activeGoalPlusId) return undefined;
-	const result = await runJsonCli(pi, ctx, "goal_plus_status", { goal_plus_id: activeGoalPlusId });
+	const result = await runJsonCli(pi, ctx, "goal_plus_status",
+		{ goal_plus_id: activeGoalPlusId, ...(detail ? { detail: true } : {}) });
 	const status = statusFrom(result.details);
 	if (!status?.goal_plus_id) return undefined;
 	cachedGoalStatus = status;
@@ -2549,7 +2549,8 @@ async function queueMainGoalContinuation(pi: ExtensionAPI, ctx: ExtensionContext
 		if (canPersistGoalState(ctx)) persistGoalState(pi);
 		// The runtime owns the continuation text: it carries only the rules that
 		// exist nowhere else, while the goal data comes from the per-turn context.
-		pendingMustContinueTurn = true;
+		// The followUp turn itself bypasses before_agent_start in native Pi, so
+		// the next prompt-path turn keeps its per-turn reminder unconditionally.
 		const content = details.continuation_prompt || details.reason
 			|| "Goal Plus 仍处于 active。继续下一项必需 action。";
 		appendInjectionObservation(pi, ctx, {
@@ -3017,33 +3018,36 @@ export default async function (pi: ExtensionAPI) {
 			? `${status.goal_plus_id ?? ""}:${status.goal_revision ?? 0}:${status.control?.version ?? 0}`
 			: undefined;
 		const needsFullGoalContext = goalContextKey !== undefined && goalContextFullKey !== goalContextKey;
-		const continuationTurn = pendingMustContinueTurn;
-		pendingMustContinueTurn = false;
+		// Full contexts are rare (first turn, post-compaction, revision/control
+		// change); only they pay the detail fetch that carries the raw goal, so
+		// ordinary turns keep the cheap status refresh and no goal tokens.
+		const fullStatus = needsFullGoalContext
+			? (await refreshActiveGoal(pi, commandCtx, persist, true)) ?? status
+			: status;
 		const goalContext = goalPlusSessionAuthorized && status && !isTerminalStatus(status.status)
 			&& status.control?.state === "active"
 			? needsFullGoalContext
-				? buildGoalPlusContext(status)
-				: continuationTurn ? undefined : buildGoalPlusBriefContext(status)
+				? buildGoalPlusContext(fullStatus)
+				: buildGoalPlusBriefContext(status)
 			: undefined;
 		if (goalContext && needsFullGoalContext) goalContextFullKey = goalContextKey;
 		// The injection ledger is the deterministic guardian of this cadence: the
-		// audit turns a full context without raw_goal, or a skipped prompt-path
-		// turn, into a reported defect instead of a silent prompt regression.
+		// audit turns a full context without raw_goal into a reported defect
+		// instead of a silent prompt regression.
 		appendInjectionObservation(pi, ctx, {
 			kind: goalContext === undefined
 				? "goal_context_skipped"
 				: needsFullGoalContext ? "goal_context_full" : "goal_context_brief",
 			role, channel: "system_message", target_id: status?.goal_plus_id,
 			goal_revision: status?.goal_revision, control_version: status?.control?.version,
-			raw_goal_present: Boolean(status?.raw_goal),
+			raw_goal_present: Boolean(fullStatus?.raw_goal),
 			needs_full: needsFullGoalContext,
 			...(goalContext !== undefined
 				? { content: goalContext }
 				: { reason: !goalPlusSessionAuthorized ? "not_authorized"
 					: !status ? "no_status"
 					: isTerminalStatus(status.status) ? "terminal"
-					: status.control?.state !== "active" ? "control_inactive"
-					: "continuation_turn" }),
+					: "control_inactive" }),
 		});
 		const content = [publication.content, goalContext].filter((item): item is string => Boolean(item));
 		if (content.length === 0) return { systemPrompt };

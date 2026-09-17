@@ -268,7 +268,7 @@ class GoalGate:
             f"revision={record.goal_revision}）。顶层 agent 只有在记录真实终态后才能停止。\n\n"
             f"当前 next action：{action_text}\n"
             f"{final_check_text}"
-            "完整原始目标、命令配置、时间上下文和 reconciliation 见本 session 的 Goal Plus "
+            "完整原始目标和命令配置见本 session 的 Goal Plus "
             "context；缺失时用 goal_plus_status(detail=true) 读取。\n\n"
             "对照持久证据审计完整原始目标中的每项要求。如果原始目标包含时间限制，使用 status "
             "中的时间戳进行判断：只要仍有可用时间且目标未完成，就继续工作；达到或超过时间条件时，"

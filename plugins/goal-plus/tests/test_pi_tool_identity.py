@@ -58,7 +58,8 @@ def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug, diagnos
         expected = (
             {"agent_session_id": "worker-session", "candidate_task": {"workspace": str(tmp_path)}}
             if role == "worker" else
-            {"goal_plus_id": "gp_0001", "raw_goal": "\u4e2d\u6587", "status": "active",
+            # goal_plus_status without detail never carries the raw goal.
+            {"goal_plus_id": "gp_0001", "status": "active",
              "phase": "goal", "goal_revision": 1, "control": {"state": "active", "version": 1},
              "active_session": {"session_id": "pi-test"}}
         )
@@ -242,6 +243,10 @@ const mocks = {
         ? {decision: "block", reason: "fixture phase gate",
            continuation_prompt: "fixture continuation prompt"}
         : globalThis.status;
+      if (name === "goal_plus_status" && args?.detail !== true) {
+        const {raw_goal, ...slim} = globalThis.status;
+        details = slim;
+      }
       if (name === "goal_plus_monitor_snapshot" && globalThis.monitorSnapshot) {
         details = globalThis.monitorSnapshot;
       }
@@ -565,25 +570,40 @@ if (process.env.GOAL_PLUS_PI_SEARCH_PROGRESS_TEST === "1") {
 }
 if (process.env.GOAL_PLUS_PI_CONTINUATION_TEST === "1") {
   const sent = [];
+  const ledger = [];
   ctx.ui.setStatus = () => {};
   ctx.ui.setWidget = () => {};
   ctx.ui.setWorkingMessage = () => {};
   pi.sendMessage = (message, options) => sent.push({message, options});
   pi.sendUserMessage = () => {};
+  pi.appendEntry = (customType, data) => {
+    if (customType === "goal-plus-injection-observation") ledger.push(data);
+  };
   await commands.get("goal-plus").handler("fixture", ctx);
   sent.length = 0;
+  const detailCalls = () => globalThis.calls.filter(c => c.name === "goal_plus_status" && c.args?.detail === true).length;
   // The full goal context is injected once, then only the compact status line.
   const first = await events.get("before_agent_start")({prompt: "first", systemPrompt: "sys"}, ctx);
   assert.ok(first.message.content.includes("原始目标"), first.message.content);
   assert.ok(first.message.content.includes("中文"), first.message.content);
+  assert.ok(detailCalls() >= 1, "a full context must fetch the goal payload with detail=true");
+  assert.equal(ledger.at(-1).kind, "goal_context_full");
+  assert.equal(ledger.at(-1).raw_goal_present, true, "the ledger must see the raw goal in the full payload");
+  const detailAfterFirst = detailCalls();
   const second = await events.get("before_agent_start")({prompt: "second", systemPrompt: "sys"}, ctx);
   assert.ok(!second.message.content.includes("原始目标"), second.message.content);
   assert.ok(second.message.content.includes("goal_plus_status(detail=true)"), second.message.content);
   assert.ok(second.message.content.includes("next_action"), second.message.content);
+  assert.equal(detailCalls(), detailAfterFirst, "an ordinary turn must not pay the detail fetch");
+  assert.equal(ledger.at(-1).kind, "goal_context_brief");
+  assert.equal(ledger.at(-1).raw_goal_present, false);
   // Compaction rebuilds the model context: the next turn re-injects the full goal.
   await events.get("session_compact")({}, ctx);
   const third = await events.get("before_agent_start")({prompt: "third", systemPrompt: "sys"}, ctx);
   assert.ok(third.message.content.includes("原始目标"), third.message.content);
+  assert.equal(detailCalls(), detailAfterFirst + 1);
+  assert.equal(ledger.at(-1).kind, "goal_context_full");
+  assert.equal(ledger.at(-1).raw_goal_present, true);
   // A refused stop carries the runtime continuation verbatim, not a second copy of
   // the goal, and stays out of the transcript.
   await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
@@ -595,14 +615,13 @@ if (process.env.GOAL_PLUS_PI_CONTINUATION_TEST === "1") {
   assert.equal(continuation.message.content, "fixture continuation prompt");
   assert.ok(!continuation.message.content.includes("中文"));
   assert.ok(sent.every(item => item.message.customType !== "goal-plus-stop-continuation"));
-  // The continuation turn carries the same phase/next action, so it skips the
-  // per-turn reminder; the following normal turn gets it again.
-  const continuationTurn = await events.get("before_agent_start")({prompt: "continue", systemPrompt: "sys"}, ctx);
-  assert.equal(continuationTurn.message, undefined, "the continuation turn must not repeat the reminder");
-  const laterTurn = await events.get("before_agent_start")({prompt: "later", systemPrompt: "sys"}, ctx);
-  assert.ok(laterTurn.message, "a normal turn keeps the compact reminder");
-  assert.ok(laterTurn.message.content.includes("next_action"), laterTurn.message.content);
-  assert.ok(!laterTurn.message.content.includes("原始目标"), laterTurn.message.content);
+  // Native Pi routes the followUp turn around before_agent_start, so no
+  // suppression flag exists: every prompt-path turn keeps the reminder.
+  const afterStop = await events.get("before_agent_start")({prompt: "continue", systemPrompt: "sys"}, ctx);
+  assert.ok(afterStop.message, "a prompt-path turn after a refused stop keeps the compact reminder");
+  assert.ok(afterStop.message.content.includes("next_action"), afterStop.message.content);
+  assert.ok(!afterStop.message.content.includes("原始目标"), afterStop.message.content);
+  assert.equal(ledger.at(-1).kind, "goal_context_brief");
   console.log("continuation checks passed");
   process.exit(0);
 }

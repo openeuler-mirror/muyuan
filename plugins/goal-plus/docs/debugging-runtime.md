@@ -173,8 +173,9 @@ token，并把每条注入关联到之前最近一次 provider 输入用量（�
 
 - `full_context_without_raw_goal`：goal_context_full 触发但载荷没有 raw_goal（节流触发、
   补货失效，如 status 刷新未带 detail）；
-- `goal_context_skipped_on_prompt_turn`：prompt 路径 turn 因 stale must-continue 标志被跳过
-  （该条目只可能来自 `before_agent_start`，真实 continuation turn 不经过它）；
+- `goal_context_skipped_on_prompt_turn`：prompt 路径 turn 被标为 continuation 而跳过注入。
+  must-continue 抑制标志已删除（followUp turn 由宿主路由天然绕过 before_agent_start），
+  该规则保留为防回归 tripwire；
 - `registered_injection_absent`：登记了 custom message 注入但分支上找不到对应消息。
 
 新增任何模型上下文注入必须先过 `appendInjectionObservation`
