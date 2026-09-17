@@ -90,7 +90,7 @@ def test_codex_circle_packing_cycle_has_isolated_source_and_valid_layouts(tmp_pa
     import subprocess
     import sys
 
-    from goal_plus.models import SearchSpec
+    from goal_plus.domain.search_input import SearchSpecInput
     from tests.st.helpers.circle_cycle import prepare_circle
     from tests.st.test_st_scenarios import SCENARIO_CASES
 
@@ -102,9 +102,10 @@ def test_codex_circle_packing_cycle_has_isolated_source_and_valid_layouts(tmp_pa
     hashes = prepare_circle(tmp_path, "gpt-5.6-sol", "low")
     assert set(hashes) == {"initial_program.py", "evaluator.py"}
     source = tmp_path / "source"
-    spec = SearchSpec.model_validate_json((source / "spec.json").read_text())
+    spec = SearchSpecInput.model_validate_json((source / "spec.json").read_text()).to_runtime_spec()
     assert "worker_host" not in spec.strategy.model_dump()
-    assert spec.strategy.worker_launch.model == "gpt-5.6-sol"
+    assert spec.strategy.models[0].model == "gpt-5.6-sol"
+    assert spec.strategy.models[0].reasoning_effort == "low"
     assert spec.strategy.evidence_annotator.reasoning_effort == "low"
     assert (source / ".git").is_dir() and (tmp_path / ".git").is_dir()
     for layout, expected in (("rectangular", 2.166664066666667), ("staggered", 2.4389636673796344)):

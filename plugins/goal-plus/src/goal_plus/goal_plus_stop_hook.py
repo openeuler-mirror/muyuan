@@ -1132,6 +1132,7 @@ def _handle_role_pre_tool_use(
 
 
 GOAL_PLUS_READ_ONLY_TOOLS = {
+    "goal_plus_get_tool_schema",
     "goal_plus_status",
     "goal_plus_history",
     "goal_plus_monitor_snapshot",

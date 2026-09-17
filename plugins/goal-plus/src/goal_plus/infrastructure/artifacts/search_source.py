@@ -145,11 +145,10 @@ class FileFreezeSource:
             )
         spec = self.configuration.normalize_inner_agent_spec(spec, agent_harness, runtime_provider)
         self.configuration.validate_host_workspace_provider(spec, agent_harness, runtime_provider)
-        self.configuration.validate_inner_agent_binding(spec.strategy, agent_harness, runtime_provider)
         spec = _normalize_verifier_cwds_for_candidate_workspace(spec)
         spec = self.configuration.apply_global_evidence_mode_from_environment(spec)
         spec = self.configuration.normalize_strategy_models(spec, agent_harness, runtime_provider)
-        self.configuration.validate_strategy_config(spec.strategy)
+        self.configuration.validate_host_strategy(spec.strategy, agent_harness, runtime_provider)
         device_inventory = self.configuration.resolve_device_inventory(
             spec.device_pools,
             spec.budget.max_parallel,

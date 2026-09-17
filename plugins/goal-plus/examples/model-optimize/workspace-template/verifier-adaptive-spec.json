@@ -65,8 +65,7 @@
     "name": "agent_guided",
     "orchestration_mode": "adaptive_search",
     "worker_budget": {
-      "max_runtime_seconds": 360,
-      "on_exceed": "interrupt"
+      "max_runtime_seconds": 360
     },
     "selection": {
       "ranking_keys": [
@@ -79,15 +78,11 @@
       ]
     },
     "allocation": {
-      "policy": "priority_replace/v1",
       "features": [
         "latest_record_values/v1",
         "progress_trend/v1"
       ],
       "switch_margin": 0.15
-    },
-    "config": {
-      "seed": 20260819
     }
   },
   "constraints": {

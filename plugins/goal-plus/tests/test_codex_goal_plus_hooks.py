@@ -2100,6 +2100,18 @@ def test_pre_tool_use_denies_goal_mutation_without_exact_host_command(
     assert not search_root.exists()
 
 
+def test_tool_schema_lookup_does_not_require_or_create_goal(tmp_path: Path) -> None:
+    search_root = tmp_path / ".gp"
+    result = _run_hook(tmp_path, search_root, {
+        "hook_event_name": "PreToolUse", "session_id": "main-session",
+        "tool_name": "mcp__goal_plus__goal_plus_get_tool_schema",
+        "tool_input": {"tool_name": "goal_plus_search_freeze_spec"},
+    })
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert not search_root.exists()
+
+
 def test_pre_tool_use_gates_nested_invocation_not_code_text(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     nested_mutation = _run_hook(

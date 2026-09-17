@@ -335,7 +335,7 @@ fence 拒绝。因此结束 Search 前无需等待 annotation backlog。
 
 ## Global Evidence 模式
 
-`strategy.config.global_evidence_mode` 只改变 Evidence 的交付方式，不改变 task 创建、
+Freeze 输入 `strategy.global_evidence_mode`（冻结记录保存于 `strategy.config`）只改变 Evidence 的交付方式，不改变 task 创建、
 annotation 内容或 verifier settlement：
 
 | 模式 | Candidate 可见行为 |

@@ -28,7 +28,7 @@
     "orchestration_mode": "parallel_loops",
     "inner_agent": "autoresearch",
     "evidence_annotator": {"timeout_seconds": 300},
-    "config": {"global_evidence_mode": "manual"}
+    "global_evidence_mode": "manual"
   },
   "workspace": {"provider": "thinkthread", "promotion_mode": "artifact_only"},
   "constraints": {

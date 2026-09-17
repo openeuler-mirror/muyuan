@@ -17,10 +17,9 @@ from pydantic import Field, TypeAdapter, ValidationError
 from goal_plus._version import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
-from goal_plus.domain.search import (
-    CandidateProposal,
-    SearchSpec,
-)
+from goal_plus.domain.search import CandidateProposal
+from goal_plus.domain.search_input import SearchSpecInput
+from goal_plus.tool_schema import compact_tool_schema
 from goal_plus.domain.goal import (
     GoalPlusFinalCheckerIdentity,
     GoalPlusSpecDraftInput,
@@ -112,6 +111,8 @@ def create_mcp(
     candidate_tool_call: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> FastMCP:
     from fastmcp import FastMCP
+    from fastmcp.tools import Tool
+    from fastmcp.utilities.json_schema import dereference_refs
 
     if (caller_role == "final_checker") != (caller_final_check is not None):
         raise ValueError("final checker MCP requires its host-bound check identity")
@@ -171,6 +172,7 @@ def create_mcp(
 
     mcp = FastMCP(
         "goal-plus", version=__version__,
+        dereference_schemas=False,
         instructions=(host_assets_root() / "assets/goal-plus-instructions.txt").read_text(encoding="utf-8").strip()
         if caller_role in {None, "main"} else None,
         lifespan=session_lifespan if any(item is not None for item in (session_launcher, final_checker, work_items)) else None,
@@ -184,6 +186,14 @@ def create_mcp(
             call.exception()
 
     def register_tool():
+        def expose(function):
+            tool = Tool.from_function(function)
+            tool.parameters = compact_tool_schema(tool.parameters)
+            if tool.output_schema is not None:
+                tool.output_schema = dereference_refs(tool.output_schema)
+            mcp.add_tool(tool)
+            return function
+
         def register(function):
             if function.__name__ not in PUBLIC_TOOL_NAMES:
                 return function
@@ -191,7 +201,7 @@ def create_mcp(
             if capability and capabilities is not None and not capabilities[capability]:
                 return function
             if caller_role is None:
-                return mcp.tool()(function)
+                return expose(function)
             try:
                 require_tool_role(
                     caller_role, function.__name__,
@@ -245,8 +255,21 @@ def create_mcp(
                     check_call(*args, **kwargs)
                     return function(*args, **kwargs)
 
-            return mcp.tool()(bound_call)
+            return expose(bound_call)
         return register
+
+    @register_tool()
+    async def goal_plus_get_tool_schema(tool_name: str) -> dict[str, Any]:
+        """读取当前注册工具的完整 inputSchema 与说明，不创建或修改运行状态。
+
+        宿主声明显示 unknown 或省略嵌套字段时，用此入口读取完整参数合同，无需查源码。
+        tool_name 使用不带 MCP namespace 的名称，例如 goal_plus_search_freeze_spec。
+        仅返回当前 MCP 注册中可见的工具；返回值与 tools/list 同源，不裁剪嵌套字段。
+        """
+        tool = next((tool for tool in await mcp.list_tools() if tool.name == tool_name), None)
+        if tool is None:
+            raise ValueError(f"ToolSchemaUnavailable: tool is not registered: {tool_name}")
+        return {"name": tool.name, "description": tool.description, "inputSchema": tool.parameters}
 
     if session_controls is not None:
         if session_launcher is not None:
@@ -304,7 +327,7 @@ def create_mcp(
             session_id: str, call_id: str, prompt: str,
             timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)],
         ) -> dict[str, Any]:
-            """Steer the identified active invocation. Use wake to give an idle session another task."""
+            """Steer the identified active invocation. Use session_run with a new call_id for an idle session."""
             await asyncio.to_thread(
                 lambda: session_controls(session_id, "message").message(call_id, prompt, timeout=timeout_seconds),
             )
@@ -337,34 +360,26 @@ def create_mcp(
     @_debug_tool_response
     def goal_plus_search_freeze_spec(
         goal_plus_id: str,
-        spec: SearchSpec,
+        spec: SearchSpecInput,
         verifier_artifact_paths: list[str],
     ) -> dict[str, Any]:
-        """将 SearchSpec 及其 verifier 文件冻结为不可变 bundle。
+        """为当前 active Goal 冻结 SearchSpec 与 verifier 文件，不代表候选已达标。
 
-        `goal_plus_id` 必须是当前 host session 绑定的 active Goal。冻结前校验 worker host、
-        workspace provider 和 source 状态；`git_worktree`
-        要求整个 source repository 对应 clean HEAD，dirty source 会在 verifier preflight
-        前失败。ThinkThread 仅接受匹配的 Pi ThinkThread host/Profile，并在 create 时通过
-        exact Agent POSIX preflight 固定 Root-owned snapshot；Codex/Pi RPC 不能混用该 workspace_provider。
-        成功只返回 `frozen_spec_id` 与 frozen 状态，容量不足时附带警告；
-        将该 ID 交给 `goal_plus_search_create`。完整合同、技能清单和容量估算留在持久状态。
-        verifier 文件按 hash 固定；
-        `verifier_artifact_paths` 必须使用相对 `source_path` 的路径，不能越界；
-        候选执行期间修改它们会强制分数为 0.0。冻结会预检每个 `ranking_signal`：
-        它必须以 0 退出，并输出一个最终 JSON 对象，其中包含有限数值类型的
-        `spec.metric_name`，例如 `{"score": 123.0}`。本地 process suite 即使未声明
-        ranking_signal，也必须在冻结前实际产出有限数值分数。分数从 stdout 的单行
-        JSON 对象读取，不解析文本分数或输出文件。verifier 命令在一次性源码副本中
-        运行，不能改变该工作区。编译器产物和临时输出应放入每次调用唯一的
-        `GOAL_PLUS_VERIFIER_TMPDIR`、`TMPDIR`、`TMP` 或 `TEMP`；并发验证候选时固定
-        `/tmp` 路径不安全。可选自定义 verifier 必须在 Spec Discovery 期间写入源码拥有
-        的路径，绝不能放在 `.gp` 或 `.search`。`expected_outputs` 只包含产物路径/glob，
-        不是 stdout parser 配置。`spec.budget.max_parallel` 唯一决定初始候选 Agent 数。
-        可选 `device_pools` 只能引用 host 通过 `GOAL_PLUS_DEVICE_POOLS` 注册的 pool ID；
-        每个引用 pool 至少提供 `spec.budget.max_parallel` 个设备，且不能与另一个引用 pool
-        共用同一可见变量。需要 worker 遵守的公开条件写入 `candidate_acceptance`；
-        `constraints` 保持 runtime 私有。
+        Git source 必须是 clean HEAD。verifier_artifact_paths 相对 source_path，
+        文件须位于源码内，不得放在 .gp 或 .search。Git 在 source 原位、Copy 在一次性副本执行
+        process suite；ThinkThread 在 create 时验证 baseline。临时产物使用 GOAL_PLUS_VERIFIER_TMPDIR。
+        stdout JSON outcome=valid/invalid/error 区分有效候选、确定无效候选和评估故障。
+        invalid 可用退出码 0/1，保留原 error；可作基线但不能进入 best、selection 或 promotion。
+        valid 或省略 outcome 须退出 0 且 error 缺失/null；valid=false 须显式分类为 invalid/error。
+        从 stdout 最后一个可解析的单行 JSON 对象精确读取 spec.metric_name，不猜字段别名。
+        ranking_signal 是唯一评分来源；省略时只允许一个非 diagnostic/anti_cheat verifier 产出分数。
+        基线须有有限分数（可为零）；只将已确认的候选问题归为 invalid，未知故障归为 error，
+        不得删掉原诊断或把所有异常转零分。promotion_verifiers 仅提升时执行，freeze 不证明其可用。
+        budget.max_parallel 决定初始候选数；device_pools 只引用宿主已注册的资源池。
+        candidate_acceptance 只给 worker 文字要求，不自动执行验收；constraints 不下发。
+        成功返回 frozen_spec_id、baseline 摘要及提升检查名称；baseline=null 表示尚未验证。
+        将 frozen_spec_id 交给 goal_plus_search_create；失败不生成 FrozenSpec。
+        参数声明不完整时，用 goal_plus_get_tool_schema 读取完整合同。
         """
         return tools.goal_plus_search_freeze_spec(goal_plus_id, spec, verifier_artifact_paths)
 
@@ -377,7 +392,7 @@ def create_mcp(
     ) -> dict[str, Any]:
         """列出指定 Codex/Pi host 当前可用的模型。
 
-        `/goal-plus models=...` 在冻结 spec 前调用它。返回的 `model` 是可写入
+        指定 worker 模型时，在冻结 spec 前调用它。返回的 `model` 是可写入
         `strategy.models[].model` 的精确 host 引用；不存在或有歧义的请求会在冻结时
         直接失败。省略 `query` 返回完整清单。
         """
@@ -391,10 +406,10 @@ def create_mcp(
         request_id: Annotated[str, Field(min_length=1)],
         source_run_id: str | None = None,
     ) -> dict[str, str]:
-        """从冻结 spec 创建 Search run，返回 `run_id`；然后关联 Goal，再规划候选。
+        """从冻结 spec 创建并关联 Search run，返回 `run_id`；随后规划候选。
 
         request_id 标识可恢复的创建请求；同参数重试返回原 run，并自动关联当前 Goal revision。
-        创建本身不完成关联；尚未关联的 run 不能用于候选操作。
+        成功回执 state=linked；尚未关联的 run 不能用于候选操作。
         `goal_plus_id` 必须与 freeze 使用的当前 active Goal 相同。启动前复检冻结的
         agent_harness/runtime_provider 组合、workspace provider 和 source Git 状态；
         不支持的组合，或 Git source 在 freeze 后变 dirty，会在创建 run 或 candidate 前失败。
@@ -524,7 +539,7 @@ def create_mcp(
         `requested_k` 只适用于这一次初始规划。实际 `planned_k` 是 `requested_k` 与
         `budget.max_parallel` 剩余可用数量的最小值。标准流程必须令两者相等。
         下一步用 goal_plus_search_start_batch 一次性提交该 plan 的完整 proposals 列表。
-        重复调用返回已有 plan；已启动候选的后续探索通过同一 session 的 wake 继续。
+        重复调用返回已有 plan；后续探索用 goal_plus_session_run 和新 call_id 继续同一 session。
         """
         return tools.goal_plus_search_plan_next(run_id, requested_k)
 
@@ -543,6 +558,7 @@ def create_mcp(
     ) -> list[dict[str, Any]]:
         """一次性物化 plan 的完整初始候选批次，返回 candidate ID、workspace provider 和实际选定模型。
 
+        proposals 嵌套字段不完整时，先用 goal_plus_get_tool_schema 读取本工具的完整合同。
         在 goal_plus_search_plan_next 之后调用。需要 K=2 时将两个 proposal 放在同一次调用的
         proposals 列表中；分两次各传一个不会创建两个候选。成功后的重复调用是幂等读取，
         即使传入不同 proposals 也不会追加或替换。省略 proposals 只适用于已有固定 work orders 的 plan。
@@ -687,7 +703,7 @@ def create_mcp(
         attempt_id: Annotated[str, Field(min_length=1)] | None = None,
         timeout_seconds: Annotated[float, Field(ge=0, le=60, allow_inf_nan=False)] = 30,
     ) -> dict[str, Any]:
-        """Subagent 带 `agent_session_id` 自评分；主流程最终验证不带它。
+        """执行冻结 verifier 并记录 Evidence；process_passed 不代表最终验收达标。
 
         subagent 传入准确 `run_id`、`candidate_id`、自己的 `agent_session_id`、一句话
         `hypothesis` 并省略 `scope`，同时遵守 candidate instructions；启用 shared-dir 时
@@ -767,7 +783,7 @@ def create_mcp(
     ) -> dict[str, Any]:
         """仅当 FrozenSpec 使用 adaptive_search 时读取持久化资源分配决策。
 
-        该工具只读，不启动、继续或中断任何 host worker。未传 status 时返回全部决策。
+        该工具只读，不启动、继续或中断任何 host worker。默认只返回 pending；status=null 返回全部决策。
         """
         return tools.goal_plus_search_list_allocation_decisions(run_id, status, offset, limit)
 
@@ -807,7 +823,11 @@ def create_mcp(
     @register_tool()
     @_debug_tool_response
     def goal_plus_search_promote(run_id: str, candidate_id: str) -> dict[str, Any]:
-        """准备 provider-native publication，不改变主源码工作区。"""
+        """为已 select 的 artifact 准备 publication，不改变主源码工作区。
+
+        自动重新执行已配置的 promotion_verifiers，无需先手动调用 promotion 验证。
+        未配置时不会补出新的验收标准；写回源码另调 goal_plus_search_apply_promotion。
+        """
         return tools.goal_plus_search_promote(run_id, candidate_id)
 
     @register_tool()

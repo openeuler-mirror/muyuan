@@ -49,11 +49,14 @@ class PublicationDependency(SearchModel):
 
 class WorkspaceSpec(SearchModel):
     provider: WorkspaceProvider = "git_worktree"
-    promotion_mode: Literal["apply", "artifact_only"] = "apply"
+    promotion_mode: Literal["apply", "artifact_only"] = Field(
+        default="apply", description="copy requires artifact_only; other providers default to apply.",
+    )
     dependencies: list[PublicationDependency] = Field(
         default_factory=list,
         max_length=256,
         exclude_if=lambda value: not value,
+        description="ThinkThread publication dependencies only; omit for git_worktree/copy. Not a skill/file include list.",
     )
 
     @model_validator(mode="before")

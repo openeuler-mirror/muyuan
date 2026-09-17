@@ -67,7 +67,7 @@ def test_codex_goal_plus_revises_goal_and_frozen_spec_after_first_result(
             "candidate.txt. Use strategy.name=random, "
             "inner_agent=autoresearch, "
             "max_parallel=1 and worker_budget with "
-            "max_runtime_seconds=90, max_turns=4, on_exceed=interrupt. Freeze the exact "
+            "max_runtime_seconds=90, max_turns=4. Freeze the exact "
             "verifier artifact and complete the Search flow through selection, "
             "promotion, and goal_plus_record_search_result. Direct the candidate worker to "
             "set candidate.txt to an integer that reaches the simple verifier cap.\n\n"

@@ -35,8 +35,7 @@
     "orchestration_mode": "parallel_loops",
     "worker_budget": {
       "max_runtime_seconds": 90,
-      "max_turns": 6,
-      "on_exceed": "interrupt"
+      "max_turns": 6
     }
   },
   "workspace": {

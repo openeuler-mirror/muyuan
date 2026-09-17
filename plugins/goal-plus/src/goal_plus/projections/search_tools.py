@@ -8,6 +8,13 @@ from goal_plus.domain.promotion import PromotionRecord
 
 def frozen_spec_receipt(frozen: FrozenSpec) -> dict[str, Any]:
     payload: dict[str, Any] = {"frozen_spec_id": frozen.frozen_spec_id, "state": "frozen"}
+    baseline = frozen.origin_verification
+    payload.update(
+        metric_name=frozen.spec.metric_name,
+        baseline={"evaluation_completed": baseline.evaluation_completed,
+                  "passed": baseline.passed, "score": baseline.aggregate_score} if baseline else None,
+        promotion_verifiers=[command.name for command in frozen.spec.promotion_verifiers],
+    )
     capacity = frozen.workspace_capacity_estimate
     if capacity is not None and capacity.fits_available_space is False:
         payload["warnings"] = [{

@@ -14,7 +14,8 @@ from goal_plus.evidence_annotator import (
     ToolViewOutput,
     drain_evidence_annotations,
 )
-from goal_plus.models import ScoreReport, SearchSpec
+from goal_plus.models import ScoreReport
+from goal_plus.domain.search_input import SearchSpecInput
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.shared_dir import SharedDirManager
@@ -74,7 +75,7 @@ def _shared_run(
         "print(json.dumps({'combined_score': float(value)}))\n",
         encoding="utf-8",
     )
-    data = spec_for(project, max_parallel=2).model_dump(mode="json")
+    data = spec_for(project, max_parallel=2).model_dump(mode="json", exclude_defaults=True)
     data["edit_surface"]["allow"].extend(
         f"extra_{index}.py" for index in range(extra_allowed_files)
     )
@@ -90,9 +91,10 @@ def _shared_run(
     }
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(data),
+        SearchSpecInput.model_validate(data).to_runtime_spec(),
         [project / "evaluator.py"], agent_harness="codex",
     )
+    assert frozen.spec.shared_dir.model_dump(exclude={"max_pending_revisions_per_family"}) == data["shared_dir"]
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
     tasks = runtime.start_batch(run_id, plan.plan_id)

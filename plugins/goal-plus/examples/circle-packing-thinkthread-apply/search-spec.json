@@ -50,9 +50,7 @@
     "evidence_annotator": {
       "timeout_seconds": 900
     },
-    "config": {
-      "global_evidence_mode": "manual"
-    }
+    "global_evidence_mode": "manual"
   },
   "workspace": {
     "provider": "thinkthread",

@@ -39,11 +39,24 @@ from goal_plus.models import (
     WorkerExecutionResult,
 )
 from goal_plus.runtime import FileSearchRuntime
+from goal_plus.domain.search import BootstrapVerification, BootstrapVerifierResult, VERIFIER_ERROR_EXCERPT_CHARS
+from goal_plus.domain.selection import SelectionSpec
 from goal_plus.infrastructure.search_configuration import (
     SUPPLEMENTAL_EVALUATION_ENABLED_ENV,
     SUPPLEMENTAL_EVALUATION_REQUIRED_ENV,
 )
 from tests._runtime_helpers import make_project, spec_for
+
+
+@pytest.mark.parametrize("metric_name", ["returncode", "elapsed_seconds"])
+def test_search_metric_rejects_runtime_metadata(tmp_path, metric_name):
+    from goal_plus.domain.search_input import SearchSpecInput
+
+    data = spec_for(make_project(tmp_path)).model_dump(mode="json")
+    data["metric_name"] = metric_name
+    for model in (SearchSpec, SearchSpecInput):
+        with pytest.raises(ValidationError, match="reserved runtime metadata"):
+            model.model_validate(data)
 
 
 def test_legacy_tool_adoption_declaration_drops_mode() -> None:
@@ -442,7 +455,6 @@ def test_goal_plus_spec_draft_exposes_typed_partial_search_spec() -> None:
                 "cwd": ".",
                 "timeout_seconds": 300,
                 "feedback_policy": "visible_to_workers",
-                "expected_outputs": [],
             }
         ],
     }
@@ -463,14 +475,6 @@ def test_goal_plus_spec_draft_keeps_legacy_unstructured_search_spec_readable() -
     assert draft.model_dump(mode="json")["search_spec"]["allowed_paths"] == [
         "legacy.py"
     ]
-
-
-def test_expected_outputs_schema_describes_artifact_paths_not_stdout_parser() -> None:
-    schema = VerifierCommand.model_json_schema()
-    description = schema["properties"]["expected_outputs"]["description"]
-
-    assert "产物路径或 glob" in description
-    assert "不解析 verifier stdout metric" in description
 
 
 def test_model_spec_requires_a_concrete_model_reference() -> None:
@@ -763,6 +767,65 @@ def test_provider_cleanup_requires_pins_or_a_durable_request() -> None:
             created_at="2026-09-03T00:00:00Z",
             updated_at="2026-09-03T00:00:00Z",
         )
+
+
+def test_selection_keys_are_enumerated_and_unique():
+    schema = SelectionSpec.model_json_schema()
+    assert schema["properties"]["ranking_keys"]["items"]["enum"] == ["hard_score", "quality_score"]
+    with pytest.raises(ValidationError, match="hard_score.*quality_score"):
+        SelectionSpec(ranking_keys=["score"])
+    with pytest.raises(ValidationError, match="unique"):
+        SelectionSpec(ranking_keys=["hard_score", "hard_score"], ranking_tolerance=[0, 0])
+
+
+@pytest.mark.parametrize("suite", ["process_verifiers", "promotion_verifiers"])
+def test_search_input_rejects_multiple_ranking_sources(suite):
+    from goal_plus.domain.search_input import SearchSpecInput
+
+    command = {"name": "score", "role": "ranking_signal", "command": ["true"]}
+    data = {
+        "objective": "test", "metric_name": "score", "metric_direction": "maximize",
+        "source_path": ".", "edit_surface": {"allow": ["candidate.py"]},
+        "budget": {"max_parallel": 1}, "process_verifiers": [command],
+    }
+    data[suite] = [command, {**command, "name": "other"}]
+    for model in (SearchSpec, SearchSpecInput):
+        with pytest.raises(ValidationError, match="at most one ranking_signal"):
+            model.model_validate(data)
+
+
+def test_bootstrap_failure_detail_selects_blocking_failure_and_bounds_error():
+    diagnostic = BootstrapVerifierResult(
+        name="diagnostic", role="diagnostic_signal", passed=False, failure_class="VerifierCommandFailed",
+    )
+    failure = BootstrapVerifierResult(
+        name="ranking", role="ranking_signal", passed=False, failure_class="VerifierCommandFailed",
+        metrics={"returncode": 0, "error": "x" * (VERIFIER_ERROR_EXCERPT_CHARS + 100)},
+        log_path=Path("/logs/ranking.log"),
+    )
+    report = BootstrapVerification(
+        phase="origin", workspace_provider="thinkthread", passed=False,
+        verifier_results=[diagnostic, BootstrapVerifierResult(
+            name="candidate", role="validity_gate", passed=False, failure_class="CandidateRejected",
+        ), failure], started_at="start", completed_at="end",
+    )
+    assert not report.evaluation_completed
+    detail = report.failure_detail()
+    assert "ranking: VerifierCommandFailed" in detail and "diagnostic" not in detail
+    assert "returncode=0" in detail and "log_path=/logs/ranking.log" in detail
+    assert "[truncated]" in detail
+    assert "x" * (VERIFIER_ERROR_EXCERPT_CHARS + 1) not in detail
+
+
+def test_bootstrap_cannot_ignore_anti_cheat_rejection():
+    report = BootstrapVerification(
+        phase="origin", workspace_provider="copy", passed=False,
+        verifier_results=[BootstrapVerifierResult(
+            name="integrity", role="anti_cheat_gate", passed=False, failure_class="CandidateRejected",
+        )], started_at="start", completed_at="end",
+    )
+    assert not report.evaluation_completed
+    assert "integrity: CandidateRejected" in report.failure_detail()
 
 
 def test_strategy_spec_accepts_supported_orchestration_modes() -> None:

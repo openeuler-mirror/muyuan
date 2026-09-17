@@ -28,7 +28,7 @@ def test_two_candidates_continue_verify_select_and_publish_through_shared_mcp(tm
     def main(name, **arguments):
         return call_mcp_tool(root, name, arguments, caller_role="main")
 
-    spec = spec_for(project, max_parallel=2).model_dump(mode="json")
+    spec = spec_for(project, max_parallel=2).model_dump(mode="json", exclude_defaults=True)
     spec["strategy"]["inner_agent"] = "common"
     spec["promotion_verifiers"] = [{
         "name": "independent_score", "role": "promotion_gate",

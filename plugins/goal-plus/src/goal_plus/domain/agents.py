@@ -8,6 +8,7 @@ from typing import (
 )
 
 from pydantic import (
+    ConfigDict,
     Field,
     field_validator,
     model_validator,
@@ -51,18 +52,27 @@ class AgentSessionHandle(SearchModel):
         return self
 
 
-class WorkerBudget(SearchModel):
+class WorkerBudgetInput(SearchModel):
+    model_config = ConfigDict(json_schema_extra={
+        "anyOf": [
+            {"required": [key], "properties": {key: {"type": "integer"}}}
+            for key in ("max_runtime_seconds", "max_turns")
+        ],
+    })
     max_runtime_seconds: int | None = Field(default=None, gt=0)
     max_turns: int | None = Field(default=None, gt=0)
-    on_exceed: Literal["interrupt"] = "interrupt"
 
     @model_validator(mode="after")
-    def require_runtime_or_turn_limit(self) -> "WorkerBudget":
+    def require_runtime_or_turn_limit(self) -> "WorkerBudgetInput":
         if self.max_runtime_seconds is None and self.max_turns is None:
             raise ValueError(
                 "worker_budget requires max_runtime_seconds or max_turns"
             )
         return self
+
+
+class WorkerBudget(WorkerBudgetInput):
+    on_exceed: Literal["interrupt"] = "interrupt"
 
 
 class WorkerLaunchOptions(SearchModel):
@@ -78,25 +88,35 @@ class WorkerLaunchOptions(SearchModel):
         return value
 
 
-class ModelSpec(SearchModel):
-    """User-facing model request, normalized before the spec is frozen."""
+class ModelRequest(SearchModel):
+    """Model choices supplied by Main, without host-owned provenance."""
 
     model: str = Field(min_length=1)
     count: int | None = Field(default=None, gt=0)
-    provider: str | None = None
-    adapter_version: str | None = None
     reasoning_effort: str | None = None
     service_tier: str | None = None
-    context_policy: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator(
-        "model", "provider", "adapter_version", "reasoning_effort", "service_tier"
+        "model", "reasoning_effort", "service_tier"
     )
     @classmethod
     def string_values_must_be_nonempty(cls, value: str | None) -> str | None:
         if value is not None and not value.strip():
             raise ValueError("model option must be non-empty when provided")
         return value
+
+
+class ModelSpec(ModelRequest):
+    """Normalized model configuration stored in a frozen spec."""
+
+    provider: str | None = None
+    adapter_version: str | None = None
+    context_policy: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("provider", "adapter_version")
+    @classmethod
+    def provenance_must_be_nonempty(cls, value: str | None) -> str | None:
+        return cls.string_values_must_be_nonempty(value)
 
 
 class SelectedModel(SearchModel):

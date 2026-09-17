@@ -7,6 +7,7 @@ import pytest
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.domain.goal import (
     GoalPlusActiveSession,
+    GoalPlusCommandConfig,
     GoalPlusControl,
     GoalPlusHostCommandInvocation,
     GoalPlusLinkedSearch,
@@ -14,10 +15,38 @@ from goal_plus.domain.goal import (
 )
 from goal_plus.domain.goal_authorization import require_control_session
 from goal_plus.domain.goal_authorization import tool_matches
+from goal_plus.domain.goal_authorization import validate_search_command_config
+from goal_plus.domain.search import SearchSpec
 from goal_plus.ports.goal_authorization import GoalToolTarget
 
 
 STAMP = "2026-09-05T00:00:00Z"
+
+
+@pytest.mark.parametrize("workers,count,accepted", [
+    ("model-a", None, True),
+    ("model-a", 3, True),
+    ("model-a*3", 3, True),
+    ("model-a*3", 2, False),
+    ("model-a*3", None, False),
+    ("model-b", 3, False),
+])
+def test_worker_command_only_constrains_explicit_counts(workers, count, accepted):
+    config = GoalPlusCommandConfig(max_parallel=3, workers=workers, worker_directive="workers")
+    spec = SearchSpec(
+        objective="maximize score", metric_name="score", metric_direction="maximize",
+        source_path=".", edit_surface={"allow": ["candidate.py"]},
+        budget={"max_parallel": 3},
+        process_verifiers=[{"name": "score", "role": "ranking_signal", "command": ["python", "evaluator.py"]}],
+        strategy={"models": [{"model": "model-a", "count": count}]},
+    )
+    before = spec.model_dump_json()
+    if accepted:
+        validate_search_command_config(config, spec)
+    else:
+        with pytest.raises(ValueError, match="workers="):
+            validate_search_command_config(config, spec)
+    assert spec.model_dump_json() == before
 
 
 @pytest.mark.parametrize("action", ["goal_plus_search_create", "goal_plus_search_prepare_recovery", "goal_plus_gate", "bash"])

@@ -15,6 +15,18 @@ Session 准备回执返回身份、工作区和选定模型，handle 不展开 m
 Main 使用稳定目录，candidate/checker 按角色与冻结能力过滤；宿主 gate 不进入模型目录。
 Codex 只识别已注册的 Goal Plus MCP namespace，其他插件的同名动作不会获得授权。
 
+宿主将嵌套参数显示为 `unknown` 时，Main 可用 `goal_plus_get_tool_schema(tool_name)`
+读取当前注册工具的完整 `inputSchema` 与说明。名称不带 MCP namespace；查询不改变状态，
+不暴露当前角色未注册的工具，也不维护第二份 schema。
+
+工具 schema 用本地 `$defs/$ref` 复用重复结构，并合并等价的基础类型联合；不裁剪字段、
+约束或可选功能。`shared_dir` 由 Main 选择 `enabled`，按需覆盖工具数、发布版本数、文件数、
+路径条目数、深度和字节限额；省略时使用默认值。模型 provenance/context policy 和固定动作由 runtime 补齐。
+`strategy.models[]` 分配各模型席位；`worker_launch` 设置全局 model、reasoning_effort、
+service_tier 默认值，各席位的非空设置优先。
+`strategy.global_evidence_mode` 直接选择证据共享方式，不再接受任意 `strategy.config`；
+`allocation.policy` 由 runtime 固定，Main 只配置 features 和 switch_margin。
+
 `goal_plus_session_run(run_id, candidate_id, call_id, prompt, timeout_seconds, new_session=false)`
 内部准备领域 session、打开 native session、绑定准确身份并执行一轮任务，立即返回
 session/call identity、实际状态及错误。后续 run 默认复用当前 session；worker 在一轮内自主工作。
@@ -86,6 +98,7 @@ host 负责，详见
 | `goal_plus_record_triage`        | 按需记录 Search 判断与缺项；普通 coding 无需调用                             |
 | `goal_plus_record_work_event`    | 按实际派发懒创建 subagent 记录，并管理 generation、结果和 Main 决策          |
 | `goal_plus_list_models`          | 列出 Codex 或 Pi host 当前可用模型                                           |
+| `goal_plus_get_tool_schema`      | Main 按需读取当前注册工具的完整参数合同                                      |
 | `goal_plus_record_search_result` | 绑定 selection/promotion Evidence，并预留 final report 路径                  |
 | `goal_plus_run_final_check`      | 启动只读 reviewer，等待结构化结论并关闭原生资源                              |
 | `goal_plus_run_work_item`        | 运行普通子任务，支持同 session 返工；Main 审查结果                           |
@@ -175,6 +188,8 @@ launch 前拒绝状态转换。检查使用 Codex/Pi 原生 model API，Goal Plu
 解析后的 `GoalPlusRecord.command_config` 是显式用户约束，配置 token 不再保留在
 `raw_goal` 中。freeze 准入校验完整 SearchSpec 与所有显式 command config，
 不再要求 ready draft。未知字段、非法枚举、非正整数和不一致的 worker count 仍由严格 schema 拒绝。
+`workers=A` 只约束模型，不要求 spec 省略 count；`workers=A*3` 才固定该模型的 count 为 3。
+spec 不填 count 时按 round-robin 分配；填写时必须全部填写，且总和等于 `max_parallel`。
 历史草稿通过 status detail 读取；未解决的评价问题使用 triage 记录。
 
 `max_duration_seconds` 不映射到 FrozenSpec。runtime 在创建 Goal Plus 记录时固定绝对
@@ -255,19 +270,39 @@ facade 再要求目标是 active、host-verified Goal，并校验 successor `sou
 猜测目标。candidate worker 的既有 run 工具不依赖 bootstrap 参数；它们继续由绑定的
 candidate/session identity 和 run owner 限制。
 
-freeze 成功仅返回 `frozen_spec_id` 和 `state="frozen"`；容量不足时附带 warning。
+freeze 成功返回 `frozen_spec_id`、`state="frozen"`、`metric_name`、`baseline={evaluation_completed,passed,score}`
+和 `promotion_verifiers` 名称；ThinkThread 的 baseline 尚未执行，返回 `null`。容量不足附带 warning。
 完整 FrozenSpec、verifier hash、技能清单和容量估算仍持久化。冻结尚未创建 run，
 后续 `goal_plus_search_create` 使用返回 ID；正常回执不回显提交的 SearchSpec。
+`strategy.name` 为 `agent_guided`（别名 agent/default）或 `random`（别名 random_mode），
+不是自定义标签；前者需要 candidate proposals。名称按原规则忽略大小写并将连字符转为下划线。
+`worker_budget` 不限时省略，否则至少填写一个正数上限。策略与宿主能力在 baseline 前校验。
 
-Git workspace_provider 的 freeze 会直接在 `SearchSpec.source_path` 执行一次完整 process-verifier suite，
-并在成功后记录 `FrozenSpec.source_artifact_ref` 与 `origin_verification`。MainAgent 负责给出正确
+Git freeze 在 `SearchSpec.source_path` 原位、Copy 在一次性源码副本执行完整 process suite，
+结果保存为 `origin_verification`；Git 同时固定 `source_artifact_ref`。Main 负责给出正确
 的 `source_path`、verifier `cwd` 和 artifact 路径；runtime 不扫描目录来猜另一个 task root。
 `goal_plus_search_create` 要求 origin 仍是同一个 clean commit。
 
 本地 Git/Copy 的 process suite 在冻结前必须实际输出有限数值分数，即使没有显式
 `ranking_signal`。只有正常退出或文本分数不足以冻结；缺失数值时返回
-`MissingNumericMetric`，不创建 FrozenSpec。指标从 stdout 的单行 JSON 对象读取，
-不读取任意结果文件，也不能用 promotion verifier 补足缺失的 process metric。
+`MissingNumericMetric`，不创建 FrozenSpec。指标从 stdout 最后一个可解析的单行 JSON 对象读取，
+允许混合日志，精确匹配 `metric_name`，不猜别名、不读取结果文件或运行时元数据。
+`returncode`、`elapsed_seconds` 为保留字段。每个 suite 至多一个 `ranking_signal`，由它供分；
+未声明时只允许一个非 diagnostic/anti-cheat verifier 产出分数。promotion 不能补足 process metric。
+stdout JSON 可用 `outcome=valid/invalid/error` 区分有效候选、确定无效候选、评估故障。
+
+| outcome | 退出码与诊断 | 含义 |
+| --- | --- | --- |
+| `valid` 或省略 | 退出 0，`error` 缺失/null | 候选通过 |
+| `invalid` | 退出 0/1，保留 `error` | `CandidateRejected`；有分数可作基线，但不能选中或提升 |
+| `error` | 保留退出码与 `error` | 评估故障，阻止冻结 |
+
+`valid` 布尔字段只作一致性检查：`valid=false` 必须显式分类，不能与 `outcome=valid` 并存；
+`valid=true` 不能与 `outcome=invalid` 并存。未知 outcome 拒绝。
+未知故障不得转为 invalid，超时、中断、anti-cheat 失败仍阻止启动；诊断角色失败不阻断 suite。
+`candidate_acceptance` 只是 worker 文字要求。`promotion_verifiers` 仅提升时执行，freeze 不证明其可用。
+`goal_plus_search_promote` 自动执行已配置的 promotion suite，无需先手动验证。
+Bootstrap 失败直接返回 verifier 名称、失败类别、已有的退出码/错误摘要及日志路径，无需重跑获取原因。
 
 `goal_plus_search_start_batch` 对 Git run 先只物化 `c001`，在真实 worktree 中重跑同一 suite，并把结果
 记录为 `RunRecord.workspace_bootstrap_verification`。通过后才物化其余 candidate。失败会自动以
@@ -435,7 +470,7 @@ Codex MCP 对 context、Global Evidence、detail 和完整 iteration history 使
 并切到新的精确 artifact。reference 不是 peer 的活动 workspace，所有候选实现修改仍发生在自己的 candidate
 workspace。runtime 不要求 worker 关闭 reference；目录随 run state 保留，数量受实际 worker 数限制。
 
-`strategy.config.global_evidence_mode` 决定 candidate 如何收到 Evidence：
+`strategy.global_evidence_mode` 决定 candidate 如何收到 Evidence：
 
 - `manual`：默认模式，由 candidate 显式读取共享 run view；
 - `auto`：除显式读取外，每次成功的 worker process verifier 后注入 `global_evidence_snapshot`；
@@ -677,12 +712,11 @@ Annotation Child 不激活命令执行或 verifier 工具，也不为读取 Arti
 | `objective` | 可度量的优化目标 |
 | `metric_name`, `metric_direction` | ranking value 和方向 |
 | `source_path` | baseline source snapshot |
-| `editable_globs`, `forbidden_globs` | candidate edit surface |
-| `process_verifiers` | correctness gate |
-| `ranking_signals` | 产生 metric 的 command |
+| `edit_surface.allow`, `edit_surface.deny` | candidate edit surface |
+| `process_verifiers` | 评分、硬 gate 与可选诊断命令；`role=ranking_signal` 指定评分来源 |
 | `promotion_verifiers` | promotion 前必须通过的检查 |
 | `budget.max_parallel` | 初始 candidate 和活跃 worker 数 |
-| `candidate_acceptance` | 受界且显式下发给 worker 的验收条件 |
+| `candidate_acceptance` | 下发给 worker 的文字要求，不自动执行验收 |
 | `constraints` | runtime 私有的结构化控制数据，不下发给 worker |
 | `strategy.worker_budget` | 可省略的单次执行上限；不强制最低时长或验证次数 |
 | `workspace.provider` | `git_worktree`（默认）、`copy` 或 `thinkthread` |

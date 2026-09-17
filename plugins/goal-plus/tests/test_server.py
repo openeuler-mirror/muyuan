@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from fastmcp import Client, FastMCP
+from fastmcp.utilities.json_schema import dereference_refs
 import pytest
 
 from goal_plus import __version__
@@ -31,7 +32,7 @@ def test_ready_spec_draft_returns_actionable_tool_error_without_state_change(tmp
     })
     goal_path = root / "goal-plus" / goal.goal_plus_id / "goal.json"
     before = goal_path.read_bytes()
-    spec = spec_for(project).model_dump(mode="json")
+    spec = spec_for(project).model_dump(mode="json", exclude_defaults=True)
     incomplete = {key: value for key, value in spec.items() if key != "process_verifiers"}
     draft = {
         "baseline": {}, "metric": {}, "correctness_gate": {}, "edit_surface": {},
@@ -64,6 +65,42 @@ def test_create_mcp(tmp_path: Path) -> None:
     assert isinstance(mcp, FastMCP)
     assert mcp.version == __version__
     assert not runtime_root.exists()
+
+
+def test_tool_schema_returns_complete_registered_contract_without_state(tmp_path):
+    root = tmp_path / ".gp"
+
+    async def exercise():
+        async with Client(create_mcp(root, caller_role="main")) as client:
+            catalog = {tool.name: tool for tool in await client.list_tools()}
+            for name in ("goal_plus_search_freeze_spec", "goal_plus_search_start_batch"):
+                response = await client.call_tool("goal_plus_get_tool_schema", {"tool_name": name})
+                contract = json.loads(response.content[0].text)
+                assert contract == {
+                    "name": name,
+                    "description": catalog[name].description,
+                    "inputSchema": catalog[name].model_dump(by_alias=True)["inputSchema"],
+                }
+                if name == "goal_plus_search_freeze_spec":
+                    spec = dereference_refs(contract["inputSchema"])["properties"]["spec"]["properties"]
+                    verifier = spec["process_verifiers"]["items"]
+                    assert {"name", "command"} <= set(verifier["required"])
+                    assert verifier["properties"]["command"]["items"]["type"] == "string"
+                    models = spec["strategy"]["properties"]["models"]["items"]["properties"]
+                    assert {"model", "count", "reasoning_effort"} <= set(models)
+            for name in ("missing", "goal_plus_search_get_agent_context"):
+                rejected = await client.call_tool(
+                    "goal_plus_get_tool_schema", {"tool_name": name}, raise_on_error=False,
+                )
+                assert rejected.is_error
+            assert not root.exists()
+
+        async with Client(create_mcp(
+            root, caller_role="candidate", caller_agent_session_id="schema-only",
+        )) as client:
+            assert "goal_plus_get_tool_schema" not in {tool.name for tool in await client.list_tools()}
+
+    asyncio.run(exercise())
 
 
 def test_public_catalog_has_one_search_spec_and_no_removed_aliases(tmp_path):
@@ -189,6 +226,7 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
     assert history_detail["default"] is False
 
     assert set(tools) == {
+        "goal_plus_get_tool_schema",
         "goal_plus_search_freeze_spec",
         "goal_plus_search_create",
         "goal_plus_search_status",
@@ -261,7 +299,7 @@ def test_mcp_exposes_structured_triage_and_candidate_proposals(tmp_path: Path) -
 
     triage = tools["goal_plus_record_triage"].parameters["properties"]["triage"]
     proposals = tools["goal_plus_search_start_batch"].parameters["properties"]["proposals"]
-    proposal_items = proposals["anyOf"][0]["items"]
+    proposal_items = proposals["items"]
 
     assert set(triage["required"]) == {
         "is_optimization",
@@ -331,7 +369,7 @@ def test_run_verifier_exposes_optional_agent_session_id(tmp_path: Path) -> None:
     assert "toolization_decision" in schema["properties"]
     assert "adopted_tools" not in schema["properties"]
     assert schema["properties"]["scope"]["enum"] == ["process", "promotion"]
-    decision_schema = schema["properties"]["toolization_decision"]["anyOf"][0]
+    decision_schema = schema["properties"]["toolization_decision"]
     signal_schema = decision_schema["properties"]["signals"]
     assert signal_schema["items"]["enum"] == [
         "repeated_workflow",
@@ -392,7 +430,8 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     mcp = create_mcp(tmp_path / ".search")
     tools = asyncio.run(tools_by_name(mcp))
 
-    spec_schema = tools["goal_plus_search_freeze_spec"].parameters["properties"]["spec"]
+    schema = tools["goal_plus_search_freeze_spec"].parameters
+    spec_schema = dereference_refs(schema)["properties"]["spec"]
 
     assert set(spec_schema["required"]) >= {
         "objective",
@@ -410,6 +449,16 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     assert verifier["properties"]["command"]["type"] == "array"
     strategy = spec_schema["properties"]["strategy"]
     assert "worker_budget" in strategy["properties"]
+    model = strategy["properties"]["models"]["items"]
+    assert set(model["properties"]) == {"model", "count", "reasoning_effort", "service_tier"}
+    worker_budget = strategy["properties"]["worker_budget"]["anyOf"][0]
+    assert set(worker_budget["properties"]) == {"max_runtime_seconds", "max_turns"}
+    assert set(spec_schema["properties"]["shared_dir"]["properties"]) == {
+        "enabled", "max_tools_per_iteration", "max_published_versions_per_family",
+        "max_files_per_iteration", "max_path_entries_per_iteration", "max_depth", "max_bytes_per_iteration",
+    }
+    worker_defaults = strategy["properties"]["worker_launch"]
+    assert set(worker_defaults["properties"]) == {"model", "reasoning_effort", "service_tier"}
     assert "evidence_annotator" in strategy["properties"]
     orchestration = strategy["properties"]["orchestration_mode"]
     assert orchestration["default"] == "parallel_loops"
@@ -421,27 +470,22 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     assert "verifier" not in strategy["properties"]
     selection = strategy["properties"]["selection"]["properties"]
     assert set(selection) == {"ranking_keys", "ranking_tolerance"}
-    allocation_schema = next(
-        item
-        for item in strategy["properties"]["allocation"]["anyOf"]
-        if item.get("type") == "object"
-    )
+    assert selection["ranking_keys"]["items"]["enum"] == ["hard_score", "quality_score"]
+    allocation_schema = strategy["properties"]["allocation"]
     assert set(allocation_schema["properties"]) == {
-        "policy", "features", "switch_margin"
+        "features", "switch_margin"
     }
+    assert "config" not in strategy["properties"]
+    assert strategy["properties"]["global_evidence_mode"]["anyOf"][0]["enum"] == [
+        "manual", "auto", "independent",
+    ]
     assert "search_scheduler" not in strategy["properties"]
 
     budget = spec_schema["properties"]["budget"]["properties"]
+    assert set(budget) == {"max_parallel", "max_candidates"}
     assert "初始创建并实际并行工作" in budget["max_parallel"]["description"]
     assert "null 表示不限制" in budget["max_candidates"]["description"]
     assert "大于等于 max_parallel" in budget["max_candidates"]["description"]
-
-    freeze_description = " ".join(tools["goal_plus_search_freeze_spec"].description.split())
-    assert "唯一决定初始候选 Agent 数" in freeze_description
-    assert "一次性源码副本" in freeze_description
-    assert "GOAL_PLUS_VERIFIER_TMPDIR" in freeze_description
-    assert "固定 `/tmp` 路径不安全" in freeze_description
-    assert "clean HEAD" in freeze_description
 
     verifier_description = " ".join(
         tools["goal_plus_search_run_verifier"].description.split()

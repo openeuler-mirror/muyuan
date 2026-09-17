@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
+import json
 import threading
 
 import pytest
@@ -42,6 +43,65 @@ def prepared_candidates(tmp_path, monkeypatch):
 
 def candidate_record(runtime, session):
     return runtime.candidate_creation.state.read_candidate(session.run_id, session.candidate_id)
+
+
+@pytest.mark.parametrize("metrics,failure", [
+    ({"combined_score": 0, "outcome": "valid", "error": None, "returncode": 99}, None),
+    ({"combined_score": 0, "error": "broken evaluator"}, "VerifierCommandFailed"),
+    ({"score": 9}, "MissingNumericMetric"),
+])
+def test_thinkthread_uses_shared_metric_and_error_contract(prepared_candidates, monkeypatch, metrics, failure):
+    runtime, sdk, [session] = prepared_candidates()
+    monkeypatch.setattr(
+        "goal_plus.infrastructure.verifiers.thinkthread.decode_fs_run_output",
+        lambda _result: (json.dumps(metrics), ""),
+    )
+    report = verify_candidate(runtime, sdk, session)
+    ranking = next(result for result in report.verifier_results if result.role == "ranking_signal")
+    assert ranking.failure_class == failure
+    assert ranking.passed is (failure is None)
+    assert ranking.metrics["returncode"] == 0
+    assert report.process_passed is (failure is None)
+
+
+@pytest.mark.parametrize("exit_status,failure", [
+    ({"kind": "code", "code": 1}, None),
+    ({"kind": "signal", "signal": 15}, "VerifierSignal"),
+    ({"kind": "timeout"}, "Timeout"),
+])
+def test_thinkthread_invalid_baseline_preserves_exit_and_rejects_interruption(
+    prepared_candidates, monkeypatch, exit_status, failure,
+):
+    invoke = IntegratedAgentPosix.invoke
+
+    def classified_output(self, operation, params=None, **kwargs):
+        result = invoke(self, operation, params, **kwargs)
+        if operation == "fs.run":
+            result["exit"] = exit_status
+        return result
+
+    monkeypatch.setattr(IntegratedAgentPosix, "invoke", classified_output)
+    monkeypatch.setattr(
+        "goal_plus.infrastructure.verifiers.thinkthread.decode_fs_run_output",
+        lambda _result: (json.dumps({
+            "combined_score": -2, "outcome": "invalid", "error": "candidate rejected",
+        }), ""),
+    )
+    if failure:
+        with pytest.raises(ValueError, match=failure):
+            prepared_candidates()
+        return
+    runtime, sdk, [session] = prepared_candidates()
+    baseline = runtime.search_run.state.read_run(session.run_id).workspace_bootstrap_verification
+    assert baseline.evaluation_completed and not baseline.passed
+    assert baseline.aggregate_score == -2
+    result = baseline.verifier_results[0]
+    assert result.failure_class == "CandidateRejected"
+    assert result.metrics["returncode"] == 1
+    assert result.metrics["error"] == "candidate rejected"
+    report = verify_candidate(runtime, sdk, session)
+    assert not report.process_passed
+    assert report.verifier_results[0].failure_class == "CandidateRejected"
 
 
 def test_common_verifier_queries_exact_tt_attempt_without_resubmitting(prepared_candidates):

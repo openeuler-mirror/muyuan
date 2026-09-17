@@ -29,7 +29,10 @@ def test_freeze_receipt_only_expands_capacity_warning(fits):
             "code": "WorkspaceCapacityExceeded", "required_bytes": 100, "available_bytes": 1000,
         }]
     else:
-        assert receipt == {"frozen_spec_id": frozen.frozen_spec_id, "state": "frozen"}
+        assert "warnings" not in receipt
+    assert set(receipt) - {"warnings"} == {
+        "frozen_spec_id", "state", "metric_name", "baseline", "promotion_verifiers",
+    }
     assert frozen.model_dump(mode="json") == before
 
 

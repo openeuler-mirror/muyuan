@@ -52,6 +52,9 @@ CandidateAcceptanceCriterion = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
 ]
 
+# Match the existing bounded preflight error excerpts; full output stays in logs.
+VERIFIER_ERROR_EXCERPT_CHARS = 2_000
+
 
 class RunState(str, Enum):
     FROZEN_SPEC = "frozen_spec"
@@ -98,7 +101,6 @@ class Budget(SearchModel):
             "有界值必须大于等于 max_parallel。"
         ),
     )
-    max_tokens: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def candidate_limit_covers_parallel_width(self) -> "Budget":
@@ -117,13 +119,16 @@ VerifierInvalidationReason = Literal[
 
 
 class EditSurface(SearchModel):
-    allow: list[str] = Field(min_length=1)
-    deny: list[str] = Field(default_factory=list)
+    allow: list[str] = Field(min_length=1, description="Editable paths/globs relative to source_path.")
+    deny: list[str] = Field(default_factory=list, description="Read-only paths/globs; overrides allow.")
     max_file_changes: int | None = Field(default=None, gt=0)
 
 
-class StrategySpec(SearchModel):
-    name: str = "agent_guided"
+class StrategyOptions(SearchModel):
+    name: str = Field(
+        default="agent_guided",
+        description="agent_guided (aliases agent/default) requires proposals; random (alias random_mode) does not. Not a custom label.",
+    )
     orchestration_mode: Literal[
         "rolling_candidates",
         "parallel_loops",
@@ -132,8 +137,7 @@ class StrategySpec(SearchModel):
     inner_agent: str | None = Field(
         default=None,
         description=(
-            "Host-neutral inner-agent adapter id. New frozen specs normalize this "
-            "to an explicit value."
+            "Host-neutral adapter: autoresearch or common. Omit for the host default."
         ),
     )
     worker_budget: WorkerBudget | None = None
@@ -150,7 +154,6 @@ class StrategySpec(SearchModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
-    config: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("name")
     @classmethod
@@ -170,7 +173,7 @@ class StrategySpec(SearchModel):
         return value.strip() if value is not None else None
 
     @model_validator(mode="after")
-    def search_mode_configuration_is_consistent(self) -> "StrategySpec":
+    def search_mode_configuration_is_consistent(self) -> "StrategyOptions":
         adaptive_search = self.orchestration_mode == "adaptive_search"
         if (
             "quality_score" in self.selection.ranking_keys
@@ -195,26 +198,24 @@ class StrategySpec(SearchModel):
         )
 
 
+class StrategySpec(StrategyOptions):
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
 class VerifierCommand(SearchModel):
     name: str = Field(min_length=1)
-    role: VerifierRole
+    role: VerifierRole = Field(description="ranking_signal selects the score; diagnostic_signal is non-blocking. Other roles are gates, not JSON field predicates.")
     command: list[str] = Field(min_length=1)
-    cwd: str = "."
+    cwd: str = Field(default=".", description="Relative to the source/candidate workspace; normally '.'.")
     timeout_seconds: int = Field(default=300, gt=0)
     resource_lock: str | None = Field(
         default=None,
         min_length=1,
         description=(
-            "可选的 host 级独占资源名。值相同的 verifier 命令会跨候选和 run 串行执行。"
+            "Host-wide exclusive resource name. Each declared device pool requires a <pool_id>:0 lock."
         ),
     )
     feedback_policy: FeedbackPolicy = FeedbackPolicy.VISIBLE_TO_WORKERS
-    expected_outputs: list[str] = Field(
-        default_factory=list,
-        description=(
-            "候选工作区中预期的产物路径或 glob；此字段不解析 verifier stdout metric。"
-        ),
-    )
 
     @field_validator("resource_lock")
     @classmethod
@@ -262,9 +263,9 @@ class DevicePoolInventory(SearchModel):
 
 class SearchSpec(SearchModel):
     objective: str = Field(min_length=1)
-    metric_name: str = Field(min_length=1)
+    metric_name: str = Field(min_length=1, description="Exact numeric stdout JSON key; no aliases. returncode/elapsed_seconds are reserved.")
     metric_direction: Literal["minimize", "maximize"]
-    source_path: str
+    source_path: str = Field(min_length=1, description="Task source root to snapshot into candidate workspaces.")
     edit_surface: EditSurface
     budget: Budget
     process_verifiers: list[VerifierCommand] = Field(min_length=1)
@@ -273,12 +274,27 @@ class SearchSpec(SearchModel):
     candidate_acceptance: list[CandidateAcceptanceCriterion] = Field(
         default_factory=list,
         max_length=32,
+        description="Worker instructions, not executable gates. Enforce acceptance in verifier commands.",
     )
     constraints: dict[str, Any] = Field(default_factory=dict)
     root_hypotheses: list[str] = Field(default_factory=list)
     strategy: StrategySpec = Field(default_factory=StrategySpec)
     workspace: WorkspaceSpec = Field(default_factory=WorkspaceSpec)
     shared_dir: SharedDirSpec = Field(default_factory=SharedDirSpec)
+
+    @field_validator("metric_name")
+    @classmethod
+    def metric_is_not_runtime_metadata(cls, value: str) -> str:
+        if value in {"returncode", "elapsed_seconds"}:
+            raise ValueError("metric_name must not use reserved runtime metadata: returncode, elapsed_seconds")
+        return value
+
+    @field_validator("process_verifiers", "promotion_verifiers")
+    @classmethod
+    def unambiguous_ranking_source(cls, commands: list[VerifierCommand]) -> list[VerifierCommand]:
+        if sum(command.role == VerifierRole.RANKING_SIGNAL for command in commands) > 1:
+            raise ValueError("each verifier suite permits at most one ranking_signal; combine metrics in that verifier")
+        return commands
 
     @field_validator("source_path")
     @classmethod
@@ -351,6 +367,13 @@ class BootstrapVerifierResult(SearchModel):
     log_path: Path | None = None
     failure_class: str | None = None
 
+    @property
+    def blocks_bootstrap(self) -> bool:
+        return (
+            not self.passed and self.role != VerifierRole.DIAGNOSTIC_SIGNAL
+            and (self.failure_class != "CandidateRejected" or self.role == VerifierRole.ANTI_CHEAT_GATE)
+        )
+
 
 class BootstrapVerification(SearchModel):
     phase: Literal["origin", "workspace_relocation"]
@@ -362,6 +385,31 @@ class BootstrapVerification(SearchModel):
     candidate_id: str | None = None
     started_at: str
     completed_at: str
+
+    @property
+    def evaluation_completed(self) -> bool:
+        return self.passed or bool(self.verifier_results) and all(
+            not result.blocks_bootstrap for result in self.verifier_results
+        )
+
+    def failure_detail(self) -> str:
+        failed = next(
+            (result for result in self.verifier_results if result.blocks_bootstrap),
+            None,
+        )
+        if failed is None:
+            return ""
+        details = [f"{failed.name}: {failed.failure_class}"]
+        for key in ("returncode", "error", "timeout_seconds", "cwd"):
+            value = failed.metrics.get(key)
+            if value is not None:
+                excerpt = str(value)
+                if len(excerpt) > VERIFIER_ERROR_EXCERPT_CHARS:
+                    excerpt = excerpt[:VERIFIER_ERROR_EXCERPT_CHARS] + "... [truncated]"
+                details.append(f"{key}={excerpt}")
+        if failed.log_path is not None:
+            details.append(f"log_path={failed.log_path}")
+        return " " + "; ".join(details)
 
     def require_numeric_metric(self, metric_name: str) -> None:
         if self.aggregate_score is None or not math.isfinite(self.aggregate_score):

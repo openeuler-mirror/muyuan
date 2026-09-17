@@ -52,10 +52,10 @@ def prepare_circle(project: Path, model: str, reasoning_effort: str) -> dict[str
     spec["strategy"] = {
         "name": "agent_guided", "orchestration_mode": "parallel_loops",
          "inner_agent": "common",
-        "worker_launch": {"model": model, "reasoning_effort": reasoning_effort},
+        "models": [{"model": model, "reasoning_effort": reasoning_effort}],
         "evidence_annotator": { "model": model,
                                "reasoning_effort": reasoning_effort, "timeout_seconds": 300},
-        "config": {"global_evidence_mode": "manual"},
+        "global_evidence_mode": "manual",
     }
     (source / "spec.json").write_text(json.dumps(spec, indent=2) + "\n")
     hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()

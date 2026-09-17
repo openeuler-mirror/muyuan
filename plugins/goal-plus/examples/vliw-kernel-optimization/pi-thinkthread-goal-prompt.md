@@ -1,7 +1,7 @@
 /goal-plus mode=probe max_parallel=2 max_duration_seconds=900 workspace_provider=thinkthread promotion_mode=artifact_only strategy=agent_guided inner_agent=autoresearch 在 15 分钟内多轮优化 VLIW kernel，并验证 retained candidate 的真实续跑。
 <!-- markdownlint-disable-file MD013 MD041 -->
 
-完整采用当前目录的 `thinkthread-search-spec.json`，保留 strategy.config、worker_budget、
+完整采用当前目录的 `thinkthread-search-spec.json`，保留 strategy.global_evidence_mode、worker_budget、
 evidence_annotator 和 constraints。source_path 为只读 `workspace-template`，冻结所有
 非 solution.py 的评价输入。只允许 candidate 修改自己的 solution.py，不改模拟器、runner、
 verifier、案例或 score adapter，不硬编码案例 seed，不访问网络。
