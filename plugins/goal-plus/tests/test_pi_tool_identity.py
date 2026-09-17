@@ -239,6 +239,9 @@ const mocks = {
     export async function runJsonCli(pi, ctx, name, args) {
       if (name === "host_mcp_manifest") return {details: globalThis.mcpManifest};
       globalThis.calls.push({name, args});
+      if (name === "goal_plus_status" && globalThis.statusFailure) {
+        return {details: {ok: false, error: "fixture status failure", tool: name}};
+      }
       let details = name === "goal_plus_gate"
         ? {decision: "block", reason: "fixture phase gate",
            continuation_prompt: "fixture continuation prompt"}
@@ -440,7 +443,7 @@ if (process.env.GOAL_PLUS_PI_PROGRESS_TEST === "1") {
     goal_plus: {goal_plus_id: "gp_0001", status: "active",
       created_at: "2026-09-16T10:00:00.000Z", updated_at: "2026-09-16T10:02:06.000Z",
       current_search_run_id: "run_1"},
-    search_tasks: [{run_id: "run_1", is_current: true, state: "active",
+    search_tasks: [{run_id: "run_1", is_current: true, state: "evaluating",
       candidates_total: 2, candidates_evaluated: 2, verifier_runs_total: 4,
       best_candidate_id: "c001", best_score: 1.93276,
       statistics: {scores: {metric_name: "sum_radii", direction: "maximize",
@@ -523,13 +526,16 @@ if (process.env.GOAL_PLUS_PI_SEARCH_PROGRESS_TEST === "1") {
   };
   ctx.ui.setWorkingMessage = () => {};
   pi.sendMessage = () => {}; pi.sendUserMessage = () => {};
-  // A Goal that is not exploring a Search run must not create the frame.
-  globalThis.status = {...globalThis.status, current_search_run_id: undefined};
+  // A Goal that is not exploring a Search run must not create the frame - not
+  // even a paused one (paused is not a blocked Search).
+  globalThis.status = {...globalThis.status, current_search_run_id: undefined,
+    control: {state: "paused", version: 1}};
   globalThis.monitorSnapshot = snapshot(null);
   await commands.get("goal-plus").handler("fixture", ctx);
   await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
   await events.get("agent_settled")({}, ctx);
   assert.equal(widgets.size, 0, "a Goal without a Search run must not show the frame");
+  globalThis.status = {...globalThis.status, control: {state: "active", version: 1}};
   // An in-progress Search run shows the frame at the turn boundary.
   globalThis.status = {...globalThis.status, current_search_run_id: "run_1"};
   globalThis.monitorSnapshot = snapshot("running");
@@ -556,6 +562,13 @@ if (process.env.GOAL_PLUS_PI_SEARCH_PROGRESS_TEST === "1") {
   const recoverDeadline = Date.now() + 9_000;
   while (renders === rendersBeforeFailure && Date.now() < recoverDeadline) await wait(200);
   assert.ok(renders > rendersBeforeFailure, "the interval must keep retrying after a failed read");
+  // A failed status read is not evidence the Goal ended either: the frame stays
+  // and the poll keeps retrying until a read succeeds again.
+  globalThis.statusFailure = true;
+  const statusFailureDeadline = Date.now() + 6_500;
+  while (Date.now() < statusFailureDeadline) await wait(200);
+  assert.equal(widgets.size, 1, "a failed status read must not clear the surfaces");
+  globalThis.statusFailure = false;
   // A finished Search run keeps the frame during the hide delay, then clears it.
   globalThis.monitorSnapshot = snapshot("promoted");
   await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
@@ -564,6 +577,17 @@ if (process.env.GOAL_PLUS_PI_SEARCH_PROGRESS_TEST === "1") {
   const hideDeadline = Date.now() + 15_000;
   while (widgets.size > 0 && Date.now() < hideDeadline) await wait(200);
   assert.equal(widgets.size, 0, "the frame must disappear after the Search run finished");
+  // A settled RunState (waiting on Main, e.g. selection_blocked) must not
+  // resurrect the frame or restart the idle poll.
+  globalThis.monitorSnapshot = snapshot("selection_blocked");
+  await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
+  await events.get("agent_settled")({}, ctx);
+  assert.equal(widgets.size, 0, "a settled run must not show the live frame");
+  const settledCalls = calls.length;
+  const idleDeadline = Date.now() + 6_500;
+  while (Date.now() < idleDeadline) await wait(200);
+  assert.ok(!calls.slice(settledCalls).some(call => call.name === "goal_plus_monitor_snapshot"),
+    "the idle poll must not start for a settled run");
   await events.get("session_shutdown")({reason: "test"}, ctx);
   console.log("search progress checks passed");
   process.exit(0);

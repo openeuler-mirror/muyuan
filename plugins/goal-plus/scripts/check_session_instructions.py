@@ -455,12 +455,12 @@ def audit_session(path: Path, *, agent_harness: str, overview: str, leaf_id: str
             entries = {}
             sequences = {}
             archive_leaf = None
-            for digest, metadata in sorted(index["batches"].items(), key=lambda item: (
+            for batch_digest, metadata in sorted(index["batches"].items(), key=lambda item: (
                 item[1]["captured_at"], item[1]["stream_id"], item[1]["sequence"],
             )):
-                if not re.fullmatch(r"[a-f0-9]{64}", digest):
+                if not re.fullmatch(r"[a-f0-9]{64}", batch_digest):
                     raise ValueError("invalid archive filename")
-                batch = json.loads((path / f"{digest}.json").read_text())
+                batch = json.loads((path / f"{batch_digest}.json").read_text())
                 if hashlib.sha256(json.dumps(batch, sort_keys=True, separators=(",", ":")).encode()).hexdigest() != metadata["content_sha256"]:
                     raise ValueError("archive content hash mismatch")
                 if batch["session_id"] != index["session_id"]:

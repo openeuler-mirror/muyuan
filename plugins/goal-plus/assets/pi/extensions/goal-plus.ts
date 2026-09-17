@@ -1368,11 +1368,21 @@ async function readMonitorSnapshot(
 // interval, and disappear shortly after the run stops being in progress.
 const SEARCH_PROGRESS_REFRESH_MS = 5000;
 const SEARCH_PROGRESS_HIDE_DELAY_MS = 5000;
+// Sustained unknown reads back off instead of burning two RPC round-trips
+// every 5s while idle; any authoritative read resets the cadence.
+const SEARCH_PROGRESS_IDLE_REFRESH_MS = 30000;
+const SEARCH_PROGRESS_UNKNOWN_STREAK = 3;
+// Only these RunStates still move on their own. selection_blocked,
+// ready_to_promote and the terminal states have settled - nothing changes
+// until Main acts again - so the idle poll stops and a turn boundary restarts
+// it if the run resumes. A future RunState lands here too, never in "running".
+const RUN_STATES_IN_PROGRESS = new Set(["frozen_spec", "running", "waiting_for_workers", "evaluating", "selecting"]);
 
 // A failed or incomplete read is "unknown": it must never hide the surfaces or
 // stop the retry loop, because only an authoritative read may end a Search run.
 type SearchProgressPhase = "running" | "blocked" | "finished" | "unknown";
-let searchProgressPoll: ReturnType<typeof setInterval> | undefined;
+let searchProgressPoll: ReturnType<typeof setTimeout> | undefined;
+let searchProgressUnknownStreak = 0;
 let searchProgressHide: ReturnType<typeof setTimeout> | undefined;
 let searchProgressPhaseShown: SearchProgressPhase | undefined;
 let searchProgressChecking = false;
@@ -1387,8 +1397,9 @@ function progressDebug(event: string, details: Record<string, unknown>): void {
 }
 
 function stopSearchProgressPoll(): void {
-	if (searchProgressPoll !== undefined) clearInterval(searchProgressPoll);
+	if (searchProgressPoll !== undefined) clearTimeout(searchProgressPoll);
 	searchProgressPoll = undefined;
+	searchProgressUnknownStreak = 0;
 }
 
 function cancelSearchProgressHide(): void {
@@ -1406,22 +1417,25 @@ function scheduleSearchProgressHide(ctx: ExtensionContext): void {
 
 function ensureSearchProgressPoll(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	if (searchProgressPoll !== undefined) return;
-	searchProgressPoll = setInterval(() => { void checkSearchProgress(pi, ctx); }, SEARCH_PROGRESS_REFRESH_MS);
+	const idle = searchProgressUnknownStreak >= SEARCH_PROGRESS_UNKNOWN_STREAK;
+	searchProgressPoll = setTimeout(() => {
+		searchProgressPoll = undefined;
+		void checkSearchProgress(pi, ctx);
+	}, idle ? SEARCH_PROGRESS_IDLE_REFRESH_MS : SEARCH_PROGRESS_REFRESH_MS);
 }
 
 function searchProgressPhase(
 	status: GoalPlusStatusPayload,
 	snapshot: Record<string, unknown> | undefined,
 ): SearchProgressPhase {
-	if (status.control?.state === "paused" || status.status === "blocked") return "blocked";
 	const runId = stringFrom(status.current_search_run_id);
+	// Without a Search run there is no Search surface, whatever the Goal's
+	// control state is: pausing a plain Goal must not render a blocked frame.
 	if (!runId) return "finished";
+	if (status.control?.state === "paused" || status.status === "blocked") return "blocked";
 	const task = monitorSearchTask(snapshot);
 	if (!task || task.is_current !== true || stringFrom(task.run_id) !== runId) return "unknown";
-	const runState = stringFrom(task.state);
-	return runState === "promoted" || runState === "aborted" || runState === "failed"
-		? "finished"
-		: "running";
+	return RUN_STATES_IN_PROGRESS.has(stringFrom(task.state)) ? "running" : "finished";
 }
 
 function applySearchProgress(
@@ -1475,6 +1489,7 @@ function observeSearchProgress(
 	});
 	applySearchProgress(ctx, status, snapshot);
 	const phase = searchProgressPhase(status, snapshot);
+	searchProgressUnknownStreak = phase === "unknown" ? searchProgressUnknownStreak + 1 : 0;
 	if (phase === "running" || phase === "unknown") ensureSearchProgressPoll(pi, ctx);
 }
 
@@ -1484,18 +1499,29 @@ async function checkSearchProgress(pi: ExtensionAPI, ctx: ExtensionContext): Pro
 	searchProgressChecking = true;
 	try {
 		const commandCtx = commandContextFrom(ctx);
-		const status = await refreshActiveGoal(pi, commandCtx, false);
-		if (!status?.goal_plus_id) {
-			stopSearchProgressPoll();
-			if (searchProgressPhaseShown !== undefined) scheduleSearchProgressHide(ctx);
+		// Only an authoritative read may end the surfaces. A failure payload is
+		// not "the Goal is gone": it is unknown and keeps the retry loop alive.
+		const result = await runJsonCli(pi, commandCtx, "goal_plus_status", { goal_plus_id: activeGoalPlusId });
+		if (isRecord(result.details) && result.details.ok === false) {
+			progressDebug("goal_plus_progress_read_failed", { tool: "goal_plus_status" });
+			searchProgressUnknownStreak += 1;
+			if (searchProgressPhaseShown !== undefined) ensureSearchProgressPoll(pi, ctx);
 			return;
 		}
-		observeSearchProgress(pi, ctx, status, await readMonitorSnapshot(pi, commandCtx, status));
+		const status = statusFrom(result.details);
+		if (status?.goal_plus_id) {
+			cachedGoalStatus = status;
+			observeSearchProgress(pi, ctx, status, await readMonitorSnapshot(pi, commandCtx, status));
+			return;
+		}
+		stopSearchProgressPoll();
+		if (searchProgressPhaseShown !== undefined) scheduleSearchProgressHide(ctx);
 	} catch (error) {
 		// A failed read must not clear the surfaces or stop the retry loop.
 		progressDebug("goal_plus_progress_read_failed", {
 			error: error instanceof Error ? error.message : String(error),
 		});
+		searchProgressUnknownStreak += 1;
 		if (searchProgressPhaseShown !== undefined) ensureSearchProgressPoll(pi, ctx);
 	} finally {
 		searchProgressChecking = false;
@@ -2963,10 +2989,18 @@ export default async function (pi: ExtensionAPI) {
 	});
 	pi.on("context", async (event, ctx) => {
 		if (role !== "main" || !activeGoalPlusId) return;
-		const status = await refreshActiveGoal(pi, commandContextFrom(ctx), false);
 		const messages = event.messages;
 		const isRequest = (message: unknown) => isRecord(message) && message.role === "custom"
 			&& [GOAL_PLUS_COMMAND_CONTEXT_TYPE, GOAL_PLUS_MUST_CONTINUE_TYPE].includes(String(message.customType));
+		// Only cancel a stale, not-yet-run automatic request. Historical requests
+		// must never abort an ordinary user turn or an already running Main turn.
+		const lastInput = [...messages].reverse().find((message) => message.role === "user" || message.role === "assistant" || isRequest(message));
+		// This hook fires before every LLM call; a status round-trip is worth it
+		// only when a Goal Plus request is about to be consumed. Pruning
+		// historical requests reuses the turn's cached status.
+		const status = lastInput !== undefined && isRequest(lastInput)
+			? await refreshActiveGoal(pi, commandContextFrom(ctx), false)
+			: cachedGoalStatus;
 		const stale = (message: unknown) => {
 			if (!isRequest(message) || !isRecord(message) || !isRecord(message.details)) return false;
 			const d = message.details;
@@ -2975,14 +3009,12 @@ export default async function (pi: ExtensionAPI) {
 				|| d.control_version !== status.control?.version
 				|| (d.session_id !== undefined && d.session_id !== ctx.sessionManager.getSessionId());
 		};
-		// Only cancel a stale, not-yet-run automatic request. Historical requests
-		// must never abort an ordinary user turn or an already running Main turn.
-		const lastInput = [...messages].reverse().find((message) => message.role === "user" || message.role === "assistant" || isRequest(message));
 		if (lastInput && stale(lastInput)) {
+			const pruned = messages.filter((message) => stale(message)).length;
 			appendInjectionObservation(pi, ctx, {
 				kind: "context_prune", role, channel: "context_filter",
 				target_id: status?.goal_plus_id,
-				pruned: messages.filter((message) => stale(message)).length,
+				pruned,
 				reason: "stale_request_abort",
 			});
 			suppressedContinuationAbort = true;

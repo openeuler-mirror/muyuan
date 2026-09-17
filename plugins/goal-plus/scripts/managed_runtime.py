@@ -213,19 +213,26 @@ def unbind(host: str, config: Path, *, dry_run: bool = False) -> None:
             binding_path(host, config).unlink(missing_ok=True)
 
 
-def _unreferenced_releases() -> list[Path]:
+def _unreferenced_releases(*, strict: bool = True) -> list[Path]:
     pinned = {Path(json.loads(p.read_text())["package"]).resolve().parent
               for p in (home() / "bindings").glob("*.json")}
     stale: list[Path] = []
     for release in (home() / "releases").iterdir():
-        if release.is_symlink():
-            raise RuntimeError(f"Refusing symlink release: {release}")
-        if release.resolve() in pinned:
+        reason = "symlink release" if release.is_symlink() else None
+        if reason is None and release.resolve() in pinned:
             continue
-        receipt = read_receipt(release / "package")
-        if receipt is None or receipt["build"] != release.name or Path(receipt["package"]).resolve() != release / "package":
-            raise RuntimeError(f"Refusing unrecognized release: {release}")
-        stale.append(release)
+        if reason is None:
+            receipt = read_receipt(release / "package")
+            if receipt is None or receipt["build"] != release.name or Path(receipt["package"]).resolve() != release / "package":
+                reason = "unrecognized release"
+        if reason is None:
+            stale.append(release)
+        elif strict:
+            raise RuntimeError(f"Refusing {reason}: {release}")
+        else:
+            # An inspect-only dry run reports what it cannot understand instead
+            # of crashing; the real cleanup keeps refusing.
+            print(f"Skipping {reason}: {release.name}")
     return stale
 
 
@@ -234,7 +241,7 @@ def cleanup(*, dry_run: bool = False) -> None:
     if not releases.exists():
         return
     if dry_run:
-        for release in _unreferenced_releases():
+        for release in _unreferenced_releases(strict=False):
             print(f"Would remove unreferenced release: {release.name}")
         return
     with locked():

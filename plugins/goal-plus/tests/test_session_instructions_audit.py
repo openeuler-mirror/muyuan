@@ -148,6 +148,33 @@ def test_codex_injection_ledger_is_unavailable(tmp_path):
     assert report["injection_ledger"] == {"status": "unavailable", "reason": "no_injection_observations"}
 
 
+def test_pi_archive_audit_keeps_overview_digest_across_batches(tmp_path):
+    """The batch loop must not shadow the overview digest it later compares against."""
+    digest = hashlib.sha256(OVERVIEW.encode()).hexdigest()
+    entries = [
+        {"id": "a", "parentId": None, "type": "custom", "customType": module.OBSERVATION_TYPE,
+         "data": {"version": 1, "session_id": "pi-test", "turn_index": 0,
+                  "expected_sha256": digest, "overview_present": True}},
+        {"id": "b", "parentId": "a", "type": "message", "message": {"role": "assistant", "content": "ok"}},
+    ]
+    batch = {"version": 1, "session_id": "pi-test", "stream_id": "s1", "sequence": 0,
+             "captured_at": "2026-01-01T00:00:00Z", "leaf_id": "b", "entries": entries}
+    content = hashlib.sha256(json.dumps(batch, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    directory = tmp_path / "host-logs/session-diagnostics/tt-child"
+    directory.mkdir(parents=True)
+    (directory / f"{content}.json").write_text(json.dumps(batch))
+    (directory / "index.json").write_text(json.dumps({
+        "version": 1, "source": "thinkthread_messages", "agent_harness": "pi",
+        "session_id": "pi-test", "identity": {}, "status": "recorded", "pending_batches": {},
+        "batches": {content: {"stream_id": "s1", "sequence": 0, "entries": len(entries),
+                              "compressed_bytes": 1, "decoded_bytes": 1,
+                              "captured_at": "2026-01-01T00:00:00Z", "content_sha256": content}},
+    }))
+    report = audit_session(directory, agent_harness="pi", overview=OVERVIEW)
+    assert report["status"] == "present"
+    assert report["checks"] == [{"line": 3, "compaction": 0, "status": "present", "reason": "host_system_prompt_match"}]
+
+
 def test_pi_branch_and_each_inference_observation(tmp_path):
     records = [{"type": "session", "id": "pi-test"}, observation("a", None), pi_message("b", "a"),
         {"type": "compaction", "id": "c", "parentId": "b"}, observation("d", "c"), pi_message("e", "d"),
