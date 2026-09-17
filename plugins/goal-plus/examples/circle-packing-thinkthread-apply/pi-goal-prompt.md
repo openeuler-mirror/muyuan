@@ -17,3 +17,5 @@ verifier feedback 自主继续；只要全局
 并应用回当前 Root。回写后重跑 verifier，必须 `valid=true` 且 `sum_radii >= 2.4`。记录 Search
 result，完成原始目标审计并把 Goal Plus 标记 complete，最后生成规范报告。正常完成流程只依据
 monitor 与完成卡，不检查 ThinkThread 内部状态文件。
+
+执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

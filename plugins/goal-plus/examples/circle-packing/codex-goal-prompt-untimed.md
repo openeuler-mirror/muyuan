@@ -18,3 +18,5 @@ publication 回写到 `workspace-template/`；候选、Evidence、publication �
 `python workspace-template/.goal-plus-verifiers/circle_packing_score.py`。结果必须满足
 `valid=true`，圆的数量必须为 26，并最大化 `sum_radii`。两个候选通道都至少产出一个
 verifier 已结算结果后结束探索，并确认 `workspace-template/` 保持不变。
+
+执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。
