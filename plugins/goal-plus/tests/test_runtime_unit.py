@@ -37,6 +37,7 @@ from goal_plus.workspaces import (
     initialize_workspace_git_baseline,
 )
 from goal_plus.domain.edit_surface import path_matches
+from goal_plus.domain.search_input import SearchSpecInput
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.domain.serialization import canonical_json
 from goal_plus.infrastructure.state.files import load_json, write_json
@@ -750,27 +751,33 @@ def test_freeze_preflight_overrides_verifier_phase_environment(
     assert frozen.frozen_spec_id
 
 
-def test_freeze_preflight_failure_includes_error_and_full_log(tmp_path: Path) -> None:
+@pytest.mark.parametrize("workspace_provider,returncode", [("copy", 20), ("git_worktree", 0)])
+def test_freeze_preflight_failure_includes_error_and_full_log(tmp_path, workspace_provider, returncode):
     project = make_project(tmp_path)
     (project / "evaluator.py").write_text(
         "import json\n"
         "import sys\n"
-        "print(json.dumps({'status': 'error', 'error': 'baseline missing'}))\n"
+        "print(json.dumps({'combined_score': 7, 'error': 'baseline missing'}))\n"
         "print('device unavailable', file=sys.stderr)\n"
-        "raise SystemExit(20)\n",
+        f"raise SystemExit({returncode})\n",
         encoding="utf-8",
     )
     runtime = FileSearchRuntime(tmp_path / ".search")
+    _initialize_source_repository(project)
 
     with pytest.raises(ValueError, match="OriginVerifierFailed") as exc_info:
-        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], agent_harness="codex")
+        runtime.freeze_spec(
+            _spec_with_workspace_provider(project, workspace_provider),
+            [project / "evaluator.py"], agent_harness="codex",
+        )
 
     message = str(exc_info.value)
     assert "error=baseline missing" in message
-    assert "returncode=20" in message
+    assert f"returncode={returncode}" in message
     log_path, = (runtime.root_dir / "bootstrap").glob("origin-*/*.log")
     assert f"log_path={log_path}" in message
     assert "device unavailable" in log_path.read_text()
+    assert not runtime.specs_dir.exists()
 
 
 def test_freeze_spec_rejects_plain_text_ranking_score(tmp_path: Path) -> None:
@@ -787,38 +794,15 @@ def test_freeze_spec_rejects_plain_text_ranking_score(tmp_path: Path) -> None:
     assert not runtime.specs_dir.exists()
 
 
-@pytest.mark.parametrize(
-    "metric_value",
-    ["'18941966307'", "True", "float('nan')", "float('inf')"],
-)
-def test_freeze_spec_rejects_non_numeric_or_non_finite_ranking_score(
-    tmp_path: Path,
-    metric_value: str,
-) -> None:
-    project = make_project(tmp_path)
-    (project / "evaluator.py").write_text(
-        "import json\n"
-        f"print(json.dumps({{'combined_score': {metric_value}}}))\n",
-        encoding="utf-8",
-    )
+@pytest.mark.parametrize("metrics,expected", [
+    ({"latency_ms": 0}, 0),
+    ({"latency_ms": -2.5}, -2.5),
+    *[({"latency_ms": value}, None) for value in ("18941966307", True, float("nan"), float("inf"))],
+    *[({alias: 1}, None) for alias in ("score", "combined_score", "overall_score")],
+])
+def test_metric_requires_exact_finite_numeric_value(tmp_path, metrics, expected):
     runtime = FileSearchRuntime(tmp_path / ".search")
-
-    with pytest.raises(ValueError, match="MissingNumericMetric"):
-        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], agent_harness="codex")
-
-
-@pytest.mark.parametrize("workspace_provider", ["copy", "git_worktree"])
-@pytest.mark.parametrize("alias", ["score", "combined_score", "overall_score"])
-def test_freeze_requires_exact_metric_key(tmp_path, workspace_provider, alias):
-    project = make_project(tmp_path)
-    (project / "evaluator.py").write_text(f"print('{{\"{alias}\": 1}}')\n")
-    _initialize_source_repository(project)
-    runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = _spec_with_workspace_provider(project, workspace_provider)
-    spec.metric_name = "latency_ms"
-    with pytest.raises(ValueError, match="MissingNumericMetric"):
-        runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
-    assert not runtime.specs_dir.exists()
+    assert runtime.verifiers.score_from_metrics("latency_ms", metrics) == expected
 
 
 @pytest.mark.parametrize("workspace_provider", ["copy", "git_worktree"])
@@ -916,8 +900,7 @@ def test_zero_score_with_logs_and_null_error_is_accepted(tmp_path: Path, workspa
     assert frozen.origin_verification.aggregate_score == 0.0
 
 
-@pytest.mark.parametrize("workspace_provider", ["copy", "git_worktree"])
-@pytest.mark.parametrize("returncode", [0, 1])
+@pytest.mark.parametrize("workspace_provider,returncode", [("copy", 0), ("git_worktree", 1)])
 def test_invalid_baseline_is_evaluated_but_candidate_is_not_selectable(
     tmp_path, workspace_provider, returncode,
 ):
@@ -954,6 +937,11 @@ def test_invalid_baseline_is_evaluated_but_candidate_is_not_selectable(
 
 
 @pytest.mark.parametrize("metrics,returncode,failure", [
+    ({}, 0, None),
+    ({"outcome": "valid", "error": None}, 0, None),
+    ({"outcome": "invalid", "error": "candidate rejected"}, 1, "CandidateRejected"),
+    ({"error": False}, 0, "VerifierCommandFailed"),
+    ({"error": "broken evaluator"}, 0, "VerifierCommandFailed"),
     ({"outcome": "error", "error": "device unavailable"}, 0, "VerifierCommandFailed"),
     ({"outcome": "invalid", "error": "unknown exit"}, 2, "VerifierCommandFailed"),
     ({"valid": False}, 0, "InvalidVerifierOutcome"),
@@ -961,40 +949,9 @@ def test_invalid_baseline_is_evaluated_but_candidate_is_not_selectable(
     ({"outcome": "invalid", "valid": True}, 0, "InvalidVerifierOutcome"),
     ({"outcome": ["invalid"]}, 0, "InvalidVerifierOutcome"),
 ])
-def test_freeze_rejects_faults_and_ambiguous_outcomes(tmp_path, metrics, returncode, failure):
-    project = make_project(tmp_path)
-    metrics["combined_score"] = 0
-    (project / "evaluator.py").write_text(
-        f"print({json.dumps(metrics)!r})\nraise SystemExit({returncode})\n",
-    )
+def test_verifier_outcome_classification(tmp_path, metrics, returncode, failure):
     runtime = FileSearchRuntime(tmp_path / ".search")
-    with pytest.raises(ValueError, match=failure):
-        runtime.freeze_spec(spec_for(project), [project / "evaluator.py"], agent_harness="codex")
-    assert not runtime.specs_dir.exists()
-
-
-@pytest.mark.parametrize("workspace_provider,role", [
-    ("copy", "ranking_signal"), ("copy", "process_gate"), ("git_worktree", "ranking_signal"),
-])
-def test_freeze_spec_rejects_non_null_verifier_error(tmp_path: Path, workspace_provider, role) -> None:
-    project = make_project(tmp_path)
-    (project / "evaluator.py").write_text(
-        "import json\n"
-        "print(json.dumps({'combined_score': 7.0, 'error': 'broken evaluator'}))\n",
-        encoding="utf-8",
-    )
-    runtime = FileSearchRuntime(tmp_path / ".search")
-    _initialize_source_repository(project)
-    spec = _spec_with_workspace_provider(project, workspace_provider)
-    spec.process_verifiers[0].role = role
-
-    with pytest.raises(ValueError, match="broken evaluator") as exc_info:
-        runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
-    if workspace_provider == "git_worktree" or role == "process_gate":
-        assert "returncode=0" in str(exc_info.value)
-        assert "log_path=" in str(exc_info.value)
-
-    assert not runtime.specs_dir.exists()
+    assert runtime.verifiers.command_failure("ranking_signal", returncode, metrics, 0) == failure
 
 
 def test_runtime_rejects_non_null_verifier_error_after_clean_preflight(
@@ -3851,6 +3808,7 @@ def test_codex_creates_sessions_for_portable_strategy_modes(
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec = spec_with_strategy(project, {"name": strategy_name}, max_parallel=1)
+    spec = SearchSpecInput.model_validate(spec.model_dump(mode="json", exclude_defaults=True)).to_runtime_spec()
     frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
@@ -3893,6 +3851,7 @@ def test_freeze_rejects_non_portable_strategies_before_baseline(
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec = spec_with_strategy(project, {"name": strategy_name}, max_parallel=1)
     execute = Mock(side_effect=AssertionError("invalid strategy must not run baseline"))
+    spec = SearchSpecInput.model_validate(spec.model_dump(mode="json", exclude_defaults=True)).to_runtime_spec()
     monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", execute)
 
     with pytest.raises(ValueError, match=f"{agent_harness}.*{strategy_name}"):

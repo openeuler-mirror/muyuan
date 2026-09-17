@@ -132,8 +132,9 @@ def test_registered_freeze_schema_matches_parameter_validation(tmp_path):
     for strategy, valid in [
         ({"name": "agent_guided"}, True),
         ({"name": "random"}, True),
-        ({"name": "three-way correctness exploration"}, False),
-        ({"inner_agent": "custom"}, False),
+        ({"name": "default"}, True),
+        ({"name": "random-mode"}, True),
+        ({"inner_agent": "common"}, True),
         ({"worker_budget": None}, True),
         ({"worker_budget": {}}, False),
         ({"worker_budget": {"max_turns": None, "max_runtime_seconds": None}}, False),

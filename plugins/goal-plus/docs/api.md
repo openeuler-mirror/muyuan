@@ -20,11 +20,10 @@ Codex 只识别已注册的 Goal Plus MCP namespace，其他插件的同名动�
 不暴露当前角色未注册的工具，也不维护第二份 schema。
 
 工具 schema 用本地 `$defs/$ref` 复用重复结构，并合并等价的基础类型联合；不裁剪字段、
-约束或可选功能。Freeze 输入只保留 Main 的决策：`shared_dir` 只选 `enabled`，资源上限、
-模型 provenance/context policy 和固定超限动作由 runtime 补齐；不接受无执行效果的
-`budget.max_tokens` 和 verifier `expected_outputs`。
-模型统一由 `strategy.models[]` 选择；`worker_launch` 只设全局 `reasoning_effort`、
-`service_tier` 默认值，各模型的非空设置优先。
+约束或可选功能。`shared_dir` 由 Main 选择 `enabled`，按需覆盖工具数、发布版本数、文件数、
+路径条目数、深度和字节限额；省略时使用默认值。模型 provenance/context policy 和固定动作由 runtime 补齐。
+`strategy.models[]` 分配各模型席位；`worker_launch` 设置全局 model、reasoning_effort、
+service_tier 默认值，各席位的非空设置优先。
 `strategy.global_evidence_mode` 直接选择证据共享方式，不再接受任意 `strategy.config`；
 `allocation.policy` 由 runtime 固定，Main 只配置 features 和 switch_margin。
 
@@ -275,7 +274,8 @@ freeze 成功返回 `frozen_spec_id`、`state="frozen"`、`metric_name`、`basel
 和 `promotion_verifiers` 名称；ThinkThread 的 baseline 尚未执行，返回 `null`。容量不足附带 warning。
 完整 FrozenSpec、verifier hash、技能清单和容量估算仍持久化。冻结尚未创建 run，
 后续 `goal_plus_search_create` 使用返回 ID；正常回执不回显提交的 SearchSpec。
-`strategy.name` 为 `agent_guided` 或 `random`，不是自定义标签；前者需要 candidate proposals。
+`strategy.name` 为 `agent_guided`（别名 agent/default）或 `random`（别名 random_mode），
+不是自定义标签；前者需要 candidate proposals。名称按原规则忽略大小写并将连字符转为下划线。
 `worker_budget` 不限时省略，否则至少填写一个正数上限。策略与宿主能力在 baseline 前校验。
 
 Git freeze 在 `SearchSpec.source_path` 原位、Copy 在一次性源码副本执行完整 process suite，
@@ -290,9 +290,15 @@ Git freeze 在 `SearchSpec.source_path` 原位、Copy 在一次性源码副本�
 `returncode`、`elapsed_seconds` 为保留字段。每个 suite 至多一个 `ranking_signal`，由它供分；
 未声明时只允许一个非 diagnostic/anti-cheat verifier 产出分数。promotion 不能补足 process metric。
 stdout JSON 可用 `outcome=valid/invalid/error` 区分有效候选、确定无效候选、评估故障。
-例如 `{"outcome":"invalid","score":0,"error":"candidate assertion failed"}` 可作零分基线
-（metric_name 为 score），退出码允许 0/1，原诊断保留；它不算通过，也不能被选中或提升。
-`valid` 或省略 outcome 须退出 0 且 `error` 缺失/null；`valid=false` 必须显式分类为 invalid/error。
+
+| outcome | 退出码与诊断 | 含义 |
+| --- | --- | --- |
+| `valid` 或省略 | 退出 0，`error` 缺失/null | 候选通过 |
+| `invalid` | 退出 0/1，保留 `error` | `CandidateRejected`；有分数可作基线，但不能选中或提升 |
+| `error` | 保留退出码与 `error` | 评估故障，阻止冻结 |
+
+`valid` 布尔字段只作一致性检查：`valid=false` 必须显式分类，不能与 `outcome=valid` 并存；
+`valid=true` 不能与 `outcome=invalid` 并存。未知 outcome 拒绝。
 未知故障不得转为 invalid，超时、中断、anti-cheat 失败仍阻止启动；诊断角色失败不阻断 suite。
 `candidate_acceptance` 只是 worker 文字要求。`promotion_verifiers` 仅提升时执行，freeze 不证明其可用。
 `goal_plus_search_promote` 自动执行已配置的 promotion suite，无需先手动验证。

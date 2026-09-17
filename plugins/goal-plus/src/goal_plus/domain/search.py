@@ -84,7 +84,7 @@ class FeedbackPolicy(str, Enum):
     FINAL_ONLY = "final_only"
 
 
-class BudgetInput(SearchModel):
+class Budget(SearchModel):
     max_parallel: int = Field(
         gt=0,
         description=(
@@ -103,14 +103,10 @@ class BudgetInput(SearchModel):
     )
 
     @model_validator(mode="after")
-    def candidate_limit_covers_parallel_width(self) -> "BudgetInput":
+    def candidate_limit_covers_parallel_width(self) -> "Budget":
         if self.max_candidates is not None and self.max_candidates < self.max_parallel:
             raise ValueError("budget.max_candidates must be >= budget.max_parallel")
         return self
-
-
-class Budget(BudgetInput):
-    max_tokens: int | None = Field(default=None, gt=0)
 
 
 VerifierInvalidationReason = Literal[
@@ -129,7 +125,10 @@ class EditSurface(SearchModel):
 
 
 class StrategyOptions(SearchModel):
-    name: str = "agent_guided"
+    name: str = Field(
+        default="agent_guided",
+        description="agent_guided (aliases agent/default) requires proposals; random (alias random_mode) does not. Not a custom label.",
+    )
     orchestration_mode: Literal[
         "rolling_candidates",
         "parallel_loops",
@@ -138,8 +137,7 @@ class StrategyOptions(SearchModel):
     inner_agent: str | None = Field(
         default=None,
         description=(
-            "Host-neutral inner-agent adapter id. New frozen specs normalize this "
-            "to an explicit value."
+            "Host-neutral adapter: autoresearch or common. Omit for the host default."
         ),
     )
     worker_budget: WorkerBudget | None = None
@@ -204,7 +202,7 @@ class StrategySpec(StrategyOptions):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
-class VerifierInput(SearchModel):
+class VerifierCommand(SearchModel):
     name: str = Field(min_length=1)
     role: VerifierRole = Field(description="ranking_signal selects the score; diagnostic_signal is non-blocking. Other roles are gates, not JSON field predicates.")
     command: list[str] = Field(min_length=1)
@@ -231,10 +229,6 @@ class VerifierInput(SearchModel):
         if not normalized:
             raise ValueError("resource_lock must be non-empty when provided")
         return normalized
-
-
-class VerifierCommand(VerifierInput):
-    expected_outputs: list[str] = Field(default_factory=list)
 
 
 class DevicePoolSpec(SearchModel):
@@ -297,7 +291,7 @@ class SearchSpec(SearchModel):
 
     @field_validator("process_verifiers", "promotion_verifiers")
     @classmethod
-    def unambiguous_ranking_source(cls, commands: list[VerifierInput]) -> list[VerifierInput]:
+    def unambiguous_ranking_source(cls, commands: list[VerifierCommand]) -> list[VerifierCommand]:
         if sum(command.role == VerifierRole.RANKING_SIGNAL for command in commands) > 1:
             raise ValueError("each verifier suite permits at most one ranking_signal; combine metrics in that verifier")
         return commands
@@ -373,6 +367,13 @@ class BootstrapVerifierResult(SearchModel):
     log_path: Path | None = None
     failure_class: str | None = None
 
+    @property
+    def blocks_bootstrap(self) -> bool:
+        return (
+            not self.passed and self.role != VerifierRole.DIAGNOSTIC_SIGNAL
+            and (self.failure_class != "CandidateRejected" or self.role == VerifierRole.ANTI_CHEAT_GATE)
+        )
+
 
 class BootstrapVerification(SearchModel):
     phase: Literal["origin", "workspace_relocation"]
@@ -388,23 +389,12 @@ class BootstrapVerification(SearchModel):
     @property
     def evaluation_completed(self) -> bool:
         return self.passed or bool(self.verifier_results) and all(
-            result.passed
-            or result.role == VerifierRole.DIAGNOSTIC_SIGNAL
-            or (
-                result.failure_class == "CandidateRejected"
-                and result.role != VerifierRole.ANTI_CHEAT_GATE
-            )
-            for result in self.verifier_results
+            not result.blocks_bootstrap for result in self.verifier_results
         )
 
     def failure_detail(self) -> str:
         failed = next(
-            (
-                result for result in self.verifier_results
-                if not result.passed and result.role != VerifierRole.DIAGNOSTIC_SIGNAL
-                and (result.failure_class != "CandidateRejected"
-                     or result.role == VerifierRole.ANTI_CHEAT_GATE)
-            ),
+            (result for result in self.verifier_results if result.blocks_bootstrap),
             None,
         )
         if failed is None:

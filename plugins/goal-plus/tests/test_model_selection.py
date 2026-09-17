@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from goal_plus.runtime import FileSearchRuntime
-from goal_plus.domain.agents import WorkerLaunchDefaults
+from goal_plus.domain.agents import WorkerLaunchOptions
 from goal_plus.domain.search_input import SearchSpecInput
 from tests._runtime_helpers import make_project, spec_with_strategy, start_host_verified_goal
 
@@ -58,7 +58,7 @@ def test_explicit_a1b3_models_bind_each_candidate_and_session(tmp_path: Path) ->
     runtime = FileSearchRuntime(tmp_path / ".gp")
     _stub_model_discovery(runtime)
     spec = SearchSpecInput.model_validate(_models_spec(project).model_dump(mode="json", exclude_defaults=True))
-    spec.strategy.worker_launch = WorkerLaunchDefaults(reasoning_effort="high", service_tier="priority")
+    spec.strategy.worker_launch = WorkerLaunchOptions(model="fallback-model", reasoning_effort="high", service_tier="priority")
     spec.strategy.models[0].reasoning_effort = "low"
     frozen = runtime.freeze_spec(spec.to_runtime_spec(), [project / "evaluator.py"], agent_harness="codex")
     assert frozen.spec.strategy.models[0].provider == "deepseek"
@@ -191,6 +191,7 @@ def test_without_models_candidates_keep_the_strategy_default_model(
     strategy["models"] = []
     strategy["worker_launch"] = {"model": "gpt-5.6-sol"}
     spec = spec_with_strategy(project, strategy, max_parallel=4)
+    spec = SearchSpecInput.model_validate(spec.model_dump(mode="json", exclude_defaults=True)).to_runtime_spec()
     frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=4)

@@ -455,7 +455,6 @@ def test_goal_plus_spec_draft_exposes_typed_partial_search_spec() -> None:
                 "cwd": ".",
                 "timeout_seconds": 300,
                 "feedback_policy": "visible_to_workers",
-                "expected_outputs": [],
             }
         ],
     }

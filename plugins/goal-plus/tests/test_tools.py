@@ -365,16 +365,6 @@ def test_search_freeze_spec_resolves_source_relative_artifacts(
     (("strategy", "models", 0, "context_policy"), {}),
     (("strategy", "worker_budget", "on_exceed"), "interrupt"),
     (("shared_dir", "max_pending_revisions_per_family"), 1),
-    (("shared_dir", "max_tools_per_iteration"), 8),
-    (("shared_dir", "max_published_versions_per_family"), 3),
-    (("shared_dir", "max_files_per_iteration"), 8),
-    (("shared_dir", "max_path_entries_per_iteration"), 64),
-    (("shared_dir", "max_depth"), 4),
-    (("shared_dir", "max_bytes_per_iteration"), 1024),
-    (("budget", "max_tokens"), 1000),
-    (("process_verifiers", 0, "expected_outputs"), ["result.json"]),
-    (("promotion_verifiers", 0, "expected_outputs"), ["result.json"]),
-    (("strategy", "worker_launch", "model"), "gpt"),
     (("strategy", "allocation", "policy"), "priority_replace/v1"),
     (("strategy", "config"), {"global_evidence_mode": "auto"}),
 ])
@@ -397,18 +387,25 @@ def test_freeze_input_rejects_runtime_owned_fields(path, value):
     runtime.freeze_spec.assert_not_called()
 
 
-def test_freeze_input_restores_internal_defaults_without_losing_choices():
+@pytest.mark.parametrize("shared_dir", [
+    {}, {"enabled": False},
+    {"enabled": True, "max_tools_per_iteration": 8, "max_published_versions_per_family": 3,
+     "max_files_per_iteration": 12, "max_path_entries_per_iteration": 96,
+     "max_depth": 5, "max_bytes_per_iteration": 4096},
+])
+def test_freeze_input_preserves_choices_and_defaults_only_omitted_fields(shared_dir):
     runtime = Mock()
     runtime.freeze_spec.return_value = frozen_spec()
     spec = spec_dict()
     spec["strategy"] = {
         "models": [{"model": "gpt", "count": 1, "reasoning_effort": "high"}],
         "worker_budget": {"max_runtime_seconds": 60},
+        "worker_launch": {"model": "default-model", "reasoning_effort": "low"},
         "selection": {"ranking_keys": ["hard_score"], "ranking_tolerance": [0.1]},
         "orchestration_mode": "adaptive_search", "allocation": {"switch_margin": 0.2},
         "global_evidence_mode": "auto",
     }
-    spec["shared_dir"] = {"enabled": True}
+    spec["shared_dir"] = shared_dir
     SearchTools(runtime, Mock()).goal_plus_search_freeze_spec("gp_0001", spec, [])
 
     parsed = runtime.freeze_spec.call_args.args[0]
@@ -418,16 +415,15 @@ def test_freeze_input_restores_internal_defaults_without_losing_choices():
     assert parsed.strategy.models[0].reasoning_effort == "high"
     assert parsed.strategy.models[0].provider is None
     assert parsed.strategy.worker_budget.on_exceed == "interrupt"
+    assert parsed.strategy.worker_launch.model == "default-model"
+    assert parsed.strategy.worker_launch.reasoning_effort == "low"
     assert parsed.strategy.selection.ranking_tolerance == [0.1]
     assert parsed.strategy.allocation.policy == "priority_replace/v1"
     assert parsed.strategy.allocation.switch_margin == 0.2
     assert parsed.strategy.config == {"global_evidence_mode": "auto"}
-    assert parsed.shared_dir.enabled
     from goal_plus.domain.shared_tools import SharedDirSpec
 
-    assert parsed.shared_dir == SharedDirSpec(enabled=True)
-    assert parsed.budget.max_tokens is None
-    assert parsed.process_verifiers[0].expected_outputs == []
+    assert parsed.shared_dir == SharedDirSpec(**shared_dir)
 
 
 @pytest.mark.parametrize("mode", [None, "manual", "auto", "independent", "invalid"])

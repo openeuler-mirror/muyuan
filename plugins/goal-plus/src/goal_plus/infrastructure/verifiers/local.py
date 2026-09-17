@@ -947,9 +947,7 @@ class LocalVerifiers:
             if role == VerifierRole.RANKING_SIGNAL and score is None:
                 return "MissingNumericMetric"
             return "CandidateRejected"
-        if returncode != 0 or metrics.get("error") is not None:
-            return "VerifierCommandFailed"
-        if outcome == "error":
+        if returncode != 0 or metrics.get("error") is not None or outcome == "error":
             return "VerifierCommandFailed"
         if metrics.get("valid") is False:
             return "InvalidVerifierOutcome"

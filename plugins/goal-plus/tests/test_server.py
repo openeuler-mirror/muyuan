@@ -447,16 +447,18 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
     assert set(verifier["required"]) == {"name", "role", "command"}
     assert "ranking_signal" in verifier["properties"]["role"]["enum"]
     assert verifier["properties"]["command"]["type"] == "array"
-    assert "expected_outputs" not in verifier["properties"]
     strategy = spec_schema["properties"]["strategy"]
     assert "worker_budget" in strategy["properties"]
     model = strategy["properties"]["models"]["items"]
     assert set(model["properties"]) == {"model", "count", "reasoning_effort", "service_tier"}
     worker_budget = strategy["properties"]["worker_budget"]["anyOf"][0]
     assert set(worker_budget["properties"]) == {"max_runtime_seconds", "max_turns"}
-    assert set(spec_schema["properties"]["shared_dir"]["properties"]) == {"enabled"}
+    assert set(spec_schema["properties"]["shared_dir"]["properties"]) == {
+        "enabled", "max_tools_per_iteration", "max_published_versions_per_family",
+        "max_files_per_iteration", "max_path_entries_per_iteration", "max_depth", "max_bytes_per_iteration",
+    }
     worker_defaults = strategy["properties"]["worker_launch"]
-    assert set(worker_defaults["properties"]) == {"reasoning_effort", "service_tier"}
+    assert set(worker_defaults["properties"]) == {"model", "reasoning_effort", "service_tier"}
     assert "evidence_annotator" in strategy["properties"]
     orchestration = strategy["properties"]["orchestration_mode"]
     assert orchestration["default"] == "parallel_loops"

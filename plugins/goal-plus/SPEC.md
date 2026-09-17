@@ -295,22 +295,9 @@ Codex/Pi 共用这些返回合同；持久化、授权、Evidence 和恢复不�
 
 ## SearchSpec 与冻结
 
-SearchSpec 合同覆盖：
-
-- `objective`、`metric_name` 和 `metric_direction`；
-- `source_path` 与 `edit_surface`；
-- `process_verifiers`，以及需要时的 `promotion_verifiers`；
-- `budget.max_parallel`；
-- `strategy`、`workspace`；
-- 需要时才设置的 `candidate_acceptance`、`device_pools` 和 `shared_dir`。
-
-Main 的 freeze 输入保留可选能力开关；模型 provenance、context policy、固定超限动作和
-Shared Tool 资源上限由 runtime 补齐，冻结记录格式不变。无执行效果的 `max_tokens`、
-`expected_outputs` 不作为输入；模型统一在 `strategy.models[]` 选择。
-Main 用 `strategy.global_evidence_mode` 选择证据共享方式，不接受任意 `strategy.config`；
-唯一的 `allocation.policy` 由 runtime 固定。
-Main 的策略名仅接受 `agent_guided`（需 proposals）或 `random`（无需 proposals）；
-策略与宿主能力在执行 baseline 前校验。`worker_budget` 省略表示不限，否则至少设置一个正数上限。
+Main 决定目标、metric、source/edit surface、verifier、并发预算、策略及可选能力；
+模型 provenance、context policy 和固定策略由 runtime 补齐；可调资源限额仅在省略时使用默认值。
+输入字段、verifier 输出协议与冻结回执见 [API](docs/api.md#冻结合同与创建-run)。
 
 `constraints` 是 runtime 私有控制数据，不会整体投影给 candidate。Main Agent 必须让最初
 目标、candidate 验收、ranking 和最终验收使用同一标准；不能先按一套标准搜索，再用未经
@@ -318,31 +305,19 @@ Main 的策略名仅接受 `agent_guided`（需 proposals）或 `random`（无�
 
 Freeze 与 run bootstrap 必须：
 
-1. freeze 准入校验完整 SearchSpec 与显式 host command config，不要求 ready draft；
+1. baseline 前校验完整 SearchSpec、策略、宿主能力与显式 host command config，不要求 ready draft；
 2. freeze 时固定 clean source identity 和 verifier artifact hash；
 3. Git 原位、Copy 在一次性副本执行完整 process baseline；ThinkThread 在 create 时执行；
 4. 创建 run 时确认 source identity 未变化；
 5. 首次物化 Git worktree 时执行 workspace relocation gate；
 6. 全程校验 metric、退出码、timeout、edit surface 和可选 device pool。
 
-`workers` 命令只约束显式给出的模型及数量；未指定 count 不要求 SearchSpec 省略 count。
-Spec 的模型顺序、count 全填或全不填、显式 count 总和等于 `max_parallel` 的规则不变。
-
 本地 Git/Copy 冻结必须确认 process verifier baseline 实际产出有限数值分数；没有声明
-`ranking_signal` 也不能跳过此检查。正常退出但只有文本分数、缺少数值 JSON metric 的
-合同以 `MissingNumericMetric` 拒绝，不创建 FrozenSpec 或候选。分数精确读取 stdout 最后一个可解析
-单行 JSON 对象的 `metric_name`，不猜别名、不从运行时元数据取分；`returncode`、`elapsed_seconds`
-为保留字段。每个 suite 至多一个 `ranking_signal`，由它提供分数；省略时只允许一个非
-diagnostic/anti-cheat verifier 产出分数。不能用 promotion 分数替代 process metric。
-
-stdout JSON 的 `outcome=valid/invalid/error` 分别表示有效候选、确定无效候选、评估故障。
-`invalid` 允许退出码 0/1，保留原 `error` 诊断，记录为 `CandidateRejected`；有限分数的无效
-基线允许启动搜索，但无效候选不能进入 best、selection 或 promotion。`valid` 或省略 outcome
-要求退出码 0、`error` 缺失/null；`valid=false` 必须显式分类，矛盾或未知 outcome 拒绝。
-故障、超时、中断与 anti-cheat 失败不能当作无效基线；`diagnostic_signal` 失败仍不阻断 suite。
-分类由 evaluator 或了解任务的适配器提供，不得一律吞错转零分。`candidate_acceptance` 仅为
-worker 文字要求。promotion suite 仅提升时执行，freeze 不证明其可用。
-冻结回执包含 metric、baseline 评估完成/候选通过状态/分数和 promotion 检查名称，不回显完整 spec。
+`ranking_signal` 也不能跳过。分数必须来自精确 metric，且来源唯一，不能用运行时元数据或
+promotion 分数替代。评估完成与候选通过分别记录：明确无效但有分数的基线允许启动搜索，
+无效候选不能进入 best、selection 或 promotion。故障、超时、中断与 anti-cheat 失败不能
+当作无效基线；diagnostic 失败不阻断。分类由 evaluator 或了解任务的适配器提供，不得
+一律吞错转零分。promotion suite 仅提升时执行，freeze 不证明其可用。
 
 FrozenSpec 创建后不可原地改写。评价合同有误时，使旧 run invalid，冻结新合同并创建
 successor run；不同合同的分数不得直接比较。

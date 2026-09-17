@@ -52,7 +52,7 @@ Every request must resolve these fields before readiness:
 References have explicit roles:
 
 | Role | Meaning |
-|---|---|
+| --- | --- |
 | `semantics` | Defines the mathematical/API behavior. |
 | `golden` | Supplies or supports an executable correctness Oracle. |
 | `cases` | Supplies shapes, dtypes, attributes, ranges, or weights. |
@@ -250,8 +250,7 @@ which excludes untracked generated artifacts without dropping source scripts.
 
 Do not create, modify, or delete any path in the Candidate input, including
 ignored paths and `_verifier/`. Do not copy generated state back after the
-command. `expected_outputs` must not name ephemeral files under the invocation
-directory. Freeze preflight must run the complete commands and reject any
+command. Freeze preflight must run the complete commands and reject any
 Candidate-workspace side effect before Search starts.
 
 The verifier may retain detailed files inside the invocation directory while

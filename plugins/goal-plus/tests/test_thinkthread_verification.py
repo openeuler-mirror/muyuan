@@ -47,10 +47,7 @@ def candidate_record(runtime, session):
 
 @pytest.mark.parametrize("metrics,failure", [
     ({"combined_score": 0, "outcome": "valid", "error": None, "returncode": 99}, None),
-    ({"combined_score": 0, "valid": False}, "InvalidVerifierOutcome"),
-    ({"combined_score": -2, "outcome": "invalid", "error": "candidate rejected"}, "CandidateRejected"),
     ({"combined_score": 0, "error": "broken evaluator"}, "VerifierCommandFailed"),
-    ({"combined_score": 0, "error": False}, "VerifierCommandFailed"),
     ({"score": 9}, "MissingNumericMetric"),
 ])
 def test_thinkthread_uses_shared_metric_and_error_contract(prepared_candidates, monkeypatch, metrics, failure):

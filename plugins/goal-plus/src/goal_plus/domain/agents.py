@@ -75,25 +75,17 @@ class WorkerBudget(WorkerBudgetInput):
     on_exceed: Literal["interrupt"] = "interrupt"
 
 
-class WorkerLaunchDefaults(SearchModel):
+class WorkerLaunchOptions(SearchModel):
+    model: str | None = None
     reasoning_effort: str | None = None
     service_tier: str | None = None
 
-    @field_validator("reasoning_effort", "service_tier")
+    @field_validator("model", "reasoning_effort", "service_tier")
     @classmethod
     def values_must_be_nonempty(cls, value: str | None) -> str | None:
         if value is not None and not value.strip():
             raise ValueError("worker launch option must be non-empty when provided")
         return value
-
-
-class WorkerLaunchOptions(WorkerLaunchDefaults):
-    model: str | None = None
-
-    @field_validator("model")
-    @classmethod
-    def model_must_be_nonempty(cls, value: str | None) -> str | None:
-        return cls.values_must_be_nonempty(value)
 
 
 class ModelRequest(SearchModel):
