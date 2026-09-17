@@ -30,7 +30,7 @@ INJECTION_CUSTOM_TYPES = {
     "native_continuation": "goal-plus-command-context",
     "must_continue": "goal-plus-must-continue",
     "publication_notification": "goal-plus-publication-notification-delivery",
-    "tt_missing_attempt": "goal-plus-thinkthread-missing-attempt",
+    "missing_attempt_nudge": "goal-plus-missing-attempt",
     "worker_continuation": "goal-plus-worker-continuation",
 }
 

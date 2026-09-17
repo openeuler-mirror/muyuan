@@ -60,6 +60,10 @@ let goalContextFullKey: string | undefined;
 
 let continuationCount = 0;
 let workerContinuationCount = 0;
+// Turn count of one dispatch without any verifier submission after which the
+// worker continuation becomes a short submit nudge. Eight rounds balances
+// leaving room to explore against burning a whole dispatch on unverified edits.
+const WORKER_SUBMIT_NUDGE_TURNS = 8;
 let workerRegistrationSent = false;
 let workerSdkModulePromise: Promise<any> | undefined;
 let workerSdkClientPromise: Promise<any> | undefined;
@@ -845,6 +849,8 @@ async function acknowledgeThinkThreadDispatch(
 		workerActiveDispatchNonce = metadata.dispatchNonce;
 		workerVerifierSubmitted = false;
 		workerMissingAttemptContinuationSent = false;
+		// The nudge turn count is per dispatch wake, not per worker process.
+		workerContinuationCount = 0;
 		workerInnerGitBinding = innerGitBindingFromContext(ctx, dispatchText);
 		workerInnerGitInitializedDispatch = undefined;
 	}
@@ -3200,22 +3206,25 @@ export default async function (pi: ExtensionAPI) {
 		if (ctx.hasPendingMessages()) return;
 		if (role === "worker") {
 			if (lengthWithoutToolCall) return;
+			// A worker turn that ends without any accepted attempt gets one short
+			// "submit if you have a shaped plan" nudge - for every provider, not
+			// only ThinkThread - before the wake is allowed to end. One-shot per
+			// dispatch; submitting is still the model's judgment.
 			if (
-				isThinkThreadWorker
-				&& latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"
+				latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"
 				&& !workerVerifierSubmitted
 				&& !workerMissingAttemptContinuationSent
 			) {
 				workerMissingAttemptContinuationSent = true;
-				const missingAttemptContent = "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成本轮修改，使用当前 agent_session_id 通过 goal_plus_search_run_verifier 提交一个 attempt，并按回执行动。";
+				const missingAttemptContent = "本次 dispatch 尚未提交 accepted verifier attempt。若有成型方案，建议立即提交验证：如尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成修改，通过 goal_plus_search_run_verifier 提交一个 attempt，并按回执行动。";
 				appendInjectionObservation(pi, ctx, {
-					kind: "tt_missing_attempt", role, channel: "follow_up",
+					kind: "missing_attempt_nudge", role, channel: "follow_up",
 					target_id: workerSteeringIdentity?.agentSessionId,
 					dispatch_nonce: workerActiveDispatchNonce, content: missingAttemptContent,
 				});
 				pi.sendMessage(
 					{
-						customType: "goal-plus-thinkthread-missing-attempt",
+						customType: "goal-plus-missing-attempt",
 						content: missingAttemptContent,
 						display: false,
 						details: { dispatchNonce: workerActiveDispatchNonce },
@@ -3232,11 +3241,19 @@ export default async function (pi: ExtensionAPI) {
 				return;
 			}
 			workerContinuationCount += 1;
-			const workerContinuationContent = "继续当前 Candidate 会话。沿用已加载的运行时上下文和 Evidence；探索新方向。只有产物发生实质变化后才运行 verifier，不要重复验证未修改的产物。";
+			// The plain "keep exploring" continuation turns into a short submit
+			// nudge once enough turns of this dispatch passed without any
+			// verifier submission.
+			const submitNudge = workerContinuationCount >= WORKER_SUBMIT_NUDGE_TURNS
+				&& !workerVerifierSubmitted;
+			const workerContinuationContent = submitNudge
+				? `本 dispatch 已进行 ${workerContinuationCount} 轮且尚无 verifier 提交。若有成型方案，建议立即用 goal_plus_search_run_verifier 提交验证；仅在还有实质新改进时继续探索。`
+				: "继续当前 Candidate 会话。沿用已加载的运行时上下文和 Evidence；探索新方向。只有产物发生实质变化后才运行 verifier，不要重复验证未修改的产物。";
 			appendInjectionObservation(pi, ctx, {
 				kind: "worker_continuation", role, channel: "follow_up",
 				target_id: workerSteeringIdentity?.agentSessionId,
 				continuation_count: workerContinuationCount,
+				submit_nudge: submitNudge,
 				continue_until_ms: workerContinueUntilMs, content: workerContinuationContent,
 			});
 			pi.sendMessage(

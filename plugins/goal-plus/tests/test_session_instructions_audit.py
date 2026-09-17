@@ -130,7 +130,7 @@ def test_pi_injection_ledger_flags_stale_continuation_and_absent_delivery(tmp_pa
         injection("d", "c", {"kind": "goal_start", "role": "main", "channel": "input_transform", "est_tokens": 700}),
         injection("e", "d", {"kind": "worker_continuation", "role": "worker", "est_tokens": 90}),
         delivered("f", "e", "goal-plus-worker-continuation"),
-        injection("g", "f", {"kind": "tt_missing_attempt", "role": "worker", "est_tokens": 80})]
+        injection("g", "f", {"kind": "missing_attempt_nudge", "role": "worker", "est_tokens": 80})]
     ledger = audit(tmp_path, records, "pi")["injection_ledger"]
     assert {item["reason"] for item in ledger["errors"]} == {
         "goal_context_skipped_on_prompt_turn", "registered_injection_absent"}
