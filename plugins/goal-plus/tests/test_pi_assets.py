@@ -53,7 +53,6 @@ def test_pi_model_context_injections_are_ledger_registered() -> None:
         "goal-plus-publication-notification-delivery": "publication_notification",
         "goal-plus-command-context": "goal_start",
         "goal-plus-missing-attempt": "missing_attempt_nudge",
-        "goal-plus-worker-continuation": "worker_continuation",
         "goal-plus-native-context": "goal_context_full",
     }
     registrations = text.count("appendInjectionObservation(")
@@ -63,12 +62,9 @@ def test_pi_model_context_injections_are_ledger_registered() -> None:
     for literal in ("goal_context_full", "goal_context_brief", "goal_context_skipped",
                     "must_continue", "worker_steer", "input_transform"):
         assert f'"{literal}"' in text
-    # The submit nudges are code-owned, not prompt-owned: the stop nudge covers
-    # every worker provider, and long unsubmitted dispatches switch the
-    # continuation text to a submit nudge.
+    # The stop nudge is code-owned, not prompt-owned, and covers every worker
+    # provider, not only ThinkThread.
     assert 'latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"' in text
-    assert "WORKER_SUBMIT_NUDGE_TURNS" in text
-    assert "submit_nudge" in text
     archive = (ROOT / "assets/pi/extensions/lib/goal-plus-session-archive.ts").read_text(encoding="utf-8")
     assert '"goal-plus-injection-observation"' in archive
 

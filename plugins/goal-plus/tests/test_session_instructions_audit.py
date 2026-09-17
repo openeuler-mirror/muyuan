@@ -128,8 +128,8 @@ def test_pi_injection_ledger_flags_stale_continuation_and_absent_delivery(tmp_pa
         # An input-transform injection becomes the user prompt itself: no
         # custom message exists to find, so it must not be presence-checked.
         injection("d", "c", {"kind": "goal_start", "role": "main", "channel": "input_transform", "est_tokens": 700}),
-        injection("e", "d", {"kind": "worker_continuation", "role": "worker", "est_tokens": 90}),
-        delivered("f", "e", "goal-plus-worker-continuation"),
+        injection("e", "d", {"kind": "publication_notification", "role": "worker", "est_tokens": 90}),
+        delivered("f", "e", "goal-plus-publication-notification-delivery"),
         injection("g", "f", {"kind": "missing_attempt_nudge", "role": "worker", "est_tokens": 80})]
     ledger = audit(tmp_path, records, "pi")["injection_ledger"]
     assert {item["reason"] for item in ledger["errors"]} == {

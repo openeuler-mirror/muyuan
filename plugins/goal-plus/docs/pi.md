@@ -145,8 +145,8 @@ reconciliation）；Codex 的 Stop hook 用同一份文本。
 （id/phase/revision/next action + 需要时读 `goal_plus_status`）；由 `goal-plus-must-continue`
 点火的那一轮已自带 phase/next action，因此跳过这条精简提醒。Codex 在
 `SessionStart(source=compact)` 后同样会重注 goal context，两种宿主都保证压缩后目标仍可见。记录真实
-终态或 `/goal-plus pause|clear` 后不再注入；candidate 侧的续跑是另一条独立的
-`goal-plus-worker-continuation`。
+终态或 `/goal-plus pause|clear` 后不再注入；candidate 侧只有一次性的
+`goal-plus-missing-attempt` 提交提醒，属于另一条独立消息。
 
 也可以在交互式 Pi 中直接使用：
 

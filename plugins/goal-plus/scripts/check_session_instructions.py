@@ -31,7 +31,6 @@ INJECTION_CUSTOM_TYPES = {
     "must_continue": "goal-plus-must-continue",
     "publication_notification": "goal-plus-publication-notification-delivery",
     "missing_attempt_nudge": "goal-plus-missing-attempt",
-    "worker_continuation": "goal-plus-worker-continuation",
 }
 
 

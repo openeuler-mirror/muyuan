@@ -37,7 +37,6 @@ let thinkThreadSupplementalEnabled = false;
 
 
 
-const workerContinueUntilMs = Number(process.env.GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS || "0");
 const modeArgIndex = process.argv.indexOf("--mode");
 const isPrintLikeInvocation =
 	process.argv.includes("-p") ||
@@ -59,11 +58,6 @@ let cachedGoalStatus: GoalPlusStatusPayload | undefined;
 let goalContextFullKey: string | undefined;
 
 let continuationCount = 0;
-let workerContinuationCount = 0;
-// Turn count of one dispatch without any verifier submission after which the
-// worker continuation becomes a short submit nudge. Eight rounds balances
-// leaving room to explore against burning a whole dispatch on unverified edits.
-const WORKER_SUBMIT_NUDGE_TURNS = 8;
 let workerRegistrationSent = false;
 let workerSdkModulePromise: Promise<any> | undefined;
 let workerSdkClientPromise: Promise<any> | undefined;
@@ -849,8 +843,6 @@ async function acknowledgeThinkThreadDispatch(
 		workerActiveDispatchNonce = metadata.dispatchNonce;
 		workerVerifierSubmitted = false;
 		workerMissingAttemptContinuationSent = false;
-		// The nudge turn count is per dispatch wake, not per worker process.
-		workerContinuationCount = 0;
 		workerInnerGitBinding = innerGitBindingFromContext(ctx, dispatchText);
 		workerInnerGitInitializedDispatch = undefined;
 	}
@@ -3233,39 +3225,6 @@ export default async function (pi: ExtensionAPI) {
 				);
 				return;
 			}
-			if (
-				!Number.isFinite(workerContinueUntilMs) ||
-				workerContinueUntilMs <= 0 ||
-				Date.now() >= workerContinueUntilMs
-			) {
-				return;
-			}
-			workerContinuationCount += 1;
-			// Every WORKER_SUBMIT_NUDGE_TURNS turns of this dispatch without any
-			// verifier submission, the "keep exploring" continuation is replaced
-			// once by a short submit nudge; the turns in between stay quiet.
-			const submitNudge = workerContinuationCount % WORKER_SUBMIT_NUDGE_TURNS === 0
-				&& !workerVerifierSubmitted;
-			const workerContinuationContent = submitNudge
-				? `本 dispatch 已进行 ${workerContinuationCount} 轮且尚无 verifier 提交。若有成型方案，建议立即用 goal_plus_search_run_verifier 提交验证；仅在还有实质新改进时继续探索。`
-				: "继续当前 Candidate 会话。沿用已加载的运行时上下文和 Evidence；探索新方向。只有产物发生实质变化后才运行 verifier，不要重复验证未修改的产物。";
-			appendInjectionObservation(pi, ctx, {
-				kind: "worker_continuation", role, channel: "follow_up",
-				target_id: workerSteeringIdentity?.agentSessionId,
-				continuation_count: workerContinuationCount,
-				submit_nudge: submitNudge,
-				continue_until_ms: workerContinueUntilMs, content: workerContinuationContent,
-			});
-			pi.sendMessage(
-				{
-					customType: "goal-plus-worker-continuation",
-					content: workerContinuationContent,
-					display: false,
-					details: { workerContinuationCount, workerContinueUntilMs },
-				},
-				{ triggerTurn: true, deliverAs: "followUp" },
-			);
-			return;
 		}
 	});
 	pi.on("agent_settled", async (_event, ctx) => {
