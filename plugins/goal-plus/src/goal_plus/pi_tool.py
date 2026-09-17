@@ -7,7 +7,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT

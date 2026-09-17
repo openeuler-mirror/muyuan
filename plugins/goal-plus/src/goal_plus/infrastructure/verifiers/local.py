@@ -30,7 +30,7 @@ from goal_plus.domain.search import (
     VerifierRole,
     CandidateTask,
 )
-from goal_plus.domain.serialization import canonical_json, sha256_text
+from goal_plus.domain.serialization import sha256_text
 from goal_plus.infrastructure.clock import utc_timestamp as utc_timestamp
 from goal_plus.infrastructure.state.files import sha256_file
 from goal_plus.infrastructure.state.resource_locks import verifier_resource_lock

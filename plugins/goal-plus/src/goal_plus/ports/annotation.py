@@ -75,15 +75,6 @@ class AnnotationAdmissionSource(Protocol):
     ) -> list[AnnotationCandidateEvidence]: ...
 
 
-class AnnotationTaskQuery(Protocol):
-    def task(
-        self,
-        run_id: str,
-        candidate_id: str,
-        iteration: int,
-    ) -> EvidenceAnnotationTask | None: ...
-
-
 class AnnotationTaskState(Protocol):
     def lock_run(self, run_id: str) -> AbstractContextManager[None]: ...
     def lock_tasks(self, run_id: str) -> AbstractContextManager[None]: ...

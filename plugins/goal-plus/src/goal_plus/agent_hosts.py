@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from queue import Empty, Queue
 from threading import Thread

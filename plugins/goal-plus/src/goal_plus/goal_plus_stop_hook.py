@@ -18,7 +18,6 @@ from typing import Any
 from uuid import uuid4
 
 from goal_plus.codex_transcript import (
-    iter_codex_transcript_header,
     read_codex_session_meta,
 )
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT

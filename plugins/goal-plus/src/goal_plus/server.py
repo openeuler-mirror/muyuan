@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from dataclasses import asdict
 from contextlib import asynccontextmanager
 from collections.abc import Callable, Mapping
 from functools import wraps
@@ -12,7 +11,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TYPE_CHECKING
 
 from mcp.types import TextContent
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter
 
 from goal_plus._version import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
@@ -22,7 +21,6 @@ from goal_plus.domain.search_input import SearchSpecInput
 from goal_plus.tool_schema import compact_tool_schema
 from goal_plus.domain.goal import (
     GoalPlusFinalCheckerIdentity,
-    GoalPlusSpecDraftInput,
     GoalPlusStatus,
     GoalPlusTriage,
     GoalPlusWorkEventKind,

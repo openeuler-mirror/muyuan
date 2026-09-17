@@ -2,7 +2,6 @@
 
 from typing import Any
 from goal_plus.domain.goal_commands import (
-    SEARCH_TOOL_SUFFIXES,
     MUTATING_TOOL_SUFFIXES,
 )
 
@@ -105,10 +104,6 @@ def tool_input(context: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, dict):
             return value
     return {}
-
-
-def is_search_tool(tool_name: str) -> bool:
-    return any(tool_matches(tool_name, suffix) for suffix in SEARCH_TOOL_SUFFIXES)
 
 
 def is_mutating_tool(tool_name: str) -> bool:
