@@ -217,9 +217,11 @@ def test_main_reconciliation_survives_non_search_round_and_requires_new_evidence
     for _ in range(2):
         gate = runtime.gate(goal.goal_plus_id, "stop", {})
         assert gate.decision == "block"
-        # The compact stop continuation no longer embeds reconciliation;
-        # it must survive the non-Search stop rounds in the reconciliation
-        # context the agent is told to re-read.
+        # A pending recovery agenda is live state the model cannot recall, so
+        # the stop continuation re-embeds it (and it survives non-Search rounds
+        # in the reconciliation context the per-turn line points at).
+        assert "start_fresh_worker" in gate.continuation_prompt
+        assert recovery.recovery_id in gate.continuation_prompt
         reconciliation = runtime.reconciliation_context(goal.goal_plus_id)
         assert "start_fresh_worker" in reconciliation
         assert recovery.recovery_id in reconciliation

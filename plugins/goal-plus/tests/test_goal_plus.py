@@ -1054,7 +1054,7 @@ def test_goal_like_triage_blocks_stop_until_terminal_status(tmp_path) -> None:
     assert "仍处于 active" in gate.continuation_prompt
     assert "当前 next action" in gate.continuation_prompt
     assert "goal_plus_status" in gate.continuation_prompt
-    assert "时间戳" in gate.continuation_prompt
+    assert "时间参照：created_at=" in gate.continuation_prompt
     assert "即使实际收尾晚于预设也使用 complete" in gate.continuation_prompt
     assert "不要仅因超出预设而使用 blocked" in gate.continuation_prompt
     assert "goal_plus_set_status" in gate.continuation_prompt
@@ -1323,6 +1323,10 @@ def test_high_confidence_spec_draft_links_search_and_final_audit(tmp_path) -> No
     gate = runtime.gate(record.goal_plus_id, event="stop", context={})
     assert gate.decision == "block"
     assert "对照持久证据审计完整原始目标中的每项要求" in gate.continuation_prompt
+    # A prose time limit needs a judgeable reference, so the continuation
+    # carries the goal's creation time and the current time itself.
+    assert "时间参照：created_at=" in gate.continuation_prompt
+    assert "当前时间=" in gate.continuation_prompt
 
     completed = runtime.set_status(
         record.goal_plus_id,

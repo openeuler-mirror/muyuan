@@ -251,10 +251,12 @@ class GoalGate:
     def _stop_audit_prompt(self, record: GoalPlusRecord) -> str:
         """Compact stop continuation: only the rules that live nowhere else.
 
-        The full raw goal, command config, policy and reconciliation are already
-        delivered by each host while the Goal is active (Pi: per-turn native
-        context, Codex: UserPromptSubmit goal context), so re-sending them on
-        every stop attempt only burns tokens.
+        The full raw goal, command config and policy are already delivered by
+        each host while the Goal is active (Pi: per-turn native context, Codex:
+        UserPromptSubmit goal context), so re-sending them on every stop
+        attempt only burns tokens. Two exceptions carry live state the model
+        cannot recall: a pending Search recovery agenda, and the time
+        reference a prose time limit needs.
         """
         action = record.next_action
         action_text = action.description if action else "没有记录下一步 action。"
@@ -263,15 +265,19 @@ class GoalGate:
             if final_check_mode(record) == "required"
             else ""
         )
+        agenda = self.reconciliation.reconciliation_context(record.goal_plus_id)
+        time_text = (
+            f"时间参照：created_at={record.created_at}，当前时间={self.clock.timestamp()}。\n"
+        )
         return (
             f"Goal Plus {record.goal_plus_id} 仍处于 active（phase={record.phase}，"
             f"revision={record.goal_revision}）。顶层 agent 只有在记录真实终态后才能停止。\n\n"
             f"当前 next action：{action_text}\n"
-            f"{final_check_text}"
+            f"{final_check_text}{time_text}{agenda}"
             "完整原始目标和命令配置见本 session 的 Goal Plus "
             "context；缺失时用 goal_plus_status(detail=true) 读取。\n\n"
-            "对照持久证据审计完整原始目标中的每项要求。如果原始目标包含时间限制，使用 status "
-            "中的时间戳进行判断：只要仍有可用时间且目标未完成，就继续工作；达到或超过时间条件时，"
+            "对照持久证据审计完整原始目标中的每项要求。如果原始目标包含时间限制，用上面的时间参照"
+            "进行判断：只要仍有可用时间且目标未完成，就继续工作；达到或超过时间条件时，"
             "停止新增工作、保留最佳持久结果并完成必需审计。时间条件不覆盖已经完成的结果终态："
             "若必需工作、验证、提升和审计已经完成，即使实际收尾晚于预设也使用 complete，并在"
             " evidence 中分别记录预设时间和实际完成收尾时间；不要输出 late，也不要仅因超出预设"
