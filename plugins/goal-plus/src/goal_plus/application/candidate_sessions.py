@@ -479,6 +479,7 @@ class CandidateSessions:
                 "ended_at": observation.ended_at,
                 "duration_seconds": observation.duration_seconds,
                 "usage": result.usage,
+                "metrics_baseline": observation.metrics_baseline,
             }
             for previous in dispatches:
                 if (

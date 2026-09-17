@@ -403,6 +403,7 @@ class SearchTools:
         inject_evidence: bool = True,
         on_submitted: Callable[[PendingVerification], None] | None = None,
         attempt_id: str | None = None,
+        retry: bool = False,
     ) -> dict[str, Any]:
         self._require_target(
             "goal_plus_search_run_verifier",
@@ -410,9 +411,14 @@ class SearchTools:
             run_id=run_id,
             agent_session_id=agent_session_id,
         )
+        if retry and attempt_id is None:
+            raise ValueError("VerifierQueryInvalid: retry requires the original attempt_id")
         if attempt_id is not None:
-            if not attempt_id or scope != "process" or hypothesis is not None or toolization_decision is not None or on_submitted is not None:
+            if not attempt_id or scope != "process" or hypothesis is not None or toolization_decision is not None or (on_submitted is not None and not retry):
                 raise ValueError("VerifierQueryInvalid: provide only the process attempt identity")
+        if retry and self.candidate_attempt is not None:
+            raise ValueError("VerifierRetryUnsupported: ThinkThread resumes through its retained attempt owner")
+        if attempt_id is not None and not retry:
             result = (
                 self.runtime.thinkthread_verification.result(
                     self.candidate_attempt, run_id, candidate_id, agent_session_id, attempt_id,
@@ -436,6 +442,7 @@ class SearchTools:
             hypothesis=hypothesis,
             toolization_decision=toolization_decision,
             on_submitted=on_submitted,
+            attempt_id=attempt_id,
         )
         result = report.model_dump(mode="json")
         if scope != "process" or not inject_evidence:

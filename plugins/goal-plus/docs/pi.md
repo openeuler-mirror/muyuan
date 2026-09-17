@@ -273,7 +273,7 @@ Pi Search 使用 `strategy.orchestration_mode="parallel_loops"` 和固定的初�
 2. 用 `goal_plus_session_run` 准备候选并执行，保存返回的 session/call identity；
 3. 用 `goal_plus_session_wait` 读取准确调用结果；
 4. 检查持久 Evidence，若需继续探索，对同一 candidate 再次 run；
-5. controller 丢失后，按 [Search 恢复](search-recovery.md) 核验旧资源退出并恢复 checkpoint；
+5. controller 重建后，用新的 call_id 继续原 session 和 workspace，详见 [Search 恢复](search-recovery.md)；
 6. 结束时调用 `goal_plus_session_close`，再 select 和 promote；默认 promotion mode 必须 apply，
    只有显式 `artifact_only` 才保留 publication；
 7. 记录 Search result，完成 raw-goal audit，设置 Goal Plus 终态，并为每个已记录 run 生成一次 final
@@ -397,7 +397,8 @@ extension 从 session 恢复 workspace 和已启用能力的最小投影，不�
 完整 worker contract 和已加载 Evidence 仍由持久 session 保留。
 
 模型因上下文限制结束时，host 保存本次调用观测；共同 controller 不自动创建替代 session。
-需要刷新时由 Main 沿显式 Search 恢复入口核验旧资源退出和 checkpoint，保留 durable Evidence。
+需要新对话时，Main 使用 `goal_plus_session_run(new_session=true)` 接手当前 workspace，
+保留未验证修改、durable Evidence 和累计预算。
 
 无法恢复 native session 时，handoff、candidate Git state 和 `.gp` verifier history
 是持久恢复依据。main 只发送中性 continuation directive，不替 worker 选择技术方向。

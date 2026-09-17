@@ -326,16 +326,21 @@ Goal/Search attachment、原 run_ids/run_id 布局与领域授权继续保留。
 4. 根据 candidate-local artifact、verifier iterations、`research_summary`、Global Evidence 和
    `.tmp/handoff.json` 恢复。
 
-Codex/Pi 支持跨进程的 native session 续轮：调用超时或 stop 后，保留调用记录的宿主在
-下一次 run 中确认旧资源清理并重新授权，分别通过 `thread/resume` 或 `--session`
+Codex/Pi 支持跨进程的 native session 续轮：调用超时、stop 或 MCP 重建后，宿主在
+下一次新 call 的 run 中取得由 native 进程持有的独占执行 lease 并重新授权，分别通过 `thread/resume` 或 `--session`
 恢复准确的原生会话。PID 会变化，但 native session、runtime `agent_session_id`、candidate
 generation、workspace、Evidence 和累计预算保持不变。新 call 不重放旧调用，用量沿用最后
 成功观测的基线。只有 native session 无法恢复、Main 明确决定换上下文时，才使用上述
 state redispatch；恢复失败不能隐式创建新会话。
 
-Worker 丢失且留下半次修改或结算时，使用 [Search 一致性恢复](search-recovery.md)：共享
+控制器重建读取持久 native handle 和最后成功观测的用量基线。旧 call 的完整结果不可用时
+明确报错，Main 检查领域状态后以新 call_id 继续，不进入 checkpoint recovery。原对话无法加载时，显式
+`new_session=true` 可直接接手现场，无需先恢复旧对话。
+
+普通未验证修改保留在 workspace；pending verifier/settlement 须先处理完。
+显式恢复 checkpoint 时，使用 [Search 一致性恢复](search-recovery.md)：共享
 runtime 固定 checkpoint 并 fence 旧 generation；host 核验旧 session 已关闭或释放；provider 恢复
-`ArtifactRef`；随后启动 fresh worker。普通 redispatch 不回滚工作区，不能代替这个流程。
+`ArtifactRef`；随后启动 fresh worker。普通 redispatch 不回滚工作区。
 
 每份 handoff 应包含关键工作、verifier-backed feature entries、blockers、next
 steps，以及最多五条带适用范围和条件的 pitfalls。`candidate_local`

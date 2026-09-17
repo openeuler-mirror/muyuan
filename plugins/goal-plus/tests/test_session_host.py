@@ -301,13 +301,13 @@ def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
     assert [item["processed_tokens"] for item in reported] == ([110, 110] if agent_harness == "codex" else [6, 9])
 
 
-@pytest.mark.parametrize("ending", ["timeout", "stop", "completed_stop"])
+@pytest.mark.parametrize("ending", ["timeout", "stop", "completed_stop", "host_restart"])
 def test_run_resumes_same_native_session_after_process_exit(hosted_candidate, ending):
     from goal_plus.session_host import NativeCandidateHost
 
     root, harness, goal, runtime, task, session, scope, actors, inputs = hosted_candidate
     hold = root.parent / "hold-native-turn"
-    if ending != "completed_stop":
+    if ending not in {"completed_stop", "host_restart"}:
         hold.touch()
     host = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
     try:
@@ -324,7 +324,7 @@ def test_run_resumes_same_native_session_after_process_exit(hosted_candidate, en
                 time.sleep(0.01)
             control.stop()
         settled = control.wait("first", timeout=10)
-        if ending == "completed_stop":
+        if ending in {"completed_stop", "host_restart"}:
             assert settled.state == "completed"
             control.stop()
         else:
@@ -334,7 +334,23 @@ def test_run_resumes_same_native_session_after_process_exit(hosted_candidate, en
         assert len(actors) == 1
         hold.unlink(missing_ok=True)
         (task.workspace / "initial_program.py").write_text("VALUE = 4\n")
+        if ending == "host_restart":
+            (task.workspace / ".tmp").mkdir(exist_ok=True)
+            note = task.workspace / ".tmp/local-result.txt"
+            note.write_text("local result not submitted to verifier\n")
+            host.shutdown()
+            host = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
+            with pytest.raises(RuntimeError, match="SessionCallHistoryUnavailable.*new call_id"):
+                host(session.agent_session_id, "wait")
+            assert (task.workspace / "initial_program.py").read_text() == "VALUE = 4\n"
+            assert note.read_text() == "local result not submitted to verifier\n"
+            assert runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id).iterations == before.iterations
+            agenda = FileGoalPlusRuntime(root).reconciliation(goal.goal_plus_id)
+            assert agenda["runs"][0]["candidates"][0]["next_step"] == "continue_candidate"
+            with pytest.raises(RuntimeError, match="SessionCallHistoryUnavailable"):
+                host.run_candidate(task.run_id, task.candidate_id, "first", "work", 10)
         resumed = host.run_candidate(task.run_id, task.candidate_id, "second", "continue", 5)
+        control = host(resumed["session_id"], "wait")
         result = control.wait("second", timeout=10)
         assert result.state == "completed", result.error
         assert resumed["session_id"] == first["session_id"]
@@ -344,8 +360,9 @@ def test_run_resumes_same_native_session_after_process_exit(hosted_candidate, en
         if harness == "pi":
             assert "--session" in inputs[-1].process.command
             assert "--session-id" not in inputs[-1].process.command
-        assert control.wait("first", timeout=0) == settled
-        if ending == "completed_stop":
+        if ending != "host_restart":
+            assert control.wait("first", timeout=0) == settled
+        if ending in {"completed_stop", "host_restart"}:
             assert result.result.invocation_id != settled.result.invocation_id
             assert result.result.usage["scope"] == "since_last_observation"
             assert result.result.usage["input"] == (80 if harness == "codex" else 6)
@@ -392,7 +409,8 @@ def test_same_call_retries_native_resume_after_cleanup_failure(hosted_candidate,
         host.shutdown()
 
 
-def test_run_redispatch_preserves_evidence_and_rejects_old_request(hosted_candidate):
+@pytest.mark.parametrize("host_restart", [False, True])
+def test_run_redispatch_preserves_evidence_and_rejects_old_request(hosted_candidate, monkeypatch, host_restart):
     from goal_plus.session_host import NativeCandidateHost
 
     root, harness, goal, runtime, task, session, _, actors, _ = hosted_candidate
@@ -403,6 +421,22 @@ def test_run_redispatch_preserves_evidence_and_rejects_old_request(hosted_candid
         assert host(first["session_id"], "wait").wait("first", timeout=10).state == "completed"
         before = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
         assert len(before.iterations) == 1
+        if host_restart:
+            host.shutdown()
+            host = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
+            launch = host._launch_native
+
+            def unavailable(*args, **kwargs):
+                if kwargs.get("resume"):
+                    raise FileNotFoundError("native session unavailable")
+                return launch(*args, **kwargs)
+
+            monkeypatch.setattr(host, "_launch_native", unavailable)
+            with pytest.raises(FileNotFoundError, match="native session unavailable"):
+                host.open(session.agent_session_id)
+            assert runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id) == before
+            (task.workspace / ".tmp").mkdir(exist_ok=True)
+            (task.workspace / ".tmp/local-result.txt").write_text("unverified local result\n")
         second = host.run_candidate(task.run_id, task.candidate_id, "fresh", "work", 10, True)
         assert second["session_id"] != first["session_id"]
         assert actors[0].rpc.process.returncode is not None
@@ -412,6 +446,8 @@ def test_run_redispatch_preserves_evidence_and_rejects_old_request(hosted_candid
         assert after.execution_generation == before.execution_generation + 1
         assert after.iterations == before.iterations
         assert after.results_ledger == before.results_ledger
+        if host_restart:
+            assert (task.workspace / ".tmp/local-result.txt").read_text() == "unverified local result\n"
         with pytest.raises(RuntimeError, match="StaleAgentSession"):
             host.run_candidate(task.run_id, task.candidate_id, "first", "work", 10)
         with pytest.raises(ValueError, match="SessionRunConflict"):
@@ -419,6 +455,111 @@ def test_run_redispatch_preserves_evidence_and_rejects_old_request(hosted_candid
         assert len(actors) == 2
     finally:
         host.shutdown()
+
+
+def test_rebuilt_host_requires_cleanup_and_settled_verifier(hosted_candidate):
+    from goal_plus.session_host import NativeCandidateHost
+
+    root, harness, goal, runtime, task, session, scope, actors, _ = hosted_candidate
+    first = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
+    rebuilt = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
+    try:
+        first.open(session.agent_session_id)
+        before = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
+        from goal_plus.bootstrap import build_scope_process_registry
+
+        for released in (False, True):
+            if released:
+                build_scope_process_registry(root).release(scope_id=scope["scope_id"])
+            assert actors[0].rpc.process.poll() is None
+            for new_session in (False, True):
+                with pytest.raises(RuntimeError, match="SessionExecutionActive"):
+                    rebuilt.run_candidate(task.run_id, task.candidate_id, "resume", "continue", 5, new_session)
+                assert runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id) == before
+        assert len(actors) == 1
+        first.shutdown()
+        (task.workspace / "initial_program.py").write_text("VALUE = 4\n")
+        def while_pending(attempt):
+            pending = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
+            assert pending.verification.attempt_id == attempt.attempt_id
+            assert runtime.verifier_result(task.run_id, task.candidate_id, attempt.attempt_id,
+                                           session.agent_session_id)["state"] == "pending"
+            with pytest.raises(RuntimeError, match="VerifierInProgress|VerifierRecoveryRequired"):
+                rebuilt.open(session.agent_session_id)
+            assert runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id) == pending
+
+        runtime.run_verifier(task.run_id, task.candidate_id, agent_session_id=session.agent_session_id,
+                             hypothesis="pending attempt", on_submitted=while_pending)
+        assert len(actors) == 1
+        assert rebuilt.open(session.agent_session_id).session_id == session.agent_session_id
+    finally:
+        first.shutdown()
+        rebuilt.shutdown()
+
+
+def test_rebuilt_host_resumes_released_session_after_process_exit(hosted_candidate):
+    from goal_plus.bootstrap import build_scope_process_registry
+    from goal_plus.session_host import NativeCandidateHost
+
+    root, harness, goal, runtime, task, session, scope, actors, inputs = hosted_candidate
+    first = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
+    rebuilt = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
+    try:
+        opened = first.open(session.agent_session_id)
+        before = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
+        build_scope_process_registry(root).release(scope_id=scope["scope_id"])
+        actors[0].rpc.process.kill()
+        actors[0].rpc.process.wait(timeout=5)
+        (task.workspace / "initial_program.py").write_text("VALUE = 4\n")
+
+        receipt = rebuilt.run_candidate(task.run_id, task.candidate_id, "resume", "continue", 5)
+        result = rebuilt(receipt["session_id"], "wait").wait("resume", timeout=10)
+
+        assert result.state == "completed", result.error
+        assert receipt["session_id"] == session.agent_session_id
+        assert inputs[-1].native_session_id == opened.native_session_id
+        after = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
+        assert after.execution_generation == before.execution_generation
+        assert after.iterations[:len(before.iterations)] == before.iterations
+        resources = [item for item in execution_scope_snapshot(
+            root_dir=root, scope_id=scope["scope_id"],
+        )["processes"] if item["label"] == f"native-session:{session.agent_session_id}"]
+        assert len(resources) == 2 and resources[0]["status"] == "finished"
+    finally:
+        first.shutdown()
+        rebuilt.shutdown()
+
+
+@pytest.mark.parametrize("hosted_candidate", ["codex"], indirect=True)
+def test_verifier_process_loss_requires_inspection_and_recovery(hosted_candidate):
+    import subprocess
+
+    root, _, goal, runtime, task, session, _, _, _ = hosted_candidate
+    (task.workspace / "initial_program.py").write_text("VALUE = 4\n")
+    before = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
+    crashed = subprocess.run(
+        [sys.executable, "-c", """
+import os, sys
+from goal_plus.runtime import FileSearchRuntime
+FileSearchRuntime(sys.argv[1]).run_verifier(
+    sys.argv[2], sys.argv[3], agent_session_id=sys.argv[4], hypothesis="interrupted verification",
+    on_submitted=lambda attempt: os._exit(23),
+)
+""", str(root), task.run_id, task.candidate_id, session.agent_session_id],
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert crashed.returncode == 23, crashed.stderr
+    pending = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
+    assert pending.verification.state == "running"
+    assert pending.iterations == before.iterations
+    agenda = FileGoalPlusRuntime(root).reconciliation(goal.goal_plus_id)
+    assert agenda["runs"][0]["candidates"][0]["next_step"] == "inspect_verifier_execution"
+    result = runtime.verifier_result(task.run_id, task.candidate_id, pending.verification.attempt_id,
+                                     session.agent_session_id)
+    assert result["state"] == "needs_recovery"
+    assert result["candidate_action"] == "retry_verifier"
+    assert runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id) == pending
 
 
 def test_run_rejects_active_dispatch_and_cleanup_failure(hosted_candidate, monkeypatch):

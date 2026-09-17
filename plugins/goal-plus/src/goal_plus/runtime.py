@@ -198,16 +198,23 @@ class FileSearchRuntime:
         hypothesis: str | None = None,
         toolization_decision: ToolizationDecision | dict[str, Any] | None = None,
         *, on_submitted: Callable[[PendingVerification], None] | None = None,
+        attempt_id: str | None = None,
     ) -> ScoreReport:
         if scope not in {"process", "promotion"}:
             raise ValueError("verifier scope must be 'process' or 'promotion'")
-        require_no_pending_verification(self.candidate_creation.state.read_candidate(run_id, candidate_id))
-        with self.settlement.state.lock_verifier(run_id, candidate_id, blocking=False):
+        if attempt_id is not None and (scope != "process" or hypothesis is not None or toolization_decision is not None):
+            raise ValueError("VerifierQueryInvalid: retry uses only the process attempt identity")
+        if attempt_id is None:
             require_no_pending_verification(self.candidate_creation.state.read_candidate(run_id, candidate_id))
+        else:
+            self.queries.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
+        with self.settlement.state.lock_verifier(run_id, candidate_id, blocking=False) as lease:
+            if attempt_id is None:
+                require_no_pending_verification(self.candidate_creation.state.read_candidate(run_id, candidate_id))
             require_candidate_not_recovering(
                 self.candidate_creation.state.read_candidate(run_id, candidate_id)
             )
-            if scope == "process" and agent_session_id is None:
+            if scope == "process" and agent_session_id is None and attempt_id is None:
                 with self.search_run.state.lock_run(run_id):
                     record = self.candidate_creation.state.read_candidate(
                         run_id, candidate_id
@@ -217,7 +224,9 @@ class FileSearchRuntime:
                             "parent process verifier cannot settle a candidate "
                             "with pending tool copies"
                         )
-            report = self.verification.verify(
+            report = self.verification.resume(
+                run_id, candidate_id, attempt_id, on_submitted=on_submitted, execution_lock=lease,
+            ) if attempt_id is not None else self.verification.verify(
                 run_id,
                 candidate_id,
                 scope=scope,
@@ -225,6 +234,7 @@ class FileSearchRuntime:
                 hypothesis=hypothesis,
                 toolization_decision=toolization_decision,
                 on_submitted=on_submitted,
+                execution_lock=lease,
             )
             adaptive_search_enabled = False
             if scope == "process":

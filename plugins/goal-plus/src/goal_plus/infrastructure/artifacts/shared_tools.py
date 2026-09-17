@@ -48,7 +48,27 @@ class FileToolPublicationWorkspace:
     def remove_inbox(self, path: Path) -> None:
         import shutil
 
-        shutil.rmtree(path, ignore_errors=True)
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            if path.exists():
+                raise
+
+    def staging_path(
+        self, run_id: str, candidate_id: str, generation: int, attempt_id: str
+    ) -> Path:
+        return self._manager(run_id).pending_dir / f"{candidate_id}-g{generation}-{attempt_id}"
+
+    def capture_staging(self, run_id: str, source: Path, destination: Path) -> None:
+        self._manager(run_id).capture_staging(source, destination)
+
+    def publish_committed(self, run_id: str, tools: list[SharedToolRecord]) -> None:
+        self._manager(run_id).publish_committed(tools)
+
+    def finish_staging(
+        self, run_id: str, staging: Path, share_out: Path, consumed: list[str]
+    ) -> None:
+        self._manager(run_id).finish_staging(staging, share_out, consumed)
 
     def __init__(self, root_dir: Path | str) -> None:
         self.root_dir = Path(root_dir)
@@ -64,7 +84,7 @@ class FileToolPublicationWorkspace:
         )
         return {"entries": inventory["entries"], "errors": inventory["errors"]}
 
-    def settle_iteration(
+    def prepare_iteration(
         self,
         *,
         run_id: str,
@@ -75,7 +95,7 @@ class FileToolPublicationWorkspace:
         limits: SharedDirSpec,
         adopted_tool_ids: set[str],
     ) -> SharedDirSettlement:
-        return self._manager(run_id).settle_iteration(
+        return self._manager(run_id).prepare_iteration(
             candidate_id=candidate_id,
             iteration=iteration,
             source_commit=source_commit,
@@ -100,21 +120,23 @@ class FileToolPublicationWorkspace:
     def discoverable_tool_ids(self, run_id: str) -> set[str]:
         return self._manager(run_id).discoverable_tool_ids()
 
-    def recover_candidate_publications(
+    def archive_staging(
         self,
         run_id: str,
         candidate_id: str,
-        committed_tool_ids: set[str],
+        staging: Path,
         recovery_id: str,
     ) -> None:
-        self._manager(run_id).recover_candidate_publications(
-            candidate_id,
-            committed_tool_ids,
+        destination = (
             self.root_dir
             / "runs"
             / run_id
             / "candidates"
             / candidate_id
             / "recoveries"
-            / recovery_id,
+            / recovery_id
+            / "shared-tool-input"
         )
+        if staging.exists() and not destination.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            staging.rename(destination)

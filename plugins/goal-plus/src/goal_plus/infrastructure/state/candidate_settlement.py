@@ -15,12 +15,12 @@ class FileCandidateSettlementState(FileCandidateCreationState):
     def lock_verifier(self, run_id: str, candidate_id: str, *, blocking: bool = True):
         with ExitStack() as stack:
             try:
-                stack.enter_context(exclusive_file_lock(
+                lease = stack.enter_context(exclusive_file_lock(
                     self.candidate_dir(run_id, candidate_id) / "verifier.lock", blocking=blocking
                 ))
             except BlockingIOError as exc:
                 raise RuntimeError("VerifierInProgress: candidate verifier is already active") from exc
-            yield
+            yield lease
 
     def relative_workspace(self, run_id: str, record: CandidateRecord) -> str:
         return (

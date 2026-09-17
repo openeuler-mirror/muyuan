@@ -180,7 +180,6 @@ class _SettlementBatch:
     physical_by_hash: dict[str, Path]
     new_records: list[SharedToolRecord] = field(default_factory=list)
     created_snapshots: list[Path] = field(default_factory=list)
-    processed_entries: list[Path] = field(default_factory=list)
     usage: _ToolUsage = field(default_factory=_ToolUsage)
 
 
@@ -687,7 +686,7 @@ class SharedDirManager:
         result["path_count"] = usage.path_count
         return result
 
-    def settle_iteration(
+    def prepare_iteration(
         self,
         *,
         candidate_id: str,
@@ -703,7 +702,7 @@ class SharedDirManager:
         max_published_versions_per_family: int = 2,
         adopted_tool_ids: set[str] | None = None,
     ) -> SharedDirSettlement:
-        """Atomically claim staging, publish deltas, and consume accepted input."""
+        """Prepare immutable snapshots without publishing or consuming input."""
         limits = _ToolLimits(
             max_tools=max_tools,
             max_files=max_files,
@@ -728,11 +727,7 @@ class SharedDirManager:
         if result.errors or not result.staged_entries:
             return result
 
-        claim_dir = self._claim_staging(
-            share_out_dir,
-            candidate_id=candidate_id,
-            iteration=iteration,
-        )
+        claim_dir = share_out_dir
         existing, families = self._load_index_state()
         batch = _SettlementBatch(
             result=result,
@@ -759,18 +754,7 @@ class SharedDirManager:
                     )
                 except (OSError, ValueError) as exc:
                     result.errors.append(f"{entry.name}: {exc}")
-                    self._restore_entry(entry, share_out_dir, result.errors)
-
-            if batch.new_records:
-                self._append_index(
-                    batch.new_records,
-                    families=list(families.values()),
-                )
         except Exception:
-            # No index publication means none of this batch is durably settled.
-            for entry in batch.processed_entries:
-                if entry.exists():
-                    self._restore_entry(entry, share_out_dir, result.errors)
             for snapshot in reversed(batch.created_snapshots):
                 self._remove_unindexed_snapshot(snapshot)
             raise
@@ -778,8 +762,6 @@ class SharedDirManager:
             result.tools = batch.new_records
             result.staged_file_count = batch.usage.file_count
             result.staged_bytes = batch.usage.size_bytes
-        finally:
-            self._cleanup_claim(claim_dir, batch.processed_entries, result.errors)
         return result
 
     def _settle_claimed_entry(
@@ -871,7 +853,6 @@ class SharedDirManager:
             size_bytes=size_bytes,
             path_count=path_entries,
         )
-        batch.processed_entries.append(entry)
         batch.result.consumed_entries.append(entry.name)
 
     @staticmethod
@@ -983,25 +964,54 @@ class SharedDirManager:
             )
         return family, max((item.version for item in versions), default=0) + 1
 
-    @staticmethod
-    def _cleanup_claim(
-        claim_dir: Path,
-        processed_entries: list[Path],
-        errors: list[str],
-    ) -> None:
-        if not claim_dir.exists():
+    def publish_committed(self, tools: list[SharedToolRecord]) -> None:
+        """Project missing receipts without resetting an already reconciled head."""
+        existing, families = self._load_index_state()
+        known = {item["tool_id"] for item in existing}
+        missing = sorted(
+            (tool for tool in tools if tool.tool_id not in known),
+            key=lambda tool: (tool.family_id, tool.version),
+        )
+        if not missing:
             return
-        try:
-            # Delete only consumed entries. Rejected entries that could not be
-            # restored remain in pending storage for manual recovery.
-            for entry in processed_entries:
-                if entry.is_dir() and not entry.is_symlink():
-                    shutil.rmtree(entry)
-                elif entry.exists() or entry.is_symlink():
-                    entry.unlink()
-            claim_dir.rmdir()
-        except OSError as exc:
-            errors.append(f"consumed staging cleanup failed at {claim_dir}: {exc}")
+        for tool in missing:
+            family = families.get(tool.family_id) or SharedToolFamily(
+                family_id=tool.family_id, created_at=tool.created_at, updated_at=tool.created_at,
+            )
+            newest = max(
+                (item["version"] for item in existing if item["family_id"] == tool.family_id),
+                default=0,
+            )
+            if tool.version > newest:
+                family = family.model_copy(update={"pending_head": tool.tool_id, "updated_at": tool.created_at})
+            families[tool.family_id] = family
+            existing.append(tool.model_dump(mode="json"))
+        self._append_index(missing, families=list(families.values()))
+
+    @staticmethod
+    def finish_staging(staging: Path, share_out: Path, consumed: list[str]) -> None:
+        if _is_link_or_reparse_point(staging) or (staging.exists() and not staging.is_dir()):
+            staging.rename(staging.with_name(staging.name + "-rejected"))
+            return
+        if not staging.exists():
+            return
+        if _is_link_or_reparse_point(share_out):
+            raise ValueError(f"{SHARE_OUT_RELATIVE_PATH} must be a real directory")
+        share_out.mkdir(parents=True, exist_ok=True)
+        for name in consumed:
+            entry = staging / name
+            if entry.is_dir() and not _is_link_or_reparse_point(entry):
+                shutil.rmtree(entry)
+            elif entry.exists() or entry.is_symlink():
+                entry.unlink()
+        if not any(staging.iterdir()):
+            staging.rmdir()
+        elif any(share_out.iterdir()):
+            # Retain rejected input without overwriting later drafts or replaying it again.
+            staging.rename(staging.with_name(staging.name + "-rejected"))
+        else:
+            share_out.rmdir()
+            staging.rename(share_out)
 
     def tool_view_input(
         self,
@@ -1354,10 +1364,7 @@ class SharedDirManager:
             destination = (
                 self.tools_dir / "sha256" / snapshot_hash[:2] / snapshot_hash
             )
-            if destination.exists():
-                destination = destination.with_name(
-                    f"{snapshot_hash}-{uuid.uuid4().hex[:8]}"
-                )
+        if not destination.exists():
             self.publish_temp_dir.mkdir(parents=True, exist_ok=True)
             temporary = self.publish_temp_dir / f"snapshot-{uuid.uuid4().hex}"
             temporary.mkdir(parents=True, exist_ok=False)
@@ -1405,7 +1412,7 @@ class SharedDirManager:
                 "utf-8"
             )
         ).hexdigest()
-        return SharedToolRecord(
+        record = SharedToolRecord(
             tool_id=f"{candidate_id}-i{iteration:04d}-{identity[:16]}",
             family_id=family_id,
             version=version,
@@ -1425,7 +1432,12 @@ class SharedDirManager:
             files=relative_files,
             size_bytes=size_bytes,
             created_at=_utc_timestamp(),
-        ), created_snapshot
+        )
+        if not created_snapshot:
+            self._read_snapshot_content(
+                record, self._resolve_snapshot_files(record), max_content_bytes=0,
+            )
+        return record, created_snapshot
 
     @staticmethod
     def _copy_file_bounded(source: Path, target: Path, *, max_bytes: int) -> int:
@@ -1456,42 +1468,18 @@ class SharedDirManager:
                 writer.write(chunk)
         return copied
 
-    def _claim_staging(
-        self,
-        share_out_dir: Path,
-        *,
-        candidate_id: str,
-        iteration: int,
-    ) -> Path:
+    def capture_staging(self, share_out_dir: Path, claim: Path) -> None:
         self.pending_dir.mkdir(parents=True, exist_ok=True)
-        claim = self.pending_dir / (
-            f"{_safe_name(candidate_id)}-i{iteration:04d}-{uuid.uuid4().hex}"
-        )
-        os.replace(share_out_dir, claim)
-        try:
-            if _is_link_or_reparse_point(claim):
-                raise ValueError(
-                    f"{SHARE_OUT_RELATIVE_PATH} must be a real directory"
-                )
-            share_out_dir.mkdir(parents=True, exist_ok=False)
-        except Exception:
-            os.replace(claim, share_out_dir)
-            raise
-        return claim
-
-    @staticmethod
-    def _restore_entry(entry: Path, share_out_dir: Path, errors: list[str]) -> None:
-        target = share_out_dir / entry.name
-        if target.exists():
-            errors.append(
-                f"{entry.name}: could not restore rejected staging because "
-                "a new entry already exists"
-            )
-            return
-        try:
-            os.replace(entry, target)
-        except OSError as exc:
-            errors.append(f"{entry.name}: could not restore rejected staging: {exc}")
+        if not claim.exists():
+            if _is_link_or_reparse_point(share_out_dir) or (share_out_dir.exists() and not share_out_dir.is_dir()):
+                raise ValueError(f"{SHARE_OUT_RELATIVE_PATH} must be a real directory")
+            if share_out_dir.exists():
+                os.replace(share_out_dir, claim)
+            else:
+                claim.mkdir()
+        if _is_link_or_reparse_point(claim) or not claim.is_dir():
+            raise ValueError(f"{SHARE_OUT_RELATIVE_PATH} must be a real directory")
+        share_out_dir.mkdir(parents=True, exist_ok=True)
 
     def _safe_snapshot_path(self, path: Path) -> bool:
         try:
@@ -1693,37 +1681,6 @@ class SharedDirManager:
 
     def load_families(self) -> list[SharedToolFamily]:
         return list(self._load_families().values())
-
-    def recover_candidate_publications(
-        self, candidate_id: str, settled_tool_ids: set[str], recovery_dir: Path
-    ) -> None:
-        """Archive index entries published before an interrupted settlement.
-
-        The caller holds the run lock. Immutable snapshots remain on disk, but
-        uncommitted publications must not consume family slots or become input
-        to a fresh generation. Other candidates and settled tools are untouched.
-        """
-        existing, families = self._load_index_state()
-        abandoned = [item for item in existing
-                     if item.get("candidate_id") == candidate_id
-                     and item.get("tool_id") not in settled_tool_ids]
-        if not abandoned:
-            return
-        abandoned_ids = {item["tool_id"] for item in abandoned}
-        if any(family.discoverable_head in abandoned_ids for family in families.values()):
-            raise RuntimeError("RecoverySharedEvidenceMismatch: uncommitted tool is discoverable")
-        from goal_plus.infrastructure.state.files import write_json
-
-        archive = recovery_dir / "unsettled-shared-tools.json"
-        if not archive.exists():
-            write_json(archive, {"tools": abandoned})
-        retained = [item for item in existing if item.get("tool_id") not in abandoned_ids]
-        retained_families = {item.get("family_id") for item in retained}
-        self._write_index(retained, families=[
-            family.model_copy(update={"pending_head": None})
-            if family.pending_head in abandoned_ids else family
-            for family in families.values() if family.family_id in retained_families
-        ])
 
     def _load_families(self) -> dict[str, SharedToolFamily]:
         _tools, families = self._load_index_state()

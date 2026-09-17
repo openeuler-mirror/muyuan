@@ -1,7 +1,9 @@
 """Candidate artifact inspection and checkpoint I/O for Git and Copy."""
 
 from pathlib import Path
+import os
 import subprocess
+import tempfile
 from goal_plus.domain.results_ledger import RESULTS_TSV_RELATIVE_PATH
 from goal_plus.infrastructure.artifacts.git import candidate_git_pathspecs, git_output
 from goal_plus.domain.artifacts import ArtifactRef
@@ -19,7 +21,33 @@ from goal_plus.workspaces import (
 
 
 class FileCandidateArtifacts:
-    def publish_settlement(self, task: CandidateTask, attempt: ArtifactRef, settled: ArtifactRef) -> bool:
+    def publish_settlement(self, task: CandidateTask, attempt: ArtifactRef, settled: ArtifactRef,
+                           *, preserve_workspace: bool = False, ledger_projection: bool = False) -> bool:
+        if preserve_workspace:
+            head = self.current_artifact(task)
+            if head is None or not self.is_descendant(task, attempt, head):
+                raise RuntimeError("VerifierReplayUnavailable: workspace history no longer contains the submitted attempt")
+            if self.is_descendant(task, settled, head):
+                if ledger_projection:
+                    git_output(task.workspace, ["git", "restore", f"--source={settled.id}", "--staged", "--worktree", "--", RESULTS_TSV_RELATIVE_PATH])
+                return True
+            # Join settlement history without checking out its keep/rollback tree.
+            # A temporary index preserves both staged and unstaged worker edits.
+            with tempfile.TemporaryDirectory(prefix="goal-plus-settlement-index-") as directory:
+                env = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+                def git(*args: str) -> str:
+                    return subprocess.check_output(["git", *args], cwd=task.workspace, env=env, text=True).strip()
+                git("read-tree", head.id)
+                if ledger_projection:
+                    git("restore", f"--source={settled.id}", "--staged", "--", RESULTS_TSV_RELATIVE_PATH)
+                tree = git("write-tree")
+                commit = git("-c", "user.name=goal-plus", "-c", "user.email=goal-plus@example.invalid",
+                             "commit-tree", tree, "-p", head.id, "-p", settled.id,
+                             "-m", "goal-plus resume verification settlement")
+                git("update-ref", "HEAD", commit, head.id)
+            if ledger_projection:
+                git_output(task.workspace, ["git", "restore", f"--source={commit}", "--staged", "--worktree", "--", RESULTS_TSV_RELATIVE_PATH])
+            return True
         if self.current_artifact(task) != attempt or self.status(task, ignore_runtime_noise=True):
             return False
         try:

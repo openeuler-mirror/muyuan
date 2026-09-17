@@ -1,11 +1,14 @@
 """Immutable candidate artifact observations and exact workspace operations."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TYPE_CHECKING
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.search import CandidateTask
-from goal_plus.ports.state import CandidateRecord, RunRecord
+if TYPE_CHECKING:
+    from goal_plus.ports.state import CandidateRecord, RunRecord
 
 
 @dataclass(frozen=True)
@@ -50,4 +53,5 @@ class CandidateArtifactWorkspace(Protocol):
     def changed_between(
         self, task: CandidateTask, base: ArtifactRef, target: ArtifactRef
     ) -> list[str]: ...
-    def publish_settlement(self, task: CandidateTask, attempt: ArtifactRef, settled: ArtifactRef) -> bool: ...
+    def publish_settlement(self, task: CandidateTask, attempt: ArtifactRef, settled: ArtifactRef,
+                           *, preserve_workspace: bool = False, ledger_projection: bool = False) -> bool: ...

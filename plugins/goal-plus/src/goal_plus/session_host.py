@@ -1,6 +1,7 @@
 """Native candidate launch/control assembly for a single host MCP service."""
 
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import threading
@@ -20,6 +21,7 @@ from goal_plus.execution.session_rpc import SessionRequestRejected
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_scope import execution_scope_for_run, execution_scope_snapshot
 from goal_plus.infrastructure.native_session_inputs import native_candidate_input
+from goal_plus.infrastructure.state.files import exclusive_file_lock
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.scope import ScopeAttachment, ScopeRecord, SCOPE_PROCESS_TERMINAL_STATUSES
 from goal_plus.ports.session import SessionOpenResult, SessionOperation
@@ -39,6 +41,7 @@ class _HostedCandidate:
     run_id: str
     scope_id: str
     control: NativeSessionControl
+    unavailable_calls: frozenset[str] = frozenset()
 
 
 class _CandidateInvocation:
@@ -292,6 +295,11 @@ class NativeCandidateHost:
                     previous = self.queries.source.read_agent_session(request.target_session_id)
                 self.queries.session(previous.agent_session_id)
                 hosted = self._sessions.get(previous.agent_session_id)
+                if previous.runtime_provider == "direct" and (
+                    hosted is None and previous.session_handle.metadata.get("transport")
+                    or hosted is not None and call_id in hosted.unavailable_calls
+                ):
+                    raise RuntimeError("SessionCallHistoryUnavailable: inspect candidate state and continue with a new call_id")
                 if hosted is not None:
                     try:
                         hosted.control.wait(call_id, timeout=0)
@@ -305,28 +313,29 @@ class NativeCandidateHost:
                 current = self.queries.current_session(run_id, candidate_id)
                 if new_session and current is not None:
                     hosted = self._sessions.get(current.agent_session_id)
-                    opened = (SessionOpenResult(current.agent_session_id, hosted.control.session.native_session_id,
-                                                self.agent_harness) if hosted is not None
-                              else self.open(current.agent_session_id))
-                    control = self(opened.session_id, "wait")
-                    if control.current_call_id and control.wait(control.current_call_id, timeout=0).state == "running":
-                        raise RuntimeError("session already has an active invocation")
-                    control.close()
-                    scope = execution_scope_for_run(root_dir=self.root, run_id=run_id)
-                    if any(item.get("status") not in SCOPE_PROCESS_TERMINAL_STATUSES
-                           and item.get("label") in {f"native-session:{opened.session_id}", f"pi-rpc:{opened.session_id}"}
-                           for item in scope.get("processes", [])):
-                        raise RuntimeError("SessionCleanupRequired: old resources have not finished")
-                    current = self.runtime.candidate_sessions.replace_session(
-                        current.agent_session_id, call_id=call_id, fingerprint=fingerprint,
-                    )
+                    if hosted is not None or current.runtime_provider == "thinkthread" or not current.session_handle.metadata.get("transport"):
+                        opened = (SessionOpenResult(current.agent_session_id, hosted.control.session.native_session_id,
+                                                    self.agent_harness) if hosted is not None
+                                  else self.open(current.agent_session_id))
+                        control = self(opened.session_id, "wait")
+                        if control.current_call_id and control.wait(control.current_call_id, timeout=0).state == "running":
+                            raise RuntimeError("session already has an active invocation")
+                        control.close()
+                    with self._native_session_lock(current.agent_session_id):
+                        current = self.queries.session(current.agent_session_id)
+                        if current.runtime_provider == "direct":
+                            self._finish_previous_native_resources(current)
+                        current = self.runtime.candidate_sessions.replace_session(
+                            current.agent_session_id, call_id=call_id, fingerprint=fingerprint,
+                        )
                     opened = self.open(current.agent_session_id)
                 else:
                     self.queries.validate_candidate(run_id, candidate_id)
                     current = current or self.runtime.start_agent_session(run_id, candidate_id)
                     self.admit(current.agent_session_id, self.caller(), execution=True)
                     hosted = self._sessions.get(current.agent_session_id)
-                    if hosted is None and (current.runtime_provider == "thinkthread" or current.run_requests):
+                    if hosted is None and (current.runtime_provider == "thinkthread" or current.run_requests
+                                           or current.session_handle.metadata.get("transport")):
                         self.open(current.agent_session_id)
                         hosted = self._sessions[current.agent_session_id]
                     if hosted is not None:
@@ -381,16 +390,15 @@ class NativeCandidateHost:
                     and session.session_handle.external_id == session.agent_session_id
                     and session.session_handle.metadata == {"continuation": "native_session"}
                 )
-                if session.session_handle.external_id and not initial_pi_handle:
-                    raise RuntimeError("native session already has a handle; cold recovery requires explicit recovery")
-                if any(
+                resume = bool(session.session_handle.external_id and not initial_pi_handle)
+                if not resume and any(
                     item.get("status") not in SCOPE_PROCESS_TERMINAL_STATUSES and item.get("label") in {
                         f"pi-rpc:{agent_session_id}", f"native-session:{agent_session_id}",
                     }
                     for item in scope.get("processes", [])
                 ):
                     raise RuntimeError("candidate already has a registered execution resource")
-                native = self._launch_native(session, caller_id, scope)
+                native = self._launch_native(session, caller_id, scope, resume=resume)
                 try:
                     self.admit(agent_session_id, caller_id, execution=True, scope_id=scope_id)
                     self.runtime.candidate_sessions.bind_agent_handle(agent_session_id, {
@@ -399,8 +407,12 @@ class NativeCandidateHost:
                                      "scope_id": scope_id},
                     })
                     invocation = _CandidateInvocation(self, agent_session_id, caller_id, scope_id, native)
+                    invocation._has_run = resume
                     control = NativeSessionControl(invocation, reopen_action=invocation.reopen)
-                    self._sessions[agent_session_id] = _HostedCandidate(caller_id, session.run_id, scope_id, control)
+                    self._sessions[agent_session_id] = _HostedCandidate(
+                        caller_id, session.run_id, scope_id, control,
+                        frozenset(item.call_id for item in session.run_requests) if resume else frozenset(),
+                    )
                 except BaseException:
                     native.close()
                     raise
@@ -408,17 +420,21 @@ class NativeCandidateHost:
 
     def _launch_native(
         self, session: AgentSessionRecord, caller_id: str, scope: ScopeRecord, *,
-        previous: CodexSession | PiSession | None = None, timeout: float = SESSION_START_TIMEOUT_SECONDS,
+        previous: CodexSession | PiSession | None = None, resume: bool = False,
+        timeout: float = SESSION_START_TIMEOUT_SECONDS,
     ) -> CodexSession | PiSession:
         agent_session_id, scope_id = session.agent_session_id, scope["scope_id"]
         config = native_candidate_input(
-            self.root, session, scope, resume=previous is not None,
+            self.root, session, scope, resume=resume or previous is not None,
             process_environment=self.queries.process_environment(agent_session_id),
         )
         registry = build_scope_process_registry(self.root)
 
         def register(pid):
             self.admit(agent_session_id, caller_id, execution=True, scope_id=scope_id)
+            if resume or previous is not None:
+                # Registration runs while the new process holds the execution lease.
+                self._finish_previous_native_resources(session)
             return registry.register(
                 scope_id=scope_id, pid=pid, label=f"native-session:{agent_session_id}",
                 attachment=ScopeAttachment("search_run", session.run_id),
@@ -432,15 +448,44 @@ class NativeCandidateHost:
 
             return CodexSession(
                 config, registration, timeout=timeout, resume_from=previous,
+                execution_lock=self.root / "host-sessions" / f"{agent_session_id}.lock",
                 tool_bridge=McpSessionToolBridge(
                     self.root, caller_role="candidate", caller_agent_session_id=agent_session_id,
                     on_settled=lambda: self.wake_internal_agents(session.run_id),
                 ),
             )
-        return PiSession(config, registration, timeout=timeout, resume_from=previous)
+        return PiSession(
+            config, registration, timeout=timeout, resume_from=previous,
+            execution_lock=self.root / "host-sessions" / f"{agent_session_id}.lock",
+        )
+
+    def _finish_previous_native_resources(self, session: AgentSessionRecord) -> None:
+        metadata = session.session_handle.metadata
+        transport = "app-server" if session.agent_harness == "codex" else "native-rpc"
+        if metadata.get("transport") != transport or not metadata.get("scope_id"):
+            raise RuntimeError("SessionCleanupRequired: native session has no bound execution scope")
+        scope = execution_scope_snapshot(root_dir=self.root, scope_id=metadata["scope_id"])
+        resources = [item for item in scope.get("processes", [])
+                     if item.get("label") == f"native-session:{session.agent_session_id}"
+                     and item.get("run_id") == session.run_id and item.get("kind", "candidate") == "candidate"]
+        if scope.get("agent_harness") != session.agent_harness or not resources:
+            raise RuntimeError("SessionCleanupRequired: native session has no matching execution resource")
+        registry = build_scope_process_registry(self.root)
+        for resource in resources:
+            if resource.get("status") != "finished":
+                registry.finish(scope_id=metadata["scope_id"], token=resource["token"])
+
+    @contextmanager
+    def _native_session_lock(self, agent_session_id: str):
+        try:
+            with exclusive_file_lock(
+                self.root / "host-sessions" / f"{agent_session_id}.lock", blocking=False,
+            ):
+                yield
+        except BlockingIOError as exc:
+            raise RuntimeError("SessionExecutionActive: native session is still running") from exc
 
     def resume_native(self, invocation: _CandidateInvocation, *, timeout: float) -> CodexSession | PiSession:
-        # Only the retained exact call owner may restart a known, stopped process.
         with self._lock:
             if self._closing:
                 raise RuntimeError("native session host is closing")
@@ -455,11 +500,6 @@ class NativeCandidateHost:
                     scope_id=invocation.scope_id, native_session_id=invocation.native_session_id,
                 )
                 scope = execution_scope_snapshot(root_dir=self.root, scope_id=invocation.scope_id)
-                resources = [item for item in scope.get("processes", [])
-                             if item.get("label") == f"native-session:{invocation.identity}"
-                             and item.get("run_id") == session.run_id]
-                if not resources or any(item.get("status") != "finished" for item in resources):
-                    raise RuntimeError("SessionCleanupRequired: native session has not finished cleanup")
                 native = self._launch_native(session, invocation.caller_id, scope,
                                              previous=invocation.native, timeout=timeout)
                 try:
@@ -474,7 +514,13 @@ class NativeCandidateHost:
         caller_id = self.caller()
         with self._lock:
             hosted = self._sessions.get(session_id)
-            if hosted is None or hosted.caller_id != caller_id:
+            if hosted is None:
+                self.admit(session_id, caller_id, execution=False)
+                raise RuntimeError(
+                    "SessionCallHistoryUnavailable: continue the candidate with "
+                    "goal_plus_session_run and a new call_id"
+                )
+            if hosted.caller_id != caller_id:
                 raise PermissionError("session controller does not belong to this Main MCP service")
         self.admit(
             session_id, caller_id, execution=operation in {"wake", "message"}, scope_id=hosted.scope_id,

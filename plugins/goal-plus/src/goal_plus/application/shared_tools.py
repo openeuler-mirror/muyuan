@@ -1,5 +1,6 @@
 """Shared-tool publication admission and settlement advisories."""
 
+from pathlib import Path
 from typing import Any, Literal
 from goal_plus.domain.evidence import ScoreReport
 from goal_plus.domain.search import FrozenSpec
@@ -15,7 +16,7 @@ from goal_plus.application.annotation import AnnotationWorkflow
 from goal_plus.ports.candidate_settlement import CandidateSettlementState
 from goal_plus.ports.clock import Clock
 from goal_plus.application.candidate_sessions import CandidateSessions
-from goal_plus.application.candidate_execution import require_worker_iteration_state
+from goal_plus.application.candidate_execution import require_no_pending_verification, require_worker_iteration_state
 from goal_plus.domain.shared_tools import TOOL_INBOX_RELATIVE_PATH, ToolCopyReceipt
 from goal_plus.ports.shared_tools import ToolDraft
 from goal_plus.ports.shared_tools import (
@@ -36,18 +37,19 @@ class SharedTools:
         self.source, self.publication, self.annotation = source, publication, annotation
         self.sessions, self.clock = sessions, clock
 
-    def settle_shared_tool_iteration(
+    def prepare_shared_tool_iteration(
         self,
         *,
         run_id: str,
         candidate_id: str,
         frozen: FrozenSpec,
-        record: CandidateRecord,
         report: ScoreReport,
         source_commit: str | None,
         iteration_number: int,
         agent_session_id: str | None,
         toolization_decision: ToolizationDecision | None,
+        staging_dir: Path | None,
+        capture_error: str | None,
     ) -> SharedToolIterationSettlement:
         limits = frozen.spec.shared_dir
         if not limits.enabled:
@@ -64,10 +66,12 @@ class SharedTools:
             )
 
         shared_inventory = None
-        if record.task.share_out_dir is not None:
+        if capture_error is not None:
+            shared_inventory = {"entries": [], "errors": [capture_error]}
+        elif staging_dir is not None:
             try:
                 shared_inventory = self.publication.inspect_staging(
-                    run_id, record.task.share_out_dir, limits.max_tools_per_iteration
+                    run_id, staging_dir, limits.max_tools_per_iteration
                 )
             except Exception as exc:
                 shared_inventory = {
@@ -80,15 +84,16 @@ class SharedTools:
         if (
             report.process_passed
             and agent_session_id is not None
-            and record.task.share_out_dir is not None
+            and staging_dir is not None
+            and capture_error is None
         ):
             try:
-                shared_settlement = self.publication.settle_iteration(
+                shared_settlement = self.publication.prepare_iteration(
                     run_id=run_id,
                     candidate_id=candidate_id,
                     iteration=iteration_number,
                     source_commit=source_commit,
-                    share_out_dir=record.task.share_out_dir,
+                    share_out_dir=staging_dir,
                     limits=limits,
                     adopted_tool_ids={
                         item.tool_id
@@ -135,6 +140,8 @@ class SharedTools:
                 publish_status = "consumed_unchanged"
             elif shared_settlement.errors:
                 publish_status = "snapshot_rejected"
+        elif capture_error is not None:
+            publish_status = "snapshot_rejected"
         elif shared_settlement_error is not None:
             publish_status = "snapshot_error"
         elif inventory_observed and agent_session_id is None:
@@ -166,6 +173,30 @@ class SharedTools:
             publish_status=publish_status,
             toolization_advisories=advisories,
         )
+
+    def reconcile_index(self, run_id: str) -> None:
+        self.publication.publish_committed(
+            run_id,
+            [tool for candidate in self.source.read_candidates(run_id)
+             for iteration in candidate.iterations for tool in iteration.shared_tools],
+        )
+
+    def reconcile(self, run_id: str, record: CandidateRecord) -> None:
+        self.reconcile_index(run_id)
+        consumed = {tool.receipt_id for iteration in record.iterations for tool in iteration.adopted_tools}
+        for receipt in record.pending_tool_copies:
+            if receipt.receipt_id in consumed:
+                self.publication.remove_inbox(receipt.inbox_path)
+        record.pending_tool_copies = [
+            receipt for receipt in record.pending_tool_copies if receipt.receipt_id not in consumed
+        ]
+        for iteration in record.iterations:
+            if iteration.shared_tool_staging_dir is not None:
+                assert record.task.share_out_dir is not None
+                self.publication.finish_staging(
+                    run_id, iteration.shared_tool_staging_dir, record.task.share_out_dir,
+                    iteration.shared_tool_consumed_entries,
+                )
 
     def prepare_worker_toolization_decision(
         self,
@@ -302,6 +333,7 @@ class SharedTools:
                 record = self.source.read_candidate(
                     session.run_id, session.candidate_id
                 )
+                require_no_pending_verification(record)
                 if record.status not in {"created", "evaluated"}:
                     raise RuntimeError(
                         f"cannot stage a tool for candidate in status {record.status}"
@@ -344,6 +376,7 @@ class SharedTools:
                 record = self.source.read_candidate(
                     session.run_id, session.candidate_id
                 )
+                require_no_pending_verification(record)
                 if (
                     len(record.pending_tool_copies)
                     >= frozen.spec.shared_dir.max_tools_per_iteration

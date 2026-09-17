@@ -163,12 +163,13 @@ class SearchQueries:
             return report.model_copy(update={"verification": pending}).model_dump(mode="json")
         if pending is None and (report is None or report.attempt_id != attempt_id):
             raise ValueError("VerifierAttemptUnavailable: attempt is not pending or the latest result of this candidate")
-        state = "needs_recovery" if not running and pending is not None and pending.state == "needs_recovery" else "pending"
+        state = "needs_recovery" if not running and pending is not None else "pending"
         return {
             "run_id": run_id, "candidate_id": candidate_id, "attempt_id": attempt_id,
             "state": state,
             "verification": pending.model_dump(mode="json") if pending is not None else None,
-            "candidate_action": "handoff_to_main" if state == "needs_recovery" else "wait_for_verifier",
+            "candidate_action": ("retry_verifier" if record.verification_request is not None else "handoff_to_main")
+            if state == "needs_recovery" else "wait_for_verifier",
         }
 
     def current_process_evidence(

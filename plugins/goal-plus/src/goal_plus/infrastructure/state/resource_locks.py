@@ -38,13 +38,13 @@ def verifier_resource_lock(resource: str | None, *, request_id: str | None = Non
         return
     lock_root = host_resource_lock_root()
     lock_name = f"{sha256_text(resource)}.lock"
-    with exclusive_file_lock(lock_root / lock_name):
+    with exclusive_file_lock(lock_root / lock_name) as lease:
         owner_path = lock_root / f"{sha256_text(resource)}.owner.json"
         if owner_path.exists() and (request_id is None or load_json(owner_path).get("request_id") != request_id):
             raise RuntimeError("VerifierResourceNeedsRecovery: unresolved resource owner")
         if request_id is not None:
             write_json(owner_path, {"request_id": request_id})
         # Remote execution may outlive this controller; an exceptional exit retains ownership.
-        yield
+        yield lease
         if request_id is not None:
             owner_path.unlink(missing_ok=True)

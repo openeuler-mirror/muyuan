@@ -145,6 +145,7 @@ class CandidateAttemptFeedback(SearchModel):
 
 class IterationRecord(SearchModel):
     iteration: int
+    settlement_sequence: int = Field(default=0, ge=0)
     settlement_id: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -194,6 +195,7 @@ class IterationRecord(SearchModel):
     adoption_confounded: bool | None = Field(default=None, exclude_if=lambda value: value is None)
     shared_tools: list[SharedToolRecord] = Field(default_factory=list)
     shared_tool_errors: list[str] = Field(default_factory=list)
+    shared_tool_staging_dir: Path | None = None
     shared_tool_staged_entries: list[str] = Field(default_factory=list)
     shared_tool_staged_file_count: int = Field(default=0, ge=0)
     shared_tool_staged_bytes: int = Field(default=0, ge=0)

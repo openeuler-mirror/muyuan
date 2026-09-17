@@ -349,12 +349,23 @@ def test_pi_tool_calls_context_verifier_and_iterations(tmp_path: Path, monkeypat
         },
     )
     assert report["candidate_id"] == task.candidate_id
+    if report.get("state") == "pending":
+        report = call_pi_tool(runtime_root, "goal_plus_search_run_verifier", {
+            "run_id": run_id, "candidate_id": task.candidate_id,
+            "agent_session_id": session.agent_session_id,
+            "attempt_id": report["attempt_id"], "timeout_seconds": 10,
+        })
     waited = call_pi_tool(runtime_root, "goal_plus_search_run_verifier", {
         "run_id": run_id, "candidate_id": task.candidate_id,
         "agent_session_id": session.agent_session_id,
         "attempt_id": report["attempt_id"], "timeout_seconds": 0,
     })
     assert waited == report
+    assert call_pi_tool(runtime_root, "goal_plus_search_run_verifier", {
+        "run_id": run_id, "candidate_id": task.candidate_id,
+        "agent_session_id": session.agent_session_id,
+        "attempt_id": report["attempt_id"], "retry": True,
+    }) == report
 
     iterations = call_pi_tool(
         runtime_root,

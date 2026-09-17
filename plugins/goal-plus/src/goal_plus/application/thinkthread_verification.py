@@ -209,6 +209,7 @@ class ThinkThreadVerification:
                         raise RuntimeError(
                             "verified ThinkThread attempt is missing its score report"
                         )
+                    self.settlement.reconcile(run, frozen, record)
                     return record.score_report.model_copy(
                         update={
                             "attempt_id": attempt_id,

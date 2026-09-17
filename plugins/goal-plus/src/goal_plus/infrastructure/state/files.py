@@ -47,13 +47,13 @@ def write_text(path: Path, text: str) -> None:
 
 
 @contextmanager
-def exclusive_file_lock(lock_path: Path, *, blocking: bool = True) -> Iterator[None]:
+def exclusive_file_lock(lock_path: Path, *, blocking: bool = True) -> Iterator[int | None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     if fcntl is not None:
         with lock_path.open("a", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
             try:
-                yield
+                yield handle.fileno()
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         return

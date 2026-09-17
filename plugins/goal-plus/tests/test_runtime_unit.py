@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import json
 import os
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -3934,7 +3935,6 @@ def test_verifier_snapshot_preserves_later_worker_edits(tmp_path, monkeypatch, b
     plan = runtime.plan_next(run_id, requested_k=1)
     task = runtime.start_batch(run_id, plan.plan_id)[0]
     session = runtime.start_agent_session(run_id, task.candidate_id, {})
-    baseline = (task.workspace / "initial_program.py").read_text()
     submitted = "VALUE = 3\n"
     later = "VALUE = 2\n"
     (task.workspace / "initial_program.py").write_text(submitted)
@@ -3976,15 +3976,15 @@ def test_verifier_snapshot_preserves_later_worker_edits(tmp_path, monkeypatch, b
     assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
     assert (task.workspace / "initial_program.py").read_text() == later
     restarted = FileSearchRuntime(runtime.root_dir)
-    recovery = restarted.prepare_candidate_recovery(run_id, task.candidate_id)
-    monkeypatch.setattr(restarted.recovery.workspace, "read_approval", lambda _: {
-        "recovery": recovery.model_dump(mode="json", exclude={"state"}),
-    })
-    restarted.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    resumed = SearchTools(restarted).goal_plus_search_run_verifier(
+        run_id, task.candidate_id, attempt_id=report.attempt_id, retry=True,
+    )
     restored = restarted.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     assert restored.verification is None
+    assert restored.recovery is None
     assert restored.iterations == before.iterations
-    assert (task.workspace / "initial_program.py").read_text() == (submitted if returncode == 0 else baseline)
+    assert resumed["process_passed"] is (returncode == 0)
+    assert (task.workspace / "initial_program.py").read_text() == later
 
 
 def test_pending_verifier_is_visible_and_does_not_queue_another_attempt(tmp_path, monkeypatch):
@@ -4009,6 +4009,10 @@ def test_pending_verifier_is_visible_and_does_not_queue_another_attempt(tmp_path
             assert context["iteration_count"] == 0
             assert context["verification"]["state"] == "running"
             assert context["verification"]["artifact_ref"]["kind"] == "git_commit"
+            with pytest.raises(RuntimeError, match="VerifierInProgress"):
+                SearchTools(runtime).goal_plus_search_run_verifier(
+                    run_id, candidate_id, attempt_id=context["verification"]["attempt_id"], retry=True,
+                )
             before_session = runtime.candidate_sessions.session(session.agent_session_id)
             with pytest.raises(RuntimeError, match="VerifierInProgress"):
                 runtime.continue_agent_session(session.agent_session_id)
@@ -4032,32 +4036,97 @@ def test_pending_verifier_is_visible_and_does_not_queue_another_attempt(tmp_path
     assert handoff.read_text() == '{"status":"waiting"}'
 
 
-def test_verifier_interrupted_settlement_requires_checkpoint_recovery(tmp_path, monkeypatch):
+@pytest.mark.parametrize("interruption", [
+    "submitted", "executing", "reported", "committed",
+    pytest.param(signal.SIGINT, id="sigint"),
+    pytest.param(signal.SIGTERM, id="sigterm"),
+    pytest.param(signal.SIGKILL, id="sigkill"),
+])
+def test_verifier_interrupted_attempt_resumes_without_rollback(tmp_path, monkeypatch, interruption):
     runtime = FileSearchRuntime(tmp_path / ".search")
     run_id, candidate_id, workspace = create_candidate(runtime, make_project(tmp_path))
-    baseline = (workspace / "initial_program.py").read_text()
+    session = runtime.start_agent_session(run_id, candidate_id, {})
     (workspace / "initial_program.py").write_text("VALUE = 3\n")
 
     def interrupted(*args, **kwargs):
         raise RuntimeError("interrupted attempt")
 
-    monkeypatch.setattr(runtime.verifiers, "run_commands", interrupted)
-    with pytest.raises(RuntimeError, match="interrupted attempt"):
-        runtime.run_verifier(run_id, candidate_id)
+    expected_error = "interrupted attempt"
+    if isinstance(interruption, signal.Signals):
+        execute = runtime.verifiers.execute_verifier_process
+
+        def signalled(command, **kwargs):
+            return execute(["python", "-c", (
+                "import os, sys; "
+                "print('{\"combined_score\": 999}', flush=True); "
+                "print('interrupted verifier diagnostic', file=sys.stderr, flush=True); "
+                f"os.kill(os.getpid(), {int(interruption)})"
+            )], **kwargs)
+
+        monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", signalled)
+        expected_error = "VerifierInterrupted"
+    elif interruption == "executing":
+        monkeypatch.setattr(runtime.verifiers, "run_commands", interrupted)
+    elif interruption == "reported":
+        monkeypatch.setattr(runtime.settlement, "record", interrupted)
+    elif interruption == "committed":
+        monkeypatch.setattr(runtime.settlement, "persist_run", interrupted)
+    with pytest.raises(RuntimeError, match=expected_error):
+        runtime.run_verifier(run_id, candidate_id, agent_session_id=session.agent_session_id,
+                             hypothesis="original hypothesis",
+                             on_submitted=interrupted if interruption == "submitted" else None)
     restarted = FileSearchRuntime(runtime.root_dir)
     record = restarted.candidate_creation.state.read_candidate(run_id, candidate_id)
-    assert record.verification.state == "needs_recovery"
-    assert record.iterations == []
-    receipt = SearchTools(restarted).goal_plus_search_run_verifier(run_id, candidate_id, attempt_id=record.verification.attempt_id)
-    assert receipt["state"] == "needs_recovery"
-    assert "interrupted attempt" in receipt["verification"]["error"]
-    assert "aggregate_score" not in receipt
-    with pytest.raises(RuntimeError, match="VerifierRecoveryRequired"):
-        restarted.run_verifier(run_id, candidate_id)
-    recovery = restarted.prepare_candidate_recovery(run_id, candidate_id)
-    restarted.recover_candidate(run_id, candidate_id, recovery.recovery_id)
-    assert (workspace / "initial_program.py").read_text() == baseline
-    assert restarted.run_verifier(run_id, candidate_id).process_passed
+    if interruption not in {"reported", "committed"}:
+        assert record.verification.state == "needs_recovery"
+        assert record.verification_request.report is None
+        assert record.score_report is None
+        assert record.iterations == record.results_ledger == []
+    if isinstance(interruption, signal.Signals):
+        log_dir = restarted.candidate_creation.state.candidate_dir(run_id, candidate_id) / "logs/process"
+        log_path, = log_dir.glob("*.log")
+        assert "interrupted verifier diagnostic" in log_path.read_text()
+    attempt_id = record.score_report.attempt_id if interruption == "committed" else record.verification.attempt_id
+    artifact = record.score_report.attempt_artifact_ref if interruption == "committed" else record.verification.artifact_ref
+    (workspace / "initial_program.py").write_text("VALUE = 4\n")
+    subprocess.run(["git", "add", "initial_program.py"], cwd=workspace, check=True)
+    (workspace / ".tmp/local-result.txt").write_text("unsubmitted result")
+    if interruption in {"reported", "committed"}:
+        monkeypatch.setattr(restarted.verifiers, "run_commands", lambda *a, **k: pytest.fail("repeated completed verifier"))
+    executions = []
+    if isinstance(interruption, signal.Signals):
+        execute = restarted.verifiers.execute_verifier_process
+
+        def resumed(command, **kwargs):
+            executions.append(kwargs["cwd"])
+            assert (kwargs["cwd"] / "initial_program.py").read_text() == "VALUE = 3\n"
+            return execute(command, **kwargs)
+
+        monkeypatch.setattr(restarted.verifiers, "execute_verifier_process", resumed)
+    facade = SearchTools(restarted)
+    result = facade.goal_plus_search_run_verifier(run_id, candidate_id, attempt_id=attempt_id, retry=True)
+    assert result["attempt_id"] == attempt_id
+    assert result["process_passed"] is True
+    after = restarted.candidate_creation.state.read_candidate(run_id, candidate_id)
+    assert after.verification is None
+    assert after.recovery is None
+    assert after.execution_generation == record.execution_generation
+    assert len(after.iterations) == len(after.results_ledger) == 1
+    assert after.iterations[0].artifact_ref == artifact
+    assert after.iterations[0].agent_session_id == session.agent_session_id
+    assert after.iterations[0].hypothesis == "original hypothesis"
+    assert (workspace / "initial_program.py").read_text() == "VALUE = 4\n"
+    assert subprocess.check_output(["git", "show", ":initial_program.py"], cwd=workspace, text=True) == "VALUE = 4\n"
+    assert (workspace / ".tmp/local-result.txt").read_text() == "unsubmitted result"
+    assert facade.goal_plus_search_run_verifier(run_id, candidate_id, attempt_id=attempt_id, retry=True) == result
+    assert restarted.candidate_creation.state.read_candidate(run_id, candidate_id) == after
+    assert restarted.candidate_sessions.session(session.agent_session_id).counters["verifier_runs"] == 1
+    if isinstance(interruption, signal.Signals):
+        assert len(executions) == 1
+    monkeypatch.undo()
+    assert restarted.run_verifier(run_id, candidate_id, agent_session_id=session.agent_session_id,
+                                  hypothesis="next local version").process_passed
+    assert len(restarted.list_iterations(run_id, candidate_id)) == 2
 
 
 def test_verifier_lock_rejects_duplicate_during_attempt_capture(tmp_path):
@@ -4350,6 +4419,9 @@ def test_checkpoint_write_error_preserves_settlement_and_peer_execution(tmp_path
     assert candidate.iterations[0].score == 9.0
     assert runtime.status(run_id).state == RunState.WAITING_FOR_WORKERS
     assert runtime.run_verifier(run_id, peer.candidate_id).disposition == "keep"
+    with pytest.raises(RuntimeError, match="VerifierRecoveryRequired"):
+        runtime.select(run_id)
+    runtime.run_verifier(run_id, task.candidate_id, attempt_id=candidate.score_report.attempt_id)
     selected = runtime.select(run_id)
     assert selected["selected_candidate_id"] == task.candidate_id
     assert selected["selected_score"] == 9.0

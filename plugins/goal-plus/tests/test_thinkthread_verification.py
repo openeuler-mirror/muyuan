@@ -208,6 +208,27 @@ def test_request_close_recovery_preserves_evidence_without_repeating_verifier(pr
     assert next(item for item in recovered.provider_mutations if item.request_id == mutation.request_id).state == "closed"
 
 
+def test_committed_attempt_reconciles_projections_without_provider_calls(prepared_candidates, monkeypatch):
+    runtime, sdk, [session] = prepared_candidates()
+
+    def interrupt_projection(run):
+        raise OSError("run projection interrupted")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.settlement, "persist_run", interrupt_projection)
+        with pytest.raises(OSError, match="run projection interrupted"):
+            verify_candidate(runtime, sdk, session)
+    record = candidate_record(runtime, session)
+    operations = list(sdk.operations)
+    assert len(record.iterations) == 1
+    assert runtime.search_run.state.read_run(session.run_id).candidates_evaluated == 0
+    for _ in range(2):
+        assert verify_candidate(runtime, sdk, session) == record.score_report
+    assert runtime.search_run.state.read_run(session.run_id).candidates_evaluated == 1
+    assert candidate_record(runtime, session).iterations == record.iterations
+    assert sdk.operations == operations
+
+
 def test_definitive_verifier_failure_records_one_failed_attempt(prepared_candidates):
     runtime, sdk, [session, second] = prepared_candidates(count=2, resource="device")
     sdk.definitive_failure_once.add("fs.run")
