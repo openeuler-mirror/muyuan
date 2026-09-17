@@ -19,7 +19,9 @@ INJECTION_OBSERVATION_TYPE = "goal-plus-injection-observation"
 RECENT_CONTENT_CHARS = 800
 # Kinds delivered as persistent custom messages can be presence-checked on the
 # branch; other channels (system prompt, user transform, steering) have no
-# stable history marker of their own.
+# stable history marker of their own. A kind maps to a custom type only for its
+# custom-message channels - the same kind delivered via input_transform
+# becomes the user prompt and must not be presence-checked.
 INJECTION_CUSTOM_TYPES = {
     "goal_context_full": "goal-plus-native-context",
     "goal_context_brief": "goal-plus-native-context",
@@ -401,7 +403,7 @@ def analyze_injections(records: list[tuple[int, dict[str, Any]]], *, agent_harne
             # These entries only originate from before_agent_start, which fires
             # solely on prompt-path turns; a real continuation turn bypasses it.
             errors.append({"line": line, "reason": "goal_context_skipped_on_prompt_turn"})
-        if kind in INJECTION_CUSTOM_TYPES:
+        if kind in INJECTION_CUSTOM_TYPES and entry.get("channel") != "input_transform":
             pending_delivery.append((line, kind))
     errors.extend({"line": at_line, "reason": "registered_injection_absent"}
                   for at_line, kind in pending_delivery)

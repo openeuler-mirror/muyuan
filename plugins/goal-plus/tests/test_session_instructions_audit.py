@@ -125,14 +125,17 @@ def test_pi_injection_ledger_flags_stale_continuation_and_absent_delivery(tmp_pa
         injection("a", None, {"kind": "goal_context_skipped", "role": "main", "reason": "continuation_turn"}),
         injection("b", "a", {"kind": "must_continue", "role": "main", "est_tokens": 200}),
         delivered("c", "b", "goal-plus-must-continue"),
-        injection("d", "c", {"kind": "worker_continuation", "role": "worker", "est_tokens": 90}),
-        delivered("e", "d", "goal-plus-worker-continuation"),
-        injection("f", "e", {"kind": "tt_missing_attempt", "role": "worker", "est_tokens": 80})]
+        # An input-transform injection becomes the user prompt itself: no
+        # custom message exists to find, so it must not be presence-checked.
+        injection("d", "c", {"kind": "goal_start", "role": "main", "channel": "input_transform", "est_tokens": 700}),
+        injection("e", "d", {"kind": "worker_continuation", "role": "worker", "est_tokens": 90}),
+        delivered("f", "e", "goal-plus-worker-continuation"),
+        injection("g", "f", {"kind": "tt_missing_attempt", "role": "worker", "est_tokens": 80})]
     ledger = audit(tmp_path, records, "pi")["injection_ledger"]
     assert {item["reason"] for item in ledger["errors"]} == {
         "goal_context_skipped_on_prompt_turn", "registered_injection_absent"}
     absent = next(item for item in ledger["errors"] if item["reason"] == "registered_injection_absent")
-    assert absent == {"line": 7, "reason": "registered_injection_absent"}
+    assert absent == {"line": 8, "reason": "registered_injection_absent"}
 
 
 def test_pi_injection_ledger_rejects_malformed_entries(tmp_path):
