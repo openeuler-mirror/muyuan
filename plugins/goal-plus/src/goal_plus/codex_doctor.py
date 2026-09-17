@@ -14,7 +14,6 @@ import re
 import shutil
 import shlex
 import subprocess
-import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -110,13 +109,6 @@ def _run(
         check=False,
         env=env,
     )
-
-
-def _version_tuple(text: str) -> tuple[int, int, int] | None:
-    match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)", text)
-    if match is None:
-        return None
-    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
 
 
 def _check_codex_version(codex_home: Path) -> CheckResult:

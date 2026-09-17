@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 from typing import Any
-from goal_plus.domain.goal_commands import (
-    DEFAULT_EXECUTION_POLICY,
-)
 
 
 from goal_plus.domain.goal import (
@@ -30,7 +27,6 @@ from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.domain.goal_closeout import (
     tool_name,
     tool_input,
-    is_search_tool,
     is_mutating_tool,
     should_block_mutation,
     mutation_block_reason,

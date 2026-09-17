@@ -54,6 +54,12 @@ def test_native_install_reinstall_uninstall(tmp_path):
                 "PYTHONHOME": str(foreign), "PYTHONPATH": str(foreign),
                 "GOAL_PLUS_PYTHON": str(foreign / "python")}
     run([python, "-I", "-c", MCP_CHECK, str(package)], environment=poisoned, cwd=foreign)
+    # The dev/test interpreter (3.14) defers annotations (PEP 649), so an
+    # import removed while still referenced by a def-signature annotation
+    # passes the unit suite yet breaks the managed 3.12 runtime at class
+    # creation. Importing every module inside the installed venv is the
+    # guard for exactly that class of regression.
+    run([python, "-I", "-c", IMPORT_ALL_CHECK], environment=poisoned, cwd=foreign)
     pi = str(Path(shutil.which("pi")).resolve())
     run(["node", "--input-type=module", "-e", PI_LOAD_CHECK, str(package), pi, python],
         environment=poisoned, cwd=foreign)
@@ -73,7 +79,9 @@ def test_native_install_reinstall_uninstall(tmp_path):
     assert not list(bindings.glob("codex-*.json"))
     assert not json.loads(run(["codex", "plugin", "list", "--json"]))["installed"]
     stale_build = "stale-unreferenced-release"
-    stale_package = package.parent / stale_build / "package"
+    # The cleanup scans releases/ top-level directories; fabricate the stale
+    # release as a sibling of the pinned one, not nested inside it.
+    stale_package = package.parent.parent / stale_build / "package"
     stale_package.mkdir(parents=True)
     stale_receipt = {**json.loads((package / ".goal-plus-runtime.json").read_text()),
                      "build": stale_build, "package": str(stale_package)}
@@ -96,6 +104,7 @@ def test_native_install_reinstall_uninstall(tmp_path):
     run(["node", "--input-type=module", "-e", PI_LOAD_CHECK, str(ROOT), pi, dev_python],
         environment={**poisoned, "GOAL_PLUS_PI_DEV_ROOT": str(ROOT), "GOAL_PLUS_PYTHON": dev_python},
         cwd=foreign)
+    run([dev_python, "-I", "-c", IMPORT_ALL_CHECK], environment=poisoned, cwd=foreign)
     run([str(ROOT / "uninstall.sh"), "--pi-dev", "--pi-dev-dir", str(dev)])
     assert not dev.exists()
 
@@ -113,6 +122,19 @@ async def check():
         tools = await client.list_tools()
         assert 'goal_plus_status' in {tool.name for tool in tools}
 asyncio.run(check())
+'''
+
+IMPORT_ALL_CHECK = r'''
+import importlib, pkgutil, sys
+import goal_plus
+failed = []
+for module in pkgutil.walk_packages(goal_plus.__path__, prefix="goal_plus."):
+    try:
+        importlib.import_module(module.name)
+    except Exception as exc:
+        failed.append(f"{module.name}: {type(exc).__name__}: {exc}")
+assert not failed, "managed runtime modules failed to import:\n" + "\n".join(failed)
+print(f"goal_plus imports OK under {sys.version.split()[0]}")
 '''
 
 PI_LOAD_CHECK = r'''
@@ -146,7 +168,13 @@ try {
   assert.match(tool.stdout, /usage:/);
 } finally {
   for (const handler of result.extensions[0].handlers.get("session_shutdown") ?? []) {
-    await handler({type: "session_shutdown", reason: "test_finished"}, {cwd: process.cwd()});
+    // Real Pi builds the extension context through ExtensionRunner with a
+    // sessionManager; the extension's shutdown path reads the native session
+    // id from it. Provide the same minimal shape here.
+    await handler(
+      {type: "session_shutdown", reason: "test_finished"},
+      {cwd: process.cwd(), sessionManager: {getSessionId: () => "pi-load-check"}},
+    );
   }
 }
 '''

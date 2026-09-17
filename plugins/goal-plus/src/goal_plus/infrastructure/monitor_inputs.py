@@ -419,7 +419,6 @@ def _host_cleanup_payload(
         "complete": sessions_complete,
     }
 
-    annotation_host = frozen.agent_harness
     annotation_applicable = frozen.runtime_provider == "thinkthread"
     annotation_state = "not_applicable"
     annotation_service_state = "not_applicable"

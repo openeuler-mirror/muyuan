@@ -1,6 +1,5 @@
 """Read-only candidate admission, session binding and settled-result projections."""
 
-from collections.abc import Mapping
 from typing import Any
 
 from goal_plus.application.candidate_execution import (

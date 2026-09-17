@@ -38,10 +38,11 @@ from goal_plus.projections.search_tools import (
     search_history_summary, search_plan_receipt,
     history_page,
 )
-
-
 from goal_plus.domain.tool_catalog import (
-    ToolCallerRole, CANDIDATE_TOOL_NAMES, FINAL_CHECKER_TOOL_NAMES, require_tool_role,
+    ToolCallerRole as ToolCallerRole,
+    CANDIDATE_TOOL_NAMES as CANDIDATE_TOOL_NAMES,
+    FINAL_CHECKER_TOOL_NAMES as FINAL_CHECKER_TOOL_NAMES,
+    require_tool_role as require_tool_role,
 )
 
 

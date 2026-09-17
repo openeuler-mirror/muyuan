@@ -199,7 +199,7 @@ from pydantic import BaseModel
 modules = [
     'goal_plus.models', 'goal_plus.domain.search', 'goal_plus.domain.evidence',
     'goal_plus.domain.goal', 'goal_plus.domain.annotation',
-    'goal_plus.domain.adaptive.models', 'goal_plus.domain.adaptive.policies',
+    'goal_plus.domain.adaptive.models', 'goal_plus.domain.adaptive.deterministic',
     'goal_plus.ports.state', 'goal_plus.ports.execution',
     'goal_plus.ports.annotation', 'goal_plus.application.annotation',
     'goal_plus.application.annotation_admission', 'goal_plus.application.search_context',

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from goal_plus.domain.agents import AgentHarnessKind
-from goal_plus.ports.thinkthread import AgentPosixBridgeError, AgentPosixSdkMismatch, capability_ids
+from goal_plus.ports.thinkthread import AgentPosixBridgeError, capability_ids
 
 AGENT_POSIX_CONTRACT_FINGERPRINT = (
     "fcc80b665cd990f9d1e3681a9d384cb99994f2b739cd4fbddc97bdda01391131"

@@ -18,7 +18,6 @@ from typing import Any
 from uuid import uuid4
 
 from goal_plus.codex_transcript import (
-    iter_codex_transcript_header,
     read_codex_session_meta,
 )
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT
@@ -157,14 +156,6 @@ def _tool_name(hook_input: dict[str, Any]) -> str:
 def _prompt(hook_input: dict[str, Any]) -> str:
     value = hook_input.get("prompt")
     return value if isinstance(value, str) else ""
-
-
-def _goal_plus_prompt(hook_input: dict[str, Any]) -> str | None:
-    request = _goal_plus_request(hook_input)
-    if request is None:
-        return None
-    raw_goal = request.get("raw_goal")
-    return raw_goal if isinstance(raw_goal, str) and raw_goal else None
 
 
 def _goal_plus_request(hook_input: dict[str, Any]) -> dict[str, Any] | None:
@@ -311,10 +302,6 @@ def _host_agent_id(hook_input: dict[str, Any]) -> str | None:
 def _codex_turn_started_at(hook_input: dict[str, Any]) -> datetime | None:
     event = hook_input_codec.codex_turn_event(hook_input)
     return _utc_datetime(event.get("timestamp")) if event else None
-
-
-def _compact_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def _codex_subagent_task_name(hook_input: dict[str, Any]) -> str | None:
@@ -499,14 +486,6 @@ def _is_final_checker_context(search_root: Path, hook_input: dict[str, Any]) -> 
 
 def _time_advisory_dir(search_root: Path) -> Path:
     return search_root / "host-logs" / "codex-time-advisory"
-
-
-def _read_json_object(path: Path) -> dict[str, Any] | None:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 def _write_json_object(path: Path, payload: dict[str, Any]) -> None:
@@ -845,13 +824,6 @@ def _select_terminal_report_goal_id(
     for record in records:
         if any(task.run_id == run_id for task in record.search_tasks):
             return record.goal_plus_id
-    return None
-
-
-def _select_resumable_goal_id(search_root: Path) -> str | None:
-    resumable = _resumable_records(search_root)
-    if len(resumable) == 1:
-        return resumable[0].goal_plus_id
     return None
 
 

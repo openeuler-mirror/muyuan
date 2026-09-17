@@ -2,7 +2,6 @@
 
 from typing import Any
 from goal_plus.domain.goal_commands import (
-    SEARCH_TOOL_SUFFIXES,
     MUTATING_TOOL_SUFFIXES,
 )
 
@@ -94,23 +93,6 @@ def spec_draft_next_action(spec_draft: GoalPlusSpecDraft) -> GoalPlusNextAction:
     )
 
 
-def has_search_ready_spec(record: GoalPlusRecord) -> bool:
-    return (
-        record.spec_draft is not None
-        and record.spec_draft.confidence == "high"
-        and not record.spec_draft.open_questions
-    )
-
-
-def search_block_reason(record: GoalPlusRecord) -> str:
-    spec_draft = record.spec_draft
-    if spec_draft is None:
-        return "Search 工具要求先提供高置信度的冻结 spec draft。"
-    if spec_draft.confidence != "high" or spec_draft.open_questions:
-        return "Search 工具要求先提供高置信度的冻结 spec draft。"
-    return "Search 工具要求先提供已准备好进入 Search 的 spec draft。"
-
-
 def tool_name(context: dict[str, Any]) -> str:
     value = context.get("tool_name") or context.get("toolName") or ""
     return str(value)
@@ -122,10 +104,6 @@ def tool_input(context: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, dict):
             return value
     return {}
-
-
-def is_search_tool(tool_name: str) -> bool:
-    return any(tool_matches(tool_name, suffix) for suffix in SEARCH_TOOL_SUFFIXES)
 
 
 def is_mutating_tool(tool_name: str) -> bool:

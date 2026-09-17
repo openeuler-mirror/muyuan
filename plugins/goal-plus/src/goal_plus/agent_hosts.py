@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from queue import Empty, Queue
 from threading import Thread
@@ -110,14 +109,9 @@ def _worker_contract(worker_prompt: str | None) -> str:
 def _budget_control(worker_budget: dict[str, Any] | None) -> dict[str, Any] | None:
     if not worker_budget:
         return None
-    control = {
-        "mode": "session_control",
+    return {
         "max_runtime_seconds": worker_budget.get("max_runtime_seconds"),
-        "on_exceed": worker_budget.get("on_exceed", "interrupt"),
     }
-    if worker_budget.get("max_turns") is not None:
-        control["max_turns_hint"] = worker_budget["max_turns"]
-    return control
 
 
 class CodexModelCatalog:
