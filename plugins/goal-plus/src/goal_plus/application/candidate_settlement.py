@@ -36,6 +36,7 @@ from goal_plus.domain.shared_tools import (
     ToolizationDecision,
 )
 from goal_plus.ports.state import (
+    CandidateRecord,
     RunRecord,
 )
 from goal_plus.application.settlement_policy import (
