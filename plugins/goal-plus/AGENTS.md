@@ -339,6 +339,21 @@ Markdown 改动必须运行 `markdownlint-cli2` 并检查受影响的相对链�
 正文按需加 `--include-content`，不要每次临时重写监控或日志解析器。命令示例见
 [Runtime 调试](docs/debugging-runtime.md#长时间观察)。这些只读脚本不负责调度或恢复。
 
+### 注入看护（防止 prompt 裁剪静默回归）
+
+进入模型上下文的注入是确定性接口，必须像代码一样被看护，不能只靠 review：
+
+- Pi 扩展任何注入（custom message、system prompt 追加、prompt 转换、steering）必须先经
+  `appendInjectionObservation`（`assets/pi/extensions/lib/goal-plus-session-diagnostics.ts`）
+  登记 kind/role/channel/token 估算与载荷布尔（如 `raw_goal_present`）；条目随
+  session-diagnostics 归档，注入正文本身不落盘。
+- `check_session_instructions.py` 默认输出 `injection_ledger` 汇总，并用健康规则把
+  `full_context_without_raw_goal`、`goal_context_skipped_on_prompt_turn`、
+  `registered_injection_absent` 降级为 missing。改动注入逻辑后必须重跑该审计确认规则未变红。
+- 新增注入点时同步：登记调用、`tests/test_pi_assets.py` 结构配对断言、
+  `scripts/check_session_instructions.py` 的 `INJECTION_CUSTOM_TYPES`（若以 custom message 投递）。
+- 细节与健康规则语义见 [Runtime 调试](docs/debugging-runtime.md#注入台账)。
+
 Report 是终态持久数据的静态投影，不是 live UI。生成顺序和恢复方法见
 [Runtime 调试](docs/debugging-runtime.md)。缺失的观测数据保持 unavailable，不从 transcript 猜测。
 

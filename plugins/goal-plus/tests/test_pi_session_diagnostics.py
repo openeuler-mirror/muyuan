@@ -17,6 +17,54 @@ def test_request_contract_observation(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_injection_observation_ledger_entry(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for Pi diagnostics")
+    module = Path(__file__).resolve().parents[1] / "assets/pi/extensions/lib/goal-plus-session-diagnostics.ts"
+    result = subprocess.run([node, "--experimental-strip-types", "--input-type=module", "-e", INJECTION_SCRIPT, str(module)],
+                            capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+INJECTION_SCRIPT = r'''
+import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+import {createHash} from 'node:crypto';
+const {appendInjectionObservation, estimateTokens, INJECTION_OBSERVATION_TYPE} = await import(pathToFileURL(process.argv[1]).href);
+assert.equal(INJECTION_OBSERVATION_TYPE, 'goal-plus-injection-observation');
+assert.equal(estimateTokens('你好世界'), 4);
+assert.equal(estimateTokens('abcdefgh'), 2);
+assert.equal(estimateTokens('你好abcd'), 3);
+const entries = [];
+const pi = {appendEntry: (customType, data) => entries.push({customType, data})};
+const ctx = {sessionManager: {getSessionId: () => 'session-a'}};
+appendInjectionObservation(pi, ctx, {
+  kind: 'goal_context_full', role: 'main', content: 'SECRET GOAL TEXT 你好abcd',
+  raw_goal_present: false, goal_revision: 2,
+});
+process.env.GOAL_PLUS_SESSION_DIAGNOSTICS = '0';
+appendInjectionObservation(pi, ctx, {kind: 'goal_context_brief', role: 'main', content: 'SECRET'});
+delete process.env.GOAL_PLUS_SESSION_DIAGNOSTICS;
+assert.equal(entries.length, 1);
+const entry = entries[0];
+assert.equal(entry.customType, INJECTION_OBSERVATION_TYPE);
+assert.deepEqual(Object.keys(entry.data).sort(),
+  ['chars', 'est_tokens', 'goal_revision', 'kind', 'raw_goal_present', 'role', 'session_id', 'sha256', 'version']);
+assert.equal(entry.data.version, 1);
+assert.equal(entry.data.session_id, 'session-a');
+assert.equal(entry.data.kind, 'goal_context_full');
+assert.equal(entry.data.raw_goal_present, false);
+assert.equal(entry.data.goal_revision, 2);
+assert.equal(entry.data.chars, 'SECRET GOAL TEXT 你好abcd'.length);
+assert.equal(entry.data.sha256, createHash('sha256').update('SECRET GOAL TEXT 你好abcd').digest('hex'));
+assert.ok(!JSON.stringify(entries).includes('SECRET'), 'injected content itself never persists');
+pi.appendEntry = () => {throw new Error('disk full');};
+assert.doesNotThrow(() => appendInjectionObservation(pi, ctx, {kind: 'must_continue', role: 'main', content: 'x'}));
+console.log('injection ledger checks passed');
+'''
+
+
 SCRIPT = r'''
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';

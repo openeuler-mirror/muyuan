@@ -6,6 +6,57 @@ export const sessionDiagnosticsEnabled = () => process.env.GOAL_PLUS_SESSION_DIA
 const record = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
+// One ledger entry per injection of Goal Plus content into a model context.
+// The audit script treats these as the authoritative injection registry; any
+// new injection site must register through appendInjectionObservation.
+export const INJECTION_OBSERVATION_TYPE = "goal-plus-injection-observation";
+
+// Heuristic estimate only: CJK text averages ~1 token per character and ASCII
+// ~4 characters per token (cl100k-style ratio). Reports label these estimates
+// and never mix them with provider usage numbers.
+export function estimateTokens(text: string): number {
+	let cjk = 0;
+	for (const character of text) {
+		const code = character.codePointAt(0)!;
+		if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3400 && code <= 0x4dbf)
+			|| (code >= 0x3000 && code <= 0x303f) || (code >= 0xff00 && code <= 0xffef)) cjk += 1;
+	}
+	return Math.ceil(cjk + (text.length - cjk) / 4);
+}
+
+export interface InjectionObservation {
+	kind: string;
+	role: string;
+	/** Injected text; measured for chars/tokens/digest when present. */
+	content?: string;
+	[key: string]: unknown;
+}
+
+export function appendInjectionObservation(
+	pi: ExtensionAPI,
+	ctx: { sessionManager: { getSessionId(): string } },
+	observation: InjectionObservation,
+): void {
+	if (!sessionDiagnosticsEnabled()) return;
+	try {
+		const { kind, role, content, ...rest } = observation;
+		pi.appendEntry(INJECTION_OBSERVATION_TYPE, {
+			version: 1,
+			session_id: ctx.sessionManager.getSessionId(),
+			kind,
+			role,
+			...(content !== undefined ? {
+				chars: content.length,
+				est_tokens: estimateTokens(content),
+				sha256: createHash("sha256").update(content).digest("hex"),
+			} : {}),
+			...rest,
+		});
+	} catch {
+		// Optional diagnostics never replace the injection or prevent inference.
+	}
+}
+
 export function registerSessionDiagnostics(pi: ExtensionAPI, contracts: Map<string, Contract>) {
 	let turnIndex: number | undefined;
 	let sessionId: string | undefined;

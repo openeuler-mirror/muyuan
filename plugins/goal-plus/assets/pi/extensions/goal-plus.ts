@@ -2,7 +2,11 @@ import { LooseObject, RuntimeToolSchemas, RuntimeToolDescriptions } from "./lib/
 import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, parseJsonObject, runJsonCli, runHostCommandCli, closeMcpConnections } from "./lib/goal-plus-transport.ts";
 import { THINKTHREAD_GOAL_PLUS_PROTOCOL, WorkerSteeringReceiver, dispatchMessageId, dispatchMetadata, requestWorkerTool } from "../../thinkthread-session-rpc.ts";
 import { toolOwner, type ToolOwner } from "./lib/goal-plus-tool-identity.ts";
-import { registerSessionDiagnostics, sessionDiagnosticsEnabled } from "./lib/goal-plus-session-diagnostics.ts";
+import {
+	appendInjectionObservation,
+	registerSessionDiagnostics,
+	sessionDiagnosticsEnabled,
+} from "./lib/goal-plus-session-diagnostics.ts";
 import { SessionArchive, sendDiagnosticMessages } from "./lib/goal-plus-session-archive.ts";
 import { parseArgs, type ExtensionAPI, type ExtensionContext, type ToolCallEvent, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
@@ -1054,13 +1058,19 @@ function clearActiveGoalState(pi: ExtensionAPI, persist: boolean): void {
 
 function queuePublicationNotificationTurn(
 	pi: ExtensionAPI,
+	ctx: ExtensionContext,
 	runId: string,
 	notificationIds: string[],
 ): void {
+	const content = "处理本轮 native context 中的 Goal Plus publication 终态通知。不要恢复 Goal Plus，也不要调用 mutation tool。";
+	appendInjectionObservation(pi, ctx, {
+		kind: "publication_notification", role, channel: "follow_up", target_id: runId,
+		notification_count: notificationIds.length, content,
+	});
 	pi.sendMessage(
 		{
 			customType: "goal-plus-publication-notification-delivery",
-			content: "处理本轮 native context 中的 Goal Plus publication 终态通知。不要恢复 Goal Plus，也不要调用 mutation tool。",
+			content,
 			display: false,
 			details: {
 				run_id: runId,
@@ -2156,6 +2166,8 @@ async function controlGoalPlus(
 
 function startGoalPlusMainTurn(
 	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	kind: "goal_start" | "goal_edit" | "native_continuation",
 	context: string,
 	deliverAsFollowUp: boolean,
 ) {
@@ -2173,6 +2185,13 @@ function startGoalPlusMainTurn(
 			request_id: randomUUID(),
 		},
 	};
+	appendInjectionObservation(pi, ctx, {
+		kind, role, channel: deliverAsFollowUp ? "follow_up" : "next_turn_user_message",
+		target_id: activeGoalPlusId,
+		goal_revision: cachedGoalStatus?.goal_revision,
+		control_version: cachedGoalStatus?.control?.version,
+		content: context,
+	});
 	if (deliverAsFollowUp) {
 		pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
 	} else {
@@ -2531,11 +2550,17 @@ async function queueMainGoalContinuation(pi: ExtensionAPI, ctx: ExtensionContext
 		// The runtime owns the continuation text: it carries only the rules that
 		// exist nowhere else, while the goal data comes from the per-turn context.
 		pendingMustContinueTurn = true;
+		const content = details.continuation_prompt || details.reason
+			|| "Goal Plus 仍处于 active。继续下一项必需 action。";
+		appendInjectionObservation(pi, ctx, {
+			kind: "must_continue", role, channel: "follow_up", target_id: activeGoalPlusId,
+			goal_revision: details.goal_revision, control_version: details.control_version,
+			continuation_count: continuationCount, content,
+		});
 		pi.sendMessage(
 			{
 				customType: GOAL_PLUS_MUST_CONTINUE_TYPE,
-				content: details.continuation_prompt || details.reason
-					|| "Goal Plus 仍处于 active。继续下一项必需 action。",
+				content,
 				display: false,
 				details: { goal_plus_id: activeGoalPlusId, continuationCount,
 					goal_revision: details.goal_revision, control_version: details.control_version,
@@ -2636,7 +2661,7 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 			if (publication.content) {
 				goalPlusSessionAuthorized = false;
 				if (persist) persistGoalState(pi);
-				queuePublicationNotificationTurn(pi, runId, publication.notificationIds);
+				queuePublicationNotificationTurn(pi, ctx, runId, publication.notificationIds);
 				return;
 			}
 		}
@@ -2724,7 +2749,7 @@ export default async function (pi: ExtensionAPI) {
 				}
 				if (request && ["summary", "pause", "resume", "clear"].includes(request.action)) {
 					const prompt = await controlGoalPlus(pi, ctx, request.action as "summary" | "pause" | "resume" | "clear");
-					if (prompt) startGoalPlusMainTurn(pi, prompt, false);
+					if (prompt) startGoalPlusMainTurn(pi, ctx, "native_continuation", prompt, false);
 					return;
 				}
 				if (!request || !request.rawGoal) {
@@ -2735,7 +2760,7 @@ export default async function (pi: ExtensionAPI) {
 				const prompt = request.action === "edit"
 						? await updateGoalPlusStart(pi, ctx, request.rawGoal)
 						: await createGoalPlusStart(pi, ctx, request.rawGoal);
-				if (prompt) startGoalPlusMainTurn(pi, prompt, deliverAsFollowUp);
+				if (prompt) startGoalPlusMainTurn(pi, ctx, request.action === "edit" ? "goal_edit" : "goal_start", prompt, deliverAsFollowUp);
 			},
 		});
 		pi.registerCommand("goal-plus-with-final-check", {
@@ -2747,7 +2772,7 @@ export default async function (pi: ExtensionAPI) {
 					return;
 				}
 				const prompt = await createGoalPlusStart(pi, ctx, rawGoal, true);
-				if (prompt) startGoalPlusMainTurn(pi, prompt, !ctx.isIdle());
+				if (prompt) startGoalPlusMainTurn(pi, ctx, "goal_start", prompt, !ctx.isIdle());
 			},
 		});
 	}
@@ -2853,6 +2878,10 @@ export default async function (pi: ExtensionAPI) {
 		}
 		if (["summary", "pause", "resume", "clear"].includes(request.action)) {
 			const prompt = await controlGoalPlus(pi, ctx, request.action as "summary" | "pause" | "resume" | "clear");
+			if (prompt) appendInjectionObservation(pi, ctx, {
+				kind: "native_continuation", role, channel: "input_transform",
+				target_id: activeGoalPlusId, content: prompt,
+			});
 			return prompt ? { action: "transform", text: prompt, images: event.images } : { action: "handled" };
 		}
 		if (!request.rawGoal) {
@@ -2862,6 +2891,10 @@ export default async function (pi: ExtensionAPI) {
 		const prompt = request.action === "edit"
 				? await updateGoalPlusStart(pi, ctx, request.rawGoal)
 				: await createGoalPlusStart(pi, ctx, request.rawGoal, request.withFinalCheck);
+		if (prompt) appendInjectionObservation(pi, ctx, {
+			kind: request.action === "edit" ? "goal_edit" : "goal_start", role,
+			channel: "input_transform", target_id: activeGoalPlusId, content: prompt,
+		});
 		return prompt
 			? { action: "transform", text: prompt, images: event.images }
 			: { action: "handled" };
@@ -2906,7 +2939,7 @@ export default async function (pi: ExtensionAPI) {
 					}
 					if (publication.content) {
 						if (persist) persistGoalState(pi);
-						queuePublicationNotificationTurn(pi, runId, publication.notificationIds);
+						queuePublicationNotificationTurn(pi, ctx, runId, publication.notificationIds);
 						return;
 						}
 					}
@@ -2945,6 +2978,12 @@ export default async function (pi: ExtensionAPI) {
 		// must never abort an ordinary user turn or an already running Main turn.
 		const lastInput = [...messages].reverse().find((message) => message.role === "user" || message.role === "assistant" || isRequest(message));
 		if (lastInput && stale(lastInput)) {
+			appendInjectionObservation(pi, ctx, {
+				kind: "context_prune", role, channel: "context_filter",
+				target_id: status?.goal_plus_id,
+				pruned: messages.filter((message) => stale(message)).length,
+				reason: "stale_request_abort",
+			});
 			suppressedContinuationAbort = true;
 			ctx.abort();
 		}
@@ -2987,6 +3026,25 @@ export default async function (pi: ExtensionAPI) {
 				: continuationTurn ? undefined : buildGoalPlusBriefContext(status)
 			: undefined;
 		if (goalContext && needsFullGoalContext) goalContextFullKey = goalContextKey;
+		// The injection ledger is the deterministic guardian of this cadence: the
+		// audit turns a full context without raw_goal, or a skipped prompt-path
+		// turn, into a reported defect instead of a silent prompt regression.
+		appendInjectionObservation(pi, ctx, {
+			kind: goalContext === undefined
+				? "goal_context_skipped"
+				: needsFullGoalContext ? "goal_context_full" : "goal_context_brief",
+			role, channel: "system_message", target_id: status?.goal_plus_id,
+			goal_revision: status?.goal_revision, control_version: status?.control?.version,
+			raw_goal_present: Boolean(status?.raw_goal),
+			needs_full: needsFullGoalContext,
+			...(goalContext !== undefined
+				? { content: goalContext }
+				: { reason: !goalPlusSessionAuthorized ? "not_authorized"
+					: !status ? "no_status"
+					: isTerminalStatus(status.status) ? "terminal"
+					: status.control?.state !== "active" ? "control_inactive"
+					: "continuation_turn" }),
+		});
 		const content = [publication.content, goalContext].filter((item): item is string => Boolean(item));
 		if (content.length === 0) return { systemPrompt };
 		return {
@@ -3028,7 +3086,13 @@ export default async function (pi: ExtensionAPI) {
 		const parentId = process.env.THINKTHREAD_PARENT_ID!;
 		const receiver = new WorkerSteeringReceiver(client, parentId, workerSteeringIdentity,
 			() => !ctx.isIdle() && !ctx.signal?.aborted,
-			(prompt) => pi.sendUserMessage(prompt, { deliverAs: "steer" }), () => ctx.abort());
+			(prompt) => {
+				appendInjectionObservation(pi, ctx, {
+					kind: "worker_steer", role, channel: "steer",
+					target_id: workerSteeringIdentity.agentSessionId, content: prompt,
+				});
+				pi.sendUserMessage(prompt, { deliverAs: "steer" });
+			}, () => ctx.abort());
 		let stopped = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const poll = async () => {
@@ -3107,10 +3171,16 @@ export default async function (pi: ExtensionAPI) {
 				&& !workerMissingAttemptContinuationSent
 			) {
 				workerMissingAttemptContinuationSent = true;
+				const missingAttemptContent = "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成本轮修改，使用当前 agent_session_id 通过 goal_plus_search_run_verifier 提交一个 attempt，并按回执行动。";
+				appendInjectionObservation(pi, ctx, {
+					kind: "tt_missing_attempt", role, channel: "follow_up",
+					target_id: workerSteeringIdentity?.agentSessionId,
+					dispatch_nonce: workerActiveDispatchNonce, content: missingAttemptContent,
+				});
 				pi.sendMessage(
 					{
 						customType: "goal-plus-thinkthread-missing-attempt",
-						content: "本次 ThinkThread dispatch 尚未提交 accepted verifier attempt。继续当前 wake：如果尚未加载 candidate_task，先调用 goal_plus_search_get_agent_context；随后完成本轮修改，使用当前 agent_session_id 通过 goal_plus_search_run_verifier 提交一个 attempt，并按回执行动。",
+						content: missingAttemptContent,
 						display: false,
 						details: { dispatchNonce: workerActiveDispatchNonce },
 					},
@@ -3126,10 +3196,17 @@ export default async function (pi: ExtensionAPI) {
 				return;
 			}
 			workerContinuationCount += 1;
+			const workerContinuationContent = "继续当前 Candidate 会话。沿用已加载的运行时上下文和 Evidence；探索新方向。只有产物发生实质变化后才运行 verifier，不要重复验证未修改的产物。";
+			appendInjectionObservation(pi, ctx, {
+				kind: "worker_continuation", role, channel: "follow_up",
+				target_id: workerSteeringIdentity?.agentSessionId,
+				continuation_count: workerContinuationCount,
+				continue_until_ms: workerContinueUntilMs, content: workerContinuationContent,
+			});
 			pi.sendMessage(
 				{
 					customType: "goal-plus-worker-continuation",
-					content: "继续当前 Candidate 会话。沿用已加载的运行时上下文和 Evidence；探索新方向。只有产物发生实质变化后才运行 verifier，不要重复验证未修改的产物。",
+					content: workerContinuationContent,
 					display: false,
 					details: { workerContinuationCount, workerContinueUntilMs },
 				},

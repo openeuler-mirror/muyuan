@@ -15,7 +15,22 @@ from typing import Any
 
 
 OBSERVATION_TYPE = "goal-plus-instructions-observation"
+INJECTION_OBSERVATION_TYPE = "goal-plus-injection-observation"
 RECENT_CONTENT_CHARS = 800
+# Kinds delivered as persistent custom messages can be presence-checked on the
+# branch; other channels (system prompt, user transform, steering) have no
+# stable history marker of their own.
+INJECTION_CUSTOM_TYPES = {
+    "goal_context_full": "goal-plus-native-context",
+    "goal_context_brief": "goal-plus-native-context",
+    "goal_start": "goal-plus-command-context",
+    "goal_edit": "goal-plus-command-context",
+    "native_continuation": "goal-plus-command-context",
+    "must_continue": "goal-plus-must-continue",
+    "publication_notification": "goal-plus-publication-notification-delivery",
+    "tt_missing_attempt": "goal-plus-thinkthread-missing-attempt",
+    "worker_continuation": "goal-plus-worker-continuation",
+}
 
 
 def checkout_tool_manifest(role: str) -> dict:
@@ -333,6 +348,85 @@ def analyze_context(records, tool_analysis, *, overview: str, token_encoding: st
     return report
 
 
+def analyze_injections(records: list[tuple[int, dict[str, Any]]], *, agent_harness: str) -> dict[str, Any]:
+    """Summarize injection-ledger observations and enforce the injection contract.
+
+    Every Goal Plus injection site registers a ``goal-plus-injection-observation``
+    entry; this analyzer rolls them up per role and kind, correlates each with
+    the most recent provider input usage (context size at injection time), and
+    reports the defects that motivated the ledger: a full goal context whose
+    payload lacks ``raw_goal``, a registered injection whose custom message is
+    absent from the branch, and a prompt-path turn that skipped the goal
+    context because of a stale must-continue flag.
+    """
+    if agent_harness != "pi":
+        return {"status": "unavailable", "reason": "no_injection_observations"}
+    errors: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
+    context_tokens: int | None = None
+    pending_delivery: list[tuple[int, str]] = []
+    for line, record in records:
+        message = record.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            usage = message.get("usage")
+            if isinstance(usage, dict):
+                values = [usage.get(key) for key in ("input", "cacheRead", "cacheWrite")]
+                if all(type(value) is int and value >= 0 for value in values):
+                    context_tokens = sum(values)
+        if record.get("type") == "custom_message" and record.get("customType") in set(INJECTION_CUSTOM_TYPES.values()):
+            custom_type = record["customType"]
+            still_pending = []
+            for at_line, kind in pending_delivery:
+                if INJECTION_CUSTOM_TYPES[kind] == custom_type and at_line <= line:
+                    continue
+                still_pending.append((at_line, kind))
+            pending_delivery = still_pending
+        if record.get("type") != "custom" or record.get("customType") != INJECTION_OBSERVATION_TYPE:
+            continue
+        data = record.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("kind"), str):
+            errors.append({"line": line, "reason": "invalid_injection_observation"})
+            continue
+        entry = {"line": line, "kind": data["kind"]}
+        for key in ("role", "session_id", "channel", "target_id", "est_tokens", "chars",
+                    "raw_goal_present", "reason", "goal_revision", "control_version"):
+            if key in data:
+                entry[key] = data[key]
+        entry["context_tokens_at_injection"] = context_tokens
+        entries.append(entry)
+        kind = data["kind"]
+        if kind == "goal_context_full" and data.get("raw_goal_present") is False:
+            errors.append({"line": line, "reason": "full_context_without_raw_goal"})
+        if kind == "goal_context_skipped" and data.get("reason") == "continuation_turn":
+            # These entries only originate from before_agent_start, which fires
+            # solely on prompt-path turns; a real continuation turn bypasses it.
+            errors.append({"line": line, "reason": "goal_context_skipped_on_prompt_turn"})
+        if kind in INJECTION_CUSTOM_TYPES:
+            pending_delivery.append((line, kind))
+    errors.extend({"line": at_line, "reason": "registered_injection_absent"}
+                  for at_line, kind in pending_delivery)
+    summary: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in entries:
+        row = summary.setdefault((entry.get("role", "unknown"), entry["kind"]),
+                                 {"count": 0, "est_tokens": 0,
+                                  "raw_goal_present": {"true": 0, "false": 0}})
+        row["count"] += 1
+        row["est_tokens"] += entry.get("est_tokens") or 0
+        if isinstance(entry.get("raw_goal_present"), bool):
+            row["raw_goal_present"]["true" if entry["raw_goal_present"] else "false"] += 1
+    return {
+        "status": "observed" if entries else "unavailable",
+        "scope": "selected_branch_injection_observations",
+        "limitations": [
+            "Token estimates use the extension heuristic (CJK about one token per character, ASCII about four characters per token), not a tokenizer.",
+            "Context size at injection is the most recent provider input usage before the ledger entry; it covers the whole context, not only Goal Plus.",
+        ],
+        "entries": entries,
+        "summary": [{"role": role, "kind": kind, **row} for (role, kind), row in sorted(summary.items())],
+        "errors": errors,
+    }
+
+
 def audit_session(path: Path, *, agent_harness: str, overview: str, leaf_id: str | None = None,
                   tools: bool = False, include_content: bool = False,
                   reference_manifest: dict | None = None, context: bool = False,
@@ -437,6 +531,8 @@ def audit_session(path: Path, *, agent_harness: str, overview: str, leaf_id: str
     elif agent_harness != "codex":
         raise ValueError("unsupported agent_harness")
 
+    report["injection_ledger"] = analyze_injections(records, agent_harness=agent_harness)
+
     if tools or context:
         tool_analysis = analyze_tools(
             records, session_id=report.get("session_id"), include_content=include_content,
@@ -515,6 +611,10 @@ def audit_session(path: Path, *, agent_harness: str, overview: str, leaf_id: str
         report["status"] = "missing"
     elif statuses == {"present"}:
         report["status"] = "present"
+    # Injection-ledger defects mean an expected payload was absent from model
+    # context; they downgrade an otherwise clean overview audit to "missing".
+    if report["injection_ledger"].get("errors") and report["status"] == "present":
+        report["status"] = "missing"
     # A compaction at EOF has no subsequent model turn to inspect.
     if generation and not any(item["compaction"] == generation for item in report["checks"]):
         report["errors"].append({"reason": "no_turn_after_last_compaction"})
@@ -549,6 +649,8 @@ def recent_activity(report: dict[str, Any], limit: int) -> dict[str, Any]:
         "compactions": report["compactions"], "errors": report["errors"],
         "tool_analysis_status": analysis.get("status", "unavailable"),
         "tool_analysis_errors": analysis.get("errors", []),
+        "injection_ledger_status": report.get("injection_ledger", {}).get("status", "unavailable"),
+        "injection_ledger_errors": report.get("injection_ledger", {}).get("errors", []),
         "models": [{"provider": provider, "model": model} for provider, model in models],
         "summary": analysis.get("summary", {}), "recent_calls": recent,
         "recent_provider_errors": provider_errors,
