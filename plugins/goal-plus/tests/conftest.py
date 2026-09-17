@@ -15,6 +15,31 @@ from pathlib import Path
 
 import pytest
 
+# The suite must run on the same interpreter the managed release builds with
+# (.python-version, Python 3.12). Newer interpreters defer annotation
+# evaluation (PEP 649), which silently hides imports referenced only by
+# def-signature annotations - a regression class that shipped green on 3.14
+# and crashed the 3.12 runtime at class creation.
+_EXPECTED_PYTHON = (3, 12)
+if sys.version_info[:2] != _EXPECTED_PYTHON:
+    raise SystemExit(
+        f"goal-plus tests must run on Python {'.'.join(map(str, _EXPECTED_PYTHON))} "
+        f"(the managed release interpreter, see .python-version); "
+        f"got {sys.version.split()[0]}.\n"
+        "Rebuild the checkout environment with: uv sync && uv run pytest"
+    )
+
+import goal_plus  # noqa: E402 (guard must run first)
+
+_CHECKOUT_PACKAGE = Path(__file__).resolve().parents[1] / "src" / "goal_plus"
+if Path(goal_plus.__file__).resolve().parent != _CHECKOUT_PACKAGE.resolve():
+    raise SystemExit(
+        "pytest is not using this checkout's editable goal_plus "
+        f"(imported from {goal_plus.__file__}).\n"
+        "A foreign environment on PATH shadowed the project venv; "
+        "run tests with: uv run pytest"
+    )
+
 from tests._test_tmp import (
     configure_test_tmp,
     pytest_runtest_makereport,  # noqa: F401 (registers the hook)

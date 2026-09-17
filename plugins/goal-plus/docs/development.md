@@ -7,6 +7,25 @@ Goal Plus 由共享 Python runtime、Pi package 和 Codex plugin 组成。仓库
 修改防御性 runtime 规则前先阅读仓库级 [开发约定](../AGENTS.md) 和
 [系统规格](../SPEC.md)。本页只说明安装、刷新和本地验证环境，不重复运行时行为合同。
 
+## 测试环境
+
+新 checkout 只需两条命令，uv 按 `.python-version` 自动构建与受管 release 相同解释器
+（Python 3.12）的 venv，`dev` 依赖组（pytest 等）默认包含：
+
+```bash
+uv sync
+uv run pytest tests
+```
+
+测试必须跑在 Python 3.12 上：更新的解释器惰性求值注解（PEP 649），会漏掉"仅被
+def 签名注解引用的 import 被删除"这类在 3.12 runtime 立即 NameError 的回归。
+`tests/conftest.py` 会在解释器不是 3.12、或 pytest 落到非本 checkout 的环境时立即报错
+并给出修复命令。安装后的完整验证（真 release venv 内 import 全部模块）：
+
+```bash
+uv run pytest tests/test_installation_system.py --run-system-tests -n 0
+```
+
 ## 安装模式
 
 | 命令 | Python runtime | 宿主资产 | 宿主配置 |
@@ -181,7 +200,7 @@ Pi 加载，也不会阻塞开发态。其他 Pi package、模型设置和认证
 Pi package、extension 或共同概要变更至少运行：
 
 ```bash
-python -m pytest -q tests/test_install.py tests/test_pi_assets.py
+uv run pytest -q tests/test_install.py tests/test_pi_assets.py
 ```
 
 涉及 worker、session 或 RPC 时继续运行对应 `tests/test_pi_*.py`；只有具备 Pi credentials
@@ -222,7 +241,7 @@ codex plugin marketplace remove goal-plus-local
 修改后重跑 `./install.sh --codex`，再使用新 thread 验证。至少运行：
 
 ```bash
-python -m pytest -q tests/test_install.py tests/test_codex_assets.py \
+uv run pytest -q tests/test_install.py tests/test_codex_assets.py \
   tests/test_codex_doctor.py
 ./install.sh --runtime-info
 ```
