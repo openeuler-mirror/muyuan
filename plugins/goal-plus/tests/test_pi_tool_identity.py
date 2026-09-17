@@ -173,16 +173,6 @@ def test_pi_continuation_and_goal_context_are_compact(tmp_path):
     assert "continuation checks passed" in result.stdout
 
 
-@pytest.mark.ui
-def test_pi_ui_demo_walks_the_search_run_lifecycle(tmp_path):
-    result = _run_env_script(tmp_path, {
-        "GOAL_PLUS_PI_ROLE": "main",
-        "GOAL_PLUS_UI_DEMO": "1",
-        "GOAL_PLUS_PI_DEMO_TEST": "1",
-    }, timeout=60)
-    assert "ui demo checks passed" in result.stdout
-
-
 @pytest.mark.parametrize("sdk_mode", ["compatible", "parent", "capability", "interface"])
 def test_thinkthread_sdk_drift_preserves_identity_and_interface_gates(tmp_path, sdk_mode):
     result = _run_context_script(tmp_path, sdk_mode)
@@ -614,51 +604,6 @@ if (process.env.GOAL_PLUS_PI_CONTINUATION_TEST === "1") {
   assert.ok(laterTurn.message.content.includes("next_action"), laterTurn.message.content);
   assert.ok(!laterTurn.message.content.includes("原始目标"), laterTurn.message.content);
   console.log("continuation checks passed");
-  process.exit(0);
-}
-if (process.env.GOAL_PLUS_PI_DEMO_TEST === "1") {
-  const frames = [];
-  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
-  const lane = (lines, id) => lines.find(item => item.includes(id)) ?? "";
-  const notifications = [];
-  let pending;
-  ctx.ui.setStatus = () => {};
-  ctx.ui.setWidget = (key, value) => {
-    if (value === undefined) { pending = undefined; return; }
-    pending = {lines: value};
-    frames.push(pending);
-  };
-  ctx.ui.setWorkingMessage = () => {};
-  ctx.ui.notify = (message, level) => notifications.push({message, level});
-  const waitFor = async (predicate, what, timeoutMs) => {
-    const until = Date.now() + timeoutMs;
-    while (!predicate() && Date.now() < until) await wait(100);
-    assert.ok(predicate(), `${what} must happen; frames=${frames.length} visible=${pending !== undefined}`);
-  };
-  await events.get("session_start")({}, ctx);
-  // No Search run yet: nothing is shown.
-  assert.equal(frames.length, 0, "the frame must not exist before a Search run starts");
-  await waitFor(() => frames.length >= 1, "the frame at Search start", 4000);
-  assert.ok(frames[0].lines[0].includes("SEARCH ACTIVE"), frames[0].lines[0]);
-  assert.ok(frames[0].lines.some(line => line.includes("Lanes 0/4 evaluated · Verify 0 · Best --")),
-    frames[0].lines.join("\n"));
-  // Inside the refresh interval the surfaces stay untouched.
-  await wait(4000);
-  assert.equal(frames.length, 1, "the frame must not re-render inside the refresh interval");
-  await waitFor(() => frames.length >= 2, "the interval refresh", 8000);
-  const refreshed = frames[frames.length - 1];
-  assert.ok(refreshed.lines[0].includes("SELECTING"), refreshed.lines[0]);
-  assert.ok(refreshed.lines.some(line => line.includes("Lanes 3/4 evaluated · Verify 7 · Best 1.9123")),
-    refreshed.lines.join("\n"));
-  assert.ok(lane(refreshed.lines, "c001").includes("best 1.9123"), lane(refreshed.lines, "c001"));
-  assert.ok(lane(refreshed.lines, "c004").includes("created"), lane(refreshed.lines, "c004"));
-  // The finished Search run keeps the last frame for the hide delay, then clears it.
-  assert.notEqual(pending, undefined, "the finished Search run must keep the frame");
-  await waitFor(() => pending === undefined, "the hide after the Search run", 12000);
-  assert.ok(frames.every(frame => !lane(frame.lines, "c004").includes("evaluated")), "c004 must never settle");
-  assert.ok(notifications.some(item => item.message.includes("Search run finished")), JSON.stringify(notifications));
-  await events.get("session_shutdown")({reason: "test"}, ctx);
-  console.log("ui demo checks passed");
   process.exit(0);
 }
 if (process.env.GOAL_PLUS_PI_WORK_RECEIPT_TEST === "1") {

@@ -114,32 +114,7 @@ editable 环境、launcher、资源冲突与刷新步骤见
 [Pi 开发指南](development.md#开发-pi-集成)。`--pi` 与 `--pi-dev` 不能同时使用。
 正常和开发安装均不发布 Goal Plus skill；命令由 extension 注册，导航来自共同 MCP instructions。
 
-#### Progress UI 开发预览
-
-extension 可以在不创建 Goal Plus record、Search run、candidate workspace 或模型请求的情况下显示
-fixture-backed Search progress。这只是开发预览，不是 benchmark Evidence：
-
-```bash
-GOAL_PLUS_UI_PREVIEW=active \
-  pi --offline --no-session --no-extensions \
-  -e assets/pi/extensions/goal-plus.ts
-```
-
-在该 session 中使用 `/goal-plus-ui-preview active`、`/goal-plus-ui-preview complete`、
-`/goal-plus-ui-preview result` 或 `/goal-plus-ui-preview clear` 切换状态。`result` 会用 Circle Packing
-的真实样例数值追加一张终态完成卡，不需要运行模型、verifier 或完整 Goal Plus 流程；普通 session
-不注册该命令。
-
-动态演示（走真实渲染管线、无需 Goal 或模型）：
-
-```bash
-GOAL_PLUS_UI_DEMO=1 pi
-```
-
-session 打开后立即播放一段约 12 秒的脚本时间线，只演示 Search run 的进度 widget：run 启动前没有
-任何 widget，run 创建时出现，按真实刷新间隔更新一次（各 lane 在互不相同的时刻结算，其中一条
-始终没有 settled 结果），run 结束后再保留 5 秒然后消失。任何真实 Goal 启动、
-`/goal-plus` clear 或 session 退出都会停止演示。
+#### Progress UI 实时展示
 
 实时进度表面只在 Search run 进行期间存在，不做 Goal 全局展示：
 

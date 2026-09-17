@@ -21,7 +21,7 @@
 | 理解分层、状态 owner 与角色能力 | [架构图集](architecture.md)、[图集页面](architecture.html) |
 | 排障、查看日志、检查上下文概要 | [Runtime 调试](debugging-runtime.md) |
 | 使用可选监控功能 | [Feature Plugins](feature-plugins.md) |
-| 了解 Pi 进度预览与终态卡 | [Pi](pi.md#progress-ui-开发预览) |
+| 了解 Pi 进度展示与终态卡 | [Pi](pi.md#progress-ui-实时展示) |
 | 选择测试和真实宿主验收 | [Tests](../tests/README.md) |
 
 ## 内容归属

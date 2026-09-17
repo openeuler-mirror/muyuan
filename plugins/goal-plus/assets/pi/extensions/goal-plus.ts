@@ -14,8 +14,6 @@ import { type TSchema, Type } from "typebox";
 import {
 	buildPiCompletionPresentation,
 	buildPiProgressPresentation,
-	PI_COMPLETION_PREVIEW,
-	PI_PROGRESS_PREVIEWS,
 	type GoalPlusCandidateCompletion,
 	type GoalPlusCandidateProgress,
 	type GoalPlusCompletionView,
@@ -36,13 +34,6 @@ let thinkThreadSupplementalEnabled = false;
 
 
 const workerContinueUntilMs = Number(process.env.GOAL_PLUS_PI_WORKER_CONTINUE_UNTIL_MS || "0");
-const progressPreviewMode = (() => {
-	const value = process.env.GOAL_PLUS_UI_PREVIEW?.trim().toLowerCase();
-	if (!value) return undefined;
-	if (value === "1" || value === "running") return "active";
-	if (value === "active" || value === "complete") return value;
-	return undefined;
-})();
 const modeArgIndex = process.argv.indexOf("--mode");
 const isPrintLikeInvocation =
 	process.argv.includes("-p") ||
@@ -1020,8 +1011,6 @@ function restoreGoalState(ctx: ExtensionContext) {
 function activateGoal(pi: ExtensionAPI, details: unknown, startEntryCount?: number, persist = true) {
 	const id = goalPlusIdFrom(details);
 	if (!id) return;
-	// A real Goal owns the live surfaces; stop any running UI demo.
-	stopPiProgressDemo?.();
 	if (id !== activeGoalPlusId || !activeGoalStartedAt) {
 		activeGoalStartedAt = new Date().toISOString();
 		activeGoalStartEntryCount = startEntryCount ?? activeGoalStartEntryCount;
@@ -1462,7 +1451,6 @@ function observeSearchProgress(
 	status: GoalPlusStatusPayload,
 	snapshot: Record<string, unknown> | undefined,
 ): void {
-	if (progressPreviewMode || progressDemoMode) return;
 	progressDebug("goal_plus_progress_read", {
 		source: stringFrom((status.details as Record<string, unknown> | undefined)?.tool),
 		goal_plus_id: stringFrom(status.goal_plus_id),
@@ -1481,7 +1469,7 @@ function observeSearchProgress(
 }
 
 async function checkSearchProgress(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-	if (role !== "main" || !activeGoalPlusId || progressPreviewMode || progressDemoMode) return;
+	if (role !== "main" || !activeGoalPlusId) return;
 	if (searchProgressChecking) return;
 	searchProgressChecking = true;
 	try {
@@ -1523,27 +1511,6 @@ function appendGoalStats(
 		collapsedLineCount: presentation.collapsedLineCount,
 	});
 	return message;
-}
-
-function appendGoalCompletionPreview(pi: ExtensionAPI): void {
-	const presentation = buildPiCompletionPresentation(PI_COMPLETION_PREVIEW);
-	pi.appendEntry<GoalPlusStatsEntry>(GOAL_PLUS_STATS_ENTRY_TYPE, {
-		goal_plus_id: PI_COMPLETION_PREVIEW.goalPlusId,
-		status: PI_COMPLETION_PREVIEW.status,
-		startedAt: undefined,
-		endedAt: new Date().toISOString(),
-		usage: {
-			assistantMessages: PI_COMPLETION_PREVIEW.mainUsage.assistantMessages,
-			toolCalls: PI_COMPLETION_PREVIEW.mainUsage.toolCalls,
-			input: 0,
-			output: PI_COMPLETION_PREVIEW.mainUsage.processedTokens,
-			cacheRead: 0,
-			cacheWrite: 0,
-			cost: PI_COMPLETION_PREVIEW.mainUsage.costUsd,
-		},
-		message: presentation.lines.join("\n"),
-		collapsedLineCount: presentation.collapsedLineCount,
-	});
 }
 
 function monitorSnapshotPresentation(value: unknown): { status: string; lines: string[] } | undefined {
@@ -1603,149 +1570,10 @@ function showPiProgress(ctx: ExtensionContext, view: GoalPlusProgressView): void
 }
 
 function clearPiProgress(ctx: ExtensionContext): void {
-	stopPiProgressDemo?.();
 	stopSearchProgressPoll();
 	cancelSearchProgressHide();
 	searchProgressPhaseShown = undefined;
 	ctx.ui.setWidget(GOAL_PLUS_PROGRESS_WIDGET_KEY, undefined);
-}
-
-const progressDemoMode = process.env.GOAL_PLUS_UI_DEMO?.trim() === "1";
-const PI_PROGRESS_DEMO_TICK_MS = 1000;
-let stopPiProgressDemo: (() => void) | undefined;
-
-type PiProgressDemoLane = {
-	candidateId: string;
-	model: string;
-	rounds: Array<{atMs: number; score: number}>;
-};
-
-function startPiProgressDemo(pi: ExtensionAPI, ctx: ExtensionContext): void {
-	stopPiProgressDemo?.();
-	clearPiProgress(ctx);
-	const startedAtMs = Date.now();
-	// The demo only covers the Search run: no frame exists before it starts, it
-	// shows two frames a production refresh interval apart, and it disappears on
-	// the production hide delay after the run finishes. The scripted timeline is
-	// relative to the first rendered frame, so a delayed timer cannot squeeze it.
-	const runCreatedAtMs = 1000;
-	const selectionAtMs = 4000;
-	const runningFrames = 2;
-	let originMs: number | undefined;
-	let renderedFrames = 0;
-	let nextRefreshAtMs = runCreatedAtMs;
-	const lanes: PiProgressDemoLane[] = [
-		{candidateId: "c001", model: "openai-codex/gpt-5.6-terra", rounds: [
-			{atMs: 900, score: 1.8041},
-			{atMs: 1800, score: 1.792},
-			{atMs: 3800, score: 1.9123},
-		]},
-		{candidateId: "c002", model: "openai-codex/gpt-5.6-luna", rounds: [
-			{atMs: 1200, score: 1.8352},
-			{atMs: 3000, score: 1.841},
-		]},
-		{candidateId: "c003", model: "openai-codex/gpt-5.6-terra", rounds: [
-			{atMs: 500, score: 1.8901},
-			{atMs: 2500, score: 1.8955},
-		]},
-		// c004 stays without a settled verifier result, so the lanes never finish
-		// together.
-		{candidateId: "c004", model: "openai-codex/gpt-5.6-luna", rounds: []},
-	];
-	let timer: ReturnType<typeof setInterval> | undefined;
-	let announced = false;
-	const stop = () => {
-		if (timer !== undefined) clearInterval(timer);
-		stopPiProgressDemo = undefined;
-	};
-	const render = () => {
-		const elapsedMs = Date.now() - startedAtMs;
-		if (elapsedMs < runCreatedAtMs) return;
-		const timelineOriginMs = (originMs ??= elapsedMs);
-		const demoElapsedMs = elapsedMs - timelineOriginMs;
-		const finished = renderedFrames >= runningFrames;
-		if (!finished && elapsedMs < nextRefreshAtMs) return;
-		nextRefreshAtMs = elapsedMs + SEARCH_PROGRESS_REFRESH_MS;
-		if (!finished) renderedFrames += 1;
-		const candidates: Record<string, Record<string, unknown>> = {};
-		let bestCandidateId: string | undefined;
-		let bestScore: number | undefined;
-		let verifierRuns = 0;
-		let evaluated = 0;
-		for (const lane of lanes) {
-			const settled = lane.rounds.filter((round) => demoElapsedMs >= round.atMs);
-			const last = settled[settled.length - 1];
-			const scores = settled.map((round) => round.score);
-			const best = scores.length > 0 ? Math.max(...scores) : undefined;
-			if (last) evaluated += 1;
-			if (best !== undefined && (bestScore === undefined || best > bestScore)) {
-				bestScore = best;
-				bestCandidateId = lane.candidateId;
-			}
-			verifierRuns += scores.length;
-			const intervalCount = settled.length - 1;
-			candidates[lane.candidateId] = {
-				candidate_id: lane.candidateId,
-				// A lane stays "created" until its first settled verifier result.
-				status: last ? "evaluated" : "created",
-				verifier_count: scores.length,
-				best_iteration_score: best,
-				last_score: last?.score,
-				// Pinned to the settlement instant so the round timer advances and the
-				// next-result estimate converges between settlements.
-				last_verifier_at: last ? new Date(timelineOriginMs + last.atMs).toISOString() : undefined,
-				avg_round_seconds: intervalCount > 0
-					? (settled[settled.length - 1].atMs - settled[0].atMs) / intervalCount / 1000
-					: undefined,
-			};
-		}
-		const demoStatus: GoalPlusStatusPayload = {
-			goal_plus_id: "gp_demo",
-			status: "active",
-			control: {state: "active", version: 1},
-			current_search_run_id: "run_demo",
-		};
-		const snapshot = {
-			ok: true,
-			goal_plus: {
-				goal_plus_id: "gp_demo",
-				status: "active",
-				created_at: new Date(startedAtMs).toISOString(),
-				updated_at: new Date().toISOString(),
-				current_search_run_id: "run_demo",
-			},
-			search_tasks: [{
-				run_id: "run_demo",
-				is_current: true,
-				state: finished ? "promoted" : demoElapsedMs >= selectionAtMs ? "selecting" : "running",
-				candidates_total: lanes.length,
-				candidates_evaluated: evaluated,
-				verifier_runs_total: verifierRuns,
-				best_candidate_id: bestCandidateId,
-				best_score: bestScore,
-				statistics: {
-					scores: {metric_name: "sum_radii", direction: "maximize", baseline: 1.798_348_5, best: bestScore},
-					selection: {promotion_verified: finished},
-				},
-			}],
-			candidates,
-			subagents: lanes.map((lane) => ({
-				candidate_id: lane.candidateId,
-				observability: {execution: {model: lane.model}},
-			})),
-		};
-		if (finished && !announced) {
-			announced = true;
-			ctx.ui.notify(
-				`Goal Plus UI demo: the Search run finished; the frame hides in ${SEARCH_PROGRESS_HIDE_DELAY_MS / 1000}s.`,
-				"info",
-			);
-		}
-		applySearchProgress(ctx, demoStatus, snapshot);
-	};
-	timer = setInterval(render, PI_PROGRESS_DEMO_TICK_MS);
-	stopPiProgressDemo = stop;
-	render();
 }
 
 // The full context (goal text, command config, final-check policy) is only worth
@@ -2922,29 +2750,6 @@ export default async function (pi: ExtensionAPI) {
 				if (prompt) startGoalPlusMainTurn(pi, prompt, !ctx.isIdle());
 			},
 		});
-		if (role === "main" && progressPreviewMode) {
-			pi.registerCommand("goal-plus-ui-preview", {
-				description: "预览 Goal Plus 进度或完成 UI，不创建 Goal Plus/Search run",
-				handler: async (args, ctx) => {
-					const mode = args.trim().toLowerCase() || "active";
-					if (mode === "clear") {
-						clearPiProgress(ctx);
-						ctx.ui.notify("Goal Plus progress preview cleared.", "info");
-						return;
-					}
-					if (mode === "result") {
-						clearPiProgress(ctx);
-						appendGoalCompletionPreview(pi);
-						return;
-					}
-					if (mode !== "active" && mode !== "complete") {
-						ctx.ui.notify("Usage: /goal-plus-ui-preview [active|complete|result|clear]", "error");
-						return;
-					}
-					showPiProgress(ctx, PI_PROGRESS_PREVIEWS[mode]);
-				},
-			});
-		}
 	}
 
 	const mainTools = [
@@ -3083,14 +2888,6 @@ export default async function (pi: ExtensionAPI) {
 					item.type === "custom" && item.customType === WORKER_CONTEXT_ENTRY_TYPE)
 				.pop() as { data?: unknown } | undefined;
 			activateWorkerContext(pi, entry?.data, registeredRuntimeTools, false);
-			return;
-		}
-		if (role === "main" && progressPreviewMode) {
-			showPiProgress(ctx, PI_PROGRESS_PREVIEWS[progressPreviewMode]);
-			return;
-		}
-		if (role === "main" && progressDemoMode) {
-			startPiProgressDemo(pi, ctx);
 			return;
 		}
 		restoreGoalState(ctx);
@@ -3354,7 +3151,6 @@ export default async function (pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", async (event, ctx) => {
 		stopWorkerSteering?.();
-		stopPiProgressDemo?.();
 		stopSearchProgressPoll();
 		cancelSearchProgressHide();
 		try {
