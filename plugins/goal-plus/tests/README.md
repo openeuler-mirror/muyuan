@@ -497,6 +497,12 @@ Search evidence remains under `.gp/runs/`; host-specific logs are under
 `.gp/host-logs/`. Use [runtime debugging](../docs/debugging-runtime.md) to
 correlate `run_id`, `candidate_id`, and `agent_session_id`.
 
+Verifier resource locks default to `.tmp/verifier-locks/` inside the checkout
+(`tests/conftest.py`), not the machine-wide `/tmp/goal-plus-verifier-locks/`,
+because on shared machines that `/tmp` directory belongs to whichever user
+created it first and blocks everyone else. Export
+`GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR` to override.
+
 ## Pytest Configuration
 
 `GOAL_PLUS_TEST_DEBUG` controls test artifact retention independently of the

@@ -2694,7 +2694,11 @@ def test_stop_prefers_new_active_goal_over_older_terminal_goal(
 
     payload = json.loads(result.stdout)
     assert payload["decision"] == "block"
-    assert "Implement the new active work" in payload["reason"]
+    # The compact stop continuation no longer embeds the raw goal; it must
+    # still point the agent at the new active Goal Plus, not the older
+    # terminal one.
+    assert active.goal_plus_id in payload["reason"]
+    assert terminal.goal_plus_id not in payload["reason"]
     assert runtime.status(active.goal_plus_id).hook_counters["stop"] == 1
     assert runtime.status(terminal.goal_plus_id).hook_counters == {}
 
