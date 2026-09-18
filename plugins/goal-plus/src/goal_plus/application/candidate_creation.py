@@ -306,18 +306,25 @@ class CandidateCreation:
     ) -> CandidateTask:
         run, frozen, candidate_id = request.run, request.frozen, request.candidate_id
         plan, proposal, slot = request.plan, request.proposal, request.slot
+        expansion_source, source_record = request.expansion_source, request.source_record
         inner_agent = str(
             plan.worker_policy.get("inner_agent")
             or resolved_inner_agent_id(frozen.spec.strategy, frozen.agent_harness, frozen.runtime_provider)
         )
-        baseline = run.source_artifact_ref
+        base_revision = prepared.materialization.base_revision
+        baseline = (
+            expansion_source.attempt_artifact_ref
+            if expansion_source is not None
+            else run.source_artifact_ref
+        )
         if (
             baseline is None
             or baseline.kind != "fs_snapshot"
             or baseline.provider != "thinkthread"
+            or base_revision != baseline.id
         ):
             raise RuntimeError(
-                "ThinkThread candidate requires a captured baseline snapshot"
+                "ThinkThread candidate requires its exact base snapshot"
             )
         logical_workspace = prepared.materialization.workspace
         provider_handle = {
@@ -359,11 +366,26 @@ class CandidateCreation:
                 "Global Evidence 使用 auto 模式：在下一次 wake 后从已加载 context 使用最新共享 View；accepted receipt 不包含尚未产生的 Evidence。"
             )
         instructions.extend(proposal.instructions)
-        selected_model = selected_model_for_slot(plan, slot)
+        selected_model = (
+            source_record.task.selected_model
+            if source_record is not None
+            else selected_model_for_slot(plan, slot)
+        )
         hypothesis = proposal.hypothesis or proposal.intent or f"候选 {candidate_id}"
         return CandidateTask(
             run_id=run.run_id,
             candidate_id=candidate_id,
+            parent_id=(
+                expansion_source.candidate_id if expansion_source is not None else None
+            ),
+            parent_candidate_ids=(
+                [*source_record.task.parent_candidate_ids, source_record.candidate_id]
+                if source_record is not None
+                else []
+            ),
+            base_candidate_id=(
+                expansion_source.candidate_id if expansion_source is not None else None
+            ),
             plan_id=plan.plan_id,
             hypothesis=hypothesis,
             execution_scope="thinkthread_private",
@@ -374,6 +396,12 @@ class CandidateCreation:
                 run.source_provider_handle.get("source_relative_path") or "."
             ),
             workspace_provider_handle=provider_handle,
+            allocation_depth=(
+                source_record.task.allocation_depth + 1
+                if source_record is not None
+                else 0
+            ),
+            expansion_source=expansion_source,
             base_artifact_ref=baseline,
             workspace_access=WorkspaceAccess(
                 logical_root=".",
@@ -405,6 +433,16 @@ class CandidateCreation:
                 "selected_model": selected_model.model if selected_model else None,
                 "workspace_provider": "thinkthread",
                 "workspace_base_revision": baseline.id,
+                "allocation_depth": (
+                    source_record.task.allocation_depth + 1
+                    if source_record is not None
+                    else 0
+                ),
+                "allocation_source_candidate_id": (
+                    expansion_source.candidate_id
+                    if expansion_source is not None
+                    else None
+                ),
             },
         )
 

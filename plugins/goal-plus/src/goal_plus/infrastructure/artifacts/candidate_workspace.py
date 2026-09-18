@@ -60,14 +60,18 @@ class FileCandidateWorkspaceCreation:
         run_dir = self.root_dir / "runs" / run.run_id
         workspace = run_dir / "workspace" / request.candidate_id
         if frozen.spec.workspace.provider == "thinkthread":
-            baseline = run.source_artifact_ref
+            baseline = (
+                request.expansion_source.attempt_artifact_ref
+                if request.expansion_source is not None
+                else run.source_artifact_ref
+            )
             if (
                 baseline is None
                 or baseline.kind != "fs_snapshot"
                 or baseline.provider != "thinkthread"
             ):
                 raise RuntimeError(
-                    "ThinkThread candidate requires a captured baseline snapshot"
+                    "ThinkThread candidate requires an exact base snapshot"
                 )
             if workspace.exists():
                 raise RuntimeError(

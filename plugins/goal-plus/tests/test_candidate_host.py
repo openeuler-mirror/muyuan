@@ -11,8 +11,12 @@ from goal_plus.runtime import FileSearchRuntime
 from goal_plus.infrastructure.host_bindings import candidate_inner_agent_binding
 from goal_plus.application.candidate_host import ThinkThreadCandidatePreparation
 from goal_plus.application.candidate_queries import CandidateHostQueries
+from goal_plus.domain.adaptive.models import ExpansionSource
+from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.evidence import IterationRecord, ResultLedgerEntry
+from goal_plus.domain.search import CandidateProposal
 from goal_plus.domain.worker_policy import normalize_worker_budget_override
+from goal_plus.ports.candidate_creation import CandidateMaterialization
 from tests._runtime_helpers import make_project, spec_for
 from tests._thinkthread_sdk import IntegratedAgentPosix, thinkthread_spec
 
@@ -27,6 +31,11 @@ def candidate_host(tmp_path, monkeypatch, request):
     spec = thinkthread_spec(project)
     if getattr(request, "param", None) == "no_budget":
         spec.strategy.worker_budget = None
+    elif getattr(request, "param", None) == "adaptive":
+        payload = spec.model_dump(mode="json")
+        payload["strategy"]["orchestration_mode"] = "adaptive_search"
+        payload["strategy"]["allocation"] = {"policy": "swe_search_uct/v1"}
+        spec = SearchSpec.model_validate(payload)
     frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="pi")
     run_id = runtime.create_run(frozen.frozen_spec_id)
     plan = runtime.plan_next(run_id, requested_k=2)
@@ -214,6 +223,69 @@ def test_candidate_preparation_runs_from_typed_inputs_without_runtime(
         assert base64.b64decode(
             binding["initial_results_base64"]
         ).decode().splitlines()[1] == ("a" * 40 + "\t3\tpass\trecovered iteration 1")
+
+
+@pytest.mark.parametrize("candidate_host", ["adaptive"], indirect=True)
+def test_thinkthread_allocation_child_starts_from_selected_snapshot(candidate_host):
+    runtime, service, tasks, _session = candidate_host
+    run = runtime.search_run.state.read_run(tasks[0].run_id)
+    frozen = runtime.search_run.state.read_frozen_spec(run.frozen_spec_id)
+    source = runtime.candidate_creation.state.read_candidate(
+        run.run_id, tasks[0].candidate_id
+    )
+    plan = runtime.search_run.state.read_plan(run.run_id, tasks[0].plan_id)
+    selected = ArtifactRef(
+        kind="fs_snapshot", id="fsnap-adaptive-source", provider="thinkthread"
+    )
+    expansion_source = ExpansionSource(
+        candidate_id=source.candidate_id,
+        iteration=1,
+        settlement_id="settlement_source",
+        node_id=f"{source.candidate_id}/iteration-0001",
+        verifier_record_id="record_source",
+        attempt_artifact_ref=selected,
+        attempt_artifact_hash="a" * 64,
+        ledger_artifact_ref=selected,
+        allocation_depth=source.task.allocation_depth,
+    )
+
+    child = runtime.materialize_candidate(CandidateMaterialization(
+        run=run,
+        frozen=frozen,
+        candidate_id="c003",
+        plan=plan,
+        proposal=CandidateProposal(
+            intent="expand selected snapshot",
+            metadata={
+                "allocation_decision_id": "allocation_test",
+                "expansion_id": "expansion_test",
+            },
+        ),
+        slot=1,
+        expansion_source=expansion_source,
+        source_record=source,
+    ))
+    child_session = runtime.start_agent_session(
+        run.run_id,
+        child.candidate_id,
+        {
+            "adaptive_allocation_expansion": True,
+            "allocation_decision_id": "allocation_test",
+            "expansion_id": "expansion_test",
+        },
+    )
+    prepared = service.prepare_thinkthread_session(child_session.agent_session_id)
+
+    assert child.task.base_artifact_ref == selected
+    assert child.task.workspace_base_revision == selected.id
+    assert child.task.workspace_provider_handle["base_snapshot_id"] == selected.id
+    assert child.task.expansion_source == expansion_source
+    assert child.task.parent_id == source.candidate_id
+    assert child.task.parent_candidate_ids == [source.candidate_id]
+    assert child.task.allocation_depth == source.task.allocation_depth + 1
+    assert child.task.selected_model == source.task.selected_model
+    assert prepared.baseline_snapshot_id == selected.id
+    assert not child.task.workspace.exists()
 
 
 @pytest.mark.parametrize(

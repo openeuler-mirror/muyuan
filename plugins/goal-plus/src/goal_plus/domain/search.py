@@ -350,9 +350,11 @@ class SearchSpec(SearchModel):
     def strategy_extension_constraints_are_valid(self) -> "SearchSpec":
         if (
             (self.strategy.allocation is not None or self.strategy.steering is not None)
-            and self.workspace.provider != "git_worktree"
+            and self.workspace.provider not in {"git_worktree", "thinkthread"}
         ):
-            raise ValueError("adaptive search requires workspace.provider=git_worktree")
+            raise ValueError(
+                "adaptive search requires workspace.provider=git_worktree or thinkthread"
+            )
         return self
 
 

@@ -906,6 +906,38 @@ def test_adaptive_policy_spec_excludes_verifier_semantics(tmp_path: Path) -> Non
     assert "verifier_score_contract" not in FrozenSpec.model_fields
 
 
+@pytest.mark.parametrize("provider", ["git_worktree", "thinkthread"])
+def test_adaptive_search_accepts_immutable_workspace_providers(
+    tmp_path: Path, provider: str,
+) -> None:
+    project = make_project(tmp_path)
+    data = spec_for(project).model_dump(mode="json")
+    data["workspace"] = {"provider": provider, "promotion_mode": "apply"}
+    data["strategy"]["orchestration_mode"] = "adaptive_search"
+    data["strategy"]["allocation"] = {"policy": "swe_search_uct/v1"}
+
+    spec = SearchSpec.model_validate(data)
+
+    assert spec.workspace.provider == provider
+    assert spec.strategy.orchestration_mode == "adaptive_search"
+
+
+def test_adaptive_search_rejects_copy_workspace(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    data = spec_for(project).model_dump(mode="json")
+    data["workspace"] = {"provider": "copy"}
+    data["strategy"]["orchestration_mode"] = "adaptive_search"
+    data["strategy"]["steering"] = {
+        "policy": "search_diagnostic_guidance/v1"
+    }
+
+    with pytest.raises(
+        ValidationError,
+        match="requires workspace.provider=git_worktree or thinkthread",
+    ):
+        SearchSpec.model_validate(data)
+
+
 @pytest.mark.parametrize("verifier", [
     None, {}, {"scores": ["progress_reward"]},
     {"scores": ["validation_gap", "allocation_utility"]},
