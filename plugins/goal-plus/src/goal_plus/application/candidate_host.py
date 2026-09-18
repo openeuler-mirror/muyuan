@@ -67,14 +67,15 @@ class ThinkThreadCandidatePreparation:
         frozen = self.source.read_frozen_spec(run.frozen_spec_id)
         if session.runtime_provider != "thinkthread" or frozen.spec.workspace.provider != "thinkthread":
             raise ValueError("session does not use the ThinkThread workspace_provider")
-        baseline = run.source_artifact_ref
         root_id = run.source_provider_handle.get("root_thinkthread_id")
+        record = self.source.read_candidate(session.run_id, session.candidate_id)
+        base = record.task.base_artifact_ref
         if (
-            baseline is None or baseline.kind != "fs_snapshot" or baseline.provider != "thinkthread"
+            base is None or base.kind != "fs_snapshot" or base.provider != "thinkthread"
+            or record.task.workspace_base_revision != base.id
             or not isinstance(root_id, str) or not root_id.startswith("tt-")
         ):
-            raise RuntimeError("ThinkThread session has no runtime-owned Root and baseline snapshot")
-        record = self.source.read_candidate(session.run_id, session.candidate_id)
+            raise RuntimeError("ThinkThread session has no runtime-owned Root and candidate base snapshot")
         binding = self.resolve_binding(frozen, record.task)
         inner_git_binding = None
         if binding.workspace_ledger_projection == "results_tsv":
@@ -88,7 +89,7 @@ class ThinkThreadCandidatePreparation:
                 "initial_results_base64": base64.b64encode(initial_results.encode("utf-8")).decode("ascii"),
                 "initial_result_count": len(record.results_ledger),
             }
-        return ThinkThreadSessionLaunch(session, root_id, baseline.id, inner_git_binding)
+        return ThinkThreadSessionLaunch(session, root_id, base.id, inner_git_binding)
 
 
     def prepare_thinkthread_continuation(

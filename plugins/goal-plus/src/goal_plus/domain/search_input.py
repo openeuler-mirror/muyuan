@@ -20,7 +20,7 @@ class StrategyInput(StrategyOptions):
     )
     allocation: AllocationPolicySpec | None = Field(
         default=None, description=(
-            "Select a policy to enable adaptive_search; requires git_worktree. "
+            "Select a policy to enable adaptive_search; requires git_worktree or thinkthread. "
             "Required verifier scores and policy parameter defaults are filled automatically."
         ),
     )

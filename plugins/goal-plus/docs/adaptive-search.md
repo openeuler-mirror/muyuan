@@ -31,8 +31,8 @@ Adaptive Search 只在 orchestration_mode 为 adaptive_search 时启用。它包
 两者都消费已经冻结和校验的 score key，但不共享 Decision、Executor 或恢复机制。Allocation
 改变搜索拓扑并具有持久化执行恢复；Steering 不改变拓扑，是一次性发送许可，没有待发送队列。
 
-Verifier key 拥有唯一语义，policy identity 和参数按决策语义版本化。已有 SearchSpec 使用 Git
-worktree 时，最简只需指定 Allocation policy：
+Verifier key 拥有唯一语义，policy identity 和参数按决策语义版本化。Adaptive Search 支持 Git
+worktree 和 ThinkThread private workspace；最简只需指定 Allocation policy：
 
 ~~~yaml
 workspace:

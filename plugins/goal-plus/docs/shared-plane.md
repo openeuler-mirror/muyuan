@@ -138,7 +138,7 @@ origin/relocation bootstrap result 单独保存在 FrozenSpec 和 RunRecord 中�
 ### Adaptive Search
 
 `strategy.orchestration_mode="adaptive_search"` 在 hard settlement 主流程上增加 LLM Verifier 评估和
-确定性资源分配或软引导。它要求 `workspace.provider="git_worktree"`，allocation 与 steering 至少
+确定性资源分配或软引导。它支持 `workspace.provider="git_worktree"` 或 `"thinkthread"`，allocation 与 steering 至少
 配置一个。提供任一 policy 时自动选择 adaptive_search，冻结前合并所需评分 key 并展开参数
 默认值。Verifier 通过 `scores` 独立选择额外注册指标，普通搜索同样可以启用；
 没有 Adaptive policy 时，Selection 使用 `quality_score` 仍补齐并冻结基础 Verifier 配置。
