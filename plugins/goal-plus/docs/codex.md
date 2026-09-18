@@ -220,7 +220,8 @@ Candidate 先调用 `goal_plus_search_get_agent_context`，再把 `context.candi
 
 1. freeze `strategy.orchestration_mode="parallel_loops"`，只规划一次并启动全部初始 candidate；
 2. 对每个 candidate 用独立 `call_id` 调用 `goal_plus_session_run`；
-3. 用 `goal_plus_session_wait` 收取准确调用结果；等待超时只表示尚未返回；
+3. 把全部活跃调用放进同一次 `goal_plus_session_wait_any`，在首个完成的调用处收取结果；
+   等待超时只返回仍在运行的 roster，不取消执行；
 4. 共同交付用例复用准确 verifier Evidence，对需要补验的修改执行原 verifier/barrier；
 5. Main 判断仍需继续时，以新的 `call_id` wake 同一 session；
 6. selection 前让所有活跃候选静默并关闭资源，再进行 selection、promotion 和 report。

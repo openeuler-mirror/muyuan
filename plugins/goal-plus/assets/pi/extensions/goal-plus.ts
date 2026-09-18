@@ -58,6 +58,10 @@ let cachedGoalStatus: GoalPlusStatusPayload | undefined;
 let goalContextFullKey: string | undefined;
 
 let continuationCount = 0;
+// True once the full stop-audit policy block sits in this session's visible
+// history. Compaction clears it so the next stop re-injects the full text
+// instead of the compact pointer — same policy as goalContextFullKey.
+let stopPolicyDelivered = false;
 let workerRegistrationSent = false;
 let workerSdkModulePromise: Promise<any> | undefined;
 let workerSdkClientPromise: Promise<any> | undefined;
@@ -161,7 +165,7 @@ const MAIN_READ_ONLY_RUNTIME_TOOLS = new Set([
 	"goal_plus_search_get_agent_observability",
 ]);
 const MAIN_SESSION_CLEANUP_TOOLS = new Set([
-	"goal_plus_session_wait", "goal_plus_session_interrupt",
+	"goal_plus_session_wait_any", "goal_plus_session_interrupt",
 	"goal_plus_session_stop", "goal_plus_session_close",
 ]);
 
@@ -173,6 +177,7 @@ function requiresGoalPlusAuthorization(toolName: string, owner: ToolOwner): bool
 interface GoalPlusNativeState {
 	activeGoalPlusId?: string;
 	continuationCount?: number;
+	stopPolicyDelivered?: boolean;
 	startedAt?: string;
 	startEntryCount?: number;
 	stagedPublicationNotifications?: Array<{ runId: string; notificationId: string }>;
@@ -953,6 +958,7 @@ function persistGoalState(pi: ExtensionAPI) {
 	pi.appendEntry(STATE_ENTRY_TYPE, {
 		activeGoalPlusId,
 		continuationCount,
+		stopPolicyDelivered,
 		startedAt: activeGoalStartedAt,
 		startEntryCount: activeGoalStartEntryCount,
 		stagedPublicationNotifications: stagedPublicationNotifications.map((item) => ({ ...item })),
@@ -987,6 +993,7 @@ function restoreGoalState(ctx: ExtensionContext) {
 	if (!stateEntry?.data) return;
 	activeGoalPlusId = stateEntry.data.activeGoalPlusId;
 	continuationCount = stateEntry.data.continuationCount ?? 0;
+	stopPolicyDelivered = stateEntry.data.stopPolicyDelivered ?? false;
 	activeGoalStartedAt = stateEntry.data.startedAt;
 	activeGoalStartEntryCount = stateEntry.data.startEntryCount ?? 0;
 	for (const item of stateEntry.data.stagedPublicationNotifications ?? []) {
@@ -1015,6 +1022,7 @@ function activateGoal(pi: ExtensionAPI, details: unknown, startEntryCount?: numb
 		activeGoalStartedAt = new Date().toISOString();
 		activeGoalStartEntryCount = startEntryCount ?? activeGoalStartEntryCount;
 		continuationCount = 0;
+		stopPolicyDelivered = false;
 	}
 	activeGoalPlusId = id;
 	cachedGoalStatus = statusFrom(details);
@@ -1046,6 +1054,7 @@ function clearActiveGoalState(pi: ExtensionAPI, persist: boolean): void {
 	activeGoalStartedAt = undefined;
 	activeGoalStartEntryCount = 0;
 	continuationCount = 0;
+	stopPolicyDelivered = false;
 	stagedPublicationNotifications.splice(0);
 	presentedPublicationNotifications.clear();
 	cachedGoalStatus = undefined;
@@ -2564,12 +2573,15 @@ async function queueMainGoalContinuation(pi: ExtensionAPI, ctx: ExtensionContext
 	const gate = await runJsonCli(pi, commandCtx, "goal_plus_gate", {
 		goal_plus_id: activeGoalPlusId,
 		event: "stop",
-		context: { mode, continuationCount },
+		context: { mode, continuationCount, stop_prompt_compact: stopPolicyDelivered },
 	});
 	const details = gateFrom(gate.details);
 	if (!details) return;
 	if (details.decision === "block") {
 		continuationCount += 1;
+		// A non-compact request means the gate returned the full audit policy;
+		// it is now visible in history until compaction clears it.
+		if (!stopPolicyDelivered) stopPolicyDelivered = true;
 		if (canPersistGoalState(ctx)) persistGoalState(pi);
 		// The runtime owns the continuation text: it carries only the rules that
 		// exist nowhere else, while the goal data comes from the per-turn context.
@@ -2805,7 +2817,7 @@ export default async function (pi: ExtensionAPI) {
 	const mainTools = [
 		"goal_plus_get_tool_schema",
 		"goal_plus_session_run",
-		"goal_plus_session_wait",
+		"goal_plus_session_wait_any",
 		"goal_plus_session_message",
 		"goal_plus_session_interrupt",
 		"goal_plus_session_stop",
@@ -3231,12 +3243,15 @@ export default async function (pi: ExtensionAPI) {
 		await settleMainGoal(pi, ctx);
 	});
 	// Compaction rebuilds the model context, so the next turn re-injects the full
-	// Goal context instead of the compact status line.
+	// Goal context instead of the compact status line, and the next stop
+	// re-injects the full audit policy instead of the compact pointer.
 	pi.on("session_before_compact", () => {
 		goalContextFullKey = undefined;
+		stopPolicyDelivered = false;
 	});
 	pi.on("session_compact", () => {
 		goalContextFullKey = undefined;
+		stopPolicyDelivered = false;
 	});
 	pi.on("session_shutdown", async (event, ctx) => {
 		stopWorkerSteering?.();

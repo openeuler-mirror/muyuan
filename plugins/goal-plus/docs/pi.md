@@ -271,7 +271,7 @@ Pi Search 使用 `strategy.orchestration_mode="parallel_loops"` 和固定的初�
 
 1. 只规划并物化一次初始 candidate；
 2. 用 `goal_plus_session_run` 准备候选并执行，保存返回的 session/call identity；
-3. 用 `goal_plus_session_wait` 读取准确调用结果；
+3. 把全部活跃调用放进同一次 `goal_plus_session_wait_any`，在首个完成的调用处读取结果；
 4. 检查持久 Evidence，若需继续探索，对同一 candidate 再次 run；
 5. controller 重建后，用新的 call_id 继续原 session 和 workspace，详见 [Search 恢复](search-recovery.md)；
 6. 结束时调用 `goal_plus_session_close`，再 select 和 promote；默认 promotion mode 必须 apply，

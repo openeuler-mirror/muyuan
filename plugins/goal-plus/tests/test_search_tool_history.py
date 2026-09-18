@@ -9,7 +9,8 @@ from goal_plus.tools import SearchTools
 @pytest.fixture
 def history():
     return {
-        "run_id": "run_1", "state": "running", "metric_name": "score",
+        "run_id": "run_1", "state": "running", "objective": "test runtime",
+        "metric_name": "score",
         "metric_direction": "maximize", "best_candidate_id": "c001", "best_score": 0.0,
         "total_candidates": 2, "returned_candidates": 1, "top_n": 1, "sort_by": "score",
         "worker_policy": {"session_control": {"wake_tool": "goal_plus_session_run"}},
@@ -41,10 +42,12 @@ def test_history_default_is_stable_as_host_diagnostics_grow_and_detail_is_comple
 
     summary = tools.goal_plus_search_list_history("run_1", top_n=1)
     assert summary["best_score"] == 0.0
+    assert summary["objective"] == "test runtime"
     assert summary["candidates"] == [{
         "candidate_id": "c001", "status": "evaluated", "intent": "baseline",
         "score": 0.0, "process_passed": True, "evidence_source": "best_iteration",
         "best_iteration": 1, "changed_files": ["program.py"], "best_git_head": "commit-1",
+        "key_metrics": {"score": 0.0, "request_id": "provider-request"},
     }]
     assert "research_rollup" not in summary
     assert "worker_policy" not in summary

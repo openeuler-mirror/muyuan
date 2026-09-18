@@ -16,7 +16,7 @@ class SessionControlTools:
     """Public control tools shared by all candidate session adapters."""
 
     run_tool: str = "goal_plus_session_run"
-    wait_tool: str = "goal_plus_session_wait"
+    wait_tool: str = "goal_plus_session_wait_any"
     message_tool: str = "goal_plus_session_message"
     interrupt_tool: str = "goal_plus_session_interrupt"
     stop_tool: str = "goal_plus_session_stop"

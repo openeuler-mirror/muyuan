@@ -1,8 +1,6 @@
 """Initial run and plan records in the existing Search layout."""
 
 from pathlib import Path
-import time
-import uuid
 
 from goal_plus.domain.artifacts import WorkspaceProvider
 from goal_plus.domain.search import SearchPlan
@@ -16,8 +14,22 @@ from goal_plus.ports.state import RunRecord
 
 
 class FileSearchRunState(FileCandidateQueries):
-    def new_run_id(self, now: float) -> str:
-        return f"run_{time.strftime('%Y%m%d_%H%M%S', time.gmtime(now))}_{uuid.uuid4().hex[:8]}"
+    def new_run_id(self) -> str:
+        """Mint a short sequential id: run_NNNN, following the gp_NNNN pattern.
+
+        Run ids ride along in every tool call, roster and injection; a hex or
+        timestamp suffix costs ~20 tokens per occurrence. Sequence numbers stay
+        collision-free within one runtime root, sort by creation in ls output,
+        and leave legacy long-format run dirs untouched.
+        """
+        runs_dir = self.root_dir / "runs"
+        highest = 0
+        if runs_dir.is_dir():
+            for entry in runs_dir.iterdir():
+                suffix = entry.name.removeprefix("run_")
+                if entry.is_dir() and entry.name != suffix and suffix.isdigit():
+                    highest = max(highest, int(suffix))
+        return f"run_{highest + 1:04d}"
 
     def lock_run(self, run_id: str):
         return exclusive_file_lock(self.run_dir(run_id) / "run.lock")

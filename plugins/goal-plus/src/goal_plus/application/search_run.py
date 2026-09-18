@@ -141,7 +141,7 @@ class SearchRun:
             if source_run_id
             else {}
         )
-        run_id = run_id or self.state.new_run_id(self.clock.now())
+        run_id = run_id or self.state.new_run_id()
         run = existing or RunRecord(
             run_id=run_id,
             state=RunState.RUNNING,

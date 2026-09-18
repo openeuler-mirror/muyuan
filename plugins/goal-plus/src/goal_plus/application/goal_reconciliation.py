@@ -90,7 +90,13 @@ class GoalReconciliation:
             "runs": runs,
         }
 
-    def reconciliation_context(self, goal_plus_id: str) -> str:
+    def reconciliation_context(self, goal_plus_id: str, *, compact: bool = False) -> str:
+        """Agenda text for stop continuations; compact keeps only live state.
+
+        The full instructions ride along in the first stop injection; compact
+        stop prompts (host-tracked, compaction-aware) keep the one-line form
+        because the JSON agenda is the only part that changes between stops.
+        """
         runs = self.reconciliation(goal_plus_id)["runs"]
         if not runs:
             return ""
@@ -114,6 +120,14 @@ class GoalReconciliation:
                     for candidate in run["candidates"]
                 ]
             agenda.append(item)
+        if compact:
+            return (
+                "Search reconciliation:\n"
+                + json.dumps(agenda, ensure_ascii=False)
+                + "\n按 next_step 推进（continue_candidate → goal_plus_session_run 新 "
+                "call_id；仅显式 recovery_id 事务用 recovery 工具）；先处理最新用户消息，"
+                "每轮重读 goal_plus_status。\n"
+            )
         return (
             "Search reconciliation:\n"
             + json.dumps(agenda, ensure_ascii=False)

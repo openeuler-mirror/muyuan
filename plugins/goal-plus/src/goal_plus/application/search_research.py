@@ -271,8 +271,8 @@ class SearchResearch:
                     "score_reusable": False,
                     "best_iteration": payload["best_iteration"],
                     "best_git_head": payload["best_git_head"],
-                    "summary": payload["summary"],
-                    "feature_ledger": payload["feature_ledger"],
+                    "summary": payload.get("summary", ""),
+                    "feature_ledger": payload.get("feature_ledger", []),
                 }
             )
 
@@ -298,6 +298,8 @@ class SearchResearch:
         self,
         record: CandidateRecord,
         spec: SearchSpec,
+        *,
+        run_worker_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         score_report = record.score_report
         best_iteration = best_iteration_record(record, spec.metric_direction)
@@ -316,8 +318,6 @@ class SearchResearch:
             else None
         )
         metrics: dict[str, Any] = {}
-        verifier_summaries: list[dict[str, Any]] = []
-        failure_classes: list[str] = []
         log_paths: list[str] = []
         latest_verifier_summaries: list[dict[str, Any]] = []
         latest_failure_classes: list[str] = []
@@ -355,15 +355,11 @@ class SearchResearch:
                         "log_path": str(result.log_path) if result.log_path else None,
                     }
                 )
-            if score_report_is_evidence:
-                if not metrics:
-                    for result in score_report.verifier_results:
-                        if result.metrics:
-                            metrics = result.metrics
-                            break
-                failure_classes = list(latest_failure_classes)
-                log_paths = list(latest_log_paths)
-                verifier_summaries = list(latest_verifier_summaries)
+            if score_report_is_evidence and not metrics:
+                for result in score_report.verifier_results:
+                    if result.metrics:
+                        metrics = result.metrics
+                        break
 
         key_metrics = {
             key: value
@@ -376,6 +372,14 @@ class SearchResearch:
             and isinstance(value, int | float | bool | str)
         }
 
+        strategy_metadata = dict(record.task.strategy_metadata)
+        if (
+            run_worker_policy is not None
+            and strategy_metadata.get("worker_policy") == run_worker_policy
+        ):
+            # Identical static policy already appears once at run level.
+            strategy_metadata.pop("worker_policy", None)
+
         agent_sessions = self.agent_session_payloads_for_candidate(
             record.task.run_id,
             record.candidate_id,
@@ -383,6 +387,17 @@ class SearchResearch:
         research_summary = self.candidate_research_summary(
             record.task.run_id,
             record.candidate_id,
+        )
+        assessment = research_summary["verifier_assessment"]
+        research_empty = (
+            not research_summary["summary"]
+            and not research_summary["key_results"]
+            and not research_summary["pitfalls"]
+            and not research_summary["blockers"]
+            and not research_summary["next_steps"]
+            and assessment["status"] == "unknown"
+            and not assessment["evidence"]
+            and not assessment["impact"]
         )
         risk_notes = [
             (
@@ -399,7 +414,7 @@ class SearchResearch:
             for pitfall in research_summary["pitfalls"]
         ]
 
-        return {
+        payload = {
             "candidate_id": record.candidate_id,
             "parent_id": record.task.parent_id,
             "parent_candidate_ids": record.task.parent_candidate_ids,
@@ -410,26 +425,9 @@ class SearchResearch:
             "intent": record.task.proposal.intent
             if record.task.proposal
             else record.task.hypothesis,
-            "expected_tradeoff": (
-                record.task.proposal.expected_tradeoff if record.task.proposal else ""
-            ),
-            "strategy_metadata": record.task.strategy_metadata,
+            "strategy_metadata": strategy_metadata,
             "workspace": str(record.task.workspace),
             "agent_sessions": agent_sessions,
-            "summary": research_summary["summary"],
-            "key_results": research_summary["key_results"],
-            "feature_ledger": research_summary["feature_ledger"],
-            "next_ideas": research_summary["next_steps"],
-            "risk_notes": risk_notes,
-            "blockers": research_summary["blockers"],
-            "verifier_assessment": research_summary["verifier_assessment"],
-            "research_summary": research_summary,
-            "search_action": (
-                record.task.proposal.metadata.get("search_action")
-                if record.task.proposal
-                else None
-            ),
-            "artifact_status": None,
             "changed_files": record.detected_changed_files,
             "touched_denied_files": record.touched_denied_files,
             "changed_outside_allowed": record.changed_outside_allowed,
@@ -455,27 +453,45 @@ class SearchResearch:
             "latest_verifiers": latest_verifier_summaries,
             "latest_log_paths": latest_log_paths,
             "key_metrics": key_metrics,
-            "failure_classes": failure_classes,
-            "verifiers": verifier_summaries,
-            "log_paths": log_paths,
         }
+        if record.task.proposal:
+            expected_tradeoff = record.task.proposal.expected_tradeoff
+            if expected_tradeoff:
+                payload["expected_tradeoff"] = expected_tradeoff
+            search_action = record.task.proposal.metadata.get("search_action")
+            if search_action is not None:
+                payload["search_action"] = search_action
+        if not research_empty:
+            payload.update(
+                summary=research_summary["summary"],
+                key_results=research_summary["key_results"],
+                feature_ledger=research_summary["feature_ledger"],
+                next_ideas=research_summary["next_steps"],
+                risk_notes=risk_notes,
+                blockers=research_summary["blockers"],
+                verifier_assessment=research_summary["verifier_assessment"],
+                research_summary=research_summary,
+            )
+        # latest_* already carries the latest verifier state verbatim; keep the
+        # best-iteration logs only when they are not that same latest report.
+        if log_paths and log_paths != latest_log_paths:
+            payload["log_paths"] = log_paths
+        return payload
 
     def agent_session_payloads_for_candidate(
         self,
         run_id: str,
         candidate_id: str,
     ) -> list[dict[str, Any]]:
+        # Identity and timing only; full session handles stay behind
+        # goal_plus_search_recovery_status(detail=true) and observability reads.
         return [
             {
                 "agent_session_id": session.agent_session_id,
                 "candidate_id": session.candidate_id,
-                "agent_harness": session.agent_harness,
-            "runtime_provider": session.runtime_provider,
-                "session_handle": session.session_handle.model_dump(mode="json"),
                 "session_handle_display": self.display_session_handle(session),
                 "created_at": session.created_at,
                 "updated_at": session.updated_at,
-                "directive": session.directive,
                 "verifier_runs": session.counters.get("verifier_runs", 0),
             }
             for session in self.source.read_agent_sessions(run_id)

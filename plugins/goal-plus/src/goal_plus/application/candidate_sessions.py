@@ -2,6 +2,7 @@
 
 import math
 from contextlib import nullcontext
+import re
 from typing import Any, Literal
 from goal_plus.application.adaptive_admission import AdaptiveAdmission
 from goal_plus.application.candidate_execution import (
@@ -642,6 +643,11 @@ class CandidateSessions:
 
     @staticmethod
     def _make_agent_session_id(run_id: str, index: int) -> str:
+        match = re.fullmatch(r"run_(\d+)", run_id)
+        if match:
+            # agent_0007_02 rides along in every wait roster and session
+            # receipt; keep it as short as the run id it derives from.
+            return f"agent_{match.group(1)}_{index:02d}"
         run_suffix = run_id.removeprefix("run_")
         return f"agent_{run_suffix}_{index:03d}"
 

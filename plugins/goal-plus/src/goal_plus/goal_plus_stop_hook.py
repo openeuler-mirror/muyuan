@@ -1115,7 +1115,7 @@ GOAL_PLUS_READ_ONLY_TOOLS = {
     "goal_plus_search_get_agent_observability",
 }
 GOAL_PLUS_SESSION_CLEANUP_TOOLS = {
-    "goal_plus_session_wait", "goal_plus_session_interrupt",
+    "goal_plus_session_wait_any", "goal_plus_session_interrupt",
     "goal_plus_session_stop", "goal_plus_session_close",
 }
 

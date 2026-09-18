@@ -74,8 +74,9 @@ def history_page(items: list[dict[str, Any]], offset: int, limit: int) -> dict[s
 
 def search_history_summary(history: dict[str, Any]) -> dict[str, Any]:
     payload = {key: history[key] for key in (
-        "run_id", "state", "metric_name", "metric_direction", "best_candidate_id",
-        "best_score", "total_candidates", "returned_candidates", "top_n", "sort_by",
+        "run_id", "state", "objective", "metric_name", "metric_direction",
+        "best_candidate_id", "best_score", "total_candidates", "returned_candidates",
+        "top_n", "sort_by",
     ) if key in history}
     for key in (
         "source_run_id", "invalidated_at", "invalidation_reason",
@@ -93,8 +94,8 @@ def search_history_summary(history: dict[str, Any]) -> dict[str, Any]:
             "evidence_source", "best_iteration", "changed_files",
         ) if key in candidate}
         for key in (
-            "best_git_head", "summary", "next_ideas", "blockers", "failure_classes",
-            "touched_denied_files", "changed_outside_allowed",
+            "best_git_head", "summary", "next_ideas", "blockers",
+            "key_metrics", "touched_denied_files", "changed_outside_allowed",
         ):
             if candidate.get(key):
                 row[key] = candidate[key]

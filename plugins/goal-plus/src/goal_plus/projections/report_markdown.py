@@ -192,7 +192,7 @@ def render_markdown_report(inputs: MarkdownReportInputs) -> str:
             f"{markdown_cell(git_head or '')} | "
             f"{best_iteration_value} | {best_score_value} | "
             f"{markdown_cell(best_git_head)} | {passed} | "
-            f"{markdown_cell(payload['summary'])} | "
+                f"{markdown_cell(payload.get('summary', ''))} | "
             f"{markdown_cell(key_metrics)} | {markdown_cell(changed)} | "
             f"{markdown_cell(ledger_display)} |"
         )

@@ -2694,7 +2694,7 @@ def test_worker_policy_includes_host_capabilities_for_codex(tmp_path: Path) -> N
 
     assert plan.worker_policy["agent_harness"] == "codex"
     assert plan.worker_policy["session_control"]["run_tool"] == "goal_plus_session_run"
-    assert plan.worker_policy["session_control"]["wait_tool"] == "goal_plus_session_wait"
+    assert plan.worker_policy["session_control"]["wait_tool"] == "goal_plus_session_wait_any"
 
 
 @pytest.mark.pi
@@ -2720,7 +2720,7 @@ def test_worker_policy_uses_pi_rpc_native_session_resume(tmp_path: Path) -> None
 
     assert plan.worker_policy["agent_harness"] == "pi"
     assert plan.worker_policy["session_control"]["run_tool"] == "goal_plus_session_run"
-    assert plan.worker_policy["session_control"]["wait_tool"] == "goal_plus_session_wait"
+    assert plan.worker_policy["session_control"]["wait_tool"] == "goal_plus_session_wait_any"
 
 
 def test_start_agent_session_creates_context_handle_and_launch_payload(tmp_path: Path) -> None:

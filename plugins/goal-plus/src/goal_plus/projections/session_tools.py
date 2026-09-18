@@ -32,7 +32,7 @@ def session_call_receipt(snapshot: SessionCallSnapshot, *, detail: bool = False)
             payload["error"] = snapshot.result.error
         if snapshot.result.text:
             payload["result_available"] = True
-            payload["details"] = {"tool": "goal_plus_session_wait", "detail": True}
+            payload["details"] = {"tool": "goal_plus_session_wait_any", "detail": True}
     if snapshot.error:
         payload["error"] = snapshot.error
     return payload

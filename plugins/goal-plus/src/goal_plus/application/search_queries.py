@@ -92,8 +92,13 @@ class SearchQueries:
             ordered = sorted(records, key=created_index)
 
         selected = ordered[:top_n]
+        worker_policy = self.inspection.normalize_worker_policy(frozen)
         candidates = [
-            self.research.history_candidate_payload(record, frozen.spec)
+            self.research.history_candidate_payload(
+                record,
+                frozen.spec,
+                run_worker_policy=worker_policy,
+            )
             for record in selected
         ]
         research_rollup = self.research.run_research_rollup(
@@ -102,7 +107,7 @@ class SearchQueries:
             visible_candidate_ids=[record.candidate_id for record in selected],
         )
 
-        return {
+        payload = {
             "run_id": run.run_id,
             "state": run.state,
             "frozen_spec_id": run.frozen_spec_id,
@@ -119,9 +124,7 @@ class SearchQueries:
             "strategy": frozen.spec.strategy.model_dump(mode="json"),
             "agent_harness": frozen.agent_harness,
             "runtime_provider": frozen.runtime_provider,
-            "worker_policy": self.inspection.normalize_worker_policy(
-                frozen
-            ),
+            "worker_policy": worker_policy,
             "best_candidate_id": run.best_candidate_id,
             "best_score": run.best_score,
             "total_candidates": len(records),
@@ -129,11 +132,14 @@ class SearchQueries:
             "top_n": top_n,
             "sort_by": sort_by,
             "candidates": candidates,
-            "feature_ledger": research_rollup["feature_ledger"],
-            "pitfalls": research_rollup["pitfalls"],
-            "verifier_assessments": research_rollup["verifier_assessments"],
             "research_rollup": research_rollup,
         }
+        # The rollup already carries these; mirror them at top level only
+        # when they hold content so empty runs stay quiet.
+        for key in ("feature_ledger", "pitfalls", "verifier_assessments"):
+            if research_rollup[key]:
+                payload[key] = research_rollup[key]
+        return payload
 
     def list_iterations(
         self,

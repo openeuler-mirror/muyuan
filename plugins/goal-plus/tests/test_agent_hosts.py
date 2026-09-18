@@ -48,7 +48,7 @@ def test_host_binding_returns_all_supported_hosts() -> None:
     assert thinkthread.capabilities.search_enabled is True
     assert thinkthread.capabilities.disabled_reason is None
     assert thinkthread.capabilities.session_control.run_tool == "goal_plus_session_run"
-    assert thinkthread.capabilities.session_control.wait_tool == "goal_plus_session_wait"
+    assert thinkthread.capabilities.session_control.wait_tool == "goal_plus_session_wait_any"
     assert thinkthread.capabilities.session_control == execution_binding("pi").capabilities.session_control
     assert execution_binding("codex").capabilities.supports_model_discovery
     assert execution_binding("pi").capabilities.supports_model_discovery

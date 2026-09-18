@@ -42,7 +42,7 @@ class FileCandidateQueries:
         return [
             AgentSessionRecord.model_validate(load_json(path))
             for path in sorted(
-                (self.run_dir(run_id) / "agent_sessions").glob("agent_*.json")
+                (self.run_dir(run_id) / "agent_sessions").glob("*.json")
             )
         ]
 
