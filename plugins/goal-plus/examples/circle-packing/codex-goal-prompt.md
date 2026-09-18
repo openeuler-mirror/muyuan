@@ -5,7 +5,8 @@ $goal-plus max_parallel=2 max_duration_seconds=600 workspace_provider=git_worktr
 所有圆的半径之和。
 
 修改：只修改候选工作区中的 `initial_program.py`。不要修改 verifier 或其他冻结输入，
-不要访问网络。
+不要访问网络。实现只使用 Python 标准库，禁止 numpy、scipy 等第三方依赖
+（执行环境未安装，verifier 会直接失败）。
 
 工作区合同：`workspace-template/` 是受版本控制的只读 baseline。把当前目录中的
 `search-spec.json` 作为权威 SearchSpec，保持

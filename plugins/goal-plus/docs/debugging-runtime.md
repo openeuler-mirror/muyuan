@@ -38,6 +38,8 @@ provider 错误及模型标识，不输出完整 schema、参数或思考内容�
 发送消息或修改运行状态；等待、停止和恢复仍使用正式宿主入口。正在追加的日志可能暂时
 不完整，unavailable 时稍后重读，不据此宣称 worker 丢失。`--overview` 应来自该 session
 实际运行的 build。更深入的 schema、成本和完整结果分析继续使用下文的 audit 选项。
+需要逐行查看 Main/subagent 实际对话与注入内容时，使用
+[Agent 行为全量导出](#agent-行为全量导出goal_plus_agent_transcript)。
 
 ## 任务结束后检查概要是否保留
 
@@ -206,6 +208,86 @@ token 数仅为指定编码对记录文本的估算，不等于 provider 的工�
 原生工具、图片以及压缩后的保留内容不从日志推测；Codex 缺少 provider 工具观测时保持
 unavailable。默认报告不包含参数/返回正文或模型思考，`details` UI 副本不会计入正文两次。
 TT Child 的诊断归档目录同样可作为输入；报告只保存在本地，不提交到仓库。
+
+## Agent 行为全量导出（GOAL_PLUS_AGENT_TRANSCRIPT）
+
+现有诊断默认脱敏：session-diagnostics 归档过滤普通对话、模型思考和原生工具正文，注入
+台账只保存哈希。需要逐行检查 Main/subagent 实际做了什么（长时间无输出、临时注入的
+prompt、工具调用与返回正文）时，使用本导出。它在导出时回读本地原生日志，内容完整，
+属于显式 debug 通道，输出两种形式：
+
+- `index.html`：自包含静态页面（无脚本），会话导航、类型配色、注入高亮、`⏸ gap`
+  停顿标记、可折叠正文与内容足迹统计，是主要的人读视图；
+- `events.jsonl`：每行一个事件的完整 JSON，供离线脚本消费，也可 `tail -F` 观察增量。
+
+HTML 中每个事件正文默认展开（`meta`/`context` 观测记录折叠），会话标题与导航用
+`candidate c001`、`main` 这类标识区分各 lane，进入会话的真实 prompt 前有
+`▶ prompt #N · dispatch/continuation` 分界线。每个会话还给出内容足迹统计：按 kind+label
+分组的字符数与启发式 token 估算（CJK 约 1 token/字符、ASCII 约 4 字符/token，非计费口径），
+并区分进入模型上下文的事件与仅占磁盘的宿主记录，用于定位可删减的冗余。
+生成 `goal_plus_search_report` 时若本地已存在该导出，report.html 末尾会附上指向它的链接。
+
+手动导出整个 runtime root，自动发现并合并 Pi Main 原生历史、Search candidate、TT Child
+诊断归档、controller journal、Codex rollout 和 time advisory：
+
+```bash
+PYTHONPATH=src python scripts/export_agent_transcript.py /path/to/project/.gp
+PYTHONPATH=src python scripts/export_agent_transcript.py --watch --interval 5 /path/to/project/.gp
+tail -F /path/to/project/.gp/host-logs/agent-transcript/events.jsonl
+```
+
+输出默认写入 `<root>/host-logs/agent-transcript/`（每个会话一个子目录，内含
+`transcript.html`），`--watch` 在源文件变化时持续刷新，适合观察长时间运行的任务。也可以直读单个原始文件：
+
+```bash
+PYTHONPATH=src python scripts/export_agent_transcript.py --pi /path/to/pi-session.jsonl --role main
+PYTHONPATH=src python scripts/export_agent_transcript.py --codex /path/to/rollout.jsonl
+```
+
+常用选项：`--leaf-id`（Pi 分支，默认最后持久 entry）、`--max-chars`（HTML 正文
+截断上限）、`--gap-seconds`（停顿标记阈值，0 关闭）、`--output`、`--no-jsonl`。
+
+`GOAL_PLUS_AGENT_TRANSCRIPT` 自动导出（与 `GOAL_PLUS_DEBUG` 的 stderr 大小统计互相
+独立，只开大小统计不会产生这些文件）。TT Child 的释放前抓取**默认开启**，仅精确值 `0`
+关闭；Codex stop hook 的逐 turn 刷新仍需显式 `=1`（其 rollout 本来持久，不开不丢数据）：
+
+- Codex Stop/SubagentStop hook 每次触发后只刷新
+  `<root>/host-logs/agent-transcript/<role>-<session-id>/`，不写顶层合并文件——
+  `index.html`/`events.jsonl` 始终是全 runtime root 的完整快照，多次 goal/Search
+  混在同一目录时由导航的 run 分组区分。rollout 未变化时（既有导出不早于源文件）
+  跳过重写，超过 32 MiB 的 rollout 跳过导出；
+- TT Child 的 `session-diagnostics/<child-id>/` 归档目录会得到自动写入的
+  `transcript.html`（脱敏归档 + `events.sqlite3` 恢复的 turn 总结与 controller prompt）。
+  注意 controller（Root 沙箱内的 MCP 进程）**看不到兄弟 Child 的目录**，进程内抓取永远
+  拿不到原始历史；Child 的 thinking 与原生工具正文只能在**宿主侧**于保留期读取
+  `<instance>/thinkthreads/<child>/session/active.jsonl`。全量导出器运行在宿主侧，对仍
+  保留的 Child 自动优先原始历史——**运行期间用 `--watch` 持续导出即可实时保全全内容**：
+
+  最简单的方式是用启动包装器，`GOAL_PLUS_DEBUG=1` 时它自动伴随任务运行 `--watch`
+  （任务结束再做一次最终导出；未设置该变量时命令原样直通）：
+
+  ```bash
+  GOAL_PLUS_DEBUG=1 scripts/run-with-transcript.sh tt run --profile goal-plus-pi \
+      --fs <workspace> -- --model zai/glm-5.3-flash --thinking low
+  GOAL_PLUS_DEBUG=1 scripts/run-with-transcript.sh pi -a --model zai/glm-5.3-flash \
+      --thinking low -p "$(cat pi-goal-prompt.md)"
+  ```
+
+  也可以手动挂 watch：
+
+  ```bash
+  ROOT=$(ls -td ~/.local/state/thinkthread/instances/*/thinkthreads/*/session/goal-plus | head -1)
+  PYTHONPATH=src python scripts/export_agent_transcript.py "$ROOT" --watch
+  ```
+
+边界与限制：
+
+- 输出包含 prompt、工具参数、返回正文和模型思考，只保存在本地 host-logs，不要提交。
+- TT Child 视图来自 session-diagnostics 归档，继承了它的过滤：普通对话与原生工具正文
+  是 placeholder；GP 工具调用、注入台账与 controller prompt 仍完整可见。
+- Pi Main 依赖原生历史仍存在（`session-diagnostics/pi-*/index.json` 的 history 指针）；
+  Codex reasoning 摘要取决于 rollout 是否记录，缺失时不推测。
+- 导出器只读：不启动模型、不发送消息、不修改运行状态；与 monitor/audit 脚本可同时使用。
 
 ## API 返回大小 Debug
 

@@ -66,7 +66,8 @@ GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED=1 \
 tt run --profile goal-plus-pi --fs "$PWD/workspace"
 ```
 
-随后在 Root TUI 完整粘贴 [`pi-goal-prompt.md`](pi-goal-prompt.md)。不要使用
+随后在 Root TUI 完整粘贴 [`pi-goal-prompt.md`](pi-goal-prompt.md)。要与 git-apply 示例对齐（不限时、无候选提示、允许自主探索）时，改用
+[`pi-goal-prompt-untimed.md`](pi-goal-prompt-untimed.md)。不要使用
 `tt run -- -p ...` 传入 Root prompt；追加的 agent 参数会被 `profile="self"` candidate Child
 继承。探索预算为 20 分钟；Main 根据返回的 Evidence 决定是否继续。预算耗尽后不再
 启动新探索，只允许已有合同规定的收尾；已提交结果的结算、publication、审计和资源清理
@@ -138,3 +139,42 @@ ThinkThread 系统验收覆盖；普通示例运行不读取 session-private 内
 运行状态位于 native Session-private Goal Plus root，不写入 `workspace/.gp`。检查完成后停止 Root，从
 `tt ps --forest` 取得准确 ID，再执行 `tt rm <root-id>`。不要提交 Runtime state、raw transcript、
 socket、token 或生成的 workspace。
+
+## 调试转录在哪里、怎么导出到本目录
+
+TT 只把 `workspace/` 挂载为 Root 的可写文件系统，Goal Plus runtime 因此不在示例目录的
+`.gp/`（与 [git-apply 示例](../circle-packing-git-apply/README.md) 不同），而位于 Root 的
+受管 session 目录：
+
+```text
+~/.local/state/thinkthread/instances/<root-id>/thinkthreads/<root-id>/session/goal-plus/
+```
+
+`<root-id>` 是本次 `tt run` 的实例 id（`tt ps --forest` 可查）。需要人工 review 行为时，
+把完整转录导出成和 git-apply 示例相同的目录布局——本目录 `.gp/host-logs/agent-transcript/`
+（只读调试快照，不是 runtime root，不要用它做恢复）：
+
+```bash
+cd ../../../  # plugins/goal-plus
+ROOT=$(ls -td ~/.local/state/thinkthread/instances/*/thinkthreads/*/session/goal-plus | head -1)
+PYTHONPATH=src python scripts/export_agent_transcript.py "$ROOT" \
+  --output examples/circle-packing-thinkthread-apply/.gp/host-logs/agent-transcript
+```
+
+TT Child 的 thinking 与原生工具正文只在保留期存在于
+`<instance>/thinkthreads/<child>/session/active.jsonl`（controller 沙箱内不可见，释放即
+删）。要实时保全全内容，在宿主侧伴随运行 `--watch` 导出（另开一个终端）：
+
+```bash
+# 起跑时用包装器（GOAL_PLUS_DEBUG=1 自动伴随 watch）：
+cd ../.. && GOAL_PLUS_DEBUG=1 scripts/run-with-transcript.sh tt run --profile goal-plus-pi \
+    --fs examples/circle-packing-thinkthread-apply/workspace -- --model zai/glm-5.3-flash --thinking low
+# 或对已启动的运行手动挂 watch：
+ROOT=$(ls -td ~/.local/state/thinkthread/instances/*/thinkthreads/*/session/goal-plus | head -1)
+PYTHONPATH=src python scripts/export_agent_transcript.py "$ROOT" --watch
+```
+
+清理实例前先完成导出：`tt rm <root-id>` 会连同 `events.sqlite3` 和 Root 会话一起删除，
+那是多数调试数据的唯一副本。
+不要手工移动或修改受管目录里的 runtime 状态；上面的导出命令只读。本示例 prompt 文件
+不写调试路径，避免进入模型上下文。

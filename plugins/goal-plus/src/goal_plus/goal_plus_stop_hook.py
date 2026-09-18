@@ -563,6 +563,15 @@ def _record_stop_hook_event(
             _stop_hook_event_dir(search_root) / f"{invocation_id}.json",
             payload,
         )
+        if os.environ.get("GOAL_PLUS_AGENT_TRANSCRIPT") == "1":
+            from goal_plus.infrastructure.agent_transcript import debug_export_codex_transcript
+
+            debug_export_codex_transcript(
+                search_root,
+                hook_input_codec.transcript_path(hook_input),
+                session_id=payload["session_id"] if isinstance(payload["session_id"], str) else None,
+                role="subagent" if event_name == "SubagentStop" else "main",
+            )
     except Exception:
         # Statistics must never alter the host hook's fail-open contract.
         return

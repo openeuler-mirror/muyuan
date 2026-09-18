@@ -16,6 +16,7 @@ from goal_plus.host_services import SearchHostService
 from goal_plus.infrastructure.clock import SystemClock
 from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json, write_json
 from goal_plus.infrastructure.thinkthread_worker_rpc import receive_worker_messages
+from goal_plus.infrastructure.agent_transcript import debug_export_child_transcript
 from goal_plus.infrastructure.session_diagnostics import collect_child_diagnostics
 from goal_plus.ports.thinkthread_session import ThinkThreadSessionHooks, ThinkThreadSessionInput
 from goal_plus.ports.session import SessionCallRequest, SessionInvocationResult
@@ -321,6 +322,7 @@ def _release_session_resource(path: Path, *, client, timeout: float):
     actor.close()
     if actor.native_session_id is not None:
         collect_child_diagnostics(path.parents[3], record, sdk)
+        debug_export_child_transcript(path.parents[3], record)
         driver.release(actor.native_session_id, root_id=record["root_thinkthread_id"],
                        branch_id=record["fs_branch_id"], timeout=timeout)
     record["cleanup_state"] = "closed"

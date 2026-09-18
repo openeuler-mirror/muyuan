@@ -1757,6 +1757,21 @@ def _render_bootstrap_verification(task: dict[str, Any]) -> str:
     )
 
 
+def _render_agent_transcript_section(agent_transcript: Any) -> str:
+    """Optional closing link to a local debug transcript export; empty when absent."""
+    if not isinstance(agent_transcript, dict):
+        return ""
+    href = agent_transcript.get("href")
+    if not isinstance(href, str) or not href:
+        return ""
+    return f"""    <section id="agent-transcript" class="report-section">
+      <h2>Agent Behavior Transcript</h2>
+      <p><a class="mono" href="{escape(href)}">{escape(href)}</a></p>
+      <p class="footnote">Local debug export of the full main/subagent session histories, produced by scripts/export_agent_transcript.py. It may contain prompts and tool payloads, lives outside this report's normalized evidence, and only exists while kept under host-logs.</p>
+    </section>
+"""
+
+
 def render_html_report(
     data: dict[str, Any], *, plotly_javascript: str | None = None
 ) -> str:
@@ -1928,6 +1943,7 @@ def render_html_report(
         or "<li>No monitor warnings.</li>"
     )
     metric_availability = _render_metric_availability(unavailable + missing)
+    agent_transcript_section = _render_agent_transcript_section(data.get("agent_transcript"))
 
     worker_sources = int(aggregate_usage.get("sources_total") or 0)
     worker_coverage = (aggregate_usage.get("coverage") or {}).get(
@@ -2053,6 +2069,7 @@ def render_html_report(
       <details class="summary-block"><summary>Complete normalized report data</summary><pre>{escape(json.dumps(raw_payload, indent=2, ensure_ascii=False, sort_keys=True))}</pre></details>
       <p class="footnote">Goal Plus {escape(__version__)} · Schema goal-plus-report/v{REPORT_SCHEMA_VERSION}. This file is self-contained and generated from durable Goal Plus/Search state. Host-native transcripts remain external evidence and are summarized only through normalized observability.</p>
     </section>
+{agent_transcript_section}
   </main>
   {plotly_script}
   <script>{REPORT_SCRIPT}</script>
