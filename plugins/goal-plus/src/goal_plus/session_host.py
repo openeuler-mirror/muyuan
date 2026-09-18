@@ -234,7 +234,11 @@ class NativeCandidateHost:
                 execution_scope_snapshot(root_dir=self.root, scope_id=scope_id)
                 if scope_id else execution_scope_for_run(root_dir=self.root, run_id=run_id)
             )
-            if scope is None and scope_id is None:
+            if (
+                scope is None
+                and scope_id is None
+                and self.queries.runtime_provider(run_id) == "thinkthread"
+            ):
                 # A ThinkThread Root has no PreToolUse stop hook, so the scope the
                 # hook would have created for goal_plus_session_run does not exist
                 # yet; ensure it here with the same Main-activation identity.

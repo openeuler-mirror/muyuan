@@ -918,6 +918,33 @@ def test_thinkthread_profile_preflight_refuses_unmanaged_file(
         )
 
 
+def test_thinkthread_profile_preflight_allows_explicit_replacement(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile_path = tmp_path / "goal-plus-pi.toml"
+    profile_path.write_text("schemaVersion = 4\n", encoding="utf-8")
+    base = installer._render_thinkthread_profile(_thinkthread_pi_profile())
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        stdout = "thinkthread 0.1.0\n" if "--version" in argv else base
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(installer, "_run", run)
+
+    plan = installer._preflight_thinkthread_profile(
+        "/opt/bin/tt",
+        profile_path=profile_path,
+        runtime_python=tmp_path / "venv/bin/python",
+        allow_replacement=True,
+    )
+
+    assert plan.installed is False
+    assert "replacing unmanaged ThinkThread Profile" in capsys.readouterr().err
+
+
 def test_thinkthread_profile_preflight_updates_profile_owned_by_checkout(
     installer: ModuleType,
     tmp_path: Path,
@@ -1111,6 +1138,26 @@ def test_thinkthread_sdk_preflight_refuses_unmanaged_directory(
             git_executable="/opt/git",
             install_root=root,
         )
+
+
+def test_thinkthread_sdk_preflight_allows_explicit_replacement(
+    installer: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "sdk"
+    root.mkdir()
+
+    plan = installer._preflight_thinkthread_sdk(
+        node_executable="/opt/node",
+        npm_executable="/opt/npm",
+        git_executable="/opt/git",
+        install_root=root,
+        allow_replacement=True,
+    )
+
+    assert plan.installed is False
+    assert "replacing unmanaged Agent POSIX SDK" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("failure", ["registration", "cache"])

@@ -64,8 +64,8 @@ does not modify Pi authentication or global configuration.
 | Unused managed releases | `./uninstall.sh --unused-runtime` |
 | Inspect the full plan | `./uninstall.sh --dry-run` |
 
-With a selector, the uninstaller removes only that component. Codex and normal Pi
-registrations are removed regardless of their source checkout. A different source
+With a selector, the uninstaller removes only that component. Codex, normal Pi, and explicitly
+selected ThinkThread registrations are removed regardless of their source checkout. A different source
 produces a warning and removal continues without confirmation; `--dry-run` only
 prints the plan. Local development directories retain their ownership checks.
 Normal host installations use the shared Python runtime, so removing one host preserves
@@ -73,8 +73,8 @@ the runtime. `--unused-runtime` garbage-collects only releases that no host
 registration references, so it is safe to run at any time. Pi development uses
 its own managed environment.
 Uninstallation never deletes target workspace `.gp/` records or
-reverts promoted changes. `--thinkthread` removes only this checkout's generated
-`goal-plus-pi` / `goal-plus-codex` Profiles; it never deletes a ThinkThread
+reverts promoted changes. `--thinkthread` removes the selected generated
+`goal-plus-pi` / `goal-plus-codex` Profiles and shared Agent POSIX SDK after a foreign-ownership warning; it never deletes a ThinkThread
 Runtime, Root, or state.
 
 ## Start a Goal
@@ -180,8 +180,8 @@ inside a ThinkThread path is bound by the Root Profile (Pi or Codex).
 | --- | --- | --- | --- | --- |
 | Codex | `git_worktree` / `copy` | Codex app-server | Codex CLI | Codex CLI; Git worktree only |
 | Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI; Git worktree only |
-| Pi | `thinkthread` | TT Pi Child | TT Pi Child | Not supported |
-| Codex | `thinkthread` | TT Codex Child | TT Codex Child | Not supported |
+| Pi | `thinkthread` | TT Pi Child | TT Pi Child | Pi CLI; Adaptive supported |
+| Codex | `thinkthread` | TT Codex Child | TT Codex Child | Codex CLI; Adaptive supported |
 
 `workspace.provider` identifies the workspace provider. Agent identity comes from
 the authorized Main session and is recorded as `FrozenSpec.agent_harness`.

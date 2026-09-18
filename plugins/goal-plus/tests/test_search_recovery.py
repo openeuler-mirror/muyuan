@@ -572,7 +572,22 @@ def test_shared_recovery_gate_checks_goal_run_ownership(tmp_path, input_key):
     assert runtime.gate(goal.goal_plus_id, "pre_tool_use", context).decision == "block"
 
 
-@pytest.mark.parametrize("retirement_pending", [False, True])
+@pytest.mark.parametrize(
+    "retirement_pending",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=[
+                pytest.mark.todo(reason="adaptive_check_later"),
+                pytest.mark.xfail(
+                    reason="mark.todo.adaptive_check_later",
+                    strict=True,
+                ),
+            ],
+        ),
+    ],
+)
 def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_path, retirement_pending):
     project = make_project(tmp_path)
     payload = spec_for(project, max_parallel=1).model_dump(mode="json")

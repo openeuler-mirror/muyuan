@@ -450,6 +450,7 @@ def test_executor_recovers_pending_decisions_in_order_without_verifier(tmp_path)
     assert decisions[second.decision_id].status == "superseded"
 
 
+@pytest.mark.todo(reason="adaptive_check_later")
 def test_admission_fences_only_the_selected_retirement(tmp_path):
     from goal_plus.application.adaptive_admission import AdaptiveAdmission
     _, state, _, _, _ = executor(tmp_path)

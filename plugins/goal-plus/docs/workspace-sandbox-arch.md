@@ -119,8 +119,8 @@ capability；Runtime release、Agent Control protocol 与 Agent POSIX fingerprin
 snapshot `fs.run(writes="discard")`；失败会 abort run，且不会启动 candidate。
 
 ThinkThread Child 只接收逻辑 `source_subdir`，不会获得 Root 的本地绝对路径。每个 candidate
-从同一个 `S0` 创建，但拥有不同的 ThinkThread ID、Pi Session 和 private branch。Pi 支持
-ThinkThread Search；Codex 的 ThinkThread worker host 仍保持关闭。
+从同一个 `S0` 创建，但拥有不同的 ThinkThread ID、native Session 和 private branch。
+Pi/Codex 的 ThinkThread Profile 都支持 Search 及 Adaptive allocation。
 
 ### Search：checkpoint、验证与结算
 
@@ -308,7 +308,7 @@ ThinkThread 的完整 target/peer 阅读由独立 retained Annotation Child 的 
 | conflict state | source apply rejects | `awaiting_main_integration` |
 | uncertain result | ordinary operation failure | same RequestId recovery fence |
 | execution boundary | path isolation, not sandbox | provider-enforced private Child |
-| supported host | Codex and Pi RPC | installed Pi ThinkThread Profile |
+| supported host | Codex and Pi RPC | installed Pi or Codex ThinkThread Profile |
 
 ## Inner Agent 对照
 
@@ -381,5 +381,5 @@ promotion 从 selected artifact 和 original baseline 派生，过滤到 allowed
 
 - [Shared Plane](shared-plane.md) 说明 Evidence、settlement、selection 和端到端 Search flow。
 - [API](api.md) 列出 host 可用的 session、Artifact View 和 promotion tools。
-- [Agent Host Adapters](agent-host-adapters.md) 说明 Codex、Pi RPC 与 Pi + ThinkThread 的
+- [Agent Host Adapters](agent-host-adapters.md) 说明 Codex、Pi RPC 与 Pi/Codex + ThinkThread 的
   launch/continue/budget mapping。

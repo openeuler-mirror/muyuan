@@ -220,6 +220,7 @@ def _preflight_thinkthread_sdk(
     source: Path | None = None,
     package: Path | None = None,
     install_root: Path | None = None,
+    allow_replacement: bool = False,
 ) -> ThinkThreadSdkPlan:
     if source is not None and package is not None:
         raise InstallError("choose either --agent-posix-source or --agent-posix-package")
@@ -244,13 +245,20 @@ def _preflight_thinkthread_sdk(
     installed = False
     if root.exists():
         owner = _managed_thinkthread_sdk_source(root)
-        if owner != ROOT.resolve():
+        foreign = owner != ROOT.resolve()
+        if foreign and not allow_replacement:
             detail = f"managed by {owner}" if owner is not None else "not Goal Plus-managed"
             raise InstallError(
                 f"Agent POSIX SDK directory is {detail}: {root}\n"
                 "Remove or relocate it explicitly, then rerun the installer."
             )
-        if entry.is_file():
+        if foreign and allow_replacement:
+            detail = f"managed by {owner}" if owner is not None else "unmanaged"
+            print(
+                f"warning: replacing {detail} Agent POSIX SDK at {root}",
+                file=sys.stderr,
+            )
+        if entry.is_file() and not foreign:
             _validate_agent_posix_sdk(node_executable, entry)
             installed = True
     return ThinkThreadSdkPlan(
@@ -758,6 +766,7 @@ def _preflight_thinkthread_profile(
     runtime_python: Path | None = None,
     native_agent: str = "pi",
     codex_config: ThinkThreadCodexConfigPlan | None = None,
+    allow_replacement: bool = False,
 ) -> ThinkThreadProfilePlan:
     runtime_version = _run([executable, "--version"], capture=True).stdout.strip()
     if runtime_version != THINKTHREAD_RUNTIME_VERSION:
@@ -790,20 +799,26 @@ def _preflight_thinkthread_profile(
     installed = False
     if path.exists():
         existing = path.read_text(encoding="utf-8")
-        if existing == content:
+        owner = _managed_thinkthread_profile_source(path)
+        foreign = owner != ROOT.resolve()
+        if existing == content and not foreign:
             installed = True
-        else:
-            owner = _managed_thinkthread_profile_source(path)
-            if owner != ROOT.resolve():
-                detail = (
-                    f"managed by {owner}"
-                    if owner is not None
-                    else "not managed by this installer"
-                )
-                raise InstallError(
-                    f"ThinkThread Profile already exists and is {detail}: {path}\n"
-                    "Resolve that Profile outside Goal Plus, then rerun the installer."
-                )
+        elif foreign and not allow_replacement:
+            detail = (
+                f"managed by {owner}"
+                if owner is not None
+                else "not managed by this installer"
+            )
+            raise InstallError(
+                f"ThinkThread Profile already exists and is {detail}: {path}\n"
+                "Resolve that Profile outside Goal Plus, then rerun the installer."
+            )
+        elif foreign and allow_replacement:
+            detail = f"managed by {owner}" if owner is not None else "unmanaged"
+            print(
+                f"warning: replacing {detail} ThinkThread Profile at {path}",
+                file=sys.stderr,
+            )
     return ThinkThreadProfilePlan(
         executable=executable,
         runtime_version=runtime_version,
@@ -2008,7 +2023,10 @@ def main(argv: list[str] | None = None) -> int:
                 installed.append(f"Codex marketplace: {_codex_marketplaces(codex)[NORMAL_CODEX_MARKETPLACE]}")
         if args.pi:
             installed.extend(f"Pi: {entry['source']}" for entry in _pi_goal_plus_entries())
-        if not _confirm_reinstall(installed, assume_yes=args.yes, dry_run=args.dry_run):
+        confirmed = _confirm_reinstall(
+            installed, assume_yes=args.yes, dry_run=args.dry_run
+        )
+        if not confirmed:
             return 0
         package = managed_runtime.prepare(
             ROOT, dry_run=args.dry_run,
@@ -2021,6 +2039,7 @@ def main(argv: list[str] | None = None) -> int:
                 git_executable=git,
                 source=args.agent_posix_source,
                 package=args.agent_posix_package,
+                allow_replacement=confirmed,
             )
             if thinkthread is not None and node is not None and npm is not None
             else None
@@ -2036,6 +2055,7 @@ def main(argv: list[str] | None = None) -> int:
                     if thinkthread_sdk_plan is not None
                     else None
                 ),
+                allow_replacement=confirmed,
             )
             if thinkthread is not None and args.pi
             else None
@@ -2058,6 +2078,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 native_agent="codex",
                 codex_config=thinkthread_codex_config_plan,
+                allow_replacement=confirmed,
             )
             if thinkthread_codex_config_plan is not None
             else None

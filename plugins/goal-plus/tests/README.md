@@ -368,7 +368,8 @@ The former Pi pool workflow ST has been removed. Its native two-turn and recover
 coverage now lives in `st/test_st_session_host.py`; Main orchestration uses
 `st/test_st_unified_main.py`. TT candidate lifecycle uses its own fixtures;
 `st_thinkthread/test_circle_main.py` separately covers the Pi TT native Main
-Circle workflow. Both use the installed Profile and their documented overrides.
+Circle workflow; `st_thinkthread/test_codex_circle_main.py` covers the Codex TT
+native Main path. They use the installed Profile and their documented overrides.
 
 The TT Circle test has three prompt variants: `[bounded]` checks exactly four
 deliveries; `[example]` reads the public

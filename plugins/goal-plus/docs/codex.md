@@ -364,6 +364,8 @@ Codex 支持本地 `git_worktree` / `copy`，并支持 `agent_harness=codex` +
 已验证范围：TT 子模块矩阵（managed profile、wake 续跑、signal 中断语义、fs
 branch/snapshot 生命周期、消息分块重组、并发 Child、hook 隔离、annotator 角色）与
 缩减版 circle 验收（并行 candidate、Annotation Evidence、selection、apply、cleanup）。
+`parallel_loops` 与 `adaptive_search` 均使用同一 TT snapshot/Child 合同；Adaptive 的派生
+candidate 从 AllocationDecision 选定的精确 snapshot 启动。
 
 模型切换：`./install.sh --codex --thinkthread --codex-profile <name>` 会把用户
 `CODEX_HOME` 下的 `NAME.config.toml` 顶层覆盖层（`model`、`model_provider`、

@@ -656,7 +656,7 @@ def _read_json_quietly(path: Path) -> Any:
 
 def _check_thinkthread() -> CheckResult:
     """Read-only inspection of the optional ThinkThread Codex candidate mode."""
-    from goal_plus.thinkthread import AGENT_POSIX_CONTRACT_FINGERPRINT
+    from goal_plus.thinkthread_agent_posix import AGENT_POSIX_CONTRACT_FINGERPRINT
 
     name = "thinkthread.installation"
     missing_tools = [tool for tool in ("tt", "codex", "node") if shutil.which(tool) is None]

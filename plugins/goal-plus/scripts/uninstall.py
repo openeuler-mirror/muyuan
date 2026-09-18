@@ -58,6 +58,7 @@ class UninstallPlan:
     goal_plus_thinkthread_profile_paths: tuple[Path, ...] = ()
     goal_plus_thinkthread_sdk_path: Path | None = None
     pi_resources: tuple[dict[str, Any], ...] = ()
+    allow_foreign_thinkthread: bool = False
 
     @property
     def has_changes(self) -> bool:
@@ -197,6 +198,7 @@ def _pi_dev_plan(dev_dir: Path) -> tuple[Path | None, Path | None, list[str]]:
 def _goal_plus_thinkthread_profile_plan(
     *,
     native_agent: str = "pi",
+    allow_foreign: bool = False,
 ) -> tuple[Path | None, list[str]]:
     path = install_support._thinkthread_profile_path(native_agent)
     label = f"Goal Plus ThinkThread {native_agent} Profile"
@@ -206,12 +208,17 @@ def _goal_plus_thinkthread_profile_plan(
     if source == ROOT.resolve():
         return path, []
     detail = f"managed by {source}" if source is not None else "not Goal Plus-managed"
+    if allow_foreign:
+        return path, [f"Warning: removing {label} {detail}: {path}"]
     raise UninstallError(
         f"refusing to remove {label} because it is {detail}: {path}"
     )
 
 
-def _goal_plus_thinkthread_sdk_plan() -> tuple[Path | None, list[str]]:
+def _goal_plus_thinkthread_sdk_plan(
+    *,
+    allow_foreign: bool = False,
+) -> tuple[Path | None, list[str]]:
     path = install_support._thinkthread_sdk_root()
     if not path.exists():
         return None, [f"Goal Plus Agent POSIX SDK is not installed: {path}"]
@@ -219,6 +226,8 @@ def _goal_plus_thinkthread_sdk_plan() -> tuple[Path | None, list[str]]:
     if source == ROOT.resolve():
         return path, []
     detail = f"managed by {source}" if source is not None else "not Goal Plus-managed"
+    if allow_foreign:
+        return path, [f"Warning: removing Agent POSIX SDK {detail}: {path}"]
     raise UninstallError(
         "refusing to remove Agent POSIX SDK because it is "
         f"{detail}: {path}"
@@ -234,7 +243,10 @@ def _runtime_plan() -> tuple[bool, list[str]]:
 
 
 def _build_plan(
-    dev_dir: Path, *, components: frozenset[str] | None = None
+    dev_dir: Path,
+    *,
+    components: frozenset[str] | None = None,
+    allow_foreign_thinkthread: bool = False,
 ) -> UninstallPlan:
     selected = ALL_COMPONENTS if components is None else components
     if not selected or not selected.issubset(ALL_COMPONENTS):
@@ -275,11 +287,14 @@ def _build_plan(
         for native_agent in ("pi", "codex"):
             owned_profile, profile_notes = _goal_plus_thinkthread_profile_plan(
                 native_agent=native_agent,
+                allow_foreign=allow_foreign_thinkthread,
             )
             if owned_profile is not None:
                 owned_thinkthread_profiles.append(owned_profile)
             thinkthread_notes.extend(profile_notes)
-        owned_thinkthread_sdk, sdk_notes = _goal_plus_thinkthread_sdk_plan()
+        owned_thinkthread_sdk, sdk_notes = _goal_plus_thinkthread_sdk_plan(
+            allow_foreign=allow_foreign_thinkthread,
+        )
         thinkthread_notes.extend(sdk_notes)
 
     remove_runtime = False
@@ -306,6 +321,7 @@ def _build_plan(
         goal_plus_thinkthread_sdk_path=(
             owned_thinkthread_sdk if remove_thinkthread else None
         ),
+        allow_foreign_thinkthread=allow_foreign_thinkthread,
     )
 
 
@@ -369,7 +385,7 @@ def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
             print("+ remove Goal Plus ThinkThread Profile", profile_path)
         else:
             source = install_support._managed_thinkthread_profile_source(profile_path)
-            if source != ROOT.resolve():
+            if source != ROOT.resolve() and not plan.allow_foreign_thinkthread:
                 raise UninstallError(
                     "Goal Plus ThinkThread Profile ownership changed before removal: "
                     f"{profile_path}"
@@ -383,7 +399,7 @@ def _execute(plan: UninstallPlan, *, dry_run: bool) -> None:
             source = install_support._managed_thinkthread_sdk_source(
                 plan.goal_plus_thinkthread_sdk_path
             )
-            if source != ROOT.resolve():
+            if source != ROOT.resolve() and not plan.allow_foreign_thinkthread:
                 raise UninstallError(
                     "Agent POSIX SDK ownership changed before removal: "
                     f"{plan.goal_plus_thinkthread_sdk_path}"
@@ -493,9 +509,13 @@ def _selected_components(args: argparse.Namespace) -> frozenset[str]:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        explicit_selection = any(
+            (args.codex, args.pi, args.pi_dev, args.thinkthread, args.unused_runtime)
+        )
         plan = _build_plan(
             args.pi_dev_dir,
             components=_selected_components(args),
+            allow_foreign_thinkthread=explicit_selection and args.thinkthread,
         )
         _print_plan(plan, dry_run=args.dry_run)
         if plan.has_changes:

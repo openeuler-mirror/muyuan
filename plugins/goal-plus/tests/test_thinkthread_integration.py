@@ -1494,7 +1494,14 @@ def test_retained_annotation_child_uses_full_snapshot_views_and_structured_submi
                                 "evidence": ["settled process-verifier result"],
                             }
                         ],
-                        "comparisons": [],
+                        "comparisons": [
+                            {
+                                **first_context["comparison_basis"][0],
+                                "relation": "different",
+                                "rationale": "The target snapshot has a valid exact verifier result.",
+                                "evidence": ["immutable target and peer views"],
+                            }
+                        ],
                         "limitations": [],
                     },
                 "tool_views": [],

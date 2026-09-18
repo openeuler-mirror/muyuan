@@ -78,10 +78,10 @@ Root 内只有精确 Pi host command 能启动 Goal Plus。显式选择 ThinkThr
 /goal-plus workspace_provider=thinkthread max_parallel=2 <可度量目标>
 ```
 
-对应 SearchSpec 使用 `orchestration_mode="parallel_loops"` 和
+对应 SearchSpec 可使用 `orchestration_mode="parallel_loops"`，或在配置 Allocation/Steering policy 时使用 `adaptive_search`，并设置
 `workspace.provider="thinkthread"`；Pi 身份从 Main 会话解析，不另填 host/profile。
 普通 Pi 进程继续使用 `pi + direct + git_worktree`；两条路径不能混用，也不能在 preflight
-失败时 fallback。Codex 尚不支持 ThinkThread worker host。
+失败时 fallback。Codex 对应路径见 [Codex](codex.md#支持范围与验证)。
 
 ThinkThread 可独立升级；已测版本或 fingerprint 差异只警告，Root/Child 的实际接口与能力
 仍须满足合同。每个 candidate 使用 private Child/Session/branch，公共 Evidence 绑定准确

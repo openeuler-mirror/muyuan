@@ -122,7 +122,8 @@ freeze/launch 前 fail closed。
 
 当前可移植 planner 为 `agent_guided`（含 `agent`、`default`）和 `random`（含
 `random_mode`）。Codex/Pi RPC 的普通运行使用固定初始并行循环；Git worktree 可选
-`adaptive_search`。ThinkThread（Pi 与 Codex Profile）只支持 `parallel_loops`，Codex
+`adaptive_search`。ThinkThread（Pi 与 Codex Profile）支持 `parallel_loops` 和
+`adaptive_search`，Codex
 ThinkThread 继承 Profile 默认模型。harness/runtime/workspace 组合不匹配或 Profile preflight 失败时 runtime 在
 freeze/create 边界 fail closed。
 
