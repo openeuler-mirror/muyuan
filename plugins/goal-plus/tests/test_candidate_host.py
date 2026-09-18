@@ -59,7 +59,8 @@ def test_native_wake_rejects_pending_allocation_retirement(tmp_path: Path) -> No
             "ranking_keys": ["quality_score", "hard_score"],
             "ranking_tolerance": [0.05, 0.0],
         },
-        "allocation": {"policy": "priority_replace/v1"},
+        "verifier": {"scores": ["progress_reward", "allocation_utility"]},
+        "allocation": {"policy": "swe_search_uct/v1"},
     }
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
@@ -80,7 +81,7 @@ def test_native_wake_rejects_pending_allocation_retirement(tmp_path: Path) -> No
         )
     ]
 
-    with pytest.raises(RuntimeError, match="pending allocation decision"):
+    with pytest.raises(RuntimeError, match="active allocation decision"):
         queries.require_native_execution(session.agent_session_id, now=0.0)
 
 

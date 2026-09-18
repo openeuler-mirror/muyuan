@@ -82,7 +82,11 @@ pi
 消费 `quality_score`，不启用 Adaptive allocation。
 要启用确定性 Candidate 退休和替换，改用
 [`pi-goal-prompt-adaptive-search.md`](pi-goal-prompt-adaptive-search.md)。该变体限制两个
-活跃通道和四个累计 Candidate，并由 AllocationPolicy 消费 LLM-Verifier 评分。
+活跃通道和四个累计 Candidate，由 AllocationPolicy 消费 LLM-Verifier 的资源分配评分，
+并启用 `search_diagnostic_guidance/v1` Steering。Allocation 始终先执行；只有没有产生
+Allocation Plan 时，Steering 才会向当前活动 candidate 投递一次局部纠错、可证伪检验、
+严格去重或边界探索建议。它不延迟淘汰或为低价值方向提供保护。示例使用 `mode=apply`，
+阈值只用于演示完整配置，尚未针对 Circle Packing 收益标定。
 
 上述四个 prompt 使用 `inner_agent=autoresearch`，每个 candidate 在一次 worker
 dispatch 中自主执行多轮修改和 verifier。要验证普通 agent 接口，改用

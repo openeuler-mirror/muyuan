@@ -26,6 +26,7 @@ def test_circle_packing_git_apply_prompts_bind_inner_agents() -> None:
     prompt_names = (
         "pi-goal-prompt.md",
         "pi-goal-prompt-common.md",
+        "pi-goal-prompt-adaptive-search.md",
         "codex-goal-prompt.md",
         "pi-goal-prompt-untimed.md",
         "codex-goal-prompt-untimed.md",
@@ -47,6 +48,27 @@ def test_circle_packing_git_apply_prompts_bind_inner_agents() -> None:
         if name == "pi-goal-prompt-common.md":
             assert '`strategy.inner_agent` 设置为 `"common"`' in body
             assert "调用一次 `goal_plus_search_run_verifier` 后返回" in body
+
+
+def test_circle_packing_adaptive_prompt_enables_apply_steering() -> None:
+    text = (EXAMPLE / "pi-goal-prompt-adaptive-search.md").read_text(encoding="utf-8")
+    required_scores = {
+        "progress_reward", "allocation_utility", "correctness_gap", "validation_gap",
+        "local_confounder_evidence", "discriminating_test_gap", "boundary_evidence_strength",
+    }
+    assert all(f"      - {score}" in text for score in required_scores)
+    assert "policy: search_diagnostic_guidance/v1" in text
+    assert "mode: apply" in text
+    assert "只有当前 Record 没有产生 Allocation Plan 时" in text
+    assert "不帮助低价值方向规避 Allocation" in text
+    for parameter in (
+        "correctness_gap_threshold", "validation_gap_threshold", "confounder_threshold",
+        "test_gap_threshold", "boundary_probe_threshold", "boundary_confirmed_threshold",
+        "cooldown_seconds", "max_steering_attempts_per_candidate",
+        "max_steering_attempts_per_issue", "history_limit", "rpc_timeout_seconds",
+        "max_source_age_seconds",
+    ):
+        assert f"{parameter}:" in text
 
 
 def _git(workspace: Path, *arguments: str) -> str:

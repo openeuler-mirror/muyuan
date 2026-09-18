@@ -18,9 +18,6 @@ class FileVerifierState:
     def run_dir(self, run_id: str) -> Path:
         return self.root_dir / "runs" / run_id
 
-    def lock_verifier_queue(self) -> AbstractContextManager[None]:
-        return exclusive_file_lock(self.root_dir / "verifier-queue.lock")
-
     def lock_run(self, run_id: str) -> AbstractContextManager[None]:
         return exclusive_file_lock(self.run_dir(run_id) / "verifier" / "verifier.lock")
 

@@ -7,10 +7,13 @@ from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.selection import SelectionOption, SelectionSubjectKey
 from goal_plus.domain.settlement import SettlementEvidence, SettlementReceipt
 from goal_plus.domain.verifier import (
+    VerifierInput,
     VerifierInvocationRecord,
     VerifierRecord,
+    VerifierScoreContract,
     VerifierSubject,
     VerifierTask,
+    verifier_score_contract,
     verifier_subject_identity,
 )
 
@@ -59,17 +62,21 @@ def _completed_assessment(
     subject: VerifierSubject,
     quality_score: float,
     *,
-    allocation_policy_id: str | None = None,
-    allocation_scores: dict[str, float] | None = None,
+    scores: dict[str, float] | None = None,
 ) -> tuple[VerifierTask, VerifierRecord]:
     record_id = f"record_{token}"
-    score_names = list(allocation_scores or {})
+    score_contract = (
+        verifier_score_contract(["progress_reward", "allocation_utility"])
+        if scores is not None
+        else VerifierScoreContract.from_rules()
+    )
     task = VerifierTask(
         task_id=f"verifier_{token * 24}",
         queue_sequence=1,
         subject=subject,
-        allocation_policy_id=allocation_policy_id,
-        allocation_score_names=score_names,
+        score_contract=score_contract,
+        input=VerifierInput(objective="selection", candidate_acceptance=[], hypothesis="",
+                            artifact_diff="", agent_harness="codex"),
         state="completed",
         output_record_id=record_id,
         created_at="2026-01-01T00:00:00Z",
@@ -78,11 +85,15 @@ def _completed_assessment(
     record = VerifierRecord(
         record_id=record_id,
         task_id=task.task_id,
+        queue_sequence=task.queue_sequence,
         subject=subject,
-        allocation_policy_id=allocation_policy_id,
+        score_contract_hash=score_contract.contract_hash,
         quality_score=quality_score,
-        allocation_scores=allocation_scores,
-        rationale="selection test record",
+        scores=scores,
+        score_rationales={
+            name: "selection test record"
+            for name in {"quality_score", *(scores or {})}
+        },
         invocation=VerifierInvocationRecord(
             invocation_id=f"invocation_{token}",
             agent_harness="codex",
@@ -103,14 +114,11 @@ def test_quality_source_uses_the_complete_verifier_task_identity() -> None:
         "b",
         subject,
         0.9,
-        allocation_policy_id="priority_replace/v1",
-        allocation_scores={"progress_reward": 0.4, "allocation_utility": 0.8},
+        scores={"progress_reward": 0.4, "allocation_utility": 0.8},
     )
     source = _QualityScoreSource(
-        allocation_policy_id="priority_replace/v1",
-        allocation_score_names=["progress_reward", "allocation_utility"],
-        tasks=[minimal[0], adaptive[0]],
-        records=[minimal[1], adaptive[1]],
+        tasks=[adaptive[0]],
+        records=[adaptive[1]],
     )
 
     result = source.resolve(_selection_option(subject))
@@ -123,8 +131,6 @@ def test_quality_source_rejects_changed_artifact_or_evidence_identity() -> None:
     original = _subject()
     task, record = _completed_assessment("a", original, 0.8)
     source = _QualityScoreSource(
-        allocation_policy_id=None,
-        allocation_score_names=[],
         tasks=[task],
         records=[record],
     )
@@ -154,12 +160,15 @@ def test_quality_source_rejects_changed_artifact_or_evidence_identity() -> None:
     assert source.resolve(_selection_option(changed_evidence)).state == "unavailable"
 
 
+def test_quality_source_waits_for_unadmitted_submission() -> None:
+    source = _QualityScoreSource(tasks=[], records=[])
+    assert source.resolve(_selection_option(_subject())).state == "pending"
+
+
 def test_quality_source_requires_the_task_output_record_pointer() -> None:
     subject = _subject()
     task, record = _completed_assessment("a", subject, 0.8)
     source = _QualityScoreSource(
-        allocation_policy_id=None,
-        allocation_score_names=[],
         tasks=[task.model_copy(update={"output_record_id": "record_wrong"})],
         records=[record],
     )
@@ -213,12 +222,13 @@ def test_selection_waits_for_quality_and_preserves_hard_evidence(quality_run, mo
     assert len(workflow.list_tasks(run_id)) == 2
     while task := workflow.claim_task("quality-test", 60, run_id=run_id):
         if outcome == "all_scores_failed" or (outcome == "terminal_score" and task.candidate_id == "c001"):
-            workflow.fail_task(task.task_id, "controlled terminal inference failure", retryable=False)
+            workflow.fail_task(task.task_id, "controlled terminal inference failure", retryable=False,
+                               worker_id=task.lease.worker_id, attempt=task.attempts)
         else:
             workflow.complete_task(task.task_id, {
                 "quality_score": 0.9 if task.candidate_id == "c001" else 0.2,
-                "allocation_scores": None, "rationale": "Controlled quality assessment",
-            }, invocation())
+                "scores": None, "score_rationales": {"quality_score": "Controlled quality assessment"},
+            }, invocation(), worker_id=task.lease.worker_id, attempt=task.attempts)
     if outcome == "all_scores_failed":
         with pytest.raises(RuntimeError, match="no candidate satisfies"):
             runtime.select(run_id)
@@ -244,3 +254,16 @@ def test_selection_waits_for_quality_and_preserves_hard_evidence(quality_run, mo
         assert result["selected_quality_score"] == (0.9 if outcome == "quality" else 0.2)
     assert [runtime.list_iterations(run_id, item.candidate_id) for item in candidates] == before
     assert len(workflow.list_tasks(run_id)) == 2
+
+
+def test_quality_source_rejects_a_record_from_another_score_contract() -> None:
+    subject = _subject()
+    task, record = _completed_assessment("a", subject, 0.8)
+    source = _QualityScoreSource(
+        tasks=[task],
+        records=[
+            record.model_copy(update={"score_contract_hash": "0" * 64})
+        ],
+    )
+
+    assert source.resolve(_selection_option(subject)).state == "unavailable"

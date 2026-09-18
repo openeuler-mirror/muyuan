@@ -1,7 +1,7 @@
 """Native candidate launch/control assembly for a single host MCP service."""
 
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 import threading
@@ -13,6 +13,7 @@ from goal_plus.application.candidate_delivery import CandidateDelivery
 from goal_plus.bootstrap import build_scope_process_registry, build_scope_state
 from goal_plus.candidate_host import candidate_host_queries
 from goal_plus.domain.agents import AgentHarnessKind
+from goal_plus.domain.adaptive.models import SteeringTarget
 from goal_plus.domain.search import AgentSessionRecord
 from goal_plus.execution.native_session import CodexSession, PiSession
 from goal_plus.execution.scope import assert_scope_admission
@@ -22,6 +23,7 @@ from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_scope import execution_scope_for_run, execution_scope_snapshot
 from goal_plus.infrastructure.native_session_inputs import native_candidate_input
 from goal_plus.infrastructure.state.files import exclusive_file_lock
+from goal_plus.ports.allocation_apply import DispatchRejected
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.scope import ScopeAttachment, ScopeRecord, SCOPE_PROCESS_TERMINAL_STATUSES
 from goal_plus.ports.session import SessionOpenResult, SessionOperation
@@ -35,6 +37,43 @@ SESSION_START_TIMEOUT_SECONDS = 60.0
 ALLOCATION_INTERRUPT_TIMEOUT_SECONDS = 30.0
 
 
+_VERIFIER_QUEUES_LOCK = threading.RLock()
+_VERIFIER_QUEUES: dict[tuple[Path, str], set[object]] = {}
+
+
+def _register_verifier_queue(root: Path, run_id: str, queue: object) -> None:
+    with _VERIFIER_QUEUES_LOCK:
+        _VERIFIER_QUEUES.setdefault((root, run_id), set()).add(queue)
+
+
+def _unregister_verifier_queue(root: Path, run_id: str, queue: object) -> None:
+    with _VERIFIER_QUEUES_LOCK:
+        queues = _VERIFIER_QUEUES.get((root, run_id))
+        if queues is None:
+            return
+        queues.discard(queue)
+        if not queues:
+            _VERIFIER_QUEUES.pop((root, run_id), None)
+
+
+def close_verifier_queue(*, root_dir: Path | str, run_id: str) -> None:
+    """Close every in-process host queue for one run."""
+
+    root = Path(root_dir).resolve()
+    with _VERIFIER_QUEUES_LOCK:
+        queues = list(_VERIFIER_QUEUES.get((root, run_id), ()))
+    errors: list[Exception] = []
+    for queue in queues:
+        try:
+            queue.close()
+        except Exception as exc:  # cleanup continues for the remaining hosts
+            errors.append(exc)
+        finally:
+            _unregister_verifier_queue(root, run_id, queue)
+    if errors:
+        raise RuntimeError(f"verifier queue cleanup failed for {len(errors)} resources") from errors[0]
+
+
 @dataclass
 class _HostedCandidate:
     caller_id: str
@@ -42,6 +81,49 @@ class _HostedCandidate:
     scope_id: str
     control: NativeSessionControl
     unavailable_calls: frozenset[str] = frozenset()
+
+
+class _SteeringTransport:
+    """A queue owner's exact controller capability, without policy or retry logic."""
+
+    def __init__(self, host: "NativeCandidateHost", caller_id: str) -> None:
+        self.host, self.caller_id = host, caller_id
+
+    def _controller(self, session_id: str):
+        with self.host._lock:
+            hosted = self.host._sessions.get(session_id)
+            if self.host._closing or hosted is None or hosted.caller_id != self.caller_id:
+                return None
+            return hosted
+
+    def active_call(self, session: AgentSessionRecord) -> SteeringTarget | None:
+        hosted = self._controller(session.agent_session_id)
+        if hosted is None or hosted.run_id != session.run_id:
+            return None
+        call_id = hosted.control.current_call_id
+        if call_id is None:
+            return None
+        observed = hosted.control.wait(call_id, timeout=0)
+        if (observed.state != "running" or not observed.native_session_id
+                or observed.native_session_id != session.session_handle.external_id):
+            return None
+        return SteeringTarget(agent_session_id=session.agent_session_id,
+            execution_generation=session.execution_generation,
+            native_session_id=observed.native_session_id, call_id=call_id)
+
+    def message(self, target: SteeringTarget, text: str, *, timeout: float,
+                before_send: Callable[[], None]) -> None:
+        hosted = self._controller(target.agent_session_id)
+        if hosted is None:
+            raise PermissionError("steering controller unavailable")
+        session = self.host.admit(target.agent_session_id, self.caller_id, execution=True,
+            scope_id=hosted.scope_id, native_session_id=target.native_session_id)
+        if (session.execution_generation != target.execution_generation
+                or hosted.run_id != session.run_id
+                or hosted.control.session.native_session_id != target.native_session_id):
+            raise PermissionError("steering target changed")
+        before_send()
+        hosted.control.message(target.call_id, text, timeout=timeout)
 
 
 class _CandidateInvocation:
@@ -91,7 +173,7 @@ class _CandidateInvocation:
                 session.run_id, session.candidate_id, agent_session_id=self.identity,
                 hypothesis="Host supplemental verification of returned candidate changes",
             )
-        self.host.wake_internal_agents(session.run_id)
+        self.host.wake_internal_agents(session.run_id, caller_id=self.caller_id)
         return result
 
     def message(self, prompt: str, *, timeout: float) -> None:
@@ -126,6 +208,7 @@ class NativeCandidateHost:
         self.delivery = CandidateDelivery(self.runtime.queries, self.queries)
         self._lock = threading.RLock()
         self._sessions: dict[str, _HostedCandidate] = {}
+        self._verifier_queues: dict[str, tuple[str, object]] = {}
         self._closing = False
 
     def admit(
@@ -163,24 +246,16 @@ class NativeCandidateHost:
             ):
                 raise PermissionError("native candidate scope does not belong to the current Main activation")
 
-    def cancel_allocation(self, run_id: str, decision_id: str) -> None:
-        """Persist exact native cancellation facts before the Allocation owner applies."""
-        caller_id = self.caller()
+    def _cancel_allocation(self, decision, caller_id: str) -> None:
+        """Interrupt the exact retired sessions and persist host receipts."""
+        run_id, decision_id = decision.run_id, decision.decision_id
         scopes = build_scope_state(self.root)
         with self._lock:
             self._admit_run(run_id, caller_id, execution=True)
             scope = execution_scope_for_run(root_dir=self.root, run_id=run_id)
             scope_id = scope["scope_id"]
-            decision = next((item for item in self.runtime.list_allocation_decisions(run_id)
-                             if item.decision_id == decision_id), None)
-            if decision is None:
-                raise ValueError("unknown allocation decision")
-            if decision.status == "applied":
-                return
-            if decision.status != "pending":
-                raise RuntimeError(f"allocation decision is {decision.status}")
             sessions = [self.queries.current_session(run_id, candidate_id)
-                        for candidate_id in decision.retire_candidate_ids]
+                        for candidate_id in [decision.selected_retirement] if candidate_id is not None]
             for session in sessions:
                 if session is None:
                     continue
@@ -200,7 +275,10 @@ class NativeCandidateHost:
                         continue
                     if previous is not None and previous["status"] in {"requested", "unknown"}:
                         try:
-                            control = self(session.agent_session_id, "wait")
+                            hosted = self._sessions.get(session.agent_session_id)
+                            if hosted is None or hosted.caller_id != caller_id:
+                                raise RuntimeError("native controller is unavailable")
+                            control = hosted.control
                             if target["call_id"] is None or control.current_call_id != target["call_id"]:
                                 raise RuntimeError("native call identity is unavailable")
                             observed = control.wait(target["call_id"], timeout=0)
@@ -227,7 +305,18 @@ class NativeCandidateHost:
                         }:
                             raise RuntimeError("AllocationCancellationRecoveryRequired: native controller is unavailable")
                     else:
-                        control = self(session.agent_session_id, "interrupt")
+                        if hosted.caller_id != caller_id:
+                            raise PermissionError("session controller belongs to another Main")
+                        self.admit(
+                            session.agent_session_id, caller_id, execution=False,
+                            scope_id=hosted.scope_id,
+                            native_session_id=hosted.control.session.native_session_id,
+                        )
+                        self.queries.session(
+                            session.agent_session_id,
+                            native_session_id=hosted.control.session.native_session_id,
+                        )
+                        control = hosted.control
                         if control.current_call_id != target["call_id"]:
                             raise RuntimeError("AllocationCancellationRecoveryRequired: native call identity changed")
                         if control.current_call_id is not None:
@@ -239,6 +328,8 @@ class NativeCandidateHost:
                 except Exception as exc:
                     receipt["status"] = "rejected" if isinstance(exc, (ValueError, PermissionError, SessionRequestRejected)) else "unknown"
                     receipt["error"] = f"{type(exc).__name__}: {exc}"
+                    if isinstance(exc, SessionRequestRejected):
+                        raise ValueError(str(exc)) from exc
                     raise
                 else:
                     receipt["status"] = "accepted"
@@ -251,13 +342,119 @@ class NativeCandidateHost:
                         ] + [receipt]
                         scopes.write(current)
 
-    def wake_internal_agents(self, run_id: str) -> None:
+    def _dispatch_allocation(self, session: AgentSessionRecord, decision, caller_id: str) -> None:
+        try:
+            self._dispatch_allocation_native(session, decision, caller_id)
+        except (ValueError, PermissionError, SessionRequestRejected) as exc:
+            if getattr(session, "run_requests", ()):
+                # Rejection now cannot disprove submission by an earlier attempt.
+                raise
+            raise DispatchRejected(str(exc)) from exc
+
+    def _dispatch_allocation_native(self, session: AgentSessionRecord, _decision, caller_id: str) -> None:
+        """Start and bind the exact prepared native session under the executor lock."""
+
+        call_id = session.directive["expansion_id"]
+        hosted = self._sessions.get(session.agent_session_id)
+        if hosted is not None:
+            if hosted.caller_id != caller_id:
+                raise PermissionError("session controller belongs to another Main")
+            try:
+                hosted.control.wait(call_id, timeout=0)
+                return  # The exact dispatch was already submitted, never wake it twice.
+            except KeyError:
+                pass
+        timeout = self.runtime.candidate_sessions.invocation_timeout(session.agent_session_id)
+        prompt = "Continue the allocated candidate from its inherited artifact and search contract."
+        fingerprint = sha256_text(canonical_json({"prompt": prompt, "expansion_id": call_id}))
+        self.runtime.candidate_sessions.record_run_request(
+            session.agent_session_id, call_id, fingerprint, run_locked=True,
+        )
+        self._open(session.agent_session_id, caller_id, run_locked=True)
+        self._sessions[session.agent_session_id].control.wake(prompt, call_id=call_id, timeout=timeout)
+
+    def apply_allocation_decision(
+        self, run_id: str, decision_id: str, *, caller_id: str | None = None,
+    ) -> dict:
+        with self._lock:
+            owner = caller_id or self.caller()
+            self._admit_run(run_id, owner, execution=True)
+            return self.runtime.apply_allocation_decision(
+                run_id,
+                decision_id,
+                cancel=lambda decision: self._cancel_allocation(decision, owner),
+                dispatch=lambda session, decision: self._dispatch_allocation(
+                    session, decision, owner
+                ),
+            )
+
+    def _verifier_queue(self, run_id: str, caller_id: str):
+        from goal_plus.llm_verifier import VerifierQueue
+
+        current = self._verifier_queues.get(run_id)
+        if current is not None:
+            owner, queue = current
+            if owner == caller_id and not queue.stopped.is_set():
+                return queue
+            if not queue.stopped.is_set():
+                queue.close()
+            _unregister_verifier_queue(self.root, run_id, queue)
+        self.runtime.settlement.verifier_submission.replay(run_id)
+        queue = VerifierQueue(
+            self.root,
+            run_id,
+            lambda record: self.runtime.accept_verifier_record(
+                record,
+                execute=lambda target_run_id, decision_id: self.apply_allocation_decision(
+                    target_run_id, decision_id, caller_id=caller_id
+                ),
+                steering_host=_SteeringTransport(self, caller_id),
+            ),
+        )
+        self._verifier_queues[run_id] = (caller_id, queue)
+        _register_verifier_queue(self.root, run_id, queue)
+        return queue
+
+    def wake_internal_agents(self, run_id: str, *, caller_id: str | None = None) -> None:
         from goal_plus.internal_agents import kick_internal_agents
 
         try:
+            if caller_id is None:
+                owners = {
+                    hosted.caller_id
+                    for hosted in self._sessions.values()
+                    if hosted.run_id == run_id
+                }
+                caller_id = next(iter(owners)) if len(owners) == 1 else self.caller()
+            self._admit_run(run_id, caller_id, execution=True)
+            from goal_plus.bootstrap import build_internal_agent_work
+            from goal_plus.host_scope import run_accepts_internal_agent_launch
+
+            if (
+                not build_internal_agent_work(self.root).inspect(run_id).accepts_work
+                or not run_accepts_internal_agent_launch(
+                    root_dir=self.root, run_id=run_id
+                )
+            ):
+                return
+            self._verifier_queue(run_id, caller_id).start()
+        except Exception:
+            logging.getLogger(__name__).exception("Verifier wake failed after settlement for %s", run_id)
+        # Independent owners: neither annotation failure nor allocation recovery blocks scoring.
+        try:
             kick_internal_agents(self.root, run_id, agent_harness=self.agent_harness)
         except Exception:
-            logging.getLogger(__name__).exception("Internal-agent wake failed after settlement for %s", run_id)
+            logging.getLogger(__name__).exception("Annotation wake failed for %s", run_id)
+        try:
+            with self._lock:
+                self._admit_run(run_id, caller_id, execution=True)
+                self.runtime.recover_allocation(
+                    run_id,
+                    cancel=lambda decision: self._cancel_allocation(decision, caller_id),
+                    dispatch=lambda session, decision: self._dispatch_allocation(session, decision, caller_id),
+                )
+        except Exception:
+            logging.getLogger(__name__).exception("Allocation recovery deferred for %s", run_id)
 
     def open_candidate(self, run_id: str, candidate_id: str) -> SessionOpenResult:
         with self._lock:
@@ -351,7 +548,11 @@ class NativeCandidateHost:
             return {"session_id": opened.session_id, **session_call_receipt(snapshot)}
 
     def open(self, agent_session_id: str) -> SessionOpenResult:
-        caller_id = self.caller()
+        return self._open(agent_session_id, self.caller())
+
+    def _open(
+        self, agent_session_id: str, caller_id: str, *, run_locked: bool = False,
+    ) -> SessionOpenResult:
         with self._lock:
             if self._closing:
                 raise RuntimeError("native session host is closing")
@@ -374,7 +575,11 @@ class NativeCandidateHost:
             if session.runtime_provider == "thinkthread":
                 from goal_plus.infrastructure.thinkthread_sessions import ThinkThreadCandidateSession
 
-                with self.runtime.candidate_sessions.state.lock_run(session.run_id):
+                with (
+                    nullcontext()
+                    if run_locked
+                    else self.runtime.candidate_sessions.state.lock_run(session.run_id)
+                ):
                     session = self.admit(agent_session_id, caller_id, execution=True, scope_id=scope_id)
                     native = ThinkThreadCandidateSession(self, agent_session_id, caller_id, scope_id)
                     control = NativeSessionControl(native, stop_action=native.stop, admit_call=native.admit_call,
@@ -383,7 +588,11 @@ class NativeCandidateHost:
                 self._sessions[agent_session_id] = _HostedCandidate(caller_id, session.run_id, scope_id, control)
                 return SessionOpenResult(agent_session_id, native.native_session_id, self.agent_harness, control.current_call_id, session.runtime_provider)
             # Serialize launch/bind with recovery and another MCP process's launch.
-            with self.runtime.candidate_sessions.state.lock_run(session.run_id):
+            with (
+                nullcontext()
+                if run_locked
+                else self.runtime.candidate_sessions.state.lock_run(session.run_id)
+            ):
                 session = self.admit(agent_session_id, caller_id, execution=True, scope_id=scope_id)
                 initial_pi_handle = (
                     session.agent_harness == "pi"
@@ -451,7 +660,9 @@ class NativeCandidateHost:
                 execution_lock=self.root / "host-sessions" / f"{agent_session_id}.lock",
                 tool_bridge=McpSessionToolBridge(
                     self.root, caller_role="candidate", caller_agent_session_id=agent_session_id,
-                    on_settled=lambda: self.wake_internal_agents(session.run_id),
+                    on_settled=lambda: self.wake_internal_agents(
+                        session.run_id, caller_id=caller_id
+                    ),
                 ),
             )
         return PiSession(
@@ -532,7 +743,16 @@ class NativeCandidateHost:
         with self._lock:
             self._closing = True
             sessions = list(self._sessions.values())
+            queues = list(self._verifier_queues.items())
         errors = []
+        for run_id, (_owner, queue) in queues:
+            try:
+                queue.close()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                _unregister_verifier_queue(self.root, run_id, queue)
+        self._verifier_queues.clear()
         for session in sessions:
             try:
                 session.control.close()

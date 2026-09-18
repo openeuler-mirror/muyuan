@@ -5,16 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from goal_plus.domain.adaptive.models import AllocationDecision, SearchSnapshot
+from goal_plus.domain.adaptive.models import AllocationDecision
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.search import AgentSessionRecord, CandidateTask
 from goal_plus.ports.state import CandidateRecord, RunRecord
-
-
-class AllocationCancellationProof(Protocol):
-    def require_accepted(
-        self, decision: AllocationDecision, sessions: list[AgentSessionRecord],
-    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -32,6 +26,10 @@ class AllocationApplied:
     agent_sessions: list[AgentSessionRecord]
 
 
+class DispatchRejected(RuntimeError):
+    """Host confirms that no candidate invocation was submitted."""
+
+
 class AllocationApplyState(Protocol):
     def lock_run(self, run_id: str) -> AbstractContextManager[None]: ...
     def read_run(self, run_id: str) -> RunRecord: ...
@@ -45,9 +43,6 @@ class AllocationApplyState(Protocol):
         self, run_id: str, decision_id: str
     ) -> AllocationDecision: ...
     def load_allocation_decisions(self, run_id: str) -> list[AllocationDecision]: ...
-    def load_search_snapshot(
-        self, run_id: str, snapshot_revision: str
-    ) -> SearchSnapshot: ...
     def write_allocation_decision(self, decision: AllocationDecision) -> None: ...
     def write_retirement(
         self, run_id: str, candidate_id: str, decision_id: str

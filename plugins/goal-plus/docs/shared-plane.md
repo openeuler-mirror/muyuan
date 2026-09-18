@@ -135,53 +135,34 @@ origin/relocation bootstrap result 单独保存在 FrozenSpec 和 RunRecord 中�
 全部写数量时按数量展开。每个 selected model 随 candidate 和原生 session 的续跑保持
 不变，但所有 lane 仍共享同一份 Global Evidence。
 
-### Adaptive Search allocation
+### Adaptive Search
 
 `strategy.orchestration_mode="adaptive_search"` 在 hard settlement 主流程上增加 LLM Verifier 评估和
-确定性资源分配。它要求 `workspace.provider="git_worktree"` 和非空的 `strategy.allocation`，并自动
-启用 LLM-Verifier。非 Adaptive 模式则由 `selection.ranking_keys` 是否包含 `quality_score` 决定是否
-启用。`budget.max_parallel` 是实时活跃 lane
+确定性资源分配或软引导。它要求 `workspace.provider="git_worktree"`，allocation 与 steering 至少
+配置一个。提供任一 policy 时自动选择 adaptive_search，冻结前合并所需评分 key 并展开参数
+默认值。Verifier 通过 `scores` 独立选择额外注册指标，普通搜索同样可以启用；
+没有 Adaptive policy 时，Selection 使用 `quality_score` 仍补齐并冻结基础 Verifier 配置。
+仅使用 hard_score 且没有 policy/verifier 配置时关闭 LLM-Verifier。`budget.max_parallel` 是实时活跃 lane
 上限，可选的 `budget.max_candidates` 是累计物化上限。
 
-每个精确 settlement 幂等创建一个 `VerifierTask`。一次结构化 LLM 调用同时生成 `quality_score`
-以及 policy 版本定义的 `progress_reward` 和 `allocation_utility`；allocation 指标统一为
-`[0,1]`、越高越优的 normalized utility。Task 使用
-`pending -> running -> retry_wait/completed/terminal_error` 的可靠队列状态；lease 过期可恢复，输出
+Settlement 为当前提交幂等入队一个 `VerifierTask`，队列启动/恢复时重放已提交输入。
+一次结构化 LLM 调用同时生成 `quality_score` 及选定的 `scores`。Admission 将每项指标的 key、
+范围和提示规则冻结到带 hash 的 `VerifierScoreContract`。UCT 只消费 `progress_reward` 和
+`allocation_utility`，范围分别为 `[-1,1]` 与 `[0,1]`。Task 使用
+`pending -> running -> retry_wait/completed/abandoned` 的可靠队列状态；lease 过期可恢复，输出
 record 一旦写入就不可变。Evidence Annotation 是独立弱依赖，不参与 Verifier task 身份和 Allocation
 前态。
 
-Adaptive reconcile 只读取已经提交的权威事实，构建不可变 `SearchSnapshot`：
+Settlement 保存单次事实、身份和 diff 并异步入队；Verifier 不读取历史评分或 allocation。
+其队列在完整得分或最终失败后写不可变 Record，完成同步交付后才启动下一项。
+AdaptiveSearch 的唯一 record 入口只从旧 Snapshot 和新 Record 追加历史得分，再由
+AllocationPolicy 计算包含淘汰备选、派生备选排序和兼容条件的 Plan。无计划时可进入可选
+Steering；计算失败则拒绝决策并结束，两者都不会回到 Verifier 重评。
 
-```text
-settled nodes + VerifierRecord + FrozenSpec + decision history
-  -> SearchSnapshot
-  -> deterministic FeatureView
-  -> priority_replace/v1
-  -> AllocationPlan
-  -> durable AllocationDecision
-```
-
-只有已经完成并持久化的 VerifierRecord 才形成 Snapshot 评分行，缺失值不会折算为零。FeatureProvider
-只派生数值事实；当前 `priority_replace/v1` 独立拥有 feature 组合和 `switch_margin` 语义。
-Snapshot、FeatureView 和 AllocationPlan 都带内容哈希；Application 会从冻结配置重算 plan 后再记录
-Decision。Plan 固定精确 source node、退休目标、稳定 direction key 和理由，但不预留 candidate id、
-workspace 或 session。
-
-`goal_plus_search_apply_allocation_decision` 在 run lock 内再次校验 snapshot revision、source
-candidate/iteration/node/commit/artifact、retire eligibility、capacity 和 budget，然后才分配新
-candidate id、退休 lane、物化 workspace 并创建 `AgentSessionRecord`。中断后的重复 apply 复用持久
-Decision 和已完成的子步骤，不重新调用 LLM 或重新计算 policy。Host 只按返回的 launch payload
-启动派生 worker，不解释质量分值或改写计划。
-
-Verifier task 只进入 run-scoped 可靠队列，并由单 drainer 顺序消费；未完成任务不参与 candidate
-admission，也不回写 candidate Evidence。只有 AllocationPolicy 基于 VerifierRecord 生成 pending
-retirement Decision 后，admission 才禁止对应 lane 的新 wake。
-
-最终 Selection 与 Adaptive allocation 相互独立。Selection 在 hard-settled options 上按冻结的
-`ranking_keys` 和 `ranking_tolerance` 做逐级确定性过滤，且每个 score 必须绑定同一精确 subject。
-Allocation score 或 Decision 失败不改变 hard score、keep/retain/discard/failure、`best.json`、
-selection 或 promotion。隐藏答案 benchmark 不能向 Verifier/worker 暴露 gold correctness、score
-或其派生决策。
+AllocationExecutor 在 run.lock 内执行持久化 Decision，不重验评分、不重算 Policy。
+淘汰失败结束，派生明确失败或节点已占用则尝试下一项；未知派发只能恢复原 child/session。
+完整身份在物化前持久化，成功派发才标记 applied。没有额外 reconciliation journal 或调度锁。
+更多算法、恢复与接口合同见 [Adaptive Search](adaptive-search.md)。
 
 ## Candidate 循环
 

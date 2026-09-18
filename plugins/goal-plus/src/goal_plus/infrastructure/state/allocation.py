@@ -6,10 +6,8 @@ from pathlib import Path
 from goal_plus.infrastructure.state.candidate_queries import FileCandidateQueries
 
 from goal_plus.domain.adaptive.models import (
-    AdaptiveReconciliationRecord,
     AllocationDecision,
     SearchSnapshot,
-    adaptive_reconciliation_identity,
 )
 from goal_plus.domain.evidence import ResultLedgerEntry
 from goal_plus.domain.search import SearchPlan
@@ -39,16 +37,6 @@ def search_snapshot_path(run_dir: Path | str, snapshot_revision: str) -> Path:
     return Path(run_dir) / "adaptive-snapshots" / f"{snapshot_revision}.json"
 
 
-def adaptive_reconciliation_path(
-    run_dir: Path | str, verifier_record_id: str
-) -> Path:
-    return (
-        Path(run_dir)
-        / "adaptive-reconciliations"
-        / f"{adaptive_reconciliation_identity(verifier_record_id)}.json"
-    )
-
-
 def load_allocation_decision(
     run_dir: Path | str,
     decision_id: str,
@@ -66,65 +54,22 @@ def load_allocation_decisions(run_dir: Path | str) -> list[AllocationDecision]:
     ]
 
 
-def load_search_snapshot(
-    run_dir: Path | str, snapshot_revision: str
-) -> SearchSnapshot:
-    path = search_snapshot_path(run_dir, snapshot_revision)
-    if not path.exists():
-        raise FileNotFoundError(
-            f"adaptive search snapshot not found: {snapshot_revision}"
-        )
-    return SearchSnapshot.model_validate(load_json(path))
-
-
 class FileAllocationState(FileCandidateQueries):
-    def lock_adaptive_reconciliation(
-        self, run_id: str
-    ) -> AbstractContextManager[None]:
-        return exclusive_file_lock(
-            self.run_dir(run_id) / "adaptive-reconciliations" / "reconcile.lock"
-        )
+    def write_policy_error(self, snapshot: SearchSnapshot, error: str) -> None:
+        write_json(self.run_dir(snapshot.run_id) / "adaptive-errors" / f"{snapshot.snapshot_revision}.json",
+                   {"snapshot_revision": snapshot.snapshot_revision, "error": error})
 
-    def load_adaptive_reconciliation(
-        self, run_id: str, verifier_record_id: str
-    ) -> AdaptiveReconciliationRecord | None:
-        path = adaptive_reconciliation_path(
-            self.run_dir(run_id), verifier_record_id
-        )
-        if not path.exists():
-            return None
-        return AdaptiveReconciliationRecord.model_validate(load_json(path))
+    def latest_search_snapshot(self, run_id: str) -> SearchSnapshot | None:
+        snapshots = [SearchSnapshot.model_validate(load_json(p))
+                     for p in (self.run_dir(run_id) / "adaptive-snapshots").glob("snapshot_*.json")]
+        return max(snapshots, key=lambda s: s.verifier_cutoff_sequence, default=None)
 
-    def write_adaptive_reconciliation(
-        self, record: AdaptiveReconciliationRecord
-    ) -> None:
-        path = adaptive_reconciliation_path(
-            self.run_dir(record.run_id), record.verifier_record_id
-        )
-        if path.exists():
-            existing = AdaptiveReconciliationRecord.model_validate(load_json(path))
-            immutable_fields = (
-                "reconciliation_id",
-                "run_id",
-                "task_id",
-                "verifier_record_id",
-                "snapshot_revision",
-                "plan_hash",
-            )
-            if any(
-                getattr(existing, field) != getattr(record, field)
-                for field in immutable_fields
-            ):
-                raise RuntimeError("adaptive reconciliation identity collision")
-            if existing.state == "completed" and existing != record:
-                raise RuntimeError("completed adaptive reconciliation is immutable")
-            if existing.state == "completed":
-                return
-        elif record.state != "prepared":
-            raise RuntimeError(
-                "adaptive reconciliation must be prepared before completion"
-            )
-        write_json(path, record.model_dump(mode="json"))
+    def snapshot_for_record(self, run_id: str, record_id: str) -> SearchSnapshot | None:
+        for path in (self.run_dir(run_id) / "adaptive-snapshots").glob("snapshot_*.json"):
+            snapshot = SearchSnapshot.model_validate(load_json(path))
+            if snapshot.verifier_record_ids and snapshot.verifier_record_ids[-1] == record_id:
+                return snapshot
+        return None
 
     def load_allocation_decision(
         self,
@@ -160,11 +105,6 @@ class FileAllocationState(FileCandidateQueries):
                 raise RuntimeError("immutable SearchSnapshot identity collision")
             return
         write_json(path, snapshot.model_dump(mode="json"))
-
-    def load_search_snapshot(
-        self, run_id: str, snapshot_revision: str
-    ) -> SearchSnapshot:
-        return load_search_snapshot(self.run_dir(run_id), snapshot_revision)
 
     def lock_run(self, run_id: str) -> AbstractContextManager[None]:
         return exclusive_file_lock(self.run_dir(run_id) / "run.lock")

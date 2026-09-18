@@ -144,9 +144,16 @@ def test_registered_freeze_schema_matches_parameter_validation(tmp_path):
         ({"selection": {"ranking_tolerance": [-0.1]}}, False),
         ({"selection": {"ranking_tolerance": [0.1]}}, True),
         ({"selection": {"ranking_keys": ["hard_score", "hard_score"], "ranking_tolerance": [0, 0]}}, False),
-        ({"orchestration_mode": "adaptive_search", "allocation": {"features": ["invented"]}}, False),
-        ({"orchestration_mode": "adaptive_search", "allocation": {"features": ["progress_trend/v1"]}}, True),
-        ({"orchestration_mode": "adaptive_search", "allocation": {"features": ["progress_trend/v1"] * 2}}, False),
+        ({"orchestration_mode": "adaptive_search", "allocation": {"features": ["progress_trend/v1"]}}, False),
+        ({"orchestration_mode": "adaptive_search",
+          "verifier": {"scores": ["progress_reward", "allocation_utility"]},
+          "allocation": {"policy": "swe_search_uct/v1"}}, True),
+        ({"orchestration_mode": "adaptive_search",
+          "verifier": {"scores": ["progress_reward", "allocation_utility"]},
+          "allocation": {"policy": "unknown/v1"}}, False),
+        ({"orchestration_mode": "adaptive_search",
+          "verifier": {"scores": ["progress_reward", "allocation_utility"]},
+          "allocation": {"policy": "swe_search_uct/v1", "parameters": {"max_depth": 0}}}, False),
     ]:
         spec = {**spec_dict(), "strategy": strategy}
         arguments = {"goal_plus_id": "gp_0001", "spec": spec, "verifier_artifact_paths": ["evaluator.py"]}

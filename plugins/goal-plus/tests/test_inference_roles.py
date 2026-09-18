@@ -109,12 +109,14 @@ def test_verifier_uses_shared_inference_and_registration(
     from goal_plus.infrastructure.state.verifier import FileVerifierState
     from goal_plus.llm_verifier import LlmVerifier
     from goal_plus.ports.process import ProcessRegistration
-    from tests.test_llm_verifier import subject
+    from tests.test_llm_verifier import subject, verifier_input
+    from goal_plus.domain.verifier import verifier_score_contract
 
     workflow = VerifierWorkflow(FileVerifierState(tmp_path), SystemClock())
-    workflow.ensure_assessment(subject())
+    workflow.ensure_assessment(subject(), verifier_score_contract(),
+        verifier_input().model_copy(update={"agent_harness": agent_harness}))
     task = workflow.claim_task("role-test", 60, run_id="run_1")
-    payload = {"quality_score": 0.8, "allocation_scores": None, "evidence_refs": [], "rationale": "Valid attempt"}
+    payload = {"quality_score": 0.8, "scores": None, "evidence_refs": [], "score_rationales": {"quality_score": "Valid attempt"}}
     build_inference = bootstrap.build_structured_inference
     monkeypatch.setattr(bootstrap, "build_structured_inference", lambda: build_inference(
         popen=process_factory(agent_harness, mode, payload),
@@ -135,11 +137,7 @@ def test_verifier_uses_shared_inference_and_registration(
         register=lambda pid: resources.append(("registered", pid)) or "token",
         finish=lambda token: resources.append(("finished", token)),
     ))
-    worker.state = SimpleNamespace(
-        read_run=lambda _: SimpleNamespace(frozen_spec_id="frozen_1"),
-        read_frozen_spec=lambda _: SimpleNamespace(agent_harness=agent_harness),
-    )
-    monkeypatch.setattr(worker, "_prompt", lambda _: ("Exact test attempt", {}, None))
+    monkeypatch.setattr(worker, "_prompt", lambda _: ("Exact test attempt", {}))
     if mode == "valid":
         result, invocation, usage = worker.execute(task)
         assert result.model_dump() == payload
@@ -215,9 +213,9 @@ console.log(JSON.stringify({ tools: [...tools.keys()], submission, read, denied,
         assert '"$ref"' not in json.dumps(schema)
         payload = {
             "quality_score": 0.8,
-            "allocation_scores": None,
+            "scores": None,
             "evidence_refs": [],
-            "rationale": "Valid local assessment.",
+            "score_rationales": {"quality_score": "Valid local assessment."},
         }
         validator = Draft202012Validator(schema)
         validator.validate(payload)

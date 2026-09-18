@@ -18,7 +18,9 @@ from pydantic import (
     model_validator,
 )
 
-from goal_plus.domain.adaptive.models import ExpansionSource, PriorityReplacePolicySpec
+from goal_plus.domain.adaptive.models import ExpansionSource
+from goal_plus.domain.adaptive.policy import AllocationPolicySpec, SteeringPolicySpec
+from goal_plus.domain.verifier import VerifierSpec
 from goal_plus.domain.agents import (
     AgentSessionHandle,
     AgentHarnessKind,
@@ -133,7 +135,9 @@ class StrategyOptions(SearchModel):
         "rolling_candidates",
         "parallel_loops",
         "adaptive_search",
-    ] = "parallel_loops"
+    ] = Field(default="parallel_loops", description=(
+        "Defaults to adaptive_search when allocation or steering is supplied, otherwise parallel_loops."
+    ))
     inner_agent: str | None = Field(
         default=None,
         description=(
@@ -150,10 +154,15 @@ class StrategyOptions(SearchModel):
         exclude_if=lambda value: not value,
     )
     selection: SelectionSpec = Field(default_factory=SelectionSpec)
-    allocation: PriorityReplacePolicySpec | None = Field(
+    verifier: VerifierSpec | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="Optional extra scores; configured policies automatically add their required score keys.",
+    )
+    allocation: AllocationPolicySpec | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
+    steering: SteeringPolicySpec | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("name")
     @classmethod
@@ -174,6 +183,9 @@ class StrategyOptions(SearchModel):
 
     @model_validator(mode="after")
     def search_mode_configuration_is_consistent(self) -> "StrategyOptions":
+        policies = [policy for policy in (self.allocation, self.steering) if policy is not None]
+        if policies and "orchestration_mode" not in self.model_fields_set:
+            self.orchestration_mode = "adaptive_search"
         adaptive_search = self.orchestration_mode == "adaptive_search"
         if (
             "quality_score" in self.selection.ranking_keys
@@ -182,18 +194,27 @@ class StrategyOptions(SearchModel):
             raise ValueError(
                 "quality_score selection requires parallel_loops or adaptive_search"
             )
-        if adaptive_search and self.allocation is None:
+        if adaptive_search and not policies:
             raise ValueError(
-                "strategy.orchestration_mode=adaptive_search requires allocation"
+                "strategy.orchestration_mode=adaptive_search requires allocation or steering"
             )
         if self.allocation is not None and not adaptive_search:
             raise ValueError("strategy.allocation requires adaptive_search")
+        if self.verifier is not None and self.orchestration_mode == "rolling_candidates":
+            raise ValueError("strategy.verifier requires parallel_loops or adaptive_search")
+        if self.steering is not None and not adaptive_search:
+            raise ValueError("strategy.steering requires adaptive_search")
+        if policies or "quality_score" in self.selection.ranking_keys:
+            scores = list(self.verifier.scores) if self.verifier is not None else []
+            for policy in policies:
+                scores.extend(key for key in policy.required_score_keys if key not in scores)
+            self.verifier = VerifierSpec(scores=scores)
         return self
 
     @property
     def requires_llm_verifier(self) -> bool:
         return (
-            self.orchestration_mode == "adaptive_search"
+            self.verifier is not None
             or "quality_score" in self.selection.ranking_keys
         )
 
@@ -328,10 +349,10 @@ class SearchSpec(SearchModel):
     @model_validator(mode="after")
     def strategy_extension_constraints_are_valid(self) -> "SearchSpec":
         if (
-            self.strategy.allocation is not None
+            (self.strategy.allocation is not None or self.strategy.steering is not None)
             and self.workspace.provider != "git_worktree"
         ):
-            raise ValueError("adaptive allocation requires workspace.provider=git_worktree")
+            raise ValueError("adaptive search requires workspace.provider=git_worktree")
         return self
 
 
@@ -453,6 +474,7 @@ class FrozenSpec(SearchModel):
     def agent_harness_supports_workspace(self) -> "FrozenSpec":
         validate_search_execution(self.agent_harness, self.runtime_provider, self.spec.workspace.provider)
         return self
+
 
 class CandidateTask(SearchModel):
     run_id: str

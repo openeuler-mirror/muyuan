@@ -305,15 +305,10 @@ def _close_run_internal_drainers(
     except Exception as exc:  # noqa: BLE001 - cleanup must record host failures
         errors.append(f"annotation:{type(exc).__name__}:{exc}")
     try:
-        from goal_plus.llm_verifier import close_verifier
-
-        close_verifier(
-            root_dir=root_dir,
-            run_id=run_id,
-            timeout_seconds=timeout_seconds,
-        )
+        from goal_plus.session_host import close_verifier_queue
+        close_verifier_queue(root_dir=root_dir, run_id=run_id)
     except Exception as exc:  # noqa: BLE001 - cleanup must record host failures
-        errors.append(f"verifier:{type(exc).__name__}:{exc}")
+        errors.append(f"llm-verifier:{type(exc).__name__}:{exc}")
     try:
         from goal_plus.thinkthread_annotation import close_thinkthread_annotation
 

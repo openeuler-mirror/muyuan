@@ -51,10 +51,7 @@ from goal_plus.application.candidate_sessions import CandidateSessions
 from goal_plus.application.candidate_artifacts import CandidateArtifacts
 from goal_plus.application.candidate_ledger import CandidateLedger
 from goal_plus.application.shared_tools import SharedTools
-from goal_plus.application.annotation import AnnotationWorkflow
-from goal_plus.application.annotation_admission import AnnotationAdmission
 from goal_plus.application.goal_authorization import GoalAuthorization
-from goal_plus.application.verifier import VerifierWorkflow, verifier_subject
 from goal_plus.ports.candidate_artifacts import CandidateArtifactState
 from goal_plus.ports.candidate_settlement import CandidateSettlementState, InnerGitSettlement
 from goal_plus.ports.clock import Clock
@@ -71,11 +68,10 @@ class CandidateSettlement:
         artifacts: CandidateArtifacts,
         candidate_ledger: CandidateLedger,
         shared_tools: SharedTools,
-        annotation: AnnotationWorkflow,
-        annotation_admission: AnnotationAdmission,
-        verifier: VerifierWorkflow,
         checkpoints: CandidateCheckpoints,
         persist_run: Callable[[RunRecord], None],
+        verifier_submission,
+
     ) -> None:
         self.state, self.clock, self.authorization = state, clock, authorization
         self.candidate_sessions, self.artifacts, self.candidate_ledger = (
@@ -83,16 +79,12 @@ class CandidateSettlement:
             artifacts,
             candidate_ledger,
         )
-        self.shared_tools, self.annotation, self.annotation_admission = (
-            shared_tools,
-            annotation,
-            annotation_admission,
-        )
-        self.verifier, self.checkpoints, self.persist_run = (
-            verifier,
+        self.shared_tools = shared_tools
+        self.checkpoints, self.persist_run = (
             checkpoints,
             persist_run,
         )
+        self.verifier_submission = verifier_submission
 
     def record(
         self,
@@ -612,73 +604,69 @@ class CandidateSettlement:
             ):
                 record.promotion_report = None
                 record.promotion_evidence = None
-            # Commit the complete settlement before any derived projection.
+            submission = self.verifier_submission.prepare(frozen, record, record.iterations[-1])
+            # Commit the complete settlement and immutable outbound input together.
             self.state.write_candidate(run_id, record)
-            self.reconcile(run, frozen, record, preserve_workspace=preserve_workspace)
-            return record.score_report
-
-    def reconcile(
-        self, run: RunRecord, frozen: FrozenSpec, record: CandidateRecord,
-        *, preserve_workspace: bool = False,
-    ) -> None:
-        """Replay projections from durable Evidence without another hard settlement."""
-        if frozen.spec.shared_dir.enabled:
-            self.shared_tools.reconcile(run.run_id, record)
-        records = self.state.read_candidates(run.run_id)
-        best_records = []
-        for candidate in records:
-            best = best_artifact_iteration_record(candidate, frozen.spec.metric_direction)
-            if best is not None and candidate.score_report is not None:
-                best_records.append((candidate, best))
-        winner = None
-        for candidate, best in sorted(best_records, key=lambda item: item[1].settlement_sequence):
-            report = candidate.score_report.model_copy(update={"aggregate_score": best.score, "disposition": best.disposition})
-            if update_best_seen(run, frozen.spec, report):
-                winner = candidate, best
-        if winner is not None:
-            self.checkpoints.write_best(run, frozen.spec, *winner)
-        run.candidates_evaluated = sum(c.status == "evaluated" for c in records)
-        self.persist_run(run)
-        for session in self.candidate_sessions.state.read_agent_sessions(run.run_id):
-            if session.candidate_id == record.candidate_id:
-                count = sum(i.agent_session_id == session.agent_session_id for i in record.iterations)
-                if session.counters.get("verifier_runs") != count:
-                    session.counters["verifier_runs"] = count
-                    session.updated_at = self.clock.timestamp()
-                    self.candidate_sessions.state.write_agent_session(session)
-        for iteration in record.iterations:
-            if iteration.agent_session_id is not None or frozen.spec.strategy.orchestration_mode == "adaptive_search":
-                try:
-                    self.annotation_admission.create(run.run_id, record.candidate_id, iteration.iteration)
-                except Exception:
-                    # Queue recovery reconstructs the task from settled Evidence.
-                    pass
-            if frozen.spec.strategy.requires_llm_verifier and iteration.settlement_id is not None and iteration.artifact_hash is not None:
-                try:
-                    allocation = frozen.spec.strategy.allocation
-                    rules = allocation.verifier_rules() if allocation is not None else None
-                    self.verifier.ensure_assessment(
-                        verifier_subject(frozen, record, iteration),
-                        rules.policy_id if rules is not None else None,
-                        rules.score_names if rules is not None else [],
-                    )
-                except Exception:
-                    pass
-        if frozen.spec.shared_dir.enabled:
-            try:
-                self.annotation.reconcile_tool_heads(run.run_id)
-            except Exception:
-                pass
-        if record.verification is not None and record.score_report is not None:
-            synchronized = self.artifacts.workspace.publish_settlement(
-                record.task, record.score_report.attempt_artifact_ref,
-                record.results_ledger_artifact_ref, preserve_workspace=preserve_workspace,
-                ledger_projection=self.candidate_ledger.projection(frozen, record) == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV,
+            if frozen.spec.shared_dir.enabled:
+                self.shared_tools.reconcile(run_id, record)
+            records = self.state.read_candidates(run_id)
+            best_records = []
+            for candidate in records:
+                best = best_artifact_iteration_record(
+                    candidate, frozen.spec.metric_direction
+                )
+                if best is not None and candidate.score_report is not None:
+                    best_records.append((candidate, best))
+            winner = None
+            for candidate, best in sorted(
+                best_records, key=lambda item: item[1].settlement_sequence
+            ):
+                candidate_report = candidate.score_report.model_copy(
+                    update={
+                        "aggregate_score": best.score,
+                        "disposition": best.disposition,
+                    }
+                )
+                if update_best_seen(run, frozen.spec, candidate_report):
+                    winner = candidate, best
+            if winner is not None:
+                self.checkpoints.write_best(run, frozen.spec, *winner)
+            run.candidates_evaluated = sum(
+                candidate.status == "evaluated" for candidate in records
             )
-            if synchronized:
-                record.verification = None
-            else:
-                record.verification.state = "needs_recovery"
-                record.verification.error = "WorkerWorkspaceChanged: submitted artifact was settled separately"
-            record.score_report.verification = record.verification
-        self.state.write_candidate(run.run_id, record)
+            self.persist_run(run)
+            for candidate_session in self.candidate_sessions.state.read_agent_sessions(
+                run_id
+            ):
+                if candidate_session.candidate_id != record.candidate_id:
+                    continue
+                count = sum(
+                    item.agent_session_id == candidate_session.agent_session_id
+                    for item in record.iterations
+                )
+                if candidate_session.counters.get("verifier_runs") != count:
+                    candidate_session.counters["verifier_runs"] = count
+                    candidate_session.updated_at = self.clock.timestamp()
+                    self.candidate_sessions.state.write_agent_session(candidate_session)
+            if record.verification is not None and record.score_report is not None:
+                synchronized = self.artifacts.workspace.publish_settlement(
+                    record.task,
+                    record.score_report.attempt_artifact_ref,
+                    record.results_ledger_artifact_ref,
+                    preserve_workspace=preserve_workspace,
+                    ledger_projection=(
+                        self.candidate_ledger.projection(frozen, record)
+                        == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV
+                    ),
+                )
+                if synchronized:
+                    record.verification = None
+                else:
+                    record.verification.state = "needs_recovery"
+                    record.verification.error = (
+                        "WorkerWorkspaceChanged: submitted artifact was settled separately"
+                    )
+                record.score_report.verification = record.verification
+            self.state.write_candidate(run_id, record)
+        self.verifier_submission.submit(submission)
+        return record.score_report

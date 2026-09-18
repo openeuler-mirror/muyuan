@@ -1,1 +1,1 @@
-"""Deterministic Adaptive Search allocation and reconciliation tests."""
+"""Deterministic Adaptive Search policy, snapshot, and allocation tests."""

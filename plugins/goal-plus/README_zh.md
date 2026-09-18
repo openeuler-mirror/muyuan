@@ -181,7 +181,7 @@ LLM Verifier 同次生成质量及可选 allocation 评分；选择和分配由�
 
 默认 `parallel_loops` 使用固定 candidate lane。Main 审查每次返回并决定是否继续同一候选，
 后续技术方向由 candidate 选择，分数不触发替换。Git worktree 可显式选择
-[Adaptive Search](docs/adaptive-search.md)，由 Scheduler 提出候选替换。
+[Adaptive Search](docs/adaptive-search.md)，执行确定性资源分配和可选 worker 引导。
 共同流程与 Evidence 合同见 [Shared Plane](docs/shared-plane.md)。
 
 Git worktree 模式在 freeze 时先直接在 clean origin 中运行一次 process-verifier suite，

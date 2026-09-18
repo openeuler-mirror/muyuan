@@ -214,7 +214,7 @@ The default `parallel_loops` mode creates fixed candidate lanes. Main reviews
 each returned result and decides whether to continue that same candidate;
 candidates choose their own technical direction. Scores do not trigger replacement.
 Git worktree runs may explicitly use [Adaptive Search](docs/adaptive-search.md)
-for Scheduler-proposed replacement. See [Shared Plane](docs/shared-plane.md)
+for deterministic allocation and optional worker steering. See [Shared Plane](docs/shared-plane.md)
 for the common workflow and Evidence contract.
 
 For Git worktrees, freezing first runs the process-verifier suite once in the

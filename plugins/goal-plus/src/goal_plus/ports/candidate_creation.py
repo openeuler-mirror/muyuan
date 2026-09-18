@@ -50,4 +50,5 @@ class PrepareInitialSession(Protocol):
         directive: dict[str, Any] | str | None = None,
         *,
         worker_budget: dict[str, Any] | None = None,
+        run_locked: bool = False,
     ) -> AgentSessionRecord: ...

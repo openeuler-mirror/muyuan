@@ -1,812 +1,466 @@
-from __future__ import annotations
-
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from goal_plus.application.allocation import AllocationDecisions
 from goal_plus.application.allocation_apply import AllocationApply
-from goal_plus.application.allocation_preparation import AllocationPreparation
-from goal_plus.application.adaptive_admission import AdaptiveAdmission
-from goal_plus.application.adaptive_reconciliation import (
-    AdaptiveDecisionReconciliation,
-)
-from goal_plus.application.adaptive_snapshot import AdaptiveSnapshotBuilder
-from goal_plus.application.goal_authorization import GoalAuthorization
-from goal_plus.application.verifier import VerifierWorkflow, verifier_subject
 from goal_plus.domain.adaptive.models import (
+    AllocationExpansionIntent,
+    AllocationPlan,
+    ExpansionSource,
     SearchSnapshot,
     SnapshotCandidate,
     SnapshotNode,
-    compute_allocation_plan,
-    compute_feature_view,
     snapshot_identity,
 )
-from goal_plus.domain.evidence import IterationRecord, ResultLedgerEntry
 from goal_plus.domain.artifacts import ArtifactRef
-from goal_plus.domain.settlement import (
-    RollbackReceipt,
-    SettlementEvidence,
-    SettlementReceipt,
-)
-from goal_plus.domain.search import AgentSessionRecord, CandidateTask, RunState, SearchPlan
-from goal_plus.infrastructure.state.allocation import FileAllocationState
-from goal_plus.infrastructure.state.files import write_json
-from goal_plus.infrastructure.state.goal import FileGoalQueries
-from goal_plus.infrastructure.state.verifier import FileVerifierState
-from goal_plus.infrastructure.state.scope import FileScopeState, FileAllocationCancellationProof
-from goal_plus.domain.verifier import (
-    VerifierRecord,
-    VerifierSubject,
-    verifier_subject_identity,
-)
+from goal_plus.domain.evidence import ResultLedgerEntry
+from goal_plus.domain.search import AgentSessionRecord, CandidateTask, RunState
+from goal_plus.domain.serialization import canonical_json, sha256_text
 from goal_plus.ports.state import CandidateRecord, RunRecord
-from tests.test_annotation_admission import frozen_spec
-from tests.test_annotation_workflow import Clock
 
 
-def _write_candidate(state: FileAllocationState, record: CandidateRecord) -> None:
-    directory = state.candidate_dir("run_test", record.candidate_id)
-    write_json(directory / "candidate.json", record.model_dump(mode="json"))
-    write_json(directory / "task.json", record.task.model_dump(mode="json"))
+class Clock:
+    def timestamp(self) -> str:
+        return "2026-09-17T00:00:00Z"
 
 
-def _ensure_allocation_tasks(
-    state: FileAllocationState,
-    workflow: VerifierWorkflow,
-):
-    frozen = state.read_frozen_spec("frozen_test")
-    policy = frozen.spec.strategy.allocation
-    assert policy is not None
-    rules = policy.verifier_rules()
-    return [
-        workflow.ensure_assessment(
-            verifier_subject(frozen, candidate, iteration),
-            rules.policy_id,
-            rules.score_names,
-        )
-        for candidate in state.read_candidates("run_test")
-        for iteration in candidate.iterations
-    ]
+def artifact(identity: str) -> ArtifactRef:
+    return ArtifactRef(kind="git_commit", id=identity, provider="git_worktree")
 
 
-def _allocation_state(tmp_path: Path, *, failed_source: bool = False):
-    clock = Clock()
-    frozen = frozen_spec(clock, adaptive=True)
-    state = FileAllocationState(tmp_path / ".gp")
-    write_json(
-        state.root_dir / "specs/frozen_test/frozen_spec.json",
-        frozen.model_dump(mode="json"),
+def source(candidate_id: str, utility: float) -> tuple[ExpansionSource, SnapshotNode]:
+    exact = ExpansionSource(
+        candidate_id=candidate_id,
+        iteration=1,
+        settlement_id=f"settlement_{candidate_id}",
+        node_id=f"{candidate_id}/iteration-0001",
+        verifier_record_id=f"record_{candidate_id}",
+        attempt_artifact_ref=artifact(f"attempt_{candidate_id}"),
+        attempt_artifact_hash=f"hash_{candidate_id}",
+        ledger_artifact_ref=artifact(f"ledger_{candidate_id}"),
     )
-    run = RunRecord(
-        run_id="run_test",
-        frozen_spec_id="frozen_test",
-        state=RunState.RUNNING,
-        source_path="project",
-        created_at=clock.timestamp(),
-        candidates_total=2,
-        next_candidate_index=3,
+    return exact, SnapshotNode(
+        candidate_id=candidate_id,
+        iteration=1,
+        node_id=exact.node_id,
+        edge_kind="initial",
+        settlement_id=exact.settlement_id,
+        verifier_record_id=exact.verifier_record_id,
+        verifier_subject_hash=("a" if candidate_id == "c001" else "b") * 64,
+        source=exact,
+        quality_score=utility,
+        allocation_scores={
+            "progress_reward": utility,
+            "allocation_utility": utility,
+        },
     )
-    write_json(state.run_dir("run_test") / "run.json", run.model_dump(mode="json"))
-    plan = SearchPlan(
-        run_id="run_test",
-        plan_id="plan_test",
-        strategy=frozen.spec.strategy,
-        requested_k=2,
-        planned_k=2,
-        remaining_budget=0,
-        created_at=clock.timestamp(),
-    )
-    write_json(
-        state.run_dir("run_test") / "plans/plan_test.json",
-        plan.model_dump(mode="json"),
-    )
-    candidates = []
-    for candidate_id, quality, utility in (
-        ("c001", 0.2, 0.1),
-        ("c002", 0.9, 0.8),
-    ):
-        commit = f"commit_{candidate_id}"
-        artifact_ref = ArtifactRef(
-            kind="git_commit", id=commit, provider="git_worktree"
-        )
-        is_failed_source = failed_source and candidate_id == "c002"
-        attempt_base_ref = (
-            ArtifactRef(
-                kind="git_commit",
-                id="rollback_target",
-                provider="git_worktree",
-            )
-            if is_failed_source
-            else None
-        )
-        restored_ref = (
-            ArtifactRef(
-                kind="git_commit",
-                id="restore_commit",
-                provider="git_worktree",
-            )
-            if is_failed_source
-            else artifact_ref
-        )
-        ledger_ref = (
-            ArtifactRef(
-                kind="git_commit",
-                id="rollback_ledger",
-                provider="git_worktree",
-            )
-            if is_failed_source
-            else artifact_ref
-        )
-        receipt = SettlementReceipt(
-            settlement_id=f"settlement_{candidate_id}",
-            run_id="run_test",
-            candidate_id=candidate_id,
-            iteration=1,
-            attempt_base_artifact_ref=attempt_base_ref,
-            attempt_artifact_ref=artifact_ref,
-            attempt_artifact_hash=f"artifact_{candidate_id}",
-            evidence=SettlementEvidence(
-                metric_name="score",
-                hard_score=quality,
-                process_passed=not is_failed_source,
-                artifact_clean=True,
-            ),
-            disposition="failure" if is_failed_source else "keep",
-            rollback=(
-                RollbackReceipt(
-                    target_artifact_ref=attempt_base_ref,
-                    restored_artifact_ref=restored_ref,
-                    restored_artifact_hash="restored_hash",
-                )
-                if attempt_base_ref is not None
-                else None
-            ),
-            post_settlement_artifact_ref=restored_ref,
-            ledger_artifact_ref=ledger_ref,
-            created_at=clock.timestamp(),
-        )
-        iteration = IterationRecord(
-            iteration=1,
-            settlement_id=f"settlement_{candidate_id}",
-            score=quality,
-            process_passed=not is_failed_source,
-            git_head=commit,
-            attempt_base_git_head=(
-                attempt_base_ref.id if attempt_base_ref is not None else None
-            ),
-            artifact_ref=artifact_ref,
-            attempt_base_artifact_ref=attempt_base_ref,
-            ledger_git_head=ledger_ref.id,
-            ledger_artifact_ref=ledger_ref,
-            restored_to_git_head=(
-                attempt_base_ref.id if attempt_base_ref is not None else None
-            ),
-            restored_to_artifact_ref=(
-                restored_ref if is_failed_source else None
-            ),
-            workspace_git_head_after_settlement=ledger_ref.id,
-            workspace_artifact_after_settlement=ledger_ref,
-            artifact_hash=f"artifact_{candidate_id}",
-            disposition="failure" if is_failed_source else "keep",
-            settlement_receipt=receipt,
-            created_at=clock.timestamp(),
-        )
-        record = CandidateRecord(
-            candidate_id=candidate_id,
-            status="evaluated",
-            task=CandidateTask(
-                run_id="run_test",
-                candidate_id=candidate_id,
-                plan_id="plan_test",
-                hypothesis="initial candidate",
-                workspace=tmp_path / candidate_id,
-                workspace_provider="git_worktree",
-                allowed_files=["main.py"],
-                denied_files=["verify.py"],
-                strategy_metadata={"slot": 1},
-            ),
-            iterations=[iteration],
-            results_ledger_git_head=commit,
-            results_ledger=[
-                ResultLedgerEntry(
-                    source_run_id="run_test",
-                    source_candidate_id=candidate_id,
-                    iteration=1,
-                    git_head=commit,
-                    ledger_git_head=ledger_ref.id,
-                    artifact_ref=artifact_ref,
-                    ledger_artifact_ref=ledger_ref,
-                    metric_name="score",
-                    score=quality,
-                    status="pass",
-                )
-            ],
-        )
-        _write_candidate(state, record)
-        candidates.append(
-            SnapshotCandidate(
-                candidate_id=candidate_id,
-                allocation_eligibility="eligible",
-                allocation_depth=0,
-                nodes=[
-                    SnapshotNode(
-                        candidate_id=candidate_id,
-                        iteration=1,
-                        settlement_id=iteration.settlement_id,
-                        node_id=f"{candidate_id}/iteration-0001",
-                        verifier_record_id=f"record_{candidate_id}",
-                        verifier_subject_hash=verifier_subject_identity(
-                            VerifierSubject(
-                                frozen_spec_id="frozen_test",
-                                settlement=receipt,
-                            )
-                        ),
-                        quality_score=quality,
-                        allocation_scores={
-                            "progress_reward": 0.1,
-                            "allocation_utility": utility,
-                        },
-                    )
-                ],
-            )
-        )
+
+
+def snapshot_and_plan() -> tuple[SearchSnapshot, AllocationPlan]:
+    first_source, first_node = source("c001", 0.1)
+    second_source, second_node = source("c002", 0.9)
     body = {
-        "schema_version": 2,
+        "schema_version": 6,
         "run_id": "run_test",
         "frozen_spec_id": "frozen_test",
-        "policy_id": "priority_replace/v1",
+        "policy_id": "swe_search_uct/v1",
         "max_parallel": 2,
-        "max_candidates": None,
-        "candidates_total": 2,
-        "candidates": [item.model_dump(mode="json") for item in candidates],
-        "historical_decision_ids": [],
+        "verifier_cutoff_sequence": 2,
+        "candidates": [
+            SnapshotCandidate(
+                candidate_id="c001",
+                allocation_depth=0,
+                tip_node_id=first_node.node_id,
+                nodes=[first_node],
+            ).model_dump(mode="json"),
+            SnapshotCandidate(
+                candidate_id="c002",
+                allocation_depth=0,
+                tip_node_id=second_node.node_id,
+                nodes=[second_node],
+            ).model_dump(mode="json"),
+        ],
+        "verifier_record_ids": ["record_c001", "record_c002"],
     }
     revision, input_hash = snapshot_identity(body)
     snapshot = SearchSnapshot(
         **body, snapshot_revision=revision, input_hash=input_hash
     )
-    state.write_search_snapshot(snapshot)
-    features = compute_feature_view(snapshot, frozen.spec.strategy.allocation.features)
-    allocation_plan = compute_allocation_plan(
-        snapshot,
-        features,
-        policy=frozen.spec.strategy.allocation,
+    intents = [
+        AllocationExpansionIntent(
+            source_candidate_id=item.candidate_id,
+            source_iteration=item.iteration,
+            source_settlement_id=item.settlement_id,
+            source_node_id=item.node_id,
+            source_verifier_record_id=item.verifier_record_id,
+            eligible_retirements=["c001"],
+            direction_key=f"expand-{item.candidate_id}",
+            rationale=f"ranked source {index}",
+        )
+        for index, item in enumerate((second_source, first_source), 1)
+    ]
+    plan_body = {
+        "schema_version": 5,
+        "based_on_snapshot_revision": revision,
+        "policy_id": "swe_search_uct/v1",
+        "retire_candidate_ids": ["c001"],
+        "expansions": [item.model_dump(mode="json") for item in intents],
+        "reason_codes": ["replace-low-utility"],
+    }
+    plan = AllocationPlan(
+        **plan_body, plan_hash=sha256_text(canonical_json(plan_body))
     )
-    assert allocation_plan is not None
-    decisions = AllocationDecisions(state=state, clock=clock)
-    return state, clock, decisions, allocation_plan
+    return snapshot, plan
 
 
-def test_decision_is_deterministic_and_does_not_reserve_candidate_ids(
-    tmp_path: Path,
-) -> None:
-    state, _clock, decisions, plan = _allocation_state(tmp_path)
-
-    decision = decisions.record("run_test", plan)
-
-    assert decisions.record("run_test", plan) == decision
-    assert decision.decision_id == f"allocation_{plan.plan_hash[:24]}"
-    assert decision.expansions[0].new_candidate_id is None
-    assert state.read_run("run_test").next_candidate_index == 3
-    forged = plan.model_copy(
-        update={
-            "reason_codes": ["forged"],
-        }
+def candidate(candidate_id: str, tmp_path: Path) -> CandidateRecord:
+    return CandidateRecord(
+        candidate_id=candidate_id,
+        status="evaluated",
+        task=CandidateTask(
+            run_id="run_test",
+            candidate_id=candidate_id,
+            plan_id="plan_test",
+            hypothesis="candidate",
+            workspace=tmp_path / candidate_id,
+            workspace_provider="git_worktree",
+            allowed_files=["main.py"],
+            denied_files=["verify.py"],
+            strategy_metadata={"slot": 1},
+        ),
+        results_ledger=[
+            ResultLedgerEntry(
+                source_run_id="run_test",
+                source_candidate_id=candidate_id,
+                iteration=1,
+                artifact_ref=artifact(f"attempt_{candidate_id}"),
+                ledger_artifact_ref=artifact(f"ledger_{candidate_id}"),
+                metric_name="score",
+                score=0.5,
+                status="pass",
+            )
+        ],
     )
-    with pytest.raises(ValueError, match="deterministic result"):
-        decisions.record("run_test", forged)
 
 
-def test_record_allows_only_one_pending_decision_per_run(tmp_path: Path) -> None:
-    state, _clock, decisions, first_plan = _allocation_state(tmp_path)
-    first_snapshot = state.load_search_snapshot(
-        "run_test", first_plan.based_on_snapshot_revision
-    )
-    body = first_snapshot.model_dump(
-        mode="json", exclude={"snapshot_revision", "input_hash"}
-    )
-    body["historical_decision_ids"] = ["allocation_prior"]
-    revision, input_hash = snapshot_identity(body)
-    second_snapshot = SearchSnapshot(
-        **body,
-        snapshot_revision=revision,
-        input_hash=input_hash,
-    )
-    state.write_search_snapshot(second_snapshot)
-    frozen = state.read_frozen_spec("frozen_test")
-    allocation = frozen.spec.strategy.allocation
-    assert allocation is not None
-    second_plan = compute_allocation_plan(
-        second_snapshot,
-        compute_feature_view(second_snapshot, allocation.features),
-        policy=allocation,
-    )
-    assert second_plan is not None
-    assert second_plan.plan_hash != first_plan.plan_hash
+class State:
+    def __init__(self, tmp_path: Path, decision) -> None:
+        self.root_dir = tmp_path
+        self.decision = decision
+        self.run = RunRecord(
+            run_id="run_test",
+            frozen_spec_id="frozen_test",
+            state=RunState.RUNNING,
+            source_path="project",
+            created_at="2026-09-17T00:00:00Z",
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(
-            executor.map(
-                lambda plan: decisions.record("run_test", plan),
-                [first_plan, second_plan],
+            next_candidate_index=3,
+        )
+        self.frozen = SimpleNamespace(
+            spec=SimpleNamespace(
+                budget=SimpleNamespace(max_parallel=2, max_candidates=4)
             )
         )
+        self.candidates = {
+            "c001": candidate("c001", tmp_path),
+            "c002": candidate("c002", tmp_path),
+        }
+        self.sessions: list[AgentSessionRecord] = []
+        self.lock_depth = 0
+        self.materialization_projection = None
 
-    assert sum(item is not None for item in results) == 1
-    assert len(decisions.list("run_test", "pending")) == 1
+    @contextmanager
+    def lock_run(self, run_id):
+        assert run_id == "run_test"
+        assert self.lock_depth == 0
+        self.lock_depth = 1
+        try:
+            yield
+        finally:
+            self.lock_depth = 0
 
+    def read_run(self, run_id):
+        assert run_id == "run_test"
+        return self.run
 
-def test_decision_resolves_score_row_to_attempt_instead_of_rollback(
-    tmp_path: Path,
-) -> None:
-    state, _clock, decisions, plan = _allocation_state(
-        tmp_path, failed_source=True
-    )
-    candidate = state.read_candidate("run_test", "c002")
-    original = candidate.iterations[0]
-    assert original.artifact_ref is not None
-    assert original.settlement_receipt is not None
-    assert original.settlement_receipt.rollback is not None
+    def read_frozen_spec(self, frozen_spec_id):
+        assert frozen_spec_id == "frozen_test"
+        return self.frozen
 
-    decision = decisions.record("run_test", plan)
-    source = decision.expansions[0].source
+    def load_allocation_decision(self, run_id, decision_id):
+        assert (run_id, decision_id) == ("run_test", self.decision.decision_id)
+        return self.decision
 
-    assert source.candidate_id == "c002"
-    assert source.attempt_artifact_ref == original.artifact_ref
-    assert source.attempt_artifact_hash == original.artifact_hash
-    assert source.ledger_artifact_ref.id == "rollback_ledger"
-    assert source.attempt_artifact_ref.id == "commit_c002"
-    assert source.attempt_artifact_ref.id != "restore_commit"
+    def load_allocation_decisions(self, run_id):
+        return [self.decision]
 
+    def write_allocation_decision(self, decision):
+        assert self.lock_depth == 1
+        self.decision = decision.model_copy(deep=True)
 
-def test_decision_rejects_receipt_rebound_after_snapshot(tmp_path: Path) -> None:
-    state, _clock, decisions, plan = _allocation_state(tmp_path)
-    candidate = state.read_candidate("run_test", "c002")
-    original = candidate.iterations[0]
-    assert original.settlement_receipt is not None
-    forged_receipt = original.settlement_receipt.model_copy(
-        update={"attempt_artifact_hash": "forged_artifact"}
-    )
-    candidate.iterations = [
-        IterationRecord.model_validate(
-            {
-                **original.model_dump(mode="python"),
-                "artifact_hash": "forged_artifact",
-                "settlement_receipt": forged_receipt,
+    def read_candidate(self, run_id, candidate_id):
+        return self.candidates[candidate_id]
+
+    def find_candidate(self, run_id, candidate_id):
+        return self.candidates.get(candidate_id)
+
+    def read_candidates(self, run_id):
+        return list(self.candidates.values())
+
+    def write_retirement(self, run_id, candidate_id, decision_id):
+        current = self.candidates[candidate_id]
+        self.candidates[candidate_id] = current.model_copy(
+            update={
+                "allocation_eligibility": "retired",
+                "retired_by_decision_id": decision_id,
             }
         )
-    ]
-    _write_candidate(state, candidate)
 
-    with pytest.raises(ValueError, match="does not match its score row"):
-        decisions.record("run_test", plan)
+    def write_candidate_index(self, run_id, next_candidate_index):
+        self.run.next_candidate_index = next_candidate_index
+
+    def read_plan(self, run_id, plan_id):
+        return SimpleNamespace(plan_id=plan_id)
+
+    def read_source_ledger(self, source_record):
+        return source_record.results_ledger
+
+    def read_agent_sessions(self, run_id):
+        return list(self.sessions)
+
+    def write_materialization_projection(self, run_id, projection):
+        self.materialization_projection = projection
 
 
-def test_apply_assigns_id_and_recovers_after_partial_retirement(
-    tmp_path: Path,
-) -> None:
-    state, clock, decisions, plan = _allocation_state(tmp_path)
-    decision = decisions.record("run_test", plan)
-    fail_once = True
+class Authorization:
+    def require_search_execution(self, run_id):
+        assert run_id == "run_test"
 
-    def materialize(request):
-        nonlocal fail_once
-        if fail_once:
-            fail_once = False
-            raise OSError("injected materialization interruption")
-        record = CandidateRecord(
-            candidate_id=request.candidate_id,
-            status="created",
-            task=CandidateTask(
-                run_id="run_test",
-                candidate_id=request.candidate_id,
-                plan_id=request.plan.plan_id,
-                hypothesis=request.proposal.intent,
-                workspace=tmp_path / request.candidate_id,
-                workspace_provider="git_worktree",
-                allowed_files=["main.py"],
-                denied_files=["verify.py"],
-                expansion_source=request.expansion_source,
-            ),
-            results_ledger=list(request.results_ledger or []),
+
+def executor(tmp_path: Path):
+    snapshot, plan = snapshot_and_plan()
+
+    class DecisionState:
+        decisions = []
+
+        def load_allocation_decisions(self, run_id):
+            return list(self.decisions)
+
+        def write_allocation_decision(self, decision):
+            self.decisions = [decision]
+
+    decision = AllocationDecisions(
+        state=DecisionState(), clock=Clock()
+    ).record(snapshot, plan)
+    state = State(tmp_path, decision)
+    events = []
+
+    def default_materialize(request):
+        events.append(("materialize", request.candidate_id, request.expansion_source.candidate_id))
+        original = candidate(request.candidate_id, tmp_path)
+        child = original.model_copy(
+            update={
+                "status": "created",
+                "task": original.task.model_copy(
+                    update={
+                        "proposal": request.proposal,
+                        "expansion_source": request.expansion_source,
+                    }
+                ),
+            }
         )
-        _write_candidate(state, record)
-        return record
+        state.candidates[child.candidate_id] = child
+        return child
 
-    def start_session(run_id, candidate_id, directive=None, *, worker_budget=None):
-        candidate = state.read_candidate(run_id, candidate_id)
+    def start_session(run_id, candidate_id, directive=None, *, worker_budget=None, run_locked=False):
+        assert run_locked and state.lock_depth == 1
+        existing = next((item for item in state.sessions if item.candidate_id == candidate_id), None)
+        if existing is not None:
+            return existing
         session = AgentSessionRecord(
             agent_session_id=f"agent_{candidate_id}",
             run_id=run_id,
             candidate_id=candidate_id,
-            execution_generation=candidate.execution_generation,
+            created_at=Clock().timestamp(),
+            updated_at=Clock().timestamp(),
             directive=directive,
-            workspace=candidate.task.workspace,
-            created_at=clock.timestamp(),
-            updated_at=clock.timestamp(),
-            launch={"worker_budget": worker_budget},
+            workspace=tmp_path / candidate_id,
         )
-        write_json(
-            state.run_dir(run_id)
-            / "agent_sessions"
-            / f"{session.agent_session_id}.json",
-            session.model_dump(mode="json"),
-        )
+        state.sessions.append(session)
         return session
+
+    def dispatch(session, applied_decision):
+        assert state.lock_depth == 1
+        events.append(("dispatch", session.candidate_id, applied_decision.decision_id))
 
     application = AllocationApply(
         state=state,
-        cancellation=FileAllocationCancellationProof(FileScopeState(state.root_dir, clock)),
-        preparation=AllocationPreparation(
-            state, GoalAuthorization(FileGoalQueries(state.root_dir))
-        ),
-        materialize=materialize,
+        authorization=Authorization(),
+        materialize=default_materialize,
         start_session=start_session,
-        clock=clock,
+        clock=Clock(),
     )
-    with pytest.raises(OSError, match="interruption"):
-        application.apply("run_test", decision.decision_id)
-    interrupted = state.load_allocation_decision("run_test", decision.decision_id)
-    assert interrupted.status == "pending"
-    assert interrupted.expansions[0].new_candidate_id == "c003"
-    assert state.read_candidate("run_test", "c001").allocation_eligibility == "retired"
+    return application, state, events, default_materialize, dispatch
 
-    applied = application.apply("run_test", decision.decision_id)
+
+def test_decision_record_preserves_ranked_exact_sources() -> None:
+    snapshot, plan = snapshot_and_plan()
+
+    class DecisionState:
+        decisions = []
+
+        def load_allocation_decisions(self, run_id):
+            return self.decisions
+
+        def write_allocation_decision(self, decision):
+            self.decisions = [decision]
+
+    decisions = AllocationDecisions(state=DecisionState(), clock=Clock())
+    first = decisions.record(snapshot, plan)
+    replay = decisions.record(snapshot, plan)
+
+    assert replay == first
+    assert [item.source.candidate_id for item in first.expansions] == ["c002", "c001"]
+    assert all(item.new_candidate_id is None for item in first.expansions)
+
+
+def test_executor_cancels_materializes_and_dispatches_once(tmp_path: Path) -> None:
+    application, state, events, _materialize, dispatch = executor(tmp_path)
+
+    def cancel(decision):
+        assert state.lock_depth == 1
+        assert state.candidates["c001"].allocation_eligibility == "eligible"
+        events.append(("cancel", decision.decision_id))
+
+    applied = application.apply(
+        "run_test", state.decision.decision_id, cancel=cancel, dispatch=dispatch
+    )
+    replay = application.apply(
+        "run_test", state.decision.decision_id, cancel=cancel, dispatch=dispatch
+    )
+
+    assert applied == replay
+    assert applied.decision.status == "applied"
+    assert state.candidates["c001"].allocation_eligibility == "retired"
+    assert [event[0] for event in events] == ["cancel", "materialize", "dispatch"]
+    assert len(applied.candidate_tasks) == len(applied.agent_sessions) == 1
+
+
+def test_executor_uses_next_ranked_source_after_clean_failure(tmp_path: Path) -> None:
+    application, state, events, default_materialize, dispatch = executor(tmp_path)
+
+    def materialize(request):
+        if request.expansion_source.candidate_id == "c002":
+            events.append(("failed", "c002"))
+            raise OSError("source unavailable")
+        return default_materialize(request)
+
+    application.materialize = materialize
+    applied = application.apply(
+        "run_test", state.decision.decision_id, cancel=lambda _decision: None, dispatch=dispatch
+    )
 
     assert applied.decision.status == "applied"
-    assert [item.candidate_id for item in applied.candidate_tasks] == ["c003"]
-    assert [item.candidate_id for item in applied.agent_sessions] == ["c003"]
-    assert state.read_run("run_test").candidates_total == 3
+    assert [item.status for item in applied.decision.expansions] == ["failed", "applied"]
+    assert events[0] == ("failed", "c002")
 
 
-def test_completed_verifier_record_is_the_only_decision_trigger(
-    tmp_path: Path,
-) -> None:
-    state, clock, decisions, _plan = _allocation_state(tmp_path)
-    workflow = VerifierWorkflow(FileVerifierState(state.root_dir), clock)
-    reconciliation = AdaptiveDecisionReconciliation(
-        state=state,
-        verifier=workflow,
-        snapshots=AdaptiveSnapshotBuilder(state=state, verifier=workflow),
-        decisions=decisions,
-    )
-    tasks = _ensure_allocation_tasks(state, workflow)
-    assert len(tasks) == 2
-    assert decisions.list("run_test") == []
+def test_dispatch_failure_does_not_create_a_backup_child(tmp_path: Path) -> None:
+    application, state, _events, _materialize, _dispatch = executor(tmp_path)
 
-    quality = {"c001": 0.2, "c002": 0.9}
-    utility = {"c001": 0.1, "c002": 0.8}
-    decision = None
-    while (task := workflow.claim_task("worker", 60, run_id="run_test")) is not None:
-        record = workflow.complete_task(
-            task.task_id,
-            {
-                "quality_score": quality[task.candidate_id],
-                "allocation_scores": {
-                    "progress_reward": 0.1,
-                    "allocation_utility": utility[task.candidate_id],
-                },
-                "rationale": "bounded hard evidence supports this quality estimate",
-            },
-            {
-                "invocation_id": f"invocation_{task.candidate_id}",
-                "agent_harness": "codex",
-                "model": "test-model",
-                "started_at": clock.timestamp(),
-                "completed_at": clock.timestamp(),
-                "elapsed_seconds": 0,
-            },
-        )
-        decision = reconciliation.on_verifier_record_completed(record) or decision
+    def uncertain_dispatch(_session, _decision):
+        raise TimeoutError("unknown dispatch")
 
-    assert decision is not None
-    assert decision.retire_candidate_ids == ["c001"]
-    assert decision.expansions[0].source.candidate_id == "c002"
-    snapshot = state.load_search_snapshot(
-        "run_test", decision.based_on_snapshot_revision
-    )
-    assert snapshot.candidates[0].nodes[0].verifier_record_id
-    assert snapshot.candidates[0].nodes[0].allocation_scores[
-        "allocation_utility"
-    ] == 0.1
-
-
-def test_reconciliation_replays_completed_verifier_records(tmp_path: Path) -> None:
-    state, clock, decisions, _plan = _allocation_state(tmp_path)
-    verifier_state = FileVerifierState(state.root_dir)
-    workflow = VerifierWorkflow(verifier_state, clock)
-    reconciliation = AdaptiveDecisionReconciliation(
-        state=state,
-        verifier=workflow,
-        snapshots=AdaptiveSnapshotBuilder(state=state, verifier=workflow),
-        decisions=decisions,
-    )
-    _ensure_allocation_tasks(state, workflow)
-    quality = {"c001": 0.2, "c002": 0.9}
-    utility = {"c001": 0.1, "c002": 0.8}
-    records = []
-    while (task := workflow.claim_task("worker", 60, run_id="run_test")) is not None:
-        records.append(
-            workflow.complete_task(
-                task.task_id,
-                {
-                    "quality_score": quality[task.candidate_id],
-                    "allocation_scores": {
-                        "progress_reward": 0.1,
-                        "allocation_utility": utility[task.candidate_id],
-                    },
-                    "rationale": "durable completed record awaiting reconciliation",
-                },
-                {
-                    "invocation_id": f"invocation_{task.candidate_id}",
-                    "agent_harness": "codex",
-                    "model": "test-model",
-                    "started_at": clock.timestamp(),
-                    "completed_at": clock.timestamp(),
-                    "elapsed_seconds": 0,
-                },
-            )
-        )
-
-    while (record := reconciliation.next_pending_record("run_test")) is not None:
-        reconciliation.on_verifier_record_completed(record)
-
-    assert len(decisions.list("run_test")) == 1
-    assert all(
-        state.load_adaptive_reconciliation("run_test", record.record_id).state
-        == "completed"
-        for record in records
-    )
-    assert reconciliation.next_pending_record("run_test") is None
-
-
-def test_prepared_reconciliation_replays_existing_decision(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    state, clock, decisions, _plan = _allocation_state(tmp_path)
-    workflow = VerifierWorkflow(FileVerifierState(state.root_dir), clock)
-    reconciliation = AdaptiveDecisionReconciliation(
-        state=state,
-        verifier=workflow,
-        snapshots=AdaptiveSnapshotBuilder(state=state, verifier=workflow),
-        decisions=decisions,
-    )
-    _ensure_allocation_tasks(state, workflow)
-    first_task = workflow.claim_task("worker", 60, run_id="run_test")
-    assert first_task is not None and first_task.candidate_id == "c001"
-    first_record = workflow.complete_task(
-        first_task.task_id,
-        {
-            "quality_score": 0.2,
-            "allocation_scores": {
-                "progress_reward": 0.1,
-                "allocation_utility": 0.1,
-            },
-            "rationale": "first lane is not enough to allocate",
-        },
-        {
-            "invocation_id": "invocation_c001",
-            "agent_harness": "codex",
-            "model": "test-model",
-            "started_at": clock.timestamp(),
-            "completed_at": clock.timestamp(),
-            "elapsed_seconds": 0,
-        },
-    )
-    assert reconciliation.on_verifier_record_completed(first_record) is None
-
-    second_task = workflow.claim_task("worker", 60, run_id="run_test")
-    assert second_task is not None and second_task.candidate_id == "c002"
-    second_record = workflow.complete_task(
-        second_task.task_id,
-        {
-            "quality_score": 0.9,
-            "allocation_scores": {
-                "progress_reward": 0.1,
-                "allocation_utility": 0.8,
-            },
-            "rationale": "second lane can replace the weaker lane",
-        },
-        {
-            "invocation_id": "invocation_c002",
-            "agent_harness": "codex",
-            "model": "test-model",
-            "started_at": clock.timestamp(),
-            "completed_at": clock.timestamp(),
-            "elapsed_seconds": 0,
-        },
-    )
-    original_write = state.write_adaptive_reconciliation
-
-    def interrupt_completed_receipt(record):
-        if record.state == "completed" and record.decision_id is not None:
-            raise OSError("interruption after decision commit")
-        original_write(record)
-
-    monkeypatch.setattr(
-        state, "write_adaptive_reconciliation", interrupt_completed_receipt
-    )
-    with pytest.raises(OSError, match="interruption after decision commit"):
-        reconciliation.on_verifier_record_completed(second_record)
-
-    [recorded] = decisions.list("run_test")
-    prepared = state.load_adaptive_reconciliation(
-        "run_test", second_record.record_id
-    )
-    assert prepared is not None and prepared.state == "prepared"
-    monkeypatch.setattr(state, "write_adaptive_reconciliation", original_write)
-
-    replayed = reconciliation.on_verifier_record_completed(second_record)
-
-    assert replayed is not None and replayed.decision_id == recorded.decision_id
-    assert len(decisions.list("run_test")) == 1
-    completed = state.load_adaptive_reconciliation(
-        "run_test", second_record.record_id
-    )
-    assert completed is not None and completed.state == "completed"
-    assert completed.decision_id == recorded.decision_id
-
-
-def test_uncompleted_verifier_record_cannot_trigger_snapshot(
-    tmp_path: Path,
-) -> None:
-    state, clock, decisions, _plan = _allocation_state(tmp_path)
-    workflow = VerifierWorkflow(FileVerifierState(state.root_dir), clock)
-    [task, *_] = _ensure_allocation_tasks(state, workflow)
-    record = VerifierRecord(
-        record_id="record_unpersisted",
-        task_id=task.task_id,
-        subject=task.subject,
-        allocation_policy_id=task.allocation_policy_id,
-        quality_score=0.5,
-        allocation_scores={
-            "progress_reward": 0.5,
-            "allocation_utility": 0.5,
-        },
-        rationale="an uncompleted task cannot publish an allocation score row",
-        invocation={
-            "invocation_id": "invocation_unpersisted",
-            "agent_harness": "codex",
-            "model": "test-model",
-            "started_at": clock.timestamp(),
-            "completed_at": clock.timestamp(),
-            "elapsed_seconds": 0,
-        },
-        created_at=clock.timestamp(),
-    )
-    reconciliation = AdaptiveDecisionReconciliation(
-        state=state,
-        verifier=workflow,
-        snapshots=AdaptiveSnapshotBuilder(state=state, verifier=workflow),
-        decisions=decisions,
-    )
-    snapshot_dir = state.run_dir("run_test") / "adaptive-snapshots"
-    snapshots_before = sorted(snapshot_dir.glob("*.json"))
-
-    with pytest.raises(ValueError, match="completed verifier task"):
-        reconciliation.on_verifier_record_completed(record)
-    assert sorted(snapshot_dir.glob("*.json")) == snapshots_before
-    assert decisions.list("run_test") == []
-
-
-def test_pending_verifier_tasks_do_not_block_candidate_continuation(
-    tmp_path: Path,
-) -> None:
-    state, clock, _decisions, _plan = _allocation_state(tmp_path)
-    workflow = VerifierWorkflow(FileVerifierState(state.root_dir), clock)
-    tasks = _ensure_allocation_tasks(state, workflow)
-    assert tasks
-    assert all(task.state == "pending" for task in tasks)
-
-    admission = AdaptiveAdmission(state)
-    admission.assert_candidate_execution_allowed(
-        state.read_candidate("run_test", "c001"),
-        "continue_session",
+    interrupted = application.apply(
+        "run_test",
+        state.decision.decision_id,
+        cancel=lambda _decision: None,
+        dispatch=uncertain_dispatch,
     )
 
+    assert interrupted.decision.status == "interrupted"
+    assert interrupted.decision.expansions[0].new_candidate_id in state.candidates
+    assert interrupted.decision.expansions[1].new_candidate_id is None
+    assert len(state.sessions) == 1
+    first_id = interrupted.decision.expansions[0].new_candidate_id
+    recovered = application.apply(
+        "run_test", state.decision.decision_id,
+        cancel=lambda _: pytest.fail("retirement must not repeat"), dispatch=_dispatch,
+    )
+    assert recovered.decision.status == "applied"
+    assert recovered.decision.expansions[0].new_candidate_id == first_id
+    assert recovered.decision.expansions[1].new_candidate_id is None
+    assert len(state.sessions) == 1
 
-def test_snapshot_includes_failed_attempt_verifier_scores(
-    tmp_path: Path,
-) -> None:
-    state, clock, _decisions, _plan = _allocation_state(tmp_path)
-    frozen = state.read_frozen_spec("frozen_test")
-    candidate = state.read_candidate("run_test", "c001")
-    original = candidate.iterations[0]
-    attempt_ref = original.artifact_ref
-    assert attempt_ref is not None
-    base_ref = ArtifactRef(
-        kind="git_commit", id="base_commit", provider="git_worktree"
-    )
-    restored_ref = ArtifactRef(
-        kind="git_commit", id="restore_commit", provider="git_worktree"
-    )
-    ledger_ref = ArtifactRef(
-        kind="git_commit", id="ledger_commit", provider="git_worktree"
-    )
-    receipt = SettlementReceipt(
-        settlement_id=str(original.settlement_id),
-        run_id="run_test",
-        candidate_id="c001",
-        iteration=1,
-        attempt_base_artifact_ref=base_ref,
-        attempt_artifact_ref=attempt_ref,
-        attempt_artifact_hash=str(original.artifact_hash),
-        evidence=SettlementEvidence(
-            metric_name="score",
-            hard_score=original.score,
-            process_passed=False,
-            changed_files=["main.py"],
-            attempt_changed_files=["main.py"],
-            artifact_clean=True,
-            failure_class="VerifierCommandFailed",
-        ),
-        disposition="failure",
-        rollback=RollbackReceipt(
-            target_artifact_ref=base_ref,
-            restored_artifact_ref=restored_ref,
-            restored_artifact_hash="restored_hash",
-        ),
-        post_settlement_artifact_ref=restored_ref,
-        ledger_artifact_ref=ledger_ref,
-        created_at=clock.timestamp(),
-    )
-    iteration = IterationRecord.model_validate(
-        {
-            **original.model_dump(mode="python"),
-            "process_passed": False,
-            "attempt_base_artifact_ref": base_ref,
-            "attempt_changed_files": ["main.py"],
-            "changed_files": ["main.py"],
-            "failure_class": "VerifierCommandFailed",
-            "disposition": "failure",
-            "restored_to_git_head": base_ref.id,
-            "restored_to_artifact_ref": restored_ref,
-            "ledger_git_head": ledger_ref.id,
-            "ledger_artifact_ref": ledger_ref,
-            "workspace_git_head_after_settlement": ledger_ref.id,
-            "workspace_artifact_after_settlement": ledger_ref,
-            "settlement_receipt": receipt,
-        }
-    )
-    candidate.iterations = [iteration]
-    _write_candidate(state, candidate)
-    workflow = VerifierWorkflow(FileVerifierState(state.root_dir), clock)
-    task = workflow.ensure_assessment(
-        verifier_subject(frozen, candidate, iteration),
-        "priority_replace/v1",
-        ["progress_reward", "allocation_utility"],
-    )
 
-    claimed = workflow.claim_task("worker", 60, run_id="run_test")
-    assert claimed is not None
-    workflow.complete_task(
-        claimed.task_id,
-        {
-            "quality_score": 0.6,
-            "allocation_scores": {
-                "progress_reward": 0.7,
-                "allocation_utility": 0.8,
-            },
-            "rationale": "the failed attempt contains reusable partial value",
-        },
-        {
-            "invocation_id": "invocation_failure",
-            "agent_harness": "codex",
-            "model": "test-model",
-            "started_at": clock.timestamp(),
-            "completed_at": clock.timestamp(),
-            "elapsed_seconds": 0,
-        },
-    )
-    snapshot = AdaptiveSnapshotBuilder(
-        state=state,
-        verifier=workflow,
-    ).build("run_test")
+def test_executor_selects_next_eligible_retirement_without_rescoring(tmp_path):
+    app, state, _, _, dispatch = executor(tmp_path)
+    state.decision.retire_candidate_ids = ["c001", "c002"]
+    state.decision.expansions[0].eligible_retirements = ["c001"]
+    state.decision.expansions[1].eligible_retirements = ["c002"]
+    state.write_retirement("run_test", "c001", "another-decision")
+    cancellations = []
+    result = app.apply("run_test", state.decision.decision_id,
+                       cancel=lambda d: cancellations.append(d.selected_retirement), dispatch=dispatch)
+    assert result.decision.status == "applied"
+    assert cancellations == ["c002"]
+    assert [e.status for e in result.decision.expansions] == ["skipped", "applied"]
+    assert state.candidates["c001"].retired_by_decision_id == "another-decision"
 
-    failure_row = snapshot.candidates[0].nodes[0]
-    assert failure_row.settlement_id == receipt.settlement_id
-    assert failure_row.verifier_record_id
-    assert failure_row.allocation_scores["allocation_utility"] == 0.8
+
+def test_capacity_exhausted_never_retires_candidate(tmp_path):
+    app, state, _, _, _ = executor(tmp_path)
+    state.frozen.spec.budget.max_candidates = 2
+    result = app.apply("run_test", state.decision.decision_id,
+                       cancel=lambda _: pytest.fail("capacity must precede retirement"),
+                       dispatch=lambda *_: pytest.fail("must not dispatch"))
+    assert result.decision.status == "superseded"
+    assert all(c.allocation_eligibility == "eligible" for c in state.candidates.values())
+
+
+def test_executor_recovers_pending_decisions_in_order_without_verifier(tmp_path):
+    app, state, _, _, dispatched = executor(tmp_path)
+    first = state.decision
+    second = first.model_copy(deep=True, update={
+        "decision_id": "allocation_" + "f" * 24, "verifier_sequence": first.verifier_sequence + 1})
+    decisions = {d.decision_id: d for d in [second, first]}
+    state.load_allocation_decisions = lambda _: list(decisions.values())
+    state.load_allocation_decision = lambda _, identity: decisions[identity]
+
+    def write(decision):
+        assert state.lock_depth == 1
+        decisions[decision.decision_id] = decision.model_copy(deep=True)
+
+    state.write_allocation_decision = write
+    def unknown(*_):
+        raise TimeoutError("missing exact controller")
+
+    result = app.apply("run_test", second.decision_id, cancel=lambda _: None, dispatch=unknown)
+    assert result.decision.status == "pending"
+    assert result.decision.selected_retirement is None
+    assert decisions[first.decision_id].status == "interrupted"
+    child_id = decisions[first.decision_id].expansions[0].new_candidate_id
+    app.materialize = lambda _: pytest.fail("dispatch recovery must not repeat materialization")
+    app.recover("run_test", cancel=lambda _: pytest.fail("already retired"), dispatch=dispatched)
+    assert decisions[first.decision_id].status == "applied"
+    assert decisions[first.decision_id].expansions[0].new_candidate_id == child_id
+    assert decisions[second.decision_id].status == "superseded"
+
+
+def test_admission_fences_only_the_selected_retirement(tmp_path):
+    from goal_plus.application.adaptive_admission import AdaptiveAdmission
+    _, state, _, _, _ = executor(tmp_path)
+    state.frozen.spec.strategy = SimpleNamespace(orchestration_mode="adaptive_search")
+    state.decision.retire_candidate_ids = ["c001", "c002"]
+    guard = AdaptiveAdmission(state)
+    for candidate in state.candidates.values():
+        guard.assert_candidate_execution_allowed(candidate, "start_session")
+    state.decision.selected_retirement = "c001"
+    with pytest.raises(RuntimeError, match="retires"):
+        guard.assert_candidate_execution_allowed(state.candidates["c001"], "start_session")
+    guard.assert_candidate_execution_allowed(state.candidates["c002"], "start_session")
+    state.decision.status = "terminal_error"
+    guard.assert_candidate_execution_allowed(state.candidates["c001"], "start_session")

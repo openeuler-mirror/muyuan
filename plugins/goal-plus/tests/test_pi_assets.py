@@ -162,11 +162,25 @@ def test_pi_loads_shared_allocation_schema(tmp_path) -> None:
     manifest = mcp_manifest(tmp_path / ".gp")
     freeze = next(tool for tool in manifest["tools"] if tool["name"] == "goal_plus_search_freeze_spec")
     strategy = freeze["inputSchema"]["properties"]["spec"]["properties"]["strategy"]["properties"]
-    assert "verifier" not in strategy and "search_scheduler" not in strategy
-    policy = strategy["allocation"]
-    assert set(policy["properties"]) == {"features", "switch_margin"}
-    assert policy["properties"]["switch_margin"]["minimum"] == 0
-    assert policy["properties"]["switch_margin"]["maximum"] == 1
+    assert "verifier" in strategy and "search_scheduler" not in strategy
+    verifier = strategy["verifier"]
+    assert set(verifier["properties"]["scores"]["items"]["enum"]) == {
+        "progress_reward", "allocation_utility", "correctness_gap", "validation_gap",
+        "local_confounder_evidence", "discriminating_test_gap", "boundary_evidence_strength"}
+    policy_set = next(
+        item for item in strategy["allocation"]["anyOf"] if "oneOf" in item
+    )
+    assert policy_set["discriminator"]["propertyName"] == "policy"
+    assert policy_set["required"] == ["policy"]
+    policies = {
+        item["properties"]["policy"]["const"]: item
+        for item in policy_set["oneOf"]
+    }
+    assert set(policies) == {"swe_search_uct/v1"}
+    swe = policies["swe_search_uct/v1"]["properties"]["parameters"]["properties"]
+    assert swe["low_reward_threshold"]["minimum"] == -1
+    assert swe["low_reward_threshold"]["maximum"] == 1
+    assert swe["max_children_per_node"]["minimum"] == 1
 
 
 def test_pi_package_manifest_exports_only_the_user_integration() -> None:

@@ -137,8 +137,9 @@ def test_native_main_without_control_skills(
             public_prompt = public_prompt.replace("任务预算为 5 分钟，第 4 分钟开始收尾", "任务预算为 15 分钟，第 12 分钟开始收尾")
             public_prompt += (
                 "\n本次是独立的有界替换验收，冻结前覆盖上述配置：Goal 预算 900 秒；"
-                "max_parallel=2、max_candidates=3、allocation.features=[latest_record_values/v1]、"
-                "switch_margin=0。等待两个初始 lane 各完成一次真实评分后，应用 pending Decision，"
+                "max_parallel=2、max_candidates=3、allocation.policy=swe_search_uct/v1、"
+                "verifier.scores=[progress_reward, allocation_utility]。"
+                "等待两个初始 lane 各完成一次真实评分后，应用未完成 Decision，"
                 "关闭退休 session，通过 goal_plus_session_run 启动派生 candidate 并取得真实 Evidence，"
                 "随后完成选择、promotion、apply、报告与资源收尾。不要在运行中修改 FrozenSpec。\n"
             )
@@ -262,10 +263,10 @@ def test_native_main_without_control_skills(
                 assert records and "quality_score" in frozen.spec.strategy.selection.ranking_keys
                 assert all(item.invocation.agent_harness == "pi" for item in records)
                 if task_kind == "circle_example_llm":
-                    assert all(item.allocation_scores is None for item in records)
+                    assert all(item.scores is None for item in records)
                     assert not decisions
                 else:
-                    assert all(item.allocation_scores is not None for item in records)
+                    assert all(item.scores is not None for item in records)
                     if task_kind == "circle_example_replacement":
                         assert any(item.status == "applied" for item in decisions)
                     for decision in decisions:

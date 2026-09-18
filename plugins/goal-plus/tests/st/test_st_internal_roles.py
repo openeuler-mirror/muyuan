@@ -69,7 +69,8 @@ def test_circle_annotation_verifier(
     data["strategy"].update({
         "orchestration_mode": "adaptive_search", "inner_agent": "common",
         "evidence_annotator": profile,
-        "allocation": {"policy": "priority_replace/v1"},
+        "verifier": {"scores": ["progress_reward", "allocation_utility"]},
+        "allocation": {"policy": "swe_search_uct/v1"},
     })
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(
@@ -105,6 +106,7 @@ def test_circle_annotation_verifier(
         "agent_harness": agent_harness, "model": model, "reasoning_effort": thinking,
     }, indent=2))
     try:
+        runtime.annotation_admission.ensure(run_id)
         task = runtime.annotation.claim(run_id, candidate.candidate_id, 1)
         assert task is not None
         context = runtime.annotation_context.build(run_id, candidate.candidate_id, 1)
@@ -128,10 +130,13 @@ def test_circle_annotation_verifier(
         claimed = workflow.claim_task("internal-role-st", timeout, run_id=run_id)
         assert claimed is not None
         result, invocation, usage = LlmVerifier(runtime.root_dir).execute(claimed)
-        finished = workflow.complete_task(claimed.task_id, result, invocation, usage=usage)
+        finished = workflow.complete_task(
+            claimed.task_id, result, invocation, usage=usage,
+            worker_id=claimed.lease.worker_id, attempt=claimed.attempts,
+        )
         assert finished.invocation.agent_harness == role_host
         assert finished.invocation.model == model
-        assert finished.allocation_scores is not None
+        assert finished.scores is not None
         assert usage.get("output_tokens", 0) > 0
         (st_log_dir / "verifier.json").write_text(finished.model_dump_json(indent=2))
         print("Verifier completed through real structured inference", flush=True)

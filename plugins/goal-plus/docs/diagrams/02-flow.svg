@@ -53,7 +53,7 @@
   <rect x="1040" y="475" width="320" height="132" class="box pure"/>
   <text x="1060" y="510" class="heading">F7 · Annotation owner</text>
   <text x="1060" y="543">只读精确 immutable View</text>
-  <text x="1060" y="573">completed / terminal_error</text>
+  <text x="1060" y="573">completed / abandoned</text>
   <text x="1060" y="596" class="sub">不执行项目代码或 verifier</text>
   <path d="M980 843H1010V542H1040" class="async"/>
   <text x="1042" y="440" class="sub">硬结算先提交，再 admission</text>
@@ -68,7 +68,7 @@
 
   <rect x="1040" y="839" width="320" height="142" class="box business"/>
   <text x="1060" y="874" class="heading">Snapshot / Allocation owner</text>
-  <text x="1060" y="907">纯特征 / 确定性 Policy / Decision</text>
+  <text x="1060" y="907">Snapshot / Policy / 排序 Plan</text>
   <text x="1060" y="937">整批预检 → 分配 id → retirement / apply</text>
   <text x="1060" y="966" class="sub">只准备候选；启动仍归 Host</text>
 
@@ -78,7 +78,7 @@
   <text x="42" y="702">Adaptive：继续或按 Decision 替换</text>
   <text x="42" y="746" class="sub">预算 / Goal / generation / lane gate</text>
   <text x="42" y="775" class="sub">在准备与执行入口再次核验。</text>
-  <text x="1042" y="1016" class="sub">Decision 返回 F3；不另建 worker supervisor</text>
+  <text x="1042" y="1016" class="sub">Executor 持有 run.lock，淘汰、派生并派发</text>
 
   <path d="M200 267V319" class="flow"/>
   <rect x="40" y="319" width="320" height="146" class="box host"/>

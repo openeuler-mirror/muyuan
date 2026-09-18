@@ -199,7 +199,7 @@ from pydantic import BaseModel
 modules = [
     'goal_plus.models', 'goal_plus.domain.search', 'goal_plus.domain.evidence',
     'goal_plus.domain.goal', 'goal_plus.domain.annotation',
-    'goal_plus.domain.adaptive.models', 'goal_plus.domain.adaptive.deterministic',
+    'goal_plus.domain.adaptive.models', 'goal_plus.domain.adaptive.policy',
     'goal_plus.ports.state', 'goal_plus.ports.execution',
     'goal_plus.ports.annotation', 'goal_plus.application.annotation',
     'goal_plus.application.annotation_admission', 'goal_plus.application.search_context',
@@ -212,8 +212,7 @@ modules = [
     'goal_plus.application.candidate_execution',
     'goal_plus.domain.goal_authorization', 'goal_plus.ports.goal_authorization',
     'goal_plus.application.goal_authorization',
-    'goal_plus.domain.results_ledger', 'goal_plus.ports.allocation_preparation',
-    'goal_plus.application.allocation_preparation',
+    'goal_plus.domain.results_ledger',
     'goal_plus.application.allocation_apply', 'goal_plus.ports.allocation_apply',
     'goal_plus.ports.candidate_creation',
     'goal_plus.application.internal_agents', 'goal_plus.ports.internal_agents',
@@ -226,7 +225,7 @@ for name in modules:
             value.model_json_schema()
 for name in sys.modules:
     assert not name.startswith((
-        'goal_plus.runtime', 'goal_plus.adaptive_search', 'goal_plus.evidence_annotator',
+        'goal_plus.runtime', 'goal_plus.adaptive', 'goal_plus.evidence_annotator',
         'goal_plus.agent_hosts', 'goal_plus.infrastructure', 'goal_plus.thinkthread',
     )), name
 from goal_plus import FileSearchRuntime
@@ -317,19 +316,86 @@ def test_verifier_execution_does_not_import_adaptive_implementations() -> None:
         (PACKAGE / "llm_verifier.py").read_text(encoding="utf-8")
     )
     adaptive_implementations = {
-        "goal_plus.adaptive_search",
-        "goal_plus.application.adaptive_reconciliation",
+        "goal_plus.adaptive",
         "goal_plus.application.adaptive_snapshot",
         "goal_plus.application.allocation",
+        "goal_plus.domain.adaptive",
         "goal_plus.infrastructure.state.allocation",
     }
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            assert node.module not in adaptive_implementations
-        if isinstance(node, ast.Import):
-            assert not adaptive_implementations.intersection(
-                alias.name for alias in node.names
+            assert not any(
+                node.module == dependency
+                or node.module.startswith(dependency + ".")
+                for dependency in adaptive_implementations
             )
+        if isinstance(node, ast.Import):
+            assert not any(
+                alias.name == dependency
+                or alias.name.startswith(dependency + ".")
+                for dependency in adaptive_implementations
+                for alias in node.names
+            )
+
+
+def test_candidate_settlement_does_not_drive_async_evaluators() -> None:
+    tree = ast.parse(
+        (PACKAGE / "application/candidate_settlement.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    forbidden_modules = {
+        "goal_plus.application.annotation",
+        "goal_plus.application.annotation_admission",
+        "goal_plus.application.verifier",
+    }
+    assert not [
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module in forbidden_modules
+    ]
+    assert not [
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and node.attr in {"ensure_assessment", "reconcile_tool_heads"}
+    ]
+
+
+def test_common_models_do_not_reexport_adaptive_search_contracts() -> None:
+    tree = ast.parse((PACKAGE / "models.py").read_text(encoding="utf-8"))
+    assert not [
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        and node.module.startswith("goal_plus.domain.adaptive")
+    ]
+
+
+def test_verifier_record_identifies_scores_by_key() -> None:
+    from goal_plus.domain.search import FrozenSpec
+    from goal_plus.domain.verifier import VerifierRecord, VerifierTask
+
+    assert "verifier_score_contract" not in FrozenSpec.model_fields
+    assert "score_contract" in VerifierTask.model_fields
+    assert "policy_id" not in VerifierRecord.model_fields
+    assert "score_versions" not in VerifierRecord.model_fields
+    assert "scores" in VerifierRecord.model_fields
+    assert "score_contract_hash" in VerifierRecord.model_fields
+
+
+def test_policy_module_does_not_own_verifier_score_semantics() -> None:
+    violations: list[str] = []
+    path = PACKAGE / "domain/adaptive/policy.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "goal_plus.domain.verifier":
+            violations.append(path.relative_to(PACKAGE).as_posix())
+        if isinstance(node, ast.FunctionDef) and "verifier" in node.name:
+            violations.append(path.relative_to(PACKAGE).as_posix())
+
+    assert violations == []
 
 
 def test_search_execution_authorization_does_not_construct_goal_runtime() -> None:
@@ -343,7 +409,7 @@ def test_search_execution_authorization_does_not_construct_goal_runtime() -> Non
 
 def test_allocation_facade_does_not_rebuild_preflight_from_private_runtime_queries() -> None:
     tree = ast.parse(
-        (PACKAGE / "adaptive_search/allocation.py").read_text(encoding="utf-8")
+        (PACKAGE / "adaptive/allocation.py").read_text(encoding="utf-8")
     )
     retired = {
         "_run_transaction", "_load_run", "_load_frozen_spec", "_load_plan",
