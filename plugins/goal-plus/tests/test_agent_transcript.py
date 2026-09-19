@@ -195,7 +195,8 @@ def _archive_entries() -> list[dict]:
     return [
         {"id": "a1", "parentId": None, "timestamp": "2026-09-13T11:25:00.000Z", "type": "message",
          "message": {"role": "assistant",
-                     "content": [{"type": "toolCall", "id": "call_a", "name": "search_run_verifier",
+                     "content": [{"type": "thinking", "thinking": "RAW_THINKING_BEFORE_RELEASE"},
+                                  {"type": "toolCall", "id": "call_a", "name": "search_run_verifier",
                                   "arguments": {"run_id": "run-1"}}]}},
         {"id": "a2", "parentId": "a1", "timestamp": "2026-09-13T11:25:05.000Z", "type": "message",
          "message": {"role": "toolResult", "toolCallId": "call_a", "toolName": "search_run_verifier",
@@ -210,8 +211,8 @@ def test_archive_transcript_replays_batches(tmp_path):
     directory = _write_archive(tmp_path / "tt-child", _archive_entries())
     parsed = read_session_diagnostics_archive(directory)
     assert parsed.session_id == "child-sess"
-    assert [event.kind for event in parsed.events] == ["session", "tool_call", "tool_result", "meta"]
-    assert parsed.events[1].label == "search_run_verifier"
+    assert [event.kind for event in parsed.events] == ["session", "thinking", "tool_call", "tool_result", "meta"]
+    assert parsed.events[2].label == "search_run_verifier"
 
     partial = _write_archive(tmp_path / "tt-partial", _archive_entries()[:1], status="partial")
     assert "archive_status_partial" in read_session_diagnostics_archive(partial).warnings
@@ -431,7 +432,7 @@ def test_tt_child_prefers_raw_history_and_falls_back_to_archive(tmp_path):
     runtime_root, raw_child = _tt_layout(tmp_path)
     sessions = collect_runtime_transcripts(runtime_root)
     child = next(session for session in sessions if session.role == "tt-child")
-    # Retained child: the unfiltered raw history wins over the privacy-filtered archive.
+    # Retained child: the raw history is preferred while it is still available.
     assert child.source_path == str(raw_child)
     joined = " ".join(event.content for event in child.events)
     assert "RAW_THINKING_BEFORE_RELEASE" in joined
@@ -441,7 +442,8 @@ def test_tt_child_prefers_raw_history_and_falls_back_to_archive(tmp_path):
     sessions = collect_runtime_transcripts(runtime_root)
     child = next(session for session in sessions if session.role == "tt-child")
     assert child.source_path.endswith("session-diagnostics/tt-child")
-    assert "RAW_THINKING_BEFORE_RELEASE" not in " ".join(event.content for event in child.events)
+    # After release the unified archive still retains the full entry.
+    assert "RAW_THINKING_BEFORE_RELEASE" in " ".join(event.content for event in child.events)
     assert "search_run_verifier" in " ".join(event.label for event in child.events)
 
 

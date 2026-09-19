@@ -1,11 +1,10 @@
-"""Opt-in, content-complete transcript collection from local native session histories.
+"""Opt-in transcript collection from local native session histories.
 
-Unlike the privacy-filtered session-diagnostics archives, this module re-reads the
-raw Codex/Pi histories at export time. Automatic exports are gated on their own
-``GOAL_PLUS_AGENT_TRANSCRIPT=1`` switch — deliberately separate from
-``GOAL_PLUS_DEBUG`` so size-statistics debugging stays cheap — or on direct
-script invocation. Output stays under ``host-logs/`` and may contain prompts,
-tool arguments and outputs.
+This module replays native Codex/Pi histories and the unified TT session archive.
+Automatic exports are gated on their own ``GOAL_PLUS_AGENT_TRANSCRIPT=1`` switch
+— deliberately separate from ``GOAL_PLUS_DEBUG`` so size-statistics debugging
+stays cheap — or on direct script invocation. Output stays under ``host-logs/``
+and may contain prompts, tool arguments and outputs.
 """
 
 from __future__ import annotations
@@ -347,7 +346,7 @@ def read_codex_transcript(path: Path) -> _Parsed:
 
 
 def read_session_diagnostics_archive(directory: Path) -> _Parsed:
-    """Replay TT Child diagnostic batches into the same pi-style event stream."""
+    """Replay unified TT Child session batches into the same pi-style event stream."""
     parsed = _Parsed()
     index = load_json(directory / "index.json")
     if index.get("source") != "thinkthread_messages":
@@ -385,7 +384,8 @@ def _tt_child_raw_history(runtime_root: Path, child_id: str) -> Path | None:
     The runtime root lives at <instance>/thinkthreads/<root>/session/goal-plus,
     and each child keeps its own session at
     <instance>/thinkthreads/<child>/session/active.jsonl. Once the child is
-    released that file is gone and only the privacy-filtered archive remains.
+    released that file is gone and the retained session archive is the recovery
+    source.
     """
     try:
         root = Path(runtime_root).resolve()
@@ -591,9 +591,10 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
                     logger.warning("transcript archive unavailable: %s", type(exc).__name__)
                     continue
                 recovered = event_store_children.get(str(identity.get("thinkthread_id") or ""))
-                if recovered:
+                archive_complete = index.get("status") == "recorded" and index.get("collection_complete") is True
+                if recovered and not archive_complete:
                     # Released child: the TT event store still holds turn texts
-                    # and controller prompts; merge them over the filtered archive.
+                    # and controller prompts; merge them over the session archive.
                     parsed.events = sorted([*parsed.events, *recovered], key=lambda item: item.at or "")
                     parsed.warnings.append("partial: recovered turn texts from the TT event store")
                 add(AgentTranscriptSession(

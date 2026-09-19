@@ -97,7 +97,12 @@ def test_three_native_deltas_archive_and_replay(tmp_path, archive_messages):
                                    "est_tokens": 15, "raw_goal_present": {"true": 0, "false": 0}}]
     assert ledger["errors"] == []
     assert len(analysis["tool_analysis"]["contracts"]) == 1
-    assert "PRIVATE" not in json.dumps(analysis)
+    archived = ""
+    for digest in index["batches"]:
+        archived += (directory / f"{digest}.json").read_text()
+    assert "PRIVATE USER" in archived
+    assert "PRIVATE THINKING" in archived
+    assert "PRIVATE COMMAND" in archived
     batches = sorted(index["batches"].items(), key=lambda item: item[1]["sequence"])
     assert batches[1][1]["decoded_bytes"] < batches[0][1]["decoded_bytes"]
     del index["batches"][batches[1][0]]
@@ -121,6 +126,38 @@ def test_archive_disabled_wrong_sender_and_corruption(tmp_path, archive_messages
     message["text"] = json.dumps(payload)
     assert archive_diagnostic_message(tmp_path, binding, message)
     assert not (tmp_path / "host-logs").exists()
+
+
+def test_full_entries_split_into_bounded_batches(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for Pi diagnostics")
+    module = ROOT / "assets/pi/extensions/lib/goal-plus-session-archive.ts"
+    script = r'''
+import {randomBytes} from "node:crypto";
+import {pathToFileURL} from "node:url";
+const {SessionArchive} = await import(pathToFileURL(process.argv[1]).href);
+delete process.env.GOAL_PLUS_SESSION_DIAGNOSTICS;
+const entries = [];
+const append = entry => entries.push({id: String(entries.length), parentId: entries.at(-1)?.id ?? null,
+  timestamp: new Date().toISOString(), ...entry});
+for (let i = 0; i < 4; i++) append({type: "message", message: {role: "user", content: [
+  {type: "text", text: randomBytes(470000).toString("base64")},
+]}});
+const messages = [];
+const ctx = {cwd: ".", sessionManager: {getSessionId: () => "large-session",
+  getEntries: () => entries, getLeafId: () => entries.at(-1)?.id,
+  getSessionFile: () => "/native/session.jsonl"}};
+const options = {root: ".gp", role: "worker", sourceRoot: "/installed",
+  checkpoint: data => append({type: "custom", customType: "goal-plus-session-archive-checkpoint", data}),
+  worker: async () => ({agentSessionId: "agent-owned", send: async batch => messages.push(...batch)})};
+await new SessionArchive().flush(ctx, options);
+console.log(JSON.stringify({distinctBatches: new Set(messages.map(message => message.batch_sha256)).size}));
+'''
+    result = subprocess.run([node, "--experimental-strip-types", "--input-type=module", "-e", script, str(module)],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["distinctBatches"] == 2
 
 
 def test_cleanup_collector_uses_separate_cursor(tmp_path, archive_messages):
@@ -167,7 +204,7 @@ import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-const {SessionArchive, diagnosticEntry} = await import(pathToFileURL(process.argv[1]).href);
+const {SessionArchive, sessionEntry} = await import(pathToFileURL(process.argv[1]).href);
 delete process.env.GOAL_PLUS_DEBUG;
 delete process.env.GOAL_PLUS_SESSION_DIAGNOSTICS;
 const entries = [], messages = [];
@@ -205,7 +242,9 @@ for (let i = 0; i < 3; i++) {
   assert.equal(messages.length, count);
 }
 assert.equal(messages.length, 3);
-assert.ok(!JSON.stringify(entries.map(diagnosticEntry)).includes('PRIVATE'));
+assert.ok(JSON.stringify(entries.map(sessionEntry)).includes('PRIVATE USER'));
+assert.ok(JSON.stringify(entries.map(sessionEntry)).includes('PRIVATE THINKING'));
+assert.ok(JSON.stringify(entries.map(sessionEntry)).includes('PRIVATE COMMAND'));
 process.env.GOAL_PLUS_SESSION_DIAGNOSTICS = '0';
 append({type: 'message', message: {role: 'user', content: 'PRIVATE'}});
 await archive.flush(ctx, options);

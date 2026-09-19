@@ -130,18 +130,19 @@ schema 合法但持续无法推进时，还需结合 Goal 状态和实际工具�
 session 的历史路径和 build 概要路径写入 `<runtime>/host-logs/session-diagnostics/pi-<hash>/index.json`，
 不复制原生历史。TT Root 的 runtime 位于其受管 session 目录，不能假定是目标工作区的 `.gp/`。
 
-TT Candidate/Annotation Child 每次执行结束通过原有父子 Message 通道发送新增条目。
-Root 校验已绑定的 Child 和 agent session，将批次保存到
+TT Candidate/Annotation Child 每次执行结束通过原有父子 Message 通道发送新增 native
+session entries。Root 校验已绑定的 Child 和 agent session，将批次保存到
 `<runtime>/host-logs/session-diagnostics/<child-id>/`，删除 Child 前再补收尾部消息。
-批次包含压缩校验、原生 session、stream、顺序号和 entry identity；重放不重复保存，
-成功发送后的游标保存在原生 `goal-plus-session-archive-checkpoint` custom entry 中，
-同一 Child 的 Pi 进程重建后继续发送新增条目，不重新发送整个历史；游标不进入模型上下文。
-清理使用独立 Message cursor，不执行或重放业务工具。每个目录的 `index.json` 关联
-Root/run/candidate/session，并记录批次条目数、压缩大小、解码大小和清理时收取状态。
+同一条归档流同时服务运行诊断和离线行为复盘；批次包含压缩校验、原生 session、stream、
+顺序号和 entry identity。重放不重复保存，成功发送后的游标保存在原生
+`goal-plus-session-archive-checkpoint` custom entry 中，同一 Child 的 Pi 进程重建后继续
+发送新增条目，不重新发送整个历史；游标不进入模型上下文。清理使用独立 Message cursor，
+不执行或重放业务工具。每个目录的 `index.json` 关联 Root/run/candidate/session，并记录
+批次条目数、压缩大小、解码大小和清理时收取状态。
 
-归档过滤普通对话、模型思考、原生文件/命令工具正文和 compaction 摘要；保留 GP 工具参数、
-文本结果及 provider 错误，供离线分析，内容可能包含任务信息，不提交到仓库。
-每批压缩上限为 1 MiB、解码上限为 16 MiB；超限或发送失败保留原生记录并报告
+归档保留完整 Pi native session entry，内容可能包含 prompt、thinking、工具参数和返回正文，
+只供本地 host 侧诊断和行为复盘，不提交到仓库。每批压缩上限为 1 MiB、解码上限为 16 MiB；
+完整 session 会按大小切成多个批次。单个 entry 超过边界或发送失败时，保留原生记录并报告
 `goal_plus_session_archive_unavailable`，不阻止推理和业务清理。
 发送复用官方 SDK，由限时 5 秒的独立 helper 执行；超时回收 helper，后续执行结束可重试同批。
 突然退出前尚未发送的尾部、外部删除整个 Root 后的 runtime 不在保留保证内。
@@ -211,8 +212,8 @@ TT Child 的诊断归档目录同样可作为输入；报告只保存在本地�
 
 ## Agent 行为全量导出（GOAL_PLUS_AGENT_TRANSCRIPT）
 
-现有诊断默认脱敏：session-diagnostics 归档过滤普通对话、模型思考和原生工具正文，注入
-台账只保存哈希。需要逐行检查 Main/subagent 实际做了什么（长时间无输出、临时注入的
+session-diagnostics 归档现在保留完整 session entry，注入台账仍只保存哈希。需要逐行检查
+Main/subagent 实际做了什么（长时间无输出、临时注入的
 prompt、工具调用与返回正文）时，使用本导出。它在导出时回读本地原生日志，内容完整，
 属于显式 debug 通道，输出两种形式：
 
@@ -257,11 +258,10 @@ PYTHONPATH=src python scripts/export_agent_transcript.py --codex /path/to/rollou
   混在同一目录时由导航的 run 分组区分。rollout 未变化时（既有导出不早于源文件）
   跳过重写，超过 32 MiB 的 rollout 跳过导出；
 - TT Child 的 `session-diagnostics/<child-id>/` 归档目录会得到自动写入的
-  `transcript.html`（脱敏归档 + `events.sqlite3` 恢复的 turn 总结与 controller prompt）。
+  `transcript.html`（统一 session 归档与 `events.sqlite3` 恢复的 turn 总结和 controller prompt）。
   注意 controller（Root 沙箱内的 MCP 进程）**看不到兄弟 Child 的目录**，进程内抓取永远
-  拿不到原始历史；Child 的 thinking 与原生工具正文只能在**宿主侧**于保留期读取
-  `<instance>/thinkthreads/<child>/session/active.jsonl`。全量导出器运行在宿主侧，对仍
-  保留的 Child 自动优先原始历史——**运行期间用 `--watch` 持续导出即可实时保全全内容**：
+  拿不到尚未归档的原始历史；Child 的 session entry 在每次执行结束后通过归档流发送，
+  释放前再做 bounded drain。全量导出器运行在宿主侧，对仍保留的 Child 自动优先原始历史：
 
   最简单的方式是用启动包装器，`GOAL_PLUS_DEBUG=1` 时它自动伴随任务运行 `--watch`
   （任务结束再做一次最终导出；未设置该变量时命令原样直通）：
@@ -273,7 +273,7 @@ PYTHONPATH=src python scripts/export_agent_transcript.py --codex /path/to/rollou
       --thinking low -p "$(cat pi-goal-prompt.md)"
   ```
 
-  也可以手动挂 watch：
+  也可以手动挂 watch（仅用于额外观察，不是保留 transcript 的必要条件）：
 
   ```bash
   ROOT=$(ls -td ~/.local/state/thinkthread/instances/*/thinkthreads/*/session/goal-plus | head -1)
@@ -283,8 +283,8 @@ PYTHONPATH=src python scripts/export_agent_transcript.py --codex /path/to/rollou
 边界与限制：
 
 - 输出包含 prompt、工具参数、返回正文和模型思考，只保存在本地 host-logs，不要提交。
-- TT Child 视图来自 session-diagnostics 归档，继承了它的过滤：普通对话与原生工具正文
-  是 placeholder；GP 工具调用、注入台账与 controller prompt 仍完整可见。
+- TT Child 视图来自 session-diagnostics 归档，包含完整归档期间已收到的 session entry；
+  如果 Child 在 flush 前突然退出，尾部仍可能显示为 partial。
 - Pi Main 依赖原生历史仍存在（`session-diagnostics/pi-*/index.json` 的 history 指针）；
   Codex reasoning 摘要取决于 rollout 是否记录，缺失时不推测。
 - 导出器只读：不启动模型、不发送消息、不修改运行状态；与 monitor/audit 脚本可同时使用。
