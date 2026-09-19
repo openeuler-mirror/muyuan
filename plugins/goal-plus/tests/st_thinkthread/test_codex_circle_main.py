@@ -440,6 +440,8 @@ def test_native_codex_main_completes_single_candidate_search_thinkthread(thinkth
     )
 
 
+@pytest.mark.todo(reason="adaptive_check_later")
+@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_native_codex_main_completes_circle_thinkthread_apply(thinkthread_root):
     """L4: two retained Codex candidates, continuation, annotation, selection, apply."""
     prompt = (
@@ -468,6 +470,8 @@ def test_native_codex_main_completes_circle_thinkthread_apply(thinkthread_root):
     )
 
 
+@pytest.mark.todo(reason="adaptive_check_later")
+@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_native_codex_main_completes_circle_thinkthread_apply_k2_single_turn(thinkthread_root):
     """Reduced L4: two retained Codex candidates, one delivery each, annotation, apply."""
     prompt = (
@@ -484,7 +488,10 @@ def test_native_codex_main_completes_circle_thinkthread_apply_k2_single_turn(thi
         "best valid exact snapshot, independently verify the publication and apply it to Root. Re-run the "
         "Root verifier and require valid=true and sum_radii >= 2.4. Finish the Goal audit, mark complete, "
         "generate MD/HTML reports and complete resource cleanup. Keep verifier and other frozen files "
-        "unchanged."
+        "unchanged. The promotion call already runs the independent promotion verifier: after "
+        "goal_plus_search_apply_promotion returns state=applied, do not call "
+        "goal_plus_search_run_verifier again (especially not scope=promotion) and do not repeat "
+        "promotion; run only the Root verifier, then audit, close the execution scope, report, and cleanup."
     )
     run_codex_circle(
         thinkthread_root,

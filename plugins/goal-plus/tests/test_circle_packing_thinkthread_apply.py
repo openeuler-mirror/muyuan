@@ -160,5 +160,7 @@ def test_circle_packing_thinkthread_codex_prompt_uses_host_entrypoint() -> None:
     assert "candidate-hints/staggered.py" in prompt
     assert "两次 candidate delivery 足够" in prompt
     assert "sum_radii >= 2.4" in prompt
+    assert "不要再次调用\n`goal_plus_search_run_verifier`" in prompt
+    assert "不要重复 promotion" in prompt
     assert prompt.index("关闭 Goal 的 execution scope") < prompt.index("生成规范 MD/HTML 报告")
     assert "goal_plus_host_close_scopes" not in prompt

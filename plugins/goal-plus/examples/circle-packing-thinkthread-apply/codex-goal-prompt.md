@@ -21,4 +21,9 @@ snapshot，完成独立 publication 验证、promotion 并应用回当前 Root�
 标记 complete，关闭 Goal 的 execution scope，最后生成规范 MD/HTML 报告并确认 cleanup
 complete。
 
+注意：`goal_plus_search_promote` 已经执行独立 promotion verifier，
+`goal_plus_search_apply_promotion` 返回 `state="applied"` 后不要再次调用
+`goal_plus_search_run_verifier`（尤其不要传 `scope="promotion"`），也不要重复 promotion。
+此后只需在 Root 工作区直接运行冻结 verifier，完成 Goal audit、scope close、report 和 cleanup。
+
 执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。
