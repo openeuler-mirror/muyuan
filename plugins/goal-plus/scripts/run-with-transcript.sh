@@ -80,8 +80,11 @@ else
 fi
 
 start_watcher
+# errexit must not bypass cleanup/export when the wrapped task fails.
+set +e
 wait "$TASK_PID"
 STATUS=$?
+set -e
 cleanup
 final_export
 if [ -n "$RUNTIME_ROOT" ]; then
