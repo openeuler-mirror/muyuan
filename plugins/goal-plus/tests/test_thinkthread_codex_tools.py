@@ -175,6 +175,15 @@ def test_codex_tt_main_host_start_creates_activates_and_replays_goal(tmp_path, m
     view["profiles"][0]["agent"] = "codex"
     monkeypatch.setattr(sdk, "self_view", lambda: view)
     monkeypatch.setattr("goal_plus.infrastructure.thinkthread_codex_tools.AgentPosixSdkClient", lambda: sdk)
+    preflight_calls = []
+    monkeypatch.setattr(
+        "goal_plus.thinkthread_connectivity.preflight_thinkthread_codex",
+        lambda: preflight_calls.append("preflight") or {
+            "model": "gpt-5.6-luna",
+            "provider": "direct",
+            "endpoint": "http://127.0.0.1:18081/v1",
+        },
+    )
 
     server = create_thinkthread_main_mcp()
 
@@ -186,6 +195,7 @@ def test_codex_tt_main_host_start_creates_activates_and_replays_goal(tmp_path, m
                 "goal_plus_host_start", {"raw_goal": "Optimize the toy project"},
                 meta={"threadId": "tt-main-session"},
             )
+            assert preflight_calls == ["preflight"]
             payload = json.loads(started.content[0].text)
             assert payload["status"] == "active"
             assert payload["entrypoint_status"] == "host_verified"
