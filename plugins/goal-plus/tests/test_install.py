@@ -202,7 +202,7 @@ def test_pi_dev_isolated_from_retired_source_package_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_dir = tmp_path / "pi-agent"
-    _write_pi_settings(agent_dir, [str(ROOT)])
+    _write_pi_settings(agent_dir, [str(tmp_path / "foreign-release" / "goal-plus")])
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
     installer._preflight_pi_dev()
