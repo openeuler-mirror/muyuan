@@ -271,7 +271,7 @@ Pi Search 使用 `strategy.orchestration_mode="parallel_loops"` 和固定的初�
 
 1. 只规划并物化一次初始 candidate；
 2. 用 `goal_plus_session_run` 准备候选并执行，保存返回的 session/call identity；
-3. 用 `goal_plus_session_wait` 读取准确调用结果；
+3. 把全部活跃调用放进同一次 `goal_plus_session_wait_any`，在首个完成的调用处读取结果；
 4. 检查持久 Evidence，若需继续探索，对同一 candidate 再次 run；
 5. controller 重建后，用新的 call_id 继续原 session 和 workspace，详见 [Search 恢复](search-recovery.md)；
 6. 结束时调用 `goal_plus_session_close`，再 select 和 promote；默认 promotion mode 必须 apply，
@@ -345,14 +345,13 @@ count，且总数必须等于 `max_parallel`。`models=` 是 `workers=` 的兼�
 
 `/goal-plus` command 和 `goal_plus_search_freeze_spec` extension gate 只收集显式 worker、annotator
 model。匹配当前 Main 的显式引用直接使用 `ctx.model` 对象，其他引用从 native registry
-唯一解析；随后按模型去重，通过一次 `Promise.all` 并发调用 `ctx.modelRegistry.complete()` 发送
-最小 `hi` 请求。任一失败时在 agent 启动前拒绝创建或 freeze；即使没有显式 role model，也会
-把当前 `ctx.model` 纳入 probe，避免默认模型配置失效到 Goal 启动后才暴露。extension 直接从
+唯一解析；这些检查只读取本地 model catalog，不发送合成 `hi` 请求。extension 直接从
 `ctx.model` 和当前 thinking 建立
 execution scope 的非敏感 native launch snapshot；candidate、Annotation、普通 subagent 和 final
 check 在没有显式 override 时使用该 snapshot，避免新 Pi 进程回落到机器级 default。该 snapshot
 不进入 SearchSpec，不使用 Goal Plus model 环境变量，也不包含或解析 API key、endpoint 或独立
-provider 配置。catalog 可发现不等于真实推理可用。
+provider 配置。catalog 可发现不等于真实推理可用；实际 invocation 失败会以结构化 model failure
+写入 session metadata、monitor 和 report。
 
 ## Worker 上下文与恢复
 

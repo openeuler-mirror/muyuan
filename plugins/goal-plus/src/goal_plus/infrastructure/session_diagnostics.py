@@ -1,4 +1,4 @@
-"""Local diagnostic archives from already bound TT Children; never execution authority."""
+"""Local transcript archives from already bound TT Children; never execution authority."""
 
 import base64
 import hashlib
@@ -37,7 +37,7 @@ def _identity(binding):
 def _index(directory, binding):
     path = directory / "index.json"
     index = load_json(path) if path.exists() else {
-        "version": 1, "source": "thinkthread_messages", "agent_harness": "pi",
+        "version": 1, "source": "thinkthread_messages", "stream_type": "session_transcript", "agent_harness": "pi",
         "identity": _identity(binding), "batches": {}, "pending_batches": {}, "status": "unavailable",
     }
     if index["identity"] != _identity(binding):
@@ -48,7 +48,7 @@ def _index(directory, binding):
 def archive_diagnostic_message(root, binding, message):
     """Return whether this is a diagnostic envelope, including disabled/invalid ones."""
     payload = message_payload(message)
-    if payload is None or payload.get("protocol") != PROTOCOL or payload.get("type") != "session_diagnostics":
+    if payload is None or payload.get("protocol") != PROTOCOL or payload.get("type") not in {"session_transcript", "session_diagnostics"}:
         return False
     if os.environ.get("GOAL_PLUS_SESSION_DIAGNOSTICS") == "0":
         return True

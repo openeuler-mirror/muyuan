@@ -186,7 +186,7 @@ def assert_codex_circle_evidence(
 def _last_codex_assistant_text(state_root: Path) -> str | None:
     """Best-effort native evidence: the Codex rollout of the Root instance."""
     rollouts = sorted(
-        state_root.glob("instances/*/thinkthreads/*/session/sessions/**/rollout-*.jsonl"),
+        state_root.glob("instances/*/thinkthreads/*/session/**/rollout-*.jsonl"),
         key=lambda path: path.stat().st_mtime,
     )
     if not rollouts:
@@ -239,6 +239,13 @@ def run_codex_circle(
         "--fs", str(workspace),
         "--state-root", str(state_root),
     ]
+    agent_args = []
+    if model := os.environ.get("ST_CODEX_MODEL"):
+        agent_args.extend(["--model", model])
+    if effort := os.environ.get("ST_CODEX_REASONING_EFFORT"):
+        agent_args.extend(["-c", f'model_reasoning_effort="{effort}"'])
+    if agent_args:
+        command.extend(["--", *agent_args])
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
 

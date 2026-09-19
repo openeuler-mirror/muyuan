@@ -158,7 +158,9 @@ class GoalGate:
                     event,
                     "block",
                     reason=reason,
-                    continuation_prompt=self._stop_audit_prompt(record),
+                    continuation_prompt=self._stop_audit_prompt(
+                        record, compact=bool(context.get("stop_prompt_compact"))
+                    ),
                 )
 
             if event == "subagent_stop" and record.next_action is not None:
@@ -244,7 +246,7 @@ class GoalGate:
             else None,
         )
 
-    def _stop_audit_prompt(self, record: GoalPlusRecord) -> str:
+    def _stop_audit_prompt(self, record: GoalPlusRecord, *, compact: bool = False) -> str:
         """Compact stop continuation: only the rules that live nowhere else.
 
         The full raw goal, command config and policy are already delivered by
@@ -253,6 +255,12 @@ class GoalGate:
         attempt only burns tokens. Two exceptions carry live state the model
         cannot recall: a pending Search recovery agenda, and the time
         reference a prose time limit needs.
+
+        Hosts that track whether the terminal-state policy block is still
+        visible in the conversation (Pi resets the flag on compaction) set
+        stop_prompt_compact in the gate context; the policy block then
+        collapses to its one-line core rule instead of being re-sent on every
+        stop attempt. Unknown or falsy context keeps the full text.
         """
         action = record.next_action
         action_text = action.description if action else "没有记录下一步 action。"
@@ -261,16 +269,29 @@ class GoalGate:
             if final_check_mode(record) == "required"
             else ""
         )
-        agenda = self.reconciliation.reconciliation_context(record.goal_plus_id)
+        agenda = self.reconciliation.reconciliation_context(
+            record.goal_plus_id, compact=compact
+        )
         time_text = (
             f"时间参照：created_at={record.created_at}，当前时间={self.clock.timestamp()}。\n"
         )
-        return (
+        header = (
             f"Goal Plus {record.goal_plus_id} 仍处于 active（phase={record.phase}，"
             f"revision={record.goal_revision}）。顶层 agent 只有在记录真实终态后才能停止。\n\n"
             f"当前 next action：{action_text}\n"
-            f"{final_check_text}{time_text}{agenda}"
-            "完整原始目标和命令配置见本 session 的 Goal Plus "
+        )
+        if compact:
+            return (
+                header
+                + f"{final_check_text}{time_text}{agenda}"
+                + "停止前，使用 complete、blocked 或 abandoned 调用 goal_plus_set_status，"
+                "并提供真实原因和证据。完整停止与终态规则见本 session 早前的 must-continue "
+                "注入；已不可见时本提示会自动恢复为完整版。\n"
+            )
+        return (
+            header
+            + f"{final_check_text}{time_text}{agenda}"
+            + "完整原始目标和命令配置见本 session 的 Goal Plus "
             "context；缺失时用 goal_plus_status(detail=true) 读取。\n\n"
             "对照持久证据审计完整原始目标中的每项要求。如果原始目标包含时间限制，用上面的时间参照"
             "进行判断：只要仍有可用时间且目标未完成，就继续工作；达到或超过时间条件时，"

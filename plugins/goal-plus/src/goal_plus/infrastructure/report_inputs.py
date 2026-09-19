@@ -335,4 +335,13 @@ def build_html_report_data(root_dir: Path | str, run_id: str) -> dict[str, Any]:
         "timeline": timeline,
         "stop_hook_statistics": stop_hook_statistics,
         "loop_agent_statistics": loop_agent_statistics,
+        "agent_transcript": _agent_transcript_export(root),
     }
+
+
+def _agent_transcript_export(root: Path) -> dict[str, str] | None:
+    """Optional pointer to a local debug transcript export beside run reports."""
+    index = root / "host-logs" / "agent-transcript" / "index.html"
+    if index.is_file():
+        return {"href": "../../host-logs/agent-transcript/index.html"}
+    return None

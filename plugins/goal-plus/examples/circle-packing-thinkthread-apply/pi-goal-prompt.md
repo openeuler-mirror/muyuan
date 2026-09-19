@@ -5,6 +5,7 @@
 `.goal-plus-verifiers/circle_packing_score.py`。只修改 `initial_program.py`；保持 spec 中的
 ThinkThread 工作区、AutoResearch inner agent 与 apply 模式，不得回退到其他工作区实现或
 inner agent。
+实现只使用 Python 标准库，禁止 numpy、scipy 等第三方依赖（执行环境未安装，verifier 会直接失败）。
 
 只运行一个 K=2 Search，并把两个确定路线作为各 lane 的起点：c001 从
 `candidate-hints/rectangular.py` 开始；c002 从 `candidate-hints/staggered.py` 开始。每个 lane 的

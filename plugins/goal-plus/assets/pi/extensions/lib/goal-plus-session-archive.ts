@@ -8,13 +8,8 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { THINKTHREAD_GOAL_PLUS_PROTOCOL } from "../../../thinkthread-session-rpc.ts";
 import { sessionDiagnosticsEnabled } from "./goal-plus-session-diagnostics.ts";
 
-const observationTypes = new Set([
-	"goal-plus-instructions-observation", "goal-plus-tool-contracts", "goal-plus-provider-request",
-	"goal-plus-injection-observation",
-]);
-const gpTool = (name: unknown) => typeof name === "string" && /^(goal_plus_|search_|thinkthread_)/.test(name);
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
-// Match the existing TT RPC chunk size; bound a diagnostic batch to 32 chunks.
+// Match the existing TT RPC chunk size; bound each session archive batch to 32 chunks.
 const CHUNK_BYTES = 32 * 1024;
 const MAX_BATCH_BYTES = 32 * CHUNK_BYTES;
 const MAX_DECODED_BYTES = 16 * 1024 * 1024;
@@ -32,30 +27,13 @@ export async function sendDiagnosticMessages(parentId: string, messages: Record<
 	});
 }
 
-export function diagnosticEntry(entry: any): Record<string, unknown> {
-	const base = { id: entry.id, parentId: entry.parentId, timestamp: entry.timestamp };
-	if (entry.type === "custom" && observationTypes.has(entry.customType)) {
-		return { ...base, type: "custom", customType: entry.customType, data: entry.data };
+export function sessionEntry(entry: any): Record<string, unknown> {
+	if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+		throw new TypeError("Pi session entry must be an object");
 	}
-	if (entry.type === "compaction") return { ...base, type: "compaction" };
-	const message = entry.message;
-	if (entry.type === "message" && message?.role === "assistant") {
-		return { ...base, type: "message", message: {
-			role: "assistant", stopReason: message.stopReason, provider: message.provider, model: message.model,
-			errorMessage: message.errorMessage,
-			content: (message.content ?? []).filter((part: any) => part.type === "toolCall" && gpTool(part.name))
-				.map((part: any) => ({ type: "toolCall", id: part.id, name: part.name, arguments: part.arguments })),
-		} };
-	}
-	if (entry.type === "message" && message?.role === "toolResult" && gpTool(message.toolName)) {
-		return { ...base, type: "message", message: {
-			role: "toolResult", toolCallId: message.toolCallId, toolName: message.toolName, isError: message.isError,
-			content: (message.content ?? []).filter((part: any) => part.type === "text")
-				.map((part: any) => ({ type: "text", text: part.text })),
-		} };
-	}
-	// Keep tree identity without user text, native tool bodies or private reasoning.
-	return { ...base, type: "diagnostic-placeholder" };
+	// Pi native entries are JSON records. Preserve the complete entry so the same
+	// archive supports operational monitoring and post-run behavior review.
+	return { ...entry };
 }
 
 export class SessionArchive {
@@ -64,6 +42,35 @@ export class SessionArchive {
 	private sequence = 0;
 	private sent = new Set<string>();
 	private pending?: { bytes: Buffer; entries: string[] };
+
+	private encodeBatch(sessionId: string, leafId: string | undefined,
+		entries: Record<string, unknown>[]): Buffer {
+		const raw = JSON.stringify({ version: 1, session_id: sessionId, stream_id: this.streamId,
+			sequence: this.sequence, captured_at: new Date().toISOString(),
+			leaf_id: leafId, entries: entries.map(sessionEntry) });
+		if (Buffer.byteLength(raw) > MAX_DECODED_BYTES) throw new Error("session_batch_too_large");
+		const bytes = gzipSync(raw);
+		if (bytes.length > MAX_BATCH_BYTES) throw new Error("session_batch_too_large");
+		return bytes;
+	}
+
+	private nextBatch(sessionId: string, leafId: string | undefined,
+		entries: Record<string, unknown>[]): { bytes: Buffer; entries: string[] } {
+		const selected: Record<string, unknown>[] = [];
+		let bytes: Buffer | undefined;
+		for (const entry of entries) {
+			const candidate = [...selected, entry];
+			try {
+				bytes = this.encodeBatch(sessionId, leafId, candidate);
+			} catch (error) {
+				if (selected.length === 0) throw error;
+				break;
+			}
+			selected.push(entry);
+		}
+		if (!bytes || selected.length === 0) throw new Error("session_batch_empty");
+		return { bytes, entries: selected.map(entry => String(entry.id)) };
+	}
 
 	async flush(ctx: ExtensionContext, options: {
 		root: string; role: string; sourceRoot: string;
@@ -107,19 +114,13 @@ export class SessionArchive {
 			if (!this.pending) {
 				const entries = ctx.sessionManager.getEntries().filter(entry => !this.sent.has(entry.id));
 				if (entries.every(entry => entry.type === "custom" && entry.customType === CHECKPOINT_TYPE)) return;
-				const raw = JSON.stringify({ version: 1, session_id: sessionId, stream_id: this.streamId,
-					sequence: this.sequence, captured_at: new Date().toISOString(),
-					leaf_id: ctx.sessionManager.getLeafId(), entries: entries.map(diagnosticEntry) });
-				if (Buffer.byteLength(raw) > MAX_DECODED_BYTES) throw new Error("diagnostic_batch_too_large");
-				const bytes = gzipSync(raw);
-				if (bytes.length > MAX_BATCH_BYTES) throw new Error("diagnostic_batch_too_large");
-				this.pending = { bytes, entries: entries.map(entry => entry.id) };
+				this.pending = this.nextBatch(sessionId, ctx.sessionManager.getLeafId(), entries);
 			}
 			const { bytes, entries } = this.pending;
 			const messages = [];
 			for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
 				const chunk = bytes.subarray(offset, offset + CHUNK_BYTES);
-				messages.push({ protocol: THINKTHREAD_GOAL_PLUS_PROTOCOL, type: "session_diagnostics",
+				messages.push({ protocol: THINKTHREAD_GOAL_PLUS_PROTOCOL, type: "session_transcript",
 						agent_session_id: agentSessionId, batch_sha256: hash(bytes), chunk_index: offset / CHUNK_BYTES,
 						chunk_count: Math.ceil(bytes.length / CHUNK_BYTES), chunk_sha256: hash(chunk),
 						data_base64: chunk.toString("base64") });
@@ -129,8 +130,10 @@ export class SessionArchive {
 			this.sequence++; this.pending = undefined;
 			options.checkpoint({ version: 1, session_id: sessionId, stream_id: this.streamId,
 				next_sequence: this.sequence, exported_through: entries.at(-1) });
-			// A replayed pending batch may precede entries from the current invocation.
-			if (replaying) await this.flush(ctx, options);
+			// Drain the next bounded batch after a replay or a split full session.
+			if (replaying || ctx.sessionManager.getEntries().some(entry => !this.sent.has(entry.id))) {
+				await this.flush(ctx, options);
+			}
 		} catch (error) {
 			console.error(JSON.stringify({ event: "goal_plus_session_archive_unavailable",
 				reason: error instanceof Error ? error.name : "Error" }));

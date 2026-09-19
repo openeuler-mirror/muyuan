@@ -1064,6 +1064,40 @@ def test_goal_like_triage_blocks_stop_until_terminal_status(tmp_path) -> None:
     assert len(gate.continuation_prompt) < 800
 
 
+def test_stop_gate_compact_prompt_keeps_live_state_and_policy_pointer(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    record = runtime.create_goal("Tidy docs wording")
+
+    updated = runtime.record_triage(
+        record.goal_plus_id,
+        GoalPlusTriage(
+            is_optimization=False,
+            confidence="high",
+            recommended_phase="goal",
+            reasons=["qualitative documentation task"],
+        ),
+    )
+
+    gate = runtime.gate(
+        updated.goal_plus_id,
+        event="stop",
+        context={"stop_prompt_compact": True},
+    )
+    assert gate.decision == "block"
+    prompt = gate.continuation_prompt
+    # Live state the model cannot recall stays in every injection.
+    assert "仍处于 active" in prompt
+    assert "当前 next action" in prompt
+    assert "时间参照：created_at=" in prompt
+    assert "goal_plus_set_status" in prompt
+    assert "完整停止与终态规则" in prompt
+    # The static terminal-state policy collapses to its pointer line.
+    assert "即使实际收尾晚于预设也使用 complete" not in prompt
+    assert "不要仅因超出预设而使用 blocked" not in prompt
+    assert "Tidy docs wording" not in prompt
+    assert len(prompt) < 500
+
+
 def test_spec_discovery_stop_gate_blocks_with_next_action(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("Optimize model throughput")

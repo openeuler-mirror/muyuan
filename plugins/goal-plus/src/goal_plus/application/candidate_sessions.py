@@ -2,6 +2,8 @@
 
 import math
 from contextlib import nullcontext
+from dataclasses import asdict
+import re
 from typing import Any, Literal
 from goal_plus.application.adaptive_admission import AdaptiveAdmission
 from goal_plus.application.candidate_execution import (
@@ -485,6 +487,13 @@ class CandidateSessions:
                 "usage": result.usage,
                 "metrics_baseline": observation.metrics_baseline,
             }
+            if result.error:
+                receipt["error"] = (
+                    result.failure.message if result.failure is not None
+                    else "native model request failed"
+                )
+            if result.failure is not None:
+                receipt["failure"] = asdict(result.failure)
             for previous in dispatches:
                 if (
                     previous.get("native_session_id") == result.native_session_id
@@ -500,6 +509,16 @@ class CandidateSessions:
                 ended_at=observation.ended_at,
                 duration_seconds=sum(item["duration_seconds"] for item in dispatches),
             )
+            if result.failure is not None:
+                metadata["model_failure"] = asdict(result.failure)
+            elif result.error:
+                metadata["model_failure"] = {
+                    "code": "provider_rejected",
+                    "message": (
+                        result.failure.message if result.failure is not None
+                        else "native model request failed"
+                    ),
+                }
             if session.agent_harness == "pi" and observation.pi_metrics is not None:
                 metadata["pi_metrics"] = observation.pi_metrics
                 metadata["session_file"] = observation.pi_metrics.get("session_file")
@@ -642,6 +661,11 @@ class CandidateSessions:
 
     @staticmethod
     def _make_agent_session_id(run_id: str, index: int) -> str:
+        match = re.fullmatch(r"run_(\d+)", run_id)
+        if match:
+            # agent_0007_02 rides along in every wait roster and session
+            # receipt; keep it as short as the run id it derives from.
+            return f"agent_{match.group(1)}_{index:02d}"
         run_suffix = run_id.removeprefix("run_")
         return f"agent_{run_suffix}_{index:03d}"
 

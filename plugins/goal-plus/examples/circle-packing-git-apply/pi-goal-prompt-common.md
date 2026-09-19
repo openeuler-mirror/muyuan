@@ -4,7 +4,8 @@
 所有圆的半径之和。
 
 修改：只修改 `workspace/initial_program.py`。不要修改 verifier 或其他任务输入，
-不要访问网络。
+不要访问网络。实现只使用 Python 标准库，禁止 numpy、scipy 等第三方依赖
+（执行环境未安装，verifier 会直接失败）。
 
 工作区合同：`workspace/` 是本任务可写的独立源码 Git 仓库。把当前目录中的
 `search-spec.json` 作为权威 SearchSpec，保持 `source_path="workspace"`，

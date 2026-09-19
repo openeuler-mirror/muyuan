@@ -93,7 +93,7 @@ def require_tool_role(
 
 
 
-SESSION_TOOL_NAMES = {"goal_plus_session_" + action for action in ("run", "wait", "message", "interrupt", "stop", "close")}
+SESSION_TOOL_NAMES = {"goal_plus_session_" + action for action in ("run", "wait_any", "message", "interrupt", "stop", "close")}
 PUBLIC_TOOL_NAMES = SEARCH_TOOL_NAMES | GOAL_PLUS_TOOL_NAMES | SESSION_TOOL_NAMES | {"goal_plus_monitor_snapshot"}
 
 CANDIDATE_CAPABILITIES = {

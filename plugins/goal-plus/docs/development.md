@@ -105,7 +105,14 @@ Codex、Pi 和 ThinkThread Profile 分别持有版本引用，更新其中一个
 `./install.sh --pi --thinkthread` 或 `./install.sh --codex --thinkthread`。搭配
 `--codex --thinkthread` 时可用 `--codex-profile <name>` 叠加用户 `CODEX_HOME` 下的
 `NAME.config.toml` 覆盖层，把受管 TT Codex 配置切换到非默认模型（如 DeepSeek）；
-省略时投影 base config 默认模型。同样，
+省略时投影 base config 默认模型。带 `--thinkthread` 的安装在 Profile、隔离配置和
+MCP 环境接线写入后，会读取 TT Profile 的 exact model allowlist，不发送真实模型请求。配置失败会列出
+agent、Profile、model、provider、endpoint 和缺失的 credential 名称（不会输出 credential
+值）。allowlist 可包含当前不可用或不打算在本任务使用的模型，因此安装只确认其可读取，不会
+逐个强制请求。多个 worker/annotator 模型不需要为每个模型猜一个 `--codex-profile`；它们先成为
+TT Profile 的显式 delegation allowlist 成员，任务实际选择后由运行时做 exact 配置准入，真实请求
+失败则写入结构化执行失败并在 monitor/report 中展示。
+同样，
 `./uninstall.sh --pi` 只移除普通 Pi 注册；
 要移除本 checkout 管理的 TT Profile，显式加 `--thinkthread`。无参数卸载默认选择全部组件。
 TT Profile 从基础 `pi` Profile 整份生成，重装会覆盖受管文件中的手工修改。写入后的
@@ -190,11 +197,10 @@ cd /absolute/path/to/target-workspace
 pi-goal-plus
 ```
 
-用户级或目标项目若已显式引用相同 `assets/pi/` extension/skill，Pi 会按绝对资源路径去重。
-旧式直接注册源码根目录的 package 已不再有效，需先移除该注册。
-安装时和 launcher 每次启动时仍会拒绝来自其他 checkout 或复制路径的 Goal Plus；若
-报错，先按报告的 source 执行 `pi remove <source>`。断链的旧式 loose-resource symlink 不会被
-Pi 加载，也不会阻塞开发态。其他 Pi package、模型设置和认证信息不会被修改。
+开发 launcher 使用 `--no-extensions` 后显式加载当前 checkout 的 `assets/pi/` extension，
+因此普通 `--pi` release、用户级 package 和目标项目资源都不会进入 dev 进程，也不需要卸载。
+`--pi-dev` 不修改 Pi 用户配置、模型设置或认证信息；它只校验当前 checkout 的 extension
+存在并使用自己的 editable Python runtime。普通 Pi 会话和开发 Pi 会话可以并行运行。
 
 ### Pi 开发循环
 

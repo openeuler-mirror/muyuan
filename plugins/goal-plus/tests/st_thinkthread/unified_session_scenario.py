@@ -34,9 +34,17 @@ def crash_after_first_call(root, identity, caller, receipt_path, active=False):
         async with Client(create_host_mcp(root, agent_harness="pi", caller_role="main")) as client:
             async def call(action, **params):
                 if action == "wait":
-                    params["detail"] = True
+                    action = "wait_any"
+                    params = {
+                        "calls": [{"session_id": params["session_id"], "call_id": params["call_id"]}],
+                        "timeout_seconds": params.get("timeout_seconds", 0),
+                        "detail": True,
+                    }
                 response = await client.call_tool("goal_plus_session_" + action, params, meta={"threadId": caller})
-                return json.loads(response.content[0].text)
+                payload = json.loads(response.content[0].text)
+                if action == "wait_any":
+                    return payload["finished"][0] if payload["finished"] else payload["running"][0]
+                return payload
 
             await call("run", run_id=session.run_id, candidate_id=session.candidate_id,
                        call_id="1", timeout_seconds=180, prompt=first_call_prompt(active))
@@ -100,9 +108,17 @@ def run_unified_session(config):
         async with Client(mcp) as client:
             async def call(action, **args):
                 if action == "wait":
-                    args["detail"] = True
+                    action = "wait_any"
+                    args = {
+                        "calls": [{"session_id": args["session_id"], "call_id": args["call_id"]}],
+                        "timeout_seconds": args.get("timeout_seconds", 0),
+                        "detail": True,
+                    }
                 reply = await client.call_tool("goal_plus_session_" + action, args, meta={"threadId": native_id})
-                return json.loads(reply.content[0].text)
+                payload = json.loads(reply.content[0].text)
+                if action == "wait_any":
+                    return payload["finished"][0] if payload["finished"] else payload["running"][0]
+                return payload
 
             if cold:
                 opened = await call("run", run_id=run_id, candidate_id=task.candidate_id,

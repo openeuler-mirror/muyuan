@@ -5,6 +5,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 **/.gp/
+**/.gp.*/
 **/.goal-plus*
 !/examples/circle-packing/workspace-template/.goal-plus-verifiers/
 !/examples/circle-packing/workspace-template/.goal-plus-verifiers/circle_packing_score.py

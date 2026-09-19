@@ -16,7 +16,7 @@ class SessionControlTools:
     """Public control tools shared by all candidate session adapters."""
 
     run_tool: str = "goal_plus_session_run"
-    wait_tool: str = "goal_plus_session_wait"
+    wait_tool: str = "goal_plus_session_wait_any"
     message_tool: str = "goal_plus_session_message"
     interrupt_tool: str = "goal_plus_session_interrupt"
     stop_tool: str = "goal_plus_session_stop"
@@ -76,6 +76,22 @@ class SessionInvocationObservation:
 
 
 @dataclass(frozen=True)
+class ModelExecutionFailure:
+    """Normalized provider/host failure attached to one real invocation."""
+
+    phase: Literal["admission", "spawn", "request", "response", "transport", "unknown"]
+    code: str
+    message: str
+    provider: str | None = None
+    model: str | None = None
+    endpoint: str | None = None
+    credential: str | None = None
+    upstream_status: int | None = None
+    retryable: bool = False
+    source: str | None = None
+
+
+@dataclass(frozen=True)
 class SessionInvocationResult:
     agent_harness: AgentHarnessKind = field(kw_only=True)
     runtime_provider: AgentRuntimeProvider = field(kw_only=True)
@@ -86,6 +102,7 @@ class SessionInvocationResult:
     usage: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     observation: SessionInvocationObservation | None = None
+    failure: ModelExecutionFailure | None = None
 
 
 class NativeSession(Protocol):

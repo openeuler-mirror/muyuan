@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from collections.abc import Callable, Mapping
 from functools import wraps
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TYPE_CHECKING
 
 from mcp.types import TextContent
-from pydantic import Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter
 
 from goal_plus._version import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
@@ -46,6 +47,41 @@ VERIFIER_FAST_WAIT_SECONDS = 1.0
 # ends; a single long wait blocks the only interruption path. 300s keeps
 # polling cheap while bounding how long a user can be locked out.
 SESSION_WAIT_MAX_SECONDS = 300.0
+
+# Server-side wait-any poll cadence: the composition loop reads every listed
+# controller with a zero-timeout wait and sleeps between scans. The tool runs
+# in a worker thread, so the MCP loop keeps serving other control requests.
+SESSION_WAIT_POLL_SECONDS = 0.1
+
+
+class SessionCallRef(BaseModel):
+    """One exact session/call pair observed by goal_plus_session_wait_any."""
+
+    session_id: str = Field(min_length=1)
+    call_id: str = Field(min_length=1)
+
+
+def _wait_any_receipts(
+    session_controls: SessionControlLookup,
+    calls: list[SessionCallRef],
+    timeout_seconds: float,
+    *, detail: bool,
+) -> dict[str, Any]:
+    resolved = [
+        (ref.session_id, ref.call_id, session_controls(ref.session_id, "wait"))
+        for ref in calls
+    ]
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        finished: list[dict[str, Any]] = []
+        running: list[dict[str, Any]] = []
+        for session_id, call_id, control in resolved:
+            snapshot = control.wait(call_id, timeout=0)
+            entry = {"session_id": session_id, **session_call_receipt(snapshot, detail=detail)}
+            (finished if snapshot.state != "running" else running).append(entry)
+        if finished or timeout_seconds <= 0 or time.monotonic() >= deadline:
+            return {"finished": finished, "running": running}
+        time.sleep(min(SESSION_WAIT_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
 
 
 def _json_text(value: Any) -> TextContent:
@@ -293,35 +329,59 @@ def create_mcp(
                 )
 
         @register_tool()
-        async def goal_plus_session_wait(
-            session_id: str, call_id: str,
+        async def goal_plus_session_wait_any(
+            calls: Annotated[list[SessionCallRef], Field(
+                min_length=1,
+                description="Exact session_id/call_id pairs to observe. Parallel lanes list every active "
+                "invocation once; duplicate pairs are rejected.",
+            )],
             timeout_seconds: Annotated[float, Field(
                 ge=0, allow_inf_nan=False,
-                description="Maximum time this read waits for the invocation result; zero polls immediately. "
-                "Does not change the execution allowance supplied to run or stop a running invocation.",
+                description="Maximum time this read waits for the first finished invocation; zero polls "
+                "immediately. Does not change the execution allowance supplied to run or stop a running "
+                "invocation.",
             )] = 0,
-            detail: bool = False,
+            detail: Annotated[bool, Field(
+                description="Expand each finished entry's receipt with the invocation's full output. "
+                "Applies to this tool only; leave false during lane polling.",
+            )] = False,
         ) -> dict[str, Any]:
-            """Read exact call state and errors, optionally waiting. A wait timeout returns running without stopping execution.
+            """Observe every listed call and return at the first finished one; a wait timeout returns the roster without stopping execution.
 
-            Completed means the invocation returned, not that verification passed. Read Search results with
-            goal_plus_search_list_history; detail=true retrieves the full invocation output and host diagnostics.
-            Wait with a short timeout (<= SESSION_WAIT_MAX_SECONDS); when the result is not ready yet, end the
-            turn and let the host Stop continuation re-ignite you instead of blocking a single turn. User input
-            is only delivered at turn boundaries, and goal_plus_session_message can steer an active invocation.
+            finished entries carry the exact call state, errors and result availability; running entries keep
+            identity and state only. Completed means the invocation returned, not that verification passed.
+            For Search progress read goal_plus_search_list_history's default view — it already carries
+            rankings, scores and key metrics; its detail=true is only for host diagnostics and invalidation
+            evidence. This tool's own detail=true merely expands finished receipts with the invocation's
+            full output. Handle a finished lane with a new session_run call_id while the other lanes keep
+            running; one wait covers the whole lane set, so per-lane waits are not needed.
+            Scale the wait to the lanes: short waits (tens of seconds) while lanes are starting
+            or settling; once every listed lane is running in stable exploration, longer waits
+            up to SESSION_WAIT_MAX_SECONDS are appropriate — this wait returns early at the
+            first finish, so the timeout only bounds idle time. When no call is finished, end
+            the turn and let the host Stop continuation re-ignite you instead of blocking a
+            single turn. User input cannot interrupt an in-flight wait: it queues until this
+            turn ends and is then handled first; goal_plus_session_message can steer an active
+            invocation.
             A restarted MCP cannot replay old call history; continue with session_run and a new call_id.
             """
             if timeout_seconds > SESSION_WAIT_MAX_SECONDS:
                 raise ValueError(
-                    f"goal_plus_session_wait timeout_seconds must be <= "
+                    f"goal_plus_session_wait_any timeout_seconds must be <= "
                     f"{int(SESSION_WAIT_MAX_SECONDS)}: a single long wait blocks the agent "
                     "turn and prevents user input from being delivered at turn "
-                    "boundaries. Use short waits; when a result is not ready, end "
+                    "boundaries. Use short waits; when no call is finished, end "
                     "the turn and let the host Stop continuation re-ignite you."
                 )
-            return session_call_receipt(await asyncio.to_thread(
-                lambda: session_controls(session_id, "wait").wait(call_id, timeout=timeout_seconds),
-            ), detail=detail)
+            pairs = [(ref.session_id, ref.call_id) for ref in calls]
+            if len(set(pairs)) != len(pairs):
+                raise ValueError(
+                    "goal_plus_session_wait_any requires unique session_id/call_id pairs"
+                )
+            return await asyncio.to_thread(
+                _wait_any_receipts, session_controls, calls, timeout_seconds,
+                detail=detail,
+            )
 
         @register_tool()
         async def goal_plus_session_message(
@@ -514,7 +574,9 @@ def create_mcp(
     ) -> dict[str, Any]:
         """返回候选排名、验证结果、异常和当前 run 的研究摘要。
 
-        默认省略宿主诊断及重复配置；detail=true 读取完整 session、日志、研究与失效证据。
+        默认视图含 objective、key_metrics、latest 异常与研究汇总，足以分析当前进展；
+        detail=true 仅在需要宿主诊断或失效调查时使用，读取完整 session、日志路径、
+        配置、研究与失效证据。完整 iteration 历史仍用 goal_plus_search_list_iterations。
         best 与 latest 验证结果不一致时单独返回 latest；未验证分数保持 null。
         top_n 限制排名中的候选数量，研究汇总仍覆盖当前 run 的所有候选。
         """

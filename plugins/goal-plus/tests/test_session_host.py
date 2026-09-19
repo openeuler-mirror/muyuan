@@ -1,7 +1,7 @@
 """Common product launcher gates and delivery, with controlled native processes."""
 
 import asyncio
-from dataclasses import replace
+from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
@@ -12,6 +12,7 @@ from fastmcp import Client
 import pytest
 
 from goal_plus.execution.native_session import CodexSession, PiSession
+from goal_plus.execution.model_failures import normalize_model_failure
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_scope import close_execution_scope, close_run_candidates, ensure_execution_scope, execution_scope_snapshot
 from goal_plus.runtime import FileSearchRuntime
@@ -19,6 +20,7 @@ from goal_plus.domain.agents import WorkerBudget
 from goal_plus.domain.search import DevicePoolSpec
 from goal_plus.infrastructure.search_configuration import DEVICE_POOLS_ENV
 from goal_plus.infrastructure.state.resource_locks import VERIFIER_RESOURCE_LOCK_DIR_ENV
+from goal_plus.ports.session import SessionInvocationObservation, SessionInvocationResult
 from goal_plus.server import create_host_mcp
 from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
@@ -199,11 +201,15 @@ def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
                 (task.workspace / "initial_program.py").write_text(f"VALUE = {iteration}\n")
                 request = dict(run_id=task.run_id, candidate_id=task.candidate_id, call_id=str(iteration), prompt="bounded task", timeout_seconds=5)
                 await call("run", **request)
-                result = await call("wait", session_id=session.agent_session_id, call_id=str(iteration), timeout_seconds=10)
+                waited = await call("wait_any", calls=[
+                    {"session_id": session.agent_session_id, "call_id": str(iteration)},
+                ], timeout_seconds=10)
+                result = waited["finished"][0]
                 assert result["state"] == "completed", result.get("error") or result
                 assert result["result_available"] is True
-                detailed = await call("wait", session_id=session.agent_session_id,
-                                      call_id=str(iteration), detail=True)
+                detailed = (await call("wait_any", calls=[
+                    {"session_id": session.agent_session_id, "call_id": str(iteration)},
+                ], detail=True))["finished"][0]
                 assert detailed["result"]["text"] == f"answer-{iteration}"
                 assert await call("run", **request) == {"session_id": session.agent_session_id, **result}
                 records = runtime.list_iterations(task.run_id, task.candidate_id)
@@ -254,6 +260,70 @@ def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
     reported = report["search_tasks"][0]["sessions"]
     assert len(reported) == 2
     assert [item["processed_tokens"] for item in reported] == ([110, 110] if agent_harness == "codex" else [6, 9])
+
+
+@pytest.mark.parametrize("hosted_candidate", [
+    {"harness": "codex"}, {"harness": "pi"},
+], indirect=True)
+def test_provider_failure_receipt_reaches_main_and_monitor_without_secret(hosted_candidate, monkeypatch):
+    """A failed child turn is observable by Main with its exact, redacted cause."""
+    root, harness, goal, runtime, task, session, _, actors, _ = hosted_candidate
+    native_actor = CodexSession if harness == "codex" else PiSession
+    failure = normalize_model_failure(
+        "HTTP 401: Bearer sk-test-secret-value-should-not-persist",
+        phase="response", provider="openai", model="gpt-5.6-luna", source="native_rpc",
+    )
+    assert failure is not None
+    expected_failure = asdict(failure)
+
+    def failed_run(self, prompt, *, timeout, on_started=None):
+        if on_started is not None:
+            on_started()
+        return SessionInvocationResult(
+            native_session_id=self.native_session_id,
+            invocation_id="provider-failure-1",
+            state="failed",
+            text="",
+            error=failure.message,
+            observation=SessionInvocationObservation(
+                "2026-09-11T12:00:00Z", "2026-09-11T12:00:01Z", 1,
+            ),
+            failure=failure,
+            agent_harness=harness,
+            runtime_provider=session.runtime_provider,
+        )
+
+    monkeypatch.setattr(native_actor, "run", failed_run)
+    mcp = create_host_mcp(root, agent_harness=harness, caller_role="main")
+
+    async def exercise():
+        async with Client(mcp) as client:
+            meta = {"threadId": goal.active_session.session_id}
+            started = await client.call_tool(
+                "goal_plus_session_run", {
+                    "run_id": task.run_id, "candidate_id": task.candidate_id,
+                    "call_id": "provider-failure", "prompt": "work", "timeout_seconds": 5,
+                }, meta=meta)
+            started_payload = json.loads(started.content[0].text)
+            assert started_payload["session_id"] == session.agent_session_id
+            waited = await client.call_tool(
+                "goal_plus_session_wait_any", {
+                    "calls": [{"session_id": session.agent_session_id, "call_id": "provider-failure"}],
+                    "timeout_seconds": 5,
+                }, meta=meta)
+            receipt = json.loads(waited.content[0].text)["finished"][0]
+            assert receipt["state"] == "failed"
+            assert receipt["failure"] == expected_failure
+            assert "sk-test-secret" not in json.dumps(receipt)
+
+    asyncio.run(exercise())
+    observed = runtime.candidate_sessions.session(session.agent_session_id)
+    assert observed.session_handle.metadata["model_failure"] == expected_failure
+    from goal_plus.tools import SearchTools
+
+    snapshot = SearchTools(runtime).goal_plus_monitor_snapshot(run_id=task.run_id, detail=True)
+    assert snapshot["subagents"][0]["model_failure"] == expected_failure
+    assert runtime.list_iterations(task.run_id, task.candidate_id) == []
 
 
 @pytest.mark.parametrize("ending", ["timeout", "stop", "completed_stop", "host_restart"])
@@ -650,7 +720,7 @@ def test_product_mcp_rejects_missing_foreign_and_fenced_main(hosted_candidate):
                 assert domain() == before
             meta = {"threadId": goal.active_session.session_id}
             await client.call_tool("goal_plus_session_run", {"run_id": task.run_id, "candidate_id": task.candidate_id, "call_id": "initial", "prompt": "work", "timeout_seconds": 5}, meta=meta)
-            await client.call_tool("goal_plus_session_wait", {"session_id": session.agent_session_id, "call_id": "initial", "timeout_seconds": 10}, meta=meta)
+            await client.call_tool("goal_plus_session_wait_any", {"calls": [{"session_id": session.agent_session_id, "call_id": "initial"}], "timeout_seconds": 10}, meta=meta)
             close_execution_scope(root_dir=root, scope_id=scope["scope_id"], reason="owner stopped")
             before = domain()
             denied = await client.call_tool("goal_plus_session_run", {
@@ -673,7 +743,7 @@ def test_rebound_native_handle_fences_old_controller_but_allows_cleanup(hosted_c
         async with Client(mcp) as client:
             meta = {"threadId": goal.active_session.session_id}
             await client.call_tool("goal_plus_session_run", {"run_id": task.run_id, "candidate_id": task.candidate_id, "call_id": "initial", "prompt": "work", "timeout_seconds": 5}, meta=meta)
-            await client.call_tool("goal_plus_session_wait", {"session_id": session.agent_session_id, "call_id": "initial", "timeout_seconds": 10}, meta=meta)
+            await client.call_tool("goal_plus_session_wait_any", {"calls": [{"session_id": session.agent_session_id, "call_id": "initial"}], "timeout_seconds": 10}, meta=meta)
             runtime.candidate_sessions.bind_agent_handle(session.agent_session_id, {
                 "agent_harness": session.agent_harness, "external_id": "replacement-native-session",
                 "metadata": {"transport": "app-server" if agent_harness == "codex" else "native-rpc"},
@@ -708,9 +778,10 @@ def test_cold_controller_recovery_preserves_evidence_and_fences_old_session(host
             (task.workspace / "initial_program.py").write_text("VALUE = 1\n")
             await call(client, "goal_plus_session_run", run_id=task.run_id, candidate_id=task.candidate_id,
                        call_id="first", prompt="bounded task", timeout_seconds=5)
-            result = await call(client, "goal_plus_session_wait", session_id=session.agent_session_id,
-                                call_id="first", timeout_seconds=10)
-            assert result["state"] == "completed", result
+            result = await call(client, "goal_plus_session_wait_any",
+                                calls=[{"session_id": session.agent_session_id, "call_id": "first"}],
+                                timeout_seconds=10)
+            assert result["finished"][0]["state"] == "completed", result
             before = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
             (task.workspace / "initial_program.py").write_text("VALUE = 99 # partial\n")
             recovery = runtime.prepare_candidate_recovery(task.run_id, task.candidate_id)
@@ -741,9 +812,10 @@ def test_cold_controller_recovery_preserves_evidence_and_fences_old_session(host
             (task.workspace / "initial_program.py").write_text("VALUE = 2\n")
             await call(client, "goal_plus_session_run", run_id=task.run_id, candidate_id=task.candidate_id,
                        call_id="recovered", prompt="bounded task", timeout_seconds=5)
-            result = await call(client, "goal_plus_session_wait", session_id=fresh.agent_session_id,
-                                call_id="recovered", timeout_seconds=10)
-            assert result["state"] == "completed", result
+            result = await call(client, "goal_plus_session_wait_any",
+                                calls=[{"session_id": fresh.agent_session_id, "call_id": "recovered"}],
+                                timeout_seconds=10)
+            assert result["finished"][0]["state"] == "completed", result
             after = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
             assert after.iterations[0] == before.iterations[0]
             assert after.iterations[-1].agent_session_id == fresh.agent_session_id

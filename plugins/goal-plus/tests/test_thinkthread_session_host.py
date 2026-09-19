@@ -151,9 +151,13 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
                     assert sdk.child("tt-child-1")["executionState"] == "absent"
                     assert len(runtime.list_iterations(run_id, task.candidate_id)) == 1
                     if reconnect == "stop_active":
-                        stopped = await call("wait", session_id=session.agent_session_id, call_id="stop-probe", timeout_seconds=5)
+                        stopped = (await call("wait_any", calls=[
+                            {"session_id": session.agent_session_id, "call_id": "stop-probe"},
+                        ], timeout_seconds=5))["finished"][0]
                         assert stopped["state"] == "failed"
-                    first = await call("wait", session_id=session.agent_session_id, call_id="1", timeout_seconds=0)
+                    first = (await call("wait_any", calls=[
+                        {"session_id": session.agent_session_id, "call_id": "1"},
+                    ], timeout_seconds=0))["finished"][0]
                     assert first["state"] == "completed"
                 if number == 2 and reconnect is True:
                     peer = NativeCandidateHost(root, agent_harness="pi", caller=lambda: goal.active_session.session_id)
@@ -194,7 +198,9 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
                                         prompt="One bounded attempt", timeout_seconds=30)
                     assert replay["state"] == "running"
                     allow_completion.set()
-                completed = await call("wait", session_id=session.agent_session_id, call_id=str(number), timeout_seconds=10)
+                completed = (await call("wait_any", calls=[
+                    {"session_id": session.agent_session_id, "call_id": str(number)},
+                ], timeout_seconds=10))["finished"][0]
                 if rollback == "missing_attempt":
                     # A Child may finish its turn without requesting verification;
                     # the invocation completes with no settled attempt.
@@ -213,15 +219,18 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
                     client = await stack.enter_async_context(Client(create_host_mcp(root, agent_harness="pi", caller_role="main")))
                     restored = await call("run", run_id=run_id, candidate_id=task.candidate_id, call_id="2", prompt="One bounded attempt", timeout_seconds=30)
                     assert restored["call_id"] == "2"
-                    completed = await call("wait", session_id=session.agent_session_id, call_id="2", timeout_seconds=10)
+                    completed = (await call("wait_any", calls=[
+                        {"session_id": session.agent_session_id, "call_id": "2"},
+                    ], timeout_seconds=10))["finished"][0]
                     assert runtime.list_iterations(run_id, task.candidate_id) == settled
                     assert sum(op == "fs.branch.reset" for op, _ in sdk.operations) == 2
                 assert completed["state"] == "completed", completed
                 assert completed["native_session_id"] == "tt-child-1"
                 assert completed["result_available"] is True
                 assert "result" not in completed
-                detailed = await call("wait", session_id=session.agent_session_id,
-                                      call_id=str(number), detail=True)
+                detailed = (await call("wait_any", calls=[
+                    {"session_id": session.agent_session_id, "call_id": str(number)},
+                ], detail=True))["finished"][0]
                 feedback = json.loads(detailed["result"]["text"])
                 assert feedback["state"] == "verified"
                 assert feedback["candidate_id"] == task.candidate_id

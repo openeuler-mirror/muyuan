@@ -65,8 +65,9 @@ def _register_thinkthread_main_host_tools(mcp, root: Path) -> None:
         from goal_plus.server import native_mcp_caller
         from goal_plus.thinkthread_connectivity import preflight_thinkthread_codex
 
-        # TT's Main hook path is intentionally absent. Probe the Child's native
-        # Codex config before creating any durable Goal state.
+        # TT's Main hook path is intentionally absent. Validate the Child's
+        # managed Codex wiring before creating any durable Goal state. The
+        # first real turn is the provider availability proof.
         preflight_thinkthread_codex()
         caller = native_mcp_caller()
         identity = "\0".join((caller, raw_goal))

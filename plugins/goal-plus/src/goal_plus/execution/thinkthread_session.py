@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from goal_plus.execution.thinkthread_child import ChildDriver
+from goal_plus.execution.model_failures import model_identity, normalize_model_failure
 from goal_plus.execution.thinkthread_rpc import MESSAGE_RECEIVE_LIMIT, PROTOCOL, message_payload
 from goal_plus.ports.clock import Clock
 from goal_plus.ports.session import SessionInvocationObservation, SessionInvocationResult
@@ -207,6 +208,20 @@ class ThinkThreadSession:
         if isinstance(dispatch_error, dict) and dispatch_error.get("dispatch_nonce") == nonce:
             state = "failed"
             error = "ChildDispatchError: " + str(dispatch_error.get("message") or "Child startup failed")
+        if state == "failed" and error is None:
+            completion = child.get("completion")
+            wake = child.get("lastWakeOutcome")
+            error = str(completion or wake or "ThinkThread Child model request failed")
+        configured_model = self.record.get("model")
+        if isinstance(configured_model, dict):
+            provider = configured_model.get("provider")
+            model = configured_model.get("model")
+            provider = provider if isinstance(provider, str) else None
+            model = model if isinstance(model, str) else None
+        else:
+            provider, model = model_identity(
+                configured_model if isinstance(configured_model, str) else None
+            )
         with self.hooks.admission():
             pass
         text = self.hooks.settle(self.record) if state == "completed" else ""
@@ -217,6 +232,13 @@ class ThinkThreadSession:
             observation=SessionInvocationObservation(
                 self.record["started_at"], self.clock.timestamp(),
                 max(0.0, self.clock.now() - self.record["started_unix"]),
+            ),
+            failure=normalize_model_failure(
+                error,
+                phase="spawn" if error and error.startswith("ChildDispatchError") else "response",
+                model=model,
+                provider=provider,
+                source="thinkthread_child",
             ),
         )
         self.record.update(status=state, invocation_result=asdict(result))

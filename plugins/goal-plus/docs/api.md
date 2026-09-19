@@ -43,9 +43,12 @@ Main 读取 candidate/Evidence 状态后使用新 call_id 继续，不重发原�
 已有代码、Evidence 和累计预算保留。原 native session 无法加载时也可使用该入口，
 直接接手包含未验证修改的 workspace。冻结 worker budget 和 Goal deadline 限制整轮执行额度；
 wait 的 timeout 只控制读取等待，不延长额度、不取消执行。
-`goal_plus_session_wait` 默认返回准确状态与错误，`detail=true` 才读取正文和诊断；
-completed 表示调用返回，不能代替 verifier 通过。Search Evidence 用
+`goal_plus_session_wait_any` 接收 `(session_id, call_id)` 列表，在首个完成的调用处返回：
+`finished` 条目携带准确状态与错误，`running` 条目只保留身份与状态；`detail=true` 才读取
+已完成调用的正文和诊断。completed 表示调用返回，不能代替 verifier 通过。Search Evidence 用
 `goal_plus_search_list_history` 查询；已注入的 Evidence 无需机械重复读取。
+并行 lane 在同一次 wait-any 中列出全部活跃调用，不需要逐 lane 等待；完成一个 lane 就用新的
+`call_id` 续跑该 session，其余 lane 继续运行。
 wait 的 `timeout_seconds` 上限为 300 秒：用户输入只能在 turn 边界交付，单次长阻塞
 会锁死用户唯一的插话出口。结果未就绪时使用短等待或结束当前 turn，由宿主 Stop
 continuation 重新点火；需要向活动调用插话时改用 `goal_plus_session_message`。
@@ -260,12 +263,15 @@ identity。过期 generation 的迟到结果保留为 `stale_result` Evidence，
 | `goal_plus_search_list_iterations` | 显式读取单个 candidate 可能很大的完整 verifier 历史 |
 | `goal_plus_monitor_snapshot` | 只读汇总 goal/run/session/host Evidence |
 
-`goal_plus_search_list_history` 默认返回候选排名、分数及其 Evidence 来源、变更文件、异常和一份
-当前 run 的研究汇总。best 与 latest 验证结果不一致、latest 被回滚或失败时单独返回
-`latest`；未验证的分数与验证结果保持 `null`。研究汇总仍包含排名之外候选的发现，
-`top_n` 只限制排名候选数。空研究不展开，存在 predecessor 研究时用
-`inherited_research_available` 提示。`detail=true` 显式读取完整 session/dispatch、日志路径、
-配置、研究和失效证据；完整 iteration 仍通过 `goal_plus_search_list_iterations` 读取。
+`goal_plus_search_list_history` 默认返回 objective、候选排名、分数、key_metrics、Evidence 来源、
+变更文件、异常和一份当前 run 的研究汇总，足以分析当前进展。best 与 latest 验证结果不一致、
+latest 被回滚或失败时单独返回 `latest`；未验证的分数与验证结果保持 `null`。研究汇总仍包含
+排名之外候选的发现，`top_n` 只限制排名候选数。空研究不展开，存在 predecessor 研究时用
+`inherited_research_available` 提示。`detail=true` 显式读取完整 dispatch、日志路径、研究和
+失效证据，用于宿主诊断与失效调查；其中静态 worker_policy 只在 run 级出现一次，与 latest 一致
+的 verifier 证据和空研究块不再逐候选重复，agent_sessions 仅保留身份与时间（完整 handle 用
+`goal_plus_search_recovery_status` 的 detail 视图读取）；完整 iteration 仍通过
+`goal_plus_search_list_iterations` 读取。
 
 `goal_plus_search_invalidate_run` 需要 typed verifier reason、非空 summary 和具体 Evidence。它把 run 置为
 `aborted`，拒绝新的 planning、session、verifier record、selection 和 promotion。runtime 不拥有 host

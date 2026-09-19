@@ -107,12 +107,12 @@ freeze/launch 前 fail closed。
 | --- | --- | --- | --- | --- |
 | 启动 | 共同 session run → app-server | 共同 session run → Pi RPC | 共同 session run 登记并创建 private Child | 同 Pi + ThinkThread |
 | Candidate 进程环境 | 宿主把冻结 `process_environment` 注入候选进程 | 同一宿主输入接线 | 由 ThinkThread Profile/Runtime 控制，不接受 candidate process environment | 同 Pi + ThinkThread |
-| 等待 | `goal_plus_session_wait` | 同一工具 | 同一工具 | 同一工具 |
+| 等待 | `goal_plus_session_wait_any` | 同一工具 | 同一工具 | 同一工具 |
 | 续跑 | `goal_plus_session_run` 复用 native session | 同一工具 | 同一工具，复用 Child/Session/branch | 同一工具；TERM 后 Child 不可复用，恢复走 destroy + respawn |
 | Deadline | Application 预算 gate + 宿主执行限时 | 同一接线 | parent/controller watchdog | 同 Pi + ThinkThread |
 | 恢复 | `.gp` checkpoint/generation + scope 资源核验 | 同一恢复用例 | scope 资源日志、原 call_id/Message、独占 controller lease | 同 Pi + ThinkThread，复用受 Child 不可复用约束 |
 | Goal gate | 精确 `$goal-plus...` + hooks | 精确 `/goal-plus...` + extension events | 同 Pi gate + exact Profile preflight | Codex gate + exact Profile preflight；managed config 无 hooks，TT Root 无 Stop-hook 续跑 |
-| 模型发现 | app-server `model/list` | Pi RPC model catalog | Profile/default 或显式 provider/model | Profile 默认模型，不支持显式 override |
+| 模型发现 | app-server `model/list` | Pi RPC model catalog | Profile/default 或显式 provider/model | TT Profile allowlist；默认或显式 exact provider/model |
 | Observability | native JSONL + metadata | `pi_metrics` + metadata | TT IDs + durable snapshot/request IDs | 同 Pi + ThinkThread |
 | Workspace | `copy`、`git_worktree` | `copy`、`git_worktree` | `thinkthread` | `thinkthread` |
 
@@ -124,7 +124,8 @@ freeze/launch 前 fail closed。
 `random_mode`）。Codex/Pi RPC 的普通运行使用固定初始并行循环；Git worktree 可选
 `adaptive_search`。ThinkThread（Pi 与 Codex Profile）支持 `parallel_loops` 和
 `adaptive_search`，Codex
-ThinkThread 继承 Profile 默认模型。harness/runtime/workspace 组合不匹配或 Profile preflight 失败时 runtime 在
+ThinkThread 默认继承 Profile 模型；显式模型必须来自 Profile allowlist，并以 exact
+`provider/model` 传给 Child。harness/runtime/workspace 组合不匹配或 Profile preflight 失败时 runtime 在
 freeze/create 边界 fail closed。
 
 Codex Goal Plus startup 仍只接受精确 `$goal-plus...` 的 `UserPromptSubmit` 授权，并在
@@ -167,7 +168,7 @@ ThinkThread verifier 使用相同锁目录和冻结 `resource_lock` 的精确字
 run 只做一次初始规划，创建固定数量的 candidate lane：
 
 1. 启动全部初始 candidate；
-2. 使用共同 session wait 读取各 invocation 结果；
+2. 用共同 session wait-any 等待首个完成的 invocation，并按 roster 处理其余调用；
 3. 复用该 worker 已经落盘的准确 Evidence，缺失时才由 parent 补做 verifier；
 4. 如果全局停止条件尚未满足，继续同一 candidate、workspace 和 native session；
 5. selection 前停止或 drain 所有活跃 worker。

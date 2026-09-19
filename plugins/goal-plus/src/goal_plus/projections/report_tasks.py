@@ -171,6 +171,7 @@ def task_details(
             "duration_seconds": execution.get("duration_seconds"),
             "timed_out": bool(execution.get("timed_out")),
             "runner_failed": bool(execution.get("runner_failed")),
+            "model_failure": session.session_handle.metadata.get("model_failure"),
             "processed_tokens": usage.get("processed_tokens"),
             "cost_usd": usage.get("cost_usd"),
             "tool_calls": usage.get("tool_calls"),

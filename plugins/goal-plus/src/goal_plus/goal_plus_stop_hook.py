@@ -563,6 +563,15 @@ def _record_stop_hook_event(
             _stop_hook_event_dir(search_root) / f"{invocation_id}.json",
             payload,
         )
+        if os.environ.get("GOAL_PLUS_AGENT_TRANSCRIPT") == "1":
+            from goal_plus.infrastructure.agent_transcript import debug_export_codex_transcript
+
+            debug_export_codex_transcript(
+                search_root,
+                hook_input_codec.transcript_path(hook_input),
+                session_id=payload["session_id"] if isinstance(payload["session_id"], str) else None,
+                role="subagent" if event_name == "SubagentStop" else "main",
+            )
     except Exception:
         # Statistics must never alter the host hook's fail-open contract.
         return
@@ -1115,7 +1124,7 @@ GOAL_PLUS_READ_ONLY_TOOLS = {
     "goal_plus_search_get_agent_observability",
 }
 GOAL_PLUS_SESSION_CLEANUP_TOOLS = {
-    "goal_plus_session_wait", "goal_plus_session_interrupt",
+    "goal_plus_session_wait_any", "goal_plus_session_interrupt",
     "goal_plus_session_stop", "goal_plus_session_close",
 }
 
@@ -1303,9 +1312,6 @@ def _handle_user_prompt_submit(
     ):
         try:
             role_models = codex_models.parse_goal_plus_role_models(raw_goal)
-            codex_models.probe_codex_models(
-                codex_models.command_codex_model_targets(hook_input, role_models)
-            )
         except ValueError as exc:
             _emit_user_prompt_block(str(exc))
             return
@@ -1765,11 +1771,9 @@ def _handle_pre_tool_use(
         _emit_pre_tool_block(str(exc))
         return
     if logical_name == "goal_plus_search_freeze_spec":
-        try:
-            codex_models.probe_codex_models(codex_models.search_spec_codex_model_targets(hook_input))
-        except RuntimeError as exc:
-            _emit_pre_tool_block(str(exc))
-            return
+        # Freeze validates the selected model against the host catalog. The
+        # actual provider request belongs to the candidate invocation itself.
+        pass
     gate = runtime.gate(goal_id, event="pre_tool_use", context=hook_input)
     if gate.decision == "block":
         _emit_pre_tool_block(gate.reason or "Goal Plus 阻止了此工具调用。")

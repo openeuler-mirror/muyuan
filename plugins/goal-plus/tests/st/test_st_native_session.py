@@ -76,28 +76,30 @@ def test_native_session_two_turns_with_scope(tmp_path: Path, st_log_dir: Path, a
         async def exercise():
             async with Client(mcp, timeout=timeout) as client:
                 tools = await client.list_tools()
-                assert {"goal_plus_session_wait", "goal_plus_session_close"} <= {tool.name for tool in tools}
-                control.wake(
+                assert "goal_plus_session_wait_any" in {tool.name for tool in tools}
+                await asyncio.to_thread(
+                    control.wake,
                     f"Remember marker {marker}. What is 17 + 25? Reply with the number only.",
                     call_id="first", timeout=timeout,
                 )
-                receipt = (await client.call_tool("goal_plus_session_wait", {
-                    "session_id": session.native_session_id,
-                    "call_id": "first", "timeout_seconds": timeout, "detail": True,
+                receipt = (await client.call_tool("goal_plus_session_wait_any", {
+                    "calls": [{"session_id": session.native_session_id, "call_id": "first"}],
+                    "timeout_seconds": timeout,
                 })).data
-                assert receipt["state"] == "completed", receipt
-                first = receipt["result"]
+                assert receipt["finished"][0]["state"] == "completed", receipt
+                first = receipt["finished"][0]["result"]
                 assert first["text"].strip() == "42"
-                control.wake(
+                await asyncio.to_thread(
+                    control.wake,
                     "Return the marker from my previous message and the value of 9 * 7.",
                     call_id="second", timeout=timeout,
                 )
-                receipt = (await client.call_tool("goal_plus_session_wait", {
-                    "session_id": session.native_session_id,
-                    "call_id": "second", "timeout_seconds": timeout, "detail": True,
+                receipt = (await client.call_tool("goal_plus_session_wait_any", {
+                    "calls": [{"session_id": session.native_session_id, "call_id": "second"}],
+                    "timeout_seconds": timeout,
                 })).data
-                assert receipt["state"] == "completed", receipt
-                second = receipt["result"]
+                assert receipt["finished"][0]["state"] == "completed", receipt
+                second = receipt["finished"][0]["result"]
                 assert marker in second["text"] and "63" in second["text"]
                 assert first["native_session_id"] == second["native_session_id"]
                 assert first["invocation_id"] != second["invocation_id"]
@@ -128,7 +130,7 @@ def test_native_session_two_turns_with_scope(tmp_path: Path, st_log_dir: Path, a
         "agent_harness": agent_harness, "model": model, "results": results,
         "process_returncode": session.rpc.process.returncode,
         "scope_state": snapshot["state"], "candidate_authorization_verified": False,
-        "control_contract": "goal_plus_session_run/wait/close", "launcher": "test_controller",
+        "control_contract": "controller wake with goal_plus_session_wait_any/close", "launcher": "test_controller",
     }, indent=2) + "\n")
 
 

@@ -66,7 +66,7 @@ def monitor_tool_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
         if candidate.get("touched_denied_files") or candidate.get("changed_outside_allowed")
     }
     payload["subagents"] = [_fields(agent, (
-        "agent_session_id", "candidate_id", "timed_out", "runner_failed", "failure_stage", "error_type", "error",
+        "agent_session_id", "candidate_id", "timed_out", "runner_failed", "failure_stage", "error_type", "error", "model_failure",
     )) for agent in snapshot.get("subagents", [])
         if agent.get("timed_out") or agent.get("runner_failed") or agent.get("error")]
     orchestration = snapshot.get("feature_plugins", {}).get("orchestration")

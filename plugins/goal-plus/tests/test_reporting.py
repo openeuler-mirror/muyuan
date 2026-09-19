@@ -1644,3 +1644,27 @@ def test_long_dense_timeline_renders_horizontal_and_vertical_scroll_surfaces() -
     assert 'class="timeline-scroll" tabindex="0"' in html
     assert 'style="--timeline-width:9790px"' in html
     assert 'class="timeline-rows" data-track-count="21"' in html
+
+
+def test_report_links_local_agent_transcript_export(tmp_path: Path) -> None:
+    from goal_plus.infrastructure.report_inputs import _agent_transcript_export
+    from goal_plus.projections import report_html
+
+    assert _agent_transcript_export(tmp_path) is None
+    index = tmp_path / "host-logs" / "agent-transcript" / "index.html"
+    index.parent.mkdir(parents=True)
+    index.write_text("<html></html>", encoding="utf-8")
+    assert _agent_transcript_export(tmp_path) == {
+        "href": "../../host-logs/agent-transcript/index.html"
+    }
+
+    section = report_html._render_agent_transcript_section(
+        {"href": "../../host-logs/agent-transcript/index.html"}
+    )
+    assert 'id="agent-transcript"' in section
+    assert 'href="../../host-logs/agent-transcript/index.html"' in section
+    assert "<script>" not in report_html._render_agent_transcript_section(
+        {"href": "../../x/<script>alert(1)</script>"}
+    )
+    assert report_html._render_agent_transcript_section(None) == ""
+    assert report_html._render_agent_transcript_section({"href": ""}) == ""

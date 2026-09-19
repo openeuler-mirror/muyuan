@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,6 +94,7 @@ def _run(
     dry_run: bool = False,
     env: dict[str, str] | None = None,
     cwd: Path | None = None,
+    stdin: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if not capture:
         print("+", shlex.join(argv))
@@ -105,6 +107,7 @@ def _run(
         text=True,
         env=env,
         cwd=cwd,
+        stdin=stdin,
     )
 
 
@@ -656,6 +659,7 @@ def _resolve_system_ca_bundles(
 
 def _build_thinkthread_codex_config(
     source: dict[str, Any], *, runtime_python: Path,
+    codex_env_vars: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     # Native model/provider configuration is shared; Root MCPs, plugins and instructions are not Child inputs.
     fields = {"model", "model_provider", "model_providers", "model_reasoning_effort", "service_tier", "model_catalog_json"}
@@ -667,6 +671,10 @@ def _build_thinkthread_codex_config(
             "env_vars": [
                 "GOAL_PLUS_THINKTHREAD_ROLE", "GOAL_PLUS_ROOT", "GOAL_PLUS_NODE",
                 "GOAL_PLUS_AGENT_POSIX_SDK_ENTRY", "GOAL_PLUS_AGENT_POSIX_BRIDGE",
+                # The managed Profile supplies this value through configDirDefault;
+                # forward it to the Goal Plus MCP so its configuration preflight
+                # inspects the same isolated Codex config as the Child.
+                "CODEX_CONFIG_DIR",
                 "THINKTHREAD_PARENT_ID", "THINKTHREAD_CONTROL_SOCKET", "THINKTHREAD_CONTROL_TOKEN",
                 "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED",
                 "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED",
@@ -675,31 +683,44 @@ def _build_thinkthread_codex_config(
             "tool_timeout_sec": 180,
         },
     }
+    config["mcp_servers"]["goal-plus"]["env_vars"] = sorted(
+        set(config["mcp_servers"]["goal-plus"]["env_vars"]) | set(codex_env_vars)
+    )
     config["features"] = {"multi_agent": False}
+    return config
+
+
+def _load_codex_config(source: Path, *, profile: str | None = None) -> dict[str, Any]:
+    config_path = source / "config.toml"
+    config = tomllib.loads(config_path.read_text()) if config_path.is_file() else {}
+    if profile is None:
+        return config
+    # Codex profile layers are top-level key overlays on the base config; nested
+    # tables such as model_providers merge per key.
+    overlay_path = source / f"{profile}.config.toml"
+    if not overlay_path.is_file():
+        raise InstallError(f"Codex profile config not found: {overlay_path}")
+    for key, value in tomllib.loads(overlay_path.read_text()).items():
+        if isinstance(value, dict) and isinstance(config.get(key), dict):
+            merged = dict(config[key])
+            merged.update(value)
+            config[key] = merged
+        else:
+            config[key] = value
     return config
 
 
 def _plan_thinkthread_codex_config(
     package: Path, source: Path | None = None, *, profile: str | None = None,
+    codex_env_vars: tuple[str, ...] = (),
 ) -> ThinkThreadCodexConfigPlan:
     source = source or _codex_config()
-    config_path = source / "config.toml"
-    config = tomllib.loads(config_path.read_text()) if config_path.is_file() else {}
-    if profile is not None:
-        # Codex profile layers are top-level key overlays on the base config; apply
-        # the same semantics (nested tables such as model_providers merge per key)
-        # before projecting the Child's managed config.
-        overlay_path = source / f"{profile}.config.toml"
-        if not overlay_path.is_file():
-            raise InstallError(f"Codex profile config not found: {overlay_path}")
-        for key, value in tomllib.loads(overlay_path.read_text()).items():
-            if isinstance(value, dict) and isinstance(config.get(key), dict):
-                merged = dict(config[key])
-                merged.update(value)
-                config[key] = merged
-            else:
-                config[key] = value
-    projected = _build_thinkthread_codex_config(config, runtime_python=package.parent / "venv/bin/python")
+    config = _load_codex_config(source, profile=profile)
+    projected = _build_thinkthread_codex_config(
+        config,
+        runtime_python=package.parent / "venv/bin/python",
+        codex_env_vars=codex_env_vars,
+    )
     catalog = projected.get("model_catalog_json")
     catalog_source = None
     if isinstance(catalog, str) and catalog.strip():
@@ -1474,24 +1495,14 @@ def _preflight_pi_normal(*, allow_replacement: bool = False) -> bool:
 
 
 def _preflight_pi_dev(*, cwd: Path | None = None) -> None:
-    entries = _pi_goal_plus_entries(cwd=cwd)
-    root = ROOT.resolve()
-    allowed_paths = {
-        (root / "assets/pi/extensions/goal-plus.ts").resolve(),
-    }
-    conflicts = [
-        entry
-        for entry in entries
-        if entry.get("resolved_path") not in allowed_paths
-    ]
-    if conflicts:
-        raise InstallError(
-            "Pi development mode found another active Goal Plus source; "
-            "pi-goal-plus already loads this checkout explicitly:\n"
-            f"  - {_render_pi_entries(conflicts)}\n"
-            f"{_render_pi_conflict_remediation(conflicts)}\n"
-            "Other Pi packages and authentication remain untouched."
-        )
+    # The dev launcher passes --no-extensions and then explicitly loads this
+    # checkout's extension.  Normal user/project registrations therefore stay
+    # untouched and cannot be loaded into the dev process; treating them as an
+    # install conflict would incorrectly couple --pi-dev to --pi.
+    del cwd
+    extension = (ROOT / "assets/pi/extensions/goal-plus.ts").resolve()
+    if not extension.is_file():
+        raise InstallError(f"Pi development extension is missing: {extension}")
 
 
 def _git_source_state() -> dict[str, Any]:
@@ -1700,10 +1711,9 @@ def _codex_config() -> Path:
     return Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
 
 
-def _codex_provider_env_vars() -> tuple[str, ...]:
+def _codex_provider_env_vars(*, profile: str | None = None) -> tuple[str, ...]:
     """Forward only provider-declared credential names, never their values."""
-    path = _codex_config() / "config.toml"
-    config = tomllib.loads(path.read_text()) if path.is_file() else {}
+    config = _load_codex_config(_codex_config(), profile=profile)
     names = {"OPENAI_API_KEY"}
     for provider in config.get("model_providers", {}).values():
         if provider.get("env_key"):
@@ -1712,6 +1722,98 @@ def _codex_provider_env_vars() -> tuple[str, ...]:
     if any(not isinstance(name, str) or not name or "=" in name or "\0" in name for name in names):
         raise InstallError("Codex provider credential environment names are invalid")
     return tuple(sorted(names))
+
+
+def _thinkthread_profile_models(
+    thinkthread: str,
+    *,
+    profile: str,
+    fs: Path,
+) -> list[dict[str, str]]:
+    """Return the exact models TT will permit this Profile to delegate.
+
+    This is deliberately sourced from ThinkThread rather than from a Codex/Pi
+    catalog. TT's allowlist is the actual admission boundary for Child model
+    selection, so a model absent here cannot be promised by installation.
+    """
+    try:
+        result = _run(
+            [
+                thinkthread, "model", "list", "--profile", profile,
+                "--fs", str(fs), "--json",
+            ],
+            capture=True,
+        )
+        payload = json.loads(result.stdout)
+    except (OSError, subprocess.CalledProcessError, ValueError, json.JSONDecodeError) as exc:
+        detail = getattr(exc, "stderr", None) or str(exc)
+        raise InstallError(
+            f"ThinkThread model inventory failed (profile={profile}): {detail.strip()}"
+        ) from exc
+    if not isinstance(payload, list):
+        raise InstallError(
+            f"ThinkThread model inventory returned a non-list (profile={profile})"
+        )
+    models: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        provider, model = item.get("provider"), item.get("model")
+        if not isinstance(provider, str) or not provider.strip():
+            continue
+        if not isinstance(model, str) or not model.strip():
+            continue
+        ref = f"{provider.strip()}/{model.strip()}"
+        if ref in seen:
+            continue
+        seen.add(ref)
+        models.append({"provider": provider.strip(), "model": model.strip(), "ref": ref})
+    return models
+
+
+def _verify_thinkthread_profile_models(
+    thinkthread: str,
+    *,
+    native_agent: str,
+    target: dict[str, str | tuple[str, ...]],
+    native_executable: str | None = None,
+    codex_config_dir: Path | None = None,
+) -> list[dict[str, str]]:
+    """Read the exact TT model admission boundary without contacting a provider."""
+    inventory_root = Path(tempfile.mkdtemp(prefix="goal-plus-tt-model-list-"))
+    try:
+        profile = f"goal-plus-{native_agent}"
+        models = _thinkthread_profile_models(
+            thinkthread, profile=profile, fs=inventory_root,
+        )
+        print(
+            f"ThinkThread model inventory is readable (profile={profile}, "
+            f"delegable_models={len(models)})"
+        )
+        requested_provider = target.get("provider")
+        requested_model = target.get("model")
+        if requested_provider is not None or requested_model is not None:
+            if not isinstance(requested_provider, str) or not requested_provider.strip():
+                raise InstallError(
+                    f"ThinkThread model admission requires provider/model; "
+                    f"got provider={requested_provider!r}, model={requested_model!r}"
+                )
+            if not isinstance(requested_model, str) or not requested_model.strip():
+                raise InstallError(
+                    f"ThinkThread model admission requires provider/model; "
+                    f"got provider={requested_provider!r}, model={requested_model!r}"
+                )
+            requested_ref = f"{requested_provider.strip()}/{requested_model.strip()}"
+            if not any(item["ref"] == requested_ref for item in models):
+                allowed = ", ".join(item["ref"] for item in models) or "none"
+                raise InstallError(
+                    f"ThinkThread model is not admitted by profile={profile}: "
+                    f"requested={requested_ref}; allowed={allowed}"
+                )
+        return models
+    finally:
+        shutil.rmtree(inventory_root, ignore_errors=True)
 
 
 def _verify_codex_installation(codex: str, package: Path) -> None:
@@ -2030,9 +2132,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not confirmed:
             return 0
+        codex_env_vars = (
+            _codex_provider_env_vars(profile=args.codex_profile)
+            if args.codex
+            else ()
+        )
         package = managed_runtime.prepare(
             ROOT, dry_run=args.dry_run,
-            codex_env_vars=_codex_provider_env_vars() if args.codex else (),
+            codex_env_vars=codex_env_vars,
         ) if args.codex or args.pi else None
         thinkthread_sdk_plan = (
             _preflight_thinkthread_sdk(
@@ -2063,7 +2170,11 @@ def main(argv: list[str] | None = None) -> int:
             else None
         )
         thinkthread_codex_config_plan = (
-            _plan_thinkthread_codex_config(package, profile=args.codex_profile)
+            _plan_thinkthread_codex_config(
+                package,
+                profile=args.codex_profile,
+                codex_env_vars=codex_env_vars,
+            )
             if thinkthread is not None and args.codex
             else None
         )
@@ -2130,6 +2241,22 @@ def main(argv: list[str] | None = None) -> int:
                 pi_executable=pi,
                 dry_run=args.dry_run,
             )
+        if not args.dry_run:
+            # Installation proves deterministic wiring and reads the TT
+            # allowlist. A live model request is deliberately left to the
+            # user's actual task so installation never incurs provider cost.
+            if thinkthread_codex_plan is not None:
+                _verify_thinkthread_profile_models(
+                    thinkthread,
+                    native_agent="codex",
+                    target={},
+                )
+            if thinkthread_plan is not None:
+                _verify_thinkthread_profile_models(
+                    thinkthread,
+                    native_agent="pi",
+                    target={},
+                )
     except (RuntimeError, subprocess.CalledProcessError, OSError, KeyboardInterrupt) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

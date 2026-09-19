@@ -117,9 +117,10 @@ def test_product_session_candidate_two_turns(tmp_path, st_log_dir, agent_harness
                         "run_id": run_id, "candidate_id": task.candidate_id, "call_id": "timeout-probe",
                         "timeout_seconds": 0.1, "prompt": "Run sleep 60, then report that the wait ended.",
                     })
-                    interrupted = await call("wait", {
-                        "session_id": active.agent_session_id, "call_id": "timeout-probe", "timeout_seconds": 30,
-                    })
+                    interrupted = (await call("wait_any", {
+                        "calls": [{"session_id": active.agent_session_id, "call_id": "timeout-probe"}],
+                        "timeout_seconds": 30,
+                    }))["finished"][0]
                     interrupted_calls.append(interrupted)
                     assert interrupted["state"] == "failed" and "TimeoutError" in interrupted["error"]
                     assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
@@ -151,7 +152,7 @@ def test_product_session_candidate_two_turns(tmp_path, st_log_dir, agent_harness
                     ))
                     assert ready.read_text() == local_result
                     with pytest.raises(ToolError, match="SessionCallHistoryUnavailable"):
-                        await call("wait", {"session_id": active.agent_session_id, "call_id": "local-probe"})
+                        await call("wait_any", {"calls": [{"session_id": active.agent_session_id, "call_id": "local-probe"}]})
                 prompt = f"Set VALUE = {value} in initial_program.py, run your verifier, report the score and stop."
                 if recover == "host_restart" and value == 2:
                     prompt = "Inspect the preserved local result in .tmp/local-ready and existing code, run your verifier, report the score and stop."
@@ -163,9 +164,10 @@ def test_product_session_candidate_two_turns(tmp_path, st_log_dir, agent_harness
                     "timeout_seconds": timeout,
                     "prompt": prompt,
                 })
-                result = await call("wait", {
-                    "session_id": active.agent_session_id, "call_id": str(value), "timeout_seconds": timeout + 30,
-                })
+                result = (await call("wait_any", {
+                    "calls": [{"session_id": active.agent_session_id, "call_id": str(value)}],
+                    "timeout_seconds": timeout + 30,
+                }))["finished"][0]
                 results.append(result)
                 assert result["state"] == "completed", result.get("error") or result
                 assert result["native_session_id"] == opened["native_session_id"]
@@ -179,7 +181,9 @@ def test_product_session_candidate_two_turns(tmp_path, st_log_dir, agent_harness
                     if recover in {"timeout_resume", "host_restart"}:
                         assert record.execution_generation == before.execution_generation
                         assert results[0]["native_session_id"] == result["native_session_id"]
-                        detailed = await call("wait", {"session_id": active.agent_session_id, "call_id": "2", "detail": True})
+                        detailed = (await call("wait_any", {
+                            "calls": [{"session_id": active.agent_session_id, "call_id": "2"}], "detail": True,
+                        }))["finished"][0]
                         assert memory_token in detailed["result"]["text"]
                         context_resumed = True
             assert len(record.iterations) == 2

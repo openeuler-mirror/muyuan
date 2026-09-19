@@ -275,7 +275,7 @@ def _load_agent_sessions(run_dir: Path) -> list[AgentSessionRecord]:
         return []
     return [
         AgentSessionRecord.model_validate(load_json(path))
-        for path in sorted(session_dir.glob("agent_*.json"))
+        for path in sorted(session_dir.glob("*.json"))
     ]
 
 

@@ -79,11 +79,12 @@ prompt、认证 header 或模型思考；它只证明该 hook 时点的可见内
 请求。离线 session 分析关联工具调用、原生工具错误和参数修正，不据此自动判断模型意图。
 缺少请求观测的旧历史只能与显式提供的 tools/list 参考合同比较，不能确认当时模型可见性。
 `GOAL_PLUS_DEBUG=1` 仅额外启用请求大小和 API 返回大小统计，不覆盖 session 采集的显式关闭。
-TT Child 在每次执行结束后通过原有 Message 通道发送压缩的增量诊断记录；Root 按已绑定的
+TT Child 在每次执行结束后通过原有 Message 通道发送压缩的增量 session 记录；Root 按已绑定的
 Child/session 身份收取并在删除资源前补收，存入 runtime 的 `host-logs/session-diagnostics/`。
 已发送游标保存在原生 custom entry，跨同一 session 的 Pi 进程重建延续增量，不作为业务恢复依据。
-归档保留 GP 工具调用及文本结果、provider 错误和诊断条目，过滤普通对话、模型思考、原生
-文件/命令工具正文与 compaction 摘要。Main 索引引用原生历史，不复制完整历史。
+归档保留完整的 Pi native session entry，同时供运行诊断和离线行为复盘使用；批次按大小切分，
+并保留压缩校验、entry identity、sequence/cursor 和 partial 状态。Main 索引引用原生历史，
+不复制完整历史。
 诊断归档不授予执行权，不进入模型上下文，不改变结算或清理 gate；缺失批次、损坏记录和
 采集失败不得作为完整证据。突然退出前未送出的尾部不保证保留，外部删除 Root 后也不保证
 保留其 runtime；默认不外传或上传归档。

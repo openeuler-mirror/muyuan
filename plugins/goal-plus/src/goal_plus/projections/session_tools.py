@@ -17,6 +17,8 @@ def invocation_receipt(result: SessionInvocationResult, *, include_text: bool = 
         payload["text"] = result.text
     if result.error:
         payload["error"] = result.error
+    if result.failure is not None:
+        payload["failure"] = asdict(result.failure)
     return payload
 
 
@@ -30,9 +32,11 @@ def session_call_receipt(snapshot: SessionCallSnapshot, *, detail: bool = False)
         payload["invocation_id"] = snapshot.result.invocation_id
         if snapshot.result.error:
             payload["error"] = snapshot.result.error
+        if snapshot.result.failure is not None:
+            payload["failure"] = asdict(snapshot.result.failure)
         if snapshot.result.text:
             payload["result_available"] = True
-            payload["details"] = {"tool": "goal_plus_session_wait", "detail": True}
+            payload["details"] = {"tool": "goal_plus_session_wait_any", "detail": True}
     if snapshot.error:
         payload["error"] = snapshot.error
     return payload

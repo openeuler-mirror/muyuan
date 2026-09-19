@@ -44,6 +44,64 @@ def test_codex_provider_credentials_forward_only_configured_names(installer, tmp
     assert installer._codex_provider_env_vars() == ("HEADER_TOKEN", "MODEL_TOKEN", "OPENAI_API_KEY")
 
 
+def test_thinkthread_profile_models_reads_exact_allowlist(installer, monkeypatch, tmp_path):
+    class Result:
+        stdout = '[{"provider":"direct","model":"model-a"},{"provider":"direct","model":"model-a"},{"provider":"zai","model":"glm-5"}]'
+
+    monkeypatch.setattr(installer, "_run", lambda *args, **kwargs: Result())
+    assert installer._thinkthread_profile_models(
+        "tt", profile="goal-plus-pi", fs=tmp_path
+    ) == [
+        {"provider": "direct", "model": "model-a", "ref": "direct/model-a"},
+        {"provider": "zai", "model": "glm-5", "ref": "zai/glm-5"},
+    ]
+
+
+def test_thinkthread_profile_models_rejects_invalid_inventory(installer, monkeypatch, tmp_path):
+    class Result:
+        stdout = "{}"
+
+    monkeypatch.setattr(installer, "_run", lambda *args, **kwargs: Result())
+    with pytest.raises(installer.InstallError, match="non-list"):
+        installer._thinkthread_profile_models("tt", profile="goal-plus-pi", fs=tmp_path)
+
+
+def test_thinkthread_profile_verification_reads_allowlist_without_probe(
+    installer, monkeypatch
+):
+    monkeypatch.setattr(
+        installer,
+        "_thinkthread_profile_models",
+        lambda *args, **kwargs: [
+            {"provider": "direct", "model": "default", "ref": "direct/default"},
+            {"provider": "direct", "model": "second", "ref": "direct/second"},
+        ],
+    )
+    installer._verify_thinkthread_profile_models(
+        "tt",
+        native_agent="pi",
+        target={"provider": "direct", "model": "default"},
+    )
+
+
+def test_thinkthread_profile_verification_rejects_model_outside_allowlist(
+    installer, monkeypatch
+):
+    monkeypatch.setattr(
+        installer,
+        "_thinkthread_profile_models",
+        lambda *args, **kwargs: [
+            {"provider": "direct", "model": "default", "ref": "direct/default"},
+        ],
+    )
+    with pytest.raises(installer.InstallError, match="not admitted.*direct/missing"):
+        installer._verify_thinkthread_profile_models(
+            "tt",
+            native_agent="pi",
+            target={"provider": "direct", "model": "missing"},
+        )
+
+
 def _write_pi_settings(agent_dir: Path, packages: list[object]) -> None:
     agent_dir.mkdir(parents=True)
     (agent_dir / "settings.json").write_text(
@@ -196,17 +254,16 @@ def test_pi_dev_usage_output_explains_same_shell_and_target_workspace(
     assert "打开新的 shell 后，需要重新执行上面的 source 命令。" in output
 
 
-def test_pi_dev_rejects_retired_source_package_registration(
+def test_pi_dev_isolated_from_retired_source_package_registration(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_dir = tmp_path / "pi-agent"
-    _write_pi_settings(agent_dir, [str(ROOT)])
+    _write_pi_settings(agent_dir, [str(tmp_path / "foreign-release" / "goal-plus")])
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
-    with pytest.raises(installer.InstallError, match="another active Goal Plus source"):
-        installer._preflight_pi_dev()
+    installer._preflight_pi_dev()
 
 
 def test_pi_registration_resolves_relative_source_from_symlinked_agent_path(
@@ -314,7 +371,7 @@ def test_env_show_is_read_only_mode(
     assert shown == [tmp_path]
 
 
-def test_pi_dev_detects_stale_local_goal_plus_path(
+def test_pi_dev_ignores_stale_local_goal_plus_path(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -323,11 +380,10 @@ def test_pi_dev_detects_stale_local_goal_plus_path(
     _write_pi_settings(agent_dir, ["../missing-checkout/goal-plus"])
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
-    with pytest.raises(installer.InstallError, match="missing-checkout/goal-plus"):
-        installer._preflight_pi_dev()
+    installer._preflight_pi_dev()
 
 
-def test_pi_dev_rejects_project_local_goal_plus_assets(
+def test_pi_dev_isolated_from_project_local_goal_plus_assets(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -340,8 +396,7 @@ def test_pi_dev_rejects_project_local_goal_plus_assets(
     extension.write_text("// duplicate\n", encoding="utf-8")
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
-    with pytest.raises(installer.InstallError, match=r"\[project\].*goal-plus\.ts"):
-        installer._preflight_pi_dev(cwd=project)
+    installer._preflight_pi_dev(cwd=project)
 
 
 def test_pi_normal_accepts_same_checkout_registration(
@@ -568,6 +623,7 @@ def test_thinkthread_codex_install_flow_installs_config_before_profile(
         installer.managed_runtime, "bind",
         lambda host, path, _package, *, dry_run: calls.append(f"bind:{path.stem}"),
     )
+    monkeypatch.setattr(installer, "_thinkthread_profile_models", lambda *args, **kwargs: [])
 
     assert installer.main(["--codex", "--thinkthread", "-y"]) == 0
 
@@ -606,6 +662,7 @@ def test_thinkthread_pi_install_flow_skips_the_codex_profile(
     monkeypatch.setattr(installer, "_preflight_thinkthread_profile", preflight)
     monkeypatch.setattr(installer, "_install_thinkthread_profile", lambda plan, *, dry_run: None)
     monkeypatch.setattr(installer.managed_runtime, "bind", lambda *a, **k: None)
+    monkeypatch.setattr(installer, "_thinkthread_profile_models", lambda *args, **kwargs: [])
 
     assert installer.main(["--pi", "--thinkthread", "-y"]) == 0
 
@@ -702,12 +759,25 @@ def test_thinkthread_codex_config_isolates_native_tools_and_forwards_only_env_na
     assert "developer_instructions" not in config and "plugins" not in config
     mcp = config["mcp_servers"]["goal-plus"]
     assert mcp["args"] == ["-I", "-m", "goal_plus.server"]
+    assert "CODEX_CONFIG_DIR" in mcp["env_vars"]
     assert "THINKTHREAD_CONTROL_TOKEN" in mcp["env_vars"]
     assert "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED" in mcp["env_vars"]
     assert "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED" in mcp["env_vars"]
     assert "env" not in mcp
     assert source["mcp_servers"] == {"private": {"command": "private-server"}}
     assert installer.tomllib.loads(installer._render_thinkthread_profile(config)) == config
+
+
+def test_thinkthread_codex_config_forwards_provider_credentials(installer, tmp_path):
+    config = installer._build_thinkthread_codex_config(
+        {"model": "provider-model"},
+        runtime_python=tmp_path / "venv/bin/python",
+        codex_env_vars=("CUSTOM_MODEL_KEY", "OPENAI_API_KEY"),
+    )
+
+    env_vars = config["mcp_servers"]["goal-plus"]["env_vars"]
+    assert "CUSTOM_MODEL_KEY" in env_vars
+    assert "OPENAI_API_KEY" in env_vars
 
 
 def test_thinkthread_codex_config_plan_keeps_auth_as_an_owned_file_reference(installer, tmp_path):

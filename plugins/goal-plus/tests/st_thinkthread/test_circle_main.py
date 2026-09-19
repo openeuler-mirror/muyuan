@@ -251,7 +251,7 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
         str(state_root),
         "--",
         "--thinking",
-        "low",
+        os.environ.get("ST_PI_THINKING", "low"),
     ]
     if model := os.environ.get("ST_PI_MODEL"):
         command.extend(["--model", model])

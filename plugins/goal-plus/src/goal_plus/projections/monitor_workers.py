@@ -290,6 +290,7 @@ def project_session(
             "failure_stage": metadata.get("failure_stage"),
             "error_type": metadata.get("error_type"),
             "error": metadata.get("error"),
+            "model_failure": metadata.get("model_failure"),
             "time_advisory_sent": time_advisory is not None,
             "time_advisory": time_advisory,
             "raw_logging": bool(metadata.get("raw_logging")),
