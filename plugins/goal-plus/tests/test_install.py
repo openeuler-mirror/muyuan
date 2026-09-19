@@ -703,6 +703,8 @@ def test_thinkthread_codex_config_isolates_native_tools_and_forwards_only_env_na
     mcp = config["mcp_servers"]["goal-plus"]
     assert mcp["args"] == ["-I", "-m", "goal_plus.server"]
     assert "THINKTHREAD_CONTROL_TOKEN" in mcp["env_vars"]
+    assert "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED" in mcp["env_vars"]
+    assert "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED" in mcp["env_vars"]
     assert "env" not in mcp
     assert source["mcp_servers"] == {"private": {"command": "private-server"}}
     assert installer.tomllib.loads(installer._render_thinkthread_profile(config)) == config

@@ -668,6 +668,8 @@ def _build_thinkthread_codex_config(
                 "GOAL_PLUS_THINKTHREAD_ROLE", "GOAL_PLUS_ROOT", "GOAL_PLUS_NODE",
                 "GOAL_PLUS_AGENT_POSIX_SDK_ENTRY", "GOAL_PLUS_AGENT_POSIX_BRIDGE",
                 "THINKTHREAD_PARENT_ID", "THINKTHREAD_CONTROL_SOCKET", "THINKTHREAD_CONTROL_TOKEN",
+                "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED",
+                "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED",
             ],
             "startup_timeout_sec": 60,
             "tool_timeout_sec": 180,

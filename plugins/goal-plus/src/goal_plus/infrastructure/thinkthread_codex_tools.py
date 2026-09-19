@@ -221,6 +221,7 @@ def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
     from pydantic import Field
 
     from goal_plus._version import __version__
+    from goal_plus.domain.annotation import SupplementalEvaluation, ToolViewOutput
     from goal_plus.server import native_mcp_caller
 
     native_thread: str | None = None
@@ -251,19 +252,29 @@ def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
 
     @mcp.tool()
     def goal_plus_thinkthread_artifact_view_list(view_id: str, path: str = ".") -> dict[str, Any]:
-        """列出授权 immutable Artifact View 的目录内容；仅限当前 task 授权的 view id。"""
+        """列出授权 immutable Artifact View 的目录内容。
+
+        view_id 必须逐字使用 annotation_next 返回的 artifact_views[].view_id；
+        不得使用其中 artifact_ref.id（例如 fsnap-*）替代。
+        """
         return call("goal_plus_thinkthread_artifact_view_list", {"view_id": view_id, "path": path})
 
     @mcp.tool()
     def goal_plus_thinkthread_artifact_view_stat(view_id: str, path: str = ".") -> dict[str, Any]:
-        """读取授权 Artifact View 中路径的元数据（类型、大小、哈希）。"""
+        """读取授权 Artifact View 中路径的元数据（类型、大小、哈希）。
+
+        view_id 必须是 annotation_next 返回的 view_id，不是 artifact_ref.id。
+        """
         return call("goal_plus_thinkthread_artifact_view_stat", {"view_id": view_id, "path": path})
 
     @mcp.tool()
     def goal_plus_thinkthread_artifact_view_pread(
         view_id: str, path: str, offset: int = 0, length: int = 64 * 1024,
     ) -> dict[str, Any]:
-        """按 offset/length 读取授权 Artifact View 中文件的内容片段。"""
+        """按 offset/length 读取授权 Artifact View 中文件的内容片段。
+
+        view_id 必须是 annotation_next 返回的 view_id，不是 artifact_ref.id。
+        """
         return call(
             "goal_plus_thinkthread_artifact_view_pread",
             {"view_id": view_id, "path": path, "offset": offset, "length": length},
@@ -271,7 +282,11 @@ def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
 
     @mcp.tool()
     def goal_plus_thinkthread_artifact_view_diff(base_view_id: str, target_view_id: str) -> dict[str, Any]:
-        """读取两个授权 Artifact View 之间的受控 diff（peer 比较基线）。"""
+        """读取两个授权 Artifact View 之间的受控 diff（peer 比较基线）。
+
+        两个参数都必须逐字使用 annotation_next 返回的 view_id；不得传入
+        artifact_ref.id（例如 fsnap-*）。
+        """
         return call(
             "goal_plus_thinkthread_artifact_view_diff",
             {"base_view_id": base_view_id, "target_view_id": target_view_id},
@@ -280,14 +295,19 @@ def _annotator_mcp(transport: AgentPosixSdkClient, session_id: str):
     @mcp.tool()
     def goal_plus_thinkthread_annotation_submit(
         description: Annotated[str, Field(min_length=1, max_length=1000)],
-        supplemental_evaluation: dict[str, TypingAny] | None = None,
-        tool_views: list[dict[str, TypingAny]] | None = None,
+        supplemental_evaluation: SupplementalEvaluation | None = None,
+        tool_views: list[ToolViewOutput] | None = None,
     ) -> dict[str, Any]:
         """发布当前 task 的 annotation（单行客观 description 与可选补充评价）。"""
         return call("goal_plus_thinkthread_annotation_submit", {
             "description": description,
-            "supplemental_evaluation": supplemental_evaluation,
-            "tool_views": tool_views or [],
+            "supplemental_evaluation": (
+                supplemental_evaluation.model_dump(mode="json")
+                if supplemental_evaluation is not None else None
+            ),
+            "tool_views": [
+                item.model_dump(mode="json") for item in (tool_views or [])
+            ],
         })
 
     return mcp
