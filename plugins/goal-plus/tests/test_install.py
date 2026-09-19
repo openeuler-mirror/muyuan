@@ -196,7 +196,7 @@ def test_pi_dev_usage_output_explains_same_shell_and_target_workspace(
     assert "打开新的 shell 后，需要重新执行上面的 source 命令。" in output
 
 
-def test_pi_dev_rejects_retired_source_package_registration(
+def test_pi_dev_isolated_from_retired_source_package_registration(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -205,8 +205,7 @@ def test_pi_dev_rejects_retired_source_package_registration(
     _write_pi_settings(agent_dir, [str(ROOT)])
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
-    with pytest.raises(installer.InstallError, match="another active Goal Plus source"):
-        installer._preflight_pi_dev()
+    installer._preflight_pi_dev()
 
 
 def test_pi_registration_resolves_relative_source_from_symlinked_agent_path(
@@ -314,7 +313,7 @@ def test_env_show_is_read_only_mode(
     assert shown == [tmp_path]
 
 
-def test_pi_dev_detects_stale_local_goal_plus_path(
+def test_pi_dev_ignores_stale_local_goal_plus_path(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -323,11 +322,10 @@ def test_pi_dev_detects_stale_local_goal_plus_path(
     _write_pi_settings(agent_dir, ["../missing-checkout/goal-plus"])
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
-    with pytest.raises(installer.InstallError, match="missing-checkout/goal-plus"):
-        installer._preflight_pi_dev()
+    installer._preflight_pi_dev()
 
 
-def test_pi_dev_rejects_project_local_goal_plus_assets(
+def test_pi_dev_isolated_from_project_local_goal_plus_assets(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -340,8 +338,7 @@ def test_pi_dev_rejects_project_local_goal_plus_assets(
     extension.write_text("// duplicate\n", encoding="utf-8")
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
 
-    with pytest.raises(installer.InstallError, match=r"\[project\].*goal-plus\.ts"):
-        installer._preflight_pi_dev(cwd=project)
+    installer._preflight_pi_dev(cwd=project)
 
 
 def test_pi_normal_accepts_same_checkout_registration(

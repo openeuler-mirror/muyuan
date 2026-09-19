@@ -1474,24 +1474,14 @@ def _preflight_pi_normal(*, allow_replacement: bool = False) -> bool:
 
 
 def _preflight_pi_dev(*, cwd: Path | None = None) -> None:
-    entries = _pi_goal_plus_entries(cwd=cwd)
-    root = ROOT.resolve()
-    allowed_paths = {
-        (root / "assets/pi/extensions/goal-plus.ts").resolve(),
-    }
-    conflicts = [
-        entry
-        for entry in entries
-        if entry.get("resolved_path") not in allowed_paths
-    ]
-    if conflicts:
-        raise InstallError(
-            "Pi development mode found another active Goal Plus source; "
-            "pi-goal-plus already loads this checkout explicitly:\n"
-            f"  - {_render_pi_entries(conflicts)}\n"
-            f"{_render_pi_conflict_remediation(conflicts)}\n"
-            "Other Pi packages and authentication remain untouched."
-        )
+    # The dev launcher passes --no-extensions and then explicitly loads this
+    # checkout's extension.  Normal user/project registrations therefore stay
+    # untouched and cannot be loaded into the dev process; treating them as an
+    # install conflict would incorrectly couple --pi-dev to --pi.
+    del cwd
+    extension = (ROOT / "assets/pi/extensions/goal-plus.ts").resolve()
+    if not extension.is_file():
+        raise InstallError(f"Pi development extension is missing: {extension}")
 
 
 def _git_source_state() -> dict[str, Any]:

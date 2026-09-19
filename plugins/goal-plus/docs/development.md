@@ -190,11 +190,10 @@ cd /absolute/path/to/target-workspace
 pi-goal-plus
 ```
 
-用户级或目标项目若已显式引用相同 `assets/pi/` extension/skill，Pi 会按绝对资源路径去重。
-旧式直接注册源码根目录的 package 已不再有效，需先移除该注册。
-安装时和 launcher 每次启动时仍会拒绝来自其他 checkout 或复制路径的 Goal Plus；若
-报错，先按报告的 source 执行 `pi remove <source>`。断链的旧式 loose-resource symlink 不会被
-Pi 加载，也不会阻塞开发态。其他 Pi package、模型设置和认证信息不会被修改。
+开发 launcher 使用 `--no-extensions` 后显式加载当前 checkout 的 `assets/pi/` extension，
+因此普通 `--pi` release、用户级 package 和目标项目资源都不会进入 dev 进程，也不需要卸载。
+`--pi-dev` 不修改 Pi 用户配置、模型设置或认证信息；它只校验当前 checkout 的 extension
+存在并使用自己的 editable Python runtime。普通 Pi 会话和开发 Pi 会话可以并行运行。
 
 ### Pi 开发循环
 
