@@ -50,7 +50,7 @@ def test_preflight_requires_provider_endpoint_and_credentials(tmp_path, monkeypa
         preflight_thinkthread_codex()
 
 
-def test_preflight_probes_selected_model_and_returns_provider_metadata(tmp_path, monkeypatch):
+def test_preflight_returns_provider_metadata_without_live_probe(tmp_path, monkeypatch):
     _write_config(
         tmp_path,
         'model = "gpt-5.6-luna"\nmodel_provider = "direct"\n'
@@ -61,23 +61,17 @@ def test_preflight_probes_selected_model_and_returns_provider_metadata(tmp_path,
     )
     monkeypatch.setenv("CODEX_CONFIG_DIR", str(tmp_path / "codex"))
     monkeypatch.setenv("DIRECT_TOKEN", "test-token")
-    calls = []
-    monkeypatch.setattr(
-        "goal_plus.thinkthread_connectivity.probe_codex_model",
-        lambda target: calls.append(target) or None,
-    )
-
     result = preflight_thinkthread_codex()
 
-    assert calls == [{"model": "gpt-5.6-luna", "reasoning_effort": "high"}]
     assert result == {
         "model": "gpt-5.6-luna",
         "provider": "direct",
         "endpoint": "http://127.0.0.1:18081/v1",
+        "credential": "DIRECT_TOKEN",
     }
 
 
-def test_preflight_surfaces_probe_failure(tmp_path, monkeypatch):
+def test_preflight_does_not_report_provider_failure_before_execution(tmp_path, monkeypatch):
     _write_config(
         tmp_path,
         'model = "gpt-5.6-luna"\nmodel_provider = "direct"\n'
@@ -85,9 +79,4 @@ def test_preflight_surfaces_probe_failure(tmp_path, monkeypatch):
         'base_url = "http://127.0.0.1:18081/v1"\n',
     )
     monkeypatch.setenv("CODEX_CONFIG_DIR", str(tmp_path / "codex"))
-    monkeypatch.setattr(
-        "goal_plus.thinkthread_connectivity.probe_codex_model",
-        lambda target: "gpt-5.6-luna: exit 1",
-    )
-    with pytest.raises(ThinkThreadConnectivityError, match="exit 1"):
-        preflight_thinkthread_codex()
+    assert preflight_thinkthread_codex()["model"] == "gpt-5.6-luna"

@@ -1,10 +1,9 @@
-"""Opt-in transcript collection from local native session histories.
+"""Transcript collection from local native session histories.
 
 This module replays native Codex/Pi histories and the unified TT session archive.
-Automatic exports are gated on their own ``GOAL_PLUS_AGENT_TRANSCRIPT=1`` switch
-— deliberately separate from ``GOAL_PLUS_DEBUG`` so size-statistics debugging
-stays cheap — or on direct script invocation. Output stays under ``host-logs/``
-and may contain prompts, tool arguments and outputs.
+Raw entries are retained locally for the lifetime needed to diagnose a host
+failure and are exported under ``host-logs/``. Monitor projections expose only
+bounded metadata and archive availability.
 """
 
 from __future__ import annotations

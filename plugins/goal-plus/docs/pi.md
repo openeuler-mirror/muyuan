@@ -345,14 +345,13 @@ count，且总数必须等于 `max_parallel`。`models=` 是 `workers=` 的兼�
 
 `/goal-plus` command 和 `goal_plus_search_freeze_spec` extension gate 只收集显式 worker、annotator
 model。匹配当前 Main 的显式引用直接使用 `ctx.model` 对象，其他引用从 native registry
-唯一解析；随后按模型去重，通过一次 `Promise.all` 并发调用 `ctx.modelRegistry.complete()` 发送
-最小 `hi` 请求。任一失败时在 agent 启动前拒绝创建或 freeze；即使没有显式 role model，也会
-把当前 `ctx.model` 纳入 probe，避免默认模型配置失效到 Goal 启动后才暴露。extension 直接从
+唯一解析；这些检查只读取本地 model catalog，不发送合成 `hi` 请求。extension 直接从
 `ctx.model` 和当前 thinking 建立
 execution scope 的非敏感 native launch snapshot；candidate、Annotation、普通 subagent 和 final
 check 在没有显式 override 时使用该 snapshot，避免新 Pi 进程回落到机器级 default。该 snapshot
 不进入 SearchSpec，不使用 Goal Plus model 环境变量，也不包含或解析 API key、endpoint 或独立
-provider 配置。catalog 可发现不等于真实推理可用。
+provider 配置。catalog 可发现不等于真实推理可用；实际 invocation 失败会以结构化 model failure
+写入 session metadata、monitor 和 report。
 
 ## Worker 上下文与恢复
 

@@ -69,6 +69,9 @@ def test_host_binding_returns_all_supported_hosts() -> None:
     assert codex_thinkthread.runtime_provider == "thinkthread"
     assert codex_thinkthread.adapter_version == "thinkthread-v3-codex"
     assert codex_thinkthread.capabilities.search_enabled is True
+    assert codex_thinkthread.capabilities.supports_model_override is True
+    assert codex_thinkthread.capabilities.supports_reasoning_effort is False
+    assert codex_thinkthread.capabilities.supports_service_tier is False
     assert codex_thinkthread.capabilities.disabled_reason is None
     assert codex_thinkthread.capabilities.supported_workspace_providers == {"thinkthread"}
     assert codex_thinkthread.capabilities.supported_inner_agents == {INNER_AGENT_COMMON}
@@ -163,6 +166,18 @@ def test_thinkthread_adapter_payload_is_complete_for_pi_profile() -> None:
     assert "# initial worker prompt" not in continued["message"]
     assert "这是一个新的 candidate dispatch" in continued["message"]
     assert continued["message"].endswith("本轮目标：next attempt")
+
+
+def test_thinkthread_codex_adapter_accepts_exact_model_override() -> None:
+    adapter = candidate_launch_adapter("codex", "thinkthread")
+    launch = adapter.build_launch_payload(
+        candidate_id="c001",
+        agent_session_id="agent-run-001",
+        short_intent="try",
+        one_paragraph_idea="test an exact model",
+        worker_launch={"model": "provider/model"},
+    )
+    assert launch["model"] == {"provider": "provider", "model": "model"}
 
 
 @pytest.mark.codex

@@ -105,7 +105,14 @@ Codex、Pi 和 ThinkThread Profile 分别持有版本引用，更新其中一个
 `./install.sh --pi --thinkthread` 或 `./install.sh --codex --thinkthread`。搭配
 `--codex --thinkthread` 时可用 `--codex-profile <name>` 叠加用户 `CODEX_HOME` 下的
 `NAME.config.toml` 覆盖层，把受管 TT Codex 配置切换到非默认模型（如 DeepSeek）；
-省略时投影 base config 默认模型。同样，
+省略时投影 base config 默认模型。带 `--thinkthread` 的安装在 Profile、隔离配置和
+MCP 环境接线写入后，会读取 TT Profile 的 exact model allowlist，不发送真实模型请求。配置失败会列出
+agent、Profile、model、provider、endpoint 和缺失的 credential 名称（不会输出 credential
+值）。allowlist 可包含当前不可用或不打算在本任务使用的模型，因此安装只确认其可读取，不会
+逐个强制请求。多个 worker/annotator 模型不需要为每个模型猜一个 `--codex-profile`；它们先成为
+TT Profile 的显式 delegation allowlist 成员，任务实际选择后由运行时做 exact 配置准入，真实请求
+失败则写入结构化执行失败并在 monitor/report 中展示。
+同样，
 `./uninstall.sh --pi` 只移除普通 Pi 注册；
 要移除本 checkout 管理的 TT Profile，显式加 `--thinkthread`。无参数卸载默认选择全部组件。
 TT Profile 从基础 `pi` Profile 整份生成，重装会覆盖受管文件中的手工修改。写入后的

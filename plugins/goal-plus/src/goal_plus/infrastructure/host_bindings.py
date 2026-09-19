@@ -41,6 +41,10 @@ _EXECUTION_BINDINGS: dict[tuple[AgentHarnessKind, AgentRuntimeProvider], AgentEx
     )),
     ("codex", "thinkthread"): AgentExecutionBinding("codex", "thinkthread", "thinkthread-v3-codex", AgentExecutionCapabilities(
         search_enabled=True,
+        # ThinkThread's spawn contract carries an exact provider/model ref;
+        # the managed Profile/allowlist is the authority for which refs are
+        # usable.  Reasoning/service-tier overrides remain unsupported.
+        supports_model_override=True,
         supported_workspace_providers=frozenset({"thinkthread"}),
         supported_inner_agents=frozenset({INNER_AGENT_COMMON}),
     )),

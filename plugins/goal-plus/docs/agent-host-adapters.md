@@ -112,7 +112,7 @@ freeze/launch 前 fail closed。
 | Deadline | Application 预算 gate + 宿主执行限时 | 同一接线 | parent/controller watchdog | 同 Pi + ThinkThread |
 | 恢复 | `.gp` checkpoint/generation + scope 资源核验 | 同一恢复用例 | scope 资源日志、原 call_id/Message、独占 controller lease | 同 Pi + ThinkThread，复用受 Child 不可复用约束 |
 | Goal gate | 精确 `$goal-plus...` + hooks | 精确 `/goal-plus...` + extension events | 同 Pi gate + exact Profile preflight | Codex gate + exact Profile preflight；managed config 无 hooks，TT Root 无 Stop-hook 续跑 |
-| 模型发现 | app-server `model/list` | Pi RPC model catalog | Profile/default 或显式 provider/model | Profile 默认模型，不支持显式 override |
+| 模型发现 | app-server `model/list` | Pi RPC model catalog | Profile/default 或显式 provider/model | TT Profile allowlist；默认或显式 exact provider/model |
 | Observability | native JSONL + metadata | `pi_metrics` + metadata | TT IDs + durable snapshot/request IDs | 同 Pi + ThinkThread |
 | Workspace | `copy`、`git_worktree` | `copy`、`git_worktree` | `thinkthread` | `thinkthread` |
 
@@ -124,7 +124,8 @@ freeze/launch 前 fail closed。
 `random_mode`）。Codex/Pi RPC 的普通运行使用固定初始并行循环；Git worktree 可选
 `adaptive_search`。ThinkThread（Pi 与 Codex Profile）支持 `parallel_loops` 和
 `adaptive_search`，Codex
-ThinkThread 继承 Profile 默认模型。harness/runtime/workspace 组合不匹配或 Profile preflight 失败时 runtime 在
+ThinkThread 默认继承 Profile 模型；显式模型必须来自 Profile allowlist，并以 exact
+`provider/model` 传给 Child。harness/runtime/workspace 组合不匹配或 Profile preflight 失败时 runtime 在
 freeze/create 边界 fail closed。
 
 Codex Goal Plus startup 仍只接受精确 `$goal-plus...` 的 `UserPromptSubmit` 授权，并在

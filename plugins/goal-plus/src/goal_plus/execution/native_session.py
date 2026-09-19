@@ -13,6 +13,7 @@ from typing import Any
 from goal_plus.execution.managed_process import PROCESS_POLL_SECONDS
 from goal_plus.execution.process_output import PROCESS_OUTPUT_LIMIT_BYTES
 from goal_plus.execution.pi_metrics import collect_pi_metrics
+from goal_plus.execution.model_failures import model_identity, normalize_model_failure
 from goal_plus.execution.session_rpc import SessionRpcProcess, SessionTransportError, SessionRequestRejected
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.session import NativeSessionInput, SessionInvocationObservation, SessionInvocationResult, SessionToolBridge
@@ -258,6 +259,12 @@ class CodexSession:
                         started_at, datetime.now(timezone.utc).isoformat(), time.monotonic() - started,
                         metrics_baseline=dict(self._usage_baseline),
                     ),
+                    failure=normalize_model_failure(
+                        completed.get("error"), phase="response",
+                        model=self.config.model,
+                        provider=model_identity(self.config.model)[0],
+                        source="codex_app_server",
+                    ),
                     agent_harness="codex", runtime_provider="direct",
                 )
         except BaseException:
@@ -319,6 +326,7 @@ class PiSession:
             raise ValueError("Pi session requires the Pi host")
         if resume_from is not None and config.native_session_id != resume_from.native_session_id:
             raise ValueError("Pi continuation must preserve the native session identity")
+        self.config = config
         self._run_lock = threading.Lock()
         self._condition = threading.Condition()
         self._settled = False
@@ -441,6 +449,10 @@ class PiSession:
                 {"scope": metrics["usage_delta_scope"], **metrics["usage_delta"]} if metrics["usage_delta"] is not None else {},
                 self._error,
                 SessionInvocationObservation(started_at, ended_at, duration, metrics, dict(self._metrics_baseline)),
+                failure=normalize_model_failure(
+                    self._error, phase="response", model=self.config.model,
+                    provider=model_identity(self.config.model)[0], source="pi_rpc",
+                ),
                 agent_harness="pi", runtime_provider="direct",
             )
         except BaseException:

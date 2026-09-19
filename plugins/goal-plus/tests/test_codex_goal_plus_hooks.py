@@ -704,7 +704,7 @@ def test_codex_model_probe_only_uses_native_model_switch(
     assert not any("model_provider" in value for value in commands[0])
 
 
-def test_codex_model_preflight_failure_blocks_before_goal_creation(
+def test_codex_model_admission_does_not_probe_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -712,10 +712,12 @@ def test_codex_model_preflight_failure_blocks_before_goal_creation(
     search_root = tmp_path / ".gp"
     runtime = FileGoalPlusRuntime(search_root)
 
+    probe_called = False
+
     def reject(_targets: list[dict[str, str]]) -> None:
-        raise RuntimeError(
-            "Codex model preflight failed before agent launch: gpt-broken: exit 1"
-        )
+        nonlocal probe_called
+        probe_called = True
+        raise AssertionError("provider probing is not part of Goal admission")
 
     monkeypatch.setattr(codex_models, "probe_codex_models", reject)
     hook_module._handle_user_prompt_submit(
@@ -730,9 +732,9 @@ def test_codex_model_preflight_failure_blocks_before_goal_creation(
     )
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["decision"] == "block"
-    assert "model preflight failed before agent launch" in payload["reason"]
-    assert not list((search_root / "goal-plus").glob("gp_*/goal.json"))
+    assert payload.get("decision") != "block"
+    assert not probe_called
+    assert list((search_root / "goal-plus").glob("gp_*/goal.json"))
 
 
 def test_codex_search_freeze_preflight_covers_explicit_model_roles() -> None:

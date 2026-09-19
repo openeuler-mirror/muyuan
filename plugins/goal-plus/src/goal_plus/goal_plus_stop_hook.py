@@ -1312,9 +1312,6 @@ def _handle_user_prompt_submit(
     ):
         try:
             role_models = codex_models.parse_goal_plus_role_models(raw_goal)
-            codex_models.probe_codex_models(
-                codex_models.command_codex_model_targets(hook_input, role_models)
-            )
         except ValueError as exc:
             _emit_user_prompt_block(str(exc))
             return
@@ -1774,11 +1771,9 @@ def _handle_pre_tool_use(
         _emit_pre_tool_block(str(exc))
         return
     if logical_name == "goal_plus_search_freeze_spec":
-        try:
-            codex_models.probe_codex_models(codex_models.search_spec_codex_model_targets(hook_input))
-        except RuntimeError as exc:
-            _emit_pre_tool_block(str(exc))
-            return
+        # Freeze validates the selected model against the host catalog. The
+        # actual provider request belongs to the candidate invocation itself.
+        pass
     gate = runtime.gate(goal_id, event="pre_tool_use", context=hook_input)
     if gate.decision == "block":
         _emit_pre_tool_block(gate.reason or "Goal Plus 阻止了此工具调用。")

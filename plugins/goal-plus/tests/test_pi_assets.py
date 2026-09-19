@@ -66,7 +66,7 @@ def test_pi_model_context_injections_are_ledger_registered() -> None:
     # provider, not only ThinkThread.
     assert 'latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"' in text
     archive = (ROOT / "assets/pi/extensions/lib/goal-plus-session-archive.ts").read_text(encoding="utf-8")
-    assert '"goal-plus-injection-observation"' in archive
+    assert '"session_transcript"' in archive
 
 
 def test_pi_thinkthread_worker_activates_context_from_logical_root() -> None:
@@ -122,28 +122,17 @@ def test_pi_allocation_uses_shared_host_cancellation() -> None:
     assert "workerAllocationDecisionId" not in text
 
 
-def test_pi_model_preflight_uses_native_registry_concurrently() -> None:
+def test_pi_model_admission_uses_catalog_without_synthetic_request() -> None:
     text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
-    preflight = text.split("async function probePiModels(", 1)[1].split(
-        "async function probePiModelReferences(", 1
-    )[0]
-    runtime_tool = text.split("function registerRuntimeTool(", 1)[1].split(
-        "function activateWorkerContext(", 1
-    )[0]
-
-    assert "await Promise.all([...unique.values()].map(async (model)" in preflight
-    assert "ctx.modelRegistry.complete(" in preflight
-    assert 'content: "hi"' in preflight
-    assert "if (unique.size === 0) return;" in preflight
+    assert "probePiModels" not in text
+    assert 'content: "hi"' not in text
+    assert "modelRegistry.complete(" not in text
     assert "GOAL_PLUS_PI_MODEL" not in text
     assert (
         "if (ctx.model && piModelMatchesReference(ctx.model, needle)) return ctx.model;"
         in text
     )
-    assert "await probePiModels(ctx, [ctx.model, ...(resolved?.models ?? [])])" in text
-    assert "const references: Array<string | undefined> = [];" in text
-    assert 'name === "goal_plus_search_freeze_spec"' in runtime_tool
-    assert "await probePiSearchSpecModels(ctx, forwardedParams)" in runtime_tool
+    assert "requested Pi model is not available" in text
     assert 'model_pattern: `${ctx.model.provider}/${ctx.model.id}`' in text
     assert "native_agent_config: nativeAgentConfig" in text
 

@@ -105,7 +105,7 @@ doctor 会记录 Codex 版本供诊断，不按版本号设置最低门槛。它
 executable、Python source provenance、plugin
 加载、MCP 启用状态、hook path 与 trust hash、内置/custom agent role 覆盖范围，以及只读 Codex model
 catalog。required check 失败时命令返回非零，支持 `--json`；安装、更新或修改 trust 后都应使用新
-thread。`--skip-model-check` 只适合离线排障，正式 multi-model preflight 不应跳过该项。
+thread。`--skip-model-check` 只适合离线排障；正式检查仍应读取并核对 model catalog。
 
 如果升级前仍装有旧 staging 版本，先显式删除旧注册：
 
@@ -264,18 +264,19 @@ continuation 中保持不变。省略 `workers=` 和 `models=` 时，child 继�
 
 Codex + ThinkThread 的 Root 使用 `goal_plus_host_start`，没有普通 Codex hook 的
 `UserPromptSubmit` preflight 路径。该入口在创建 Goal 持久状态前读取隔离 `CODEX_CONFIG_DIR`，要求
-Profile 明确选择 `model_provider`、provider `base_url` 和可用 credential，并发送一次有界的最小
-`codex exec` 请求。缺少 provider 时会直接拒绝，避免 Codex 静默退回 `openai-codex`；失败信息会在
-Goal 启动处返回。
+Profile 明确选择 `model_provider`、provider `base_url` 和可用 credential。缺少 provider 时会直接拒绝，
+避免 Codex 静默退回 `openai-codex`；配置错误会在 Goal 启动处返回。Search 的显式模型仍必须先出现在 TT Profile allowlist 中，随后由
+`goal_plus_list_models`/freeze 使用 exact `provider/model` 校验；candidate spawn 把同一精确引用
+传给 TT，而不是回退到 Root 默认模型。
 
 Model catalog 负责发现；可信 launcher 将冻结的 model/reasoning/service-tier override
 传入原生 app-server。未显式选择时使用 scope 中保存的 Main 模型快照。
 
-Goal command 和 `goal_plus_search_freeze_spec` hook 会收集显式 worker、annotator model，按
-model 去重后并发执行最小 `codex exec -m MODEL` 推理请求。检查只使用 Codex 原生 model switch，
-不解析或覆盖 provider；认证、endpoint 与其他外部配置由当前 Codex 环境原样继承。任一显式模型
-失败时，Goal 创建或 freeze 在 agent 启动前被拒绝。完全没有显式 model 时不 probe，当前 Main
-已经运行即为其模型可用的证据。
+Goal command 和 `goal_plus_search_freeze_spec` hook 会收集显式 worker、annotator model，
+通过宿主 model catalog 和 TT allowlist 做零请求的 exact `provider/model` 准入。认证、endpoint
+与其他外部配置由当前 Codex 环境原样继承；不会为安装或 freeze 发送合成请求。实际 candidate
+invocation 才证明 provider 可用，失败会保留 phase、code、model、provider、endpoint、上游状态码、
+可重试性和脱敏错误来源，并出现在 monitor/report 中。
 
 `adaptive_search` run 配置确定性 Allocation policy 后自动启用固定 LLM-Verifier；policy 版本同时
 管理动态追加的 allocation 评分规则。`parallel_loops` 则仅在 Selection 使用 `quality_score` 时启用。
@@ -385,8 +386,15 @@ candidate 从 AllocationDecision 选定的精确 snapshot 启动。
 `/etc/pki/.../tls-ca-bundle.pem` 等）同样加入白名单——沙箱内 `/etc/ssl` 符号链接
 目标未挂载，缺少该白名单时 HTTPS provider 会以连接失败静默重试。
 
-TT Codex 下不支持/未验证：显式 `workers=` 模型 override（TT spawn 要求精确
-`provider/model` 引用，首版继承 profile 默认模型）；`reasoning_effort`/`service_tier`
+安装 `--codex --thinkthread` 时，安装器只验证最终投影的 Profile、隔离配置、MCP 环境接线和
+ThinkThread exact `provider/model` delegation allowlist 可读取，不发送真实模型请求。
+配置失败会报告具体的 Profile、model、provider、endpoint 或 credential 名称，不会把密钥
+写入输出。allowlist 中未被当前任务选择的模型可能有意不配置凭据、额度或可用 endpoint，因此
+不会阻断安装。`--codex-profile` 只选择默认配置 overlay，不是“只允许 Luna”的开关；多个 TT
+模型先进入 TT registry/allowlist，任务实际选择的 worker/annotator 模型再由运行时 LLM preflight
+逐一做 exact 配置准入；真实请求失败则由执行记录准确原因。这样安装成功证明默认执行链，任务准入成功证明本次所选模型配置链路，执行成功才证明当前服务可用。
+
+TT Codex 下不支持/未验证：`reasoning_effort`/`service_tier`
 （TT 拒绝，freeze 前报错）；TT Codex Root 内的 Ultra delegation 与独立 final check；
 Stop-hook 续跑（`$goal-plus resume` 不可用）。
 

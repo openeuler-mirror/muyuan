@@ -7,11 +7,8 @@ from pathlib import Path
 import tomllib
 from typing import Any
 
-from goal_plus.codex_models import probe_codex_model
-
-
 class ThinkThreadConnectivityError(RuntimeError):
-    """Raised when a ThinkThread native model cannot be used before Goal start."""
+    """Raised when a ThinkThread native model configuration is invalid."""
 
 
 def _config_table(config: dict[str, Any], key: str) -> dict[str, Any]:
@@ -20,11 +17,11 @@ def _config_table(config: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def preflight_thinkthread_codex() -> dict[str, str]:
-    """Verify the configured Codex provider and make one bounded real request.
+    """Validate the managed Codex wiring without making a provider request.
 
-    ThinkThread's ``tt model check`` deliberately does not contact a provider.
-    Inspect the Codex profile first to catch native default fallback, then use
-    the existing Codex probe so this checks the config a Child will inherit.
+    Installation and Goal start establish configuration and permission
+    boundaries. The first real Child turn is the availability proof; sending a
+    synthetic request here would add cost and could become stale immediately.
     """
 
     raw_config_dir = os.environ.get("CODEX_CONFIG_DIR")
@@ -78,17 +75,9 @@ def preflight_thinkthread_codex() -> dict[str, str]:
             f"{credential_env} is unset and {auth_file} is unavailable"
         )
 
-    target = {"model": model.strip()}
-    reasoning = config.get("model_reasoning_effort")
-    if isinstance(reasoning, str) and reasoning.strip():
-        target["reasoning_effort"] = reasoning.strip()
-    failure = probe_codex_model(target)
-    if failure is not None:
-        raise ThinkThreadConnectivityError(
-            "ThinkThread Codex connectivity preflight failed: " + failure
-        )
     return {
         "model": model.strip(),
         "provider": provider_name.strip(),
         "endpoint": endpoint.strip(),
+        "credential": str(credential_env).strip() if isinstance(credential_env, str) and credential_env.strip() else "",
     }

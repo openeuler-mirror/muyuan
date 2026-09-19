@@ -1799,86 +1799,6 @@ function resolveGoalPlusRoleModels(
 	};
 }
 
-async function probePiModels(
-	ctx: ExtensionContext,
-	models: PiModel[],
-): Promise<void> {
-	const unique = new Map<string, PiModel>();
-	for (const model of models) {
-		unique.set(piModelKey(model), model);
-	}
-	if (unique.size === 0) return;
-	const failures = await Promise.all([...unique.values()].map(async (model) => {
-		const reference = `${model.provider}/${model.id}`;
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 25_000);
-		try {
-			const response = await ctx.modelRegistry.complete(
-				model,
-				{
-					systemPrompt: "Reply briefly. This is a connectivity preflight.",
-					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-				},
-				{
-					signal: controller.signal,
-					maxTokens: 16,
-					maxRetries: 0,
-					timeoutMs: 25_000,
-				},
-			);
-			if (response.stopReason === "error" || response.stopReason === "aborted") {
-				return `${reference}: ${response.stopReason}`;
-			}
-			return undefined;
-		} catch (error) {
-			return `${reference}: ${error instanceof Error ? error.name : "request failed"}`;
-		} finally {
-			clearTimeout(timeout);
-		}
-	}));
-	const failed = failures.filter((failure): failure is string => Boolean(failure));
-	if (failed.length > 0) {
-		throw new Error(
-			`Pi model preflight failed before agent launch: ${failed.join("; ")}`,
-		);
-	}
-}
-
-async function probePiModelReferences(
-	ctx: ExtensionContext,
-	references: Array<string | undefined>,
-): Promise<void> {
-	await probePiModels(
-		ctx,
-		references
-			.filter((reference): reference is string => Boolean(reference))
-			.map((reference) => resolvePiModelReference(ctx, reference)),
-	);
-}
-
-async function probePiSearchSpecModels(
-	ctx: ExtensionContext,
-	params: Record<string, unknown>,
-): Promise<void> {
-	const spec = isRecord(params.spec) ? params.spec : undefined;
-	const strategy = spec && isRecord(spec.strategy) ? spec.strategy : undefined;
-	const references: Array<string | undefined> = [];
-	if (strategy) {
-		if (Array.isArray(strategy.models)) {
-			for (const item of strategy.models) {
-				if (isRecord(item)) references.push(stringFrom(item.model));
-			}
-		}
-		if (isRecord(strategy.worker_launch)) {
-			references.push(stringFrom(strategy.worker_launch.model));
-		}
-		if (isRecord(strategy.evidence_annotator)) {
-			references.push(stringFrom(strategy.evidence_annotator.model));
-		}
-	}
-	await probePiModelReferences(ctx, references);
-}
-
 function buildGoalStartPrompt(
 	status: GoalPlusStatusPayload,
 	roleModels?: GoalPlusRoleModels,
@@ -2038,7 +1958,6 @@ async function createGoalPlusStart(
 	try {
 		const resolved = resolveGoalPlusRoleModels(ctx, rawGoal);
 		roleModels = resolved?.roleModels;
-		await probePiModels(ctx, [ctx.model, ...(resolved?.models ?? [])]);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		ctx.ui.notify(message, "error");
@@ -2105,8 +2024,7 @@ async function updateGoalPlusStart(
 		return undefined;
 	}
 	try {
-		const resolved = resolveGoalPlusRoleModels(ctx, rawGoal);
-		await probePiModels(ctx, [ctx.model, ...(resolved?.models ?? [])]);
+		resolveGoalPlusRoleModels(ctx, rawGoal);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		ctx.ui.notify(message, "error");
@@ -2296,9 +2214,6 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 			const startEntryCount = ctx.sessionManager.getEntries().length;
 			const canPersistPiState = canPersistGoalState(ctx);
 			let forwardedParams = params as Record<string, unknown>;
-			if (role === "main" && name === "goal_plus_search_freeze_spec") {
-				await probePiSearchSpecModels(ctx, forwardedParams);
-			}
 			if (role === "main") {
 				if (["goal_plus_run_final_check", "goal_plus_run_work_item"].includes(name)) {
 					await ensureExecutionScope(pi, ctx, String(forwardedParams.goal_plus_id), currentPiNativeAgentConfig(pi, ctx));

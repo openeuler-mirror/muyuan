@@ -120,7 +120,7 @@ export class SessionArchive {
 			const messages = [];
 			for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
 				const chunk = bytes.subarray(offset, offset + CHUNK_BYTES);
-				messages.push({ protocol: THINKTHREAD_GOAL_PLUS_PROTOCOL, type: "session_diagnostics",
+				messages.push({ protocol: THINKTHREAD_GOAL_PLUS_PROTOCOL, type: "session_transcript",
 						agent_session_id: agentSessionId, batch_sha256: hash(bytes), chunk_index: offset / CHUNK_BYTES,
 						chunk_count: Math.ceil(bytes.length / CHUNK_BYTES), chunk_sha256: hash(chunk),
 						data_base64: chunk.toString("base64") });
