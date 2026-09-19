@@ -32,7 +32,7 @@
 
 在 Guess Number 通过后，使用
 [Circle Packing：ThinkThread Shared-Plane 回写](circle-packing-thinkthread-apply/README.md)
-验证两个实际 packing 实现均产生有效分数，并把更好的结果回写到一次性 Root。内部
+验证 Pi 或 Codex 的两个实际 packing 实现均产生有效分数，并把更好的结果回写到一次性 Root。内部
 Child、Artifact View 和 cleanup 合同由真实 ThinkThread system test 覆盖，不写入可粘贴 prompt。
 
 ## 示例索引
@@ -43,7 +43,7 @@ Child、Artifact View 和 cleanup 合同由真实 ThinkThread system test 覆盖
 | [Circle Packing](circle-packing/README.md) | 最短的完整 Goal Plus 运行与报告演示 | Pi 或 Codex，10 分钟 | Python 标准库 |
 | [Circle Packing：Git 工作区回写](circle-packing-git-apply/README.md) | 真实 Git 候选 worktree 和最佳结果回写 | Pi 或 Codex，5 分钟 | Python 标准库、Git |
 | [Guess Number：ThinkThread 回写](guess-number-thinkthread-apply/README.md) | 两条固定路线、精确评分、结果回写和规范报告 | Pi，最多 10 分钟 | ThinkThread Linux Runtime、Python 标准库 |
-| [Circle Packing：ThinkThread Shared-Plane 回写](circle-packing-thinkthread-apply/README.md) | 两个真实 packing candidate、公开 verifier 和 Root 回写 | Pi，最多 20 分钟 | ThinkThread Linux Runtime、Python 标准库 |
+| [Circle Packing：ThinkThread Shared-Plane 回写](circle-packing-thinkthread-apply/README.md) | 两个真实 packing candidate、公开 verifier 和 Root 回写 | Pi 或 Codex，最多 20 分钟 | ThinkThread Linux Runtime、Python 标准库 |
 | [Final Check Skill Guard](final-check-skill-guard/README.md) | task-local Skill 打回、修复和重新验收 | Pi 或 Codex，最多 30 分钟 | Python 标准库、Git |
 | [Model Optimize](model-optimize/README.md) | CPU/PyTorch 优化 | Pi 或 Codex，10 分钟 | PyTorch |
 | [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | 带模拟器正确性门禁的程序与调度优化 | Pi，8 分钟 | Python 标准库 |

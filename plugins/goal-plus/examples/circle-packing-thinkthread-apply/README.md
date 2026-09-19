@@ -1,9 +1,9 @@
 # Circle Packing: ThinkThread Shared-Plane Apply
 
 这个示例在 [0/1 ThinkThread apply smoke](../guess-number-thinkthread-apply/README.md) 之后运行。
-它用两个公开、确定的布局路线启动 TT outer + AutoResearch-Git inner candidate，验证
-Child-private Git、物理 `results.tsv`、多轮 outer snapshot settlement、评分、选择和最终 Root
-回写能在同一 Goal Plus run 中完成。
+它用两个公开、确定的布局路线启动 TT outer candidate，验证 snapshot settlement、评分、
+选择和最终 Root 回写能在同一 Goal Plus run 中完成。Pi 路径使用 AutoResearch-Git inner
+candidate，Codex 路径使用 Common inner candidate。
 
 两个实现作为只读提示公开，避免模型偶然性掩盖编排问题：
 
@@ -11,28 +11,31 @@ Child-private Git、物理 `results.tsv`、多轮 outer snapshot settlement、�
 - c002 使用 5/4 交错六角格，预期 `sum_radii` 约为 2.438964。
 
 ```text
-Pi /goal-plus in Root
+Pi /goal-plus 或 Codex goal_plus_host_start in Root
   -> one K=2 ThinkThread plan
-     -> c001 rectangular.py -> verify -> feedback -> continue same Child
-     -> c002 staggered.py   -> verify -> feedback -> continue same Child
+     -> c001 rectangular.py -> verify -> Pi 可继续 / Codex 返回
+     -> c002 staggered.py   -> verify -> Pi 可继续 / Codex 返回
   -> select best verified iteration -> apply to Root -> Root verifier
   -> terminal reports and host cleanup
 ```
 
 ## 前置条件
 
-需要 Linux、Pi、支持所需接口的 ThinkThread Agent Runtime，以及当前 checkout 生成的
-`goal-plus-pi` Profile：
+需要 Linux、支持所需接口的 ThinkThread Agent Runtime，以及 Pi 或 Codex。按要运行的宿主
+生成对应 Profile：
 
 ```bash
 cd /path/to/muyuan/plugins/goal-plus
 ./install.sh --pi --thinkthread
 tt profile show goal-plus-pi
+
+./install.sh --codex --thinkthread
+tt profile show goal-plus-codex
 ```
 
 版本、protocol 声明或 fingerprint 偏离已测基线时只警告；Profile 结构、实际接口与
 delegated capability 必须通过检查。本例不允许
-回退到其他执行托管方式或工作区实现；agent 身份始终是 Pi。
+回退到其他执行托管方式或工作区实现；agent 身份由所选 Profile 固定。
 
 ## 准备一次性 Root
 
@@ -82,6 +85,30 @@ tt run --profile goal-plus-pi --fs "$PWD/workspace"
 [session 分析](../../docs/debugging-runtime.md#分析工具描述与调用失败) 对照实际请求中的
 MCP 描述、参数 schema、工具错误与修正。此开关仅用于诊断，不是示例启动前置条件。
 
+## 运行真实 Codex E2E
+
+先按上面的步骤准备一次性 Root。需要覆盖 Codex 主模型时，在安装 Profile 时投影对应的
+Codex 配置层，例如：
+
+```bash
+cd /path/to/muyuan/plugins/goal-plus
+./install.sh --codex --thinkthread --codex-profile luna
+
+cd examples/circle-packing-thinkthread-apply
+GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED=1 \
+GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED=1 \
+tt run --profile goal-plus-codex --fs "$PWD/workspace"
+```
+
+随后在 Root TUI 完整粘贴 [`codex-goal-prompt.md`](codex-goal-prompt.md)。ThinkThread Codex
+Root 不加载普通 Codex plugin command 和 hooks，因此这里不使用 `$goal-plus`；prompt 会要求
+Root 先通过受信 MCP 的 `goal_plus_host_start` 建立 Goal，再按共同状态机推进。
+
+Codex binding 当前使用 `inner_agent=common`。Codex prompt 只覆盖示例 SearchSpec 的这一字段，
+保留 ThinkThread workspace、K=2、Annotation 和 apply 合同；两个候选各提交一次确定性 hint
+即可进入选择和回写，不要求额外 improvement turn。不要通过 `tt run -- -p ...` 或追加 Codex
+参数切换模型，因为 Root 参数会被 candidate 继承；使用安装器的 `--codex-profile` 投影模型。
+
 ## 验收
 
 完成卡出现后检查 Root：
@@ -93,10 +120,13 @@ MCP 描述、参数 schema、工具错误与修正。此开关仅用于诊断，
 用户侧验收：
 
 - Goal Plus 为 `complete`，恰好一个 run、一个 K=2 plan 和两个 candidate；
-- FrozenSpec 明确记录 `inner_agent=autoresearch`，TT binding 使用 Pi Search worker prompt；
-- c001/c002 均得到有效 verifier 分数，并在全局停止条件允许时 continuation 同一个 candidate；
-- canonical history 位于 Pi Session-private Goal Plus root，Evidence 是 exact TT snapshot；每个 AutoResearch Child 另有
-  independent private `.git` 和物理 `results.tsv`，但二者不成为公共 Evidence identity；
+- Pi FrozenSpec 明确记录 `inner_agent=autoresearch`；Codex FrozenSpec 明确记录
+  `inner_agent=common`；
+- c001/c002 均得到有效 verifier 分数；Pi 可在全局停止条件允许时 continuation 同一个
+  candidate，Codex 示例各交付一次后直接收尾；
+- canonical history 位于 native Session-private Goal Plus root，Evidence 是 exact TT snapshot；
+  Pi AutoResearch candidate 另有 independent private `.git` 和物理 `results.tsv`，但二者不成为
+  公共 Evidence identity；Codex Common candidate 不创建这两项 inner state；
 - 选择实际最高有效分数的 iteration，乐观 `fs.apply` 为 `applied`，Root 复验 valid 且得分至少 2.4；
 - `report.md`、`report.html` 存在，完成卡显示 `Cleanup complete`。
 
@@ -105,6 +135,6 @@ snapshot 删除属于运行时系统合同，已经由
 [`tests/st_thinkthread/test_linux_v3.py`](../../tests/st_thinkthread/test_linux_v3.py) 的真实
 ThinkThread 系统验收覆盖；普通示例运行不读取 session-private 内部状态来重复验证这些细节。
 
-运行状态位于 Pi Session-private Goal Plus root，不写入 `workspace/.gp`。检查完成后停止 Root，从
+运行状态位于 native Session-private Goal Plus root，不写入 `workspace/.gp`。检查完成后停止 Root，从
 `tt ps --forest` 取得准确 ID，再执行 `tt rm <root-id>`。不要提交 Runtime state、raw transcript、
 socket、token 或生成的 workspace。
