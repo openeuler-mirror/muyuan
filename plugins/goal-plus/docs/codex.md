@@ -261,6 +261,12 @@ $goal-plus inner_agent=autoresearch max_parallel=4 annotator=gpt-5.6-terra worke
 annotator 和 worker 名称，并在 freeze 时保存有序 `selected_models`。candidate 的 worker 模型在后续
 continuation 中保持不变。省略 `workers=` 和 `models=` 时，child 继承正常 parent/default model。
 
+Codex + ThinkThread 的 Root 使用 `goal_plus_host_start`，没有普通 Codex hook 的
+`UserPromptSubmit` preflight 路径。该入口在创建 Goal 持久状态前读取隔离 `CODEX_CONFIG_DIR`，要求
+Profile 明确选择 `model_provider`、provider `base_url` 和可用 credential，并发送一次有界的最小
+`codex exec` 请求。缺少 provider 时会直接拒绝，避免 Codex 静默退回 `openai-codex`；失败信息会在
+Goal 启动处返回。
+
 Model catalog 负责发现；可信 launcher 将冻结的 model/reasoning/service-tier override
 传入原生 app-server。未显式选择时使用 scope 中保存的 Main 模型快照。
 
