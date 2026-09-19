@@ -170,6 +170,10 @@ def test_collect_report_accepts_complete_project_local_setup(
     codex_home = tmp_path / "codex-home"
     payload = _make_project_assets(project_root)
     _write_trusted_config(codex_home, project_root, payload)
+    # Hermetic XDG roots: the optional ThinkThread check must not observe the
+    # developer machine's real profiles or SDK receipts.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
 
     def fake_which(name: str) -> str:
         return f"/mock/bin/{name}"
@@ -221,6 +225,7 @@ def test_collect_report_accepts_complete_project_local_setup(
         "codex.mcp": "pass",
         "codex.hooks": "pass",
         "codex.models": "pass",
+        "thinkthread.installation": "info",
         "codex.session_reload": "info",
     }
 

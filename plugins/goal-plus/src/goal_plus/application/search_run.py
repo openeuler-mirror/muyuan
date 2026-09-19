@@ -130,7 +130,7 @@ class SearchRun:
                 "frozen strategy.models must resolve to budget.max_parallel selected models"
             )
         baseline_source = (
-            self.baseline.prepare_baseline(frozen.spec)
+            self.baseline.prepare_baseline(frozen.spec, agent_harness=frozen.agent_harness)
             if frozen.spec.workspace.provider == "thinkthread"
             else None
         )

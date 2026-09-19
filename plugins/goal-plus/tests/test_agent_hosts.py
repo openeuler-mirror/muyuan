@@ -64,6 +64,14 @@ def test_host_binding_returns_all_supported_hosts() -> None:
         INNER_AGENT_AUTORESEARCH,
         INNER_AGENT_COMMON,
     }
+    codex_thinkthread = execution_binding("codex", "thinkthread")
+    assert codex_thinkthread.agent_harness == "codex"
+    assert codex_thinkthread.runtime_provider == "thinkthread"
+    assert codex_thinkthread.adapter_version == "thinkthread-v3-codex"
+    assert codex_thinkthread.capabilities.search_enabled is True
+    assert codex_thinkthread.capabilities.disabled_reason is None
+    assert codex_thinkthread.capabilities.supported_workspace_providers == {"thinkthread"}
+    assert codex_thinkthread.capabilities.supported_inner_agents == {INNER_AGENT_COMMON}
 
 
 def test_inner_agent_binding_separates_logical_adapter_from_native_role() -> None:
@@ -93,6 +101,18 @@ def test_inner_agent_binding_separates_logical_adapter_from_native_role() -> Non
 
     with pytest.raises(UnsupportedHostCapability, match="inner_agent='custom'"):
         resolve_inner_agent_binding("pi", "custom")
+
+    codex_thinkthread = resolve_inner_agent_binding(
+        "codex", INNER_AGENT_COMMON, "thinkthread"
+    )
+    assert codex_thinkthread.prompt_asset is None
+    assert codex_thinkthread.adapter_version == "builtin-common-v1"
+    assert codex_thinkthread.host_adapter_version == "thinkthread-v3-codex"
+    assert codex_thinkthread.continuation_mode == "native_session"
+    assert codex_thinkthread.workspace_ledger_projection == "none"
+
+    with pytest.raises(UnsupportedHostCapability, match="inner_agent='autoresearch'"):
+        resolve_inner_agent_binding("codex", INNER_AGENT_AUTORESEARCH, "thinkthread")
 
 
 def test_host_observation_and_discovery_do_not_receive_launch_capabilities(monkeypatch):

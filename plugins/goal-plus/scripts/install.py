@@ -69,6 +69,7 @@ class ThinkThreadCodexConfigPlan:
     directory: Path
     content: str
     auth_source: Path | None
+    catalog_source: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -219,6 +220,7 @@ def _preflight_thinkthread_sdk(
     source: Path | None = None,
     package: Path | None = None,
     install_root: Path | None = None,
+    allow_replacement: bool = False,
 ) -> ThinkThreadSdkPlan:
     if source is not None and package is not None:
         raise InstallError("choose either --agent-posix-source or --agent-posix-package")
@@ -243,13 +245,20 @@ def _preflight_thinkthread_sdk(
     installed = False
     if root.exists():
         owner = _managed_thinkthread_sdk_source(root)
-        if owner != ROOT.resolve():
+        foreign = owner != ROOT.resolve()
+        if foreign and not allow_replacement:
             detail = f"managed by {owner}" if owner is not None else "not Goal Plus-managed"
             raise InstallError(
                 f"Agent POSIX SDK directory is {detail}: {root}\n"
                 "Remove or relocate it explicitly, then rerun the installer."
             )
-        if entry.is_file():
+        if foreign and allow_replacement:
+            detail = f"managed by {owner}" if owner is not None else "unmanaged"
+            print(
+                f"warning: replacing {detail} Agent POSIX SDK at {root}",
+                file=sys.stderr,
+            )
+        if entry.is_file() and not foreign:
             _validate_agent_posix_sdk(node_executable, entry)
             installed = True
     return ThinkThreadSdkPlan(
@@ -587,6 +596,14 @@ def _build_thinkthread_profile(
     ):
         if str(path) not in readable:
             readable.append(str(path))
+    if native_agent == "codex":
+        # The sandbox mounts /etc/ssl behind symlinks whose targets live elsewhere
+        # (for example /etc/pki on Oracle/RHEL layouts); expose the resolved system
+        # CA bundles so the native Codex Child can reach HTTPS model providers such
+        # as DeepSeek.
+        for path in _resolve_system_ca_bundles():
+            if str(path) not in readable:
+                readable.append(str(path))
     environment["read"] = readable
 
     session_runtime_root = ("${CODEX_HOME}/goal-plus" if native_agent == "codex"
@@ -612,11 +629,36 @@ def _build_thinkthread_profile(
     return profile
 
 
+_SYSTEM_CA_BUNDLE_CANDIDATES = (
+    "/etc/ssl/certs/ca-certificates.crt",  # Debian/Ubuntu/Gentoo
+    "/etc/ssl/certs/ca-bundle.crt",  # Oracle/RHEL symlinked layout
+    "/etc/pki/tls/certs/ca-bundle.crt",  # Fedora/RHEL
+    "/etc/ssl/ca-bundle.pem",  # OpenSUSE
+    "/etc/pki/tls/cacert.pem",  # OpenELEC
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  # CentOS/RHEL 7+
+    "/etc/ssl/cert.pem",  # Alpine
+)
+
+
+def _resolve_system_ca_bundles(
+    candidates: tuple[str, ...] = _SYSTEM_CA_BUNDLE_CANDIDATES,
+) -> list[Path]:
+    resolved: list[Path] = []
+    for candidate in candidates:
+        path = Path(candidate)
+        if not path.is_file():
+            continue
+        resolved_path = path.resolve()
+        if resolved_path not in resolved:
+            resolved.append(resolved_path)
+    return resolved
+
+
 def _build_thinkthread_codex_config(
     source: dict[str, Any], *, runtime_python: Path,
 ) -> dict[str, Any]:
     # Native model/provider configuration is shared; Root MCPs, plugins and instructions are not Child inputs.
-    fields = {"model", "model_provider", "model_providers", "model_reasoning_effort", "service_tier"}
+    fields = {"model", "model_provider", "model_providers", "model_reasoning_effort", "service_tier", "model_catalog_json"}
     config = json.loads(json.dumps({key: value for key, value in source.items() if key in fields}))
     config["mcp_servers"] = {
         "goal-plus": {
@@ -626,6 +668,8 @@ def _build_thinkthread_codex_config(
                 "GOAL_PLUS_THINKTHREAD_ROLE", "GOAL_PLUS_ROOT", "GOAL_PLUS_NODE",
                 "GOAL_PLUS_AGENT_POSIX_SDK_ENTRY", "GOAL_PLUS_AGENT_POSIX_BRIDGE",
                 "THINKTHREAD_PARENT_ID", "THINKTHREAD_CONTROL_SOCKET", "THINKTHREAD_CONTROL_TOKEN",
+                "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED",
+                "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED",
             ],
             "startup_timeout_sec": 60,
             "tool_timeout_sec": 180,
@@ -635,15 +679,43 @@ def _build_thinkthread_codex_config(
     return config
 
 
-def _plan_thinkthread_codex_config(package: Path, source: Path | None = None) -> ThinkThreadCodexConfigPlan:
+def _plan_thinkthread_codex_config(
+    package: Path, source: Path | None = None, *, profile: str | None = None,
+) -> ThinkThreadCodexConfigPlan:
     source = source or _codex_config()
     config_path = source / "config.toml"
     config = tomllib.loads(config_path.read_text()) if config_path.is_file() else {}
+    if profile is not None:
+        # Codex profile layers are top-level key overlays on the base config; apply
+        # the same semantics (nested tables such as model_providers merge per key)
+        # before projecting the Child's managed config.
+        overlay_path = source / f"{profile}.config.toml"
+        if not overlay_path.is_file():
+            raise InstallError(f"Codex profile config not found: {overlay_path}")
+        for key, value in tomllib.loads(overlay_path.read_text()).items():
+            if isinstance(value, dict) and isinstance(config.get(key), dict):
+                merged = dict(config[key])
+                merged.update(value)
+                config[key] = merged
+            else:
+                config[key] = value
     projected = _build_thinkthread_codex_config(config, runtime_python=package.parent / "venv/bin/python")
+    catalog = projected.get("model_catalog_json")
+    catalog_source = None
+    if isinstance(catalog, str) and catalog.strip():
+        # The Child sandbox only exposes whitelisted paths, and the user's config home
+        # commonly sits behind symlinked directories; project the resolved catalog
+        # location so Codex opens the exact whitelisted file instead of an absent
+        # literal path (which would reject the whole managed config).
+        candidate = Path(catalog).expanduser()
+        catalog_source = (source / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+        if not catalog_source.is_file():
+            raise InstallError(f"Codex model catalog JSON is unavailable: {catalog_source}")
+        projected["model_catalog_json"] = str(catalog_source)
     content = "\n".join(_render_toml_table(projected)).rstrip() + "\n"
     auth = (source / "auth.json").resolve() if (source / "auth.json").is_file() else None
     identity = hashlib.sha256((content + str(auth)).encode()).hexdigest()
-    return ThinkThreadCodexConfigPlan(package.parent / "thinkthread-codex-config" / identity, content, auth)
+    return ThinkThreadCodexConfigPlan(package.parent / "thinkthread-codex-config" / identity, content, auth, catalog_source)
 
 
 def _install_thinkthread_codex_config(plan: ThinkThreadCodexConfigPlan, *, dry_run: bool) -> None:
@@ -696,6 +768,7 @@ def _preflight_thinkthread_profile(
     runtime_python: Path | None = None,
     native_agent: str = "pi",
     codex_config: ThinkThreadCodexConfigPlan | None = None,
+    allow_replacement: bool = False,
 ) -> ThinkThreadProfilePlan:
     runtime_version = _run([executable, "--version"], capture=True).stdout.strip()
     if runtime_version != THINKTHREAD_RUNTIME_VERSION:
@@ -720,26 +793,34 @@ def _preflight_thinkthread_profile(
         )
     if codex_config is not None and codex_config.auth_source is not None:
         profile["environment"]["read"].append(str(codex_config.auth_source))
+    if codex_config is not None and codex_config.catalog_source is not None:
+        profile["environment"]["read"].append(str(codex_config.catalog_source))
     content = _render_thinkthread_profile(profile)
     path = (profile_path or (_thinkthread_profile_path() if native_agent == "pi"
                              else _thinkthread_profile_path(native_agent))).expanduser().resolve()
     installed = False
     if path.exists():
         existing = path.read_text(encoding="utf-8")
-        if existing == content:
+        owner = _managed_thinkthread_profile_source(path)
+        foreign = owner != ROOT.resolve()
+        if existing == content and not foreign:
             installed = True
-        else:
-            owner = _managed_thinkthread_profile_source(path)
-            if owner != ROOT.resolve():
-                detail = (
-                    f"managed by {owner}"
-                    if owner is not None
-                    else "not managed by this installer"
-                )
-                raise InstallError(
-                    f"ThinkThread Profile already exists and is {detail}: {path}\n"
-                    "Resolve that Profile outside Goal Plus, then rerun the installer."
-                )
+        elif foreign and not allow_replacement:
+            detail = (
+                f"managed by {owner}"
+                if owner is not None
+                else "not managed by this installer"
+            )
+            raise InstallError(
+                f"ThinkThread Profile already exists and is {detail}: {path}\n"
+                "Resolve that Profile outside Goal Plus, then rerun the installer."
+            )
+        elif foreign and allow_replacement:
+            detail = f"managed by {owner}" if owner is not None else "unmanaged"
+            print(
+                f"warning: replacing {detail} ThinkThread Profile at {path}",
+                file=sys.stderr,
+            )
     return ThinkThreadProfilePlan(
         executable=executable,
         runtime_version=runtime_version,
@@ -1829,7 +1910,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--thinkthread",
         action="store_true",
         help=(
-            "Install the managed goal-plus-pi ThinkThread Profile; requires --pi."
+            "Install the managed goal-plus-pi/goal-plus-codex ThinkThread Profile; "
+            "requires --pi or --codex."
+        ),
+    )
+    parser.add_argument(
+        "--codex-profile",
+        metavar="NAME",
+        help=(
+            "Overlay the Codex profile NAME.config.toml from the Codex config directory "
+            "when building the managed ThinkThread Codex config; requires --codex."
         ),
     )
     parser.add_argument(
@@ -1878,7 +1968,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.runtime_info:
-        for host, config in (("codex", _codex_config()), ("pi", _pi_agent_dir()), ("thinkthread", _thinkthread_profile_path())):
+        for host, config in (("codex", _codex_config()), ("pi", _pi_agent_dir()),
+                             ("thinkthread", _thinkthread_profile_path()),
+                             ("thinkthread", _thinkthread_profile_path("codex"))):
             binding = managed_runtime.binding_path(host, config)
             if binding.is_file():
                 package = Path(json.loads(binding.read_text())["package"])
@@ -1898,8 +1990,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.pi and args.pi_dev:
         parser.error("--pi and --pi-dev are mutually exclusive")
-    if args.thinkthread and not args.pi:
-        parser.error("--thinkthread requires --pi")
+    if args.thinkthread and not (args.pi or args.codex):
+        parser.error("--thinkthread requires --pi or --codex")
+    if args.codex_profile and not (args.codex and args.thinkthread):
+        parser.error("--codex-profile requires --codex --thinkthread")
     if (args.agent_posix_source or args.agent_posix_package) and not args.thinkthread:
         parser.error("Agent POSIX source/package options require --thinkthread")
     if args.agent_posix_source and args.agent_posix_package:
@@ -1931,7 +2025,10 @@ def main(argv: list[str] | None = None) -> int:
                 installed.append(f"Codex marketplace: {_codex_marketplaces(codex)[NORMAL_CODEX_MARKETPLACE]}")
         if args.pi:
             installed.extend(f"Pi: {entry['source']}" for entry in _pi_goal_plus_entries())
-        if not _confirm_reinstall(installed, assume_yes=args.yes, dry_run=args.dry_run):
+        confirmed = _confirm_reinstall(
+            installed, assume_yes=args.yes, dry_run=args.dry_run
+        )
+        if not confirmed:
             return 0
         package = managed_runtime.prepare(
             ROOT, dry_run=args.dry_run,
@@ -1944,6 +2041,7 @@ def main(argv: list[str] | None = None) -> int:
                 git_executable=git,
                 source=args.agent_posix_source,
                 package=args.agent_posix_package,
+                allow_replacement=confirmed,
             )
             if thinkthread is not None and node is not None and npm is not None
             else None
@@ -1959,8 +2057,32 @@ def main(argv: list[str] | None = None) -> int:
                     if thinkthread_sdk_plan is not None
                     else None
                 ),
+                allow_replacement=confirmed,
             )
-            if thinkthread is not None
+            if thinkthread is not None and args.pi
+            else None
+        )
+        thinkthread_codex_config_plan = (
+            _plan_thinkthread_codex_config(package, profile=args.codex_profile)
+            if thinkthread is not None and args.codex
+            else None
+        )
+        thinkthread_codex_plan = (
+            _preflight_thinkthread_profile(
+                thinkthread,
+                package_root=package,
+                runtime_python=package.parent / "venv/bin/python",
+                node_executable=node,
+                sdk_entry=(
+                    thinkthread_sdk_plan.entry
+                    if thinkthread_sdk_plan is not None
+                    else None
+                ),
+                native_agent="codex",
+                codex_config=thinkthread_codex_config_plan,
+                allow_replacement=confirmed,
+            )
+            if thinkthread_codex_config_plan is not None
             else None
         )
         if args.pi_dev:
@@ -1991,6 +2113,17 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
             managed_runtime.bind("thinkthread", thinkthread_plan.path, package, dry_run=args.dry_run)
+        if thinkthread_codex_config_plan is not None:
+            _install_thinkthread_codex_config(
+                thinkthread_codex_config_plan,
+                dry_run=args.dry_run,
+            )
+        if thinkthread_codex_plan is not None:
+            _install_thinkthread_profile(
+                thinkthread_codex_plan,
+                dry_run=args.dry_run,
+            )
+            managed_runtime.bind("thinkthread", thinkthread_codex_plan.path, package, dry_run=args.dry_run)
         if args.pi_dev and pi is not None:
             _prepare_pi_dev(
                 dev_dir=args.pi_dev_dir,

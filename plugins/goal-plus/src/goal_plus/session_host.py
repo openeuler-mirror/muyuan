@@ -20,7 +20,7 @@ from goal_plus.execution.scope import assert_scope_admission
 from goal_plus.execution.session_control import NativeSessionControl
 from goal_plus.execution.session_rpc import SessionRequestRejected
 from goal_plus.goal_plus import FileGoalPlusRuntime
-from goal_plus.host_scope import execution_scope_for_run, execution_scope_snapshot
+from goal_plus.host_scope import ensure_execution_scope, execution_scope_for_run, execution_scope_snapshot
 from goal_plus.infrastructure.native_session_inputs import native_candidate_input
 from goal_plus.infrastructure.state.files import exclusive_file_lock
 from goal_plus.ports.allocation_apply import DispatchRejected
@@ -234,6 +234,21 @@ class NativeCandidateHost:
                 execution_scope_snapshot(root_dir=self.root, scope_id=scope_id)
                 if scope_id else execution_scope_for_run(root_dir=self.root, run_id=run_id)
             )
+            if (
+                scope is None
+                and scope_id is None
+                and self.queries.runtime_provider(run_id) == "thinkthread"
+            ):
+                # A ThinkThread Root has no PreToolUse stop hook, so the scope the
+                # hook would have created for goal_plus_session_run does not exist
+                # yet; ensure it here with the same Main-activation identity.
+                scope = ensure_execution_scope(
+                    root_dir=self.root,
+                    agent_harness=self.agent_harness,
+                    owner_session_id=caller_id,
+                    run_id=run_id,
+                    activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
+                )
             if scope is None:
                 raise PermissionError("native candidate requires a host execution scope")
             assert_scope_admission(

@@ -78,10 +78,10 @@ Root 内只有精确 Pi host command 能启动 Goal Plus。显式选择 ThinkThr
 /goal-plus workspace_provider=thinkthread max_parallel=2 <可度量目标>
 ```
 
-对应 SearchSpec 使用 `orchestration_mode="parallel_loops"` 和
+对应 SearchSpec 可使用 `orchestration_mode="parallel_loops"`，或在配置 Allocation/Steering policy 时使用 `adaptive_search`，并设置
 `workspace.provider="thinkthread"`；Pi 身份从 Main 会话解析，不另填 host/profile。
 普通 Pi 进程继续使用 `pi + direct + git_worktree`；两条路径不能混用，也不能在 preflight
-失败时 fallback。Codex 尚不支持 ThinkThread worker host。
+失败时 fallback。Codex 对应路径见 [Codex](codex.md#支持范围与验证)。
 
 ThinkThread 可独立升级；已测版本或 fingerprint 差异只警告，Root/Child 的实际接口与能力
 仍须满足合同。每个 candidate 使用 private Child/Session/branch，公共 Evidence 绑定准确
@@ -284,7 +284,8 @@ Application 核验预算、当前 generation 与归属。调用返回不代表 v
 共同 delivery 用例复用精确 artifact 对应的 Evidence；有实质修改但缺少 Evidence 时由宿主
 调用原 verifier 补验，结算后唤醒内部队列，未修改的 workspace 不增加 baseline iteration。
 Pi ThinkThread 也使用共同 session 控制，底层单 Child actor 负责准确 Message、retained wake
-和资源退出；旧 Child pool 已删除。Codex ThinkThread 尚未完成真实宿主验收。
+和资源退出；旧 Child pool 已删除。Codex ThinkThread 已完成真实宿主验收，支持范围见
+[Codex 支持范围与验证](codex.md#支持范围与验证)。
 
 ## 模型与 Worker Spec
 
@@ -345,8 +346,9 @@ count，且总数必须等于 `max_parallel`。`models=` 是 `workers=` 的兼�
 `/goal-plus` command 和 `goal_plus_search_freeze_spec` extension gate 只收集显式 worker、annotator
 model。匹配当前 Main 的显式引用直接使用 `ctx.model` 对象，其他引用从 native registry
 唯一解析；随后按模型去重，通过一次 `Promise.all` 并发调用 `ctx.modelRegistry.complete()` 发送
-最小 `hi` 请求。任一失败时在 agent 启动前拒绝创建或 freeze。没有显式 model 时完全不 probe，
-正在运行的 Main 已经证明其当前模型可用。extension 直接从 `ctx.model` 和当前 thinking 建立
+最小 `hi` 请求。任一失败时在 agent 启动前拒绝创建或 freeze；即使没有显式 role model，也会
+把当前 `ctx.model` 纳入 probe，避免默认模型配置失效到 Goal 启动后才暴露。extension 直接从
+`ctx.model` 和当前 thinking 建立
 execution scope 的非敏感 native launch snapshot；candidate、Annotation、普通 subagent 和 final
 check 在没有显式 override 时使用该 snapshot，避免新 Pi 进程回落到机器级 default。该 snapshot
 不进入 SearchSpec，不使用 Goal Plus model 环境变量，也不包含或解析 API key、endpoint 或独立

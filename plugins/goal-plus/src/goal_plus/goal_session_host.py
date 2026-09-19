@@ -9,7 +9,7 @@ from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.execution.native_session import CodexSession, PiSession
 from goal_plus.execution.scope import assert_scope_admission
 from goal_plus.goal_plus import FileGoalPlusRuntime
-from goal_plus.host_scope import execution_scope_for_run, execution_scope_snapshot
+from goal_plus.host_scope import ensure_execution_scope, execution_scope_for_run, execution_scope_snapshot
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.scope import ScopeAttachment, ScopeRecord
 from goal_plus.ports.session import NativeSession, NativeSessionInput, SessionToolBridge
@@ -33,6 +33,17 @@ class NativeGoalSessionHost:
         )
         scope = (execution_scope_snapshot(root_dir=self.root, scope_id=scope_id) if scope_id
                  else execution_scope_for_run(root_dir=self.root, run_id=goal_plus_id))
+        if scope is None and scope_id is None:
+            # A ThinkThread Root has no PreToolUse stop hook, so the scope the
+            # hook would have created for the Goal-role tool does not exist yet;
+            # ensure it here with the same Main-activation identity.
+            scope = ensure_execution_scope(
+                root_dir=self.root,
+                agent_harness=self.agent_harness,
+                owner_session_id=caller_id,
+                run_id=goal_plus_id,
+                activation_id=f"{record.goal_plus_id}:{record.control.version}",
+            )
         if scope is None:
             raise PermissionError("native Goal role requires a host execution scope")
         assert_scope_admission(scope, scope_id=scope["scope_id"], attachment=ScopeAttachment("goal", goal_plus_id))

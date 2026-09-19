@@ -23,8 +23,6 @@ AgentRuntimeProvider = Literal["direct", "thinkthread"]
 def validate_agent_execution(
     agent_harness: AgentHarnessKind, runtime_provider: AgentRuntimeProvider,
 ) -> None:
-    if agent_harness == "codex" and runtime_provider == "thinkthread":
-        raise ValueError("Codex does not support ThinkThread Search")
     if (agent_harness, runtime_provider) not in EXECUTION_INNER_AGENT_DEFAULTS:
         raise ValueError("unsupported agent harness/runtime provider combination")
 
@@ -135,6 +133,7 @@ INNER_AGENT_AUTORESEARCH = "autoresearch"
 INNER_AGENT_COMMON = "common"
 EXECUTION_INNER_AGENT_DEFAULTS: dict[tuple[AgentHarnessKind, AgentRuntimeProvider], str] = {
     ("codex", "direct"): INNER_AGENT_AUTORESEARCH,
+    ("codex", "thinkthread"): INNER_AGENT_COMMON,
     ("pi", "direct"): INNER_AGENT_AUTORESEARCH,
     ("pi", "thinkthread"): INNER_AGENT_COMMON,
 }

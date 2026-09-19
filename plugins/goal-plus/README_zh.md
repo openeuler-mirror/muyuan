@@ -22,6 +22,7 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | 仅 Codex | `./install.sh --codex` |
 | 仅 Pi | `./install.sh --pi` |
 | Pi + ThinkThread Search | `./install.sh --pi --thinkthread` |
+| Codex + ThinkThread Search | `./install.sh --codex --thinkthread` |
 | Pi 开发态 | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | 查看 Pi 开发环境及空间占用 | `./install.sh --env-show` |
 
@@ -32,11 +33,14 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 产品资产位于 `assets/codex/`、`assets/pi/`，编辑源码不会自动加载该插件的运行时资源。
 `--dry-run` 不修改宿主注册或 release；shell bootstrap 可能先下载运行检查所需的 uv/Python。
 
-`--thinkthread` 要求机器上已经独立安装受支持的 ThinkThread Runtime。它会验证内置 Pi Profile
-并生成 `goal-plus-pi` Profile，但绝不安装、升级或删除 ThinkThread 本身。使用
-`tt run --profile goal-plus-pi --fs <目标-workspace>` 启动 protected Root。
-在 Root 内使用 `workspace_provider=thinkthread`，即可在独立 private Child 中运行 Pi Search、
-验证精确 snapshot，并通过乐观 `fs.apply` 发布结果。Codex 尚不支持 ThinkThread worker host。
+`--thinkthread` 要求机器上已经独立安装受支持的 ThinkThread Runtime。它会验证内置宿主
+Profile 并生成 `goal-plus-pi` 或 `goal-plus-codex` Profile，但绝不安装、升级或删除
+ThinkThread 本身。使用 `tt run --profile goal-plus-pi --fs <目标-workspace>` 启动
+protected Root（Codex 用 `--profile goal-plus-codex`）。
+在 Root 内使用 `workspace_provider=thinkthread`，即可在独立 private Child 中运行 Search、
+验证精确 snapshot，并通过乐观 `fs.apply` 发布结果。TT Codex 继承 Profile 默认模型；
+搭配 `--codex-profile <name>` 可切换到用户覆盖层定义的非默认模型（如 DeepSeek），
+显式 `workers=` override 与 TT Root Stop-hook 续跑暂不支持。
 
 Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus，然后再新建一个
 线程。Pi 开发态通过 `pi-goal-plus` 启动，不修改 Pi 认证或全局配置。
@@ -53,14 +57,14 @@ Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus
 | 未引用的受管版本 | `./uninstall.sh --unused-runtime` |
 | 检查完整卸载计划 | `./uninstall.sh --dry-run` |
 
-指定选择器时，卸载器只移除对应组件。Codex 和普通 Pi 注册不要求来自当前 checkout；来源
+指定选择器时，卸载器只移除对应组件。Codex、普通 Pi 和显式选择的 ThinkThread 注册不要求来自当前 checkout；来源
 不同时打印警告并直接卸载，不询问确认。`--dry-run` 只展示计划，本地开发目录仍校验归属。
 正常宿主安装使用共享的 Python runtime，因此只卸载一个宿主时会保留 runtime；
 `--unused-runtime` 只清理没有任何宿主注册引用的 release，随时可以安全执行。
 Pi 开发态使用独立的受管环境。
 卸载始终不会删除目标 workspace 中的
-`.gp/` 记录，也不会回退已经提升的修改。`--thinkthread` 只删除当前 checkout 生成的
-`goal-plus-pi` Profile，绝不删除 ThinkThread Runtime、Root 或 state。
+`.gp/` 记录，也不会回退已经提升的修改。`--thinkthread` 会在 foreign ownership 警告后删除同名
+`goal-plus-pi` / `goal-plus-codex` Profile 及共享 Agent POSIX SDK，绝不删除 ThinkThread Runtime、Root 或 state。
 
 ## 启动目标
 
@@ -146,14 +150,14 @@ Goal Plus 不能切换它，`main=` 也不是受支持的命令配置。
 宿主差异和策略覆盖见 [Agent Host Adapters](docs/agent-host-adapters.md)。
 
 下面按原生 Main Agent 类型列出当前支持的 Search 路径。ThinkThread 提供工作区和
-Child 执行基础设施；当前受支持的 ThinkThread 路径内运行的 Agent 仍是 Pi。
+Child 执行基础设施；Child 的 Agent 身份由 Pi/Codex Root Profile 固定。
 
 | Main Agent | 工作区后端 | Candidate 驱动 | Annotation 驱动 | LLM Verifier / Adaptive Allocation |
 | --- | --- | --- | --- | --- |
 | Codex | `git_worktree` / `copy` | Codex app-server | Codex CLI | Codex CLI；仅 Git worktree 支持 |
 | Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI；仅 Git worktree 支持 |
-| Pi | `thinkthread` | TT Pi Child | TT Pi Child | 当前不支持 |
-| Codex | `thinkthread` | 当前不支持 | 当前不支持 | 当前不支持 |
+| Pi | `thinkthread` | TT Pi Child | TT Pi Child | Pi CLI；支持 Adaptive |
+| Codex | `thinkthread` | TT Codex Child | TT Codex Child | Codex CLI；支持 Adaptive |
 
 `workspace.provider` 表示工作区实现。Agent 身份来自已授权 Main 会话，记录为
 `FrozenSpec.agent_harness`；装配层独立固定 `runtime_provider=direct|thinkthread`。

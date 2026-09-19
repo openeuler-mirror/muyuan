@@ -36,7 +36,7 @@ def test_session_directory_outside_root_is_accepted(tmp_path, monkeypatch):
     sdk = Mock()
     monkeypatch.setattr(
         "goal_plus.infrastructure.artifacts.thinkthread_baseline.validate_thinkthread_root",
-        lambda client: {"thinkthreadId": "tt-root"},
+        lambda client, **_: {"thinkthreadId": "tt-root"},
     )
     baseline = ThinkThreadBaseline(tmp_path / "session" / "goal-plus", sdk, ".")
     assert baseline.provider_handle["root_thinkthread_id"] == "tt-root"

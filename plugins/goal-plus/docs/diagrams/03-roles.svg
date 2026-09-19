@@ -68,7 +68,7 @@
   <text x="974" y="711" class="heading">ThinkThread Child driver</text>
   <text x="974" y="748">Candidate / Annotation retained Child</text>
   <text x="974" y="780">归属、turn 静默、可靠 RPC 与恢复</text>
-  <text x="974" y="819" class="sub">Pi + TT 基线；不开放 Codex / Adaptive + TT</text>
+  <text x="974" y="819" class="sub">Pi/Codex + TT；支持 Adaptive snapshot 路径</text>
 
   <path d="M245 845V895" class="flow"/><path d="M700 845V895" class="flow"/><path d="M1155 845V895" class="flow"/>
   <rect x="40" y="895" width="1320" height="96" class="box neutral"/>

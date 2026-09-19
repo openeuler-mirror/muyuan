@@ -32,6 +32,18 @@ python -m pytest --run-system-tests -n 0 -q tests/test_installation_system.py
 Default tests must never launch Codex or Pi. A host behavior claim requires
 the matching ST; if it cannot run, report that gap.
 
+### Per-module model probes
+
+Each model-backed module has a standalone ST that exercises its real host path
+without a full Goal Plus run; select the Pi model with `ST_PI_MODEL`
+(`provider/model`, e.g. `zai/glm-5.3-flash`):
+
+| Module | Command |
+| --- | --- |
+| Native session (RPC driver, two turns) | `ST_PI_MODEL=... pytest --run-system-tests -n 0 -q tests/st/test_st_native_session.py -k "pi"` |
+| Annotation + LLM Verifier (structured inference) | `ST_PI_MODEL=... pytest --run-system-tests -n 0 -q tests/st/test_st_internal_roles.py -k "pi"` |
+| Product candidate session host (continuation/recovery) | `ST_PI_MODEL=... pytest --run-system-tests -n 0 -q tests/st/test_st_session_host.py -k "pi"` |
+
 The removed native pool/watchdog workflows are covered by shared owners:
 `test_st_session_host.py` checks explicit continuation and recovery,
 `test_st_unified_main.py` checks Main's two-candidate Circle workflow, and
@@ -55,9 +67,18 @@ resource release, without enabling Codex Search admission:
 python -m pytest --run-system-tests -n 0 -s -q tests/st_thinkthread/test_codex_bridge.py
 ```
 
-This probe currently exposes a native startup submission failure with Codex
-0.154.0: the initial dispatch remains in the composer. It is not passing evidence
-for Codex ThinkThread support; see [Codex support scope](../docs/codex.md#支持范围与验证).
+`ST_CODEX_PROFILE=<name>` overlays the user's `NAME.config.toml` Codex profile
+layer (model, provider, reasoning effort, and model catalog) so the bridge probe
+and the circle acceptance can run a non-default model such as DeepSeek without
+changing the base Codex config; set `CODEX_HOME` when the real config home is
+not the default. The catalog and system CA bundles are projected into the
+sandbox read allow-list automatically.
+
+The probe itself still runs two retained Child turns without enabling Codex
+Search admission. Codex ThinkThread Search admission is supported and covered by
+the reduced circle acceptance in `tests/st_thinkthread/test_codex_circle_main.py`;
+see [Codex support scope](../docs/codex.md#支持范围与验证) for the verified scope
+and remaining gaps.
 
 ST requires `--run-system-tests`; `-m`, `-k`, and direct node selection alone
 never authorize a host launch or preflight. Keep the flag out of default
@@ -347,7 +368,8 @@ The former Pi pool workflow ST has been removed. Its native two-turn and recover
 coverage now lives in `st/test_st_session_host.py`; Main orchestration uses
 `st/test_st_unified_main.py`. TT candidate lifecycle uses its own fixtures;
 `st_thinkthread/test_circle_main.py` separately covers the Pi TT native Main
-Circle workflow. Both use the installed Profile and their documented overrides.
+Circle workflow; `st_thinkthread/test_codex_circle_main.py` covers the Codex TT
+native Main path. They use the installed Profile and their documented overrides.
 
 The TT Circle test has three prompt variants: `[bounded]` checks exactly four
 deliveries; `[example]` reads the public

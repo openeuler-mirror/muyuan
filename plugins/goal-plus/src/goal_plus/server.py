@@ -1041,12 +1041,16 @@ def create_codex_mcp(root_dir: str | Path = DEFAULT_RUNTIME_ROOT) -> FastMCP:
     ordinary = os.environ.get(CODEX_ORDINARY_ROLE_ENV)
     thinkthread_role = os.environ.get("GOAL_PLUS_THINKTHREAD_ROLE")
     if thinkthread_role is not None:
-        if thinkthread_role not in {"main", "candidate"} or any(item is not None for item in (candidate_id, checker, ordinary)):
+        if thinkthread_role not in {"main", "candidate", "annotator"} or any(item is not None for item in (candidate_id, checker, ordinary)):
             raise PermissionError("invalid or conflicting ThinkThread native role")
         if thinkthread_role == "main":
             from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_main_mcp
 
             return create_thinkthread_main_mcp(root_dir)
+        if thinkthread_role == "annotator":
+            from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_annotator_mcp
+
+            return create_thinkthread_annotator_mcp()
         from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_candidate_mcp
 
         return create_thinkthread_candidate_mcp()
@@ -1091,7 +1095,7 @@ def main() -> None:
         from goal_plus.goal_plus_stop_hook import main as hook_main
 
         raise SystemExit(hook_main())
-    create_codex_mcp(args.root).run(transport="stdio")
+    create_codex_mcp(args.root).run(transport="stdio", show_banner=False)
 
 
 if __name__ == "__main__":

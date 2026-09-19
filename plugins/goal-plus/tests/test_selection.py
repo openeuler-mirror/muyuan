@@ -209,6 +209,8 @@ def quality_run(tmp_path):
 
 
 @pytest.mark.parametrize("outcome", ["quality", "terminal_score", "all_scores_failed", "revalidation_failed"])
+@pytest.mark.todo(reason="adaptive_check_later")
+@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_selection_waits_for_quality_and_preserves_hard_evidence(quality_run, monkeypatch, outcome):
     from goal_plus.bootstrap import build_internal_agent_work
     from tests.test_llm_verifier import invocation

@@ -2029,7 +2029,7 @@ async function createGoalPlusStart(
 	try {
 		const resolved = resolveGoalPlusRoleModels(ctx, rawGoal);
 		roleModels = resolved?.roleModels;
-		await probePiModels(ctx, resolved?.models ?? []);
+		await probePiModels(ctx, [ctx.model, ...(resolved?.models ?? [])]);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		ctx.ui.notify(message, "error");
@@ -2097,7 +2097,7 @@ async function updateGoalPlusStart(
 	}
 	try {
 		const resolved = resolveGoalPlusRoleModels(ctx, rawGoal);
-		await probePiModels(ctx, resolved?.models ?? []);
+		await probePiModels(ctx, [ctx.model, ...(resolved?.models ?? [])]);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		ctx.ui.notify(message, "error");

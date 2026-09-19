@@ -196,7 +196,9 @@ def test_common_mcp_starts_retained_child_and_settles_two_attempts(tmp_path, mon
                     allow_completion.set()
                 completed = await call("wait", session_id=session.agent_session_id, call_id=str(number), timeout_seconds=10)
                 if rollback == "missing_attempt":
-                    assert completed["state"] == "failed"
+                    # A Child may finish its turn without requesting verification;
+                    # the invocation completes with no settled attempt.
+                    assert completed["state"] == "completed"
                     assert runtime.list_iterations(run_id, task.candidate_id) == []
                     await call("close", session_id=session.agent_session_id)
                     return

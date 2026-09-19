@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ContextManager
 
+from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.ports.thinkthread import ChildBinding
 
 
@@ -12,6 +13,8 @@ class ThinkThreadSessionInput:
     root_id: str
     baseline_snapshot_id: str
     model: dict[str, str] | None = None
+    # Pre-Codex resource journals did not record a harness; they are all Pi.
+    agent_harness: AgentHarnessKind = "pi"
 
 
 @dataclass(frozen=True)

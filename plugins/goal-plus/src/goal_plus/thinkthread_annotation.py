@@ -575,7 +575,9 @@ def _spawn(
     host: AnnotationHostService,
     run_id: str,
 ) -> dict[str, Any]:
-    root_view = validate_thinkthread_root(client)
+    run = host.admission.evidence.read_run(run_id)
+    frozen = host.admission.source.read_frozen_spec(run.frozen_spec_id)
+    root_view = validate_thinkthread_root(client, agent_harness=frozen.agent_harness)
     dispatch = host.admission.prepare_thinkthread_dispatch(run_id)
     task = dispatch.task
     queue = dispatch.queue

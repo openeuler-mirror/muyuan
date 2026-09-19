@@ -667,14 +667,32 @@ class CandidateSessions:
                     "ThinkThread Child binding does not match the candidate session"
                 )
             prior = record.task.workspace_provider_handle
-            for key, value in (
-                ("thinkthread_id", thinkthread_id),
-                ("branch_id", branch_id),
-                ("agent_session_id", agent_session_id),
-            ):
-                if prior.get(key) not in {None, value}:
+            child_changed = prior.get("thinkthread_id") is not None and prior["thinkthread_id"] != thinkthread_id
+            branch_changed = prior.get("branch_id") is not None and prior["branch_id"] != branch_id
+            if child_changed or branch_changed:
+                # A stopped Codex Child can never be rewoken, so its exact continuation
+                # respawns a fresh Child and branch as an atomic pair; the run lock and
+                # the live session handle together guard the replacement (CAS).
+                if session.agent_harness != "codex" or not (child_changed and branch_changed):
                     raise RuntimeError(
-                        f"ThinkThread candidate {candidate_id} changed {key} binding"
+                        f"ThinkThread candidate {candidate_id} changed its Child binding"
+                    )
+                if (
+                    session.session_handle.external_id is not None
+                    and session.session_handle.external_id != prior["thinkthread_id"]
+                ):
+                    raise RuntimeError(
+                        "ThinkThread candidate replacement does not own its prior Child binding"
+                    )
+            prior_owner = prior.get("agent_session_id")
+            if prior_owner not in {None, agent_session_id}:
+                # A replacement session takes over the binding once the domain has
+                # fenced its predecessor by execution generation; a same-generation
+                # session can never seize another live session's Child.
+                prior_session = self.state.read_agent_session(prior_owner)
+                if prior_session.execution_generation == record.execution_generation:
+                    raise RuntimeError(
+                        f"ThinkThread candidate {candidate_id} changed agent_session_id binding"
                     )
             provider_handle = {
                 **prior,
@@ -689,7 +707,7 @@ class CandidateSessions:
         self.bind_agent_handle(
             agent_session_id,
             {
-                "agent_harness": "pi",
+                "agent_harness": session.agent_harness,
                 "runtime_provider": "thinkthread",
                 "external_id": thinkthread_id,
                 "metadata": {

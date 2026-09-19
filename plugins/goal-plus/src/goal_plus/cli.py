@@ -55,7 +55,7 @@ def main() -> None:
     from goal_plus.paths import DEFAULT_RUNTIME_ROOT
     from goal_plus.server import create_codex_mcp
 
-    create_codex_mcp(args.root or DEFAULT_RUNTIME_ROOT).run(transport="stdio")
+    create_codex_mcp(args.root or DEFAULT_RUNTIME_ROOT).run(transport="stdio", show_banner=False)
 
 
 if __name__ == "__main__":

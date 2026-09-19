@@ -130,6 +130,57 @@ def test_allocation_dispatch_wakes_exact_call_once(tmp_path, monkeypatch):
     assert len(requests) == 1 and requests[0][1] == {"run_locked": True}
 
 
+@pytest.mark.parametrize(
+    ("runtime_provider", "creates_scope"),
+    [("direct", False), ("thinkthread", True)],
+)
+def test_only_thinkthread_execution_can_create_a_missing_scope(
+    tmp_path, monkeypatch, runtime_provider, creates_scope
+):
+    from types import SimpleNamespace
+
+    from goal_plus.session_host import NativeCandidateHost
+
+    goal = SimpleNamespace(
+        goal_plus_id="goal_test",
+        control=SimpleNamespace(version=3),
+    )
+    host = NativeCandidateHost.__new__(NativeCandidateHost)
+    host.root = tmp_path
+    host.agent_harness = "codex"
+    host.authorization = SimpleNamespace(
+        require_main_search_session=lambda *_args, **_kwargs: goal
+    )
+    host.queries = SimpleNamespace(
+        runtime_provider=lambda _run_id: runtime_provider
+    )
+    created = []
+    scope = {
+        "scope_id": "scope_test",
+        "agent_harness": "codex",
+        "owner_session_id": "main_test",
+        "activation_id": "goal_test:3",
+    }
+    monkeypatch.setattr(
+        "goal_plus.session_host.execution_scope_for_run", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        "goal_plus.session_host.ensure_execution_scope",
+        lambda **kwargs: created.append(kwargs) or scope,
+    )
+    monkeypatch.setattr(
+        "goal_plus.session_host.assert_scope_admission", lambda *_args, **_kwargs: None
+    )
+
+    if creates_scope:
+        host._admit_run("run_test", "main_test", execution=True)
+        assert created[0]["run_id"] == "run_test"
+    else:
+        with pytest.raises(PermissionError, match="requires a host execution scope"):
+            host._admit_run("run_test", "main_test", execution=True)
+        assert created == []
+
+
 def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
     root, agent_harness, goal, runtime, task, session, scope, actors, inputs = hosted_candidate
     assert not {"environment", "cwd", "root", "session_persistence", "metrics_baseline"}.intersection(session.launch)

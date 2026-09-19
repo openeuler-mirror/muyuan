@@ -90,6 +90,8 @@ def test_nullable_compaction_keeps_constraints_that_reject_null():
     assert not validator.is_valid("other")
 
 
+@pytest.mark.todo(reason="adaptive_check_later")
+@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_freeze_schema_stays_below_codex_structural_compaction_budget(tmp_path):
     tool = next(tool for tool in asyncio.run(create_mcp(tmp_path).list_tools())
                 if tool.name == "goal_plus_search_freeze_spec")

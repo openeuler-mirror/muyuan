@@ -8,6 +8,7 @@ from goal_plus.application.candidate_execution import (
     require_worker_iteration_state,
 )
 from goal_plus.application.search_context import SearchContext
+from goal_plus.domain.agents import AgentRuntimeProvider
 from goal_plus.domain.search import AgentSessionRecord, CandidateRecovery
 from goal_plus.domain.time import outer_deadline_epoch
 from goal_plus.ports.candidate_host import CandidateFileWriteBoundary, CandidateHostSource
@@ -25,6 +26,10 @@ class CandidateHostQueries:
         except (OSError, ValueError):
             return False
         return strategy.orchestration_mode == "adaptive_search"
+
+    def runtime_provider(self, run_id: str) -> AgentRuntimeProvider:
+        run = self.source.read_run(run_id)
+        return self.source.read_frozen_spec(run.frozen_spec_id).runtime_provider
 
     def requires_immediate_stop(self, session: AgentSessionRecord) -> bool:
         try:

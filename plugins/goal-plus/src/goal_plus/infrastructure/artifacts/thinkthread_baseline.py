@@ -2,6 +2,7 @@
 
 from pathlib import Path, PurePosixPath
 from typing import Callable
+from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.domain.search import SearchSpec
 from goal_plus.infrastructure.verifiers.local import LocalVerifiers
 from goal_plus.domain.artifacts import ArtifactRef
@@ -25,13 +26,15 @@ class ThinkThreadBaseline:
         root_dir: Path | str,
         client: AgentPosixSdkClient,
         source_relative_path: str,
+        *,
+        agent_harness: AgentHarnessKind = "pi",
     ) -> None:
         if Path(root_dir).resolve().is_relative_to(Path.cwd().resolve()):
             raise ValueError(
                 "ThinkThread runtime root must be outside the attached Root tree; "
                 "use the managed Profile GOAL_PLUS_ROOT session directory"
             )
-        root = validate_thinkthread_root(client)
+        root = validate_thinkthread_root(client, agent_harness=agent_harness)
         self.provider_handle = {
             "provider": "thinkthread",
             "root_thinkthread_id": root.get("thinkthreadId"),
@@ -112,7 +115,12 @@ class ThinkThreadBaselinePreparation:
     def __init__(self, root_dir: Path | str, client: Callable[[], AgentPosixSdkClient]) -> None:
         self.root_dir, self.client = root_dir, client
 
-    def prepare_baseline(self, spec: SearchSpec) -> ThinkThreadBaseline:
+    def prepare_baseline(
+        self, spec: SearchSpec, *, agent_harness: AgentHarnessKind = "pi"
+    ) -> ThinkThreadBaseline:
         return ThinkThreadBaseline(
-            self.root_dir, self.client(), thinkthread_source_relative_path(Path(spec.source_path)),
+            self.root_dir,
+            self.client(),
+            thinkthread_source_relative_path(Path(spec.source_path)),
+            agent_harness=agent_harness,
         )

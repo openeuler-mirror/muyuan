@@ -42,8 +42,6 @@ def test_native_session_two_turns_with_scope(tmp_path: Path, st_log_dir: Path, a
             scope_id=scope_id, pid=pid,  label="native-session-st",
         ),
         finish=lambda token: registry.finish(scope_id=scope_id, token=token),
-        remember=lambda token, witness: registry.remember(scope_id=scope_id, token=token, witness=witness),
-        recall=lambda token: registry.witness(scope_id=scope_id, token=token),
     )
     model = st_model_for_host("codex" if agent_harness == "codex" else "pi")
     command = ["codex", "app-server", "--stdio"] if agent_harness == "codex" else [
@@ -78,27 +76,25 @@ def test_native_session_two_turns_with_scope(tmp_path: Path, st_log_dir: Path, a
         async def exercise():
             async with Client(mcp, timeout=timeout) as client:
                 tools = await client.list_tools()
-                assert "goal_plus_session_run" in {tool.name for tool in tools}
-                await client.call_tool("goal_plus_session_run", {
-                    "session_id": session.native_session_id,
-                    "call_id": "first", "timeout_seconds": timeout,
-                    "prompt": f"Remember marker {marker}. What is 17 + 25? Reply with the number only.",
-                })
+                assert {"goal_plus_session_wait", "goal_plus_session_close"} <= {tool.name for tool in tools}
+                control.wake(
+                    f"Remember marker {marker}. What is 17 + 25? Reply with the number only.",
+                    call_id="first", timeout=timeout,
+                )
                 receipt = (await client.call_tool("goal_plus_session_wait", {
                     "session_id": session.native_session_id,
-                    "call_id": "first", "timeout_seconds": timeout,
+                    "call_id": "first", "timeout_seconds": timeout, "detail": True,
                 })).data
                 assert receipt["state"] == "completed", receipt
                 first = receipt["result"]
                 assert first["text"].strip() == "42"
-                await client.call_tool("goal_plus_session_run", {
-                    "session_id": session.native_session_id,
-                    "call_id": "second", "timeout_seconds": timeout,
-                    "prompt": "Return the marker from my previous message and the value of 9 * 7.",
-                })
+                control.wake(
+                    "Return the marker from my previous message and the value of 9 * 7.",
+                    call_id="second", timeout=timeout,
+                )
                 receipt = (await client.call_tool("goal_plus_session_wait", {
                     "session_id": session.native_session_id,
-                    "call_id": "second", "timeout_seconds": timeout,
+                    "call_id": "second", "timeout_seconds": timeout, "detail": True,
                 })).data
                 assert receipt["state"] == "completed", receipt
                 second = receipt["result"]
@@ -172,8 +168,6 @@ def test_codex_session_candidate_uses_bound_mcp_tools(tmp_path: Path, st_log_dir
             attachment=ScopeAttachment("search_run", run_id),
         ),
         finish=lambda token: registry.finish(scope_id=scope_id, token=token),
-        remember=lambda token, witness: registry.remember(scope_id=scope_id, token=token, witness=witness),
-        recall=lambda token: registry.witness(scope_id=scope_id, token=token),
     )
     bridge = McpSessionToolBridge(
         runtime.root_dir, caller_role="candidate", caller_agent_session_id=binding.agent_session_id,

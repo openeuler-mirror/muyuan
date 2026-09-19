@@ -56,7 +56,8 @@ TT stop 后，下一次 run 可在重新授权、确认原调用退出后重开 
 本地 controller 重建读取持久 native handle 和用量基线；未完成验证须先结算或恢复，
 普通未提交修改保留，显式 checkpoint recovery 才回滚 workspace。
 TT 的同请求 run 可通过准确调用日志接管原 Message，只观察与完成原结算，不重发 spawn/wake，
-不改变 deadline 或 generation。Codex TT 仍不支持，见 [Codex 支持范围](codex.md#支持范围与验证)。
+不改变 deadline 或 generation。Codex TT 的 retained Child 同样遵守该恢复合同，
+见 [Codex 支持范围](codex.md#支持范围与验证)。
 TT interrupt/message 通过准确控制通道取得原生确认；确认超时不能声明执行已停止。
 恢复流程见 [Search 一致性恢复](search-recovery.md)，Main 控制合同见 [运行逻辑](runtime-logic.md)。
 
@@ -732,7 +733,7 @@ Annotation Child 不激活命令执行或 verifier 工具，也不为读取 Arti
 | `workspace.promotion_mode` | `apply`（默认）或显式 `artifact_only` |
 | `device_pools` | 可选的受信任 host pool ID；由 host 环境注册 |
 
-`thinkthread` 只在 Pi `goal-plus-pi` Profile 中启用；Agent 身份由 Main 宿主确定。
+`thinkthread` 通过 Pi `goal-plus-pi` 或 Codex `goal-plus-codex` Profile 启用；Agent 身份由 Main 宿主确定。
 freeze/create 会校验宿主身份与 workspace provider 的配对；Root
 preflight 校验实际接口、direct filesystem 和 delegated capability；release、Control protocol
 和 contract fingerprint 偏离已测基线时告警。它不会静默退回 Git。每个 candidate 使用

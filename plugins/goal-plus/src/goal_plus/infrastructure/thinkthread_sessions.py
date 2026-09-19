@@ -42,7 +42,9 @@ class ThinkThreadCandidateSession:
         prepared = self.service.prepare_thinkthread_session(identity)
         self.session = prepared.session
         self.client = AgentPosixSdkClient()
-        root = validate_thinkthread_root(self.client)
+        root = validate_thinkthread_root(
+            self.client, agent_harness=self.session.session_handle.agent_harness
+        )
         if root.get("thinkthreadId") != prepared.root_thinkthread_id:
             raise PermissionError("ThinkThread session Root differs from its frozen source")
         self.path = session_resource_path(host.root, scope_id, identity)
@@ -51,6 +53,7 @@ class ThinkThreadCandidateSession:
             "agent_session_id": identity, "scope_id": scope_id,
             "root_thinkthread_id": prepared.root_thinkthread_id,
             "baseline_snapshot_id": prepared.baseline_snapshot_id,
+            "agent_harness": self.session.session_handle.agent_harness,
             "model": self.session.launch.get("model"), "status": "prepared",
         }
         self.inner_git_binding = prepared.inner_git_binding
@@ -69,12 +72,21 @@ class ThinkThreadCandidateSession:
                             raise PermissionError("ThinkThread session resource identity changed")
                     if saved.get("cleanup_state") == "closed":
                         raise RuntimeError("ThinkThread session resources have been closed")
-                    if self.session.session_handle.external_id is not None and saved.get("thinkthread_id") != self.session.session_handle.external_id:
-                        raise PermissionError("ThinkThread resource no longer belongs to this domain session")
+                    external_id = self.session.session_handle.external_id
+                    replaced = saved.get("replaced_thinkthread_id")
+                    if external_id is not None and saved.get("thinkthread_id") != external_id:
+                        # A reaped Codex Child leaves the domain bound to the replaced
+                        # Child until the next invocation respawns and rebinds; the
+                        # journal may already name the fresh Child or none at all.
+                        if not (isinstance(replaced, dict) and replaced.get("thinkthread_id") == external_id):
+                            raise PermissionError("ThinkThread resource no longer belongs to this domain session")
                     if saved.get("thinkthread_id") is not None:
                         child = ChildDriver(self.client, clock).observe(saved["thinkthread_id"],
                             root_id=saved["root_thinkthread_id"], branch_id=saved["fs_branch_id"])
-                        if child is None:
+                        if child is None and not (
+                            isinstance(replaced, dict)
+                            and replaced.get("thinkthread_id") == saved["thinkthread_id"]
+                        ):
                             raise RuntimeError("ThinkThread retained session Child is missing")
                     if saved.get("status") != "prepared" and not isinstance(saved.get("call_request"), dict):
                         raise RuntimeError("ThinkThread session has no exact controller call identity")
@@ -89,10 +101,17 @@ class ThinkThreadCandidateSession:
             self._lease.__exit__(None, None, None)
             raise
         self.actor = ThinkThreadSession(
-            ThinkThreadSessionInput(prepared.root_thinkthread_id, prepared.baseline_snapshot_id, self.record["model"]),
-            ChildDriver(self.client, clock), clock, self.record,
+            ThinkThreadSessionInput(
+                prepared.root_thinkthread_id, prepared.baseline_snapshot_id, self.record["model"],
+                agent_harness=self.session.session_handle.agent_harness,
+            ),
+            ChildDriver(self.client, clock, agent_harness=self.session.session_handle.agent_harness),
+            clock, self.record,
             ThinkThreadSessionHooks(self._admission, self._persist, self._bind, self._receive, self._settle),
-            domain_bound=self.session.session_handle.external_id is not None,
+            domain_bound=(
+                self.session.session_handle.external_id is not None
+                and self.record.get("thinkthread_id") == self.session.session_handle.external_id
+            ),
         )
 
     @contextmanager
@@ -120,6 +139,11 @@ class ThinkThreadCandidateSession:
         receive_worker_messages(self.client, self.host.root, record, persist=lambda: self._persist(record))
 
     def _settle(self, record):
+        if record.get("attempt_request") is None:
+            # A Child may finish its turn without ever requesting verification
+            # (it reported back instead of attempting); there is no attempt to
+            # settle, so the invocation completes with empty text.
+            return ""
         accepted = CandidateAttemptAccepted.model_validate(record.get("attempt_request"))
         report = self.service.verify_thinkthread_candidate_attempt(
             run_id=self.session.run_id, candidate_id=self.session.candidate_id,
@@ -132,10 +156,16 @@ class ThinkThreadCandidateSession:
         if artifact is None or report.attempt_artifact_ref is None or report.attempt_iteration is None:
             raise RuntimeError("ThinkThread verifier omitted its exact attempted and settled artifacts")
         if artifact != report.attempt_artifact_ref:
-            self.actor.driver.reset_branch(
-                record["thinkthread_id"], root_id=record["root_thinkthread_id"],
-                branch_id=record["fs_branch_id"], snapshot_id=artifact.id,
-            )
+            if self.actor.config.agent_harness == "codex":
+                # A retained Codex Child holds executionState=running, which blocks any
+                # branch reset; its exact continuation respawns from the settled snapshot.
+                record["child_retired"] = True
+            else:
+                self.actor.driver.reset_branch(
+                    record["thinkthread_id"], root_id=record["root_thinkthread_id"],
+                    branch_id=record["fs_branch_id"], snapshot_id=artifact.id,
+                )
+        record["spawn_snapshot_id"] = artifact.id
         feedback = CandidateAttemptFeedback(
             attempt_id=accepted.attempt_id, request_id=accepted.request_id,
             run_id=self.session.run_id, candidate_id=self.session.candidate_id,
@@ -188,8 +218,16 @@ class ThinkThreadCandidateSession:
             raise PermissionError("ThinkThread saved result belongs to another invocation")
         child = self.actor.driver.observe(self.native_session_id,
             root_id=self.record["root_thinkthread_id"], branch_id=self.record["fs_branch_id"])
-        if child is None or self.actor.driver.turn_terminal(child, result.invocation_id) is None:
-            raise RuntimeError("ThinkThread saved invocation is no longer the exact quiescent native turn")
+        terminal = None if child is None else self.actor.driver.turn_terminal(child, result.invocation_id)
+        if terminal is None:
+            # A Codex Child only reaches absent from our own deliberate TERM after
+            # settlement; the saved result remains the exact native turn outcome.
+            retired = (
+                child is not None and child.get("executionState") == "absent"
+                and self.actor.config.agent_harness == "codex"
+            )
+            if not retired:
+                raise RuntimeError("ThinkThread saved invocation is no longer the exact quiescent native turn")
         self.host.runtime.candidate_sessions.record_native_invocation(self.identity, result)
         return result
 
@@ -270,9 +308,12 @@ def _release_session_resource(path: Path, *, client, timeout: float):
     if root.get("parentThinkthreadId") is not None or root.get("thinkthreadId") != record["root_thinkthread_id"]:
         raise PermissionError("ThinkThread session cleanup Root ownership mismatch")
     clock = SystemClock()
-    driver = ChildDriver(sdk, clock)
+    driver = ChildDriver(sdk, clock, agent_harness=record.get("agent_harness", "pi"))
     actor = ThinkThreadSession(
-        ThinkThreadSessionInput(record["root_thinkthread_id"], record["baseline_snapshot_id"], record.get("model")),
+        ThinkThreadSessionInput(
+            record["root_thinkthread_id"], record["baseline_snapshot_id"], record.get("model"),
+            agent_harness=record.get("agent_harness", "pi"),
+        ),
         driver, clock, record,
         ThinkThreadSessionHooks(nullcontext, lambda value: _persist_resource(path, value), lambda _: None,
                                lambda _: None, lambda _: ""),

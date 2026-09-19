@@ -23,7 +23,7 @@ Application 保留授权和状态转换；Execution 保留 native/Child 生命�
 ThinkThread 不是 agent 身份，也不决定搜索方向、评分或 publication。
 进程生命周期交给 agent/宿主。GP 不维护平台进程身份、进程组观测或 guardian；
 Execution 只操作当前持有的直接句柄，Scope 负责 session/activation admission 和登记释放。
-当前只支持 Codex/Pi direct Copy/Git 和 Pi ThinkThread TT workspace；不扩展第三种 harness。
+当前支持 Codex/Pi direct Copy/Git 和 Codex/Pi ThinkThread TT workspace；不扩展第三种 harness。
 
 这些词分为几组：前四个描述业务流程，DTO/Ports 描述模块之间的合同，Drainer 描述后台
 执行机制，Binding/Capability 描述角色如何接入与获得能力。每张 SVG 底部都有简短词表。

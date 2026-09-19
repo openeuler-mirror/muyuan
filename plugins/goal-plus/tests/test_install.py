@@ -525,6 +525,93 @@ def test_thinkthread_install_requires_normal_pi(installer: ModuleType) -> None:
     assert raised.value.code == 2
 
 
+def test_thinkthread_codex_install_flow_installs_config_before_profile(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(installer, "_require_executable", lambda name: f"/opt/bin/{name}")
+    monkeypatch.setattr(installer, "_preflight_codex", lambda *a, **k: False)
+    monkeypatch.setattr(installer, "_codex_inventory", lambda _codex: [])
+    monkeypatch.setattr(installer, "_install_codex", lambda **kwargs: calls.append("codex"))
+    package = tmp_path / "release" / "package"
+    monkeypatch.setattr(installer.managed_runtime, "prepare", lambda *a, **k: package)
+    monkeypatch.setattr(installer, "_preflight_thinkthread_sdk", lambda **kwargs: None)
+    config_plan = installer.ThinkThreadCodexConfigPlan(tmp_path / "managed-config", "content", None)
+    monkeypatch.setattr(
+        installer, "_plan_thinkthread_codex_config",
+        lambda _package, **_kwargs: calls.append("plan_config") or config_plan,
+    )
+    seen: dict[str, dict] = {}
+
+    def preflight(_executable, **kwargs):
+        agent = kwargs.get("native_agent", "pi")
+        seen[agent] = kwargs
+        return installer.ThinkThreadProfilePlan(
+            executable="/opt/bin/tt", runtime_version="thinkthread 0.1.0",
+            path=tmp_path / f"goal-plus-{agent}.toml", content="content",
+            installed=False, native_agent=agent,
+        )
+
+    monkeypatch.setattr(installer, "_preflight_thinkthread_profile", preflight)
+    monkeypatch.setattr(installer, "_install_thinkthread_sdk", lambda plan, *, dry_run: calls.append("sdk"))
+    monkeypatch.setattr(
+        installer, "_install_thinkthread_codex_config",
+        lambda plan, *, dry_run: calls.append("config"),
+    )
+    monkeypatch.setattr(
+        installer, "_install_thinkthread_profile",
+        lambda plan, *, dry_run: calls.append(f"profile:{plan.native_agent}"),
+    )
+    monkeypatch.setattr(
+        installer.managed_runtime, "bind",
+        lambda host, path, _package, *, dry_run: calls.append(f"bind:{path.stem}"),
+    )
+
+    assert installer.main(["--codex", "--thinkthread", "-y"]) == 0
+
+    assert "pi" not in seen
+    assert seen["codex"]["codex_config"] is config_plan
+    assert calls == ["plan_config", "codex", "config", "profile:codex", "bind:goal-plus-codex"]
+
+
+def test_thinkthread_pi_install_flow_skips_the_codex_profile(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(installer, "_require_executable", lambda name: f"/opt/bin/{name}")
+    monkeypatch.setattr(installer, "_preflight_pi_normal", lambda **kwargs: True)
+    monkeypatch.setattr(installer, "_pi_goal_plus_entries", lambda: [])
+    monkeypatch.setattr(installer, "_install_pi", lambda **kwargs: None)
+    package = tmp_path / "release" / "package"
+    monkeypatch.setattr(installer.managed_runtime, "prepare", lambda *a, **k: package)
+    monkeypatch.setattr(installer, "_preflight_thinkthread_sdk", lambda **kwargs: None)
+    monkeypatch.setattr(
+        installer, "_plan_thinkthread_codex_config",
+        lambda _package, **_kwargs: pytest.fail("codex config planned for --pi"),
+    )
+    seen: dict[str, dict] = {}
+
+    def preflight(_executable, **kwargs):
+        agent = kwargs.get("native_agent", "pi")
+        seen[agent] = kwargs
+        return installer.ThinkThreadProfilePlan(
+            executable="/opt/bin/tt", runtime_version="thinkthread 0.1.0",
+            path=tmp_path / f"goal-plus-{agent}.toml", content="content",
+            installed=False, native_agent=agent,
+        )
+
+    monkeypatch.setattr(installer, "_preflight_thinkthread_profile", preflight)
+    monkeypatch.setattr(installer, "_install_thinkthread_profile", lambda plan, *, dry_run: None)
+    monkeypatch.setattr(installer.managed_runtime, "bind", lambda *a, **k: None)
+
+    assert installer.main(["--pi", "--thinkthread", "-y"]) == 0
+
+    assert list(seen) == ["pi"]
+
+
 def test_thinkthread_profile_explicitly_binds_goal_plus_runtime(
     installer: ModuleType,
     tmp_path: Path,
@@ -602,6 +689,7 @@ def test_thinkthread_codex_profile_preserves_native_extension_and_binds_managed_
 def test_thinkthread_codex_config_isolates_native_tools_and_forwards_only_env_names(installer, tmp_path):
     source = {
         "model": "provider-model", "model_provider": "custom",
+        "model_catalog_json": "/catalog/models.json",
         "model_providers": {"custom": {"env_key": "CUSTOM_MODEL_KEY", "base_url": "https://example.invalid"}},
         "developer_instructions": "Main-only instructions", "plugins": {"private": {"enabled": True}},
         "mcp_servers": {"private": {"command": "private-server"}},
@@ -609,11 +697,14 @@ def test_thinkthread_codex_config_isolates_native_tools_and_forwards_only_env_na
     config = installer._build_thinkthread_codex_config(source, runtime_python=tmp_path / "venv/bin/python")
     assert config["model_providers"] == source["model_providers"]
     assert config["model"] == source["model"]
+    assert config["model_catalog_json"] == source["model_catalog_json"]
     assert set(config["mcp_servers"]) == {"goal-plus"}
     assert "developer_instructions" not in config and "plugins" not in config
     mcp = config["mcp_servers"]["goal-plus"]
     assert mcp["args"] == ["-I", "-m", "goal_plus.server"]
     assert "THINKTHREAD_CONTROL_TOKEN" in mcp["env_vars"]
+    assert "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED" in mcp["env_vars"]
+    assert "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED" in mcp["env_vars"]
     assert "env" not in mcp
     assert source["mcp_servers"] == {"private": {"command": "private-server"}}
     assert installer.tomllib.loads(installer._render_thinkthread_profile(config)) == config
@@ -642,6 +733,65 @@ def test_thinkthread_codex_config_plan_keeps_auth_as_an_owned_file_reference(ins
     (plan.directory / ".goal-plus-owner.json").unlink()
     with pytest.raises(installer.InstallError, match="unowned"):
         installer._install_thinkthread_codex_config(plan, dry_run=False)
+
+
+def test_thinkthread_codex_config_plan_overlays_the_codex_profile_layer(installer, tmp_path):
+    source = tmp_path / "codex-config"
+    source.mkdir()
+    (source / "config.toml").write_text(
+        'model = "gpt-6-astra"\nmodel_provider = "sub2api-openai"\n'
+        '[model_providers.sub2api-openai]\nname = "Sub2API OpenAI"\nbase_url = "http://127.0.0.1:3788/v1"\n'
+    )
+    (source / "deepseek.config.toml").write_text(
+        'model = "deepseek-flash"\nmodel_provider = "deepseek"\n'
+        'model_reasoning_effort = "high"\n'
+        f'model_catalog_json = "{source / "models.json"}"\n'
+        '[model_providers.deepseek]\nname = "DeepSeek"\nwire_api = "responses"\n'
+    )
+    (source / "models.json").write_text('{"models": {}}\n')
+    package = tmp_path / "release/package"
+    layered = installer._plan_thinkthread_codex_config(package, source, profile="deepseek")
+    parsed = installer.tomllib.loads(layered.content)
+    assert parsed["model"] == "deepseek-flash"
+    assert parsed["model_provider"] == "deepseek"
+    assert parsed["model_reasoning_effort"] == "high"
+    assert parsed["model_catalog_json"] == str((source / "models.json").resolve())
+    assert layered.catalog_source == (source / "models.json").resolve()
+    # A symlinked config home must project the resolved catalog path: the Child
+    # sandbox only exposes whitelisted paths, not symlink aliases.
+    alias = tmp_path / "codex-alias"
+    alias.symlink_to(source, target_is_directory=True)
+    (source / "deepseek.config.toml").write_text(
+        (source / "deepseek.config.toml").read_text().replace(str(source), str(alias))
+    )
+    canonical = installer._plan_thinkthread_codex_config(package, source, profile="deepseek")
+    assert installer.tomllib.loads(canonical.content)["model_catalog_json"] == str(
+        (source / "models.json").resolve()
+    )
+    assert "sub2api-openai" in parsed["model_providers"] and "deepseek" in parsed["model_providers"]
+    assert layered.directory != installer._plan_thinkthread_codex_config(package, source).directory
+    with pytest.raises(installer.InstallError, match="profile config not found"):
+        installer._plan_thinkthread_codex_config(package, source, profile="absent")
+    (source / "models.json").unlink()
+    with pytest.raises(installer.InstallError, match="model catalog JSON is unavailable"):
+        installer._plan_thinkthread_codex_config(package, source, profile="deepseek")
+
+
+def test_resolve_system_ca_bundles_follows_symlinked_candidates(installer, tmp_path):
+    trust = tmp_path / "pki" / "ca-trust" / "extracted" / "pem"
+    trust.mkdir(parents=True)
+    (trust / "tls-ca-bundle.pem").write_text("roots\n")
+    certs = tmp_path / "ssl" / "certs"
+    certs.mkdir(parents=True)
+    (certs / "ca-bundle.crt").symlink_to(trust / "tls-ca-bundle.pem")
+
+    resolved = installer._resolve_system_ca_bundles((
+        str(certs / "ca-certificates.crt"),
+        str(certs / "ca-bundle.crt"),
+        str(trust / "tls-ca-bundle.pem"),
+    ))
+
+    assert resolved == [trust / "tls-ca-bundle.pem"]
 
 
 def test_thinkthread_profile_exposes_python_symlink_chain(
@@ -768,6 +918,33 @@ def test_thinkthread_profile_preflight_refuses_unmanaged_file(
             profile_path=profile_path,
             runtime_python=tmp_path / "venv/bin/python",
         )
+
+
+def test_thinkthread_profile_preflight_allows_explicit_replacement(
+    installer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile_path = tmp_path / "goal-plus-pi.toml"
+    profile_path.write_text("schemaVersion = 4\n", encoding="utf-8")
+    base = installer._render_thinkthread_profile(_thinkthread_pi_profile())
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        stdout = "thinkthread 0.1.0\n" if "--version" in argv else base
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(installer, "_run", run)
+
+    plan = installer._preflight_thinkthread_profile(
+        "/opt/bin/tt",
+        profile_path=profile_path,
+        runtime_python=tmp_path / "venv/bin/python",
+        allow_replacement=True,
+    )
+
+    assert plan.installed is False
+    assert "replacing unmanaged ThinkThread Profile" in capsys.readouterr().err
 
 
 def test_thinkthread_profile_preflight_updates_profile_owned_by_checkout(
@@ -963,6 +1140,26 @@ def test_thinkthread_sdk_preflight_refuses_unmanaged_directory(
             git_executable="/opt/git",
             install_root=root,
         )
+
+
+def test_thinkthread_sdk_preflight_allows_explicit_replacement(
+    installer: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "sdk"
+    root.mkdir()
+
+    plan = installer._preflight_thinkthread_sdk(
+        node_executable="/opt/node",
+        npm_executable="/opt/npm",
+        git_executable="/opt/git",
+        install_root=root,
+        allow_replacement=True,
+    )
+
+    assert plan.installed is False
+    assert "replacing unmanaged Agent POSIX SDK" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("failure", ["registration", "cache"])

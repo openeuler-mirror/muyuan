@@ -93,8 +93,8 @@ host-command invocation 继续保存原始输入 hash。ready SearchSpec draft �
 - 检查退出码、数值 metric、超时、verifier hash 和 source identity。
 
 `copy` 仍保留旧的 disposable-copy ranking preflight。ThinkThread workspace_provider 在 origin 验证后
-固定 Root-owned provider snapshot，不重复 Git relocation；受支持的 Pi Profile 从该 snapshot
-派生 private Children。Codex 对 TT candidate 路径仍会 fail closed。
+固定 Root-owned provider snapshot，不重复 Git relocation；受支持的 Pi/Codex Profile 从该 snapshot
+派生 private Children。
 
 Runtime 不理解具体 benchmark 的语义，也不会自动证明本地 verifier 与官方 Judge
 等价。公开评分公式、有效性条件、每例资源限制和聚合方式是否完整进入 verifier，仍由

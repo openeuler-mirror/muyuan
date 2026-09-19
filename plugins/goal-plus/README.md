@@ -23,6 +23,7 @@ git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-p
 | Codex only | `./install.sh --codex` |
 | Pi only | `./install.sh --pi` |
 | Pi + ThinkThread Search | `./install.sh --pi --thinkthread` |
+| Codex + ThinkThread Search | `./install.sh --codex --thinkthread` |
 | Pi development | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
 | Show Pi development environments | `./install.sh --env-show` |
 
@@ -38,12 +39,14 @@ Use `--yes` for automation. Product assets live under `assets/codex` and `assets
 editing this checkout does not automatically load its plugin resources.
 
 `--thinkthread` requires a separately installed supported ThinkThread Runtime.
-It validates the built-in Pi Profile and generates the `goal-plus-pi` Profile;
-it never installs, upgrades, or removes ThinkThread itself. Start the protected
-Root with `tt run --profile goal-plus-pi --fs <target-workspace>`. From that
-Root, `workspace_provider=thinkthread` runs Pi Search candidates in independent
-private Children, verifies exact snapshots, and publishes through optimistic
-`fs.apply`. Codex does not support the ThinkThread worker host.
+It validates the built-in host Profile and generates the `goal-plus-pi` or
+`goal-plus-codex` Profile; it never installs, upgrades, or removes ThinkThread
+itself. Start the protected Root with `tt run --profile goal-plus-pi --fs
+<target-workspace>` (or `--profile goal-plus-codex` for Codex). From that Root,
+`workspace_provider=thinkthread` runs Search candidates in independent private
+Children, verifies exact snapshots, and publishes through optimistic `fs.apply`.
+Codex ThinkThread inherits the Profile default model; explicit `workers=`
+overrides and TT-Root Stop-hook resume are not supported.
 
 On first Codex use, start a new thread, review and trust Goal Plus in `/hooks`,
 then start one more fresh thread. Pi development starts with `pi-goal-plus` and
@@ -61,8 +64,8 @@ does not modify Pi authentication or global configuration.
 | Unused managed releases | `./uninstall.sh --unused-runtime` |
 | Inspect the full plan | `./uninstall.sh --dry-run` |
 
-With a selector, the uninstaller removes only that component. Codex and normal Pi
-registrations are removed regardless of their source checkout. A different source
+With a selector, the uninstaller removes only that component. Codex, normal Pi, and explicitly
+selected ThinkThread registrations are removed regardless of their source checkout. A different source
 produces a warning and removal continues without confirmation; `--dry-run` only
 prints the plan. Local development directories retain their ownership checks.
 Normal host installations use the shared Python runtime, so removing one host preserves
@@ -70,8 +73,9 @@ the runtime. `--unused-runtime` garbage-collects only releases that no host
 registration references, so it is safe to run at any time. Pi development uses
 its own managed environment.
 Uninstallation never deletes target workspace `.gp/` records or
-reverts promoted changes. `--thinkthread` removes only this checkout's generated
-`goal-plus-pi` Profile; it never deletes a ThinkThread Runtime, Root, or state.
+reverts promoted changes. `--thinkthread` removes the selected generated
+`goal-plus-pi` / `goal-plus-codex` Profiles and shared Agent POSIX SDK after a foreign-ownership warning; it never deletes a ThinkThread
+Runtime, Root, or state.
 
 ## Start a Goal
 
@@ -170,14 +174,14 @@ Host differences and strategy coverage are summarized in
 
 The following table groups supported Search paths by the native Main Agent.
 ThinkThread provides workspace and Child execution infrastructure; the Agent
-inside the supported ThinkThread path is Pi.
+inside a ThinkThread path is bound by the Root Profile (Pi or Codex).
 
 | Main Agent | Workspace backend | Candidate driver | Annotation driver | LLM Verifier / Adaptive allocation |
 | --- | --- | --- | --- | --- |
 | Codex | `git_worktree` / `copy` | Codex app-server | Codex CLI | Codex CLI; Git worktree only |
 | Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI; Git worktree only |
-| Pi | `thinkthread` | TT Pi Child | TT Pi Child | Not supported |
-| Codex | `thinkthread` | Not supported | Not supported | Not supported |
+| Pi | `thinkthread` | TT Pi Child | TT Pi Child | Pi CLI; Adaptive supported |
+| Codex | `thinkthread` | TT Codex Child | TT Codex Child | Codex CLI; Adaptive supported |
 
 `workspace.provider` identifies the workspace provider. Agent identity comes from
 the authorized Main session and is recorded as `FrozenSpec.agent_harness`.
@@ -255,7 +259,7 @@ not part of this isolated runtime directory.
 ## Workspace and Sandbox Architecture
 
 Goal Plus separates workspace isolation from inner-agent behavior. Git worktrees
-produce commit Evidence; Pi ThinkThread Children produce snapshot Evidence.
+produce commit Evidence; ThinkThread Children produce snapshot Evidence.
 `autoresearch` maintains candidate-local Git history, while `common` relies on
 the outer artifact and canonical runtime ledger. Copy is an explicit artifact-only
 path. Git worktrees are not a security sandbox; supported combinations and

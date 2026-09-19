@@ -94,13 +94,19 @@ Pi extension 使用标准 MCP SDK 保持 stdio 连接。`--pi` 在注册前、`-
 ```
 
 确认后先准备并验证新 release，再卸载重装所选宿主注册；即使 build 相同也会重新注册。
+明确确认的 ThinkThread 重装也会接管同名 Profile 和 Agent POSIX SDK，即使 marker
+来自另一个 checkout；安装器会先打印 warning。未确认时仍保留冲突检查。
 保留旧 release 和其他宿主引用，Pi 更新保留 package 过滤设置；过滤导致所需资源未启用时
 报告校验失败，不能静默启用。`--dry-run` 不询问、不替换注册。
 
 准备及身份验证成功后才修改宿主注册；更新已有宿主注册失败时恢复原来源。
 Codex、Pi 和 ThinkThread Profile 分别持有版本引用，更新其中一个不会更新另一个。
-因此 `./install.sh --codex --pi` 不刷新已有 `goal-plus-pi` TT Profile；还使用 TT 时执行
-`./install.sh --pi --thinkthread`。同样，`./uninstall.sh --pi` 只移除普通 Pi 注册；
+因此 `./install.sh --codex --pi` 不刷新已有 TT Profile；还使用 TT 时执行
+`./install.sh --pi --thinkthread` 或 `./install.sh --codex --thinkthread`。搭配
+`--codex --thinkthread` 时可用 `--codex-profile <name>` 叠加用户 `CODEX_HOME` 下的
+`NAME.config.toml` 覆盖层，把受管 TT Codex 配置切换到非默认模型（如 DeepSeek）；
+省略时投影 base config 默认模型。同样，
+`./uninstall.sh --pi` 只移除普通 Pi 注册；
 要移除本 checkout 管理的 TT Profile，显式加 `--thinkthread`。无参数卸载默认选择全部组件。
 TT Profile 从基础 `pi` Profile 整份生成，重装会覆盖受管文件中的手工修改。写入后的
 `tt profile show goal-plus-pi` 或配置校验失败（包括 Ctrl-C）时，恢复原文件内容和权限；
@@ -129,13 +135,15 @@ TT Profile 从基础 `pi` Profile 整份生成，重装会覆盖受管文件中�
 | `./uninstall.sh --codex` | 移除 Codex 注册与版本引用 |
 | `./uninstall.sh --pi` | 移除正常 Pi package 注册与版本引用 |
 | `./uninstall.sh --pi-dev` | 清理本 checkout 的开发环境 |
-| `./uninstall.sh --pi --thinkthread` | 移除 Pi 注册及经过 ownership marker 核验的受管 TT Profile |
+| `./uninstall.sh --pi --thinkthread` | 移除 Pi 注册及同名 TT Profile/SDK（foreign ownership 会 warning） |
+| `./uninstall.sh --codex --thinkthread` | 移除 Codex 注册及同名 TT Profile/SDK（foreign ownership 会 warning） |
 | `./uninstall.sh --unused-runtime` | 清理无宿主引用的受管 release，使用中的 release 保留；先结束旧会话 |
 
 无参数卸载默认选择全部组件。宿主卸载会保留 release，供旧会话继续使用。
 ThinkThread Runtime、Root、状态目录和包由 ThinkThread 独立管理；Goal Plus 卸载器不会删除它们。
 旧 pip/Conda 环境、bootstrap uv/Python、目标 workspace 的 `.gp/` 和用户源码不属于 runtime 清理范围。
-跨 checkout 的正常宿主注册可以显式移除；TT Profile 仍须核验本 checkout ownership，不能照此覆盖。
+跨 checkout 的正常宿主注册可以显式移除；显式选择 ThinkThread 时，同名 Profile/SDK 也会在
+warning 后移除。ThinkThread Runtime、Root 和状态目录仍不会被删除。
 
 ## 开发 Pi 集成
 

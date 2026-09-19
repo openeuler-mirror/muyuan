@@ -415,8 +415,10 @@ Agent 身份使用 `AgentHarnessKind=codex|pi`，执行托管方式使用
 Freeze 从 Goal 当前已授权的 Main 会话取得 harness，由装配层解析 runtime provider，
 保存必填 `FrozenSpec.agent_harness`、`runtime_provider` 并一起纳入 spec hash。
 工作区不能改写 agent 身份；模型不能指定 caller 身份。支持 Codex/Pi + direct + Copy/Git，
-以及通过 Root/Profile/capability preflight 的 Pi + ThinkThread + TT workspace。
-Codex + ThinkThread、ThinkThread Adaptive Search 继续拒绝。
+以及通过 Root/Profile/capability preflight 的 Pi + ThinkThread 和 Codex + ThinkThread
+（TT workspace）；两者都支持 `parallel_loops` 和 `adaptive_search`。Codex + ThinkThread 不支持显式 `workers=` 模型 override 与
+`reasoning_effort`/`service_tier`，TT Root 内的 Ultra delegation、final check 与
+Stop-hook 续跑保持不支持。
 
 Session、session_handle、角色 profile、worker policy 和调用观测分别表达 harness/provider；
 状态 owner 在执行或写入前核对冻结绑定、精确 handle、scope 和 generation。
