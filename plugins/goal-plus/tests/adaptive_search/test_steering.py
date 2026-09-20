@@ -1,4 +1,4 @@
-"""Adaptive branch routing and at-most-one SteeringExecutor host attempt."""
+"""Adaptive branch routing and serial SteeringExecutor host delivery."""
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import RLock
@@ -142,6 +142,28 @@ def test_executor_delivery_is_once_across_payload_changes_and_new_executor(setup
     assert accept(h).reason_code == "already_consumed"
     assert len(h.host.calls) == 1
     assert h.output.model_dump() == before
+
+
+def test_same_candidate_can_receive_multiple_guidance_attempts(setup):
+    first = accept(setup)
+    second_identity = setup.identity.model_copy(update={"parameters_hash": "b" * 64})
+    second_decision = setup.decision.model_copy(update={
+        "message": SteeringMessage(text="Review the next verifier result immediately."),
+    })
+    second = setup.executor.steer(
+        setup.output,
+        second_decision,
+        policy=second_identity,
+        delivery=setup.delivery,
+        renderer_version="fixture/v1",
+        host=setup.host,
+    )
+    assert first.status == second.status == "attempted"
+    assert first.attempt_key != second.attempt_key
+    assert [call[1] for call in setup.host.calls] == [
+        setup.decision.message.text,
+        second_decision.message.text,
+    ]
 
 
 @pytest.mark.parametrize("failure", [TimeoutError, PermissionError, RuntimeError])

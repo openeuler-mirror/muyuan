@@ -447,8 +447,6 @@ def test_native_codex_main_completes_single_candidate_search_thinkthread(thinkth
     )
 
 
-@pytest.mark.todo(reason="adaptive_check_later")
-@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_native_codex_main_completes_circle_thinkthread_apply(thinkthread_root):
     """L4: two retained Codex candidates, continuation, annotation, selection, apply."""
     prompt = (
@@ -477,8 +475,6 @@ def test_native_codex_main_completes_circle_thinkthread_apply(thinkthread_root):
     )
 
 
-@pytest.mark.todo(reason="adaptive_check_later")
-@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_native_codex_main_completes_circle_thinkthread_apply_k2_single_turn(thinkthread_root):
     """Reduced L4: two retained Codex candidates, one delivery each, annotation, apply."""
     prompt = (

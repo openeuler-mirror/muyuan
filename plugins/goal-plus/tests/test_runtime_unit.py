@@ -4038,10 +4038,7 @@ def test_pending_verifier_is_visible_and_does_not_queue_another_attempt(tmp_path
 
 @pytest.mark.parametrize("interruption", [
     "submitted", "executing", "reported",
-    pytest.param(
-        "committed",
-        marks=pytest.mark.todo(reason="adaptive_check_later"),
-    ),
+    "committed",
     pytest.param(signal.SIGINT, id="sigint"),
     pytest.param(signal.SIGTERM, id="sigterm"),
     pytest.param(signal.SIGKILL, id="sigkill"),
@@ -4125,6 +4122,8 @@ def test_verifier_interrupted_attempt_resumes_without_rollback(tmp_path, monkeyp
     assert facade.goal_plus_search_run_verifier(run_id, candidate_id, attempt_id=attempt_id, retry=True) == result
     assert restarted.candidate_creation.state.read_candidate(run_id, candidate_id) == after
     assert restarted.candidate_sessions.session(session.agent_session_id).counters["verifier_runs"] == 1
+    if interruption == "committed":
+        assert restarted.search_run.state.read_run(run_id).candidates_evaluated == 1
     if isinstance(interruption, signal.Signals):
         assert len(executions) == 1
     monkeypatch.undo()

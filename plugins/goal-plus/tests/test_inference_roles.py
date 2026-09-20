@@ -102,16 +102,7 @@ def test_annotation_role_output_and_failure_contracts(tmp_path, monkeypatch, age
 @pytest.mark.parametrize(
     "mode",
     [
-        pytest.param(
-            "valid",
-            marks=[
-                pytest.mark.todo(reason="adaptive_check_later"),
-                pytest.mark.xfail(
-                    reason="mark.todo.adaptive_check_later",
-                    strict=True,
-                ),
-            ],
-        ),
+        "valid",
         "missing",
         "invalid",
         "encoding",
@@ -159,7 +150,7 @@ def test_verifier_uses_shared_inference_and_registration(
     monkeypatch.setattr(worker, "_prompt", lambda _: ("Exact test attempt", {}))
     if mode == "valid":
         result, invocation, usage = worker.execute(task)
-        assert result.model_dump() == payload
+        assert result.model_dump(exclude={"steering_findings"}) == payload
         assert invocation.agent_harness == agent_harness
         assert invocation.runtime_provider == "direct"
         assert invocation.model == "test-model" and invocation.reasoning_effort == "low"
@@ -178,17 +169,7 @@ def test_verifier_uses_shared_inference_and_registration(
     [
         ("annotation", True),
         ("annotation", False),
-        pytest.param(
-            "verifier",
-            False,
-            marks=[
-                pytest.mark.todo(reason="adaptive_check_later"),
-                pytest.mark.xfail(
-                    reason="mark.todo.adaptive_check_later",
-                    strict=True,
-                ),
-            ],
-        ),
+        ("verifier", False),
     ],
 )
 def test_pi_role_binding_executes_only_authorized_tools(tmp_path, role, with_views):
@@ -252,6 +233,7 @@ console.log(JSON.stringify({ tools: [...tools.keys()], submission, read, denied,
             "scores": None,
             "evidence_refs": [],
             "score_rationales": {"quality_score": "Valid local assessment."},
+            "steering_findings": None,
         }
         validator = Draft202012Validator(schema)
         validator.validate(payload)

@@ -16,7 +16,9 @@ _NULL_COMPATIBLE_KEYS = {
 }
 
 
-def compact_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
+def compact_tool_schema(
+    schema: dict[str, Any], *, prune_additional_properties: bool = False,
+) -> dict[str, Any]:
     references: Counter[str] = Counter()
 
     def children(node, transform):
@@ -74,4 +76,8 @@ def compact_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
                 result.update(value, type=[value["type"], "null"])
         return result
 
-    return compress_schema(compact(schema), prune_titles=True)
+    return compress_schema(
+        compact(schema),
+        prune_additional_properties=prune_additional_properties,
+        prune_titles=True,
+    )

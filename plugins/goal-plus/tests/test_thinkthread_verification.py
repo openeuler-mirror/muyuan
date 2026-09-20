@@ -208,7 +208,6 @@ def test_request_close_recovery_preserves_evidence_without_repeating_verifier(pr
     assert next(item for item in recovered.provider_mutations if item.request_id == mutation.request_id).state == "closed"
 
 
-@pytest.mark.todo(reason="adaptive_check_later")
 def test_committed_attempt_reconciles_projections_without_provider_calls(prepared_candidates, monkeypatch):
     runtime, sdk, [session] = prepared_candidates()
 
@@ -227,6 +226,8 @@ def test_committed_attempt_reconciles_projections_without_provider_calls(prepare
         assert verify_candidate(runtime, sdk, session) == record.score_report
     assert runtime.search_run.state.read_run(session.run_id).candidates_evaluated == 1
     assert candidate_record(runtime, session).iterations == record.iterations
+    assert runtime.candidate_sessions.session(session.agent_session_id).counters["verifier_runs"] == 1
+    assert runtime.search_run.state.read_run(session.run_id).best_candidate_id == session.candidate_id
     assert sdk.operations == operations
 
 

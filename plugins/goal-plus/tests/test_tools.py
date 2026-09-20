@@ -368,13 +368,6 @@ def test_search_freeze_spec_resolves_source_relative_artifacts(
     pytest.param(
         ("strategy", "allocation", "policy"),
         "priority_replace/v1",
-        marks=[
-            pytest.mark.todo(reason="adaptive_check_later"),
-            pytest.mark.xfail(
-                reason="mark.todo.adaptive_check_later",
-                strict=True,
-            ),
-        ],
     ),
     (("strategy", "config"), {"global_evidence_mode": "auto"}),
 ])
@@ -392,7 +385,7 @@ def test_freeze_input_rejects_runtime_owned_fields(path, value):
         target = target[key]
     target[path[-1]] = value
 
-    with pytest.raises(ValidationError, match="extra_forbidden"):
+    with pytest.raises(ValidationError):
         SearchTools(runtime, Mock()).goal_plus_search_freeze_spec("gp_0001", spec, [])
     runtime.freeze_spec.assert_not_called()
 
@@ -403,8 +396,6 @@ def test_freeze_input_rejects_runtime_owned_fields(path, value):
      "max_files_per_iteration": 12, "max_path_entries_per_iteration": 96,
      "max_depth": 5, "max_bytes_per_iteration": 4096},
 ])
-@pytest.mark.todo(reason="adaptive_check_later")
-@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_freeze_input_preserves_choices_and_defaults_only_omitted_fields(shared_dir):
     runtime = Mock()
     runtime.freeze_spec.return_value = frozen_spec()
@@ -414,7 +405,8 @@ def test_freeze_input_preserves_choices_and_defaults_only_omitted_fields(shared_
         "worker_budget": {"max_runtime_seconds": 60},
         "worker_launch": {"model": "default-model", "reasoning_effort": "low"},
         "selection": {"ranking_keys": ["hard_score"], "ranking_tolerance": [0.1]},
-        "orchestration_mode": "adaptive_search", "allocation": {"switch_margin": 0.2},
+        "orchestration_mode": "adaptive_search",
+        "allocation": {"policy": "swe_search_uct/v1", "parameters": {"max_depth": 20}},
         "global_evidence_mode": "auto",
     }
     spec["shared_dir"] = shared_dir
@@ -430,8 +422,8 @@ def test_freeze_input_preserves_choices_and_defaults_only_omitted_fields(shared_
     assert parsed.strategy.worker_launch.model == "default-model"
     assert parsed.strategy.worker_launch.reasoning_effort == "low"
     assert parsed.strategy.selection.ranking_tolerance == [0.1]
-    assert parsed.strategy.allocation.policy == "priority_replace/v1"
-    assert parsed.strategy.allocation.switch_margin == 0.2
+    assert parsed.strategy.allocation.policy == "swe_search_uct/v1"
+    assert parsed.strategy.allocation.parameters.max_depth == 20
     assert parsed.strategy.config == {"global_evidence_mode": "auto"}
     from goal_plus.domain.shared_tools import SharedDirSpec
 

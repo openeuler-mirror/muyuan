@@ -411,6 +411,31 @@ def test_executor_selects_next_eligible_retirement_without_rescoring(tmp_path):
     assert state.candidates["c001"].retired_by_decision_id == "another-decision"
 
 
+def test_executor_honors_persisted_selected_retirement(tmp_path):
+    app, state, _, _, dispatch = executor(tmp_path)
+    state.decision.retire_candidate_ids = ["c001", "c002"]
+    state.decision.selected_retirement = "c002"
+    state.decision.expansions[0].eligible_retirements = ["c001"]
+    state.decision.expansions[1].eligible_retirements = ["c002"]
+    cancellations = []
+
+    result = app.apply(
+        "run_test",
+        state.decision.decision_id,
+        cancel=lambda decision: cancellations.append(decision.selected_retirement),
+        dispatch=dispatch,
+    )
+
+    assert result.decision.status == "applied"
+    assert cancellations == ["c002"]
+    assert state.candidates["c001"].allocation_eligibility == "eligible"
+    assert state.candidates["c002"].retired_by_decision_id == state.decision.decision_id
+    assert [expansion.status for expansion in result.decision.expansions] == [
+        "skipped",
+        "applied",
+    ]
+
+
 def test_capacity_exhausted_never_retires_candidate(tmp_path):
     app, state, _, _, _ = executor(tmp_path)
     state.frozen.spec.budget.max_candidates = 2
@@ -450,18 +475,57 @@ def test_executor_recovers_pending_decisions_in_order_without_verifier(tmp_path)
     assert decisions[second.decision_id].status == "superseded"
 
 
-@pytest.mark.todo(reason="adaptive_check_later")
-def test_admission_fences_only_the_selected_retirement(tmp_path):
+@pytest.mark.parametrize("status", ["pending", "interrupted"])
+def test_admission_fences_only_the_selected_retirement(tmp_path, status):
     from goal_plus.application.adaptive_admission import AdaptiveAdmission
     _, state, _, _, _ = executor(tmp_path)
     state.frozen.spec.strategy = SimpleNamespace(orchestration_mode="adaptive_search")
     state.decision.retire_candidate_ids = ["c001", "c002"]
-    guard = AdaptiveAdmission(state)
-    for candidate in state.candidates.values():
-        guard.assert_candidate_execution_allowed(candidate, "start_session")
     state.decision.selected_retirement = "c001"
+    state.decision.status = status
+    guard = AdaptiveAdmission(state)
     with pytest.raises(RuntimeError, match="retires"):
         guard.assert_candidate_execution_allowed(state.candidates["c001"], "start_session")
     guard.assert_candidate_execution_allowed(state.candidates["c002"], "start_session")
     state.decision.status = "terminal_error"
     guard.assert_candidate_execution_allowed(state.candidates["c001"], "start_session")
+
+
+def test_admission_does_not_fence_before_retirement_is_selected(tmp_path):
+    from goal_plus.application.adaptive_admission import AdaptiveAdmission
+
+    _, state, _, _, _ = executor(tmp_path)
+    state.frozen.spec.strategy = SimpleNamespace(orchestration_mode="adaptive_search")
+    state.decision.status = "pending"
+    state.decision.selected_retirement = None
+    guard = AdaptiveAdmission(state)
+
+    for candidate in state.candidates.values():
+        guard.assert_candidate_execution_allowed(candidate, "start_session")
+
+
+@pytest.mark.parametrize("status", ["applied", "superseded", "terminal_error"])
+def test_admission_does_not_fence_selected_retirement_after_decision_finishes(tmp_path, status):
+    from goal_plus.application.adaptive_admission import AdaptiveAdmission
+
+    _, state, _, _, _ = executor(tmp_path)
+    state.frozen.spec.strategy = SimpleNamespace(orchestration_mode="adaptive_search")
+    state.decision.selected_retirement = "c001"
+    state.decision.status = status
+    guard = AdaptiveAdmission(state)
+
+    guard.assert_candidate_execution_allowed(state.candidates["c001"], "run_verifier")
+    guard.assert_candidate_execution_allowed(state.candidates["c002"], "run_verifier")
+
+
+def test_non_adaptive_admission_ignores_selected_retirement(tmp_path):
+    from goal_plus.application.adaptive_admission import AdaptiveAdmission
+
+    _, state, _, _, _ = executor(tmp_path)
+    state.frozen.spec.strategy = SimpleNamespace(orchestration_mode="standard")
+    state.decision.selected_retirement = "c001"
+    state.decision.status = "pending"
+    guard = AdaptiveAdmission(state)
+
+    guard.assert_candidate_execution_allowed(state.candidates["c001"], "start_session")
+    guard.assert_candidate_execution_allowed(state.candidates["c002"], "start_session")

@@ -64,8 +64,6 @@ def domain_files(root: Path):
 
 
 
-@pytest.mark.todo(reason="adaptive_check_later")
-@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_native_wake_rejects_pending_allocation_retirement(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".gp")
@@ -96,6 +94,7 @@ def test_native_wake_rejects_pending_allocation_retirement(tmp_path: Path) -> No
         SimpleNamespace(
             status="pending",
             retire_candidate_ids=[task.candidate_id],
+            selected_retirement=task.candidate_id,
             decision_id="allocation_test",
         )
     ]

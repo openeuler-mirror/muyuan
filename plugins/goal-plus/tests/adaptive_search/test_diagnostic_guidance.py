@@ -255,8 +255,6 @@ def test_shadow_has_no_send_or_consumption_and_cannot_promote_saved_trace(setup)
     assert not h.host.calls
 
 
-@pytest.mark.todo(reason="adaptive_check_later")
-@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_concurrent_admission_consumes_once(setup):
     h = configure(setup)
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -575,8 +573,6 @@ def test_diagnostic_observation_failure_does_not_change_send_or_retry(setup, mon
     assert len(h.host.calls) == 1
 
 
-@pytest.mark.todo(reason="adaptive_check_later")
-@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_concurrent_delivery_observation_is_not_overwritten_by_replay(setup):
     h = configure(setup)
     with ThreadPoolExecutor(max_workers=4) as pool:

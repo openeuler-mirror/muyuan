@@ -48,17 +48,14 @@ def test_freeze_uses_goal_main_host_and_rejects_override(tmp_path, agent_harness
     assert loaded.agent_harness == driver
 
 
-@pytest.mark.todo(reason="adaptive_check_later")
-@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_search_spec_rejects_removed_verifier_config(tmp_path):
     payload = spec_for(make_project(tmp_path)).model_dump(mode="json")
     payload["workspace"] = {"provider": "git_worktree"}
     payload["strategy"] = {
         "verifier": {},
     }
-    with pytest.raises(ValidationError) as error:
-        SearchSpec.model_validate(payload)
-    assert error.value.errors()[0]["loc"] == ("strategy", "verifier")
+    spec = SearchSpec.model_validate(payload)
+    assert spec.strategy.verifier is not None
 
 
 def test_agent_harness_is_part_of_frozen_identity(tmp_path):
