@@ -1,232 +1,290 @@
-# Goal Plus (GP)
+<!-- markdownlint-configure-file {"MD033":{"allowed_elements":["details","summary","div","b"]},"MD013":false,"MD041":false} -->
 
 [English](README.md) | 简体中文
 
-Goal Plus 是面向长时间 agent 任务的宿主中立运行时。在 Pi 中使用
-`/goal-plus`，在 Codex 中使用 `$goal-plus`。它可以直接处理普通目标；遇到可度量的
-优化任务时，会升级到 Search Mode：冻结评价合同、在隔离候选中探索，并提升经过
-verifier 验证的最佳结果。
+<div align="center">
 
-Pi 和 Codex 是当前支持的宿主路径。
+# Goal Plus
 
-## 安装
+**并发、共享、智能。**
 
-从 Goal Plus 源码目录运行安装器：
+</div>
 
-```bash
-git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-plus
-```
+Goal Plus 是 [Muyuan](../../README.md) 中面向复杂优化任务的多 Agent 协作运行时。围绕同一目标，让候选独立探索、共享验证结果与可复用工具，并根据反馈持续改进方案。
 
-| 安装方式 | 命令 |
+
+<summary><b>📋 目录</b></summary>
+
+- [Goal Plus](#goal-plus)
+  - [📘 1. 核心能力](#-1-核心能力)
+  - [📅 2. 近期进展](#-2-近期进展)
+  - [🔧 3. 支持与安装](#-3-支持与安装)
+    - [支持范围](#支持范围)
+    - [候选工作方式](#候选工作方式)
+    - [安装准备](#安装准备)
+    - [选择安装方式](#选择安装方式)
+  - [🚀 4. 快速开始](#-4-快速开始)
+  - [📖 5. 优化示例](#-5-优化示例)
+  - [📐 6. 架构概览](#-6-架构概览)
+  - [📂 7. 代码目录指引](#-7-代码目录指引)
+  - [📚 8. 文档](#-8-文档)
+  - [📄 9. 许可证与第三方来源](#-9-许可证与第三方来源)
+
+
+
+## 📘 1. 核心能力
+
+| 能力 | 能为你做什么 |
 | --- | --- |
-| 仅 Codex | `./install.sh --codex` |
-| 仅 Pi | `./install.sh --pi` |
-| Pi + ThinkThread Search | `./install.sh --pi --thinkthread` |
-| Codex + ThinkThread Search | `./install.sh --codex --thinkthread` |
-| Pi 开发态 | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
-| 查看 Pi 开发环境及空间占用 | `./install.sh --env-show` |
+| **持续迭代优化** | 围绕目标反复提出方案、修改实现和验证效果，保留尝试历史并支持显式续跑。 |
+| **并行探索路线** | 多个候选各自保留工作区与会话，独立尝试不同的优化方向。 |
+| **共享有效发现** | 通过共享 Evidence 和工具复用实验结果与诊断方法，让候选相互借鉴，减少重复试错。 |
+| **验证与择优** | 以可验证的结果比较候选方案，结合正确性检查与效果评估，提高交付可靠性。 |
 
-正常安装通过 uv 准备独立 Python 3.12 和锁定依赖，各宿主绑定不可变代码 build，
-不受 Conda、`PATH` 或目标 workspace 影响。`--pi` 与 `--pi-dev` 互斥。
-用 `./install.sh --runtime-info` 检查实际版本；更新及清理方式见[开发指南](docs/development.md)。
-已有 Codex/Pi 注册时会询问是否卸载重装（`y/N`），自动化可加 `--yes`。
-产品资产位于 `assets/codex/`、`assets/pi/`，编辑源码不会自动加载该插件的运行时资源。
-`--dry-run` 不修改宿主注册或 release；shell bootstrap 可能先下载运行检查所需的 uv/Python。
+## 📅 2. 近期进展
 
-`--thinkthread` 要求机器上已经独立安装受支持的 ThinkThread Runtime。它会验证内置宿主
-Profile 并生成 `goal-plus-pi` 或 `goal-plus-codex` Profile，但绝不安装、升级或删除
-ThinkThread 本身。使用 `tt run --profile goal-plus-pi --fs <目标-workspace>` 启动
-protected Root（Codex 用 `--profile goal-plus-codex`）。
-在 Root 内使用 `workspace_provider=thinkthread`，即可在独立 private Child 中运行 Search、
-验证精确 snapshot，并通过乐观 `fs.apply` 发布结果。TT Codex 继承 Profile 默认模型；
-搭配 `--codex-profile <name>` 可切换到用户覆盖层定义的非默认模型（如 DeepSeek），
-显式 `workers=` override 与 TT Root Stop-hook 续跑暂不支持。
+<!-- 日期对应相关开发提交，不代表正式发布或宿主验收日期。 -->
 
-Codex 首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus，然后再新建一个
-线程。Pi 开发态通过 `pi-goal-plus` 启动，不修改 Pi 认证或全局配置。
-
-## 卸载
-
-| 卸载内容 | 命令 |
+| 日期 | 主要进展 |
 | --- | --- |
-| 可移除的全部 Goal Plus 组件 | `./uninstall.sh` |
-| Codex 注册 | `./uninstall.sh --codex` |
-| Pi 注册 | `./uninstall.sh --pi` |
-| Pi 开发环境 | `./uninstall.sh --pi-dev` |
-| Goal Plus ThinkThread Profile | `./uninstall.sh --thinkthread` |
-| 未引用的受管版本 | `./uninstall.sh --unused-runtime` |
-| 检查完整卸载计划 | `./uninstall.sh --dry-run` |
+| 2026-09-18 | **[ThinkThread Codex 支持](docs/codex.md#支持范围与验证)**：在私有 Child 中运行 Codex 候选，验证快照并回写结果。 |
+| 2026-09-14 | **[LLM Verifier](docs/llm-verifier.md)**：评价已结算结果的质量，为选择与分配提供评分。 |
+| 2026-09-07 | **[统一任务管理与执行接口](docs/agent-host-adapters.md)**：任务状态按职责分层，Codex/Pi 共用执行接口。 |
+| 2026-09-02 | **[自适应搜索](docs/adaptive-search.md)**：根据验证反馈调整候选探索与资源分配。 |
+| 2026-09-02 | **[ThinkThread Pi 支持](docs/pi.md)**：在私有 Child 中运行 Pi 候选，验证快照并回写结果。 |
+| 2026-08-29 | **[独立终审（Final Check）](docs/runtime-logic.md)**：按目标与任务 Skill 独立复核交付结果。 |
+| 2026-08-20 | **[Ultra 编排](docs/ultra.md)**：支持普通任务的子 Agent 委派、返工与结果验收。 |
+| 2026-08-20 | **[共享目录](docs/shared-plane.md)**：支持候选工具的受控发布与复用，保持工作区隔离。 |
+| 2026-08-17 | **[初始版本](SPEC.md)**：Goal/Search 双模式、Pi/Codex 接入、冻结验证、隔离探索与回滚、共享证据与结果交付。 |
 
-指定选择器时，卸载器只移除对应组件。Codex、普通 Pi 和显式选择的 ThinkThread 注册不要求来自当前 checkout；来源
-不同时打印警告并直接卸载，不询问确认。`--dry-run` 只展示计划，本地开发目录仍校验归属。
-正常宿主安装使用共享的 Python runtime，因此只卸载一个宿主时会保留 runtime；
-`--unused-runtime` 只清理没有任何宿主注册引用的 release，随时可以安全执行。
-Pi 开发态使用独立的受管环境。
-卸载始终不会删除目标 workspace 中的
-`.gp/` 记录，也不会回退已经提升的修改。`--thinkthread` 会在 foreign ownership 警告后删除同名
-`goal-plus-pi` / `goal-plus-codex` Profile 及共享 Agent POSIX SDK，绝不删除 ThinkThread Runtime、Root 或 state。
+## 🔧 3. 支持与安装
 
-## 启动目标
+当前支持 **Pi** 和 **Codex**，候选可通过原生会话直接执行，或交给 **ThinkThread** 托管。
 
-在 Pi 中启动目标：
+### 支持范围
 
-```text
-/goal-plus 修复这个 bug 并验证测试套件。
-/goal-plus 在不改变正确性的前提下，用两小时优化 p95 延迟。
-/goal-plus mode=probe 先确认向量化是否可行。
-/goal-plus mode=autonomous 深度优化这个 kernel。
-/goal-plus max_parallel=2 promotion_mode=artifact_only 优化这个只读模板。
-```
+Search 支持以下宿主、执行后端、候选工作方式与工作区组合：
 
-Codex 使用精确宿主命令：
-
-```text
-$goal-plus 修复这个 bug 并验证测试套件。
-$goal-plus 在不改变正确性的前提下，用两小时优化 p95 延迟。
-$goal-plus mode=probe 先确认向量化是否可行。
-$goal-plus mode=autonomous 深度优化这个 kernel。
-$goal-plus max_parallel=2 promotion_mode=artifact_only 优化这个只读模板。
-```
-
-开头连续的 `key=value` 是强类型命令配置；第一个非配置 token 开始就是自然语言目标。
-完整 key、取值范围和作用见 [Host Command Config](docs/api.md#host-command-config)。
-
-编辑和独立最终检查使用各自宿主的相同前缀：
-
-```text
-Pi:    /goal-plus edit <完整的新目标>
-Codex: $goal-plus edit <完整的新目标>
-Pi:    /goal-plus-with-final-check <目标>
-Codex: $goal-plus-with-final-check <目标>
-```
-
-原生会话恢复不启动任务。已中断 Main 使用
-`codex exec resume <session-id> '$goal-plus resume'` 或
-`pi -p --mode json --session <session-id> '/goal-plus resume'` 显式恢复。
-运行中收到新思考会先处理再继续；中断后的普通聊天不解锁。两端支持摘要、pause/resume/clear，
-clear 永久撤权但保留历史。完整合同与验证边界见[运行逻辑](docs/runtime-logic.md)。
-原生恢复不会创建或修改目标；修改仍使用 `$goal-plus edit` 或 `/goal-plus edit`。
-新的原生 session 使用精确 start 命令时会创建独立 Goal，即使同一 workspace 的其他 session
-仍有未终态 Goal；edit、resume 和其他控制命令始终只作用于本 session 绑定的 Goal。
-
-上述精确宿主命令是创建/编辑目标的唯一授权入口。自然语言请求、skill 自动加载、直接 MCP
-调用和通用 Pi CLI facade 都不能创建或编辑 Goal。两端从共同 MCP instructions 加载流程概要，
-不安装 Goal Plus 导航 skill。工具授权见 [API](docs/api.md)。
-
-一次请求会启动自主运行。agent 自己判断 Goal Mode 是否足够，或冻结 verifier 后
-并行 Search 是否更有价值；进入 Search 不需要额外确认。`mode=autonomous`（默认）
-指导持续探索；`mode=probe` 优先安排有界可行性检查。候选返回后，Main 根据持久 Evidence
-和用户明确给定的上限判断是否继续，继续时复用候选和 session。
-没有最低 worker 时长或强制提前收尾窗口；wait 超时不代表 Goal 完成，也不自动启动下一轮。
-
-## 宿主
-
-| 宿主 | 集成资产 | 入口 | Search worker 路径 |
+| Agent 宿主 | 执行后端（runtime provider） | 候选工作方式（inner agent） | 工作区（workspace provider） |
 | --- | --- | --- | --- |
-| Pi | 已安装 Pi package | `/goal-plus` 或 `pi -p "/goal-plus ..."` | Pi RPC 上的共同 session 工具；参阅 [Pi](docs/pi.md) |
-| Codex | 已安装 plugin | `$goal-plus` 宿主命令 | Codex app-server 上的共同 session 工具；参阅 [Codex](docs/codex.md) |
+| Pi | `direct` | `autoresearch`（默认）、`common` | `git_worktree` / `copy` |
+| Codex | `direct` | `autoresearch`（默认）、`common` | `git_worktree` / `copy` |
+| Pi | `thinkthread` | `common`（默认）、`autoresearch` | `thinkthread` |
+| Codex | `thinkthread` | `common` | `thinkthread` |
 
-安装 Codex plugin 后，从要修改的 workspace 启动：
+**工作区说明：** `git_worktree` 提供工作区隔离，不是安全沙箱；`copy` 仅交付产物。详见 [Workspace 架构](docs/workspace-sandbox-arch.md)。
+
+### 候选工作方式
+
+- **`autoresearch`（迭代探索）**：采用 AutoResearch 风格的迭代流程，维护候选本地 Git 尝试历史与 `results.tsv`。
+- **`common`（单次尝试）**：每次派发完成一次尝试，后续由 Main 决定是否继续。
+
+使用 `inner_agent=` 选择候选工作方式，详见[宿主适配](docs/agent-host-adapters.md)。
+
+### 安装准备
+
+- **基础工具**：Git，以及已安装并配置好模型访问的 Pi 或 Codex CLI。
+- **Pi 依赖**：通过 npm 安装的 Pi CLI，以及 Node.js 和 npm。
+- **Python 环境**：安装器通过 uv 准备受管 Python 3.12 和锁定依赖，首次安装需要联网下载。
+
+获取社区仓库源码，进入插件目录：
 
 ```bash
-cd <目标-workspace>
-codex -m <main-model> -c model_reasoning_effort=max
+git clone https://gitcode.com/openeuler/muyuan.git
+cd muyuan/plugins/goal-plus
 ```
 
-从要修改的 workspace 启动 Pi：
+### 选择安装方式
+
+以下安装命令均从 `muyuan/plugins/goal-plus/` 目录运行。
+
+<details open>
+<summary>使用 Pi：原生执行</summary>
 
 ```bash
-cd <目标-workspace>
-pi --model <provider/main-model> --thinking xhigh
+./install.sh --pi
 ```
 
-然后在 Codex 中提交 `$goal-plus <目标>`，或在 Pi 中提交 `/goal-plus <目标>`。
-Pi 保留已选 thinking；复杂任务可选 `xhigh`，它不是强制值。
-两个宿主的 main agent 都是已经运行的会话，应在启动时或通过 `/model` 预先选择；
-Goal Plus 不能切换它，`main=` 也不是受支持的命令配置。
-[Circle Packing 示例](examples/circle-packing/README.md)提供了完整的 Codex/Pi 启动命令和
-可直接粘贴的 prompt。
+安装完成后，在目标项目中启动 `pi`，使用 `/goal-plus` 命令。配置说明见 [Pi 指南](docs/pi.md)。
 
-宿主差异和策略覆盖见 [Agent Host Adapters](docs/agent-host-adapters.md)。
+</details>
 
-下面按原生 Main Agent 类型列出当前支持的 Search 路径。ThinkThread 提供工作区和
-Child 执行基础设施；Child 的 Agent 身份由 Pi/Codex Root Profile 固定。
+<details>
+<summary>使用 Codex：原生执行</summary>
 
-| Main Agent | 工作区后端 | Candidate 驱动 | Annotation 驱动 | LLM Verifier / Adaptive Allocation |
-| --- | --- | --- | --- | --- |
-| Codex | `git_worktree` / `copy` | Codex app-server | Codex CLI | Codex CLI；仅 Git worktree 支持 |
-| Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI；仅 Git worktree 支持 |
-| Pi | `thinkthread` | TT Pi Child | TT Pi Child | Pi CLI；支持 Adaptive |
-| Codex | `thinkthread` | TT Codex Child | TT Codex Child | Codex CLI；支持 Adaptive |
+```bash
+./install.sh --codex
+```
 
-`workspace.provider` 表示工作区实现。Agent 身份来自已授权 Main 会话，记录为
-`FrozenSpec.agent_harness`；装配层独立固定 `runtime_provider=direct|thinkthread`。
-这些字段不增加用户配置：仍可直接使用 `$goal-plus <诉求>` 或 `/goal-plus <诉求>`，
-Main 仅在需要时准备 Search 合同，信息不足时继续原有澄清流程。
-LLM Verifier 同次生成质量及可选 allocation 评分；选择和分配由确定性策略执行。
+首次安装后，新建线程，在 `/hooks` 中检查并信任 Goal Plus，然后再新建一个线程。在目标项目中启动 `codex`，使用 `$goal-plus` 命令。配置说明见 [Codex 指南](docs/codex.md)。
 
-此次协议不迁移旧记录。切换前使用旧 build 关闭活动资源并收尾旧记录，新 build 创建新记录；
-安装和 `.gp` 目录布局保持不变。
+</details>
 
-## 心智模型
+<details>
+<summary>使用 ThinkThread：托管 Pi / Codex 执行</summary>
 
-- 一条 **Goal Plus 记录**对应完整的用户任务。
-- 一个 **search task** 是在一份 frozen spec 上运行的一个 `run_id`；一个目标可关联
-  多个 search task。
-- 初始 **SearchPlan** 只分配固定 candidate lane，不是逐轮提交 plan 的协议。
-- 一个 **candidate** 是带 verifier 历史的持久 lane；`strategy.inner_agent` 选择多轮
-  `autoresearch`，或每次派发完成一个 attempt 的 `common`。
-- 一个 **worker session** 是宿主上下文/来源句柄。worker 生命周期属于宿主，
-  不属于 Search 运行时。
-- **共享平面**保存冻结合同、verifier 精确 commit、Global Evidence、异步客观 View
-  和 selection 状态，不暴露其他 candidate 的推理或 workspace。
-- 一个 **verifier concern** 只是 worker 的建议；只有 main agent 能确认。确认后先封锁
-  当前 run，再停止全部宿主 worker，并创建新的 spec/run。
+需要独立安装 ThinkThread Linux Runtime，并配置好对应宿主。选择其中一组命令，生成 Goal Plus Profile 并启动 Root：
 
-默认 `parallel_loops` 使用固定 candidate lane。Main 审查每次返回并决定是否继续同一候选，
-后续技术方向由 candidate 选择，分数不触发替换。Git worktree 可显式选择
-[Adaptive Search](docs/adaptive-search.md)，执行确定性资源分配和可选 worker 引导。
-共同流程与 Evidence 合同见 [Shared Plane](docs/shared-plane.md)。
+**Pi：**
 
-Git worktree 模式在 freeze 时先直接在 clean origin 中运行一次 process-verifier suite，
-并固定该 commit。batch 启动时先在 `c001` 中重复同一验证，通过后才创建其余 lane 或启动
-worker。这样 source root 与相对路径错误会在消耗候选 Search 预算前暴露；bootstrap 验证
-不是 candidate iteration。
+```bash
+./install.sh --pi --thinkthread
+tt run --profile goal-plus-pi --fs /path/to/your-project
+```
 
-同一份有效评价/编辑合同应保持一个 run。必须新建 successor 时，
-`source_run_id` 只继承有界 frontier、feature 和带作用域 pitfalls 作为研究上下文；
-旧分数不能复用，必须重新验证。
+**Codex：**
 
-运行时状态保存在 `.gp/`。`search_tasks` 只追加；`linked_search` 只是当前任务的
-兼容视图。
+```bash
+./install.sh --codex --thinkthread
+tt run --profile goal-plus-codex --fs /path/to/your-project
+```
 
-配置 `promotion_verifiers` 后，Promotion 会执行独立检查，而不是复用缓存结果。
-Runtime 会检出选中的 verifier-backed revision，以
-`GOAL_PLUS_VERIFIER_PHASE=promotion` 重新运行每个 Promotion Gate，将证据绑定到
-Selected Git Head 和 Artifact Hash，之后才生成可被 Git 应用的 Patch。Promotion
-失败时保持 `ready_to_promote` 以便重试，并且不会生成 Patch。
+在 Root 中使用对应宿主的目标命令，并通过 `workspace_provider=thinkthread` 指定 Search 工作区。候选由 ThinkThread Child 执行，结果经过快照验证与发布。
 
-## 文档
+Goal Plus 不安装、升级或删除 ThinkThread 本身。TT Codex 显式 worker 模型必须来自 Profile allowlist，并使用精确的 `provider/model`；其 Root 不支持 Ultra delegation、独立 final check 与 Stop-hook 续跑。完整边界见 [Codex 支持范围](docs/codex.md#支持范围与验证)。
 
-| 需求 | 文档 |
+</details>
+
+<details>
+<summary>开发环境、更新与卸载</summary>
+
+正常安装绑定不可变代码版本，修改 checkout 不会自动更新已安装插件。重新运行对应安装命令可更新安装；已有注册会询问是否卸载重装。检查已安装版本：
+
+```bash
+./install.sh --runtime-info
+```
+
+准备 checkout 本地测试环境：
+
+```bash
+uv sync --locked
+uv run --frozen python -m pytest -q
+```
+
+需要直接加载当前 Pi 源码时，使用独立开发入口：
+
+```bash
+./install.sh --pi-dev
+source .goal-plus-dev/set_env.sh
+```
+
+随后在目标项目中运行 `pi-goal-plus`。`--pi` 与 `--pi-dev` 不能在同一次安装命令中使用。更新已有 ThinkThread Profile 时，仍需带 `--thinkthread` 运行对应安装命令。
+
+卸载前先查看计划：
+
+```bash
+./uninstall.sh --dry-run
+```
+
+`./uninstall.sh --pi` 和 `./uninstall.sh --codex` 分别移除对应宿主注册；卸载不删除目标项目的 `.gp/` 记录，也不回退已经应用的修改。完整的更新、迁移与组件清理规则见[开发指南](docs/development.md)。
+
+</details>
+
+## 🚀 4. 快速开始
+
+在待优化项目中启动已安装 Goal Plus 的宿主：
+
+```bash
+cd /path/to/your-project
+pi  # 使用 Codex 时改为 codex
+```
+
+选择可用模型，在会话中提交优化目标；下方尖括号内容替换为你的实际要求：
+
+```text
+/goal-plus <优化目标、可修改范围与验收标准>
+```
+
+Codex 使用 `$goal-plus <优化目标、可修改范围与验收标准>`。已有基准测试时，可在目标中指定其入口。Goal Plus 使用当前 Main 会话，由 Main 准备评价合同、组织探索并审查结果。完整可运行任务见[优化示例](#-5-优化示例)。
+
+<details>
+<summary>查看状态、控制任务与获取结果</summary>
+
+以下命令用于绑定了该 Goal 的 Pi 会话；本地 Codex 使用相同子命令，前缀改为 `$goal-plus`。
+
+| 命令 | 作用 |
 | --- | --- |
-| 完整索引与内容归属 | [文档地图](docs/README.md) |
-| 稳定的产品与 runtime 合同 | [系统规格](SPEC.md) |
-| 宿主命令与配置 | [Codex](docs/codex.md)、[Pi](docs/pi.md)、[API](docs/api.md) |
-| 安装、更新、卸载与 checkout 开发 | [开发指南](docs/development.md) |
-| 运行时与宿主日志 | [调试指南](docs/debugging-runtime.md) |
-| spec 与可运行示例 | [Examples](examples/README.md) |
-| 测试与真实宿主证据 | [Tests](tests/README.md) |
+| `/goal-plus summary` | 显示当前 Goal 的状态；不带参数的 `/goal-plus` 也执行此操作。 |
+| `/goal-plus pause` | 暂停后续续跑与新派发，不强杀当前轮。 |
+| `/goal-plus resume` | 显式恢复可继续的 Goal，保留原有截止时间与累计用量。 |
+| `/goal-plus edit <完整的新目标>` | 更新目标；已暂停的任务不会因编辑自动恢复。 |
+| `/goal-plus clear` | 永久撤销该 Goal 的执行权限，保留历史。 |
 
-Benchmark 专用任务、evaluator、campaign 和对比证据不属于这个隔离的 runtime
-目录。
+恢复原生对话不等于恢复任务。ThinkThread Codex Root 不支持 Stop-hook 续跑，不能套用本地 Codex 的恢复操作；完整说明见[运行逻辑](docs/runtime-logic.md)和 [Codex 支持范围](docs/codex.md#支持范围与验证)。
 
-## Workspace 与 Sandbox 架构
+Search 收尾后可查看选中产物、验证记录与终态 `report.md`、`report.html`，以完成时返回的实际路径为准。本地默认状态目录为 `.gp/`，ThinkThread 使用原生会话的私有目录。会话导出与排障见[调试指南](docs/debugging-runtime.md)；公开分享前检查并脱敏日志。
 
-Goal Plus 将工作区隔离与 inner-agent 行为分开。Git worktree 产生 commit Evidence，
-Pi ThinkThread Child 产生 snapshot Evidence。`autoresearch` 维护候选本地 Git 历史，
-`common` 依赖 outer artifact 与 canonical runtime ledger。Copy 是显式 artifact-only 路径。
-Git worktree 不是安全沙箱；支持组合和 provider 保证由下方的工作区专题定义。
+</details>
 
-`new -> search -> apply` ASCII 主流程、设计不变量和 Git/TT 行为对照见
-[ThinkThread 与 Git Workspace 架构](docs/workspace-sandbox-arch.md)。
+## 📖 5. 优化示例
+
+<details>
+<summary>Circle Packing：并行搜索更好的圆布局</summary>
+
+在满足边界与不重叠约束的前提下，优化 26 个圆的半径和。从 `plugins/goal-plus/` 进入示例目录，启动 Pi 后完整粘贴 [pi-goal-prompt.md](examples/circle-packing/pi-goal-prompt.md)：
+
+```bash
+cd examples/circle-packing
+pi
+```
+
+任务代码和 verifier 只依赖 Python 标准库，宿主仍需模型访问。运行前保持外层 Git 仓库干净；不要进入 `workspace-template/` 启动或修改只读模板。候选结果与报告保存到 `.gp/`，不向原模板回写。详见 [Circle Packing](examples/circle-packing/README.md)。
+
+需要将结果应用回源码时，使用相应的 [Git Apply](examples/circle-packing-git-apply/README.md) 或 [ThinkThread Apply](examples/circle-packing-thinkthread-apply/README.md) 示例。
+
+</details>
+
+<details>
+<summary>PyPTO：优化已有算子的 NPU 执行性能</summary>
+
+在已有 PyPTO 实现上探索优化方案，保持输入、功能和精度标准不变，并在真实设备上测量性能。当前提供 CSA、MoE 两个任务入口与 Codex、Pi、ThinkThread + Pi 的运行说明。
+
+需要匹配的 PyPTO、simpler、PTOAS、CANN 工具链与两张可用卡；源码和运行环境在仓库外准备。性能须在目标设备上测量，不能用 CPU 正确性检查替代。按 [PyPTO Optimize](examples/pypto/optimize/README.md) 准备环境并使用对应完整 prompt。
+
+</details>
+
+<details>
+<summary>VLIW：优化程序调度，减少模拟执行周期</summary>
+
+在保持输出正确的前提下，优化生成程序的 VLIW/SIMD 调度，降低本地模拟器统计的执行周期。任务代码与模拟器只依赖 Python 标准库，不需要加速器硬件。运行方式与完整 Pi prompt 见 [VLIW Kernel Optimization](examples/vliw-kernel-optimization/README.md)。
+
+</details>
+
+更多任务见[示例索引](examples/README.md)。示例中的公开反馈用于比较本任务的优化结果，不等同于隐藏评测成绩。
+
+## 📐 6. 架构概览
+
+![Goal Plus 架构图](arch.png)
+
+**Main Agent** 理解目标、设计验收条件并决定直接执行、委派或 Search； **Goal / Search Runtime** 保存任务状态、冻结合同、候选 Evidence 与发布记录； **执行适配层** 对接 Pi/Codex 原生会话，以及 ThinkThread 的 Child 执行与控制。
+
+候选通过共享平面读取被允许的证据与产物，不共享私有推理或任意访问其他候选工作区。 LLM Verifier 的可选质量评价不改写硬 verifier 分数，Selection 与 Allocation 使用确定性策略。详细说明见[架构图集](docs/architecture.md)、[共享平面](docs/shared-plane.md)和 [系统规格](SPEC.md)。
+
+## 📂 7. 代码目录指引
+
+以下路径相对于 `plugins/goal-plus/`：
+
+| 目录 / 文件 | 用途 |
+| --- | --- |
+| [src/goal_plus/](src/goal_plus/) | 领域模型、应用用例、宿主执行与基础设施适配。 |
+| [assets/](assets/) | Codex / Pi 配置、角色资产与公共 instructions。 |
+| [examples/](examples/) | 用户示例、任务输入及其来源说明。 |
+| [docs/](docs/) | 架构、接口、安装、恢复与排障专题。 |
+| [tests/](tests/) | 默认回归、集成测试及显式启用的真实宿主测试。 |
+| [scripts/](scripts/) | 安装、监控、诊断与文档生成工具。 |
+
+
+## 📚 8. 文档
+
+| 我想…… | 从这里开始 |
+| --- | --- |
+| 安装、更新或开发插件 | [开发指南](docs/development.md)、[Codex](docs/codex.md)、[Pi](docs/pi.md) |
+| 了解命令、参数及状态控制 | [API](docs/api.md)、[运行逻辑](docs/runtime-logic.md) |
+| 理解候选之间如何协作 | [共享平面](docs/shared-plane.md)、[Evidence Annotator](docs/evidence-annotator.md) |
+| 配置评价与自适应策略 | [LLM Verifier](docs/llm-verifier.md)、[Adaptive Search](docs/adaptive-search.md) |
+| 排查执行、恢复或报告问题 | [调试指南](docs/debugging-runtime.md)、[Search 恢复](docs/search-recovery.md) |
+| 找到全部专题与代码入口 | [文档地图](docs/README.md)、[系统规格](SPEC.md) |
+
+## 📄 9. 许可证与第三方来源
+
+第三方示例的来源与许可说明随各自目录维护，入口见[示例索引](examples/README.md)。

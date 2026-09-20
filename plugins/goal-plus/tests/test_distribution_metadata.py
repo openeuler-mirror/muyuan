@@ -69,7 +69,6 @@ def test_operational_docs_do_not_reference_retired_checkouts() -> None:
         ROOT / "assets/codex/plugin.json",
     )
     retired = (
-        "/Users/qiaolina/Code/goal-plus",
         "oh-my-knowledge/code/goal-plus",
         ".[dev,report]",
     )

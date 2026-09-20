@@ -24,6 +24,24 @@
 | 了解 Pi 进度展示与终态卡 | [Pi](pi.md#progress-ui-实时展示) |
 | 选择测试和真实宿主验收 | [Tests](../tests/README.md) |
 
+## 代码评审阅读路径
+
+先读 [SPEC](../SPEC.md) 的授权与状态不变量，再看[架构图集](architecture.md)的分层。
+以下入口帮助沿业务链路检查实现；完整 owner 与依赖约束仍由 [AGENTS](../AGENTS.md) 维护。
+
+| 评审关注点 | 代码入口 | 对应合同 |
+| --- | --- | --- |
+| Goal 身份、控制与 Search 归属 | [GoalAuthorization](../src/goal_plus/application/goal_authorization.py)、[Goal facade](../src/goal_plus/goal_plus.py) | [运行逻辑](runtime-logic.md) |
+| Search 冻结、候选与硬结算 | [Runtime facade](../src/goal_plus/runtime.py)、[Search bootstrap](../src/goal_plus/application/search_bootstrap.py)、[Settlement](../src/goal_plus/application/candidate_settlement.py) | [共享平面](shared-plane.md) |
+| 可选评分与最终选择 | [Verifier](../src/goal_plus/application/verifier.py)、[Selection](../src/goal_plus/application/selection.py) | [LLM Verifier](llm-verifier.md) |
+| 自适应分配与引导 | [Adaptive 入口](../src/goal_plus/adaptive/search.py)、[版本策略](../src/goal_plus/domain/adaptive/policy.py) | [Adaptive Search](adaptive-search.md) |
+| 宿主会话与执行身份 | [Session host](../src/goal_plus/session_host.py)、[Session control](../src/goal_plus/execution/session_control.py) | [宿主适配](agent-host-adapters.md) |
+| 精确产物发布与应用 | [Promotion](../src/goal_plus/application/promotion.py)、[Publication apply](../src/goal_plus/application/publication_apply.py) | [Workspace 架构](workspace-sandbox-arch.md) |
+
+验证时先按[开发指南](development.md#测试环境)准备 checkout 本地环境，再选择
+[测试层次](../tests/README.md#test-layers)。默认回归、真实宿主验收和 benchmark 效果报告
+是不同证据：测试数量不能替代宿主 lifecycle 验证，功能可用也不代表已证明性能收益。
+
 ## 内容归属
 
 以下归属不额外定义产品状态或执行权限。每个详细合同有明确维护位置，

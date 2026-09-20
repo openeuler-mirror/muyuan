@@ -1,270 +1,288 @@
-# Goal Plus (GP)
+<!-- markdownlint-configure-file {"MD033":{"allowed_elements":["details","summary","div","b"]},"MD013":false,"MD041":false} -->
 
 English | [简体中文](README_zh.md)
 
-Goal Plus is a host-neutral runtime for long-running agent work. Use
-`/goal-plus` in Pi or `$goal-plus` in Codex to handle ordinary goals directly
-and upgrade measurable optimization tasks to Search Mode: freeze the evaluation
-contract, explore isolated candidates, and promote the best verifier-backed
-result.
+<div align="center">
 
-Pi and Codex are the supported host paths.
+# Goal Plus
 
-## Installation
+**Concurrency, Sharing, Intelligence.**
 
-Run the installer from the Goal Plus source directory:
+</div>
 
-```bash
-git clone git@gitcode.com:yiyanzhi_akane1/muyuan.git && cd muyuan/plugins/goal-plus
-```
+Goal Plus is a multi-agent collaboration runtime in [Muyuan](../../README.md) for complex optimization tasks. Candidates explore independently toward the same goal, share verification results and reusable tools, and continuously improve their solutions using feedback.
 
-| Installation | Command |
+<summary><b>📋 Contents</b></summary>
+
+- [Goal Plus](#goal-plus)
+  - [📘 1. Core Capabilities](#-1-core-capabilities)
+  - [📅 2. Current Progress](#-2-current-progress)
+  - [🔧 3. Support and Installation](#-3-support-and-installation)
+    - [Supported Configurations](#supported-configurations)
+    - [Inner-Agent Behavior](#inner-agent-behavior)
+    - [Prerequisites](#prerequisites)
+    - [Choose an Installation](#choose-an-installation)
+  - [🚀 4. Quick Start](#-4-quick-start)
+  - [📖 5. Optimization Examples](#-5-optimization-examples)
+  - [📐 6. Architecture](#-6-architecture)
+  - [📂 7. Code Directory Guide](#-7-code-directory-guide)
+  - [📚 8. Documentation](#-8-documentation)
+  - [📄 9. Licensing and Third-Party Sources](#-9-licensing-and-third-party-sources)
+
+
+## 📘 1. Core Capabilities
+
+| Capability | What it provides |
 | --- | --- |
-| Codex only | `./install.sh --codex` |
-| Pi only | `./install.sh --pi` |
-| Pi + ThinkThread Search | `./install.sh --pi --thinkthread` |
-| Codex + ThinkThread Search | `./install.sh --codex --thinkthread` |
-| Pi development | `./install.sh --pi-dev && source .goal-plus-dev/set_env.sh` |
-| Show Pi development environments | `./install.sh --env-show` |
+| **Iterative optimization** | Propose solutions, modify implementations, and verify results repeatedly, with retained attempt history and explicit continuation. |
+| **Parallel exploration** | Explore different optimization directions in candidates with separate workspaces and sessions. |
+| **Shared findings** | Reuse experimental results and diagnostic methods through shared Evidence and tools, helping candidates learn from one another and avoid repeated trial and error. |
+| **Verification and selection** | Compare candidates using verifiable results, combining correctness checks and effectiveness evaluation to improve delivery reliability. |
 
-Normal installation provisions managed Python 3.12 with uv and locked dependencies.
-Each host binds to an immutable code build, independently of Conda, `PATH`, and
-the target workspace. `--pi` and `--pi-dev` are mutually exclusive. Inspect installed
-builds with `./install.sh --runtime-info`; see [development](docs/development.md)
-for update, diagnostics, and cleanup. `--dry-run` does not change host registrations
-or releases; its shell bootstrap may download the installer Python/uv.
+## 📅 2. Current Progress
 
-Existing Codex/Pi registrations trigger an uninstall-and-reinstall prompt (`y/N`).
-Use `--yes` for automation. Product assets live under `assets/codex` and `assets/pi`;
-editing this checkout does not automatically load its plugin resources.
+<!-- Dates identify development milestones, not release or host-validation dates. -->
 
-`--thinkthread` requires a separately installed supported ThinkThread Runtime.
-It validates the built-in host Profile and generates the `goal-plus-pi` or
-`goal-plus-codex` Profile; it never installs, upgrades, or removes ThinkThread
-itself. Start the protected Root with `tt run --profile goal-plus-pi --fs
-<target-workspace>` (or `--profile goal-plus-codex` for Codex). From that Root,
-`workspace_provider=thinkthread` runs Search candidates in independent private
-Children, verifies exact snapshots, and publishes through optimistic `fs.apply`.
-Codex ThinkThread inherits the Profile default model; explicit `workers=`
-overrides and TT-Root Stop-hook resume are not supported.
-
-On first Codex use, start a new thread, review and trust Goal Plus in `/hooks`,
-then start one more fresh thread. Pi development starts with `pi-goal-plus` and
-does not modify Pi authentication or global configuration.
-
-## Uninstallation
-
-| Uninstall | Command |
+| Date | Milestone |
 | --- | --- |
-| All removable Goal Plus components | `./uninstall.sh` |
-| Codex registration | `./uninstall.sh --codex` |
-| Pi registration | `./uninstall.sh --pi` |
-| Pi development environment | `./uninstall.sh --pi-dev` |
-| Goal Plus ThinkThread Profile | `./uninstall.sh --thinkthread` |
-| Unused managed releases | `./uninstall.sh --unused-runtime` |
-| Inspect the full plan | `./uninstall.sh --dry-run` |
+| 2026-09-18 | **[ThinkThread Codex support](docs/codex.md#支持范围与验证)**: Run Codex candidates in private Children, verify snapshots, and apply results. |
+| 2026-09-14 | **[LLM Verifier](docs/llm-verifier.md)**: Evaluate settled results and provide scores for selection and allocation. |
+| 2026-09-07 | **[Unified task management and execution](docs/agent-host-adapters.md)**: Separate task state by responsibility and share execution interfaces across Codex/Pi. |
+| 2026-09-02 | **[Adaptive Search](docs/adaptive-search.md)**: Adjust candidate exploration and resource allocation using verification feedback. |
+| 2026-09-02 | **[ThinkThread Pi support](docs/pi.md)**: Run Pi candidates in private Children, verify snapshots, and apply results. |
+| 2026-08-29 | **[Independent final review (Final Check)](docs/runtime-logic.md)**: Independently review deliverables against the goal and task-local Skills. |
+| 2026-08-20 | **[Ultra orchestration](docs/ultra.md)**: Delegate ordinary tasks to subagents, track rework, and review results. |
+| 2026-08-20 | **[Shared directory](docs/shared-plane.md)**: Publish and reuse candidate tools through controlled interfaces while keeping workspaces isolated. |
+| 2026-08-17 | **[Initial version](SPEC.md)**: Goal/Search modes, Pi/Codex integration, frozen verification, isolated exploration and rollback, shared Evidence, and result delivery. |
 
-With a selector, the uninstaller removes only that component. Codex, normal Pi, and explicitly
-selected ThinkThread registrations are removed regardless of their source checkout. A different source
-produces a warning and removal continues without confirmation; `--dry-run` only
-prints the plan. Local development directories retain their ownership checks.
-Normal host installations use the shared Python runtime, so removing one host preserves
-the runtime. `--unused-runtime` garbage-collects only releases that no host
-registration references, so it is safe to run at any time. Pi development uses
-its own managed environment.
-Uninstallation never deletes target workspace `.gp/` records or
-reverts promoted changes. `--thinkthread` removes the selected generated
-`goal-plus-pi` / `goal-plus-codex` Profiles and shared Agent POSIX SDK after a foreign-ownership warning; it never deletes a ThinkThread
-Runtime, Root, or state.
+## 🔧 3. Support and Installation
 
-## Start a Goal
+Goal Plus supports **Pi** and **Codex**. Candidates can run through native sessions or use **ThinkThread** for managed execution.
 
-Start a goal in Pi:
+### Supported Configurations
 
-```text
-/goal-plus Fix this bug and verify the test suite.
-/goal-plus Optimize p95 latency for two hours without changing correctness.
-/goal-plus mode=probe Check whether vectorization is viable.
-/goal-plus mode=autonomous Deeply optimize the kernel.
-/goal-plus max_parallel=2 promotion_mode=artifact_only Optimize this read-only template.
-```
+Search supports the following host, runtime-provider, inner-agent, and workspace combinations:
 
-The equivalent Codex entry uses the exact host command:
-
-```text
-$goal-plus Fix this bug and verify the test suite.
-$goal-plus Optimize p95 latency for two hours without changing correctness.
-$goal-plus mode=probe Check whether vectorization is viable.
-$goal-plus mode=autonomous Deeply optimize the kernel.
-$goal-plus max_parallel=2 promotion_mode=artifact_only Optimize this read-only template.
-```
-
-Edit and independent-final-check commands use the same host-specific prefix:
-
-```text
-Pi:    /goal-plus edit <full revised goal>
-Codex: $goal-plus edit <full revised goal>
-Pi:    /goal-plus-with-final-check <goal>
-Codex: $goal-plus-with-final-check <goal>
-```
-
-Native session resume restores the conversation, not task execution. Restart an
-interrupted Main with `codex exec resume <session-id> '$goal-plus resume'` or
-`pi -p --mode json --session <session-id> '/goal-plus resume'`. Ordinary input
-steers a running task but never unlocks a stopped one. Both hosts support
-summary/pause/resume/clear; clear retains history but permanently revokes execution.
-See [Runtime Logic](docs/runtime-logic.md) for the contract and validation boundaries.
-An exact start command in a fresh native session creates an independent Goal even
-when another session has a nonterminal Goal in the same workspace. Edit, resume,
-and control commands remain bound to the session that owns their Goal.
-
-The exact Goal Plus host commands above are the only create/edit authority
-boundary. Natural-language requests, automatic skill loading, direct MCP calls,
-and the generic Pi CLI facade cannot create or edit a Goal Plus record.
-Both hosts load shared workflow guidance from MCP instructions; no Goal Plus
-navigation skills are installed. Tool authorization is described in [API](docs/api.md).
-
-Leading `key=value` command configuration is parsed and persisted separately
-from the natural-language goal. The first non-config token starts the goal.
-Explicit values are enforced against a ready SearchSpec draft, while omitted
-fields remain Agent decisions. See [API](docs/api.md#host-command-config) for
-the supported keys.
-
-One request starts an autonomous run. The agent decides whether Goal Mode is
-enough or a frozen verifier makes parallel Search useful; entering Search does
-not require an extra approval step. `mode=autonomous` (the default) guides continued
-exploration; `mode=probe` prioritizes bounded feasibility checks. After each candidate
-returns, Main decides whether to continue from durable Evidence and the user's
-explicit limits. Continuation reuses the candidate and session. There is no minimum
-worker duration or mandatory early closeout window, and a wait timeout does not
-complete the Goal or automatically start another turn.
-
-## Hosts
-
-| Host | Integration assets | Entry | Search worker path |
+| Agent host | Runtime provider | Inner agent | Workspace provider |
 | --- | --- | --- | --- |
-| Pi | installed Pi package | `/goal-plus` or `pi -p "/goal-plus ..."` | shared session tools over Pi RPC; see [Pi](docs/pi.md) |
-| Codex | installed plugin | `$goal-plus` host command | shared session tools over Codex app-server; see [Codex](docs/codex.md) |
+| Pi | `direct` | `autoresearch` (default), `common` | `git_worktree` / `copy` |
+| Codex | `direct` | `autoresearch` (default), `common` | `git_worktree` / `copy` |
+| Pi | `thinkthread` | `common` (default), `autoresearch` | `thinkthread` |
+| Codex | `thinkthread` | `common` | `thinkthread` |
 
-Start an installed Codex plugin from the workspace you want to change:
+**Workspace note:** `git_worktree` provides workspace isolation, not a security sandbox; `copy` delivers artifacts only. See [Workspace Architecture](docs/workspace-sandbox-arch.md).
+
+### Inner-Agent Behavior
+
+- **`autoresearch` (iterative exploration)**: Uses an AutoResearch-style loop and maintains candidate-local Git attempt history and `results.tsv`.
+- **`common` (one attempt per dispatch)**: Completes one attempt per dispatch; Main decides whether to continue afterward.
+
+Select the behavior with `inner_agent=`. See [Host Adapters](docs/agent-host-adapters.md).
+
+### Prerequisites
+
+- **Basic tools**: Git and an installed Pi or Codex CLI with model access configured.
+- **Pi dependencies**: A Pi CLI installed through npm, plus Node.js and npm.
+- **Python environment**: The installer provisions managed Python 3.12 and locked dependencies through uv. The first installation requires network access to download them.
+
+Clone the community repository and enter the plugin directory:
 
 ```bash
-cd <target-workspace>
-codex -m <main-model> -c model_reasoning_effort=max
+git clone https://gitcode.com/openeuler/muyuan.git
+cd muyuan/plugins/goal-plus
 ```
 
-Start Pi from the workspace you want to change:
+### Choose an Installation
+
+Run the following installation commands from `muyuan/plugins/goal-plus/`.
+
+<details open>
+<summary>Pi: native execution</summary>
 
 ```bash
-cd <target-workspace>
-pi --model <provider/main-model> --thinking xhigh
+./install.sh --pi
 ```
 
-Then submit `$goal-plus <goal>` in Codex or `/goal-plus <goal>` in Pi. Pi keeps
-the selected thinking level; `xhigh` is recommended for complex tasks but is not
-required or forced. In both
-hosts, the main agent is the already-running session selected at launch or with
-`/model`; Goal Plus cannot switch it, and `main=` is not a supported command
-configuration key. See the
-[Circle Packing example](examples/circle-packing/README.md) for
-complete Codex and Pi commands with ready-to-paste prompts.
+After installation, start `pi` in your target project and use `/goal-plus`. See the [Pi Guide](docs/pi.md) for configuration.
 
-Host differences and strategy coverage are summarized in
-[Agent Host Adapters](docs/agent-host-adapters.md).
+</details>
 
-The following table groups supported Search paths by the native Main Agent.
-ThinkThread provides workspace and Child execution infrastructure; the Agent
-inside a ThinkThread path is bound by the Root Profile (Pi or Codex).
+<details>
+<summary>Codex: native execution</summary>
 
-| Main Agent | Workspace backend | Candidate driver | Annotation driver | LLM Verifier / Adaptive allocation |
-| --- | --- | --- | --- | --- |
-| Codex | `git_worktree` / `copy` | Codex app-server | Codex CLI | Codex CLI; Git worktree only |
-| Pi | `git_worktree` / `copy` | Pi RPC | Pi CLI | Pi CLI; Git worktree only |
-| Pi | `thinkthread` | TT Pi Child | TT Pi Child | Pi CLI; Adaptive supported |
-| Codex | `thinkthread` | TT Codex Child | TT Codex Child | Codex CLI; Adaptive supported |
+```bash
+./install.sh --codex
+```
 
-`workspace.provider` identifies the workspace provider. Agent identity comes from
-the authorized Main session and is recorded as `FrozenSpec.agent_harness`.
-Assembly separately freezes `runtime_provider=direct|thinkthread`. These fields
-require no additional user setup: start with `$goal-plus <request>` or
-`/goal-plus <request>`. Main prepares a Search contract only when needed.
-Quality and optional allocation scores share one LLM Verifier call. Selection and
-allocation use deterministic policies.
+After the first installation, open a new thread, review and trust Goal Plus in `/hooks`, then open another fresh thread. Start `codex` in your target project and use `$goal-plus`. See the [Codex Guide](docs/codex.md) for configuration.
 
-This protocol does not migrate old records. Before switching builds, use the old
-build to close active resources and finish its records; create new records with
-the new build. Installation and `.gp` layouts are preserved.
+</details>
 
-## Mental Model
+<details>
+<summary>ThinkThread: managed Pi / Codex execution</summary>
 
-- A **Goal Plus record** is the complete user task.
-- A **search task** is one `run_id` over one frozen spec. A goal may link more
-  than one search task.
-- An initial **SearchPlan** allocates the fixed candidate lanes. It is not a
-  per-iteration plan protocol.
-- A **candidate** is a durable lane in one isolated workspace with verifier
-  history. `strategy.inner_agent` selects either the iterative `autoresearch`
-  worker or a one-attempt-per-dispatch `common` worker.
-- A **worker session** is a host context/provenance handle. Worker lifecycle
-  belongs to the host, not the Search runtime.
-- The **shared plane** contains the frozen contract, exact verifier artifacts,
-  Global Evidence, asynchronous objective Views, and selection state. It does
-  not expose peer reasoning or peer workspaces.
-- A **verifier concern** is worker advice. Only the main agent can confirm it;
-  confirmation fences the run before all host workers are stopped and a
-  successor spec/run is created.
+Install ThinkThread Linux Runtime separately and configure the corresponding host. Choose one command pair to generate the Goal Plus Profile and start a Root.
 
-The default `parallel_loops` mode creates fixed candidate lanes. Main reviews
-each returned result and decides whether to continue that same candidate;
-candidates choose their own technical direction. Scores do not trigger replacement.
-Git worktree runs may explicitly use [Adaptive Search](docs/adaptive-search.md)
-for deterministic allocation and optional worker steering. See [Shared Plane](docs/shared-plane.md)
-for the common workflow and Evidence contract.
+**Pi:**
 
-For Git worktrees, freezing first runs the process-verifier suite once in the
-clean origin and pins that exact commit. Batch startup then verifies the same
-suite in `c001` before materializing the remaining lanes or starting workers.
-This catches source-root and relative-path mistakes before candidate work uses
-the Search budget; the bootstrap checks are not candidate iterations.
+```bash
+./install.sh --pi --thinkthread
+tt run --profile goal-plus-pi --fs /path/to/your-project
+```
 
-Keep one run for one valid evaluation/edit contract. If a successor is
-unavoidable, `source_run_id` preserves bounded frontier/features/scoped
-pitfalls as research context, never as reusable scores.
+**Codex:**
 
-Runtime state lives under `.gp/`. `search_tasks` is append-only; `linked_search`
-is only the compatibility view of the current task.
+```bash
+./install.sh --codex --thinkthread
+tt run --profile goal-plus-codex --fs /path/to/your-project
+```
 
-When `promotion_verifiers` are configured, promotion is an independent check,
-not a cached pass-through. The runtime checks out the selected verifier-backed
-revision, reruns each promotion gate with
-`GOAL_PLUS_VERIFIER_PHASE=promotion`, binds the evidence to the selected Git
-head and artifact hash, and only then emits a Git-applyable patch. A failed
-promotion stays retryable in `ready_to_promote` and emits no patch.
+In the Root, use the corresponding host's goal command and set `workspace_provider=thinkthread` for the Search workspace. ThinkThread Children execute candidates, with snapshot verification and publication of results.
 
-## Documentation
+Goal Plus does not install, upgrade, or remove ThinkThread itself. Explicit TT Codex worker models must use exact `provider/model` references from the Profile allowlist. Its Root does not support Ultra delegation, independent final checks, or Stop-hook continuation. See [Codex Support](docs/codex.md#支持范围与验证) for the full boundaries.
 
-| Need | Read |
+</details>
+
+<details>
+<summary>Development, updates, and uninstallation</summary>
+
+Normal installations bind to immutable code builds. Editing a checkout does not update an installed plugin automatically. Rerun the corresponding installation command to update; existing registrations trigger an uninstall-and-reinstall prompt. Inspect installed builds with:
+
+```bash
+./install.sh --runtime-info
+```
+
+Prepare the checkout-local test environment:
+
+```bash
+uv sync --locked
+uv run --frozen python -m pytest -q
+```
+
+To load the current Pi source directly, use the separate development entry:
+
+```bash
+./install.sh --pi-dev
+source .goal-plus-dev/set_env.sh
+```
+
+Then run `pi-goal-plus` in your target project. Do not combine `--pi` and `--pi-dev` in the same installation command. To update an existing ThinkThread Profile, include `--thinkthread` in the corresponding installation command.
+
+Inspect the plan before uninstalling:
+
+```bash
+./uninstall.sh --dry-run
+```
+
+`./uninstall.sh --pi` and `./uninstall.sh --codex` remove the corresponding host registrations. Uninstallation does not delete target-project `.gp/` records or revert applied changes. See [Development](docs/development.md) for update, migration, and component cleanup rules.
+
+</details>
+
+## 🚀 4. Quick Start
+
+Start a host with Goal Plus installed in the project you want to optimize:
+
+```bash
+cd /path/to/your-project
+pi  # Use codex for Codex.
+```
+
+Choose an available model and submit an optimization goal in the session. Replace the angle-bracketed text with your requirements:
+
+```text
+/goal-plus <optimization objective, editable scope, and acceptance criteria>
+```
+
+In Codex, use `$goal-plus <optimization objective, editable scope, and acceptance criteria>`. Include an existing benchmark entry point in your goal when available. Goal Plus uses the current Main session to prepare the evaluation contract, organize exploration, and review results. See [Optimization Examples](#-5-optimization-examples) for complete runnable tasks.
+
+<details>
+<summary>Check status, control a task, and retrieve results</summary>
+
+Use these commands in the Pi session bound to the Goal. Local Codex uses the same subcommands with the `$goal-plus` prefix.
+
+| Command | Effect |
 | --- | --- |
-| Complete index and content ownership | [Documentation Map](docs/README.md) |
-| Stable product and runtime contract | [System Specification](SPEC.md) |
-| Host commands and configuration | [Codex](docs/codex.md), [Pi](docs/pi.md), [API](docs/api.md) |
-| Install, update, uninstall, and checkout development | [Development](docs/development.md) |
-| Runtime and host logs | [Debugging](docs/debugging-runtime.md) |
-| Specs and runnable examples | [Examples](examples/README.md) |
-| Tests and real-host evidence | [Tests](tests/README.md) |
+| `/goal-plus summary` | Display the current Goal status; `/goal-plus` without arguments performs the same operation. |
+| `/goal-plus pause` | Pause subsequent continuation and new dispatches without forcibly terminating the current turn. |
+| `/goal-plus resume` | Explicitly resume a resumable Goal, preserving its original deadline and accumulated usage. |
+| `/goal-plus edit <full revised goal>` | Update the goal; editing a paused task does not resume it automatically. |
+| `/goal-plus clear` | Permanently revoke execution permission for this Goal while preserving history. |
 
-Benchmark-specific tasks, evaluators, campaigns, and comparison evidence are
-not part of this isolated runtime directory.
+Restoring a native conversation does not resume task execution. ThinkThread Codex Roots do not support Stop-hook continuation; do not apply local Codex resume instructions to them. See [Runtime Logic](docs/runtime-logic.md) and [Codex Support](docs/codex.md#支持范围与验证).
 
-## Workspace and Sandbox Architecture
+After Search closeout, inspect the selected artifact, verification records, and terminal `report.md` and `report.html` using the actual paths returned on completion. Local state defaults to `.gp/`; ThinkThread uses a private native-session directory. See [Debugging](docs/debugging-runtime.md) for session exports and diagnostics. Review and redact logs before sharing them publicly.
 
-Goal Plus separates workspace isolation from inner-agent behavior. Git worktrees
-produce commit Evidence; ThinkThread Children produce snapshot Evidence.
-`autoresearch` maintains candidate-local Git history, while `common` relies on
-the outer artifact and canonical runtime ledger. Copy is an explicit artifact-only
-path. Git worktrees are not a security sandbox; supported combinations and
-provider guarantees are defined in the workspace document below.
+</details>
 
-See [ThinkThread and Git Workspace Architecture](docs/workspace-sandbox-arch.md) for
-the `new -> search -> apply` ASCII flow, design invariants, and the Git/TT
-behavior comparison.
+## 📖 5. Optimization Examples
+
+<details>
+<summary>Circle Packing: parallel search for better circle layouts</summary>
+
+Maximize the sum of radii for 26 circles while respecting boundary and non-overlap constraints. From `plugins/goal-plus/`, enter the example directory, start Pi, and paste the full [pi-goal-prompt.md](examples/circle-packing/pi-goal-prompt.md):
+
+```bash
+cd examples/circle-packing
+pi
+```
+
+The task code and verifier depend only on the Python standard library; the host still needs model access. Keep the enclosing Git repository clean before starting. Do not start inside `workspace-template/` or modify the read-only template. Candidate results and reports are stored in `.gp/`, without writing back to the original template. See [Circle Packing](examples/circle-packing/README.md).
+
+To apply results back to source, use the corresponding [Git Apply](examples/circle-packing-git-apply/README.md) or [ThinkThread Apply](examples/circle-packing-thinkthread-apply/README.md) example.
+
+</details>
+
+<details>
+<summary>PyPTO: optimize NPU execution of existing operators</summary>
+
+Explore optimizations to existing PyPTO implementations while preserving inputs, functionality, and precision requirements, and measure performance on real devices. CSA and MoE tasks include instructions for Codex, Pi, and ThinkThread + Pi.
+
+Prepare compatible PyPTO, simpler, PTOAS, and CANN toolchains with two available NPUs. Keep task source and runtime environments outside this repository. Measure performance on the target devices; CPU correctness checks cannot replace those measurements. Follow [PyPTO Optimize](examples/pypto/optimize/README.md) to prepare the environment and use the corresponding complete prompt.
+
+</details>
+
+<details>
+<summary>VLIW: optimize scheduling to reduce simulated execution cycles</summary>
+
+Optimize the generated program's VLIW/SIMD scheduling to reduce execution cycles in a local simulator while preserving correct outputs. The task code and simulator depend only on the Python standard library and do not require accelerator hardware. See [VLIW Kernel Optimization](examples/vliw-kernel-optimization/README.md) for instructions and the full Pi prompt.
+
+</details>
+
+More tasks are listed in the [Example Index](examples/README.md). Public feedback in these examples compares results within each task; it is not a hidden-evaluation benchmark result.
+
+## 📐 6. Architecture
+
+![Goal Plus architecture](arch.png)
+
+**Main Agent** understands the goal, designs acceptance criteria, and decides between direct execution, delegation, and Search. **Goal / Search Runtime** stores task state, frozen contracts, candidate Evidence, and publication records. The **execution adapters** connect Pi/Codex native sessions and ThinkThread Child execution and control.
+
+Candidates access authorized Evidence and artifacts through the shared plane. They do not share private reasoning or gain arbitrary access to peer workspaces. Optional LLM Verifier quality evaluation does not overwrite hard verifier scores; Selection and Allocation use deterministic policies. See [Architecture](docs/architecture.md), [Shared Plane](docs/shared-plane.md), and the [System Specification](SPEC.md).
+
+## 📂 7. Code Directory Guide
+
+Paths below are relative to `plugins/goal-plus/`:
+
+| Directory / file | Purpose |
+| --- | --- |
+| [src/goal_plus/](src/goal_plus/) | Domain models, application use cases, host execution, and infrastructure adapters. |
+| [assets/](assets/) | Codex / Pi configuration, role assets, and shared instructions. |
+| [examples/](examples/) | User examples, task inputs, and source attribution. |
+| [docs/](docs/) | Architecture, interfaces, installation, recovery, and troubleshooting guides. |
+| [tests/](tests/) | Default regression tests, integration tests, and opt-in real-host tests. |
+| [scripts/](scripts/) | Installation, monitoring, diagnostics, and documentation generation tools. |
+
+
+## 📚 8. Documentation
+
+| I want to... | Start here |
+| --- | --- |
+| Install, update, or develop the plugin | [Development](docs/development.md), [Codex](docs/codex.md), [Pi](docs/pi.md) |
+| Understand commands, parameters, and task controls | [API](docs/api.md), [Runtime Logic](docs/runtime-logic.md) |
+| Understand candidate collaboration | [Shared Plane](docs/shared-plane.md), [Evidence Annotator](docs/evidence-annotator.md) |
+| Configure evaluation and adaptive policies | [LLM Verifier](docs/llm-verifier.md), [Adaptive Search](docs/adaptive-search.md) |
+| Diagnose execution, recovery, or reporting issues | [Debugging](docs/debugging-runtime.md), [Search Recovery](docs/search-recovery.md) |
+| Find all guides and code entry points | [Documentation Map](docs/README.md), [System Specification](SPEC.md) |
+
+## 📄 9. Licensing and Third-Party Sources
+
+Source attribution and license information for third-party examples are maintained alongside each example. See the [Example Index](examples/README.md).
