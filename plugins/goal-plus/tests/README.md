@@ -5,6 +5,23 @@ results cover business behavior without launching agents. Real-host system
 tests (ST), including full E2E, run only when explicitly requested by the developer;
 a code change or phase boundary is not an automatic ST trigger.
 
+## Checkout setup
+
+From `plugins/goal-plus/`, prepare the locked Python 3.12 checkout environment
+before running tests:
+
+```bash
+uv sync --locked
+uv run --frozen python -m pytest -q
+```
+
+The commands below assume that this checkout's `.venv` is active; otherwise
+prefix them with `uv run --frozen`. The `dev` dependency group is included by
+`uv sync`. The test gate rejects a different Python version or a test runner
+outside the checkout environment. See [Development](../docs/development.md#测试环境).
+For a smaller machine, override the default 32 workers, for example with
+`uv run --frozen python -m pytest -n 2 -q`.
+
 ## Test Layers
 
 安装/卸载实测使用独立 Codex、Pi、runtime 和 XDG 配置目录，不读取认证或调用模型。
@@ -84,7 +101,7 @@ ST requires `--run-system-tests`; `-m`, `-k`, and direct node selection alone
 never authorize a host launch or preflight. Keep the flag out of default
 configuration, installers, and automatic development loops. Collection-only
 does not probe hosts, even with the flag. Preflight runs only for selected hosts.
-With the `dev` extra installed, the default gate uses 32 workers. On smaller
+With the `dev` dependency group installed, the default gate uses 32 workers. On smaller
 machines, override this with `pytest -n 2 --dist=load -q` (or another count no
 greater than half the available CPUs). Run real-host ST with `-n 0` or
 `-o addopts=''` so host processes, model calls, and machine resources do not
