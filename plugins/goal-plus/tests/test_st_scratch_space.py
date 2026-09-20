@@ -9,6 +9,8 @@ finishes.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,16 @@ from tests._st_tmp import (
 from tests._test_tmp import DEBUG_ENV
 
 pytest_plugins = ["pytester"]
+
+
+def _make_test_tree_removable(root: Path) -> None:
+    """Restore owner permissions before pytester removes its temporary tree."""
+    for directory, children, _files in os.walk(root, followlinks=False):
+        Path(directory).chmod(Path(directory).stat().st_mode | stat.S_IRWXU)
+        for name in children:
+            child = Path(directory) / name
+            if not child.is_symlink():
+                child.chmod(child.stat().st_mode | stat.S_IRWXU)
 
 
 def test_scratch_base_stays_outside_the_checkout() -> None:
@@ -62,7 +74,11 @@ def test_log_dir_is_node_keyed_and_outlives_the_run(tmp_path, monkeypatch) -> No
 
 
 @pytest.fixture
-def scratch_suite(pytester: pytest.Pytester, monkeypatch) -> pytest.Pytester:
+def scratch_suite(
+    pytester: pytest.Pytester,
+    monkeypatch,
+    request: pytest.FixtureRequest,
+) -> pytest.Pytester:
     """Run one inert case through the real ST fixture in a subprocess."""
     root = Path(__file__).resolve().parents[1]
     monkeypatch.delenv(DEBUG_ENV, raising=False)
@@ -71,6 +87,7 @@ def scratch_suite(pytester: pytest.Pytester, monkeypatch) -> pytest.Pytester:
     pytester.makeconftest(
         f"""
         import sys
+
         sys.path.insert(0, {str(root)!r})
         pytest_plugins = ["tests.conftest", "tests.st.conftest", "tests.st_pi.conftest"]
         """
@@ -85,6 +102,7 @@ def scratch_suite(pytester: pytest.Pytester, monkeypatch) -> pytest.Pytester:
             Path("scratch-root.txt").write_text(str(st_project_root))
         """
     )
+    request.addfinalizer(lambda: _make_test_tree_removable(pytester.path))
     return pytester
 
 
@@ -130,6 +148,7 @@ def test_cleanup_waits_for_all_outcomes_and_honors_test_debug(
             (protected / "evidence.txt").write_text("debug evidence")
             (protected / "external").symlink_to(Path("external").resolve(), target_is_directory=True)
             protected.chmod(0o500)
+            request.addfinalizer(lambda: protected.chmod(0o700))
             if phase == "setup":
                 pytest.fail("injected setup failure")
             yield directory
