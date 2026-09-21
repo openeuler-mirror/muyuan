@@ -25,15 +25,19 @@ class ScopeActivation:
         attachment: ScopeAttachment | None = None,
         native_agent_config: dict[str, Any] | None = None,
         activation_id: str | None = None,
+        activation_nonce: str | None = None,
     ) -> ScopeRecord:
         if not owner_session_id:
             raise ValueError("owner_session_id is required")
         if activation_id is not None and not activation_id:
             raise ValueError("activation_id must be non-empty")
+        if activation_nonce is not None and not activation_nonce:
+            raise ValueError("activation_nonce must be non-empty")
         config = normalize_native_agent_config(agent_harness, native_agent_config)
-        digest = hashlib.sha256(
-            f"{agent_harness}\0{owner_session_id}\0{activation_id or ''}".encode()
-        ).hexdigest()[:20]
+        scope_key = f"{agent_harness}\0{owner_session_id}\0{activation_id or ''}"
+        if activation_nonce is not None:
+            scope_key += f"\0{activation_nonce}"
+        digest = hashlib.sha256(scope_key.encode()).hexdigest()[:20]
         scope_id = f"scope_{digest}"
         with self.state.owner_lock(agent_harness, owner_session_id):
             previous = [
@@ -55,6 +59,7 @@ class ScopeActivation:
             if (
                 not self.state.exists(scope_id)
                 and current is not None
+                and activation_nonce is None
                 and (
                     current.get("state") == "open"
                     or current.get("activation_id") == activation_id

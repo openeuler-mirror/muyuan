@@ -9,7 +9,13 @@ from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.execution.native_session import CodexSession, PiSession
 from goal_plus.execution.scope import assert_scope_admission
 from goal_plus.goal_plus import FileGoalPlusRuntime
-from goal_plus.host_scope import ensure_execution_scope, execution_scope_for_run, execution_scope_snapshot
+from goal_plus.host_scope import (
+    ensure_execution_scope,
+    execution_scope_for_run,
+    execution_scope_snapshot,
+    goal_scope_activation_id,
+    goal_scope_resume_nonce,
+)
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.scope import ScopeAttachment, ScopeRecord
 from goal_plus.ports.session import NativeSession, NativeSessionInput, SessionToolBridge
@@ -33,23 +39,24 @@ class NativeGoalSessionHost:
         )
         scope = (execution_scope_snapshot(root_dir=self.root, scope_id=scope_id) if scope_id
                  else execution_scope_for_run(root_dir=self.root, run_id=goal_plus_id))
-        if scope is None and scope_id is None:
+        if scope_id is None and (scope is None or scope.get("state") == "closed"):
             # A ThinkThread Root has no PreToolUse stop hook, so the scope the
-            # hook would have created for the Goal-role tool does not exist yet;
-            # ensure it here with the same Main-activation identity.
+            # hook would have created for the Goal-role tool does not exist yet.
+            # A closed scope is replaced only after an explicit host resume.
             scope = ensure_execution_scope(
                 root_dir=self.root,
                 agent_harness=self.agent_harness,
                 owner_session_id=caller_id,
                 run_id=goal_plus_id,
-                activation_id=f"{record.goal_plus_id}:{record.control.version}",
+                activation_id=goal_scope_activation_id(record),
+                activation_nonce=goal_scope_resume_nonce(record, scope),
             )
         if scope is None:
             raise PermissionError("native Goal role requires a host execution scope")
         assert_scope_admission(scope, scope_id=scope["scope_id"], attachment=ScopeAttachment("goal", goal_plus_id))
         if (
             scope.get("agent_harness") != self.agent_harness
-            or scope.get("activation_id") != f"{record.goal_plus_id}:{record.control.version}"
+            or scope.get("activation_id") != goal_scope_activation_id(record)
             or (self.agent_harness == "codex" and scope.get("owner_session_id") != caller_id)
         ):
             raise PermissionError("native Goal scope does not belong to the current Main activation")

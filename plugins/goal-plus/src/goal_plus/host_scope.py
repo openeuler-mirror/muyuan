@@ -21,6 +21,29 @@ from goal_plus.bootstrap import (
 from goal_plus.execution.scope import assert_scope_admission, newest_scope, normalize_native_agent_config, scope_attachments
 from goal_plus.ports.scope import ScopeAttachment, ScopeHost, ScopeRecord, SCOPE_PROCESS_TERMINAL_STATUSES
 
+
+def goal_scope_activation_id(record: Any) -> str:
+    return f"{record.goal_plus_id}:{record.control.version}"
+
+
+def goal_scope_resume_nonce(record: Any, scope: ScopeRecord | None) -> str | None:
+    """Return a nonce only for an explicit resume after a closed scope."""
+    if scope is None or scope.get("state") != "closed":
+        return None
+    invocation = next(reversed(record.host_command_invocations), None)
+    active_session = getattr(record, "active_session", None)
+    if (
+        invocation is None
+        or active_session is None
+        or getattr(invocation, "action", None) != "resume"
+        or getattr(invocation, "agent_harness", None) != scope.get("agent_harness")
+        or getattr(invocation, "session_id", None) != getattr(active_session, "session_id", None)
+    ):
+        return None
+    invocation_id = getattr(invocation, "invocation_id", None)
+    return invocation_id if isinstance(invocation_id, str) and invocation_id else None
+
+
 def ensure_execution_scope(
     *,
     root_dir: Path | str,
@@ -29,12 +52,14 @@ def ensure_execution_scope(
     run_id: str | None = None,
     native_agent_config: dict[str, Any] | None = None,
     activation_id: str | None = None,
+    activation_nonce: str | None = None,
 ) -> dict[str, Any]:
     return build_scope_activation(root_dir).ensure(
         agent_harness=agent_harness, owner_session_id=owner_session_id,
         attachment=ScopeAttachment.from_id(run_id) if run_id is not None else None,
         native_agent_config=native_agent_config,
         activation_id=activation_id,
+        activation_nonce=activation_nonce,
     )
 
 

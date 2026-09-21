@@ -13,11 +13,48 @@ from fastmcp.exceptions import ToolError
 import pytest
 
 from goal_plus.execution.native_session import CodexSession, PiSession
+from goal_plus.delegation_host import NativeDelegationHost
 from goal_plus.goal_plus import FileGoalPlusRuntime
-from goal_plus.host_scope import ensure_execution_scope, close_execution_scope, execution_scope_snapshot
+from goal_plus.host_scope import (
+    close_execution_scope,
+    ensure_execution_scope,
+    execution_scope_snapshot,
+)
 from goal_plus.server import create_host_mcp
 from goal_plus.ports.session import NativeMainCaller
 from tests._runtime_helpers import start_host_verified_goal
+
+
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+def test_resume_rebinds_closed_main_scope_for_new_native_work(tmp_path, agent_harness):
+    root = tmp_path / ".gp"
+    goal = start_host_verified_goal(root, tmp_path, agent_harness=agent_harness)
+    runtime = FileGoalPlusRuntime(root)
+    scope = ensure_execution_scope(
+        root_dir=root,
+        agent_harness=agent_harness,
+        owner_session_id=goal.active_session.session_id,
+        run_id=goal.goal_plus_id,
+        activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
+    )
+    assert close_execution_scope(root_dir=root, scope_id=scope["scope_id"], reason="interrupted")["state"] == "closed"
+
+    runtime.control_from_host_command(
+        goal.goal_plus_id,
+        invocation=goal.host_command_invocations[0].model_copy(
+            update={"action": "resume", "invocation_id": f"resume:{agent_harness}"}
+        ),
+    )
+
+    host = NativeDelegationHost(
+        root, agent_harness=agent_harness, caller=lambda: goal.active_session.session_id
+    )
+    _, rebound = host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
+
+    assert rebound["scope_id"] != scope["scope_id"]
+    assert rebound["state"] == "open"
+    assert rebound["activation_id"] == f"{goal.goal_plus_id}:{goal.control.version}"
+    assert execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])["state"] == "closed"
 
 
 @pytest.mark.parametrize("event", ["dispatch", "rework", "bind", "message"])

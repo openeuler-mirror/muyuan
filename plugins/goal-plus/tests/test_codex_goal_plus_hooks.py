@@ -20,6 +20,7 @@ from goal_plus.goal_plus import (FileGoalPlusRuntime)
 from goal_plus.host_scope import (
     ensure_execution_scope,
     close_execution_scope,
+    execution_scope_for_owner,
     execution_scope_snapshot,
     register_codex_agent,
 )
@@ -1075,6 +1076,56 @@ def test_native_codex_resume_requires_explicit_goal_plus_resume(tmp_path: Path) 
     assert record.active_session is not None
     assert record.active_session.state == "attached"
     assert [item.action for item in record.host_command_invocations] == ["start", "resume"]
+
+
+def test_codex_resume_rebinds_closed_scope_for_native_spawn(tmp_path: Path) -> None:
+    search_root = tmp_path / ".gp"
+    _run_hook(tmp_path, search_root, {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "session-codex",
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "low",
+        "prompt": "$goal-plus Prepare work",
+    })
+    runtime = FileGoalPlusRuntime(search_root)
+    goal_id = next((search_root / "goal-plus").glob("gp_*/goal.json")).parent.name
+    record = runtime.status(goal_id)
+    old_scope = ensure_execution_scope(
+        root_dir=search_root,
+        agent_harness="codex",
+        owner_session_id="session-codex",
+        run_id=goal_id,
+        activation_id=f"{goal_id}:{record.control.version}",
+        native_agent_config={"model": "gpt-5.6-sol", "reasoning_effort": "low"},
+    )
+    assert close_execution_scope(
+        root_dir=search_root, scope_id=old_scope["scope_id"], reason="aborted"
+    )["state"] == "closed"
+    _run_hook(tmp_path, search_root, {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "session-codex",
+        "prompt": "$goal-plus resume",
+    })
+
+    allowed = _run_hook(tmp_path, search_root, {
+        "hook_event_name": "PreToolUse",
+        "session_id": "session-codex",
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "low",
+        "tool_name": "functions.collaboration.spawn_agent",
+        "tool_use_id": "spawn-resumed",
+        "tool_input": {"task_name": "worker", "message": "prepare work"},
+    })
+    assert allowed.stdout == ""
+    current = execution_scope_for_owner(
+        root_dir=search_root,
+        agent_harness="codex",
+        owner_session_id="session-codex",
+    )
+    assert current is not None
+    assert current["scope_id"] != old_scope["scope_id"]
+    assert current["state"] == "open"
+    assert current["codex_agents"][0]["spawn_pending"] is True
 
 
 def test_bound_codex_final_checker_role_and_stop(tmp_path: Path, monkeypatch) -> None:

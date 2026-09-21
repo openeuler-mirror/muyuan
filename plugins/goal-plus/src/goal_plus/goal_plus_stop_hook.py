@@ -1800,7 +1800,13 @@ def _handle_pre_tool_use(
         _emit_pre_tool_block("Codex execution scope requires a native session_id.")
         return
     try:
-        from goal_plus.host_scope import close_run_candidates, ensure_execution_scope
+        from goal_plus.host_scope import (
+            close_run_candidates,
+            ensure_execution_scope,
+            execution_scope_for_run,
+            goal_scope_activation_id,
+            goal_scope_resume_nonce,
+        )
 
         attachment = _execution_scope_attachment(
             search_root,
@@ -1809,12 +1815,18 @@ def _handle_pre_tool_use(
         )
         record = runtime.authorization.require_scope_attachment(goal_id, attachment)
         native_config = codex_models.codex_native_model_config(hook_input)
+        current_scope = execution_scope_for_run(
+            root_dir=search_root, run_id=attachment.identity,
+        )
+        activation_id = goal_scope_activation_id(record)
+        activation_nonce = goal_scope_resume_nonce(record, current_scope)
         scope = ensure_execution_scope(
             root_dir=search_root,
             agent_harness="codex",
             owner_session_id=session_id,
             run_id=attachment.identity,
-            activation_id=f"{record.goal_plus_id}:{record.control.version}",
+            activation_id=activation_id,
+            activation_nonce=activation_nonce,
             native_agent_config=native_config if native_config.get("model") else None,
         )
         if logical_name == "spawn_agent":
