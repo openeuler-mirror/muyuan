@@ -132,6 +132,23 @@ def test_create_mcp(tmp_path: Path) -> None:
     assert not runtime_root.exists()
 
 
+def test_controller_only_closeout_hides_tools_for_main_mcp(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT", "1")
+    names = asyncio.run(tools_by_name(create_mcp(tmp_path / ".gp", caller_role="main")))
+
+    assert {
+        "goal_plus_search_select",
+        "goal_plus_search_promote",
+        "goal_plus_search_apply_promotion",
+        "goal_plus_record_search_result",
+    }.isdisjoint(names)
+    assert "goal_plus_status" in names
+    assert "goal_plus_search_report" in names
+
+    with pytest.raises(ValueError, match="excluded MCP tools must be public"):
+        create_mcp(tmp_path / "bad", excluded_tool_names={"not_a_goal_tool"})
+
+
 def test_tool_schema_returns_complete_registered_contract_without_state(tmp_path):
     root = tmp_path / ".gp"
 

@@ -23,6 +23,7 @@ from goal_plus.domain.evidence_policy import (
 )
 from goal_plus.domain.search import FrozenSpec, RunState
 from goal_plus.domain.selection import (
+    ControllerSelectionDirective,
     ScoreResolution,
     SelectionOption,
     SelectionSubjectKey,
@@ -184,28 +185,81 @@ class Selection:
         self.persist_run = persist_run
 
     def select(
-        self, run_id: str
+        self,
+        run_id: str,
+        *,
+        controller_directive: ControllerSelectionDirective | None = None,
     ) -> Generator[CandidateVerificationRequest, ScoreReport, dict[str, Any]]:
         self.authorization.require_search_execution(run_id)
         self._assert_required_evidence_annotations_complete(run_id)
+        replay = None
         with self.state.lock_run(run_id):
             for candidate in self.state.read_candidates(run_id):
                 self.recovery.require_closeout(run_id, candidate)
             run = self.state.read_run(run_id)
             require_run_not_invalidated(run, "select")
-            if run.state not in {
-                RunState.RUNNING,
-                RunState.WAITING_FOR_WORKERS,
-                RunState.SELECTING,
-                RunState.SELECTION_BLOCKED,
-                RunState.READY_TO_PROMOTE,
-            }:
-                raise RuntimeError(f"cannot select candidate from state {run.state}")
-            run.state = RunState.SELECTING
-            run.budget_used.pop("selection_blocked_reason", None)
-            self.persist_run(run)
+            if run.selected_candidate_id is not None and (
+                controller_directive is not None
+                or run.controller_selection is not None
+            ):
+                if (
+                    controller_directive is None
+                    or run.controller_selection != controller_directive
+                ):
+                    raise RuntimeError(
+                        "controller selection conflicts with the persisted selection"
+                    )
+                target = controller_directive.target
+                if not (
+                    run.selected_candidate_id == target.candidate_id
+                    and run.selected_iteration == target.iteration
+                    and run.selected_artifact_ref == target.artifact_ref
+                    and run.selected_artifact_hash == target.artifact_hash
+                ):
+                    raise RuntimeError(
+                        "persisted controller selection has inconsistent artifact identity"
+                    )
+                replay = run
+            else:
+                if run.state not in {
+                    RunState.RUNNING,
+                    RunState.WAITING_FOR_WORKERS,
+                    RunState.SELECTING,
+                    RunState.SELECTION_BLOCKED,
+                    RunState.READY_TO_PROMOTE,
+                }:
+                    raise RuntimeError(f"cannot select candidate from state {run.state}")
+                run.state = RunState.SELECTING
+                run.budget_used.pop("selection_blocked_reason", None)
+                self.persist_run(run)
 
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+        if replay is not None:
+            selection_spec = frozen.spec.strategy.selection
+            return {
+                "selected_candidate_id": replay.selected_candidate_id,
+                "selected_score": replay.selected_score,
+                "selected_hard_score": replay.selected_hard_score,
+                "selected_quality_score": replay.selected_quality_score,
+                "selected_iteration": replay.selected_iteration,
+                "selected_git_head": replay.selected_git_head,
+                "selected_artifact_ref": (
+                    replay.selected_artifact_ref.model_dump(mode="json")
+                    if replay.selected_artifact_ref is not None
+                    else None
+                ),
+                "selected_artifact_hash": replay.selected_artifact_hash,
+                "ranking_keys": selection_spec.ranking_keys,
+                "ranking_tolerance": selection_spec.ranking_tolerance,
+                "selection_trace": replay.selection_trace,
+                "selection_exclusions": replay.selection_exclusions,
+                "selection_basis_hard_score": replay.selection_basis_hard_score,
+                "final_verifier_score": replay.final_verifier_score,
+                "selection_evidence_source": replay.selection_evidence_source,
+                "controller_selection": controller_directive.model_dump(mode="json"),
+                "best_candidate_id": replay.best_candidate_id,
+                "best_score": replay.best_score,
+            }
         records = self.state.read_candidates(run_id)
         base_options = self._selection_options(run, records, frozen)
         if not base_options:
@@ -215,13 +269,39 @@ class Selection:
             )
             raise RuntimeError("no verified candidates available for selection")
 
+        controller_option = None
+        if controller_directive is not None:
+            target = controller_directive.target
+            matches = [
+                item
+                for item in base_options
+                if item.record.candidate_id == target.candidate_id
+                and item.iteration.iteration == target.iteration
+                and item.iteration.settlement_id == target.settlement_id
+                and item.artifact_ref == target.artifact_ref
+                and item.iteration.artifact_hash == target.artifact_hash
+            ]
+            if len(matches) != 1:
+                self._mark_selection_blocked(
+                    run_id,
+                    "controller-selected subject is not one exact hard-settled option",
+                )
+                raise RuntimeError(
+                    "controller-selected subject is not an eligible exact selection option"
+                )
+            controller_option = matches[0]
+
         selection_spec = frozen.spec.strategy.selection
         domain_options = [
             SelectionOption(
                 subject=item.subject,
                 hard_score=item.score,
                 original_index=index,
-                preferred=item.record.candidate_id == run.best_candidate_id,
+                preferred=(
+                    item.subject == controller_option.subject
+                    if controller_option is not None
+                    else item.record.candidate_id == run.best_candidate_id
+                ),
             )
             for index, item in enumerate(base_options)
         ]
@@ -275,8 +355,32 @@ class Selection:
                     "winner_subject": option.subject.__dict__,
                     "stages": list(result.trace),
                     "rejected_before_attempt": _ordered_subjects(rejected),
+                    **(
+                        {
+                            "controller_directive": controller_directive.model_dump(
+                                mode="json"
+                            )
+                        }
+                        if controller_directive is not None
+                        else {}
+                    ),
                 }
             )
+            if (
+                controller_option is not None
+                and option.subject != controller_option.subject
+            ):
+                run = self.state.read_run(run_id)
+                run.selection_trace = selection_trace
+                run.selection_exclusions = exclusions
+                self.persist_run(run)
+                self._mark_selection_blocked(
+                    run_id,
+                    "controller-selected subject is outside the frozen ranking survivors",
+                )
+                raise RuntimeError(
+                    "controller-selected subject is outside the frozen selection gate"
+                )
             option_record = self.state.read_candidate(
                 run_id, option.record.candidate_id
             )
@@ -323,6 +427,19 @@ class Selection:
                     evidence_source = "parent_reverify"
                     break
             rejected.add(option.subject)
+            if controller_option is not None:
+                run = self.state.read_run(run_id)
+                run.rejected_selection_subjects = _ordered_subjects(rejected)
+                run.selection_trace = selection_trace
+                run.selection_exclusions = exclusions
+                self.persist_run(run)
+                self._mark_selection_blocked(
+                    run_id,
+                    "controller-selected subject failed hard artifact revalidation",
+                )
+                raise RuntimeError(
+                    "controller-selected subject failed hard artifact revalidation"
+                )
 
         if selected is None:
             run = self.state.read_run(run_id)
@@ -370,6 +487,7 @@ class Selection:
             run.selection_basis_hard_score = selected.score
             run.final_verifier_score = final_score
             run.selection_evidence_source = evidence_source
+            run.controller_selection = controller_directive
             run.selection_trace = selection_trace
             run.selection_exclusions = exclusions
             run.rejected_selection_subjects = _ordered_subjects(rejected)
@@ -421,6 +539,11 @@ class Selection:
             "selection_basis_hard_score": selected.score,
             "final_verifier_score": final_score,
             "selection_evidence_source": evidence_source,
+            "controller_selection": (
+                controller_directive.model_dump(mode="json")
+                if controller_directive is not None
+                else None
+            ),
             "best_candidate_id": run.best_candidate_id,
             "best_score": run.best_score,
         }

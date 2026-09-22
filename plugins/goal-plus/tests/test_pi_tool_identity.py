@@ -120,6 +120,15 @@ def test_pi_abort_notifies_user_of_paused_goal(tmp_path):
     assert "abort notify checks passed" in result.stdout
 
 
+def test_pi_controller_owned_closeout_is_not_registered(tmp_path):
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": "main",
+        "GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT": "1",
+        "GOAL_PLUS_PI_CONTROLLER_CLOSEOUT_TEST": "1",
+    })
+    assert "controller closeout checks passed" in result.stdout
+
+
 @pytest.mark.ui
 def test_pi_live_progress_refreshes_surfaces_at_turn_boundaries(tmp_path):
     result = _run_env_script(tmp_path, {
@@ -394,6 +403,15 @@ for (const tool of globalThis.mcpManifest.tools) {
 for (const action of ["open", "wait_any", "snapshot", "continue", "close"]) {
   assert.equal(tools.has(`pi_search_pool_${action}`), false);
   assert.equal(tools.has(`thinkthread_search_pool_${action}`), false);
+}
+if (process.env.GOAL_PLUS_PI_CONTROLLER_CLOSEOUT_TEST === "1") {
+  for (const name of ["goal_plus_search_select", "goal_plus_search_promote",
+      "goal_plus_search_apply_promotion", "goal_plus_record_search_result"]) {
+    assert.equal(tools.has(name), false);
+  }
+  assert.equal(tools.has("goal_plus_status"), true);
+  console.log("controller closeout checks passed");
+  process.exit(0);
 }
 if (process.env.GOAL_PLUS_PI_ABORT_NOTIFY_TEST === "1") {
   globalThis.workReceiptTest = true;

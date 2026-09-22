@@ -929,6 +929,11 @@ def goal_plus_monitor_snapshot(
             "selected_score": run.selected_score,
             "selected_hard_score": run.selected_hard_score,
             "selected_quality_score": run.selected_quality_score,
+            "controller_selection": (
+                run.controller_selection.model_dump(mode="json")
+                if run.controller_selection is not None
+                else None
+            ),
             "selection_trace": run.selection_trace,
             "selection_exclusions": run.selection_exclusions,
             "selected_iteration": run.selected_iteration,

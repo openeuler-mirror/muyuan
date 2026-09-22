@@ -8,6 +8,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import Field, field_validator, model_validator
 
+from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.base import SearchModel
 
 
@@ -47,6 +48,23 @@ class SelectionSubjectKey:
     settlement_id: str | None
     artifact_hash: str | None
     verifier_subject_hash: str
+
+
+class ControllerSelectionTarget(SearchModel):
+    """Exact hard-settled subject selected by a trusted external controller."""
+
+    candidate_id: str = Field(min_length=1)
+    iteration: int = Field(ge=1)
+    settlement_id: str = Field(min_length=1)
+    artifact_ref: ArtifactRef | None
+    artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ControllerSelectionDirective(SearchModel):
+    """Controller decision binding without importing external judge semantics."""
+
+    target: ControllerSelectionTarget
+    receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -195,6 +213,8 @@ def select_winner(
 
 __all__ = [
     "CandidatePoolResolution",
+    "ControllerSelectionDirective",
+    "ControllerSelectionTarget",
     "ResolvedSelectionOption",
     "ScoreDirection",
     "ScoreResolution",

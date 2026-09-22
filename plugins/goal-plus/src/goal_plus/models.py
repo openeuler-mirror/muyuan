@@ -136,6 +136,8 @@ from goal_plus.domain.search import (
     VerifierRole as VerifierRole,
 )
 from goal_plus.domain.selection import (
+    ControllerSelectionDirective as ControllerSelectionDirective,
+    ControllerSelectionTarget as ControllerSelectionTarget,
     SelectionSpec as SelectionSpec,
 )
 from goal_plus.domain.verifier import (

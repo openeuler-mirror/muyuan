@@ -12,6 +12,7 @@ import sys
 def snapshot() -> dict:
     path = Path(__file__).with_name("_installation.json")
     value = json.loads(path.read_text()) if path.exists() else {"build": None, "source": str(path.parent.parent.parent)}
+    value.setdefault("capabilities", [])
     return {**value, "python": sys.executable, "python_version": platform.python_version(), "module": str(Path(__file__).parent)}
 
 

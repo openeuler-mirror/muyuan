@@ -4,6 +4,16 @@ Pi 以可安装 package 的形式提供一个 extension，底层复用共享 Goa
 Plus runtime。它不修改 Pi core，不发布 Goal Plus skill；开发 checkout
 可以通过隔离的开发启动器直接加载同一组 asset。
 
+## Controller-owned closeout
+
+当外部 host 需要在 hard/process verifier 之后用自己的候选裁判完成收尾时，
+可为 Main MCP/extension 设置 `GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT=1`。该模式会
+从 Pi extension、MCP manifest 和 CLI fallback 同时移除 `select`、`promote`、
+`apply_promotion` 与 `record_search_result`；worker 仍由原有角色门禁限制。外部
+controller 通过可信 Goal Plus runtime 的 `select_for_controller()` 提交带 receipt hash
+的精确 candidate/iteration/artifact directive，之后仍必须经过原生 promotion verifier。
+该 API 不注册为模型工具。
+
 ## Execution Scope
 
 Pi main 在第一次启动 Goal Plus candidate、delegation 或 final checker session 时惰性创建 host-local

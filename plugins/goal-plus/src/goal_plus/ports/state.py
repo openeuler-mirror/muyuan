@@ -36,6 +36,7 @@ from goal_plus.domain.search import (
     RunState,
     VerifierInvalidationReason,
 )
+from goal_plus.domain.selection import ControllerSelectionDirective
 from goal_plus.domain.shared_tools import ToolCopyReceipt, ToolizationDecision
 from goal_plus.ports.candidate_artifacts import CandidateArtifactState
 
@@ -163,6 +164,7 @@ class RunRecord(SearchModel):
     selection_basis_hard_score: float | None = None
     final_verifier_score: float | None = None
     selection_evidence_source: str | None = None
+    controller_selection: ControllerSelectionDirective | None = None
     selection_trace: list[dict[str, Any]] = Field(default_factory=list)
     selection_exclusions: list[dict[str, Any]] = Field(default_factory=list)
     rejected_selection_subjects: list[dict[str, Any]] = Field(default_factory=list)

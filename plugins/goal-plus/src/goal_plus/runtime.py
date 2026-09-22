@@ -32,6 +32,7 @@ from goal_plus.domain.search import (
     SearchSpec,
     VerifierInvalidationReason,
 )
+from goal_plus.domain.selection import ControllerSelectionDirective
 from goal_plus.domain.shared_tools import (
     ToolizationDecision,
 )
@@ -479,6 +480,25 @@ class FileSearchRuntime:
 
         return resolve_verification_requests(
             self.selection.select(run_id), self.run_verifier
+        )
+
+    def select_for_controller(
+        self,
+        run_id: str,
+        directive: ControllerSelectionDirective,
+    ) -> dict[str, Any]:
+        """Select one exact subject without exposing a model-facing tool."""
+
+        if not isinstance(directive, ControllerSelectionDirective):
+            raise TypeError("controller selection requires ControllerSelectionDirective")
+        from goal_plus.search_verification import resolve_verification_requests
+
+        return resolve_verification_requests(
+            self.selection.select(
+                run_id,
+                controller_directive=directive,
+            ),
+            self.run_verifier,
         )
 
     def main_agent_notifications(

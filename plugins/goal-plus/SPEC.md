@@ -549,6 +549,12 @@ Selection 必须固定某条已验证 Evidence 的精确 artifact。Promotion �
 执行已配置的 promotion verifier；不得用缓存分、当前 workspace 或模型声明代替所需的
 promotion evidence。失败的 promotion 不生成可应用结果。
 
+外部 controller 选择模式使用安装 capability
+`goal_plus.controller_exact_selection.v1`；它通过可信 runtime 的
+`select_for_controller()` 提交带 receipt hash 的精确 subject，不注册为 MCP/Pi 模型工具。
+若设置 `GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT=1`，Main transport 隐藏 selection、promotion
+和最终 Search result 工具；候选 hard evidence 与 promotion gate 不变。
+
 ## Host 与资源合同
 
 Codex 和 Pi 共用 Goal/Search 领域规则与 MCP session 控制；Codex adapter 使用 app-server，

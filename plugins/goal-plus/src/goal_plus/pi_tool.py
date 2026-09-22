@@ -21,7 +21,12 @@ from goal_plus.tools import (
     require_tool_role,
 )
 
-from goal_plus.domain.tool_catalog import SEARCH_TOOL_NAMES, GOAL_PLUS_TOOL_NAMES
+from goal_plus.domain.tool_catalog import (
+    CONTROLLER_ONLY_CLOSEOUT_ENV,
+    CONTROLLER_ONLY_CLOSEOUT_TOOL_NAMES,
+    SEARCH_TOOL_NAMES,
+    GOAL_PLUS_TOOL_NAMES,
+)
 
 PI_HOST_COMMAND_NAMES = {
     "goal_plus_host_start",
@@ -31,7 +36,8 @@ PI_HOST_COMMAND_NAMES = {
     "goal_plus_host_kick_internal_agents",
 }
 
-
+PI_CONTROLLER_ONLY_CLOSEOUT_ENV = CONTROLLER_ONLY_CLOSEOUT_ENV
+PI_CLOSEOUT_TOOL_NAMES = CONTROLLER_ONLY_CLOSEOUT_TOOL_NAMES
 
 
 def _pi_goal_plus_finalize_reports_tool(
@@ -201,6 +207,12 @@ def pi_caller_binding() -> tuple[ToolCallerRole, str | None]:
     return role, os.environ.get("GOAL_PLUS_AGENT_SESSION_ID") if role == "candidate" else None
 
 
+def pi_excluded_tool_names(role: ToolCallerRole) -> frozenset[str]:
+    if role == "main" and os.environ.get(PI_CONTROLLER_ONLY_CLOSEOUT_ENV) == "1":
+        return PI_CLOSEOUT_TOOL_NAMES
+    return frozenset()
+
+
 def call_pi_tool(
     root_dir: Path | str,
     tool_name: str,
@@ -212,6 +224,10 @@ def call_pi_tool(
         raise ValueError(f"unsupported pi tool: {tool_name}")
     arguments = args or {}
     role, caller_session_id = pi_caller_binding()
+    if tool_name in pi_excluded_tool_names(role):
+        raise PermissionError(
+            f"GoalPlusToolReserved: {tool_name} is reserved for the host controller"
+        )
     requested_session = arguments.get("agent_session_id")
     require_tool_role(
         role,
@@ -393,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
             create_host_mcp(
                 parsed.root, agent_harness="pi", caller_role=role, caller_agent_session_id=caller_session_id,
                 caller_final_check=declared_final_checker() if role == "final_checker" else None,
+                excluded_tool_names=pi_excluded_tool_names(role),
             ).run(show_banner=False)
             return 0
         tool_args = _read_args(parsed.args_json)
