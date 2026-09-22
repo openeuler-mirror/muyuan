@@ -179,7 +179,7 @@ def test_quality_source_requires_the_task_output_record_pointer() -> None:
 @pytest.fixture
 def quality_run(tmp_path):
     from goal_plus.application.verifier import VerifierWorkflow
-    from goal_plus.domain.selection import SelectionSpec
+    from goal_plus.domain.search import SearchSpec
     from goal_plus.infrastructure.clock import SystemClock
     from goal_plus.infrastructure.state.verifier import FileVerifierState
     from goal_plus.runtime import FileSearchRuntime
@@ -191,10 +191,13 @@ def quality_run(tmp_path):
         "print(json.dumps({'combined_score': float(VALUE)}))\n"
     )
     spec = spec_for(project, max_parallel=2)
-    spec.workspace.provider = "git_worktree"
-    spec.strategy.selection = SelectionSpec(
-        ranking_keys=["quality_score", "hard_score"], ranking_tolerance=[0.05, 0.0],
-    )
+    spec_data = spec.model_dump(mode="json")
+    spec_data["workspace"]["provider"] = "git_worktree"
+    spec_data["strategy"]["selection"] = {
+        "ranking_keys": ["quality_score", "hard_score"],
+        "ranking_tolerance": [0.05, 0.0],
+    }
+    spec = SearchSpec.model_validate(spec_data)
     runtime = FileSearchRuntime(tmp_path / ".gp")
     frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
     run_id = runtime.create_run(frozen.frozen_spec_id)
@@ -209,8 +212,6 @@ def quality_run(tmp_path):
 
 
 @pytest.mark.parametrize("outcome", ["quality", "terminal_score", "all_scores_failed", "revalidation_failed"])
-@pytest.mark.todo(reason="adaptive_check_later")
-@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_selection_waits_for_quality_and_preserves_hard_evidence(quality_run, monkeypatch, outcome):
     from goal_plus.bootstrap import build_internal_agent_work
     from tests.test_llm_verifier import invocation
@@ -231,6 +232,7 @@ def test_selection_waits_for_quality_and_preserves_hard_evidence(quality_run, mo
                 "quality_score": 0.9 if task.candidate_id == "c001" else 0.2,
                 "scores": None, "score_rationales": {"quality_score": "Controlled quality assessment"},
             }, invocation(), worker_id=task.lease.worker_id, attempt=task.attempts)
+        workflow.acknowledge_delivery(task.task_id)
     if outcome == "all_scores_failed":
         with pytest.raises(RuntimeError, match="no candidate satisfies"):
             runtime.select(run_id)

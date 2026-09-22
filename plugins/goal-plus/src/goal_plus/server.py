@@ -223,7 +223,9 @@ def create_mcp(
     def register_tool():
         def expose(function):
             tool = Tool.from_function(function)
-            tool.parameters = compact_tool_schema(tool.parameters)
+            tool.parameters = compact_tool_schema(
+                tool.parameters, prune_additional_properties=True,
+            )
             if tool.output_schema is not None:
                 tool.output_schema = dereference_refs(tool.output_schema)
             mcp.add_tool(tool)

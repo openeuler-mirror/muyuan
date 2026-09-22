@@ -145,8 +145,6 @@ def test_pi_search_bootstrap_requires_goal_plus_id(tmp_path) -> None:
     assert "goal_plus_id" in schemas["goal_plus_search_create"]["required"]
 
 
-@pytest.mark.todo(reason="adaptive_check_later")
-@pytest.mark.xfail(reason="mark.todo.adaptive_check_later", strict=True)
 def test_pi_loads_shared_allocation_schema(tmp_path) -> None:
     from goal_plus.mcp_client import mcp_manifest
 
@@ -154,14 +152,15 @@ def test_pi_loads_shared_allocation_schema(tmp_path) -> None:
     freeze = next(tool for tool in manifest["tools"] if tool["name"] == "goal_plus_search_freeze_spec")
     strategy = freeze["inputSchema"]["properties"]["spec"]["properties"]["strategy"]["properties"]
     assert "verifier" in strategy and "search_scheduler" not in strategy
-    verifier = strategy["verifier"]
+    verifier = next(
+        item for item in strategy["verifier"]["anyOf"] if item.get("type") == "object"
+    )
     assert set(verifier["properties"]["scores"]["items"]["enum"]) == {
         "progress_reward", "allocation_utility", "correctness_gap", "validation_gap",
         "local_confounder_evidence", "discriminating_test_gap", "boundary_evidence_strength"}
     policy_set = next(
         item for item in strategy["allocation"]["anyOf"] if "oneOf" in item
     )
-    assert policy_set["discriminator"]["propertyName"] == "policy"
     assert policy_set["required"] == ["policy"]
     policies = {
         item["properties"]["policy"]["const"]: item

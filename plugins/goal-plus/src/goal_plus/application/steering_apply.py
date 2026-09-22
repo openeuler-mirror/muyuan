@@ -57,6 +57,21 @@ class SteeringExecutor:
               policy: SteeringPolicyIdentity, delivery: SteeringDeliverySpec,
               renderer_version: str, host: SteeringHost,
               limits: SteeringLimits | None = None) -> SteeringResult:
+        if (record.outcome != "completed" or decision.source_record_id != record.record_id
+                or decision.subject_hash != verifier_subject_identity(record.subject)
+                or decision.candidate_id != record.subject.candidate_id):
+            return SteeringResult("skipped", "source_mismatch")
+        # The verifier -> allocation -> steering pipeline is single-dispatch.
+        # Keep the lock in the state adapter so application code depends only
+        # on the port and later attempts for one candidate remain valid.
+        with self.state.lock_dispatch():
+            return self._steer_once(record, decision, policy=policy, delivery=delivery,
+                                    renderer_version=renderer_version, host=host, limits=limits)
+
+    def _steer_once(self, record: VerifierRecord, decision: SteeringDecision, *,
+              policy: SteeringPolicyIdentity, delivery: SteeringDeliverySpec,
+              renderer_version: str, host: SteeringHost,
+              limits: SteeringLimits | None = None) -> SteeringResult:
         key = None
         try:
             if (record.outcome != "completed" or decision.source_record_id != record.record_id

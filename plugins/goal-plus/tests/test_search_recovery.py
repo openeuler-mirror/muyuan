@@ -574,19 +574,7 @@ def test_shared_recovery_gate_checks_goal_run_ownership(tmp_path, input_key):
 
 @pytest.mark.parametrize(
     "retirement_pending",
-    [
-        False,
-        pytest.param(
-            True,
-            marks=[
-                pytest.mark.todo(reason="adaptive_check_later"),
-                pytest.mark.xfail(
-                    reason="mark.todo.adaptive_check_later",
-                    strict=True,
-                ),
-            ],
-        ),
-    ],
+    [False, True],
 )
 def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_path, retirement_pending):
     project = make_project(tmp_path)
@@ -639,8 +627,12 @@ def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_pa
         runtime.accept_verifier_record(completed, execute=lambda *_args: None)
         [decision] = runtime.list_allocation_decisions(run_id, "pending")
         assert decision.retire_candidate_ids == [task.candidate_id]
+        decision = decision.model_copy(update={"selected_retirement": task.candidate_id})
+        from goal_plus.infrastructure.state.allocation import FileAllocationState
+
+        FileAllocationState(runtime.root_dir).write_allocation_decision(decision)
         before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
-        with pytest.raises(RuntimeError, match="pending allocation"):
+        with pytest.raises(RuntimeError, match="active allocation decision"):
             runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
         assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
         return

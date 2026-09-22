@@ -1,5 +1,7 @@
 """Spent steering opportunities only; no queue, scan or recovery mechanism."""
 
+from contextlib import contextmanager
+from threading import Lock
 from typing import Literal
 import re
 
@@ -12,8 +14,18 @@ from goal_plus.ports.steering import SteeringDiagnosticObservation
 
 
 class FileSteeringState(FileCandidateQueries):
+    def __init__(self, root_dir):
+        super().__init__(root_dir)
+        self._dispatch_lock = Lock()
+
     def lock_run(self, run_id: str):
         return exclusive_file_lock(self.run_dir(run_id) / "run.lock")
+
+    @contextmanager
+    def lock_dispatch(self):
+        """Serialize the host-facing steering pipeline within this state owner."""
+        with self._dispatch_lock:
+            yield
 
     def _path(self, run_id: str, attempt_key: str):
         # These are generated identities, not paths supplied by a candidate.
