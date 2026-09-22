@@ -83,6 +83,10 @@ class SearchRun:
                 self.state.write_run(run)
                 raise
 
+    def new_run_id(self) -> str:
+        """Allocate the canonical short run identity for a new creation request."""
+        return self.state.new_run_id()
+
     def create_run(
         self,
         frozen_spec_id: str,

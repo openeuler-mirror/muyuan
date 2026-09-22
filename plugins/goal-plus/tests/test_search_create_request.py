@@ -37,6 +37,17 @@ def test_concurrent_create_and_lost_response_return_one_linked_run(creation):
     assert goals.status(goal.goal_plus_id).model_dump() == before
 
 
+def test_new_goal_search_uses_short_run_id_with_legacy_runs_present(creation):
+    goal, goals, runtime, tools, frozen = creation
+    legacy = runtime.root_dir / "runs" / "run_cff1b1216dbb3770a05d3d0bc6f8e4e5"
+    legacy.mkdir(parents=True)
+
+    result = tools.goal_plus_search_create(goal.goal_plus_id, frozen, "new-task")
+
+    assert result["run_id"] == "run_0001"
+    assert not result["run_id"].startswith("run_cff1b1216")
+
+
 def test_link_failure_retries_exact_created_run(creation, monkeypatch):
     goal, goals, runtime, tools, frozen = creation
     link = goals.goal_search.link_search_run

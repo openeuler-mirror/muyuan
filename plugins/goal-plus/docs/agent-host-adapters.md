@@ -213,8 +213,10 @@ completion-unknown 不等于已关闭，后续 reconciliation 只重试 close，
 
 `goal_plus_list_models` 提供只读模型发现。用户把选择写入
 `strategy.models`，Adapter 在派发时将已解析模型投影到实际 host
-schema；没有指定模型时，保留 host 原生继承行为。模型目录只说明当前可发现的模型，不保证旧版 host
-tool 能转发所有可选字段。
+schema；没有指定模型时，保留 host 原生继承行为。默认 `detail=false` 只返回
+`provider`/`model_id` 和 reasoning 选择字段，减少模型选择时的上下文开销；`detail=true` 才返回 display name、模态、限制
+和 catalog provenance。runtime freeze 始终使用完整目录做精确解析。模型目录只说明当前可发现的模型，
+不保证旧版 host tool 能转发所有可选字段。
 
 模型目录也不证明真实推理可用。现有 Goal command 与 `goal_plus_search_freeze_spec` host gate 只收集显式
 worker 和 annotator override，按模型去重后并发发送最小 `hi` 请求；任一请求失败就

@@ -258,7 +258,8 @@ $goal-plus inner_agent=autoresearch max_parallel=4 annotator=gpt-5.6-terra worke
 
 `max_parallel=4 workers=A,B` 未固定各模型数量；spec 也省略 count 时按 A、B、A、B round-robin；
 `max_parallel=4 workers=A*1,B*3` 是显式 A1B3。Goal Plus 通过
-`goal_plus_list_models(agent_harness="codex", runtime_provider="direct")` 解析
+`goal_plus_list_models(agent_harness="codex", runtime_provider="direct")` 默认返回可选择的
+`provider`/`model_id` 及 reasoning levels；需要完整目录时传 `detail=true`。它解析
 annotator 和 worker 名称，并在 freeze 时保存有序 `selected_models`。candidate 的 worker 模型在后续
 continuation 中保持不变。省略 `workers=` 和 `models=` 时，child 继承正常 parent/default model。
 
