@@ -158,12 +158,20 @@ class FileGoalPlusRuntime:
         record = self.goal_control.control_from_host_command(
             goal_plus_id, invocation=invocation
         )
-        if parsed.action == "resume":
+        if (
+            parsed.action == "resume"
+            and record.host_command_invocations
+            and record.host_command_invocations[-1].invocation_id
+            == parsed.invocation_id
+        ):
             from goal_plus.host_scope import observe_goal_scope_resume
 
             observe_goal_scope_resume(
                 root_dir=self.root_dir,
-                run_id=goal_plus_id,
+                attachment_ids=(
+                    goal_plus_id,
+                    *(task.run_id for task in record.search_tasks),
+                ),
                 invocation_id=parsed.invocation_id,
             )
         return record

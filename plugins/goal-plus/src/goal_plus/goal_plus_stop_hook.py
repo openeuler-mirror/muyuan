@@ -330,6 +330,29 @@ def _codex_subagent_task_name(hook_input: dict[str, Any]) -> str | None:
     return None
 
 
+def _codex_subagent_parent_session_id(
+    hook_input: dict[str, Any],
+) -> str | None:
+    transcript = hook_input_codec.agent_transcript_path(hook_input)
+    meta = read_codex_session_meta(Path(transcript).expanduser()) if transcript else None
+    if meta is None:
+        return None
+    parent_session_id = meta.get("parent_thread_id")
+    if isinstance(parent_session_id, str) and parent_session_id:
+        return parent_session_id
+    source = meta.get("source")
+    subagent = source.get("subagent") if isinstance(source, dict) else None
+    spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+    parent_session_id = (
+        spawn.get("parent_thread_id") if isinstance(spawn, dict) else None
+    )
+    return (
+        parent_session_id
+        if isinstance(parent_session_id, str) and parent_session_id
+        else None
+    )
+
+
 def _transcript_declares_subagent(hook_input: dict[str, Any]) -> bool:
     value = hook_input_codec.agent_transcript_path(hook_input)
     if not value:
@@ -1026,18 +1049,7 @@ def _codex_scope_for_hook(
     session_id = _session_id(hook_input)
     if not _is_child_context(hook_input) and session_id:
         return execution_scope_for_owner(root_dir=search_root, agent_harness="codex", owner_session_id=session_id)
-    transcript = (
-        hook_input_codec.agent_transcript_path(hook_input)
-        if _is_subagent_context(hook_input)
-        else hook_input_codec.transcript_path(hook_input)
-    )
-    meta = read_codex_session_meta(Path(transcript).expanduser()) if transcript else None
-    parent_session_id = meta.get("parent_thread_id") if meta else None
-    if meta and not parent_session_id:
-        source = meta.get("source")
-        subagent = source.get("subagent") if isinstance(source, dict) else None
-        spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
-        parent_session_id = spawn.get("parent_thread_id") if isinstance(spawn, dict) else None
+    parent_session_id = _codex_subagent_parent_session_id(hook_input)
     for identity in (
         _host_agent_id(hook_input),
         _codex_subagent_task_name(hook_input),
@@ -1046,7 +1058,7 @@ def _codex_scope_for_hook(
             scope = execution_scope_for_codex_agent(
                 root_dir=search_root,
                 agent_id=identity,
-                parent_session_id=parent_session_id if isinstance(parent_session_id, str) else None,
+                parent_session_id=parent_session_id,
             )
             if scope is not None:
                 return scope
@@ -1677,12 +1689,14 @@ def _record_codex_subagent_terminal(
     from goal_plus.execution.codex_scope import codex_agent_for_target
     from goal_plus.host_scope import execution_scope_for_codex_agent, finish_codex_agent
 
+    parent_session_id = _codex_subagent_parent_session_id(hook_input)
     matches: set[tuple[str, str]] = set()
     for identity in identities:
         try:
             scope = execution_scope_for_codex_agent(
                 root_dir=search_root,
                 agent_id=identity,
+                parent_session_id=parent_session_id,
             )
             if scope is None:
                 continue

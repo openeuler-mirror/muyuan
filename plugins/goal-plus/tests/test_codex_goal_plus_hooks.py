@@ -331,9 +331,13 @@ def _write_codex_subagent_transcript(
     *,
     parent_session_id: str,
     child_session_id: str,
+    agent_path: str | None = None,
     prefix_lines: list[str] | None = None,
 ) -> None:
     lines = list(prefix_lines or [])
+    thread_spawn = {"parent_thread_id": parent_session_id}
+    if agent_path is not None:
+        thread_spawn["agent_path"] = agent_path
     lines.append(
         json.dumps(
             {
@@ -344,9 +348,7 @@ def _write_codex_subagent_transcript(
                     "thread_source": "subagent",
                     "source": {
                         "subagent": {
-                            "thread_spawn": {
-                                "parent_thread_id": parent_session_id,
-                            }
+                            "thread_spawn": thread_spawn,
                         }
                     },
                 },
@@ -1109,9 +1111,10 @@ def test_codex_subagent_settlement_and_resume_reuse_scope(tmp_path: Path) -> Non
     parent_transcript = tmp_path / "main.jsonl"
     _write_codex_rollout(parent_transcript, turn_id="turn-main")
     child_transcript = tmp_path / "completed-worker.jsonl"
-    _write_codex_rollout(
+    _write_codex_subagent_transcript(
         child_transcript,
-        turn_id="turn-worker",
+        parent_session_id="session-codex",
+        child_session_id="child-session",
         agent_path="completed_worker",
     )
     stopped = _run_hook(tmp_path, search_root, {
@@ -1557,6 +1560,93 @@ def test_subagent_stop_uses_agent_transcript_to_finish_canonical_task(
     })
     nested = execution_scope_snapshot(root_dir=search_root, scope_id=scope["scope_id"])["codex_agents"][1]
     assert nested["wake_pending"] is True
+
+
+@pytest.mark.host_process
+def test_subagent_stop_uses_parent_session_to_disambiguate_canonical_task(
+    tmp_path: Path,
+) -> None:
+    search_root = tmp_path / ".gp"
+    first = start_host_verified_goal(
+        search_root,
+        tmp_path,
+        session_id="session-a",
+        invocation_id="codex:a:start",
+    )
+    second = start_host_verified_goal(
+        search_root,
+        tmp_path,
+        session_id="session-b",
+        invocation_id="codex:b:start",
+    )
+    first_scope = ensure_execution_scope(
+        root_dir=search_root,
+        agent_harness="codex",
+        owner_session_id="session-a",
+        run_id=first.goal_plus_id,
+    )
+    second_scope = ensure_execution_scope(
+        root_dir=search_root,
+        agent_harness="codex",
+        owner_session_id="session-b",
+        run_id=second.goal_plus_id,
+    )
+    for scope, parent_session_id, run_id, tool_use_id, native_agent_id in (
+        (first_scope, "session-a", first.goal_plus_id, "spawn-a", "native-a"),
+        (second_scope, "session-b", second.goal_plus_id, "spawn-b", "native-b"),
+    ):
+        register_codex_agent(
+            root_dir=search_root,
+            scope_id=scope["scope_id"],
+            agent_id="/root/worker",
+            label="worker",
+            run_id=run_id,
+            tool_use_id=tool_use_id,
+            parent_session_id=parent_session_id,
+        )
+        complete_codex_spawn(
+            root_dir=search_root,
+            scope_id=scope["scope_id"],
+            tool_use_id=tool_use_id,
+            agent_id=native_agent_id,
+        )
+    parent_transcript = tmp_path / "main-a.jsonl"
+    _write_codex_rollout(parent_transcript, turn_id="turn-main-a")
+    transcript = tmp_path / "worker-a.jsonl"
+    _write_codex_subagent_transcript(
+        transcript,
+        parent_session_id="session-a",
+        child_session_id="child-a",
+        agent_path="worker",
+    )
+
+    stopped = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "SubagentStop",
+            "session_id": "child-a",
+            "agent_id": "unmatched-native-uuid",
+            "agent_type": "explorer",
+            "transcript_path": str(parent_transcript),
+            "agent_transcript_path": str(transcript),
+        },
+    )
+
+    assert stopped.returncode == 0, stopped.stderr
+    assert execution_scope_snapshot(
+        root_dir=search_root, scope_id=first_scope["scope_id"]
+    )["codex_agents"][0]["status"] == "finished"
+    assert execution_scope_snapshot(
+        root_dir=search_root, scope_id=second_scope["scope_id"]
+    )["codex_agents"][0]["status"] == "active"
+    [event_path] = (search_root / "host-logs" / "codex-hook-events").glob("*.json")
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    assert event["native_agent_reconciliation"] == {
+        "status": "settled",
+        "scope_id": first_scope["scope_id"],
+        "agent_id": "/root/worker",
+    }
 
 
 @pytest.mark.host_process

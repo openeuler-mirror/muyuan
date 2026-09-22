@@ -19,10 +19,12 @@ from goal_plus.host_scope import (
     close_execution_scope,
     ensure_execution_scope,
     execution_scope_snapshot,
+    goal_scope_resume_nonce,
 )
+from goal_plus.runtime import FileSearchRuntime
 from goal_plus.server import create_host_mcp
 from goal_plus.ports.session import NativeMainCaller
-from tests._runtime_helpers import start_host_verified_goal
+from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
 
 @pytest.mark.parametrize("agent_harness", ["codex", "pi"])
@@ -37,11 +39,11 @@ def test_resume_rebinds_closed_main_scope_for_new_native_work(tmp_path, agent_ha
         run_id=goal.goal_plus_id,
         activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
     )
+    resume_before_close = goal.host_command_invocations[0].model_copy(
+        update={"action": "resume", "invocation_id": f"resume-before-close:{agent_harness}"}
+    )
     runtime.control_from_host_command(
-        goal.goal_plus_id,
-        invocation=goal.host_command_invocations[0].model_copy(
-            update={"action": "resume", "invocation_id": f"resume-before-close:{agent_harness}"}
-        ),
+        goal.goal_plus_id, invocation=resume_before_close,
     )
     assert close_execution_scope(root_dir=root, scope_id=scope["scope_id"], reason="interrupted")["state"] == "closed"
 
@@ -51,11 +53,11 @@ def test_resume_rebinds_closed_main_scope_for_new_native_work(tmp_path, agent_ha
     with pytest.raises(RuntimeError, match="new work is fenced"):
         host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
 
+    resume_after_close = goal.host_command_invocations[0].model_copy(
+        update={"action": "resume", "invocation_id": f"resume-after-close:{agent_harness}"}
+    )
     runtime.control_from_host_command(
-        goal.goal_plus_id,
-        invocation=goal.host_command_invocations[0].model_copy(
-            update={"action": "resume", "invocation_id": f"resume-after-close:{agent_harness}"}
-        ),
+        goal.goal_plus_id, invocation=resume_after_close,
     )
     _, rebound = host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
     _, reused = host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
@@ -65,6 +67,56 @@ def test_resume_rebinds_closed_main_scope_for_new_native_work(tmp_path, agent_ha
     assert rebound["state"] == "open"
     assert rebound["activation_id"] == f"{goal.goal_plus_id}:{goal.control.version}"
     assert execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])["state"] == "closed"
+
+    runtime.control_from_host_command(
+        goal.goal_plus_id, invocation=resume_before_close,
+    )
+    assert execution_scope_snapshot(
+        root_dir=root, scope_id=rebound["scope_id"]
+    )["resume_barrier_id"] == resume_after_close.invocation_id
+    assert close_execution_scope(
+        root_dir=root, scope_id=rebound["scope_id"], reason="interrupted again"
+    )["state"] == "closed"
+    with pytest.raises(RuntimeError, match="new work is fenced"):
+        host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
+
+
+@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
+def test_resume_barrier_covers_search_only_scope(tmp_path, agent_harness):
+    root = tmp_path / ".gp"
+    goal = start_host_verified_goal(root, tmp_path, agent_harness=agent_harness)
+    goals = FileGoalPlusRuntime(root)
+    search = FileSearchRuntime(root)
+    project = make_project(tmp_path)
+    frozen = search.freeze_spec(
+        spec_for(project),
+        [project / "evaluator.py"],
+        goal_plus_id=goal.goal_plus_id,
+        agent_harness=agent_harness,
+    )
+    run_id = search.create_run(frozen.frozen_spec_id)
+    goals.link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
+    scope = ensure_execution_scope(
+        root_dir=root,
+        agent_harness=agent_harness,
+        owner_session_id=goal.active_session.session_id,
+        run_id=run_id,
+        activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
+    )
+    invocation = goal.host_command_invocations[0].model_copy(
+        update={"action": "resume", "invocation_id": f"search-resume:{agent_harness}"}
+    )
+
+    goals.control_from_host_command(goal.goal_plus_id, invocation=invocation)
+
+    observed = execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])
+    assert observed["resume_barrier_id"] == invocation.invocation_id
+    closed = close_execution_scope(
+        root_dir=root, scope_id=scope["scope_id"], reason="interrupted"
+    )
+    assert goal_scope_resume_nonce(
+        goals.status(goal.goal_plus_id), closed
+    ) is None
 
 
 @pytest.mark.parametrize("event", ["dispatch", "rework", "bind", "message"])

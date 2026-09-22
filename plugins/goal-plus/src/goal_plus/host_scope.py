@@ -7,7 +7,7 @@ into a worker supervisor.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,21 +56,26 @@ def goal_scope_resume_nonce(record: Any, scope: ScopeRecord | None) -> str | Non
 
 
 def observe_goal_scope_resume(
-    *, root_dir: Path | str, run_id: str, invocation_id: str,
+    *, root_dir: Path | str, attachment_ids: Iterable[str], invocation_id: str,
 ) -> None:
     """Prevent a resume observed before cleanup from authorizing a later generation."""
     if not invocation_id:
         raise ValueError("resume invocation_id is required")
-    scope = execution_scope_for_run(root_dir=root_dir, run_id=run_id)
-    if scope is None:
-        return
     state = build_scope_state(root_dir)
-    with state.lock(str(scope["scope_id"])):
-        current = state.read(str(scope["scope_id"]))
-        if current.get("state") == "closed":
-            return
-        current["resume_barrier_id"] = invocation_id
-        state.write(current)
+    scopes = {
+        str(scope["scope_id"]): scope
+        for attachment_id in attachment_ids
+        if (scope := execution_scope_for_run(
+            root_dir=root_dir, run_id=attachment_id
+        )) is not None
+    }
+    for scope_id in scopes:
+        with state.lock(scope_id):
+            current = state.read(scope_id)
+            if current.get("state") == "closed":
+                continue
+            current["resume_barrier_id"] = invocation_id
+            state.write(current)
 
 
 def ensure_execution_scope(
