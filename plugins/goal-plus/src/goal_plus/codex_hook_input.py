@@ -49,6 +49,14 @@ def transcript_path(hook_input: dict[str, Any]) -> str | None:
     return None
 
 
+def agent_transcript_path(hook_input: dict[str, Any]) -> str | None:
+    for key in ("agent_transcript_path", "agentTranscriptPath"):
+        value = hook_input.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return transcript_path(hook_input)
+
+
 def turn_id(hook_input: dict[str, Any]) -> str | None:
     for key in ("turn_id", "turnId"):
         value = hook_input.get(key)

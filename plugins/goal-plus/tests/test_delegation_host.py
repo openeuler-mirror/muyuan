@@ -37,21 +37,31 @@ def test_resume_rebinds_closed_main_scope_for_new_native_work(tmp_path, agent_ha
         run_id=goal.goal_plus_id,
         activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
     )
-    assert close_execution_scope(root_dir=root, scope_id=scope["scope_id"], reason="interrupted")["state"] == "closed"
-
     runtime.control_from_host_command(
         goal.goal_plus_id,
         invocation=goal.host_command_invocations[0].model_copy(
-            update={"action": "resume", "invocation_id": f"resume:{agent_harness}"}
+            update={"action": "resume", "invocation_id": f"resume-before-close:{agent_harness}"}
         ),
     )
+    assert close_execution_scope(root_dir=root, scope_id=scope["scope_id"], reason="interrupted")["state"] == "closed"
 
     host = NativeDelegationHost(
         root, agent_harness=agent_harness, caller=lambda: goal.active_session.session_id
     )
+    with pytest.raises(RuntimeError, match="new work is fenced"):
+        host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
+
+    runtime.control_from_host_command(
+        goal.goal_plus_id,
+        invocation=goal.host_command_invocations[0].model_copy(
+            update={"action": "resume", "invocation_id": f"resume-after-close:{agent_harness}"}
+        ),
+    )
     _, rebound = host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
+    _, reused = host.admit_goal(goal.goal_plus_id, goal.active_session.session_id)
 
     assert rebound["scope_id"] != scope["scope_id"]
+    assert reused["scope_id"] == rebound["scope_id"]
     assert rebound["state"] == "open"
     assert rebound["activation_id"] == f"{goal.goal_plus_id}:{goal.control.version}"
     assert execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])["state"] == "closed"

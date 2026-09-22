@@ -27,8 +27,13 @@ def goal_scope_activation_id(record: Any) -> str:
 
 
 def goal_scope_resume_nonce(record: Any, scope: ScopeRecord | None) -> str | None:
-    """Return a nonce only for an explicit resume after a closed scope."""
-    if scope is None or scope.get("state") != "closed":
+    """Reuse an open resume generation or authorize one after a closed scope."""
+    if scope is None:
+        return None
+    if scope.get("state") == "open":
+        nonce = scope.get("activation_nonce")
+        return nonce if isinstance(nonce, str) and nonce else None
+    if scope.get("state") != "closed":
         return None
     invocation = next(reversed(record.host_command_invocations), None)
     active_session = getattr(record, "active_session", None)
@@ -41,7 +46,31 @@ def goal_scope_resume_nonce(record: Any, scope: ScopeRecord | None) -> str | Non
     ):
         return None
     invocation_id = getattr(invocation, "invocation_id", None)
-    return invocation_id if isinstance(invocation_id, str) and invocation_id else None
+    if (
+        not isinstance(invocation_id, str)
+        or not invocation_id
+        or invocation_id == scope.get("resume_barrier_id")
+    ):
+        return None
+    return invocation_id
+
+
+def observe_goal_scope_resume(
+    *, root_dir: Path | str, run_id: str, invocation_id: str,
+) -> None:
+    """Prevent a resume observed before cleanup from authorizing a later generation."""
+    if not invocation_id:
+        raise ValueError("resume invocation_id is required")
+    scope = execution_scope_for_run(root_dir=root_dir, run_id=run_id)
+    if scope is None:
+        return
+    state = build_scope_state(root_dir)
+    with state.lock(str(scope["scope_id"])):
+        current = state.read(str(scope["scope_id"]))
+        if current.get("state") == "closed":
+            return
+        current["resume_barrier_id"] = invocation_id
+        state.write(current)
 
 
 def ensure_execution_scope(

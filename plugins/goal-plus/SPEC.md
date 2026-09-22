@@ -253,6 +253,11 @@ clear 永久撤权且保留历史。
 blocked 是显式可恢复停止，旧终态 blocked 迁移为 closed，不复活历史。paused/blocked 下 edit
 不激活；有效编辑 complete 可产生新 revision。不同 session、fork、detached/stale 和已结束任务
 不继承执行权。resume 保留原 deadline、累计用量及 Search 身份。
+显式 resume 只为命令发生前已经关闭的 Execution Scope 授权下一代 scope；新 generation
+持久化该 resume identity，后续操作持续复用。scope 尚未关闭时观察到的 resume 不得在其
+之后关闭时再次授权。Codex `SubagentStop` 使用 child transcript 的 canonical task identity
+与 native identity 共同结算；二者指向不同 child 时不更新终态，保留 active fence 并记录
+结构化 reconciliation 结果。
 完整控制合同、持续 Main/reconciliation 和验证边界见[运行逻辑](docs/runtime-logic.md)。
 
 ## Goal 生命周期

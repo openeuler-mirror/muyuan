@@ -98,6 +98,9 @@ class ScopeActivation:
                         "created_at_ns": time.time_ns(),
                         "updated_at": now,
                     }
+                    if activation_nonce is not None:
+                        scope["activation_nonce"] = activation_nonce
+                        scope["resume_barrier_id"] = activation_nonce
                 if config is not None:
                     scope["native_agent_config"] = config
                 if (

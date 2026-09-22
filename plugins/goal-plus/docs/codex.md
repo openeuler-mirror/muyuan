@@ -21,6 +21,9 @@ Cleanup 不改写 durable Goal/Search 终态，也不授予 resume；失败时�
 Scope owner 使用可信 native session；GP 不读取祖先进程、不核验 PID、不启动 guardian。
 宿主未发送退出事件时，遗留进程由 agent/Codex 处理。
 
+显式 resume 只在旧 scope 已关闭后创建下一代 scope。该 generation 持久化 resume identity，
+同一 Main 的后续操作持续复用；旧 scope 尚未关闭时收到的 resume 不能在稍后关闭后再次授权。
+
 原生 collaboration 的 hook 仍记录 Goal Plus scope 内实际发生的调用、task target 和 wake
 身份，供归属核验与清理观察；迟到回执不能关闭新调用或重开已关闭 scope。共同 session 启动器
 管理自己启动的 app-server，它不能接管另一个 Codex TUI 的 active turn。
@@ -349,6 +352,8 @@ canonical agent path，也接受 hook 直接提供的
 `SubagentStop`，成功且关联当前 wake 的 `interrupt_agent(target=...)` 仍可确认同一 target
 静默。该机制不用于 Search candidate；candidate 通过准确 app-server handle 识别，
 以共同 session 的 invocation 记录和进程资源确认结果及退出。
+native identity 与 canonical identity 指向不同 child 时不结算任一记录；hook 保存结构化
+reconciliation 结果，scope 保持 active 并由 cleanup fail-closed。
 再次唤醒后的观察规则见本页 [Execution Scope](#execution-scope)。
 
 需要原始 event 时使用：
