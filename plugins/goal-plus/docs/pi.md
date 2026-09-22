@@ -337,7 +337,8 @@ Goal Plus 命令配置；新命令填写它会在创建记录前失败。
 ```
 
 Goal Plus 通过 `goal_plus_list_models(agent_harness="pi", runtime_provider="direct")`
-调用 Pi RPC `get_available_models`。短 ID
+调用 Pi RPC `get_available_models`；默认返回 `provider`/`model_id` 和 reasoning 能力，传 `detail=true` 才返回
+完整目录。短 ID
 只有在唯一匹配时才会接受。命令未写 count 时不固定各模型数量；spec 也省略 count 时按 round-robin 分配；`A*1,B*3` 会生成显式
 count，且总数必须等于 `max_parallel`。`models=` 是 `workers=` 的兼容别名，两者不能同时出现。最终
 `selected_models` 对每个 candidate/native session 不可变；同时省略 `workers=` 和 `models=` 时

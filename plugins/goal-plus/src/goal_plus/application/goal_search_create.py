@@ -39,7 +39,7 @@ class GoalSearchCreate:
                     request = GoalSearchCreateRequest(
                         request_id=request_id, fingerprint=fingerprint,
                         frozen_spec_id=frozen.frozen_spec_id, source_run_id=source_run_id,
-                        run_id="run_" + sha256_text(goal_plus_id + "\0" + request_id)[:32],
+                        run_id=self.runs.new_run_id(),
                         goal_revision=goal.goal_revision, control_version=goal.control.version,
                     )
                     goal.search_create_requests.append(request)

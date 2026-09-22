@@ -106,7 +106,7 @@ host 负责，详见
 | `goal_plus_history`              | 分页读取 revision、dispatch、Search 结果、final check 或审计事件             |
 | `goal_plus_record_triage`        | 按需记录 Search 判断与缺项；普通 coding 无需调用                             |
 | `goal_plus_record_work_event`    | 按实际派发懒创建 subagent 记录，并管理 generation、结果和 Main 决策          |
-| `goal_plus_list_models`          | 列出 Codex 或 Pi host 当前可用模型                                           |
+| `goal_plus_list_models`          | 默认列出 provider/model_id；`detail=true` 时返回完整模型目录               |
 | `goal_plus_get_tool_schema`      | Main 按需读取当前注册工具的完整参数合同                                      |
 | `goal_plus_record_search_result` | 绑定 selection/promotion Evidence，并预留 final report 路径                  |
 | `goal_plus_run_final_check`      | 启动只读 reviewer，等待结构化结论并关闭原生资源                              |
@@ -407,7 +407,10 @@ min(requested_k, remaining max_parallel)
 batch 回执不包含完整 CandidateTask、instructions 或 workspace 内部 handle；宿主从持久
 task/session 交付工作合同，worker 通过 `goal_plus_search_get_agent_context` 读取自己的工作区与技能清单。
 
-多模型 run 先调用 `goal_plus_list_models(agent_harness=..., runtime_provider=...)`，再把用户选择写入 frozen `strategy.models`。没有
+多模型 run 先调用 `goal_plus_list_models(agent_harness=..., runtime_provider=...)`，再把用户选择写入 frozen `strategy.models`。
+默认响应包含每个模型的 `provider`、`model_id`、`reasoning`，以及 host 提供时的
+`reasoning_efforts`，足以选择模型和 thinking level；需要展示名称、模态、上下文窗口或 catalog provenance
+时传 `detail=true`。runtime freeze 仍使用完整 host catalog 做精确解析。没有
 `count` 的 entry 按 round-robin 扩展：四条 lane 中的 `A,B` 变为
 `A,B,A,B`。全部 entry 都有 count 时，总和必须等于 `max_parallel`，例如 `A*1,B*3` 变为
 `A,B,B,B`；不能混用 counted 和 uncounted entry。

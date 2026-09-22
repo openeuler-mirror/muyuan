@@ -452,14 +452,18 @@ def create_mcp(
         agent_harness: AgentHarnessKind,
         runtime_provider: AgentRuntimeProvider,
         query: str | None = None,
+        detail: Annotated[bool, Field(
+            description="Include display names, modalities, limits and catalog provenance. "
+            "The default returns provider/model_id and reasoning selection fields.",
+        )] = False,
     ) -> dict[str, Any]:
         """列出指定 Codex/Pi host 当前可用的模型。
 
-        指定 worker 模型时，在冻结 spec 前调用它。返回的 `model` 是可写入
-        `strategy.models[].model` 的精确 host 引用；不存在或有歧义的请求会在冻结时
-        直接失败。省略 `query` 返回完整清单。
+        指定 worker 模型时，在冻结 spec 前调用它。默认只返回 provider/model_id，足以
+        选择模型及 reasoning 能力；detail=true 才返回完整 host catalog。不存在或有歧义的请求会在冻结
+        时直接失败。省略 query 返回完整清单。
         """
-        return tools.goal_plus_list_models(agent_harness, runtime_provider, query)
+        return tools.goal_plus_list_models(agent_harness, runtime_provider, query, detail)
 
     @register_tool()
     @_debug_tool_response

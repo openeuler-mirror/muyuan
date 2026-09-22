@@ -938,14 +938,34 @@ def test_goal_plus_list_models_delegates_to_host_adapter() -> None:
     runtime.list_available_models.return_value = {
         "agent_harness": "pi",
         "adapter_version": "pi-rpc-v1",
-        "models": [{"model": "openai-codex/gpt-5.6-sol"}],
+        "models": [{
+            "model": "openai-codex/gpt-5.6-sol",
+            "provider": "openai-codex",
+            "model_id": "gpt-5.6-sol",
+            "display_name": "GPT-5.6 Sol",
+            "reasoning": True,
+            "reasoning_efforts": ["low", "high"],
+        }],
     }
     tools = SearchTools(runtime)
 
-    assert tools.goal_plus_list_models("pi", "direct", "sol") == (
+    assert tools.goal_plus_list_models("pi", "direct", "sol") == {
+        "agent_harness": "pi",
+        "adapter_version": "pi-rpc-v1",
+        "models": [{
+            "provider": "openai-codex",
+            "model_id": "gpt-5.6-sol",
+            "reasoning": True,
+            "reasoning_efforts": ["low", "high"],
+        }],
+    }
+    assert tools.goal_plus_list_models("pi", "direct", "sol", detail=True) == (
         runtime.list_available_models.return_value
     )
-    runtime.list_available_models.assert_called_once_with("pi", "direct", "sol")
+    assert runtime.list_available_models.call_args_list == [
+        (("pi", "direct", "sol"), {}),
+        (("pi", "direct", "sol"), {}),
+    ]
 
 
 def test_search_tools_expose_no_lifecycle_methods() -> None:

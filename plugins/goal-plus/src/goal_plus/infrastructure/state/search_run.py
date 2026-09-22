@@ -8,6 +8,7 @@ from goal_plus.infrastructure.state.candidate_queries import FileCandidateQuerie
 from goal_plus.infrastructure.state.files import (
     exclusive_file_lock,
     load_json,
+    write_text,
     write_json,
 )
 from goal_plus.ports.state import RunRecord
@@ -23,13 +24,21 @@ class FileSearchRunState(FileCandidateQueries):
         and leave legacy long-format run dirs untouched.
         """
         runs_dir = self.root_dir / "runs"
-        highest = 0
-        if runs_dir.is_dir():
-            for entry in runs_dir.iterdir():
-                suffix = entry.name.removeprefix("run_")
-                if entry.is_dir() and entry.name != suffix and suffix.isdigit():
-                    highest = max(highest, int(suffix))
-        return f"run_{highest + 1:04d}"
+        with exclusive_file_lock(self.root_dir / "run-id.lock"):
+            highest = 0
+            if runs_dir.is_dir():
+                for entry in runs_dir.iterdir():
+                    suffix = entry.name.removeprefix("run_")
+                    if entry.is_dir() and entry.name != suffix and suffix.isdigit():
+                        highest = max(highest, int(suffix))
+            counter = runs_dir / ".next-run-number"
+            try:
+                next_number = int(counter.read_text(encoding="utf-8").strip())
+            except (FileNotFoundError, ValueError):
+                next_number = 1
+            next_number = max(next_number, highest + 1)
+            write_text(counter, str(next_number + 1))
+            return f"run_{next_number:04d}"
 
     def lock_run(self, run_id: str):
         return exclusive_file_lock(self.run_dir(run_id) / "run.lock")

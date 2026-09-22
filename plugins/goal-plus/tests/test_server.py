@@ -283,6 +283,9 @@ def test_invalidate_run_and_successor_expose_contract_fields(tmp_path: Path) -> 
     assert "goal_plus_id" in tools["goal_plus_search_freeze_spec"].parameters["required"]
     assert "goal_plus_id" in tools["goal_plus_search_create"].parameters["required"]
     assert "goal_plus_list_models" in tools
+    model_tool = tools["goal_plus_list_models"]
+    assert model_tool.parameters["properties"]["detail"]["default"] is False
+    assert "query" in model_tool.parameters["properties"]
     assert set(invalidation["required"]) == {
         "run_id",
         "reason",

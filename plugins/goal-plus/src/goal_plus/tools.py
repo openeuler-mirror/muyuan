@@ -142,8 +142,28 @@ class SearchTools:
         agent_harness: AgentHarnessKind,
         runtime_provider: AgentRuntimeProvider,
         query: str | None = None,
+        detail: bool = False,
     ) -> dict[str, Any]:
-        return self.runtime.list_available_models(agent_harness, runtime_provider, query)
+        discovery = self.runtime.list_available_models(agent_harness, runtime_provider, query)
+        if detail:
+            return discovery
+        return {
+            **{key: value for key, value in discovery.items() if key != "models"},
+            "models": [
+                {
+                    "provider": model["provider"],
+                    "model_id": model["model_id"],
+                    "reasoning": model.get("reasoning"),
+                    **(
+                        {"reasoning_efforts": model["reasoning_efforts"]}
+                        if model.get("reasoning_efforts")
+                        else {}
+                    ),
+                }
+                for model in discovery.get("models", [])
+                if model.get("provider") and model.get("model_id")
+            ],
+        }
 
     def goal_plus_search_invalidate_run(
         self,
