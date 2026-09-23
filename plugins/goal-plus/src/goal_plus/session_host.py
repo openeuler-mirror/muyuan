@@ -20,7 +20,13 @@ from goal_plus.execution.scope import assert_scope_admission
 from goal_plus.execution.session_control import NativeSessionControl
 from goal_plus.execution.session_rpc import SessionRequestRejected
 from goal_plus.goal_plus import FileGoalPlusRuntime
-from goal_plus.host_scope import ensure_execution_scope, execution_scope_for_run, execution_scope_snapshot
+from goal_plus.host_scope import (
+    ensure_execution_scope,
+    execution_scope_for_run,
+    execution_scope_snapshot,
+    goal_scope_activation_id,
+    goal_scope_resume_nonce,
+)
 from goal_plus.infrastructure.native_session_inputs import native_candidate_input
 from goal_plus.infrastructure.state.files import exclusive_file_lock
 from goal_plus.ports.allocation_apply import DispatchRejected
@@ -235,19 +241,19 @@ class NativeCandidateHost:
                 if scope_id else execution_scope_for_run(root_dir=self.root, run_id=run_id)
             )
             if (
-                scope is None
-                and scope_id is None
+                scope_id is None
+                and (scope is None or scope.get("state") == "closed")
                 and self.queries.runtime_provider(run_id) == "thinkthread"
             ):
-                # A ThinkThread Root has no PreToolUse stop hook, so the scope the
-                # hook would have created for goal_plus_session_run does not exist
-                # yet; ensure it here with the same Main-activation identity.
+                # A ThinkThread Root has no PreToolUse stop hook. Recreate a
+                # closed scope only when the Main has explicitly resumed.
                 scope = ensure_execution_scope(
                     root_dir=self.root,
                     agent_harness=self.agent_harness,
                     owner_session_id=caller_id,
                     run_id=run_id,
-                    activation_id=f"{goal.goal_plus_id}:{goal.control.version}",
+                    activation_id=goal_scope_activation_id(goal),
+                    activation_nonce=goal_scope_resume_nonce(goal, scope),
                 )
             if scope is None:
                 raise PermissionError("native candidate requires a host execution scope")

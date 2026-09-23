@@ -82,6 +82,8 @@ class ScopeRecord(TypedDict, total=False):
     owner_session_id: str
     generation: int
     activation_id: str | None
+    activation_nonce: str
+    resume_barrier_id: str
     state: Literal["open", "closing", "cleanup_failed", "closed"]
     run_ids: list[str]
     fenced_run_ids: list[str]

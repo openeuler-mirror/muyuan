@@ -37,7 +37,7 @@ def test_pi_scope_tool_records_current_native_agent_config(tmp_path: Path) -> No
             "agent_harness": "pi",
             "goal_plus_id": goal.goal_plus_id,
             "native_session_id": "pi-main",
-            "owner_session_id": "pi-main",
+            "owner_session_id": "pi-owner-key",
             "run_id": goal.goal_plus_id,
             "native_agent_config": {
                 "model_pattern": "native-main/example-model",

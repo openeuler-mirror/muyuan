@@ -7,7 +7,7 @@ into a worker supervisor.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +21,63 @@ from goal_plus.bootstrap import (
 from goal_plus.execution.scope import assert_scope_admission, newest_scope, normalize_native_agent_config, scope_attachments
 from goal_plus.ports.scope import ScopeAttachment, ScopeHost, ScopeRecord, SCOPE_PROCESS_TERMINAL_STATUSES
 
+
+def goal_scope_activation_id(record: Any) -> str:
+    return f"{record.goal_plus_id}:{record.control.version}"
+
+
+def goal_scope_resume_nonce(record: Any, scope: ScopeRecord | None) -> str | None:
+    """Reuse an open resume generation or authorize one after a closed scope."""
+    if scope is None:
+        return None
+    if scope.get("state") == "open":
+        nonce = scope.get("activation_nonce")
+        return nonce if isinstance(nonce, str) and nonce else None
+    if scope.get("state") != "closed":
+        return None
+    invocation = next(reversed(record.host_command_invocations), None)
+    active_session = getattr(record, "active_session", None)
+    if (
+        invocation is None
+        or active_session is None
+        or getattr(invocation, "action", None) != "resume"
+        or getattr(invocation, "agent_harness", None) != scope.get("agent_harness")
+        or getattr(invocation, "session_id", None) != getattr(active_session, "session_id", None)
+    ):
+        return None
+    invocation_id = getattr(invocation, "invocation_id", None)
+    if (
+        not isinstance(invocation_id, str)
+        or not invocation_id
+        or invocation_id == scope.get("resume_barrier_id")
+    ):
+        return None
+    return invocation_id
+
+
+def observe_goal_scope_resume(
+    *, root_dir: Path | str, attachment_ids: Iterable[str], invocation_id: str,
+) -> None:
+    """Prevent a resume observed before cleanup from authorizing a later generation."""
+    if not invocation_id:
+        raise ValueError("resume invocation_id is required")
+    state = build_scope_state(root_dir)
+    scopes = {
+        str(scope["scope_id"]): scope
+        for attachment_id in attachment_ids
+        if (scope := execution_scope_for_run(
+            root_dir=root_dir, run_id=attachment_id
+        )) is not None
+    }
+    for scope_id in scopes:
+        with state.lock(scope_id):
+            current = state.read(scope_id)
+            if current.get("state") == "closed":
+                continue
+            current["resume_barrier_id"] = invocation_id
+            state.write(current)
+
+
 def ensure_execution_scope(
     *,
     root_dir: Path | str,
@@ -29,12 +86,14 @@ def ensure_execution_scope(
     run_id: str | None = None,
     native_agent_config: dict[str, Any] | None = None,
     activation_id: str | None = None,
+    activation_nonce: str | None = None,
 ) -> dict[str, Any]:
     return build_scope_activation(root_dir).ensure(
         agent_harness=agent_harness, owner_session_id=owner_session_id,
         attachment=ScopeAttachment.from_id(run_id) if run_id is not None else None,
         native_agent_config=native_agent_config,
         activation_id=activation_id,
+        activation_nonce=activation_nonce,
     )
 
 

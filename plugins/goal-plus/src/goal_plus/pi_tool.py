@@ -75,7 +75,12 @@ def _host_execution_scope_open_tool(
         goal_plus_id: str | None = None,
         native_session_id: str | None = None,
     ) -> dict[str, Any]:
-        from goal_plus.host_scope import ensure_execution_scope
+        from goal_plus.host_scope import (
+            ensure_execution_scope,
+            execution_scope_for_run,
+            goal_scope_activation_id,
+            goal_scope_resume_nonce,
+        )
         from goal_plus.ports.scope import ScopeAttachment
 
         if agent_harness not in {"codex", "pi"}:
@@ -89,7 +94,13 @@ def _host_execution_scope_open_tool(
                 binding.session_id != native_session_id or binding.state in {"detached", "stale"}
             ):
                 raise RuntimeError("MainSessionMismatch: execution scope requires the active native session")
-            activation_id = f"{record.goal_plus_id}:{record.control.version}"
+            current_scope = execution_scope_for_run(
+                root_dir=root_dir, run_id=run_id or goal_plus_id,
+            )
+            activation_id = goal_scope_activation_id(record)
+            activation_nonce = goal_scope_resume_nonce(record, current_scope)
+        else:
+            activation_nonce = None
         return ensure_execution_scope(
             root_dir=root_dir,
             agent_harness=agent_harness,  # type: ignore[arg-type]
@@ -97,6 +108,7 @@ def _host_execution_scope_open_tool(
             run_id=run_id,
             native_agent_config=native_agent_config,
             activation_id=activation_id,
+            activation_nonce=activation_nonce,
         )
 
     return call

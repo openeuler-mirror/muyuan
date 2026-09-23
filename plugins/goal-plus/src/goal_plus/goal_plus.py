@@ -154,9 +154,27 @@ class FileGoalPlusRuntime:
         *,
         invocation: GoalPlusHostCommandInvocation | dict[str, Any],
     ) -> GoalPlusRecord:
-        return self.goal_control.control_from_host_command(
+        parsed = GoalPlusHostCommandInvocation.model_validate(invocation)
+        record = self.goal_control.control_from_host_command(
             goal_plus_id, invocation=invocation
         )
+        if (
+            parsed.action == "resume"
+            and record.host_command_invocations
+            and record.host_command_invocations[-1].invocation_id
+            == parsed.invocation_id
+        ):
+            from goal_plus.host_scope import observe_goal_scope_resume
+
+            observe_goal_scope_resume(
+                root_dir=self.root_dir,
+                attachment_ids=(
+                    goal_plus_id,
+                    *(task.run_id for task in record.search_tasks),
+                ),
+                invocation_id=parsed.invocation_id,
+            )
+        return record
 
     def stop_for_host_retry(
         self, goal_plus_id: str, expectation: dict[str, Any]

@@ -309,7 +309,7 @@ def _codex_subagent_task_name(hook_input: dict[str, Any]) -> str | None:
         value = hook_input.get(key)
         if isinstance(value, str) and value:
             return value
-    transcript = hook_input_codec.transcript_path(hook_input)
+    transcript = hook_input_codec.agent_transcript_path(hook_input)
     if transcript is None:
         return None
     meta = read_codex_session_meta(Path(transcript).expanduser())
@@ -330,8 +330,31 @@ def _codex_subagent_task_name(hook_input: dict[str, Any]) -> str | None:
     return None
 
 
+def _codex_subagent_parent_session_id(
+    hook_input: dict[str, Any],
+) -> str | None:
+    transcript = hook_input_codec.agent_transcript_path(hook_input)
+    meta = read_codex_session_meta(Path(transcript).expanduser()) if transcript else None
+    if meta is None:
+        return None
+    parent_session_id = meta.get("parent_thread_id")
+    if isinstance(parent_session_id, str) and parent_session_id:
+        return parent_session_id
+    source = meta.get("source")
+    subagent = source.get("subagent") if isinstance(source, dict) else None
+    spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+    parent_session_id = (
+        spawn.get("parent_thread_id") if isinstance(spawn, dict) else None
+    )
+    return (
+        parent_session_id
+        if isinstance(parent_session_id, str) and parent_session_id
+        else None
+    )
+
+
 def _transcript_declares_subagent(hook_input: dict[str, Any]) -> bool:
-    value = hook_input_codec.transcript_path(hook_input)
+    value = hook_input_codec.agent_transcript_path(hook_input)
     if not value:
         return False
     meta = read_codex_session_meta(Path(value).expanduser())
@@ -559,6 +582,9 @@ def _record_stop_hook_event(
             "error_type": type(error).__name__ if error is not None else None,
             "error": _bounded_hook_text(str(error)) if error is not None else None,
         }
+        reconciliation = details.get("native_agent_reconciliation")
+        if isinstance(reconciliation, dict):
+            payload["native_agent_reconciliation"] = reconciliation
         _write_json_object(
             _stop_hook_event_dir(search_root) / f"{invocation_id}.json",
             payload,
@@ -568,7 +594,11 @@ def _record_stop_hook_event(
 
             debug_export_codex_transcript(
                 search_root,
-                hook_input_codec.transcript_path(hook_input),
+                (
+                    hook_input_codec.agent_transcript_path(hook_input)
+                    if event_name == "SubagentStop"
+                    else hook_input_codec.transcript_path(hook_input)
+                ),
                 session_id=payload["session_id"] if isinstance(payload["session_id"], str) else None,
                 role="subagent" if event_name == "SubagentStop" else "main",
             )
@@ -1019,14 +1049,7 @@ def _codex_scope_for_hook(
     session_id = _session_id(hook_input)
     if not _is_child_context(hook_input) and session_id:
         return execution_scope_for_owner(root_dir=search_root, agent_harness="codex", owner_session_id=session_id)
-    transcript = hook_input_codec.transcript_path(hook_input)
-    meta = read_codex_session_meta(Path(transcript).expanduser()) if transcript else None
-    parent_session_id = meta.get("parent_thread_id") if meta else None
-    if meta and not parent_session_id:
-        source = meta.get("source")
-        subagent = source.get("subagent") if isinstance(source, dict) else None
-        spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
-        parent_session_id = spawn.get("parent_thread_id") if isinstance(spawn, dict) else None
+    parent_session_id = _codex_subagent_parent_session_id(hook_input)
     for identity in (
         _host_agent_id(hook_input),
         _codex_subagent_task_name(hook_input),
@@ -1035,7 +1058,7 @@ def _codex_scope_for_hook(
             scope = execution_scope_for_codex_agent(
                 root_dir=search_root,
                 agent_id=identity,
-                parent_session_id=parent_session_id if isinstance(parent_session_id, str) else None,
+                parent_session_id=parent_session_id,
             )
             if scope is not None:
                 return scope
@@ -1648,9 +1671,9 @@ def _record_codex_subagent_terminal(
     search_root: Path,
     hook_input: dict[str, Any],
     result: dict[str, Any],
-) -> None:
+) -> dict[str, Any]:
     if result.get("decision") == "block":
-        return
+        return {"status": "deferred"}
     identities = list(
         dict.fromkeys(
             item
@@ -1662,26 +1685,54 @@ def _record_codex_subagent_terminal(
         )
     )
     if not identities:
-        return
-    run_id = result.get("run_id") or result.get("goal_plus_id")
-    scope = _codex_scope_for_hook(
-        search_root,
-        hook_input,
-        run_id=run_id if isinstance(run_id, str) else None,
-    )
-    if scope is None:
-        return
-    from goal_plus.host_scope import finish_codex_agent
+        return {"status": "identity_missing"}
+    from goal_plus.execution.codex_scope import codex_agent_for_target
+    from goal_plus.host_scope import execution_scope_for_codex_agent, finish_codex_agent
 
+    parent_session_id = _codex_subagent_parent_session_id(hook_input)
+    matches: set[tuple[str, str]] = set()
     for identity in identities:
-        finish_codex_agent(
-            root_dir=search_root,
-            scope_id=str(scope["scope_id"]),
-            agent_id=identity,
-            status="finished",
+        try:
+            scope = execution_scope_for_codex_agent(
+                root_dir=search_root,
+                agent_id=identity,
+                parent_session_id=parent_session_id,
+            )
+            if scope is None:
+                continue
+            agent = codex_agent_for_target(scope, identity)
+        except RuntimeError:
+            return {"status": "identity_ambiguous"}
+        matches.add((str(scope["scope_id"]), str(agent["agent_id"])))
+    if len(matches) > 1:
+        receipt: dict[str, Any] = {
+            "status": "identity_conflict",
+            "agent_ids": sorted({agent_id for _, agent_id in matches}),
+        }
+        scope_ids = sorted({scope_id for scope_id, _ in matches})
+        receipt["scope_id" if len(scope_ids) == 1 else "scope_ids"] = (
+            scope_ids[0] if len(scope_ids) == 1 else scope_ids
         )
-    # An unmatched native UUID must not mask a still-active canonical task.
-    # The Stop hook will fail closed until the tracked target is interrupted.
+        return receipt
+    if not matches:
+        return {"status": "identity_mismatch"}
+    scope_id, agent_id = next(iter(matches))
+    if not finish_codex_agent(
+        root_dir=search_root,
+        scope_id=scope_id,
+        agent_id=agent_id,
+        status="finished",
+    ):
+        return {
+            "status": "terminal_observation_rejected",
+            "scope_id": scope_id,
+            "agent_id": agent_id,
+        }
+    return {
+        "status": "settled",
+        "scope_id": scope_id,
+        "agent_id": agent_id,
+    }
 
 
 def _close_codex_scope_for_stop(
@@ -1800,7 +1851,13 @@ def _handle_pre_tool_use(
         _emit_pre_tool_block("Codex execution scope requires a native session_id.")
         return
     try:
-        from goal_plus.host_scope import close_run_candidates, ensure_execution_scope
+        from goal_plus.host_scope import (
+            close_run_candidates,
+            ensure_execution_scope,
+            execution_scope_for_run,
+            goal_scope_activation_id,
+            goal_scope_resume_nonce,
+        )
 
         attachment = _execution_scope_attachment(
             search_root,
@@ -1809,12 +1866,18 @@ def _handle_pre_tool_use(
         )
         record = runtime.authorization.require_scope_attachment(goal_id, attachment)
         native_config = codex_models.codex_native_model_config(hook_input)
+        current_scope = execution_scope_for_run(
+            root_dir=search_root, run_id=attachment.identity,
+        )
+        activation_id = goal_scope_activation_id(record)
+        activation_nonce = goal_scope_resume_nonce(record, current_scope)
         scope = ensure_execution_scope(
             root_dir=search_root,
             agent_harness="codex",
             owner_session_id=session_id,
             run_id=attachment.identity,
-            activation_id=f"{record.goal_plus_id}:{record.control.version}",
+            activation_id=activation_id,
+            activation_nonce=activation_nonce,
             native_agent_config=native_config if native_config.get("model") else None,
         )
         if logical_name == "spawn_agent":
@@ -2100,7 +2163,9 @@ def _run_recorded_stop_event(
             event="subagent_stop" if event_name == "SubagentStop" else "stop",
         )
         if event_name == "SubagentStop":
-            _record_codex_subagent_terminal(search_root, hook_input, result)
+            result["native_agent_reconciliation"] = _record_codex_subagent_terminal(
+                search_root, hook_input, result
+            )
     except Exception as exc:
         _record_stop_hook_event(
             search_root,
@@ -2112,7 +2177,7 @@ def _run_recorded_stop_event(
             error=exc,
         )
         raise
-    if not any(
+    if "native_agent_reconciliation" not in result and not any(
         result.get(field)
         for field in ("goal_plus_id", "agent_session_id", "run_id", "candidate_id")
     ):
