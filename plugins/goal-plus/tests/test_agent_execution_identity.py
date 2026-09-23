@@ -84,9 +84,22 @@ def test_workspace_rejects_old_protocol(old_field):
 def test_roles_reject_unsupported_runtime_providers():
     with pytest.raises(ValidationError):
         VerifierInvocationRecord(
-            invocation_id="test", agent_harness="pi", runtime_provider="thinkthread",
+            invocation_id="test", agent_harness="pi", runtime_provider="unsupported",
             model="test", started_at="before", completed_at="after", elapsed_seconds=1,
         )
+
+
+@pytest.mark.parametrize("harness", ["pi", "codex"])
+def test_verifier_records_thinkthread_invocation_identity(harness):
+    invocation = VerifierInvocationRecord(
+        invocation_id="test", agent_harness=harness, runtime_provider="thinkthread",
+        native_session_id="tt-verifier", native_invocation_id="message-verifier",
+        model="test", started_at="before", completed_at="after", elapsed_seconds=1,
+    )
+    restored = VerifierInvocationRecord.model_validate_json(invocation.model_dump_json())
+    assert restored.runtime_provider == "thinkthread"
+    assert restored.native_session_id == "tt-verifier"
+    assert restored.native_invocation_id == "message-verifier"
 
 
 def test_cross_execution_calls_have_no_domain_side_effects(tmp_path):

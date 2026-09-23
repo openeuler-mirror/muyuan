@@ -143,6 +143,29 @@ def test_circle_packing_thinkthread_prompt_is_outcome_focused() -> None:
         assert internal_detail not in prompt
 
 
+def test_circle_packing_thinkthread_variant_prompts_bind_expected_modes() -> None:
+    llm = EXAMPLE.joinpath("pi-goal-prompt-llm-verifier.md").read_text(encoding="utf-8")
+    adaptive = EXAMPLE.joinpath("pi-goal-prompt-adaptive-search.md").read_text(encoding="utf-8")
+
+    for prompt in (llm, adaptive):
+        assert prompt.startswith(
+            "/goal-plus mode=probe max_parallel=2 max_duration_seconds=1200 "
+            "workspace_provider=thinkthread promotion_mode=apply "
+            "strategy=agent_guided inner_agent=autoresearch "
+        )
+        assert "candidate-hints/rectangular.py" in prompt
+        assert "candidate-hints/staggered.py" in prompt
+        assert "sum_radii >= 2.4" in prompt
+
+    assert "GOAL_PLUS_DEBUG=1" in llm
+    assert "orchestration_mode: parallel_loops" in llm
+    assert "ranking_keys: [quality_score, hard_score]" in llm
+    assert "orchestration_mode: adaptive_search" in adaptive
+    assert "max_candidates: 4" in adaptive
+    assert "policy: swe_search_uct/v1" in adaptive
+    assert "policy: search_diagnostic_guidance/v1" in adaptive
+
+
 def test_circle_packing_thinkthread_codex_prompt_uses_host_entrypoint() -> None:
     prompt = EXAMPLE.joinpath("codex-goal-prompt.md").read_text(encoding="utf-8")
 

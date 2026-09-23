@@ -243,7 +243,9 @@ class VerifierLease(SearchModel):
 class VerifierInvocationRecord(SearchModel):
     invocation_id: str = Field(min_length=1)
     agent_harness: Literal["codex", "pi"]
-    runtime_provider: Literal["direct"] = "direct"
+    runtime_provider: Literal["direct", "thinkthread"] = "direct"
+    native_session_id: str | None = None
+    native_invocation_id: str | None = None
     model: str = Field(min_length=1)
     reasoning_effort: str | None = None
     started_at: str

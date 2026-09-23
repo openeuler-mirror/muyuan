@@ -233,7 +233,10 @@ class NativeCandidateHost:
             )
         return session
 
-    def _admit_run(self, run_id: str, caller_id: str, *, execution: bool, scope_id: str | None = None):
+    def _admit_run(
+        self, run_id: str, caller_id: str, *, execution: bool,
+        scope_id: str | None = None, internal: bool = False,
+    ):
         goal = self.authorization.require_main_search_session(
             run_id, agent_harness=self.agent_harness, session_id=caller_id, execution=execution,
         )
@@ -242,7 +245,7 @@ class NativeCandidateHost:
                 execution_scope_snapshot(root_dir=self.root, scope_id=scope_id)
                 if scope_id else execution_scope_for_run(root_dir=self.root, run_id=run_id)
             )
-            if scope_id is None and (
+            if not internal and scope_id is None and (
                 scope is None or scope.get("state") == "closed"
             ):
                 scope = self._reconcile_run_scope(run_id, caller_id, goal)
@@ -250,6 +253,7 @@ class NativeCandidateHost:
                 raise PermissionError("native candidate requires a host execution scope")
             assert_scope_admission(
                 scope, scope_id=scope["scope_id"], attachment=ScopeAttachment("search_run", run_id),
+                internal=internal,
             )
             if (
                 scope.get("agent_harness") != self.agent_harness
@@ -493,6 +497,20 @@ class NativeCandidateHost:
         _register_verifier_queue(self.root, run_id, queue)
         return queue
 
+    def _wake_verifier(self, run_id: str, caller_id: str) -> None:
+        from goal_plus.bootstrap import build_internal_agent_work
+
+        try:
+            with self._lock:
+                if self._closing:
+                    return
+                self._admit_run(run_id, caller_id, execution=True, internal=True)
+                work = build_internal_agent_work(self.root).inspect(run_id)
+                if work.accepts_work and work.verifier_enabled:
+                    self._verifier_queue(run_id, caller_id).start()
+        except Exception:
+            logging.getLogger(__name__).exception("Verifier wake failed for %s", run_id)
+
     def wake_internal_agents(self, run_id: str, *, caller_id: str | None = None) -> None:
         from goal_plus.internal_agents import kick_internal_agents
 
@@ -504,18 +522,7 @@ class NativeCandidateHost:
                     if hosted.run_id == run_id
                 }
                 caller_id = next(iter(owners)) if len(owners) == 1 else self.caller()
-            self._admit_run(run_id, caller_id, execution=True)
-            from goal_plus.bootstrap import build_internal_agent_work
-            from goal_plus.host_scope import run_accepts_internal_agent_launch
-
-            if (
-                not build_internal_agent_work(self.root).inspect(run_id).accepts_work
-                or not run_accepts_internal_agent_launch(
-                    root_dir=self.root, run_id=run_id
-                )
-            ):
-                return
-            self._verifier_queue(run_id, caller_id).start()
+            self._wake_verifier(run_id, caller_id)
         except Exception:
             logging.getLogger(__name__).exception("Verifier wake failed after settlement for %s", run_id)
         # Independent owners: neither annotation failure nor allocation recovery blocks scoring.
@@ -622,6 +629,9 @@ class NativeCandidateHost:
                 control = self(opened.session_id, "wait")
                 if control.current_call_id and control.wait(control.current_call_id, timeout=0).state == "running":
                     raise RuntimeError("session already has an active invocation")
+            # Pi settlements arrive through another process. Keep the host-owned
+            # consumer ready while the candidate invocation is still running.
+            self._wake_verifier(run_id, self.caller())
             snapshot = self(opened.session_id, "wake").wake(prompt, call_id=call_id, timeout=timeout_seconds)
             return {"session_id": opened.session_id, **session_call_receipt(snapshot)}
 

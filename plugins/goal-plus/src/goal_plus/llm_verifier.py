@@ -31,17 +31,24 @@ from goal_plus.infrastructure.inference_bindings import (
 )
 from goal_plus.infrastructure.state.files import exclusive_file_lock
 from goal_plus.infrastructure.state.verifier import FileVerifierState
+from goal_plus.infrastructure.state.candidate_queries import FileCandidateQueries
+from goal_plus.execution.sandbox import SandboxUnavailable
 from goal_plus.internal_agents import (
     CODEX_MODEL_ENV,
     CODEX_REASONING_EFFORT_ENV,
 )
-from goal_plus.ports.inference import StructuredInferenceRequest
+from goal_plus.ports.inference import InferenceTranscriptIdentity, StructuredInferenceRequest
 from goal_plus.ports.process_monitor import ProcessMonitorIdentity
 from goal_plus.ports.sandbox import ProcessSandbox
 
 
 VERIFIER_DISABLED_ENV = "GOAL_PLUS_LLM_VERIFIER_DISABLED"
 MAX_VERIFIER_PROMPT_BYTES = 2 * 1024 * 1024
+
+
+class VerifierExecutionUnavailable(RuntimeError):
+    """A binding or resource failure that cannot be fixed by retrying the model."""
+
 
 VERIFIER_ROLE_INSTRUCTIONS = (
     "You are a one-shot LLM Verifier for one hard-settled software-engineering "
@@ -108,10 +115,40 @@ class LlmVerifier:
 
         self.root_dir = Path(root_dir).resolve()
         self.records = FileVerifierState(self.root_dir)
+        self.source = FileCandidateQueries(self.root_dir)
         self.inference = build_structured_inference()
+        self.thinkthread_inference = None
 
     def terminate(self) -> None:
         self.inference.terminate()
+        if self.thinkthread_inference is not None:
+            self.thinkthread_inference.terminate()
+
+    def _execution_binding(self, task):
+        run = self.source.read_run(task.run_id)
+        frozen = self.source.read_frozen_spec(task.subject.frozen_spec_id)
+        if (run.frozen_spec_id != frozen.frozen_spec_id
+                or frozen.frozen_spec_id != task.subject.frozen_spec_id
+                or frozen.agent_harness != task.input.agent_harness):
+            raise VerifierExecutionUnavailable("verifier frozen host binding mismatch")
+        provider = frozen.runtime_provider
+        artifact = task.subject.settlement.attempt_artifact_ref
+        if (provider == "thinkthread") != (artifact.provider == "thinkthread"):
+            raise VerifierExecutionUnavailable("verifier runtime/artifact provider mismatch")
+        baseline = run.source_artifact_ref
+        if provider == "thinkthread" and (
+            baseline is None or baseline.provider != "thinkthread" or baseline.kind != "fs_snapshot"
+        ):
+            raise VerifierExecutionUnavailable("ThinkThread verifier requires the runtime-owned S0")
+        return provider, baseline
+
+    @staticmethod
+    def _validate_result(task, payload):
+        parsed = VerifierResult.model_validate(payload)
+        validate_scores(parsed.scores, task.score_contract.score_rules)
+        validate_diagnostics(parsed.steering_findings, parsed.scores, task.score_contract,
+                             diagnostic_references(task.input, task.subject))
+        return parsed
 
     def _prompt(
         self, task: VerifierTask
@@ -185,6 +222,7 @@ class LlmVerifier:
     def execute(self, task: VerifierTask):
         from goal_plus.bootstrap import (
             build_inference_registration,
+            build_inference_transcript,
             build_process_monitor,
         )
 
@@ -192,9 +230,12 @@ class LlmVerifier:
         if len(prompt.encode("utf-8")) > MAX_VERIFIER_PROMPT_BYTES:
             raise ValueError("verifier prompt exceeds the bounded input limit")
         agent_harness = task.input.agent_harness
+        runtime_provider, baseline = self._execution_binding(task)
         model = os.environ.get(CODEX_MODEL_ENV)
         reasoning = os.environ.get(CODEX_REASONING_EFFORT_ENV)
-        if agent_harness == "pi":
+        if runtime_provider == "thinkthread":
+            model, reasoning = None, None
+        if agent_harness == "pi" and runtime_provider == "direct":
             from goal_plus.host_scope import pi_native_agent_config_for_run
 
             inherited = pi_native_agent_config_for_run(
@@ -209,7 +250,7 @@ class LlmVerifier:
         if task.score_contract.diagnostics is not None:
             instructions += "\n\n" + task.score_contract.diagnostics.instructions
         pi_tools = None
-        if agent_harness == "pi":
+        if agent_harness == "pi" and runtime_provider == "direct":
             instructions += (
                 f"\n必须调用 {PI_VERIFIER_TOOL_NAME} 作为最后且唯一的输出动作；"
                 "不要直接输出 JSON 文本，也不要调用其他工具。"
@@ -254,45 +295,72 @@ class LlmVerifier:
                 mode="workspace-write",
                 backend="outer" if agent_harness == "pi" else "native",
                 workspace=self.root_dir,
-            ),
+            ) if runtime_provider == "direct" else None,
+            runtime_provider=runtime_provider,
         )
-        result = self.inference.execute(
-            request,
-            monitor=monitor,
-            is_active=lambda: (
+        transcript = build_inference_transcript(self.root_dir, InferenceTranscriptIdentity(
+            role="verifier", run_id=task.run_id, task_id=task.task_id,
+            settlement_id=task.subject.settlement_id, candidate_id=task.candidate_id,
+            iteration=task.iteration, attempt=task.attempts,
+            artifact=task.subject.settlement.model_dump(mode="json"),
+        ))
+        def is_active():
+            return (
                 (current := self.records.load_verifier_task(task.task_id)).state
                 == "running"
                 and current.lease is not None
                 and task.lease is not None
                 and current.lease.worker_id == task.lease.worker_id
                 and current.attempts == task.attempts
-            ),
-            usage=_codex_usage if agent_harness == "codex" else _pi_usage,
-            registration=build_inference_registration(
-                self.root_dir, task.run_id, label="llm-verifier"
-            ),
-        )
-        detail = (result.process.stderr or result.process.stdout).strip()[-2000:]
-        if result.process.state == "timed_out":
-            raise TimeoutError(result.stop_detail or "LLM verifier timed out")
-        if result.process.state == "terminated":
-            raise RuntimeError(result.stop_detail or "LLM verifier terminated")
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"{'codex exec' if agent_harness == 'codex' else 'pi'} exited "
-                f"{result.returncode}: {detail or 'no process output'}"
             )
-        if result.output_error is not None:
-            raise ValueError(f"invalid verifier structured output: {result.output_error}")
-        if not isinstance(result.payload, dict):
-            raise ValueError("LLM verifier did not produce a structured object")
-        parsed = VerifierResult.model_validate(result.payload)
-        validate_scores(
-            parsed.scores,
-            task.score_contract.score_rules,
-        )
-        validate_diagnostics(parsed.steering_findings, parsed.scores, task.score_contract,
-                             diagnostic_references(task.input, task.subject))
+
+        if runtime_provider == "thinkthread":
+            from goal_plus.thinkthread_verifier import ThinkThreadVerifier
+
+            if self.thinkthread_inference is None:
+                self.thinkthread_inference = ThinkThreadVerifier(self.root_dir)
+            result = self.thinkthread_inference.execute(
+                task, request, baseline_snapshot_id=baseline.id,
+                is_active=is_active, validate=lambda payload: self._validate_result(task, payload),
+                transcript=transcript,
+            )
+        else:
+            result = self.inference.execute(
+                request,
+                monitor=monitor,
+                is_active=is_active,
+                usage=_codex_usage if agent_harness == "codex" else _pi_usage,
+                registration=build_inference_registration(
+                    self.root_dir, task.run_id, label="llm-verifier"
+                ),
+                transcript=transcript,
+            )
+        try:
+            detail = (result.process.stderr or result.process.stdout).strip()[-2000:]
+            if result.process.state == "timed_out":
+                raise TimeoutError(result.stop_detail or "LLM verifier timed out")
+            if result.process.state == "terminated":
+                raise RuntimeError(result.stop_detail or "LLM verifier terminated")
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"{'codex exec' if agent_harness == 'codex' else 'pi'} exited "
+                    f"{result.returncode}: {detail or 'no process output'}"
+                )
+            if result.output_error is not None:
+                raise ValueError(f"invalid verifier structured output: {result.output_error}")
+            if not isinstance(result.payload, dict):
+                raise ValueError("LLM verifier did not produce a structured object")
+            parsed = self._validate_result(task, result.payload)
+        except Exception as exc:
+            if transcript is not None:
+                transcript.accept(f"{type(exc).__name__}: {exc}")
+            raise
+        if transcript is not None:
+            transcript.accept()
+            if runtime_provider == "thinkthread":
+                from goal_plus.infrastructure.agent_transcript import debug_export_transcripts
+
+                debug_export_transcripts(self.root_dir)
         monitor.observe(
             "completed",
             result,
@@ -308,6 +376,9 @@ class LlmVerifier:
             started_at=result.invocation.started_at,
             completed_at=result.invocation.completed_at,
             elapsed_seconds=result.invocation.elapsed_seconds,
+            runtime_provider=result.invocation.runtime_provider,
+            native_session_id=result.invocation.native_session_id,
+            native_invocation_id=result.invocation.native_invocation_id,
         )
         return parsed, invocation, result.usage
 
@@ -353,7 +424,9 @@ class VerifierQueue:
                 worker_id=claimed.lease.worker_id, attempt=claimed.attempts)
         except Exception as exc:
             self.workflow.fail_task(claimed.task_id, f"{type(exc).__name__}: {exc}",
-                retryable=claimed.input.input_error is None,
+                retryable=claimed.input.input_error is None and not isinstance(
+                    exc, (SandboxUnavailable, VerifierExecutionUnavailable, PermissionError)
+                ),
                 worker_id=claimed.lease.worker_id, attempt=claimed.attempts)
         return True
 

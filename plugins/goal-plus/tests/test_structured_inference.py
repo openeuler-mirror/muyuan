@@ -188,3 +188,58 @@ def test_shared_schema_normalization_and_event_decode_are_pure():
         {"type": "agent_end", "messages": [{"role": "user"}]},
     ])
     assert pi_assistant_message(stdout) == latest
+
+
+@pytest.mark.parametrize("protected", [False, True])
+def test_transcript_capture_does_not_change_one_shot_pi_launch(tmp_path, scripted_process_output, monkeypatch, protected):
+    from goal_plus.infrastructure.inference_transcript import FileInferenceTranscript
+    from goal_plus.ports.inference import InferenceTranscriptIdentity
+
+    commands = []
+    policies = []
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "empty-config"))
+    monkeypatch.setattr("goal_plus.execution.structured_inference.resolve_sandbox_command",
+                        lambda command, **kwargs: policies.append(kwargs["sandbox"]) or command)
+
+    class Process:
+        returncode = 0
+        pid = 123
+
+        def __init__(self, command, **kwargs):
+            commands.append(command)
+            assert "--no-session" in command
+            assert command.count("--extension") == 2
+            observer = Path(command[command.index("--extension", command.index("--extension") + 1) + 1])
+            assert "before_provider_request" in observer.read_text(encoding="utf-8")
+            provider_path = kwargs["cwd"] / "provider-requests.jsonl"
+            assert json.dumps(str(provider_path)) in observer.read_text(encoding="utf-8")
+            provider_path.write_text(json.dumps({"type": "provider_request", "payload": {"input": "exact"}}) + "\n")
+            Path(kwargs["env"]["TEST_INFERENCE_OUTPUT"]).write_text('{"answer":"ok"}')
+
+        def communicate(self, **_kwargs):
+            return "", ""
+
+    transcript = FileInferenceTranscript(tmp_path, InferenceTranscriptIdentity(
+        "verifier", "run_1", "task_1", "settlement_1", "c001", 2, 1,
+    ))
+    request = request_for("pi")
+    if protected:
+        request = replace(request, sandbox=ProcessSandbox(
+            mode="workspace-write", backend="outer", workspace=tmp_path,
+        ))
+    result = build_structured_inference(popen=Process).execute(
+        request, monitor=build_process_monitor(None, ProcessMonitorIdentity()),
+        is_active=None, usage=lambda *_: {}, transcript=transcript,
+    )
+    assert result.payload == {"answer": "ok"}
+    assert len(commands) == 1
+    assert (transcript.directory / "input.json").is_file()
+    assert json.loads((transcript.directory / "command.json").read_text())["argv"].count("--extension") == 2
+    assert (transcript.directory / "result.json").is_file()
+    assert json.loads((transcript.directory / "provider-requests.jsonl").read_text())["payload"] == {"input": "exact"}
+    assert json.loads((transcript.directory / "record.json").read_text())["capture_status"] == "complete"
+    assert not transcript.provider_path.exists()
+    if protected:
+        assert json.loads((transcript.directory / "input.json").read_text())["sandbox"]["workspace"] == str(tmp_path)
+        assert policies[0].workspace != tmp_path
+        assert all(path != tmp_path and path != transcript.directory for path in policies[0].writable_roots)

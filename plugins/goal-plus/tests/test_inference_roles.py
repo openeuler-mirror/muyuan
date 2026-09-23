@@ -132,6 +132,11 @@ def test_verifier_uses_shared_inference_and_registration(
         popen=process_factory(agent_harness, mode, payload),
     ))
     worker = LlmVerifier(tmp_path)
+    worker.source = SimpleNamespace(
+        read_run=lambda _: SimpleNamespace(frozen_spec_id="frozen_1", source_artifact_ref=None),
+        read_frozen_spec=lambda _: SimpleNamespace(
+            frozen_spec_id="frozen_1", agent_harness=agent_harness, runtime_provider="direct"),
+    )
     if mode == "timeout":
         execute = worker.inference.execute
         monkeypatch.setattr(worker.inference, "execute", lambda request, **kwargs: execute(

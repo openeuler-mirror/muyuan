@@ -65,7 +65,7 @@ def test_pi_model_context_injections_are_ledger_registered() -> None:
         assert f'"{literal}"' in text
     # The stop nudge is code-owned, not prompt-owned, and covers every worker
     # provider, not only ThinkThread.
-    assert 'latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"' in text
+    assert '!["annotator", "verifier"].includes(latestDispatchMetadata(ctx).thinkthreadRole ?? "")' in text
     archive = (ROOT / "assets/pi/extensions/lib/goal-plus-session-archive.ts").read_text(encoding="utf-8")
     assert '"session_transcript"' in archive
 

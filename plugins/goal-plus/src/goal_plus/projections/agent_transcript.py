@@ -198,6 +198,10 @@ def _identity_line(identity: dict[str, Any]) -> str:
 def _display_name(session: AgentTranscriptSession) -> str:
     """Role plus the most distinguishing identity token, e.g. ``candidate c001``."""
     identity = session.identity or {}
+    if session.role in {"verifier", "annotator"}:
+        return (f"{session.role} {identity.get('candidate_id', '?')}"
+                f" / iteration {identity.get('iteration', '?')}"
+                f" / attempt {identity.get('attempt', '?')}")
     for key in ("candidate_id", "goal_plus_id", "thinkthread_id", "agent_session_id"):
         value = identity.get(key)
         if isinstance(value, str) and value:
@@ -241,16 +245,36 @@ _REPORT_CSS = """
 body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
        font-size: 12.5px; margin: 0; padding: 16px; background: #f8fafc; color: #111827; }
 nav { position: sticky; top: 0; background: #f8fafc; padding: 8px 0; border-bottom: 2px solid #cbd5e1;
-      display: flex; flex-wrap: wrap; gap: 8px; z-index: 2; }
+      display: flex; flex-wrap: wrap; gap: 8px; z-index: 2; max-height: 6rem; overflow: auto; }
 nav a { color: #1d4ed8; text-decoration: none; background: #e0e7ff; border-radius: 4px; padding: 2px 8px; }
 nav a:hover { text-decoration: underline; }
 .navgroup { color: #475569; background: #e2e8f0; border-radius: 4px; padding: 2px 8px; font-size: 11px; }
+body { overflow-wrap: anywhere; }
+section, .transcript-index { scroll-margin-top: 8rem; }
+.transcript-index { padding: 14px 0; border-bottom: 1px solid #cbd5e1; }
+.transcript-index h2 { margin: 0 0 8px; font-size: 14px; }
+.transcript-index a { color: #1d4ed8; }
+.worker-links, .attempt-links { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.inference-index { margin: 10px 0 0; }
+.inference-index > summary { color: inherit; font-size: 12px; }
+.index-filters { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0; }
+.index-filters[hidden], .index-list tr[hidden] { display: none; }
+.index-filters label { display: flex; align-items: center; gap: 6px; }
+.index-filters input { width: 7rem; }
+.index-filters input, .index-filters select { font: inherit; padding: 4px; }
+.index-list { max-height: min(22rem, 50vh); overflow: auto; margin-top: 8px; }
+.index-list table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.index-list th, .index-list td { text-align: left; vertical-align: top; padding: 8px;
+                               border-bottom: 1px solid #cbd5e1; }
+.index-list small { display: block; margin-top: 4px; color: #64748b; }
+.index-list th:first-child { width: 26%; }
+.index-list th:last-child { width: 36%; }
 section { background: white; border: 1px solid #cbd5e1; border-radius: 8px;
           margin: 18px 0; overflow: hidden; }
 header { background: #1e293b; color: #e2e8f0; padding: 10px 14px; }
 header h2 { margin: 0; font-size: 14px; }
 header .facts { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 11.5px; color: #cbd5e1; }
-table.summary { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+table.summary { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 11.5px; }
 table.summary td { padding: 3px 10px; border-top: 1px solid #e2e8f0; vertical-align: top; }
 table.summary td:first-child { color: #64748b; white-space: nowrap; width: 90px; }
 ol.events { list-style: none; margin: 0; padding: 6px 0; }
@@ -280,15 +304,174 @@ footer { color: #94a3b8; margin: 24px 0 8px; font-size: 11.5px; }
   pre { background: #0f172a; }
   .gap { background: #422006; }
   .turn { background: #172554; }
+  .transcript-index a { color: #93c5fd; }
+  .index-list small { color: #94a3b8; }
 }
 """
 
 
-def _html_event_rows(events: list[TranscriptEvent], *, max_chars: int, gap_seconds: float) -> str:
+_INDEX_SCRIPT = """
+document.querySelectorAll('.inference-index').forEach(index => {
+  const filters = index.querySelector('.index-filters');
+  const iteration = filters.querySelector('input');
+  const role = filters.querySelector('select');
+  const rows = Array.from(index.querySelectorAll('tbody tr'));
+  const update = () => {
+    let visible = 0;
+    rows.forEach(row => {
+      row.hidden = (iteration.value !== '' && row.dataset.iteration !== iteration.value)
+        || (role.value !== '' && row.dataset.role !== role.value);
+      if (!row.hidden) visible++;
+    });
+    index.querySelector('.index-empty').hidden = visible !== 0;
+  };
+  iteration.addEventListener('input', update);
+  role.addEventListener('change', update);
+  filters.hidden = false;
+});
+"""
+
+
+def _candidate_key(session: AgentTranscriptSession) -> tuple[str, str] | None:
+    run, candidate = (session.identity.get(key) for key in ("run_id", "candidate_id"))
+    if isinstance(run, str) and run and isinstance(candidate, str) and candidate:
+        return run, candidate
+    return None
+
+
+def _complete_inference_identity(session: AgentTranscriptSession) -> bool:
+    identity = session.identity
+    return (all(isinstance(identity.get(key), str) and identity[key]
+                for key in ("settlement_id", "task_id"))
+            and all(type(identity.get(key)) is int and identity[key] > 0
+                    for key in ("iteration", "attempt")))
+
+
+def _html_inference_index(records: list[tuple[int, AgentTranscriptSession]], *, unlinked: bool = False) -> str:
+    counts = {role: sum(session.role == role for _, session in records)
+              for role in ("verifier", "annotator")}
+    parts = ['<details class="inference-index"><summary>Inferences: '
+             f'verifier {counts["verifier"]}, annotator {counts["annotator"]}</summary>',
+             '<div class="index-filters" hidden>'
+             '<label>Iteration <input type="number" min="1" step="1" placeholder="All"></label>'
+             '<label>Role <select aria-label="Role"><option value="">All</option>'
+             '<option value="verifier">Verifier</option><option value="annotator">Annotator</option>'
+             '</select></label></div>',
+             '<div class="index-list" tabindex="0" role="region" aria-label="Inference records">'
+             '<table><thead><tr><th scope="col">Iteration / settlement</th>'
+             '<th scope="col">Role / task</th><th scope="col">Calls</th></tr></thead><tbody>']
+    groups: dict[tuple, list[tuple[int, AgentTranscriptSession]]] = {}
+    for position, session in records:
+        identity = session.identity
+        # Incomplete identities must not accidentally merge unrelated invocations.
+        key = ((position,) if unlinked else (
+            identity["iteration"], identity["settlement_id"], session.role, identity["task_id"]))
+        groups.setdefault(key, []).append((position, session))
+    ordered = sorted(groups.values(), key=lambda group: (
+        group[0][1].identity.get("iteration") if type(group[0][1].identity.get("iteration")) is int else 0,
+        str(group[0][1].identity.get("settlement_id") or ""), group[0][1].role,
+        str(group[0][1].identity.get("task_id") or ""), group[0][0],
+    ))
+    for group in ordered:
+        session = group[0][1]
+        identity = session.identity
+        iteration = html.escape(str(identity.get("iteration", "unavailable")))
+        settlement = html.escape(str(identity.get("settlement_id") or "unavailable"))
+        task = html.escape(str(identity.get("task_id") or "unavailable"))
+        target = (f'<small>{html.escape(str(identity.get("run_id") or "unavailable"))} / '
+                  f'{html.escape(str(identity.get("candidate_id") or "unavailable"))}</small>') if unlinked else ""
+        parts.append(f'<tr data-iteration="{iteration}" data-role="{html.escape(session.role)}">'
+                     f'<td>iteration {iteration}<small>{settlement}</small>{target}</td>'
+                     f'<td>{html.escape(session.role)}<small>{task}</small></td><td><div class="attempt-links">')
+        for position, call in sorted(group, key=lambda item: (
+            item[1].identity.get("attempt") if type(item[1].identity.get("attempt")) is int else 0, item[0],
+        )):
+            attempt = call.identity.get("attempt", "unavailable")
+            duplicate = sum(item.identity.get("attempt") == attempt for _, item in group) > 1
+            label = f"attempt {attempt} / {call.harness}"
+            if duplicate or unlinked:
+                label += f" / {call.session_id}"
+            parts.append(f'<a href="#s{position}" title="{html.escape(call.session_id)}">{html.escape(label)}</a>')
+        parts.append('</div></td></tr>')
+    parts.append('</tbody></table></div><p class="index-empty" hidden>No matching calls.</p></details>')
+    return "".join(parts)
+
+
+def _html_navigation(sessions: list[AgentTranscriptSession]) -> tuple[str, dict[int, str]]:
+    candidates: dict[tuple[str, str], list[tuple[int, AgentTranscriptSession]]] = {}
+    for position, session in enumerate(sessions, 1):
+        if session.role == "candidate" and (key := _candidate_key(session)) is not None:
+            candidates.setdefault(key, []).append((position, session))
+    inferences: dict[tuple[str, str], list[tuple[int, AgentTranscriptSession]]] = {}
+    unlinked: list[tuple[int, AgentTranscriptSession]] = []
+    navigation: dict[str, list[str]] = {}
+    indexes: list[str] = []
+    backlinks: dict[int, str] = {}
+    for position, session in enumerate(sessions, 1):
+        key = _candidate_key(session)
+        if session.role in {"verifier", "annotator"}:
+            if key in candidates and _complete_inference_identity(session):
+                inferences.setdefault(key, []).append((position, session))
+            else:
+                unlinked.append((position, session))
+            continue
+        run = session.identity.get("run_id")
+        run = run if isinstance(run, str) else ""
+        if session.role == "candidate" and key in candidates:
+            if position != candidates[key][0][0]:
+                continue
+            link = f'<a href="#candidate-{position}">candidate {html.escape(key[1])}</a>'
+        else:
+            link = f'<a href="#s{position}">{html.escape(_display_name(session) + "/" + session.harness)}</a>'
+        navigation.setdefault(run, []).append(link)
+    parts = ['<nav aria-label="Transcript navigation">'] if sessions else []
+    for run in sorted(navigation, key=lambda value: (bool(value), value)):
+        if run:
+            parts.append(f'<span class="navgroup">{html.escape(run)}</span>')
+        parts.extend(navigation[run])
+    for (run, candidate), workers in candidates.items():
+        index_id = f"candidate-{workers[0][0]}"
+        indexes.append(f'<article class="transcript-index" id="{index_id}">'
+                       f'<h2>{html.escape(run)} / candidate {html.escape(candidate)}</h2>'
+                       '<div class="worker-links">')
+        for position, session in workers:
+            backlinks[position] = index_id
+            indexes.append(f'<a href="#s{position}">{html.escape(session.session_id + "/" + session.harness)}</a>')
+        indexes.append('</div>')
+        records = inferences.get((run, candidate), [])
+        if records:
+            indexes.append(_html_inference_index(records))
+            backlinks.update({position: index_id for position, _ in records})
+        indexes.append('</article>')
+    if unlinked:
+        parts.append(f'<a href="#unlinked-inferences">Unlinked inferences ({len(unlinked)})</a>')
+        indexes.append('<article class="transcript-index" id="unlinked-inferences">'
+                       '<h2>Unlinked inferences</h2>')
+        indexes.append(_html_inference_index(unlinked, unlinked=True))
+        indexes.append('</article>')
+        backlinks.update({position: "unlinked-inferences" for position, _ in unlinked})
+    if sessions:
+        parts.append('</nav>')
+    return "".join(parts + indexes), backlinks
+
+
+def _is_raw_message_stream(event: TranscriptEvent) -> bool:
+    return event.kind == "meta" and event.label in {
+        "host event: message_start", "host event: message_update",
+    }
+
+
+def _html_event_rows(
+    events: list[TranscriptEvent], *, max_chars: int, gap_seconds: float,
+    raw_stream: bool = False,
+) -> str:
     rows: list[str] = []
     markers = _gap_markers(events, gap_seconds)
     prompt_count = 0
     for index, event in enumerate(events):
+        # Keep original sequence numbers so both views still match events.jsonl.
+        if _is_raw_message_stream(event) != raw_stream:
+            continue
         if index in markers:
             rows.append(f'<li class="gap">⏸ gap {_duration_text(markers[index])}</li>')
         if _is_prompt_event(event):
@@ -339,24 +522,9 @@ def render_transcript_html(
         f"<h1>{html.escape(title)}</h1>",
     ]
     if generated_at:
-        parts.append(f"<p>generated {html.escape(generated_at)} · {len(sessions)} session(s)</p>")
-    if sessions:
-        parts.append("<nav>")
-        # Cluster consecutive sessions by run id so multi-search goals (and
-        # repeated goals in one runtime root) stay navigable.
-        position = 0
-        previous_run: str | None = None
-        for session in sessions:
-            run_id = session.identity.get("run_id")
-            run_id = run_id if isinstance(run_id, str) and run_id else ""
-            if run_id != previous_run:
-                if run_id:
-                    parts.append(f'<span class="navgroup">{html.escape(run_id)}</span>')
-                previous_run = run_id
-            position += 1
-            parts.append(f'<a href="#{anchor(session, position)}">'
-                         f'{html.escape(_display_name(session) + "/" + session.harness)}</a>')
-        parts.append("</nav>")
+        parts.append(f"<p>generated {html.escape(generated_at)} · {len(sessions)} record(s)</p>")
+    navigation, backlinks = _html_navigation(sessions)
+    parts.append(navigation)
     for position, session in enumerate(sessions, 1):
         start, end, span = _session_span(session.events)
         counts = _count_by_kind(session.events)
@@ -375,6 +543,25 @@ def render_transcript_html(
             ("source", html.escape(session.source_path)),
             ("identity", html.escape(_identity_line(session.identity))),
         ]
+        if position in backlinks:
+            rows.append(("index", f'<a href="#{backlinks[position]}">'
+                                 + ("Unlinked inferences" if backlinks[position] == "unlinked-inferences"
+                                    else "Candidate index") + '</a>'))
+        if session.role in {"verifier", "annotator"}:
+            identity = session.identity
+            workers = [(worker_position, worker) for worker_position, worker in enumerate(sessions, 1)
+                       if worker.role == "candidate"
+                       and worker.identity.get("run_id") == identity.get("run_id")
+                       and worker.identity.get("candidate_id") == identity.get("candidate_id")]
+            worker_id = identity.get("worker_session_id")
+            workers = [(number, worker) for number, worker in workers
+                       if worker_id and worker.identity.get("agent_session_id") == worker_id]
+            if len(workers) == 1:
+                worker_position, worker = workers[0]
+                rows.append(("worker", f'<a href="#{anchor(worker, worker_position)}">'
+                                       f'{html.escape(_display_name(worker))}</a>'))
+            else:
+                rows.append(("worker", "ambiguous candidate sessions" if workers else "unavailable"))
         footprint_lines = _footprint_text_lines(session.events)
         rows.append(("footprint", "<pre>" + html.escape(
             footprint_lines[0] + "\n" + "\n".join(line.strip() for line in footprint_lines[1:]))
@@ -391,13 +578,24 @@ def render_transcript_html(
                 parts.append(f"<tr><td>{key}</td><td>{value}</td></tr>")
         parts.append("</table>")
         if session.events:
-            parts.append(f'<ol class="events">{_html_event_rows(session.events, max_chars=max_chars, gap_seconds=gap_seconds)}</ol>')
+            event_limit = 0 if session.role in {"verifier", "annotator"} else max_chars
+            parts.append(f'<ol class="events">{_html_event_rows(session.events, max_chars=event_limit, gap_seconds=gap_seconds)}</ol>')
+            stream_count = sum(_is_raw_message_stream(event) for event in session.events)
+            if stream_count:
+                parts.append('<details class="raw-message-stream">'
+                             f'<summary>Raw message stream ({stream_count} events)</summary>'
+                             '<ol class="events">'
+                             + _html_event_rows(session.events, max_chars=event_limit,
+                                                gap_seconds=gap_seconds, raw_stream=True)
+                             + '</ol></details>')
         parts.append("</section>")
     parts.append("<footer>Usage notes: context/output/total are tokens for that one provider call"
                  " (context = input side including cache hits, i.e. the context size the model"
                  " saw); N chars = this event's content length; usage appears once per model call.<br>"
                  "Debug export from local native session histories; may contain prompts,"
                  " tool arguments and outputs. Do not commit.</footer>")
+    if any(session.role in {"verifier", "annotator"} for session in sessions):
+        parts.append(f"<script>{_INDEX_SCRIPT}</script>")
     parts.append("</body></html>")
     return "".join(parts)
 

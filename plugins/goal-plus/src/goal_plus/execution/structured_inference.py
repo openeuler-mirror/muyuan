@@ -25,6 +25,7 @@ from goal_plus.execution.sandbox import prepare_sandbox_environment, resolve_san
 from goal_plus.ports.clock import Clock
 from goal_plus.ports.inference import (
     InferenceInvocation,
+    InferenceTranscript,
     StructuredInferenceRequest,
     StructuredInferenceResult,
 )
@@ -66,6 +67,7 @@ class StructuredInference:
         is_active: Callable[[], bool] | None,
         usage: Callable[[str, dict[str, Any] | None], dict[str, int | float]],
         registration: ProcessRegistration | None = None,
+        transcript: InferenceTranscript | None = None,
     ) -> StructuredInferenceResult:
         if self._active is not None:
             raise RuntimeError("inference process still active or cleanup pending")
@@ -75,12 +77,17 @@ class StructuredInference:
             raise ValueError("Pi inference requires its authorized tool bundle; Codex does not accept one")
         started_at = self.clock.timestamp()
         started = time.monotonic()
+        invocation_id = f"invocation_{uuid.uuid4().hex}"
         temporary = ExitStack()
         directory = Path(temporary.enter_context(tempfile.TemporaryDirectory(
             prefix="goal-plus-inference-",
             dir=str(request.sandbox.workspace) if request.sandbox is not None else None,
         )))
         try:
+            observer = transcript.start(
+                request, invocation_id, started_at, strict_output_schema(request.output_schema),
+                observer_output_path=directory / "provider-requests.jsonl",
+            ) if transcript else None
             sandbox = (
                 replace(request.sandbox, workspace=directory)
                 if request.sandbox is not None else None
@@ -124,6 +131,10 @@ class StructuredInference:
                     command.extend(("--model", model_id))
                 if request.reasoning_effort:
                     command.extend(("--thinking", request.reasoning_effort))
+                if observer is not None:
+                    observer_path = directory / "inference-transcript.ts"
+                    observer_path.write_text(observer, encoding="utf-8")
+                    command.extend(("--extension", str(observer_path)))
                 environment[tools.output_env] = str(output_path)
                 options["cwd"] = directory
             sandbox = prepare_sandbox_environment(
@@ -134,6 +145,8 @@ class StructuredInference:
                 cwd=options.get("cwd", directory),
                 sandbox=sandbox,
             ))
+            if transcript is not None:
+                transcript.launch(command)
             prompt_path = directory / "prompt.txt"
             prompt_path.write_text(request.prompt, encoding="utf-8")
             with ExitStack() as launch, prompt_path.open("r", encoding="utf-8") as prompt_input:
@@ -155,6 +168,7 @@ class StructuredInference:
                         request.timeout_seconds, monitor=monitor, is_active=is_active,
                         timeout_detail=request.timeout_detail, cancellation_detail=request.cancellation_detail,
                         active_check=request.active_check,
+                        observe_output=transcript.observe if transcript else None,
                     )
                 finally:
                     if registration is not None:
@@ -178,21 +192,28 @@ class StructuredInference:
                         payload = json.loads(output_text)
                     except (OSError, ValueError) as exc:
                         output_error = exc
+        except BaseException as exc:
+            if transcript is not None:
+                transcript.failed(f"{type(exc).__name__}: {exc}")
+            raise
         finally:
             if self._active is None:
                 temporary.close()
             else:
                 self._pending_cleanup = temporary
-        return StructuredInferenceResult(
+        result = StructuredInferenceResult(
             process=outcome, pid=getattr(process, "pid", None), returncode=process.returncode,
             stop_detail=(request.timeout_detail if outcome.state == "timed_out" else
                          request.cancellation_detail if outcome.state == "terminated" else outcome.detail),
             output_text=output_text, payload=payload, output_error=output_error,
             assistant_message=message, usage=parsed_usage,
             invocation=InferenceInvocation(
-                invocation_id=f"invocation_{uuid.uuid4().hex}", agent_harness=request.agent_harness,
+                invocation_id=invocation_id, agent_harness=request.agent_harness,
                 model=request.model, reasoning_effort=request.reasoning_effort,
                 started_at=started_at, completed_at=self.clock.timestamp(),
                 elapsed_seconds=max(0.0, time.monotonic() - started),
             ),
         )
+        if transcript is not None:
+            transcript.finish(result)
+        return result

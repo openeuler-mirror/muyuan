@@ -43,6 +43,7 @@ def _single_session(args: argparse.Namespace) -> AgentTranscriptSession:
 def _source_fingerprint(root: Path) -> dict[str, float]:
     fingerprint: dict[str, float] = {}
     for pattern in ("host-logs/session-diagnostics/**/*.json*",
+                    "host-logs/inference-transcripts/**/*",
                     "runs/*/agent_sessions/*.json",
                     "host-scopes/*/thinkthread-sessions/*.json",
                     "host-logs/codex-time-advisory/sent/*.json"):

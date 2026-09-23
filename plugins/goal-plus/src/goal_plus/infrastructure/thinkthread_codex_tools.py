@@ -202,9 +202,48 @@ def create_thinkthread_candidate_mcp():
     session_id, role = _child_binding(transport)
     if role == "annotator":
         return _annotator_mcp(transport, session_id)
+    if role == "verifier":
+        return _verifier_mcp(transport, session_id)
     if role not in (None, "candidate"):
         raise PermissionError(f"ThinkThread Child has an unknown dispatch role: {role}")
     return _child_mcp(transport, session_id)
+
+
+def _verifier_mcp(transport: AgentPosixSdkClient, session_id: str):
+    from fastmcp import FastMCP
+    from goal_plus._version import __version__
+    from goal_plus.server import native_mcp_caller
+
+    native_thread: str | None = None
+    identity_lock = Lock()
+
+    def call(name, arguments):
+        nonlocal native_thread
+        caller = native_mcp_caller()
+        with identity_lock:
+            if native_thread is not None and native_thread != caller:
+                raise PermissionError("ThinkThread MCP native thread changed")
+            native_thread = caller
+        return transport.invoke("call", {
+            "agent_session_id": session_id, "name": name, "arguments": arguments,
+        }, timeout_seconds=WORKER_BRIDGE_TIMEOUT_SECONDS)
+
+    mcp = FastMCP("goal-plus", version=__version__, instructions=(
+        "Read this assessment with goal_plus_thinkthread_verifier_input, then submit its complete "
+        "result with goal_plus_thinkthread_verifier_submit and end the turn. No other tools are permitted."
+    ))
+
+    @mcp.tool()
+    def goal_plus_thinkthread_verifier_input() -> dict[str, Any]:
+        """Read this assessment's fixed instructions, evidence and output schema."""
+        return call("goal_plus_thinkthread_verifier_input", {})
+
+    @mcp.tool()
+    def goal_plus_thinkthread_verifier_submit(result: dict[str, Any]) -> dict[str, Any]:
+        """Submit the complete result matching this assessment's output schema."""
+        return call("goal_plus_thinkthread_verifier_submit", {"result": result})
+
+    return mcp
 
 
 # Authoritative tool surface of a retained Evidence Annotation Child: the six

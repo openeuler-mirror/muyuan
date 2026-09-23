@@ -15,7 +15,9 @@ from goal_plus.infrastructure.inference_bindings import (
     annotation_role_capabilities, build_pi_role_tools,
     PI_ANNOTATION_TOOL_NAME, PI_ARTIFACT_VIEW_LIST_TOOL_NAME, PI_ARTIFACT_VIEW_READ_TOOL_NAME,
 )
-from goal_plus.ports.inference import StructuredInferenceRequest, StructuredInferenceResult
+from goal_plus.ports.inference import (
+    InferenceTranscriptIdentity, StructuredInferenceRequest, StructuredInferenceResult,
+)
 from goal_plus.execution.process_monitor import MONITOR_TAIL_CHARS, ProcessMonitor
 from goal_plus.ports.process_monitor import ProcessMonitorIdentity
 from goal_plus.domain.agents import AgentHarnessKind
@@ -285,16 +287,21 @@ def _annotation_inference_output(
 
 def _accept_annotation_inference(
     result: StructuredInferenceResult, context: dict[str, Any], monitor: ProcessMonitor,
+    transcript=None,
 ) -> EvidenceAnnotationResult:
     try:
         output = _annotation_inference_output(result, context)
     except AnnotationError as exc:
+        if transcript is not None:
+            transcript.accept(f"{type(exc).__name__}: {exc}")
         if result.process.state == "process_exited":
             monitor.observe(
                 "failed", result, stdout=result.process.stdout, stderr=result.process.stderr,
                 detail=f"{type(exc).__name__}: {exc}", force=True,
             )
         raise
+    if transcript is not None:
+        transcript.accept()
     monitor.observe("completed", result, stdout=result.process.stdout, stderr=result.process.stderr, force=True)
     return output
 
@@ -305,6 +312,23 @@ def _annotation_process_registration(context: dict[str, Any]) -> ProcessRegistra
     return build_inference_registration(
         context.get("runtime_root"), context.get("run_id"), label="annotation",
     )
+
+
+def _annotation_transcript(context: dict[str, Any]):
+    from goal_plus.bootstrap import build_inference_transcript
+
+    if not context.get("_annotation_task_id"):
+        return None
+    return build_inference_transcript(context.get("runtime_root"), InferenceTranscriptIdentity(
+        role="annotator", run_id=str(context["run_id"]),
+        task_id=str(context["_annotation_task_id"]),
+        settlement_id=str(context["_annotation_settlement_id"]),
+        candidate_id=str(context["candidate_id"]), iteration=int(context["iteration"]),
+        attempt=int(context["_annotation_attempt"]),
+        artifact={key: context.get(key) for key in (
+            "exact_attempt_commit", "exact_attempt_artifact_ref")},
+        references=list(context.get("comparison_basis") or []),
+    ))
 
 
 def close_evidence_annotator(
@@ -477,12 +501,14 @@ class CodexEvidenceAnnotator:
             cancellation_detail="annotation run closed during inference", active_check="after_timeout",
             sandbox=_annotation_sandbox(context, "native"),
         )
+        transcript = _annotation_transcript(context)
         result = self._inference.execute(
             request, monitor=monitor, is_active=lambda: self._still_active(context),
             usage=lambda stdout, _message: self._usage(stdout, request.model),
             registration=_annotation_process_registration(context),
+            transcript=transcript,
         )
-        return _accept_annotation_inference(result, context, monitor)
+        return _accept_annotation_inference(result, context, monitor, transcript)
 
 
 class PiEvidenceAnnotator:
@@ -584,12 +610,14 @@ class PiEvidenceAnnotator:
                 output_schema=_strict_annotation_output_schema(),
             ),
         )
+        transcript = _annotation_transcript(context)
         result = self._inference.execute(
             request, monitor=monitor, is_active=lambda: CodexEvidenceAnnotator._still_active(context),
             usage=lambda _stdout, message: self._usage(message) if message is not None else {},
             registration=_annotation_process_registration(context),
+            transcript=transcript,
         )
-        return _accept_annotation_inference(result, context, monitor)
+        return _accept_annotation_inference(result, context, monitor, transcript)
 
 
 class HostEvidenceAnnotator:
@@ -691,6 +719,8 @@ def drain_evidence_annotations(
                                 Path(root_dir).resolve() / monitor_path
                             )
                         context["_annotation_attempt"] = task.attempts
+                        context["_annotation_task_id"] = task.task_id
+                        context["_annotation_settlement_id"] = task.settlement_id
                         result = _annotation_result(
                             selected_annotator.annotate(context)
                         )

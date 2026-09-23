@@ -134,6 +134,27 @@ def test_archive_disabled_wrong_sender_and_corruption(tmp_path, archive_messages
     assert not (tmp_path / "host-logs").exists()
 
 
+def test_verifier_archive_keeps_assessment_identity_in_live_index(tmp_path, archive_messages):
+    from goal_plus.infrastructure.agent_transcript import collect_runtime_transcripts
+
+    binding = {"thinkthread_id": "tt-child", "root_thinkthread_id": "tt-root",
+               "agent_session_id": "agent-owned", "run_id": "run-owned", "candidate_id": "c001",
+               "role": "verifier", "task_id": "verifier-owned", "iteration": 7, "attempt": 2,
+               "settlement_id": "settlement-owned", "invocation_id": "invocation-owned"}
+    for payload in archive_messages:
+        assert archive_diagnostic_message(tmp_path, binding, {
+            "senderThinkthreadId": "tt-child", "text": json.dumps(payload), "truncated": False})
+    sessions = collect_runtime_transcripts(tmp_path)
+    session = next(item for item in sessions if item.role == "verifier")
+    assert session.identity["candidate_id"] == "c001"
+    assert session.identity["iteration"] == 7
+    assert session.identity["attempt"] == 2
+    assert session.identity["task_id"] == "verifier-owned"
+    assert any("PRIVATE USER" in event.content for event in session.events)
+    html = (tmp_path / "host-logs/agent-transcript/index.html").read_text()
+    assert "verifier c001 / iteration 7 / attempt 2" in html
+
+
 def test_full_entries_split_into_bounded_batches(tmp_path):
     node = shutil.which("node")
     if node is None:

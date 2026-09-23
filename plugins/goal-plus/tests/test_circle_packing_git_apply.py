@@ -26,6 +26,7 @@ def test_circle_packing_git_apply_prompts_bind_inner_agents() -> None:
     prompt_names = (
         "pi-goal-prompt.md",
         "pi-goal-prompt-common.md",
+        "pi-goal-prompt-llm-verifier.md",
         "pi-goal-prompt-adaptive-search.md",
         "codex-goal-prompt.md",
         "pi-goal-prompt-untimed.md",
@@ -50,21 +51,20 @@ def test_circle_packing_git_apply_prompts_bind_inner_agents() -> None:
 
 def test_circle_packing_adaptive_prompt_enables_apply_steering() -> None:
     text = (EXAMPLE / "pi-goal-prompt-adaptive-search.md").read_text(encoding="utf-8")
-    required_scores = {
-        "progress_reward", "allocation_utility", "correctness_gap", "validation_gap",
-        "local_confounder_evidence", "discriminating_test_gap", "boundary_evidence_strength",
-    }
-    assert all(f"      - {score}" in text for score in required_scores)
+    assert "max_candidates: 4" in text
+    assert "orchestration_mode: adaptive_search" in text
+    assert "ranking_keys: [quality_score, hard_score]" in text
+    assert "ranking_tolerance: [0.05, 0.0]" in text
+    assert "policy: swe_search_uct/v1" in text
     assert "policy: search_diagnostic_guidance/v1" in text
-    assert "mode: apply" in text
-    for parameter in (
-        "correctness_gap_threshold", "validation_gap_threshold", "confounder_threshold",
-        "test_gap_threshold", "boundary_probe_threshold", "boundary_confirmed_threshold",
-        "cooldown_seconds", "max_steering_attempts_per_candidate",
-        "max_steering_attempts_per_issue", "history_limit", "rpc_timeout_seconds",
-        "max_source_age_seconds",
-    ):
-        assert f"{parameter}:" in text
+
+
+def test_circle_packing_llm_verifier_prompt_enables_context_and_quality_ranking() -> None:
+    text = (EXAMPLE / "pi-goal-prompt-llm-verifier.md").read_text(encoding="utf-8")
+    assert "GOAL_PLUS_DEBUG=1" in text
+    assert "orchestration_mode: parallel_loops" in text
+    assert "ranking_keys: [quality_score, hard_score]" in text
+    assert "ranking_tolerance: [0.05, 0.0]" in text
 
 
 def _git(workspace: Path, *arguments: str) -> str:

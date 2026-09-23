@@ -23,6 +23,7 @@ from goal_plus.domain.verifier import (
     verifier_score_contract,
 )
 from goal_plus.infrastructure.clock import SystemClock
+from goal_plus.infrastructure.state.files import load_json, write_json
 from goal_plus.infrastructure.state.verifier import FileVerifierState
 from goal_plus.llm_verifier import LlmVerifier, VerifierQueue
 
@@ -149,6 +150,23 @@ def test_complete_task_commits_one_atomic_record(tmp_path: Path) -> None:
         attempt=claimed.attempts,
     ) == record
     assert len(workflow.list_records("run_1")) == 1
+
+
+def test_schema8_verifier_task_remains_readable_after_diagnostic_replacement(tmp_path: Path) -> None:
+    workflow = VerifierWorkflow(FileVerifierState(tmp_path), SystemClock())
+    task = ensure(workflow)
+    state = FileVerifierState(tmp_path)
+    path = state._task_path(task.run_id, task.task_id)
+    payload = load_json(path)
+    payload.update(schema_version=8, execution_profile={"agent_harness": "pi"},
+                   context_snapshot={"context_hash": "old"}, attempt_history=[])
+    write_json(path, payload)
+
+    loaded = state.load_verifier_task(task.task_id)
+
+    assert loaded.schema_version == 7
+    assert loaded.task_id == task.task_id
+    assert state.load_verifier_tasks("run_1")[0].task_id == task.task_id
 
 
 def test_failed_task_has_no_partial_scores_or_invocation(tmp_path: Path) -> None:

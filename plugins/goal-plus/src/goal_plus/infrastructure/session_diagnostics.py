@@ -30,9 +30,14 @@ def _directory(root, binding):
 
 
 def _identity(binding):
-    return {key: binding.get(key) for key in (
+    identity = {key: binding.get(key) for key in (
         "root_thinkthread_id", "thinkthread_id", "agent_session_id", "run_id", "candidate_id",
     )}
+    if binding.get("role") == "verifier":
+        identity.update({key: binding.get(key) for key in (
+            "role", "task_id", "iteration", "attempt", "settlement_id", "invocation_id",
+        )})
+    return identity
 
 
 def _index(directory, binding):
