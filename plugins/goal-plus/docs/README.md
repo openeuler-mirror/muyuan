@@ -15,7 +15,7 @@
 | 理解 Goal 状态、授权和恢复 | [运行逻辑](runtime-logic.md)、[Search 恢复](search-recovery.md) |
 | 理解 Search 与 Evidence | [共享平面](shared-plane.md)、[Adaptive Search](adaptive-search.md) |
 | 修改 native session、scope 或宿主接线 | [Agent Host Adapters](agent-host-adapters.md) |
-| 修改 workspace、artifact、reference 或 publication | [Workspace 架构](workspace-sandbox-arch.md) |
+| 修改 workspace、artifact、reference 或 publication | [Workspace 架构](workspace-sandbox-arch.md)、[多目录 Submodule 方案](submodule-workspace-design.md) |
 | 修改 Annotation 或 Artifact View | [Evidence Annotator](evidence-annotator.md) |
 | 修改普通任务委派 | [Ultra](ultra.md) |
 | 理解分层、状态 owner 与角色能力 | [架构图集](architecture.md)、[图集页面](architecture.html) |
