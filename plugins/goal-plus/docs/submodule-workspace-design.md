@@ -1,7 +1,25 @@
 # Goal Plus Submodule Workspace 支持方案
 
-状态：**讨论稿，不是已实现能力说明**  
+状态：**实施中；以下标为当前实现的部分已接入，递归发布与恢复仍按后续阶段实现**
 审计基线：`muyuan@270111af4b64`，2026-09-23
+
+### 当前实现切片
+
+当前版本已经接入以下准入和物化行为：
+
+- Git freeze 前检查 parent 与递归 formal submodule 的 checkout、HEAD、gitlink、
+  `.gitmodules`、对象可用性、浅仓库、merge/rebase 状态和 dirty 状态；失败使用
+  `Submodule*` 类型，包含 parent-relative 路径、阶段、原因以及 expected/actual。
+- Git candidate worktree 执行 `submodule update --init --recursive`，随后重复递归检查；
+  未初始化 child、缺对象或拓扑不一致不会继续到 verifier。
+- ThinkThread 只在 source 对应 Git root 的 committed tree 含 `.gitmodules`/gitlink，或
+  工作树含嵌套 `.git` 标记时拒绝，并返回 `ThinkThreadSubmoduleUnsupported` 及路径；root
+  自身 `.git` 不触发拒绝。普通无 Git 目录和没有子模块的 ThinkThread Git root 保持原路径。
+- 离线 fixture 位于 `examples/submodule-e2e/`；真实 Pi + ThinkThread 双 module apply
+  fixture 位于 `examples/two-modules-thinkthread-apply/`。
+
+当前切片尚未声称递归 child-first publication、跨仓库 apply 原子性或保留对象闭包恢复；
+这些仍由本文后续生命周期方案约束，并需要独立行为测试后再标记为已实现。
 
 本文固定 Goal Plus 的最小支持合同：workspace 根由 Goal Plus workspace provider 管理一套
 parent Git；workspace 中参与组合的其他 Git root 必须沿 parent 链路登记为标准 submodule。

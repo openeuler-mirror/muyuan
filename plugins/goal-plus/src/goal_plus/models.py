@@ -166,6 +166,11 @@ from goal_plus.domain.shared_tools import (
     ToolViewRecord as ToolViewRecord,
     ToolViewRef as ToolViewRef,
 )
+from goal_plus.domain.submodules import (
+    SubmoduleCheckError as SubmoduleCheckError,
+    SubmoduleNode as SubmoduleNode,
+    SubmoduleTopology as SubmoduleTopology,
+)
 from goal_plus.ports.execution import (
     WorkerExecutionResult as WorkerExecutionResult,
 )

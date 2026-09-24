@@ -1,11 +1,16 @@
 """Resolve freeze inputs from separate configuration and source capabilities."""
 
 from __future__ import annotations
+
 import subprocess
 import uuid
 from pathlib import Path
+
 from goal_plus.domain.agents import AgentHarnessKind, validate_search_execution
 from goal_plus.domain.search import SearchSpec, VerifierCommand
+from goal_plus.infrastructure.artifacts.submodules import (
+    ensure_thinkthread_submodules_supported,
+)
 from goal_plus.ports.search_bootstrap import FreezeInputs
 from goal_plus.infrastructure.artifacts.source_repository import SourceRepository
 from goal_plus.infrastructure.artifacts.thinkthread_baseline import thinkthread_source_relative_path
@@ -157,6 +162,7 @@ class FileFreezeSource:
         self.repository.validate_clean_source_repository(spec)
         if spec.workspace.provider == "thinkthread":
             thinkthread_source_relative_path(source_root)
+            ensure_thinkthread_submodules_supported(source_root)
             if spec.shared_dir.enabled:
                 raise ValueError(
                     "ThinkThread Search does not enable shared_dir until provider-native "

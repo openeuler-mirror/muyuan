@@ -35,6 +35,14 @@
 验证 Pi 或 Codex 的两个实际 packing 实现均产生有效分数，并把更好的结果回写到一次性 Root。内部
 Child、Artifact View 和 cleanup 合同由真实 ThinkThread system test 覆盖，不写入可粘贴 prompt。
 
+需要验证递归 Git submodule 的冻结、脏 child 拒绝、gitlink 检查和 candidate materialization，
+使用 [Recursive Submodule E2E](submodule-e2e/README.md)。需要验证真实 Pi + ThinkThread 用
+`gpt-5.6-luna` 同时修改两个普通 module 并回写 Root，使用
+[Two Modules：ThinkThread Pi Apply](two-modules-thinkthread-apply/README.md)。
+
+需要验证 Pi + Git worktree 的同一双 module 任务，使用
+[Two Modules：Pi + Git Apply](two-modules-git-apply/README.md)。
+
 ## 示例索引
 
 | 示例 | 用途 | 入口 | 依赖 |
@@ -44,6 +52,9 @@ Child、Artifact View 和 cleanup 合同由真实 ThinkThread system test 覆盖
 | [Circle Packing：Git 工作区回写](circle-packing-git-apply/README.md) | 真实 Git 候选 worktree 和最佳结果回写 | Pi 或 Codex，5 分钟 | Python 标准库、Git |
 | [Guess Number：ThinkThread 回写](guess-number-thinkthread-apply/README.md) | 两条固定路线、精确评分、结果回写和规范报告 | Pi，最多 10 分钟 | ThinkThread Linux Runtime、Python 标准库 |
 | [Circle Packing：ThinkThread Shared-Plane 回写](circle-packing-thinkthread-apply/README.md) | 两个真实 packing candidate、公开 verifier 和 Root 回写 | Pi 或 Codex，最多 20 分钟 | ThinkThread Linux Runtime、Python 标准库 |
+| [Recursive Submodule E2E](submodule-e2e/README.md) | 递归 submodule 拓扑、冻结前 dirty 检查和 candidate materialization | 离线，1 分钟 | Python、Git |
+| [Two Modules：ThinkThread Pi Apply](two-modules-thinkthread-apply/README.md) | 真实 Pi + ThinkThread 双 module Search、promotion 和 Root apply | Pi，最多 10 分钟 | ThinkThread Linux Runtime、Python 标准库 |
+| [Two Modules：Pi + Git Apply](two-modules-git-apply/README.md) | 真实 Pi + Git worktree 双 module Search、publication 和 apply | Pi，最多 10 分钟 | Python、Git |
 | [Final Check Skill Guard](final-check-skill-guard/README.md) | task-local Skill 打回、修复和重新验收 | Pi 或 Codex，最多 30 分钟 | Python 标准库、Git |
 | [Model Optimize](model-optimize/README.md) | CPU/PyTorch 优化 | Pi 或 Codex，10 分钟 | PyTorch |
 | [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | 带模拟器正确性门禁的程序与调度优化 | Pi，8 分钟 | Python 标准库 |

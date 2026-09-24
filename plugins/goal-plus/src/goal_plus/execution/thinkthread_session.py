@@ -270,6 +270,7 @@ class ThinkThreadSession:
                 self._save()
             message = (
                 prompt + f"\n\nThinkThread Goal Plus dispatch: protocol={PROTOCOL}; "
+                f"agent_session_id={self.record['agent_session_id']}; "
                 f"registration_nonce={self.record['registration_nonce']}; dispatch_nonce={nonce}."
             )
             with self._lock:
