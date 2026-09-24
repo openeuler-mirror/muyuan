@@ -40,8 +40,8 @@ Child、Artifact View 和 cleanup 合同由真实 ThinkThread system test 覆盖
 `gpt-5.6-luna` 同时修改两个普通 module 并回写 Root，使用
 [Two Modules：ThinkThread Pi Apply](two-modules-thinkthread-apply/README.md)。
 
-需要验证 Pi + Git worktree 的同一双 module 任务，使用
-[Two Modules：Pi + Git Apply](two-modules-git-apply/README.md)。
+需要验证 Pi 或 Codex + Git worktree 的同一双 module 任务，使用
+[Two Modules：Git Apply](two-modules-git-apply/README.md)。
 
 ## 示例索引
 
@@ -54,7 +54,7 @@ Child、Artifact View 和 cleanup 合同由真实 ThinkThread system test 覆盖
 | [Circle Packing：ThinkThread Shared-Plane 回写](circle-packing-thinkthread-apply/README.md) | 两个真实 packing candidate、公开 verifier 和 Root 回写 | Pi 或 Codex，最多 20 分钟 | ThinkThread Linux Runtime、Python 标准库 |
 | [Recursive Submodule E2E](submodule-e2e/README.md) | 递归 submodule 拓扑、冻结前 dirty 检查和 candidate materialization | 离线，1 分钟 | Python、Git |
 | [Two Modules：ThinkThread Pi Apply](two-modules-thinkthread-apply/README.md) | 真实 Pi + ThinkThread 双 module Search、promotion 和 Root apply | Pi，最多 10 分钟 | ThinkThread Linux Runtime、Python 标准库 |
-| [Two Modules：Pi + Git Apply](two-modules-git-apply/README.md) | 真实 Pi + Git worktree 双 module Search、publication 和 apply | Pi，最多 10 分钟 | Python、Git |
+| [Two Modules：Git Apply](two-modules-git-apply/README.md) | 真实 Pi/Codex + Git worktree 双 module Search、publication 和 apply | Pi 或 Codex，最多 10 分钟 | Python、Git |
 | [Final Check Skill Guard](final-check-skill-guard/README.md) | task-local Skill 打回、修复和重新验收 | Pi 或 Codex，最多 30 分钟 | Python 标准库、Git |
 | [Model Optimize](model-optimize/README.md) | CPU/PyTorch 优化 | Pi 或 Codex，10 分钟 | PyTorch |
 | [VLIW Kernel Optimization](vliw-kernel-optimization/README.md) | 带模拟器正确性门禁的程序与调度优化 | Pi，8 分钟 | Python 标准库 |
