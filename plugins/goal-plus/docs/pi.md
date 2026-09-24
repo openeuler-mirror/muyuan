@@ -160,7 +160,10 @@ reconciliation）；Codex 的 Stop hook 用同一份文本。
 required final check 由共同 `goal_plus_run_final_check` 启动独立 Pi RPC reviewer。
 启动器继承当前 Main 的模型快照，登记 scope 资源并绑定准确 check/revision/native session。
 Pi 的工具白名单包含 `read`、`goal_plus_status`、`goal_plus_submit_final_check`；不开放编辑或
-shell。结构化提交仍由共同 GoalCompletion 验收，普通正文不能完成 Goal，返回后关闭原生资源。
+shell。没有活动 Goal Plus 任务的普通 Main 会话不能使用 Goal Plus MCP：误调用
+`goal_plus_status` 只返回 `inactive/no_active_goal`，不会读取 `.gp`；其他 `goal_plus_*`
+工具在 extension gate 被拒绝。结构化提交仍由共同 GoalCompletion 验收，普通正文不能完成
+Goal，返回后关闭原生资源。
 
 这些大小写精确的 slash command 是唯一创建/编辑入口。自然语言请求、skill/prompt 自动加载、
 直接 MCP 调用和通用 `goal-plus-pi-tool` 不能创建或编辑 Goal Plus。extension 通过未注册为模型 tool 的
