@@ -11,12 +11,77 @@ from fastmcp.utilities.json_schema import dereference_refs
 import pytest
 
 from goal_plus import __version__
+from goal_plus.goal_plus import FileGoalPlusRuntime
 import goal_plus.server as server_module
-from goal_plus.server import create_mcp
+from goal_plus.server import create_host_mcp, create_mcp
 from tests._fastmcp_helpers import tools_by_name
-from tests._runtime_helpers import create_candidate, make_project
+from tests._runtime_helpers import create_candidate, make_project, start_host_verified_goal
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import SearchTools
+
+
+def test_host_main_mcp_requires_native_session_for_goal_tools(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    root = tmp_path / ".gp"
+    goal = start_host_verified_goal(root, project, session_id="main-session")
+    runtime = FileGoalPlusRuntime(root)
+    runtime.activate_session(
+        goal.goal_plus_id,
+        {"agent_harness": "codex", "session_id": "main-session"},
+    )
+    args = {
+        "goal_plus_id": goal.goal_plus_id,
+        "triage": {
+            "is_optimization": False,
+            "confidence": "high",
+            "recommended_phase": "goal",
+        },
+    }
+
+    async def exercise() -> None:
+        async with Client(
+            create_host_mcp(root, agent_harness="codex", caller_role="main")
+        ) as client:
+            for metadata in (None, {"threadId": "foreign-session"}):
+                denied = await client.call_tool(
+                    "goal_plus_record_triage",
+                    args,
+                    meta=metadata,
+                    raise_on_error=False,
+                )
+                assert denied.is_error
+                assert "MainSessionMismatch" in "\n".join(
+                    item.text for item in denied.content if item.type == "text"
+                )
+            allowed = await client.call_tool(
+                "goal_plus_record_triage",
+                args,
+                meta={"threadId": "main-session"},
+            )
+            assert not allowed.is_error
+
+    asyncio.run(exercise())
+
+
+def test_search_report_requires_linked_goal_at_mcp_boundary(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    root = tmp_path / ".gp"
+    search = FileSearchRuntime(root)
+    run_id, _, _ = create_candidate(search, project)
+
+    async def exercise() -> None:
+        async with Client(create_mcp(root, caller_role="main")) as client:
+            denied = await client.call_tool(
+                "goal_plus_search_report",
+                {"run_id": run_id},
+                raise_on_error=False,
+            )
+            assert denied.is_error
+            assert "linked" in "\n".join(
+                item.text for item in denied.content if item.type == "text"
+            )
+
+    asyncio.run(exercise())
 
 
 def test_ready_spec_draft_returns_actionable_tool_error_without_state_change(tmp_path):

@@ -172,7 +172,7 @@ def test_codex_session_two_turns_through_mcp(tmp_path: Path, st_log_dir: Path):
                 async with Client(mcp, timeout=timeout) as client:
                     tools = await client.list_tools()
                     assert [tool.name for tool in tools] == ["session_run"]
-                    assert tools[0].inputSchema["required"] == ["prompt"]
+                    assert tools[0].input_schema["required"] == ["prompt"]
                     first = await client.call_tool("session_run", {
                         "prompt": f"Remember marker {marker}. What is 17 + 25? Reply with the number only.",
                     })

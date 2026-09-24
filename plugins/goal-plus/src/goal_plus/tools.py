@@ -542,6 +542,8 @@ class SearchTools:
         return self.runtime.select(run_id)
 
     def goal_plus_search_report(self, run_id: str) -> dict[str, str]:
+        if self.goal_runtime is not None:
+            self.goal_runtime.authorization.require_linked_search_run(run_id)
         report_path = self.runtime.report(run_id)
         return {
             "report_path": str(report_path),

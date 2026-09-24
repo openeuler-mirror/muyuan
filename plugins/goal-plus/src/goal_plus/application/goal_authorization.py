@@ -187,6 +187,134 @@ class GoalAuthorization:
             self.require_search_execution(run_id)
         return record
 
+    def require_linked_search_run(self, run_id: str) -> GoalPlusRecord:
+        """Require a Search run to belong to a host-authorized Goal.
+
+        This check deliberately does not require an active Main session. Terminal
+        report generation may be requested by a detached continuation, while the
+        report use case remains responsible for checking the Goal's terminal state.
+        """
+        owner = self.run_owner(run_id)
+        if owner is None:
+            raise PermissionError(
+                "GoalPlusOwnershipMismatch: report requires a Search run linked "
+                "to a host-authorized Goal Plus record"
+            )
+        record = self._source.read_goal(owner)
+        if (
+            record.entrypoint_status != "host_verified"
+            or not record.host_command_invocations
+            or not any(task.run_id == run_id for task in record.search_tasks)
+        ):
+            raise PermissionError(
+                "GoalPlusOwnershipMismatch: report requires a Search run linked "
+                "to a host-authorized Goal Plus record"
+            )
+        return record
+
+    def require_native_main_tool(
+        self,
+        tool_name: str,
+        tool_input: dict[str, object],
+        *,
+        agent_harness: AgentHarnessKind,
+        session_id: str,
+    ) -> GoalPlusRecord | None:
+        """Authorize a Main MCP call against its native session.
+
+        The host hook/extension remains the first gate. This second gate protects
+        the MCP transport itself when a caller reaches the server without going
+        through that host path.
+        """
+        target = GoalToolTarget.from_input(tool_name, tool_input)
+        if tool_matches(tool_name, "goal_plus_get_tool_schema") or tool_matches(
+            tool_name, "goal_plus_list_models"
+        ):
+            return None
+        if tool_matches(tool_name, "goal_plus_search_report"):
+            return self.require_linked_search_run(target.run_id or "")
+        if tool_matches(tool_name, "goal_plus_status") or tool_matches(
+            tool_name, "goal_plus_history"
+        ):
+            if target.goal_plus_id is None:
+                raise PermissionError(
+                    "GoalPlusOwnershipMismatch: Goal read requires a Goal Plus target"
+                )
+            return self.require_main_goal_session(
+                target.goal_plus_id,
+                agent_harness=agent_harness,
+                session_id=session_id,
+                execution=False,
+            )
+        if (
+            tool_matches(tool_name, "goal_plus_search_status")
+            or tool_matches(tool_name, "goal_plus_search_list_history")
+            or tool_matches(tool_name, "goal_plus_search_get_agent_observability")
+        ):
+            run_id = self.target_run_id(target)
+            if run_id is None:
+                raise PermissionError(
+                    "GoalPlusOwnershipMismatch: Search read requires a linked run"
+                )
+            return self.require_main_search_session(
+                run_id,
+                agent_harness=agent_harness,
+                session_id=session_id,
+                execution=False,
+            )
+        if tool_matches(tool_name, "goal_plus_monitor_snapshot"):
+            if target.goal_plus_id is not None:
+                return self.require_main_goal_session(
+                    target.goal_plus_id,
+                    agent_harness=agent_harness,
+                    session_id=session_id,
+                    execution=False,
+                )
+            run_id = target.run_id
+            if run_id is None:
+                raise PermissionError(
+                    "GoalPlusOwnershipMismatch: monitor snapshot requires a "
+                    "Goal Plus or linked Search target"
+                )
+            return self.require_main_search_session(
+                run_id,
+                agent_harness=agent_harness,
+                session_id=session_id,
+                execution=False,
+            )
+        if tool_matches(tool_name, "goal_plus_session_wait_any") or tool_matches(
+            tool_name, "goal_plus_session_interrupt"
+        ) or tool_matches(tool_name, "goal_plus_session_stop") or tool_matches(
+            tool_name, "goal_plus_session_close"
+        ):
+            # Native session-control adapters perform their own exact caller
+            # check, including the target session handle.
+            return None
+        if any(tool_matches(tool_name, suffix) for suffix in GOAL_SCOPED_TOOL_SUFFIXES):
+            if target.goal_plus_id is None:
+                raise PermissionError(
+                    "GoalPlusOwnershipMismatch: Main tool requires a Goal Plus target"
+                )
+            return self.require_main_goal_session(
+                target.goal_plus_id,
+                agent_harness=agent_harness,
+                session_id=session_id,
+                execution=False,
+            )
+        if any(tool_matches(tool_name, suffix) for suffix in LINKED_SEARCH_TOOL_SUFFIXES):
+            run_id = self.target_run_id(target)
+            if run_id is None:
+                raise PermissionError(
+                    "GoalPlusOwnershipMismatch: Main Search tool requires a linked run"
+                )
+            return self.require_main_search_session(
+                run_id,
+                agent_harness=agent_harness,
+                session_id=session_id,
+                execution=False,
+            )
+        return None
+
     def require_main_goal_session(
         self, goal_plus_id: str, *, agent_harness: AgentHarnessKind, session_id: str, execution: bool,
     ) -> GoalPlusRecord:
