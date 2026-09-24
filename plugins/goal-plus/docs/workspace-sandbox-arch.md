@@ -112,6 +112,11 @@ Git + Git 在 freeze 时要求 clean Git `HEAD`，hash-pin verifier artifact，�
 只建立 `c001`，在真实 worktree 运行 relocation verifier。通过后才创建其余 candidate；
 失败会 abort run，并保留诊断 Evidence。
 
+当 Git root 的 committed tree 含 `.gitmodules` 或 gitlink 时，clean 检查会递归验证所有
+formal child。它报告 `SubmoduleWorkspaceDirty`、`SubmoduleHeadMismatch`、
+`SubmoduleUninitialized`、`SubmoduleObjectUnavailable` 等明确类型，并带 child 相对路径、
+检查阶段、原因和 expected/actual；candidate worktree 会先递归初始化 child 再进入 verifier。
+
 ThinkThread 在 freeze 时校验 `source_path` 可表示为当前 Root 的逻辑 `source_subdir`，并固定
 SearchSpec 与 verifier artifact。`goal_plus_search_create` 校验 Root direct filesystem 和 delegated Child
 capability；Runtime release、Agent Control protocol 与 Agent POSIX fingerprint 偏离已测基线时

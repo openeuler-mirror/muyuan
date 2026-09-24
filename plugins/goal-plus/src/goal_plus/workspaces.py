@@ -16,6 +16,7 @@ from goal_plus.domain.artifacts import (
     WorkspaceProvider,
     WorkspaceCapacityEstimate,
 )
+from goal_plus.infrastructure.artifacts.submodules import inspect_submodules
 from goal_plus.ports.workspace_creation import WorkspaceMaterialization
 from goal_plus.ports.publication import (
     PreparedPromotion,
@@ -507,6 +508,7 @@ def _materialize_git_candidate_workspace(
                 str(workspace),
                 revision,
             )
+    _materialize_submodules(workspace)
     logical_workspace = (
         workspace
         if source_subdir == "."
@@ -1231,6 +1233,42 @@ def _ensure_synthetic_worktree_repository(
     return repository
 
 
+def _materialize_submodules(workspace: Path) -> None:
+    """Populate formal submodules in a candidate worktree and verify them."""
+    result = subprocess.run(
+        [
+            "git",
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+        ],
+        cwd=workspace,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(
+            f"failed to materialize Git submodules in {workspace}: {detail[:1000]}"
+        )
+    # Parent-only repositories remain a valid fast path.
+    has_gitlinks = any(
+        line.startswith("160000 commit ")
+        for line in _git_output(
+            workspace,
+            "ls-tree",
+            "-r",
+            "HEAD",
+        ).splitlines()
+    )
+    if (workspace / ".gitmodules").exists() or has_gitlinks:
+        inspect_submodules(workspace)
+
+
 def _is_expected_worktree(
     repository: Path,
     workspace: Path,
@@ -1292,8 +1330,15 @@ def _top_level_pathspec(source_subdir: str, relative_path: str) -> str:
     return f":(top,literal){value}"
 
 
-def git_status(workspace: Path, *, ignore_runtime_noise: bool = False) -> list[str]:
+def git_status(
+    workspace: Path,
+    *,
+    ignore_runtime_noise: bool = False,
+    ignore_submodules: bool = False,
+) -> list[str]:
     command = ["status", "--porcelain=v1", "--untracked-files=all"]
+    if ignore_submodules:
+        command.append("--ignore-submodules=all")
     if ignore_runtime_noise:
         exclusions = [
             pattern

@@ -58,7 +58,10 @@ def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug, diagnos
         expected = (
             {"agent_session_id": "worker-session", "candidate_task": {"workspace": str(tmp_path)}}
             if role == "worker" else
-            # goal_plus_status without detail never carries the raw goal.
+            {"status": "inactive", "reason": "no_active_goal",
+             "message": "当前 Pi 会话不在 Goal Plus 任务中；Goal Plus 工具不可用。",
+             "details": {"tool": "goal_plus_status", "inactive": True}}
+            if role == "main" else
             {"goal_plus_id": "gp_0001", "status": "active",
              "phase": "goal", "goal_revision": 1, "control": {"state": "active", "version": 1},
              "active_session": {"session_id": "pi-test"}}
@@ -745,7 +748,7 @@ assert(tools.has("goal_plus_get_tool_schema"));
 assert.equal(await events.get("tool_call")(event("goal_plus_get_tool_schema"), ctx), undefined);
 const ownMutations = [...tools.keys()].filter(name => !readOnly.has(name) && !resourceControls.has(name));
 for (const name of ownMutations) {
-  await assert.rejects(() => call(name), /GoalPlusEntrypointRequired/);
+  await assert.rejects(() => call(name), /GoalPlusUnavailable/);
 }
 assert.equal(calls.length, 0); // Rejection precedes model/runtime/process work.
 
@@ -759,9 +762,14 @@ for (const name of ["search_emails", "goal_plus_external", "pi_search_pool_exter
 // closure still refuses direct execution without authorization.
 sources.delete("goal_plus_search_create");
 assert.equal(await events.get("tool_call")(event("goal_plus_search_create"), ctx), undefined);
-await assert.rejects(() => call("goal_plus_search_create"), /GoalPlusEntrypointRequired/);
-await call("goal_plus_status");
-assert.equal(calls.at(-1).name, "goal_plus_status");
+await assert.rejects(() => call("goal_plus_search_create"), /GoalPlusUnavailable/);
+const inactive = await call("goal_plus_status");
+assert.equal(inactive.details.status, "inactive");
+assert.equal(inactive.details.reason, "no_active_goal");
+assert.equal(calls.length, 0, "an inactive status read must not touch the runtime or .gp tree");
+for (const name of ["goal_plus_get_tool_schema", "goal_plus_history", "goal_plus_monitor_snapshot", "goal_plus_search_status"]) {
+  await assert.rejects(() => call(name), /GoalPlusUnavailable/);
+}
 
 await commands.get("goal-plus").handler("fixture", ctx);
 assert(calls.some(c => c.name === "goal_plus_host_start"));

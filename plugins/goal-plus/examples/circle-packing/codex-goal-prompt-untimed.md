@@ -1,4 +1,4 @@
-$goal-plus max_parallel=2 workspace_provider=git_worktree promotion_mode=artifact_only strategy=agent_guided inner_agent=autoresearch annotator=gpt-5.6-terra workers=gpt-5.6-terra,gpt-5.6-luna 优化只读 Circle Packing 模板，并把结果保存在 `.gp/`。
+$goal-plus max_parallel=2 workspace_provider=git_worktree promotion_mode=artifact_only strategy=agent_guided inner_agent=autoresearch 优化只读 Circle Packing 模板，并把结果保存在 `.gp/`。
 <!-- markdownlint-disable-file MD013 MD041 -->
 
 问题：当前程序需要在单位正方形内放置恰好 26 个互不重叠的圆，并尽可能增大
@@ -17,7 +17,11 @@ publication 回写到 `workspace-template/`；候选、Evidence、publication �
 
 验收：运行
 `python workspace-template/.goal-plus-verifiers/circle_packing_score.py`。结果必须满足
-`valid=true`，圆的数量必须为 26，并最大化 `sum_radii`。两个候选通道都至少产出一个
+`valid=true`，圆的数量必须为 26，且 `sum_radii >= 2.2` 即视为达标；本示例用于验证
+流程，达标后正常收尾即可，不要求继续提高分数。两个候选通道都至少产出一个
 verifier 已结算结果后结束探索，并确认 `workspace-template/` 保持不变。
+
+模型选择：prompt 不为 main 或任何 subagent 指定模型；所有 subagent（candidate
+worker、Evidence annotator 等）默认不指定模型，直接继承 main agent 当前使用的模型。
 
 执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

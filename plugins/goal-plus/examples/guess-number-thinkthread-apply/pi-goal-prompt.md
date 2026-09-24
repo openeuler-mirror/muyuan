@@ -15,4 +15,7 @@ zero 路线，把 `guess.py` 完整写成 `print(0)`；c002 采用 immediate-exa
 记录 Search result，完成原始目标审计，把 Goal Plus 标记为 complete，最后生成规范报告。正常
 完成流程只依据 monitor 与完成卡，不检查 ThinkThread 内部状态文件。
 
+模型选择：prompt 不为 main 或任何 subagent 指定模型；所有 subagent（candidate
+worker、Evidence annotator 等）默认不指定模型，直接继承 main agent 当前使用的模型。
+
 执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

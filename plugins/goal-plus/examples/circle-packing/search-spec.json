@@ -47,6 +47,7 @@
     "promotion_mode": "artifact_only"
   },
   "constraints": {
+    "success_threshold": 2.2,
     "suggested_batch_size": 2,
     "task_summary": "在单位正方形内返回恰好 26 个互不重叠的圆，并最大化所有圆的半径之和。"
   }

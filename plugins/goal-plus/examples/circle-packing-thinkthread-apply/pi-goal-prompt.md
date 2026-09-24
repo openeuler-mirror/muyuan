@@ -15,8 +15,11 @@ verifier feedback 自主继续；只要全局
 停止条件未满足就 continuation 同一个 candidate。不要新增 plan、candidate 或 run。
 
 等待冻结 SearchSpec 要求的 Evidence 就绪后，选择最高 `sum_radii` 的有效结果，完成 promotion
-并应用回当前 Root。回写后重跑 verifier，必须 `valid=true` 且 `sum_radii >= 2.4`。记录 Search
+并应用回当前 Root。回写后重跑 verifier，必须 `valid=true` 且 `sum_radii >= 2.2`。记录 Search
 result，完成原始目标审计并把 Goal Plus 标记 complete，最后生成规范报告。正常完成流程只依据
 monitor 与完成卡，不检查 ThinkThread 内部状态文件。
+
+模型选择：prompt 不为 main 或任何 subagent 指定模型；所有 subagent（candidate
+worker、Evidence annotator 等）默认不指定模型，直接继承 main agent 当前使用的模型。
 
 执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

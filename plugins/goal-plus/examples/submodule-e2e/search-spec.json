@@ -1,0 +1,6 @@
+{
+  "metric_name": "combined_score",
+  "metric_direction": "maximize",
+  "verifier": "verifier.py",
+  "workspace_provider": "git_worktree"
+}

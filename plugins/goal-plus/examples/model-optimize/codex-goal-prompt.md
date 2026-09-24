@@ -30,6 +30,10 @@ the promotion patch under `.gp/`; do not apply it back to
 `source_path`. Before terminal settlement, confirm that `workspace-template/`
 remains unchanged.
 
+Model selection: this prompt pins no model. Every subagent (candidate worker,
+Evidence annotator, and any other helper) leaves its model unspecified and
+inherits the main agent's current model.
+
 Cadence: once a candidate has a plan, make the edit and submit it to the
 verifier promptly; do not iterate internally for a long time without
 submitting.

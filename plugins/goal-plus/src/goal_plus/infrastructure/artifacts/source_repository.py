@@ -2,9 +2,11 @@
 
 import subprocess
 from pathlib import Path
+
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.domain.search import SearchSpec
 from goal_plus.infrastructure.artifacts.git import git_output
+from goal_plus.infrastructure.artifacts.submodules import inspect_submodules
 from goal_plus.workspaces import LocalGitWorkspace, git_status
 
 
@@ -19,10 +21,15 @@ class SourceRepository:
         workspace: Path,
         *,
         ignore_runtime_noise: bool = False,
+        ignore_submodules: bool = False,
         strict: bool = False,
     ) -> list[str]:
         try:
-            return git_status(workspace, ignore_runtime_noise=ignore_runtime_noise)
+            return git_status(
+                workspace,
+                ignore_runtime_noise=ignore_runtime_noise,
+                ignore_submodules=ignore_submodules,
+            )
         except RuntimeError as exc:
             if strict:
                 raise RuntimeError(
@@ -55,9 +62,19 @@ class SourceRepository:
         status = self.git_status(
             repository,
             ignore_runtime_noise=True,
+            ignore_submodules=True,
             strict=True,
         )
         if not status:
+            has_gitlinks = any(
+                line.startswith("160000 commit ")
+                for line in git_output(
+                    repository,
+                    ["git", "ls-tree", "-r", "HEAD"],
+                ).splitlines()
+            )
+            if (repository / ".gitmodules").is_file() or has_gitlinks:
+                inspect_submodules(repository)
             return
 
         preview_limit = 10

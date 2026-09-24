@@ -56,6 +56,7 @@ let workerGeneration: { runId: string; candidateId: string; generation: number }
 let activeGoalPlusId = process.env.GOAL_PLUS_ID;
 let cachedGoalStatus: GoalPlusStatusPayload | undefined;
 let goalContextFullKey: string | undefined;
+let mainGoalPlusToolNames: string[] = [];
 
 let continuationCount = 0;
 // True once the full stop-audit policy block sits in this session's visible
@@ -377,6 +378,27 @@ function goalPlusIdFrom(value: unknown): string | undefined {
 function statusFrom(value: unknown): GoalPlusStatusPayload | undefined {
 	if (!isRecord(value)) return undefined;
 	return value as GoalPlusStatusPayload;
+}
+
+function inactiveGoalStatusResult(): { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> } {
+	const details = {
+		status: "inactive",
+		reason: "no_active_goal",
+		message: "当前 Pi 会话不在 Goal Plus 任务中；Goal Plus 工具不可用。",
+		details: { tool: "goal_plus_status", inactive: true },
+	};
+	return {
+		content: [{ type: "text", text: JSON.stringify(details) }],
+		details,
+	};
+}
+
+function setMainGoalPlusToolAvailability(pi: ExtensionAPI, enabled: boolean): void {
+	if (role !== "main" || mainGoalPlusToolNames.length === 0) return;
+	const goalTools = new Set(mainGoalPlusToolNames);
+	const active = pi.getActiveTools().filter((name) => !goalTools.has(name));
+	if (enabled) active.push(...mainGoalPlusToolNames);
+	pi.setActiveTools([...new Set(active)]);
 }
 
 function gateFrom(value: unknown): GoalPlusGatePayload | undefined {
@@ -1026,6 +1048,7 @@ function activateGoal(pi: ExtensionAPI, details: unknown, startEntryCount?: numb
 	}
 	activeGoalPlusId = id;
 	cachedGoalStatus = statusFrom(details);
+	setMainGoalPlusToolAvailability(pi, true);
 	if (persist) persistGoalState(pi);
 }
 
@@ -1060,6 +1083,7 @@ function clearActiveGoalState(pi: ExtensionAPI, persist: boolean): void {
 	cachedGoalStatus = undefined;
 	goalContextFullKey = undefined;
 	goalPlusSessionAuthorized = false;
+	setMainGoalPlusToolAvailability(pi, false);
 	if (persist) persistGoalState(pi);
 }
 
@@ -2210,6 +2234,11 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 		parameters: toolParameters(name),
 		executionMode: name === "goal_plus_run_work_item" ? "concurrent" : "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (role === "main" && name === "goal_plus_status" && !activeGoalPlusId) {
+				// A fresh ordinary session has no Goal Plus state to read. Keep an
+				// accidental model call local so it cannot probe the workspace .gp tree.
+				return inactiveGoalStatusResult();
+			}
 			const commandCtx = commandContextFrom(ctx);
 			const startEntryCount = ctx.sessionManager.getEntries().length;
 			const canPersistPiState = canPersistGoalState(ctx);
@@ -2422,6 +2451,12 @@ function workspaceGuard(event: ToolCallEvent, ctx: ExtensionContext, owner: Tool
 
 async function mainGate(event: ToolCallEvent, ctx: ExtensionContext, owner: ToolOwner) {
 	if (role !== "main") return undefined;
+	if (owner === "goal-plus" && !activeGoalPlusId && event.toolName !== "goal_plus_status") {
+		return {
+			block: true,
+			reason: "GoalPlusUnavailable: this Pi session is not running a Goal Plus task; Goal Plus tools are unavailable.",
+		};
+	}
 	const requiresAuthorization = requiresGoalPlusAuthorization(event.toolName, owner);
 	if (requiresAuthorization && !goalPlusSessionAuthorized) {
 		// An interrupt or explicit pause also clears the in-memory
@@ -2796,6 +2831,7 @@ export default async function (pi: ExtensionAPI) {
 				? []
 				: mainTools;
 	const registeredRuntimeTools = new Set<string>();
+	mainGoalPlusToolNames = role === "main" ? [...roleTools] : [];
 	for (const tool of roleTools) {
 		registerRuntimeTool(pi, tool, registeredRuntimeTools);
 	}
@@ -2876,6 +2912,7 @@ export default async function (pi: ExtensionAPI) {
 			return;
 		}
 		restoreGoalState(ctx);
+		setMainGoalPlusToolAvailability(pi, Boolean(activeGoalPlusId));
 		if (role !== "main" || !activeGoalPlusId) return;
 		const commandCtx = commandContextFrom(ctx);
 		const persist = canPersistGoalState(ctx);

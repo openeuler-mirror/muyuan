@@ -16,8 +16,13 @@ rebase、改写 refs 或编辑 `results.tsv`。不要把当前示例目录或其
 Search 要求：这是强制进入 Search Mode 的任务。
 
 验收：运行 `python workspace/.goal-plus-verifiers/circle_packing_score.py`。结果必须
-满足 `valid=true`，圆的数量必须为 26，并最大化 `sum_radii`。
+满足 `valid=true`，圆的数量必须为 26，且 `sum_radii >= 2.2` 即视为达标；本示例用于
+验证流程，达标后正常收尾即可，不要求继续提高分数。
 选中结果必须通过 provider publication 回写到 `workspace/`；回写后从源码工作区
-重新运行 verifier，并确认结果一致。
+重新运行 verifier，并确认结果一致。两个候选通道都至少产出一个
+verifier 已结算结果后结束探索。
+
+模型选择：prompt 不为 main 或任何 subagent 指定模型；所有 subagent（candidate
+worker、Evidence annotator 等）默认不指定模型，直接继承 main agent 当前使用的模型。
 
 执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

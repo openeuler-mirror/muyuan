@@ -20,7 +20,7 @@ from tests._thinkthread_sdk import StatefulAgentPosix
 @pytest.fixture
 def child_actor():
     sdk, clock = StatefulAgentPosix(), SystemClock()
-    record, saved, settled = {}, [], []
+    record, saved, settled = {"agent_session_id": "agent-child"}, [], []
 
     def receive(state):
         child = sdk.child(state["thinkthread_id"])
@@ -47,7 +47,7 @@ def child_actor():
 @pytest.fixture
 def codex_actor():
     sdk, clock = StatefulAgentPosix(), SystemClock()
-    record, saved, settled, bound = {}, [], [], []
+    record, saved, settled, bound = {"agent_session_id": "agent-codex"}, [], [], []
 
     def receive(state):
         child = sdk.child(state["thinkthread_id"])
@@ -164,6 +164,18 @@ def test_common_controller_retains_child_for_two_exact_calls(child_actor):
     finally:
         control.close()
     assert sdk.child("tt-child-1")["executionState"] == "absent"
+
+
+def test_dispatch_message_carries_the_bound_agent_session_id(child_actor):
+    actor, sdk, record, _, _ = child_actor
+
+    actor.run("first", timeout=5)
+    spawn = next(params for operation, params in sdk.operations if operation == "thinkthread.spawn")
+    assert f"agent_session_id={record['agent_session_id']};" in spawn["initialMessage"]
+
+    actor.run("second", timeout=5)
+    wake = [params for operation, params in sdk.operations if operation == "message.send" and params.get("wake") is True]
+    assert f"agent_session_id={record['agent_session_id']};" in wake[-1]["text"]
 
 
 @pytest.mark.parametrize("lost", ["spawn", "wake"])
