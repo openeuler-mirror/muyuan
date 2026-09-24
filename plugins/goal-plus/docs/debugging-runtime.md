@@ -77,8 +77,9 @@ Codex 检查 `replacement_history` 和之后的 system/developer 消息；每次
 为 `recorded_working_context`：rollout 不包含完整 provider request，不能据此断言隐藏的
 MCP 动态描述也缺失。记录匹配同样不证明模型遵循了流程。
 
-Pi 默认于 `turn_start` 读取宿主最终 system prompt，并将概要哈希、匹配布尔值及 session/turn
-身份写入 `goal-plus-instructions-observation` 原生 custom entry。它不写完整 prompt，也不
+有活动 Goal Plus 时，Pi 于 `turn_start` 读取宿主最终 system prompt，并将概要哈希、匹配布尔值及
+session/turn 身份写入 `goal-plus-instructions-observation` 原生 custom entry。普通会话不注入
+概要，也不写这类 observation。它不写完整 prompt，也不
 进入模型上下文。检查按分支祖先链进行；默认检查最后持久 entry 的分支，也可通过
 `--leaf-id` 指定分支。旧 Pi session 或关闭采集的会话缺少观测时只能返回 unavailable。
 

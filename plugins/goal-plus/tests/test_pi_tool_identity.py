@@ -53,7 +53,7 @@ def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug, diagnos
     assert "ownership checks passed" in result.stdout
     diagnostics = [json.loads(line) for line in result.stderr.splitlines()
                    if line.startswith('{"event":"goal_plus_api_response_size"')]
-    if debug and role != "ordinary":
+    if debug and role != "ordinary" and (role != "main" or os.environ.get("GOAL_PLUS_ID")):
         assert len(diagnostics) == 1
         expected = (
             {"agent_session_id": "worker-session", "candidate_task": {"workspace": str(tmp_path)}}
@@ -283,15 +283,16 @@ registerHooks({ resolve(specifier, context, next) {
   return next(specifier, context);
 }});
 const {default: register} = await import(pathToFileURL(extensionPath).href);
-const tools = new Map(), sources = new Map(), events = new Map(), commands = new Map();
+const tools = new Map(), activeTools = new Set(), sources = new Map(), events = new Map(), commands = new Map();
 const pi = {
   registerTool(tool) {
     tools.set(tool.name, tool);
+    activeTools.add(tool.name);
     sources.set(tool.name, {path: extensionPath, source: "package"});
   },
   getAllTools() { return [...sources].map(([name, sourceInfo]) => ({name, sourceInfo})); },
-  getActiveTools() { return [...tools.keys()]; },
-  setActiveTools() {},
+  getActiveTools() { return [...activeTools]; },
+  setActiveTools(names) { activeTools.clear(); for (const name of names) if (tools.has(name)) activeTools.add(name); },
   registerCommand(name, command) {commands.set(name, command);},
   on(name, handler) {events.set(name, handler);},
   sendMessage() {}, sendUserMessage() {}, appendEntry() {}, getThinkingLevel() {return "medium";},
@@ -386,9 +387,12 @@ if (process.env.GOAL_PLUS_TT_SDK_TEST) {
 }
 const overview = await events.get("before_agent_start")({prompt: "ordinary task", systemPrompt: "host system"}, ctx);
 if (process.env.GOAL_PLUS_PI_ROLE === "main") {
-  assert.equal(overview.systemPrompt, "host system\n\n" + globalThis.mcpManifest.instructions);
+  const initiallyActive = Boolean(process.env.GOAL_PLUS_ID);
+  assert.equal(overview.systemPrompt,
+    initiallyActive ? "host system\n\n" + globalThis.mcpManifest.instructions : "host system");
   const next = await events.get("before_agent_start")({prompt: "continued task", systemPrompt: "rebuilt system"}, ctx);
-  assert.equal(next.systemPrompt, "rebuilt system\n\n" + globalThis.mcpManifest.instructions);
+  assert.equal(next.systemPrompt,
+    initiallyActive ? "rebuilt system\n\n" + globalThis.mcpManifest.instructions : "rebuilt system");
   const observations = [];
   pi.appendEntry = (type, data) => observations.push({type, data});
   const debug = process.env.GOAL_PLUS_SESSION_DIAGNOSTICS !== "0";
@@ -399,12 +403,13 @@ if (process.env.GOAL_PLUS_PI_ROLE === "main") {
   await events.get("turn_start")({turnIndex: 0}, ctx);
   ctx.getSystemPrompt = () => "prompt overwritten by another extension";
   await events.get("turn_start")({turnIndex: 1}, ctx);
-  assert.deepEqual(observations.map(item => item.data.overview_present), debug ? [true, false] : []);
-  if (debug) {
+  assert.deepEqual(observations.map(item => item.data.overview_present),
+    debug && initiallyActive ? [true, false] : []);
+  if (debug && initiallyActive) {
     assert.equal(observations[0].type, "goal-plus-instructions-observation");
     assert.equal(observations[0].data.session_id, "pi-test");
     assert.equal(observations[0].data.expected_sha256,
-      createHash("sha256").update(globalThis.mcpManifest.instructions.trim()).digest("hex"));
+      createHash("sha256").update(initiallyActive ? globalThis.mcpManifest.instructions.trim() : "").digest("hex"));
   }
   pi.appendEntry = () => {};
 } else {
@@ -725,6 +730,7 @@ if (process.env.GOAL_PLUS_PI_ROLE !== "main") {
   process.exit(0);
 }
 if (process.env.GOAL_PLUS_PI_PAUSED_GATE_TEST === "1") {
+  await commands.get("goal-plus").handler("fixture", ctx);
   globalThis.status = {...globalThis.status,
     control: {state: "paused", reason: "user_interrupt", version: 2}};
   await assert.rejects(() => call("goal_plus_search_create"),
@@ -744,13 +750,9 @@ const readOnly = new Set(["goal_plus_search_recovery_status", "goal_plus_status"
   "goal_plus_search_list_history", "goal_plus_search_list_iterations", "goal_plus_search_get_agent_observability"]);
 const resourceControls = new Set(["goal_plus_session_wait_any", "goal_plus_session_interrupt",
   "goal_plus_session_stop", "goal_plus_session_close"]);
-assert(tools.has("goal_plus_get_tool_schema"));
-assert.equal(await events.get("tool_call")(event("goal_plus_get_tool_schema"), ctx), undefined);
-const ownMutations = [...tools.keys()].filter(name => !readOnly.has(name) && !resourceControls.has(name));
-for (const name of ownMutations) {
-  await assert.rejects(() => call(name), /GoalPlusUnavailable/);
-}
-assert.equal(calls.length, 0); // Rejection precedes model/runtime/process work.
+assert.equal(tools.size, 0, "Main Goal Plus tools must not be registered before slash activation");
+assert.equal(activeTools.size, 0, "Main Goal Plus tools must not be active before slash activation");
+assert.equal(await events.get("tool_call")(event("goal_plus_search_create"), ctx), undefined);
 
 // Both ordinary prefixed tools and exact-name overrides are foreign registrations.
 for (const name of ["search_emails", "goal_plus_external", "pi_search_pool_external",
@@ -762,17 +764,12 @@ for (const name of ["search_emails", "goal_plus_external", "pi_search_pool_exter
 // closure still refuses direct execution without authorization.
 sources.delete("goal_plus_search_create");
 assert.equal(await events.get("tool_call")(event("goal_plus_search_create"), ctx), undefined);
-await assert.rejects(() => call("goal_plus_search_create"), /GoalPlusUnavailable/);
-const inactive = await call("goal_plus_status");
-assert.equal(inactive.details.status, "inactive");
-assert.equal(inactive.details.reason, "no_active_goal");
-assert.equal(calls.length, 0, "an inactive status read must not touch the runtime or .gp tree");
-for (const name of ["goal_plus_get_tool_schema", "goal_plus_history", "goal_plus_monitor_snapshot", "goal_plus_search_status"]) {
-  await assert.rejects(() => call(name), /GoalPlusUnavailable/);
-}
 
 await commands.get("goal-plus").handler("fixture", ctx);
 assert(calls.some(c => c.name === "goal_plus_host_start"));
+assert(tools.has("goal_plus_get_tool_schema"), "slash activation must register Main tools");
+assert(activeTools.has("goal_plus_get_tool_schema"), "slash activation must activate Main tools");
+const ownMutations = [...tools.keys()].filter(name => !readOnly.has(name) && !resourceControls.has(name));
 calls.length = 0;
 // A live Goal must not intercept an effective foreign override either.
 for (const name of ["search_emails", "goal_plus_search_create", "bash", "edit"]) {

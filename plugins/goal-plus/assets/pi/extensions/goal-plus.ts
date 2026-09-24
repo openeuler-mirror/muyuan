@@ -57,6 +57,7 @@ let activeGoalPlusId = process.env.GOAL_PLUS_ID;
 let cachedGoalStatus: GoalPlusStatusPayload | undefined;
 let goalContextFullKey: string | undefined;
 let mainGoalPlusToolNames: string[] = [];
+let ensureMainGoalPlusTools: (() => Promise<void>) | undefined;
 
 let continuationCount = 0;
 // True once the full stop-audit policy block sits in this session's visible
@@ -2027,6 +2028,7 @@ async function createGoalPlusStart(
 		});
 		return undefined;
 	}
+	await ensureMainGoalPlusTools?.();
 	goalPlusSessionAuthorized = true;
 	activateGoal(pi, status, startEntryCount, canPersistGoalState(ctx));
 	pi.sendMessage({
@@ -2079,6 +2081,7 @@ async function updateGoalPlusStart(
 	});
 	const status = statusFrom(result.details);
 	if (!status?.goal_plus_id) return undefined;
+	await ensureMainGoalPlusTools?.();
 	goalPlusSessionAuthorized = true;
 	activateGoal(pi, status, undefined, canPersistGoalState(ctx));
 	if (status.control?.state !== "active" || status.status === "blocked") {
@@ -2119,6 +2122,7 @@ async function controlGoalPlus(
 		return undefined;
 	}
 	if (action !== "summary") {
+		await ensureMainGoalPlusTools?.();
 		goalPlusSessionAuthorized = status.control?.state === "active";
 		activateGoal(pi, status, undefined, canPersistGoalState(ctx));
 	}
@@ -2663,7 +2667,9 @@ let piForGate: ExtensionAPI;
 export default async function (pi: ExtensionAPI) {
 	piForGate = pi;
 	let mcpInstructions: string | undefined;
-	if (role !== "ordinary") {
+	let mcpManifestLoaded = false;
+	const loadMcpManifest = async (): Promise<void> => {
+		if (mcpManifestLoaded) return;
 		const manifest = await runJsonCli(pi, { cwd: process.cwd() }, "host_mcp_manifest", {});
 		if (!isRecord(manifest.details) || !Array.isArray(manifest.details.tools)) {
 			throw new Error("Goal Plus MCP tool discovery failed");
@@ -2683,7 +2689,12 @@ export default async function (pi: ExtensionAPI) {
 				inputSchema: tool.inputSchema as TSchema,
 			});
 		}
-	}
+		mcpManifestLoaded = true;
+	};
+	// Main tools are a capability of an activated Goal, not of every Pi
+	// session. Worker and final-checker processes are already host-launched
+	// for a Goal, so their role-scoped tools can be loaded during startup.
+	if (role !== "ordinary" && role !== "main") await loadMcpManifest();
 	if (typeof pi.registerEntryRenderer === "function") {
 		pi.registerEntryRenderer<PiRuntimeStartEntry>(GOAL_PLUS_RUNTIME_ENTRY_TYPE, (entry, { expanded }, theme) => {
 			const lines = renderPiRuntimeStartEntry(entry.data, expanded);
@@ -2745,8 +2756,8 @@ export default async function (pi: ExtensionAPI) {
 				}
 				const deliverAsFollowUp = !ctx.isIdle();
 				const prompt = request.action === "edit"
-						? await updateGoalPlusStart(pi, ctx, request.rawGoal)
-						: await createGoalPlusStart(pi, ctx, request.rawGoal);
+					? await updateGoalPlusStart(pi, ctx, request.rawGoal)
+					: await createGoalPlusStart(pi, ctx, request.rawGoal);
 				if (prompt) startGoalPlusMainTurn(pi, ctx, request.action === "edit" ? "goal_edit" : "goal_start", prompt, deliverAsFollowUp);
 			},
 		});
@@ -2832,8 +2843,17 @@ export default async function (pi: ExtensionAPI) {
 				: mainTools;
 	const registeredRuntimeTools = new Set<string>();
 	mainGoalPlusToolNames = role === "main" ? [...roleTools] : [];
-	for (const tool of roleTools) {
-		registerRuntimeTool(pi, tool, registeredRuntimeTools);
+	let mainToolsRegistered = false;
+	const ensureMainToolsRegistered = async (): Promise<void> => {
+		if (role !== "main" || mainToolsRegistered) return;
+		await loadMcpManifest();
+		for (const tool of mainTools) registerRuntimeTool(pi, tool, registeredRuntimeTools);
+		mainToolsRegistered = true;
+		setMainGoalPlusToolAvailability(pi, Boolean(activeGoalPlusId));
+	};
+	ensureMainGoalPlusTools = ensureMainToolsRegistered;
+	if (role !== "main") {
+		for (const tool of roleTools) registerRuntimeTool(pi, tool, registeredRuntimeTools);
 	}
 	pi.on("input", async (event, ctx) => {
 		scopeThinkThreadWorkerTools(pi, ctx, event.text);
@@ -2877,8 +2897,8 @@ export default async function (pi: ExtensionAPI) {
 			return { action: "handled" };
 		}
 		const prompt = request.action === "edit"
-				? await updateGoalPlusStart(pi, ctx, request.rawGoal)
-				: await createGoalPlusStart(pi, ctx, request.rawGoal, request.withFinalCheck);
+			? await updateGoalPlusStart(pi, ctx, request.rawGoal)
+			: await createGoalPlusStart(pi, ctx, request.rawGoal, request.withFinalCheck);
 		if (prompt) appendInjectionObservation(pi, ctx, {
 			kind: request.action === "edit" ? "goal_edit" : "goal_start", role,
 			channel: "input_transform", target_id: activeGoalPlusId, content: prompt,
@@ -2912,6 +2932,7 @@ export default async function (pi: ExtensionAPI) {
 			return;
 		}
 		restoreGoalState(ctx);
+		if (activeGoalPlusId) await ensureMainToolsRegistered();
 		setMainGoalPlusToolAvailability(pi, Boolean(activeGoalPlusId));
 		if (role !== "main" || !activeGoalPlusId) return;
 		const commandCtx = commandContextFrom(ctx);
@@ -2998,8 +3019,11 @@ export default async function (pi: ExtensionAPI) {
 		}
 		if (role === "main") mainStartPending = false;
 		if (role !== "main") return;
-		const systemPrompt = `${event.systemPrompt}\n\n${mcpInstructions}`;
-		if (!activeGoalPlusId) return { systemPrompt };
+		if (!activeGoalPlusId) return { systemPrompt: event.systemPrompt };
+		await ensureMainToolsRegistered();
+		const systemPrompt = mcpInstructions
+			? `${event.systemPrompt}\n\n${mcpInstructions}`
+			: event.systemPrompt;
 		const commandCtx = commandContextFrom(ctx);
 		const persist = canPersistGoalState(ctx);
 		const status = await refreshActiveGoal(pi, commandCtx, persist);
@@ -3062,11 +3086,11 @@ export default async function (pi: ExtensionAPI) {
 	});
 	registerSessionDiagnostics(pi, diagnosticToolContracts);
 	pi.on("turn_start", (event, ctx) => {
-		if (role !== "main" || !sessionDiagnosticsEnabled()) return;
+		if (role !== "main" || !sessionDiagnosticsEnabled() || !mcpInstructions) return;
 		// Observe the host's final prompt after all before_agent_start handlers.
 		// Custom entries stay in native history but do not enter model context.
 		try {
-		const expected = mcpInstructions.trim();
+		const expected = mcpInstructions ?? "";
 		pi.appendEntry("goal-plus-instructions-observation", {
 			version: 1,
 			session_id: ctx.sessionManager.getSessionId(),
