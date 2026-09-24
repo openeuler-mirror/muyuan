@@ -160,8 +160,11 @@ MCP/CLI 直调都不能创建记录。`goal_plus_create`/`goal_plus_update_goal`
 `$goal-plus` 查询摘要；pause 禁止后续续跑/新派发，不强杀当前 turn；clear 撤权且保留历史。
 正常运行中收到新思考会先处理再继续，不要求 resume。不同 session、fork、detached/stale
 绑定和终态 Goal 都不会继承 continuation 权限。未授权 session 对 Goal Plus/Search 变更的
-`PreToolUse` 检查 fail closed；只有显示和只读监控故障可以 fail open。详见
+`PreToolUse` 检查 fail closed；hook 层只有显示和只读监控故障可以 fail open。详见
 [运行逻辑](runtime-logic.md)。控制命令按宿主交付时机生效，不承诺原生 `/goal` 的无模型 UI。
+Host MCP server 还会用请求中的 native thread identity 复核 Main 的 Goal/Search 目标；绕过 hook
+直接连接 MCP 不能借目标 ID 获得另一 native session 的权限。Search report 只有在 run 已关联
+host-verified Goal 后才会进入报告用例。
 普通 subagent 不继承 parent 的 next action。
 新的 Codex session 可用 `$goal-plus <完整目标>` 在同一 workspace 创建独立 Goal；其他 session
 的未终态 Goal 不会阻止创建。Search bootstrap 的 `goal_plus_search_freeze_spec` 和 `goal_plus_search_create` 必须传入

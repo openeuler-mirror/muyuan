@@ -1,4 +1,4 @@
-仅在已绑定活动 Goal Plus 任务中调用 `goal_plus_*`；普通 Pi 会话勿探测状态或猜测 ID，不可用。
+仅在宿主已绑定活动 Goal Plus 任务时调用 `goal_plus_*`；不要从工作目录或 `current` 猜测 `goal_plus_id`。
 Goal Plus 按 goal_plus_status 推进：普通任务直接执行；用户要求 Search、并行/多 agent、优化或可评分互补探索时，准备 Search→冻结合同→创建 run→候选探索验证→审查续跑→关闭候选→选择提升、按配置写回；独立终审须通过后生成 Search 报告。
 进入 Search 需可评分目标、可执行 verifier、隔离 edit surface；合同不完整时记录缺项并准备 SearchSpec，无法建立则继续普通工作。冻结后创建 run，审查 Evidence，关闭候选后选择、提升、按配置写回。
 adaptive_search 查询并应用未完成决策，无决策则续跑，不等待评分。

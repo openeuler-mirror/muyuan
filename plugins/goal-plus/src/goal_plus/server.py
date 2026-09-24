@@ -136,6 +136,7 @@ def create_mcp(
     root_dir: str | Path = DEFAULT_RUNTIME_ROOT,
     *,
     caller_role: ToolCallerRole | None = None,
+    native_main_harness: AgentHarnessKind | None = None,
     caller_agent_session_id: str | None = None,
     caller_final_check: "GoalPlusFinalCheckerIdentity | None" = None,
     session_controls: SessionControlLookup | None = None,
@@ -155,6 +156,8 @@ def create_mcp(
         raise ValueError("candidate MCP requires a host-bound agent session identity")
     if caller_agent_session_id is not None and caller_role != "candidate":
         raise ValueError("agent session binding requires the candidate MCP role")
+    if native_main_harness is not None and caller_role != "main":
+        raise ValueError("native Main binding requires the Main MCP role")
     if candidate_attempt is not None and (
         caller_role != "candidate" or caller_agent_session_id != candidate_attempt.agent_session_id
     ):
@@ -254,6 +257,13 @@ def create_mcp(
             def check_call(*args, **kwargs):
                 arguments = tool_signature.bind(*args, **kwargs).arguments
                 requested_session = arguments.get("agent_session_id")
+                if caller_role == "main" and native_main_harness is not None:
+                    goal_runtime.authorization.require_native_main_tool(
+                        function.__name__,
+                        dict(arguments),
+                        agent_harness=native_main_harness,
+                        session_id=native_mcp_caller(),
+                    )
                 if caller_final_check is not None:
                     if arguments.get("goal_plus_id") != caller_final_check.goal_plus_id or (
                         function.__name__ == "goal_plus_submit_final_check" and (
@@ -1093,7 +1103,10 @@ def create_host_mcp(
 
     sessions = NativeCandidateHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller)
     return create_mcp(
-        root_dir, caller_role=caller_role, session_controls=sessions, session_launcher=sessions,
+        root_dir,
+        caller_role=caller_role,
+        native_main_harness=agent_harness if caller_role == "main" else None,
+        session_controls=sessions, session_launcher=sessions,
         final_checker=NativeFinalCheckHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller),
         work_items=NativeDelegationHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller),
     )
