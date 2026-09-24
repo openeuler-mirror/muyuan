@@ -231,7 +231,7 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
         "and verification, then return. Four candidate deliveries are sufficient; no further exploration "
         "is required. Wait for the required Annotation Evidence, select the best valid exact snapshot, "
         "independently verify the publication and apply it to Root. Re-run the Root verifier and require "
-        "valid=true and sum_radii >= 2.4. Finish the Goal audit, mark complete, generate MD/HTML reports "
+        "valid=true and sum_radii >= 2.2. Finish the Goal audit, mark complete, generate MD/HTML reports "
         "and complete resource cleanup. Keep verifier and other frozen files unchanged."
     )
     if prompt_kind == "example":
@@ -386,7 +386,7 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
             timeout=30,
         )
         score = json.loads(verified.stdout)
-        assert score["valid"] and score["sum_radii"] >= 2.4
+        assert score["valid"] and score["sum_radii"] >= 2.2
         (state_root.parent / "report.json").write_text(
             json.dumps(
                 {

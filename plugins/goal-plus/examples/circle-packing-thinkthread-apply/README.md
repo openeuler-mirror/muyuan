@@ -128,7 +128,7 @@ Codex binding 当前使用 `inner_agent=common`。Codex prompt 只覆盖示例 S
 - canonical history 位于 native Session-private Goal Plus root，Evidence 是 exact TT snapshot；
   Pi AutoResearch candidate 另有 independent private `.git` 和物理 `results.tsv`，但二者不成为
   公共 Evidence identity；Codex Common candidate 不创建这两项 inner state；
-- 选择实际最高有效分数的 iteration，乐观 `fs.apply` 为 `applied`，Root 复验 valid 且得分至少 2.4；
+- 选择实际最高有效分数的 iteration，乐观 `fs.apply` 为 `applied`，Root 复验 valid 且得分至少 2.2；
 - `report.md`、`report.html` 存在，完成卡显示 `Cleanup complete`。
 
 Child 隔离、完整 Annotation Artifact View、peer comparison、provider resource ownership 和

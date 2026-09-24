@@ -25,11 +25,15 @@ strategy:
 verifier 开关、`allocation` 或 `adaptive_search`。
 
 验收：运行 `python workspace/.goal-plus-verifiers/circle_packing_score.py`。结果必须
-满足 `valid=true`，圆的数量必须为 26，并最大化 `sum_radii`。
+满足 `valid=true`，圆的数量必须为 26，且 `sum_radii >= 2.2` 即视为达标；本示例用于
+验证流程，达标后正常收尾即可，不要求继续提高分数。
 选中结果必须通过 provider publication 回写到 `workspace/`；回写后从该源码仓库
 重新运行 verifier，并确认 Git worktree 干净。
 
 时间约束：任务预算为 5 分钟，第 4 分钟开始收尾；单个 worker 最长运行 3 分钟。
 时间预算只控制探索与收尾，不改变有效结果的验收标准。
+
+模型选择：prompt 不为 main 或任何 subagent 指定模型；所有 subagent（candidate
+worker、Evidence annotator 等）默认不指定模型，直接继承 main agent 当前使用的模型。
 
 执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

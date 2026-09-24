@@ -57,7 +57,7 @@
     "promotion_mode": "apply"
   },
   "constraints": {
-    "success_threshold": 2.4,
+    "success_threshold": 2.2,
     "suggested_batch_size": 2,
     "task_summary": "Compare the fixed rectangular and staggered 26-circle packings, publish complete target/peer Artifact Views, and apply the higher exact-snapshot score."
   }

@@ -45,6 +45,7 @@
     "promotion_mode": "apply"
   },
   "constraints": {
+    "success_threshold": 2.2,
     "suggested_batch_size": 2,
     "task_summary": "Return exactly 26 non-overlapping circles inside the unit square and maximize the sum of their radii."
   }

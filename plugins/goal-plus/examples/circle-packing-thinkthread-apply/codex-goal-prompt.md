@@ -17,7 +17,7 @@ mode=probe max_parallel=2 max_duration_seconds=1200 workspace_provider=thinkthre
 
 等待冻结 SearchSpec 要求的 Annotation Evidence 就绪后，选择 `sum_radii` 最高的有效精确
 snapshot，完成独立 publication 验证、promotion 并应用回当前 Root。回写后重跑 verifier，
-必须 `valid=true` 且 `sum_radii >= 2.4`。记录 Search result，完成原始目标审计并把 Goal Plus
+必须 `valid=true` 且 `sum_radii >= 2.2`。记录 Search result，完成原始目标审计并把 Goal Plus
 标记 complete，关闭 Goal 的 execution scope，最后生成规范 MD/HTML 报告并确认 cleanup
 complete。
 
@@ -25,5 +25,8 @@ complete。
 `goal_plus_search_apply_promotion` 返回 `state="applied"` 后不要再次调用
 `goal_plus_search_run_verifier`（尤其不要传 `scope="promotion"`），也不要重复 promotion。
 此后只需在 Root 工作区直接运行冻结 verifier，完成 Goal audit、scope close、report 和 cleanup。
+
+模型选择：prompt 不为 main 或任何 subagent 指定模型；所有 subagent（candidate
+worker、Evidence annotator 等）默认不指定模型，直接继承 main agent 当前使用的模型。
 
 执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

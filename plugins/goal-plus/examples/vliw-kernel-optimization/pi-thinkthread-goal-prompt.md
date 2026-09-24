@@ -21,4 +21,7 @@ cycles 的有效 exact artifact，完成 artifact_only promotion。不要 apply 
 147734、选中 cycles、各 lane 的实际迭代次数及未完成项。正常流程使用 monitor 和公开工具，
 不读取 session-private 内部文件；不要因为首轮有改善就提前关闭候选执行。
 
+模型选择：prompt 不为 main 或任何 subagent 指定模型；所有 subagent（candidate
+worker、Evidence annotator 等）默认不指定模型，直接继承 main agent 当前使用的模型。
+
 执行节奏：有方案后及时提交 verifier 验证，切勿长时间内部迭代而不提交方案。

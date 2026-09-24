@@ -113,8 +113,11 @@ candidate 上限，可选 `budget.max_candidates` 限制累计唯一候选数，
 完整调度合同见 [Adaptive Search](../docs/adaptive-search.md)。
 
 普通 prompt 使用当前 Host 已选择的模型和 Goal Plus 默认值，不固定 `main`、
-`annotator` 或 `workers`。Circle Packing 的 Codex prompt 是唯一的多模型路由示例：两个
-候选通道分别使用 Terra 和 Luna，并由 Terra 执行 Evidence annotation。
+`annotator` 或 `workers`。所有示例的 subagent（candidate worker、Evidence
+annotator）默认不指定模型，直接继承 main agent 当前使用的模型，避免选中当前
+环境不可用的模型。需要多模型路由时，先用 `goal_plus_list_models` 确认可用模型，
+再显式写入 frozen `strategy.models`（见 [API 文档](../docs/api.md)）；示例集中
+不再默认展示多模型路由。
 
 ## 结果位置
 

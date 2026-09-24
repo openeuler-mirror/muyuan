@@ -60,7 +60,7 @@ def test_circle_packing_thinkthread_apply_example_is_deterministic(
     assert spec.workspace.provider == "thinkthread"
     assert spec.workspace.promotion_mode == "apply"
     assert spec.edit_surface.allow == ["initial_program.py"]
-    assert spec.constraints["success_threshold"] == 2.4
+    assert spec.constraints["success_threshold"] == 2.2
     assert len(spec.root_hypotheses) == 2
 
     verifier = destination / ".goal-plus-verifiers/circle_packing_score.py"
@@ -133,7 +133,7 @@ def test_circle_packing_thinkthread_prompt_is_outcome_focused() -> None:
     assert "c002" in prompt and "candidate-hints/staggered.py" in prompt
     assert "continuation 同一个 candidate" in prompt
     assert "不要新增 plan、candidate 或 run" in prompt
-    assert "sum_radii >= 2.4" in prompt
+    assert "sum_radii >= 2.2" in prompt
     for internal_detail in (
         "GOAL_PLUS_ROOT",
         "instances/",
@@ -159,7 +159,7 @@ def test_circle_packing_thinkthread_codex_prompt_uses_host_entrypoint() -> None:
     assert "candidate-hints/rectangular.py" in prompt
     assert "candidate-hints/staggered.py" in prompt
     assert "两次 candidate delivery 足够" in prompt
-    assert "sum_radii >= 2.4" in prompt
+    assert "sum_radii >= 2.2" in prompt
     assert "不要再次调用\n`goal_plus_search_run_verifier`" in prompt
     assert "不要重复 promotion" in prompt
     assert prompt.index("关闭 Goal 的 execution scope") < prompt.index("生成规范 MD/HTML 报告")

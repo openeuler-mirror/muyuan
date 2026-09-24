@@ -18,5 +18,9 @@ artifacts are frozen. Then run the fixed candidate lanes, select and promote
 the best verifier-backed result, complete the Goal Plus audit, and report the
 final metric and artifact paths.
 
+Model selection: this prompt pins no model. Every subagent (candidate worker,
+Evidence annotator, and any other helper) leaves its model unspecified and
+inherits the main agent's current model.
+
 Cadence: once a lane has a plan, make the edit and submit it to the verifier
 promptly; do not iterate internally for a long time without submitting.

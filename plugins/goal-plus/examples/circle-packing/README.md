@@ -49,12 +49,14 @@ cd examples/circle-packing
 python3 workspace-template/.goal-plus-verifiers/circle_packing_score.py
 ```
 
-初始程序应通过合法性检查，并输出约 `1.79835` 的 `sum_radii`。指标越高越好。
+初始程序应通过合法性检查，并输出约 `1.79835` 的 `sum_radii`。指标越高越好，但
+`sum_radii >= 2.2` 即视为流程验证达标：该阈值由 SearchSpec 的
+`constraints.success_threshold` 声明，runtime 会告知候选达标后可以正常收尾。
 候选只能修改自己的 `initial_program.py`；verifier 和其他模板文件都是冻结输入。
 
 ## 使用 Codex 运行
 
-从本示例目录启动 Codex：
+从本示例目录启动 Codex（`-m` 换成当前环境可用的模型即可）：
 
 ```bash
 cd examples/circle-packing
@@ -67,8 +69,9 @@ codex -m gpt-5.6-terra -c model_reasoning_effort=max
 如果不希望设置顶层截止条件，改用
 [`codex-goal-prompt-untimed.md`](codex-goal-prompt-untimed.md)。
 
-Circle 的 Codex prompt 是示例集中唯一的显式多模型路由：一个候选通道使用 Terra，
-另一个使用 Luna，并由 Terra 执行 Evidence annotation。
+Codex prompt 不指定任何模型：所有 subagent（candidate worker、Evidence
+annotator）默认不指定模型，直接继承 Codex main session 当前使用的模型，避免选中
+当前环境不可用的模型。需要多模型路由时参考 [API 文档](../../docs/api.md) 显式配置。
 
 ## 使用 Pi 运行
 

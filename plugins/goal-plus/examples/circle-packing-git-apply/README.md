@@ -42,7 +42,8 @@ python3 prepare_workspace.py --reset
 ```
 
 `--reset` 只会删除 `.git/` 中带有本示例专用标记的工作区，不会删除任意同名
-目录。
+目录。上一轮运行可能已把最佳候选回写进 `workspace/`，使 baseline 高于初始的
+`1.79835`；重新验证流程前先执行 `--reset`，避免把已优化的 baseline 当作起点。
 
 准备完成后，目录层级应当是：
 
@@ -55,7 +56,7 @@ circle-packing-git-apply/
 
 ## 使用 Codex 运行
 
-从本示例目录启动 Codex：
+从本示例目录启动 Codex（`-m` 换成当前环境可用的模型即可）：
 
 ```bash
 cd examples/circle-packing-git-apply
@@ -104,8 +105,9 @@ candidate。common 是空白策略基线：runtime 仍为 MCP verifier 创建 ou
 源码仓库。prompt 不需要逐步指挥
 candidate 创建、selection、promotion、apply 或 report。
 
-prompt 使用当前 Host 已选择的模型和已安装的 Goal Plus 默认值。原始 Circle Packing
-的 Codex prompt 仍用于展示多模型路由；本示例只关注 Git workspace 和 apply 行为。
+prompt 使用当前 Host 已选择的模型和已安装的 Goal Plus 默认值；所有 subagent
+（candidate worker、Evidence annotator）默认不指定模型，直接继承 main agent 当前
+使用的模型。本示例只关注 Git workspace 和 apply 行为。
 
 ## 这个示例展示什么
 
@@ -150,5 +152,6 @@ git -C workspace show --stat --oneline HEAD
 Git no-op，`HEAD` 保持不变。
 
 候选只能修改 `initial_program.py`。公开 verifier 仍然要求在单位正方形内返回恰好
-26 个互不重叠的圆，并最大化 `sum_radii`；任务和评分规则与原始 Circle Packing
-示例完全相同。
+26 个互不重叠的圆；`sum_radii` 达到 `2.2` 即视为流程验证达标（由 SearchSpec 的
+`constraints.success_threshold` 声明），达标后正常收尾。任务和评分规则与原始
+Circle Packing 示例完全相同。

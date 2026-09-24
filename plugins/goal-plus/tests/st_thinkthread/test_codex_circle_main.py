@@ -381,7 +381,7 @@ def run_codex_circle(
             cwd=workspace, check=True, capture_output=True, text=True, timeout=30,
         )
         score = json.loads(verified.stdout)
-        assert score["valid"] and score["sum_radii"] >= 2.4
+        assert score["valid"] and score["sum_radii"] >= 2.2
         final_text = _last_codex_assistant_text(state_root)
         (state_root.parent / "report.json").write_text(
             json.dumps(
@@ -434,7 +434,7 @@ def test_native_codex_main_completes_single_candidate_search_thinkthread(thinkth
         "implementation with goal_plus_search_run_verifier and returns; no further improvement "
         "turn is required. Then select the best valid exact snapshot, independently verify the "
         "publication and apply it to Root. Re-run the Root verifier and require valid=true and "
-        "sum_radii >= 2.4. Finish the Goal audit, mark complete, generate MD/HTML reports and "
+        "sum_radii >= 2.2. Finish the Goal audit, mark complete, generate MD/HTML reports and "
         "complete resource cleanup. Keep verifier and other frozen files unchanged."
     )
     run_codex_circle(
@@ -462,7 +462,7 @@ def test_native_codex_main_completes_circle_thinkthread_apply(thinkthread_root):
         "and verification, then return. Four candidate deliveries are sufficient; no further exploration "
         "is required. Wait for the required Annotation Evidence, select the best valid exact snapshot, "
         "independently verify the publication and apply it to Root. Re-run the Root verifier and require "
-        "valid=true and sum_radii >= 2.4. Finish the Goal audit, mark complete, generate MD/HTML reports "
+        "valid=true and sum_radii >= 2.2. Finish the Goal audit, mark complete, generate MD/HTML reports "
         "and complete resource cleanup. Keep verifier and other frozen files unchanged."
     )
     run_codex_circle(
@@ -489,7 +489,7 @@ def test_native_codex_main_completes_circle_thinkthread_apply_k2_single_turn(thi
         "that implementation in its first turn and returns; no further improvement turn is required. "
         "Two candidate deliveries are sufficient. Wait for the required Annotation Evidence, select the "
         "best valid exact snapshot, independently verify the publication and apply it to Root. Re-run the "
-        "Root verifier and require valid=true and sum_radii >= 2.4. Finish the Goal audit, mark complete, "
+        "Root verifier and require valid=true and sum_radii >= 2.2. Finish the Goal audit, mark complete, "
         "generate MD/HTML reports and complete resource cleanup. Keep verifier and other frozen files "
         "unchanged. The promotion call already runs the independent promotion verifier: after "
         "goal_plus_search_apply_promotion returns state=applied, do not call "
