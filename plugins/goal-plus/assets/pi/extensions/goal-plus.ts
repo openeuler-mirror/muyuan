@@ -2835,7 +2835,6 @@ export default async function (pi: ExtensionAPI) {
 	for (const tool of roleTools) {
 		registerRuntimeTool(pi, tool, registeredRuntimeTools);
 	}
-	setMainGoalPlusToolAvailability(pi, Boolean(activeGoalPlusId));
 	pi.on("input", async (event, ctx) => {
 		scopeThinkThreadWorkerTools(pi, ctx, event.text);
 		if (role !== "main" || event.source === "extension") {
