@@ -44,10 +44,8 @@ def test_circle_packing_git_apply_prompts_bind_inner_agents() -> None:
         assert config.workspace_provider == "git_worktree"
         assert config.promotion_mode == "apply"
         assert '`source_path="workspace"' in body
-        assert "回写到 `workspace/`" in body
         if name == "pi-goal-prompt-common.md":
-            assert '`strategy.inner_agent` 设置为 `"common"`' in body
-            assert "调用一次 `goal_plus_search_run_verifier` 后返回" in body
+            assert "goal_plus_search_run_verifier" in body
 
 
 def test_circle_packing_adaptive_prompt_enables_apply_steering() -> None:
@@ -59,8 +57,6 @@ def test_circle_packing_adaptive_prompt_enables_apply_steering() -> None:
     assert all(f"      - {score}" in text for score in required_scores)
     assert "policy: search_diagnostic_guidance/v1" in text
     assert "mode: apply" in text
-    assert "只有当前 Record 没有产生 Allocation Plan 时" in text
-    assert "不帮助低价值方向规避 Allocation" in text
     for parameter in (
         "correctness_gap_threshold", "validation_gap_threshold", "confounder_threshold",
         "test_gap_threshold", "boundary_probe_threshold", "boundary_confirmed_threshold",

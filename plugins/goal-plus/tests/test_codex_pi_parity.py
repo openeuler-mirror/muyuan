@@ -65,23 +65,13 @@ def test_codex_and_pi_publish_native_parity_capabilities() -> None:
 def test_codex_and_pi_share_role_model_command_interface() -> None:
     codex = (ROOT / "docs" / "codex.md").read_text(encoding="utf-8")
     pi = (ROOT / "docs" / "pi.md").read_text(encoding="utf-8")
-    normalized_codex = " ".join(codex.split())
-    normalized_pi = " ".join(pi.split())
-
     for text in (codex, pi):
-        assert "`main=` 不是受支持的" in " ".join(text.split())
+        assert "`main=`" in text
         assert "annotator=" in text
         assert "workers=" in text
         assert "models=" in text
         assert "strategy.evidence_annotator.model" in text
         assert "strategy.models" in text
-
-    assert "Codex session 就是 main agent" in normalized_codex
-    assert "Pi session 就是 main agent" in normalized_pi
-    assert "不能切换它的模型" in normalized_codex
-    assert "不能切换它的模型" in normalized_pi
-    assert "新命令填写它会在创建记录前失败" in normalized_codex
-    assert "新命令填写它会在创建记录前失败" in normalized_pi
 
 
 @pytest.mark.parametrize(

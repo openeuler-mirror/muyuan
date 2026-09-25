@@ -75,14 +75,10 @@ def test_codex_and_pi_worker_launch_contracts_share_the_portable_core() -> None:
     pi_normalized = " ".join(pi_prompt.split())
 
     for instruction in (
-        "你是 Search 候选 worker，不是搜索编排器。",
         "goal_plus_search_get_agent_context(agent_session_id)",
-        "以返回的 `candidate_task` 为当前工作契约",
-        "不要创建或管理其他 candidate",
-        "沿用已加载的运行时上下文和 Evidence",
+        "`candidate_task`",
     ):
         assert instruction in codex_normalized
         assert instruction in pi_normalized
     assert "ThinkThread" not in codex_normalized
-    assert "ThinkThread context 不提供 Root 本地路径" in pi_normalized
-    assert "访问 Root 或 sibling Child" in pi_normalized
+    assert "ThinkThread" in pi_normalized

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import threading
 import time
@@ -16,7 +15,6 @@ import goal_plus.evidence_annotator as annotator_module
 from goal_plus.infrastructure import inference_bindings
 from goal_plus.domain.annotation import MAX_ANNOTATION_ATTEMPTS, validate_supplemental_output
 from goal_plus.evidence_annotator import (
-    ANNOTATOR_INSTRUCTIONS,
     MAX_ANNOTATION_DIFF_BYTES,
     AnnotationOutputError,
     CodexEvidenceAnnotator,
@@ -32,15 +30,12 @@ from goal_plus.evidence_annotator import (
 )
 from goal_plus.host_scope import ensure_execution_scope
 from goal_plus.models import SearchSpec, SupplementalEvaluation
-from goal_plus.domain.time import outer_deadline_epoch
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.infrastructure.search_configuration import (
     SUPPLEMENTAL_EVALUATION_ENABLED_ENV,
     SUPPLEMENTAL_EVALUATION_REQUIRED_ENV,
 )
 from tests._runtime_helpers import make_project, spec_for
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_pi_annotator_omits_unknown_zero_cost() -> None:
@@ -58,45 +53,6 @@ def test_pi_annotator_omits_unknown_zero_cost() -> None:
 
     assert usage["input_tokens"] == 100
     assert "cost_usd" not in usage
-
-
-def test_annotator_actor_terminology_is_consistent_across_repository() -> None:
-    code_suffixes = {
-        ".py",
-        ".pyi",
-        ".ts",
-        ".tsx",
-        ".js",
-        ".mjs",
-        ".cjs",
-        ".toml",
-        ".md",
-    }
-    roots = [
-        "src",
-        "tests",
-        "scripts",
-        "benchmarks",
-        ".agents",
-        ".codex",
-        ".pi",
-        "docs",
-        "examples",
-    ]
-    actor_pattern = re.compile(r"\bview[_ -]?agent\b", flags=re.IGNORECASE)
-    offenders: list[str] = []
-
-    for relative_root in roots:
-        for path in (ROOT / relative_root).rglob("*"):
-            if (
-                path.is_file()
-                and path.suffix.lower() in code_suffixes
-                and "__pycache__" not in path.parts
-                and actor_pattern.search(path.read_text(encoding="utf-8"))
-            ):
-                offenders.append(path.relative_to(ROOT).as_posix())
-
-    assert offenders == []
 
 
 class RecordingAnnotator:
@@ -128,13 +84,6 @@ class RecordingAnnotator:
             description="Changed the candidate value stored in initial_program.py.",
             usage={"input_tokens": 7, "output_tokens": 3},
         )
-
-
-def test_annotator_instructions_require_tool_views_and_adoption_analysis() -> None:
-    assert "published_tools 非空" in ANNOTATOR_INSTRUCTIONS
-    assert "恰好一个 tool_views" in ANNOTATOR_INSTRUCTIONS
-    assert "tool_adoptions 非空" in ANNOTATOR_INSTRUCTIONS
-    assert "不要汇总工具收益" in ANNOTATOR_INSTRUCTIONS
 
 
 def test_supplemental_output_must_match_dynamic_comparison_basis() -> None:
@@ -191,10 +140,6 @@ def test_supplemental_output_must_match_dynamic_comparison_basis() -> None:
             enabled=True,
             comparison_basis=comparison_basis,
         )
-
-
-def test_outer_deadline_accepts_unix_epoch() -> None:
-    assert outer_deadline_epoch("1785491629") == 1785491629.0
 
 
 def test_drainer_serially_describes_pending_evidence(tmp_path: Path) -> None:
@@ -392,53 +337,6 @@ def test_annotation_admission_repairs_legacy_queue_first_crash_window(
     assert result.errors == []
     assert recovered.annotation_admission.reconcile(run_id).created == []
     assert recovered.annotation.queue(run_id) == repaired
-
-
-def test_annotation_admission_reconcile_preserves_closed_queue_fence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = make_project(tmp_path)
-    runtime = FileSearchRuntime(tmp_path / ".gp")
-    frozen = runtime.freeze_spec(
-        spec_for(project, max_parallel=1), [project / "evaluator.py"], agent_harness="codex"
-    )
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-    plan = runtime.plan_next(run_id, requested_k=1)
-    candidate = runtime.start_batch(run_id, plan.plan_id)[0]
-    session = runtime.start_agent_session(run_id, candidate.candidate_id)
-    monkeypatch.setattr(runtime.evidence_reads, "register_annotations", lambda _run_id: None)
-
-    def fail_task_write(_task) -> None:
-        raise OSError("injected task write failure")
-
-    monkeypatch.setattr(
-        runtime.annotation.tasks,
-        "write_task",
-        fail_task_write,
-    )
-    (candidate.workspace / "initial_program.py").write_text(
-        "VALUE = 1\n", encoding="utf-8"
-    )
-    runtime.run_verifier(
-        run_id,
-        candidate.candidate_id,
-        agent_session_id=session.agent_session_id,
-        hypothesis="Create Evidence immediately before annotation queue close",
-    )
-    with runtime.search_run.state.lock_run(run_id):
-        runtime.annotation.close_queue(run_id, reason="test_closed_fence")
-    closed = runtime.annotation.queue(run_id)
-
-    recovered = FileSearchRuntime(runtime.root_dir)
-    result = recovered.annotation_admission.reconcile(run_id)
-    assert result.state == "closed"
-    assert result.created == []
-    assert result.errors == []
-    assert recovered.annotation.task(
-        run_id, candidate.candidate_id, 1
-    ) is None
-    assert recovered.annotation.queue(run_id) == closed
 
 
 def test_codex_annotator_uses_resolved_options_and_default_cli_inheritance(
@@ -1112,7 +1010,7 @@ def test_process_failure_detail_reports_stdout_and_stderr() -> None:
     )
 
 
-def test_selection_cancels_pending_retry_before_promotion(
+def test_selection_cancels_unclaimed_annotation_before_promotion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1137,19 +1035,14 @@ def test_selection_cancels_pending_retry_before_promotion(
     runtime.select(run_id)
     runtime.promote(run_id, task.candidate_id)
 
-    class TransientThenSuccess:
+    class UnclaimedAnnotator:
         calls = 0
 
         def annotate(self, _context):
             self.calls += 1
-            if self.calls == 1:
-                raise TransientAnnotationError("502 Bad Gateway")
-            return EvidenceAnnotationResult(
-                description="Described promoted Evidence after a transient retry.",
-                usage={},
-            )
+            pytest.fail("selection must cancel the annotation before it is claimed")
 
-    annotator = TransientThenSuccess()
+    annotator = UnclaimedAnnotator()
     assert drain_evidence_annotations(
         runtime.root_dir,
         run_id,

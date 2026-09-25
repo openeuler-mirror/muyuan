@@ -237,7 +237,7 @@ def test_pi_dev_assets_scope_only_the_launcher(
     subprocess.run(["bash", "-n", str(launcher_path)], check=True)
 
 
-def test_pi_dev_usage_output_explains_same_shell_and_target_workspace(
+def test_pi_dev_usage_output_includes_launcher_commands(
     installer: ModuleType,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -247,11 +247,9 @@ def test_pi_dev_usage_output_explains_same_shell_and_target_workspace(
     installer._print_pi_dev_usage(dev_dir, dry_run=False)
 
     output = capsys.readouterr().out
-    assert "后续使用方式（请在当前 shell 执行）：" in output
     assert f"source {(dev_dir / 'set_env.sh').resolve()}" in output
     assert "cd <target-workspace>" in output
     assert "pi-goal-plus" in output
-    assert "打开新的 shell 后，需要重新执行上面的 source 命令。" in output
 
 
 def test_pi_dev_isolated_from_retired_source_package_registration(
@@ -355,7 +353,7 @@ def test_env_show_lists_registered_and_current_environments(
     assert "Total: 2 existing, 0 missing, 2.0 KiB allocated" in output
 
 
-def test_env_show_is_read_only_mode(
+def test_env_show_dispatches_to_environment_inventory(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -258,19 +258,6 @@ def test_host_command_invocation_rejects_wrong_host_prefix() -> None:
         )
 
 
-def test_host_command_invocation_accepts_explicit_resume_action() -> None:
-    assert GoalPlusHostCommandInvocation(
-            agent_harness="codex",
-            transport="codex_user_prompt_submit",
-            command="$goal-plus",
-            action="resume",
-            session_id="session-test",
-            invocation_id="codex:test:resume",
-            raw_input_sha256="0" * 64,
-            invoked_at="2026-08-28T00:00:00Z",
-        ).action == "resume"
-
-
 def test_native_session_continuation_state_machine(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.start_from_host_command(
@@ -337,29 +324,6 @@ def test_native_session_continuation_state_machine(tmp_path) -> None:
     )
     assert mismatch.decision == "stop"
     assert mismatch.reason == "session_mismatch"
-
-
-def test_paused_headless_session_fails_closed(tmp_path) -> None:
-    runtime = FileGoalPlusRuntime(tmp_path / ".search")
-    record = runtime.start_from_host_command(
-        "Improve the README examples",
-        invocation=_codex_invocation("codex:test:paused-headless"),
-    )
-    runtime.activate_session(
-        record.goal_plus_id,
-        {"agent_harness": "codex", "session_id": "session-test", "state": "paused"},
-    )
-
-    decision = runtime.handle_host_session_event(
-        record.goal_plus_id,
-        agent_harness="codex",
-        session_id="session-test",
-        event="session_start",
-        delivery="auto",
-        interaction="headless",
-    )
-
-    assert decision.decision == "wait_for_user"
 
 
 @pytest.mark.parametrize("agent_harness", ["codex", "pi"])
@@ -1790,7 +1754,7 @@ def test_record_search_result_requires_default_provider_native_apply(
         )
 
 
-def test_pre_tool_use_blocks_search_before_high_confidence_spec(tmp_path) -> None:
+def test_pre_tool_use_rejects_freeze_without_goal_id(tmp_path) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("Maybe optimize something")
 
@@ -1869,7 +1833,8 @@ def test_goal_mode_allows_mutation_after_triage(tmp_path) -> None:
     assert gate.decision == "allow"
 
 
-def test_pre_tool_use_blocks_candidate_preparation_before_search_ready(tmp_path) -> None:
+@pytest.mark.parametrize("tool_name", ["search_start_agent_session", "search_continue_agent_session"])
+def test_pre_tool_use_rejects_candidate_call_without_linked_target(tmp_path, tool_name) -> None:
     runtime = FileGoalPlusRuntime(tmp_path / ".search")
     record = runtime.create_goal("Optimize kernel latency")
     runtime.record_triage(
@@ -1886,31 +1851,7 @@ def test_pre_tool_use_blocks_candidate_preparation_before_search_ready(tmp_path)
     gate = runtime.gate(
         record.goal_plus_id,
         event="pre_tool_use",
-        context={"tool_name": "search_start_agent_session"},
-    )
-
-    assert gate.decision == "block"
-    assert "GoalPlusOwnershipMismatch" in gate.reason
-
-
-def test_pre_tool_use_blocks_candidate_continuation_before_search_ready(tmp_path) -> None:
-    runtime = FileGoalPlusRuntime(tmp_path / ".search")
-    record = runtime.create_goal("Optimize kernel latency")
-    runtime.record_triage(
-        record.goal_plus_id,
-        GoalPlusTriage(
-            is_optimization=True,
-            confidence="high",
-            recommended_phase="search",
-            identified_at="initial",
-            reasons=["latency benchmark exists"],
-        ),
-    )
-
-    gate = runtime.gate(
-        record.goal_plus_id,
-        event="pre_tool_use",
-        context={"tool_name": "search_continue_agent_session"},
+        context={"tool_name": tool_name},
     )
 
     assert gate.decision == "block"

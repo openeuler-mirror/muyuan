@@ -422,27 +422,6 @@ def test_pi_rpc_adapter_builds_worker_payload() -> None:
     assert payload["budget_control"] == {"max_runtime_seconds": 600}
 
 
-@pytest.mark.parametrize("agent_harness,runtime_provider", [("pi", "direct"), ("pi", "thinkthread")])
-def test_native_launch_does_not_prescribe_removed_pool_workflow(agent_harness, runtime_provider) -> None:
-    adapter = candidate_launch_adapter(agent_harness, runtime_provider)
-
-    payload = adapter.build_launch_payload(
-        candidate_id="c001",
-        agent_session_id="agent_0001",
-        short_intent="try",
-        one_paragraph_idea="try",
-        worker_budget={
-            "max_runtime_seconds": 420,
-            "on_exceed": "interrupt",
-        },
-    )
-
-    control = payload["budget_control"]
-    assert control == {"max_runtime_seconds": 420}
-    assert "autoresearch_lease" not in control
-    assert "soft_closeout_seconds" not in control
-
-
 @pytest.mark.pi
 def test_pi_rpc_adapter_maps_native_worker_launch_options() -> None:
     adapter = candidate_launch_adapter("pi")

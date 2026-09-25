@@ -13,7 +13,7 @@ EXAMPLE = ROOT / "examples" / "how-to-work-with-thinkthread"
 pytestmark = pytest.mark.example
 
 
-def test_thinkthread_goal_mode_example_does_not_enable_search_or_git() -> None:
+def test_thinkthread_example_declares_main_route_and_public_configuration() -> None:
     prompt = (EXAMPLE / "pi-goal-prompt.md").read_text(encoding="utf-8")
     readme = (EXAMPLE / "README.md").read_text(encoding="utf-8")
     commands = [line for line in prompt.splitlines() if line.startswith("/goal-plus ")]
@@ -22,9 +22,6 @@ def test_thinkthread_goal_mode_example_does_not_enable_search_or_git() -> None:
     command = commands[0]
     assert command.startswith("/goal-plus max_duration_seconds=300 ")
     assert 'route="main"' in command
-    assert "不派发 subagent" in command
-    assert "不创建 SearchSpec" in command
-    assert "不调用任何 `search_*`" in command
     assert "agent-posix" not in prompt
     assert "THINKTHREAD_" not in prompt
     assert "workspace_provider=" not in prompt

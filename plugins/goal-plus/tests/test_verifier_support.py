@@ -140,7 +140,7 @@ def test_sanitized_evaluator_environment_drops_live_workspace_pythonpath(
     pinned_source = tmp_path / "pinned-source"
     neutral_cwd = tmp_path / "neutral"
     for root, origin in ((live_source, "live"), (pinned_source, "pinned")):
-        package = root / "cann_bench"
+        package = root / "fixture_evaluator"
         package.mkdir(parents=True)
         package.joinpath("__init__.py").write_text(
             f"ORIGIN = {origin!r}\n",
@@ -153,7 +153,7 @@ def test_sanitized_evaluator_environment_drops_live_workspace_pythonpath(
         python_paths=(pinned_source,),
     )
     completed = subprocess.run(
-        [sys.executable, "-c", "import cann_bench; print(cann_bench.ORIGIN)"],
+        [sys.executable, "-c", "import fixture_evaluator; print(fixture_evaluator.ORIGIN)"],
         cwd=neutral_cwd,
         env=evaluator_env,
         check=True,

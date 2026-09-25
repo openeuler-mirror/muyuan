@@ -254,8 +254,18 @@ def test_source_and_execution_gates_never_send(setup, gate):
     elif gate == "run_finished":
         h.state.run.state = RunState.FAILED
     elif gate == "rollback":
-        h.output = record(2, rollback_to=1)
-    accept(h)
+        h.output = record(1, rollback_to=1)
+        receipt = h.output.subject.settlement
+        h.state.candidate.iterations[0] = h.state.candidate.iterations[0].model_copy(update={
+            "settlement_receipt": receipt,
+            "disposition": receipt.disposition,
+        })
+        h.decision = h.decision.model_copy(update={
+            "subject_hash": verifier_subject_identity(h.output.subject),
+        })
+    outcome = accept(h)
+    if gate == "rollback":
+        assert outcome.reason_code == "rolled_back_source"
     assert h.host.calls == []
     assert not list(h.state.run_dir("run_1").glob("steering-attempts/*.json"))
 

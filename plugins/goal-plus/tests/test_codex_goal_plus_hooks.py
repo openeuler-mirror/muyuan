@@ -5,12 +5,10 @@ import os
 import re
 import subprocess
 import sys
-import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from goal_plus import codex_models
 import pytest
 
 import goal_plus.goal_plus_stop_hook as hook_module
@@ -590,15 +588,8 @@ def test_native_session_followup_finds_existing_parent_root(tmp_path: Path) -> N
 
 def test_user_prompt_submit_accepts_explicit_role_models(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     search_root = tmp_path / ".gp"
-
-    def probe_ok(_targets: list[dict[str, str]]) -> None:
-        return None
-
-    # Keep this a no-LLM test: the probe drives a real `codex exec` per model.
-    monkeypatch.setattr(codex_models, "probe_codex_models", probe_ok)
 
     result = _run_hook(
         tmp_path,
@@ -630,84 +621,6 @@ def test_user_prompt_submit_accepts_explicit_role_models(
     assert "继承当前 Codex Main 的 native model" in context
 
 
-def test_codex_model_preflight_deduplicates_and_runs_concurrently(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    barrier = threading.Barrier(2)
-    calls: list[tuple[str, str]] = []
-    calls_lock = threading.Lock()
-
-    def probe(target: dict[str, str]) -> None:
-        with calls_lock:
-            calls.append(
-                (
-                    target["model"],
-                    target["reasoning_effort"],
-                )
-            )
-        barrier.wait(timeout=2)
-        return None
-
-    monkeypatch.setattr(codex_models, "probe_codex_model", probe)
-    targets = codex_models.command_codex_model_targets(
-        {
-            "model": "gpt-5.6-sol",
-            "reasoning_effort": "low",
-        },
-        {
-            "annotator": "gpt-5.6-sol",
-            "workers": "gpt-5.6-terra,gpt-5.6-terra",
-        },
-    )
-
-    codex_models.probe_codex_models(targets)
-
-    assert sorted(calls) == [
-        ("gpt-5.6-sol", "low"),
-        ("gpt-5.6-terra", "low"),
-    ]
-
-
-def test_codex_model_preflight_skips_native_defaults() -> None:
-    hook_input = {
-        "model": "gpt-5.6-sol",
-        "reasoning_effort": "low",
-    }
-
-    assert codex_models.command_codex_model_targets(hook_input, None) == []
-    assert codex_models.search_spec_codex_model_targets(
-        {
-            **hook_input,
-            "tool_input": {
-                "spec": {
-                    "strategy": {
-                        "models": [],
-                        "evidence_annotator": {},
-                    }
-                }
-            },
-        }
-    ) == []
-
-
-def test_codex_model_probe_only_uses_native_model_switch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    commands: list[list[str]] = []
-
-    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr(codex_models.subprocess, "run", run)
-
-    assert codex_models.probe_codex_model(
-        {"model": "gpt-5.6-sol", "reasoning_effort": "low"}
-    ) is None
-    assert commands[0][commands[0].index("--model") + 1] == "gpt-5.6-sol"
-    assert not any("model_provider" in value for value in commands[0])
-
-
 def test_codex_model_admission_does_not_probe_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -718,12 +631,13 @@ def test_codex_model_admission_does_not_probe_provider(
 
     probe_called = False
 
-    def reject(_targets: list[dict[str, str]]) -> None:
+    def reject(*_args: object, **_kwargs: object) -> None:
         nonlocal probe_called
         probe_called = True
         raise AssertionError("provider probing is not part of Goal admission")
 
-    monkeypatch.setattr(codex_models, "probe_codex_models", reject)
+    monkeypatch.setattr(subprocess, "run", reject)
+    monkeypatch.setattr(subprocess, "Popen", reject)
     hook_module._handle_user_prompt_submit(
         runtime,
         search_root,
@@ -739,35 +653,6 @@ def test_codex_model_admission_does_not_probe_provider(
     assert payload.get("decision") != "block"
     assert not probe_called
     assert list((search_root / "goal-plus").glob("gp_*/goal.json"))
-
-
-def test_codex_search_freeze_preflight_covers_explicit_model_roles() -> None:
-    targets = codex_models.search_spec_codex_model_targets(
-        {
-            "model": "gpt-main",
-            "reasoning_effort": "low",
-            "tool_input": {
-                "spec": {
-                    "strategy": {
-                        "models": [
-                            {"model": "gpt-worker", "reasoning_effort": "medium"},
-                            {"model": "gpt-main"},
-                        ],
-                        "worker_launch": {"model": "gpt-worker"},
-                        "evidence_annotator": {
-                            "model": "gpt-annotator",
-                        },
-                    }
-                }
-            },
-        }
-    )
-
-    assert {(target["model"], target["reasoning_effort"]) for target in targets} == {
-        ("gpt-main", "low"),
-        ("gpt-worker", "medium"),
-        ("gpt-annotator", "low"),
-    }
 
 
 @pytest.mark.parametrize(
@@ -2315,7 +2200,7 @@ def test_post_tool_time_advisory_uses_current_codex_turn_budget(
     assert evidence["remaining_seconds"] == 0
 
 
-def test_pre_tool_use_blocks_search_before_spec_is_ready(tmp_path: Path) -> None:
+def test_pre_tool_use_rejects_freeze_without_goal_id(tmp_path: Path) -> None:
     search_root = tmp_path / ".gp"
     runtime = FileGoalPlusRuntime(search_root)
     record = runtime.create_goal("Optimize model throughput")
@@ -2568,7 +2453,7 @@ def test_pre_tool_use_denies_report_without_terminal_run_link(tmp_path: Path) ->
     assert "GoalPlusEntrypointRequired" in specific["permissionDecisionReason"]
 
 
-def test_pre_tool_use_allows_terminal_report_for_detached_original_session(
+def test_pre_tool_use_allows_linked_terminal_report_from_later_session(
     tmp_path: Path,
 ) -> None:
     search_root = tmp_path / ".gp"

@@ -1821,10 +1821,6 @@ def _handle_pre_tool_use(
     except RuntimeError as exc:
         _emit_pre_tool_block(str(exc))
         return
-    if logical_name == "goal_plus_search_freeze_spec":
-        # Freeze validates the selected model against the host catalog. The
-        # actual provider request belongs to the candidate invocation itself.
-        pass
     gate = runtime.gate(goal_id, event="pre_tool_use", context=hook_input)
     if gate.decision == "block":
         _emit_pre_tool_block(gate.reason or "Goal Plus 阻止了此工具调用。")

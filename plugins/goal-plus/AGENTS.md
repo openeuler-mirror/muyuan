@@ -111,7 +111,7 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `domain/goal_commands.py`、`goal_policy.py`、`goal_closeout.py` | 命令结构与纯解析、时间/continuation 和 closeout 投影；时钟由调用方提供 |
 | `domain/worker_policy.py`、`domain/goal_authorization.py`、`application/goal_dispatch.py` | 分别拥有共用 worker model/count 解析、显式命令与 SearchSpec 匹配和 dispatch 结果摘要；不跨模块借用私有 helper |
 | `goal_plus.py`、`application/goal_observation.py` | 前者为 Goal 公共薄入口；后者保存宿主已归一化的用量观测，写入经 typed State |
-| `codex_hook_input.py`、`codex_models.py` | Codex 原生输入/turn 解码、模型事实与显式 override preflight；不拥有 Goal 状态转换 |
+| `codex_hook_input.py`、`codex_models.py` | Codex 原生输入/turn 解码、模型事实与角色模型投影；不拥有 Goal 状态转换 |
 | `assets/pi/extensions/lib/goal-plus-schemas.ts`、`goal-plus-transport.ts` | Pi/TT 专属 schema 与 CLI/capability transport；共同业务 schema 从 MCP 加载，主 extension 保留唯一注册入口和可信 host 事实 |
 | `runtime.py`、`bootstrap.py` | 前者保留 Search 公共入口与本地 verifier 锁；后者装配窄用例，`SearchServices` 仅供 facade 接线，不传入用例或充当全能 port |
 | `session_host.py`、`infrastructure/state/scope.py` | 宿主持有串行 VerifierQueue，经公共入口交付 Record；执行器回调精确取消/派发并保存 session/call 回执 |
@@ -265,8 +265,13 @@ Pi checkout-local 开发和 Codex 正常 plugin 刷新的具体步骤见
   `goal_plus_stop_hook.main()`；入口、进程隔离/退出或环境继承等依赖真实进程语义的测试
   保留子进程，不用进程内 helper 代替。源码子进程测试必须设 `PYTHONPATH` 指向仓库
   `src/`，避免解析到已安装的旧拷贝；安装产物测试仍验证自己的隔离安装环境。
-- 默认测试不得触发真实模型调用；会启动 `codex exec` 的路径（如 model preflight）必须 mock。
+- 默认测试不得触发真实模型调用；原生模型执行使用受控 transport 或 process fixture。
 - 状态 gate 同时覆盖合法前态、非法前态、领域状态不变和允许的操作性副作用。
+- 负例先证明去掉被测违规项后的输入合法，并断言目标 gate 的结构化错误或稳定 reason token，
+  避免无关 schema 错误让授权测试通过。哈希、wire payload 与持久化期望须独立构造，不能调用
+  被测 helper 生成期望，也不能仅断言哈希非空或长度。
+- 合并重复测试时明确保留的 owner 与断言；删除旧测试层时一起检查仅由它使用的生产代码和
+  fixture。历史运行记录不代替当前行为验证。
 - Worker context 或操作性 prompt 变化时验证结构化 projection，而不是复述文案。
 - 模块通过 typed API 和受控中间结果独立验证，优先在对应 owner 复现故障，不以整个 E2E
   作为每次修改的默认检查。参见[模块验证](tests/README.md#module-boundaries)。

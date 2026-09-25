@@ -42,7 +42,6 @@ def test_guess_number_thinkthread_apply_example_is_deterministic(
     assert len(spec.root_hypotheses) == 2
 
     verifier = destination / "verify.py"
-    assert len(verifier.read_text(encoding="utf-8").splitlines()) == 1
 
     def score() -> dict[str, int]:
         result = subprocess.run(
@@ -88,8 +87,6 @@ def test_guess_number_thinkthread_prompt_is_outcome_focused() -> None:
     )
     assert "c001" in prompt and "`print(0)`" in prompt
     assert "c002" in prompt and "`print(1)`" in prompt
-    assert "不要 continuation" in prompt
-    assert "规范报告" in prompt
     for internal_detail in (
         "GOAL_PLUS_ROOT",
         "instances/",

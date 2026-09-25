@@ -237,7 +237,7 @@ def test_user_interrupted_goal_keeps_settlement_and_read_tools_available(
     assert report["process_passed"] is True
 
 
-def test_settlement_target_still_rejects_terminal_and_unverified_goals(
+def test_settlement_target_rejects_terminal_goal(
     tmp_path,
 ) -> None:
     project = make_project(tmp_path)
@@ -373,20 +373,27 @@ def test_search_freeze_spec_resolves_source_relative_artifacts(
 ])
 def test_freeze_input_rejects_runtime_owned_fields(path, value):
     runtime = Mock()
+    runtime.freeze_spec.return_value = frozen_spec()
     spec = spec_dict()
     spec["strategy"] = {
         "models": [{"model": "gpt"}], "worker_budget": {"max_turns": 4}, "worker_launch": {},
-        "orchestration_mode": "adaptive_search", "allocation": {},
+        "orchestration_mode": "adaptive_search", "allocation": {"policy": "swe_search_uct/v1"},
     }
     spec["promotion_verifiers"] = [dict(spec["process_verifiers"][0])]
     spec["shared_dir"] = {"enabled": True}
+    SearchSpecInput.model_validate(spec)
     target = spec
     for key in path[:-1]:
         target = target[key]
     target[path[-1]] = value
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as rejected:
         SearchTools(runtime, Mock()).goal_plus_search_freeze_spec("gp_0001", spec, [])
+    expected_location = path[:-1] if path == ("strategy", "allocation", "policy") else path
+    expected_type = "union_tag_invalid" if path == ("strategy", "allocation", "policy") else "extra_forbidden"
+    assert [(error["loc"], error["type"]) for error in rejected.value.errors()] == [
+        (expected_location, expected_type),
+    ]
     runtime.freeze_spec.assert_not_called()
 
 

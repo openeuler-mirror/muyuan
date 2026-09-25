@@ -400,8 +400,9 @@ ThinkThread exact `provider/model` delegation allowlist 可读取，不发送真
 配置失败会报告具体的 Profile、model、provider、endpoint 或 credential 名称，不会把密钥
 写入输出。allowlist 中未被当前任务选择的模型可能有意不配置凭据、额度或可用 endpoint，因此
 不会阻断安装。`--codex-profile` 只选择默认配置 overlay，不是“只允许 Luna”的开关；多个 TT
-模型先进入 TT registry/allowlist，任务实际选择的 worker/annotator 模型再由运行时 LLM preflight
-逐一做 exact 配置准入；真实请求失败则由执行记录准确原因。这样安装成功证明默认执行链，任务准入成功证明本次所选模型配置链路，执行成功才证明当前服务可用。
+模型先进入 TT registry/allowlist，任务实际选择的 worker/annotator 模型在 freeze 时通过 catalog
+解析与配置准入；真实请求失败由执行记录准确原因。安装与任务准入不发送额外的推理请求，
+执行成功才证明当前服务可用。
 
 TT Codex 下不支持/未验证：`reasoning_effort`/`service_tier`
 （TT 拒绝，freeze 前报错）；TT Codex Root 内的 Ultra delegation 与独立 final check；

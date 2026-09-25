@@ -10,7 +10,7 @@ from goal_plus.domain.promotion import PromotionRecord
 from goal_plus.domain.artifacts import ArtifactRef
 from goal_plus.ports.session import SessionCallSnapshot, SessionInvocationResult
 from goal_plus.projections.search_tools import (
-    candidate_task_receipt, frozen_spec_receipt, promotion_apply_receipt, search_plan_receipt,
+    frozen_spec_receipt, promotion_apply_receipt,
 )
 from goal_plus.projections.session_tools import invocation_receipt, session_call_receipt
 from goal_plus.tools import SearchTools
@@ -36,7 +36,7 @@ def test_freeze_receipt_only_expands_capacity_warning(fits):
     assert frozen.model_dump(mode="json") == before
 
 
-def test_plan_and_batch_receipts_preserve_allocated_ids_models_and_replay_contract():
+def test_plan_and_batch_receipts_project_allocated_ids_models_without_private_fields():
     selected = SelectedModel(slot=1, model="resolved-model", provider="provider", reasoning_effort="high")
     plan = SearchPlan(
         run_id="run_1", plan_id="plan_1", status="started", strategy=frozen_spec().spec.strategy,
@@ -63,10 +63,10 @@ def test_plan_and_batch_receipts_preserve_allocated_ids_models_and_replay_contra
     assert receipt["selected_models"][0]["model"] == "resolved-model"
     assert "worker_policy" not in receipt and "strategy_trace" not in receipt
     batch = tools.goal_plus_search_start_batch("run_1", "plan_1")
-    assert batch == [candidate_task_receipt(task)]
-    assert batch[0]["selected_model"]["reasoning_effort"] == "high"
-    assert "instructions" not in batch[0] and "workspace_provider_handle" not in batch[0]
-    assert tools.goal_plus_search_start_batch("run_1", "plan_1") == batch
+    assert batch == [{
+        "candidate_id": "c001", "workspace_provider": "copy",
+        "selected_model": {"model": "resolved-model", "provider": "provider", "reasoning_effort": "high"},
+    }]
     assert task.model_dump(mode="json") == before
 
 

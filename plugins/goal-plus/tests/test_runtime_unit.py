@@ -71,12 +71,7 @@ def _guarded_runtime_state(
     return state
 
 
-def test_hash_json_and_path_helpers(tmp_path: Path) -> None:
-    file_path = tmp_path / "a.txt"
-    file_path.write_text("hello\n", encoding="utf-8")
-
-    assert sha256_file(file_path) == sha256_file(file_path)
-    assert canonical_json({"b": 2, "a": 1}) == canonical_json({"a": 1, "b": 2})
+def test_edit_paths_and_verifier_names_are_safe() -> None:
     assert path_matches("src/app.py", ["src/"])
     assert path_matches("initial_program.py", ["*.py"])
     assert not path_matches("evaluator.py", ["initial_program.py"])
@@ -187,12 +182,6 @@ def test_file_search_runtime_defaults_to_gp_root(tmp_path: Path, monkeypatch: py
     assert runtime.specs_dir == tmp_path / ".gp" / "specs"
     assert runtime.runs_dir == tmp_path / ".gp" / "runs"
     assert not runtime.root_dir.exists()
-
-
-def test_write_json_is_readable(tmp_path: Path) -> None:
-    path = tmp_path / "nested" / "data.json"
-    write_json(path, {"ok": True})
-    assert path.read_text(encoding="utf-8").strip().startswith("{")
 
 
 def test_freeze_spec_is_stable_and_copies_verifier(tmp_path: Path) -> None:
@@ -602,10 +591,14 @@ def test_create_run_ignores_runtime_state_inside_source_repository(
     assert runtime.status(run_id).run_id == run_id
 
 
-@pytest.mark.codex
-def test_freeze_spec_accepts_codex_thinkthread_host_without_creating_run(
+@pytest.mark.parametrize("agent_harness", [
+    pytest.param("codex", marks=pytest.mark.codex),
+    pytest.param("pi", marks=pytest.mark.pi),
+])
+def test_freeze_spec_accepts_thinkthread_host_without_creating_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    agent_harness: str,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     project = make_project(tmp_path)
@@ -615,12 +608,12 @@ def test_freeze_spec_accepts_codex_thinkthread_host_without_creating_run(
 
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"], agent_harness="codex",
+        [project / "evaluator.py"], agent_harness=agent_harness,
     )
 
     assert frozen.runtime_provider == "thinkthread"
     assert frozen.spec.workspace.provider == "thinkthread"
-    assert frozen.agent_harness == "codex"
+    assert frozen.agent_harness == agent_harness
     assert frozen.spec.strategy.worker_launch is None
     assert runtime.specs_dir.exists()
     assert not runtime.runs_dir.exists()
@@ -641,29 +634,6 @@ def test_create_run_rechecks_inconsistent_frozen_spec_execution(tmp_path: Path) 
     ):
         runtime.create_run(frozen.frozen_spec_id)
 
-    assert not runtime.runs_dir.exists()
-
-
-def test_freeze_spec_accepts_enabled_thinkthread_host_without_creating_run(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    project = make_project(tmp_path)
-    runtime = FileSearchRuntime(tmp_path / ".search")
-    spec_data = spec_for(project).model_dump(mode="json")
-    spec_data["workspace"] = {"provider": "thinkthread"}
-
-    frozen = runtime.freeze_spec(
-        SearchSpec.model_validate(spec_data),
-        [project / "evaluator.py"], agent_harness="pi",
-    )
-
-    assert frozen.runtime_provider == "thinkthread"
-    assert frozen.spec.workspace.provider == "thinkthread"
-    assert frozen.agent_harness == "pi"
-    assert frozen.spec.strategy.worker_launch is None
-    assert runtime.specs_dir.exists()
     assert not runtime.runs_dir.exists()
 
 
@@ -2682,43 +2652,20 @@ def test_git_promotion_conflict_aborts_without_cherry_pick_state(
     assert failed_promotion.apply_timing.duration_seconds >= 0
 
 
-@pytest.mark.codex
-def test_worker_policy_includes_host_capabilities_for_codex(tmp_path: Path) -> None:
+@pytest.mark.parametrize("agent_harness", [
+    pytest.param("codex", marks=pytest.mark.codex),
+    pytest.param("pi", marks=pytest.mark.pi),
+])
+def test_worker_policy_exposes_native_session_tools(tmp_path: Path, agent_harness: str) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec = spec_with_strategy(project, {"name": "random"}, max_parallel=1)
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness=agent_harness)
     run_id = runtime.create_run(frozen.frozen_spec_id)
 
     plan = runtime.plan_next(run_id, requested_k=1)
 
-    assert plan.worker_policy["agent_harness"] == "codex"
-    assert plan.worker_policy["session_control"]["run_tool"] == "goal_plus_session_run"
-    assert plan.worker_policy["session_control"]["wait_tool"] == "goal_plus_session_wait_any"
-
-
-@pytest.mark.pi
-def test_worker_policy_uses_pi_rpc_native_session_resume(tmp_path: Path) -> None:
-    project = make_project(tmp_path)
-    runtime = FileSearchRuntime(tmp_path / ".search")
-    spec = spec_with_strategy(
-        project,
-        {
-            "name": "random",
-            "worker_budget": {
-                "max_runtime_seconds": 600,
-                "max_turns": 8,
-                "on_exceed": "interrupt",
-            },
-        },
-        max_parallel=1,
-    )
-    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="pi")
-    run_id = runtime.create_run(frozen.frozen_spec_id)
-
-    plan = runtime.plan_next(run_id, requested_k=1)
-
-    assert plan.worker_policy["agent_harness"] == "pi"
+    assert plan.worker_policy["agent_harness"] == agent_harness
     assert plan.worker_policy["session_control"]["run_tool"] == "goal_plus_session_run"
     assert plan.worker_policy["session_control"]["wait_tool"] == "goal_plus_session_wait_any"
 
@@ -3666,7 +3613,7 @@ def test_agent_guided_strategy_requires_and_validates_proposals(tmp_path: Path) 
         runtime.plan_next(run_id, requested_k=1)
 
 
-def test_git_worktree_start_batch_recovers_after_materialization_before_record(
+def test_git_worktree_start_batch_repairs_task_projection_after_candidate_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4251,7 +4198,9 @@ def test_run_verifier_records_failure_class_on_timeout(
         hypothesis="Measure timeout handling",
     )
 
+    assert report.process_passed is False
     assert report.aggregate_score == 0.0
+    assert report.verifier_results[0].failure_class == "Timeout"
     assert report.attempt_id is not None
     assert report.attempt_iteration == 1
     assert report.attempt_artifact_ref is not None
@@ -5010,26 +4959,6 @@ def test_promotion_verifier_overrides_verifier_phase_environment(
     assert calls[0][1]["env"]["GOAL_PLUS_VERIFIER_PHASE"] == "promotion"
 
 
-def test_run_verifier_handles_subprocess_timeout_with_mock(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = make_project(tmp_path)
-    runtime = FileSearchRuntime(tmp_path / ".search")
-    run_id, candidate_id, _workspace = create_candidate(runtime, project)
-
-    def fake_run(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
-
-    monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
-
-    report = runtime.run_verifier(run_id, candidate_id)
-
-    assert report.process_passed is False
-    assert report.aggregate_score == 0.0
-    assert report.verifier_results[0].failure_class == "Timeout"
-
-
 def test_verifier_timeout_is_bounded_without_process_tree_inspection(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     (project / "evaluator.py").write_text(
@@ -5296,6 +5225,10 @@ def test_select_can_recover_best_iteration_after_artifact_changed(
     )
     runtime.run_verifier(run_id, "c002")
 
+    c001_workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 'unverified'\n", encoding="utf-8"
+    )
+    assert c001_workspace.joinpath("initial_program.py").read_text() == "VALUE = 'unverified'\n"
     selection = runtime.select(run_id)
 
     assert selection["selected_candidate_id"] == "c001"
@@ -5549,7 +5482,7 @@ def test_legacy_tmp_results_tsv_migrates_and_backfills_missing_iterations(
     assert len(migrated_record.results_ledger) == 2
 
 
-def test_select_restores_best_git_commit_before_final_verify(
+def test_select_restores_best_git_commit_and_preserves_ledger(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = make_project(tmp_path)
@@ -5601,6 +5534,10 @@ def test_select_restores_best_git_commit_before_final_verify(
     git_commit_all(c002_workspace, "middle version")
     runtime.run_verifier(run_id, "c002")
 
+    c001_workspace.joinpath("initial_program.py").write_text(
+        "VALUE = 'unverified'\n", encoding="utf-8"
+    )
+    assert c001_workspace.joinpath("initial_program.py").read_text() == "VALUE = 'unverified'\n"
     selection = runtime.select(run_id)
 
     assert selection["selected_candidate_id"] == "c001"
@@ -5735,7 +5672,7 @@ def test_concurrent_run_verifiers_preserve_best_score(
     assert run.candidates_evaluated == 2
 
 
-def test_run_verifier_works_without_session_and_records_iterations(
+def test_repeated_worker_verification_records_sequential_iterations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = make_project(tmp_path)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import zipfile
 from pathlib import Path
 
@@ -12,14 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.mark.integration
 def test_wheel_contains_thinkthread_agent_posix_bridge(tmp_path: Path) -> None:
-    pytest.importorskip("build")
     subprocess.run(
         [
-            sys.executable,
-            "-m",
+            "uv",
             "build",
             "--wheel",
-            "--outdir",
+            "--out-dir",
             str(tmp_path),
             str(ROOT),
         ],

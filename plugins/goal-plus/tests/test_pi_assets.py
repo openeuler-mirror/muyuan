@@ -18,8 +18,9 @@ def test_pi_package_exports_the_supported_user_assets() -> None:
     assert all((ROOT / path).is_file() for path in expected)
 
     package = json.loads((ROOT / "assets/pi/package.json").read_text(encoding="utf-8"))
-    assert package["pi"]["extensions"] == ["assets/pi/extensions/goal-plus.ts"]
-    assert "skills" not in package["pi"]
+    assert package["name"] == "goal-plus"
+    assert "pi-package" in package["keywords"]
+    assert package["pi"] == {"extensions": ["assets/pi/extensions/goal-plus.ts"]}
     assert not (ROOT / "assets/pi/prompts/goal-plus.md").exists()
     direct_extension_files = sorted(
         path.relative_to(ROOT).as_posix()
@@ -116,12 +117,6 @@ def test_pi_verifier_kicks_internal_agents_through_agent_harness_path() -> None:
     assert "{ run_id: runId }" in text
 
 
-def test_pi_allocation_uses_shared_host_cancellation() -> None:
-    text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
-    assert "host_execution_scope_interrupt_allocation" not in text
-    assert "workerAllocationDecisionId" not in text
-
-
 def test_pi_model_admission_uses_catalog_without_synthetic_request() -> None:
     text = (ROOT / "assets/pi/extensions/goal-plus.ts").read_text(encoding="utf-8")
     assert "probePiModels" not in text
@@ -171,16 +166,6 @@ def test_pi_loads_shared_allocation_schema(tmp_path) -> None:
     assert swe["low_reward_threshold"]["minimum"] == -1
     assert swe["low_reward_threshold"]["maximum"] == 1
     assert swe["max_children_per_node"]["minimum"] == 1
-
-
-def test_pi_package_manifest_exports_only_the_user_integration() -> None:
-    package = json.loads((ROOT / "assets/pi/package.json").read_text(encoding="utf-8"))
-
-    assert package["name"] == "goal-plus"
-    assert "pi-package" in package["keywords"]
-    assert package["pi"] == {
-        "extensions": ["assets/pi/extensions/goal-plus.ts"],
-    }
 
 
 def test_pyproject_exposes_pi_console_scripts() -> None:

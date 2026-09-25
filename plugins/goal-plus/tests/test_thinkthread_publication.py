@@ -11,14 +11,12 @@ import pytest
 
 from goal_plus.models import (
     ArtifactRef,
-    EvidenceAnnotationTask,
-    EvidenceArtifactViewReference,
-    IterationRecord,
     PromotionRecord,
     PublicationOutcome,
     RunRecord,
     RunState,
 )
+from goal_plus.domain.promotion import PendingIntegrationRecord
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.domain.serialization import canonical_json
 from goal_plus.infrastructure.clock import utc_timestamp
@@ -387,7 +385,7 @@ def test_optimistic_apply_preserves_unrelated_root_change_and_replays(
         ),
     ],
 )
-def test_optimistic_apply_conflict_is_atomic_and_creates_pending_artifact(
+def test_apply_conflict_preserves_root_and_records_pending_integration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     changed_path: str,
@@ -413,10 +411,25 @@ def test_optimistic_apply_conflict_is_atomic_and_creates_pending_artifact(
     assert run.publication_outcome.pending_artifact_path is not None
     assert run.publication_outcome.pending_artifact_path.is_file()
     payload = run.publication_outcome.pending_artifact_path.read_text(encoding="utf-8")
-    assert hashlib.sha256(payload.encode()).hexdigest()
-    assert "fsnap-S0" in payload
-    assert "fsnap-selected" in payload
-    assert "fsnap-P" in payload
+    pending = PendingIntegrationRecord.model_validate_json(payload)
+    assert pending.run_id == run_id
+    assert pending.status == "awaiting_main_integration"
+    assert pending.base_artifact_ref == ArtifactRef(
+        kind="fs_snapshot", id="fsnap-S0", provider="thinkthread"
+    )
+    assert pending.selected_artifact_ref == ArtifactRef(
+        kind="fs_snapshot", id="fsnap-selected", provider="thinkthread"
+    )
+    assert pending.publication_artifact_ref == ArtifactRef(
+        kind="fs_snapshot", id="fsnap-P", provider="thinkthread"
+    )
+    assert pending.apply_request_id == promotion.apply_request_id
+    assert pending.apply_outcome == "conflict"
+    assert pending.changed_paths == ["program.py"]
+    assert pending.dependency_summary == {
+        "dependencies": dependencies, "policy_id": "safe_content_v1",
+    }
+    assert pending.provider_error["code"] == "FsApplyConflict"
     assert not (runtime.search_run.state.run_dir(run_id) / "artifacts" / "candidate.patch").exists()
     notifications = runtime.main_agent_notifications(run_id)
     assert len(notifications) == 1
@@ -777,79 +790,6 @@ def test_provider_recovery_anchor_pins_owned_snapshot(
     assert client.removed_snapshots == []
 
 
-def test_removed_snapshot_artifact_view_fails_before_provider_access(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client = StatefulApplyClient()
-    runtime, run_id = _prepared_runtime(tmp_path, monkeypatch, client)
-    artifact = ArtifactRef(
-        kind="fs_snapshot",
-        id="fsnap-evidence",
-        provider="thinkthread",
-    )
-    runtime.artifact_lifecycle.record_cleanup(
-        run_id,
-        artifact.id,
-        purposes={"candidate:c001:branch_snapshot"},
-        ownership_request_ids={"req-create"},
-        state="removed",
-        request_id="req-remove",
-    )
-    iteration = IterationRecord(
-        iteration=1,
-        agent_session_id="agent-1",
-        artifact_ref=artifact,
-        created_at=utc_timestamp(),
-    )
-    monkeypatch.setattr(
-        runtime.annotation_context.source,
-        "read_context_candidate",
-        lambda _run_id, _candidate_id: SimpleNamespace(
-            workspace=tmp_path / "unused",
-            workspace_provider="thinkthread",
-            iterations=[iteration],
-        ),
-    )
-
-    def unexpected_provider_access(_backend: str) -> None:
-        raise AssertionError("provider must not be accessed after cleanup")
-
-    monkeypatch.setattr(
-        "goal_plus.infrastructure.artifacts.reader.thinkthread_artifact_view",
-        unexpected_provider_access,
-    )
-    task = EvidenceAnnotationTask(
-        task_id="annotation_settlement-test",
-        settlement_id="settlement-test",
-        run_id=run_id,
-        candidate_id="c001",
-        iteration=1,
-        attempt_base_artifact_ref=ArtifactRef(
-            kind="fs_snapshot",
-            id="fsnap-base",
-            provider="thinkthread",
-        ),
-        attempt_artifact_ref=artifact,
-        artifact_views=[
-            EvidenceArtifactViewReference(
-                view_id="view-target",
-                role="target",
-                candidate_id="c001",
-                iteration=1,
-                artifact_ref=artifact,
-                workspace_provider="thinkthread",
-                display_name="target",
-            )
-        ],
-        created_at=utc_timestamp(),
-        updated_at=utc_timestamp(),
-    )
-
-    with pytest.raises(RuntimeError, match="removed after terminal cleanup"):
-        runtime.annotation_context.open_views(task)
-
-
 def test_cleanup_never_claims_snapshot_with_mismatched_provider_ownership(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -896,11 +836,13 @@ def test_apply_intent_hash_covers_dependencies_and_policy(
         item for item in run.provider_mutations if item.operation == "apply"
     )
     assert run.promotion is not None
-    from goal_plus.application.publication_contracts import publication_apply_intent
-    from goal_plus.infrastructure.artifacts.thinkthread_publication import apply_contract
-
-    _, params = apply_contract(publication_apply_intent(run.promotion, 1))
-    exact = {**params, "requestId": mutation.request_id}
+    exact = {
+        "baseSnapshotId": "fsnap-S0",
+        "targetSnapshotId": "fsnap-P",
+        "dependencies": [{"path": "project/config.json", "scope": "content"}],
+        "policyId": "safe_content_v1",
+        "requestId": mutation.request_id,
+    }
 
     assert (
         mutation.params_sha256

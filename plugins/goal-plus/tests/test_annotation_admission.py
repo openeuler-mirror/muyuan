@@ -262,9 +262,11 @@ def test_reconcile_does_not_reopen_closed_generation(admission) -> None:
     api, state, _ = admission
     with state.lock_run("run_test"):
         api.workflow.close_queue("run_test", reason="selected")
+    closed = api.workflow.queue("run_test").model_copy(deep=True)
     result = api.reconcile("run_test")
     assert result.state == "closed" and result.created == result.errors == []
     assert result.queue.generation == 2 and state.task_records == {}
+    assert api.workflow.queue("run_test") == closed
 
 
 def test_adaptive_parent_admission_remains_distinct_from_worker_rescan(

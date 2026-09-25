@@ -18,6 +18,7 @@ from goal_plus.infrastructure.agent_transcript import (
 )
 from goal_plus.projections.agent_transcript import (
     AgentTranscriptSession,
+    TranscriptEvent,
     render_transcript_html,
     render_transcript_jsonl,
 )
@@ -101,6 +102,8 @@ def test_pi_leaf_id_selects_other_branch(tmp_path):
 
 def test_html_is_self_contained_and_jsonl_is_flat(tmp_path):
     parsed = read_pi_transcript(_pi_history(tmp_path))
+    hostile_content = '<script>alert("transcript")</script> & <GOAL>'
+    parsed.events.append(TranscriptEvent(kind="text", label="hostile content", content=hostile_content))
     session = AgentTranscriptSession(session_id="sess-1", harness="pi", role="candidate",
                                      source_path="pi.jsonl", identity={"candidate_id": "c001"},
                                      events=parsed.events, model=parsed.model, thinking=parsed.thinking)
@@ -124,7 +127,8 @@ def test_html_is_self_contained_and_jsonl_is_flat(tmp_path):
     assert page.count("<details><summary>content</summary>") >= 2
     assert "provider request" in page
     assert ">candidate c001/pi</a>" in page and "candidate c001 (pi)" in page
-    assert "<GOAL" not in page  # content stays escaped
+    assert hostile_content not in page
+    assert "&lt;script&gt;alert(&quot;transcript&quot;)&lt;/script&gt; &amp; &lt;GOAL&gt;" in page
     lines = [json.loads(line) for line in render_transcript_jsonl([session]).splitlines()]
     assert [line["seq"] for line in lines] == list(range(1, len(parsed.events) + 1))
     assert lines[0]["session_id"] == "sess-1" and lines[0]["role"] == "candidate"
@@ -457,7 +461,6 @@ def test_release_debug_export_grabs_raw_child_history(tmp_path, monkeypatch):
     debug_export_child_transcript(runtime_root, record)
     exported = (archive / "transcript.html").read_text(encoding="utf-8")
     assert "RAW_THINKING_BEFORE_RELEASE" in exported  # captured before release
-    assert "final attempt" not in exported or True
 
 
 def test_released_child_recovers_turns_from_tt_event_store(tmp_path):
