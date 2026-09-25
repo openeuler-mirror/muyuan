@@ -43,12 +43,18 @@ def test_final_checker_mcp_requires_exact_target_and_native_identity(pending_che
 
     async def exercise():
         async with Client(server) as client:
-            for args, native in (({"goal_plus_id": "gp_peer"}, "native-owned"),
-                                 (identity.model_dump(), "peer"),
-                                 (identity.model_dump(), None)):
+            valid_status = {"goal_plus_id": identity.goal_plus_id}
+            owned = await client.call_tool("goal_plus_status", valid_status, meta={"threadId": "native-owned"})
+            assert json.loads(owned.content[0].text)["goal_plus_id"] == identity.goal_plus_id
+            for args, native, reason in (
+                ({"goal_plus_id": "gp_peer"}, "native-owned", "FinalCheckerIdentityMismatch"),
+                (valid_status, "peer", "FinalCheckerIdentityMismatch"),
+                (valid_status, None, "MainSessionMismatch"),
+            ):
                 result = await client.call_tool("goal_plus_status", args, meta={"threadId": native} if native else None,
                                                 raise_on_error=False)
                 assert result.is_error
+                assert reason in result.content[0].text
                 assert runtime.state.read_goal(identity.goal_plus_id).model_dump() == before
             for override in ({"check_id": "peer"}, {"goal_revision": 2}):
                 result = await client.call_tool("goal_plus_submit_final_check", {

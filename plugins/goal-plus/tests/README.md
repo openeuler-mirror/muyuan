@@ -40,7 +40,7 @@ python -m pytest --run-system-tests -n 0 -q tests/test_installation_system.py
 | Example slice | `pytest -m example -q` | `examples/*` fixtures drive real generated assets |
 | Codex fast slice | `pytest -m codex -q` | Codex adapter, hooks, assets, native session contract |
 | Pi fast slice | `pytest -m pi -q` | Pi extension, native protocol, metrics, assets |
-| Progress UI slice | `pytest -m ui -q` | Pi progress widget (5s refresh/hide waits) and the hidden Main continuation |
+| Progress UI slice | `pytest -m ui -q` | Pi progress widget (5s refresh/hide boundaries with Node mock timers) and the hidden Main continuation |
 | Runtime-focused | `pytest tests/test_runtime_unit.py` | Search state machine without a host |
 | LLM Verifier-focused | `pytest tests/test_llm_verifier.py -q` | task lifecycle, immutable records, structured output, prompt binding, and FIFO terminal delivery |
 | Adaptive Search-focused | `pytest tests/adaptive_search -q` | deterministic allocation, record-driven snapshot, allocation recovery, one-shot steering, diagnostic actions, shadow and atomic limits |
@@ -129,8 +129,8 @@ and the environment are restored after each call, including failures. The return
 `subprocess.CompletedProcess`. Do not spawn one interpreter per hook event —
 each cold start costs about a second of imports, and per-event subprocess calls
 previously dominated total suite time. Default tests also never launch a real
-model; paths that would run `codex exec` (for example the model preflight) are
-monkeypatched — see the explicit-role-models test for the pattern.
+model; native execution uses controlled transport/process fixtures. Goal model
+admission is separately checked to avoid provider subprocess calls.
 
 A fixed, small set of tests keeps the real entry points covered:
 
@@ -202,20 +202,19 @@ also verify native Main discovers this path with the old control skills disabled
 Identity, stale activation, missing verdict and timeout cleanup use controlled
 processes in `test_final_check_host.py`.
 
-The unified-session feasibility probes are isolated from the product candidate
-driver. The Codex case runs two text tasks through an MCP facade and an independent
-app-server thread; it does not verify native collaboration hooks or Goal admission.
-The Pi case loads a disposable extension, consumes the real Goal Plus MCP schema,
-and forwards a read-only call without inference. Both close their processes.
+The Pi loading probe uses a disposable extension, consumes the real Goal Plus MCP
+schema, and forwards a read-only call without inference. It closes its process;
+native two-turn behavior belongs to `test_st_native_session.py`, which exercises
+the product session adapters and scope registration.
 
 ```bash
 python -m pytest --run-system-tests -n 0 -s -q tests/st/test_st_session_control.py
 ```
 
-`ST_SESSION_PROBE_TIMEOUT` bounds the Codex probe (180 seconds by default);
-`ST_CODEX_MODEL` and `ST_CODEX_REASONING_EFFORT` select its existing host model.
-The Pi probe uses `ST_PI_BINARY` or `pi` and a 60-second bound. These probes do not
-install assets or switch the production execution mechanism.
+The Pi probe uses `ST_PI_BINARY` or `pi` and a 60-second bound. It does not install
+assets or switch the production execution mechanism.
+`ST_SESSION_PROBE_TIMEOUT` still controls the product native-session and candidate
+session-host ST bounds (180 seconds by default).
 
 ```bash
 # Codex ordinary-language entrypoint guard: the MCP mutation is blocked and

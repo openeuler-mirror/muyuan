@@ -255,14 +255,6 @@ def test_shadow_has_no_send_or_consumption_and_cannot_promote_saved_trace(setup)
     assert not h.host.calls
 
 
-def test_concurrent_admission_consumes_once(setup):
-    h = configure(setup)
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(lambda _: accept(h), range(4)))
-    assert sum(result.status == "attempted" for result in results) == 1
-    assert len(h.host.calls) == 1
-
-
 def next_record(h, *, new_evidence=False):
     old = h.output
     receipt = old.subject.settlement.model_copy(deep=True, update={
@@ -577,6 +569,7 @@ def test_concurrent_delivery_observation_is_not_overwritten_by_replay(setup):
     h = configure(setup)
     with ThreadPoolExecutor(max_workers=4) as pool:
         outcomes = list(pool.map(lambda _: accept(h), range(4)))
+    assert sum(outcome.status == "attempted" for outcome in outcomes) == 1
     saved = h.state.read_diagnostic_observation("run_1", diagnostic_key(h))
     assert saved.result == next(outcome for outcome in outcomes if outcome.status == "attempted")
     assert len(h.host.calls) == 1

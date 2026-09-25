@@ -48,7 +48,7 @@ def test_freeze_uses_goal_main_host_and_rejects_override(tmp_path, agent_harness
     assert loaded.agent_harness == driver
 
 
-def test_search_spec_rejects_removed_verifier_config(tmp_path):
+def test_search_spec_accepts_empty_verifier_config(tmp_path):
     payload = spec_for(make_project(tmp_path)).model_dump(mode="json")
     payload["workspace"] = {"provider": "git_worktree"}
     payload["strategy"] = {

@@ -295,9 +295,9 @@ Annotation profile 不声明模型服务的认证或 endpoint 变量；Codex MCP
 由安装器从可信 native provider 配置收集，详见 [开发指南](development.md)。执行器要求 provenance 与冻结 host
 匹配；这可以在模型调用前拒绝从错误 host 或共享 runtime 进程启动的内部 agent。
 
-显式 annotator model 在 Goal command 或 `goal_plus_search_freeze_spec` 的既有 host gate 中与其他显式
-agent model 一起去重、并发执行最小推理 preflight。model catalog 解析成功不能替代这个检查；
-默认 annotator 不需要额外 probe。
+显式 annotator model 通过 host catalog 解析并冻结。Goal command 和
+`goal_plus_search_freeze_spec` 不额外发送推理请求；实际服务可用性在 Annotation 执行时检验，
+失败按 worker 的错误分类和重试合同处理。
 
 ## Task 状态与重试
 

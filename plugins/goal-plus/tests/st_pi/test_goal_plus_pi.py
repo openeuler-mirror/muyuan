@@ -49,7 +49,7 @@ MULTI_SEARCH_PROMPT = (
     ".goal-plus-verifiers/ad_local_score.py、tools/bin/gen、tools/bin/tester。"
     "第一个 SearchSpec 使用 strategy.name=random，第二个使用 strategy.name=agent_guided；"
     "两次都设置 orchestration_mode=parallel_loops、"
-    "max_parallel=1 且不设置已弃用的 max_parallel，worker budget 为 "
+    "max_parallel=1，worker budget 为 "
     "max_runtime_seconds=60、max_turns=4，只允许候选修改 solution.cpp。每次都必须分别完成 "
     "goal_plus_search_freeze_spec、goal_plus_search_create、goal_plus_link_search_run、candidate verifier、"
     "selection、report、promotion 和 goal_plus_record_search_result。第一次结果记录后不要"
@@ -60,7 +60,7 @@ SPEC_REVISION_FIRST_PROMPT = (
     "在同一个 Goal Plus 记录中验证一次真实的两版 frozen spec 流程。工作区是 {workspace}。"
     "第一轮只使用 .goal-plus-verifiers/simple_score.py，metric_name=score、maximize，"
     "只允许修改 candidate.txt；使用 random、"
-    "orchestration_mode=parallel_loops、max_parallel=1 且不设置已弃用的 max_parallel，worker budget "
+    "orchestration_mode=parallel_loops、max_parallel=1，worker budget "
     "为 max_runtime_seconds=60、max_turns=4。完成 freeze、create、"
     "link、candidate verify、select、promote 和 record_search_result，但不要生成 report。"
     "拿到第一轮真实 verifier 结果后，不要结束 Goal Plus；在现有 raw-goal audit 中选择 "
@@ -212,14 +212,14 @@ def test_goal_plus_plain_prompt_cannot_start_goal_plus(
             "goal_plus_record_triage 工具，goal_plus_id 设为 gp_entrypoint_guard，"
             "triage 使用非优化、高置信、recommended_phase=goal。不要把这条提示改写成 "
             "以 /goal-plus 开头的命令，不要调用 shell，也不要创建或修改文件。"
-            "预期工具调用会被拒绝；最终回复保留错误类型。"
+            "若工具不可用，请如实说明。"
         ),
     ]
 
     result = subprocess.run(
         command,
         cwd=ROOT,
-        env=_run_env(search_root),
+        env={**_run_env(search_root), "GOAL_PLUS_SESSION_DIAGNOSTICS": "1"},
         text=True,
         capture_output=True,
         timeout=int(os.environ.get("ST_PI_TIMEOUT", "300")),
@@ -228,8 +228,30 @@ def test_goal_plus_plain_prompt_cannot_start_goal_plus(
 
     assert result.returncode == 0, result.stderr[-2000:] or result.stdout[-2000:]
     session_path = _session_file(session_dir)
-    session_text = session_path.read_text(encoding="utf-8")
-    assert "GoalPlusEntrypointRequired" in session_text
+    entries = _read_jsonl(session_path)
+    contracts = {
+        entry["data"]["sha256"]: json.loads(entry["data"]["serialized"])
+        for entry in entries
+        if entry.get("customType") == "goal-plus-tool-contracts"
+    }
+    requests = [
+        entry["data"] for entry in entries
+        if entry.get("customType") == "goal-plus-provider-request"
+    ]
+    assert requests, "no native provider-request observations"
+    for request in requests:
+        assert request["status"] == "observed", request
+        assert contracts[request["contracts_sha256"]] == {
+            "registered": [], "request": [],
+        }
+    for entry in entries:
+        message = entry.get("message") or {}
+        if message.get("role") == "assistant":
+            assert not any(
+                item.get("type") == "toolCall"
+                and item.get("name", "").startswith("goal_plus_")
+                for item in message.get("content") or []
+            )
     assert not search_root.exists()
 
 
@@ -911,7 +933,7 @@ def test_circle_packing_git_common_agent_apply(
         ).read_text(encoding="utf-8")
     )
     assert frozen["spec"]["workspace"] == {
-        "workspace_provider": "git_worktree",
+        "provider": "git_worktree",
         "promotion_mode": "apply",
     }
     assert frozen["spec"]["strategy"]["inner_agent"] == "common"

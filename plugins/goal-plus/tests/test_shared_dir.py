@@ -688,7 +688,7 @@ def test_copy_receipts_accumulate_keep_and_discard_for_all_loops(
     assert "evidence_summary" not in global_evidence[0]["shared_tools"][0]
 
 
-def test_confounded_adoption_is_visible_but_excluded_from_tool_statistics(
+def test_confounded_adoption_is_recorded_in_evidence_projection(
     tmp_path: Path,
 ) -> None:
     runtime, run_id, [producer, consumer] = _shared_run(
@@ -1746,7 +1746,7 @@ def test_staging_inspection_failure_is_advisory_to_verifier_evidence(
     assert runtime.status(run_id).state != "failed"
 
 
-def test_shared_dir_is_disabled_by_default(tmp_path: Path) -> None:
+def test_disabled_shared_dir_omits_tools_and_storage(tmp_path: Path) -> None:
     runtime, run_id, [candidate, _peer] = _shared_run(tmp_path, enabled=False)
     context = runtime.get_agent_context(candidate.agent_session_id)
     task = context["candidate_task"]

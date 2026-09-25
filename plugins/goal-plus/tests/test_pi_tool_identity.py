@@ -30,26 +30,11 @@ def mcp_schema_manifest(tmp_path):
 @pytest.mark.parametrize("debug", [False, True])
 @pytest.mark.parametrize("diagnostics", [False, True])
 def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug, diagnostics):
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("Node is required to exercise the Pi extension")
-    supported = subprocess.run(
-        [node, "--input-type=module", "-e",
-         "import {registerHooks} from 'node:module';"], capture_output=True,
-    )
-    if supported.returncode:
-        pytest.skip("Node with synchronous module hooks is required")
-    result = subprocess.run(
-        [node, "--experimental-strip-types", "--input-type=module", "-e", SCRIPT,
-         str(ROOT / "assets/pi/extensions/goal-plus.ts"), str(tmp_path)],
-        env={**{key: value for key, value in os.environ.items()
-                if not key.startswith(("GOAL_PLUS_", "THINKTHREAD_"))},
-             "GOAL_PLUS_PI_ROLE": role,
-             "GOAL_PLUS_SESSION_DIAGNOSTICS": "1" if diagnostics else "0",
-             "GOAL_PLUS_DEBUG": "1" if debug else "0"},
-        text=True, capture_output=True, timeout=20,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": role,
+        "GOAL_PLUS_SESSION_DIAGNOSTICS": "1" if diagnostics else "0",
+        "GOAL_PLUS_DEBUG": "1" if debug else "0",
+    })
     assert "ownership checks passed" in result.stdout
     diagnostics = [json.loads(line) for line in result.stderr.splitlines()
                    if line.startswith('{"event":"goal_plus_api_response_size"')]
@@ -82,7 +67,7 @@ def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug, diagnos
         assert diagnostics == []
 
 
-def _run_env_script(tmp_path, script_env, timeout=20):
+def _run_env_script(tmp_path, script_env):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required to exercise the Pi extension")
@@ -98,34 +83,19 @@ def _run_env_script(tmp_path, script_env, timeout=20):
         env={**{key: value for key, value in os.environ.items()
                 if not key.startswith(("GOAL_PLUS_", "THINKTHREAD_"))},
              **script_env},
-        text=True, capture_output=True, timeout=timeout,
+        text=True, capture_output=True, timeout=20,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return result
 
 
 def _run_context_script(tmp_path, sdk_mode=None):
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("Node is required to exercise the Pi extension")
-    supported = subprocess.run(
-        [node, "--input-type=module", "-e", "import {registerHooks} from 'node:module';"],
-        capture_output=True,
+    return _run_env_script(
+        tmp_path,
+        {"GOAL_PLUS_PI_ROLE": "worker", "GOAL_PLUS_TT_SDK_TEST": sdk_mode,
+         "GOAL_PLUS_AGENT_POSIX_SDK_ENTRY": "file:///fixture-sdk.mjs", "THINKTHREAD_PARENT_ID": "parent"}
+        if sdk_mode else {"GOAL_PLUS_PI_ROLE": "main", "GOAL_PLUS_PI_WORK_RECEIPT_TEST": "1"},
     )
-    if supported.returncode:
-        pytest.skip("Node with synchronous module hooks is required")
-    result = subprocess.run(
-        [node, "--experimental-strip-types", "--input-type=module", "-e", SCRIPT,
-         str(ROOT / "assets/pi/extensions/goal-plus.ts"), str(tmp_path)],
-        env={**{key: value for key, value in os.environ.items()
-                if not key.startswith(("GOAL_PLUS_", "THINKTHREAD_"))},
-             **({"GOAL_PLUS_PI_ROLE": "worker", "GOAL_PLUS_TT_SDK_TEST": sdk_mode,
-                 "GOAL_PLUS_AGENT_POSIX_SDK_ENTRY": "file:///fixture-sdk.mjs", "THINKTHREAD_PARENT_ID": "parent"}
-                if sdk_mode else {"GOAL_PLUS_PI_ROLE": "main", "GOAL_PLUS_PI_WORK_RECEIPT_TEST": "1"})},
-        text=True, capture_output=True, timeout=20,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    return result
 
 
 def test_pi_command_context_and_shared_work_item_forwarding(tmp_path):
@@ -164,7 +134,7 @@ def test_pi_search_progress_frame_follows_the_search_run(tmp_path):
     result = _run_env_script(tmp_path, {
         "GOAL_PLUS_PI_ROLE": "main",
         "GOAL_PLUS_PI_SEARCH_PROGRESS_TEST": "1",
-    }, timeout=40)
+    })
     assert "search progress checks passed" in result.stdout
 
 
@@ -504,8 +474,17 @@ if (process.env.GOAL_PLUS_PI_PROGRESS_TEST === "1") {
   process.exit(0);
 }
 if (process.env.GOAL_PLUS_PI_SEARCH_PROGRESS_TEST === "1") {
+  const {mock} = await import("node:test");
+  const {setImmediate} = await import("node:timers/promises");
+  mock.timers.enable({apis: ["setTimeout", "Date"], now: Date.parse("2026-09-16T10:02:06Z")});
+  const advance = async ms => {
+    mock.timers.tick(ms);
+    // Timer callbacks start async MCP reads; drain them before the next tick.
+    await setImmediate();
+  };
+  // Public Pi progress cadence and hide delay, independent of implementation constants.
+  const progressDelay = 5_000;
   const statuses = new Map(), widgets = new Map();
-  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const snapshot = state => ({
     ok: true,
     goal_plus: {goal_plus_id: "gp_0001", status: "active",
@@ -567,23 +546,31 @@ if (process.env.GOAL_PLUS_PI_SEARCH_PROGRESS_TEST === "1") {
   await events.get("agent_settled")({}, ctx);
   assert.equal(widgets.size, 1, "a failed read must not clear the surfaces");
   globalThis.monitorSnapshot = snapshot("running");
-  const recoverDeadline = Date.now() + 9_000;
-  while (renders === rendersBeforeFailure && Date.now() < recoverDeadline) await wait(200);
+  await advance(progressDelay - 1);
+  assert.equal(renders, rendersBeforeFailure, "the frame must not refresh before five seconds");
+  await advance(1);
   assert.ok(renders > rendersBeforeFailure, "the interval must keep retrying after a failed read");
   // A failed status read is not evidence the Goal ended either: the frame stays
   // and the poll keeps retrying until a read succeeds again.
   globalThis.statusFailure = true;
-  const statusFailureDeadline = Date.now() + 6_500;
-  while (Date.now() < statusFailureDeadline) await wait(200);
+  const callsBeforeStatusFailure = calls.length;
+  const rendersBeforeStatusFailure = renders;
+  await advance(progressDelay);
+  assert.ok(calls.slice(callsBeforeStatusFailure).some(call => call.name === "goal_plus_status"),
+    "the timer must attempt the failing status read");
+  assert.equal(renders, rendersBeforeStatusFailure, "a failed read must not render new state");
   assert.equal(widgets.size, 1, "a failed status read must not clear the surfaces");
   globalThis.statusFailure = false;
+  await advance(progressDelay);
+  assert.ok(renders > rendersBeforeStatusFailure, "the poll must recover after a failed status read");
   // A finished Search run keeps the frame during the hide delay, then clears it.
   globalThis.monitorSnapshot = snapshot("promoted");
   await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
   await events.get("agent_settled")({}, ctx);
   assert.equal(widgets.size, 1, "the frame must survive the finished Search run until the hide delay");
-  const hideDeadline = Date.now() + 15_000;
-  while (widgets.size > 0 && Date.now() < hideDeadline) await wait(200);
+  await advance(progressDelay - 1);
+  assert.equal(widgets.size, 1, "the finished frame must remain for the full five seconds");
+  await advance(1);
   assert.equal(widgets.size, 0, "the frame must disappear after the Search run finished");
   // A settled RunState (waiting on Main, e.g. selection_blocked) must not
   // resurrect the frame or restart the idle poll.
@@ -592,11 +579,12 @@ if (process.env.GOAL_PLUS_PI_SEARCH_PROGRESS_TEST === "1") {
   await events.get("agent_settled")({}, ctx);
   assert.equal(widgets.size, 0, "a settled run must not show the live frame");
   const settledCalls = calls.length;
-  const idleDeadline = Date.now() + 6_500;
-  while (Date.now() < idleDeadline) await wait(200);
-  assert.ok(!calls.slice(settledCalls).some(call => call.name === "goal_plus_monitor_snapshot"),
+  await advance(progressDelay);
+  assert.ok(!calls.slice(settledCalls).some(call =>
+    call.name === "goal_plus_monitor_snapshot" || call.name === "goal_plus_status"),
     "the idle poll must not start for a settled run");
   await events.get("session_shutdown")({reason: "test"}, ctx);
+  mock.timers.reset();
   console.log("search progress checks passed");
   process.exit(0);
 }

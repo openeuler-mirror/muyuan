@@ -218,13 +218,10 @@ schema；没有指定模型时，保留 host 原生继承行为。默认 `detail
 和 catalog provenance。runtime freeze 始终使用完整目录做精确解析。模型目录只说明当前可发现的模型，
 不保证旧版 host tool 能转发所有可选字段。
 
-模型目录也不证明真实推理可用。现有 Goal command 与 `goal_plus_search_freeze_spec` host gate 只收集显式
-worker 和 annotator override，按模型去重后并发发送最小 `hi` 请求；任一请求失败就
-在启动 agent 前 fail closed。没有显式 override 时不 probe，因为 Main 当前 turn 已经是当前模型
-可用的证据。Codex probe 只通过原生 `codex exec -m MODEL` 切换模型；Pi probe 使用 extension
-持有的 native model 对象和 `modelRegistry.complete()`。Pi 未显式覆盖的 child 从 host-local
-execution scope 继承 Main 的 exact native model/thinking，而不是重新选择机器级 default。两条路径
-都继承 host 配置，不建立 provider、credential 或 endpoint plumbing。
+模型目录只证明模型可解析。Goal command 与 `goal_plus_search_freeze_spec` 不额外发送
+推理请求，provider 的实际可用性在对应 agent invocation 中检验，失败原因写入执行记录。
+Pi 未显式覆盖的 child 从 host-local execution scope 继承 Main 的 exact native model/thinking。
+Codex/Pi 都继承 host 配置，不建立 provider、credential 或 endpoint plumbing。
 
 Codex hook 在宿主提供模型事实时，也把 Main 的 model/reasoning_effort 写入 execution
 scope 的可信快照。产品 candidate launcher 已通过共同 session 接到 app-server 执行器，

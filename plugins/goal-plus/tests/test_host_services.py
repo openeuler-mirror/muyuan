@@ -119,7 +119,7 @@ def test_annotation_claim_reloads_queue_and_preserves_task_binding(monkeypatch) 
 
 
 @pytest.mark.parametrize("accepted,published", [(False, False), (True, False), (True, True)])
-def test_annotation_completion_returns_publication_state_without_cross_queue_wake(
+def test_annotation_completion_returns_publication_state(
     accepted: bool, published: bool,
     monkeypatch,
 ) -> None:

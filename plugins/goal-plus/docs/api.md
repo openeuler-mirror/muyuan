@@ -106,7 +106,7 @@ host 负责，详见
 | `goal_plus_history`              | 分页读取 revision、dispatch、Search 结果、final check 或审计事件             |
 | `goal_plus_record_triage`        | 按需记录 Search 判断与缺项；普通 coding 无需调用                             |
 | `goal_plus_record_work_event`    | 按实际派发懒创建 subagent 记录，并管理 generation、结果和 Main 决策          |
-| `goal_plus_list_models`          | 默认列出 provider/model_id；`detail=true` 时返回完整模型目录               |
+| `goal_plus_list_models`          | 默认列出 provider/model_id；`detail=true` 时返回完整模型目录                 |
 | `goal_plus_get_tool_schema`      | Main 按需读取当前注册工具的完整参数合同                                      |
 | `goal_plus_record_search_result` | 绑定 selection/promotion Evidence，并预留 final report 路径                  |
 | `goal_plus_run_final_check`      | 启动只读 reviewer，等待结构化结论并关闭原生资源                              |
@@ -190,11 +190,10 @@ token 开始就是自然语言目标：
 提交 Goal Plus 命令前通过 `/model` 选择；Goal Plus 不切换它。数据模型暂时保留 legacy
 `command_config.main`，仅用于读取旧 `.gp` 记录，新建和编辑命令都会拒绝该 key。
 
-Host command 入口只对这里显式出现的 `annotator`、`workers`/`models` 执行真实推理
-preflight；未指定时不检查 Main default。后续 `goal_plus_search_freeze_spec` 同样只检查 spec 中显式写出的
-worker 和 annotator model。每个边界都按模型去重并并发请求，任一失败则在 agent
-launch 前拒绝状态转换。检查使用 Codex/Pi 原生 model API，Goal Plus API 不接受 provider
-配置、API key 或 endpoint。
+Host command 入口解析显式 `annotator`、`workers`/`models` 配置；
+`goal_plus_search_freeze_spec` 通过 host catalog 解析选定模型。命令和 freeze 准入不发送
+额外的模型推理请求，provider 的实际可用性由对应 agent invocation 检验，失败原因写入执行记录。
+Goal Plus API 不接受 provider 配置、API key 或 endpoint。
 
 解析后的 `GoalPlusRecord.command_config` 是显式用户约束，配置 token 不再保留在
 `raw_goal` 中。freeze 准入校验完整 SearchSpec 与所有显式 command config，
@@ -418,8 +417,7 @@ task/session 交付工作合同，worker 通过 `goal_plus_search_get_agent_cont
 runtime 在 freeze 前通过 host catalog 解析模型名。最终有序 `selected_models` 属于 runtime
 state，每个 candidate 和 agent
 session 在 continuation 中保持选定模型。模型 identity 只用于 provenance，不影响 planning、verifier 或 selection。
-catalog discovery 不是 inference preflight；现有 host gate 会对本次 spec 中显式 agent model
-去重并并发发送最小请求。默认 model 不进入该集合。
+catalog discovery 只证明模型可解析；provider 的实际可用性由 agent invocation 检验。
 
 ## Worker Context
 

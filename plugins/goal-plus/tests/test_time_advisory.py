@@ -32,14 +32,27 @@ def _codex_candidate(tmp_path: Path) -> tuple[FileSearchRuntime, str, str, str]:
     return runtime, run_id, task.candidate_id, session.agent_session_id
 
 
-def test_time_advisory_candidate_classification_uses_provenance(tmp_path: Path) -> None:
+@pytest.mark.parametrize("agent_harness,role,expected", [
+    ("codex", None, True),
+    ("pi", None, True),
+    ("pi", "worker", True),
+    ("pi", "checker", False),
+])
+def test_time_advisory_candidate_classification_uses_provenance(
+    tmp_path: Path, agent_harness: str, role: str | None, expected: bool,
+) -> None:
     runtime, run_id, _, agent_session_id = _codex_candidate(tmp_path)
     session = runtime.candidate_sessions.session(agent_session_id, run_id=run_id)
-    assert is_search_candidate_session(session) is True
+    session = session.model_copy(update={
+        "agent_harness": agent_harness,
+        "launch": {"role": role} if role is not None else {},
+        "session_handle": session.session_handle.model_copy(update={"agent_harness": agent_harness}),
+    })
+    assert is_search_candidate_session(session) is expected
     renamed = session.model_copy(update={
         "session_handle": session.session_handle.model_copy(update={"nickname": "renamed"}),
     })
-    assert is_search_candidate_session(renamed) is True
+    assert is_search_candidate_session(renamed) is expected
 
 
 def test_time_advisory_uses_subagent_iterations_and_lists_candidate_timing(

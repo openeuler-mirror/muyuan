@@ -107,9 +107,8 @@ def _completed_assessment(
     return task, record
 
 
-def test_quality_source_uses_the_complete_verifier_task_identity() -> None:
+def test_quality_source_resolves_completed_adaptive_assessment() -> None:
     subject = _subject()
-    minimal = _completed_assessment("a", subject, 0.1)
     adaptive = _completed_assessment(
         "b",
         subject,

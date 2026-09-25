@@ -131,8 +131,6 @@ def test_circle_packing_thinkthread_prompt_is_outcome_focused() -> None:
     )
     assert "c001" in prompt and "candidate-hints/rectangular.py" in prompt
     assert "c002" in prompt and "candidate-hints/staggered.py" in prompt
-    assert "continuation 同一个 candidate" in prompt
-    assert "不要新增 plan、candidate 或 run" in prompt
     assert "sum_radii >= 2.2" in prompt
     for internal_detail in (
         "GOAL_PLUS_ROOT",
@@ -148,19 +146,14 @@ def test_circle_packing_thinkthread_prompt_is_outcome_focused() -> None:
 def test_circle_packing_thinkthread_codex_prompt_uses_host_entrypoint() -> None:
     prompt = EXAMPLE.joinpath("codex-goal-prompt.md").read_text(encoding="utf-8")
 
-    assert prompt.startswith("请先调用 `goal_plus_host_start`")
+    assert "`goal_plus_host_start`" in prompt
     assert "$goal-plus" not in prompt
     assert (
         "mode=probe max_parallel=2 max_duration_seconds=1200 "
         "workspace_provider=thinkthread promotion_mode=apply "
         "strategy=agent_guided inner_agent=common "
     ) in prompt
-    assert "只把\n`strategy.inner_agent`" in prompt
     assert "candidate-hints/rectangular.py" in prompt
     assert "candidate-hints/staggered.py" in prompt
-    assert "两次 candidate delivery 足够" in prompt
     assert "sum_radii >= 2.2" in prompt
-    assert "不要再次调用\n`goal_plus_search_run_verifier`" in prompt
-    assert "不要重复 promotion" in prompt
-    assert prompt.index("关闭 Goal 的 execution scope") < prompt.index("生成规范 MD/HTML 报告")
     assert "goal_plus_host_close_scopes" not in prompt

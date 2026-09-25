@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from typing import Any
 
 import pytest
@@ -180,7 +181,13 @@ def test_snapshot_reader_streams_large_file_digest_and_bounds_diff() -> None:
     assert omitted is True
     assert len(diff.encode()) == 128
     digest = reader.canonical_digest(snapshot("fsnap-S0"), snapshot("fsnap-Sk"))
-    assert len(digest) == 64
+    expected_manifest = json.dumps(
+        [{"kind": "file", "len": len(after), "mode": 0o644,
+          "path": "large.bin", "sha256": hashlib.sha256(after).hexdigest()}],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert digest == hashlib.sha256(expected_manifest.encode()).hexdigest()
     preads = [params for operation, params in client.operations if operation == "fs.snapshot.pread"]
     assert len(preads) >= 4
     assert all(int(params["length"]) <= 64 * 1024 for params in preads)
