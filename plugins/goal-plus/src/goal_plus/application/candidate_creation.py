@@ -258,7 +258,7 @@ class CandidateCreation:
                 logical_root="workspace",
                 native_cwd=workspace,
                 bootstrap_required=frozen.agent_harness == "codex",
-                confinement="soft_path",
+                confinement="protected_execution",
                 writable_surfaces=list(frozen.spec.edit_surface.allow),
                 managed_root=materialization.managed_root,
                 source_subdir=materialization.source_subdir,

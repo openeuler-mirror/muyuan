@@ -279,7 +279,7 @@ interface PiRuntimeStartEntry {
 	active_tools: string[];
 	active_builtin_tools: string[];
 	active_non_builtin_tools: string[];
-	pi_sandbox: "none";
+	pi_sandbox: "none" | "seatbelt" | "bubblewrap";
 	pi_builtin_tool_approval: "none";
 	filesystem_access: "launcher-process-user";
 	network_access: "host-policy-unreported";
@@ -327,7 +327,9 @@ function buildPiRuntimeStartEntry(pi: ExtensionAPI, ctx: ExtensionContext): PiRu
 		active_tools: activeTools,
 		active_builtin_tools: activeBuiltinTools,
 		active_non_builtin_tools: activeNonBuiltinTools,
-		pi_sandbox: "none",
+		pi_sandbox: process.env.GOAL_PLUS_PI_SANDBOX === "seatbelt"
+			? "seatbelt"
+			: process.env.GOAL_PLUS_PI_SANDBOX === "bubblewrap" ? "bubblewrap" : "none",
 		pi_builtin_tool_approval: "none",
 		filesystem_access: "launcher-process-user",
 		network_access: "host-policy-unreported",

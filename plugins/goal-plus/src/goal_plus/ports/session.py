@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
+from goal_plus.ports.sandbox import ProcessSandbox
 
 
 SessionOperation = Literal["wake", "wait", "message", "interrupt", "stop", "close"]
@@ -51,6 +52,7 @@ class SessionProcessInput:
     command: tuple[str, ...]
     cwd: Path
     environment: dict[str, str]
+    sandbox: ProcessSandbox | None = None
 
 
 @dataclass(frozen=True)

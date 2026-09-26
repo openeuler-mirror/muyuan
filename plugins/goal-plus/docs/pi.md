@@ -206,7 +206,7 @@ Pi 使用 extension event，而不是项目 hook 文件。extension 只会在 in
 
 新建 Goal Plus 记录前，Pi extension 会追加一条不进入模型上下文的
 `goal-plus-runtime-start` custom entry。折叠视图显示当前 main session 的 mode、
-project trust、active tool 数量，以及 Pi 没有内置 sandbox/审批的事实；展开后显示
+project trust、active tool 数量，以及 Pi Main 没有内置 sandbox/审批的事实；展开后显示
 实际 cwd 和 active builtin/non-builtin tool 名单。这里的 `--approve` 或
 `project_trusted=true` 只表示允许加载项目内 Pi 资源，不表示 full access。
 filesystem 只报告为 `launcher-process-user`，network 只报告为
@@ -253,7 +253,10 @@ monitor 不可用时，卡片降级到终态、当前会话耗时和 main 用量
 它是 custom entry，不是 LLM message，不会触发另一个 assistant turn，也
 不再额外发送一份重复的统计通知。
 
-Search worker 由共同 session 宿主启动 `pi --mode rpc` 子进程，资源经 scope 登记后放行；
+Search worker 由共同 session 宿主启动受保护的 `pi --mode rpc` 子进程，资源经 scope 登记后放行；
+direct Pi 的 candidate、普通 delegation 和 final checker 由 Goal Plus launcher 在 macOS
+通过 Seatbelt、Linux 通过 bubblewrap 包裹；运行时缺少可用 backend 时 fail closed。Pi Main
+仍保留宿主自身的权限语义，不能把 Main 的 project trust 当作 sandbox。
 native session 位于 `.gp/host-sessions/pi/`。旧 Pi pool/driver/worker 与专属 CLI 已删除。
 切换前须由旧安装关闭旧活跃 pool；历史文件保留，新版本不接管旧 pool 执行。
 

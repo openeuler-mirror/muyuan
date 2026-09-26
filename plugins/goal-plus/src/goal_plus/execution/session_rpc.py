@@ -15,6 +15,7 @@ from uuid import uuid4
 from goal_plus.execution.launch_gate import ProcessLaunchGate
 from goal_plus.execution.managed_process import ManagedProcess
 from goal_plus.execution.process_output import PROCESS_OUTPUT_LIMIT_BYTES
+from goal_plus.execution.sandbox import resolve_sandbox_command
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.session import SessionProcessInput
 
@@ -157,8 +158,11 @@ class SessionRpcProcess:
         self._closed = False
         self._close_lock = threading.Lock()
         with ProcessLaunchGate(execution_lock) as gate:
+            command = resolve_sandbox_command(
+                config.command, cwd=config.cwd, sandbox=config.sandbox,
+            )
             self.process = subprocess.Popen(
-                gate.command(config.command), pass_fds=gate.pass_fds,
+                gate.command(command), pass_fds=gate.pass_fds,
                 cwd=config.cwd, env=config.environment,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )

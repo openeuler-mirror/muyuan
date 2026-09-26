@@ -15,6 +15,7 @@ from goal_plus.execution.inference_output import pi_assistant_message, read_infe
 from goal_plus.execution.managed_process import ManagedProcess
 from goal_plus.execution.launch_gate import ProcessLaunchGate
 from goal_plus.execution.process_monitor import ProcessMonitor
+from goal_plus.execution.sandbox import resolve_sandbox_command
 from goal_plus.ports.clock import Clock
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.inference import (
@@ -110,6 +111,11 @@ class StructuredInference:
                     command.extend(("--thinking", request.reasoning_effort))
                 environment[tools.output_env] = str(output_path)
                 options["cwd"] = directory
+            command = list(resolve_sandbox_command(
+                command,
+                cwd=options.get("cwd", directory),
+                sandbox=request.sandbox,
+            ))
             prompt_path = directory / "prompt.txt"
             prompt_path.write_text(request.prompt, encoding="utf-8")
             with ExitStack() as launch, prompt_path.open("r", encoding="utf-8") as prompt_input:

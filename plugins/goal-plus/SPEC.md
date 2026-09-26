@@ -326,6 +326,9 @@ Freeze 与 run bootstrap 必须：
 4. 创建 run 时确认 source identity 未变化；
 5. 首次物化 Git worktree 时执行 workspace relocation gate；
 6. 全程校验 metric、退出码、timeout、edit surface 和可选 device pool。
+7. Direct Copy/Git candidate 的 native child 必须有 protected execution：Pi 由受管外层
+   Seatbelt/bubblewrap launcher 执行，Codex 由原生 workspace sandbox 执行；backend 不可用时
+   不得降级为无约束的 child。
 
 本地 Git/Copy 冻结必须确认 process verifier baseline 实际产出有限数值分数；没有声明
 `ranking_signal` 也不能跳过。分数必须来自精确 metric，且来源唯一，不能用运行时元数据或

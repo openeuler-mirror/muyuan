@@ -334,6 +334,12 @@ Git worktree 不是 security sandbox。它隔离 branch 和 filesystem tree，�
 process、network、system call 或 credential。ThinkThread 只有在 exact Profile/ABI preflight
 证明 protected execution 时才开放；缺少能力必须 fail closed。
 
+Direct Copy/Git 的 `WorkspaceAccess.confinement` 现在要求 `protected_execution`。Pi 的
+candidate、普通 delegation 和 final checker 由 Goal Plus 通过 macOS Seatbelt 或 Linux
+bubblewrap 约束 child；Codex 使用其原生 workspace sandbox。`.gp` runtime state 和 native
+session directory 是 host-owned writable roots，属于受管运行时，不属于 candidate source
+workspace。Git worktree 仍然只是 outer provider 的代码隔离，不能单独承担该 execution boundary。
+
 ---
 
 ## 资源所有权与 cleanup

@@ -1595,7 +1595,7 @@ def test_worker_task_exposes_host_and_edit_contract(tmp_path: Path) -> None:
     assert "worker_mode" not in tasks[0].strategy_metadata
     assert tasks[0].workspace_access.native_cwd == tasks[0].workspace
     assert tasks[0].workspace_access.bootstrap_required is True
-    assert tasks[0].workspace_access.confinement == "soft_path"
+    assert tasks[0].workspace_access.confinement == "protected_execution"
     assert tasks[0].allowed_files == ["initial_program.py"]
     assert tasks[0].denied_files == ["evaluator.py", "config.yaml"]
 
@@ -2864,7 +2864,7 @@ def test_start_agent_session_returns_pi_rpc_launch_payload(tmp_path: Path) -> No
     assert session.launch["run_id"] == run_id
     assert task.workspace_access.native_cwd == task.workspace
     assert task.workspace_access.bootstrap_required is False
-    assert task.workspace_access.confinement == "soft_path"
+    assert task.workspace_access.confinement == "protected_execution"
     assert session.launch["session_id"] == session.agent_session_id
     assert session.launch["budget_control"] == {"max_runtime_seconds": 600}
     assert "goal_plus_search_get_agent_context" in session.launch["prompt"]
