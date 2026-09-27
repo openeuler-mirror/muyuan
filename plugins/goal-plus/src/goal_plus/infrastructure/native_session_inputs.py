@@ -5,15 +5,19 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from goal_plus.codex_hook_input import CODEX_CANDIDATE_SESSION_ENV, CODEX_ORDINARY_ROLE_ENV
-from goal_plus.domain.search import AgentSessionRecord
+from goal_plus.codex_hook_input import (
+    CODEX_CANDIDATE_SESSION_ENV,
+    CODEX_ORDINARY_ROLE_ENV,
+)
 from goal_plus.domain.goal import GoalPlusFinalCheckerIdentity
+from goal_plus.domain.search import AgentSessionRecord
+from goal_plus.execution.pi_config import prepare_pi_home
+from goal_plus.execution.scope import normalize_native_agent_config
 from goal_plus.infrastructure.final_check_binding import FINAL_CHECK_IDENTITY_ENV
 from goal_plus.infrastructure.state.resource_locks import VERIFIER_RESOURCE_LOCK_DIR_ENV, host_resource_lock_root
-from goal_plus.execution.scope import normalize_native_agent_config
 from goal_plus.paths import host_assets_root
-from goal_plus.ports.scope import ScopeRecord
 from goal_plus.ports.sandbox import ProcessSandbox, SandboxMode
+from goal_plus.ports.scope import ScopeRecord
 from goal_plus.ports.session import NativeSessionInput, SessionProcessInput
 
 
@@ -93,6 +97,7 @@ def native_candidate_input(
         raise FileNotFoundError(f"Pi extension not found: {extension}")
     session_dir = root / "host-sessions" / "pi"
     session_dir.mkdir(parents=True, exist_ok=True)
+    prepare_pi_home(session_dir, environment)
     environment.update({
         "GOAL_PLUS_PI_ROLE": "worker",
         "GOAL_PLUS_AGENT_SESSION_ID": session.agent_session_id,
@@ -148,6 +153,7 @@ def native_final_check_input(
     environment["GOAL_PLUS_PI_SANDBOX"] = "seatbelt" if sys.platform == "darwin" else "bubblewrap"
     session_dir = root / "host-sessions" / "pi"
     session_dir.mkdir(parents=True, exist_ok=True)
+    prepare_pi_home(session_dir, environment)
     return NativeSessionInput(
         agent_harness=agent_harness,
         process=SessionProcessInput(
@@ -195,6 +201,7 @@ def native_work_item_input(
     environment["GOAL_PLUS_PI_SANDBOX"] = "seatbelt" if sys.platform == "darwin" else "bubblewrap"
     session_dir = root / "host-sessions" / "pi"
     session_dir.mkdir(parents=True, exist_ok=True)
+    prepare_pi_home(session_dir, environment)
     return NativeSessionInput(
         agent_harness=agent_harness,
         process=SessionProcessInput(

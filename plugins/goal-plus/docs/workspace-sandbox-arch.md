@@ -312,7 +312,7 @@ ThinkThread 的完整 target/peer 阅读由独立 retained Annotation Child 的 
 | source apply | fetch + cherry-pick | optimistic `fs.apply(S0, P)` |
 | conflict state | source apply rejects | `awaiting_main_integration` |
 | uncertain result | ordinary operation failure | same RequestId recovery fence |
-| execution boundary | path isolation, not sandbox | provider-enforced private Child |
+| execution boundary | worktree path isolation + direct host sandbox | provider-enforced private Child |
 | supported host | Codex and Pi RPC | installed Pi or Codex ThinkThread Profile |
 
 ## Inner Agent 对照
@@ -335,10 +335,8 @@ process、network、system call 或 credential。ThinkThread 只有在 exact Pro
 证明 protected execution 时才开放；缺少能力必须 fail closed。
 
 Direct Copy/Git 的 `WorkspaceAccess.confinement` 现在要求 `protected_execution`。Pi 的
-candidate、普通 delegation 和 final checker 由 Goal Plus 通过 macOS Seatbelt 或 Linux
-bubblewrap 约束 child；Codex 使用其原生 workspace sandbox。`.gp` runtime state 和 native
-session directory 是 host-owned writable roots，属于受管运行时，不属于 candidate source
-workspace。Git worktree 仍然只是 outer provider 的代码隔离，不能单独承担该 execution boundary。
+child 默认经过 OS wrapper，Codex 使用原生策略；共享 runtime 写根等限制统一见
+[Agent sandbox](sandbox/README.md)。Git worktree 不能单独承担该进程边界。
 
 ---
 

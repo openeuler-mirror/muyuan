@@ -70,7 +70,7 @@ Search supports the following host, runtime-provider, inner-agent, and workspace
 | Pi | `thinkthread` | `common` (default), `autoresearch` | `thinkthread` |
 | Codex | `thinkthread` | `common` | `thinkthread` |
 
-**Workspace note:** `git_worktree` provides workspace isolation, not a security sandbox; `copy` delivers artifacts only. See [Workspace Architecture](docs/workspace-sandbox-arch.md).
+**Workspace note:** `git_worktree` separates code trees; direct workers additionally use default host sandbox policies. See [Sandbox Design and Support](docs/sandbox/README.md) for dependencies and writable-root limits, and [Workspace Architecture](docs/workspace-sandbox-arch.md) for artifact delivery.
 
 ### Inner-Agent Behavior
 

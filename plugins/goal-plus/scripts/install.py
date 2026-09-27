@@ -118,6 +118,31 @@ def _require_executable(name: str) -> str:
     return str(Path(executable).resolve())
 
 
+def _report_sandbox_support(*, codex: bool, pi: bool) -> None:
+    if codex:
+        print("Sandbox (Codex direct): native workspace-write/read-only policies enabled.")
+    if not pi:
+        return
+    backend = (
+        "bwrap" if sys.platform.startswith("linux")
+        else "sandbox-exec" if sys.platform == "darwin"
+        else None
+    )
+    if backend is not None and shutil.which(backend):
+        print(
+            f"Sandbox (Pi direct): {backend} detected on PATH; "
+            "OS permissions are checked at worker launch."
+        )
+    else:
+        print(
+            f"warning: Pi direct sandbox backend {backend or sys.platform} is unavailable. "
+            "Installation can continue; protected workers will fail to launch. "
+            "No unsandboxed fallback or system dependency installation is performed. "
+            "See docs/sandbox/README.md.",
+            file=sys.stderr,
+        )
+
+
 def _read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -2132,6 +2157,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not confirmed:
             return 0
+        _report_sandbox_support(codex=args.codex, pi=args.pi or args.pi_dev)
         codex_env_vars = (
             _codex_provider_env_vars(profile=args.codex_profile)
             if args.codex

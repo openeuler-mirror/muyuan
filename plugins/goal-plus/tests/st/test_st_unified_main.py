@@ -1,18 +1,19 @@
 """Native Main consumes the shared MCP overview without GP control skills."""
 
+import errno
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
+from goal_plus.candidate_host import candidate_host_queries
+from goal_plus.domain.agents import WorkerBudget
 from goal_plus.execution.managed_process import ManagedProcess
 from goal_plus.host_scope import close_execution_scope
-from goal_plus.domain.agents import WorkerBudget
 from goal_plus.runtime import FileSearchRuntime
-from goal_plus.candidate_host import candidate_host_queries
 from tests._runtime_helpers import make_project, spec_for
 from tests.st.hosts import st_model_for_host
 
@@ -31,7 +32,7 @@ def assert_session_deliveries(sessions, evidence, *, circle):
 
 @pytest.mark.st
 @pytest.mark.parametrize("task_kind", [
-    "ordinary", "search", "final_check", "delegation", "circle_artifact", "circle_apply",
+    "ordinary", "search", "final_check", "delegation", "circle_artifact", "circle_apply", "circle_sandbox",
     "circle_example_plain", "circle_example_adaptive", "circle_example_llm", "circle_example_replacement",
 ])
 @pytest.mark.parametrize("agent_harness", [
@@ -44,6 +45,7 @@ def test_native_main_without_control_skills(
     checkout = Path(__file__).resolve().parents[2]
     circle = task_kind.startswith("circle_")
     public_example = task_kind.startswith("circle_example_")
+    sandbox_probe = task_kind == "circle_sandbox"
     if public_example and agent_harness != "pi":
         pytest.skip("Public Circle example acceptance is scoped to Pi")
     if public_example:
@@ -64,12 +66,19 @@ def test_native_main_without_control_skills(
         if not public_example:
             spec["source_path"] = str(source)
             spec["strategy"]["inner_agent"] = "common"
+        if sandbox_probe:
+            model = st_model_for_host(agent_harness)
+            spec["strategy"]["worker_launch"] = {"model": model, "reasoning_effort": "low"}
+            spec["strategy"]["models"] = [{"model": model, "reasoning_effort": "low", "count": 2}]
         spec["workspace"]["promotion_mode"] = "apply" if apply_publication else "artifact_only"
         (project / "search-spec.json").write_text(json.dumps(spec, indent=2))
     else:
         project = make_project(tmp_path)
     (project / "proof.txt").write_text("unified-main-proof\n")
     root = project / ".gp"
+    if sandbox_probe:
+        outside = tmp_path / "outside.txt"
+        outside.write_text("sandbox-outside-sentinel\n")
     timeout = float(os.environ.get("ST_UNIFIED_MAIN_TIMEOUT", "1200" if circle else
                                   "600" if task_kind in {"search", "delegation"} else "240"))
     task = (
@@ -129,6 +138,25 @@ def test_native_main_without_control_skills(
                "Deliver artifact-only output and keep the source workspace unchanged.")
         )
     public_prompt = None
+    if sandbox_probe:
+        task += (
+            " Use the shared Goal Plus MCP tools for freeze/create/plan/start_batch and "
+            "goal_plus_session_run for candidate execution. Ordinary native subagents do not "
+            "exercise this Search boundary. Preserve the worker_launch and models in search-spec.json; "
+            "they select this environment's available model. This is a bounded workflow acceptance, "
+            "so use these reproducible valid constructions: c001 first uses a 5x5 grid with centers "
+            "(0.1+0.2*i, 0.1+0.2*j), radii 0.1, plus a zero-radius circle at (0,0); on its second "
+            "turn replace the zero circle by one at (0.2,0.2), radius 0.04. c002 independently uses "
+            "the same 5x5 grid plus a circle at (0.2,0.2), radius 0.1*(sqrt(2)-1)-1e-9. "
+            "Return these exact 26 centers/radii directly; no numeric optimization is needed. "
+            " Before each candidate's first implementation change, have that candidate run "
+            f"python {checkout / 'tests/st/fixtures/sandbox_probe.py'} "
+            f"--outside {outside} --source {source / 'initial_program.py'}. "
+            "This authorized sandbox acceptance probe must run inside each candidate's native shell, "
+            "not Main. It attempts writes only to disposable test files and saves .tmp/sandbox-probe.json. "
+            "Do not synthesize or edit that receipt. A kernel write denial is the expected result; "
+            "continue the Circle implementation and real verifier after the probe succeeds."
+        )
     if public_example:
         suffix = {"plain": "", "adaptive": "-adaptive-search", "llm": "-llm-verifier", "replacement": "-adaptive-search"}[task_kind.removeprefix("circle_example_")]
         public_prompt = (example / f"pi-goal-prompt{suffix}.md").read_text()
@@ -159,18 +187,20 @@ def test_native_main_without_control_skills(
         package = Path(os.environ.get("ST_PI_PACKAGE", str(checkout)))
         if package == checkout:
             monkeypatch.setenv("GOAL_PLUS_PI_DEV_ROOT", str(checkout))
-            monkeypatch.setenv("GOAL_PLUS_PYTHON", str(checkout / ".goal-plus-dev/venv/bin/python"))
+            monkeypatch.setenv("GOAL_PLUS_PYTHON", os.environ.get(
+                "GOAL_PLUS_PYTHON", str(checkout / ".goal-plus-dev/venv/bin/python")))
         else:
             monkeypatch.delenv("GOAL_PLUS_PI_DEV_ROOT", raising=False)
             monkeypatch.delenv("GOAL_PLUS_PYTHON", raising=False)
         model = st_model_for_host("pi")
-        binary = str(checkout / ".goal-plus-dev/bin/pi-goal-plus") if public_example else "pi"
+        binary = os.environ.get("ST_PI_BINARY") or (
+            str(checkout / ".goal-plus-dev/bin/pi-goal-plus") if public_example else "pi")
         command = [
             binary, "--approve", "-p", "--mode", "json", "--no-skills",
             "--no-context-files",
             "--session-dir", str(tmp_path / "sessions"), "--thinking", "low",
         ]
-        if not public_example:
+        if not public_example and not os.environ.get("ST_PI_BINARY"):
             command.extend(["--no-extensions", "-e", str(package / "assets/pi/extensions/goal-plus.ts")])
         if model:
             command.extend(["--model", model])
@@ -283,6 +313,18 @@ def test_native_main_without_control_skills(
             }, indent=2))
         else:
             assert_session_deliveries(sessions, evidence, circle=circle)
+        if sandbox_probe:
+            receipts = []
+            for session in sessions:
+                receipt = json.loads((session.workspace / ".tmp/sandbox-probe.json").read_text())
+                assert receipt["workspace"] == str(session.workspace)
+                assert receipt["inside_write"] == "ok"
+                assert set(receipt["denied"]) == {"outside", "source", "symlink", "child"}
+                assert all(code in {errno.EROFS, errno.EACCES, errno.EPERM}
+                           for code in receipt["denied"].values()), receipt
+                receipts.append(receipt)
+            assert outside.read_text() == "sandbox-outside-sentinel\n"
+            (st_log_dir / "sandbox.json").write_text(json.dumps(receipts, indent=2))
         if circle:
             assert runtime.status(linked["run_id"]).state == "promoted"
             run = runtime.search_run.state.read_run(linked["run_id"])

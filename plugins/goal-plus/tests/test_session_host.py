@@ -85,11 +85,15 @@ def hosted_candidate(request, tmp_path, monkeypatch):
         inputs.append(config)
         wire = Path(__file__).parent / "fixtures/native_session_rpc.py"
         scenario = "interrupt" if (tmp_path / "hold-native-turn").exists() else "normal"
+        fixture_root = (config.process.sandbox.writable_roots[0]
+                        if config.process.sandbox and config.process.sandbox.writable_roots
+                        else root)
         config = replace(config, model=None, reasoning_effort=None, process=replace(
             config.process,
-            command=(sys.executable, str(wire), agent_harness, scenario, str(tmp_path / "executed")),
+            command=(sys.executable, str(wire), agent_harness, scenario,
+                     str(fixture_root / "native-fixture-executed")),
             environment={**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
-                         "NATIVE_FIXTURE_STATE": str(tmp_path / "native-wire.json"),
+                         "NATIVE_FIXTURE_STATE": str(fixture_root / "native-wire.json"),
                          "NATIVE_FIXTURE_RESUME": "1" if config.native_session_id else "0"},
         ))
         instance = native_actor(config, registration, **kwargs)
@@ -406,7 +410,7 @@ def test_run_resumes_same_native_session_after_process_exit(hosted_candidate, en
         control = host(first["session_id"], "wait")
         if ending == "stop":
             deadline = time.monotonic() + 5
-            while not (root.parent / "active").exists():
+            while not (root / "active").exists():
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
             control.stop()

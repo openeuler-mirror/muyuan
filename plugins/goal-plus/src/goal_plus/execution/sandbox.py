@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
 import sys
-import tempfile
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 from goal_plus.ports.sandbox import ProcessSandbox
 
@@ -50,7 +49,6 @@ def _unique_writable_roots(sandbox: ProcessSandbox) -> tuple[Path, ...]:
     if sandbox.mode == "workspace-write":
         roots.append(_normal_path(sandbox.workspace))
     roots.extend(_normal_path(path) for path in sandbox.writable_roots)
-    roots.append(_normal_path(Path(tempfile.gettempdir())))
     seen: set[Path] = set()
     result: list[Path] = []
     for root in roots:

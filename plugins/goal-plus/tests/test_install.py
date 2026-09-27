@@ -514,15 +514,22 @@ def test_codex_install_refreshes_existing_plugin(
     assert verified == [ROOT]
 
 
-def test_pi_dev_dry_run_does_not_create_managed_directory(
+@pytest.mark.parametrize(("platform", "backend", "available"), [
+    ("linux", "bwrap", False), ("linux", "bwrap", True),
+    ("darwin", "sandbox-exec", False), ("darwin", "sandbox-exec", True),
+])
+def test_pi_dev_dry_run_reports_sandbox_without_creating_managed_directory(
     installer: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys, platform, backend, available,
 ) -> None:
     agent_dir = tmp_path / "pi-agent"
     _write_pi_settings(agent_dir, [])
     dev_dir = tmp_path / "pi-dev"
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+    monkeypatch.setattr(installer.sys, "platform", platform)
+    monkeypatch.setattr(installer.shutil, "which", lambda name: f"/opt/bin/{name}" if available else None)
     monkeypatch.setattr(
         installer, "_require_executable", lambda _name: "/opt/pi/bin/pi"
     )
@@ -534,6 +541,13 @@ def test_pi_dev_dry_run_does_not_create_managed_directory(
 
     assert installer.main(["--pi-dev", "--pi-dev-dir", str(dev_dir), "--dry-run"]) == 0
     assert not dev_dir.exists()
+    output = capsys.readouterr()
+    if available:
+        assert f"{backend} detected on PATH" in output.out
+        assert "sandbox backend" not in output.err
+    else:
+        assert f"sandbox backend {backend} is unavailable" in output.err
+        assert "protected workers will fail to launch" in output.err
 
 
 def test_pi_dev_install_prefers_binary_dependencies(

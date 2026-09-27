@@ -32,14 +32,24 @@ IO_MEMBERS = {
 def test_no_platform_process_inspection():
     violations = []
     for path in PACKAGE.rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        tree = ast.parse(path.read_text())
+        # Bubblewrap mounts a private procfs; the argv target is not a host lookup.
+        proc_mount_targets = {
+            id(target)
+            for sequence in ast.walk(tree) if isinstance(sequence, (ast.List, ast.Tuple))
+            for option, target in zip(sequence.elts, sequence.elts[1:])
+            if isinstance(option, ast.Constant) and option.value == "--proc"
+            and isinstance(target, ast.Constant) and target.value == "/proc"
+        }
+        for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and (
                 node.attr in {"killpg", "getpgid", "getpgrp"}
                 or node.attr == "kill" and isinstance(node.value, ast.Name) and node.value.id == "os"
             ):
                 violations.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and (
-                node.value == "/proc" or node.value.startswith("/proc/") or "libproc" in node.value or node.value == "sysctl"
+                node.value == "/proc" and id(node) not in proc_mount_targets
+                or node.value.startswith("/proc/") or "libproc" in node.value or node.value == "sysctl"
             ):
                 violations.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
     assert not violations, "platform process inspection is not supported: " + ", ".join(violations)

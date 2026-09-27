@@ -16,7 +16,7 @@
 | 理解 Search 与 Evidence | [共享平面](shared-plane.md)、[Adaptive Search](adaptive-search.md) |
 | 修改 native session、scope 或宿主接线 | [Agent Host Adapters](agent-host-adapters.md) |
 | 修改 workspace、artifact、reference 或 publication | [Workspace 架构](workspace-sandbox-arch.md)、[多目录 Submodule 方案](submodule-workspace-design.md) |
-| 验证 agent 进程的 Linux/macOS 文件隔离 | [Sandbox 设计与限制](sandbox/README.md)、[Linux 验证计划](sandbox/plan.md) |
+| 理解 sandbox 设计、安装、代码架构与支持范围 | [Agent sandbox](sandbox/README.md) |
 | 修改 Annotation 或 Artifact View | [Evidence Annotator](evidence-annotator.md) |
 | 修改普通任务委派 | [Ultra](ultra.md) |
 | 理解分层、状态 owner 与角色能力 | [架构图集](architecture.md)、[图集页面](architecture.html) |

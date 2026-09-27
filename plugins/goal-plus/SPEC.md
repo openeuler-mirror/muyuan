@@ -58,6 +58,10 @@ ThinkThread 的 Goal Plus runtime 目录必须位于 Root 附着文件树之外�
 原生 session 目录；baseline 捕获前拒绝位于 Root 内的自定义路径或指向它的软链接，
 不得把 Goal/session 私有状态作为 candidate snapshot 交付。
 Pi 开发 launcher 的预检查和工具调用使用开发 venv 的隔离 Python。
+Direct Copy/Git worker 默认使用共同 sandbox 声明：Codex 原生策略、Pi OS wrapper。
+安装时系统后端缺失可以保留缺失状态并提示；执行时不得退回不受保护的命令。
+该边界不改变 Main 权限，也不承诺共享 runtime 写根之外的完整安全隔离；
+设计、支持范围及角色写入例外见 [Agent sandbox](docs/sandbox/README.md)。
 两端不发布 Goal Plus 导航 skill。命令仍由宿主授权，公共导航来自 MCP instructions；
 删除 skill 不扩大 Main 或 candidate 的执行权限。
 

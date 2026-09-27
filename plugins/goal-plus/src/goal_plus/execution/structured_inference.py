@@ -8,21 +8,27 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from goal_plus.execution.inference_output import pi_assistant_message, read_inference_output, strict_output_schema
-from goal_plus.execution.managed_process import ManagedProcess
+from goal_plus.execution.inference_output import (
+    pi_assistant_message,
+    read_inference_output,
+    strict_output_schema,
+)
 from goal_plus.execution.launch_gate import ProcessLaunchGate
+from goal_plus.execution.managed_process import ManagedProcess
+from goal_plus.execution.pi_config import prepare_pi_home
 from goal_plus.execution.process_monitor import ProcessMonitor
 from goal_plus.execution.sandbox import resolve_sandbox_command
 from goal_plus.ports.clock import Clock
-from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.inference import (
     InferenceInvocation,
     StructuredInferenceRequest,
     StructuredInferenceResult,
 )
+from goal_plus.ports.process import ProcessRegistration
 
 
 class StructuredInference:
@@ -69,9 +75,16 @@ class StructuredInference:
             raise ValueError("Pi inference requires its authorized tool bundle; Codex does not accept one")
         started_at = self.clock.timestamp()
         started = time.monotonic()
-        temporary = tempfile.TemporaryDirectory(prefix="goal-plus-inference-")
+        temporary = tempfile.TemporaryDirectory(
+            prefix="goal-plus-inference-",
+            dir=str(request.sandbox.workspace) if request.sandbox is not None else None,
+        )
         try:
             directory = Path(temporary.name)
+            sandbox = (
+                replace(request.sandbox, workspace=directory)
+                if request.sandbox is not None else None
+            )
             output_path = directory / "output.json"
             environment = os.environ.copy()
             options: dict[str, Any] = {}
@@ -92,6 +105,8 @@ class StructuredInference:
             else:
                 tools = request.pi_tools
                 assert tools is not None
+                if request.sandbox is not None:
+                    prepare_pi_home(directory / "pi-home", environment)
                 extension_path = directory / "structured-output.ts"
                 extension_path.write_text(tools.extension, encoding="utf-8")
                 command = [
@@ -114,7 +129,7 @@ class StructuredInference:
             command = list(resolve_sandbox_command(
                 command,
                 cwd=options.get("cwd", directory),
-                sandbox=request.sandbox,
+                sandbox=sandbox,
             ))
             prompt_path = directory / "prompt.txt"
             prompt_path.write_text(request.prompt, encoding="utf-8")

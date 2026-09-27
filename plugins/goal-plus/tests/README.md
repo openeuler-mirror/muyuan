@@ -363,6 +363,33 @@ in the checkout's parent directory.
 
 ### Circle Role Checks
 
+The `circle_sandbox` cases in `st/test_st_unified_main.py` reuse the
+`examples/circle-packing-git-apply` source preparation and public verifier.
+Two real candidates attempt outside/source/symlink/child writes before their
+Circle edits; workspace writes must succeed and outside writes must return an
+OS permission error. Acceptance also requires three verified deliveries,
+same-session continuation, artifact-only promotion, unchanged source, reports,
+and closed scopes. This tests Search candidates; Pi Main remains a host process.
+
+Run against available models and a prepared Pi development launcher:
+
+```bash
+ST_CODEX_MODEL="$CODEX_TEST_MODEL" uv run pytest --run-system-tests -o addopts='' \
+  'tests/st/test_st_unified_main.py::test_native_main_without_control_skills[codex-circle_sandbox]' -v -s
+
+ST_PI_MODEL="$PI_TEST_MODEL" \
+ST_PI_BINARY=/path/to/pi-dev/bin/pi-goal-plus \
+GOAL_PLUS_PYTHON=/path/to/pi-dev/venv/bin/python \
+  uv run pytest --run-system-tests -o addopts='' \
+  'tests/st/test_st_unified_main.py::test_native_main_without_control_skills[pi-circle_sandbox]' -v -s
+```
+
+Set `CODEX_TEST_MODEL` and `PI_TEST_MODEL` to models available in the selected
+hosts. Dependencies, writable-root limits and Pi development interpreter paths
+are documented in [Agent sandbox](../docs/sandbox/README.md). Codex uses a
+disposable installed plugin/config through the existing installation fixture;
+user host registrations remain untouched.
+
 With explicit developer authorization, Annotation and LLM Verifier can run on the
 selected Codex/Pi models without a native Main or candidate inference:
 

@@ -1,5 +1,8 @@
 """Focused tests for the shared native-process sandbox resolver."""
 
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -78,3 +81,44 @@ def test_bubblewrap_requires_cwd_in_a_declared_root(tmp_path: Path) -> None:
             platform="linux",
             which=lambda name: "/usr/bin/bwrap",
         )
+
+
+@pytest.mark.host_process
+def test_linux_bubblewrap_keeps_host_tmp_outside_the_write_boundary(tmp_path: Path) -> None:
+    if not sys.platform.startswith("linux"):
+        pytest.skip("this write-boundary check requires Linux")
+    bwrap = shutil.which("bwrap")
+    if bwrap is None:
+        pytest.skip("bubblewrap is not installed")
+    workspace = tmp_path / "workspace"
+    runtime = tmp_path / "runtime"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    runtime.mkdir()
+    outside.mkdir()
+    target = outside / "probe.txt"
+    target.write_text("before", encoding="utf-8")
+    sandbox = ProcessSandbox(
+        mode="workspace-write", backend="outer", workspace=workspace,
+        writable_roots=(runtime,),
+    )
+    outside_command = resolve_sandbox_command(
+        (sys.executable, "-c", f"from pathlib import Path; Path({str(target)!r}).write_text('after')"),
+        cwd=workspace, sandbox=sandbox,
+    )
+    outside_result = subprocess.run(
+        outside_command, cwd=workspace, capture_output=True, text=True, check=False,
+    )
+    assert outside_result.returncode != 0
+    assert target.read_text(encoding="utf-8") == "before"
+
+    allowed = workspace / "allowed.txt"
+    allowed_command = resolve_sandbox_command(
+        (sys.executable, "-c", f"from pathlib import Path; Path({str(allowed)!r}).write_text('ok')"),
+        cwd=workspace, sandbox=sandbox,
+    )
+    allowed_result = subprocess.run(
+        allowed_command, cwd=workspace, capture_output=True, text=True, check=False,
+    )
+    assert allowed_result.returncode == 0, allowed_result.stderr
+    assert allowed.read_text(encoding="utf-8") == "ok"
