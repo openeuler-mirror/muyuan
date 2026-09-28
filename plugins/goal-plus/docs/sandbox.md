@@ -41,6 +41,8 @@ Native session 关闭和 structured inference 完成后清理；启动失败同�
 Linux/macOS 不各自维护一套校验。
 
 Pi native session 显式开放 `.gp` runtime 和 session directory，供其 MCP bridge 保存状态。
+Candidate 的 verifier 共享资源锁目录由 host 在替换 `TMPDIR` 前确定、创建并传入；
+sandbox 仅额外开放该精确目录，不开放其父目录，也不让锁跟随 worker 的私有临时目录。
 这些目录可能包含其他 candidate 的 workspace 和共享状态，因此不能声称 workspace 外
 所有文件都只读，也不能把本实现当成 peer 或 runtime-private 数据隔离。
 `read-only` 描述角色工作区，显式 runtime 写根仍可写。需要更强隔离时使用宿主原生能力或

@@ -1,11 +1,13 @@
 """Common product launcher gates and delivery, with controlled native processes."""
 
 import asyncio
+from contextlib import ExitStack
 from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
 import select
+import shutil
 import subprocess
 import sys
 import time
@@ -15,6 +17,7 @@ import pytest
 
 from goal_plus.execution.native_session import CodexSession, PiSession
 from goal_plus.execution.model_failures import normalize_model_failure
+from goal_plus.execution.sandbox import prepare_sandbox_environment, resolve_sandbox_command
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_scope import close_execution_scope, close_run_candidates, ensure_execution_scope, execution_scope_snapshot
 from goal_plus.runtime import FileSearchRuntime
@@ -271,9 +274,14 @@ def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
 
 
 @pytest.mark.parametrize("hosted_candidate", ["pi"], indirect=True)
+@pytest.mark.parametrize("sandboxed", [False, True])
 def test_candidate_processes_share_host_resource_locks_across_private_tempdirs(
-    hosted_candidate, tmp_path
+    hosted_candidate, tmp_path, sandboxed
 ):
+    if sandboxed:
+        backend = "/usr/bin/sandbox-exec" if sys.platform == "darwin" else "bwrap"
+        if not shutil.which(backend):
+            pytest.skip(f"{backend} is not installed")
     root, _, _, _, task, session, scope, _, _ = hosted_candidate
     process_environment = {
         **task.process_environment,
@@ -293,6 +301,7 @@ with verifier_resource_lock('shared-device'):
     sys.stdin.readline()
 """
     processes = []
+    cleanup = ExitStack()
     try:
         for index in range(2):
             private_tmp = tmp_path / f"worker-{index}-tmp"
@@ -302,8 +311,15 @@ with verifier_resource_lock('shared-device'):
                 "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
                 "TMPDIR": str(private_tmp),
             }
+            command = [sys.executable, "-c", script]
+            if sandboxed:
+                sandbox = prepare_sandbox_environment(
+                    candidate.process.sandbox, cwd=session.workspace,
+                    environment=environment, cleanup=cleanup,
+                )
+                command = resolve_sandbox_command(command, cwd=session.workspace, sandbox=sandbox)
             processes.append(subprocess.Popen(
-                [sys.executable, "-c", script], env=environment,
+                command, env=environment, cwd=session.workspace,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True,
             ))
@@ -320,12 +336,15 @@ with verifier_resource_lock('shared-device'):
         assert select.select([processes[1].stdout], [], [], 10)[0]
         assert processes[1].stdout.readline() == "acquired\n"
     finally:
-        for process in processes:
-            if process.poll() is None:
-                process.stdin.write("\n")
-                process.stdin.flush()
-            _, error = process.communicate(timeout=10)
-            assert process.returncode == 0, error
+        try:
+            for process in processes:
+                if process.poll() is None:
+                    process.stdin.write("\n")
+                    process.stdin.flush()
+                _, error = process.communicate(timeout=10)
+                assert process.returncode == 0, error
+        finally:
+            cleanup.close()
 
 
 @pytest.mark.parametrize("hosted_candidate", [

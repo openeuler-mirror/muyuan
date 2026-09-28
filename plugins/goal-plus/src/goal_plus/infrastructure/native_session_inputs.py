@@ -41,6 +41,7 @@ def _sandbox(
     workspace: Path,
     runtime_root: Path,
     session_dir: Path,
+    resource_lock_root: Path | None = None,
 ) -> ProcessSandbox:
     """Declare the child boundary; the execution layer selects the OS backend."""
     return ProcessSandbox(
@@ -50,7 +51,7 @@ def _sandbox(
         # The Goal Plus MCP bridge runs inside the Pi child and must update its
         # own durable runtime state.  This is trusted host state, not an extra
         # source workspace.
-        writable_roots=(runtime_root, session_dir),
+        writable_roots=(runtime_root, session_dir, *((resource_lock_root,) if resource_lock_root else ())),
     )
 
 
@@ -71,7 +72,11 @@ def native_candidate_input(
     dispatches = session.session_handle.metadata.get("dispatches") or []
     metrics_baseline = dict(dispatches[-1].get("metrics_baseline") or {}) if resume and dispatches else {}
     environment = {**_native_environment(root), **process_environment}
-    environment[VERIFIER_RESOURCE_LOCK_DIR_ENV] = str(host_resource_lock_root())
+    resource_lock_root = host_resource_lock_root()
+    # Resolve and create this shared namespace before the outer sandbox replaces
+    # TMPDIR. Linux also requires the source directory to exist for its bind mount.
+    resource_lock_root.mkdir(parents=True, exist_ok=True)
+    environment[VERIFIER_RESOURCE_LOCK_DIR_ENV] = str(resource_lock_root)
     if agent_harness == "codex":
         environment["GOAL_PLUS_SEARCH_ROOT"] = str(root)
         environment[CODEX_CANDIDATE_SESSION_ENV] = session.agent_session_id
@@ -84,7 +89,8 @@ def native_candidate_input(
                 ("codex", "app-server", "--stdio"), session.workspace, environment,
                 _sandbox(agent_harness, mode="workspace-write", workspace=session.workspace,
                          runtime_root=root,
-                         session_dir=root / "host-sessions" / "codex"),
+                         session_dir=root / "host-sessions" / "codex",
+                         resource_lock_root=resource_lock_root),
             ),
             model=launch.get("model") or main_config["model"],
             reasoning_effort=launch.get("reasoning_effort") or main_config.get("reasoning_effort"),
@@ -115,6 +121,7 @@ def native_candidate_input(
             _sandbox(
                 agent_harness, mode="workspace-write", workspace=session.workspace,
                 runtime_root=root, session_dir=session_dir,
+                resource_lock_root=resource_lock_root,
             ),
         ),
         model=launch.get("model_pattern") or main_config["model_pattern"],

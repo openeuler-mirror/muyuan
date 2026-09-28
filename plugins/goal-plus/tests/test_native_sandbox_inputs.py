@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from goal_plus.infrastructure.native_session_inputs import native_candidate_input
+from goal_plus.infrastructure.state.resource_locks import VERIFIER_RESOURCE_LOCK_DIR_ENV
 
 
 @pytest.mark.parametrize(
@@ -14,6 +15,8 @@ from goal_plus.infrastructure.native_session_inputs import native_candidate_inpu
 )
 def test_direct_candidate_declares_host_specific_sandbox(tmp_path: Path, agent_harness: str, backend: str, monkeypatch) -> None:
     monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
+    lock_root = tmp_path / "host-locks" / "shared"
+    monkeypatch.setenv(VERIFIER_RESOURCE_LOCK_DIR_ENV, str(lock_root))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     session = SimpleNamespace(
@@ -44,4 +47,6 @@ def test_direct_candidate_declares_host_specific_sandbox(tmp_path: Path, agent_h
     assert result.process.sandbox.backend == backend
     assert result.process.sandbox.mode == "workspace-write"
     assert result.process.sandbox.workspace == workspace
-    assert result.process.sandbox.writable_roots
+    assert result.process.environment[VERIFIER_RESOURCE_LOCK_DIR_ENV] == str(lock_root)
+    assert lock_root.is_dir()
+    assert result.process.sandbox.writable_roots == (tmp_path / ".gp", tmp_path / ".gp/host-sessions" / agent_harness, lock_root)
