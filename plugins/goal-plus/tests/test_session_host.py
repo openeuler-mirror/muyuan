@@ -5,6 +5,8 @@ from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
+import select
+import subprocess
 import sys
 import time
 
@@ -19,6 +21,7 @@ from goal_plus.runtime import FileSearchRuntime
 from goal_plus.domain.agents import WorkerBudget
 from goal_plus.domain.search import DevicePoolSpec
 from goal_plus.infrastructure.search_configuration import DEVICE_POOLS_ENV
+from goal_plus.infrastructure.native_session_inputs import native_candidate_input
 from goal_plus.infrastructure.state.resource_locks import VERIFIER_RESOURCE_LOCK_DIR_ENV
 from goal_plus.ports.session import SessionInvocationObservation, SessionInvocationResult
 from goal_plus.server import create_host_mcp
@@ -240,6 +243,7 @@ def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
     assert inputs[0].process.environment["TEST_VISIBLE_DEVICES"] == "assigned"
     assert inputs[0].process.cwd == task.workspace
     assert inputs[0].process.environment["GOAL_PLUS_ROOT"] == str(root)
+    assert inputs[0].process.environment[VERIFIER_RESOURCE_LOCK_DIR_ENV] == os.environ[VERIFIER_RESOURCE_LOCK_DIR_ENV]
     if agent_harness == "codex":
         assert inputs[0].process.environment["GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID"] == session.agent_session_id
     assert actors[0].rpc.process.returncode is not None
@@ -260,6 +264,64 @@ def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
     reported = report["search_tasks"][0]["sessions"]
     assert len(reported) == 2
     assert [item["processed_tokens"] for item in reported] == ([110, 110] if agent_harness == "codex" else [6, 9])
+
+
+@pytest.mark.parametrize("hosted_candidate", ["pi"], indirect=True)
+def test_candidate_processes_share_host_resource_locks_across_private_tempdirs(
+    hosted_candidate, tmp_path
+):
+    root, _, _, _, task, session, scope, _, _ = hosted_candidate
+    process_environment = {
+        **task.process_environment,
+        VERIFIER_RESOURCE_LOCK_DIR_ENV: str(tmp_path / "candidate-private-locks"),
+    }
+    candidate = native_candidate_input(
+        root, session, scope, process_environment=process_environment,
+    )
+    host_lock_dir = os.environ[VERIFIER_RESOURCE_LOCK_DIR_ENV]
+    assert candidate.process.environment[VERIFIER_RESOURCE_LOCK_DIR_ENV] == host_lock_dir
+
+    script = """
+import sys
+from goal_plus.infrastructure.state.resource_locks import verifier_resource_lock
+with verifier_resource_lock('shared-device'):
+    print('acquired', flush=True)
+    sys.stdin.readline()
+"""
+    processes = []
+    try:
+        for index in range(2):
+            private_tmp = tmp_path / f"worker-{index}-tmp"
+            private_tmp.mkdir()
+            environment = {
+                **candidate.process.environment,
+                "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+                "TMPDIR": str(private_tmp),
+            }
+            processes.append(subprocess.Popen(
+                [sys.executable, "-c", script], env=environment,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+            ))
+            if index == 0:
+                assert select.select([processes[0].stdout], [], [], 10)[0]
+                assert processes[0].stdout.readline() == "acquired\n"
+
+        assert not select.select([processes[1].stdout], [], [], 0.2)[0]
+        assert processes[1].poll() is None
+        processes[0].stdin.write("\n")
+        processes[0].stdin.flush()
+        _, error = processes[0].communicate(timeout=10)
+        assert processes[0].returncode == 0, error
+        assert select.select([processes[1].stdout], [], [], 10)[0]
+        assert processes[1].stdout.readline() == "acquired\n"
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.stdin.write("\n")
+                process.stdin.flush()
+            _, error = process.communicate(timeout=10)
+            assert process.returncode == 0, error
 
 
 @pytest.mark.parametrize("hosted_candidate", [

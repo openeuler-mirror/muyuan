@@ -360,6 +360,8 @@ Process verifier 的提交和等待绑定准确 attempt 与不可变 artifact。
 回执通过 candidate_action 指示等待或结束 turn；ThinkThread 在静默快照验证后通过下一次
 wake 反馈。完成结果必须已硬结算；LLM Verifier 独立异步处理已结算结果。
 本地与 ThinkThread 执行按冻结 resource_lock 在共享控制器锁目录内互斥，不同资源可并行。
+本地 candidate host 在启动 worker 前解析并投影 host 级锁目录，candidate 环境和私有临时目录
+不能改写该身份；跨容器或 sandbox namespace 的宿主接线必须将投影路径绑定到同一 host 目录。
 TT 执行结果未知时持久保留原 request 的资源占用，只允许准确请求恢复后释放；不伪造失败分数。
 该互斥不覆盖未接入同一锁目录的外部执行者，也不提供分布式资源调度。
 

@@ -8,6 +8,7 @@ from goal_plus.codex_hook_input import CODEX_CANDIDATE_SESSION_ENV, CODEX_ORDINA
 from goal_plus.domain.search import AgentSessionRecord
 from goal_plus.domain.goal import GoalPlusFinalCheckerIdentity
 from goal_plus.infrastructure.final_check_binding import FINAL_CHECK_IDENTITY_ENV
+from goal_plus.infrastructure.state.resource_locks import VERIFIER_RESOURCE_LOCK_DIR_ENV, host_resource_lock_root
 from goal_plus.execution.scope import normalize_native_agent_config
 from goal_plus.paths import host_assets_root
 from goal_plus.ports.scope import ScopeRecord
@@ -44,6 +45,7 @@ def native_candidate_input(
     dispatches = session.session_handle.metadata.get("dispatches") or []
     metrics_baseline = dict(dispatches[-1].get("metrics_baseline") or {}) if resume and dispatches else {}
     environment = {**_native_environment(root), **process_environment}
+    environment[VERIFIER_RESOURCE_LOCK_DIR_ENV] = str(host_resource_lock_root())
     if agent_harness == "codex":
         environment["GOAL_PLUS_SEARCH_ROOT"] = str(root)
         environment[CODEX_CANDIDATE_SESSION_ENV] = session.agent_session_id
