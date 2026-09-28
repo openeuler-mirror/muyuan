@@ -336,7 +336,7 @@ process、network、system call 或 credential。ThinkThread 只有在 exact Pro
 
 Direct Copy/Git 的 `WorkspaceAccess.confinement` 现在要求 `protected_execution`。Pi 的
 child 默认经过 OS wrapper，Codex 使用原生策略；共享 runtime 写根等限制统一见
-[Agent sandbox](sandbox/README.md)。Git worktree 不能单独承担该进程边界。
+[Agent sandbox](sandbox.md)。Git worktree 不能单独承担该进程边界。
 
 ---
 

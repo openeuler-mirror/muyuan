@@ -255,7 +255,7 @@ monitor 不可用时，卡片降级到终态、当前会话耗时和 main 用量
 
 Search worker 由共同 session 宿主启动受保护的 `pi --mode rpc` 子进程，资源经 scope 登记后放行；
 direct child 默认使用 OS wrapper；后端缺失时拒绝启动。Pi Main 沿用宿主权限。
-依赖安装、配置副本与完整支持范围见 [Agent sandbox](sandbox/README.md)。
+依赖安装、配置副本与完整支持范围见 [Agent sandbox](sandbox.md)。
 native session 位于 `.gp/host-sessions/pi/`。旧 Pi pool/driver/worker 与专属 CLI 已删除。
 切换前须由旧安装关闭旧活跃 pool；历史文件保留，新版本不接管旧 pool 执行。
 

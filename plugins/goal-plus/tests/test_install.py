@@ -516,7 +516,7 @@ def test_codex_install_refreshes_existing_plugin(
 
 @pytest.mark.parametrize(("platform", "backend", "available"), [
     ("linux", "bwrap", False), ("linux", "bwrap", True),
-    ("darwin", "sandbox-exec", False), ("darwin", "sandbox-exec", True),
+    ("darwin", "/usr/bin/sandbox-exec", False), ("darwin", "/usr/bin/sandbox-exec", True),
 ])
 def test_pi_dev_dry_run_reports_sandbox_without_creating_managed_directory(
     installer: ModuleType,
@@ -543,7 +543,7 @@ def test_pi_dev_dry_run_reports_sandbox_without_creating_managed_directory(
     assert not dev_dir.exists()
     output = capsys.readouterr()
     if available:
-        assert f"{backend} detected on PATH" in output.out
+        assert f"{backend} detected" in output.out
         assert "sandbox backend" not in output.err
     else:
         assert f"sandbox backend {backend} is unavailable" in output.err

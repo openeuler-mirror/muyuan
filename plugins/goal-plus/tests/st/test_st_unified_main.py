@@ -1,8 +1,10 @@
 """Native Main consumes the shared MCP overview without GP control skills."""
 
 import errno
+import hashlib
 import json
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -70,6 +72,8 @@ def test_native_main_without_control_skills(
             model = st_model_for_host(agent_harness)
             spec["strategy"]["worker_launch"] = {"model": model, "reasoning_effort": "low"}
             spec["strategy"]["models"] = [{"model": model, "reasoning_effort": "low", "count": 2}]
+            # This is a bounded transport/write-boundary check, not an optimization run.
+            spec["strategy"]["worker_budget"] = {"max_runtime_seconds": 180}
         spec["workspace"]["promotion_mode"] = "apply" if apply_publication else "artifact_only"
         (project / "search-spec.json").write_text(json.dumps(spec, indent=2))
     else:
@@ -149,6 +153,10 @@ def test_native_main_without_control_skills(
             "turn replace the zero circle by one at (0.2,0.2), radius 0.04. c002 independently uses "
             "the same 5x5 grid plus a circle at (0.2,0.2), radius 0.1*(sqrt(2)-1)-1e-9. "
             "Return these exact 26 centers/radii directly; no numeric optimization is needed. "
+            "For EACH candidate, put this bounded acceptance contract in BOTH its plan intent and "
+            "session_run message: implement only the specified exact construction, run the sandbox "
+            "probe and real verifier, then immediately return. Do not perform numerical optimization "
+            "or chase reference target scores. Preserve the 180-second worker budget in the spec. "
             " Before each candidate's first implementation change, have that candidate run "
             f"python {checkout / 'tests/st/fixtures/sandbox_probe.py'} "
             f"--outside {outside} --source {source / 'initial_program.py'}. "
@@ -208,6 +216,10 @@ def test_native_main_without_control_skills(
     log = st_log_dir / "native-main.log"
     (st_log_dir / "build.json").write_text(json.dumps({
         "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip(),
+        "source_diff_sha256": hashlib.sha256(subprocess.check_output(
+            ["git", "diff", "HEAD", "--", "src", "assets", "scripts"], cwd=checkout,
+        )).hexdigest(),
+        "platform": platform.platform(),
         "checkout": str(checkout), "project": str(project), "agent_harness": agent_harness,
         "requested_model": st_model_for_host(agent_harness), "command": command,
     }, indent=2))
@@ -319,6 +331,9 @@ def test_native_main_without_control_skills(
                 receipt = json.loads((session.workspace / ".tmp/sandbox-probe.json").read_text())
                 assert receipt["workspace"] == str(session.workspace)
                 assert receipt["inside_write"] == "ok"
+                assert receipt["temporary_write"] == "ok"
+                if agent_harness == "pi":
+                    assert not Path(receipt["temporary_directory"]).exists(), "closed session scratch leaked"
                 assert set(receipt["denied"]) == {"outside", "source", "symlink", "child"}
                 assert all(code in {errno.EROFS, errno.EACCES, errno.EPERM}
                            for code in receipt["denied"].values()), receipt

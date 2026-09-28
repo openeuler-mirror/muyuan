@@ -70,7 +70,7 @@ Search supports the following host, runtime-provider, inner-agent, and workspace
 | Pi | `thinkthread` | `common` (default), `autoresearch` | `thinkthread` |
 | Codex | `thinkthread` | `common` | `thinkthread` |
 
-**Workspace note:** `git_worktree` separates code trees; direct workers additionally use default host sandbox policies. See [Sandbox Design and Support](docs/sandbox/README.md) for dependencies and writable-root limits, and [Workspace Architecture](docs/workspace-sandbox-arch.md) for artifact delivery.
+**Workspace note:** `git_worktree` separates code trees; direct workers additionally use default host sandbox policies. See [Sandbox Design and Support](docs/sandbox.md) for dependencies and writable-root limits, and [Workspace Architecture](docs/workspace-sandbox-arch.md) for artifact delivery.
 
 ### Inner-Agent Behavior
 
@@ -286,3 +286,5 @@ Paths below are relative to `plugins/goal-plus/`:
 ## 📄 9. Licensing and Third-Party Sources
 
 Source attribution and license information for third-party examples are maintained alongside each example. See the [Example Index](examples/README.md).
+
+Technical details: [Sandbox Design and Support](docs/sandbox.md).

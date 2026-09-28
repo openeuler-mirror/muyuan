@@ -125,12 +125,12 @@ def _report_sandbox_support(*, codex: bool, pi: bool) -> None:
         return
     backend = (
         "bwrap" if sys.platform.startswith("linux")
-        else "sandbox-exec" if sys.platform == "darwin"
+        else "/usr/bin/sandbox-exec" if sys.platform == "darwin"
         else None
     )
     if backend is not None and shutil.which(backend):
         print(
-            f"Sandbox (Pi direct): {backend} detected on PATH; "
+            f"Sandbox (Pi direct): {backend} detected; "
             "OS permissions are checked at worker launch."
         )
     else:
@@ -138,7 +138,7 @@ def _report_sandbox_support(*, codex: bool, pi: bool) -> None:
             f"warning: Pi direct sandbox backend {backend or sys.platform} is unavailable. "
             "Installation can continue; protected workers will fail to launch. "
             "No unsandboxed fallback or system dependency installation is performed. "
-            "See docs/sandbox/README.md.",
+            "See docs/sandbox.md.",
             file=sys.stderr,
         )
 

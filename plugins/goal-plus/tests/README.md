@@ -370,6 +370,10 @@ Circle edits; workspace writes must succeed and outside writes must return an
 OS permission error. Acceptance also requires three verified deliveries,
 same-session continuation, artifact-only promotion, unchanged source, reports,
 and closed scopes. This tests Search candidates; Pi Main remains a host process.
+The same Pi case runs on Linux (Bubblewrap) and macOS (Seatbelt); there is no
+separate macOS workflow. The shared `test_sandbox_launch.py` suite also executes
+real write/read-only, symlink/child, temporary-directory fallback and cleanup
+checks on either OS. Protected structured-inference tests run on both OSes.
 
 Run against available models and a prepared Pi development launcher:
 
@@ -386,7 +390,7 @@ GOAL_PLUS_PYTHON=/path/to/pi-dev/venv/bin/python \
 
 Set `CODEX_TEST_MODEL` and `PI_TEST_MODEL` to models available in the selected
 hosts. Dependencies, writable-root limits and Pi development interpreter paths
-are documented in [Agent sandbox](../docs/sandbox/README.md). Codex uses a
+are documented in [Agent sandbox](../docs/sandbox.md). Codex uses a
 disposable installed plugin/config through the existing installation fixture;
 user host registrations remain untouched.
 

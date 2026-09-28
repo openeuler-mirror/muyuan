@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,7 +16,7 @@ from uuid import uuid4
 from goal_plus.execution.launch_gate import ProcessLaunchGate
 from goal_plus.execution.managed_process import ManagedProcess
 from goal_plus.execution.process_output import PROCESS_OUTPUT_LIMIT_BYTES
-from goal_plus.execution.sandbox import resolve_sandbox_command
+from goal_plus.execution.sandbox import prepare_sandbox_environment, resolve_sandbox_command
 from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.session import SessionProcessInput
 
@@ -157,13 +158,18 @@ class SessionRpcProcess:
         self._token: str | None = None
         self._closed = False
         self._close_lock = threading.Lock()
-        with ProcessLaunchGate(execution_lock) as gate:
+        self._sandbox_cleanup = ExitStack()
+        with ExitStack() as setup, ProcessLaunchGate(execution_lock) as gate:
+            environment = dict(config.environment)
+            sandbox = prepare_sandbox_environment(
+                config.sandbox, cwd=config.cwd, environment=environment, cleanup=setup,
+            )
             command = resolve_sandbox_command(
-                config.command, cwd=config.cwd, sandbox=config.sandbox,
+                config.command, cwd=config.cwd, sandbox=sandbox,
             )
             self.process = subprocess.Popen(
                 gate.command(command), pass_fds=gate.pass_fds,
-                cwd=config.cwd, env=config.environment,
+                cwd=config.cwd, env=environment,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             self.managed = ManagedProcess(self.process)
@@ -179,6 +185,7 @@ class SessionRpcProcess:
             except BaseException:
                 self.close()
                 raise
+            self._sandbox_cleanup = setup.pop_all()
 
     def send(self, payload: dict[str, Any], *, timeout: float) -> None:
         self.connection.send(payload, timeout=timeout)
@@ -200,4 +207,5 @@ class SessionRpcProcess:
             self.connection.finish(timeout=self.managed.kill_timeout)
             if self._token is not None:
                 self._registration.finish(self._token)
+            self._sandbox_cleanup.close()
             self._closed = True

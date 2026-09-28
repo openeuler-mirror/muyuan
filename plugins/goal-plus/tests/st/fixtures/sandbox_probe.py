@@ -5,6 +5,7 @@ import errno
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -17,6 +18,10 @@ def main():
     scratch.mkdir(exist_ok=True)
     inside = scratch / "sandbox-inside.txt"
     inside.write_text("ok")
+    with tempfile.TemporaryFile() as temporary:
+        temporary.write(b"ok")
+        temporary.seek(0)
+        assert temporary.read() == b"ok"
     link = scratch / "sandbox-link"
     link.symlink_to(args.outside)
     denied = {}
@@ -40,7 +45,10 @@ def main():
                                text=True, capture_output=True, check=True, timeout=10)
         denied["child"] = int(child.stdout)
         assert all(value in {errno.EROFS, errno.EACCES, errno.EPERM} for value in denied.values()), denied
-        receipt = {"workspace": str(Path.cwd()), "inside_write": inside.read_text(), "denied": denied}
+        receipt = {
+            "workspace": str(Path.cwd()), "inside_write": inside.read_text(), "denied": denied,
+            "temporary_write": "ok", "temporary_directory": tempfile.gettempdir(),
+        }
         (scratch / "sandbox-probe.json").write_text(json.dumps(receipt, indent=2))
         print(json.dumps(receipt))
     finally:

@@ -33,8 +33,10 @@ def request_for(agent_harness):
 @pytest.mark.host_process
 @pytest.mark.parametrize(("agent_harness", "protected"), [("codex", False), ("pi", False), ("pi", True)])
 def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, monkeypatch, agent_harness, protected):
-    if protected and (not sys.platform.startswith("linux") or shutil.which("bwrap") is None):
-        pytest.skip("Linux bubblewrap is required for the protected Pi launch")
+    if protected:
+        backend = "/usr/bin/sandbox-exec" if sys.platform == "darwin" else "bwrap"
+        if (sys.platform != "darwin" and not sys.platform.startswith("linux")) or shutil.which(backend) is None:
+            pytest.skip("Seatbelt or bubblewrap is required for the protected Pi launch")
     calls = []
     native_popen = subprocess.Popen
     monkeypatch.setenv("TEST_NATIVE_CONFIG", "host-only-value")
@@ -83,12 +85,15 @@ def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, 
             assert Path(command[command.index("--extension") + 1]).read_text() == request.pi_tools.extension
             assert kwargs["cwd"] == Path(output_path).parent
             if protected:
+                scratch = Path(kwargs["env"]["TMPDIR"])
+                assert scratch.is_dir()
                 pi_home = Path(kwargs["env"]["PI_CODING_AGENT_DIR"])
                 assert pi_home.is_relative_to(kwargs["cwd"])
                 assert (pi_home / "models.json").read_text() == '{"providers":{}}'
         event = {"type": "message_end", "message": {"role": "assistant", "stopReason": "stop"}}
         script = (
-            "import json,os,subprocess,sys\nfrom pathlib import Path\n"
+            "import json,os,subprocess,sys,tempfile\nfrom pathlib import Path\n"
+            "with tempfile.TemporaryFile() as scratch: scratch.write(b'tmp works')\n"
             "scope=json.loads(Path(sys.argv[3]).read_text())\n"
             "registered=[p for p in scope['processes'] if p['kind']=='internal' and p['status']=='registered']\n"
             "assert len(registered) == 1\n"
@@ -123,6 +128,8 @@ def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, 
     command, kwargs = calls[0]
     directory = Path(command[command.index("-C") + 1]) if agent_harness == "codex" else kwargs["cwd"]
     assert not directory.exists()
+    if protected:
+        assert not Path(kwargs["env"]["TMPDIR"]).exists()
     assert "host-only-value" not in json.dumps(asdict(result))
     assert request.output_schema["properties"]["answer"]["default"] == "none"
     assert json.loads((tmp_path / "monitor.json").read_text())["state"] == "process_exited"

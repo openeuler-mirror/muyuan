@@ -37,7 +37,9 @@ uv run pytest tests/test_installation_system.py --run-system-tests -n 0
 `--pi` 和 `--pi-dev` 互斥；`--codex --pi` 与 `--codex --pi-dev` 都有效。
 Direct Git/Copy worker 默认带 sandbox，不需要额外安装开关。安装器检测 Pi 的系统后端，
 缺失时提示但允许安装；受保护 worker 不会降级执行。安装器不自动安装系统依赖，
-完整设计、依赖步骤和支持表见 [Agent sandbox](sandbox/README.md)。
+完整设计、依赖步骤和支持表见 [Agent sandbox](sandbox.md)。
+macOS Pi 使用系统 `/usr/bin/sandbox-exec`；两端子进程临时目录优先放 `/tmp` 下的专属目录，
+不可用时退到 cwd 下的 `.gp/.tmp`，正常退出时清理，不需要额外安装开关。
 安装入口通过 uv 自动取得受管 Python 3.12；没有 uv 时将固定版本的 uv 安装到专属
 bootstrap 目录。无需激活 Conda/venv，`PYTHON` 不再选择安装目标。
 
