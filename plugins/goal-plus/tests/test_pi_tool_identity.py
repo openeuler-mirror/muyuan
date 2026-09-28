@@ -101,6 +101,13 @@ def test_pi_command_context_and_shared_work_item_forwarding(tmp_path):
     assert "work receipt checks passed" in result.stdout
 
 
+@pytest.mark.parametrize("mode", ["tui", "rpc", "json"])
+def test_pi_runtime_display_needs_no_goal_or_model(tmp_path, mode):
+    result = _run_env_script(tmp_path, {"GOAL_PLUS_PI_ROLE": "main", "GOAL_PLUS_PI_INFO_TEST": mode})
+    assert "runtime display checks passed" in result.stdout
+    assert not (tmp_path / ".gp").exists()
+
+
 @pytest.mark.parametrize("role", ["main", "worker", "final-checker"])
 @pytest.mark.parametrize("debug", [False, True])
 def test_pi_shutdown_exports_only_main_after_closing_connections(tmp_path, role, debug):
@@ -229,6 +236,11 @@ const mocks = {
     export const parseJsonObject = JSON.parse;
     export const commandFailure = () => { throw Error("unexpected command failure"); };
     export async function closeMcpConnections() { (globalThis.shutdownEvents ??= []).push('close'); }
+    export async function readRuntimeInfo() {
+      globalThis.infoReads = (globalThis.infoReads ?? 0) + 1;
+      if (globalThis.infoFailure) throw Error('fixture runtime failure');
+      return 'Goal Plus fixture | worker sandbox: seatbelt | DEBUG off\\nPython: /managed/python';
+    }
     export async function refreshDebugTranscript() {
       globalThis.debugExports = (globalThis.debugExports ?? 0) + 1;
       (globalThis.shutdownEvents ??= []).push('export');
@@ -299,6 +311,28 @@ const ctx = {cwd, mode: "interactive", hasUI: false, isIdle: () => true,
     theme: {fg: (_color, text) => text, bg: (_color, text) => text}},
 };
 await register(pi);
+assert.equal(commands.has('goal-plus-info'), process.env.GOAL_PLUS_PI_ROLE === 'main');
+if (process.env.GOAL_PLUS_PI_INFO_TEST) {
+  ctx.mode = process.env.GOAL_PLUS_PI_INFO_TEST;
+  const statuses = new Map(), notices = [];
+  ctx.ui.setStatus = (key, value) => statuses.set(key, value);
+  ctx.ui.notify = (text, level) => notices.push({text, level});
+  pi.sendMessage = pi.sendUserMessage = pi.appendEntry = () => {throw Error('diagnostics must not start or persist work');};
+  assert.equal(globalThis.infoReads ?? 0, 0, 'factory must not launch Python');
+  await events.get('session_start')({reason: 'startup'}, ctx);
+  assert.equal(globalThis.infoReads ?? 0, ctx.mode === 'tui' ? 1 : 0);
+  await commands.get('goal-plus-info').handler('', ctx);
+  assert.ok(statuses.get('goal-plus-runtime').includes('seatbelt'));
+  assert.ok(notices[0].text.includes('/managed/python'));
+  assert.equal(notices[0].level, 'info');
+  globalThis.infoFailure = true;
+  await commands.get('goal-plus-info').handler('', ctx);
+  assert.ok(!statuses.get('goal-plus-runtime').includes('seatbelt'), 'failure clears stale status');
+  assert.equal(notices.at(-1).level, 'error');
+  assert.deepEqual(globalThis.calls, []);
+  console.log('runtime display checks passed');
+  process.exit(0);
+}
 if (process.env.GOAL_PLUS_PI_SHUTDOWN_TEST === '1') {
   ctx.sessionManager.getSessionFile = () => cwd + '/native-session.jsonl';
   await events.get('session_shutdown')({reason: 'test'}, ctx);

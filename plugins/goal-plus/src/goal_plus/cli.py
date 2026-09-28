@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument(
         "--root",
         default=None,
-        help="Search runtime storage directory (MCP server mode only)",
+        help="Search runtime storage directory",
     )
     parser.add_argument(
         "--goal-plus-stop-hook",
@@ -34,7 +34,27 @@ def main() -> None:
         help="Run the Goal Plus host hook instead of starting the MCP server",
     )
     parser.add_argument("--installation-info", action="store_true", help="Print exact build and Python identity")
+    parser.add_argument("--runtime-info", nargs="?", const="codex", choices=("codex", "pi"),
+                        help="Print this runtime's identity and host sandbox defaults without starting MCP or a model")
+    parser.add_argument("--json", action="store_true", help="Print runtime information as JSON")
+    parser.add_argument("--runtime-provider", choices=("direct", "thinkthread"),
+                        help="Provider to describe with --runtime-info; defaults to the current host environment")
     args = parser.parse_args()
+
+    if args.json and not args.runtime_info:
+        parser.error("--json requires --runtime-info")
+    if args.runtime_provider and not args.runtime_info:
+        parser.error("--runtime-provider requires --runtime-info")
+    if args.runtime_info:
+        import json
+        from pathlib import Path
+        from goal_plus.infrastructure.runtime_info import runtime_info, runtime_info_text
+        from goal_plus.paths import DEFAULT_RUNTIME_ROOT
+
+        root = Path(args.root or DEFAULT_RUNTIME_ROOT) if args.root or args.runtime_provider != "thinkthread" else None
+        info = runtime_info(root, agent_harness=args.runtime_info, runtime_provider=args.runtime_provider)
+        print(json.dumps(info, ensure_ascii=False) if args.json else runtime_info_text(info))
+        return
 
     if args.installation_info:
         import json

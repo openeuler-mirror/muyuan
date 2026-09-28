@@ -130,6 +130,14 @@ export async function refreshDebugTranscript(pi: ExtensionAPI, ctx: CommandRunti
 	if (result.code !== 0) throw new Error("debug transcript export failed");
 }
 
+export async function readRuntimeInfo(pi: ExtensionAPI, ctx: CommandRuntimeContext): Promise<string> {
+	const invocation = projectModuleInvocation(ctx, "goal-plus", "goal_plus.cli");
+	const result = await pi.exec(invocation.command, [...invocation.argsPrefix,
+		"--root", resolve(ctx.cwd, runtimeRoot), "--runtime-info", "pi"], { timeout: 10_000, cwd: ctx.cwd });
+	if (result.code !== 0) throw new Error(result.stderr.trim() || "Goal Plus runtime inspection failed");
+	return result.stdout.trim();
+}
+
 export async function closeMcpConnections() {
 	const pending = [...mcpConnections.values()];
 	mcpConnections.clear();

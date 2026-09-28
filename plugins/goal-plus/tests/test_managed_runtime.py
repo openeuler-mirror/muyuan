@@ -223,3 +223,191 @@ def test_managed_home_preserves_separately_owned_thinkthread_sdk(managed):
     with managed.locked():
         assert sentinel.read_text() == '{"owner":"sdk-installer"}'
     assert sentinel.is_file()
+
+
+def test_installed_info_command_selects_host_binding_and_survives_uninstall(managed, tmp_path, monkeypatch):
+    import os
+    import sys
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex config"))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi config"))
+    for host, config in (("codex", "CODEX_HOME"), ("pi", "PI_CODING_AGENT_DIR")):
+        package = managed.home() / "releases" / host / "package"
+        managed.bind(host, Path(os.environ[config]), package)
+        package.mkdir(parents=True)
+        python = package.parent / "python"
+        python.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps({{'host':{host!r}, 'args':sys.argv[1:]}}))\n")
+        python.chmod(0o755)
+        (package / ".goal-plus-runtime.json").write_text(json.dumps({
+            "schema": managed.SCHEMA, "build": host, "python": str(python), "package": str(package),
+        }))
+    launcher = managed.install_info_command()
+    for host in ("codex", "pi"):
+        result = subprocess.run([str(launcher), host, "--json"], cwd=tmp_path, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        info = json.loads(result.stdout)
+        assert info == {"host": host, "args": ["-I", "-m", "goal_plus.installation", "--expected-build",
+                                              host, "--module", "goal_plus.cli", "--runtime-info", host,
+                                              "--runtime-provider", "direct", "--json"]}
+    managed.unbind("codex", Path(os.environ["CODEX_HOME"]))
+    managed.cleanup()
+    result = subprocess.run([str(launcher), "codex"], cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "install.sh --codex" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert subprocess.run([str(launcher), "pi"], capture_output=True).returncode == 0
+    assert not (tmp_path / ".gp").exists()
+
+
+def test_info_command_dry_run_does_not_create_state(managed):
+    managed.install_info_command(dry_run=True)
+    assert not managed.home().exists()
+
+
+def test_info_refresh_does_not_follow_fixed_temporary_symlinks(managed, tmp_path):
+    launcher = managed.install_info_command()
+    victim = tmp_path / "outside.txt"
+    victim.write_text("preserve outside")
+    for name in ("runtime-info.tmp", "goal-plus-info.tmp"):
+        (launcher.parent / name).symlink_to(victim)
+    managed.install_info_command()
+    assert victim.read_text() == "preserve outside"
+
+
+@pytest.mark.parametrize("target", ["directory", "launcher", "query", "foreign"])
+def test_info_refresh_rejects_unowned_or_linked_targets(managed, tmp_path, target):
+    launcher = managed.install_info_command()
+    victim = tmp_path / "outside.txt"
+    victim.write_text("preserve outside")
+    if target == "directory":
+        original = launcher.parent
+        moved = original.with_name("moved")
+        original.rename(moved)
+        original.symlink_to(moved, target_is_directory=True)
+    else:
+        path = launcher if target != "query" else launcher.with_name("runtime-info.py")
+        path.unlink()
+        if target == "foreign":
+            path.write_text("user owned command")
+        else:
+            path.symlink_to(victim)
+    with pytest.raises(RuntimeError, match="Refusing"):
+        managed.install_info_command()
+    assert victim.read_text() == "preserve outside"
+    if target == "foreign":
+        assert launcher.read_text() == "user owned command"
+
+
+def test_info_refresh_failure_restores_previous_files(managed, monkeypatch):
+    launcher = managed.install_info_command()
+    query = launcher.with_name("runtime-info.py")
+    original = {path: (path.read_bytes(), path.stat().st_mode & 0o777) for path in (launcher, query)}
+    source = Path(managed.__file__).with_name("runtime-info.py")
+    read_bytes = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda path: read_bytes(path) + b"\n# next build\n" if path == source else read_bytes(path))
+    replace = Path.replace
+    failed = False
+    def fail_once(path, destination):
+        nonlocal failed
+        if destination == launcher and not failed:
+            failed = True
+            raise OSError("fixture publication failure")
+        return replace(path, destination)
+    monkeypatch.setattr(Path, "replace", fail_once)
+    with pytest.raises(OSError, match="publication failure"):
+        managed.install_info_command()
+    assert {path: (path.read_bytes(), path.stat().st_mode & 0o777) for path in original} == original
+
+
+def test_info_refresh_updates_owned_code_and_adopts_exact_preview(managed, monkeypatch):
+    import shlex
+    import sys
+
+    # The preview installed earlier had no ownership marker. Only exact known
+    # bytes may be adopted; arbitrary unmarked commands are covered above.
+    with managed.locked():
+        directory = managed.home() / "bin"
+        directory.mkdir()
+    query = directory / "runtime-info.py"
+    source = Path(managed.__file__).with_name("runtime-info.py")
+    query.write_bytes(source.read_bytes())
+    launcher = directory / "goal-plus-info"
+    launcher.write_text("#!/bin/bash\nexec " + shlex.quote(sys.executable)
+                        + " -I " + shlex.quote(str(query)) + ' "$@"\n')
+    managed.install_info_command()
+    assert query.read_bytes().startswith(managed.INFO_COMMAND_MARKER)
+    assert managed.INFO_COMMAND_MARKER in launcher.read_bytes().splitlines(keepends=True)[:2]
+    before = (query.read_bytes(), launcher.read_bytes())
+    managed.install_info_command()
+    assert (query.read_bytes(), launcher.read_bytes()) == before
+    read_bytes = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda path: read_bytes(path) + b"\n# updated selector\n" if path == source else read_bytes(path))
+    managed.install_info_command()
+    assert query.read_bytes().endswith(b"# updated selector\n")
+    result = subprocess.run([str(launcher), "--help"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "--thinkthread" in result.stdout
+
+
+def test_first_info_install_failure_removes_partial_files(managed, monkeypatch):
+    launcher = managed.home() / "bin/goal-plus-info"
+    replace = Path.replace
+    def fail(path, destination):
+        if destination == launcher:
+            raise OSError("fixture publication failure")
+        return replace(path, destination)
+    monkeypatch.setattr(Path, "replace", fail)
+    with pytest.raises(OSError, match="publication failure"):
+        managed.install_info_command()
+    assert not launcher.exists()
+    assert not launcher.with_name("runtime-info.py").exists()
+    assert not list(launcher.parent.glob(".*"))
+
+
+def test_info_refresh_reports_rollback_failure(managed, monkeypatch):
+    launcher = managed.install_info_command()
+    original_replace = managed._replace_info_file
+    updated = False
+    def fail(path, content, mode):
+        nonlocal updated
+        if updated:
+            raise OSError("fixture filesystem unavailable")
+        original_replace(path, content, mode)
+        updated = True
+    monkeypatch.setattr(managed, "_replace_info_file", fail)
+    with pytest.raises(RuntimeError, match="refresh failed and rollback failed"):
+        managed.install_info_command()
+
+
+@pytest.mark.parametrize("host", ["codex", "pi"])
+def test_info_command_selects_thinkthread_profile_not_direct_installation(managed, tmp_path, monkeypatch, host):
+    import sys
+
+    config_home = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    direct_config = tmp_path / "direct-config"
+    monkeypatch.setenv("CODEX_HOME" if host == "codex" else "PI_CODING_AGENT_DIR", str(direct_config))
+    profile = config_home / "thinkthread/profiles" / f"goal-plus-{host}.toml"
+    for provider, binding_host, config in [("direct", host, direct_config), ("thinkthread", "thinkthread", profile)]:
+        build = f"{host}-{provider}"
+        package = managed.home() / "releases" / build / "package"
+        managed.bind(binding_host, config, package)
+        package.mkdir(parents=True)
+        python = package.parent / "python"
+        python.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps({{'build':{build!r}, 'args':sys.argv[1:]}}))\n")
+        python.chmod(0o755)
+        (package / ".goal-plus-runtime.json").write_text(json.dumps({
+            "schema": managed.SCHEMA, "build": build, "python": str(python), "package": str(package),
+        }))
+    launcher = managed.install_info_command()
+    result = subprocess.run([str(launcher), host, "--thinkthread", "--json"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    value = json.loads(result.stdout)
+    assert value["build"] == f"{host}-thinkthread"
+    assert value["args"][-5:] == ["--runtime-info", host, "--runtime-provider", "thinkthread", "--json"]
+    assert "--root" not in value["args"]
+    managed.unbind("thinkthread", profile)
+    result = subprocess.run([str(launcher), host, "--thinkthread"], capture_output=True, text=True)
+    assert result.returncode == 1
+    assert f"install.sh --{host} --thinkthread" in result.stderr
+    assert not result.stdout

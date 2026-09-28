@@ -48,10 +48,42 @@ bootstrap 目录。无需激活 Conda/venv，`PYTHON` 不再选择安装目标�
 ./install.sh --runtime-info
 ```
 
+安装后无需进入 Codex/Pi、无需源码目录，即可在终端查询对应宿主登记的 runtime：
+
+```bash
+~/.local/share/goal-plus/bin/goal-plus-info codex
+~/.local/share/goal-plus/bin/goal-plus-info pi
+~/.local/share/goal-plus/bin/goal-plus-info pi --json
+~/.local/share/goal-plus/bin/goal-plus-info codex --thinkthread
+~/.local/share/goal-plus/bin/goal-plus-info pi --thinkthread
+```
+
+自定义 `GOAL_PLUS_INSTALL_HOME` 时使用该目录下的 `bin/goal-plus-info`；安装结束会打印
+准确命令。选择器按 `CODEX_HOME` 或 `PI_CODING_AGENT_DIR` 匹配安装记录，并使用该 release
+的隔离 Python 校验 build 后读取信息；不启动宿主、MCP 或模型，不创建 `.gp`。
+输出 DEBUG 来自本次终端环境，direct runtime root 默认是当前目录下的 `.gp`，可用 `--root` 指定。
+它不会检查已运行的会话，也不会重新扫描宿主注册；手动修改注册后应重新安装。
+选择器保存在受管安装目录，使用安装器的 bootstrap Python，release 清理不会删除它；
+对应宿主卸载后查询会报告未安装。安装器不修改 shell 的 PATH。
+确认重装时会刷新查询工具，再提交该宿主的新版本绑定；取消或 dry-run 不改写工具。
+工具刷新失败会恢复原文件，并进入对应宿主注册的回滚流程；回滚本身失败会明确报错。
+刷新只接受 Goal Plus 标记的文件，拒绝软链接目录/目标及非受管文件，使用随机临时文件与
+原子替换。早期无标记副本仅在完整内容与当前生成模板一致时接管，不能覆盖任意同名文件。
+
+`--thinkthread` 选择 `${XDG_CONFIG_HOME:-~/.config}/thinkthread/profiles/goal-plus-<host>.toml`
+对应的安装绑定，与 direct Codex/Pi 分别选择 build；没有该绑定时报告未安装，不回退到 direct。
+它不启动 ThinkThread、不查询 SDK 或探测隔离，也不展开 Profile 环境变量。
+未显式提供 `--root` 时，ThinkThread session 的 runtime root 显示为未检查，JSON 为 `null`。
+旧 ThinkThread release 需要通过 `./install.sh --codex --thinkthread` 或 `--pi --thinkthread`
+刷新后使用新增查询，普通宿主重装不会替换 Profile 绑定。
+
 查询时区分安装身份与任务配置：
 
 | 要确认的内容 | 入口 |
 | --- | --- |
+| 终端查看已登记的 Codex/Pi build、Python、DEBUG 和 worker sandbox 默认配置 | 上述 `bin/goal-plus-info codex` / `pi`，加 `--thinkthread` 选择 Profile，加 `--json` 输出结构化信息 |
+| 当前 Codex MCP 实际加载的 build、Python、DEBUG 和 sandbox 默认策略 | Codex `/mcp verbose` 的摘要；完整 JSON 为 `goal-plus://runtime/info` 资源，见 [Codex](codex.md#无模型查询当前-runtime) |
+| 当前 Pi extension 绑定的 runtime | 启动状态栏及 `/goal-plus-info`，见 [Pi](pi.md#无模型查询当前-runtime) |
 | 已登记的 Codex/Pi/ThinkThread build 和 Python 身份 | `bash install.sh --runtime-info` |
 | Pi checkout 开发环境及其源码路径 | `bash install.sh --env-show` |
 | 当前调用的 Goal Plus 可执行文件对应哪个 runtime | `goal-plus --installation-info`（使用目标 runtime 的可执行文件） |
@@ -59,6 +91,12 @@ bootstrap 目录。无需激活 Conda/venv，`PYTHON` 不再选择安装目标�
 | Sandbox 支持范围、默认策略和平台依赖 | [Agent sandbox](sandbox.md)；安装时也输出后端检测结果 |
 
 `--installation-info` 只描述被调用的 Python/package；PATH 中的命令不一定属于当前宿主。
+该 Python 的 `goal-plus --runtime-info codex|pi [--json]` 则提供完整诊断；安装选择器和 Pi UI
+使用这一入口，Codex MCP resource 复用同一信息采集。
+`--runtime-provider direct|thinkthread` 可显式选择诊断范围，安装选择器始终传入对应 provider；
+宿主内查询默认使用实际进程环境识别 provider。
+Codex/ThinkThread 的底层程序显示为 `managed by Codex/ThinkThread (not inspected)`，
+表示由该宿主管理，不能解读为缺少程序；Pi direct 的程序缺失则明确显示 unavailable。
 当前安装查询不返回 worker 实际启动的 sandbox 策略，也不证明 namespace/Seatbelt 能执行；
 不能将发现后端程序或文档声明当作某次 worker 的执行证据。
 
@@ -166,6 +204,9 @@ TT Profile 从基础 `pi` Profile 整份生成，重装会覆盖受管文件中�
 | `./uninstall.sh --unused-runtime` | 清理无宿主引用的受管 release，使用中的 release 保留；先结束旧会话 |
 
 无参数卸载默认选择全部组件。宿主卸载会保留 release，供旧会话继续使用。
+`bin/goal-plus-info` 和 bootstrap 一样保留，不会在卸载时用当前 checkout 重写或降级。
+查询每次读取当前绑定：已卸载宿主报告未安装，其他宿主仍可查询；`--unused-runtime`
+只清理无引用 release，不删除查询工具或它使用的 bootstrap Python。
 ThinkThread Runtime、Root、状态目录和包由 ThinkThread 独立管理；Goal Plus 卸载器不会删除它们。
 旧 pip/Conda 环境、bootstrap uv/Python、目标 workspace 的 `.gp/` 和用户源码不属于 runtime 清理范围。
 跨 checkout 的正常宿主注册可以显式移除；显式选择 ThinkThread 时，同名 Profile/SDK 也会在

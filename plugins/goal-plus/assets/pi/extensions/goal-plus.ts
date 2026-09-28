@@ -1,5 +1,5 @@
 import { LooseObject, RuntimeToolSchemas, RuntimeToolDescriptions } from "./lib/goal-plus-schemas.ts";
-import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, parseJsonObject, runJsonCli, runHostCommandCli, closeMcpConnections, refreshDebugTranscript } from "./lib/goal-plus-transport.ts";
+import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, parseJsonObject, runJsonCli, runHostCommandCli, closeMcpConnections, refreshDebugTranscript, readRuntimeInfo } from "./lib/goal-plus-transport.ts";
 import { THINKTHREAD_GOAL_PLUS_PROTOCOL, WorkerSteeringReceiver, dispatchMessageId, dispatchMetadata, requestWorkerTool } from "../../thinkthread-session-rpc.ts";
 import { toolOwner, type ToolOwner } from "./lib/goal-plus-tool-identity.ts";
 import {
@@ -2770,6 +2770,21 @@ export default async function (pi: ExtensionAPI) {
 	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_provider=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [inner_agent=ADAPTER_ID] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
 	// END GENERATED GOAL PLUS COMMAND CONFIG
 	if (!isPrintLikeInvocation) {
+		if (role === "main") {
+			pi.registerCommand("goal-plus-info", {
+				description: "查看当前 Goal Plus build、Python、DEBUG 和 worker sandbox 默认配置（不调用模型）",
+				handler: async (_args, ctx) => {
+					try {
+						const text = await readRuntimeInfo(pi, commandContextFrom(ctx));
+						ctx.ui.setStatus("goal-plus-runtime", text.split("\n")[0]);
+						ctx.ui.notify(text, "info");
+					} catch (error) {
+						ctx.ui.setStatus("goal-plus-runtime", "Goal Plus runtime unavailable");
+						ctx.ui.notify(String(error), "error");
+					}
+				},
+			});
+		}
 		pi.registerCommand("goal-plus", {
 			description: "运行或编辑原生 Pi Goal Plus（支持 typed command config）",
 			handler: async (args, ctx) => {
@@ -2952,6 +2967,14 @@ export default async function (pi: ExtensionAPI) {
 	});
 	pi.on("session_start", async (event, ctx) => {
 		await validateThinkThreadWorker(ctx);
+		if (role === "main" && ctx.mode === "tui") {
+			try {
+				const text = await readRuntimeInfo(pi, commandContextFrom(ctx));
+				ctx.ui.setStatus("goal-plus-runtime", text.split("\n")[0]);
+			} catch {
+				ctx.ui.setStatus("goal-plus-runtime", "Goal Plus runtime unavailable; /goal-plus-info");
+			}
+		}
 		goalPlusSessionAuthorized = false;
 		lastMainStopReason = undefined;
 		mainTurnSignal = undefined;

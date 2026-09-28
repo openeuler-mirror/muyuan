@@ -55,6 +55,25 @@ pi -p "/goal-plus inspect this repository"
 卸载使用 `./uninstall.sh --pi`；release 清理与组件范围见
 [卸载说明](development.md#卸载与版本清理)。
 
+### 无模型查询当前 runtime
+
+终端执行 `~/.local/share/goal-plus/bin/goal-plus-info pi`，无需启动 Pi，即可查看该宿主
+登记的 Goal Plus build、Python、DEBUG 和 worker sandbox 默认配置；支持 `--json`。
+自定义安装目录与查询范围见 [终端查询](development.md#安装模式)。
+
+交互 Pi Main 启动或 reload 时，状态栏自动显示当前 extension 绑定的 build、worker sandbox
+默认后端和 DEBUG。输入 `/goal-plus-info` 查看完整信息并刷新摘要，不需要先创建 Goal，
+不调用模型，也不写入模型上下文或 Goal 状态。RPC 客户端可通过同名 extension 命令收到
+通知；JSON/print 模式没有 UI，使用终端查询。诊断失败显示 unavailable，不阻止普通会话启动。
+
+macOS worker 默认后端为 Seatbelt，Linux 为 bubblewrap；程序缺失会标明 unavailable。
+发现程序不证明隔离能执行，`execution_verified=false` 表示未运行探针。
+Direct Pi Main 仍使用 launcher 进程权限，不能将 worker 默认后端视为 Main 已受隔离。
+ThinkThread Root 显示 provider 边界。该诊断与创建 Goal 时的 `goal-plus-runtime-start`
+权限和工具快照分别保留各自用途。
+外部终端用 `goal-plus-info pi --thinkthread` 查询 `goal-plus-pi` Profile 的安装绑定；
+底层程序显示 `managed by ThinkThread (not inspected)`，不推断该 provider 的内部隔离实现。
+
 ### ThinkThread protected Search Root
 
 ThinkThread Runtime 由 ThinkThread/Capsule 独立安装和管理。Goal Plus 不安装、升级或卸载它。

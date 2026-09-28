@@ -1244,7 +1244,7 @@ def test_thinkthread_sdk_preflight_allows_explicit_replacement(
     assert "replacing unmanaged Agent POSIX SDK" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("failure", ["registration", "cache"])
+@pytest.mark.parametrize("failure", ["registration", "cache", "info"])
 def test_codex_update_failure_restores_previous_source_and_binding(installer, tmp_path, monkeypatch, failure):
     old, new = tmp_path / "old", tmp_path / "new"
     current = {"goal-plus": old}
@@ -1260,9 +1260,14 @@ def test_codex_update_failure_restores_previous_source_and_binding(installer, tm
             raise subprocess.CalledProcessError(1, argv)
     monkeypatch.setattr(installer, "_run", run)
     def reject_cache(codex, package):
-        raise installer.InstallError("Codex cache mismatch")
+        if failure == "cache":
+            raise installer.InstallError("Codex cache mismatch")
     monkeypatch.setattr(installer, "_verify_codex_installation", reject_cache)
-    with pytest.raises(subprocess.CalledProcessError if failure == "registration" else installer.InstallError):
+    if failure == "info":
+        def fail_info(**kwargs):
+            raise OSError("runtime-info refresh failed")
+        monkeypatch.setattr(installer.managed_runtime, "install_info_command", fail_info)
+    with pytest.raises(subprocess.CalledProcessError if failure == "registration" else OSError if failure == "info" else installer.InstallError):
         installer._install_codex(codex="codex", package=new, dry_run=False)
     assert current == {"goal-plus": old}
     for host, config in [("codex", installer._codex_config()), ("pi", installer._pi_agent_dir())]:
@@ -1375,7 +1380,7 @@ def test_codex_dry_run_does_not_verify_unmaterialized_cache(installer, tmp_path,
     assert not installer.managed_runtime.home().exists()
 
 
-@pytest.mark.parametrize("fail", [True, False])
+@pytest.mark.parametrize("fail", ["registration", "info", None])
 def test_pi_update_preserves_filters_and_recovers_settings(installer, tmp_path, monkeypatch, fail):
     monkeypatch.setattr(installer, "_verify_pi_installation", lambda *args: None)
     agent = tmp_path / "pi"
@@ -1392,13 +1397,17 @@ def test_pi_update_preserves_filters_and_recovers_settings(installer, tmp_path, 
         if argv[1] == "remove":
             assert argv[2] == str(old)
             (agent / "settings.json").write_text(json.dumps({"packages": ["npm:unrelated"], "theme": "dark"}))
-        elif fail:
+        elif fail == "registration":
             raise subprocess.CalledProcessError(1, argv)
         else:
             (agent / "settings.json").write_text(json.dumps({"packages": ["npm:unrelated", str(new)], "theme": "dark"}))
     monkeypatch.setattr(installer, "_run", run)
+    if fail == "info":
+        def fail_info(**kwargs):
+            raise OSError("runtime-info refresh failed")
+        monkeypatch.setattr(installer.managed_runtime, "install_info_command", fail_info)
     if fail:
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(OSError if fail == "info" else subprocess.CalledProcessError):
             installer._install_pi(pi="pi", package=new, dry_run=False)
         assert json.loads((agent / "settings.json").read_text()) == original
     else:
@@ -1406,6 +1415,21 @@ def test_pi_update_preserves_filters_and_recovers_settings(installer, tmp_path, 
         result = json.loads((agent / "settings.json").read_text())
         assert result == {**original, "packages": [{"source": str(new), "extensions": ["*.ts"]}, "npm:unrelated"]}
     assert json.loads(installer.managed_runtime.binding_path("pi", agent).read_text())["package"] == str(old if fail else new)
+
+
+@pytest.mark.parametrize("host", ["codex", "pi"])
+def test_info_conflict_is_rejected_before_host_registration_changes(installer, tmp_path, monkeypatch, host):
+    launcher = installer.managed_runtime.install_info_command()
+    launcher.write_text("user owned command")
+    def forbidden(*args, **kwargs):
+        pytest.fail("host mutation must not run after a runtime-info ownership conflict")
+    monkeypatch.setattr(installer, "_run", forbidden)
+    with pytest.raises(RuntimeError, match="Refusing unmanaged"):
+        if host == "codex":
+            installer._install_codex(codex="codex", package=tmp_path / "new", dry_run=False)
+        else:
+            installer._install_pi(pi="pi", package=tmp_path / "new", dry_run=False)
+    assert launcher.read_text() == "user owned command"
 
 
 def test_pi_mcp_dependency_failure_preserves_registration(installer, tmp_path, monkeypatch):
@@ -1497,14 +1521,21 @@ def test_reinstall_automation_never_reads_stdin(installer, monkeypatch, option):
     assert installer._confirm_reinstall(["Pi: old"], assume_yes=option == "--yes", dry_run=option == "--dry-run")
 
 
-def test_cancel_reinstall_does_not_prepare_or_mutate(installer, monkeypatch):
+@pytest.mark.parametrize("existing_info", [False, True])
+def test_cancel_reinstall_does_not_prepare_or_mutate(installer, monkeypatch, existing_info):
+    if existing_info:
+        launcher = installer.managed_runtime.install_info_command()
+        before = {path: path.read_bytes() for path in (launcher, launcher.with_name("runtime-info.py"))}
     monkeypatch.setattr(installer, "_require_executable", lambda _: "pi")
     monkeypatch.setattr(installer, "_preflight_pi_normal", lambda **kwargs: True)
     monkeypatch.setattr(installer, "_pi_goal_plus_entries", lambda: [{"source": "old"}])
     monkeypatch.setattr("builtins.input", lambda _: "n")
     monkeypatch.setattr(installer.managed_runtime, "prepare", lambda *a, **k: pytest.fail("prepared after cancellation"))
     assert installer.main(["--pi"]) == 0
-    assert not installer.managed_runtime.home().exists()
+    if existing_info:
+        assert {path: path.read_bytes() for path in before} == before
+    else:
+        assert not installer.managed_runtime.home().exists()
 
 
 @pytest.mark.parametrize("failure", ["invalid_json", "invalid_shape", "runtime", "missing_registration"])

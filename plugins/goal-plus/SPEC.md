@@ -43,6 +43,15 @@ Codex 正式发现入口只在受管 release 中生成，Pi 通过 package 或�
 准备并核验新 release 后再卸载重装对应注册；取消不改变注册或版本引用。
 Codex 安装成功前必须核验实际缓存的 build、安装身份与 MCP/hook 启动配置，不能只以注册来源
 或 `plugin add` 成功作为验收。缓存校验失败不得提交新版本引用或报告安装成功。
+Codex Main MCP 的握手版本和只读 `goal-plus://runtime/info` 资源描述实际加载的 runtime；
+查询不依赖 Goal、不调用模型、不创建运行状态，不向 candidate/checker 暴露安装诊断。
+Sandbox 默认策略与实际执行验证分别表达，诊断读取不能作为某次隔离成功的证据。
+安装器提供不依赖源码目录的 `bin/goal-plus-info codex|pi` 终端查询，按宿主配置目录选择
+已登记 release 并校验 build；它不证明已运行会话的版本。Pi Main 的启动状态栏及
+`/goal-plus-info` 查询当前 extension 绑定的 runtime，与 Codex 复用共同信息采集。
+诊断无需 Goal 或模型，发现隔离程序只报告可发现性，不报告执行成功。
+终端查询以 `--thinkthread` 显式选择对应宿主的 Profile 安装绑定，不回退到 direct build，
+也不将当前 cwd 推断为某个 ThinkThread session 的 runtime root。
 Pi 安装成功前必须核验实际 package 注册、宿主解析出的启用 extension/skill 和 Python build。
 校验失败恢复原设置并撤销 pending 引用；显式资源配置和项目自动发现也属于冲突检查范围。
 本地和 ThinkThread verifier 的裸 `python` / `python3` 命令在执行时绑定当前 Goal Plus

@@ -54,6 +54,42 @@ if (mode === "unprepared") {
 '''
 
 
+@pytest.mark.parametrize("provider", ["direct", "thinkthread"])
+def test_pi_info_uses_bound_python_without_creating_goal_state(tmp_path, provider):
+    import sys
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for Pi diagnostics")
+    script = r'''
+import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+const [repo, cwd, python, provider] = process.argv.slice(1);
+const {readRuntimeInfo} = await import(pathToFileURL(repo + '/assets/pi/extensions/lib/goal-plus-transport.ts'));
+const pi = {exec: async (command, args, options) => {
+  assert.equal(command, python);
+  assert.equal(options.cwd, cwd);
+  assert(args.includes('--runtime-info'));
+  return {code: 0, ...await promisify(execFile)(command, args, options)};
+}};
+const text = await readRuntimeInfo(pi, {cwd});
+assert(text.includes('Host: pi / ' + provider));
+if (provider === 'thinkthread') assert(text.includes('managed by ThinkThread (not inspected)'));
+assert(text.includes(python));
+assert(text.includes(cwd + '/.gp'));
+assert(text.includes('not probed'));
+'''
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GOAL_PLUS_")}
+    env.update(GOAL_PLUS_PI_DEV_ROOT=str(ROOT), GOAL_PLUS_PYTHON=sys.executable)
+    if provider == "thinkthread":
+        env["GOAL_PLUS_AGENT_POSIX_SDK_ENTRY"] = "/not-installed/sdk"
+    result = subprocess.run([node, "--experimental-strip-types", "--input-type=module", "-e", script,
+                             str(ROOT), str(tmp_path), sys.executable, provider], env=env, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / ".gp").exists()
+
+
 @pytest.mark.parametrize('debug', [False, True])
 def test_native_pi_archive_automatically_exports_combined_html(tmp_path, debug):
     import sys
