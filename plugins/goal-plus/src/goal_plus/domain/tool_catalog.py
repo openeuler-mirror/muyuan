@@ -2,6 +2,16 @@
 
 from typing import Literal
 
+CONTROLLER_ONLY_CLOSEOUT_ENV = "GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT"
+CONTROLLER_ONLY_CLOSEOUT_TOOL_NAMES = frozenset(
+    {
+        "goal_plus_search_select",
+        "goal_plus_search_promote",
+        "goal_plus_search_apply_promotion",
+        "goal_plus_record_search_result",
+    }
+)
+
 SEARCH_TOOL_NAMES = {
     "goal_plus_get_tool_schema",
     "goal_plus_list_models",

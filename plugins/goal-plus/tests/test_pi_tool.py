@@ -13,11 +13,45 @@ import goal_plus.internal_agents as internal_agents
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import GoalPlusHostCommandInvocation, SearchSpec
 from goal_plus.pi_tool import call_pi_host_command, call_pi_tool
+from goal_plus.pi_tool import (
+    PI_CLOSEOUT_TOOL_NAMES,
+    PI_CONTROLLER_ONLY_CLOSEOUT_ENV,
+)
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.tools import SearchTools
 from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
 pytestmark = pytest.mark.pi
+
+
+def test_pi_controller_only_closeout_rejects_direct_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import goal_plus.mcp_client as mcp_client
+
+    calls: list[str] = []
+
+    def call(_root, tool_name, _args, **_kwargs):
+        calls.append(tool_name)
+        return {"tool": tool_name}
+
+    monkeypatch.setattr(mcp_client, "call_mcp_tool", call)
+    monkeypatch.setenv("GOAL_PLUS_PI_ROLE", "main")
+    monkeypatch.setenv(PI_CONTROLLER_ONLY_CLOSEOUT_ENV, "1")
+
+    for tool_name in sorted(PI_CLOSEOUT_TOOL_NAMES):
+        with pytest.raises(PermissionError, match="reserved for the host controller"):
+            call_pi_tool(tmp_path / ".gp", tool_name, {})
+    assert calls == []
+    assert call_pi_tool(tmp_path / ".gp", "goal_plus_status", {}) == {
+        "tool": "goal_plus_status"
+    }
+
+    monkeypatch.delenv(PI_CONTROLLER_ONLY_CLOSEOUT_ENV)
+    assert call_pi_tool(tmp_path / ".gp", "goal_plus_search_select", {}) == {
+        "tool": "goal_plus_search_select"
+    }
 
 
 @pytest.mark.host_process

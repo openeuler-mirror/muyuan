@@ -13,6 +13,8 @@ from goal_plus.models import (
     CandidateProposal,
     CandidateRecord,
     CandidateTask,
+    ControllerSelectionDirective,
+    ControllerSelectionTarget,
     DevicePoolSpec,
     EditSurface,
     FrozenSpec,
@@ -46,6 +48,27 @@ from goal_plus.infrastructure.search_configuration import (
     SUPPLEMENTAL_EVALUATION_REQUIRED_ENV,
 )
 from tests._runtime_helpers import make_project, spec_for
+
+
+def test_controller_selection_directive_requires_complete_identity() -> None:
+    artifact = ArtifactRef(kind="git_commit", id="a" * 40, provider="git_worktree")
+    directive = ControllerSelectionDirective(
+        target=ControllerSelectionTarget(
+            candidate_id="c001",
+            iteration=1,
+            settlement_id="settlement_1",
+            artifact_ref=artifact,
+            artifact_hash="b" * 64,
+        ),
+        receipt_sha256="c" * 64,
+    )
+
+    assert directive.target.artifact_ref == artifact
+    assert set(directive.model_dump(mode="json")) == {"target", "receipt_sha256"}
+    with pytest.raises(ValidationError):
+        ControllerSelectionDirective.model_validate(
+            {"target": directive.target.model_dump(mode="json")}
+        )
 
 
 @pytest.mark.parametrize("metric_name", ["returncode", "elapsed_seconds"])

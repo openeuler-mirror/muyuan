@@ -1922,6 +1922,7 @@ def test_promote_patch_round_trips_file_without_trailing_newline(tmp_path: Path)
     assert ">promoted</span>" in html_report_path.read_text(encoding="utf-8")
     apply_target = tmp_path / "apply-target"
     copy_source_tree(project, apply_target)
+    initialize_workspace_git_baseline(apply_target)
     subprocess.run(
         ["git", "apply", "--check", str(patch_path)],
         cwd=apply_target,
@@ -2279,6 +2280,7 @@ def test_promote_patch_uses_selected_commit_after_evidence_check(
     patch_path = runtime.promote(run_id, task.candidate_id)
     apply_target = tmp_path / "apply-target"
     copy_source_tree(project, apply_target)
+    initialize_workspace_git_baseline(apply_target)
     subprocess.run(["git", "apply", str(patch_path)], cwd=apply_target, check=True)
 
     assert (

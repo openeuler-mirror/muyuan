@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 from contextlib import asynccontextmanager
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from functools import wraps
 from inspect import iscoroutinefunction, signature
 from pathlib import Path
@@ -37,6 +38,10 @@ from goal_plus.projections.session_tools import session_call_receipt
 from goal_plus.ports.session import FinalCheckRunner, SessionControlLookup, SessionLauncher, WorkItemRunner
 from goal_plus.ports.thinkthread_verification import DeferredCandidateAttempt
 from goal_plus.domain.tool_catalog import PUBLIC_TOOL_NAMES, CANDIDATE_CAPABILITIES
+from goal_plus.domain.tool_catalog import (
+    CONTROLLER_ONLY_CLOSEOUT_ENV,
+    CONTROLLER_ONLY_CLOSEOUT_TOOL_NAMES,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -145,6 +150,7 @@ def create_mcp(
     work_items: WorkItemRunner | None = None,
     candidate_attempt: DeferredCandidateAttempt | None = None,
     candidate_tool_call: Callable[[str, dict[str, Any]], Any] | None = None,
+    excluded_tool_names: Collection[str] = (),
 ) -> FastMCP:
     from fastmcp import FastMCP
     from fastmcp.tools import Tool
@@ -170,6 +176,18 @@ def create_mcp(
         raise ValueError("session launch requires session control")
     if candidate_tool_call is not None and (caller_role != "candidate" or candidate_attempt is not None):
         raise ValueError("remote candidate tools require a bound candidate without local settlement")
+    excluded_tools = frozenset(excluded_tool_names)
+    if (
+        caller_role in {None, "main"}
+        and os.environ.get(CONTROLLER_ONLY_CLOSEOUT_ENV) == "1"
+    ):
+        excluded_tools |= CONTROLLER_ONLY_CLOSEOUT_TOOL_NAMES
+    unknown_exclusions = excluded_tools - PUBLIC_TOOL_NAMES
+    if unknown_exclusions:
+        raise ValueError(
+            "excluded MCP tools must be public Goal Plus tools: "
+            + ", ".join(sorted(unknown_exclusions))
+        )
     runtime = FileSearchRuntime(root_dir) if candidate_tool_call is None else None
     goal_runtime = FileGoalPlusRuntime(root_dir) if candidate_tool_call is None else None
     tools = SearchTools(runtime, goal_runtime, candidate_attempt=candidate_attempt) if runtime is not None else None
@@ -235,7 +253,10 @@ def create_mcp(
             return function
 
         def register(function):
-            if function.__name__ not in PUBLIC_TOOL_NAMES:
+            if (
+                function.__name__ not in PUBLIC_TOOL_NAMES
+                or function.__name__ in excluded_tools
+            ):
                 return function
             capability = CANDIDATE_CAPABILITIES.get(function.__name__)
             if capability and capabilities is not None and not capabilities[capability]:
@@ -1093,10 +1114,12 @@ def create_host_mcp(
     root_dir: str | Path = DEFAULT_RUNTIME_ROOT, *, agent_harness: Literal["codex", "pi"],
     caller_role: ToolCallerRole | None = None, caller_agent_session_id: str | None = None,
     caller_final_check: "GoalPlusFinalCheckerIdentity | None" = None,
+    excluded_tool_names: Collection[str] = (),
 ) -> FastMCP:
     if caller_role not in {None, "main"}:
         return create_mcp(root_dir, caller_role=caller_role, caller_agent_session_id=caller_agent_session_id,
-                          caller_final_check=caller_final_check)
+                          caller_final_check=caller_final_check,
+                          excluded_tool_names=excluded_tool_names)
     from goal_plus.session_host import NativeCandidateHost
     from goal_plus.final_check_host import NativeFinalCheckHost
     from goal_plus.delegation_host import NativeDelegationHost
@@ -1109,6 +1132,7 @@ def create_host_mcp(
         session_controls=sessions, session_launcher=sessions,
         final_checker=NativeFinalCheckHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller),
         work_items=NativeDelegationHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller),
+        excluded_tool_names=excluded_tool_names,
     )
 
 

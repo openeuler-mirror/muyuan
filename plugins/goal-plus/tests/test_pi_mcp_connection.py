@@ -17,8 +17,13 @@ pytestmark = pytest.mark.pi
 MAIN_AGENT_SESSION_ID = "pi-main-session"
 
 
-@pytest.mark.parametrize("role", ["main", "worker"])
-def test_persistent_pi_mcp_connection_and_shutdown(tmp_path, role):
+@pytest.mark.parametrize(
+    ("role", "controller_only_closeout"),
+    [("main", False), ("main", True), ("worker", False), ("worker", True)],
+)
+def test_persistent_pi_mcp_connection_and_shutdown(
+    tmp_path, role, controller_only_closeout
+):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required to exercise the Pi MCP adapter")
@@ -35,6 +40,9 @@ def test_persistent_pi_mcp_connection_and_shutdown(tmp_path, role):
     ], env={
         **os.environ, "PYTHONPATH": str(ROOT / "src"), "GOAL_PLUS_PI_ROLE": role,
         "GOAL_PLUS_AGENT_SESSION_ID": "bound-candidate",
+        "GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT": (
+            "1" if controller_only_closeout else "0"
+        ),
     }, text=True, capture_output=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -61,7 +69,12 @@ try {
   } else {
     assert.equal(typeof manifest.instructions, "string");
     assert(manifest.instructions.includes("goal_plus_status"));
-    assert(manifest.tools.some(tool => tool.name === "goal_plus_search_select"));
+    const closeoutTools = ["goal_plus_search_select", "goal_plus_search_promote",
+      "goal_plus_search_apply_promotion", "goal_plus_record_search_result"];
+    for (const name of closeoutTools) {
+      assert.equal(manifest.tools.some(tool => tool.name === name),
+        process.env.GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT !== "1");
+    }
     const first = await connection.call(
       "goal_plus_monitor_snapshot", {goal_plus_id: goalPlusId}, undefined, nativeSessionId);
     const second = await connection.call(

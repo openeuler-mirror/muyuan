@@ -290,6 +290,12 @@ for key, tolerance in configured_order:
 winner = prefer previous hard best, then preserve original option order
 ~~~
 
+外部 host 若需要使用 Jev 或 LLM-as-a-Verifier 在 hard-score 并列项中点名候选，
+只能通过可信 runtime 的 `select_for_controller()` 提交带 receipt hash 的精确
+`ControllerSelectionDirective`。它不会改变 ranking、hard evidence 或 promotion
+gate；指定 subject 若不在冻结 ranking survivors 中，或 artifact 重验失败，Selection
+直接进入 `selection_blocked`。该接口不作为 MCP/Pi 模型工具发布。
+
 quality_score 固定 maximize；hard_score 使用 SearchSpec 的 metric_direction。Selection 只保存
 winner、每级 threshold、survivor count、排除原因和 evidence source。Winner 恢复后仍校验 exact
 artifact 与 hard evidence；必要重验失败时排除该 subject，并在剩余候选上重放同一算法。

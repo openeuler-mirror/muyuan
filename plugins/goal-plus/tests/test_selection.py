@@ -4,7 +4,13 @@ import pytest
 
 from goal_plus.application.selection import _QualityScoreSource
 from goal_plus.domain.artifacts import ArtifactRef
-from goal_plus.domain.selection import SelectionOption, SelectionSubjectKey
+from goal_plus.domain.evidence_policy import iteration_artifact_ref
+from goal_plus.domain.selection import (
+    ControllerSelectionDirective,
+    ControllerSelectionTarget,
+    SelectionOption,
+    SelectionSubjectKey,
+)
 from goal_plus.domain.settlement import SettlementEvidence, SettlementReceipt
 from goal_plus.domain.verifier import (
     VerifierInput,
@@ -270,3 +276,185 @@ def test_quality_source_rejects_a_record_from_another_score_contract() -> None:
     )
 
     assert source.resolve(_selection_option(subject)).state == "unavailable"
+
+
+def _exact_selection_run(tmp_path, scores):
+    from goal_plus.domain.search import SearchSpec
+    from goal_plus.runtime import FileSearchRuntime
+    from tests._runtime_helpers import make_project, spec_for
+
+    project = make_project(tmp_path)
+    (project / "evaluator.py").write_text(
+        "import json\nfrom initial_program import VALUE\n"
+        "print(json.dumps({'combined_score': float(VALUE)}))\n"
+    )
+    spec_data = spec_for(project, max_parallel=2).model_dump(mode="json")
+    spec_data["workspace"]["provider"] = "git_worktree"
+    spec = SearchSpec.model_validate(spec_data)
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    frozen = runtime.freeze_spec(
+        spec,
+        [project / "evaluator.py"],
+        agent_harness="codex",
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+    candidates = runtime.start_batch(run_id, plan.plan_id)
+    reports = []
+    for candidate, score in zip(candidates, scores, strict=True):
+        (candidate.workspace / "initial_program.py").write_text(
+            f"VALUE = {score}\n",
+            encoding="utf-8",
+        )
+        reports.append(runtime.run_verifier(run_id, candidate.candidate_id))
+    return runtime, run_id, candidates, reports
+
+
+def _controller_directive(runtime, run_id, candidate_id, *, receipt="1" * 64):
+    record = runtime.search_run.state.read_candidate(run_id, candidate_id)
+    iteration = record.iterations[-1]
+    artifact_ref = iteration_artifact_ref(
+        iteration,
+        record.task.workspace_provider,
+    )
+    assert iteration.settlement_id is not None
+    assert iteration.artifact_hash is not None
+    return ControllerSelectionDirective(
+        target=ControllerSelectionTarget(
+            candidate_id=candidate_id,
+            iteration=iteration.iteration,
+            settlement_id=iteration.settlement_id,
+            artifact_ref=artifact_ref,
+            artifact_hash=iteration.artifact_hash,
+        ),
+        receipt_sha256=receipt,
+    )
+
+
+def test_controller_exact_selection_breaks_only_a_frozen_hard_tie(tmp_path) -> None:
+    runtime, run_id, candidates, _reports = _exact_selection_run(tmp_path, [1, 1])
+    first, second = candidates
+    directive = _controller_directive(runtime, run_id, first.candidate_id)
+    conflicting_target = _controller_directive(
+        runtime,
+        run_id,
+        second.candidate_id,
+    )
+
+    assert runtime.status(run_id).best_candidate_id == second.candidate_id
+    selected = runtime.select_for_controller(run_id, directive)
+
+    assert selected["selected_candidate_id"] == first.candidate_id
+    assert selected["controller_selection"] == directive.model_dump(mode="json")
+    assert selected["selection_trace"][-1]["controller_directive"] == (
+        directive.model_dump(mode="json")
+    )
+    assert runtime.select_for_controller(run_id, directive) == selected
+
+    with pytest.raises(RuntimeError, match="conflicts with the persisted selection"):
+        runtime.select_for_controller(run_id, conflicting_target)
+    with pytest.raises(RuntimeError, match="conflicts with the persisted selection"):
+        runtime.select_for_controller(
+            run_id,
+            directive.model_copy(update={"receipt_sha256": "2" * 64}),
+        )
+    run = runtime.search_run.state.read_run(run_id)
+    assert run.selected_candidate_id == first.candidate_id
+    assert run.controller_selection == directive
+
+
+def test_controller_exact_selection_cannot_bypass_frozen_hard_ranking(tmp_path) -> None:
+    runtime, run_id, candidates, _reports = _exact_selection_run(tmp_path, [1, 3])
+    directive = _controller_directive(runtime, run_id, candidates[0].candidate_id)
+
+    with pytest.raises(RuntimeError, match="outside the frozen selection gate"):
+        runtime.select_for_controller(run_id, directive)
+
+    run = runtime.search_run.state.read_run(run_id)
+    assert run.state == "selection_blocked"
+    assert run.selected_candidate_id is None
+    assert run.controller_selection is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["iteration", "settlement_id", "artifact_ref", "artifact_hash"],
+)
+def test_controller_exact_selection_rejects_stale_identity(
+    tmp_path,
+    change,
+) -> None:
+    runtime, run_id, candidates, _reports = _exact_selection_run(tmp_path, [1, 1])
+    directive = _controller_directive(runtime, run_id, candidates[0].candidate_id)
+    target = directive.target
+    if change == "iteration":
+        target = target.model_copy(update={"iteration": target.iteration + 1})
+    elif change == "settlement_id":
+        target = target.model_copy(
+            update={"settlement_id": target.settlement_id + "-stale"}
+        )
+    elif change == "artifact_ref":
+        assert target.artifact_ref is not None
+        target = target.model_copy(
+            update={
+                "artifact_ref": target.artifact_ref.model_copy(
+                    update={"id": "f" * 40}
+                )
+            }
+        )
+    else:
+        target = target.model_copy(update={"artifact_hash": "f" * 64})
+    stale = directive.model_copy(update={"target": target})
+
+    with pytest.raises(RuntimeError, match="not an eligible exact selection option"):
+        runtime.select_for_controller(run_id, stale)
+
+    run = runtime.search_run.state.read_run(run_id)
+    assert run.state == "selection_blocked"
+    assert run.selected_candidate_id is None
+
+
+def test_controller_exact_selection_does_not_fallback_after_revalidation_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime, run_id, candidates, reports = _exact_selection_run(tmp_path, [1, 1])
+    selected_candidate = candidates[0]
+    directive = _controller_directive(
+        runtime,
+        run_id,
+        selected_candidate.candidate_id,
+    )
+    artifact_state = runtime.selection.artifacts.candidate_artifact_state
+
+    def changed_state(run, frozen, record):
+        state = artifact_state(run, frozen, record)
+        if record.candidate_id == selected_candidate.candidate_id:
+            return replace(state, artifact_hash="f" * 64)
+        return state
+
+    monkeypatch.setattr(
+        runtime.selection.artifacts,
+        "candidate_artifact_state",
+        changed_state,
+    )
+    selecting = runtime.selection.select(
+        run_id,
+        controller_directive=directive,
+    )
+    request = next(selecting)
+    assert request.candidate_id == selected_candidate.candidate_id
+    with pytest.raises(RuntimeError, match="failed hard artifact revalidation"):
+        selecting.send(
+            reports[0].model_copy(
+                update={"process_passed": False, "aggregate_score": None}
+            )
+        )
+
+    run = runtime.search_run.state.read_run(run_id)
+    assert run.state == "selection_blocked"
+    assert run.selected_candidate_id is None
+    assert [item["candidate_id"] for item in run.rejected_selection_subjects] == [
+        selected_candidate.candidate_id
+    ]
+    assert len(run.selection_trace) == 1

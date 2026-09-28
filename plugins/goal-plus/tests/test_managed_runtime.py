@@ -149,6 +149,7 @@ def test_prepared_build_has_matching_manifest_receipt_and_interpreter(managed, t
     assert not list(package.parent.rglob("SKILL.md"))
     assert not (package.parent / "skills").exists()
     receipt = managed.read_receipt(package)
+    assert receipt["capabilities"] == list(managed.RUNTIME_CAPABILITIES)
     assert not (root / ".agents/plugins/marketplace.json").exists()
     assert json.loads((package / ".agents/plugins/marketplace.json").read_text()) == marketplace
     assert json.loads((package / ".codex-plugin/plugin.json").read_text())["version"] == "0.1.0+" + receipt["build"]

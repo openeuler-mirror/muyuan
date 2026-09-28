@@ -17,6 +17,10 @@ import subprocess
 
 SCHEMA = "goal-plus.managed-runtime.v1"
 PYTHON_VERSION = "3.12"
+RUNTIME_CAPABILITIES = (
+    "goal_plus.controller_exact_selection.v1",
+    "goal_plus.controller_owned_closeout.v1",
+)
 PACKAGE_PATHS = (
     "src", "scripts", "assets", "pyproject.toml",
     "uv.lock", "README.md", "README_zh.md", "SPEC.md", "AGENTS.md", "docs", "examples",
@@ -150,7 +154,9 @@ def prepare(source: Path, *, dry_run: bool = False, codex_env_vars: tuple[str, .
                     server["env_vars"] = sorted(set(server.get("env_vars", [])) | set(codex_env_vars))
                 mcp_path.write_text(json.dumps(mcp, indent=2) + "\n")
             info = {"schema": SCHEMA, "build": build, "source": str(source),
-                    "package": str(package), "python": str(python), "python_version": PYTHON_VERSION}
+                    "package": str(package), "python": str(python),
+                    "python_version": PYTHON_VERSION,
+                    "capabilities": list(RUNTIME_CAPABILITIES)}
             (package / "src/goal_plus/_installation.json").write_text(json.dumps(info))
             env = dict(os.environ)
             for key in tuple(env):

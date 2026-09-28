@@ -27,6 +27,14 @@ import {
 } from "./lib/goal-plus-progress.ts";
 
 const role = process.env.GOAL_PLUS_PI_ROLE || "main";
+const CONTROLLER_ONLY_CLOSEOUT_TOOLS = new Set([
+	"goal_plus_search_select",
+	"goal_plus_search_promote",
+	"goal_plus_search_apply_promotion",
+	"goal_plus_record_search_result",
+]);
+const controllerOwnsCloseout =
+	role === "main" && process.env.GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT === "1";
 const sharedMcpTools = new Map<string, { description: string; inputSchema: TSchema }>();
 const diagnosticToolContracts = new Map<string, { name: string; description: string; parameters: unknown }>();
 const sessionArchive = new SessionArchive();
@@ -1858,6 +1866,12 @@ function buildGoalStartPrompt(
 		"遵循 Goal Plus MCP 说明，并从 goal_plus_status 的 next_action 开始执行。",
 		"首次启动时，若目标和当前对话未给出最大运行时间，简短告知任务将持续至完成或用户停止，然后继续。",
 	);
+	if (controllerOwnsCloseout) {
+		lines.push(
+			"",
+			"Host controller owns closeout: settle all workers and verifier evidence, keep the Goal active, then return normally. Do not select, promote, apply promotion, or record the final Search result.",
+		);
+	}
 	return lines.join("\n");
 }
 
@@ -2517,6 +2531,7 @@ async function mainGate(event: ToolCallEvent, ctx: ExtensionContext, owner: Tool
 
 async function queueMainGoalContinuation(pi: ExtensionAPI, ctx: ExtensionContext) {
 	if (role !== "main" || !activeGoalPlusId || !goalPlusSessionAuthorized) return;
+	if (controllerOwnsCloseout && lastMainStopReason === "stop") return;
 	// agent_end is still inside Pi's awaited prompt lifecycle. The host drains
 	// follow-ups queued here after native retry/compaction; agent_settled is too
 	// late to start a fire-and-forget turn in print/JSON mode.
@@ -2842,18 +2857,23 @@ export default async function (pi: ExtensionAPI) {
 				? []
 				: mainTools;
 	const registeredRuntimeTools = new Set<string>();
-	mainGoalPlusToolNames = role === "main" ? [...roleTools] : [];
+	const visibleRoleTools = controllerOwnsCloseout
+		? roleTools.filter((tool) => !CONTROLLER_ONLY_CLOSEOUT_TOOLS.has(tool))
+		: roleTools;
+	mainGoalPlusToolNames = role === "main" ? [...visibleRoleTools] : [];
 	let mainToolsRegistered = false;
 	const ensureMainToolsRegistered = async (): Promise<void> => {
 		if (role !== "main" || mainToolsRegistered) return;
 		await loadMcpManifest();
-		for (const tool of mainTools) registerRuntimeTool(pi, tool, registeredRuntimeTools);
+		for (const tool of visibleRoleTools) registerRuntimeTool(pi, tool, registeredRuntimeTools);
 		mainToolsRegistered = true;
 		setMainGoalPlusToolAvailability(pi, Boolean(activeGoalPlusId));
 	};
 	ensureMainGoalPlusTools = ensureMainToolsRegistered;
 	if (role !== "main") {
-		for (const tool of roleTools) registerRuntimeTool(pi, tool, registeredRuntimeTools);
+		for (const tool of visibleRoleTools) {
+			registerRuntimeTool(pi, tool, registeredRuntimeTools);
+		}
 	}
 	pi.on("input", async (event, ctx) => {
 		scopeThinkThreadWorkerTools(pi, ctx, event.text);

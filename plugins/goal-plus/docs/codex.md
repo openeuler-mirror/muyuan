@@ -5,6 +5,12 @@ Codex 通过共同 MCP 管理 Goal/Search，并使用共同 session 工具驱动
 不发布随包 skill；Main、Search、Adaptive 和最终检查的流程由共同
 工具定义、当前状态与角色 context 提供。
 
+当外部 controller 接管 Search 收尾时，设置
+`GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT=1` 可让 Main MCP 隐藏 select、promote、
+apply promotion 和 final Search result 工具。controller 通过可信 runtime 的
+`select_for_controller()` 提交精确候选；该 API 不进入模型工具目录，原生 promotion
+gate 仍然有效。
+
 ## Execution Scope
 
 共同 launcher 将 candidate、普通 delegation 和 final checker 的原生进程登记到 Main 的
