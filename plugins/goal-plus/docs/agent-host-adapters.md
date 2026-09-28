@@ -154,8 +154,10 @@ lane 的单设备环境；后续宿主配置变化不会改写已冻结 run 的�
 
 runtime 从 run 创建到 promoted、aborted 或 failed 期间独占每个引用 pool，避免不同 run
 同时把 worker 放到同一组设备。pool lease 和 verifier resource lock 共用
-`GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR`；多个 runtime 进程或容器共享设备时，该变量必须指向
-同一个 host 共享目录，否则只能保证单个文件系统范围内不超售。
+`GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR`。可信本地 candidate host 在启动 worker 前解析该 host
+目录，并覆盖投影到 candidate 进程；worker 的临时目录或 candidate 环境不能改变锁身份。多个
+容器或 sandbox namespace 共享设备时，宿主接线还必须把这个目录映射为同一个可写 host 目录；
+未共享该目录的执行者不参与互斥。
 
 ThinkThread verifier 使用相同锁目录和冻结 `resource_lock` 的精确字符串身份；相同资源串行，
 不同资源并行，不从 Root 的逻辑设备编号推断远端设备。执行结果未知时保留原 request 的持久
