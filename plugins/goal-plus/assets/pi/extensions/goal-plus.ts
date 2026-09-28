@@ -1,5 +1,5 @@
 import { LooseObject, RuntimeToolSchemas, RuntimeToolDescriptions } from "./lib/goal-plus-schemas.ts";
-import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, parseJsonObject, runJsonCli, runHostCommandCli, closeMcpConnections } from "./lib/goal-plus-transport.ts";
+import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, parseJsonObject, runJsonCli, runHostCommandCli, closeMcpConnections, refreshDebugTranscript } from "./lib/goal-plus-transport.ts";
 import { THINKTHREAD_GOAL_PLUS_PROTOCOL, WorkerSteeringReceiver, dispatchMessageId, dispatchMetadata, requestWorkerTool } from "../../thinkthread-session-rpc.ts";
 import { toolOwner, type ToolOwner } from "./lib/goal-plus-tool-identity.ts";
 import {
@@ -38,6 +38,22 @@ const controllerOwnsCloseout =
 const sharedMcpTools = new Map<string, { description: string; inputSchema: TSchema }>();
 const diagnosticToolContracts = new Map<string, { name: string; description: string; parameters: unknown }>();
 const sessionArchive = new SessionArchive();
+async function flushSessionArchive(pi: ExtensionAPI, ctx: ExtensionContext) {
+	await sessionArchive.flush(ctx, { root: runtimeRoot, role, sourceRoot: sourceRoot(commandContextFrom(ctx)),
+		refresh: () => refreshDebugTranscript(pi, commandContextFrom(ctx)),
+		checkpoint: data => pi.appendEntry("goal-plus-session-archive-checkpoint", data),
+		...(isThinkThreadWorker ? { worker: async () => {
+			const metadata = latestDispatchMetadata(ctx);
+			const parentId = process.env.THINKTHREAD_PARENT_ID;
+			if (!parentId || !metadata.agentSessionId) {
+				throw new Error("ThinkThread diagnostic parent binding mismatch");
+			}
+			return { agentSessionId: metadata.agentSessionId,
+				send: (messages: Record<string, unknown>[]) => sendDiagnosticMessages(parentId, messages) };
+		} } : {}),
+	});
+}
+
 const extensionPath = fileURLToPath(import.meta.url);
 const isThinkThreadProfile = Boolean(process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY);
 const isThinkThreadWorker = role === "worker" && isThinkThreadProfile;
@@ -3151,18 +3167,7 @@ export default async function (pi: ExtensionAPI) {
 	});
 	pi.on("agent_end", async (event, ctx) => {
 		stopWorkerSteering?.();
-		await sessionArchive.flush(ctx, { root: runtimeRoot, role, sourceRoot: sourceRoot(commandContextFrom(ctx)),
-			checkpoint: data => pi.appendEntry("goal-plus-session-archive-checkpoint", data),
-			...(isThinkThreadWorker ? { worker: async () => {
-				const metadata = latestDispatchMetadata(ctx);
-				const parentId = process.env.THINKTHREAD_PARENT_ID;
-				if (!parentId || !metadata.agentSessionId) {
-					throw new Error("ThinkThread diagnostic parent binding mismatch");
-				}
-				return { agentSessionId: metadata.agentSessionId,
-					send: (messages: Record<string, unknown>[]) => sendDiagnosticMessages(parentId, messages) };
-			} } : {}),
-		});
+		await flushSessionArchive(pi, ctx);
 		const lastMessage = event.messages.at(-1);
 		const persist = canPersistGoalState(ctx);
 		if (role === "main" && presentedPublicationNotifications.size > 0) {
@@ -3259,6 +3264,9 @@ export default async function (pi: ExtensionAPI) {
 			if (role === "main") await closeExecutionScope(pi, commandContextFrom(ctx), `pi_session_shutdown:${event.reason}`);
 		} finally {
 			await closeMcpConnections();
+			// Child turns already flushed at agent_end. Do not launch another
+			// exporter while their owning process is waiting for bounded shutdown.
+			if (role === "main") await flushSessionArchive(pi, ctx);
 		}
 	});
 }

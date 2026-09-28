@@ -12,7 +12,8 @@ from goal_plus.infrastructure.native_session_inputs import native_candidate_inpu
     ("agent_harness", "backend"),
     [("pi", "outer"), ("codex", "native")],
 )
-def test_direct_candidate_declares_host_specific_sandbox(tmp_path: Path, agent_harness: str, backend: str) -> None:
+def test_direct_candidate_declares_host_specific_sandbox(tmp_path: Path, agent_harness: str, backend: str, monkeypatch) -> None:
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     session = SimpleNamespace(
@@ -38,6 +39,7 @@ def test_direct_candidate_declares_host_specific_sandbox(tmp_path: Path, agent_h
     result = native_candidate_input(
         tmp_path / ".gp", session, scope, process_environment={},
     )
+    assert result.process.environment["GOAL_PLUS_DEBUG"] == "1"
     assert result.process.sandbox is not None
     assert result.process.sandbox.backend == backend
     assert result.process.sandbox.mode == "workspace-write"

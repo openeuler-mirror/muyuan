@@ -92,6 +92,16 @@ def test_cli_version_prints_without_heavy_imports(tmp_path: Path) -> None:
     assert completed.stdout.strip() == "goal-plus 0.1.0"
 
 
+def test_cli_installation_info_reports_invoked_runtime_without_creating_state(tmp_path: Path) -> None:
+    completed = _run(["--installation-info"], cwd=tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    identity = json.loads(completed.stdout)
+    assert identity["python"] == sys.executable
+    assert identity["module"] == str(SRC / "goal_plus")
+    assert "build" in identity
+    assert not (tmp_path / ".gp").exists()
+
+
 def test_cli_host_hook_entry_runs_and_exits_clean(tmp_path: Path) -> None:
     completed = _run(
         ["--goal-plus-host-hook"],

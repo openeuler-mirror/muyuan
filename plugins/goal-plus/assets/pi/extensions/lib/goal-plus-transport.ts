@@ -119,6 +119,17 @@ function mcpConnection(ctx: CommandRuntimeContext) {
 	return pending;
 }
 
+// Bound optional rendering so debug export cannot hold a host turn indefinitely.
+const DEBUG_EXPORT_TIMEOUT_MS = 30_000;
+
+export async function refreshDebugTranscript(pi: ExtensionAPI, ctx: CommandRuntimeContext) {
+	if (process.env.GOAL_PLUS_DEBUG !== "1") return;
+	const invocation = projectModuleInvocation(ctx, "goal-plus-pi-tool", "goal_plus.pi_tool");
+	const result = await pi.exec(invocation.command, [...invocation.argsPrefix,
+		"--root", resolve(ctx.cwd, runtimeRoot), "host_debug_export"], { timeout: DEBUG_EXPORT_TIMEOUT_MS });
+	if (result.code !== 0) throw new Error("debug transcript export failed");
+}
+
 export async function closeMcpConnections() {
 	const pending = [...mcpConnections.values()];
 	mcpConnections.clear();

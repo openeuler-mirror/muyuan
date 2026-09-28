@@ -73,20 +73,22 @@ Pi Linux/macOS 共用路径与 cwd 归属校验。子进程临时文件优先使
 检查以 session 所用 build 的概要原文为准，不读取模型私有思考或把助手复述当作加载证据。
 Codex 仅检查 rollout 中的工作上下文，排除 `guardian_history`；Main 的 compact hook
 重新注入公共概要，即使 Goal 已结束或不存在也不创建、恢复或授权 Goal。
-此诊断不参与 Goal 完成判定。Pi 默认在每次 inference
+此诊断不参与 Goal 完成判定。开启 `GOAL_PLUS_DEBUG=1` 后，Pi 在每次 inference
 turn 从宿主最终 system prompt 记录概要哈希和匹配布尔值到原生 custom entry，不保存完整 prompt；
-`GOAL_PLUS_SESSION_DIAGNOSTICS=0` 显式关闭新增 session 观测和归档，不关闭宿主原生历史或
-业务记录。检查器由用户手动调用，沿选定 session branch 消费观测，
+未开启 DEBUG 时不新增这些观测和诊断归档，不影响宿主原生历史或业务记录。检查器由用户手动调用，沿选定 session branch 消费观测，
 旧历史或关闭采集的历史缺少观测时报告 unavailable。
 缺少、损坏、版本不符的证据不得报告通过；记录中可见不等于模型实际遵循流程。
 
-默认情况下，Pi 在 provider request hook 记录本扩展注册的工具描述/schema 与该
+开启 DEBUG 时，Pi 在 provider request hook 记录本扩展注册的工具描述/schema 与该
 请求中的对应合同，并按 session 分支复用相同合同快照。观测不修改请求，不保存完整
 prompt、认证 header 或模型思考；它只证明该 hook 时点的可见内容，后续 hook 仍可能修改
 请求。离线 session 分析关联工具调用、原生工具错误和参数修正，不据此自动判断模型意图。
 缺少请求观测的旧历史只能与显式提供的 tools/list 参考合同比较，不能确认当时模型可见性。
-`GOAL_PLUS_DEBUG=1` 仅额外启用请求大小和 API 返回大小统计，不覆盖 session 采集的显式关闭。
-TT Child 在每次执行结束后通过原有 Message 通道发送压缩的增量 session 记录；Root 按已绑定的
+`GOAL_PLUS_DEBUG=1` 是新增 session 观测、诊断归档、请求/API 大小统计及 HTML 导出的唯一开关。
+Codex Stop、Pi 回合结束/Main 会话关闭和 TT 归档完成后自动刷新完整 runtime 的
+`host-logs/agent-transcript/index.html`；报告生成前也刷新，使 report.html 能链接到该页面。
+合并导出按 runtime 串行收集和写入，单会话回调不覆盖其他会话；不启动后台 watcher。
+DEBUG 开启时，TT Child 在每次执行结束后通过原有 Message 通道发送压缩的增量 session 记录；Root 按已绑定的
 Child/session 身份收取并在删除资源前补收，存入 runtime 的 `host-logs/session-diagnostics/`。
 已发送游标保存在原生 custom entry，跨同一 session 的 Pi 进程重建延续增量，不作为业务恢复依据。
 归档保留完整的 Pi native session entry，同时供运行诊断和离线行为复盘使用；批次按大小切分，

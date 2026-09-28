@@ -48,6 +48,20 @@ bootstrap 目录。无需激活 Conda/venv，`PYTHON` 不再选择安装目标�
 ./install.sh --runtime-info
 ```
 
+查询时区分安装身份与任务配置：
+
+| 要确认的内容 | 入口 |
+| --- | --- |
+| 已登记的 Codex/Pi/ThinkThread build 和 Python 身份 | `bash install.sh --runtime-info` |
+| Pi checkout 开发环境及其源码路径 | `bash install.sh --env-show` |
+| 当前调用的 Goal Plus 可执行文件对应哪个 runtime | `goal-plus --installation-info`（使用目标 runtime 的可执行文件） |
+| 当前 Goal 的配置、policy、triage 和 spec 草案 | `goal_plus_status(goal_plus_id, detail=true)` |
+| Sandbox 支持范围、默认策略和平台依赖 | [Agent sandbox](sandbox.md)；安装时也输出后端检测结果 |
+
+`--installation-info` 只描述被调用的 Python/package；PATH 中的命令不一定属于当前宿主。
+当前安装查询不返回 worker 实际启动的 sandbox 策略，也不证明 namespace/Seatbelt 能执行；
+不能将发现后端程序或文档声明当作某次 worker 的执行证据。
+
 正常安装保存在 `${GOAL_PLUS_INSTALL_HOME:-~/.local/share/goal-plus}/releases/<build>/`：
 `package/` 保存源码及宿主资产快照，`venv/` 使用提交的 `uv.lock` 安装依赖。
 修改 `pyproject.toml` 的依赖声明（包括开发依赖）时，在源码目录运行

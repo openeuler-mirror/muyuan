@@ -37,8 +37,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.installation_info:
-        from goal_plus.installation import main as installation_main
-        installation_main()
+        import json
+        from goal_plus.installation import snapshot
+
+        print(json.dumps(snapshot()))
         return
 
     if args.version:

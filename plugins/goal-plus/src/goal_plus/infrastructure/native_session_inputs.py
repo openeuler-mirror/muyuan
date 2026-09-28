@@ -27,7 +27,7 @@ def _native_environment(root: Path) -> dict[str, str]:
         if not key.startswith("GOAL_PLUS_") and key != "CODEX_THREAD_ID"
     }
     # Installation identity is needed by the Pi extension's trusted Python launcher.
-    for key in ("GOAL_PLUS_PI_DEV_ROOT", "GOAL_PLUS_PYTHON"):
+    for key in ("GOAL_PLUS_PI_DEV_ROOT", "GOAL_PLUS_PYTHON", "GOAL_PLUS_DEBUG"):
         if key in os.environ:
             environment[key] = os.environ[key]
     environment["GOAL_PLUS_ROOT"] = str(root)

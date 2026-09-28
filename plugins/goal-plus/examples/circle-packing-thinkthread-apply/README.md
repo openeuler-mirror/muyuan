@@ -161,17 +161,13 @@ PYTHONPATH=src python scripts/export_agent_transcript.py "$ROOT" \
   --output examples/circle-packing-thinkthread-apply/.gp/host-logs/agent-transcript
 ```
 
-TT Child 的 thinking 与原生工具正文只在保留期存在于
-`<instance>/thinkthreads/<child>/session/active.jsonl`（controller 沙箱内不可见，释放即
-删）。要实时保全全内容，在宿主侧伴随运行 `--watch` 导出（另开一个终端）：
+开启 DEBUG 后，Child 在回合结束时通过归档通道保存 session entry，Root 自动刷新
+`host-logs/agent-transcript/index.html`，不需要额外启动脚本：
 
 ```bash
-# 起跑时用包装器（GOAL_PLUS_DEBUG=1 自动伴随 watch）：
-cd ../.. && GOAL_PLUS_DEBUG=1 scripts/run-with-transcript.sh tt run --profile goal-plus-pi \
+# 在 plugins/goal-plus/ 下运行
+GOAL_PLUS_DEBUG=1 tt run --profile goal-plus-pi \
     --fs examples/circle-packing-thinkthread-apply/workspace -- --model zai/glm-5.3-flash --thinking low
-# 或对已启动的运行手动挂 watch：
-ROOT=$(ls -td ~/.local/state/thinkthread/instances/*/thinkthreads/*/session/goal-plus | head -1)
-PYTHONPATH=src python scripts/export_agent_transcript.py "$ROOT" --watch
 ```
 
 清理实例前先完成导出：`tt rm <root-id>` 会连同 `events.sqlite3` 和 Root 会话一起删除，

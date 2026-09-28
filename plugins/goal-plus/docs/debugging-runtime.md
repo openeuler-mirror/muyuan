@@ -39,19 +39,20 @@ provider 错误及模型标识，不输出完整 schema、参数或思考内容�
 不完整，unavailable 时稍后重读，不据此宣称 worker 丢失。`--overview` 应来自该 session
 实际运行的 build。更深入的 schema、成本和完整结果分析继续使用下文的 audit 选项。
 需要逐行查看 Main/subagent 实际对话与注入内容时，使用
-[Agent 行为全量导出](#agent-行为全量导出goal_plus_agent_transcript)。
+[Agent 行为全量导出](#agent-行为全量导出goal_plus_debug)。
 
 ## 任务结束后检查概要是否保留
 
-这是诊断观测，不参与任务完成判定。Pi 默认记录基础 session 观测，无需开启 DEBUG。
-要明确关闭 GP 新增的 session 观测和归档，在启动前设置：
+这是诊断观测，不参与任务完成判定。所有额外的 session 观测、归档、大小统计和 HTML
+导出统一由 `GOAL_PLUS_DEBUG=1` 开启：
 
 ```bash
-GOAL_PLUS_SESSION_DIAGNOSTICS=0 pi
+GOAL_PLUS_DEBUG=1 pi
+GOAL_PLUS_DEBUG=1 codex
 ```
 
-仅精确值 `0` 关闭，`GOAL_PLUS_DEBUG=1` 不覆盖这一选择。宿主原生消息、工具调用、业务状态、
-概要的正常加载和 Codex 压缩后注入不受此诊断开关影响。
+未设置或不等于 `1` 时不新增这些诊断数据。宿主原生消息、工具调用、业务状态、
+概要的正常加载和 Codex 压缩后注入不受影响。
 宿主不会自动执行事后审计；下面的离线脚本由用户手动调用，无需再次设置环境变量。
 
 使用 [session 检查器](../scripts/check_session_instructions.py) 读取原生历史，不调用模型或修改 session：
@@ -89,7 +90,7 @@ session/turn 身份写入 `goal-plus-instructions-observation` 原生 custom ent
 
 ### 分析工具描述与调用失败
 
-Pi 默认额外记录 `goal-plus-tool-contracts` 和
+开启 DEBUG 时，Pi 额外记录 `goal-plus-tool-contracts` 和
 `goal-plus-provider-request` custom entries。前者保存 Goal Plus 注册时与 provider request
 hook 中的工具名称、description、schema；相同快照仅在当前分支未保存时追加。
 后者绑定 session、request、turn、模型和合同哈希，不保存请求正文或认证 header。
@@ -127,11 +128,11 @@ schema 合法但持续无法推进时，还需结合 Goal 状态和实际工具�
 
 ### 自动保留与增量归档
 
-普通 Pi 的原生历史默认位于 `~/.pi/agent/sessions/<工作目录编码>/`。GP 每次执行结束将该
+普通 Pi 的原生历史默认位于 `~/.pi/agent/sessions/<工作目录编码>/`。开启 DEBUG 后，GP 每次执行结束将该
 session 的历史路径和 build 概要路径写入 `<runtime>/host-logs/session-diagnostics/pi-<hash>/index.json`，
 不复制原生历史。TT Root 的 runtime 位于其受管 session 目录，不能假定是目标工作区的 `.gp/`。
 
-TT Candidate/Annotation Child 每次执行结束通过原有父子 Message 通道发送新增 native
+开启 DEBUG 时，TT Candidate/Annotation Child 每次执行结束通过原有父子 Message 通道发送新增 native
 session entries。Root 校验已绑定的 Child 和 agent session，将批次保存到
 `<runtime>/host-logs/session-diagnostics/<child-id>/`，删除 Child 前再补收尾部消息。
 同一条归档流同时服务运行诊断和离线行为复盘；批次包含压缩校验、原生 session、stream、
@@ -211,7 +212,7 @@ token 数仅为指定编码对记录文本的估算，不等于 provider 的工�
 unavailable。默认报告不包含参数/返回正文或模型思考，`details` UI 副本不会计入正文两次。
 TT Child 的诊断归档目录同样可作为输入；报告只保存在本地，不提交到仓库。
 
-## Agent 行为全量导出（GOAL_PLUS_AGENT_TRANSCRIPT）
+## Agent 行为全量导出（GOAL_PLUS_DEBUG）
 
 session-diagnostics 归档现在保留完整 session entry，注入台账仍只保存哈希。需要逐行检查
 Main/subagent 实际做了什么（长时间无输出、临时注入的
@@ -249,37 +250,25 @@ PYTHONPATH=src python scripts/export_agent_transcript.py --codex /path/to/rollou
 常用选项：`--leaf-id`（Pi 分支，默认最后持久 entry）、`--max-chars`（HTML 正文
 截断上限）、`--gap-seconds`（停顿标记阈值，0 关闭）、`--output`、`--no-jsonl`。
 
-`GOAL_PLUS_AGENT_TRANSCRIPT` 自动导出（与 `GOAL_PLUS_DEBUG` 的 stderr 大小统计互相
-独立，只开大小统计不会产生这些文件）。TT Child 的释放前抓取**默认开启**，仅精确值 `0`
-关闭；Codex stop hook 的逐 turn 刷新仍需显式 `=1`（其 rollout 本来持久，不开不丢数据）：
+正常启动只需 `GOAL_PLUS_DEBUG=1`，不需要启动包装器或单独的后台 watcher：
 
-- Codex Stop/SubagentStop hook 每次触发后只刷新
-  `<root>/host-logs/agent-transcript/<role>-<session-id>/`，不写顶层合并文件——
-  `index.html`/`events.jsonl` 始终是全 runtime root 的完整快照，多次 goal/Search
-  混在同一目录时由导航的 run 分组区分。rollout 未变化时（既有导出不早于源文件）
-  跳过重写，超过 32 MiB 的 rollout 跳过导出；
-- TT Child 的 `session-diagnostics/<child-id>/` 归档目录会得到自动写入的
-  `transcript.html`（统一 session 归档与 `events.sqlite3` 恢复的 turn 总结和 controller prompt）。
-  注意 controller（Root 沙箱内的 MCP 进程）**看不到兄弟 Child 的目录**，进程内抓取永远
-  拿不到尚未归档的原始历史；Child 的 session entry 在每次执行结束后通过归档流发送，
-  释放前再做 bounded drain。全量导出器运行在宿主侧，对仍保留的 Child 自动优先原始历史：
+```bash
+GOAL_PLUS_DEBUG=1 pi
+GOAL_PLUS_DEBUG=1 codex
+GOAL_PLUS_DEBUG=1 tt run --profile goal-plus-pi --fs <workspace> -- --model <provider/model>
+```
 
-  最简单的方式是用启动包装器，`GOAL_PLUS_DEBUG=1` 时它自动伴随任务运行 `--watch`
-  （任务结束再做一次最终导出；未设置该变量时命令原样直通）：
+- Codex Stop/SubagentStop 保存当前原生历史的诊断索引，并刷新整个 runtime 的合并页面。
+- Pi 在 agent_end 保存原生历史索引并调用受管 Python 导出；Main 在 session_shutdown
+  关闭 MCP 后再刷新一次，子进程退出不重复启动导出器；
+  direct child 继承 Main 的 DEBUG 开关。
+- TT Child 经已有 Message 通道发送增量 session entry；Root 在完整批次归档后刷新页面，
+  释放前补收并导出。Root 无需访问兄弟 Child 目录，已收到的归档可用于释放后导出。
+- 报告生成前刷新导出，`report.html` 可链接完整 `index.html`。
+- 合并导出按 runtime 加锁，保留所有已发现会话；失败只记录诊断，不改变业务结果。
 
-  ```bash
-  GOAL_PLUS_DEBUG=1 scripts/run-with-transcript.sh tt run --profile goal-plus-pi \
-      --fs <workspace> -- --model zai/glm-5.3-flash --thinking low
-  GOAL_PLUS_DEBUG=1 scripts/run-with-transcript.sh pi -a --model zai/glm-5.3-flash \
-      --thinking low -p "$(cat pi-goal-prompt.md)"
-  ```
-
-  也可以手动挂 watch（仅用于额外观察，不是保留 transcript 的必要条件）：
-
-  ```bash
-  ROOT=$(ls -td ~/.local/state/thinkthread/instances/*/thinkthreads/*/session/goal-plus | head -1)
-  PYTHONPATH=src python scripts/export_agent_transcript.py "$ROOT" --watch
-  ```
+自动刷新发生在上述事件边界，并非逐 token 实时刷新。前面的离线导出命令仍可用于
+历史数据或自定义输出目录；`--watch` 仅是可选的手动观察方式，不是正常启动依赖。
 
 边界与限制：
 

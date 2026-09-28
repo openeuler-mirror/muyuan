@@ -219,7 +219,7 @@ def test_goal_plus_plain_prompt_cannot_start_goal_plus(
     result = subprocess.run(
         command,
         cwd=ROOT,
-        env={**_run_env(search_root), "GOAL_PLUS_SESSION_DIAGNOSTICS": "1"},
+        env={**_run_env(search_root), "GOAL_PLUS_DEBUG": "1"},
         text=True,
         capture_output=True,
         timeout=int(os.environ.get("ST_PI_TIMEOUT", "300")),

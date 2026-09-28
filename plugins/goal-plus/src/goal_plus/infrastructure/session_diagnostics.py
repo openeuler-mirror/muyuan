@@ -6,12 +6,13 @@ import io
 import gzip
 import json
 import logging
-import os
 from pathlib import Path
 import re
 import time
 
 from goal_plus.execution.thinkthread_rpc import MESSAGE_RECEIVE_LIMIT, PROTOCOL, RESPONSE_CHUNK_BYTES, message_payload
+from goal_plus.infrastructure.api_debug import api_debug_enabled
+from goal_plus.infrastructure.agent_transcript import debug_export_transcripts
 from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json, write_json
 
 # Match the extension's bounded, compressed diagnostic Message batches.
@@ -50,7 +51,7 @@ def archive_diagnostic_message(root, binding, message):
     payload = message_payload(message)
     if payload is None or payload.get("protocol") != PROTOCOL or payload.get("type") not in {"session_transcript", "session_diagnostics"}:
         return False
-    if os.environ.get("GOAL_PLUS_SESSION_DIAGNOSTICS") == "0":
+    if not api_debug_enabled():
         return True
     try:
         if (message.get("senderThinkthreadId") != binding.get("thinkthread_id")
@@ -109,6 +110,7 @@ def archive_diagnostic_message(root, binding, message):
             for n in range(count):
                 (chunk_dir / f"{n}.json").unlink()
             chunk_dir.rmdir()
+        debug_export_transcripts(Path(root))
     except Exception as exc:
         logger.warning("session diagnostic archive unavailable: %s", type(exc).__name__)
     return True
@@ -116,7 +118,7 @@ def archive_diagnostic_message(root, binding, message):
 
 def collect_child_diagnostics(root, binding, client):
     """Drain only diagnostic Messages before deletion, using an independent cursor."""
-    if os.environ.get("GOAL_PLUS_SESSION_DIAGNOSTICS") == "0" or not binding.get("thinkthread_id"):
+    if not api_debug_enabled() or not binding.get("thinkthread_id"):
         return
     try:
         directory = _directory(root, binding)

@@ -69,6 +69,7 @@ def test_native_main_without_control_skills(
             spec["source_path"] = str(source)
             spec["strategy"]["inner_agent"] = "common"
         if sandbox_probe:
+            monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
             model = st_model_for_host(agent_harness)
             spec["strategy"]["worker_launch"] = {"model": model, "reasoning_effort": "low"}
             spec["strategy"]["models"] = [{"model": model, "reasoning_effort": "low", "count": 2}]
@@ -153,6 +154,10 @@ def test_native_main_without_control_skills(
             "turn replace the zero circle by one at (0.2,0.2), radius 0.04. c002 independently uses "
             "the same 5x5 grid plus a circle at (0.2,0.2), radius 0.1*(sqrt(2)-1)-1e-9. "
             "Return these exact 26 centers/radii directly; no numeric optimization is needed. "
+            "c001's initial plan intent and first session_run message must contain ONLY its first "
+            "construction. Wait for that invocation to return, then invoke goal_plus_session_run "
+            "again on the same agent_session_id with the second construction. Two verifier calls "
+            "inside a single invocation do not satisfy this same-session continuation check. "
             "For EACH candidate, put this bounded acceptance contract in BOTH its plan intent and "
             "session_run message: implement only the specified exact construction, run the sandbox "
             "probe and real verifier, then immediately return. Do not perform numerical optimization "
@@ -247,6 +252,15 @@ def test_native_main_without_control_skills(
     record = json.loads(goals[0].read_text())
     assert record["entrypoint_status"] == "host_verified", log
     assert record["status"] == "complete", log
+    if sandbox_probe and agent_harness == "pi":
+        # Host lifecycle callbacks must export without a wrapper or manual CLI.
+        export_dir = root / "host-logs/agent-transcript"
+        assert (export_dir / "index.html").is_file(), log
+        transcript_events = [json.loads(line) for line in (export_dir / "events.jsonl").read_text().splitlines()]
+        assert any(event["role"] == "main" for event in transcript_events), log
+        assert len({event["session_id"] for event in transcript_events if event["role"] == "candidate"}) == 2, log
+        for report in root.glob("runs/*/report.html"):
+            assert "../../host-logs/agent-transcript/index.html" in report.read_text(), log
     if task_kind == "delegation":
         assert len(record["work_items"]) == 1, log
         item = record["work_items"][0]

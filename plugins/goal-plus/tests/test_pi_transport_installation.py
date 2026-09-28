@@ -52,3 +52,41 @@ if (mode === "unprepared") {
   }
 }
 '''
+
+
+@pytest.mark.parametrize('debug', [False, True])
+def test_native_pi_archive_automatically_exports_combined_html(tmp_path, debug):
+    import sys
+
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node is required for Pi diagnostics')
+    history = tmp_path / 'session.jsonl'
+    history.write_text(json.dumps({'type': 'session', 'version': 3, 'id': 'native-debug'}) + '\n'
+                       + json.dumps({'type': 'message', 'id': 'm1', 'parentId': None,
+                                     'message': {'role': 'user', 'content': [{'type': 'text', 'text': 'native export evidence'}]}}) + '\n')
+    script = r'''
+import {pathToFileURL} from 'node:url';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+const [repo, cwd, history] = process.argv.slice(1);
+const {SessionArchive} = await import(pathToFileURL(repo + '/assets/pi/extensions/lib/goal-plus-session-archive.ts'));
+const {refreshDebugTranscript} = await import(pathToFileURL(repo + '/assets/pi/extensions/lib/goal-plus-transport.ts'));
+const pi = {exec: async (command, args, options) => ({code: 0, ...await promisify(execFile)(command, args, options)})};
+const ctx = {cwd, sessionManager: {getSessionId: () => 'native-debug', getSessionFile: () => history}};
+await new SessionArchive().flush(ctx, {root: '.gp', role: 'main', sourceRoot: repo,
+  checkpoint: () => {}, refresh: () => refreshDebugTranscript(pi, ctx)});
+'''
+    result = subprocess.run([node, '--experimental-strip-types', '--input-type=module', '-e', script,
+                             str(ROOT), str(tmp_path), str(history)],
+                            env={**os.environ, 'GOAL_PLUS_DEBUG': '1' if debug else '0',
+                                 'GOAL_PLUS_PI_DEV_ROOT': str(ROOT), 'GOAL_PLUS_PYTHON': sys.executable,
+                                 'GOAL_PLUS_ROOT': '.gp'},
+                            capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stderr
+    output = tmp_path / '.gp/host-logs/agent-transcript/index.html'
+    assert output.is_file() == debug, result.stderr
+    if debug:
+        assert 'native export evidence' in output.read_text()
+    else:
+        assert not (tmp_path / '.gp').exists()

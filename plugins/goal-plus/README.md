@@ -210,7 +210,7 @@ Use these commands in the Pi session bound to the Goal. Local Codex uses the sam
 
 Restoring a native conversation does not resume task execution. ThinkThread Codex Roots do not support Stop-hook continuation; do not apply local Codex resume instructions to them. See [Runtime Logic](docs/runtime-logic.md) and [Codex Support](docs/codex.md#支持范围与验证).
 
-After Search closeout, inspect the selected artifact, verification records, and terminal `report.md` and `report.html` using the actual paths returned on completion. Local state defaults to `.gp/`; ThinkThread uses a private native-session directory. See [Debugging](docs/debugging-runtime.md) for session exports and diagnostics. Review and redact logs before sharing them publicly.
+After Search closeout, inspect the selected artifact, verification records, and terminal `report.md` and `report.html` using the actual paths returned on completion. Local state defaults to `.gp/`; ThinkThread uses a private native-session directory. Start the host with `GOAL_PLUS_DEBUG=1` to automatically collect diagnostics and refresh `host-logs/agent-transcript/index.html`; no launch wrapper is needed. See [Debugging](docs/debugging-runtime.md) for details. Review and redact logs before sharing them publicly.
 
 </details>
 
