@@ -123,6 +123,7 @@ def test_pi_abort_notifies_user_of_paused_goal(tmp_path):
 def test_pi_controller_owned_closeout_is_not_registered(tmp_path):
     result = _run_env_script(tmp_path, {
         "GOAL_PLUS_PI_ROLE": "main",
+        "GOAL_PLUS_ID": "gp_0001",
         "GOAL_PLUS_CONTROLLER_ONLY_CLOSEOUT": "1",
         "GOAL_PLUS_PI_CONTROLLER_CLOSEOUT_TEST": "1",
     })

@@ -203,7 +203,8 @@ class CandidateVerification:
                 attempt_artifact_ref,
             ):
                 raise RuntimeError(
-                    "candidate artifact history diverged from the settled results ledger"
+                    "ResultsLedgerMutation: candidate artifact history diverged from "
+                    "the settled results ledger"
                 )
             attempt_changed_files = self.artifacts.workspace.changed_between(
                 record.task,

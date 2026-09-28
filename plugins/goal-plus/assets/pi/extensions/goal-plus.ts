@@ -2872,7 +2872,7 @@ export default async function (pi: ExtensionAPI) {
 	ensureMainGoalPlusTools = ensureMainToolsRegistered;
 	if (role !== "main") {
 		for (const tool of visibleRoleTools) {
-		registerRuntimeTool(pi, tool, registeredRuntimeTools);
+			registerRuntimeTool(pi, tool, registeredRuntimeTools);
 		}
 	}
 	pi.on("input", async (event, ctx) => {
