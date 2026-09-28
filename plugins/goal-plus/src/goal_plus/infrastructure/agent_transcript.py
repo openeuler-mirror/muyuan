@@ -10,15 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
-import os
 from pathlib import Path
 import re
 from typing import Any, Iterator
 
 from goal_plus.infrastructure.clock import utc_timestamp
-from goal_plus.infrastructure.state.files import load_json
+from goal_plus.infrastructure.api_debug import api_debug_enabled
+from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json, write_json, write_text
 from goal_plus.projections.agent_transcript import (
     AgentTranscriptSession,
     TranscriptEvent,
@@ -28,19 +29,6 @@ from goal_plus.projections.agent_transcript import (
 
 logger = logging.getLogger(__name__)
 
-
-def agent_transcript_debug_enabled() -> bool:
-    """Opt-in refresh for the Codex stop hook; its sources persist anyway."""
-    return os.environ.get("GOAL_PLUS_AGENT_TRANSCRIPT") == "1"
-
-
-def child_transcript_capture_enabled() -> bool:
-    """Release-time child capture defaults ON: release destroys the only raw copy.
-
-    Mirrors GOAL_PLUS_SESSION_DIAGNOSTICS: exactly ``0`` disables, everything
-    else (including unset) keeps capturing before the child is reclaimed.
-    """
-    return os.environ.get("GOAL_PLUS_AGENT_TRANSCRIPT") != "0"
 
 # A stop hook re-renders on every turn end; bound the accepted rollout size so
 # the debug opt-in cannot turn into unbounded hook latency on huge sessions.
@@ -567,10 +555,11 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
             if index.get("source") == "native" and isinstance(index.get("history"), str):
                 history = Path(index["history"]).expanduser().resolve()
                 if history.is_file():
-                    parsed = read_pi_transcript(history)
+                    harness = index.get("agent_harness", "pi")
+                    parsed = read_codex_transcript(history) if harness == "codex" else read_pi_transcript(history)
                     add(AgentTranscriptSession(
                         session_id=index.get("session_id") or parsed.session_id or directory.name,
-                        harness="pi", role=str(index.get("role") or "unknown"),
+                        harness=harness, role=str(index.get("role") or "unknown"),
                         source_path=str(history), events=parsed.events, warnings=parsed.warnings,
                         model=parsed.model, thinking=parsed.thinking))
             elif index.get("source") == "thinkthread_messages":
@@ -668,28 +657,21 @@ def write_transcript_files(
     include_jsonl: bool = True,
     per_session: bool = True,
     combined_name: str = "index.html",
-    include_combined: bool = True,
 ) -> dict[str, Any]:
-    """Render and atomically write HTML (plus optional JSONL) transcript artifacts.
-
-    Incremental exporters (the Codex stop hook) pass ``include_combined=False``
-    so they only refresh their own per-session directory and never clobber the
-    whole-root combined view gathered from every goal and run.
-    """
+    """Render and atomically write HTML (plus optional JSONL) transcript artifacts."""
     generated = generated_at or utc_timestamp()
     directory.mkdir(parents=True, exist_ok=True)
-    if include_combined:
-        _write_text(directory / combined_name,
-                    render_transcript_html(sessions, generated_at=generated, max_chars=html_max_chars,
-                                           gap_seconds=gap_seconds))
-        if include_jsonl and sessions:
-            _write_text(directory / "events.jsonl", render_transcript_jsonl(sessions))
+    write_text(directory / combined_name,
+               render_transcript_html(sessions, generated_at=generated, max_chars=html_max_chars,
+                                      gap_seconds=gap_seconds))
+    if include_jsonl and sessions:
+        write_text(directory / "events.jsonl", render_transcript_jsonl(sessions))
     written: list[dict[str, Any]] = []
     if per_session:
         for session in sessions:
             session_dir = directory / _session_directory_name(session)
             session_dir.mkdir(parents=True, exist_ok=True)
-            _write_text(session_dir / "transcript.html",
+            write_text(session_dir / "transcript.html",
                         render_transcript_html([session], generated_at=generated, max_chars=html_max_chars,
                                                gap_seconds=gap_seconds))
             written.append({"name": _session_directory_name(session), "role": session.role,
@@ -701,18 +683,25 @@ def write_transcript_files(
     return {"output": str(directory), "generated_at": generated, "sessions": written}
 
 
-def _write_text(path: Path, text: str) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(text, encoding="utf-8")
-    os.replace(temporary, path)
-
-
 def export_transcripts(root: Path, **options: Any) -> dict[str, Any]:
     """Whole-root debug export into ``host-logs/agent-transcript`` by default."""
     root = Path(root)
     output = options.pop("output", None)
     directory = Path(output).expanduser() if output else root / "host-logs" / DEFAULT_OUTPUT_DIRNAME
-    return write_transcript_files(directory, collect_runtime_transcripts(root), **options)
+    # Collect inside the same lock as publication: concurrent host callbacks must
+    # not overwrite a newer whole-runtime snapshot with an older one.
+    with exclusive_file_lock(directory / "export.lock"):
+        return write_transcript_files(directory, collect_runtime_transcripts(root), **options)
+
+
+def debug_export_transcripts(root: Path) -> None:
+    """Best-effort whole-runtime refresh at host lifecycle/diagnostic boundaries."""
+    if not api_debug_enabled():
+        return
+    try:
+        export_transcripts(root)
+    except Exception as exc:
+        logger.warning("debug transcript export unavailable: %s", type(exc).__name__)
 
 
 def debug_export_codex_transcript(
@@ -727,7 +716,7 @@ def debug_export_codex_transcript(
     Stops fire per turn end, so an unchanged rollout (same name, same mtime
     rule) must not rewrite identical exports.
     """
-    if not agent_transcript_debug_enabled() or not transcript_path:
+    if not api_debug_enabled() or not transcript_path:
         return
     try:
         path = Path(transcript_path).expanduser()
@@ -741,22 +730,24 @@ def debug_export_codex_transcript(
         name = _session_directory_name(AgentTranscriptSession(
             session_id=session_id or path.stem, harness="codex", role=role))
         existing = Path(search_root) / "host-logs" / DEFAULT_OUTPUT_DIRNAME / name / "transcript.html"
-        if existing.is_file() and existing.stat().st_mtime >= path.stat().st_mtime:
+        identity = hashlib.sha256(str(path.resolve()).encode()).hexdigest()
+        index = Path(search_root) / "host-logs/session-diagnostics" / f"codex-{identity}" / "index.json"
+        combined = Path(search_root) / "host-logs" / DEFAULT_OUTPUT_DIRNAME / "index.html"
+        if (index.is_file() and combined.is_file() and existing.is_file()
+                and existing.stat().st_mtime >= path.stat().st_mtime):
             return
-        parsed = read_codex_transcript(path)
-        session = AgentTranscriptSession(
-            session_id=session_id or path.stem, harness="codex",
-            role=role, source_path=str(path), events=parsed.events, warnings=parsed.warnings,
-            model=parsed.model, thinking=parsed.thinking)
-        write_transcript_files(Path(search_root) / "host-logs" / DEFAULT_OUTPUT_DIRNAME, [session],
-                               include_combined=False)
+        write_json(index, {
+            "version": 1, "source": "native", "agent_harness": "codex",
+            "session_id": session_id or path.stem, "role": role, "history": str(path.resolve()),
+        })
+        debug_export_transcripts(Path(search_root))
     except Exception as exc:
         logger.warning("debug transcript export unavailable: %s", type(exc).__name__)
 
 
 def debug_export_child_transcript(root: Path, record: dict[str, Any]) -> None:
-    """Best-effort pre-release transcript capture for a TT Child (default on)."""
-    if not child_transcript_capture_enabled():
+    """Best-effort pre-release transcript capture for a TT Child in debug mode."""
+    if not api_debug_enabled():
         return
     child_id = record.get("thinkthread_id")
     if not isinstance(child_id, str) or not re.fullmatch(r"tt-[A-Za-z0-9-]+", child_id):
@@ -784,5 +775,6 @@ def debug_export_child_transcript(root: Path, record: dict[str, Any]) -> None:
             model=parsed.model, thinking=parsed.thinking)
         write_transcript_files(directory, [session, journal], per_session=False,
                                combined_name="transcript.html")
+        debug_export_transcripts(root)
     except Exception as exc:
         logger.warning("debug child transcript export unavailable: %s", type(exc).__name__)

@@ -3,6 +3,7 @@
 本文说明当前框架的职责、依赖方向、角色能力和持久化边界，配合
 [系统规格](../SPEC.md)及[开发约定](../AGENTS.md)阅读。
 支持的宿主与后端组合见 [Host Adapters](agent-host-adapters.md)。
+进程文件写入边界、sandbox 调用图和支持范围见 [Agent sandbox](sandbox.md)。
 图中的框表示职责边界，不规定必须创建同名类、文件或新的持久模型。
 
 浏览入口：[连续看图页面](architecture.html)。SVG 可单独打开、放大或下载：

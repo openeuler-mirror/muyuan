@@ -97,5 +97,8 @@ class FileReportOutput:
 
     def write_html(self, run_id: str) -> None:
         from goal_plus.reporting import write_html_report
+        from goal_plus.infrastructure.agent_transcript import debug_export_transcripts
+
+        debug_export_transcripts(self.root_dir)
 
         write_html_report(self.root_dir, run_id)

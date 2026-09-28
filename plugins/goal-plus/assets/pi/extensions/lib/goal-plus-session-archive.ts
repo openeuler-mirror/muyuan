@@ -75,6 +75,7 @@ export class SessionArchive {
 	async flush(ctx: ExtensionContext, options: {
 		root: string; role: string; sourceRoot: string;
 		checkpoint: (data: Record<string, unknown>) => void;
+		refresh?: () => Promise<void>;
 		worker?: () => Promise<{ agentSessionId: string; send: (messages: Record<string, unknown>[]) => Promise<void> }>;
 	}): Promise<void> {
 		if (!sessionDiagnosticsEnabled()) return;
@@ -107,6 +108,7 @@ export class SessionArchive {
 					overview: join(options.sourceRoot, "assets", "goal-plus-instructions.txt"),
 				}), { mode: 0o600 });
 				renameSync(temporary, join(dir, "index.json"));
+				await options.refresh?.();
 				return;
 			}
 			const { send, agentSessionId } = await options.worker();

@@ -14,8 +14,11 @@ from pathlib import Path
 import shutil
 import shlex
 import subprocess
+import sys
+import tempfile
 
 SCHEMA = "goal-plus.managed-runtime.v1"
+INFO_COMMAND_MARKER = b"# Managed by Goal Plus: runtime-info-v1\n"
 PYTHON_VERSION = "3.12"
 RUNTIME_CAPABILITIES = (
     "goal_plus.controller_exact_selection.v1",
@@ -211,6 +214,85 @@ def bind(host: str, config: Path, package: Path, *, dry_run: bool = False) -> No
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps({"schema": SCHEMA, "host": host, "config": str(config), "package": str(package)}))
         temp.replace(path)
+
+
+def _info_command_files() -> list[tuple[Path, bytes, int, bytes]]:
+    directory = home() / "bin"
+    launcher = directory / "goal-plus-info"
+    query = directory / "runtime-info.py"
+    source = Path(__file__).with_name("runtime-info.py").read_bytes()
+    # The installer runs on managed bootstrap Python, which release cleanup preserves.
+    shell = ("#!/bin/bash\nexec " + shlex.quote(sys.executable)
+             + " -I " + shlex.quote(str(query)) + ' "$@"\n').encode()
+    return [(query, INFO_COMMAND_MARKER + source, 0o644, source),
+            (launcher, shell.replace(b"#!/bin/bash\n", b"#!/bin/bash\n" + INFO_COMMAND_MARKER, 1), 0o755, shell)]
+
+
+def _check_info_command_files(files: list[tuple[Path, bytes, int, bytes]]) -> None:
+    directory = home() / "bin"
+    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+        raise RuntimeError(f"Refusing linked or non-directory runtime-info location: {directory}")
+    for path, _, _, preview in files:
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise RuntimeError(f"Refusing linked or non-file runtime-info target: {path}")
+        if path.exists():
+            content = path.read_bytes()
+            marked = content.startswith(INFO_COMMAND_MARKER) or content.startswith(b"#!/bin/bash\n" + INFO_COMMAND_MARKER)
+            # Adopt the already-installed preview only when its complete contents
+            # match our generated template; never claim an arbitrary existing file.
+            if not marked and content != preview:
+                raise RuntimeError(f"Refusing unmanaged runtime-info target: {path}")
+
+
+def check_info_command() -> None:
+    """Reject path/ownership conflicts before changing host registrations."""
+    _check_info_command_files(_info_command_files())
+
+
+def _replace_info_file(path: Path, content: bytes, mode: int) -> None:
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            os.fchmod(stream.fileno(), mode)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def install_info_command(*, dry_run: bool = False) -> Path:
+    """Refresh owned files with safe staging and rollback, outside removable releases."""
+    files = _info_command_files()
+    _check_info_command_files(files)
+    if dry_run:
+        return home() / "bin/goal-plus-info"
+    with locked():
+        _check_info_command_files(files)
+        (home() / "bin").mkdir(exist_ok=True)
+        before = {path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None
+                  for path, _, _, _ in files}
+        replaced: list[Path] = []
+        try:
+            for path, content, mode, _ in files:
+                _replace_info_file(path, content, mode)
+                replaced.append(path)
+        except BaseException as failure:
+            rollback_errors: list[str] = []
+            for path in reversed(replaced):
+                try:
+                    previous = before[path]
+                    if previous is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        _replace_info_file(path, *previous)
+                except OSError as exc:
+                    rollback_errors.append(f"{path}: {exc}")
+            if rollback_errors:
+                raise RuntimeError("Runtime-info refresh failed and rollback failed: "
+                                   + "; ".join(rollback_errors)) from failure
+            raise
+    return home() / "bin/goal-plus-info"
 
 
 def unbind(host: str, config: Path, *, dry_run: bool = False) -> None:

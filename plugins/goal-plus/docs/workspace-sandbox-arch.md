@@ -312,7 +312,7 @@ ThinkThread 的完整 target/peer 阅读由独立 retained Annotation Child 的 
 | source apply | fetch + cherry-pick | optimistic `fs.apply(S0, P)` |
 | conflict state | source apply rejects | `awaiting_main_integration` |
 | uncertain result | ordinary operation failure | same RequestId recovery fence |
-| execution boundary | path isolation, not sandbox | provider-enforced private Child |
+| execution boundary | worktree path isolation + direct host sandbox | provider-enforced private Child |
 | supported host | Codex and Pi RPC | installed Pi or Codex ThinkThread Profile |
 
 ## Inner Agent 对照
@@ -333,6 +333,10 @@ autoresearch-like loop”，而是完整 AutoResearch-Git inner mechanics 加 ou
 Git worktree 不是 security sandbox。它隔离 branch 和 filesystem tree，但不限制 absolute path、
 process、network、system call 或 credential。ThinkThread 只有在 exact Profile/ABI preflight
 证明 protected execution 时才开放；缺少能力必须 fail closed。
+
+Direct Copy/Git 的 `WorkspaceAccess.confinement` 现在要求 `protected_execution`。Pi 的
+child 默认经过 OS wrapper，Codex 使用原生策略；共享 runtime 写根等限制统一见
+[Agent sandbox](sandbox.md)。Git worktree 不能单独承担该进程边界。
 
 ---
 

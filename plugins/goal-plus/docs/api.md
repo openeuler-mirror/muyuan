@@ -15,6 +15,12 @@ Session 准备回执返回身份、工作区和选定模型，handle 不展开 m
 Main 使用稳定目录，candidate/checker 按角色与冻结能力过滤；宿主 gate 不进入模型目录。
 Codex 只识别已注册的 Goal Plus MCP namespace，其他插件的同名动作不会获得授权。
 
+Codex Main 另提供只读 MCP resource `goal-plus://runtime/info`：无需 Goal 或模型推理，
+返回当前服务进程的 build、Python、平台、DEBUG 和 worker sandbox 默认策略。
+资源 title 提供 `/mcp verbose` 可显示的简短摘要，握手版本携带完整 build。
+该查询不创建运行状态、不启动隔离探针，candidate/checker 不公开此资源；
+具体入口和显示边界见 [Codex runtime 查询](codex.md#无模型查询当前-runtime)。
+
 宿主将嵌套参数显示为 `unknown` 时，Main 可用 `goal_plus_get_tool_schema(tool_name)`
 读取当前注册工具的完整 `inputSchema` 与说明。名称不带 MCP namespace；查询不改变状态，
 不暴露当前角色未注册的工具，也不维护第二份 schema。

@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import JsonValue
 
 from goal_plus.ports.process import ProcessOutcome
+from goal_plus.ports.sandbox import ProcessSandbox
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class StructuredInferenceRequest:
     active_check: Literal["before_wait", "after_timeout"] = "before_wait"
     pi_tools: PiInferenceTools | None = None
     runtime_provider: Literal["direct"] = "direct"
+    sandbox: ProcessSandbox | None = None
 
 
 @dataclass(frozen=True)

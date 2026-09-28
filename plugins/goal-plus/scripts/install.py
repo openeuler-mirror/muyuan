@@ -118,6 +118,31 @@ def _require_executable(name: str) -> str:
     return str(Path(executable).resolve())
 
 
+def _report_sandbox_support(*, codex: bool, pi: bool) -> None:
+    if codex:
+        print("Sandbox (Codex direct): native workspace-write/read-only policies enabled.")
+    if not pi:
+        return
+    backend = (
+        "bwrap" if sys.platform.startswith("linux")
+        else "/usr/bin/sandbox-exec" if sys.platform == "darwin"
+        else None
+    )
+    if backend is not None and shutil.which(backend):
+        print(
+            f"Sandbox (Pi direct): {backend} detected; "
+            "OS permissions are checked at worker launch."
+        )
+    else:
+        print(
+            f"warning: Pi direct sandbox backend {backend or sys.platform} is unavailable. "
+            "Installation can continue; protected workers will fail to launch. "
+            "No unsandboxed fallback or system dependency installation is performed. "
+            "See docs/sandbox.md.",
+            file=sys.stderr,
+        )
+
+
 def _read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -1858,6 +1883,7 @@ def _verify_codex_installation(codex: str, package: Path) -> None:
 
 
 def _install_codex(*, codex: str, package: Path, dry_run: bool, reinstall: bool = False) -> None:
+    managed_runtime.check_info_command()
     previous = _codex_marketplaces(codex).get(NORMAL_CODEX_MARKETPLACE)
     previously_installed = previous is not None or (not dry_run and any(
         item.get("pluginId") == NORMAL_CODEX_PLUGIN_ID for item in _codex_inventory(codex)
@@ -1874,6 +1900,7 @@ def _install_codex(*, codex: str, package: Path, dry_run: bool, reinstall: bool 
         _run([codex, "plugin", "add", NORMAL_CODEX_PLUGIN_ID], dry_run=dry_run)
         if not dry_run:
             _verify_codex_installation(codex, package)
+        info_command = managed_runtime.install_info_command(dry_run=dry_run)
     except (OSError, subprocess.CalledProcessError, RuntimeError, KeyboardInterrupt):
         # Restore the exact prior source if registration failed after preparation.
         if changed:
@@ -1896,6 +1923,7 @@ def _install_codex(*, codex: str, package: Path, dry_run: bool, reinstall: bool 
         raise
     managed_runtime.bind("codex", _codex_config(), package, dry_run=dry_run)
     managed_runtime.unbind("codex-pending", _codex_config(), dry_run=dry_run)
+    print(f"Runtime information (no Codex session): {shlex.quote(str(info_command))} codex")
     print("Codex installation is ready. Start a new thread, trust /hooks, then start another thread.")
 
 
@@ -1927,6 +1955,7 @@ def _prepare_pi_mcp_dependencies(package: Path, *, dry_run: bool) -> None:
 
 
 def _install_pi(*, pi: str, package: Path, dry_run: bool, reinstall: bool = False) -> None:
+    managed_runtime.check_info_command()
     _prepare_pi_mcp_dependencies(package, dry_run=dry_run)
     registrations = _pi_goal_plus_entries()
     entries = [entry for entry in registrations if entry.get("settings_path") is not None
@@ -1962,6 +1991,7 @@ def _install_pi(*, pi: str, package: Path, dry_run: bool, reinstall: bool = Fals
             _atomic_write(settings, json.dumps(current, indent=2) + "\n")
         if not dry_run:
             _verify_pi_installation(pi, package)
+        info_command = managed_runtime.install_info_command(dry_run=dry_run)
     except (OSError, subprocess.CalledProcessError, RuntimeError, KeyboardInterrupt):
         if not dry_run:
             if original is None:
@@ -1972,6 +2002,7 @@ def _install_pi(*, pi: str, package: Path, dry_run: bool, reinstall: bool = Fals
         raise
     managed_runtime.bind("pi", _pi_agent_dir(), package, dry_run=dry_run)
     managed_runtime.unbind("pi-pending", _pi_agent_dir(), dry_run=dry_run)
+    print(f"Runtime information (no Pi session): {shlex.quote(str(info_command))} pi")
     print("Pi installation is ready. Restart Pi before using /goal-plus.")
 
 
@@ -2132,6 +2163,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not confirmed:
             return 0
+        _report_sandbox_support(codex=args.codex, pi=args.pi or args.pi_dev)
         codex_env_vars = (
             _codex_provider_env_vars(profile=args.codex_profile)
             if args.codex
@@ -2224,6 +2256,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
             managed_runtime.bind("thinkthread", thinkthread_plan.path, package, dry_run=args.dry_run)
+            print(f"Runtime information: {shlex.quote(str(managed_runtime.home() / 'bin/goal-plus-info'))} pi --thinkthread")
         if thinkthread_codex_config_plan is not None:
             _install_thinkthread_codex_config(
                 thinkthread_codex_config_plan,
@@ -2235,6 +2268,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
             managed_runtime.bind("thinkthread", thinkthread_codex_plan.path, package, dry_run=args.dry_run)
+            print(f"Runtime information: {shlex.quote(str(managed_runtime.home() / 'bin/goal-plus-info'))} codex --thinkthread")
         if args.pi_dev and pi is not None:
             _prepare_pi_dev(
                 dev_dir=args.pi_dev_dir,

@@ -267,8 +267,8 @@ def test_native_pi_main_completes_circle_thinkthread_apply(thinkthread_root, pro
         command,
         cwd=ROOT,
         env={
-            **{key: value for key, value in os.environ.items()
-               if prompt_kind != "three_rounds" or key not in {"GOAL_PLUS_DEBUG", "GOAL_PLUS_SESSION_DIAGNOSTICS"}},
+            **os.environ,
+            **({"GOAL_PLUS_DEBUG": "1"} if prompt_kind == "three_rounds" else {}),
             "TERM": "xterm-256color",
             "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED": "1",
             "GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED": "1",
@@ -435,7 +435,7 @@ def assert_circle_diagnostics(runtime_root, sessions, output):
     main = audit.audit_session(runtime_root.parent / "active.jsonl", agent_harness="pi", overview=overview, tools=True)
     assert main["status"] == "present", main["errors"]
     assert main["tool_analysis"]["status"] == "observed"
-    assert all(request["request_bytes"] is None for request in main["tool_analysis"]["requests"])
+    assert all(isinstance(request["request_bytes"], int) and request["request_bytes"] > 0 for request in main["tool_analysis"]["requests"])
     results = {"main": main}
     for session in sessions:
         child = session["session_handle"]["external_id"]
@@ -455,7 +455,7 @@ def assert_circle_diagnostics(runtime_root, sessions, output):
         assert tools["status"] == "observed", analysis["errors"]
         assert len(tools["requests"]) >= 3
         assert len({request["request_id"] for request in tools["requests"]}) == len(tools["requests"])
-        assert all(request["request_bytes"] is None for request in tools["requests"])
+        assert all(isinstance(request["request_bytes"], int) and request["request_bytes"] > 0 for request in tools["requests"])
         assert tools["summary"]["schema_invalid_calls"] == 0
         results[child] = analysis
     (output / "session-diagnostics.json").write_text(json.dumps(results, indent=2))

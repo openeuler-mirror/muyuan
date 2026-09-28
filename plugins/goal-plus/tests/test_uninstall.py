@@ -111,6 +111,8 @@ def test_codex_release_uninstall_preserves_runtime_and_other_host(uninstaller, t
     monkeypatch.setattr(uninstaller.install_support, "_codex_marketplaces", lambda _: {"goal-plus": package})
     uninstaller.managed_runtime.bind("codex", config, package)
     uninstaller.managed_runtime.bind("pi", tmp_path / "pi", package)
+    launcher = uninstaller.managed_runtime.install_info_command()
+    info_files = {path: path.read_bytes() for path in (launcher, launcher.with_name("runtime-info.py"))}
     remove_plugin, remove_marketplace, notes = uninstaller._codex_plan("codex")
     commands = []
     monkeypatch.setattr(uninstaller, "_run", lambda argv, **kwargs: commands.append((argv, kwargs["dry_run"])))
@@ -129,6 +131,12 @@ def test_codex_release_uninstall_preserves_runtime_and_other_host(uninstaller, t
     assert uninstaller.managed_runtime.binding_path("pi", tmp_path / "pi").exists()
     assert (package / ".goal-plus-build").read_text() == "fixture-build\n"
     assert not (source / ".agents/plugins/marketplace.json").exists()
+    assert {path: path.read_bytes() for path in info_files} == info_files
+    if not dry_run:
+        result = subprocess.run([str(launcher), "codex"], cwd=tmp_path, capture_output=True, text=True)
+        assert result.returncode == 1
+        assert "install.sh --codex" in result.stderr
+        assert not result.stdout
 
 
 @pytest.mark.parametrize(

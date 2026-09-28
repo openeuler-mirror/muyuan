@@ -72,7 +72,7 @@ Search 支持以下宿主、执行后端、候选工作方式与工作区组合�
 | Pi | `thinkthread` | `common`（默认）、`autoresearch` | `thinkthread` |
 | Codex | `thinkthread` | `common` | `thinkthread` |
 
-**工作区说明：** `git_worktree` 提供工作区隔离，不是安全沙箱；`copy` 仅交付产物。详见 [Workspace 架构](docs/workspace-sandbox-arch.md)。
+**工作区说明：** `git_worktree` 分离代码树；direct worker 另有默认宿主 sandbox 策略。依赖和可写范围见 [Sandbox 设计与支持](docs/sandbox.md)，产物交付见 [Workspace 架构](docs/workspace-sandbox-arch.md)。
 
 ### 候选工作方式
 
@@ -212,7 +212,7 @@ Codex 使用 `$goal-plus <优化目标、可修改范围与验收标准>`。已�
 
 恢复原生对话不等于恢复任务。ThinkThread Codex Root 不支持 Stop-hook 续跑，不能套用本地 Codex 的恢复操作；完整说明见[运行逻辑](docs/runtime-logic.md)和 [Codex 支持范围](docs/codex.md#支持范围与验证)。
 
-Search 收尾后可查看选中产物、验证记录与终态 `report.md`、`report.html`，以完成时返回的实际路径为准。本地默认状态目录为 `.gp/`，ThinkThread 使用原生会话的私有目录。会话导出与排障见[调试指南](docs/debugging-runtime.md)；公开分享前检查并脱敏日志。
+Search 收尾后可查看选中产物、验证记录与终态 `report.md`、`report.html`，以完成时返回的实际路径为准。本地默认状态目录为 `.gp/`，ThinkThread 使用原生会话的私有目录。启动宿主时设置 `GOAL_PLUS_DEBUG=1`，即可自动采集诊断并刷新 `host-logs/agent-transcript/index.html`，无需额外启动脚本。会话导出与排障见[调试指南](docs/debugging-runtime.md)；公开分享前检查并脱敏日志。
 
 </details>
 
@@ -288,3 +288,5 @@ pi
 ## 📄 9. 许可证与第三方来源
 
 第三方示例的来源与许可说明随各自目录维护，入口见[示例索引](examples/README.md)。
+
+技术细节：[Sandbox 设计与支持](docs/sandbox.md)。

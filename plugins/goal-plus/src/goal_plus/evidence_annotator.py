@@ -42,9 +42,24 @@ from goal_plus.ports.annotation import EvidenceAnnotationResult as EvidenceAnnot
 from goal_plus.domain.time import outer_deadline_epoch
 from goal_plus.ports.annotation_context import MAX_EVIDENCE_ANNOTATION_DIFF_BYTES
 from goal_plus.ports.process import ProcessRegistration
+from goal_plus.ports.sandbox import ProcessSandbox, SandboxBackend
 
 EVIDENCE_ANNOTATOR_DISABLED_ENV = "GOAL_PLUS_EVIDENCE_ANNOTATOR_DISABLED"
 MAX_ANNOTATION_DIFF_BYTES = MAX_EVIDENCE_ANNOTATION_DIFF_BYTES
+
+
+def _annotation_sandbox_root(context: dict[str, Any]) -> Path | None:
+    configured = context.get("runtime_root")
+    return Path(configured).resolve() if configured else None
+
+
+def _annotation_sandbox(
+    context: dict[str, Any], backend: SandboxBackend,
+) -> ProcessSandbox | None:
+    root = _annotation_sandbox_root(context)
+    if root is None:
+        return None
+    return ProcessSandbox(mode="workspace-write", backend=backend, workspace=root)
 
 
 def _strict_annotation_output_schema() -> dict[str, Any]:
@@ -460,6 +475,7 @@ class CodexEvidenceAnnotator:
             reasoning_effort=str(reasoning_effort) if reasoning_effort else None,
             timeout_seconds=timeout, timeout_detail=f"annotation process timed out after {timeout:.3f} seconds",
             cancellation_detail="annotation run closed during inference", active_check="after_timeout",
+            sandbox=_annotation_sandbox(context, "native"),
         )
         result = self._inference.execute(
             request, monitor=monitor, is_active=lambda: self._still_active(context),
@@ -562,6 +578,7 @@ class PiEvidenceAnnotator:
             reasoning_effort=str(config["reasoning_effort"]) if config.get("reasoning_effort") else None,
             timeout_seconds=timeout, timeout_detail=f"annotation process timed out after {timeout:.3f} seconds",
             cancellation_detail="annotation run closed during inference", active_check="after_timeout",
+            sandbox=_annotation_sandbox(context, "outer"),
             pi_tools=build_pi_role_tools(
                 capabilities,
                 output_schema=_strict_annotation_output_schema(),

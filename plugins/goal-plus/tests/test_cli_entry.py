@@ -92,6 +92,51 @@ def test_cli_version_prints_without_heavy_imports(tmp_path: Path) -> None:
     assert completed.stdout.strip() == "goal-plus 0.1.0"
 
 
+def test_cli_installation_info_reports_invoked_runtime_without_creating_state(tmp_path: Path) -> None:
+    completed = _run(["--installation-info"], cwd=tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    identity = json.loads(completed.stdout)
+    assert identity["python"] == sys.executable
+    assert identity["module"] == str(SRC / "goal_plus")
+    assert "build" in identity
+    assert not (tmp_path / ".gp").exists()
+
+
+@pytest.mark.parametrize("host", ["codex", "pi"])
+def test_cli_runtime_info_prints_without_mcp_or_state(tmp_path, host):
+    completed = _run(["--runtime-info", host, "--json"], cwd=tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    info = json.loads(completed.stdout)
+    assert info["host"]["agent_harness"] == host
+    assert info["installation"]["python"] == sys.executable
+    assert info["sandbox"]["execution_verified"] is False
+    assert not (tmp_path / ".gp").exists()
+    code = ("import sys; from goal_plus.cli import main; "
+            f"sys.argv=['goal-plus', '--runtime-info', '{host}']; main(); "
+            "assert 'fastmcp' not in sys.modules and 'goal_plus.server' not in sys.modules")
+    result = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, text=True, capture_output=True,
+                            env={**os.environ, "PYTHONPATH": str(SRC)})
+    assert result.returncode == 0, result.stderr
+    assert info["installation"]["python"] in result.stdout
+
+
+@pytest.mark.parametrize("host", ["codex", "pi"])
+def test_runtime_provider_selection_is_explicit_and_thinkthread_root_is_unknown(tmp_path, monkeypatch, host):
+    monkeypatch.setenv("GOAL_PLUS_THINKTHREAD_ROLE", "main")
+    monkeypatch.setenv("GOAL_PLUS_AGENT_POSIX_SDK_ENTRY", "/unused/sdk")
+    for provider in ("direct", "thinkthread"):
+        result = _run(["--runtime-info", host, "--runtime-provider", provider, "--json"], cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        info = json.loads(result.stdout)
+        assert info["host"] == {"agent_harness": host, "runtime_provider": provider}
+        assert info["runtime"]["root"] == (None if provider == "thinkthread" else str(tmp_path / ".gp"))
+        assert info["sandbox"]["execution_verified"] is False
+        if provider == "thinkthread":
+            assert info["sandbox"]["worker_backend"] == "thinkthread"
+            assert info["sandbox"]["backend_executable"] is None
+    assert not (tmp_path / ".gp").exists()
+
+
 def test_cli_host_hook_entry_runs_and_exits_clean(tmp_path: Path) -> None:
     completed = _run(
         ["--goal-plus-host-hook"],

@@ -78,6 +78,26 @@ codex plugin list
 ./install.sh --runtime-info
 ```
 
+### 无模型查询当前 runtime
+
+在终端执行 `~/.local/share/goal-plus/bin/goal-plus-info codex` 即可查看该宿主登记的
+build、Python、DEBUG 和 worker sandbox 默认策略，无需打开 Codex。支持 `--json`；
+自定义安装目录和查询范围见 [终端查询](development.md#安装模式)。
+
+在 Codex 中输入 `/mcp verbose`，Goal Plus 的 Resources 行会显示版本、build 短标识、
+worker sandbox 默认后端及 DEBUG 开关。无需先启动 Goal，也不调用模型。
+只读资源 `goal-plus://runtime/info` 的 JSON 保存完整 build、实际 Python/package 路径、
+宿主与平台、runtime root 和 sandbox 默认策略；可通过 MCP `resources/read` 读取。
+MCP 握手的 `serverInfo.version` 同时携带完整 build，便于客户端核对实际服务进程。
+
+该资源只对 Codex Main MCP 开放，不枚举其他安装或任意环境变量，也不创建 `.gp`。
+`/mcp verbose` 显示资源摘要和 URI，不展开 JSON 正文。Sandbox 字段描述 worker 默认接线，
+`execution_verified=false` 表示本查询没有运行隔离探针，不证明某个 worker 已受保护。
+Main 权限仍由 Codex 自己管理；ThinkThread Root 显示 provider 边界。
+Codex 底层程序显示 `managed by Codex (not inspected)`；ThinkThread 中则显示
+`managed by ThinkThread (not inspected)`。在外部终端使用 `goal-plus-info codex --thinkthread`
+选择 `goal-plus-codex` Profile 的安装绑定，不需要启动 Root。
+
 ### Checkout 更新与宿主资产
 
 修改后重跑 `./install.sh --codex`，按提示更新注册并开启新 thread；运行中的 hooks/MCP

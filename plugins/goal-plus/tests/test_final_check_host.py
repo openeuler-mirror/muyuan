@@ -188,7 +188,8 @@ def test_common_checker_launch_binds_submits_and_closes(tmp_path, monkeypatch, a
     def actor(config, registration, **kwargs):
         inputs.append(config)
         config = replace(config, model=None, reasoning_effort=None, process=replace(config.process,
-            command=(sys.executable, str(Path(__file__).parent / "fixtures/native_session_rpc.py"), agent_harness, "normal", str(tmp_path / "executed")),
+            command=(sys.executable, str(Path(__file__).parent / "fixtures/native_session_rpc.py"),
+                     agent_harness, "normal", str(root / "native-fixture-executed")),
             environment={**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")},
         ))
         native = native_actor(config, registration, **kwargs)

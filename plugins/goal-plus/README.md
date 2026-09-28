@@ -70,7 +70,7 @@ Search supports the following host, runtime-provider, inner-agent, and workspace
 | Pi | `thinkthread` | `common` (default), `autoresearch` | `thinkthread` |
 | Codex | `thinkthread` | `common` | `thinkthread` |
 
-**Workspace note:** `git_worktree` provides workspace isolation, not a security sandbox; `copy` delivers artifacts only. See [Workspace Architecture](docs/workspace-sandbox-arch.md).
+**Workspace note:** `git_worktree` separates code trees; direct workers additionally use default host sandbox policies. See [Sandbox Design and Support](docs/sandbox.md) for dependencies and writable-root limits, and [Workspace Architecture](docs/workspace-sandbox-arch.md) for artifact delivery.
 
 ### Inner-Agent Behavior
 
@@ -210,7 +210,7 @@ Use these commands in the Pi session bound to the Goal. Local Codex uses the sam
 
 Restoring a native conversation does not resume task execution. ThinkThread Codex Roots do not support Stop-hook continuation; do not apply local Codex resume instructions to them. See [Runtime Logic](docs/runtime-logic.md) and [Codex Support](docs/codex.md#支持范围与验证).
 
-After Search closeout, inspect the selected artifact, verification records, and terminal `report.md` and `report.html` using the actual paths returned on completion. Local state defaults to `.gp/`; ThinkThread uses a private native-session directory. See [Debugging](docs/debugging-runtime.md) for session exports and diagnostics. Review and redact logs before sharing them publicly.
+After Search closeout, inspect the selected artifact, verification records, and terminal `report.md` and `report.html` using the actual paths returned on completion. Local state defaults to `.gp/`; ThinkThread uses a private native-session directory. Start the host with `GOAL_PLUS_DEBUG=1` to automatically collect diagnostics and refresh `host-logs/agent-transcript/index.html`; no launch wrapper is needed. See [Debugging](docs/debugging-runtime.md) for details. Review and redact logs before sharing them publicly.
 
 </details>
 
@@ -286,3 +286,5 @@ Paths below are relative to `plugins/goal-plus/`:
 ## 📄 9. Licensing and Third-Party Sources
 
 Source attribution and license information for third-party examples are maintained alongside each example. See the [Example Index](examples/README.md).
+
+Technical details: [Sandbox Design and Support](docs/sandbox.md).

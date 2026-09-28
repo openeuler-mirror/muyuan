@@ -8,20 +8,27 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from goal_plus.execution.inference_output import pi_assistant_message, read_inference_output, strict_output_schema
-from goal_plus.execution.managed_process import ManagedProcess
+from goal_plus.execution.inference_output import (
+    pi_assistant_message,
+    read_inference_output,
+    strict_output_schema,
+)
 from goal_plus.execution.launch_gate import ProcessLaunchGate
+from goal_plus.execution.managed_process import ManagedProcess
+from goal_plus.execution.pi_config import prepare_pi_home
 from goal_plus.execution.process_monitor import ProcessMonitor
+from goal_plus.execution.sandbox import prepare_sandbox_environment, resolve_sandbox_command
 from goal_plus.ports.clock import Clock
-from goal_plus.ports.process import ProcessRegistration
 from goal_plus.ports.inference import (
     InferenceInvocation,
     StructuredInferenceRequest,
     StructuredInferenceResult,
 )
+from goal_plus.ports.process import ProcessRegistration
 
 
 class StructuredInference:
@@ -31,7 +38,7 @@ class StructuredInference:
         self.clock = clock
         self.popen = popen or subprocess.Popen
         self._active: ManagedProcess | None = None
-        self._pending_cleanup: tempfile.TemporaryDirectory | None = None
+        self._pending_cleanup: ExitStack | None = None
         self._registration: ProcessRegistration | None = None
         self._registration_token: str | None = None
 
@@ -47,7 +54,7 @@ class StructuredInference:
             self._finish_registration()
             if self._pending_cleanup is not None:
                 self._active.close()
-                self._pending_cleanup.cleanup()
+                self._pending_cleanup.close()
                 self._pending_cleanup = None
                 self._active = None
 
@@ -68,9 +75,16 @@ class StructuredInference:
             raise ValueError("Pi inference requires its authorized tool bundle; Codex does not accept one")
         started_at = self.clock.timestamp()
         started = time.monotonic()
-        temporary = tempfile.TemporaryDirectory(prefix="goal-plus-inference-")
+        temporary = ExitStack()
+        directory = Path(temporary.enter_context(tempfile.TemporaryDirectory(
+            prefix="goal-plus-inference-",
+            dir=str(request.sandbox.workspace) if request.sandbox is not None else None,
+        )))
         try:
-            directory = Path(temporary.name)
+            sandbox = (
+                replace(request.sandbox, workspace=directory)
+                if request.sandbox is not None else None
+            )
             output_path = directory / "output.json"
             environment = os.environ.copy()
             options: dict[str, Any] = {}
@@ -91,6 +105,8 @@ class StructuredInference:
             else:
                 tools = request.pi_tools
                 assert tools is not None
+                if request.sandbox is not None:
+                    prepare_pi_home(directory / "pi-home", environment)
                 extension_path = directory / "structured-output.ts"
                 extension_path.write_text(tools.extension, encoding="utf-8")
                 command = [
@@ -110,6 +126,14 @@ class StructuredInference:
                     command.extend(("--thinking", request.reasoning_effort))
                 environment[tools.output_env] = str(output_path)
                 options["cwd"] = directory
+            sandbox = prepare_sandbox_environment(
+                sandbox, cwd=directory, environment=environment, cleanup=temporary,
+            )
+            command = list(resolve_sandbox_command(
+                command,
+                cwd=options.get("cwd", directory),
+                sandbox=sandbox,
+            ))
             prompt_path = directory / "prompt.txt"
             prompt_path.write_text(request.prompt, encoding="utf-8")
             with ExitStack() as launch, prompt_path.open("r", encoding="utf-8") as prompt_input:
@@ -156,7 +180,7 @@ class StructuredInference:
                         output_error = exc
         finally:
             if self._active is None:
-                temporary.cleanup()
+                temporary.close()
             else:
                 self._pending_cleanup = temporary
         return StructuredInferenceResult(

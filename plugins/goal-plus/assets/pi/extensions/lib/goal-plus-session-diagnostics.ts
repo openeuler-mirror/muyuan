@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type Contract = { name: string; description: string; parameters: unknown };
-export const sessionDiagnosticsEnabled = () => process.env.GOAL_PLUS_SESSION_DIAGNOSTICS !== "0";
+export const sessionDiagnosticsEnabled = () => process.env.GOAL_PLUS_DEBUG === "1";
 const record = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 

@@ -1,11 +1,13 @@
 """Common product launcher gates and delivery, with controlled native processes."""
 
 import asyncio
+from contextlib import ExitStack
 from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
 import select
+import shutil
 import subprocess
 import sys
 import time
@@ -15,6 +17,7 @@ import pytest
 
 from goal_plus.execution.native_session import CodexSession, PiSession
 from goal_plus.execution.model_failures import normalize_model_failure
+from goal_plus.execution.sandbox import prepare_sandbox_environment, resolve_sandbox_command
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_scope import close_execution_scope, close_run_candidates, ensure_execution_scope, execution_scope_snapshot
 from goal_plus.runtime import FileSearchRuntime
@@ -85,11 +88,15 @@ def hosted_candidate(request, tmp_path, monkeypatch):
         inputs.append(config)
         wire = Path(__file__).parent / "fixtures/native_session_rpc.py"
         scenario = "interrupt" if (tmp_path / "hold-native-turn").exists() else "normal"
+        fixture_root = (config.process.sandbox.writable_roots[0]
+                        if config.process.sandbox and config.process.sandbox.writable_roots
+                        else root)
         config = replace(config, model=None, reasoning_effort=None, process=replace(
             config.process,
-            command=(sys.executable, str(wire), agent_harness, scenario, str(tmp_path / "executed")),
+            command=(sys.executable, str(wire), agent_harness, scenario,
+                     str(fixture_root / "native-fixture-executed")),
             environment={**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
-                         "NATIVE_FIXTURE_STATE": str(tmp_path / "native-wire.json"),
+                         "NATIVE_FIXTURE_STATE": str(fixture_root / "native-wire.json"),
                          "NATIVE_FIXTURE_RESUME": "1" if config.native_session_id else "0"},
         ))
         instance = native_actor(config, registration, **kwargs)
@@ -267,9 +274,14 @@ def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
 
 
 @pytest.mark.parametrize("hosted_candidate", ["pi"], indirect=True)
+@pytest.mark.parametrize("sandboxed", [False, True])
 def test_candidate_processes_share_host_resource_locks_across_private_tempdirs(
-    hosted_candidate, tmp_path
+    hosted_candidate, tmp_path, sandboxed
 ):
+    if sandboxed:
+        backend = "/usr/bin/sandbox-exec" if sys.platform == "darwin" else "bwrap"
+        if not shutil.which(backend):
+            pytest.skip(f"{backend} is not installed")
     root, _, _, _, task, session, scope, _, _ = hosted_candidate
     process_environment = {
         **task.process_environment,
@@ -289,6 +301,7 @@ with verifier_resource_lock('shared-device'):
     sys.stdin.readline()
 """
     processes = []
+    cleanup = ExitStack()
     try:
         for index in range(2):
             private_tmp = tmp_path / f"worker-{index}-tmp"
@@ -298,8 +311,15 @@ with verifier_resource_lock('shared-device'):
                 "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
                 "TMPDIR": str(private_tmp),
             }
+            command = [sys.executable, "-c", script]
+            if sandboxed:
+                sandbox = prepare_sandbox_environment(
+                    candidate.process.sandbox, cwd=session.workspace,
+                    environment=environment, cleanup=cleanup,
+                )
+                command = resolve_sandbox_command(command, cwd=session.workspace, sandbox=sandbox)
             processes.append(subprocess.Popen(
-                [sys.executable, "-c", script], env=environment,
+                command, env=environment, cwd=session.workspace,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True,
             ))
@@ -316,12 +336,15 @@ with verifier_resource_lock('shared-device'):
         assert select.select([processes[1].stdout], [], [], 10)[0]
         assert processes[1].stdout.readline() == "acquired\n"
     finally:
-        for process in processes:
-            if process.poll() is None:
-                process.stdin.write("\n")
-                process.stdin.flush()
-            _, error = process.communicate(timeout=10)
-            assert process.returncode == 0, error
+        try:
+            for process in processes:
+                if process.poll() is None:
+                    process.stdin.write("\n")
+                    process.stdin.flush()
+                _, error = process.communicate(timeout=10)
+                assert process.returncode == 0, error
+        finally:
+            cleanup.close()
 
 
 @pytest.mark.parametrize("hosted_candidate", [
@@ -406,7 +429,7 @@ def test_run_resumes_same_native_session_after_process_exit(hosted_candidate, en
         control = host(first["session_id"], "wait")
         if ending == "stop":
             deadline = time.monotonic() + 5
-            while not (root.parent / "active").exists():
+            while not (root / "active").exists():
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
             control.stop()

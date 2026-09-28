@@ -16,6 +16,11 @@ from goal_plus.infrastructure.session_diagnostics import archive_diagnostic_mess
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def debug_mode(monkeypatch):
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
+
+
 @pytest.mark.parametrize("mode", ["success", "wrong_parent", "hang"])
 def test_diagnostic_sender_is_bound_and_bounded(tmp_path, mode):
     node = shutil.which("node")
@@ -86,6 +91,7 @@ def test_three_native_deltas_archive_and_replay(tmp_path, archive_messages):
     directory = tmp_path / "host-logs/session-diagnostics/tt-child"
     index = json.loads((directory / "index.json").read_text())
     assert len(index["batches"]) == 3
+    assert (tmp_path / "host-logs/agent-transcript/index.html").is_file()
     analysis = _analyze(directory)
     assert analysis["tool_analysis"]["status"] == "observed"
     assert analysis["tool_analysis"]["summary"]["calls"] == 3
@@ -118,10 +124,10 @@ def test_archive_disabled_wrong_sender_and_corruption(tmp_path, archive_messages
     assert archive_diagnostic_message(tmp_path, binding, message)
     assert not (tmp_path / "host-logs").exists()
     message["senderThinkthreadId"] = "tt-child"
-    monkeypatch.setenv("GOAL_PLUS_SESSION_DIAGNOSTICS", "0")
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "0")
     assert archive_diagnostic_message(tmp_path, binding, message)
     assert not (tmp_path / "host-logs").exists()
-    monkeypatch.delenv("GOAL_PLUS_SESSION_DIAGNOSTICS")
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
     payload = {**archive_messages[0], "chunk_sha256": "0" * 64}
     message["text"] = json.dumps(payload)
     assert archive_diagnostic_message(tmp_path, binding, message)
@@ -137,7 +143,7 @@ def test_full_entries_split_into_bounded_batches(tmp_path):
 import {randomBytes} from "node:crypto";
 import {pathToFileURL} from "node:url";
 const {SessionArchive} = await import(pathToFileURL(process.argv[1]).href);
-delete process.env.GOAL_PLUS_SESSION_DIAGNOSTICS;
+process.env.GOAL_PLUS_DEBUG = '1';
 const entries = [];
 const append = entry => entries.push({id: String(entries.length), parentId: entries.at(-1)?.id ?? null,
   timestamp: new Date().toISOString(), ...entry});
@@ -205,8 +211,7 @@ import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 const {SessionArchive, sessionEntry} = await import(pathToFileURL(process.argv[1]).href);
-delete process.env.GOAL_PLUS_DEBUG;
-delete process.env.GOAL_PLUS_SESSION_DIAGNOSTICS;
+process.env.GOAL_PLUS_DEBUG = '1';
 const entries = [], messages = [];
 const append = entry => entries.push({id: String(entries.length), parentId: entries.at(-1)?.id ?? null, ...entry});
 append({type: 'message', message: {role: 'user', content: 'PRIVATE USER'}});
@@ -245,11 +250,11 @@ assert.equal(messages.length, 3);
 assert.ok(JSON.stringify(entries.map(sessionEntry)).includes('PRIVATE USER'));
 assert.ok(JSON.stringify(entries.map(sessionEntry)).includes('PRIVATE THINKING'));
 assert.ok(JSON.stringify(entries.map(sessionEntry)).includes('PRIVATE COMMAND'));
-process.env.GOAL_PLUS_SESSION_DIAGNOSTICS = '0';
+process.env.GOAL_PLUS_DEBUG = '0';
 append({type: 'message', message: {role: 'user', content: 'PRIVATE'}});
 await archive.flush(ctx, options);
 assert.equal(messages.length, 3);
-delete process.env.GOAL_PLUS_SESSION_DIAGNOSTICS;
+process.env.GOAL_PLUS_DEBUG = '1';
 await archive.flush(ctx, {...options, worker: undefined});
 console.log(JSON.stringify(messages));
 '''

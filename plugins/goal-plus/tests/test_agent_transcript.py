@@ -318,16 +318,10 @@ def test_debug_exports_are_opt_in(tmp_path, monkeypatch):
 
     rollout = _codex_rollout(tmp_path)
     monkeypatch.delenv("GOAL_PLUS_DEBUG", raising=False)
-    monkeypatch.delenv("GOAL_PLUS_AGENT_TRANSCRIPT", raising=False)
     debug_export_codex_transcript(tmp_path, rollout)
     assert not (tmp_path / "host-logs" / "agent-transcript").exists()
 
-    # Size-statistics debugging alone must not buy content-complete exports.
     monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
-    debug_export_codex_transcript(tmp_path, rollout)
-    assert not (tmp_path / "host-logs" / "agent-transcript").exists()
-
-    monkeypatch.setenv("GOAL_PLUS_AGENT_TRANSCRIPT", "1")
     debug_export_codex_transcript(tmp_path, rollout, session_id="cx-1", role="main")
     exported = tmp_path / "host-logs" / "agent-transcript"
     transcript = exported / "main-cx-1" / "transcript.html"
@@ -356,16 +350,16 @@ def test_debug_exports_are_opt_in(tmp_path, monkeypatch):
     record = {"thinkthread_id": "tt-child", "agent_session_id": "agent-owned",
               "run_id": "run-1", "candidate_id": "c001", "status": "closed",
               "call_request": {"prompt": "final attempt", "timeout_seconds": 60}}
-    # Release-time child capture is default-on (release destroys the raw copy).
-    monkeypatch.delenv("GOAL_PLUS_AGENT_TRANSCRIPT", raising=False)
+    # Release-time child capture uses the same DEBUG switch.
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
     debug_export_child_transcript(tmp_path, record)
     assert (archive / "transcript.html").exists()
-    # Exactly "0" opts out, mirroring GOAL_PLUS_SESSION_DIAGNOSTICS.
+    # Disabling DEBUG stops further diagnostic export.
     (archive / "transcript.html").unlink()
-    monkeypatch.setenv("GOAL_PLUS_AGENT_TRANSCRIPT", "0")
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "0")
     debug_export_child_transcript(tmp_path, record)
     assert not (archive / "transcript.html").exists()
-    monkeypatch.setenv("GOAL_PLUS_AGENT_TRANSCRIPT", "1")
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
     debug_export_child_transcript(tmp_path, record)
     assert (archive / "transcript.html").is_file()
     archive_html = (archive / "transcript.html").read_text(encoding="utf-8")
@@ -380,7 +374,7 @@ def test_stop_hook_debug_wiring(tmp_path, monkeypatch):
     from goal_plus import goal_plus_stop_hook as hook
 
     rollout = _codex_rollout(tmp_path)
-    monkeypatch.delenv("GOAL_PLUS_AGENT_TRANSCRIPT", raising=False)
+    monkeypatch.delenv("GOAL_PLUS_DEBUG", raising=False)
     hook._record_stop_hook_event(
         tmp_path, {"session_id": "cx-1", "transcript_path": str(rollout)}, event_name="Stop",
         invocation_id="inv_1", started_at=datetime.now(timezone.utc),
@@ -388,19 +382,12 @@ def test_stop_hook_debug_wiring(tmp_path, monkeypatch):
     monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
     hook._record_stop_hook_event(
         tmp_path, {"session_id": "cx-1", "transcript_path": str(rollout)}, event_name="Stop",
-        invocation_id="inv_1b", started_at=datetime.now(timezone.utc),
-        started_monotonic=time.monotonic(), result={"decision": "block", "reason": "waiting"})
-    assert not (tmp_path / "host-logs" / "agent-transcript").exists()
-
-    monkeypatch.setenv("GOAL_PLUS_AGENT_TRANSCRIPT", "1")
-    hook._record_stop_hook_event(
-        tmp_path, {"session_id": "cx-1", "transcript_path": str(rollout)}, event_name="Stop",
         invocation_id="inv_2", started_at=datetime.now(timezone.utc),
         started_monotonic=time.monotonic(), result={"decision": "block", "reason": "waiting"})
     exported = tmp_path / "host-logs" / "agent-transcript"
     assert (exported / "main-cx-1" / "transcript.html").is_file()
-    assert not (exported / "index.html").exists()  # combined view stays whole-root only
-    assert not (exported / "events.jsonl").exists()
+    assert (exported / "index.html").is_file()
+    assert (exported / "events.jsonl").is_file()
     assert (tmp_path / "host-logs" / "codex-hook-events" / "inv_2.json").is_file()
 
 
@@ -457,7 +444,7 @@ def test_release_debug_export_grabs_raw_child_history(tmp_path, monkeypatch):
     record = {"thinkthread_id": "tt-child", "agent_session_id": "agent-owned",
               "run_id": "run-1", "candidate_id": "c001", "status": "closed",
               "model": "glm-5.3-flash"}
-    monkeypatch.setenv("GOAL_PLUS_AGENT_TRANSCRIPT", "1")
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
     debug_export_child_transcript(runtime_root, record)
     exported = (archive / "transcript.html").read_text(encoding="utf-8")
     assert "RAW_THINKING_BEFORE_RELEASE" in exported  # captured before release
@@ -496,3 +483,54 @@ def test_released_child_recovers_turns_from_tt_event_store(tmp_path):
     # Recovery stays ordered: the prompt precedes the turn it launched.
     kinds = [(event.kind, event.label) for event in child.events]
     assert kinds.index(("injection", "controller prompt")) < kinds.index(("assistant", "turn completed"))
+
+
+def test_concurrent_codex_callbacks_preserve_whole_runtime(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    root = _runtime_root(tmp_path)
+    histories = [_codex_rollout(tmp_path / f'callback-{number}') for number in range(2)]
+    code = '''
+import sys
+from pathlib import Path
+from goal_plus.infrastructure.agent_transcript import debug_export_codex_transcript
+debug_export_codex_transcript(Path(sys.argv[1]), sys.argv[2], session_id=sys.argv[3], role='subagent')
+'''
+    processes = [subprocess.Popen(
+        [sys.executable, '-c', code, str(root), str(history), f'concurrent-{number}'],
+        env={**os.environ, 'GOAL_PLUS_DEBUG': '1'}, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ) for number, history in enumerate(histories)]
+    for process in processes:
+        _, stderr = process.communicate(timeout=30)
+        assert process.returncode == 0, stderr
+    output = root / 'host-logs/agent-transcript'
+    html = (output / 'index.html').read_text()
+    assert 'concurrent-0' in html and 'concurrent-1' in html
+    assert 'candidate' in html and 'main' in html
+    assert not list(output.rglob('*.tmp'))
+
+
+def test_debug_cli_does_not_require_wrapper_or_create_output_when_disabled(tmp_path, monkeypatch):
+    from goal_plus.pi_tool import main
+
+    root = _runtime_root(tmp_path)
+    output = root / 'host-logs/agent-transcript/index.html'
+    monkeypatch.delenv('GOAL_PLUS_DEBUG', raising=False)
+    assert main(['--root', str(root), 'host_debug_export']) == 0
+    assert not output.exists()
+    monkeypatch.setenv('GOAL_PLUS_DEBUG', '1')
+    assert main(['--root', str(root), 'host_debug_export']) == 0
+    assert output.is_file()
+
+
+def test_debug_export_failure_does_not_fail_host_callback(tmp_path, monkeypatch):
+    from goal_plus.infrastructure import agent_transcript
+
+    monkeypatch.setenv('GOAL_PLUS_DEBUG', '1')
+    def fail(*args, **kwargs):
+        raise PermissionError('read-only diagnostic output')
+    monkeypatch.setattr(agent_transcript, 'export_transcripts', fail)
+    agent_transcript.debug_export_codex_transcript(tmp_path, _codex_rollout(tmp_path))
+    agent_transcript.debug_export_transcripts(tmp_path)

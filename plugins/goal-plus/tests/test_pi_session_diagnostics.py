@@ -36,6 +36,7 @@ assert.equal(INJECTION_OBSERVATION_TYPE, 'goal-plus-injection-observation');
 assert.equal(estimateTokens('你好世界'), 4);
 assert.equal(estimateTokens('abcdefgh'), 2);
 assert.equal(estimateTokens('你好abcd'), 3);
+process.env.GOAL_PLUS_DEBUG = '1';
 const entries = [];
 const pi = {appendEntry: (customType, data) => entries.push({customType, data})};
 const ctx = {sessionManager: {getSessionId: () => 'session-a'}};
@@ -43,9 +44,9 @@ appendInjectionObservation(pi, ctx, {
   kind: 'goal_context_full', role: 'main', content: 'SECRET GOAL TEXT 你好abcd',
   raw_goal_present: false, goal_revision: 2,
 });
-process.env.GOAL_PLUS_SESSION_DIAGNOSTICS = '0';
+process.env.GOAL_PLUS_DEBUG = '0';
 appendInjectionObservation(pi, ctx, {kind: 'goal_context_brief', role: 'main', content: 'SECRET'});
-delete process.env.GOAL_PLUS_SESSION_DIAGNOSTICS;
+delete process.env.GOAL_PLUS_DEBUG;
 assert.equal(entries.length, 1);
 const entry = entries[0];
 assert.equal(entry.customType, INJECTION_OBSERVATION_TYPE);
@@ -59,6 +60,7 @@ assert.equal(entry.data.goal_revision, 2);
 assert.equal(entry.data.chars, 'SECRET GOAL TEXT 你好abcd'.length);
 assert.equal(entry.data.sha256, createHash('sha256').update('SECRET GOAL TEXT 你好abcd').digest('hex'));
 assert.ok(!JSON.stringify(entries).includes('SECRET'), 'injected content itself never persists');
+process.env.GOAL_PLUS_DEBUG = '1';
 pi.appendEntry = () => {throw new Error('disk full');};
 assert.doesNotThrow(() => appendInjectionObservation(pi, ctx, {kind: 'must_continue', role: 'main', content: 'x'}));
 console.log('injection ledger checks passed');
@@ -82,12 +84,10 @@ registerSessionDiagnostics(pi, new Map([[contract.name, contract]]));
 const payload = {messages: [{role: 'system', content: 'PRIVATE PROMPT'}],
   tools: [{type: 'function', function: contract}, {type: 'function', function: {name: 'peer', description: 'PRIVATE TOOL'}}]};
 const serialized = JSON.stringify(payload);
-process.env.GOAL_PLUS_SESSION_DIAGNOSTICS = '0';
-process.env.GOAL_PLUS_DEBUG = '1';
+delete process.env.GOAL_PLUS_DEBUG;
 handlers.get('before_provider_request')({payload}, ctx);
 assert.equal(entries.length, 0);
-delete process.env.GOAL_PLUS_SESSION_DIAGNOSTICS;
-delete process.env.GOAL_PLUS_DEBUG;
+process.env.GOAL_PLUS_DEBUG = '1';
 handlers.get('turn_start')({turnIndex: 3});
 assert.equal(handlers.get('before_provider_request')({payload}, ctx), undefined);
 assert.equal(JSON.stringify(payload), serialized);
@@ -97,9 +97,8 @@ assert.deepEqual(snapshot.request, [contract]);
 assert.equal(entries[1].data.turn_index, 3);
 assert.equal(entries[1].data.model.id, 'glm-5.3-flash');
 assert.equal(entries[1].data.status, 'observed');
-assert.equal(entries[1].data.request_bytes, undefined);
+assert.equal(entries[1].data.request_bytes, Buffer.byteLength(serialized));
 assert.ok(!JSON.stringify(entries).includes('PRIVATE'));
-Object.defineProperty(payload, 'messages', {get() {throw new Error('request body must not be traversed');}, configurable: true});
 const firstReads = reads;
 handlers.get('before_provider_request')({payload}, ctx);
 assert.equal(entries.length, 3);
@@ -117,6 +116,7 @@ handlers.get('before_provider_request')({payload: {tools: [{functionDeclarations
 assert.equal(entries.at(-1).data.status, 'unavailable');
 handlers.get('before_provider_request')({payload: {tools: [{name: contract.name, description: '', input_schema: {type: 'object'}}]}}, ctx);
 assert.equal(entries.at(-1).data.status, 'observed');
+process.env.GOAL_PLUS_DEBUG = '1';
 pi.appendEntry = () => {throw new Error('disk full');};
 assert.doesNotThrow(() => handlers.get('before_provider_request')({payload}, ctx));
 '''

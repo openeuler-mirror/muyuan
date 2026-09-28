@@ -37,6 +37,7 @@ from goal_plus.internal_agents import (
 )
 from goal_plus.ports.inference import StructuredInferenceRequest
 from goal_plus.ports.process_monitor import ProcessMonitorIdentity
+from goal_plus.ports.sandbox import ProcessSandbox
 
 
 VERIFIER_DISABLED_ENV = "GOAL_PLUS_LLM_VERIFIER_DISABLED"
@@ -249,6 +250,11 @@ class LlmVerifier:
             cancellation_detail="LLM verifier task was cancelled",
             active_check="after_timeout",
             pi_tools=pi_tools,
+            sandbox=ProcessSandbox(
+                mode="workspace-write",
+                backend="outer" if agent_harness == "pi" else "native",
+                workspace=self.root_dir,
+            ),
         )
         result = self.inference.execute(
             request,

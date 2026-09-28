@@ -43,6 +43,15 @@ Codex 正式发现入口只在受管 release 中生成，Pi 通过 package 或�
 准备并核验新 release 后再卸载重装对应注册；取消不改变注册或版本引用。
 Codex 安装成功前必须核验实际缓存的 build、安装身份与 MCP/hook 启动配置，不能只以注册来源
 或 `plugin add` 成功作为验收。缓存校验失败不得提交新版本引用或报告安装成功。
+Codex Main MCP 的握手版本和只读 `goal-plus://runtime/info` 资源描述实际加载的 runtime；
+查询不依赖 Goal、不调用模型、不创建运行状态，不向 candidate/checker 暴露安装诊断。
+Sandbox 默认策略与实际执行验证分别表达，诊断读取不能作为某次隔离成功的证据。
+安装器提供不依赖源码目录的 `bin/goal-plus-info codex|pi` 终端查询，按宿主配置目录选择
+已登记 release 并校验 build；它不证明已运行会话的版本。Pi Main 的启动状态栏及
+`/goal-plus-info` 查询当前 extension 绑定的 runtime，与 Codex 复用共同信息采集。
+诊断无需 Goal 或模型，发现隔离程序只报告可发现性，不报告执行成功。
+终端查询以 `--thinkthread` 显式选择对应宿主的 Profile 安装绑定，不回退到 direct build，
+也不将当前 cwd 推断为某个 ThinkThread session 的 runtime root。
 Pi 安装成功前必须核验实际 package 注册、宿主解析出的启用 extension/skill 和 Python build。
 校验失败恢复原设置并撤销 pending 引用；显式资源配置和项目自动发现也属于冲突检查范围。
 本地和 ThinkThread verifier 的裸 `python` / `python3` 命令在执行时绑定当前 Goal Plus
@@ -58,6 +67,13 @@ ThinkThread 的 Goal Plus runtime 目录必须位于 Root 附着文件树之外�
 原生 session 目录；baseline 捕获前拒绝位于 Root 内的自定义路径或指向它的软链接，
 不得把 Goal/session 私有状态作为 candidate snapshot 交付。
 Pi 开发 launcher 的预检查和工具调用使用开发 venv 的隔离 Python。
+Direct Copy/Git worker 默认使用共同 sandbox 声明：Codex 原生策略、Pi OS wrapper。
+安装时系统后端缺失可以保留缺失状态并提示；执行时不得退回不受保护的命令。
+Pi Linux/macOS 共用路径与 cwd 归属校验。子进程临时文件优先使用系统 `/tmp` 下的专属
+目录；目录缺失、只读或权限不足时退到 cwd 下的 `.gp/.tmp`，仅授权专属目录并设置临时
+环境变量，正常关闭时清理。临时目录 fallback 不改变 sandbox 强制执行。
+该边界不改变 Main 权限，也不承诺共享 runtime 写根之外的完整安全隔离；
+设计、支持范围及角色写入例外见 [Agent sandbox](docs/sandbox.md)。
 两端不发布 Goal Plus 导航 skill。命令仍由宿主授权，公共导航来自 MCP instructions；
 删除 skill 不扩大 Main 或 candidate 的执行权限。
 
@@ -66,20 +82,22 @@ Pi 开发 launcher 的预检查和工具调用使用开发 venv 的隔离 Python
 检查以 session 所用 build 的概要原文为准，不读取模型私有思考或把助手复述当作加载证据。
 Codex 仅检查 rollout 中的工作上下文，排除 `guardian_history`；Main 的 compact hook
 重新注入公共概要，即使 Goal 已结束或不存在也不创建、恢复或授权 Goal。
-此诊断不参与 Goal 完成判定。Pi 默认在每次 inference
+此诊断不参与 Goal 完成判定。开启 `GOAL_PLUS_DEBUG=1` 后，Pi 在每次 inference
 turn 从宿主最终 system prompt 记录概要哈希和匹配布尔值到原生 custom entry，不保存完整 prompt；
-`GOAL_PLUS_SESSION_DIAGNOSTICS=0` 显式关闭新增 session 观测和归档，不关闭宿主原生历史或
-业务记录。检查器由用户手动调用，沿选定 session branch 消费观测，
+未开启 DEBUG 时不新增这些观测和诊断归档，不影响宿主原生历史或业务记录。检查器由用户手动调用，沿选定 session branch 消费观测，
 旧历史或关闭采集的历史缺少观测时报告 unavailable。
 缺少、损坏、版本不符的证据不得报告通过；记录中可见不等于模型实际遵循流程。
 
-默认情况下，Pi 在 provider request hook 记录本扩展注册的工具描述/schema 与该
+开启 DEBUG 时，Pi 在 provider request hook 记录本扩展注册的工具描述/schema 与该
 请求中的对应合同，并按 session 分支复用相同合同快照。观测不修改请求，不保存完整
 prompt、认证 header 或模型思考；它只证明该 hook 时点的可见内容，后续 hook 仍可能修改
 请求。离线 session 分析关联工具调用、原生工具错误和参数修正，不据此自动判断模型意图。
 缺少请求观测的旧历史只能与显式提供的 tools/list 参考合同比较，不能确认当时模型可见性。
-`GOAL_PLUS_DEBUG=1` 仅额外启用请求大小和 API 返回大小统计，不覆盖 session 采集的显式关闭。
-TT Child 在每次执行结束后通过原有 Message 通道发送压缩的增量 session 记录；Root 按已绑定的
+`GOAL_PLUS_DEBUG=1` 是新增 session 观测、诊断归档、请求/API 大小统计及 HTML 导出的唯一开关。
+Codex Stop、Pi 回合结束/Main 会话关闭和 TT 归档完成后自动刷新完整 runtime 的
+`host-logs/agent-transcript/index.html`；报告生成前也刷新，使 report.html 能链接到该页面。
+合并导出按 runtime 串行收集和写入，单会话回调不覆盖其他会话；不启动后台 watcher。
+DEBUG 开启时，TT Child 在每次执行结束后通过原有 Message 通道发送压缩的增量 session 记录；Root 按已绑定的
 Child/session 身份收取并在删除资源前补收，存入 runtime 的 `host-logs/session-diagnostics/`。
 已发送游标保存在原生 custom entry，跨同一 session 的 Pi 进程重建延续增量，不作为业务恢复依据。
 归档保留完整的 Pi native session entry，同时供运行诊断和离线行为复盘使用；批次按大小切分，
@@ -326,6 +344,9 @@ Freeze 与 run bootstrap 必须：
 4. 创建 run 时确认 source identity 未变化；
 5. 首次物化 Git worktree 时执行 workspace relocation gate；
 6. 全程校验 metric、退出码、timeout、edit surface 和可选 device pool。
+7. Direct Copy/Git candidate 的 native child 必须有 protected execution：Pi 由受管外层
+   Seatbelt/bubblewrap launcher 执行，Codex 由原生 workspace sandbox 执行；backend 不可用时
+   不得降级为无约束的 child。
 
 本地 Git/Copy 冻结必须确认 process verifier baseline 实际产出有限数值分数；没有声明
 `ranking_signal` 也不能跳过。分数必须来自精确 metric，且来源唯一，不能用运行时元数据或

@@ -39,6 +39,10 @@ interrupted 结果，平台将原生 abort 回报为 completed 时也不触发 v
 Adapter 返回的 launch payload 由可信 launcher 消费。Main 使用共同控制工具，
 不解释 native spawn 参数或补造身份 metadata。旧 pool DTO、派发队列和模型工具已删除。
 
+Direct native child 的 `SessionProcessInput` 默认携带 `ProcessSandbox` 合同；Codex 使用
+原生策略，Pi 使用 OS wrapper。文件写入范围、共享 runtime 例外、内部推理接线与支持表
+统一见 [Agent sandbox](sandbox.md)。该边界不替代 host callback 的领域授权。
+
 Search runtime 不承担 worker supervisor 职责。session run 内部创建的领域 session
 是 context/provenance handle，不代表 worker 已经启动或仍然存活。
 

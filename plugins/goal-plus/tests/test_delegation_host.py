@@ -190,7 +190,8 @@ def test_common_delegation_reuses_session_and_records_new_attempt(tmp_path, monk
         inputs.append(config)
         config = replace(config, model=None, reasoning_effort=None, process=replace(config.process,
             command=(sys.executable, str(Path(__file__).parent / "fixtures/native_session_rpc.py"), agent_harness,
-                     "normal" if scenario == "cold" else scenario, str(tmp_path / "executed")),
+                     "normal" if scenario == "cold" else scenario,
+                     str(root / "native-fixture-executed")),
             environment={**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")},
         ))
         native = actor_type(config, registration, **kwargs)

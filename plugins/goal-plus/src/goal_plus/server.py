@@ -226,13 +226,29 @@ def create_mcp(
                 if errors:
                     raise RuntimeError("native MCP resource cleanup failed") from errors[0]
 
+    codex_diagnostics = None
+    if native_main_harness == "codex":
+        from goal_plus.infrastructure.runtime_info import runtime_info
+
+        codex_diagnostics = runtime_info(Path(root_dir), agent_harness="codex")
     mcp = FastMCP(
-        "goal-plus", version=__version__,
+        "goal-plus", version=codex_diagnostics["server_version"] if codex_diagnostics else __version__,
         dereference_schemas=False,
         instructions=(host_assets_root() / "assets/goal-plus-instructions.txt").read_text(encoding="utf-8").strip()
         if caller_role in {None, "main"} else None,
         lifespan=session_lifespan if any(item is not None for item in (session_launcher, final_checker, work_items)) else None,
     )
+
+    if codex_diagnostics is not None:
+        from goal_plus.infrastructure.runtime_info import RUNTIME_INFO_URI, runtime_info_title
+
+        @mcp.resource(
+            RUNTIME_INFO_URI, name="goal_plus_runtime_info",
+            title=runtime_info_title(codex_diagnostics), mime_type="application/json",
+            description="当前 Codex MCP 加载的 Goal Plus build、Python、DEBUG 和 worker sandbox 默认策略；只读，无需启动 Goal 或模型。",
+        )
+        def read_runtime_info() -> str:
+            return json.dumps(runtime_info(Path(root_dir), agent_harness="codex"), ensure_ascii=False)
 
     verifier_calls: set[asyncio.Task] = set()
 

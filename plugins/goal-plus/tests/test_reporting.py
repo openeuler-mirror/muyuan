@@ -532,10 +532,13 @@ def test_search_report_generates_self_contained_html_with_multi_search_timeline(
         },
         started_at="2026-01-01T00:00:00Z",
     )
+    monkeypatch.setenv("GOAL_PLUS_DEBUG", "1")
     markdown_path = search.report(second_run)
     html_path = markdown_path.with_suffix(".html")
     html = html_path.read_text(encoding="utf-8")
 
+    assert (root / "host-logs/agent-transcript/index.html").is_file()
+    assert "../../host-logs/agent-transcript/index.html" in html
     assert markdown_path.is_file()
     assert html_path.is_file()
     assert 'data-report-schema="goal-plus-report/v1"' in html

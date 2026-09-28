@@ -1,5 +1,5 @@
 import { LooseObject, RuntimeToolSchemas, RuntimeToolDescriptions } from "./lib/goal-plus-schemas.ts";
-import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, parseJsonObject, runJsonCli, runHostCommandCli, closeMcpConnections } from "./lib/goal-plus-transport.ts";
+import { pythonExecutable, runtimeRoot, type CommandRuntimeContext, isRecord, sourceRoot, parseJsonObject, runJsonCli, runHostCommandCli, closeMcpConnections, refreshDebugTranscript, readRuntimeInfo } from "./lib/goal-plus-transport.ts";
 import { THINKTHREAD_GOAL_PLUS_PROTOCOL, WorkerSteeringReceiver, dispatchMessageId, dispatchMetadata, requestWorkerTool } from "../../thinkthread-session-rpc.ts";
 import { toolOwner, type ToolOwner } from "./lib/goal-plus-tool-identity.ts";
 import {
@@ -38,6 +38,22 @@ const controllerOwnsCloseout =
 const sharedMcpTools = new Map<string, { description: string; inputSchema: TSchema }>();
 const diagnosticToolContracts = new Map<string, { name: string; description: string; parameters: unknown }>();
 const sessionArchive = new SessionArchive();
+async function flushSessionArchive(pi: ExtensionAPI, ctx: ExtensionContext) {
+	await sessionArchive.flush(ctx, { root: runtimeRoot, role, sourceRoot: sourceRoot(commandContextFrom(ctx)),
+		refresh: () => refreshDebugTranscript(pi, commandContextFrom(ctx)),
+		checkpoint: data => pi.appendEntry("goal-plus-session-archive-checkpoint", data),
+		...(isThinkThreadWorker ? { worker: async () => {
+			const metadata = latestDispatchMetadata(ctx);
+			const parentId = process.env.THINKTHREAD_PARENT_ID;
+			if (!parentId || !metadata.agentSessionId) {
+				throw new Error("ThinkThread diagnostic parent binding mismatch");
+			}
+			return { agentSessionId: metadata.agentSessionId,
+				send: (messages: Record<string, unknown>[]) => sendDiagnosticMessages(parentId, messages) };
+		} } : {}),
+	});
+}
+
 const extensionPath = fileURLToPath(import.meta.url);
 const isThinkThreadProfile = Boolean(process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY);
 const isThinkThreadWorker = role === "worker" && isThinkThreadProfile;
@@ -279,7 +295,7 @@ interface PiRuntimeStartEntry {
 	active_tools: string[];
 	active_builtin_tools: string[];
 	active_non_builtin_tools: string[];
-	pi_sandbox: "none";
+	pi_sandbox: "none" | "seatbelt" | "bubblewrap";
 	pi_builtin_tool_approval: "none";
 	filesystem_access: "launcher-process-user";
 	network_access: "host-policy-unreported";
@@ -327,7 +343,9 @@ function buildPiRuntimeStartEntry(pi: ExtensionAPI, ctx: ExtensionContext): PiRu
 		active_tools: activeTools,
 		active_builtin_tools: activeBuiltinTools,
 		active_non_builtin_tools: activeNonBuiltinTools,
-		pi_sandbox: "none",
+		pi_sandbox: process.env.GOAL_PLUS_PI_SANDBOX === "seatbelt"
+			? "seatbelt"
+			: process.env.GOAL_PLUS_PI_SANDBOX === "bubblewrap" ? "bubblewrap" : "none",
 		pi_builtin_tool_approval: "none",
 		filesystem_access: "launcher-process-user",
 		network_access: "host-policy-unreported",
@@ -2752,6 +2770,21 @@ export default async function (pi: ExtensionAPI) {
 	const GOAL_PLUS_COMMAND_CONFIG_USAGE = "[mode=autonomous|probe] [max_parallel=正整数] [max_duration_seconds=正整数（秒）] [workspace_provider=copy|git_worktree|thinkthread] [promotion_mode=apply|artifact_only] [strategy=NAME] [inner_agent=ADAPTER_ID] [annotator=MODEL] [workers|models=MODEL[,MODEL...] 或 MODEL*COUNT[,MODEL*COUNT...]]";
 	// END GENERATED GOAL PLUS COMMAND CONFIG
 	if (!isPrintLikeInvocation) {
+		if (role === "main") {
+			pi.registerCommand("goal-plus-info", {
+				description: "查看当前 Goal Plus build、Python、DEBUG 和 worker sandbox 默认配置（不调用模型）",
+				handler: async (_args, ctx) => {
+					try {
+						const text = await readRuntimeInfo(pi, commandContextFrom(ctx));
+						ctx.ui.setStatus("goal-plus-runtime", text.split("\n")[0]);
+						ctx.ui.notify(text, "info");
+					} catch (error) {
+						ctx.ui.setStatus("goal-plus-runtime", "Goal Plus runtime unavailable");
+						ctx.ui.notify(String(error), "error");
+					}
+				},
+			});
+		}
 		pi.registerCommand("goal-plus", {
 			description: "运行或编辑原生 Pi Goal Plus（支持 typed command config）",
 			handler: async (args, ctx) => {
@@ -2934,6 +2967,14 @@ export default async function (pi: ExtensionAPI) {
 	});
 	pi.on("session_start", async (event, ctx) => {
 		await validateThinkThreadWorker(ctx);
+		if (role === "main" && ctx.mode === "tui") {
+			try {
+				const text = await readRuntimeInfo(pi, commandContextFrom(ctx));
+				ctx.ui.setStatus("goal-plus-runtime", text.split("\n")[0]);
+			} catch {
+				ctx.ui.setStatus("goal-plus-runtime", "Goal Plus runtime unavailable; /goal-plus-info");
+			}
+		}
 		goalPlusSessionAuthorized = false;
 		lastMainStopReason = undefined;
 		mainTurnSignal = undefined;
@@ -3149,18 +3190,7 @@ export default async function (pi: ExtensionAPI) {
 	});
 	pi.on("agent_end", async (event, ctx) => {
 		stopWorkerSteering?.();
-		await sessionArchive.flush(ctx, { root: runtimeRoot, role, sourceRoot: sourceRoot(commandContextFrom(ctx)),
-			checkpoint: data => pi.appendEntry("goal-plus-session-archive-checkpoint", data),
-			...(isThinkThreadWorker ? { worker: async () => {
-				const metadata = latestDispatchMetadata(ctx);
-				const parentId = process.env.THINKTHREAD_PARENT_ID;
-				if (!parentId || !metadata.agentSessionId) {
-					throw new Error("ThinkThread diagnostic parent binding mismatch");
-				}
-				return { agentSessionId: metadata.agentSessionId,
-					send: (messages: Record<string, unknown>[]) => sendDiagnosticMessages(parentId, messages) };
-			} } : {}),
-		});
+		await flushSessionArchive(pi, ctx);
 		const lastMessage = event.messages.at(-1);
 		const persist = canPersistGoalState(ctx);
 		if (role === "main" && presentedPublicationNotifications.size > 0) {
@@ -3257,6 +3287,9 @@ export default async function (pi: ExtensionAPI) {
 			if (role === "main") await closeExecutionScope(pi, commandContextFrom(ctx), `pi_session_shutdown:${event.reason}`);
 		} finally {
 			await closeMcpConnections();
+			// Child turns already flushed at agent_end. Do not launch another
+			// exporter while their owning process is waiting for bounded shutdown.
+			if (role === "main") await flushSessionArchive(pi, ctx);
 		}
 	});
 }

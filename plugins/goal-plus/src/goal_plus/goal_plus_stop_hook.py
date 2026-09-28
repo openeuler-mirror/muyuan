@@ -589,7 +589,7 @@ def _record_stop_hook_event(
             _stop_hook_event_dir(search_root) / f"{invocation_id}.json",
             payload,
         )
-        if os.environ.get("GOAL_PLUS_AGENT_TRANSCRIPT") == "1":
+        if os.environ.get("GOAL_PLUS_DEBUG") == "1":
             from goal_plus.infrastructure.agent_transcript import debug_export_codex_transcript
 
             debug_export_codex_transcript(

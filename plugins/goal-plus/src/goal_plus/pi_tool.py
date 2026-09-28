@@ -401,6 +401,11 @@ def main(argv: list[str] | None = None) -> int:
     parsed = parser.parse_args(argv)
 
     try:
+        if parsed.tool == "host_debug_export":
+            from goal_plus.infrastructure.agent_transcript import debug_export_transcripts
+
+            debug_export_transcripts(Path(parsed.root))
+            return 0
         if parsed.tool == "host_mcp_serve":
             from goal_plus.server import create_host_mcp
             from goal_plus.infrastructure.final_check_binding import declared_final_checker

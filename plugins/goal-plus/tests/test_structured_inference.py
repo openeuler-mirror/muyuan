@@ -1,6 +1,7 @@
 """Exercise the native inference API with controlled output and local processes."""
 
 import json
+import shutil
 import subprocess
 import sys
 from dataclasses import asdict, replace
@@ -13,6 +14,7 @@ from goal_plus.host_scope import ensure_execution_scope, execution_scope_snapsho
 from goal_plus.execution.inference_output import pi_assistant_message, strict_output_schema
 from goal_plus.ports.inference import PiInferenceTools, StructuredInferenceRequest
 from goal_plus.ports.process_monitor import ProcessMonitorIdentity
+from goal_plus.ports.sandbox import ProcessSandbox
 
 
 def request_for(agent_harness):
@@ -29,13 +31,27 @@ def request_for(agent_harness):
 
 
 @pytest.mark.host_process
-@pytest.mark.parametrize("agent_harness", ["codex", "pi"])
-def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, monkeypatch, agent_harness):
+@pytest.mark.parametrize(("agent_harness", "protected"), [("codex", False), ("pi", False), ("pi", True)])
+def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, monkeypatch, agent_harness, protected):
+    if protected:
+        backend = "/usr/bin/sandbox-exec" if sys.platform == "darwin" else "bwrap"
+        if (sys.platform != "darwin" and not sys.platform.startswith("linux")) or shutil.which(backend) is None:
+            pytest.skip("Seatbelt or bubblewrap is required for the protected Pi launch")
     calls = []
     native_popen = subprocess.Popen
     monkeypatch.setenv("TEST_NATIVE_CONFIG", "host-only-value")
     request = request_for(agent_harness)
     root = tmp_path / ".gp"
+    if protected:
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+        config = home / ".pi/agent"
+        config.mkdir(parents=True)
+        (config / "models.json").write_text('{"providers":{}}')
+        request = replace(request, sandbox=ProcessSandbox(
+            mode="workspace-write", backend="outer", workspace=root, writable_roots=(root,),
+        ))
     scope = ensure_execution_scope(
         root_dir=root, agent_harness="codex" if agent_harness == "codex" else "pi",
         owner_session_id="inference", run_id="run_inference",
@@ -68,11 +84,20 @@ def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, 
             assert command[command.index("--model") + 1] == "test-model"
             assert Path(command[command.index("--extension") + 1]).read_text() == request.pi_tools.extension
             assert kwargs["cwd"] == Path(output_path).parent
+            if protected:
+                scratch = Path(kwargs["env"]["TMPDIR"])
+                assert scratch.is_dir()
+                pi_home = Path(kwargs["env"]["PI_CODING_AGENT_DIR"])
+                assert pi_home.is_relative_to(kwargs["cwd"])
+                assert (pi_home / "models.json").read_text() == '{"providers":{}}'
         event = {"type": "message_end", "message": {"role": "assistant", "stopReason": "stop"}}
         script = (
-            "import json,os,subprocess,sys\nfrom pathlib import Path\n"
+            "import json,os,subprocess,sys,tempfile\nfrom pathlib import Path\n"
+            "with tempfile.TemporaryFile() as scratch: scratch.write(b'tmp works')\n"
             "scope=json.loads(Path(sys.argv[3]).read_text())\n"
-            "assert any(p['pid']==os.getpid() and p['kind']=='internal' and p['status']=='registered' for p in scope['processes'])\n"
+            "registered=[p for p in scope['processes'] if p['kind']=='internal' and p['status']=='registered']\n"
+            "assert len(registered) == 1\n"
+            f"if not {protected!r}: assert registered[0]['pid'] == os.getpid()\n"
             "text=sys.stdin.read()\n"
             "Path(sys.argv[1]).write_text(json.dumps({'answer':text}))\n"
             "event=json.loads(sys.argv[2]); event['test_event']=True\n"
@@ -90,7 +115,7 @@ def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, 
         registration=registration,
     )
     assert result.process.state == "process_exited"
-    assert result.returncode == 0
+    assert result.returncode == 0, result.process.stderr
     assert result.payload == {"answer": request.prompt}
     assert execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])["processes"][0]["status"] == "finished"
     assert result.output_error is None
@@ -103,6 +128,8 @@ def test_native_request_executes_with_file_stdin_and_cleans_its_files(tmp_path, 
     command, kwargs = calls[0]
     directory = Path(command[command.index("-C") + 1]) if agent_harness == "codex" else kwargs["cwd"]
     assert not directory.exists()
+    if protected:
+        assert not Path(kwargs["env"]["TMPDIR"]).exists()
     assert "host-only-value" not in json.dumps(asdict(result))
     assert request.output_schema["properties"]["answer"]["default"] == "none"
     assert json.loads((tmp_path / "monitor.json").read_text())["state"] == "process_exited"

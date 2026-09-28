@@ -28,11 +28,9 @@ def mcp_schema_manifest(tmp_path):
 
 @pytest.mark.parametrize("role", ["main", "worker", "final-checker", "ordinary"])
 @pytest.mark.parametrize("debug", [False, True])
-@pytest.mark.parametrize("diagnostics", [False, True])
-def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug, diagnostics):
+def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug):
     result = _run_env_script(tmp_path, {
         "GOAL_PLUS_PI_ROLE": role,
-        "GOAL_PLUS_SESSION_DIAGNOSTICS": "1" if diagnostics else "0",
         "GOAL_PLUS_DEBUG": "1" if debug else "0",
     })
     assert "ownership checks passed" in result.stdout
@@ -103,6 +101,24 @@ def test_pi_command_context_and_shared_work_item_forwarding(tmp_path):
     assert "work receipt checks passed" in result.stdout
 
 
+@pytest.mark.parametrize("mode", ["tui", "rpc", "json"])
+def test_pi_runtime_display_needs_no_goal_or_model(tmp_path, mode):
+    result = _run_env_script(tmp_path, {"GOAL_PLUS_PI_ROLE": "main", "GOAL_PLUS_PI_INFO_TEST": mode})
+    assert "runtime display checks passed" in result.stdout
+    assert not (tmp_path / ".gp").exists()
+
+
+@pytest.mark.parametrize("role", ["main", "worker", "final-checker"])
+@pytest.mark.parametrize("debug", [False, True])
+def test_pi_shutdown_exports_only_main_after_closing_connections(tmp_path, role, debug):
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": role,
+        "GOAL_PLUS_DEBUG": "1" if debug else "0",
+        "GOAL_PLUS_PI_SHUTDOWN_TEST": "1",
+    })
+    assert "shutdown checks passed" in result.stdout
+
+
 def test_pi_gate_distinguishes_paused_goal_from_unauthorized(tmp_path):
     result = _run_env_script(tmp_path, {
         "GOAL_PLUS_PI_ROLE": "main",
@@ -153,6 +169,7 @@ def test_pi_continuation_and_goal_context_are_compact(tmp_path):
     result = _run_env_script(tmp_path, {
         "GOAL_PLUS_PI_ROLE": "main",
         "GOAL_PLUS_PI_CONTINUATION_TEST": "1",
+        "GOAL_PLUS_DEBUG": "1",
     })
     assert "continuation checks passed" in result.stdout
 
@@ -218,7 +235,16 @@ const mocks = {
     };
     export const parseJsonObject = JSON.parse;
     export const commandFailure = () => { throw Error("unexpected command failure"); };
-    export async function closeMcpConnections() {}
+    export async function closeMcpConnections() { (globalThis.shutdownEvents ??= []).push('close'); }
+    export async function readRuntimeInfo() {
+      globalThis.infoReads = (globalThis.infoReads ?? 0) + 1;
+      if (globalThis.infoFailure) throw Error('fixture runtime failure');
+      return 'Goal Plus fixture | worker sandbox: seatbelt | DEBUG off\\nPython: /managed/python';
+    }
+    export async function refreshDebugTranscript() {
+      globalThis.debugExports = (globalThis.debugExports ?? 0) + 1;
+      (globalThis.shutdownEvents ??= []).push('export');
+    }
     export async function runJsonCli(pi, ctx, name, args) {
       if (name === "host_mcp_manifest") return {details: globalThis.mcpManifest};
       globalThis.calls.push({name, args});
@@ -285,12 +311,43 @@ const ctx = {cwd, mode: "interactive", hasUI: false, isIdle: () => true,
     theme: {fg: (_color, text) => text, bg: (_color, text) => text}},
 };
 await register(pi);
+assert.equal(commands.has('goal-plus-info'), process.env.GOAL_PLUS_PI_ROLE === 'main');
+if (process.env.GOAL_PLUS_PI_INFO_TEST) {
+  ctx.mode = process.env.GOAL_PLUS_PI_INFO_TEST;
+  const statuses = new Map(), notices = [];
+  ctx.ui.setStatus = (key, value) => statuses.set(key, value);
+  ctx.ui.notify = (text, level) => notices.push({text, level});
+  pi.sendMessage = pi.sendUserMessage = pi.appendEntry = () => {throw Error('diagnostics must not start or persist work');};
+  assert.equal(globalThis.infoReads ?? 0, 0, 'factory must not launch Python');
+  await events.get('session_start')({reason: 'startup'}, ctx);
+  assert.equal(globalThis.infoReads ?? 0, ctx.mode === 'tui' ? 1 : 0);
+  await commands.get('goal-plus-info').handler('', ctx);
+  assert.ok(statuses.get('goal-plus-runtime').includes('seatbelt'));
+  assert.ok(notices[0].text.includes('/managed/python'));
+  assert.equal(notices[0].level, 'info');
+  globalThis.infoFailure = true;
+  await commands.get('goal-plus-info').handler('', ctx);
+  assert.ok(!statuses.get('goal-plus-runtime').includes('seatbelt'), 'failure clears stale status');
+  assert.equal(notices.at(-1).level, 'error');
+  assert.deepEqual(globalThis.calls, []);
+  console.log('runtime display checks passed');
+  process.exit(0);
+}
+if (process.env.GOAL_PLUS_PI_SHUTDOWN_TEST === '1') {
+  ctx.sessionManager.getSessionFile = () => cwd + '/native-session.jsonl';
+  await events.get('session_shutdown')({reason: 'test'}, ctx);
+  const exported = process.env.GOAL_PLUS_PI_ROLE === 'main' && process.env.GOAL_PLUS_DEBUG === '1';
+  assert.deepEqual(globalThis.shutdownEvents, exported ? ['close', 'export'] : ['close']);
+  console.log('shutdown checks passed');
+  process.exit(0);
+}
 if (process.env.GOAL_PLUS_PI_ROLE === 'main') {
   ctx.sessionManager.getSessionFile = () => cwd + '/native-session.jsonl';
   await events.get('agent_end')({messages: [{role: 'assistant', stopReason: 'stop', content: []}]}, ctx);
   const indexPath = cwd + '/.gp/host-logs/session-diagnostics/pi-'
     + createHash('sha256').update('pi-test').digest('hex') + '/index.json';
-  assert.equal(existsSync(indexPath), process.env.GOAL_PLUS_SESSION_DIAGNOSTICS !== '0');
+  assert.equal(existsSync(indexPath), process.env.GOAL_PLUS_DEBUG === '1');
+  assert.equal(globalThis.debugExports ?? 0, process.env.GOAL_PLUS_DEBUG === '1' ? 1 : 0);
   if (existsSync(indexPath)) {
     const index = JSON.parse(readFileSync(indexPath, 'utf8'));
     assert.equal(index.history, cwd + '/native-session.jsonl');
@@ -309,7 +366,7 @@ if (process.env.GOAL_PLUS_PI_ROLE === 'main') {
     name: tool.name, description: tool.description, parameters: tool.parameters,
   }}))};
   events.get('before_provider_request')({payload}, ctx);
-  if (process.env.GOAL_PLUS_SESSION_DIAGNOSTICS !== '0' && tools.size > 0) {
+  if (process.env.GOAL_PLUS_DEBUG === '1' && tools.size > 0) {
     assert.equal(diagnostics.at(-1).data.status, 'observed');
     const catalog = JSON.parse(diagnostics[0].data.serialized);
     for (const tool of catalog.request) {
@@ -321,7 +378,7 @@ if (process.env.GOAL_PLUS_PI_ROLE === 'main') {
         assert.deepEqual(tool.parameters, shared.inputSchema);
       }
     }
-  } else if (process.env.GOAL_PLUS_SESSION_DIAGNOSTICS === '0') assert.equal(diagnostics.length, 0);
+  } else if (process.env.GOAL_PLUS_DEBUG !== '1') assert.equal(diagnostics.length, 0);
   pi.appendEntry = savedAppend;
 }
 if (process.env.GOAL_PLUS_TT_SDK_TEST) {
@@ -375,7 +432,7 @@ if (process.env.GOAL_PLUS_PI_ROLE === "main") {
     initiallyActive ? "rebuilt system\n\n" + globalThis.mcpManifest.instructions : "rebuilt system");
   const observations = [];
   pi.appendEntry = (type, data) => observations.push({type, data});
-  const debug = process.env.GOAL_PLUS_SESSION_DIAGNOSTICS !== "0";
+  const debug = process.env.GOAL_PLUS_DEBUG === "1";
   ctx.getSystemPrompt = () => {
     assert.equal(debug, true, "disabled diagnostics must not read the system prompt");
     return next.systemPrompt;

@@ -159,7 +159,8 @@ const result = await discoverAndLoadExtensions(
 assert.deepEqual(result.errors, []);
 assert.equal(result.extensions.length, 1);
 try {
-  assert(result.extensions[0].tools.has("goal_plus_status"));
+  assert(result.extensions[0].commands.has("goal-plus"));
+  assert(!result.extensions[0].tools.has("goal_plus_status"));
   const transport = await import(pathToFileURL(join(packageRoot, "assets/pi/extensions/lib/goal-plus-transport.ts")));
   const invocation = transport.projectModuleInvocation({cwd: process.cwd()}, "goal-plus-pi-tool", "goal_plus.pi_tool");
   assert.equal(invocation.command, python);

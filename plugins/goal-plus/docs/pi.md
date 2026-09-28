@@ -55,6 +55,25 @@ pi -p "/goal-plus inspect this repository"
 卸载使用 `./uninstall.sh --pi`；release 清理与组件范围见
 [卸载说明](development.md#卸载与版本清理)。
 
+### 无模型查询当前 runtime
+
+终端执行 `~/.local/share/goal-plus/bin/goal-plus-info pi`，无需启动 Pi，即可查看该宿主
+登记的 Goal Plus build、Python、DEBUG 和 worker sandbox 默认配置；支持 `--json`。
+自定义安装目录与查询范围见 [终端查询](development.md#安装模式)。
+
+交互 Pi Main 启动或 reload 时，状态栏自动显示当前 extension 绑定的 build、worker sandbox
+默认后端和 DEBUG。输入 `/goal-plus-info` 查看完整信息并刷新摘要，不需要先创建 Goal，
+不调用模型，也不写入模型上下文或 Goal 状态。RPC 客户端可通过同名 extension 命令收到
+通知；JSON/print 模式没有 UI，使用终端查询。诊断失败显示 unavailable，不阻止普通会话启动。
+
+macOS worker 默认后端为 Seatbelt，Linux 为 bubblewrap；程序缺失会标明 unavailable。
+发现程序不证明隔离能执行，`execution_verified=false` 表示未运行探针。
+Direct Pi Main 仍使用 launcher 进程权限，不能将 worker 默认后端视为 Main 已受隔离。
+ThinkThread Root 显示 provider 边界。该诊断与创建 Goal 时的 `goal-plus-runtime-start`
+权限和工具快照分别保留各自用途。
+外部终端用 `goal-plus-info pi --thinkthread` 查询 `goal-plus-pi` Profile 的安装绑定；
+底层程序显示 `managed by ThinkThread (not inspected)`，不推断该 provider 的内部隔离实现。
+
 ### ThinkThread protected Search Root
 
 ThinkThread Runtime 由 ThinkThread/Capsule 独立安装和管理。Goal Plus 不安装、升级或卸载它。
@@ -206,7 +225,7 @@ Pi 使用 extension event，而不是项目 hook 文件。extension 只会在 in
 
 新建 Goal Plus 记录前，Pi extension 会追加一条不进入模型上下文的
 `goal-plus-runtime-start` custom entry。折叠视图显示当前 main session 的 mode、
-project trust、active tool 数量，以及 Pi 没有内置 sandbox/审批的事实；展开后显示
+project trust、active tool 数量，以及 Pi Main 没有内置 sandbox/审批的事实；展开后显示
 实际 cwd 和 active builtin/non-builtin tool 名单。这里的 `--approve` 或
 `project_trusted=true` 只表示允许加载项目内 Pi 资源，不表示 full access。
 filesystem 只报告为 `launcher-process-user`，network 只报告为
@@ -253,7 +272,9 @@ monitor 不可用时，卡片降级到终态、当前会话耗时和 main 用量
 它是 custom entry，不是 LLM message，不会触发另一个 assistant turn，也
 不再额外发送一份重复的统计通知。
 
-Search worker 由共同 session 宿主启动 `pi --mode rpc` 子进程，资源经 scope 登记后放行；
+Search worker 由共同 session 宿主启动受保护的 `pi --mode rpc` 子进程，资源经 scope 登记后放行；
+direct child 默认使用 OS wrapper；后端缺失时拒绝启动。Pi Main 沿用宿主权限。
+依赖安装、配置副本与完整支持范围见 [Agent sandbox](sandbox.md)。
 native session 位于 `.gp/host-sessions/pi/`。旧 Pi pool/driver/worker 与专属 CLI 已删除。
 切换前须由旧安装关闭旧活跃 pool；历史文件保留，新版本不接管旧 pool 执行。
 
