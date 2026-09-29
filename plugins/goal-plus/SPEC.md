@@ -455,6 +455,12 @@ Stop-hook 续跑保持不支持。
 
 Session、session_handle、角色 profile、worker policy 和调用观测分别表达 harness/provider；
 状态 owner 在执行或写入前核对冻结绑定、精确 handle、scope 和 generation。
+Candidate dispatch 在领域授权后，将缺少直接 attachment 的 current-revision linked run 幂等附着
+到同一 Main activation 的 open scope。同一 activation 的 owner scope 干净关闭后，只有在有效
+host resume nonce 下才创建下一 generation，并继承原生 agent 配置；ThinkThread 的新 Goal
+activation 可在历史 Goal scope 干净关闭后创建独立 scope。closing 或 cleanup_failed scope
+继续拒绝新执行。
+旧 attachment、fence 和进程记录保留，scope reconciliation 失败不改变 Goal 业务状态。
 Candidate 与 Annotation 使用冻结绑定；LLM Verifier 复用 direct structured inference。
 Delegation 与最终 checker 保持直接启动。`strategy.inner_agent` 名称和行为不变，
 省略时 direct 默认 autoresearch、ThinkThread 默认 common，显式选择优先。
