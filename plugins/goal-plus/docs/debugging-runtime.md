@@ -644,12 +644,14 @@ spec 或手工 reset 来绕过 edit surface。
 ### `VerifierWorkspaceSideEffect`
 
 检查 verifier result 的 `metrics.verifier_workspace_side_effects`
-、`cleanup_failures`、`infrastructure_failure` 和 `candidate_action` 。该错误表示 verifier 把 compiler output
-或临时文件写进 candidate workspace。
+、`cleanup_failures`、`infrastructure_failure` 和 `candidate_action`。该错误表示 verifier 修改了
+artifact 原有文件、验证输出清理失败，或在 preflight/promotion 的非一次性 workspace 中产生变化。
+普通 candidate verifier 在一次性 worktree 中产生的纯新增文件清理成功后不触发该错误，路径记录
+在 `verifier_workspace_outputs_cleaned`。
 
-worker 应立即停止并报告。main 修复 source-owned verifier，使临时输出使用 `GOAL_PLUS_VERIFIER_TMPDIR` 、`TMPDIR` 或
-`tempfile` ；并发 verifier 不能共享固定 `/tmp` 路径。随后重新 freeze 并创建新 run，复用任何 candidate state 前先确认
-`cleanup_failures` 为空。
+worker 应立即停止并报告。main 修复 source-owned verifier，使临时输出使用
+`GOAL_PLUS_VERIFIER_TMPDIR`、`TMPDIR` 或 `tempfile`；并发 verifier 不能共享固定 `/tmp` 路径。
+随后重新 freeze 并创建新 run，复用任何 candidate state 前先确认 `cleanup_failures` 为空。
 
 ## 诊断工具与副作用
 

@@ -14,7 +14,7 @@ def candidate_delivery(tmp_path: Path, *, failing_verifier: bool = False):
         (project / "evaluator.py").write_text(
             "import json, os\nfrom pathlib import Path\n"
             "if os.environ['GOAL_PLUS_VERIFIER_PHASE'] == 'candidate':\n"
-            "    Path('unexpected-output.bin').write_text('generated')\n"
+            "    Path('initial_program.py').write_text('VALUE = 99\\n')\n"
             "print(json.dumps({'combined_score': 1.0}))\n"
         )
     runtime = FileSearchRuntime(tmp_path / ".gp")

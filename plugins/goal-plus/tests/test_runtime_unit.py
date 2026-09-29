@@ -4091,7 +4091,7 @@ def test_verifier_lock_rejects_duplicate_during_attempt_capture(tmp_path):
     assert runtime.candidate_creation.state.read_candidate(run_id, candidate_id) == before
 
 
-def test_run_verifier_reports_and_cleans_verifier_workspace_side_effect(
+def test_run_verifier_keeps_result_after_cleaning_generated_outputs(
     tmp_path: Path,
 ) -> None:
     project = make_project(tmp_path)
@@ -4105,6 +4105,55 @@ def test_run_verifier_reports_and_cleans_verifier_workspace_side_effect(
         "print(json.dumps({'combined_score': 1.0}))\n",
         encoding="utf-8",
     )
+    data = spec_for(project).model_dump(mode="json")
+    data["process_verifiers"].append({
+        "name": "clean-workspace",
+        "role": "process_gate",
+        "command": [
+            "python", "-c",
+            "from pathlib import Path; raise SystemExit(Path('.goal-plus-verifiers/generated.bin').exists())",
+        ],
+    })
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data), [project / "evaluator.py"], agent_harness="codex",
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    candidate = runtime.start_batch(
+        run_id, runtime.plan_next(run_id, requested_k=1).plan_id,
+    )[0]
+    candidate_id, workspace = candidate.candidate_id, candidate.workspace
+    (workspace / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    report = runtime.run_verifier(run_id, candidate_id)
+
+    result = report.verifier_results[0]
+    assert report.process_passed is True
+    assert result.failure_class is None
+    assert result.metrics["verifier_workspace_outputs_cleaned"] == [
+        ".goal-plus-verifiers/generated.bin"
+    ]
+    assert len(report.verifier_results) == 2
+    assert report.verifier_results[1].passed is True
+    assert not (workspace / ".goal-plus-verifiers/generated.bin").exists()
+    assert (workspace / "initial_program.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    iteration = runtime.candidate_creation.state.read_candidate(
+        run_id, candidate_id
+    ).iterations[0]
+    assert iteration.failure_class is None
+    assert iteration.score == 1.0
+
+
+def test_run_verifier_rejects_changes_to_artifact_inputs(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    (project / "evaluator.py").write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "if os.environ['GOAL_PLUS_VERIFIER_PHASE'] == 'candidate':\n"
+        "    Path('initial_program.py').write_text('VALUE = 99\\n', encoding='utf-8')\n"
+        "print(json.dumps({'combined_score': 1.0}))\n",
+        encoding="utf-8",
+    )
     runtime = FileSearchRuntime(tmp_path / ".search")
     run_id, candidate_id, workspace = create_candidate(runtime, project)
     (workspace / "initial_program.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -4114,33 +4163,77 @@ def test_run_verifier_reports_and_cleans_verifier_workspace_side_effect(
     result = report.verifier_results[0]
     assert report.process_passed is False
     assert result.failure_class == "VerifierWorkspaceSideEffect"
-    assert result.metrics["verifier_workspace_side_effects"] == [
-        ".goal-plus-verifiers/generated.bin"
-    ]
+    assert result.metrics["verifier_workspace_side_effects"] == ["initial_program.py"]
     assert result.metrics["cleanup_failures"] == []
     assert result.metrics["infrastructure_failure"] is True
     assert result.metrics["candidate_action"] == "stop_and_report"
-    assert not (workspace / ".goal-plus-verifiers/generated.bin").exists()
-    assert report.disposition == "failure"
     assert (workspace / "initial_program.py").read_text(encoding="utf-8") == "VALUE = 0\n"
-    iteration = runtime.candidate_creation.state.read_candidate(
-        run_id, candidate_id
-    ).iterations[0]
-    receipt = iteration.settlement_receipt
-    assert receipt is not None
-    assert receipt.disposition == "failure"
-    assert receipt.attempt_artifact_ref == iteration.artifact_ref
-    assert receipt.rollback is not None
-    assert receipt.rollback.target_artifact_ref == iteration.attempt_base_artifact_ref
-    assert receipt.rollback.restored_artifact_ref == iteration.restored_to_artifact_ref
-    assert receipt.ledger_artifact_ref == iteration.workspace_artifact_after_settlement
-    attempt = iteration.git_head
-    assert attempt is not None
-    assert subprocess.check_output(
-        ["git", "show", f"{attempt}:initial_program.py"],
-        cwd=workspace,
-        text=True,
-    ) == "VALUE = 1\n"
+
+
+def test_run_verifier_rejects_generated_outputs_when_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = make_project(tmp_path)
+    (project / "evaluator.py").write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "if os.environ['GOAL_PLUS_VERIFIER_PHASE'] == 'candidate':\n"
+        "    Path('generated.bin').write_text('compiled', encoding='utf-8')\n"
+        "print(json.dumps({'combined_score': 1.0}))\n",
+        encoding="utf-8",
+    )
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    run_id, candidate_id, _ = create_candidate(runtime, project)
+    restore = runtime.verifiers.restore_verifier_workspace
+
+    def fail_cleanup(*args, **kwargs):
+        restore(*args, **kwargs)
+        return ["generated.bin"]
+
+    monkeypatch.setattr(runtime.verifiers, "restore_verifier_workspace", fail_cleanup)
+    result = runtime.run_verifier(run_id, candidate_id).verifier_results[0]
+
+    assert result.failure_class == "VerifierWorkspaceSideEffect"
+    assert result.metrics["verifier_workspace_side_effects"] == ["generated.bin"]
+    assert result.metrics["cleanup_failures"] == ["generated.bin"]
+
+
+def test_promotion_verifier_keeps_generated_outputs_strict(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    (project / "evaluator.py").write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "if os.environ['GOAL_PLUS_VERIFIER_PHASE'] == 'promotion':\n"
+        "    Path('promotion-output.bin').write_text('generated', encoding='utf-8')\n"
+        "print(json.dumps({'combined_score': 1.0}))\n",
+        encoding="utf-8",
+    )
+    data = spec_for(project, max_parallel=1).model_dump(mode="json")
+    data["promotion_verifiers"] = [{
+        "name": "promotion",
+        "role": "promotion_gate",
+        "command": ["python", "evaluator.py"],
+    }]
+    runtime = FileSearchRuntime(tmp_path / ".search")
+    frozen = runtime.freeze_spec(
+        SearchSpec.model_validate(data), [project / "evaluator.py"], agent_harness="codex",
+    )
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    task = runtime.start_batch(
+        run_id, runtime.plan_next(run_id, requested_k=1).plan_id,
+    )[0]
+    assert runtime.run_verifier(run_id, task.candidate_id).process_passed is True
+    runtime.select(run_id)
+
+    result = runtime.run_verifier(
+        run_id, task.candidate_id, scope="promotion",
+    ).verifier_results[0]
+
+    assert result.failure_class == "VerifierWorkspaceSideEffect"
+    assert result.metrics["verifier_workspace_side_effects"] == [
+        "promotion-output.bin"
+    ]
+    assert not (task.workspace / "promotion-output.bin").exists()
 
 
 def test_run_verifier_classifies_legacy_generated_verifier_file_as_infrastructure(
@@ -4190,6 +4283,7 @@ def test_run_verifier_records_failure_class_on_timeout(
     session = runtime.start_agent_session(run_id, candidate_id, {"goal": "iterate"})
 
     def fake_run(*args, **kwargs):
+        (kwargs["cwd"] / "timed-out-output.bin").write_text("partial", encoding="utf-8")
         raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
 
     monkeypatch.setattr(runtime.verifiers, "execute_verifier_process", fake_run)
@@ -4202,7 +4296,11 @@ def test_run_verifier_records_failure_class_on_timeout(
 
     assert report.process_passed is False
     assert report.aggregate_score == 0.0
-    assert report.verifier_results[0].failure_class == "Timeout"
+    result = report.verifier_results[0]
+    assert result.failure_class == "Timeout"
+    assert result.metrics["verifier_workspace_outputs_cleaned"] == [
+        "timed-out-output.bin"
+    ]
     assert report.attempt_id is not None
     assert report.attempt_iteration == 1
     assert report.attempt_artifact_ref is not None

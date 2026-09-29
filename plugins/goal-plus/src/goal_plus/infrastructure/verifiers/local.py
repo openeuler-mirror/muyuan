@@ -654,6 +654,7 @@ class LocalVerifiers:
                 workspace_before,
                 self.hash_verifier_workspace(record.task.workspace),
             )
+            workspace_failure = bool(side_effects)
             if side_effects:
                 cleanup_failures = self.restore_verifier_workspace(
                     record.task.workspace,
@@ -661,6 +662,12 @@ class LocalVerifiers:
                     side_effects,
                     git_head_before,
                 )
+                if self.disposable_outputs_cleaned(
+                    verifier_phase, workspace_before, side_effects, cleanup_failures,
+                ):
+                    metrics["verifier_workspace_outputs_cleaned"] = side_effects
+                    workspace_failure = False
+            if workspace_failure:
                 metrics.update(
                     {
                         "verifier_workspace_side_effects": side_effects,
@@ -757,6 +764,10 @@ class LocalVerifiers:
                 if side_effects
                 else []
             )
+            outputs_cleaned = self.disposable_outputs_cleaned(
+                verifier_phase, workspace_before, side_effects, cleanup_failures,
+            )
+            workspace_failure = bool(side_effects) and not outputs_cleaned
             stdout = self.coerce_verifier_output(exc.stdout)
             stderr = self.coerce_verifier_output(exc.stderr)
             log_path.write_text(
@@ -779,13 +790,15 @@ class LocalVerifiers:
             metrics: dict[str, Any] = {
                 "timeout_seconds": command.timeout_seconds,
                 "elapsed_seconds": elapsed,
-                "verifier_workspace_side_effects": side_effects,
+                "verifier_workspace_side_effects": side_effects if workspace_failure else [],
                 "cleanup_failures": cleanup_failures,
-                "infrastructure_failure": bool(side_effects),
+                "infrastructure_failure": workspace_failure,
                 "candidate_action": (
-                    "stop_and_report" if side_effects else "inspect_timeout"
+                    "stop_and_report" if workspace_failure else "inspect_timeout"
                 ),
             }
+            if outputs_cleaned:
+                metrics["verifier_workspace_outputs_cleaned"] = side_effects
             metrics.update(self.verifier_diagnostics(diagnostics_dir))
             self.add_visible_verifier_feedback(
                 command,
@@ -801,7 +814,7 @@ class LocalVerifiers:
                 metrics=metrics,
                 log_path=log_path,
                 failure_class=(
-                    "VerifierWorkspaceSideEffect" if side_effects else "Timeout"
+                    "VerifierWorkspaceSideEffect" if workspace_failure else "Timeout"
                 ),
             )
         except OSError as exc:
@@ -903,6 +916,20 @@ class LocalVerifiers:
             path for path in remaining if path not in cleanup_failures
         )
         return cleanup_failures
+
+    @staticmethod
+    def disposable_outputs_cleaned(
+        verifier_phase: Literal["candidate", "promotion"],
+        before: dict[str, str],
+        changes: list[str],
+        cleanup_failures: list[str],
+    ) -> bool:
+        return (
+            verifier_phase == "candidate"
+            and bool(changes)
+            and not cleanup_failures
+            and all(path not in before for path in changes)
+        )
 
     def run_internal_command(
         self,

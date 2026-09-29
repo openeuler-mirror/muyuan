@@ -765,8 +765,10 @@ monitor 的 `artifact_availability` 显示 `removed`，但不支持重开完整 
 private branch 或 snapshot 不会删除 score、diff、annotation、provider journal 或最终 report。
 
 每条 ranking command 必须成功退出，并输出最后一个 JSON object，其中 `metric_name` 对应 finite
-number。临时 verifier 输出必须位于 `GOAL_PLUS_VERIFIER_TMPDIR`；verifier artifact 和 evaluation
-input 都会用 hash 固定。
+number。临时 verifier 输出应位于 `GOAL_PLUS_VERIFIER_TMPDIR`；verifier artifact 和 evaluation
+input 都会用 hash 固定。普通 candidate verifier 在一次性 worktree 中产生的纯新增文件会在每条
+command 后清理，并通过 `verifier_workspace_outputs_cleaned` 记录；原有 artifact 文件发生变化或
+清理失败仍视为 `VerifierWorkspaceSideEffect`。Preflight 和 promotion verifier 保持严格检查。
 
 每个引用 device pool 必须至少提供 `budget.max_parallel` 个设备，且同一 spec 的多个 pool
 不能复用同一个可见变量。lane 与设备一一对应。active run 通过
@@ -777,7 +779,8 @@ input 都会用 hash 固定。
 
 - Validation error：调用方必须修正 spec 或 tool argument。
 - Candidate verifier failure：正常 Search Evidence，不是 runtime 故障。
-- `VerifierWorkspaceSideEffect`：evaluator 破坏隔离；停止 candidate，修复后重新 freeze。
+- `VerifierWorkspaceSideEffect`：evaluator 修改原有 artifact、无法清理验证输出，或在非一次性
+  workspace 中产生变化；停止 candidate，修复后重新 freeze。
 - Frozen artifact hash mismatch：本次 scoring 无效。
 - 已确认 verifier defect：先 `goal_plus_search_invalidate_run`，再停止 host 并确认静默，最后创建 successor
   run。
