@@ -324,6 +324,12 @@ Goal/Search attachment、原 run_ids/run_id 布局与领域授权继续保留。
 
 ## 恢复与 Handoff
 
+共同 candidate host 在派发缺少直接 scope attachment 的 linked run 前核对 Main session、Goal
+revision 与 run 归属。匹配当前 activation 的 open scope 直接幂等追加 run；干净关闭的 scope
+只有在显式 resume 后创建下一 generation，并继承原 scope 的 native agent 配置。正在关闭或清理
+失败的 scope 保持 fenced。该过程不删除旧 run、fence 或进程记录，也不把 Goal 改为
+`needs_user`。replacement run 经过同一合同，没有专用恢复分支。
+
 正常续跑优先复用 host 的 native session。工作区保持完整、仅需要 fresh context 时，使用
 可移植的 state redispatch：
 

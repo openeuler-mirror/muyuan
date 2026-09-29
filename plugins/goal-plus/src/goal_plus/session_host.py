@@ -14,6 +14,7 @@ from goal_plus.bootstrap import build_scope_process_registry, build_scope_state
 from goal_plus.candidate_host import candidate_host_queries
 from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.domain.adaptive.models import SteeringTarget
+from goal_plus.domain.goal import GoalPlusRecord
 from goal_plus.domain.search import AgentSessionRecord
 from goal_plus.execution.native_session import CodexSession, PiSession
 from goal_plus.execution.scope import assert_scope_admission
@@ -22,6 +23,7 @@ from goal_plus.execution.session_rpc import SessionRequestRejected
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_scope import (
     ensure_execution_scope,
+    execution_scope_for_owner,
     execution_scope_for_run,
     execution_scope_snapshot,
     goal_scope_activation_id,
@@ -240,21 +242,10 @@ class NativeCandidateHost:
                 execution_scope_snapshot(root_dir=self.root, scope_id=scope_id)
                 if scope_id else execution_scope_for_run(root_dir=self.root, run_id=run_id)
             )
-            if (
-                scope_id is None
-                and (scope is None or scope.get("state") == "closed")
-                and self.queries.runtime_provider(run_id) == "thinkthread"
+            if scope_id is None and (
+                scope is None or scope.get("state") == "closed"
             ):
-                # A ThinkThread Root has no PreToolUse stop hook. Recreate a
-                # closed scope only when the Main has explicitly resumed.
-                scope = ensure_execution_scope(
-                    root_dir=self.root,
-                    agent_harness=self.agent_harness,
-                    owner_session_id=caller_id,
-                    run_id=run_id,
-                    activation_id=goal_scope_activation_id(goal),
-                    activation_nonce=goal_scope_resume_nonce(goal, scope),
-                )
+                scope = self._reconcile_run_scope(run_id, caller_id, goal)
             if scope is None:
                 raise PermissionError("native candidate requires a host execution scope")
             assert_scope_admission(
@@ -266,6 +257,63 @@ class NativeCandidateHost:
                 or (self.agent_harness == "codex" and scope.get("owner_session_id") != caller_id)
             ):
                 raise PermissionError("native candidate scope does not belong to the current Main activation")
+
+    def _reconcile_run_scope(
+        self, run_id: str, caller_id: str, goal: GoalPlusRecord,
+    ) -> ScopeRecord | None:
+        previous = execution_scope_for_owner(
+            root_dir=self.root,
+            agent_harness=self.agent_harness,
+            owner_session_id=caller_id,
+        )
+        activation_id = goal_scope_activation_id(goal)
+        if previous is None:
+            if self.queries.runtime_provider(run_id) != "thinkthread":
+                return None
+            return ensure_execution_scope(
+                root_dir=self.root,
+                agent_harness=self.agent_harness,
+                owner_session_id=caller_id,
+                run_id=run_id,
+                activation_id=activation_id,
+            )
+
+        state = previous.get("state")
+        if state in {"closing", "cleanup_failed"}:
+            raise RuntimeError(
+                "execution scope cleanup is incomplete; new work is fenced"
+            )
+        previous_activation = previous.get("activation_id")
+        if not isinstance(previous_activation, str) or (
+            previous_activation.partition(":")[0] != goal.goal_plus_id
+        ):
+            raise PermissionError(
+                "native candidate scope does not belong to the current Goal"
+            )
+        activation_nonce = goal_scope_resume_nonce(goal, previous)
+        if state == "open":
+            if previous_activation != activation_id:
+                raise PermissionError(
+                    "native candidate scope does not belong to the current Main activation"
+                )
+        elif state == "closed":
+            if activation_nonce is None:
+                raise RuntimeError(
+                    "GoalPlusResumeRequired: a closed execution scope requires "
+                    "an explicit host resume before candidate dispatch"
+                )
+        else:
+            raise RuntimeError(f"execution scope state is invalid: {state}")
+
+        return ensure_execution_scope(
+            root_dir=self.root,
+            agent_harness=self.agent_harness,
+            owner_session_id=caller_id,
+            run_id=run_id,
+            activation_id=activation_id,
+            activation_nonce=activation_nonce,
+            native_agent_config=previous.get("native_agent_config"),
+        )
 
     def _cancel_allocation(self, decision, caller_id: str) -> None:
         """Interrupt the exact retired sessions and persist host receipts."""

@@ -1,6 +1,7 @@
 """Common product launcher gates and delivery, with controlled native processes."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import asdict, replace
 import json
@@ -110,6 +111,24 @@ def hosted_candidate(request, tmp_path, monkeypatch):
     assert close_execution_scope(root_dir=root, scope_id=scope["scope_id"], reason="test finished")["state"] == "closed"
 
 
+def replacement_candidate(root, goal, runtime, source_task):
+    source = runtime.search_run.state.read_run(source_task.run_id)
+    runtime.invalidate_run(
+        source_task.run_id,
+        reason="verifier_infrastructure_failure",
+        summary="the source verifier contract requires replacement",
+        evidence=[{"failure_class": "VerifierWorkspaceSideEffect"}],
+    )
+    run_id = runtime.create_run(
+        source.frozen_spec_id, source_run_id=source_task.run_id,
+    )
+    FileGoalPlusRuntime(root).link_search_run(
+        goal.goal_plus_id, source.frozen_spec_id, run_id,
+    )
+    plan = runtime.plan_next(run_id, requested_k=1)
+    return runtime.start_batch(run_id, plan.plan_id)[0]
+
+
 def test_allocation_dispatch_wakes_exact_call_once(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from goal_plus.session_host import NativeCandidateHost
@@ -191,6 +210,112 @@ def test_only_thinkthread_execution_can_create_a_missing_scope(
         with pytest.raises(PermissionError, match="requires a host execution scope"):
             host._admit_run("run_test", "main_test", execution=True)
         assert created == []
+
+
+def test_replacement_dispatch_attaches_open_owner_scope_once(hosted_candidate):
+    from goal_plus.bootstrap import build_scope_state
+    from goal_plus.session_host import NativeCandidateHost
+
+    root, harness, goal, runtime, source_task, _, scope, _, _ = hosted_candidate
+    task = replacement_candidate(root, goal, runtime, source_task)
+    hosts = [
+        NativeCandidateHost(
+            root, agent_harness=harness,
+            caller=lambda: goal.active_session.session_id,
+        )
+        for _ in range(2)
+    ]
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(
+                lambda host: host._admit_run(
+                    task.run_id, goal.active_session.session_id, execution=True,
+                ),
+                hosts,
+            ))
+        current = execution_scope_snapshot(
+            root_dir=root, scope_id=scope["scope_id"],
+        )
+        assert current["run_ids"].count(task.run_id) == 1
+        assert len(list(build_scope_state(root).records())) == 1
+
+        receipt = hosts[0].run_candidate(
+            task.run_id, task.candidate_id, "replacement", "work", 5,
+        )
+        result = hosts[0](receipt["session_id"], "wait").wait(
+            "replacement", timeout=10,
+        )
+        assert result.state == "completed"
+    finally:
+        for host in hosts:
+            host.shutdown()
+
+
+def test_closed_owner_scope_requires_resume_before_replacement_dispatch(
+    hosted_candidate,
+):
+    from goal_plus.bootstrap import build_scope_state
+    from goal_plus.session_host import NativeCandidateHost
+
+    root, harness, goal, runtime, source_task, _, scope, _, _ = hosted_candidate
+    task = replacement_candidate(root, goal, runtime, source_task)
+    closed = close_execution_scope(
+        root_dir=root, scope_id=scope["scope_id"], reason="host interrupted",
+    )
+    host = NativeCandidateHost(
+        root, agent_harness=harness,
+        caller=lambda: goal.active_session.session_id,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="GoalPlusResumeRequired"):
+            host.run_candidate(
+                task.run_id, task.candidate_id, "before-resume", "work", 5,
+            )
+        assert FileGoalPlusRuntime(root).status(goal.goal_plus_id).status == "active"
+        assert list(build_scope_state(root).records()) == [closed]
+
+        goals = FileGoalPlusRuntime(root)
+        start = goals.status(goal.goal_plus_id).host_command_invocations[-1]
+        goals.control_from_host_command(
+            goal.goal_plus_id,
+            invocation=start.model_copy(update={
+                "action": "resume",
+                "invocation_id": "resume:replacement",
+                "native_entry_id": "resume-replacement",
+            }),
+        )
+        peers = [host, NativeCandidateHost(
+            root, agent_harness=harness,
+            caller=lambda: goal.active_session.session_id,
+        )]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(
+                lambda item: item._admit_run(
+                    task.run_id, goal.active_session.session_id, execution=True,
+                ),
+                peers,
+            ))
+
+        scopes = list(build_scope_state(root).records())
+        assert len(scopes) == 2
+        current = next(item for item in scopes if item["state"] == "open")
+        assert current["generation"] == closed["generation"] + 1
+        assert current["native_agent_config"] == closed["native_agent_config"]
+        assert current["run_ids"].count(task.run_id) == 1
+        assert execution_scope_snapshot(
+            root_dir=root, scope_id=closed["scope_id"],
+        ) == closed
+
+        receipt = host.run_candidate(
+            task.run_id, task.candidate_id, "after-resume", "work", 5,
+        )
+        result = host(receipt["session_id"], "wait").wait(
+            "after-resume", timeout=10,
+        )
+        assert result.state == "completed"
+        peers[1].shutdown()
+    finally:
+        host.shutdown()
 
 
 def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
