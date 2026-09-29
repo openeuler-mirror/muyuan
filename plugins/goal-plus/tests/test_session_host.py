@@ -212,6 +212,49 @@ def test_only_thinkthread_execution_can_create_a_missing_scope(
         assert created == []
 
 
+def test_thinkthread_new_goal_starts_after_historical_scope_closed(tmp_path):
+    from types import SimpleNamespace
+
+    from goal_plus.bootstrap import build_scope_state
+    from goal_plus.session_host import NativeCandidateHost
+
+    previous = ensure_execution_scope(
+        root_dir=tmp_path,
+        agent_harness="codex",
+        owner_session_id="main_test",
+        run_id="run_previous",
+        activation_id="goal_previous:1",
+    )
+    closed = close_execution_scope(
+        root_dir=tmp_path,
+        scope_id=previous["scope_id"],
+        reason="previous Goal completed",
+    )
+    goal = SimpleNamespace(
+        goal_plus_id="goal_current",
+        control=SimpleNamespace(version=1),
+    )
+    host = NativeCandidateHost.__new__(NativeCandidateHost)
+    host.root = tmp_path
+    host.agent_harness = "codex"
+    host.authorization = SimpleNamespace(
+        require_main_search_session=lambda *_args, **_kwargs: goal
+    )
+    host.queries = SimpleNamespace(runtime_provider=lambda _run_id: "thinkthread")
+
+    host._admit_run("run_current", "main_test", execution=True)
+
+    scopes = list(build_scope_state(tmp_path).records())
+    assert len(scopes) == 2
+    current = next(scope for scope in scopes if scope["state"] == "open")
+    assert current["activation_id"] == "goal_current:1"
+    assert current["run_ids"] == ["run_current"]
+    assert current["generation"] == closed["generation"] + 1
+    assert execution_scope_snapshot(
+        root_dir=tmp_path, scope_id=closed["scope_id"],
+    ) == closed
+
+
 def test_replacement_dispatch_attaches_open_owner_scope_once(hosted_candidate):
     from goal_plus.bootstrap import build_scope_state
     from goal_plus.session_host import NativeCandidateHost

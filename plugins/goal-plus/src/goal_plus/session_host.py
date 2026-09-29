@@ -267,8 +267,9 @@ class NativeCandidateHost:
             owner_session_id=caller_id,
         )
         activation_id = goal_scope_activation_id(goal)
+        runtime_provider = self.queries.runtime_provider(run_id)
         if previous is None:
-            if self.queries.runtime_provider(run_id) != "thinkthread":
+            if runtime_provider != "thinkthread":
                 return None
             return ensure_execution_scope(
                 root_dir=self.root,
@@ -287,6 +288,14 @@ class NativeCandidateHost:
         if not isinstance(previous_activation, str) or (
             previous_activation.partition(":")[0] != goal.goal_plus_id
         ):
+            if state == "closed" and isinstance(previous_activation, str) and runtime_provider == "thinkthread":
+                return ensure_execution_scope(
+                    root_dir=self.root,
+                    agent_harness=self.agent_harness,
+                    owner_session_id=caller_id,
+                    run_id=run_id,
+                    activation_id=activation_id,
+                )
             raise PermissionError(
                 "native candidate scope does not belong to the current Goal"
             )
