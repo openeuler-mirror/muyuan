@@ -173,5 +173,7 @@ class ReferenceWorkspaceRecord(SearchModel):
     state: Literal["open", "closed"] = "open"
     integrity_status: Literal["clean", "contaminated", "unavailable"] = "clean"
     created_at: str
+    trace_operation_id: str | None = Field(default=None, min_length=1)
+    trace_capture: Literal["captured", "failed"] | None = None
     expires_at: str | None = None
     closed_at: str | None = None

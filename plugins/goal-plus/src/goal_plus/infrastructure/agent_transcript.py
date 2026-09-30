@@ -117,6 +117,8 @@ def _pi_message_events(entry: dict[str, Any]) -> list[TranscriptEvent]:
                                        content=_text_parts(message.get("content"))))
     elif role == "toolResult":
         meta: dict[str, Any] = {"is_error": message.get("isError") is True}
+        if isinstance(message.get("toolCallId"), str):
+            meta["call_id"] = message["toolCallId"]
         events.append(TranscriptEvent(
             at=at, kind="tool_result", label=str(message.get("toolName") or "tool"),
             content=_text_parts(message.get("content")), meta=meta))
@@ -138,9 +140,12 @@ def _pi_message_events(entry: dict[str, Any]) -> list[TranscriptEvent]:
                 events.append(TranscriptEvent(at=at, kind="thinking", label="thinking",
                                                content=part["thinking"]))
             elif part_type == "toolCall" and isinstance(part.get("name"), str):
+                meta = carries_usage()
+                if isinstance(part.get("id"), str):
+                    meta["call_id"] = part["id"]
                 events.append(TranscriptEvent(
                     at=at, kind="tool_call", label=part["name"],
-                    content=_compact(part.get("arguments")), meta=carries_usage()))
+                    content=_compact(part.get("arguments")), meta=meta))
             elif part_type == "text" and isinstance(part.get("text"), str):
                 events.append(TranscriptEvent(at=at, kind="assistant", label="reply",
                                                content=part["text"], meta=carries_usage()))
@@ -300,13 +305,16 @@ def read_codex_transcript(path: Path) -> _Parsed:
                 if isinstance(call_id, str):
                     call_names[call_id] = name
                 parsed.events.append(TranscriptEvent(
-                    at=at, kind="tool_call", label=name, content=_compact(payload.get("arguments"))))
+                    at=at, kind="tool_call", label=name,
+                    content=_compact(payload.get("arguments")),
+                    meta={"call_id": call_id} if isinstance(call_id, str) else {}))
             elif item_type in ("function_call_output", "custom_tool_call_output"):
                 call_id = payload.get("call_id")
                 parsed.events.append(TranscriptEvent(
                     at=at, kind="tool_result",
                     label=call_names.get(call_id, str(call_id or "tool")) if isinstance(call_id, str) else "tool",
-                    content=_compact(payload.get("output"))))
+                    content=_compact(payload.get("output")),
+                    meta={"call_id": call_id} if isinstance(call_id, str) else {}))
             elif item_type == "reasoning":
                 content = _codex_reasoning_text(payload)
                 if content:

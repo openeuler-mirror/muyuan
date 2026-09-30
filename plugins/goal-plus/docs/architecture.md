@@ -177,6 +177,7 @@ Snapshot cleanup 根据持久 ownership 和 pins 决定；Host cleanup 根据登
 | Goal revision/control、dispatch、final-check | 对应 Goal 用例；host 提供可信 session/command | Main 提判断；Search 通过授权后的 Goal link 协作 |
 | FrozenSpec/run/candidate/session | 各 Search 用例与 candidate/session owner | Host 消费 launch 输入、绑定真实 handle，不用 session 记录猜 liveness |
 | Verifier Evidence / hard score | 唯一硬结算 owner；hard verifier adapter 只执行冻结验证 | Annotation/LLM Verifier/查询只读已结算事实，不回写硬分 |
+| Candidate trace / returned snapshots | Evidence、Reference 与 verifier owner 在持有可信身份和结果时采集；文件 adapter 分配 sequence 并原子写入 | 离线导出只读核验并关联原生历史；终态报告只读投影 reference 到后续 settlement；trace 不参与评分、授权、选择或恢复决策 |
 | AnnotationTask / VerifierTask / VerifierRecord | 各自 admission/claim/completion/retry 或不可变 record owner | Host 执行一次任务并交回结果；失败不撤销硬结算 |
 | SearchSnapshot / UctTreeView | Snapshot 由权威记录重建；UCT view 仅由 Policy 临时重建 | 不持久化 visits/value/rank，不修改 candidate 或 verifier record |
 | AllocationDecision / applied 投影 | Allocation owner | 确定性 policy 产生逻辑 plan；candidate creation 负责被授权的物化与 session 准备 |

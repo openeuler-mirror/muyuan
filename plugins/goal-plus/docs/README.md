@@ -14,6 +14,7 @@
 | 查询工具、字段、命令配置和返回结果 | [API](api.md) |
 | 理解 Goal 状态、授权和恢复 | [运行逻辑](runtime-logic.md)、[Search 恢复](search-recovery.md) |
 | 理解 Search 与 Evidence | [共享平面](shared-plane.md)、[Adaptive Search](adaptive-search.md) |
+| 从历史 Evidence 列表创建反事实分支 | [Evidence Replay](evidence-replay.md) |
 | 修改 native session、scope 或宿主接线 | [Agent Host Adapters](agent-host-adapters.md) |
 | 修改 workspace、artifact、reference 或 publication | [Workspace 架构](workspace-sandbox-arch.md)、[多目录 Submodule 方案](submodule-workspace-design.md) |
 | 理解 sandbox 设计、安装、代码架构与支持范围 | [Agent sandbox](sandbox.md) |
@@ -61,6 +62,7 @@
 | Snapshot、Allocation、Steering 与 Host 接线 | [Adaptive Search](adaptive-search.md) | LLM Verifier 定义评分生产；API 列工具和返回状态 |
 | Annotation queue、View、supplemental evaluation | [Evidence Annotator](evidence-annotator.md) | API 保留字段及可见性；Shared Plane 保留它对搜索的作用 |
 | Candidate checkpoint recovery | [Search 恢复](search-recovery.md) | Runtime Logic 链接；与 TT controller 接管明确区分 |
+| Candidate Evidence 离线分叉 | [Evidence Replay](evidence-replay.md) | API 保留命令入口；与 checkpoint recovery 区分 |
 | 普通 delegation 的 attempt/rework/验收 | [Ultra](ultra.md) | API 保留工具合同；宿主页保留实际执行器行为 |
 | 参数、schema、生成的命令配置表 | [代码与生成器](../scripts/generate_command_config_docs.py)、[API](api.md) | 用户页给例子，不手抄整份 schema；生成区不手改 |
 | 日志位置、运行时布局、诊断操作 | [Runtime 调试](debugging-runtime.md) | 专项文档保留必要状态语义并链接排障入口 |

@@ -288,6 +288,7 @@ def build_candidate_settlement(
     ledger,
     shared_tools,
     persist_run,
+    trace,
 ):
     from goal_plus.application.candidate_checkpoints import CandidateCheckpoints
     from goal_plus.application.candidate_settlement import CandidateSettlement
@@ -308,6 +309,7 @@ def build_candidate_settlement(
         checkpoints=checkpoints,
         persist_run=persist_run,
         verifier_submission=build_settlement_verifier(root_dir),
+        trace=trace,
     )
     return settlement, checkpoints
 
@@ -354,7 +356,7 @@ def build_selection(
     )
 
 
-def build_references(root_dir, sessions):
+def build_references(root_dir, sessions, trace):
     from goal_plus.application.references import ReferenceWorkspaces
     from goal_plus.infrastructure.state.references import FileReferenceState
     from goal_plus.infrastructure.artifacts.references import ProviderReferenceWorkspace
@@ -364,6 +366,7 @@ def build_references(root_dir, sessions):
         ProviderReferenceWorkspace(),
         sessions,
         SystemClock(),
+        trace,
     )
 
 
@@ -663,6 +666,7 @@ def build_search_queries(
     research,
     annotation,
     admission,
+    trace,
 ):
     from goal_plus.application.candidate_context import CandidateContext
     from goal_plus.application.evidence_reads import EvidenceReads
@@ -703,6 +707,7 @@ def build_search_queries(
             admission=admission,
             attachments=FileEvidenceAttachments(root_dir),
             clock=SystemClock(),
+            trace=trace,
         ),
     )
 
@@ -736,6 +741,7 @@ from goal_plus.adaptive import AdaptiveSearch
 from goal_plus.application.candidate_context import CandidateContext
 from goal_plus.application.search_queries import SearchQueries
 from goal_plus.application.evidence_reads import EvidenceReads
+from goal_plus.application.candidate_trace import CandidateTrace
 from goal_plus.application.report import Report
 from goal_plus.application.verifier import VerifierWorkflow
 
@@ -778,6 +784,7 @@ class SearchServices:
     context: CandidateContext
     queries: SearchQueries
     evidence_reads: EvidenceReads
+    trace: CandidateTrace
 
 
 def build_search_services(root_dir: Path, *, steering: Steering | None = None) -> SearchServices:
@@ -799,6 +806,8 @@ def build_search_services(root_dir: Path, *, steering: Steering | None = None) -
     client_factory = lambda: AgentPosixSdkClient()
     candidate_creation, candidate_ledger = build_candidate_creation(root_dir)
     candidate_sessions = build_candidate_sessions(root_dir)
+    from goal_plus.infrastructure.state.candidate_trace import FileCandidateTraceStore
+    trace = CandidateTrace(FileCandidateTraceStore(root_dir), SystemClock())
     research = build_search_research(root_dir)
     search_run = build_search_run(
         root_dir,
@@ -813,7 +822,7 @@ def build_search_services(root_dir: Path, *, steering: Steering | None = None) -
     )
     artifacts = build_candidate_artifacts(candidate_ledger.workspace)
     shared_tools = build_shared_tools(root_dir, annotation, candidate_sessions)
-    references = build_references(root_dir, candidate_sessions)
+    references = build_references(root_dir, candidate_sessions, trace)
     settlement, checkpoints = build_candidate_settlement(
         root_dir,
         authorization=goal_authorization,
@@ -822,6 +831,7 @@ def build_search_services(root_dir: Path, *, steering: Steering | None = None) -
         ledger=candidate_ledger,
         shared_tools=shared_tools,
         persist_run=search_run.persist,
+        trace=trace,
     )
     recovery = build_candidate_recovery(
         root_dir,
@@ -888,6 +898,7 @@ def build_search_services(root_dir: Path, *, steering: Steering | None = None) -
         research=research,
         annotation=annotation,
         admission=annotation_admission,
+        trace=trace,
     )
     reporter = build_report(
         root_dir,
@@ -931,4 +942,5 @@ def build_search_services(root_dir: Path, *, steering: Steering | None = None) -
         context=context,
         queries=queries,
         evidence_reads=evidence_reads,
+        trace=trace,
     )

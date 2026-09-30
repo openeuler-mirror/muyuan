@@ -5,6 +5,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 import threading
 import time
@@ -23,6 +24,8 @@ class CodexSession:
     def __init__(
         self, config: NativeSessionInput, registration: ProcessRegistration, *, timeout: float,
         tool_bridge: SessionToolBridge | None = None,
+        on_tool_result: Callable[[str, Any, str, str, str, float], None] | None = None,
+        on_turn_completed: Callable[[str, str, bool], None] | None = None,
         resume_from: "CodexSession | None" = None,
         execution_lock: Path | None = None,
     ) -> None:
@@ -44,6 +47,8 @@ class CodexSession:
         self._announced_turn_id: str | None = None
         self._deadline = 0.0
         self._tool_bridge = tool_bridge
+        self._on_tool_result = on_tool_result
+        self._on_turn_completed = on_turn_completed
         self._tool_names = {tool.name for tool in tool_bridge.definitions} if tool_bridge else set()
         self._tool_calls: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
         self._tool_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="codex-session-tools")
@@ -168,6 +173,16 @@ class CodexSession:
             else:
                 try:
                     value = self._tool_bridge.call(params["tool"], params["arguments"])
+                    if self._on_tool_result is not None:
+                        try:
+                            self._on_tool_result(
+                                params["tool"], value, self._session_id, turn_id, call_id,
+                                max(0.0, self._deadline - time.monotonic()),
+                            )
+                        except Exception:
+                            logging.getLogger(__name__).exception(
+                                "candidate replay capture failed"
+                            )
                     result = {"success": True, "contentItems": [
                         {"type": "inputText", "text": json.dumps(value, ensure_ascii=False)},
                     ]}
@@ -228,6 +243,11 @@ class CodexSession:
                 state = completed["status"]
                 if state not in {"completed", "interrupted", "failed"}:
                     raise SessionTransportError(f"unexpected Codex turn state: {state}")
+                if self._on_turn_completed is not None:
+                    try:
+                        self._on_turn_completed(self._session_id, self._turn_id, state == "completed")
+                    except Exception:
+                        logging.getLogger(__name__).exception("candidate replay finalization failed")
                 total = self._usage.get(self._turn_id, {}).get("total")
                 usage = {}
                 if isinstance(total, dict):

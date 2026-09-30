@@ -578,6 +578,14 @@ Evidence 模式：
 - `auto`：verifier 返回时注入最新共享快照；
 - `independent`：只向 worker 暴露自身 Evidence，不暴露 peer Evidence。
 
+Search candidate 的 Evidence 返回、reference 打开和 process-verifier 生命周期另写入 runtime
+私有、只追加的 candidate trace。Evidence 返回必须先保存完整内容寻址快照；快照或事件失败时
+不得返回未记录内容。Trace 只用于诊断和离线实验输入，不参与硬分、选择、提升、allocation、
+Goal 完成或授权。终态报告可以只读关联 `reference.opened` 与下一次硬结算，并比较已保留的
+Git 可编辑文件；该投影不得把时间先后或内容差异宣称为语义采用。`returned` 不等于宿主历史已观察到的 `delivered`，更不等于模型实际使用；
+缺少或不唯一的原生历史证据保持 unknown。硬结算仍以 iteration 和 SettlementReceipt 为权威，
+trace 失败不得改变已提交分数或触发 verifier 重跑。
+
 Supplemental evaluation 和 shared_dir 都是可选能力。启用时由 runtime 把必要入口动态写入
 candidate contract；关闭时不出现相关说明。它们不改变 verifier 硬分、selection 或 promotion
 gate。
@@ -621,7 +629,7 @@ SearchSpec 读取任意环境变量。
 
 ## 持久化与恢复
 
-目标 workspace 下的 `.gp/` 保存 Goal、FrozenSpec、run、candidate、Evidence、promotion、
+目标 workspace 下的 `.gp/` 保存 Goal、FrozenSpec、run、candidate、Evidence、candidate trace、promotion、
 host metadata 和最终报告。启用 LLM Verifier 时另外持久化 VerifierTask 和 VerifierRecord；
 Adaptive Search 还持久化追加式 Snapshot 与 AllocationDecision，不存在 reconciliation journal。
 Settlement 同时保存单次事实、身份与 diff 的不可变 submission，入队中断可重放。

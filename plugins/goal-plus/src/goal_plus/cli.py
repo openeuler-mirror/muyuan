@@ -9,9 +9,15 @@ the previous entry module.
 from __future__ import annotations
 
 import argparse
+import sys
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "replay":
+        from goal_plus.replay_cli import main as replay_main
+
+        replay_main(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(prog="goal-plus")
     parser.add_argument(
         "--version",

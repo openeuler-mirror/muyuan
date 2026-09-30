@@ -358,6 +358,27 @@ process-verifier Evidence 完全一致时，将记录附加到该条目的 `exte
 身份不匹配时，Global Evidence 行为不变。附件仍服从 `manual`、`auto` 和 `independent`
 三种可见性模式。
 
+### Candidate 执行链路
+
+每次 candidate Evidence 返回都先保存当次实际返回值的内容寻址快照，再追加
+`evidence.global_returned` 或 `evidence.detail_returned` 事件，最后把相同的
+`operation_id`/`snapshot_id` 写入 session receipt。单份快照上限为 16 MiB；超限或落盘失败时
+工具失败，不向 candidate 返回未记录的 Evidence。`auto` 事件另外绑定触发它的准确 verifier
+attempt，`independent` 快照只包含调用 candidate 实际收到的过滤后列表。
+
+同一事件流还保存每次 `reference.opened`，以及 process verifier 的 `submitted`、可重复的
+`observed` 和唯一 `settled`。事件身份来自可信的 run/candidate/session/generation 状态，按
+candidate 分配单调 sequence；提交和结算按 attempt 幂等，查询不会冒充新的 verifier 运行。
+事件和快照位于 runtime 私有的
+`runs/<run_id>/candidate-traces/<candidate_id>/`，不参与 score、settlement、selection、
+promotion、allocation 或执行授权，provider cleanup 也不删除它们。
+
+这里的 `returned` 只表示业务用例已准备并交还工具结果。只有原生会话历史中存在可唯一匹配的
+tool result 时，离线导出才标记 `delivery=observed`；历史缺失、部分归档或匹配不唯一均保持
+`unknown`。“模型使用了 Evidence”不能由返回或送达自动推出。iteration record 和
+SettlementReceipt 仍是硬结算权威；trace 缺失时只允许从它们确定性重建带 `derived` 标记的
+`verifier.settled` 投影，不重跑 verifier，也不补造历史 Evidence 返回或 reference 打开。
+
 ## 客观 View 与开放式补充评价
 
 View 是精确 settled Evidence 的异步客观描述；可选 supplemental evaluation 提供有证据的

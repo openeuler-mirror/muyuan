@@ -27,6 +27,7 @@ from goal_plus.domain.evidence import (
     VerifierResult,
 )
 from goal_plus.domain.search import (
+    AgentSessionRecord,
     VerifierRole,
 )
 from goal_plus.domain.shared_tools import (
@@ -64,6 +65,7 @@ class ThinkThreadVerification:
             candidate_ledger,
         )
         self.shared_tools, self.settlement = shared_tools, settlement
+        self.trace = settlement.trace
 
     def _bound_candidate(
         self, run_id: str, candidate_id: str, agent_session_id: str,
@@ -126,12 +128,20 @@ class ThinkThreadVerification:
                     or prior.hypothesis != hypothesis or prior.toolization_decision != decision
                 ):
                     raise ValueError("verifier request id was reused with new content")
+                self._record_submission_trace(
+                    session=self.candidate_sessions.state.read_agent_session(
+                        submission.agent_session_id,
+                        run_id,
+                    ),
+                    accepted=prior,
+                    iteration=len(record.iterations) + 1,
+                )
                 return prior
             if self.candidate_ledger.projection(frozen, record) == WORKSPACE_LEDGER_PROJECTION_RESULTS_TSV:
                 self._validate_thinkthread_inner_git_attempt(record, submission.inner_git_attempt)
             elif submission.inner_git_attempt is not None:
                 raise PermissionError("private inner Git metadata is not allowed for this inner-agent binding")
-            return CandidateAttemptAccepted(
+            accepted = CandidateAttemptAccepted(
                 attempt_id=submission.attempt_id, request_id=submission.request_id,
                 run_id=run_id, candidate_id=candidate_id, agent_session_id=submission.agent_session_id,
                 hypothesis=hypothesis, toolization_decision=decision, accepted_at=self.clock.timestamp(),
@@ -139,6 +149,15 @@ class ThinkThreadVerification:
                 "this Child turn reaches a quiescent boundary. Finish the turn without "
                 "further writes; the exact ScoreReport will be injected into the next wake.",
             )
+            self._record_submission_trace(
+                session=self.candidate_sessions.state.read_agent_session(
+                    submission.agent_session_id,
+                    run_id,
+                ),
+                accepted=accepted,
+                iteration=len(record.iterations) + 1,
+            )
+            return accepted
 
     def result(
         self, submission: DeferredCandidateAttempt, run_id: str, candidate_id: str,
@@ -153,10 +172,70 @@ class ThinkThreadVerification:
             submission.thinkthread_id, submission.branch_id,
         )
         if record.score_report is not None and record.score_report.attempt_id == attempt_id:
-            return record.score_report.model_dump(mode="json")
-        if submission.prior is not None and submission.prior.attempt_id == attempt_id:
-            return submission.prior.model_dump(mode="json")
-        raise ValueError("VerifierAttemptUnavailable: unknown verification attempt")
+            result = record.score_report.model_dump(mode="json")
+            status = "ready"
+        elif submission.prior is not None and submission.prior.attempt_id == attempt_id:
+            result = submission.prior.model_dump(mode="json")
+            status = "accepted"
+        else:
+            raise ValueError("VerifierAttemptUnavailable: unknown verification attempt")
+        session = self.candidate_sessions.state.read_agent_session(
+            submission.agent_session_id,
+            run_id,
+        )
+        self._record_observation_trace(session, attempt_id, status)
+        return result
+
+    def _record_submission_trace(
+        self,
+        *,
+        session: AgentSessionRecord,
+        accepted: CandidateAttemptAccepted,
+        iteration: int,
+    ) -> None:
+        try:
+            self.trace.record(
+                session,
+                kind="verifier.submitted",
+                operation_id=accepted.attempt_id,
+                occurred_at=accepted.accepted_at,
+                deduplicate=True,
+                payload={
+                    "attempt_id": accepted.attempt_id,
+                    "iteration": iteration,
+                    "request_id": accepted.request_id,
+                },
+            )
+        except Exception as exc:
+            self.trace.failed(
+                session,
+                operation="verifier_submission",
+                operation_id=accepted.attempt_id,
+                error=exc,
+                verified_target={"attempt_id": accepted.attempt_id},
+            )
+
+    def _record_observation_trace(
+        self,
+        session: AgentSessionRecord,
+        attempt_id: str,
+        status: str,
+    ) -> None:
+        try:
+            self.trace.record(
+                session,
+                kind="verifier.observed",
+                operation_id=attempt_id,
+                payload={"attempt_id": attempt_id, "status": status},
+            )
+        except Exception as exc:
+            self.trace.failed(
+                session,
+                operation="verifier_observation",
+                operation_id=attempt_id,
+                error=exc,
+                verified_target={"attempt_id": attempt_id},
+            )
 
     def verify(
         self,

@@ -80,6 +80,7 @@ class CandidateVerification:
             shared_tools,
             settlement,
         )
+        self.trace = settlement.trace
         self.verifiers, self.persist_run = verifiers, persist_run
 
     def verify(
@@ -250,6 +251,7 @@ class CandidateVerification:
                     tool_copies=list(current.pending_tool_copies),
                 )
                 self.state.write_candidate(run_id, current)
+                self._record_submitted_trace(current)
             return self._execute(run, frozen, current, on_submitted=on_submitted, execution_lock=execution_lock)
 
         precheck = self._precheck_candidate(frozen, record)
@@ -331,6 +333,7 @@ class CandidateVerification:
         if request.report is None:
             self._require_verifier_budget(run_id, frozen)
             self.authorization.require_search_execution(run_id)
+        self._record_submitted_trace(record)
         return self._execute(run, frozen, record, preserve_workspace=True, on_submitted=on_submitted, execution_lock=execution_lock)
 
     def _execute(
@@ -401,7 +404,66 @@ class CandidateVerification:
                     current.verification.state = "needs_recovery"
                     current.verification.error = f"{type(exc).__name__}: {exc}"
                     self.state.write_candidate(run_id, current)
+            if request.agent_session_id is not None:
+                try:
+                    session = self.candidate_sessions.state.read_agent_session(
+                        request.agent_session_id,
+                        run_id,
+                    )
+                except Exception:
+                    session = None
+                if session is not None:
+                    self.trace.failed(
+                        session,
+                        operation="verifier_settlement",
+                        operation_id=pending.attempt_id,
+                        error=exc,
+                        verified_target={
+                            "candidate_id": candidate_id,
+                            "attempt_id": pending.attempt_id,
+                        },
+                    )
             raise
+
+    def _record_submitted_trace(self, record: CandidateRecord) -> None:
+        pending, request = record.verification, record.verification_request
+        if (
+            pending is None
+            or request is None
+            or request.agent_session_id is None
+        ):
+            return
+        session = None
+        try:
+            session = self.candidate_sessions.state.read_agent_session(
+                request.agent_session_id,
+                record.task.run_id,
+            )
+            self.trace.record(
+                session,
+                kind="verifier.submitted",
+                operation_id=pending.attempt_id,
+                occurred_at=pending.started_at,
+                deduplicate=True,
+                payload={
+                    "attempt_id": pending.attempt_id,
+                    "iteration": request.iteration,
+                    "artifact_ref": pending.artifact_ref,
+                },
+            )
+        except Exception as exc:
+            if session is None:
+                return
+            self.trace.failed(
+                session,
+                operation="verifier_submission",
+                operation_id=pending.attempt_id,
+                error=exc,
+                verified_target={
+                    "candidate_id": record.candidate_id,
+                    "attempt_id": pending.attempt_id,
+                },
+            )
 
     def _require_verifier_budget(self, run_id: str, frozen: FrozenSpec) -> None:
         deadline = outer_deadline_epoch(self.context.outer_deadline(run_id))
