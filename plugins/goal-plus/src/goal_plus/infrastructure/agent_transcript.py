@@ -85,6 +85,8 @@ def _iter_json_lines(path: Path) -> Iterator[dict[str, Any]]:
 
 
 def _text_parts(parts: Any) -> str:
+    if isinstance(parts, str):
+        return parts
     if not isinstance(parts, list):
         return ""
     return "\n".join(
@@ -487,6 +489,129 @@ def _load_json_quietly(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _inference_transcript(root: Path, directory: Path) -> AgentTranscriptSession | None:
+    record = _load_json_quietly(directory / "record.json")
+    if not record or record.get("kind") != "no_session_inference":
+        return None
+    identity = record.get("identity") if isinstance(record.get("identity"), dict) else {}
+    run_id, candidate_id = identity.get("run_id"), identity.get("candidate_id")
+    if isinstance(run_id, str) and isinstance(candidate_id, str) and run_id and candidate_id:
+        candidate_path = root / "runs" / run_id / "candidates" / candidate_id / "candidate.json"
+        try:
+            if candidate_path.resolve().is_relative_to(root.resolve()):
+                candidate = _load_json_quietly(candidate_path)
+                iterations = candidate.get("iterations") if isinstance(candidate, dict) else None
+                matches = [item for item in iterations if isinstance(item, dict)
+                           and item.get("iteration") == identity.get("iteration")
+                           and item.get("settlement_id") == identity.get("settlement_id")]
+                if len(matches) == 1 and isinstance(matches[0].get("agent_session_id"), str):
+                    identity = {**identity, "worker_session_id": matches[0]["agent_session_id"]}
+        except (OSError, ValueError, TypeError):
+            pass
+    harness = str(record.get("agent_harness") or "")
+    events: list[TranscriptEvent] = []
+    warnings = list(record.get("warnings") or [])
+
+    def inference_lines(path: Path) -> Iterator[dict[str, Any]]:
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                for number, line in enumerate(stream, 1):
+                    try:
+                        value = json.loads(line)
+                    except (ValueError, TypeError):
+                        warnings.append(f"unreadable {path.name} line {number}")
+                        continue
+                    if isinstance(value, dict):
+                        yield value
+                    else:
+                        warnings.append(f"invalid {path.name} line {number}")
+        except OSError:
+            warnings.append(f"unreadable {path.name}")
+    at = str(record.get("started_at") or "")
+    input_record = _load_json_quietly(directory / "input.json")
+    if input_record is None:
+        warnings.append("missing complete inference input")
+    else:
+        for key, kind in (("instructions", "injection"), ("prompt", "user"),
+                          ("output_schema", "meta"), ("pi_tools", "meta")):
+            value = input_record.get(key)
+            if value is None:
+                continue
+            events.append(TranscriptEvent(at=at, kind=kind, label=key,
+                                          content=_compact(value)))
+        events.append(TranscriptEvent(at=at, kind="meta", label="launch configuration",
+                                      content=_compact({key: input_record.get(key) for key in
+                                                        ("model", "reasoning_effort", "timeout_seconds",
+                                                         "runtime_provider", "active_check")})))
+    command = _load_json_quietly(directory / "command.json")
+    if command is not None:
+        events.append(TranscriptEvent(at=at, kind="meta", label="CLI arguments",
+                                      content=_compact(command.get("argv"))))
+    provider_path = directory / "provider-requests.jsonl"
+    if harness == "pi" and not provider_path.is_file():
+        warnings.append("provider request hook data unavailable")
+    if provider_path.is_file():
+        for request in inference_lines(provider_path):
+            if request.get("type") == "provider_request":
+                events.append(TranscriptEvent(
+                    at=str(request.get("timestamp") or ""), kind="context",
+                    label=f"provider request #{request.get('sequence')}",
+                    content=_compact(request.get("payload")),
+                    meta={"provider": request.get("provider"), "model": request.get("model"),
+                          "request_snapshot": True},
+                ))
+    stdout_path = directory / "stdout.jsonl"
+    if stdout_path.is_file():
+        for event in inference_lines(stdout_path):
+            event_type = str(event.get("type") or "event")
+            observed_at = str(event.get("timestamp") or "")
+            if harness == "pi" and event_type == "message_end":
+                events.extend(_pi_message_events(event))
+            else:
+                events.append(TranscriptEvent(
+                    at=observed_at, kind="meta", label=f"host event: {event_type}",
+                    content=_compact(event),
+                ))
+    elif record.get("process_state") != "starting":
+        warnings.append("stdout capture unavailable")
+    stderr_path = directory / "stderr.txt"
+    if stderr_path.is_file():
+        try:
+            stderr = stderr_path.read_text(encoding="utf-8")
+            if stderr:
+                events.append(TranscriptEvent(kind="error", label="stderr", content=stderr))
+        except OSError:
+            warnings.append("stderr capture unreadable")
+    result = _load_json_quietly(directory / "result.json")
+    if result is not None:
+        if result.get("output_text") is not None:
+            events.append(TranscriptEvent(at=str(record.get("completed_at") or ""),
+                                          kind="assistant", label="structured output",
+                                          content=str(result["output_text"])))
+        events.append(TranscriptEvent(at=str(record.get("completed_at") or ""),
+                                      kind="meta", label="inference result",
+                                      content=_compact({key: value for key, value in result.items()
+                                                        if key != "output_text"})))
+    elif record.get("process_state") != "starting":
+        warnings.append("inference result unavailable")
+    if record.get("capture_status") != "complete":
+        warnings.append(f"capture {record.get('capture_status') or 'unknown'}")
+    if record.get("provider_visibility") == "unavailable":
+        warnings.append("Codex CLI provider request is not observable; launch input and host events only")
+    events.append(TranscriptEvent(at=str(record.get("completed_at") or ""),
+                                  kind="meta", label="acceptance and capture",
+                                  content=_compact({key: record.get(key) for key in
+                                                    ("process_state", "acceptance", "acceptance_error",
+                                                     "capture_status", "provider_visibility")})))
+    return AgentTranscriptSession(
+        session_id=str(record.get("invocation_id") or directory.name), harness=harness,
+        role=str(identity.get("role") or "inference"), source_path=str(directory),
+        identity=identity, events=events, warnings=warnings,
+        model=str(record.get("model") or ""),
+        thinking=str(record.get("reasoning_effort") or ""),
+    )
+
+
 def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
     """Discover every locally readable session history under a runtime root.
 
@@ -545,6 +670,17 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
                     events=parsed.events, warnings=parsed.warnings,
                     model=parsed.model, thinking=parsed.thinking))
 
+    inferences = [item for record_path in sorted(
+        (root / "host-logs" / "inference-transcripts").glob("*/record.json"))
+        if (item := _inference_transcript(root, record_path.parent)) is not None]
+    for inference in sorted(inferences, key=lambda item: (
+        str(item.identity.get("run_id") or ""), str(item.identity.get("candidate_id") or ""),
+        item.identity.get("iteration") if type(item.identity.get("iteration")) is int else 0,
+        item.identity.get("attempt") if type(item.identity.get("attempt")) is int else 0,
+        item.role, item.session_id,
+    )):
+        add(inference)
+
     diagnostics = root / "host-logs" / "session-diagnostics"
     event_store_children = _tt_event_store_children(root)
     if diagnostics.is_dir():
@@ -569,7 +705,7 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
                     parsed = read_pi_transcript(raw)
                     add(AgentTranscriptSession(
                         session_id=index.get("session_id") or parsed.session_id or directory.name,
-                        harness="pi", role="tt-child", source_path=str(raw),
+                        harness="pi", role=str(identity.get("role") or "tt-child"), source_path=str(raw),
                         identity=identity, events=parsed.events, warnings=parsed.warnings,
                         model=parsed.model, thinking=parsed.thinking))
                     continue
@@ -587,7 +723,7 @@ def collect_runtime_transcripts(root: Path) -> list[AgentTranscriptSession]:
                     parsed.warnings.append("partial: recovered turn texts from the TT event store")
                 add(AgentTranscriptSession(
                     session_id=index.get("session_id") or parsed.session_id or directory.name,
-                    harness="pi", role="tt-child", source_path=str(directory),
+                    harness="pi", role=str(identity.get("role") or "tt-child"), source_path=str(directory),
                     identity=identity, events=parsed.events, warnings=parsed.warnings,
                     model=parsed.model, thinking=parsed.thinking))
 

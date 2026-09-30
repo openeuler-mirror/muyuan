@@ -132,6 +132,11 @@ def test_verifier_uses_shared_inference_and_registration(
         popen=process_factory(agent_harness, mode, payload),
     ))
     worker = LlmVerifier(tmp_path)
+    worker.source = SimpleNamespace(
+        read_run=lambda _: SimpleNamespace(frozen_spec_id="frozen_1", source_artifact_ref=None),
+        read_frozen_spec=lambda _: SimpleNamespace(
+            frozen_spec_id="frozen_1", agent_harness=agent_harness, runtime_provider="direct"),
+    )
     if mode == "timeout":
         execute = worker.inference.execute
         monkeypatch.setattr(worker.inference, "execute", lambda request, **kwargs: execute(
@@ -197,9 +202,30 @@ def test_pi_role_binding_executes_only_authorized_tools(tmp_path, role, with_vie
 import { pathToFileURL } from "node:url";
 const { default: register } = await import(pathToFileURL(process.argv[1]).href);
 const tools = new Map();
-register({ registerTool(tool) { tools.set(tool.name, tool); } });
+const hooks = new Map();
+register({ registerTool(tool) { tools.set(tool.name, tool); }, on(name, hook) { hooks.set(name, hook); } });
 const outputName = [...tools.keys()].find(name => name.startsWith("submit_"));
 const submission = await tools.get(outputName).execute("output", { answer: "accepted" });
+let feedback = null;
+if (hooks.has("context")) {
+  const hook = hooks.get("context");
+  const message = { role: "toolResult", toolName: outputName, isError: true, content: [{ type: "text",
+    text: 'Validation failed for tool "submit_verifier_output":\\n  - score_rationales.quality_score: must not have more than 1000 characters\\n\\nReceived arguments:\\n' + 'private payload'.repeat(1000) }] };
+  const original = JSON.stringify(message);
+  feedback = hook({ messages: [message] }).messages[0];
+  if (JSON.stringify(message) !== original) throw new Error("stored message changed");
+  if (JSON.stringify(hook({ messages: [feedback] }).messages[0]) !== JSON.stringify(feedback)) {
+    throw new Error("feedback changed on repeated projection");
+  }
+  for (const untouched of [
+    { ...message, isError: false }, { ...message, toolName: "another_tool" },
+    { ...message, role: "user" }, { ...message, content: [{ type: "text", text: "execution failed" }] },
+  ]) {
+    if (JSON.stringify(hook({ messages: [untouched] }).messages[0]) !== JSON.stringify(untouched)) {
+      throw new Error("unrelated message changed");
+    }
+  }
+}
 let read = null;
 let denied = 0;
 if (tools.has("artifact_view_read")) {
@@ -213,7 +239,7 @@ if (tools.has("artifact_view_read")) {
     catch { denied++; }
   }
 }
-console.log(JSON.stringify({ tools: [...tools.keys()], submission, read, denied,
+console.log(JSON.stringify({ tools: [...tools.keys()], submission, read, denied, feedback,
   parameters: tools.get(outputName).parameters }));
 ''', str(extension)],
         env={**os.environ, binding.output_env: str(output)},
@@ -239,6 +265,13 @@ console.log(JSON.stringify({ tools: [...tools.keys()], submission, read, denied,
         validator.validate(payload)
         assert not validator.is_valid({**payload, "quality_score": "0.8"})
         assert not validator.is_valid({**payload, "extra": 1})
+        assert not validator.is_valid({**payload, "score_rationales": {"quality_score": "x" * 1001}})
+        feedback = result["feedback"]
+        assert feedback["isError"] is True
+        message = feedback["content"][0]["text"]
+        assert "score_rationales.quality_score" in message and "1000 characters" in message
+        assert "Received arguments" not in message and "private payload" not in message
+        assert len(message) < 1300
     assert json.loads(output.read_text()) == {"answer": "accepted"}
     if with_views:
         assert result["read"]["content"][0]["text"] == "immutable"

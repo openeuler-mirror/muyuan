@@ -124,6 +124,11 @@ const THINKTHREAD_ANNOTATION_TOOL_NAMES = [
 	"goal_plus_thinkthread_annotation_submit",
 ] as const;
 const THINKTHREAD_ANNOTATION_TOOLS = new Set<string>(THINKTHREAD_ANNOTATION_TOOL_NAMES);
+const THINKTHREAD_VERIFIER_TOOL_NAMES = [
+	"goal_plus_thinkthread_verifier_input",
+	"goal_plus_thinkthread_verifier_submit",
+];
+const THINKTHREAD_VERIFIER_TOOLS = new Set<string>(THINKTHREAD_VERIFIER_TOOL_NAMES);
 
 interface ThinkThreadInnerGitBinding {
 	protocol: "goal-plus.inner-git.v1";
@@ -750,6 +755,7 @@ async function runThinkThreadWorkerToolSerial(
 	signal: AbortSignal,
 ) {
 	const allowed = new Set([
+		...THINKTHREAD_VERIFIER_TOOL_NAMES,
 		"goal_plus_search_get_agent_context",
 		"goal_plus_search_get_global_evidence",
 		"goal_plus_search_get_evidence_detail",
@@ -776,6 +782,9 @@ async function runThinkThreadWorkerToolSerial(
 		throw error;
 	}
 	const metadata = latestDispatchMetadata(ctx);
+	if ((metadata.thinkthreadRole === "verifier") !== THINKTHREAD_VERIFIER_TOOLS.has(name)) {
+		throw new Error(`ThinkThread Verifier Child tool is not allowed: ${name}`);
+	}
 	if (metadata.thinkthreadRole === "annotator" && !THINKTHREAD_ANNOTATION_TOOLS.has(name)) {
 		throw new Error(`ThinkThread Annotation Child tool is not allowed: ${name}`);
 	}
@@ -880,8 +889,13 @@ function scopeThinkThreadWorkerTools(
 		pi.setActiveTools([...THINKTHREAD_ANNOTATION_TOOL_NAMES]);
 		return;
 	}
+	if (dispatchRole === "verifier") {
+		pi.setActiveTools([...THINKTHREAD_VERIFIER_TOOL_NAMES]);
+		return;
+	}
 	pi.setActiveTools(
 		pi.getActiveTools().filter((name) => !THINKTHREAD_ANNOTATION_TOOLS.has(name)
+			&& !THINKTHREAD_VERIFIER_TOOLS.has(name)
 			&& (name !== "goal_plus_search_get_evidence_detail" || thinkThreadSupplementalEnabled)),
 	);
 }
@@ -924,7 +938,7 @@ async function acknowledgeThinkThreadDispatch(
 			wake: false,
 		});
 		workerAcknowledgedDispatches.add(metadata.dispatchNonce);
-		workerSteeringIdentity = metadata.agentSessionId && metadata.thinkthreadRole !== "annotator"
+		workerSteeringIdentity = metadata.agentSessionId && !["annotator", "verifier"].includes(metadata.thinkthreadRole ?? "")
 			? { agentSessionId: metadata.agentSessionId, dispatchNonce: metadata.dispatchNonce, messageId }
 			: undefined;
 	}
@@ -2460,6 +2474,10 @@ function workspaceGuard(event: ToolCallEvent, ctx: ExtensionContext, owner: Tool
 		return { block: true, reason: "最终检查审查员只能进行只读操作。" };
 	}
 	if (role !== "worker") return undefined;
+	if (latestDispatchMetadata(ctx).thinkthreadRole === "verifier") {
+		if (owner === "goal-plus" && THINKTHREAD_VERIFIER_TOOLS.has(event.toolName)) return undefined;
+		return { block: true, reason: `ThinkThread Verifier Child tool is not allowed: ${event.toolName}` };
+	}
 	if (latestDispatchMetadata(ctx).thinkthreadRole === "annotator") {
 		if (owner === "goal-plus" && THINKTHREAD_ANNOTATION_TOOLS.has(event.toolName)) return undefined;
 		return {
@@ -2882,6 +2900,7 @@ export default async function (pi: ExtensionAPI) {
 					"goal_plus_search_copy_shared_tool",
 				].includes(tool)),
 				...thinkThreadAnnotationTools,
+				...THINKTHREAD_VERIFIER_TOOL_NAMES,
 			]
 			: workerTools
 		: role === "final-checker"
@@ -3241,7 +3260,7 @@ export default async function (pi: ExtensionAPI) {
 			// only ThinkThread - before the wake is allowed to end. One-shot per
 			// dispatch; submitting is still the model's judgment.
 			if (
-				latestDispatchMetadata(ctx).thinkthreadRole !== "annotator"
+				!["annotator", "verifier"].includes(latestDispatchMetadata(ctx).thinkthreadRole ?? "")
 				&& !workerVerifierSubmitted
 				&& !workerMissingAttemptContinuationSent
 			) {

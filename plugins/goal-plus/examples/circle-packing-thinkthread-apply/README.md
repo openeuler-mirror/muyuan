@@ -73,6 +73,10 @@ tt run --profile goal-plus-pi --fs "$PWD/workspace"
 启动新探索，只允许已有合同规定的收尾；已提交结果的结算、publication、审计和资源清理
 可能需要额外时间，详见[预算与收尾](../../docs/runtime-logic.md#预算与收尾)。
 
+需要 LLM-Verifier 或 Adaptive Search 时，分别改用
+[`pi-goal-prompt-llm-verifier.md`](pi-goal-prompt-llm-verifier.md) 或
+[`pi-goal-prompt-adaptive-search.md`](pi-goal-prompt-adaptive-search.md)。
+
 首轮只复制各自的 hint 并立即提交正式 verifier；数值优化留到同一个 Child 的后续 continuation。
 完整采用示例 SearchSpec，保留 Annotation 配置。
 

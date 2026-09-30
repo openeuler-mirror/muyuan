@@ -186,6 +186,12 @@ annotator 收到的累计 diff 使用 Git 函数级上下文和至少 10 行普�
 
 ## Host 路由与隔离
 
+本地 Codex/Pi 一次性 annotator 按当前任务裁剪输入：只有开启
+`supplemental_evaluation_enabled` 才注入补充评价说明、peer Evidence 与比较基线；只有
+`published_tools` 或 `tool_adoptions` 非空时，才分别注入工具发布或采用说明和数据。
+输出 schema 同步裁剪未启用能力的嵌套定义，关闭的补充评价固定为 `null`，无发布工具时
+`tool_views` 固定为空数组；持久化 View 结构和已有结果验收规则保持不变。
+
 Annotator 始终跟随 `FrozenSpec.agent_harness` 记录的 Main Agent 身份，不会为了 annotation
 跨用另一个 host。
 

@@ -43,6 +43,10 @@ const ANNOTATION_TOOLS = new Set([
     "goal_plus_thinkthread_artifact_view_diff",
     "goal_plus_thinkthread_annotation_submit",
 ]);
+const VERIFIER_TOOLS = new Set([
+    "goal_plus_thinkthread_verifier_input",
+    "goal_plus_thinkthread_verifier_submit",
+]);
 
 export async function workerOperation(client: any, parentId: string, request: any) {
     const binding = await workerBinding(client, parentId);
@@ -52,13 +56,17 @@ export async function workerOperation(client: any, parentId: string, request: an
     }
     const {name, arguments: args} = request.params;
     const annotator = binding.thinkthreadRole === "annotator";
+    const verifier = binding.thinkthreadRole === "verifier";
+    if (verifier !== VERIFIER_TOOLS.has(name)) {
+        throw new Error(`ThinkThread Verifier Child tool is not allowed: ${name}`);
+    }
     if (annotator !== ANNOTATION_TOOLS.has(name)) {
         throw new Error(annotator
             ? `ThinkThread Annotation Child tool is not allowed: ${name}`
             : `ThinkThread Candidate Child annotation tool is not allowed: ${name}`);
     }
     if (typeof name !== "string" || !args || typeof args !== "object" || Array.isArray(args)
-        || (annotator ? "agent_session_id" in args : args.agent_session_id !== binding.agentSessionId)) {
+        || (annotator || verifier ? "agent_session_id" in args : args.agent_session_id !== binding.agentSessionId)) {
         throw new Error(annotator
             ? "MCP annotation arguments must not select a session"
             : "MCP tool arguments do not match the bound candidate");

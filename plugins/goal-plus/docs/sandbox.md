@@ -70,7 +70,8 @@ Pi child 和 sandboxed structured inference 使用运行时目录中的配置副
 | macOS Pi direct Git/Copy candidate | Seatbelt，workspace-write | workspace、显式 runtime/session roots、专属临时目录 | 共用 Circle Git E2E 覆盖源码/外部文件拒写、symlink、子进程和同 session 续跑；Copy 未在该 E2E 验收 |
 | Direct ordinary delegation | Codex native / Pi outer，workspace-write | 被授权 workspace 和对应运行时写根 | 已有接线测试，未作为 Circle sandbox E2E 的独立角色验收 |
 | Direct final checker | Codex native / Pi outer，read-only | 工作区只读；Pi runtime/session roots 仍可写 | 共同 outer backend 已有真实 read-only 写入测试；checker 角色端到端负向 probe 未覆盖 |
-| Annotation / LLM Verifier structured inference | Codex native read-only / Pi outer scratch workspace-write | Codex 原生限制；Pi invocation 临时目录 | 已统一启动声明与 Pi 配置复制；独立角色的真实负向 probe 未覆盖 |
+| Direct Annotation / LLM Verifier structured inference | Codex native read-only / Pi outer scratch workspace-write | Codex 原生限制；Pi invocation 临时目录 | 已统一启动声明与 Pi 配置复制；独立角色的真实负向 probe 未覆盖 |
+| ThinkThread LLM Verifier | self Profile / fresh Message-only Child | 不开放文件或命令工具，仅本次输入和评分提交 | 不调用本地 bwrap；受控 transport 测试覆盖分流与清理，真实宿主尚未验收 |
 | Pi Main / GP 外的 native subagent | 宿主自身权限 | 取决于宿主 | 不在 GP direct sandbox 承诺内 |
 | ThinkThread candidate | ThinkThread Profile/Child | provider 授权文件系统 | 使用独立 provider 接线，支持边界见 [Codex](codex.md)、[Pi](pi.md) |
 

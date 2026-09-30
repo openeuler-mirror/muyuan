@@ -41,6 +41,7 @@ def test_codex_candidate_mcp_routes_children_by_dispatch_role(monkeypatch):
     calls = []
     monkeypatch.setattr(tools, "_worker_bridge_transport", lambda: object())
     monkeypatch.setattr(tools, "_annotator_mcp", lambda transport, session: calls.append(("annotator", session)))
+    monkeypatch.setattr(tools, "_verifier_mcp", lambda transport, session: calls.append(("verifier", session)))
     monkeypatch.setattr(tools, "_child_mcp", lambda transport, session: calls.append(("candidate", session)))
     for role in (None, "candidate"):
         monkeypatch.setattr(tools, "_child_binding", lambda transport: ("agent-1", role))
@@ -49,6 +50,9 @@ def test_codex_candidate_mcp_routes_children_by_dispatch_role(monkeypatch):
     monkeypatch.setattr(tools, "_child_binding", lambda transport: ("annotator-run_1", "annotator"))
     tools.create_thinkthread_candidate_mcp()
     assert calls.pop() == ("annotator", "annotator-run_1")
+    monkeypatch.setattr(tools, "_child_binding", lambda transport: ("verifier-task", "verifier"))
+    tools.create_thinkthread_candidate_mcp()
+    assert calls.pop() == ("verifier", "verifier-task")
     monkeypatch.setattr(tools, "_child_binding", lambda transport: ("agent-1", "checker"))
     with pytest.raises(PermissionError, match="unknown dispatch role"):
         tools.create_thinkthread_candidate_mcp()
@@ -460,6 +464,15 @@ await assert.rejects(workerOperation(candidate.client, "parent", {operation: "ca
     params: {agent_session_id: "agent-1", name: "goal_plus_thinkthread_annotation_next", arguments: {}}}),
     /Candidate Child annotation tool is not allowed/);
 assert.deepEqual(candidate.sent, []);
+const verifier = make(`goal_plus_thinkthread_role=verifier; agent_session_id=verifier-1; registration_nonce=${nonce}; dispatch_nonce=${nonce}.`);
+for (const name of ["goal_plus_search_run_verifier", "goal_plus_thinkthread_annotation_next", "bash"]) {
+    await assert.rejects(workerOperation(verifier.client, "parent", {operation: "call",
+        params: {agent_session_id: "verifier-1", name, arguments: {}}}), /Verifier Child tool is not allowed/);
+}
+await assert.rejects(workerOperation(candidate.client, "parent", {operation: "call",
+    params: {agent_session_id: "agent-1", name: "goal_plus_thinkthread_verifier_submit", arguments: {}}}),
+    /Verifier Child tool is not allowed/);
+assert.deepEqual(verifier.sent, []);
 ''', module.as_uri()], text=True, capture_output=True, timeout=10)
     assert checked.returncode == 0, checked.stdout + checked.stderr
 

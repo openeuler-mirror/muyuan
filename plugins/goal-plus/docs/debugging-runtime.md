@@ -219,7 +219,7 @@ Main/subagent 实际做了什么（长时间无输出、临时注入的
 prompt、工具调用与返回正文）时，使用本导出。它在导出时回读本地原生日志，内容完整，
 属于显式 debug 通道，输出两种形式：
 
-- `index.html`：自包含静态页面（无脚本），会话导航、类型配色、注入高亮、`⏸ gap`
+- `index.html`：自包含离线页面，会话导航、类型配色、注入高亮、`⏸ gap`
   停顿标记、可折叠正文与内容足迹统计，是主要的人读视图；
 - `events.jsonl`：每行一个事件的完整 JSON，供离线脚本消费，也可 `tail -F` 观察增量。
 
@@ -231,7 +231,8 @@ HTML 中每个事件正文默认展开（`meta`/`context` 观测记录折叠）�
 生成 `goal_plus_search_report` 时若本地已存在该导出，report.html 末尾会附上指向它的链接。
 
 手动导出整个 runtime root，自动发现并合并 Pi Main 原生历史、Search candidate、TT Child
-诊断归档、controller journal、Codex rollout 和 time advisory：
+诊断归档、controller journal、Codex rollout、time advisory，以及已采集的 direct
+Verifier/Annotator 一次性推理记录：
 
 ```bash
 PYTHONPATH=src python scripts/export_agent_transcript.py /path/to/project/.gp
@@ -242,13 +243,26 @@ tail -F /path/to/project/.gp/host-logs/agent-transcript/events.jsonl
 输出默认写入 `<root>/host-logs/agent-transcript/`（每个会话一个子目录，内含
 `transcript.html`），`--watch` 在源文件变化时持续刷新，适合观察长时间运行的任务。也可以直读单个原始文件：
 
+一次性推理记录位于 `<root>/host-logs/inference-transcripts/`，仅在宿主环境显式设置
+`GOAL_PLUS_DEBUG=1` 时采集。页面按 run、candidate、iteration、settlement、
+task 和 attempt 展示目标；Pi 可见每轮请求快照，Codex CLI 的 provider 请求不可见。
+Pi 一次性推理的 `message_start` / `message_update` 集中在默认折叠的
+`Raw message stream` 中，主时间线展示完整消息、工具调用及返回。原始事件序号和
+`events.jsonl`、`stdout.jsonl` 保持完整；中断时的未完成片段也可在该折叠区检查。
+顶层导航按 run/candidate 聚合，不逐条列出 Verifier/Annotator。同一候选的 worker session
+和推理调用位于候选索引；推理列表默认折叠，限定滚动高度，按迭代、settlement、角色和 task
+分组并保留所有 attempt。内嵌脚本仅提供迭代和角色筛选，关闭脚本仍可展开索引并访问全部记录。
+缺少目标身份或对应候选的推理保留在未关联索引中；完整正文和 JSONL 不受筛选影响。
+这些记录不创建原生 session，旧运行未采集的上下文不能从评分或总结中补造。
+
 ```bash
 PYTHONPATH=src python scripts/export_agent_transcript.py --pi /path/to/pi-session.jsonl --role main
 PYTHONPATH=src python scripts/export_agent_transcript.py --codex /path/to/rollout.jsonl
 ```
 
-常用选项：`--leaf-id`（Pi 分支，默认最后持久 entry）、`--max-chars`（HTML 正文
-截断上限）、`--gap-seconds`（停顿标记阈值，0 关闭）、`--output`、`--no-jsonl`。
+常用选项：`--leaf-id`（Pi 分支，默认最后持久 entry）、`--max-chars`（原生 session 的
+HTML 正文截断上限；一次性推理记录不截断）、`--gap-seconds`（停顿标记阈值，0 关闭）、
+`--output`、`--no-jsonl`。
 
 正常启动只需 `GOAL_PLUS_DEBUG=1`，不需要启动包装器或单独的后台 watcher：
 

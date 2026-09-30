@@ -93,7 +93,11 @@ turn 从宿主最终 system prompt 记录概要哈希和匹配布尔值到原生
 prompt、认证 header 或模型思考；它只证明该 hook 时点的可见内容，后续 hook 仍可能修改
 请求。离线 session 分析关联工具调用、原生工具错误和参数修正，不据此自动判断模型意图。
 缺少请求观测的旧历史只能与显式提供的 tools/list 参考合同比较，不能确认当时模型可见性。
-`GOAL_PLUS_DEBUG=1` 是新增 session 观测、诊断归档、请求/API 大小统计及 HTML 导出的唯一开关。
+direct Verifier 与 Evidence Annotator 的一次性推理另行记录完整输入、可观测执行事件、输出
+和验收状态，并按 run、candidate、iteration、settlement、task、attempt、invocation 关联。
+Pi 额外记录每轮 provider 请求快照；Codex CLI 不提供该请求体，导出时须标注观测边界。
+这类记录独立于原生 session，诊断失败不改变业务结果；旧的 hash-only receipt 不构成完整上下文。
+`GOAL_PLUS_DEBUG=1` 是新增 session 观测、no-session 完整记录、诊断归档、请求/API 大小统计及 HTML 导出的唯一开关。
 Codex Stop、Pi 回合结束/Main 会话关闭和 TT 归档完成后自动刷新完整 runtime 的
 `host-logs/agent-transcript/index.html`；报告生成前也刷新，使 report.html 能链接到该页面。
 合并导出按 runtime 串行收集和写入，单会话回调不覆盖其他会话；不启动后台 watcher。
@@ -449,7 +453,8 @@ Freeze 从 Goal 当前已授权的 Main 会话取得 harness，由装配层解�
 保存必填 `FrozenSpec.agent_harness`、`runtime_provider` 并一起纳入 spec hash。
 工作区不能改写 agent 身份；模型不能指定 caller 身份。支持 Codex/Pi + direct + Copy/Git，
 以及通过 Root/Profile/capability preflight 的 Pi + ThinkThread 和 Codex + ThinkThread
-（TT workspace）；两者都支持 `parallel_loops` 和 `adaptive_search`。Codex + ThinkThread 不支持显式 `workers=` 模型 override 与
+（TT workspace）；两者都支持 `parallel_loops` 和 `adaptive_search`。
+Codex + ThinkThread 不支持显式 `workers=` 模型 override 与
 `reasoning_effort`/`service_tier`，TT Root 内的 Ultra delegation、final check 与
 Stop-hook 续跑保持不支持。
 
@@ -461,14 +466,17 @@ host resume nonce 下才创建下一 generation，并继承原生 agent 配置�
 activation 可在历史 Goal scope 干净关闭后创建独立 scope。closing 或 cleanup_failed scope
 继续拒绝新执行。
 旧 attachment、fence 和进程记录保留，scope reconciliation 失败不改变 Goal 业务状态。
-Candidate 与 Annotation 使用冻结绑定；LLM Verifier 复用 direct structured inference。
+Candidate、Annotation 与 LLM Verifier 使用冻结的 harness/provider 绑定。
+LLM Verifier 在 direct 下复用 structured inference，在 ThinkThread 下每次评估创建独立的
+Message-only Child，仅开放读取本次输入与提交评分的工具；不得回退到本地 CLI 或关闭隔离。
 Delegation 与最终 checker 保持直接启动。`strategy.inner_agent` 名称和行为不变，
 省略时 direct 默认 autoresearch、ThinkThread 默认 common，显式选择优先。
 
 用户仍只需 `$goal-plus <自然语言诉求>` 或 `/goal-plus <自然语言诉求>`。
 普通任务进入 Goal Mode；Main 在需要 Search 时准备评价合同，信息不足时继续原有澄清流程。
 新身份字段不增加用户必填配置。模型发现工具显式接收 `agent_harness` 和 `runtime_provider`。
-不保留旧字段 alias、双写或迁移。切换前使用旧 build 关闭活动资源并收尾旧记录，
+不保留旧字段 alias 或双写；schema 8 VerifierTask 仅只读兼容解析，后续写回 schema 7。
+切换前使用旧 build 关闭活动资源并收尾旧记录，
 新 build 创建新记录；旧或未完整解码的记录不得被忽略而绕过授权和终态 gate。
 `.gp`、scope/resource journal 与安装目录布局保持不变，不自动刷新用户安装。
 

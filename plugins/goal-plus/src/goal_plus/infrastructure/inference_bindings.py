@@ -62,6 +62,8 @@ def build_pi_role_tools(
         if views else 'import { writeFileSync } from "node:fs";\n'
     )
     extension = prelude + f"\nconst parameters = {schema};\n\nexport default function (pi: any) {{\n"
+    if capabilities.role == "verifier":
+        extension += _VERIFIER_VALIDATION_FEEDBACK
     if views:
         extension += _ARTIFACT_TOOLS.replace("__LIST_TOOL__", PI_ARTIFACT_VIEW_LIST_TOOL_NAME).replace("__READ_TOOL__", PI_ARTIFACT_VIEW_READ_TOOL_NAME)
     extension += f'''  pi.registerTool({{
@@ -84,6 +86,24 @@ def build_pi_role_tools(
 '''
     names = (tool, PI_ARTIFACT_VIEW_LIST_TOOL_NAME, PI_ARTIFACT_VIEW_READ_TOOL_NAME) if views else (tool,)
     return PiInferenceTools(names, extension, output_env)
+
+
+_VERIFIER_VALIDATION_FEEDBACK = '''  pi.on("context", (event: any) => {
+    const prefix = 'Validation failed for tool "submit_verifier_output":';
+    return { messages: event.messages.map((message: any) => {
+      if (message.role !== "toolResult" || message.toolName !== "submit_verifier_output" || !message.isError) {
+        return message;
+      }
+      return { ...message, content: message.content.map((item: any) => {
+        if (item.type !== "text" || !item.text.startsWith(prefix)) return item;
+        const boundary = item.text.indexOf("\\n\\nReceived arguments:");
+        if (boundary < 0) return item;
+        const issues = item.text.slice(0, boundary);
+        return { type: "text", text: issues.slice(0, 1200) + "\\nCorrect these fields and resubmit." };
+      }) };
+    }) };
+  });
+'''
 
 
 _ARTIFACT_PRELUDE = '''import { closeSync, lstatSync, openSync, readSync, readdirSync, realpathSync, writeFileSync } from "node:fs";

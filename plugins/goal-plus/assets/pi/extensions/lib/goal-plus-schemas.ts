@@ -71,6 +71,10 @@ export const ThinkThreadToolView = Type.Object(
 
 
 export const RuntimeToolSchemas: Record<string, TSchema> = {
+	goal_plus_thinkthread_verifier_input: Type.Object({}, { additionalProperties: false }),
+	goal_plus_thinkthread_verifier_submit: Type.Object(
+		{ result: Type.Record(Type.String(), Type.Unknown()) }, { additionalProperties: false },
+	),
 	goal_plus_thinkthread_annotation_next: Type.Object(
 		{ run_id: Type.String() },
 		{ additionalProperties: false },
@@ -118,6 +122,8 @@ export const RuntimeToolSchemas: Record<string, TSchema> = {
 };
 
 export const RuntimeToolDescriptions: Record<string, string> = {
+	goal_plus_thinkthread_verifier_input: "Read this Verifier assessment's fixed instructions, evidence and output schema.",
+	goal_plus_thinkthread_verifier_submit: "Submit this assessment's complete result matching the supplied output schema, then end the turn.",
 	goal_plus_thinkthread_annotation_next: "仅供 retained ThinkThread Annotation Child 领取下一条由 Runtime settlement 已录取的 immutable Evidence task；candidate Child 调用会被 Root 拒绝。",
 	goal_plus_thinkthread_artifact_view_list: "列出当前 annotation task 授权的 target/peer immutable snapshot 目录。",
 	goal_plus_thinkthread_artifact_view_stat: "读取当前 annotation task 授权的 Artifact View 路径元数据。",

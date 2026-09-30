@@ -109,6 +109,14 @@ def build_structured_inference(
     return StructuredInference(clock=SystemClock(), popen=popen)
 
 
+def build_inference_transcript(root_dir, identity):
+    from goal_plus.infrastructure.inference_transcript import FileInferenceTranscript, inference_capture_enabled
+
+    if not root_dir or identity is None or not inference_capture_enabled():
+        return None
+    return FileInferenceTranscript(Path(root_dir).resolve(), identity)
+
+
 def build_inference_registration(
     root_dir: Path | str | None,
     run_id: str | None,

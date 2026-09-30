@@ -71,6 +71,7 @@ class ManagedProcess:
         timeout_detail: str,
         cancellation_detail: str,
         active_check: Literal["before_wait", "after_timeout"] = "before_wait",
+        observe_output: Callable[[str, str], None] | None = None,
     ) -> ProcessOutcome:
         started = time.monotonic()
         stdout = ""
@@ -80,6 +81,8 @@ class ManagedProcess:
         def stop(state: Literal["timed_out", "terminated"]) -> ProcessOutcome:
             self.terminate()
             final_stdout, final_stderr = self._collect_after_termination(output, stdout, stderr)
+            if observe_output is not None:
+                observe_output(final_stdout, final_stderr)
             monitor.observe(
                 state, self.process, stdout=final_stdout, stderr=final_stderr,
                 detail=timeout_detail if state == "timed_out" else cancellation_detail, force=True,
@@ -104,16 +107,22 @@ class ManagedProcess:
                 except subprocess.TimeoutExpired as exc:
                     stdout = _complete_output(stdout, exc.output)
                     stderr = _complete_output(stderr, exc.stderr)
+                    if observe_output is not None:
+                        observe_output(stdout, stderr)
                     monitor.observe("running", self.process, stdout=stdout, stderr=stderr)
                     if active_check == "after_timeout" and is_active is not None and not is_active():
                         return stop("terminated")
                     continue
                 stdout, stderr = observed_stdout, observed_stderr
+                if observe_output is not None:
+                    observe_output(stdout, stderr)
                 monitor.observe(
                     "process_exited", self.process, stdout=stdout, stderr=stderr, force=True,
                 )
                 return ProcessOutcome("process_exited", stdout, stderr)
         except ProcessOutputLimitExceeded as exc:
+            if observe_output is not None:
+                observe_output(exc.stdout, exc.stderr)
             self.close()
             monitor.observe(
                 "failed", self.process, stdout=exc.stdout, stderr=exc.stderr, detail=str(exc), force=True,

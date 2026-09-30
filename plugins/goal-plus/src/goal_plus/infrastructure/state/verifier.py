@@ -27,11 +27,20 @@ class FileVerifierState:
     def _record_path(self, run_id: str, record_id: str) -> Path:
         return self.run_dir(run_id) / "verifier" / "records" / f"{record_id}.json"
 
+    @staticmethod
+    def _load_task(path: Path) -> VerifierTask:
+        payload = load_json(path)
+        if payload.get("schema_version") == 8:
+            payload = {key: value for key, value in payload.items()
+                       if key not in {"execution_profile", "context_snapshot", "attempt_history"}}
+            payload["schema_version"] = 7
+        return VerifierTask.model_validate(payload)
+
     def load_verifier_task(self, task_id: str) -> VerifierTask:
         paths = list(self.root_dir.glob(f"runs/*/verifier/tasks/{task_id}.json"))
         if len(paths) != 1:
             raise FileNotFoundError(f"verifier task not found: {task_id}")
-        return VerifierTask.model_validate(load_json(paths[0]))
+        return self._load_task(paths[0])
 
     def load_verifier_tasks(
         self,
@@ -46,7 +55,7 @@ class FileVerifierState:
             else "runs/*/verifier/tasks/verifier_*.json"
         )
         tasks = [
-            VerifierTask.model_validate(load_json(path))
+            self._load_task(path)
             for path in sorted(self.root_dir.glob(pattern))
         ]
         filtered = [

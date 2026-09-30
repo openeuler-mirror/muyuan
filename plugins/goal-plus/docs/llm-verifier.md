@@ -88,19 +88,33 @@ canonical payload 计算；attempt、rollback 或 evidence 任一字段变化都
 
 模型输入只投影当前 subject 的精简事实：
 
+- objective、candidate_acceptance、candidate_hypothesis：冻结目标、显式验收要求和本次假设；
+- metric_target：冻结指标方向、有效数值 success_threshold 和 hard score 是否达到该阈值；
 - attempt_identity：candidate、iteration、settlement 和 exact attempt artifact 身份；
-- hard_evidence：disposition、hard score、process 结果和 failure class；
+- hard_evidence：disposition、hard score、process 结果、edit-surface 事实和 failure class，
+  以及有界 verifier metrics 摘要；
 - comparison_base_identity：bounded diff 的直接基线身份；
 - artifact_manifest 与 bounded_artifact_diff：当前 attempt 的改动文件和直接 diff。
 
 完整 Receipt、历史 Record、旧分数和 rationale、调用与 usage、整包 runtime constraints、rollback
 artifact 内容都不进入模型输入。直接浏览 candidate 代码与 Git 历史也不属于当前协议。
 
+metric_target 只比较数值，不替代 process 或 edit-surface gate，也不表示达到全局最优。
+阈值与方向在 settlement submission 中冻结；旧记录缺少字段时保持 null，不从当前配置补取。
+metrics 摘要最多 8 KiB，每个字段最多 1 KiB，保留完整 JSON 值；内部元数据和 stdout/stderr
+tail 不进入摘要。超限、非法数值或其他被省略的验证内容通过 metrics_omitted 明示，
+不截断字段值，也不把缺失理解成验证未执行或失败。
+
 ## 异步任务队列设计
 
 每个 run 使用一个由可信 candidate host 持有的 FIFO consumer。入队时分配单调
 queue_sequence，队首 task 独占模型执行权；只有它进入不可逆终态并完成 Record 交付后，
 队列才领取下一项。
+
+启用 Verifier 时，host 在派发 candidate 调用时启动持久 consumer，worker 尚未返回也能消费
+后续结算任务；结算与 Selection 回调可再次唤醒同一队列。内部评分仍校验 Main 授权、run 归属、
+当前 activation 和开放的 execution scope，但不受关闭候选时的 run fence 阻断，也不重新打开
+已关闭的 scope。Allocation 与 Steering 的候选操作仍受原有执行准入约束。
 
 ~~~text
 pending -> running -> completed
@@ -132,8 +146,15 @@ SettlementVerifier.prepare() 根据 FrozenSpec.strategy.verifier.scores 解析�
 
 Adapter 将固定质量 rubric、执行协议和附加 score instructions 放入可信指令，将 Settlement 的
 精简投影放入不可信 evidence 区。Structured inference backend 强制返回动态严格 JSON Schema；
-Pi 路径要求最后且唯一动作调用受限 Verifier 输出工具。Adapter 直接读取 inference payload，
+direct Pi 路径要求最后且唯一动作调用受限 Verifier 输出工具。Adapter 直接读取 inference payload，
 不扫描普通 stdout 或 worker 自建 JSON。
+
+质量评分区分达到用户阈值与继续优化，不引用未提供的最优纪录或从 diff 推断实测提升。
+固定锚点为 0（核心目标已证实失败）、0.5（部分完成或存在实质缺口）、1（目标和验收有充分
+证据支持，且无实质正确性或集成问题）；中间分值应说明具体缺口，不自行增加要求。
+每项 rationale 建议少于 800 字符，严格上限仍为 1000 字符。Pi 在模型请求上下文中将 verifier
+校验失败回执精简为有界的字段错误与重提提示，不回显整份参数；原始记录、成功提交和其他
+工具错误保持原样。
 
 结构化结果必须满足：
 
@@ -143,8 +164,39 @@ Pi 路径要求最后且唯一动作调用受限 Verifier 输出工具。Adapter
 - diagnostics 启用时，findings 的结构与公开引用合法；
 - 不允许缺字段、额外字段、非有限值或静默默认值。
 
-调用观测记录 agent_harness=codex|pi 与 runtime_provider=direct。模型和 reasoning 继承可信
-当前宿主配置；Pi 使用 scope 中记录的 Main model/thinking，没有独立 model override。
+执行 adapter 核对 task 所属 run、FrozenSpec、harness 和 artifact provider，再按冻结的
+runtime_provider 分流，不从环境变量或模型输入推断后端。
+Git/Copy 的 direct 调用保留 Codex native / Pi outer 隔离；direct Pi 使用 scope 中记录的
+Main model/thinking，没有独立 model override。
+
+ThinkThread 每次评估启动独立的 fresh private Child，使用 runtime-owned S0 与 self Profile，
+继承 Root 模型配置，仅授予 Message capability。工具限定为
+`goal_plus_thinkthread_verifier_input` 和 `goal_plus_thinkthread_verifier_submit`；
+没有 candidate、Annotation、文件访问或命令工具。输入通过分块 Message RPC 返回，评分仍由
+同一 owner 按冻结 schema、score contract 和当前 lease 验收，不解析普通模型文本。
+重复请求复用原回包，冲突提交拒绝；spawn 回包丢失时观察原 Child，不重新 spawn。
+完成、超时或取消后确认原 Child 停止并释放 private branch；清理结果未知时拒绝后续模型调用。
+执行 journal 位于 `runs/<run_id>/verifier/executions/`，保留准确 Child/Message 和 attempt 身份。
+进程中断后的未释放资源不会自动重开新评估；必须由宿主确认清理后再开始新 run。
+沙箱依赖缺失、身份不符或清理失败不是可自动重试的模型错误；不改变 hard settlement。
+
+调用观测记录 agent_harness=codex|pi、runtime_provider=direct|thinkthread；ThinkThread
+另外记录 native_session_id 和 native_invocation_id，不将 Child 调用标记为 direct。
+
+direct Verifier 每次调用另存独立的 no-session 推理记录，按 run、candidate、iteration、
+settlement、task、attempt 和 invocation 关联到 worker 结算；记录完整输入、可观测事件、
+原始输出和验收结果。Pi 额外保存每轮 provider 请求快照；Codex CLI 无法提供该快照，
+页面明确标注观测边界。与 Annotator 共用 `host-logs/inference-transcripts/` 采集格式，
+由 agent-transcript 导出器合入 `index.html`；诊断失败不改变评分或重试。
+Pi provider 请求先写入本次推理的 sandbox 临时目录，由宿主归档，不增加 runtime 写权限。
+完整内容仅在宿主进程设置 `GOAL_PLUS_DEBUG=1` 时采集；仅把变量写进
+prompt 不会改变宿主环境。
+ThinkThread Verifier 同样记录本次 prepared input、结果与候选/迭代关联，但明确标记它们不等于
+完整 provider 请求。Pi Child 的实际上下文由原生 session Message 归档保留，并按 Verifier 角色
+关联到同一 task/attempt，在 `index.html` 的候选评估分组中展示；删除 Child 前补收归档。
+缺少原生归档时不能宣称完整上下文已采集；Codex Child 的原生归档尚未覆盖。
+先前 schema 8 Task 的摘要字段只在读取时兼容，后续写入回到 schema 7；旧摘要不补造
+历史完整上下文。
 
 ## VerifierRecord 设计和 Adaptive Search 接口
 

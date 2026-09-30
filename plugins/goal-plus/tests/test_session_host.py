@@ -39,6 +39,7 @@ pytestmark = pytest.mark.host_process
 def hosted_candidate(request, tmp_path, monkeypatch):
     settings = request.param if isinstance(request.param, dict) else {"harness": request.param}
     agent_harness = settings["harness"]
+    monkeypatch.setenv("GOAL_PLUS_LLM_VERIFIER_DISABLED", "1")
     monkeypatch.setenv(VERIFIER_RESOURCE_LOCK_DIR_ENV, str(tmp_path / "resource-locks"))
     project = make_project(tmp_path)
     (project / "evaluator.py").write_text(
@@ -52,6 +53,11 @@ def hosted_candidate(request, tmp_path, monkeypatch):
     spec = spec_for(project, max_parallel=1)
     spec.strategy.inner_agent = "common"
     spec.strategy.worker_budget = WorkerBudget(max_runtime_seconds=60)
+    if settings.get("quality"):
+        from goal_plus.domain.selection import SelectionSpec
+
+        spec.workspace.provider = "git_worktree"
+        spec.strategy.selection = SelectionSpec(ranking_keys=["quality_score"], ranking_tolerance=[0.0])
     if settings.get("adaptive"):
         from goal_plus.domain.adaptive.policy import SweSearchUctPolicySpec
         from goal_plus.domain.verifier import VerifierSpec
@@ -162,11 +168,12 @@ def test_allocation_dispatch_wakes_exact_call_once(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("runtime_provider", "creates_scope"),
-    [("direct", False), ("thinkthread", True)],
+    ("runtime_provider", "internal", "creates_scope"),
+    [("direct", False, False), ("thinkthread", False, True),
+     ("direct", True, False), ("thinkthread", True, False)],
 )
 def test_only_thinkthread_execution_can_create_a_missing_scope(
-    tmp_path, monkeypatch, runtime_provider, creates_scope
+    tmp_path, monkeypatch, runtime_provider, internal, creates_scope
 ):
     from types import SimpleNamespace
 
@@ -204,11 +211,11 @@ def test_only_thinkthread_execution_can_create_a_missing_scope(
     )
 
     if creates_scope:
-        host._admit_run("run_test", "main_test", execution=True)
+        host._admit_run("run_test", "main_test", execution=True, internal=internal)
         assert created[0]["run_id"] == "run_test"
     else:
         with pytest.raises(PermissionError, match="requires a host execution scope"):
-            host._admit_run("run_test", "main_test", execution=True)
+            host._admit_run("run_test", "main_test", execution=True, internal=internal)
         assert created == []
 
 
@@ -1085,8 +1092,7 @@ def test_internal_owners_wake_independently(tmp_path, monkeypatch, failed_owner)
     monkeypatch.setattr(host, "_admit_run", lambda *_a, **_k: None)
     monkeypatch.setattr(host, "_verifier_queue", lambda *_: SimpleNamespace(start=lambda: events.append("verifier")))
     monkeypatch.setattr("goal_plus.bootstrap.build_internal_agent_work",
-                        lambda _: SimpleNamespace(inspect=lambda _: SimpleNamespace(accepts_work=True)))
-    monkeypatch.setattr("goal_plus.host_scope.run_accepts_internal_agent_launch", lambda **_: True)
+                        lambda _: SimpleNamespace(inspect=lambda _: SimpleNamespace(accepts_work=True, verifier_enabled=True)))
     def wake(owner):
         events.append(owner)
         if owner == failed_owner:
@@ -1095,3 +1101,107 @@ def test_internal_owners_wake_independently(tmp_path, monkeypatch, failed_owner)
     host.runtime = SimpleNamespace(recover_allocation=lambda *_a, **_k: wake("executor"))
     host.wake_internal_agents("run_test", caller_id="main")
     assert set(events) == {"verifier", "annotation", "executor"}
+
+
+@pytest.mark.parametrize("hosted_candidate", [
+    {"harness": "codex", "quality": True}, {"harness": "pi", "quality": True},
+], indirect=True)
+@pytest.mark.parametrize("fenced", [False, True])
+def test_host_consumes_verifier_without_candidate_completion(hosted_candidate, monkeypatch, fenced):
+    from goal_plus.application.verifier import VerifierWorkflow
+    from goal_plus.infrastructure.clock import SystemClock
+    from goal_plus.infrastructure.state.verifier import FileVerifierState
+    from goal_plus.session_host import NativeCandidateHost
+    from tests.test_llm_verifier import invocation, result
+
+    root, harness, goal, runtime, task, session, scope, _, _ = hosted_candidate
+    monkeypatch.delenv("GOAL_PLUS_LLM_VERIFIER_DISABLED")
+    monkeypatch.setattr("goal_plus.internal_agents.kick_internal_agents", lambda *_a, **_k: None)
+    calls = []
+
+    def score(_runner, assessment):
+        calls.append(assessment.task_id)
+        return result(), invocation().model_copy(update={"agent_harness": harness}), {}
+
+    monkeypatch.setattr("goal_plus.llm_verifier.LlmVerifier.execute", score)
+    workflow = VerifierWorkflow(FileVerifierState(root), SystemClock())
+    host = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
+    try:
+        if not fenced:
+            (root.parent / "hold-native-turn").touch()
+            host.run_candidate(task.run_id, task.candidate_id, "working", "work", 30)
+            control = host(session.agent_session_id, "wait")
+            assert control.wait("working", timeout=0).state == "running"
+        else:
+            host.open(session.agent_session_id)
+        (task.workspace / "initial_program.py").write_text("VALUE = 4\n")
+        runtime.run_verifier(task.run_id, task.candidate_id, agent_session_id=session.agent_session_id,
+                             hypothesis="Increase the controlled score")
+        before = runtime.list_iterations(task.run_id, task.candidate_id)
+        if fenced:
+            assert not calls
+            close_run_candidates(root_dir=root, scope_id=scope["scope_id"], run_id=task.run_id)
+            with pytest.raises(RuntimeError, match="waiting for required verifier scores"):
+                runtime.select(task.run_id)
+            with pytest.raises(RuntimeError, match="fenced"):
+                host.run_candidate(task.run_id, task.candidate_id, "blocked", "work", 5)
+            monkeypatch.setattr(host.runtime, "recover_allocation", lambda *_a, **_k: pytest.fail("fenced allocation"))
+            host.wake_internal_agents(task.run_id, caller_id=goal.active_session.session_id)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            assessments = workflow.list_tasks(task.run_id)
+            if len(assessments) == 1 and assessments[0].delivered:
+                break
+            time.sleep(0.05)
+        assert len(assessments) == 1
+        assessment = assessments[0]
+        assert assessment.state == "completed" and assessment.delivered
+        assert calls == [assessment.task_id]
+        assert workflow.terminal_output(assessment).quality_score == 0.75
+        assert runtime.list_iterations(task.run_id, task.candidate_id) == before
+        if fenced:
+            selected = runtime.select(task.run_id)
+            assert selected["selected_candidate_id"] == task.candidate_id
+            assert selected["selected_quality_score"] == 0.75
+        else:
+            assert control.wait("working", timeout=0).state == "running"
+    finally:
+        host.shutdown()
+
+
+def test_internal_verifier_admission_keeps_authorization_and_scope_gates(hosted_candidate, monkeypatch):
+    from goal_plus.session_host import NativeCandidateHost
+
+    root, harness, goal, _, task, _, scope, _, _ = hosted_candidate
+    host = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
+    caller = goal.active_session.session_id
+    host._admit_run(task.run_id, caller, execution=True, internal=True)
+    with pytest.raises(PermissionError):
+        host._admit_run(task.run_id, "foreign-main", execution=True, internal=True)
+    for change, error in [
+        ({"activation_id": "old-activation"}, PermissionError),
+        ({"agent_harness": "pi" if harness == "codex" else "codex"}, PermissionError),
+        ({"run_ids": []}, PermissionError),
+        ({"state": "closed"}, RuntimeError),
+    ]:
+        monkeypatch.setattr("goal_plus.session_host.execution_scope_for_run", lambda **_: {**scope, **change})
+        with pytest.raises(error):
+            host._admit_run(task.run_id, caller, execution=True, internal=True)
+    monkeypatch.setattr(host.queries, "runtime_provider", lambda _: "thinkthread")
+    monkeypatch.setattr("goal_plus.session_host.ensure_execution_scope", lambda **_: pytest.fail("internal scope reopen"))
+    with pytest.raises(RuntimeError, match="not open"):
+        host._admit_run(task.run_id, caller, execution=True, internal=True)
+    assert not host._verifier_queues
+
+
+def test_disabled_verifier_does_not_create_consumer(hosted_candidate):
+    from goal_plus.session_host import NativeCandidateHost
+
+    root, harness, goal, _, task, session, _, _, _ = hosted_candidate
+    host = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
+    try:
+        host.run_candidate(task.run_id, task.candidate_id, "work", "work", 5)
+        assert host(session.agent_session_id, "wait").wait("work", timeout=10).state == "completed"
+        assert not host._verifier_queues
+    finally:
+        host.shutdown()
