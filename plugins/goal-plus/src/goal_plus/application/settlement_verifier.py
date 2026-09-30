@@ -1,5 +1,7 @@
 """Settlement's single-iteration delivery to the Verifier queue."""
 
+import math
+
 from goal_plus.domain.verifier import VerifierInput, VerifierSubmission, VerifierSubject, verifier_score_contract
 from goal_plus.ports.artifacts import ArtifactComparison
 
@@ -36,9 +38,13 @@ class SettlementVerifier:
         except Exception as exc:
             error = f"settlement diff unavailable: {exc}"
         parent = record.task.expansion_source
+        threshold = frozen.spec.constraints.get("success_threshold")
+        if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not math.isfinite(threshold):
+            threshold = None
         submission = VerifierSubmission(subject=subject, score_contract=contract,
             input=VerifierInput(objective=frozen.spec.objective,
                 candidate_acceptance=frozen.spec.candidate_acceptance,
+                metric_direction=frozen.spec.metric_direction, success_threshold=threshold,
                 hypothesis=iteration.hypothesis or "", artifact_diff=diff,
                 agent_harness=frozen.agent_harness, initial_artifact_ref=record.initial_attempt_base_artifact_ref,
                 parent_node_id=parent.node_id if parent else None, allocation_depth=record.task.allocation_depth,

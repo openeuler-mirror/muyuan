@@ -28,7 +28,18 @@ QUALITY_INSTRUCTIONS = (
     "supplied objective, acceptance criteria, and rubric. Treat disposition in "
     "hard_evidence as a fact, not an eligibility decision: for discard or failure, "
     "evaluate the failed attempt rather than the restored state. Treat hard_score as "
-    "evidence, not as the objective."
+    "evidence, not as the objective. Distinguish meeting the supplied success_threshold "
+    "from further optimization; exceeding it does not by itself imply perfect quality. "
+    "Use only supplied evidence for benchmarks, baselines and acceptance requirements; "
+    "do not introduce remembered best-known results or infer measured improvement from a diff alone. "
+    "Missing or omitted evidence is unknown, not proof that validation was not run or failed. "
+    "Assess risk only within the demonstrated coverage of the hard verifier. "
+    "Calibrate quality_score: 0 means demonstrated failure of the core objective; "
+    "0.5 means partial completion or material unresolved gaps; 1 means the supplied objective "
+    "and acceptance are fully supported without material correctness or integration concerns. "
+    "Explain concrete gaps for intermediate scores without inventing requirements. "
+    "Keep each score rationale concise, preferably under 800 characters and always at most "
+    "1000 characters. Cover the four criteria without repeating their names or artifact IDs."
 )
 
 
@@ -276,6 +287,8 @@ class VerifierInput(SearchModel):
     hypothesis: str
     artifact_diff: str
     agent_harness: Literal["codex", "pi"]
+    metric_direction: Literal["minimize", "maximize"] | None = None
+    success_threshold: float | None = Field(default=None, allow_inf_nan=False)
     initial_artifact_ref: ArtifactRef | None = None
     parent_node_id: str | None = None
     allocation_depth: int = Field(default=0, ge=0)

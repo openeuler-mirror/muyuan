@@ -44,6 +44,8 @@ from goal_plus.ports.sandbox import ProcessSandbox
 
 VERIFIER_DISABLED_ENV = "GOAL_PLUS_LLM_VERIFIER_DISABLED"
 MAX_VERIFIER_PROMPT_BYTES = 2 * 1024 * 1024
+MAX_VERIFIER_METRICS_BYTES = 8192
+MAX_VERIFIER_METRIC_FIELD_BYTES = 1024
 
 
 class VerifierExecutionUnavailable(RuntimeError):
@@ -63,6 +65,38 @@ VERIFIER_ROLE_INSTRUCTIONS = (
 
 def _verifier_dir(root_dir: Path | str, run_id: str) -> Path:
     return Path(root_dir).resolve() / "runs" / run_id / "verifier"
+
+
+def _bounded_verifier_metrics(metrics: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Keep complete small fields, marking omissions instead of clipping JSON values."""
+    summary: dict[str, Any] = {}
+    omitted = False
+    for name, values in sorted(metrics.items()):
+        if name.startswith("_"):
+            continue
+        if len(name) > 128 or not isinstance(values, dict):
+            omitted = True
+            continue
+        for key, value in sorted(values.items()):
+            if key.startswith("_"):
+                continue
+            if key in {"stdout_tail", "stderr_tail"}:
+                omitted = True
+                continue
+            try:
+                field = json.dumps({key: value}, ensure_ascii=False, allow_nan=False)
+            except (ValueError, TypeError):
+                omitted = True
+                continue
+            if len(key) > 128 or len(field.encode("utf-8")) > MAX_VERIFIER_METRIC_FIELD_BYTES:
+                omitted = True
+                continue
+            candidate = {**summary, name: {**summary.get(name, {}), key: value}}
+            if len(json.dumps(candidate, ensure_ascii=False).encode("utf-8")) > MAX_VERIFIER_METRICS_BYTES:
+                omitted = True
+                continue
+            summary = candidate
+    return summary, omitted
 
 
 def _codex_usage(stdout: str, _message: dict[str, Any] | None) -> dict[str, int | float]:
@@ -158,8 +192,20 @@ class LlmVerifier:
             raise ValueError(submission.input_error)
         receipt = task.subject.settlement
         base = receipt.attempt_base_artifact_ref
+        metrics, metrics_omitted = _bounded_verifier_metrics(receipt.evidence.metrics)
+        threshold = submission.success_threshold
+        score = receipt.evidence.hard_score
+        threshold_met = None
+        if threshold is not None and score is not None and submission.metric_direction is not None:
+            threshold_met = score >= threshold if submission.metric_direction == "maximize" else score <= threshold
         payload: dict[str, Any] = {
             "objective": submission.objective,
+            "metric_target": {
+                "metric_name": receipt.evidence.metric_name,
+                "direction": submission.metric_direction,
+                "success_threshold": threshold,
+                "hard_score_meets_threshold": threshold_met,
+            },
             "candidate_acceptance": submission.candidate_acceptance,
             "candidate_hypothesis": submission.hypothesis,
             "attempt_identity": {
@@ -175,6 +221,11 @@ class LlmVerifier:
                 "hard_score": receipt.evidence.hard_score,
                 "process_passed": receipt.evidence.process_passed,
                 "failure_class": receipt.evidence.failure_class,
+                "artifact_clean": receipt.evidence.artifact_clean,
+                "touched_denied_files": receipt.evidence.touched_denied_files,
+                "changed_outside_allowed": receipt.evidence.changed_outside_allowed,
+                "metrics": metrics,
+                "metrics_omitted": metrics_omitted,
             },
             "comparison_base_identity": (
                 base.model_dump(mode="json") if base is not None else None
@@ -252,8 +303,8 @@ class LlmVerifier:
         pi_tools = None
         if agent_harness == "pi" and runtime_provider == "direct":
             instructions += (
-                f"\n必须调用 {PI_VERIFIER_TOOL_NAME} 作为最后且唯一的输出动作；"
-                "不要直接输出 JSON 文本，也不要调用其他工具。"
+                f"\nYou must call {PI_VERIFIER_TOOL_NAME} as the final and only output action. "
+                "Do not emit JSON directly or call any other tool."
             )
             pi_tools = build_pi_role_tools(
                 verifier_role_capabilities(),

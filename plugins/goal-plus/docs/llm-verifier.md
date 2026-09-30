@@ -88,13 +88,22 @@ canonical payload 计算；attempt、rollback 或 evidence 任一字段变化都
 
 模型输入只投影当前 subject 的精简事实：
 
+- objective、candidate_acceptance、candidate_hypothesis：冻结目标、显式验收要求和本次假设；
+- metric_target：冻结指标方向、有效数值 success_threshold 和 hard score 是否达到该阈值；
 - attempt_identity：candidate、iteration、settlement 和 exact attempt artifact 身份；
-- hard_evidence：disposition、hard score、process 结果和 failure class；
+- hard_evidence：disposition、hard score、process 结果、edit-surface 事实和 failure class，
+  以及有界 verifier metrics 摘要；
 - comparison_base_identity：bounded diff 的直接基线身份；
 - artifact_manifest 与 bounded_artifact_diff：当前 attempt 的改动文件和直接 diff。
 
 完整 Receipt、历史 Record、旧分数和 rationale、调用与 usage、整包 runtime constraints、rollback
 artifact 内容都不进入模型输入。直接浏览 candidate 代码与 Git 历史也不属于当前协议。
+
+metric_target 只比较数值，不替代 process 或 edit-surface gate，也不表示达到全局最优。
+阈值与方向在 settlement submission 中冻结；旧记录缺少字段时保持 null，不从当前配置补取。
+metrics 摘要最多 8 KiB，每个字段最多 1 KiB，保留完整 JSON 值；内部元数据和 stdout/stderr
+tail 不进入摘要。超限、非法数值或其他被省略的验证内容通过 metrics_omitted 明示，
+不截断字段值，也不把缺失理解成验证未执行或失败。
 
 ## 异步任务队列设计
 
@@ -139,6 +148,13 @@ Adapter 将固定质量 rubric、执行协议和附加 score instructions 放入
 精简投影放入不可信 evidence 区。Structured inference backend 强制返回动态严格 JSON Schema；
 direct Pi 路径要求最后且唯一动作调用受限 Verifier 输出工具。Adapter 直接读取 inference payload，
 不扫描普通 stdout 或 worker 自建 JSON。
+
+质量评分区分达到用户阈值与继续优化，不引用未提供的最优纪录或从 diff 推断实测提升。
+固定锚点为 0（核心目标已证实失败）、0.5（部分完成或存在实质缺口）、1（目标和验收有充分
+证据支持，且无实质正确性或集成问题）；中间分值应说明具体缺口，不自行增加要求。
+每项 rationale 建议少于 800 字符，严格上限仍为 1000 字符。Pi 在模型请求上下文中将 verifier
+校验失败回执精简为有界的字段错误与重提提示，不回显整份参数；原始记录、成功提交和其他
+工具错误保持原样。
 
 结构化结果必须满足：
 
