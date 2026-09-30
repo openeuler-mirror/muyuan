@@ -350,7 +350,7 @@ def test_goal_plus_thinkthread_profile_plan_removes_only_current_checkout(
     assert notes == []
 
 
-def test_goal_plus_thinkthread_profile_plan_refuses_another_checkout(
+def test_goal_plus_thinkthread_profile_plan_preserves_another_checkout(
     uninstaller: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -368,8 +368,53 @@ def test_goal_plus_thinkthread_profile_plan_refuses_another_checkout(
         lambda _path: tmp_path / "other-checkout",
     )
 
-    with pytest.raises(uninstaller.UninstallError, match="refusing to remove"):
-        uninstaller._goal_plus_thinkthread_profile_plan()
+    owned, notes = uninstaller._goal_plus_thinkthread_profile_plan()
+
+    assert owned is None
+    assert notes == [
+        f"Warning: preserving Goal Plus ThinkThread pi Profile because it is "
+        f"managed by {tmp_path / 'other-checkout'}: {path}"
+    ]
+
+
+def test_build_plan_continues_when_foreign_thinkthread_is_preserved(
+    uninstaller: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = tmp_path / "goal-plus-codex.toml"
+    profile.write_text("foreign\n", encoding="utf-8")
+    sdk = tmp_path / "sdk"
+    sdk.mkdir()
+    foreign = tmp_path / "other-checkout"
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_thinkthread_profile_path",
+        lambda native_agent="pi": profile,
+    )
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_managed_thinkthread_profile_source",
+        lambda _path: foreign,
+    )
+    monkeypatch.setattr(uninstaller.install_support, "_thinkthread_sdk_root", lambda: sdk)
+    monkeypatch.setattr(
+        uninstaller.install_support,
+        "_managed_thinkthread_sdk_source",
+        lambda _path: foreign,
+    )
+    monkeypatch.setattr(uninstaller, "_runtime_plan", lambda: (True, []))
+
+    plan = uninstaller._build_plan(
+        tmp_path / "dev",
+        components=frozenset({"thinkthread", "unused-runtime"}),
+    )
+
+    assert plan.goal_plus_thinkthread_profile_paths == ()
+    assert plan.goal_plus_thinkthread_sdk_path is None
+    assert plan.remove_runtime is True
+    assert len(plan.notes) == 3
+    assert all(note.startswith("Warning: preserving") for note in plan.notes[:2])
 
 
 def test_goal_plus_thinkthread_profile_plan_allows_explicit_foreign_removal(

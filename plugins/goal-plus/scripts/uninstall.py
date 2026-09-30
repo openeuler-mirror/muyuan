@@ -210,9 +210,9 @@ def _goal_plus_thinkthread_profile_plan(
     detail = f"managed by {source}" if source is not None else "not Goal Plus-managed"
     if allow_foreign:
         return path, [f"Warning: removing {label} {detail}: {path}"]
-    raise UninstallError(
-        f"refusing to remove {label} because it is {detail}: {path}"
-    )
+    return None, [
+        f"Warning: preserving {label} because it is {detail}: {path}"
+    ]
 
 
 def _goal_plus_thinkthread_sdk_plan(
@@ -228,10 +228,10 @@ def _goal_plus_thinkthread_sdk_plan(
     detail = f"managed by {source}" if source is not None else "not Goal Plus-managed"
     if allow_foreign:
         return path, [f"Warning: removing Agent POSIX SDK {detail}: {path}"]
-    raise UninstallError(
-        "refusing to remove Agent POSIX SDK because it is "
+    return None, [
+        "Warning: preserving Agent POSIX SDK because it is "
         f"{detail}: {path}"
-    )
+    ]
 
 
 def _runtime_plan() -> tuple[bool, list[str]]:

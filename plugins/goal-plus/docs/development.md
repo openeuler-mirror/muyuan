@@ -208,6 +208,8 @@ TT Profile 从基础 `pi` Profile 整份生成，重装会覆盖受管文件中�
 查询每次读取当前绑定：已卸载宿主报告未安装，其他宿主仍可查询；`--unused-runtime`
 只清理无引用 release，不删除查询工具或它使用的 bootstrap Python。
 ThinkThread Runtime、Root、状态目录和包由 ThinkThread 独立管理；Goal Plus 卸载器不会删除它们。
+无参数卸载遇到其他 checkout 管理的 ThinkThread Profile 或 SDK 时会保留这些资源并输出 warning，
+但会继续清理其他可移除组件；显式使用 `--thinkthread` 才会按 warning 接管并移除它们。
 旧 pip/Conda 环境、bootstrap uv/Python、目标 workspace 的 `.gp/` 和用户源码不属于 runtime 清理范围。
 跨 checkout 的正常宿主注册可以显式移除；显式选择 ThinkThread 时，同名 Profile/SDK 也会在
 warning 后移除。ThinkThread Runtime、Root 和状态目录仍不会被删除。
