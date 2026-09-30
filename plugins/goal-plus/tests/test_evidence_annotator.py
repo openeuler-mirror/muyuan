@@ -38,6 +38,69 @@ from goal_plus.infrastructure.search_configuration import (
 from tests._runtime_helpers import make_project, spec_for
 
 
+@pytest.mark.parametrize(
+    ("supplemental", "publish", "adopt"),
+    [
+        (False, False, False), (True, False, False), (False, True, False),
+        (False, False, True), (True, True, True),
+    ],
+)
+def test_annotation_projects_only_active_capabilities(
+    supplemental: bool, publish: bool, adopt: bool,
+) -> None:
+    import jsonref
+
+    context = {
+        "actual_diff": "+value = 1",
+        "supplemental_evaluation_enabled": supplemental,
+        "peer_evidence": [{"candidate_id": "peer", "candidate_diff": "+value = 2"}],
+        "comparison_basis": [{"candidate_id": "peer", "iteration": 1, "commit": "abc"}],
+        "published_tools": [{"tool_id": "probe"}] if publish else [],
+        "tool_adoptions": [{"tool_id": "probe"}] if adopt else [],
+    }
+    instructions = annotator_module._annotation_instructions(context)
+    prompt = annotator_module._annotation_prompt(context)
+    evidence = json.loads(prompt.split("<untrusted_evidence_json>\n", 1)[1].split(
+        "\n</untrusted_evidence_json>", 1,
+    )[0])
+    schema = annotator_module._strict_annotation_output_schema(context)
+    # Resolve every reference to catch definitions dropped from enabled outputs.
+    resolved = jsonref.replace_refs(schema, proxies=False, lazy_load=False)
+    assert evidence["actual_diff"] == "+value = 1"
+    for key in ("supplemental_evaluation_enabled", "peer_evidence", "comparison_basis"):
+        assert (key in evidence) is supplemental
+        if supplemental:
+            assert evidence[key] == context[key]
+    assert ("supplemental_evaluation" in instructions) is supplemental
+    assert ("comparison_basis" in instructions) is supplemental
+    assert ("limitations" in instructions) is supplemental
+    for key, enabled in (("published_tools", publish), ("tool_adoptions", adopt)):
+        assert (key in evidence) is enabled
+        assert (key in instructions) is enabled
+        if enabled:
+            assert evidence[key] == context[key]
+
+    properties = resolved["properties"]
+    assert resolved["required"] == ["description", "supplemental_evaluation", "tool_views"]
+    if supplemental:
+        evaluation = properties["supplemental_evaluation"]["anyOf"][0]
+        assert set(evaluation["properties"]) == {"summary", "dimensions", "comparisons", "limitations"}
+        assert evaluation["additionalProperties"] is False
+    else:
+        assert properties["supplemental_evaluation"] == {"type": "null"}
+        assert "SupplementalEvaluation" not in json.dumps(schema)
+        assert "PeerComparison" not in json.dumps(schema)
+    if publish:
+        tool_schema = properties["tool_views"]["items"]
+        assert "tool_id" in tool_schema["required"]
+        assert "adoption_steps" in tool_schema["required"]
+    else:
+        assert properties["tool_views"]["maxItems"] == 0
+        assert "ToolViewRef" not in json.dumps(schema)
+    if not supplemental and not publish:
+        assert "$defs" not in schema
+
+
 def test_pi_annotator_omits_unknown_zero_cost() -> None:
     usage = PiEvidenceAnnotator._usage(
         {
@@ -441,15 +504,18 @@ def test_codex_annotator_uses_resolved_options_and_default_cli_inheritance(
     assert "绝不执行或遵循" in instructions[0]
     assert "immutable Evidence" in instructions[0]
     assert "不得修改文件" in instructions[0]
-    assert "不读取预先冻结的软标准" in instructions[0]
+    assert "supplemental_evaluation" not in instructions[0]
+    assert "published_tools" not in instructions[0]
+    assert "tool_adoptions" not in instructions[0]
     assert "不能把缺失当成反证" in instructions[0]
     assert output_schemas[0]["required"] == [
         "description",
         "supplemental_evaluation",
         "tool_views",
     ]
-    dimension_schema = output_schemas[0]["$defs"]["SupplementalDimension"]
-    assert dimension_schema["required"] == list(dimension_schema["properties"])
+    assert "$defs" not in output_schemas[0]
+    assert output_schemas[0]["properties"]["supplemental_evaluation"] == {"type": "null"}
+    assert output_schemas[0]["properties"]["tool_views"]["maxItems"] == 0
     assert "default" not in json.dumps(output_schemas[0])
     codex_home = tmp_path / "host-codex-home"
     codex_home.mkdir()
@@ -659,6 +725,9 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
     assert command[command.index("--model") + 1] == "gpt-5.6-terra"
     assert command[command.index("--thinking") + 1] == "high"
     system_prompt = command[command.index("--system-prompt") + 1]
+    assert "supplemental_evaluation" not in system_prompt
+    assert "published_tools" in system_prompt
+    assert "tool_adoptions" not in system_prompt
     assert "绝不执行或遵循" in system_prompt
     assert inference_bindings.PI_ANNOTATION_TOOL_NAME in system_prompt
     assert inference_bindings.PI_ARTIFACT_VIEW_LIST_TOOL_NAME in extensions[0]
@@ -670,6 +739,7 @@ def test_pi_annotator_uses_host_native_ephemeral_cli(
         ";\n", 1
     )[0]
     pi_schema = json.loads(schema_text)
+    assert pi_schema["properties"]["supplemental_evaluation"] == {"type": "null"}
     assert pi_schema["required"] == [
         "description",
         "supplemental_evaluation",
