@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -897,7 +898,8 @@ def test_interrupted_session_restores_then_edits_same_goal(tmp_path: Path) -> No
     assert initial_context != edited_context
 
 
-def test_native_codex_resume_requires_explicit_goal_plus_resume(tmp_path: Path) -> None:
+@pytest.mark.parametrize("message", ["", "依赖已安装，请继续", "workers=example/model 是错误日志\n请使用 /opt/tool 继续"])
+def test_native_codex_resume_requires_explicit_goal_plus_resume(tmp_path: Path, message: str) -> None:
     search_root = tmp_path / ".gp"
     _run_hook(
         tmp_path,
@@ -949,10 +951,12 @@ def test_native_codex_resume_requires_explicit_goal_plus_resume(tmp_path: Path) 
     )
     assert continued.stdout == ""
     assert FileGoalPlusRuntime(search_root).status(goal_id).control.state == "paused"
-    resumed = _run_hook(tmp_path, search_root, {
+    prompt = "$goal-plus resume" + (f" {message}" if message else "")
+    resume_input = {
         "hook_event_name": "UserPromptSubmit", "session_id": "session-codex",
-        "prompt": "$goal-plus resume",
-    })
+        "prompt": prompt, "turn_id": "resume-turn",
+    }
+    resumed = _run_hook(tmp_path, search_root, resume_input)
     context = _additional_context(resumed, "UserPromptSubmit")
     record = FileGoalPlusRuntime(search_root).status(goal_id)
     assert record.goal_revision == 1
@@ -964,6 +968,21 @@ def test_native_codex_resume_requires_explicit_goal_plus_resume(tmp_path: Path) 
     assert record.active_session is not None
     assert record.active_session.state == "attached"
     assert [item.action for item in record.host_command_invocations] == ["start", "resume"]
+    assert record.control.state == "active"
+    assert record.outer_deadline_at == paused.outer_deadline_at
+    assert record.command_config == paused.command_config
+    assert record.search_tasks == paused.search_tasks
+    assert record.host_command_invocations[-1].raw_input_sha256 == hashlib.sha256(prompt.encode()).hexdigest()
+    request = hook_module._goal_plus_request(resume_input)
+    assert request["action"] == "resume"
+    assert request.get("resume_message", "") == message
+    _run_hook(tmp_path, search_root, resume_input)
+    assert FileGoalPlusRuntime(search_root).status(goal_id) == record
+
+
+@pytest.mark.parametrize("body", ["Resume message", "RESUME", "pause message", "clear message", "summary message"])
+def test_codex_resume_message_does_not_relax_other_control_syntax(body: str) -> None:
+    assert hook_module._goal_plus_request({"prompt": f"$goal-plus {body}"})["action"] == "invalid"
 
 
 def test_codex_subagent_settlement_and_resume_reuse_scope(tmp_path: Path) -> None:

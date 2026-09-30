@@ -182,6 +182,7 @@ MCP/CLI 直调都不能创建记录。`goal_plus_create`/`goal_plus_update_goal`
 
 使用 `codex resume <session-id>` 恢复交互式 session，`SessionStart` 只恢复上下文。
 明确中断后的任务必须用 `$goal-plus resume` 重启 Main；普通聊天不解除 control=paused。
+可直接使用 `$goal-plus resume <补充信息>`，让恢复的 Main 在同一轮处理新信息，保留原目标与 revision。
 无交互写法为 `codex exec resume <session-id> '$goal-plus resume'`。
 `$goal-plus` 查询摘要；pause 禁止后续续跑/新派发，不强杀当前 turn；clear 撤权且保留历史。
 正常运行中收到新思考会先处理再继续，不要求 resume。不同 session、fork、detached/stale

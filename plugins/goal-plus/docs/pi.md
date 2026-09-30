@@ -208,6 +208,7 @@ provider error 和自动重试会沿用该绑定；最终异常或用户 abort �
 `pi -p --mode json --session <id> '/goal-plus resume'`。原 session 身份必须精确匹配；
 不同 session、fork、detached/stale 不继承执行权。摘要、pause、clear 及完整合同见
 [运行逻辑](runtime-logic.md)。开发安装的 `pi-goal-plus` 支持相同参数。
+可在 `resume` 后附带多行补充信息，与恢复合并为一次输入，例如 `/goal-plus resume 依赖已安装，请继续`。
 新的 Pi session 可用 `/goal-plus <完整目标>` 在同一 workspace 创建独立 Goal；其他 session 的
 未终态 Goal 不会阻止创建。Search bootstrap 的 `goal_plus_search_freeze_spec` 和 `goal_plus_search_create` 必须传入
 当前 session 绑定的 `goal_plus_id`，extension 会在执行前核对该归属。

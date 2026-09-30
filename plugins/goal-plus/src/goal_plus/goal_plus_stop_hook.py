@@ -168,6 +168,11 @@ def _goal_plus_request(hook_input: dict[str, Any]) -> dict[str, Any] | None:
         return {"action": "summary", "raw_goal": None, "command": "$goal-plus"}
     word = body.split(maxsplit=1)[0] if body else ""
     if command == "goal-plus" and word.casefold() in {"summary", "pause", "resume", "clear"}:
+        if word == "resume":
+            return {
+                "action": "resume", "raw_goal": None, "command": "$goal-plus",
+                "resume_message": body[len(word):].strip(),
+            }
         if body == word and word in {"summary", "pause", "resume", "clear"}:
             return {"action": word, "raw_goal": None, "command": "$goal-plus"}
         return {
@@ -175,7 +180,7 @@ def _goal_plus_request(hook_input: dict[str, Any]) -> dict[str, Any] | None:
             "raw_goal": None,
             "command": "$goal-plus",
             "invalid_reason": (
-                "`$goal-plus` 控制命令必须精确使用小写 summary/pause/resume/clear，且不接受目标正文。"
+                "`$goal-plus` 控制命令必须精确使用小写 summary/pause/resume/clear；只有 resume 可以附带补充信息。"
             ),
         }
     if command == "goal-plus" and (body == "edit" or body.startswith("edit ")):
@@ -1309,7 +1314,11 @@ def _handle_user_prompt_submit(
             _emit_user_prompt_block(str(exc))
             return
         if request["action"] == "resume":
-            _emit_additional_context("UserPromptSubmit", _goal_context(record) + "\n" + runtime.reconciliation_context(goal_id))
+            context = _goal_context(record) + "\n" + runtime.reconciliation_context(goal_id)
+            if request.get("resume_message"):
+                # The original user prompt already carries the message in this turn.
+                context += "\n先处理本次 resume 命令附带的用户补充信息，再继续原任务。"
+            _emit_additional_context("UserPromptSubmit", context)
         else:
             # continue=false would terminate an already running Codex turn.
             # Acknowledge controls through the normal input path instead.

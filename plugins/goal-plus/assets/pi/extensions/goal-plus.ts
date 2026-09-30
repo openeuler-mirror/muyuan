@@ -1910,6 +1910,7 @@ function buildGoalStartPrompt(
 interface GoalPlusSlashRequest {
 	action: "start" | "edit" | "summary" | "pause" | "resume" | "clear" | "invalid";
 	rawGoal: string;
+	resumeMessage?: string;
 	withFinalCheck: boolean;
 	invalidReason?: string;
 }
@@ -1924,6 +1925,9 @@ function goalPlusRequestFromSlashInput(text: string): GoalPlusSlashRequest | und
 	}
 	const word = body.split(/\s+/, 1)[0];
 	if (command === "goal-plus" && ["summary", "pause", "resume", "clear"].includes(word.toLowerCase())) {
+		if (word === "resume") {
+			return { action: "resume", rawGoal: "", withFinalCheck: false, resumeMessage: body.slice(word.length).trim() };
+		}
 		if (word === body && ["summary", "pause", "resume", "clear"].includes(word)) {
 			return { action: word as "summary" | "pause" | "resume" | "clear", rawGoal: "", withFinalCheck: false };
 		}
@@ -1932,7 +1936,7 @@ function goalPlusRequestFromSlashInput(text: string): GoalPlusSlashRequest | und
 			rawGoal: "",
 			withFinalCheck: false,
 			invalidReason:
-				"Goal Plus controls require exact lowercase summary/pause/resume/clear without an objective.",
+				"Goal Plus controls require exact lowercase summary/pause/resume/clear; only resume accepts a supplemental message.",
 		};
 	}
 	if (command === "goal-plus" && (body === "edit" || body.startsWith("edit "))) {
@@ -2147,6 +2151,8 @@ async function updateGoalPlusStart(
 async function controlGoalPlus(
 	pi: ExtensionAPI, ctx: ExtensionContext,
 	action: "summary" | "pause" | "resume" | "clear",
+	rawInput: string,
+	resumeMessage = "",
 ): Promise<string | undefined> {
 	if (!activeGoalPlusId) {
 		pi.sendMessage({ customType: "goal-plus-control", content: "No Goal Plus task is bound to this native session.", display: true });
@@ -2155,7 +2161,7 @@ async function controlGoalPlus(
 	const current = await refreshActiveGoal(pi, commandContextFrom(ctx), false);
 	if (!current) return undefined;
 	const invocation = {
-		...piHostInvocation(ctx, "/goal-plus", action, `/goal-plus ${action}`, `pi-entry-${ctx.sessionManager.getEntries().length}`),
+		...piHostInvocation(ctx, "/goal-plus", action, rawInput, `pi-entry-${ctx.sessionManager.getEntries().length}`),
 		...(action === "resume" && process.env.GOAL_PLUS_RESUME_EXPECTATION
 			? { resume_expectation: JSON.parse(process.env.GOAL_PLUS_RESUME_EXPECTATION) } : {}),
 	};
@@ -2184,9 +2190,22 @@ async function controlGoalPlus(
 	pi.sendMessage({ customType: "goal-plus-control", content: `Goal Plus ${action}: ${status.goal_plus_id}, status=${status.status}, control=${status.control?.state}, reason=${status.control?.reason ?? "none"}`, display: true });
 	if (action !== "resume") return undefined;
 	// An already running native turn will reach agent_end with the new control
-	// state. Do not create a second queued Main for repeated/busy resume.
-	if (!ctx.isIdle() || mainStartPending) return undefined;
-	return buildNativeSessionContinuationPrompt(status);
+	// state. Deliver new input without creating a second queued Main.
+	const supplemental = resumeMessage
+		? `先处理以下用户补充信息，再继续原任务：\n${resumeMessage}` : "";
+	if (!ctx.isIdle() || mainStartPending) {
+		if (supplemental) {
+			const busy = !ctx.isIdle();
+			appendInjectionObservation(pi, ctx, {
+				kind: "native_continuation", role, channel: busy ? "steer" : "next_turn_user_message",
+				target_id: activeGoalPlusId, content: supplemental,
+			});
+			pi.sendMessage({ customType: "goal-plus-resume-input", content: supplemental, display: true },
+				{ deliverAs: busy ? "steer" : "nextTurn" });
+		}
+		return undefined;
+	}
+	return [buildNativeSessionContinuationPrompt(status), supplemental].filter(Boolean).join("\n\n");
 }
 
 function startGoalPlusMainTurn(
@@ -2812,7 +2831,8 @@ export default async function (pi: ExtensionAPI) {
 					return;
 				}
 				if (request && ["summary", "pause", "resume", "clear"].includes(request.action)) {
-					const prompt = await controlGoalPlus(pi, ctx, request.action as "summary" | "pause" | "resume" | "clear");
+					const prompt = await controlGoalPlus(pi, ctx, request.action as "summary" | "pause" | "resume" | "clear",
+						`/goal-plus ${args}`, request.resumeMessage);
 					if (prompt) startGoalPlusMainTurn(pi, ctx, "native_continuation", prompt, false);
 					return;
 				}
@@ -2957,7 +2977,8 @@ export default async function (pi: ExtensionAPI) {
 			return { action: "handled" };
 		}
 		if (["summary", "pause", "resume", "clear"].includes(request.action)) {
-			const prompt = await controlGoalPlus(pi, ctx, request.action as "summary" | "pause" | "resume" | "clear");
+			const prompt = await controlGoalPlus(pi, ctx, request.action as "summary" | "pause" | "resume" | "clear",
+				event.text, request.resumeMessage);
 			if (prompt) appendInjectionObservation(pi, ctx, {
 				kind: "native_continuation", role, channel: "input_transform",
 				target_id: activeGoalPlusId, content: prompt,

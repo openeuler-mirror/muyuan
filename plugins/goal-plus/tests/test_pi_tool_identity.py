@@ -136,6 +136,16 @@ def test_pi_abort_notifies_user_of_paused_goal(tmp_path):
     assert "abort notify checks passed" in result.stdout
 
 
+@pytest.mark.parametrize("mode", ["tui", "print", "json", "busy", "pending", "rejected"])
+def test_pi_resume_delivers_message_without_an_extra_main_turn(tmp_path, mode):
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": "main",
+        "GOAL_PLUS_ID": "gp_0001",
+        "GOAL_PLUS_PI_RESUME_MESSAGE_TEST": mode,
+    })
+    assert "resume message checks passed" in result.stdout
+
+
 def test_pi_controller_owned_closeout_is_not_registered(tmp_path):
     result = _run_env_script(tmp_path, {
         "GOAL_PLUS_PI_ROLE": "main",
@@ -278,6 +288,9 @@ const mocks = {
     }
     export async function runHostCommandCli(pi, ctx, name, args) {
       globalThis.calls.push({name, args});
+      if (globalThis.rejectControl && name === "goal_plus_host_control") {
+        return {details: {ok: false, error: "Goal is closed"}};
+      }
       return {details: globalThis.status};
     }
   `,
@@ -312,6 +325,60 @@ const ctx = {cwd, mode: "interactive", hasUI: false, isIdle: () => true,
 };
 await register(pi);
 assert.equal(commands.has('goal-plus-info'), process.env.GOAL_PLUS_PI_ROLE === 'main');
+if (process.env.GOAL_PLUS_PI_RESUME_MESSAGE_TEST) {
+  const mode = process.env.GOAL_PLUS_PI_RESUME_MESSAGE_TEST;
+  ctx.mode = ["print", "json"].includes(mode) ? mode : "tui";
+  ctx.isIdle = () => mode !== "busy";
+  const messages = [], starts = [], notices = [];
+  pi.sendMessage = (message, options) => messages.push({message, options});
+  pi.sendUserMessage = (message, options) => starts.push({message, options});
+  ctx.ui.notify = (message, level) => notices.push({message, level});
+  const submit = async body => ctx.mode === "tui"
+    ? commands.get("goal-plus").handler(body, ctx)
+    : events.get("input")({text: `/goal-plus ${body}`, source: "user", images: []}, ctx);
+  for (const body of ["Resume info", "RESUME", "pause info", "clear info", "summary info"]) {
+    await submit(body);
+  }
+  assert.equal(notices.length, 5);
+  assert.equal(globalThis.calls.length, 0);
+  assert.equal(starts.length, 0);
+  if (mode === "pending") {
+    await submit("resume");
+    assert.equal(starts.length, 1);
+    messages.length = 0;
+  }
+  globalThis.rejectControl = mode === "rejected";
+  const supplemental = "workers=example/model 是错误日志\n依赖已安装，请使用 /opt/tool 继续";
+  const rawInput = `/goal-plus resume\t ${supplemental}  `;
+  const result = await submit(rawInput.slice("/goal-plus ".length));
+  const controls = globalThis.calls.filter(call => call.name === "goal_plus_host_control");
+  assert.equal(controls.at(-1).args.invocation.action, "resume");
+  assert.equal(controls.at(-1).args.invocation.raw_input_sha256,
+    createHash("sha256").update(rawInput).digest("hex"));
+  assert.equal(globalThis.calls.filter(call => /goal_plus_host_(start|edit)/.test(call.name)).length, 0);
+  const delivered = messages.filter(item => item.message.content.includes(supplemental));
+  if (mode === "rejected") {
+    assert.equal(starts.length, 0);
+    assert.equal(delivered.length, 0);
+  } else if (["print", "json"].includes(mode)) {
+    assert.equal(result.action, "transform");
+    assert.ok(result.text.includes(supplemental));
+    assert.deepEqual(result.images, []);
+    assert.equal(starts.length, 0, "the transformed input is the only Main turn");
+    assert.equal(delivered.length, 0);
+  } else {
+    assert.equal(delivered.length, 1, "supplemental input reaches Main once");
+    assert.equal(starts.length, mode === "busy" ? 0 : 1);
+    assert.ok(!delivered[0].options?.triggerTurn);
+    assert.equal(delivered[0].options.deliverAs, mode === "busy" ? "steer" : "nextTurn");
+    if (mode !== "busy") {
+      await submit("resume");
+      assert.equal(starts.length, 1, "a pending Main is not started again");
+    }
+  }
+  console.log("resume message checks passed");
+  process.exit(0);
+}
 if (process.env.GOAL_PLUS_PI_INFO_TEST) {
   ctx.mode = process.env.GOAL_PLUS_PI_INFO_TEST;
   const statuses = new Map(), notices = [];

@@ -204,7 +204,7 @@ Use these commands in the Pi session bound to the Goal. Local Codex uses the sam
 | --- | --- |
 | `/goal-plus summary` | Display the current Goal status; `/goal-plus` without arguments performs the same operation. |
 | `/goal-plus pause` | Pause subsequent continuation and new dispatches without forcibly terminating the current turn. |
-| `/goal-plus resume` | Explicitly resume a resumable Goal, preserving its original deadline and accumulated usage. |
+| `/goal-plus resume [message]` | Resume with optional supplemental input in the same turn, preserving the goal, revision, original deadline and accumulated usage. |
 | `/goal-plus edit <full revised goal>` | Update the goal; editing a paused task does not resume it automatically. |
 | `/goal-plus clear` | Permanently revoke execution permission for this Goal while preserving history. |
 

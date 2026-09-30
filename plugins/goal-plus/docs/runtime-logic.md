@@ -61,12 +61,25 @@
 | GP <目标> | 为当前 native session 创建并启动；本 session 已有未结束任务时拒绝静默替换 |
 | GP edit <完整目标> | 有效变更产生新 revision，默认回到普通 Goal 执行，隔离旧 work/Search/final check |
 | GP pause | 停止后续自主续跑及新派发，不主动强杀当前 turn |
-| GP resume | 显式重启原 Main；busy/重复交付不得创建第二个 Main |
+| GP resume [补充信息] | 显式重启原 Main，并在同一次恢复中交付可选用户输入；busy/重复交付不得创建第二个 Main |
 | GP clear | 永久撤销执行资格；保留历史、Evidence、产物和报告，不可 resume |
 
 独立最终检查仍由 `$goal-plus-with-final-check` / `/goal-plus-with-final-check` 创建。
 summary/pause/resume/clear 是保留词，不能解析成目标。控制操作只接受可信宿主入口，
 模型工具、自动加载 skill、历史消息中的命令和普通 child 都不能伪造权限。
+
+`resume` 后的正文支持多行，作为用户补充信息保留在原生会话上下文中；不解析其中的
+`key=value`、不替换原目标，也不产生新 revision。Main 先处理补充信息，再判断如何继续；
+命令本身不证明 `needs_user` 或业务阻塞已经解决。省略正文时保持原有恢复行为，
+summary/pause/clear 仍不接受正文。例如：
+
+```text
+/goal-plus resume 依赖已经安装好，请使用 /opt/tool/bin/tool 继续。
+```
+
+Codex 使用 `$goal-plus resume ...`，原始用户输入随恢复 turn 一起交付。Pi 的交互命令及
+print/JSON 输入均先完成恢复授权，再将补充信息交给 Main；正在运行时通过 steering 交付，
+已有 Main 等待启动时附到该次启动，不额外启动一轮模型。
 
 ### 默认执行与 Search 进入
 

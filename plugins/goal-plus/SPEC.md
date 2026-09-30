@@ -257,6 +257,8 @@ control version。Codex 使用只读 sandbox，Pi 仅开放读取工具；模型
 
 原生 session resume 只恢复会话与绑定，不启动任务。精确 host command 还支持
 `summary`、`pause`、`resume`、`clear`；只有显式 resume 能解除中断后的任务停止。
+`resume [补充信息]` 将可选的多行用户输入交给同一次恢复的 Main，不预先启动单独的对话轮次；
+正文不解析为命令配置，不修改目标或产生新 revision，也不自动判定业务阻塞已经解决。
 新的原生 session 使用精确 start 命令会创建独立 Goal；其他 session 的 nonterminal、paused 或
 blocked Goal 不得阻止创建，也不得被隐式接管。同一 host session 已有未终态 Goal 时，新的 start
 必须拒绝，并要求使用 edit 或 resume。
