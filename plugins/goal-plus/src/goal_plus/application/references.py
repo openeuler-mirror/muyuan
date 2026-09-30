@@ -10,6 +10,7 @@ from goal_plus.domain.artifacts import (
 )
 from goal_plus.domain.serialization import canonical_json, sha256_text
 from goal_plus.application.candidate_sessions import CandidateSessions
+from goal_plus.application.candidate_trace import CandidateTrace
 from goal_plus.ports.references import ReferenceState, ReferenceWorkspace
 from goal_plus.ports.clock import Clock
 
@@ -21,6 +22,7 @@ class ReferenceWorkspaces:
         workspace: ReferenceWorkspace,
         sessions: CandidateSessions,
         clock: Clock,
+        trace: CandidateTrace,
     ) -> None:
         self.state, self.workspace, self.sessions, self.clock = (
             state,
@@ -28,6 +30,7 @@ class ReferenceWorkspaces:
             sessions,
             clock,
         )
+        self.trace = trace
 
     def open(
         self,
@@ -36,12 +39,40 @@ class ReferenceWorkspaces:
         source_iteration: int,
     ) -> ReferenceWorkspaceRecord:
         """Check out one exact settled artifact in the worker's ref-workspace."""
+        session = self.sessions.session(agent_session_id)
+        operation_id = self.trace.new_operation_id("reference")
+        try:
+            return self._open(
+                session,
+                source_candidate_id,
+                source_iteration,
+                operation_id,
+            )
+        except Exception as exc:
+            self.trace.failed(
+                session,
+                operation="reference_open",
+                operation_id=operation_id,
+                error=exc,
+                verified_target={
+                    "source_candidate_id": source_candidate_id,
+                    "source_iteration": source_iteration,
+                },
+            )
+            raise
+
+    def _open(
+        self,
+        session,
+        source_candidate_id: str,
+        source_iteration: int,
+        operation_id: str,
+    ) -> ReferenceWorkspaceRecord:
         candidate_id = source_candidate_id
         iteration = source_iteration
-        session = self.sessions.session(agent_session_id)
         with self.state.lock_run(session.run_id):
             session = self.sessions.session(
-                agent_session_id,
+                session.agent_session_id,
                 run_id=session.run_id,
             )
             run = self.state.read_run(session.run_id)
@@ -128,9 +159,41 @@ class ReferenceWorkspaces:
                 state="open",
                 integrity_status="clean",
                 created_at=self.clock.timestamp(),
+                trace_operation_id=operation_id,
             )
             self.state.write(record)
-            return record
+            try:
+                self.trace.record(
+                    session,
+                    kind="reference.opened",
+                    operation_id=operation_id,
+                    occurred_at=record.created_at,
+                    payload={
+                        "source_candidate_id": candidate_id,
+                        "source_iteration": iteration,
+                        "artifact_ref": artifact_ref,
+                        "reference_id": reference_id,
+                        "workspace_provider": source.task.workspace_provider,
+                    },
+                )
+            except Exception as exc:
+                failed = record.model_copy(update={"trace_capture": "failed"})
+                self.state.write(failed)
+                self.trace.failed(
+                    session,
+                    operation="reference_open",
+                    operation_id=operation_id,
+                    error=exc,
+                    verified_target={
+                        "source_candidate_id": candidate_id,
+                        "source_iteration": iteration,
+                        "reference_id": reference_id,
+                    },
+                )
+                return failed
+            captured = record.model_copy(update={"trace_capture": "captured"})
+            self.state.write(captured)
+            return captured
 
     def list(
         self,

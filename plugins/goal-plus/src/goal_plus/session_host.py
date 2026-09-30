@@ -742,10 +742,28 @@ class NativeCandidateHost:
         )
         if self.agent_harness == "codex":
             from goal_plus.mcp_client import McpSessionToolBridge
+            from goal_plus.infrastructure.replay_capture import FileReplayCapture
+            from goal_plus.infrastructure.replay_native import finalize_turn
+
+            replay_capture = FileReplayCapture(self.root)
 
             return CodexSession(
                 config, registration, timeout=timeout, resume_from=previous,
                 execution_lock=self.root / "host-sessions" / f"{agent_session_id}.lock",
+                on_tool_result=lambda name, value, thread_id, turn_id, call_id, remaining: (
+                    replay_capture.capture_tool_result(
+                        agent_session_id=agent_session_id,
+                        tool_name=name,
+                        tool_result=value,
+                        native_thread_id=thread_id,
+                        native_turn_id=turn_id,
+                        native_tool_call_id=call_id,
+                        remaining_seconds=remaining,
+                    )
+                ),
+                on_turn_completed=lambda thread_id, turn_id, completed: finalize_turn(
+                    self.root, thread_id, turn_id, completed=completed,
+                ),
                 tool_bridge=McpSessionToolBridge(
                     self.root, caller_role="candidate", caller_agent_session_id=agent_session_id,
                     on_settled=lambda: self.wake_internal_agents(

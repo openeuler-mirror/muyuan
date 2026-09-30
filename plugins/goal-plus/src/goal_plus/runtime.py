@@ -99,6 +99,7 @@ class FileSearchRuntime:
         self.context = services.context
         self.queries = services.queries
         self.evidence_reads = services.evidence_reads
+        self.trace = services.trace
 
     def llm_verifier_enabled(self, run_id: str) -> bool:
         return self.queries.llm_verifier_enabled(run_id)
@@ -182,8 +183,13 @@ class FileSearchRuntime:
         agent_session_id: str,
         *,
         source: Literal["explicit", "verifier_injected"] = "explicit",
+        verifier_attempt_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        return self.evidence_reads.get_global_evidence(agent_session_id, source=source)
+        return self.evidence_reads.get_global_evidence(
+            agent_session_id,
+            source=source,
+            verifier_attempt_id=verifier_attempt_id,
+        )
 
     def get_evidence_detail(
         self,
@@ -217,6 +223,12 @@ class FileSearchRuntime:
             require_no_pending_verification(self.candidate_creation.state.read_candidate(run_id, candidate_id))
         else:
             self.queries.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
+            self._record_verifier_observation(
+                run_id,
+                agent_session_id,
+                attempt_id,
+                "retry_requested",
+            )
         with self.settlement.state.lock_verifier(run_id, candidate_id, blocking=False) as lease:
             if attempt_id is None:
                 require_no_pending_verification(self.candidate_creation.state.read_candidate(run_id, candidate_id))
@@ -266,11 +278,56 @@ class FileSearchRuntime:
         self.queries.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
         try:
             with self.settlement.state.lock_verifier(run_id, candidate_id, blocking=False):
-                return self.queries.verifier_result(run_id, candidate_id, attempt_id, agent_session_id)
+                result = self.queries.verifier_result(
+                    run_id, candidate_id, attempt_id, agent_session_id
+                )
         except RuntimeError as exc:
             if not str(exc).startswith("VerifierInProgress:"):
                 raise
-        return self.queries.verifier_result(run_id, candidate_id, attempt_id, agent_session_id, running=True)
+            result = self.queries.verifier_result(
+                run_id,
+                candidate_id,
+                attempt_id,
+                agent_session_id,
+                running=True,
+            )
+        status = "ready" if "aggregate_score" in result else str(result["state"])
+        self._record_verifier_observation(
+            run_id,
+            agent_session_id,
+            attempt_id,
+            status,
+        )
+        return result
+
+    def _record_verifier_observation(
+        self,
+        run_id: str,
+        agent_session_id: str | None,
+        attempt_id: str,
+        status: str,
+    ) -> None:
+        if agent_session_id is None:
+            return
+        session = self.candidate_sessions.state.read_agent_session(
+            agent_session_id,
+            run_id,
+        )
+        try:
+            self.trace.record(
+                session,
+                kind="verifier.observed",
+                operation_id=attempt_id,
+                payload={"attempt_id": attempt_id, "status": status},
+            )
+        except Exception as exc:
+            self.trace.failed(
+                session,
+                operation="verifier_observation",
+                operation_id=attempt_id,
+                error=exc,
+                verified_target={"attempt_id": attempt_id},
+            )
 
     def report(self, run_id: str) -> Path:
         return self.reporter.report(run_id)

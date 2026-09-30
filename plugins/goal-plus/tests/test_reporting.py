@@ -26,6 +26,7 @@ from goal_plus.infrastructure.state.files import write_json
 from goal_plus.tools import SearchTools
 
 from tests._runtime_helpers import make_project, spec_for
+from tests.test_global_evidence import _search_with_candidates
 
 
 def _write_stop_hook_event(
@@ -60,6 +61,76 @@ def _write_stop_hook_event(
         json.dumps(payload),
         encoding="utf-8",
     )
+
+
+def test_report_correlates_reference_opens_with_subsequent_edits(
+    tmp_path: Path,
+) -> None:
+    runtime, run_id, candidates = _search_with_candidates(tmp_path, 2)
+    source_id, source_session, source_workspace = candidates[0]
+    requester_id, requester_session, requester_workspace = candidates[1]
+
+    (source_workspace / "initial_program.py").write_text(
+        "VALUE = 3\n", encoding="utf-8"
+    )
+    runtime.run_verifier(
+        run_id,
+        source_id,
+        agent_session_id=source_session,
+        hypothesis="Source <script> vector schedule",
+    )
+    (requester_workspace / "initial_program.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    runtime.run_verifier(
+        run_id,
+        requester_id,
+        agent_session_id=requester_session,
+        hypothesis="Requester baseline",
+    )
+
+    runtime.open_reference_workspace(requester_session, source_id, 1)
+    (requester_workspace / "initial_program.py").write_text(
+        "VALUE = 3\n", encoding="utf-8"
+    )
+    runtime.run_verifier(
+        run_id,
+        requester_id,
+        agent_session_id=requester_session,
+        hypothesis="Adopt the source exactly",
+    )
+    runtime.open_reference_workspace(requester_session, source_id, 1)
+    (requester_workspace / "initial_program.py").write_text(
+        "VALUE = 4\n", encoding="utf-8"
+    )
+    runtime.run_verifier(
+        run_id,
+        requester_id,
+        agent_session_id=requester_session,
+        hypothesis="Adapt the source",
+    )
+
+    data = build_html_report_data(runtime.root_dir, run_id)
+    impacts = data["search_tasks"][0]["reference_impacts"]
+    assert [item["comparison_state"] for item in impacts] == [
+        "exact_editable_content",
+        "different_editable_content",
+    ]
+    assert [item["subsequent_iteration"] for item in impacts] == [2, 3]
+    assert impacts[0]["compared_files"] == ["initial_program.py"]
+    assert (impacts[0]["preceding_score"], impacts[0]["subsequent_score"]) == (
+        1.0,
+        3.0,
+    )
+    assert impacts[1]["added_lines"] == 1
+    assert impacts[1]["deleted_lines"] == 1
+
+    html = render_html_report(data)
+    assert "Cross-Candidate Reference Impact" in html
+    assert "Exact editable-content match" in html
+    assert "Post-reference edit differs" in html
+    assert "Source &lt;script&gt; vector schedule" in html
+    assert "Source <script> vector schedule" not in html
 
 
 def test_stop_hook_statistics_tolerate_corrupt_files_and_invalid_durations(

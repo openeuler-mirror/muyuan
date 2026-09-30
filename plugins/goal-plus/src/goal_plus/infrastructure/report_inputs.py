@@ -34,6 +34,7 @@ from goal_plus.infrastructure.evidence_attachments import FileEvidenceAttachment
 from goal_plus.infrastructure.state.files import load_json
 
 from goal_plus.infrastructure.state.search_run import FileSearchRunState
+from goal_plus.infrastructure.report_references import collect_reference_impacts
 from goal_plus.ports.report import ReportTaskInputs
 from goal_plus.ports.report import SearchVerifierViews
 from goal_plus.projections.report_tasks import task_details
@@ -264,6 +265,12 @@ def _task_details(
             for c in candidates
             for i in c.iterations
         },
+        reference_impacts=collect_reference_impacts(
+            root,
+            run,
+            frozen,
+            candidates,
+        ),
     )
     result = task_details(inputs, task_summary, report_run_id)
     FileEvidenceAttachments(root).attach_external_evaluations(

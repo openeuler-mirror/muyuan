@@ -293,6 +293,39 @@ GOAL_PLUS_DEBUG=1 tt run --profile goal-plus-pi --fs <workspace> -- --model <pro
   Codex reasoning 摘要取决于 rollout 是否记录，缺失时不推测。
 - 导出器只读：不启动模型、不发送消息、不修改运行状态；与 monitor/audit 脚本可同时使用。
 
+## Candidate 执行链路导出
+
+Search candidate 的窄业务事件和 Evidence 返回快照保存在 runtime 原始状态中：
+
+```text
+<runtime>/runs/<run_id>/candidate-traces/<candidate_id>/
+  events/<sequence>-<event_id>.json
+  snapshots/<sha256>.json
+```
+
+事件覆盖 Global Evidence/detail 返回、每次 reference 打开，以及 process verifier 的提交、
+查询/等待、retry 请求和硬结算。它不复制 prompt、thinking、shell 全量输出或环境变量；普通编辑
+过程仍从上面的原生 transcript 查看。导出一个 run 或单个 candidate：
+
+```bash
+PYTHONPATH=src python scripts/export_candidate_trace.py /path/to/project/.gp --run-id run_...
+PYTHONPATH=src python scripts/export_candidate_trace.py /path/to/project/.gp \
+  --run-id run_... --candidate-id c001
+```
+
+默认输出为
+`<runtime>/host-logs/candidate-traces/<run_id>/<candidate_id>/trace.json` 和 `trace.md`；
+`--output <directory>` 可指定另一个导出根目录。输出是可删除、可重新生成的只读投影，原始
+`runs/` 记录才是权威输入。导出器不调用模型、verifier 或 provider mutation，也不修改 run、
+candidate 或 session 状态。
+
+`completeness.status` 为 `complete`、`partial` 或 `legacy_unavailable`。导出器逐项检查 event
+schema/sequence、快照哈希、session receipt、reference artifact 和 settlement identity；缺页、
+损坏或交叉引用不一致会进入 `warnings`，不会猜测补齐。缺少原生历史时 Evidence 的
+`delivery.state=unknown`，不能写成“未送达”；原生历史中唯一匹配的 tool result 才是
+`observed`。旧运行没有新事件或完整快照时报告 `legacy_unavailable`。缺失原生 settlement
+事件时可从权威 SettlementReceipt 生成 `derived_events`，但仍保持不完整状态。
+
 ## API 返回大小 Debug
 
 在启动宿主前设置 `GOAL_PLUS_DEBUG=1`，逐次输出接口返回大小：
@@ -437,6 +470,13 @@ run 生成一次 report。
 HTML 是生成时刻的静态视图。后续产生新的 hook event 或 observability 后，需要再次调用 `goal_plus_search_report` 才会更新。缺失数据保持
 `Not observed` 或列入 `unavailable_metrics` ，不会从 transcript prose 补造。
 
+存在 candidate trace 时，HTML 的 `Cross-Candidate Reference Impact` 表把每条
+`reference.opened` 与该 candidate 随后的第一条 `verifier.settled` 关联，展示来源和后续
+iteration、commit、分数变化及双方 worker summary。Git workspace 另外只比较来源或后续
+iteration 实际触碰的可编辑文件：blob 全部相同才标为 exact match，否则只报告 diff 行数。
+时间先后和内容差异不被解释成语义采用；旧运行缺少 trace、provider 不支持本地 Git 比较或
+artifact 已不可用时保持 comparison unavailable。
+
 Goal Monitor 优先投影关联该 Goal 的最新 execution scope，缺失时才回退到所选 run 的
 scope。Git 报告的 publication 状态和 artifact 由持久 Promotion 补全投影，不写回或修复
 run。报告用例先检查关联 Goal 终态，再写 MD/HTML、执行 snapshot cleanup 并刷新
@@ -495,6 +535,9 @@ context/provenance handle，不是 liveness record。
     ├── shared/index.json                        # shared-dir family/tool index
     ├── shared/tools/<candidate_id>/<iteration>/ # immutable tool snapshot
     ├── agent_sessions/<agent_session_id>.json
+    ├── candidate-traces/<candidate_id>/
+    │   ├── events/<sequence>-<event_id>.json     # append-only candidate business events
+    │   └── snapshots/<sha256>.json              # immutable returned Evidence payloads
     ├── report.md / report.html
     └── promotion/
 ```

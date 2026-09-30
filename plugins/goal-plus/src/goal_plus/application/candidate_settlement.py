@@ -51,6 +51,7 @@ from goal_plus.application.candidate_sessions import CandidateSessions
 from goal_plus.application.candidate_artifacts import CandidateArtifacts
 from goal_plus.application.candidate_ledger import CandidateLedger
 from goal_plus.application.shared_tools import SharedTools
+from goal_plus.application.candidate_trace import CandidateTrace
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.ports.candidate_artifacts import CandidateArtifactState
 from goal_plus.ports.candidate_settlement import CandidateSettlementState, InnerGitSettlement
@@ -71,6 +72,7 @@ class CandidateSettlement:
         checkpoints: CandidateCheckpoints,
         persist_run: Callable[[RunRecord], None],
         verifier_submission,
+        trace: CandidateTrace,
 
     ) -> None:
         self.state, self.clock, self.authorization = state, clock, authorization
@@ -85,6 +87,7 @@ class CandidateSettlement:
             persist_run,
         )
         self.verifier_submission = verifier_submission
+        self.trace = trace
 
     def record(
         self,
@@ -607,6 +610,7 @@ class CandidateSettlement:
             submission = self.verifier_submission.prepare(frozen, record, record.iterations[-1])
             # Commit the complete settlement and immutable outbound input together.
             self.state.write_candidate(run_id, record)
+            self._record_settled_trace(record, iteration)
             self._reconcile_projections(
                 run, frozen, record, preserve_workspace=preserve_workspace
             )
@@ -628,11 +632,69 @@ class CandidateSettlement:
         self._reconcile_projections(
             run, frozen, record, preserve_workspace=preserve_workspace
         )
+        if record.iterations:
+            self._record_settled_trace(record, record.iterations[-1])
         try:
             self.verifier_submission.replay(run.run_id)
         except OSError:
             # The immutable submission remains recoverable from the settlement.
             pass
+
+    def _record_settled_trace(
+        self,
+        record: CandidateRecord,
+        iteration: IterationRecord,
+    ) -> None:
+        receipt = iteration.settlement_receipt
+        if receipt is None or iteration.agent_session_id is None:
+            return
+        attempt = iteration.metrics.get("_candidate_attempt")
+        attempt_id = attempt.get("id") if isinstance(attempt, dict) else None
+        if not isinstance(attempt_id, str) or not attempt_id:
+            return
+        session = None
+        try:
+            session = self.candidate_sessions.state.read_agent_session(
+                iteration.agent_session_id,
+                record.task.run_id,
+            )
+            self.trace.record(
+                session,
+                kind="verifier.settled",
+                operation_id=attempt_id,
+                occurred_at=receipt.created_at,
+                deduplicate=True,
+                payload={
+                    "attempt_id": attempt_id,
+                    "settlement_id": receipt.settlement_id,
+                    "iteration": receipt.iteration,
+                    "attempt_base_artifact_ref": receipt.attempt_base_artifact_ref,
+                    "attempt_artifact_ref": receipt.attempt_artifact_ref,
+                    "post_settlement_artifact_ref": (
+                        receipt.post_settlement_artifact_ref
+                    ),
+                    "attempt_changed_files": receipt.evidence.attempt_changed_files,
+                    "process_passed": receipt.evidence.process_passed,
+                    "score": receipt.evidence.hard_score,
+                    "failure_class": receipt.evidence.failure_class,
+                    "disposition": receipt.disposition,
+                    "settled_at": receipt.created_at,
+                },
+            )
+        except Exception as exc:
+            if session is None:
+                return
+            self.trace.failed(
+                session,
+                operation="verifier_settlement",
+                operation_id=attempt_id,
+                error=exc,
+                verified_target={
+                    "candidate_id": record.candidate_id,
+                    "iteration": iteration.iteration,
+                    "settlement_id": receipt.settlement_id,
+                },
+            )
 
     def _reconcile_projections(
         self,

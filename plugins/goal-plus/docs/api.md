@@ -502,7 +502,16 @@ parent/promotion verification 不进入 peer Evidence。快照失败只增加
 
 每次 Evidence 读取都会在 agent session 中保存 `global_evidence_reads`
 receipt，记录读取时间和当时可见的 completed candidate/iteration/commit
-View。receipt 只用于报告“某个 View 是否在后续尝试前可见”，不参与 settlement、selection、promotion 或 PASS/FAIL。
+View。新 receipt 同时返回持久状态中的 `operation_id` 与内容寻址 `snapshot_id`，用于与
+candidate trace 双向核对；缺少这两个字段的旧 receipt 不会被补造快照。receipt 只用于报告
+“某个 View 是否在后续尝试前可见”，不参与 settlement、selection、promotion 或 PASS/FAIL。
+
+这些 trace 不增加模型可见 MCP 工具。离线使用
+`python scripts/export_candidate_trace.py <runtime-root> --run-id <run-id>`，可选
+`--candidate-id` 和 `--output`。导出的 `returned` 事件不证明 tool result 已进入模型历史；
+`delivery=observed` 需要准确 session 下的原生 tool result，缺少或无法唯一关联时为 `unknown`。
+操作者可对新捕获且通过原生前缀核验的列表点执行离线
+[Evidence Replay](evidence-replay.md)；这不向 candidate 增加创建实验的 MCP 工具。
 
 `goal_plus_search_get_agent_context` 的 `supplemental_evaluation_enabled`
 告诉 worker 是否存在按需详情。关闭时不等待也不请求；开启时，窄 Global Evidence 只增加

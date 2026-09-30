@@ -218,6 +218,11 @@ class GlobalEvidenceViewReference(SearchModel):
 
 class GlobalEvidenceReadRecord(SearchModel):
     read_at: str
+    operation_id: str | None = Field(default=None, min_length=1)
+    snapshot_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     source: Literal["explicit", "verifier_injected"] = "explicit"
     candidate_verifier_iteration: int | None = Field(default=None, ge=1)
     run_verifier_iteration_count: int = Field(default=0, ge=0)
@@ -228,6 +233,10 @@ class GlobalEvidenceReadRecord(SearchModel):
 
     @model_validator(mode="after")
     def counts_match_completed_views(self) -> "GlobalEvidenceReadRecord":
+        if (self.operation_id is None) != (self.snapshot_id is None):
+            raise ValueError(
+                "global Evidence trace operation_id and snapshot_id must appear together"
+            )
         if self.completed_view_count != len(self.completed_views):
             raise ValueError("completed_view_count must match completed_views")
         supplemental_count = sum(
@@ -244,6 +253,11 @@ class GlobalEvidenceReadRecord(SearchModel):
 
 class EvidenceDetailReadRecord(SearchModel):
     read_at: str
+    operation_id: str | None = Field(default=None, min_length=1)
+    snapshot_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     candidate_id: str = Field(min_length=1)
     iteration: int = Field(ge=1)
     commit: str | None = Field(default=None, min_length=1)
@@ -254,6 +268,10 @@ class EvidenceDetailReadRecord(SearchModel):
 
     @model_validator(mode="after")
     def immutable_identity_is_present(self) -> "EvidenceDetailReadRecord":
+        if (self.operation_id is None) != (self.snapshot_id is None):
+            raise ValueError(
+                "Evidence detail trace operation_id and snapshot_id must appear together"
+            )
         if self.commit is None and self.artifact_ref is None:
             raise ValueError("evidence detail read requires an immutable artifact")
         return self

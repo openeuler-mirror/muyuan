@@ -345,6 +345,21 @@ def task_details(
         "plans": plan_payloads,
         "candidates": candidate_payloads,
         "sessions": session_payloads,
+        "reference_impacts": [
+            {
+                **impact.__dict__,
+                "source_artifact_ref": impact.source_artifact_ref.model_dump(
+                    mode="json"
+                ),
+                "subsequent_artifact_ref": (
+                    impact.subsequent_artifact_ref.model_dump(mode="json")
+                    if impact.subsequent_artifact_ref is not None
+                    else None
+                ),
+                "compared_files": list(impact.compared_files),
+            }
+            for impact in inputs.reference_impacts
+        ],
     }
     if verifier_views is not None:
         task_payload.update(

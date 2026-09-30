@@ -26,6 +26,7 @@ from goal_plus.ports.clock import Clock
 from goal_plus.application.candidate_sessions import CandidateSessions
 from goal_plus.application.annotation import AnnotationWorkflow
 from goal_plus.application.annotation_admission import AnnotationAdmission
+from goal_plus.application.candidate_trace import CandidateTrace
 
 
 def global_evidence_entry(
@@ -89,6 +90,7 @@ class EvidenceReads:
         admission: AnnotationAdmission,
         attachments: EvidenceAttachments,
         clock: Clock,
+        trace: CandidateTrace,
     ) -> None:
         self.state = state
         self.sessions = sessions
@@ -96,96 +98,146 @@ class EvidenceReads:
         self.annotation_admission = admission
         self.attachments = attachments
         self.clock = clock
+        self.trace = trace
 
     def get_global_evidence(
         self,
         agent_session_id: str,
         *,
         source: Literal["explicit", "verifier_injected"] = "explicit",
+        verifier_attempt_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return settled worker evidence and any completed objective views."""
         session = self.sessions.session(agent_session_id)
-        with self.state.lock_run(session.run_id):
-            self.annotation.reconcile_tool_heads(session.run_id)
-            session = self.sessions.session(
-                agent_session_id,
-                run_id=session.run_id,
-            )
-            run = self.state.read_run(session.run_id)
-            view = self.view(session.run_id)
-            self.attachments.attach_external_evaluations(session.run_id, view)
-            frozen = self.state.read_frozen_spec(run.frozen_spec_id)
-            mode = global_evidence_mode(frozen.spec.strategy.config)
-            if mode == "independent":
-                view = [
-                    entry
+        operation_id = self.trace.new_operation_id("read")
+        try:
+            with self.state.lock_run(session.run_id):
+                self.annotation.reconcile_tool_heads(session.run_id)
+                session = self.sessions.session(
+                    agent_session_id,
+                    run_id=session.run_id,
+                )
+                run = self.state.read_run(session.run_id)
+                view = self.view(session.run_id)
+                self.attachments.attach_external_evaluations(session.run_id, view)
+                frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+                mode = global_evidence_mode(frozen.spec.strategy.config)
+                if mode == "independent":
+                    view = [
+                        entry
+                        for entry in view
+                        if entry["candidate_id"] == session.candidate_id
+                    ]
+                completed_views = [
+                    GlobalEvidenceViewReference(
+                        candidate_id=str(entry["candidate_id"]),
+                        iteration=int(entry["iteration"]),
+                        commit=(
+                            str(entry["commit"])
+                            if entry.get("commit") is not None
+                            else None
+                        ),
+                        artifact_ref=(
+                            ArtifactRef.model_validate(entry["artifact_ref"])
+                            if entry.get("artifact_ref") is not None
+                            else None
+                        ),
+                        view_created_at=str(entry["view_created_at"]),
+                        supplemental_evaluation_present=(
+                            bool(entry.get("supplemental_available"))
+                        ),
+                    )
                     for entry in view
-                    if entry["candidate_id"] == session.candidate_id
+                    if entry["view"] is not None
+                    and (
+                        entry.get("commit") is not None
+                        or entry.get("artifact_ref") is not None
+                    )
+                    and entry["view_created_at"] is not None
                 ]
-            completed_views = [
-                GlobalEvidenceViewReference(
-                    candidate_id=str(entry["candidate_id"]),
-                    iteration=int(entry["iteration"]),
-                    commit=(
-                        str(entry["commit"])
-                        if entry.get("commit") is not None
+                candidate_records = self.state.read_candidates(session.run_id)
+                caller_record = next(
+                    (
+                        record
+                        for record in candidate_records
+                        if record.candidate_id == session.candidate_id
+                    ),
+                    None,
+                )
+                caller_iterations = caller_record.iterations if caller_record else []
+                if source == "verifier_injected" and verifier_attempt_id is None:
+                    latest_attempt = (
+                        caller_iterations[-1].metrics.get("_candidate_attempt", {})
+                        if caller_iterations
+                        else {}
+                    )
+                    verifier_attempt_id = (
+                        str(latest_attempt["id"])
+                        if isinstance(latest_attempt, dict)
+                        and latest_attempt.get("id")
                         else None
-                    ),
-                    artifact_ref=(
-                        ArtifactRef.model_validate(entry["artifact_ref"])
-                        if entry.get("artifact_ref") is not None
-                        else None
-                    ),
-                    view_created_at=str(entry["view_created_at"]),
-                    supplemental_evaluation_present=(
-                        bool(entry.get("supplemental_available"))
-                    ),
+                    )
+                snapshot = self.trace.snapshot(session, view)
+                read_at = self.clock.timestamp()
+                self.trace.record(
+                    session,
+                    kind="evidence.global_returned",
+                    operation_id=operation_id,
+                    occurred_at=read_at,
+                    payload={
+                        "source": source,
+                        "snapshot_id": snapshot.snapshot_id,
+                        "entry_count": len(view),
+                        "mode": mode,
+                        "candidate_iteration": (
+                            caller_iterations[-1].iteration
+                            if caller_iterations
+                            else None
+                        ),
+                        "run_iteration_count": sum(
+                            len(record.iterations) for record in candidate_records
+                        ),
+                        "verifier_attempt_id": verifier_attempt_id,
+                    },
                 )
-                for entry in view
-                if entry["view"] is not None
-                and (
-                    entry.get("commit") is not None
-                    or entry.get("artifact_ref") is not None
+                read_record = GlobalEvidenceReadRecord(
+                    read_at=read_at,
+                    operation_id=operation_id,
+                    snapshot_id=snapshot.snapshot_id,
+                    source=source,
+                    candidate_verifier_iteration=(
+                        caller_iterations[-1].iteration if caller_iterations else None
+                    ),
+                    run_verifier_iteration_count=sum(
+                        len(record.iterations) for record in candidate_records
+                    ),
+                    evidence_count=len(view),
+                    completed_view_count=len(completed_views),
+                    completed_supplemental_evaluation_count=sum(
+                        item.supplemental_evaluation_present for item in completed_views
+                    ),
+                    completed_views=completed_views,
                 )
-                and entry["view_created_at"] is not None
-            ]
-            candidate_records = self.state.read_candidates(session.run_id)
-            caller_record = next(
-                (
-                    record
-                    for record in candidate_records
-                    if record.candidate_id == session.candidate_id
-                ),
-                None,
-            )
-            caller_iterations = caller_record.iterations if caller_record else []
-            read_record = GlobalEvidenceReadRecord(
-                read_at=self.clock.timestamp(),
-                source=source,
-                candidate_verifier_iteration=(
-                    caller_iterations[-1].iteration if caller_iterations else None
-                ),
-                run_verifier_iteration_count=sum(
-                    len(record.iterations) for record in candidate_records
-                ),
-                evidence_count=len(view),
-                completed_view_count=len(completed_views),
-                completed_supplemental_evaluation_count=sum(
-                    item.supplemental_evaluation_present for item in completed_views
-                ),
-                completed_views=completed_views,
-            )
-            self.state.write_agent_session(
-                session.model_copy(
-                    update={
-                        "updated_at": read_record.read_at,
-                        "global_evidence_reads": [
-                            *session.global_evidence_reads,
-                            read_record,
-                        ],
-                    }
+                self.state.write_agent_session(
+                    session.model_copy(
+                        update={
+                            "updated_at": read_record.read_at,
+                            "global_evidence_reads": [
+                                *session.global_evidence_reads,
+                                read_record,
+                            ],
+                        }
+                    )
                 )
+        except Exception as exc:
+            self.trace.failed(
+                session,
+                operation="global_evidence",
+                operation_id=operation_id,
+                error=exc,
+                verified_target={"agent_session_id": agent_session_id},
             )
+            raise
         self.register_annotations(session.run_id)
         return view
 
@@ -197,89 +249,123 @@ class EvidenceReads:
     ) -> dict[str, Any]:
         """Return one immutable supplemental evaluation visible to a worker."""
         session = self.sessions.session(agent_session_id)
-        with self.state.lock_run(session.run_id):
-            session = self.sessions.session(
-                agent_session_id,
-                run_id=session.run_id,
-            )
-            run = self.state.read_run(session.run_id)
-            frozen = self.state.read_frozen_spec(run.frozen_spec_id)
-            if not frozen.supplemental_evaluation_enabled:
-                raise RuntimeError("supplemental evaluation is disabled for this run")
-            if (
-                global_evidence_mode(frozen.spec.strategy.config) == "independent"
-                and candidate_id != session.candidate_id
-            ):
-                raise PermissionError(
-                    "independent Global Evidence only exposes the caller's candidate"
+        operation_id = self.trace.new_operation_id("read")
+        try:
+            with self.state.lock_run(session.run_id):
+                session = self.sessions.session(
+                    agent_session_id,
+                    run_id=session.run_id,
                 )
+                run = self.state.read_run(session.run_id)
+                frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+                if not frozen.supplemental_evaluation_enabled:
+                    raise RuntimeError("supplemental evaluation is disabled for this run")
+                if (
+                    global_evidence_mode(frozen.spec.strategy.config) == "independent"
+                    and candidate_id != session.candidate_id
+                ):
+                    raise PermissionError(
+                        "independent Global Evidence only exposes the caller's candidate"
+                    )
 
-            entry = next(
-                (
-                    item
-                    for item in self.view(session.run_id)
-                    if item["candidate_id"] == candidate_id
-                    and item["iteration"] == iteration
-                ),
-                None,
-            )
-            if entry is None:
-                raise ValueError("settled worker Evidence iteration not found")
+                entry = next(
+                    (
+                        item
+                        for item in self.view(session.run_id)
+                        if item["candidate_id"] == candidate_id
+                        and item["iteration"] == iteration
+                    ),
+                    None,
+                )
+                if entry is None:
+                    raise ValueError("settled worker Evidence iteration not found")
 
-            task = self.annotation.task(session.run_id, candidate_id, iteration)
-            view = task.view if task is not None and task.state == "completed" else None
-            if (
-                task is None
-                or view is None
-                or task.run_id != session.run_id
-                or task.candidate_id != candidate_id
-                or task.iteration != iteration
-                or task.attempt_commit != entry["commit"]
-                or task.attempt_artifact_ref
-                != (
-                    ArtifactRef.model_validate(entry["artifact_ref"])
-                    if entry.get("artifact_ref") is not None
-                    else None
-                )
-            ):
-                raise RuntimeError(
-                    "supplemental Evidence identity does not match iteration"
-                )
-            if view.supplemental_evaluation is None:
-                raise RuntimeError("supplemental evaluation is not available")
+                task = self.annotation.task(session.run_id, candidate_id, iteration)
+                view = task.view if task is not None and task.state == "completed" else None
+                if (
+                    task is None
+                    or view is None
+                    or task.run_id != session.run_id
+                    or task.candidate_id != candidate_id
+                    or task.iteration != iteration
+                    or task.attempt_commit != entry["commit"]
+                    or task.attempt_artifact_ref
+                    != (
+                        ArtifactRef.model_validate(entry["artifact_ref"])
+                        if entry.get("artifact_ref") is not None
+                        else None
+                    )
+                ):
+                    raise RuntimeError(
+                        "supplemental Evidence identity does not match iteration"
+                    )
+                if view.supplemental_evaluation is None:
+                    raise RuntimeError("supplemental evaluation is not available")
 
-            read_record = EvidenceDetailReadRecord(
-                read_at=self.clock.timestamp(),
-                candidate_id=candidate_id,
-                iteration=iteration,
-                commit=(
-                    str(entry["commit"]) if entry.get("commit") is not None else None
-                ),
-                artifact_ref=(
-                    ArtifactRef.model_validate(entry["artifact_ref"])
-                    if entry.get("artifact_ref") is not None
-                    else None
-                ),
-            )
-            self.state.write_agent_session(
-                session.model_copy(
-                    update={
-                        "updated_at": read_record.read_at,
-                        "evidence_detail_reads": [
-                            *session.evidence_detail_reads,
-                            read_record,
-                        ],
-                    }
+                if entry.get("artifact_ref") is None:
+                    raise RuntimeError(
+                        "supplemental Evidence has no exact artifact reference"
+                    )
+                artifact_ref = ArtifactRef.model_validate(entry["artifact_ref"])
+                result = {
+                    "candidate_id": candidate_id,
+                    "iteration": iteration,
+                    "commit": entry["commit"],
+                    "supplemental_evaluation": view.supplemental_evaluation.model_dump(
+                        mode="json"
+                    ),
+                }
+                snapshot = self.trace.snapshot(session, result)
+                read_at = self.clock.timestamp()
+                self.trace.record(
+                    session,
+                    kind="evidence.detail_returned",
+                    operation_id=operation_id,
+                    occurred_at=read_at,
+                    payload={
+                        "target_candidate_id": candidate_id,
+                        "target_iteration": iteration,
+                        "artifact_ref": artifact_ref,
+                        "snapshot_id": snapshot.snapshot_id,
+                    },
                 )
+                read_record = EvidenceDetailReadRecord(
+                    read_at=read_at,
+                    operation_id=operation_id,
+                    snapshot_id=snapshot.snapshot_id,
+                    candidate_id=candidate_id,
+                    iteration=iteration,
+                    commit=(
+                        str(entry["commit"])
+                        if entry.get("commit") is not None
+                        else None
+                    ),
+                    artifact_ref=artifact_ref,
+                )
+                self.state.write_agent_session(
+                    session.model_copy(
+                        update={
+                            "updated_at": read_record.read_at,
+                            "evidence_detail_reads": [
+                                *session.evidence_detail_reads,
+                                read_record,
+                            ],
+                        }
+                    )
+                )
+                return result
+        except Exception as exc:
+            self.trace.failed(
+                session,
+                operation="evidence_detail",
+                operation_id=operation_id,
+                error=exc,
+                verified_target={
+                    "candidate_id": candidate_id,
+                    "iteration": iteration,
+                },
             )
-            return {
-                "candidate_id": candidate_id,
-                "iteration": iteration,
-                "commit": entry["commit"],
-                "supplemental_evaluation": view.supplemental_evaluation.model_dump(
-                    mode="json"
-                ),
-            }
+            raise
 
     def evidence_annotation_usage(self, run_id: str) -> dict[str, Any]:
         """Return persisted annotator usage without exposing annotation tasks."""

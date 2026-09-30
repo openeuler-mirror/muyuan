@@ -309,9 +309,12 @@ class SearchTools:
                 str(result["run_id"])
             ):
                 return result
+            evidence_options = {"source": "verifier_injected"}
+            if result.get("attempt_id") is not None:
+                evidence_options["verifier_attempt_id"] = str(result["attempt_id"])
             snapshot = self.runtime.get_global_evidence(
                 agent_session_id,
-                source="verifier_injected",
+                **evidence_options,
             )
         except Exception as exc:
             result["global_evidence_injected"] = False
@@ -479,9 +482,12 @@ class SearchTools:
         try:
             if not self.runtime.should_inject_global_evidence_after_verifier(run_id):
                 return result
+            evidence_options = {"source": "verifier_injected"}
+            if result.get("attempt_id") is not None:
+                evidence_options["verifier_attempt_id"] = str(result["attempt_id"])
             snapshot = self.runtime.get_global_evidence(
                 agent_session_id,
-                source="verifier_injected",
+                **evidence_options,
             )
         except Exception as exc:
             result["global_evidence_injected"] = False

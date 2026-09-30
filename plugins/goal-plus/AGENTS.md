@@ -116,6 +116,9 @@ FrozenSpec、candidate、verifier 和 promotion 状态，不能映射成普通 s
 | `runtime.py`、`bootstrap.py` | 前者保留 Search 公共入口与本地 verifier 锁；后者装配窄用例，`SearchServices` 仅供 facade 接线，不传入用例或充当全能 port |
 | `session_host.py`、`infrastructure/state/scope.py` | 宿主持有串行 VerifierQueue，经公共入口交付 Record；执行器回调精确取消/派发并保存 session/call 回执 |
 | `application/candidate_context.py`、`search_queries.py`、`evidence_reads.py` | 授权 session 的 context/ledger 初始化、只读 history/查询，以及保留 reconciliation/读取计数的 Evidence 用例；不启动模型 |
+| `domain/candidate_trace.py`、`application/candidate_trace.py`、`infrastructure/state/candidate_trace.py` | 严格 candidate trace schema、窄采集用例和原子事件/内容寻址快照；只记录既有业务事实，不参与评分、授权或 worker 生命周期 |
+| `infrastructure/candidate_trace_export.py`、`projections/candidate_trace.py` | 只读核验 trace、receipt、settlement 与原生历史并导出 JSON/Markdown；缺失保持 partial/unknown，不修改原始状态或补跑操作 |
+| `infrastructure/report_references.py` | 从已持久化 trace/iteration 关联 reference 与下一 settlement，并在 Git edit surface 上做只读内容比较；不从 transcript 推断语义采用 |
 | `ports/search_inspection.py`、`ports/monitor.py`、`projections/monitor_workers.py` | 分离只读查询与 context 初始化写入，定义候选 context/Monitor 已采集输入；候选/session 投影不读取文件或执行状态恢复 |
 | `application/report.py`、`ports/report.py` | 终态 gate、typed 报告输入与输出/cleanup/刷新次序；未完整解码的历史 Goal 链接仍参与终态 gate |
 | `infrastructure/monitor_inputs.py`、`report_inputs.py`、`report_output.py` | canonical 状态与已有 host observation 取数、文件输出和资产装配；不通过 Runtime 或展示恢复领域状态 |

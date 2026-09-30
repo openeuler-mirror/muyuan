@@ -1214,6 +1214,84 @@ def _render_candidates(task: dict[str, Any]) -> str:
     )
 
 
+def _render_reference_impacts(task: dict[str, Any]) -> str:
+    impacts = task.get("reference_impacts") or []
+    if not impacts:
+        return ""
+    rows = []
+    for impact in impacts:
+        source_ref = impact.get("source_artifact_ref") or {}
+        subsequent_ref = impact.get("subsequent_artifact_ref") or {}
+        source_label = (
+            f"{impact.get('source_candidate_id')}:i{impact.get('source_iteration')}"
+        )
+        subsequent_iteration = impact.get("subsequent_iteration")
+        subsequent_label = (
+            f"{impact.get('requester_candidate_id')}:i{subsequent_iteration}"
+            if subsequent_iteration is not None
+            else "No subsequent settlement"
+        )
+        before = numeric_value(impact.get("preceding_score"))
+        after = numeric_value(impact.get("subsequent_score"))
+        score_change = f"{before} &rarr; {after}"
+        comparison_state = impact.get("comparison_state")
+        compared_files = ", ".join(impact.get("compared_files") or [])
+        if comparison_state == "exact_editable_content":
+            relationship = (
+                '<strong class="success">Exact editable-content match</strong>'
+                f"<br><span>{escape_html(compared_files or None)}</span>"
+            )
+        elif comparison_state == "different_editable_content":
+            additions = impact.get("added_lines")
+            deletions = impact.get("deleted_lines")
+            diff_detail = (
+                f"+{additions} / -{deletions} lines versus reference"
+                if additions is not None and deletions is not None
+                else "Editable content differs from reference"
+            )
+            relationship = (
+                "<strong>Post-reference edit differs</strong>"
+                f"<br><span>{escape_html(diff_detail)}</span>"
+                f"<br><span>{escape_html(compared_files or None)}</span>"
+            )
+        else:
+            relationship = (
+                "<strong>Comparison unavailable</strong>"
+                "<br><span>No comparable editable artifact was retained.</span>"
+            )
+        source_id = str(source_ref.get("id") or "")
+        subsequent_id = str(subsequent_ref.get("id") or "")
+        rows.append(
+            "<tr>"
+            f'<td class="mono"><strong>{escape_html(impact.get("requester_candidate_id"))}</strong></td>'
+            "<td>"
+            f'<strong class="mono">{escape_html(source_label)}</strong> '
+            f'<span class="mono" title="{escape(source_id, quote=True)}">{escape_html(source_id[:7] or None)}</span>'
+            f'<br><span>{escape_html(impact.get("source_summary"))}</span>'
+            "</td>"
+            "<td>"
+            f'<strong class="mono">{escape_html(subsequent_label)}</strong> '
+            f'<span class="mono" title="{escape(subsequent_id, quote=True)}">{escape_html(subsequent_id[:7] or None)}</span>'
+            f'<br><span class="mono">{score_change}</span>'
+            f'<br><span>{escape_html(impact.get("subsequent_summary"))}</span>'
+            "</td>"
+            f"<td>{relationship}</td>"
+            "</tr>"
+        )
+    return (
+        '<section class="subsection"><h3>Cross-Candidate Reference Impact</h3>'
+        '<div class="table-scroll"><table><thead><tr>'
+        "<th>Candidate</th><th>Opened reference</th>"
+        "<th>Next settled modification</th><th>Relationship evidence</th>"
+        f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
+        '<p class="footnote">Rows pair each durable <code>reference.opened</code> event with the next '
+        "verifier settlement for that candidate. Exact matches compare retained Git blobs only across "
+        "the editable files touched by the source or subsequent iteration. Different content and temporal "
+        "ordering do not by themselves prove semantic adoption; the source and subsequent worker summaries "
+        "are shown for review.</p></section>"
+    )
+
+
 def _render_sessions(task: dict[str, Any]) -> str:
     sessions = task.get("sessions") or []
     if not sessions:
@@ -1702,6 +1780,7 @@ def _render_task(
         f"{_render_shared_evidence_view(task)}</section>"
         '<section class="subsection"><h3>Candidate Evidence</h3>'
         f"{_render_candidates(task)}</section>"
+        f"{_render_reference_impacts(task)}"
         f"{_render_artifact_lifecycle(task)}"
         '<section class="subsection"><h3>Worker Sessions</h3>'
         f"{_render_sessions(task)}</section>"

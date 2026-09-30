@@ -1,16 +1,17 @@
 """Bounded report inputs for one Search task, captured before rendering."""
 
 from dataclasses import dataclass
-from typing import Any, Protocol
 from pathlib import Path
+from typing import Any, Literal, Protocol
 
-from goal_plus.domain.search import AgentSessionRecord, FrozenSpec, SearchPlan
 from goal_plus.domain.adaptive.models import (
     AllocationDecision,
 )
+from goal_plus.domain.artifacts import ArtifactRef
+from goal_plus.domain.evidence import ResultLedgerEntry
+from goal_plus.domain.search import AgentSessionRecord, FrozenSpec, SearchPlan
 from goal_plus.domain.verifier import VerifierRecord, VerifierTask
 from goal_plus.ports.state import CandidateRecord, RunRecord
-from goal_plus.domain.evidence import ResultLedgerEntry
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,33 @@ class SearchVerifierViews:
     verifier_tasks: tuple[VerifierTask, ...]
     verifier_records: tuple[VerifierRecord, ...]
     allocation_decisions: tuple[AllocationDecision, ...]
+
+
+@dataclass(frozen=True)
+class ReportReferenceImpact:
+    requester_candidate_id: str
+    requester_agent_session_id: str
+    reference_event_id: str
+    opened_at: str
+    source_candidate_id: str
+    source_iteration: int
+    source_artifact_ref: ArtifactRef
+    source_summary: str | None
+    preceding_iteration: int | None
+    preceding_score: float | None
+    subsequent_iteration: int | None
+    subsequent_score: float | None
+    subsequent_artifact_ref: ArtifactRef | None
+    subsequent_summary: str | None
+    settlement_event_id: str | None
+    compared_files: tuple[str, ...]
+    comparison_state: Literal[
+        "exact_editable_content",
+        "different_editable_content",
+        "unavailable",
+    ]
+    added_lines: int | None
+    deleted_lines: int | None
 
 
 @dataclass(frozen=True)
@@ -30,6 +58,7 @@ class ReportTaskInputs:
     observations: dict[str, dict[str, Any]]
     verifier_views: SearchVerifierViews | None
     iterations: dict[tuple[str, int], dict[str, Any]]
+    reference_impacts: list[ReportReferenceImpact]
 
 
 @dataclass(frozen=True)
