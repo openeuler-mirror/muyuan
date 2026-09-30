@@ -275,7 +275,12 @@ class CandidateSessions:
                 require_current_session(self.state.read_agent_session(replaced_agent_session_id), candidate_record)
                 if candidate_record.status not in {"created", "evaluated"}:
                     raise RuntimeError("candidate cannot be redispatched in its current state")
-                candidate_record.execution_generation += 1
+                # Validate the entire next state before any request/index writes.
+                # A restored recovery retains its original checkpoint generation.
+                candidate_record = CandidateRecord.model_validate({
+                    **candidate_record.model_dump(mode="python"),
+                    "execution_generation": candidate_record.execution_generation + 1,
+                })
             workspace = candidate_record.task.workspace
             if self._adaptive_search_is_enabled(frozen):
                 self.admission.assert_candidate_execution_allowed(

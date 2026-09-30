@@ -9,7 +9,10 @@ from goal_plus.ports.state import CandidateRecord, RunRecord
 class FileCandidateSessionState(FileCandidateQueries):
     def write_execution_generation(self, record: CandidateRecord) -> None:
         current = self.read_candidate(record.task.run_id, record.candidate_id)
-        current.execution_generation = record.execution_generation
+        current = CandidateRecord.model_validate({
+            **current.model_dump(mode="python"),
+            "execution_generation": record.execution_generation,
+        })
         write_json(self.candidate_dir(record.task.run_id, record.candidate_id) / "candidate.json",
                    current.model_dump(mode="json"))
 

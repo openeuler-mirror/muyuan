@@ -1083,6 +1083,71 @@ def test_cold_controller_recovery_preserves_evidence_and_fences_old_session(host
 
     asyncio.run(exercise())
 
+@pytest.mark.parametrize("recovery_count", [1, 2])
+def test_new_session_after_checkpoint_recovery_preserves_recovery_and_fences_workers(
+    hosted_candidate, recovery_count,
+):
+    from goal_plus.host_recovery import approve_recovery
+    from goal_plus.session_host import NativeCandidateHost
+
+    root, harness, goal, runtime, task, session, _, actors, _ = hosted_candidate
+    host = NativeCandidateHost(root, agent_harness=harness, caller=lambda: goal.active_session.session_id)
+
+    def run(call_id, *, new_session=False):
+        receipt = host.run_candidate(task.run_id, task.candidate_id, call_id, "work", 10, new_session)
+        control = host(receipt["session_id"], "wait")
+        result = control.wait(call_id, timeout=10)
+        assert result.state == "completed", result.error
+        return receipt, control
+
+    try:
+        (task.workspace / "initial_program.py").write_text("VALUE = 1\n")
+        receipt, control = run("initial")
+        before = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
+        for index in range(recovery_count):
+            recovery = runtime.prepare_candidate_recovery(task.run_id, task.candidate_id)
+            control.close()
+            approve_recovery(root, recovery)
+            restored = runtime.recover_candidate(task.run_id, task.candidate_id, recovery.recovery_id)
+            receipt, control = run(f"recovered-{index}")
+            assert runtime.candidate_sessions.session(receipt["session_id"]).execution_generation == index + 1
+
+        previous_id = receipt["session_id"]
+        receipt, control = run("replace", new_session=True)
+        after = FileSearchRuntime(root).candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
+        assert after.execution_generation == recovery_count + 1
+        assert after.recovery == restored
+        assert after.iterations == before.iterations
+        assert after.results_ledger == before.results_ledger
+        actor_count = len(actors)
+        replay, _ = run("replace", new_session=True)
+        assert replay["session_id"] == receipt["session_id"]
+        assert len(actors) == actor_count
+        with pytest.raises(RuntimeError, match="StaleAgentSession"):
+            host(previous_id, "wake")
+        with pytest.raises(ValueError, match="SessionRunConflict"):
+            host.run_candidate(task.run_id, task.candidate_id, "replace", "different", 10, True)
+        agenda = FileGoalPlusRuntime(root).reconciliation(goal.goal_plus_id)
+        assert agenda["runs"][0]["candidates"][0]["next_step"] == "await_fresh_evidence"
+
+        # A later checkpoint recovery still fences the replacement and can finish.
+        next_recovery = runtime.prepare_candidate_recovery(task.run_id, task.candidate_id)
+        assert next_recovery.recovery_id != restored.recovery_id
+        assert next_recovery.generation == after.execution_generation + 1
+        control.close()
+        approve_recovery(root, next_recovery)
+        runtime.recover_candidate(task.run_id, task.candidate_id, next_recovery.recovery_id)
+        (task.workspace / "initial_program.py").write_text("VALUE = 2\n")
+        receipt, control = run("final-recovery")
+        final = runtime.candidate_creation.state.read_candidate(task.run_id, task.candidate_id)
+        assert final.iterations[:len(before.iterations)] == before.iterations
+        assert final.iterations[-1].agent_session_id == receipt["session_id"]
+        agenda = FileGoalPlusRuntime(root).reconciliation(goal.goal_plus_id)
+        assert agenda["runs"][0]["candidates"][0]["next_step"] == "continue_search"
+    finally:
+        host.shutdown()
+
+
 @pytest.mark.parametrize("failed_owner", ["annotation", "executor"])
 def test_internal_owners_wake_independently(tmp_path, monkeypatch, failed_owner):
     from types import SimpleNamespace

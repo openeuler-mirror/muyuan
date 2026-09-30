@@ -26,6 +26,60 @@ def make_search(tmp_path: Path, *, inner_agent=None):
     return runtime, run_id, task
 
 
+@pytest.mark.parametrize("provider", ["copy", "git_worktree"])
+def test_restored_recovery_survives_replacement_and_preserves_shared_history(tmp_path, provider):
+    project = make_project(tmp_path)
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    spec = spec_for(project, max_parallel=2)
+    spec.workspace.provider = provider
+    frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
+    run_id = runtime.create_run(frozen.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=2)
+    task, peer_task = runtime.start_batch(run_id, plan.plan_id)
+    peer = runtime.start_agent_session(run_id, peer_task.candidate_id)
+    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    restored = runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    worker = runtime.start_agent_session(run_id, task.candidate_id)
+    runtime.bind_agent_handle(worker.agent_session_id, {"external_id": "recovered-worker"})
+    runtime.run_verifier(run_id, task.candidate_id, agent_session_id=worker.agent_session_id,
+                         hypothesis="Verify the recovered checkpoint")
+    before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    evidence = runtime.get_global_evidence(worker.agent_session_id)
+    assert evidence
+    assert runtime.recovery.queries.has_fresh_evidence(run_id, before)
+
+    for index in range(2):
+        previous = worker
+        worker = runtime.candidate_sessions.replace_session(
+            previous.agent_session_id, call_id=f"replace-{index}", fingerprint=f"replace-{index}",
+        )
+        runtime = FileSearchRuntime(runtime.root_dir)
+        after = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+        assert after.execution_generation == previous.execution_generation + 1
+        assert after.recovery == restored
+        assert after.iterations == before.iterations
+        assert after.results_ledger == before.results_ledger
+        assert runtime.get_global_evidence(worker.agent_session_id) == evidence
+        assert runtime.get_global_evidence(peer.agent_session_id) == evidence
+        with pytest.raises(RuntimeError, match="StaleAgentSession"):
+            runtime.run_verifier(run_id, task.candidate_id, agent_session_id=previous.agent_session_id,
+                                 hypothesis="Reject late verification from a fenced worker")
+        with pytest.raises(RuntimeError, match="SearchRecoveryIncomplete"):
+            runtime.select(run_id)
+
+    (task.workspace / "initial_program.py").write_text("VALUE = 9 # preserved\n")
+    assert runtime.recover_candidate(run_id, task.candidate_id, restored.recovery_id) == restored
+    assert (task.workspace / "initial_program.py").read_text() == "VALUE = 9 # preserved\n"
+    runtime.run_verifier(run_id, task.candidate_id)  # Main cannot satisfy worker recovery.
+    with pytest.raises(RuntimeError, match="SearchRecoveryIncomplete"):
+        runtime.select(run_id)
+    runtime.bind_agent_handle(worker.agent_session_id, {"external_id": "replacement-worker"})
+    runtime.run_verifier(run_id, task.candidate_id, agent_session_id=worker.agent_session_id,
+                         hypothesis="Verify with the current replacement worker")
+    assert runtime.goal_plus_search_recovery_status(run_id)["candidates"][0]["fresh_recovery_evidence"]
+    runtime.select(run_id)
+
+
 def native_recovery_resource(runtime, session, monkeypatch, *, status="finished"):
     scope = {
         "scope_id": "scope_recovery", "agent_harness": "codex",
@@ -139,7 +193,8 @@ def test_restored_or_main_only_evidence_cannot_bypass_fresh_worker_closeout(tmp_
     runtime.select(run_id)
 
 
-def test_finalization_can_select_existing_settlement_without_launching_worker(tmp_path, monkeypatch):
+@pytest.mark.parametrize("replacement", [False, True])
+def test_finalization_can_select_existing_settlement_without_launching_worker(tmp_path, monkeypatch, replacement):
     runtime, run_id, task = make_search(tmp_path)
     original = runtime.start_agent_session(run_id, task.candidate_id)
     runtime.bind_agent_handle(original.agent_session_id, {"external_id": "original"})
@@ -147,9 +202,12 @@ def test_finalization_can_select_existing_settlement_without_launching_worker(tm
     runtime.run_verifier(run_id, task.candidate_id, agent_session_id=original.agent_session_id, hypothesis="original worker evidence")
     recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
     SearchTools(runtime).goal_plus_search_recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    if replacement:
+        worker = runtime.start_agent_session(run_id, task.candidate_id)
+        runtime.candidate_sessions.replace_session(worker.agent_session_id, call_id="replace", fingerprint="f")
     monkeypatch.setattr(runtime.search_context, "outer_deadline", lambda _: "2000-01-01T00:00:00Z")
     runtime.select(run_id)
-    assert len(runtime.candidate_sessions.state.read_agent_sessions(run_id)) == 1  # No new worker after cutoff.
+    assert len(runtime.candidate_sessions.state.read_agent_sessions(run_id)) == (3 if replacement else 1)
 
 
 def test_recover_initial_checkpoint_without_creating_another_candidate(tmp_path):
