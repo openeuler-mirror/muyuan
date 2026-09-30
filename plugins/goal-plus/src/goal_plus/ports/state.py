@@ -219,9 +219,13 @@ class CandidateRecord(SearchModel):
 
     @model_validator(mode="after")
     def recovery_matches_candidate(self) -> "CandidateRecord":
-        if self.recovery is not None and (
-            self.recovery.generation != self.execution_generation
-            or self.recovery.point.artifact_ref.provider != self.task.workspace_provider
-        ):
-            raise ValueError("recovery generation/provider must match the candidate")
+        recovery = self.recovery
+        if recovery is None:
+            return self
+        if recovery.point.artifact_ref.provider != self.task.workspace_provider:
+            raise ValueError("recovery provider must match the candidate")
+        if recovery.generation > self.execution_generation:
+            raise ValueError("recovery generation cannot exceed the candidate execution generation")
+        if recovery.state != "restored" and recovery.generation != self.execution_generation:
+            raise ValueError("unfinished recovery generation must match the candidate execution generation")
         return self

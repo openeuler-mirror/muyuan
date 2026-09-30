@@ -53,6 +53,67 @@ def test_candidate_invocation_start_continue_and_refresh_preserve_provenance(can
     assert len(sessions.state.read_agent_sessions(run_id)) == 2
 
 
+@pytest.mark.parametrize("state", ["prepared", "restoring"])
+def test_replacement_cannot_bypass_unfinished_recovery(candidate_sessions, state):
+    runtime, run_id, tasks = candidate_sessions
+    task = tasks[0]
+    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    worker = runtime.start_agent_session(run_id, task.candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    record.recovery.state = state
+    runtime.candidate_creation.state.write_candidate(run_id, record)
+    before = {str(path): path.read_bytes() for path in runtime.root_dir.rglob("*.json")}
+    with pytest.raises(RuntimeError, match="CandidateRecoveryRequired"):
+        runtime.candidate_sessions.replace_session(worker.agent_session_id, call_id="replace", fingerprint="f")
+    assert {str(path): path.read_bytes() for path in runtime.root_dir.rglob("*.json")} == before
+
+
+def test_replacement_validates_next_candidate_before_persisting_requests(candidate_sessions, monkeypatch):
+    runtime, run_id, tasks = candidate_sessions
+    task = tasks[0]
+    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    worker = runtime.start_agent_session(run_id, task.candidate_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    # Typed models can be mutated without assignment validation. Do not serialize
+    # such an invalid input, or save a replacement request before detecting it.
+    record.recovery.restored_at = None
+    monkeypatch.setattr(runtime.candidate_sessions.state, "read_candidate", lambda *_: record)
+    before = {str(path): path.read_bytes() for path in runtime.root_dir.rglob("*.json")}
+    with pytest.raises(ValueError, match="restored recovery requires"):
+        runtime.candidate_sessions.replace_session(worker.agent_session_id, call_id="replace", fingerprint="f")
+    assert {str(path): path.read_bytes() for path in runtime.root_dir.rglob("*.json")} == before
+
+
+@pytest.mark.parametrize("failure", ["invalid_generation", "write_failure"])
+def test_generation_write_preserves_candidate_on_failure(candidate_sessions, monkeypatch, failure):
+    runtime, run_id, tasks = candidate_sessions
+    task = tasks[0]
+    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    before = {str(path): path.read_bytes() for path in runtime.root_dir.rglob("*.json")}
+    if failure == "invalid_generation":
+        record.execution_generation = 0
+        # The narrow writer must validate the merged persisted record, rather
+        # than an incoming DTO that might omit its recovery obligation.
+        record.recovery = None
+        error, reason = ValueError, "recovery generation"
+    else:
+        record.execution_generation += 1
+
+        def fail_write(*_args, **_kwargs):
+            raise OSError("injected write failure")
+
+        monkeypatch.setattr("goal_plus.infrastructure.state.candidate_sessions.write_json", fail_write)
+        error, reason = OSError, "injected write failure"
+    with pytest.raises(error, match=reason):
+        runtime.candidate_sessions.state.write_execution_generation(record)
+    assert {str(path): path.read_bytes() for path in runtime.root_dir.rglob("*.json")} == before
+    assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id).recovery.generation == 1
+
+
 @pytest.mark.parametrize("invalid", ["agent_harness", "peer", "missing", "mode"])
 def test_invalid_invocation_preparation_does_not_mutate_domain(candidate_sessions, invalid):
     runtime, run_id, tasks = candidate_sessions

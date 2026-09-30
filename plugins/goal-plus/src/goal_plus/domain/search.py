@@ -620,6 +620,12 @@ class CandidateRecoveryPoint(SearchModel):
 
 
 class CandidateRecovery(SearchModel):
+    """Latest checkpoint recovery; generation stays fixed across session replacement.
+
+    Restored records remain the checkpoint and fresh-worker Evidence gate even
+    when a later session replacement advances the candidate execution generation.
+    """
+
     recovery_id: str = Field(pattern=r"^recovery_[0-9a-f]{32}$")
     generation: int = Field(ge=1)
     state: Literal["prepared", "restoring", "restored"] = "prepared"

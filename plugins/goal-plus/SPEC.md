@@ -649,6 +649,14 @@ VerifierTask 的重试和缺分不是终态；完整得分或最终失败才生�
 workspace provider 恢复受管理的 candidate 工作区。恢复事务必须幂等，不重置 run/candidate
 身份、Goal revision、预算或已结算 Evidence；旧代际迟到结果不得结算。恢复后使用新 worker
 session；不假定原生 transcript 与 artifact 原子配对，不以 Git 专属 reset 作为公共合同。
+`CandidateRecord.recovery` 保留最近一次 checkpoint 恢复及其验收依据；其中 generation 是
+该次恢复建立的代际。prepared/restoring 必须与当前 execution generation 相等；restored
+允许早于当前代际，但不能超前。显式 new_session 仅推进当前执行代际，不改写已完成恢复的
+身份、checkpoint 或 generation，不删除已结算历史。恢复后的 fresh Evidence 须来自当前
+代际已绑定的 worker，且 iteration 晚于恢复点；Main 验证或旧代际 Evidence 不替代此验收。
+原 deadline 已到时，保留既有 selection/promotion 使用完整历史 Evidence 收尾的例外，
+不得为补验收重启 worker。换代的完整 candidate 状态须在请求、索引和 candidate 写入前校验；
+文件 adapter 对实际合并后的 candidate 再校验并原子写入，不将多文件写入视为一个原子事务。
 不支持恢复的 provider、未知宿主状态和不一致 checkpoint 必须显式拒绝。
 详细合同见 [Search 一致性恢复](docs/search-recovery.md)。
 

@@ -162,6 +162,10 @@ reconciliation，执行有界工作后再次判断。Main 可先做非 Search �
 | fresh worker 已绑定、没有新 Evidence | 等待/推进 fresh verifier |
 | 已取得新 Evidence | 回到 Search 的 selection、promotion、结果登记与审计 |
 
+这里的 fresh worker 和新 Evidence 均以当前 candidate execution generation 为准。
+已 restored 的 recovery 保留最初恢复代际，后续 new_session 可以推进当前代际；旧 Evidence
+仍可共享，但不能代替新代际 worker 的恢复验收，详见 [Search 一致性恢复](search-recovery.md#状态重试与数据保留)。
+
 以上步骤持续投影在 Main context/Stop continuation 和 monitor 中，不只注入 resume 首轮。
 完成/最终检查会拒绝仍处于恢复中、仅 restored 或尚无新 Evidence 的必要恢复事务。
 

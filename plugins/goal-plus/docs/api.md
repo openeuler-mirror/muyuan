@@ -47,7 +47,9 @@ Main 读取 candidate/Evidence 状态后使用新 call_id 继续，不重发原�
 
 `new_session=true` 先关闭空闲旧资源并确认清理，再隔离旧 generation、创建新 session。
 已有代码、Evidence 和累计预算保留。原 native session 无法加载时也可使用该入口，
-直接接手包含未验证修改的 workspace。冻结 worker budget 和 Goal deadline 限制整轮执行额度；
+直接接手包含未验证修改的 workspace。已有 restored recovery 的 ID、checkpoint 和恢复代际
+保持不变；当前代际仍须满足 [fresh-worker Evidence 验收](search-recovery.md#状态重试与数据保留)。
+冻结 worker budget 和 Goal deadline 限制整轮执行额度；
 wait 的 timeout 只控制读取等待，不延长额度、不取消执行。
 `goal_plus_session_wait_any` 接收 `(session_id, call_id)` 列表，在首个完成的调用处返回：
 `finished` 条目携带准确状态与错误，`running` 条目只保留身份与状态；`detail=true` 才读取

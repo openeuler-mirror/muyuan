@@ -84,6 +84,25 @@ score report、iteration 和 canonical ledger 原子落盘，包含工具回执�
 | `restoring` | 恢复或投影未完成 | 按同一 checkpoint 重试 |
 | `restored` | artifact、ledger、投影已核验落盘 | 返回原结果，不再次修改工作区 |
 
+`CandidateRecord.recovery` 是最近一次 checkpoint 恢复记录，`restored` 不代表新 worker
+已经完成恢复验收。`recovery.generation` 固定为该次恢复建立的代际；prepared/restoring
+期间必须等于当前 `execution_generation`。恢复完成后的 `new_session=true` 只增加当前
+执行代际，保留原 recovery ID、generation 和 checkpoint；此时允许
+`recovery.generation < execution_generation`，不允许恢复记录超前。provider 始终必须匹配。
+
+恢复后的 fresh Evidence 必须来自当前代际已绑定的 worker，且 iteration 晚于 recovery
+checkpoint。更换 session 后旧代际 Evidence 仍可查询和共享，但不满足当前 worker 的
+恢复验收；Main 自行验证也不能代替。没有新 Evidence 时 reconciliation 继续提示恢复待办，
+selection/promotion 仍受恢复 gate 约束。原 deadline 已到的收尾例外保持不变：只能使用
+已有完整 Evidence，不为补齐验收重启 worker。同一 restored recovery ID 的重试只返回原
+结果，不回滚 replacement worker 的新修改。
+
+下一次 prepare 会替换最近一次 recovery 记录，不修改 candidate 身份、iteration、ledger
+或已发布的共享 Evidence。现有现场备份和 host approval 可用于诊断，但不构成统一的完整
+recovery 历史查询。generation/provider 的检查错误分别报告；读取不改写状态。旧记录若仅
+因 restored recovery 的代际落后而曾无法读取，可按上述合同正常解码；这不重新激活已失效
+run，不重置预算，也不解除任何执行 gate。
+
 新 generation 再中断时可准备新 recovery ID；旧 session 仅保留历史归属。恢复不重置 Goal revision、
 外层 deadline、预算或已结算 Evidence。Codex 收尾仅豁免已完成 recovery 明确覆盖的旧 session；
 新 session 仍需终态证据，当前 scope 的活跃 agent 检查不变。
@@ -116,6 +135,10 @@ Runtime 不监督未知进程；脱离宿主的后台程序和外部服务须另
 确定性覆盖见 [test_search_recovery.py](../tests/test_search_recovery.py)。真实宿主场景见
 [session ST](../tests/st/test_st_session_host.py) 的 `host_restart` / `cold_recovery` 和
 [Main recovery ST](../tests/st/test_st_search_recovery.py)；运行条件见 [Tests](../tests/README.md)。
+[Circle recovery ST](../tests/st/test_st_circle_recovery.py) 使用 `examples/circle-packing`
+的 Git worktree 与冻结评分器，让真实 Pi worker 两次中断并恢复 checkpoint，再显式
+`new_session=true`；检查历史保留、当前代际 Evidence 和 selection/promotion。Main 操作
+由测试控制器触发，不代表原生 Main 自主 resume 的端到端验收。
 
 | 错误 | 检查方向 |
 | --- | --- |
