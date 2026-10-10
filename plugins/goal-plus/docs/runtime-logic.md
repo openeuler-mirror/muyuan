@@ -69,8 +69,9 @@ summary/pause/resume/clear 是保留词，不能解析成目标。控制操作�
 模型工具、自动加载 skill、历史消息中的命令和普通 child 都不能伪造权限。
 
 `resume` 后的正文支持多行，作为用户补充信息保留在原生会话上下文中；不解析其中的
-`key=value`、不替换原目标，也不产生新 revision。Main 先处理补充信息，再判断如何继续；
-命令本身不证明 `needs_user` 或业务阻塞已经解决。省略正文时保持原有恢复行为，
+`key=value`、不替换原目标，也不产生新 revision。显式 host resume 会将 `blocked` 或
+`needs_user` 恢复为 `active`，解除运行时执行门禁；Main 仍须先处理补充信息，并按
+`next_action` 和原始目标判断业务问题是否已经解决。省略正文时也执行同样的状态恢复；
 summary/pause/clear 仍不接受正文。例如：
 
 ```text
@@ -115,7 +116,7 @@ Pi 交互 command 与 print/JSON input 共用同一 host-only 控制入口。
 | 正常 active | 先处理输入，再继续原任务 | 不重复创建运行中的 Main | 有效修改后按新 revision 继续 |
 | paused | 可以聊天，不恢复 | 同一 session 显式恢复 | 仍保持暂停 |
 | blocked | 不自动重试 | 开启一次明确重试，保留 next_action | 仍保持停止 |
-| needs_user | 不用无关输入伪造问题已解决 | 不代表业务问题已经解决 | 按新目标重新判断所需输入 |
+| needs_user | 不用无关输入伪造问题已解决 | 同一 session 显式恢复为 active；仍由 Main 处理补充信息和 `next_action` | 按新目标重新判断所需输入 |
 | complete | 普通聊天 | 拒绝重开原 revision | 有效编辑可开启新 revision |
 | abandoned / clear | 普通聊天 | 拒绝 | 拒绝；须创建新任务 |
 | fork / 新 session / detached / stale | 不继承执行权 | 拒绝接管 | 不借 edit 接管其他任务 |

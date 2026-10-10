@@ -88,7 +88,7 @@ class GoalControl:
             status = record.status
             if parsed.action == "clear":
                 status = "abandoned"
-            elif parsed.action == "resume" and status == "blocked":
+            elif parsed.action == "resume" and status in {"blocked", "needs_user"}:
                 status = "active"
             updated = with_host_invocation(
                 record, parsed, self.clock.timestamp()

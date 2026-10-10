@@ -7,6 +7,7 @@ import pytest
 
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.models import GoalPlusHostCommandInvocation
+from goal_plus.tools import GoalPlusTools
 
 
 def invocation(action, nonce="1", session="main", **extra):
@@ -114,12 +115,55 @@ def test_legacy_blocked_record_stays_closed(goal):
         runtime.control_from_host_command(goal_id, invocation=invocation("resume"))
 
 
-def test_resume_cannot_resolve_needs_user(goal):
+@pytest.mark.parametrize(
+    ("stop_event", "stopped_reason"),
+    [(None, "GoalPlusUserInputRequired"), ("interrupt", "GoalPlusResumeRequired")],
+)
+def test_explicit_resume_resolves_needs_user(goal, stop_event, stopped_reason):
+    runtime, goal_id = goal
+    runtime.set_status(
+        goal_id,
+        "needs_user",
+        reason="choose a deployment target",
+        next_action={
+            "kind": "choose_deployment_target",
+            "description": "Choose a deployment target",
+        },
+    )
+    if stop_event is not None:
+        event(runtime, goal_id, stop_event)
+    before = runtime.status(goal_id)
+    with pytest.raises(RuntimeError, match=stopped_reason):
+        GoalPlusTools(runtime).goal_plus_set_status(goal_id, "active")
+    resumed = runtime.control_from_host_command(goal_id, invocation=invocation("resume"))
+    assert resumed.status == "active"
+    assert resumed.control.state == "active"
+    assert resumed.goal_revision == before.goal_revision
+    assert resumed.outer_deadline_at == before.outer_deadline_at
+    assert resumed.next_action == before.next_action
+    assert GoalPlusTools(runtime).goal_plus_set_status(goal_id, "active")["status"] == "active"
+    assert runtime.gate(goal_id, "stop", {}).decision == "block"
+
+
+def test_automatic_resume_does_not_resolve_needs_user(goal):
     runtime, goal_id = goal
     runtime.set_status(goal_id, "needs_user", reason="choose a deployment target")
-    resumed = runtime.control_from_host_command(goal_id, invocation=invocation("resume"))
-    assert resumed.status == "needs_user"
-    assert runtime.gate(goal_id, "stop", {}).decision == "allow"
+    event(runtime, goal_id, "execution_lost")
+    stopped = runtime.status(goal_id)
+    with pytest.raises(RuntimeError, match="AutomaticResumeRejected"):
+        runtime.control_from_host_command(
+            goal_id,
+            invocation=invocation(
+                "resume",
+                resume_expectation={
+                    "goal_plus_id": goal_id,
+                    "goal_revision": 1,
+                    "session_id": "main",
+                    "control_version": stopped.control.version,
+                },
+            ),
+        )
+    assert runtime.status(goal_id) == stopped
 
 
 def test_native_restore_never_fires_a_turn(goal):
