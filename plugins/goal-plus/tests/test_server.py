@@ -326,6 +326,8 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
         "goal_plus_search_copy_shared_tool",
         "goal_plus_search_get_evidence_detail",
         "goal_plus_search_get_agent_observability",
+        "goal_plus_search_read_shared_cache",
+        "goal_plus_search_append_shared_cache",
         "goal_plus_search_run_verifier",
         "goal_plus_search_list_iterations",
         "goal_plus_search_list_allocation_decisions",

@@ -7,7 +7,11 @@ from goal_plus.domain.verifier import (
     VerifierInput, VerifierInvocationRecord, VerifierLease, VerifierRecord,
     VerifierResult, VerifierScoreContract, VerifierSubject, VerifierTask,
     VerifierTaskState, validate_scores, validate_diagnostics, diagnostic_references,
+    validate_cache_updates, verifier_cache_contract,
 )
+
+def _task_cache_contract(task: VerifierTask):
+    return verifier_cache_contract(task.input.cache_snapshot)
 from goal_plus.ports.clock import Clock
 from goal_plus.ports.verifier import VerifierState
 
@@ -159,6 +163,7 @@ class VerifierWorkflow:
             validate_scores(parsed.scores, task.score_contract.score_rules)
             validate_diagnostics(parsed.steering_findings, parsed.scores, task.score_contract,
                                  diagnostic_references(task.input, task.subject))
+            validate_cache_updates(parsed.cache_updates, _task_cache_contract(task))
             record = VerifierRecord(**self._record_fields(task), **parsed.model_dump(),
                                     invocation=VerifierInvocationRecord.model_validate(invocation), usage=dict(usage or {}))
             self._terminal(task, record)

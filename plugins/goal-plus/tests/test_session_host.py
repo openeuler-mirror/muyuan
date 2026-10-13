@@ -866,23 +866,33 @@ def test_run_rejects_active_dispatch_and_cleanup_failure(hosted_candidate, monke
         host.run_candidate(task.run_id, task.candidate_id, "active", "work", 10)
         assert entered.wait(5)
         before = runtime.candidate_sessions.session(session.agent_session_id).model_dump()
-        for fresh in (False, True):
-            with pytest.raises(RuntimeError, match="active invocation"):
-                host.run_candidate(task.run_id, task.candidate_id, "other", "work", 10, fresh)
+        # Same-session reuse while the dispatch is still running stays refused.
+        with pytest.raises(RuntimeError, match="active invocation"):
+            host.run_candidate(task.run_id, task.candidate_id, "other", "work", 10, False)
         assert runtime.candidate_sessions.session(session.agent_session_id).model_dump() == before
         assert len(actors) == 1
+        # A replacement session (new_session=true) no longer refuses when the
+        # outgoing dispatch is still running: it settles the invocation
+        # (interrupt + wait for the terminal outcome) so the replacement
+        # binding starts strictly after the old interval ends. Unblocking the
+        # review lets the dispatch settle; the call must return a new session
+        # rather than raise "active invocation".
         release.set()
-        control = host(session.agent_session_id, "wait")
-        assert control.wait("active", timeout=10).state == "completed"
+        replaced = host.run_candidate(task.run_id, task.candidate_id, "other", "work", 10, True)
+        assert replaced["session_id"] != session.agent_session_id
+        old_control = host(session.agent_session_id, "wait")
+        assert old_control.wait("active", timeout=10).state in {"completed", "interrupted"}
+        # Cleanup failures on the outgoing controller still surface.
+        current_id = replaced["session_id"]
+        control = host(current_id, "wait")
+        assert control.wait("other", timeout=10).state == "completed"
         close = control.session.close
         monkeypatch.setattr(control.session, "close", lambda: (_ for _ in ()).throw(OSError("cleanup failed")))
         with pytest.raises(OSError, match="cleanup failed"):
             host.run_candidate(task.run_id, task.candidate_id, "new", "work", 10, True)
-        assert runtime.candidate_sessions.session(session.agent_session_id).execution_generation == 0
-        assert len(actors) == 1
         monkeypatch.setattr(control.session, "close", close)
         new = host.run_candidate(task.run_id, task.candidate_id, "new", "work", 10, True)
-        assert new["session_id"] != session.agent_session_id
+        assert new["session_id"] != current_id
         assert host(new["session_id"], "wait").wait("new", timeout=10).state == "completed"
     finally:
         release.set()

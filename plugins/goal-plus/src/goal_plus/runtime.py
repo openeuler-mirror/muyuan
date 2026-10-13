@@ -33,6 +33,7 @@ from goal_plus.domain.search import (
     VerifierInvalidationReason,
 )
 from goal_plus.domain.selection import ControllerSelectionDirective
+from goal_plus.domain.shared_cache import SharedCacheView
 from goal_plus.domain.shared_tools import (
     ToolizationDecision,
 )
@@ -69,7 +70,6 @@ class FileSearchRuntime:
         self.research = services.research
         self.search_run = services.search_run
         self.artifacts = services.artifacts
-        self.shared_tools = services.shared_tools
         self.references = services.references
         self.recovery = services.recovery
         self.verification = services.verification
@@ -99,6 +99,8 @@ class FileSearchRuntime:
         self.context = services.context
         self.queries = services.queries
         self.evidence_reads = services.evidence_reads
+        self.shared_cache = services.shared_cache
+        self.shared_tools = services.shared_tools
         self.trace = services.trace
 
     def llm_verifier_enabled(self, run_id: str) -> bool:
@@ -145,11 +147,27 @@ class FileSearchRuntime:
 
     def accept_verifier_record(self, record, *, execute, steering_host=None) -> None:
         frozen = self.queries.state.read_frozen_spec(record.subject.frozen_spec_id)
+        shared_cache = getattr(frozen.spec, "shared_cache", None)
+        if shared_cache is not None and shared_cache.enabled:
+            self._apply_verifier_cache_updates(record, frozen)
         if frozen.spec.strategy.allocation is not None or frozen.spec.strategy.steering is not None:
             self._adaptive_search.accept_verifier_record(record,
                 policy=frozen.spec.strategy.allocation, max_parallel=frozen.spec.budget.max_parallel,
                 execute=execute, steering_host=steering_host,
                 steering_policy=frozen.spec.strategy.steering)
+
+    def _apply_verifier_cache_updates(self, record, frozen) -> None:
+        if record.outcome != "completed" or not record.cache_updates:
+            return
+        updates = [
+            update.model_dump(mode="json") if hasattr(update, "model_dump") else update
+            for update in record.cache_updates
+        ]
+        self.shared_cache.append_verifier_updates(
+            record.subject.run_id,
+            frozen,
+            updates,
+        )
 
     def recover_allocation(self, run_id: str, *, cancel, dispatch):
         return self._adaptive_search.recover_allocation(run_id, cancel=cancel, dispatch=dispatch)
@@ -518,6 +536,37 @@ class FileSearchRuntime:
             agent_session_id=agent_session_id,
             tool_id=tool_id,
             snapshot_hash=snapshot_hash,
+        )
+
+    def read_shared_cache(
+        self, agent_session_id: str,
+    ) -> tuple[FrozenSpec, SharedCacheView]:
+        return self.shared_cache.view_for_candidate(agent_session_id)
+
+    def read_shared_cache_for_run(
+        self, run_id: str,
+    ) -> tuple[FrozenSpec, SharedCacheView]:
+        run = self.queries.state.read_run(run_id)
+        frozen = self.queries.state.read_frozen_spec(run.frozen_spec_id)
+        if not frozen.spec.shared_cache.enabled:
+            return frozen, SharedCacheView()
+        return frozen, self.shared_cache.view_for_run(run_id, frozen)
+
+    def append_shared_cache(
+        self,
+        agent_session_id: str,
+        *,
+        section: str,
+        content: str,
+        supersedes: str | None = None,
+        evidence_ref: str | None = None,
+    ) -> dict[str, Any]:
+        return self.shared_cache.append(
+            agent_session_id,
+            section=section,
+            content=content,
+            supersedes=supersedes,
+            evidence_ref=evidence_ref,
         )
 
     def open_reference_workspace(

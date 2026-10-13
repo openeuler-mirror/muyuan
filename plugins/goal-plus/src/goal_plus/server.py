@@ -205,7 +205,8 @@ def create_mcp(
                 runtime.queries.state.read_run(session.run_id).frozen_spec_id
             )
             capabilities = {"supplemental": frozen.supplemental_evaluation_enabled,
-                            "shared_tools": frozen.spec.shared_dir.enabled}
+                            "shared_tools": frozen.spec.shared_dir.enabled,
+                            "shared_cache": frozen.spec.shared_cache.enabled}
     @asynccontextmanager
     async def session_lifespan(server):
         try:
@@ -804,6 +805,48 @@ def create_mcp(
                 agent_session_id,
                 candidate_id,
                 iteration,
+            )
+        )
+
+    @register_tool()
+    @_debug_tool_response
+    def goal_plus_search_read_shared_cache(
+        agent_session_id: str,
+    ) -> TextContent:
+        """读取当前 run 的 shared cache 投影。
+
+        返回 sections（操作者冻结的模板：key、标题、要求、cardinality、是否需要
+        evidence）与 entries（各 writer 追加的客观事实）。任何 candidate 或 verifier
+        都可随时查阅，避免对同一问题重复探索。内容为追加式事实日志的读时投影，
+        不包含 peer workspace、transcript 或推理。
+        """
+        return _json_text(
+            tools.goal_plus_search_read_shared_cache(agent_session_id)
+        )
+
+    @register_tool()
+    @_debug_tool_response
+    def goal_plus_search_append_shared_cache(
+        agent_session_id: str,
+        section: str,
+        content: Annotated[str, Field(min_length=1)],
+        supersedes: str | None = None,
+        evidence_ref: str | None = None,
+    ) -> TextContent:
+        """向 shared cache 的一个 section 追加一条客观事实。
+
+        content 会做空白归一化并受 max_content_chars 限制；requires_evidence 的
+        section 必须提供 evidence_ref（指向已结算 Evidence 或 verifier 输出）。
+        修正先前记录时传 supersedes=record_id：旧条目从投影中移除，新条目生效，
+        但事实日志保持追加式。写入仅记录客观内容，不影响评分。
+        """
+        return _json_text(
+            tools.goal_plus_search_append_shared_cache(
+                agent_session_id,
+                section,
+                content,
+                supersedes,
+                evidence_ref,
             )
         )
 

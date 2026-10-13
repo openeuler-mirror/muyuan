@@ -8,6 +8,7 @@ from goal_plus.domain.adaptive.policy import AllocationPolicySpec
 from goal_plus.domain.agents import ModelRequest, WorkerBudgetInput
 from goal_plus.domain.search import SearchSpec, StrategyOptions
 from goal_plus.domain.shared_tools import SharedDirInput
+from goal_plus.domain.shared_cache import SharedCacheSpec
 
 
 class StrategyInput(StrategyOptions):
@@ -30,6 +31,7 @@ class StrategyInput(StrategyOptions):
 class SearchSpecInput(SearchSpec):
     strategy: StrategyInput = Field(default_factory=StrategyInput)
     shared_dir: SharedDirInput = Field(default_factory=SharedDirInput)
+    shared_cache: SharedCacheSpec = Field(default_factory=SharedCacheSpec)
 
     def to_runtime_spec(self) -> SearchSpec:
         payload = self.model_dump(mode="json")

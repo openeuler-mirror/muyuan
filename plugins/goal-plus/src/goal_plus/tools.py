@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from goal_plus.application.controller_overlay import (
+    CONTROLLER_SHARED_CACHE_ENV,
+    apply_controller_shared_cache_overlay,
+)
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.domain.goal_commands import GOAL_PLUS_EDIT_ENTRYPOINT_REQUIRED
 from goal_plus.domain.goal_authorization import GOAL_PLUS_ENTRYPOINT_REQUIRED
@@ -94,6 +99,12 @@ class SearchTools:
             parsed_spec = spec
         else:
             parsed_spec = SearchSpecInput.model_validate(spec).to_runtime_spec()
+        # The controller overlay (GOAL_PLUS_CONTROLLER_SHARED_CACHE) wins over
+        # whatever the agent supplied, so shared-cache templating does not
+        # depend on instruction following. No-op when not exported.
+        parsed_spec = apply_controller_shared_cache_overlay(
+            parsed_spec, os.environ.get(CONTROLLER_SHARED_CACHE_ENV)
+        )
         source_path = Path(parsed_spec.source_path).expanduser().resolve()
         artifact_paths: list[Path] = []
         for value in verifier_artifact_paths:
@@ -472,7 +483,8 @@ class SearchTools:
         result = report.model_dump(mode="json")
         if scope != "process" or not inject_evidence:
             return result
-        return self.verifier_response(run_id, agent_session_id, result)
+        result = self.verifier_response(run_id, agent_session_id, result)
+        return self.shared_cache_response(run_id, agent_session_id, result)
 
     def verifier_response(
         self, run_id: str, agent_session_id: str | None, result: dict[str, Any],
@@ -500,6 +512,29 @@ class SearchTools:
         result["global_evidence_entry_count"] = len(snapshot)
         return result
 
+    def shared_cache_response(
+        self, run_id: str, agent_session_id: str | None, result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Inject the shared cache snapshot after a process verifier response."""
+        if agent_session_id is None or "aggregate_score" not in result:
+            return result
+        try:
+            frozen, view = self.runtime.read_shared_cache_for_run(run_id)
+        except Exception as exc:
+            result["shared_cache_injected"] = False
+            result["shared_cache_warning"] = (
+                f"Shared cache read failed: {type(exc).__name__}: {exc}"
+            )
+            return result
+        if not frozen.spec.shared_cache.enabled:
+            return result
+        result["shared_cache_snapshot"] = {
+            "entries": [entry.model_dump(mode="json") for entry in view.entries],
+            "total_records": view.total_records,
+        }
+        result["shared_cache_injected"] = True
+        return result
+
     def goal_plus_search_list_iterations(
         self,
         agent_session_id: str,
@@ -512,6 +547,51 @@ class SearchTools:
             agent_session_id=agent_session_id,
         )
         return history_page(self.runtime.list_agent_iterations(agent_session_id), offset, limit)
+
+    def goal_plus_search_read_shared_cache(
+        self, agent_session_id: str,
+    ) -> dict[str, Any]:
+        self._require_target(
+            "goal_plus_search_read_shared_cache",
+            settlement=True,
+            agent_session_id=agent_session_id,
+        )
+        frozen, view = self.runtime.read_shared_cache(agent_session_id)
+        return {
+            "sections": [
+                {
+                    "key": section.key,
+                    "title": section.title,
+                    "requirement": section.requirement,
+                    "cardinality": section.cardinality,
+                    "requires_evidence": section.requires_evidence,
+                }
+                for section in frozen.spec.shared_cache.sections
+            ],
+            "entries": [entry.model_dump(mode="json") for entry in view.entries],
+            "total_records": view.total_records,
+        }
+
+    def goal_plus_search_append_shared_cache(
+        self,
+        agent_session_id: str,
+        section: str,
+        content: str,
+        supersedes: str | None = None,
+        evidence_ref: str | None = None,
+    ) -> dict[str, Any]:
+        self._require_target(
+            "goal_plus_search_append_shared_cache",
+            settlement=True,
+            agent_session_id=agent_session_id,
+        )
+        return self.runtime.append_shared_cache(
+            agent_session_id,
+            section=section,
+            content=content,
+            supersedes=supersedes,
+            evidence_ref=evidence_ref,
+        )
 
     def goal_plus_search_list_allocation_decisions(
         self,
