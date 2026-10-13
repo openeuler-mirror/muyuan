@@ -265,12 +265,92 @@ class VerifierInvocationRecord(SearchModel):
     scoring_token_logprobs: bool = False
 
 
+# Shared-cache proposals: bounded objective facts, never free-form essays.
+MAX_CACHE_UPDATES = 8
+MAX_CACHE_UPDATE_CHARS = 2000
+
+
+class VerifierCacheUpdate(SearchModel):
+    """One verifier-proposed shared cache entry (proposal-ledger pattern).
+
+    The trusted runtime, not the model, validates and applies the update:
+    section must belong to the frozen closed key set, content is bounded,
+    supersedes must reference an existing record, and requires_evidence
+    sections must carry an evidence_ref. Invalid proposals are rejected
+    individually (or invalidate the whole output at the adapter layer).
+    """
+
+    section: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    content: str = Field(min_length=1, max_length=MAX_CACHE_UPDATE_CHARS)
+    supersedes: str | None = Field(default=None, max_length=128)
+    evidence_ref: str | None = Field(default=None, max_length=128)
+
+    @model_validator(mode="after")
+    def content_is_collapsed(self) -> "VerifierCacheUpdate":
+        if not " ".join(self.content.split()):
+            raise ValueError("cache update content must be non-empty")
+        return self
+
+
+class VerifierCacheContract(SearchModel):
+    """Cache sections the verifier may read and propose updates for."""
+
+    sections: tuple[tuple[str, str, str], ...] = ()
+    # (key, title, requirement) triples from the frozen SharedCacheSpec.
+
+    @property
+    def keys(self) -> frozenset[str]:
+        return frozenset(key for key, _title, _requirement in self.sections)
+
+
+def verifier_cache_contract(snapshot: dict[str, Any] | None) -> VerifierCacheContract | None:
+    """Derive the update contract from the frozen input's cache snapshot."""
+
+    if not isinstance(snapshot, dict) or not snapshot.get("updates_allowed"):
+        return None
+    sections = snapshot.get("sections")
+    if not isinstance(sections, list):
+        return None
+    triples = tuple(
+        (
+            str(item.get("key", "")),
+            str(item.get("title", "")),
+            str(item.get("requirement", "")),
+        )
+        for item in sections
+        if isinstance(item, dict)
+    )
+    if not triples:
+        return None
+    return VerifierCacheContract(sections=triples)
+
+
+def validate_cache_updates(
+    updates: list[VerifierCacheUpdate] | None,
+    contract: VerifierCacheContract | None,
+) -> None:
+    """Adapter-level validation: illegal proposals invalidate the whole output."""
+
+    if contract is None or not contract.keys:
+        if updates:
+            raise ValueError("cache updates are not enabled by the frozen contract")
+        return
+    if updates is None:
+        raise ValueError("cache updates require an explicit list, possibly empty")
+    if len(updates) > MAX_CACHE_UPDATES:
+        raise ValueError(f"at most {MAX_CACHE_UPDATES} cache updates per verdict")
+    for update in updates:
+        if update.section not in contract.keys:
+            raise ValueError(f"cache update section {update.section!r} is outside the frozen key set")
+
+
 class VerifierResult(SearchModel):
     quality_score: float = Field(ge=0, le=1, allow_inf_nan=False)
     scores: dict[str, float] | None
     evidence_refs: list[str] = Field(default_factory=list)
     score_rationales: dict[str, str]
     steering_findings: SteeringFindings | None = None
+    cache_updates: list[VerifierCacheUpdate] | None = None
 
     @model_validator(mode="after")
     def scores_and_rationales_are_atomic(self) -> "VerifierResult":
@@ -294,6 +374,9 @@ class VerifierInput(SearchModel):
     allocation_depth: int = Field(default=0, ge=0)
     input_error: str | None = None
     replaces_candidate_id: str | None = None
+    # Frozen shared-cache projection (sections template + entries) captured at
+    # settlement time; None when the run has no cache or verifier_input=false.
+    cache_snapshot: dict[str, Any] | None = None
 
 
 class VerifierTask(SearchModel):
@@ -375,6 +458,7 @@ class VerifierRecord(SearchModel):
     evidence_refs: list[str] = Field(default_factory=list)
     score_rationales: dict[str, str] = Field(default_factory=dict)
     steering_findings: SteeringFindings | None = None
+    cache_updates: list[VerifierCacheUpdate] | None = None
     invocation: VerifierInvocationRecord | None = None
     usage: dict[str, int | float] = Field(default_factory=dict)
     created_at: str
@@ -383,7 +467,8 @@ class VerifierRecord(SearchModel):
     def scores_are_valid(self) -> "VerifierRecord":
         if self.outcome == "failed":
             if (not self.error or self.quality_score is not None or self.scores is not None
-                    or self.score_rationales or self.steering_findings is not None):
+                    or self.score_rationales or self.steering_findings is not None
+                    or self.cache_updates is not None):
                 raise ValueError("failed verifier record requires an error and no partial scores")
             return self
         if self.quality_score is None or self.invocation is None or self.error is not None:
@@ -443,6 +528,7 @@ def validate_scores(
 def verifier_result_schema(
     score_rules: Sequence[VerifierScoreRule],
     diagnostics: DiagnosticContract | None = None,
+    cache_contract: VerifierCacheContract | None = None,
 ) -> dict[str, Any]:
     schema = VerifierResult.model_json_schema()
     properties = schema["properties"]
@@ -453,6 +539,17 @@ def verifier_result_schema(
         schema.setdefault("$defs", {}).update(frozen_schema.pop("$defs", {}))
         properties["steering_findings"] = frozen_schema
         schema.setdefault("required", []).append("steering_findings")
+    if cache_contract is None or not cache_contract.keys:
+        properties["cache_updates"] = {"type": "null"}
+    else:
+        update_schema = VerifierCacheUpdate.model_json_schema()
+        schema.setdefault("$defs", {})["VerifierCacheUpdate"] = update_schema
+        properties["cache_updates"] = {
+            "type": "array",
+            "items": {"$ref": "#/$defs/VerifierCacheUpdate"},
+            "maxItems": MAX_CACHE_UPDATES,
+        }
+        schema.setdefault("required", []).append("cache_updates")
     if score_rules:
         properties["scores"] = {
             "type": "object",
@@ -535,6 +632,10 @@ __all__ = [
     "DiagnosticQuestion",
     "DiagnosticBoundary",
     "SteeringFindings",
+    "VerifierCacheUpdate",
+    "VerifierCacheContract",
+    "validate_cache_updates",
+    "verifier_cache_contract",
     "diagnostic_references",
     "validate_diagnostics",
     "QUALITY_CRITERIA",

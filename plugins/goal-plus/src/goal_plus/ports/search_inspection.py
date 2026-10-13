@@ -63,3 +63,4 @@ class CandidateContextInputs:
     inner_agent: str
     references: list[ReferenceWorkspaceRecord]
     tool_catalog: list[dict[str, Any]]
+    shared_cache: dict[str, Any] | None = None

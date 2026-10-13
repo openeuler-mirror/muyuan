@@ -58,6 +58,11 @@ const extensionPath = fileURLToPath(import.meta.url);
 const isThinkThreadProfile = Boolean(process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY);
 const isThinkThreadWorker = role === "worker" && isThinkThreadProfile;
 let thinkThreadSupplementalEnabled = false;
+let workerSharedCacheEnabled = false;
+const SHARED_CACHE_TOOL_NAMES = [
+	"goal_plus_search_read_shared_cache",
+	"goal_plus_search_append_shared_cache",
+] as const;
 
 
 
@@ -759,6 +764,8 @@ async function runThinkThreadWorkerToolSerial(
 		"goal_plus_search_get_agent_context",
 		"goal_plus_search_get_global_evidence",
 		"goal_plus_search_get_evidence_detail",
+		"goal_plus_search_read_shared_cache",
+		"goal_plus_search_append_shared_cache",
 		"goal_plus_search_run_verifier",
 		"goal_plus_search_list_iterations",
 		"goal_plus_thinkthread_annotation_next",
@@ -895,8 +902,9 @@ function scopeThinkThreadWorkerTools(
 	}
 	pi.setActiveTools(
 		pi.getActiveTools().filter((name) => !THINKTHREAD_ANNOTATION_TOOLS.has(name)
-			&& !THINKTHREAD_VERIFIER_TOOLS.has(name)
-			&& (name !== "goal_plus_search_get_evidence_detail" || thinkThreadSupplementalEnabled)),
+		&& !THINKTHREAD_VERIFIER_TOOLS.has(name)
+			&& (name !== "goal_plus_search_get_evidence_detail" || thinkThreadSupplementalEnabled)
+		&& (!SHARED_CACHE_TOOL_NAMES.includes(name as (typeof SHARED_CACHE_TOOL_NAMES)[number]) || workerSharedCacheEnabled)),
 	);
 }
 
@@ -2340,8 +2348,12 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 					: await runJsonCli(pi, commandCtx, name, forwardedParams, signal);
 			if (isThinkThreadWorker && name === "goal_plus_search_get_agent_context" && isRecord(result.details)) {
 				thinkThreadSupplementalEnabled = result.details.supplemental_evaluation_enabled === true;
-				const active = pi.getActiveTools().filter((tool) => tool !== "goal_plus_search_get_evidence_detail");
+				workerSharedCacheEnabled = isRecord(result.details.shared_cache);
+				const active = pi.getActiveTools()
+					.filter((tool) => tool !== "goal_plus_search_get_evidence_detail"
+						&& !SHARED_CACHE_TOOL_NAMES.includes(tool as (typeof SHARED_CACHE_TOOL_NAMES)[number]));
 				if (thinkThreadSupplementalEnabled) active.push("goal_plus_search_get_evidence_detail");
+				if (workerSharedCacheEnabled) active.push(...SHARED_CACHE_TOOL_NAMES);
 				pi.setActiveTools(active);
 			}
 			if (!isThinkThreadWorker && ["goal_plus_search_run_verifier", "goal_plus_search_get_global_evidence", "goal_plus_search_get_agent_context", "goal_plus_search_select", "goal_plus_search_status", "goal_plus_search_invalidate_run", "goal_plus_search_report"].includes(name)) {
@@ -2442,6 +2454,14 @@ function activateWorkerContext(
 		registerRuntimeTool(pi, "goal_plus_search_stage_shared_tool", registered);
 		registerRuntimeTool(pi, "goal_plus_search_copy_shared_tool", registered);
 	}
+	const sharedCacheEnabled = isRecord(details.shared_cache)
+		|| details.shared_cache_enabled === true;
+	if (sharedCacheEnabled) {
+		workerSharedCacheEnabled = true;
+		for (const tool of SHARED_CACHE_TOOL_NAMES) {
+			registerRuntimeTool(pi, tool, registered);
+		}
+	}
 	if (details.supplemental_evaluation_enabled === true) {
 		registerRuntimeTool(pi, "goal_plus_search_get_evidence_detail", registered);
 	}
@@ -2460,6 +2480,7 @@ function activateWorkerContext(
 			...(details.supplemental_evaluation_enabled === true
 				? { supplemental_evaluation_enabled: true }
 				: {}),
+			...(sharedCacheEnabled ? { shared_cache_enabled: true } : {}),
 		});
 	}
 }

@@ -155,7 +155,9 @@ def test_verifier_uses_shared_inference_and_registration(
     monkeypatch.setattr(worker, "_prompt", lambda _: ("Exact test attempt", {}))
     if mode == "valid":
         result, invocation, usage = worker.execute(task)
-        assert result.model_dump(exclude={"steering_findings"}) == payload
+        assert result.model_dump(
+            exclude={"steering_findings", "cache_updates"}
+        ) == payload
         assert invocation.agent_harness == agent_harness
         assert invocation.runtime_provider == "direct"
         assert invocation.model == "test-model" and invocation.reasoning_effort == "low"
@@ -260,6 +262,7 @@ console.log(JSON.stringify({ tools: [...tools.keys()], submission, read, denied,
             "evidence_refs": [],
             "score_rationales": {"quality_score": "Valid local assessment."},
             "steering_findings": None,
+            "cache_updates": None,
         }
         validator = Draft202012Validator(schema)
         validator.validate(payload)

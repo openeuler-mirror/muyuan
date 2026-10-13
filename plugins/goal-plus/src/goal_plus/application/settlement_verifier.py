@@ -14,8 +14,12 @@ def verifier_subject(frozen, record, iteration):
 
 
 class SettlementVerifier:
-    def __init__(self, *, workflow, artifacts, source) -> None:
+    def __init__(self, *, workflow, artifacts, source, cache_snapshot=None) -> None:
         self.workflow, self.artifacts, self.source = workflow, artifacts, source
+        # Optional shared-cache projection provider: (frozen, run_id) -> dict.
+        # Injected only when the run has a cache; keeps the no-cache path free
+        # of cache dependencies.
+        self.cache_snapshot = cache_snapshot
 
     def prepare(self, frozen, record, iteration):
         if not frozen.spec.strategy.requires_llm_verifier:
@@ -37,6 +41,13 @@ class SettlementVerifier:
                     function_context=True).text
         except Exception as exc:
             error = f"settlement diff unavailable: {exc}"
+        cache_snapshot = None
+        if (
+            self.cache_snapshot is not None
+            and frozen.spec.shared_cache.enabled
+            and frozen.spec.shared_cache.verifier_input
+        ):
+            cache_snapshot = self.cache_snapshot(frozen, record.task.run_id)
         parent = record.task.expansion_source
         threshold = frozen.spec.constraints.get("success_threshold")
         if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not math.isfinite(threshold):
@@ -49,7 +60,7 @@ class SettlementVerifier:
                 agent_harness=frozen.agent_harness, initial_artifact_ref=record.initial_attempt_base_artifact_ref,
                 parent_node_id=parent.node_id if parent else None, allocation_depth=record.task.allocation_depth,
                 replaces_candidate_id=record.task.proposal.metadata.get("replaces_candidate_id") if record.task.proposal else None,
-                input_error=error))
+                input_error=error, cache_snapshot=cache_snapshot))
         iteration.verifier_submission = submission
         return submission
 

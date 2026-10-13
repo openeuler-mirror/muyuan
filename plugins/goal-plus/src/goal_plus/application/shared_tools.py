@@ -432,3 +432,4 @@ class SharedTools:
                     frozen.spec.shared_dir.max_published_versions_per_family
                 ),
             )
+

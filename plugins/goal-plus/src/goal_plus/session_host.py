@@ -43,6 +43,11 @@ from goal_plus.projections.session_tools import session_call_receipt
 # Native initialization and MCP discovery, independently of a model invocation.
 SESSION_START_TIMEOUT_SECONDS = 60.0
 ALLOCATION_INTERRUPT_TIMEOUT_SECONDS = 30.0
+# Settling an outgoing invocation before replacing its session (new_session
+# run) must be generous: it covers interrupt delivery plus the worker's
+# in-flight turn, and guarantees the replaced binding's interval ends before
+# the replacement session starts (no overlapping bound sessions).
+REPLACE_SESSION_INTERRUPT_TIMEOUT_SECONDS = 120.0
 
 
 _VERIFIER_QUEUES_LOCK = threading.RLock()
@@ -600,8 +605,17 @@ class NativeCandidateHost:
                                                     self.agent_harness) if hosted is not None
                                   else self.open(current.agent_session_id))
                         control = self(opened.session_id, "wait")
-                        if control.current_call_id and control.wait(control.current_call_id, timeout=0).state == "running":
-                            raise RuntimeError("session already has an active invocation")
+                        if control.current_call_id is not None:
+                            observed = control.wait(control.current_call_id, timeout=0)
+                            if observed.state == "running":
+                                # Option: settle the outgoing invocation instead of
+                                # refusing, so the replacement session never overlaps
+                                # the old candidate binding (the K contract holds by
+                                # construction, not by orchestrator discipline).
+                                control.interrupt(
+                                    control.current_call_id,
+                                    timeout=REPLACE_SESSION_INTERRUPT_TIMEOUT_SECONDS,
+                                )
                         control.close()
                     with self._native_session_lock(current.agent_session_id):
                         current = self.queries.session(current.agent_session_id)

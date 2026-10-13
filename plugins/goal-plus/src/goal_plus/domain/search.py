@@ -47,6 +47,7 @@ from goal_plus.domain.artifacts import (
 )
 from goal_plus.domain.base import SearchModel
 from goal_plus.domain.shared_tools import SharedDirSpec
+from goal_plus.domain.shared_cache import SharedCacheSpec
 from goal_plus.domain.selection import SelectionSpec
 
 CandidateAcceptanceCriterion = Annotated[
@@ -302,6 +303,7 @@ class SearchSpec(SearchModel):
     strategy: StrategySpec = Field(default_factory=StrategySpec)
     workspace: WorkspaceSpec = Field(default_factory=WorkspaceSpec)
     shared_dir: SharedDirSpec = Field(default_factory=SharedDirSpec)
+    shared_cache: SharedCacheSpec = Field(default_factory=SharedCacheSpec)
 
     @field_validator("metric_name")
     @classmethod
@@ -379,6 +381,7 @@ class SearchSpecDraft(SearchModel):
     strategy: StrategySpec | None = None
     workspace: WorkspaceSpec | None = None
     shared_dir: SharedDirSpec | None = None
+    shared_cache: SharedCacheSpec | None = None
 
 
 class BootstrapVerifierResult(SearchModel):
