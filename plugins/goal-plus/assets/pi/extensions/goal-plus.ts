@@ -114,7 +114,7 @@ let executionScopeId: string | undefined;
 
 const AGENT_POSIX_CONTROL_PROTOCOL_VERSION = 2;
 const AGENT_POSIX_CONTRACT_FINGERPRINT =
-	"fcc80b665cd990f9d1e3681a9d384cb99994f2b739cd4fbddc97bdda01391131";
+	"780479f40a2e93789bdca94033da18189f406c704e1d35a8e67052f0fe8ecfd6";
 const THINKTHREAD_ANNOTATION_TOOL_NAMES = [
 	"goal_plus_thinkthread_annotation_next",
 	"goal_plus_thinkthread_artifact_view_list",

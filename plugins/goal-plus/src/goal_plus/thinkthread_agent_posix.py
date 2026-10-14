@@ -13,7 +13,7 @@ from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.ports.thinkthread import AgentPosixBridgeError, capability_ids
 
 AGENT_POSIX_CONTRACT_FINGERPRINT = (
-    "fcc80b665cd990f9d1e3681a9d384cb99994f2b739cd4fbddc97bdda01391131"
+    "780479f40a2e93789bdca94033da18189f406c704e1d35a8e67052f0fe8ecfd6"
 )
 AGENT_POSIX_CONTROL_PROTOCOL_VERSION = 2
 

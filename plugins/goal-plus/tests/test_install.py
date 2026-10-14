@@ -950,6 +950,13 @@ def test_thinkthread_sdk_metadata_difference_warns(installer, monkeypatch, tmp_p
     assert "warning:" in capsys.readouterr().err
 
 
+def test_thinkthread_sdk_baseline_tracks_alpha9_contract(installer):
+    assert installer.AGENT_POSIX_REF == "v0.1.0-alpha9"
+    assert installer.AGENT_POSIX_CONTRACT_FINGERPRINT == (
+        "780479f40a2e93789bdca94033da18189f406c704e1d35a8e67052f0fe8ecfd6"
+    )
+
+
 def test_thinkthread_profile_preflight_is_idempotent(
     installer: ModuleType,
     tmp_path: Path,
