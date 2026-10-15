@@ -17,7 +17,7 @@ def test_source_assets_do_not_publish_host_discovery_entries() -> None:
         assert not (ROOT / relative).exists()
     for relative in (".codex/skills", ".codex/agents", ".pi/extensions", ".pi/skills", ".pi/prompts", "skills", "hooks"):
         assert not any(path.is_file() for path in (ROOT / relative).rglob("*"))
-    assert not list((ROOT / "assets/codex").rglob("SKILL.md"))
+    assert (ROOT / "assets/codex/skills/thinkthread-usage/SKILL.md").is_file()
     manifest = json.loads((ROOT / "assets/codex/plugin.json").read_text())
     assert "skills" not in manifest
 

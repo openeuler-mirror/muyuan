@@ -31,6 +31,7 @@ def test_wheel_contains_thinkthread_agent_posix_bridge(tmp_path: Path) -> None:
     assert "goal_plus/_plugin_root/assets/pi/package-lock.json" in names
     assert "goal_plus/_plugin_root/assets/codex/hooks.json" in names
     assert "goal_plus/_plugin_root/assets/goal-plus-instructions.txt" in names
+    assert not any("/assets/codex/skills/" in name for name in names)
     assert "goal_plus/_plugin_root/assets/thinkthread-session-rpc.ts" in names
     assert "goal_plus/_plugin_root/assets/codex/thinkthread-worker-bridge.mts" in names
     assert not any("/node_modules/" in name for name in names)

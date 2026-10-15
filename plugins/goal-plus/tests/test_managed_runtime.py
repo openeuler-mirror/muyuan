@@ -32,6 +32,10 @@ def test_build_changes_with_code_or_dependency_lock_not_working_state(managed, t
     (root / ".gp").mkdir()
     (root / ".gp/goal.json").write_text("private state")
     assert managed.fingerprint(root) == first
+    skill = root / "assets/codex/skills/thinkthread-usage"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("On-demand guidance\n")
+    assert managed.fingerprint(root) == first
     (root / "src/goal_plus/example.py").write_text("VALUE = 2\n")
     second = managed.fingerprint(root)
     assert second != first
@@ -126,6 +130,11 @@ def test_prepared_build_has_matching_manifest_receipt_and_interpreter(managed, t
     (root / "assets/codex/mcp.json").write_text(json.dumps({
         "mcpServers": {"goal-plus": {"args": ["launcher"], "env_vars": ["CODEX_HOME"]}},
     }))
+    skill = root / "assets/codex/skills/thinkthread-usage"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("On-demand guidance\n")
+    (skill / "references").mkdir()
+    (skill / "references/prepare.md").write_text("Preparation guidance\n")
     before = managed.fingerprint(root)
     marketplace = json.loads(template.read_text())
     marketplace["interface"]["displayName"] = "Updated Goal Plus"
@@ -147,7 +156,8 @@ def test_prepared_build_has_matching_manifest_receipt_and_interpreter(managed, t
     monkeypatch.setenv("MODEL_TOKEN", "local-secret-value")
     package = managed.prepare(root, codex_env_vars=("MODEL_TOKEN",))
     assert not list(package.parent.rglob("SKILL.md"))
-    assert not (package.parent / "skills").exists()
+    assert not (package / "assets/codex/skills").exists()
+    assert not (package / "skills").exists()
     receipt = managed.read_receipt(package)
     assert receipt["capabilities"] == list(managed.RUNTIME_CAPABILITIES)
     assert not (root / ".agents/plugins/marketplace.json").exists()

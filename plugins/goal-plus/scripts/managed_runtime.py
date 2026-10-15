@@ -46,6 +46,8 @@ def files(source: Path):
         candidates = sorted(path.rglob("*")) if path.is_dir() else [path]
         for item in candidates:
             relative = item.relative_to(source)
+            if relative.parts[:3] == ("assets", "codex", "skills"):
+                continue
             if included is not None and relative.as_posix() not in included:
                 continue
             if item.name == ".env" or item.name.startswith(".env."):
