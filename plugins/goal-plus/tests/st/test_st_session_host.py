@@ -152,7 +152,10 @@ def test_product_session_candidate_two_turns(tmp_path, st_log_dir, agent_harness
                     ))
                     assert ready.read_text() == local_result
                     with pytest.raises(ToolError, match="SessionCallHistoryUnavailable"):
-                        await call("wait_any", {"calls": [{"session_id": active.agent_session_id, "call_id": "local-probe"}]})
+                        await call("wait_any", {
+                            "calls": [{"session_id": active.agent_session_id, "call_id": "local-probe"}],
+                            "timeout_seconds": 0,
+                        })
                 prompt = f"Set VALUE = {value} in initial_program.py, run your verifier, report the score and stop."
                 if recover == "host_restart" and value == 2:
                     prompt = "Inspect the preserved local result in .tmp/local-ready and existing code, run your verifier, report the score and stop."

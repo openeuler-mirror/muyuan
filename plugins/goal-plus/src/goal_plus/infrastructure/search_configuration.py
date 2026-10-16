@@ -367,8 +367,10 @@ class SearchConfiguration:
             "session_control": adapter.capabilities.session_control.as_dict(),
             "reason": (
                 "Main 调用 goal_plus_session_run 执行 candidate，"
-                "goal_plus_session_wait_any 等待列表中首个完成的调用并收取结果"
-                "（短超时、分轮等待，其余调用继续运行）；"
+                "将全部活跃调用放入同一次 goal_plus_session_wait_any，等待首个完成的调用并收取结果；"
+                "稳定探索使用默认 900 秒等待，任一调用返回即提前结束；超时且全部仍为 running 时继续 wait-any，"
+                "不例行查询 status/history、审查 diff 或重算耗时；worker 返回、报错、求助、需要搜索决策或接近预算时再按需读取；"
+                "启动和恢复阶段可使用短等待。需要整体概览时优先调用 goal_plus_monitor_snapshot(detail=false)；"
                 "后续 run 默认复用当前 session，"
                 "收尾调用 goal_plus_session_close。launch payload 由宿主内部消费。"
             ),
