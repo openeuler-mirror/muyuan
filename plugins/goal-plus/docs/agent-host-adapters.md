@@ -308,6 +308,8 @@ Annotation/LLM Verifier CLI 的 stdout/stderr 各最多 8 MiB，每次读取最�
 超限不解析截断 transcript，结构化结果按 2 MiB 上限有界读取。
 本地 verifier 和 Git capture 在直接子进程退出后有界收集输出，不等待其他进程关闭继承管道。
 推理、verifier 和 RPC 的操作超时继续生效，直接句柄关闭不代表进程树已清空。
+ThinkThread process verifier 的 `timeout_seconds` 会原样转换为 `fs.run.limits.timeoutMs`；当前
+alpha9 Agent POSIX 基线支持 1 至 1800 秒，超过 300 秒时必须同步升级 ThinkThread Runtime 与 SDK。
 
 ### Selection 与 Owner 收尾
 

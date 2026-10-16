@@ -23,7 +23,7 @@ from tests._thinkthread_sdk import IntegratedAgentPosix, thinkthread_spec
 def prepared_candidates(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
-    def prepare(*, inner_agent="common", count=1, resource=None):
+    def prepare(*, inner_agent="common", count=1, resource=None, timeout_seconds=30):
         project = make_project(tmp_path)
         sdk = IntegratedAgentPosix(project)
         monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: sdk)
@@ -31,6 +31,7 @@ def prepared_candidates(tmp_path, monkeypatch):
         spec = thinkthread_spec(project)
         spec.strategy.inner_agent = inner_agent
         spec.process_verifiers[0].resource_lock = resource
+        spec.process_verifiers[0].timeout_seconds = timeout_seconds
         monkeypatch.setenv("GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR", str(tmp_path / "locks"))
         frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="pi")
         run_id = runtime.create_run(frozen.frozen_spec_id)
@@ -62,6 +63,19 @@ def test_thinkthread_uses_shared_metric_and_error_contract(prepared_candidates, 
     assert ranking.passed is (failure is None)
     assert ranking.metrics["returncode"] == 0
     assert report.process_passed is (failure is None)
+
+
+def test_thinkthread_alpha9_accepts_thirty_minute_verifier_budget(prepared_candidates):
+    runtime, sdk, [session] = prepared_candidates(timeout_seconds=1800)
+
+    verify_candidate(runtime, sdk, session)
+
+    verifier_run = next(
+        params
+        for operation, params in sdk.operations
+        if operation == "fs.run" and params.get("writes") == "discard"
+    )
+    assert verifier_run["limits"]["timeoutMs"] == 1_800_000
 
 
 @pytest.mark.parametrize("exit_status,failure", [
