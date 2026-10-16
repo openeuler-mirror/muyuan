@@ -4787,6 +4787,10 @@ def test_candidates_receive_stable_device_resources_and_frozen_acceptance(
         "devices": ["4", "5"],
     }
     assert tasks[0].acceptance == spec_data["candidate_acceptance"]
+    assert all(
+        any("GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR" in item for item in task.instructions)
+        for task in tasks
+    )
     for task in tasks:
         runtime.run_verifier(run_id, task.candidate_id)
 
