@@ -35,7 +35,9 @@ def test_mcp_control_survives_client_reconnect_and_checks_each_operation(tmp_pat
         first = control.wake("work", call_id="one", timeout=10)
         assert first.call_id == "one"
         assert first.state == "running"
-        polled = await call("wait_any", calls=[{"session_id": "owned-session", "call_id": "one"}])
+        polled = await call(
+            "wait_any", calls=[{"session_id": "owned-session", "call_id": "one"}], timeout_seconds=0,
+        )
         assert polled["finished"] == []
         assert polled["running"] == [
             {"session_id": "owned-session", "call_id": "one", "state": "running",
@@ -79,7 +81,7 @@ def test_control_requires_trusted_main_binding(tmp_path, role):
         )
 
 
-def test_wait_rejects_timeout_above_turn_boundary_cap(tmp_path):
+def test_wait_rejects_timeout_above_stable_exploration_cap(tmp_path):
     def reject_lookup(session_id, operation):
         raise AssertionError("cap must be checked before touching the session control")
 
@@ -87,10 +89,36 @@ def test_wait_rejects_timeout_above_turn_boundary_cap(tmp_path):
 
     async def exercise():
         async with Client(mcp) as client:
-            with pytest.raises(Exception, match="must be <= 300"):
+            with pytest.raises(Exception, match="must be <= 900"):
                 await client.call_tool("goal_plus_session_wait_any", {
-                    "calls": [{"session_id": "owned", "call_id": "one"}], "timeout_seconds": 301,
+                    "calls": [{"session_id": "owned", "call_id": "one"}], "timeout_seconds": 901,
                 })
+
+    asyncio.run(exercise())
+
+
+def test_wait_accepts_900_second_boundary_without_waiting_for_a_running_call(tmp_path):
+    from goal_plus.ports.session import SessionCallSnapshot
+
+    class ImmediateControl:
+        def wait(self, call_id, *, timeout):
+            return SessionCallSnapshot(call_id=call_id, native_session_id="native", state="completed")
+
+    mcp = create_mcp(tmp_path / ".gp", caller_role="main",
+                     session_controls=lambda *_: ImmediateControl())
+
+    async def exercise():
+        async with Client(mcp) as client:
+            wait_tool = next(
+                tool for tool in await client.list_tools()
+                if tool.name == "goal_plus_session_wait_any"
+            )
+            wait_schema = wait_tool.model_dump(by_alias=True)["inputSchema"]
+            assert wait_schema["properties"]["timeout_seconds"]["default"] == 900.0
+            result = await client.call_tool("goal_plus_session_wait_any", {
+                "calls": [{"session_id": "owned", "call_id": "one"}], "timeout_seconds": 900,
+            })
+            assert json.loads(result.content[0].text)["finished"][0]["state"] == "completed"
 
     asyncio.run(exercise())
 

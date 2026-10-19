@@ -48,10 +48,10 @@ if TYPE_CHECKING:
 
 VERIFIER_FAST_WAIT_SECONDS = 1.0
 
-# Turn-boundary responsiveness: Pi queues user input until the agent turn
-# ends; a single long wait blocks the only interruption path. 300s keeps
-# polling cheap while bounding how long a user can be locked out.
-SESSION_WAIT_MAX_SECONDS = 300.0
+# Stable Search exploration waits on the whole active lane set and returns as
+# soon as one invocation settles. Startup/recovery may use a shorter wait;
+# the stable-exploration default and the single-call cap are both 900 seconds.
+SESSION_WAIT_MAX_SECONDS = 900.0
 
 # Server-side wait-any poll cadence: the composition loop reads every listed
 # controller with a zero-timeout wait and sleeps between scans. The tool runs
@@ -390,7 +390,7 @@ def create_mcp(
                 description="Maximum time this read waits for the first finished invocation; zero polls "
                 "immediately. Does not change the execution allowance supplied to run or stop a running "
                 "invocation.",
-            )] = 0,
+            )] = SESSION_WAIT_MAX_SECONDS,
             detail: Annotated[bool, Field(
                 description="Expand each finished entry's receipt with the invocation's full output. "
                 "Applies to this tool only; leave false during lane polling.",
@@ -400,28 +400,24 @@ def create_mcp(
 
             finished entries carry the exact call state, errors and result availability; running entries keep
             identity and state only. Completed means the invocation returned, not that verification passed.
-            For Search progress read goal_plus_search_list_history's default view — it already carries
-            rankings, scores and key metrics; its detail=true is only for host diagnostics and invalidation
-            evidence. This tool's own detail=true merely expands finished receipts with the invocation's
-            full output. Handle a finished lane with a new session_run call_id while the other lanes keep
-            running; one wait covers the whole lane set, so per-lane waits are not needed.
-            Scale the wait to the lanes: short waits (tens of seconds) while lanes are starting
-            or settling; once every listed lane is running in stable exploration, longer waits
-            up to SESSION_WAIT_MAX_SECONDS are appropriate — this wait returns early at the
-            first finish, so the timeout only bounds idle time. When no call is finished, end
-            the turn and let the host Stop continuation re-ignite you instead of blocking a
-            single turn. User input cannot interrupt an in-flight wait: it queues until this
-            turn ends and is then handled first; goal_plus_session_message can steer an active
-            invocation.
+            For Search progress, use goal_plus_monitor_snapshot(detail=false) when a current
+            overview is needed; read status/history, diff or host diagnostics only when a worker
+            returns, errors, asks for help, a search decision is needed, or the budget is near its
+            end. This tool's own detail=true merely expands finished receipts with the invocation's
+            full output. Handle a finished lane with a new session_run call_id while the other lanes
+            keep running; one wait covers the whole lane set, so per-lane waits are not needed.
+            During stable exploration, list every active invocation in one wait-any call and use the
+            default 900-second timeout. The call returns early at the first finish; if it times out
+            with every entry still running, call wait-any again without routine status/history/diff
+            inspection. Startup and recovery may use shorter waits. User input queues until this
+            turn ends; goal_plus_session_message can steer an active invocation.
             A restarted MCP cannot replay old call history; continue with session_run and a new call_id.
             """
             if timeout_seconds > SESSION_WAIT_MAX_SECONDS:
                 raise ValueError(
                     f"goal_plus_session_wait_any timeout_seconds must be <= "
-                    f"{int(SESSION_WAIT_MAX_SECONDS)}: a single long wait blocks the agent "
-                    "turn and prevents user input from being delivered at turn "
-                    "boundaries. Use short waits; when no call is finished, end "
-                    "the turn and let the host Stop continuation re-ignite you."
+                    f"{int(SESSION_WAIT_MAX_SECONDS)}; use the default for stable "
+                    "exploration and shorter waits only while starting or recovering."
                 )
             pairs = [(ref.session_id, ref.call_id) for ref in calls]
             if len(set(pairs)) != len(pairs):
@@ -604,11 +600,12 @@ def create_mcp(
         feature_plugins: list[str] | None = None,
         detail: bool = False,
     ) -> dict[str, Any]:
-        """返回供轮询 agent 使用的只读 Goal Plus/Search 监控 snapshot。
+        """返回供 Main 按需查看的只读 Goal Plus/Search 监控 snapshot。
 
         从持久化 `.gp` 状态返回 run、candidate、agent-session、verifier、host-log 和 Pi
-        usage 证据。默认只返回当前进度、错误和恢复待办；详细统计、历史与宿主诊断
-        使用 detail=true。它不会启动、等待或中断 worker。
+        usage 证据。Main 需要整体概览时应优先使用 detail=false；默认只返回当前进度、
+        错误和恢复待办，详细统计、历史与宿主诊断使用 detail=true。它不会启动、等待或
+        中断 worker。
         """
         return tools.goal_plus_monitor_snapshot(
             goal_plus_id=goal_plus_id,

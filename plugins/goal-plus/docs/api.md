@@ -53,13 +53,14 @@ Main 读取 candidate/Evidence 状态后使用新 call_id 继续，不重发原�
 wait 的 timeout 只控制读取等待，不延长额度、不取消执行。
 `goal_plus_session_wait_any` 接收 `(session_id, call_id)` 列表，在首个完成的调用处返回：
 `finished` 条目携带准确状态与错误，`running` 条目只保留身份与状态；`detail=true` 才读取
-已完成调用的正文和诊断。completed 表示调用返回，不能代替 verifier 通过。Search Evidence 用
-`goal_plus_search_list_history` 查询；已注入的 Evidence 无需机械重复读取。
+已完成调用的正文和诊断。默认 `timeout_seconds=900`，上限也是 900 秒；completed 表示调用返回，
+不能代替 verifier 通过。Search 需要整体概览时优先调用 `goal_plus_monitor_snapshot(detail=false)`；
+worker 返回、报错、求助、需要搜索决策或接近预算时，再按需读取 status/history、diff 和诊断。
 并行 lane 在同一次 wait-any 中列出全部活跃调用，不需要逐 lane 等待；完成一个 lane 就用新的
 `call_id` 续跑该 session，其余 lane 继续运行。
-wait 的 `timeout_seconds` 上限为 300 秒：用户输入只能在 turn 边界交付，单次长阻塞
-会锁死用户唯一的插话出口。结果未就绪时使用短等待或结束当前 turn，由宿主 Stop
-continuation 重新点火；需要向活动调用插话时改用 `goal_plus_session_message`。
+稳定探索中，超时且全部调用仍为 running 时继续调用同一个 wait-any，不例行查询状态、历史、diff
+或重算耗时；启动和恢复阶段可以使用短等待。需要向活动调用插话时改用
+`goal_plus_session_message`。
 
 `goal_plus_session_interrupt` 中断指定轮次，随后仍需确认结果；stop 停止执行，
 close 关闭 controller 和资源并保留历史及 artifact。Main 暂停后仍可读取与清理。
@@ -163,7 +164,7 @@ work event 保留 attempt/generation 与结果摘要；Search result 保留准�
 只有准确绑定的 checker 可调用 submit。普通正文不构成通过证据，GoalCompletion 决定终态。
 普通 work item 保留完整交付正文一次，不重复回显 result_summary。
 
-`goal_plus_monitor_snapshot` 默认返回进度计数、最佳/选中结果、审查队列、恢复动作、scope 和错误。
+`goal_plus_monitor_snapshot` 是 Main 按需读取整体进度的只读入口，默认返回进度计数、最佳/选中结果、审查队列、恢复动作、scope 和错误。
 成功 candidate/session 的逐项结果、配置、artifact 路径和历史诊断使用 `detail=true`；直接
 Python Monitor/dashboard 接口仍保留完整 snapshot。异常、违规、清理错误与未知活跃数不被隐藏。
 candidate 条目附带 `last_verifier_at` 与 `avg_round_seconds`（相邻两次结算 verifier 的平均

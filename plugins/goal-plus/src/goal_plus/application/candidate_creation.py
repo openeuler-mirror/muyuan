@@ -117,6 +117,16 @@ class CandidateCreation:
             run.source_repository = Path(repository_value)
         workspace = materialization.workspace
         task_skill_paths = self.workspaces.task_skill_paths(frozen, workspace)
+        resource_locks = sorted(
+            {
+                command.resource_lock
+                for command in [
+                    *frozen.spec.process_verifiers,
+                    *frozen.spec.promotion_verifiers,
+                ]
+                if command.resource_lock
+            }
+        )
         inner_agent = str(
             plan.worker_policy.get("inner_agent")
             or resolved_inner_agent_id(frozen.spec.strategy, frozen.agent_harness, frozen.runtime_provider)
@@ -132,6 +142,10 @@ class CandidateCreation:
             "在分配的 host budget 内工作；收到用户停止、run 失效或 host 截止提示时及时收尾。",
             "窄代码证据可以直接比较 commit；改动较大或需要浏览完整实现时，调用 goal_plus_search_reference_open 把该 Evidence checkout 到当前 agent 唯一的 ref-workspace，并直接用普通文件和命令工具查看返回路径。再次调用会把同一目录切到新的 reference commit；所有实现修改仍留在 candidate workspace。不要访问或 fetch peer 的真实工作区。",
         ]
+        if resource_locks:
+            instructions.append(
+                "本候选的 host 已注入 GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR，并映射到 GP 与本地进程共用的 host 锁目录。需要本地命令占用分配设备时，复用该目录和本轮 verifier 提供的 resource-lock helper/wrapper；仅设置变量不会让任意命令自动获得互斥。不要创建私有锁目录、删除锁或绕过正在运行的 verifier；没有可用 helper 时将本地结果作为诊断，使用 goal_plus_search_run_verifier 获取正式 Evidence。"
+            )
         if inner_agent == INNER_AGENT_COMMON:
             instructions.extend(
                 [
