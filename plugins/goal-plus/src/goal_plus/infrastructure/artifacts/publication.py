@@ -3,7 +3,6 @@
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from goal_plus.infrastructure.artifacts.git import git_output
 from goal_plus.workspaces import (
@@ -12,6 +11,7 @@ from goal_plus.workspaces import (
     copy_source_tree,
     initialize_workspace_git_baseline,
 )
+from goal_plus.temp import temporary_directory
 
 
 class LocalPublication:
@@ -79,7 +79,7 @@ class LocalPublication:
             patch_path.write_text("", encoding="utf-8")
             return
 
-        with tempfile.TemporaryDirectory(prefix="goal-plus-patch-") as temporary:
+        with temporary_directory(prefix="goal-plus-patch-") as temporary:
             repository = Path(temporary) / "repository"
             copy_source_tree(source, repository)
             baseline = initialize_workspace_git_baseline(repository)

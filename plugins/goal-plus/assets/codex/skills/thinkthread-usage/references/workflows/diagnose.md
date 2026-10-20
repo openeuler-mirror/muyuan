@@ -37,6 +37,29 @@ Check actual imports/cwd/env in that layer instead of inferring from container m
 Exit: a bounded hypothesis supported by observations. A warning present in a working startup,
 a package version difference, or a direct-run score alone does not establish the root cause.
 
+For Pi×TT failures, classify the earliest boundary before retrying:
+
+| Earliest evidence | Owner | Interpretation |
+| --- | --- | --- |
+| `tt run` rejects `--model`, or `native-main.log` reports an invalid Pi config directory | TT host/Profile | Fix exact provider/model or inherited config path; no Root/Goal was started |
+| Root reaches ready but no Goal state exists | Pi/extension/host entrypoint | Inspect extension loading, PTY, MCP and prompt submission |
+| Child fails before the dispatch message and the error names manifest/session identity | Goal Plus bootstrap | Schema discovery must work with schema-only identity; real calls still need candidate identity |
+| Freeze admission rejects duplicated `source_path` or stale SearchSpec fields | Goal Plus MCP schema/LLM payload | Read the live tool schema, send the complete SearchSpec under `spec`, and omit compatibility fields unless the live schema requires them |
+| Goal/run/candidate state exists and provider receipt is missing | Goal Plus dispatch/provider adapter | Reconcile the persisted target and provider journal; do not blindly resend an unknown operation |
+| Goal is active, repeated provider `server_error`/overloaded appears, and no new receipt arrives | Provider transport/capacity | Preserve the original request, stop dependent retries, and report the provider boundary; a longer outer watchdog does not make an unknown request safe to resend |
+| Candidate Child reports AutoResearch-Git settled-ledger mismatch | Inner Git continuation/settlement | Inspect the child's retained filesystem and attempt/settlement records; distinguish an unresolved attempt from a provider startup failure before choosing recovery |
+| Goal state is complete but artifact, promotion or cleanup is wrong | Goal Plus/task contract | Diagnose settlement, publication and cleanup independently of TT startup |
+
+Run one pure Pi×TT Root/Child probe when the first two layers are uncertain. It must use the same
+Profile, exact model/provider, and isolated state root while bypassing Goal Plus. A passing probe
+proves the TT runtime, Pi and provider path can start; it does not prove Goal Plus identity,
+dispatch, settlement or publication. Conversely, a failure before Root readiness is not evidence
+of a fork/fresh defect.
+
+Native Circle ST cases share pytest's temporary workspace naming. Run bounded and fork one after the
+other, and clean/reconcile the previous TT state before the next case. A concurrent pair can fail
+with `destination already exists` or PTY `EIO` without exercising the product lifecycle.
+
 ## 3. Reproduce with the smallest relevant probe
 
 Choose from [execution probes](execute.md#choose-a-probe). Preserve source/snapshot, command,

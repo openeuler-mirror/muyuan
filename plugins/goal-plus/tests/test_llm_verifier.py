@@ -326,23 +326,28 @@ def test_prompt_distinguishes_numeric_target_from_hard_validation(direction, sco
     assert payload["hard_evidence"]["process_passed"] is False
 
 
-def test_prompt_preserves_measured_validation_facts_without_logs_or_private_metadata():
+@pytest.mark.parametrize("with_logs", [False, True])
+def test_prompt_preserves_measured_validation_facts_without_logs_or_private_metadata(with_logs):
     exact = subject()
     facts = {"valid": True, "errors": [], "elapsed_seconds": 4.54,
-             "reported_sum_delta": 0.0, "returncode": 0, "sum_radii": 2.524}
+             "reported_sum_delta": 0.0, "returncode": 0, "sum_radii": 2.524,
+             "_coverage": 0, "_checked": False, "details": {"items": [0, False, "measured"]}}
+    excluded = {"stdout_tail": "raw log", "stderr_tail": "raw stderr",
+                "large_array": list(range(1000)), "nonfinite": float("nan"),
+                "nested_nonfinite": {"samples": [1.0, float("nan")]}} if with_logs else {}
     exact.settlement.evidence.metrics = {
-        "packing": {**facts, "stdout_tail": "raw log", "stderr_tail": "raw stderr",
-                    "large_array": list(range(1000)), "nonfinite": float("nan")},
+        "_packing": {**facts, **excluded},
         "_candidate_attempt": {"id": "private-attempt-id"},
+        "_thinkthread_settlement": {"request_id": "private-request"},
     }
     task = SimpleNamespace(subject=exact, score_contract=verifier_score_contract(), input=verifier_input())
     prompt, payload = LlmVerifier._prompt(None, task)
-    assert payload["hard_evidence"]["metrics"] == {"packing": facts}
+    assert payload["hard_evidence"]["metrics"] == {"_packing": facts}
     assert payload["hard_evidence"]["metrics_omitted"] is True
     assert payload["hard_evidence"]["artifact_clean"] is True
     assert payload["hard_evidence"]["touched_denied_files"] is False
     assert payload["hard_evidence"]["changed_outside_allowed"] is False
-    assert "private-attempt-id" not in prompt and "raw log" not in prompt
+    assert "private-attempt-id" not in prompt and "private-request" not in prompt and "raw log" not in prompt
 
 
 def test_prompt_metrics_are_bounded_json_and_evidence_remains_untrusted():

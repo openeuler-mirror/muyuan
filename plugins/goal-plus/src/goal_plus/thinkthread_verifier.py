@@ -218,6 +218,11 @@ class ThinkThreadVerifier:
                     session.close()
                     if request.agent_harness == "pi":
                         collect_child_diagnostics(self.root, record, self.client)
+                    # Codex Children have no Pi extension archive sender. In
+                    # debug mode capture their locally readable rollout before
+                    # release removes the Child's session/home tree.
+                    from goal_plus.infrastructure.agent_transcript import debug_export_child_transcript
+                    debug_export_child_transcript(self.root, record)
                     if session.native_session_id is not None:
                         driver.release(session.native_session_id, root_id=root["thinkthreadId"],
                                        branch_id=record["fs_branch_id"], timeout=5.0)

@@ -46,6 +46,8 @@ class SettlementReceipt(SearchModel):
     settlement_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     candidate_id: str = Field(min_length=1)
+    frozen_spec_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     iteration: int = Field(ge=1)
     attempt_base_artifact_ref: ArtifactRef | None = None
     attempt_artifact_ref: ArtifactRef

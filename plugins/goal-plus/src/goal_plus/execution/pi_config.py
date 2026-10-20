@@ -1,4 +1,7 @@
-"""Copy Pi's model configuration into a sandbox-owned writable home."""
+"""Copy Pi configuration into a sandbox-owned home, separate from session files.
+
+Pi startup migrates loose JSONL histories out of its configuration home.
+"""
 
 import shutil
 from pathlib import Path

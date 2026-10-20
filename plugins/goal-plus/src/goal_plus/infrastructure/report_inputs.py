@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from goal_plus._version import __version__
+from goal_plus.installation import snapshot as installation_snapshot
 
 from goal_plus.agent_hosts import collect_host_observability
 
@@ -18,6 +19,7 @@ from goal_plus.infrastructure.state.goal import FileGoalQueries
 
 from goal_plus.domain.search import (
     AgentSessionRecord,
+    FrozenSpec,
 )
 
 
@@ -35,6 +37,7 @@ from goal_plus.infrastructure.state.files import load_json
 
 from goal_plus.infrastructure.state.search_run import FileSearchRunState
 from goal_plus.infrastructure.report_references import collect_reference_impacts
+from goal_plus.infrastructure.report_transcripts import attach_transcript_links
 from goal_plus.ports.report import ReportTaskInputs
 from goal_plus.ports.report import SearchVerifierViews
 from goal_plus.projections.report_tasks import task_details
@@ -86,6 +89,7 @@ def _report_iteration_payload(
     candidate_id: str,
     iteration: IterationRecord,
     *,
+    frozen: FrozenSpec,
     verifier_views: SearchVerifierViews | None,
 ) -> dict[str, Any]:
     annotation_path = (
@@ -145,7 +149,12 @@ def _report_iteration_payload(
     payload = {
         "candidate_id": candidate_id,
         "iteration": iteration.iteration,
+        "frozen_spec_id": frozen.frozen_spec_id,
+        "spec_hash": frozen.spec_hash,
+        "metric_name": frozen.spec.metric_name,
+        "metric_direction": frozen.spec.metric_direction,
         "agent_session_id": iteration.agent_session_id,
+        "settlement_id": iteration.settlement_id,
         "selected_model": iteration.selected_model,
         "exact_model_ref": iteration.exact_model_ref,
         "adapter_version": iteration.adapter_version,
@@ -242,6 +251,22 @@ def _task_details(
     run = state.read_run(run_id)
     frozen = state.read_frozen_spec(run.frozen_spec_id)
     candidates = state.read_candidates(run_id)
+    spec_ids = {run.frozen_spec_id}
+    spec_ids.update(c.active_frozen_spec_id or run.frozen_spec_id for c in candidates)
+    spec_ids.update(i.frozen_spec_id or run.frozen_spec_id for c in candidates for i in c.iterations)
+    spec_ids.update(revision.frozen_spec_id for c in candidates for revision in c.spec_revisions)
+    spec_ids.update(revision.parent_frozen_spec_id for c in candidates for revision in c.spec_revisions)
+    if run.selected_frozen_spec_id is not None:
+        spec_ids.add(run.selected_frozen_spec_id)
+    specs: dict[str, FrozenSpec] = {}
+    while spec_ids:
+        spec_id = spec_ids.pop()
+        if spec_id in specs:
+            continue
+        related = state.read_frozen_spec(spec_id)
+        specs[spec_id] = related
+        if related.parent_frozen_spec_id is not None:
+            spec_ids.add(related.parent_frozen_spec_id)
     sessions = state.read_agent_sessions(run_id)
     run_dir = state.run_dir(run_id)
     verifier_enabled = frozen.spec.strategy.requires_llm_verifier
@@ -249,6 +274,8 @@ def _task_details(
     inputs = ReportTaskInputs(
         run=run,
         frozen=frozen,
+        candidate_specs={c.candidate_id: specs[c.active_frozen_spec_id or run.frozen_spec_id] for c in candidates},
+        frozen_specs=specs,
         candidates=candidates,
         sessions=sessions,
         plans=state.read_plans(run_id),
@@ -260,6 +287,7 @@ def _task_details(
                 run_id,
                 c.candidate_id,
                 i,
+                frozen=specs[i.frozen_spec_id or run.frozen_spec_id],
                 verifier_views=verifier_views,
             )
             for c in candidates
@@ -276,6 +304,7 @@ def _task_details(
     FileEvidenceAttachments(root).attach_external_evaluations(
         run_id, [i for c in result["candidates"] for i in c["iterations"]]
     )
+    attach_transcript_links(root, result)
     return result
 
 
@@ -334,6 +363,7 @@ def build_html_report_data(root_dir: Path | str, run_id: str) -> dict[str, Any]:
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "goal_plus_version": __version__,
+        "goal_plus_build": installation_snapshot().get("build"),
         "generated_at": snapshot.get("snapshot_at"),
         "goal_plus_id": goal_id,
         "report_run_id": run_id,

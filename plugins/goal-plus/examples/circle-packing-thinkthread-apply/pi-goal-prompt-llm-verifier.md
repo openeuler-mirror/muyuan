@@ -10,7 +10,7 @@ inner agent。实现只使用 Python 标准库，禁止 numpy、scipy 等第三�
 verifier 会直接失败）。
 
 ```yaml
-strategy: {orchestration_mode: parallel_loops, selection: {ranking_keys: [quality_score, hard_score], ranking_tolerance: [0.05, 0.0]}}
+strategy: {initial_context: fresh, selection: {ranking_keys: [quality_score, hard_score], ranking_tolerance: [0.05, 0.0]}}
 ```
 
 只运行一个 K=2 Search，并把两个确定路线作为各 lane 的起点：c001 从

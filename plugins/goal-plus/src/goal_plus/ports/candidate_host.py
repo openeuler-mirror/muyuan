@@ -5,14 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+
 from goal_plus.domain.agents import (
+    WORKSPACE_LEDGER_PROJECTION_NONE,
     AgentHarnessKind,
     AgentRuntimeProvider,
     WorkspaceLedgerProjection,
-    WORKSPACE_LEDGER_PROJECTION_NONE,
 )
-from goal_plus.domain.search import AgentSessionRecord, FrozenSpec
-from goal_plus.ports.state import RunRecord, CandidateRecord
+from goal_plus.domain.search import AgentSessionRecord, FrozenSpec, SearchPlan
+from goal_plus.domain.tool_catalog import CandidateToolCapabilities
+from goal_plus.ports.state import CandidateRecord, RunRecord
 
 if TYPE_CHECKING:
     from goal_plus.domain.adaptive.models import AllocationDecision
@@ -58,6 +60,7 @@ class ThinkThreadSessionLaunch:
     root_thinkthread_id: str
     baseline_snapshot_id: str
     inner_git_binding: dict[str, Any] | None
+    tool_capabilities: CandidateToolCapabilities
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,7 @@ class CandidateHostSource(Protocol):
     def read_frozen_spec(self, frozen_spec_id: str) -> FrozenSpec: ...
     def read_candidate(self, run_id: str, candidate_id: str) -> CandidateRecord: ...
     def read_candidates(self, run_id: str) -> list[CandidateRecord]: ...
+    def read_plans(self, run_id: str) -> list[SearchPlan]: ...
     def read_agent_sessions(self, run_id: str) -> list[AgentSessionRecord]: ...
     def read_agent_session(
         self, agent_session_id: str, run_id: str | None = None

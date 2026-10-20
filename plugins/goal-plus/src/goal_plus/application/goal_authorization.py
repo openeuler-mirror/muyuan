@@ -16,7 +16,10 @@ from goal_plus.domain.goal_authorization import (
     stopped_goal_message,
     tool_matches,
 )
-from goal_plus.ports.goal_authorization import GoalAuthorizationSource, GoalToolTarget
+from goal_plus.domain.time import timestamp_epoch
+from goal_plus.ports.goal_authorization import (
+    GoalAuthorizationSource, GoalToolTarget, DispatchPreparation,
+)
 from goal_plus.ports.scope import ScopeAttachment
 
 
@@ -211,6 +214,56 @@ class GoalAuthorization:
                 "to a host-authorized Goal Plus record"
             )
         return record
+
+    def require_fork_checkpoint_preparation(
+        self, run_id: str, *, batch_started_at: str,
+    ) -> DispatchPreparation:
+        """Return the post-batch preparation event for native boundary checks.
+
+        A completed native turn is only a safe default checkpoint after the
+        current run has been prepared and the Main has explicitly ended that
+        preparation turn.  Searching arbitrary older turns would silently
+        omit the current freeze/batch context.
+        """
+        owner = self.run_owner(run_id)
+        if owner is None:
+            raise PermissionError(
+                "GoalPlusOwnershipMismatch: fork requires a linked Search run"
+            )
+        events = self._source.read_events(owner)
+        linked_indexes = [
+            index for index, event in enumerate(events)
+            if event.get("event_type") == "search_linked"
+            and isinstance(event.get("payload"), dict)
+            and event["payload"].get("run_id") == run_id
+        ]
+        if not linked_indexes:
+            raise RuntimeError(
+                "ForkPreparationRequired: complete freeze/create/plan/batch "
+                "in the current Main turn and finish that preparation turn before "
+                "selecting its completed checkpoint"
+            )
+        linked_index = max(linked_indexes)
+        blocked = [event for event in events[linked_index + 1 :] if (
+            event.get("event_type") == "status_changed"
+            and isinstance(event.get("payload"), dict)
+            and event["payload"].get("status") == "blocked"
+        )]
+        event = blocked[-1] if blocked else {}
+        event_id, created_at = event.get("event_id"), event.get("created_at")
+        prepared_epoch = timestamp_epoch(created_at) if isinstance(created_at, str) else None
+        batch_epoch = timestamp_epoch(batch_started_at)
+        # Persisted wire timestamps have second precision. Equality cannot
+        # establish that preparation followed the complete batch, so it is
+        # deliberately rejected rather than inferred from wall-clock order.
+        if (not isinstance(event_id, str) or not event_id or prepared_epoch is None
+                or batch_epoch is None or prepared_epoch <= batch_epoch):
+            raise RuntimeError(
+                "ForkPreparationRequired: the Goal preparation event must "
+                "follow the completed Search batch with a later recorded timestamp; "
+                "finish the preparation turn before selecting its checkpoint"
+            )
+        return DispatchPreparation(owner, run_id, event_id, created_at)
 
     def require_native_main_tool(
         self,

@@ -118,7 +118,9 @@ formal child。它报告 `SubmoduleWorkspaceDirty`、`SubmoduleHeadMismatch`、
 检查阶段、原因和 expected/actual；candidate worktree 会先递归初始化 child 再进入 verifier。
 
 ThinkThread 在 freeze 时校验 `source_path` 可表示为当前 Root 的逻辑 `source_subdir`，并固定
-SearchSpec 与 verifier artifact。`goal_plus_search_create` 校验 Root direct filesystem 和 delegated Child
+SearchSpec 与 verifier artifact。Submodule 准入只检查 `source_path` 子树；源目录外祖先的
+`.gitmodules`、gitlink 或嵌套 Git 不影响任务，子树内真实 submodule/嵌套 Git 仍拒绝。
+`goal_plus_search_create` 校验 Root direct filesystem 和 delegated Child
 capability；Runtime release、Agent Control protocol 与 Agent POSIX fingerprint 偏离已测基线时
 只警告，实际接口调用仍须满足合同。通过后在短暂写入边界捕获 Root-owned `S0`。origin verifier 对 `S0` 执行 exact
 snapshot `fs.run(writes="discard")`；失败会 abort run，且不会启动 candidate。
@@ -268,10 +270,11 @@ object store；因此 Git 子目录任务不会错误地只按子目录估算，
 
 任务局部 Skill 仍属于 source baseline，而不是共享平面。runtime 自动发现 source Git
 index 中的 `.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；
-freeze 持久化发现结果，launch/context 向每个 candidate 提供清单；candidate
-通过 `task_skill_paths` 获得自己 worktree 的绝对路径。无需额外 spec 配置或逐文件 Skill
-哈希；Git baseline 决定内容。worker 只加载明确列出的 task-local Skill，不扫描
-parent/global/plugin 或 peer worktree。
+freeze 持久化发现结果，context 向每个 candidate 提供清单；candidate
+通过 `task_skill_paths` 获得自己 worktree 的绝对路径，作为唯一清单。无需额外 spec 配置或逐文件
+Skill 哈希；Git baseline 决定内容。worker 按任务、角色和 provider 选择适用 Skill，选中后完整
+读取 `SKILL.md`；同一 session 中已完整加载且内容未变时复用，上下文被截断、压缩、缺失或文件
+变化时补读。不扫描 parent/global/plugin 或 peer worktree。
 
 `git_worktree` 后端下，各 candidate 共享一个 Git common directory。窄、单文件证据可以
 从自己的工作区查看 peer Evidence commit：

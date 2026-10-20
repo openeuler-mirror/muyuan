@@ -8,16 +8,19 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     import tomli as tomllib
 from pathlib import Path
 from typing import Any
+
 from goal_plus.agent_hosts import candidate_launch_adapter
-from goal_plus.infrastructure.host_bindings import candidate_inner_agent_binding
-from goal_plus.application.candidate_creation import format_task_skill_listing
 from goal_plus.domain.agents import INNER_AGENT_COMMON
 from goal_plus.domain.search import AgentSessionRecord, FrozenSpec
+from goal_plus.infrastructure.host_bindings import (
+    candidate_inner_agent_binding,
+    execution_binding,
+)
 from goal_plus.paths import host_assets_root
 from goal_plus.ports.candidate_host import ResolvedInnerAgentBinding
 from goal_plus.ports.candidate_sessions import (
-    MODEL_HANDOFF_RELATIVE_PATH,
     MAX_MODEL_HANDOFF_BYTES,
+    MODEL_HANDOFF_RELATIVE_PATH,
 )
 from goal_plus.ports.state import CandidateRecord
 
@@ -25,6 +28,9 @@ from goal_plus.ports.state import CandidateRecord
 class HostCandidateLaunch:
     def __init__(self, root_dir: Path | str) -> None:
         self.root_dir = Path(root_dir).resolve()
+
+    def supports_fork(self, frozen: FrozenSpec) -> bool:
+        return execution_binding(frozen.agent_harness, frozen.runtime_provider).capabilities.supports_fork
 
     def _candidate_worker_launch(
         self,
@@ -75,31 +81,10 @@ class HostCandidateLaunch:
             short_intent = str(directive["goal"])
         else:
             short_intent = candidate_record.task.hypothesis
-
-        idea_lines: list[str] = []
-        if proposal is not None and proposal.intent:
-            idea_lines.append(f"candidate_intent: {proposal.intent}")
-            if proposal.hypothesis:
-                idea_lines.append(f"candidate_hypothesis: {proposal.hypothesis}")
-            if proposal.expected_tradeoff:
-                idea_lines.append(f"expected_tradeoff: {proposal.expected_tradeoff}")
-            if proposal.instructions:
-                idea_lines.append(
-                    "candidate_instructions: " + " | ".join(proposal.instructions)
-                )
-        else:
-            idea_lines.append(
-                f"candidate_hypothesis: {candidate_record.task.hypothesis}"
-            )
-        if directive:
-            idea_lines.extend(
-                f"main_directive.{key}: {value}" for key, value in directive.items()
-            )
-        idea_lines.append(
-            "task_local_skills_visible: "
-            + format_task_skill_listing(candidate_record.task.task_skill_paths)
-        )
-        one_paragraph_idea = "; ".join(idea_lines)
+        # The launch is only a wake-up message.  Proposal hypothesis,
+        # tradeoff and instructions live in candidate_task/context, where the
+        # worker reads the authoritative contract exactly once.
+        one_paragraph_idea = short_intent
 
         adapter = candidate_launch_adapter(frozen.agent_harness, frozen.runtime_provider)
         worker_budget = worker_budget_override

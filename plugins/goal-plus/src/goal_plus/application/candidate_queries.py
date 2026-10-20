@@ -25,11 +25,21 @@ class CandidateHostQueries:
             strategy = self.source.read_frozen_spec(run.frozen_spec_id).spec.strategy
         except (OSError, ValueError):
             return False
-        return strategy.orchestration_mode == "adaptive_search"
+        return strategy.adaptive_search_enabled
 
     def runtime_provider(self, run_id: str) -> AgentRuntimeProvider:
         run = self.source.read_run(run_id)
         return self.source.read_frozen_spec(run.frozen_spec_id).runtime_provider
+
+    def dispatch_batch_started_at(self, run_id: str) -> str:
+        plans = self.source.read_plans(run_id)
+        if (len(plans) != 1 or plans[0].status != "started"
+                or not plans[0].started_at or len(plans[0].started_candidate_ids) < 2):
+            raise RuntimeError(
+                "ForkPreparationRequired: fork requires a complete "
+                "prepared batch with its recorded completion time"
+            )
+        return plans[0].started_at
 
     def requires_immediate_stop(self, session: AgentSessionRecord) -> bool:
         try:
@@ -133,6 +143,9 @@ class CandidateHostQueries:
     ) -> AgentSessionRecord:
         session = self.session(agent_session_id, native_session_id=native_session_id)
         run = self.source.read_run(session.run_id)
+        from goal_plus.application.candidate_execution import require_fork_ready
+        require_fork_ready(run, self.source.read_frozen_spec(run.frozen_spec_id),
+                                  [self.source.read_candidate(session.run_id, session.candidate_id)])
         require_worker_iteration_state(run, "wake native candidate")
         self.validate_candidate(session.run_id, session.candidate_id)
         require_no_pending_verification(self.source.read_candidate(session.run_id, session.candidate_id))

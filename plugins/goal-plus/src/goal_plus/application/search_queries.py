@@ -19,6 +19,7 @@ from goal_plus.ports.search_inspection import SearchReadState, SearchInspection
 from goal_plus.application.candidate_sessions import CandidateSessions
 from goal_plus.application.candidate_artifacts import CandidateArtifacts
 from goal_plus.application.search_research import SearchResearch
+from goal_plus.application.candidate_spec import candidate_spec_id, iteration_spec_id
 
 
 class SearchQueries:
@@ -67,9 +68,15 @@ class SearchQueries:
         run = self.state.read_run(run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         records = self.state.read_candidates(run_id)
+        spec_ids = {candidate_spec_id(run, record) for record in records}
+        score_comparable = len(spec_ids) <= 1
+        ranking_frozen = (
+            self.state.read_frozen_spec(next(iter(spec_ids))) if spec_ids else frozen
+        )
+        effective_sort_by = sort_by if score_comparable else "created"
 
         def score_value(record: CandidateRecord) -> float | None:
-            return record_ranking_score(record, frozen.spec)
+            return record_ranking_score(record, ranking_frozen.spec)
 
         def created_index(record: CandidateRecord) -> int:
             try:
@@ -77,8 +84,8 @@ class SearchQueries:
             except ValueError:
                 return 0
 
-        if sort_by == "score":
-            reverse = frozen.spec.metric_direction == "maximize"
+        if effective_sort_by == "score":
+            reverse = ranking_frozen.spec.metric_direction == "maximize"
 
             def score_key(record: CandidateRecord) -> tuple[int, float, int]:
                 score = score_value(record)
@@ -96,14 +103,12 @@ class SearchQueries:
         candidates = [
             self.research.history_candidate_payload(
                 record,
-                frozen.spec,
                 run_worker_policy=worker_policy,
             )
             for record in selected
         ]
         research_rollup = self.research.run_research_rollup(
             records,
-            frozen.spec,
             visible_candidate_ids=[record.candidate_id for record in selected],
         )
 
@@ -131,6 +136,8 @@ class SearchQueries:
             "returned_candidates": len(candidates),
             "top_n": top_n,
             "sort_by": sort_by,
+            "score_comparable": score_comparable,
+            "effective_sort_by": effective_sort_by,
             "candidates": candidates,
             "research_rollup": research_rollup,
         }
@@ -146,12 +153,30 @@ class SearchQueries:
         run_id: str,
         candidate_id: str,
     ) -> list[dict[str, Any]]:
+        run = self.state.read_run(run_id)
         record = self.state.read_candidate(run_id, candidate_id)
-        return [it.model_dump(mode="json") for it in record.iterations]
+        specs: dict[str, FrozenSpec] = {}
+        iterations = []
+        for iteration in record.iterations:
+            spec_id = iteration_spec_id(run, iteration)
+            if spec_id not in specs:
+                specs[spec_id] = self.state.read_frozen_spec(spec_id)
+            iterations.append({
+                **iteration.model_dump(mode="json"),
+                "frozen_spec_id": spec_id,
+                "spec_hash": specs[spec_id].spec_hash,
+            })
+        return iterations
 
     def list_agent_iterations(self, agent_session_id: str) -> list[dict[str, Any]]:
+        from goal_plus.domain.evidence import shared_tool_feedback_projection
+
         session = self.sessions.session(agent_session_id)
-        return self.list_iterations(session.run_id, session.candidate_id)
+        enabled = self.shared_dir_enabled(session.run_id)
+        projected = []
+        for item in self.list_iterations(session.run_id, session.candidate_id):
+            projected.append(shared_tool_feedback_projection(item, enabled=enabled))
+        return projected
 
     def verifier_result(
         self, run_id: str, candidate_id: str, attempt_id: str,
@@ -184,8 +209,8 @@ class SearchQueries:
         candidate_id: str,
     ) -> dict[str, Any] | None:
         run = self.state.read_run(run_id)
-        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         record = self.state.read_candidate(run_id, candidate_id)
+        frozen = self.state.read_frozen_spec(candidate_spec_id(run, record))
         state = self.artifacts.candidate_artifact_state(run, frozen, record)
         if not state.artifact_clean:
             return None
@@ -198,6 +223,10 @@ class SearchQueries:
         return {
             "run_id": run_id,
             "candidate_id": candidate_id,
+            "frozen_spec_id": frozen.frozen_spec_id,
+            "spec_hash": frozen.spec_hash,
+            "metric_name": frozen.spec.metric_name,
+            "metric_direction": frozen.spec.metric_direction,
             "aggregate_score": iteration.score,
             "process_passed": True,
             "disposition": iteration.disposition,
@@ -223,8 +252,8 @@ class SearchQueries:
         candidate_id: str,
     ) -> bool:
         run = self.state.read_run(run_id)
-        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         record = self.state.read_candidate(run_id, candidate_id)
+        frozen = self.state.read_frozen_spec(candidate_spec_id(run, record))
         state = self.artifacts.candidate_artifact_state(run, frozen, record)
         meaningful_status = self.inspection.git_status(
             record.task.workspace,
@@ -256,17 +285,22 @@ class SearchQueries:
         mode = global_evidence_mode(frozen.spec.strategy.config)
         return mode == "auto"
 
+    def shared_dir_enabled(self, run_id: str) -> bool:
+        run = self.state.read_run(run_id)
+        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+        return frozen.spec.shared_dir.enabled
+
     def llm_verifier_enabled(self, run_id: str) -> bool:
         run = self.state.read_run(run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
-        return frozen.spec.strategy.orchestration_mode == "adaptive_search"
+        return frozen.spec.strategy.requires_llm_verifier
 
     def require_adaptive_search(self, run_id: str) -> FrozenSpec:
         run = self.state.read_run(run_id)
         frozen = self.state.read_frozen_spec(run.frozen_spec_id)
-        if not (frozen.spec.strategy.orchestration_mode == "adaptive_search"):
+        if not frozen.spec.strategy.adaptive_search_enabled:
             raise RuntimeError(
-                "operation requires strategy.orchestration_mode=adaptive_search"
+                "operation requires strategy.adaptive_search"
             )
         return frozen
 

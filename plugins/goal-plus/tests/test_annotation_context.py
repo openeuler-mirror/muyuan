@@ -144,6 +144,27 @@ def test_exact_context_uses_settled_anchors_and_preserves_state(context_api):
     ) == before
 
 
+def test_annotation_uses_settled_spec_version_after_branch_revision(context_api, monkeypatch):
+    builder, admission, state, _, _ = context_api
+    original = state.frozen.model_copy(deep=True)
+    revised = original.model_copy(deep=True, update={
+        "frozen_spec_id": "spec_revised", "spec_hash": "b" * 64,
+    })
+    revised.spec.objective = "Measure the revised branch contract"
+    revised.spec.process_verifiers[0].command = ["python", "verify.py", "--revised"]
+    versions = {original.frozen_spec_id: original, revised.frozen_spec_id: revised}
+    monkeypatch.setattr(state, "read_frozen_spec", lambda identity: versions[identity].model_copy(deep=True))
+    state.iteration.frozen_spec_id = revised.frozen_spec_id
+    state.iteration.spec_hash = revised.spec_hash
+    task = create(admission)
+    context = build(builder)
+    assert context["objective"] == "Measure the revised branch contract"
+    assert context["verifier_contract"][0]["command"] == ["python", "verify.py", "--revised"]
+    assert context["frozen_spec_id"] == task.frozen_spec_id == revised.frozen_spec_id
+    assert context["spec_hash"] == task.spec_hash == revised.spec_hash
+    assert state.run.frozen_spec_id == original.frozen_spec_id
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

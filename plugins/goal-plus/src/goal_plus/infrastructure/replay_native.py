@@ -120,7 +120,7 @@ def verify_injected_prefix(thread_id: str, prefix: list[dict[str, Any]]) -> None
     sessions = home if home.name == "sessions" else home / "sessions"
     files = list(sessions.rglob(f"*{thread_id}.jsonl"))
     if len(files) != 1:
-        raise RuntimeError("NativeForkRolloutMissingOrAmbiguous")
+        raise RuntimeError("ForkRolloutMissingOrAmbiguous")
     session_id = None
     items = []
     with files[0].open("r", encoding="utf-8") as stream:

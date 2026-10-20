@@ -6,13 +6,24 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from goal_plus.domain.tool_catalog import CandidateToolCapabilities
 from goal_plus.ports.clock import Clock
-from goal_plus.ports.thinkthread import AgentPosixBridgeError, RpcDeliveryState, ThinkThreadClient
+from goal_plus.ports.thinkthread import (
+    AgentPosixBridgeError,
+    RpcDeliveryState,
+    ThinkThreadClient,
+)
 
 PROTOCOL = "goal-plus.thinkthread.v3"
 MESSAGE_RECEIVE_LIMIT = 32
 RESPONSE_CHUNK_BYTES = 32 * 1024
 RESPONSE_RETRY_SECONDS = 1.0
+
+
+def candidate_capabilities_marker(capabilities: CandidateToolCapabilities) -> str:
+    """Encode the narrow frozen projection in a trusted Parent dispatch."""
+    encoded = base64.urlsafe_b64encode(capabilities.model_dump_json().encode()).decode("ascii").rstrip("=")
+    return f"goal_plus_candidate_capabilities={encoded};"
 
 
 def message_payload(message: dict[str, Any]) -> dict[str, Any] | None:

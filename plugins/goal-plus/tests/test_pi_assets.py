@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import tomllib
 from pathlib import Path
 
+from fastmcp import Client
 import pytest
+
+from goal_plus.server import create_mcp
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -169,11 +173,16 @@ def test_pi_search_bootstrap_requires_goal_plus_id(tmp_path) -> None:
 
 
 def test_pi_loads_shared_allocation_schema(tmp_path) -> None:
-    from goal_plus.mcp_client import mcp_manifest
+    async def read_schema():
+        async with Client(create_mcp(tmp_path / ".gp")) as client:
+            response = await client.call_tool(
+                "goal_plus_get_tool_schema",
+                {"tool_name": "goal_plus_search_freeze_spec"},
+            )
+            return json.loads(response.content[0].text)["inputSchema"]
 
-    manifest = mcp_manifest(tmp_path / ".gp")
-    freeze = next(tool for tool in manifest["tools"] if tool["name"] == "goal_plus_search_freeze_spec")
-    strategy = freeze["inputSchema"]["properties"]["spec"]["properties"]["strategy"]["properties"]
+    schema = asyncio.run(read_schema())
+    strategy = schema["properties"]["spec"]["properties"]["strategy"]["properties"]
     assert "verifier" in strategy and "search_scheduler" not in strategy
     verifier = next(
         item for item in strategy["verifier"]["anyOf"] if item.get("type") == "object"
@@ -181,8 +190,9 @@ def test_pi_loads_shared_allocation_schema(tmp_path) -> None:
     assert set(verifier["properties"]["scores"]["items"]["enum"]) == {
         "progress_reward", "allocation_utility", "correctness_gap", "validation_gap",
         "local_confounder_evidence", "discriminating_test_gap", "boundary_evidence_strength"}
+    adaptive = next(item for item in strategy["adaptive_search"]["anyOf"] if item.get("type") == "object")
     policy_set = next(
-        item for item in strategy["allocation"]["anyOf"] if "oneOf" in item
+        item for item in adaptive["properties"]["allocation"]["anyOf"] if "oneOf" in item
     )
     assert policy_set["required"] == ["policy"]
     policies = {

@@ -6,7 +6,10 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
 import logging
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import threading
 import time
 from typing import Any
@@ -17,7 +20,71 @@ from goal_plus.execution.pi_metrics import collect_pi_metrics
 from goal_plus.execution.model_failures import model_identity, normalize_model_failure
 from goal_plus.execution.session_rpc import SessionRpcProcess, SessionTransportError, SessionRequestRejected
 from goal_plus.ports.process import ProcessRegistration
-from goal_plus.ports.session import NativeSessionInput, SessionInvocationObservation, SessionInvocationResult, SessionToolBridge
+from goal_plus.ports.session import (
+    ProviderDispatchReceipt,
+    ProviderDispatchRequest,
+    NativeSessionInput,
+    SessionInvocationObservation,
+    SessionInvocationResult,
+    SessionToolBridge,
+    SessionProcessInput,
+)
+
+
+def _pi_package_module() -> Path:
+    executable = shutil.which("pi")
+    if executable is None:
+        raise SessionTransportError("Pi executable is unavailable for fork")
+    resolved = Path(executable).resolve()
+    # The supported Pi launcher is <package>/dist/bundle/cli.js.  Walk upward
+    # so checkout-local or user-local installations use their own SDK version.
+    for parent in (resolved.parent, *resolved.parents):
+        module = parent / "dist" / "index.js"
+        if module.is_file():
+            return module
+    raise SessionTransportError("Pi package SDK is unavailable for fork")
+
+
+def _fork_pi_session_file(
+    *,
+    source_path: Path,
+    target_cwd: Path,
+    session_dir: Path,
+    session_id: str,
+    parent_session_id: str,
+    checkpoint_id: str,
+    helper: Path,
+    process_input: SessionProcessInput,
+    registration: ProcessRegistration,
+    timeout: float,
+) -> dict[str, Any]:
+    """Create one Pi session file with the official SessionManager API."""
+    node = shutil.which("node")
+    if node is None:
+        raise SessionTransportError("Node.js is unavailable for native Pi fork")
+    module = _pi_package_module()
+    environment = dict(process_input.environment)
+    environment.update(
+        GP_PI_MODULE=module.as_uri(),
+    )
+    rpc = SessionRpcProcess(replace(process_input, command=(node, str(helper)), environment=environment),
+                            registration, lambda _event: None)
+    try:
+        result = rpc.request({"sourcePath": str(source_path.resolve()), "targetCwd": str(target_cwd.resolve()),
+                              "sessionDir": str(session_dir.resolve()), "sessionId": session_id,
+                              "parentSessionId": parent_session_id, "checkpointId": checkpoint_id}, timeout=timeout)
+        if result.get("error"):
+            raise SessionTransportError(f"Pi SessionManager fork failed: {result['error']}")
+        payload = result.get("result")
+    finally:
+        rpc.close()
+    branch_id = payload.get("sessionId") if isinstance(payload, dict) else None
+    if branch_id != session_id:
+        raise SessionTransportError("Pi SessionManager fork returned an unexpected session identity")
+    session_file = payload.get("sessionFile") if isinstance(payload, dict) else None
+    if not isinstance(session_file, str) or not Path(session_file).is_file():
+        raise SessionTransportError("Pi SessionManager fork did not create a session file")
+    return payload
 
 
 class CodexSession:
@@ -28,6 +95,7 @@ class CodexSession:
         on_turn_completed: Callable[[str, str, bool], None] | None = None,
         resume_from: "CodexSession | None" = None,
         execution_lock: Path | None = None,
+        attach_existing: bool = False,
     ) -> None:
         if config.agent_harness != "codex" or config.runtime_provider != "direct":
             raise ValueError("Codex session requires the Codex host")
@@ -80,13 +148,18 @@ class CodexSession:
                      "inputSchema": tool.input_schema, "deferLoading": False}
                     for tool in tool_bridge.definitions
                 ]
-            result = self._request(
-                "thread/resume" if config.native_session_id else "thread/start", params,
-                timeout=deadline - time.monotonic(),
-            )
-            self._session_id = str(result["thread"]["id"])
-            if config.native_session_id and self._session_id != config.native_session_id:
-                raise SessionTransportError("Codex resumed a different native session")
+            if attach_existing:
+                if not config.native_session_id:
+                    raise ValueError("attach_existing requires a native session identity")
+                self._session_id = config.native_session_id
+            else:
+                result = self._request(
+                    "thread/resume" if config.native_session_id else "thread/start", params,
+                    timeout=deadline - time.monotonic(),
+                )
+                self._session_id = str(result["thread"]["id"])
+                if config.native_session_id and self._session_id != config.native_session_id:
+                    raise SessionTransportError("Codex resumed a different native session")
         except BaseException:
             self.close()
             raise
@@ -316,6 +389,36 @@ class CodexSession:
             "input": [{"type": "text", "text": prompt}],
         }, timeout=timeout)
 
+    def fork(self, request: ProviderDispatchRequest, *, timeout: float = 60.0) -> ProviderDispatchReceipt:
+        """Create a branch from a completed turn without changing this session."""
+        if request.checkpoint.parent_native_session_id != self._session_id:
+            raise PermissionError("fork checkpoint does not belong to this session")
+        if self._run_lock.locked():
+            raise RuntimeError("fork requires an idle parent session")
+        params: dict[str, Any] = {
+            "threadId": self._session_id,
+            "lastTurnId": request.checkpoint.checkpoint_id,
+            "cwd": str(request.workspace),
+            "approvalPolicy": "never",
+            "sandbox": "read-only",
+            "config": {"sandbox_mode": "read-only"},
+        }
+        if self.config.model is not None:
+            params["model"] = self.config.model
+        result = self._request("thread/fork", params, timeout=timeout)
+        branch_id = str((result.get("thread") or {}).get("id") or "")
+        if not branch_id or branch_id == self._session_id:
+            raise SessionTransportError("fork returned an invalid branch identity")
+        return ProviderDispatchReceipt(
+            provider_session_id=branch_id,
+            parent_native_session_id=self._session_id,
+            workspace=request.workspace,
+            launch_state="started",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            checkpoint_id=request.checkpoint.checkpoint_id,
+            checkpoint_kind=request.checkpoint.checkpoint_kind,
+        )
+
     def interrupt(self, *, timeout: float) -> None:
         turn = self._active_turn(timeout)
         if turn is not None:
@@ -347,6 +450,7 @@ class PiSession:
         if resume_from is not None and config.native_session_id != resume_from.native_session_id:
             raise ValueError("Pi continuation must preserve the native session identity")
         self.config = config
+        self._registration = registration
         self._run_lock = threading.Lock()
         self._condition = threading.Condition()
         self._settled = False
@@ -490,6 +594,61 @@ class PiSession:
             if not self._accepted or self._settled:
                 raise RuntimeError("messages require an active invocation; use run for an idle session")
             self._command("steer", message=prompt, timeout=timeout)
+
+    def fork(self, request: ProviderDispatchRequest, *, timeout: float = 60.0) -> ProviderDispatchReceipt:
+        """Fork the current Pi session through Pi's stable SessionManager API.
+
+        Pi RPC intentionally does not expose a ``fork_from`` command.  The
+        process reports its persisted session file, while the host invokes the
+        installed Pi package's ``SessionManager.forkFrom`` to create a new
+        session with the target cwd and the candidate's durable identity.
+        """
+        if request.checkpoint.parent_native_session_id != self._session_id:
+            raise PermissionError("fork checkpoint does not belong to this session")
+        if self._run_lock.locked():
+            raise RuntimeError("fork requires an idle parent session")
+        state = self._command("get_state", timeout=timeout).get("data") or {}
+        source_path = state.get("sessionFile")
+        if not isinstance(source_path, str) or not source_path:
+            raise SessionTransportError("Pi fork source session file is unavailable")
+        session_dir = self._session_dir()
+        branch_id = str(request.worker_identity.get("agent_session_id") or "")
+        if not branch_id:
+            raise SessionTransportError("Pi fork requires the candidate session identity")
+        helper = self.config.configuration.get("fork_helper")
+        if not isinstance(helper, str) or not Path(helper).is_file():
+            raise SessionTransportError("Pi fork helper is unavailable")
+        payload = _fork_pi_session_file(
+            source_path=Path(source_path), target_cwd=request.workspace, session_dir=session_dir,
+            session_id=branch_id, parent_session_id=self._session_id,
+            checkpoint_id=request.checkpoint.checkpoint_id, helper=Path(helper), timeout=timeout,
+            process_input=self.config.process, registration=self._registration,
+        )
+        if not branch_id or branch_id == self._session_id:
+            raise SessionTransportError("Pi fork adapter returned an invalid branch identity")
+        return ProviderDispatchReceipt(
+            provider_session_id=branch_id,
+            parent_native_session_id=self._session_id,
+            workspace=request.workspace,
+            launch_state="started",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            context_projection_digest=payload["contextProjectionDigest"],
+            native_session_file=payload["sessionFile"],
+            checkpoint_id=request.checkpoint.checkpoint_id,
+            checkpoint_kind=request.checkpoint.checkpoint_kind,
+        )
+
+    def _session_dir(self) -> Path:
+        command = self.config.process.command
+        try:
+            index = command.index("--session-dir")
+            return Path(command[index + 1]).resolve()
+        except (ValueError, IndexError):
+            state = self._command("get_state", timeout=10.0).get("data") or {}
+            session_file = state.get("sessionFile")
+            if isinstance(session_file, str) and session_file:
+                return Path(session_file).resolve().parent
+            raise SessionTransportError("Pi fork session directory is unavailable")
 
     def interrupt(self, *, timeout: float) -> None:
         with self._control_lock:

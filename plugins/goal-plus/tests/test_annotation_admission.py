@@ -41,13 +41,13 @@ def frozen_spec(clock: Clock, *, adaptive: bool = False) -> FrozenSpec:
     if adaptive:
         data["strategy"].update(
             {
-                "orchestration_mode": "adaptive_search",
+                "initial_context": "fresh",
                 "selection": {
                     "ranking_keys": ["quality_score", "hard_score"],
                     "ranking_tolerance": [0.05, 0.0],
                 },
                 "verifier": {"scores": ["progress_reward", "allocation_utility"]},
-                "allocation": {"policy": "swe_search_uct/v1"},
+                "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}},
             }
         )
     spec = SearchSpec.model_validate(data)

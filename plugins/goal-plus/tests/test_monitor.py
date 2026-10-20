@@ -192,7 +192,8 @@ def test_goal_plus_monitor_snapshot_summarizes_run_subagents_and_pi_metrics(
         "worker_launch": None,
         "models": [],
         "agent_harness": "pi",
-        "orchestration_mode": "parallel_loops",
+        "initial_context": "fresh",
+        "adaptive_search": False,
         "runtime_provider": "direct",
         "inner_agent": "autoresearch",
         "latest_plan": {

@@ -1,23 +1,33 @@
 """One retained Child actor; domain admission, RPC tools and settlement are injected."""
 
-from collections.abc import Callable
-from contextlib import nullcontext
-from dataclasses import asdict
 import hashlib
 import json
 import math
 import threading
 import uuid
+from collections.abc import Callable
+from contextlib import nullcontext
+from dataclasses import asdict
 from typing import Any
 
-from goal_plus.execution.thinkthread_child import ChildDriver
 from goal_plus.execution.model_failures import model_identity, normalize_model_failure
-from goal_plus.execution.thinkthread_rpc import MESSAGE_RECEIVE_LIMIT, PROTOCOL, message_payload
+from goal_plus.execution.thinkthread_child import ChildDriver
+from goal_plus.execution.thinkthread_rpc import (
+    MESSAGE_RECEIVE_LIMIT,
+    PROTOCOL,
+    candidate_capabilities_marker,
+    message_payload,
+)
 from goal_plus.ports.clock import Clock
-from goal_plus.ports.session import SessionInvocationObservation, SessionInvocationResult
+from goal_plus.ports.session import (
+    SessionInvocationObservation,
+    SessionInvocationResult,
+)
 from goal_plus.ports.thinkthread import AgentPosixBridgeError, ChildBinding
-from goal_plus.ports.thinkthread_session import ThinkThreadSessionHooks, ThinkThreadSessionInput
-
+from goal_plus.ports.thinkthread_session import (
+    ThinkThreadSessionHooks,
+    ThinkThreadSessionInput,
+)
 
 # Poll retained Message outcomes without scheduling subsequent turns.
 CHILD_POLL_SECONDS = 0.2
@@ -75,6 +85,12 @@ class ThinkThreadSession:
 
     def _reap_dead_child(self) -> None:
         """Destroy a stopped Codex Child; its next invocation respawns from the last settled snapshot."""
+        if self.config.fork or self.record.get("dispatch_provenance") is not None:
+            child = self._observe()
+            if (child is None or self.record.get("child_retired") is True
+                    or (self.config.agent_harness == "codex" and child.get("executionState") == "absent")):
+                raise RuntimeError("ForkContinuationUnavailable: the original ThinkThread Child cannot continue")
+            return
         if self.config.agent_harness != "codex":
             return
         replaced = self.record.get("replaced_thinkthread_id")
@@ -273,6 +289,8 @@ class ThinkThreadSession:
                 f"agent_session_id={self.record['agent_session_id']}; "
                 f"registration_nonce={self.record['registration_nonce']}; dispatch_nonce={nonce}."
             )
+            if self.config.tool_capabilities is not None:
+                message += "\n" + candidate_capabilities_marker(self.config.tool_capabilities)
             with self._lock:
                 self._start(message)
             announced = False

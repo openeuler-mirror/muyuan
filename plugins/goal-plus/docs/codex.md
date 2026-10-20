@@ -175,6 +175,12 @@ Goal Plus 前识别 child：普通 subagent 不接收 Main context，Search cand
 或 fresh launch 时接收紧凑的 candidate context，同一 session continuation 不重复注入。
 Selection、promotion 和 final audit 始终由 parent 所有。
 
+Main 的 Goal context 按宿主 session 持久化的 context key（schema、Goal ID、revision 和
+control version）节流：首轮、revision/control 变化、显式 resume 以及 compact 后发送完整目标、
+配置和 MCP 概要；key 未变化的普通 UserPromptSubmit 只发送 status、phase、next action 和活跃
+派发摘要。`resume` 仍附带完整 context 与 reconciliation，不依赖这项节流。完整 context 已成功
+交付后才记录 key，交付失败会在下一轮重发。
+
 只有大小写精确的 `$goal-plus`、`$goal-plus edit` 和
 `$goal-plus-with-final-check` 会授权 Goal Plus。`/goal-plus`、自然语言请求、skill 自动加载和
 MCP/CLI 直调都不能创建记录。`goal_plus_create`/`goal_plus_update_goal` 是 deny-only tombstone，
@@ -198,8 +204,9 @@ host-verified Goal 后才会进入报告用例。
 当前 session 绑定的 `goal_plus_id`，hook 会在 MCP 调用前核对该归属。
 
 Candidate 的初始 `UserPromptSubmit` 只注入 runtime 绑定的 role 与
-`agent_session_id`；完整工作说明已包含在 host launch message，并由
-`goal_plus_search_get_agent_context` 返回权威合同。Hook 不重复权限、workspace 或交接文案。
+`agent_session_id`；host launch message 只提供追踪标签、单句 intent 和读取 context 的引导，
+完整工作说明由绑定的 `goal_plus_search_get_agent_context()` 返回权威合同。Hook 不重复权限、
+workspace 或交接文案。
 Codex native subagent 仍会按宿主规则自动加载适用的 `AGENTS.md`；当前没有关闭该行为的
 subagent launch 字段，Goal Plus 不再用额外 prompt 抵消它。
 
@@ -245,13 +252,15 @@ native thread。公开回执不包含需要 Main 手工映射的 spawn 脚本。
 Candidate 先调用 `goal_plus_search_get_agent_context`，再把 `context.candidate_task.workspace`
 用于文件、编辑和 shell 操作。MCP 角色声明及原生 hook 共同核对当前绑定，避免退回 Main 权限。
 任务本地 Skill 无需配置：runtime 只发现 source Git 已跟踪的 `.agents/skills/<name>/SKILL.md`，
-并要求该 Skill 目录内所有文件都由 Git 跟踪；发现结果持久化并在 launch message
-中明确列出，通过 `context.candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。child
-完整读取清单中的 Skill，不扫描 parent/global/plugin 或其他 candidate 路径。
+并要求该 Skill 目录内所有文件都由 Git 跟踪；发现结果持久化，通过
+`context.candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径，作为唯一清单。
+launch message 和 instructions 不展开路径；child 按任务、角色和 provider 选择适用 Skill，选中后
+完整读取清单中的 Skill。同一 session 中已完整加载且内容未变时复用；上下文被截断、压缩、缺失
+或文件变化时补读。不扫描 parent/global/plugin 或其他 candidate 路径。
 
-标准 `parallel_loops` 并行循环如下：
+标准固定并行循环如下：
 
-1. freeze `strategy.orchestration_mode="parallel_loops"`，只规划一次并启动全部初始 candidate；
+1. freeze 时省略 `strategy.adaptive_search`（`initial_context` 默认是 `fresh`），只规划一次并启动全部初始 candidate；
 2. 对每个 candidate 用独立 `call_id` 调用 `goal_plus_session_run`；
 3. 把全部活跃调用放进同一次 `goal_plus_session_wait_any`，在首个完成的调用处收取结果；
    等待超时只返回仍在运行的 roster，不取消执行；
@@ -313,7 +322,7 @@ invocation 才证明 provider 可用，失败会保留 phase、code、model、pr
 可重试性和脱敏错误来源，并出现在 monitor/report 中。
 
 `adaptive_search` run 配置确定性 Allocation policy 后自动启用固定 LLM-Verifier；policy 版本同时
-管理动态追加的 allocation 评分规则。`parallel_loops` 则仅在 Selection 使用 `quality_score` 时启用。
+管理动态追加的 allocation 评分规则。固定并行仅在 Selection 使用 `quality_score` 时启用。
 Verifier 使用当前 Codex host 的继承配置，没有独立 model override。未终态 Verifier task 只在
 run-scoped 队列中顺序积压，不阻塞对应 lane 的下一轮；main 不等待或自行解释 Verifier 输出。
 Decision 出现后，Main 调用 `goal_plus_search_apply_allocation_decision`；可信 session host
@@ -362,8 +371,9 @@ goal_plus_session_run(run_id, candidate_id, new_call_id, prompt, timeout_seconds
 `common` 只完成下一个有界 attempt。
 
 Controller 或原生进程退出后，host 取得独占执行 lease，从持久绑定恢复原 session，
-保留当前 workspace、未验证修改、Evidence 和预算。原 session 无法加载时，Main 可显式
-使用 `new_session=true` 建立新对话接手现场。明确放弃现场时才使用
+保留当前 workspace、未验证修改、Evidence 和预算。非 fork candidate 的原 session 无法加载时，
+Main 可显式使用 `new_session=true` 建立新对话接手现场。Fork 必须保留原 native context，
+见[共同恢复边界](agent-host-adapters.md#恢复与-handoff)。明确放弃现场时才使用
 [checkpoint 恢复](search-recovery.md)。
 
 ## Observability 与日志
@@ -407,8 +417,17 @@ Codex 支持本地 `git_worktree` / `copy`，并支持 `agent_harness=codex` +
 
 已验证范围：TT 子模块矩阵（managed profile、wake 续跑、signal 中断语义、fs
 branch/snapshot 生命周期、消息分块重组、并发 Child、hook 隔离、annotator 角色）与
-缩减版 circle 验收（并行 candidate、Annotation Evidence、selection、apply、cleanup）。
-`parallel_loops` 与 `adaptive_search` 均使用同一 TT snapshot/Child 合同；Adaptive 的派生
+缩减版 circle 验收（并行 candidate、Annotation Evidence、selection、apply、cleanup）；该普通
+Search 验收不包含 fork 的完整 Root/Child 生命周期。
+Fork 已接入共同 adapter、session 控制、已知 receipt 恢复、冻结工具投影和关闭 owner；
+真实 Circle 场景核验从同一 completed prefix 派生两个不同 Child/Fs branch，各完成两次
+delivery，并完成 hard verifier、audit/Annotation、selection、独立 publication/apply 与资源关闭。
+每次验收绑定实际安装 build。SDK exact checkpoint receipt、首模型请求 projection 和异常恢复
+仍有证据边界，见
+[Fork 支持范围](agent-host-adapters.md#fork-支持范围)。
+fresh/fork 的共同 session、receipt、continuation 和恢复图见
+[Candidate Dispatch：fresh 与 fork](candidate-dispatch.md)。
+固定并行与 `adaptive_search` 均使用同一 TT snapshot/Child 合同；Adaptive 的派生
 candidate 从 AllocationDecision 选定的精确 snapshot 启动。
 
 模型切换：`./install.sh --codex --thinkthread --codex-profile <name>` 会把用户
@@ -424,6 +443,8 @@ candidate 从 AllocationDecision 选定的精确 snapshot 启动。
 
 安装 `--codex --thinkthread` 时，安装器只验证最终投影的 Profile、隔离配置、MCP 环境接线和
 ThinkThread exact `provider/model` delegation allowlist 可读取，不发送真实模型请求。
+受管 MCP 配置转发 TT actor 的运行时 `CODEX_HOME`，使 candidate dispatch adapter 读取该 actor 的
+rollout；`CODEX_CONFIG_DIR` 只负责受管配置，不能替代 native session home。
 配置失败会报告具体的 Profile、model、provider、endpoint 或 credential 名称，不会把密钥
 写入输出。allowlist 中未被当前任务选择的模型可能有意不配置凭据、额度或可用 endpoint，因此
 不会阻断安装。`--codex-profile` 只选择默认配置 overlay，不是“只允许 Luna”的开关；多个 TT
@@ -454,3 +475,9 @@ pytest --run-system-tests -n 0 -s -q tests/st/test_st_unified_main.py -k circle
 
 共同 Main Circle 验证初始 plan、两个候选、同 session 续跑、精确 Evidence、selection、
 publication 和 cleanup。Goal Plus report 只在 parent record 进入终态后生成。
+
+2026-10-16 在 `examples/circle-packing-git-apply` 完成了一次 direct、非 ThinkThread
+Codex E2E，使用 `gpt-6-luna`、`low` reasoning。`c001` 被选中并 apply，公开 verifier
+报告 `valid=true`、恰好 26 个圆、`sum_radii=2.2`，最后源码 Git worktree 保持干净。
+本次运行的报告保存在 checkout 本地 `.tmp/e2e-circle-codex-gpt6luna-low-untimed-*` 目录；
+该目录属于运行证据，不纳入提交。

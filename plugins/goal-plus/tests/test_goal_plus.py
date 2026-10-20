@@ -1330,10 +1330,39 @@ def test_high_confidence_spec_draft_links_search_and_final_audit(tmp_path) -> No
         record.goal_plus_id,
         status="complete",
         reason="raw goal audited",
-        evidence=[{"kind": "report", "path": "/tmp/report.md"}],
+        evidence=[
+            {"kind": "report", "path": "/tmp/report.md"},
+            {"kind": "selection", "selected_candidate_id": "c001"},
+        ],
     )
     assert completed.status == "complete"
     assert runtime.gate(record.goal_plus_id, event="stop", context={}).decision == "allow"
+
+
+def test_set_status_rejects_search_claims_without_settled_run(tmp_path) -> None:
+    runtime = FileGoalPlusRuntime(tmp_path / ".search")
+    record = runtime.create_goal("Complete the Circle Packing Search task")
+    # Native collab agents or manual edits never populate search_tasks, so
+    # terminal evidence naming their lanes as Search candidates is refused.
+    with pytest.raises(RuntimeError, match="candidate_id=c001"):
+        runtime.set_status(
+            record.goal_plus_id,
+            status="complete",
+            reason="shadow agents delivered candidates",
+            evidence=[
+                {"kind": "candidate_delivery", "candidate_id": "c001", "valid": True},
+                {"kind": "publication", "selected_candidate_id": "c002", "valid": True},
+            ],
+        )
+    assert runtime.status(record.goal_plus_id).status == "active"
+
+    plain = runtime.set_status(
+        record.goal_plus_id,
+        status="complete",
+        reason="ordinary delivery",
+        evidence=[{"kind": "report", "path": "/tmp/report.md"}],
+    )
+    assert plain.status == "complete"
 
 
 def test_pre_tool_use_enforces_goal_and_linked_run_ownership(tmp_path) -> None:

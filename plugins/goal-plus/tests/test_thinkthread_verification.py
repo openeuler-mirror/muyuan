@@ -11,9 +11,12 @@ from goal_plus.infrastructure.verifiers.thinkthread_attempt import ProviderThink
 from goal_plus.monitor import goal_plus_monitor_snapshot
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.thinkthread_agent_posix import AgentPosixBridgeError
-from tests._runtime_helpers import make_project
+from tests._runtime_helpers import make_project, start_host_verified_goal
 from tests._thinkthread_candidates import attempt_parameters, bind_candidate, verify_candidate
 from goal_plus.domain.evidence import CandidateAttemptAccepted
+from goal_plus.domain.artifacts import ThinkThreadWorkspaceAttachment
+from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.ports.session import ProviderDispatchReceipt
 from goal_plus.ports.thinkthread_verification import DeferredCandidateAttempt
 from goal_plus.tools import SearchTools
 from tests._thinkthread_sdk import IntegratedAgentPosix, thinkthread_spec
@@ -23,20 +26,32 @@ from tests._thinkthread_sdk import IntegratedAgentPosix, thinkthread_spec
 def prepared_candidates(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
-    def prepare(*, inner_agent="common", count=1, resource=None, timeout_seconds=30):
+    def prepare(
+        *, inner_agent="common", count=1, resource=None, timeout_seconds=30,
+        initial_context=None, bind_children=True,
+    ):
         project = make_project(tmp_path)
         sdk = IntegratedAgentPosix(project)
         monkeypatch.setattr("goal_plus.bootstrap.AgentPosixSdkClient", lambda: sdk)
         runtime = FileSearchRuntime(tmp_path.parent / (tmp_path.name + "-runtime"))
         spec = thinkthread_spec(project)
         spec.strategy.inner_agent = inner_agent
+        if initial_context is not None:
+            spec.strategy.initial_context = initial_context
+        if initial_context == "fork":
+            spec.strategy.llm_validation = "off"
         spec.process_verifiers[0].resource_lock = resource
         spec.process_verifiers[0].timeout_seconds = timeout_seconds
         monkeypatch.setenv("GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR", str(tmp_path / "locks"))
         frozen = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="pi")
         run_id = runtime.create_run(frozen.frozen_spec_id)
         tasks = runtime.start_batch(run_id, runtime.plan_next(run_id, requested_k=count).plan_id)
-        sessions = [bind_candidate(runtime, sdk, run_id, task.candidate_id) for task in tasks]
+        if bind_children:
+            sessions = [bind_candidate(runtime, sdk, run_id, task.candidate_id) for task in tasks]
+        else:
+            goal = start_host_verified_goal(runtime.root_dir, project, agent_harness="pi")
+            FileGoalPlusRuntime(runtime.root_dir).link_search_run(goal.goal_plus_id, frozen.frozen_spec_id, run_id)
+            sessions = [runtime.start_agent_session(run_id, task.candidate_id) for task in tasks]
         return runtime, sdk, sessions
 
     return prepare
@@ -44,6 +59,122 @@ def prepared_candidates(tmp_path, monkeypatch):
 
 def candidate_record(runtime, session):
     return runtime.candidate_creation.state.read_candidate(session.run_id, session.candidate_id)
+
+
+def test_recovery_uses_settled_tt_snapshot_without_workspace_inspection(prepared_candidates):
+    runtime, sdk, [session] = prepared_candidates()
+    report = verify_candidate(runtime, sdk, session)
+    before = candidate_record(runtime, session)
+    operations = list(sdk.operations)
+    status = runtime.goal_plus_search_recovery_status(session.run_id)["candidates"][0]
+    assert status["checkpoint"]["artifact_ref"] == report.workspace_artifact_after_settlement.model_dump(mode="json")
+    assert status["unsettled_workspace_changes"] is None
+    assert status["workspace_inspection_error"] is None
+    goal = FileGoalPlusRuntime(runtime.root_dir).require_host_verified_active_goal()
+    snapshot = goal_plus_monitor_snapshot(runtime.root_dir, goal_plus_id=goal.goal_plus_id)
+    assert snapshot["reconciliation"]["runs"][0]["candidates"][0]["workspace_inspection_error"] is None
+    assert sdk.operations == operations
+    recovery = runtime.prepare_candidate_recovery(session.run_id, session.candidate_id)
+    assert recovery.point.artifact_ref == report.workspace_artifact_after_settlement
+    assert candidate_record(runtime, session).recovery == recovery
+    assert sdk.operations == operations
+
+
+@pytest.mark.parametrize("operation", ["accept", "verify"])
+def test_thinkthread_attempt_requires_complete_fork_group(prepared_candidates, operation):
+    runtime, sdk, sessions = prepared_candidates(count=2, initial_context="fork")
+    session = sessions[0]
+    params = attempt_parameters(runtime, session)
+    before = candidate_record(runtime, session)
+    operations = list(sdk.operations)
+    with pytest.raises(RuntimeError, match="ForkIncomplete"):
+        if operation == "verify":
+            verify_candidate(runtime, sdk, session)
+        else:
+            submission = DeferredCandidateAttempt(
+                **{key: value for key, value in params.items() if key != "hypothesis"}, request_id="request-1"
+            )
+            SearchTools(runtime, candidate_attempt=submission).goal_plus_search_run_verifier(
+                run_id=session.run_id, candidate_id=session.candidate_id,
+                agent_session_id=session.agent_session_id, hypothesis=params["hypothesis"],
+            )
+    assert candidate_record(runtime, session) == before
+    assert sdk.operations == operations
+
+
+@pytest.fixture
+def prepared_fork(prepared_candidates):
+    runtime, _, sessions = prepared_candidates(
+        count=2, initial_context="fork", bind_children=False,
+    )
+    run_id = sessions[0].run_id
+    owner = runtime.candidate_sessions.authorization.require_linked_search_run(run_id)
+    fork = runtime.candidate_sessions.prepare_dispatch_group(
+        run_id, "tt-root", "root-message-7", "thinkthread_context", runtime_provider="thinkthread",
+        main_session_id=owner.active_session.session_id,
+    )
+    baseline = runtime.search_run.state.read_run(run_id).source_artifact_ref
+    receipts = [ProviderDispatchReceipt(
+        f"tt-fork-{branch.dispatch_target_index}", "tt-root", branch.binding.workspace, "started",
+        runtime_provider="thinkthread", checkpoint_id=fork.checkpoint_id, checkpoint_kind=fork.checkpoint_kind,
+        context_projection_digest=f"context-{branch.dispatch_target_index}", request_id=f"request-{branch.dispatch_target_index}",
+        workspace_attachment=ThinkThreadWorkspaceAttachment(
+            root_thinkthread_id="tt-root", fs_branch_id=f"fs-fork-{branch.dispatch_target_index}", baseline_snapshot_id=baseline.id,
+        ),
+    ) for branch in fork.branches]
+    return runtime, sessions, receipts
+
+
+@pytest.mark.parametrize("mismatch", ["provider", "checkpoint", "root", "baseline", "child_duplicate", "fs_duplicate"])
+def test_fork_receipt_identity_is_checked_before_any_binding_write(prepared_fork, mismatch):
+    runtime, sessions, receipts = prepared_fork
+    run_id = sessions[0].run_id
+    receipt = receipts[1]
+    if mismatch in {"child_duplicate", "fs_duplicate"}:
+        runtime.candidate_sessions.record_dispatch_receipt(run_id, 1, receipts[0])
+    if mismatch == "provider":
+        receipt = replace(receipt, runtime_provider="direct")
+    elif mismatch == "checkpoint":
+        receipt = replace(receipt, checkpoint_id="another-message")
+    elif mismatch == "child_duplicate":
+        receipt = replace(receipt, provider_session_id=receipts[0].provider_session_id)
+    else:
+        field, value = {
+            "root": ("root_thinkthread_id", "another-root"),
+            "baseline": ("baseline_snapshot_id", "fsnap-another-baseline"),
+            "fs_duplicate": ("fs_branch_id", receipts[0].workspace_attachment.fs_branch_id),
+        }[mismatch]
+        receipt = replace(receipt, workspace_attachment=receipt.workspace_attachment.model_copy(update={field: value}))
+    before_run = runtime.search_run.state.read_run(run_id)
+    before_candidates = runtime.candidate_creation.state.read_candidates(run_id)
+    before_sessions = runtime.candidate_sessions.state.read_agent_sessions(run_id)
+    with pytest.raises(ValueError, match="receipt.*mismatch"):
+        runtime.candidate_sessions.record_dispatch_receipt(run_id, 2, receipt)
+    assert runtime.search_run.state.read_run(run_id) == before_run
+    assert runtime.candidate_creation.state.read_candidates(run_id) == before_candidates
+    assert runtime.candidate_sessions.state.read_agent_sessions(run_id) == before_sessions
+
+
+@pytest.mark.parametrize("mismatch", ["child", "fs"])
+def test_fork_child_and_fs_cannot_be_rebound(prepared_fork, mismatch):
+    runtime, sessions, receipts = prepared_fork
+    session, receipt = sessions[0], receipts[0]
+    runtime.candidate_sessions.record_dispatch_receipt(session.run_id, 1, receipt)
+    runtime.candidate_sessions.bind_thinkthread_candidate(
+        run_id=session.run_id, candidate_id=session.candidate_id, agent_session_id=session.agent_session_id,
+        thinkthread_id=receipt.provider_session_id, branch_id=receipt.workspace_attachment.fs_branch_id,
+    )
+    before_candidate = candidate_record(runtime, session)
+    before_session = runtime.candidate_sessions.session(session.agent_session_id)
+    assert before_candidate.task.candidate_origin.workspace_attachment == receipt.workspace_attachment
+    with pytest.raises(ValueError, match="fork.*identity"):
+        runtime.candidate_sessions.bind_thinkthread_candidate(
+            run_id=session.run_id, candidate_id=session.candidate_id, agent_session_id=session.agent_session_id,
+            thinkthread_id="tt-another" if mismatch == "child" else receipt.provider_session_id,
+            branch_id="fs-another" if mismatch == "fs" else receipt.workspace_attachment.fs_branch_id,
+        )
+    assert candidate_record(runtime, session) == before_candidate
+    assert runtime.candidate_sessions.session(session.agent_session_id) == before_session
 
 
 @pytest.mark.parametrize("metrics,failure", [
@@ -138,8 +269,60 @@ def test_common_verifier_queries_exact_tt_attempt_without_resubmitting(prepared_
     assert candidate_record(runtime, session) == before
     assert sdk.operations == operations
     report = verify_candidate(runtime, sdk, session)
-    assert tools.goal_plus_search_run_verifier(**args, attempt_id=report.attempt_id) == report.model_dump(mode="json")
+    returned = tools.goal_plus_search_run_verifier(**args, attempt_id=report.attempt_id)
+    expected = report.model_dump(mode="json")
+    for key in (
+        "shared_tools", "shared_tool_errors", "shared_tool_staging_dir",
+        "shared_tool_staged_entries", "shared_tool_staged_file_count",
+        "shared_tool_staged_bytes", "shared_tool_consumed_entries",
+        "shared_tool_deduplicated_entries", "shared_tool_publish_status",
+        "toolization_decision", "toolization_advisories",
+    ):
+        expected.pop(key, None)
+    assert returned == expected
     assert len(candidate_record(runtime, session).iterations) == 1
+
+
+def test_tt_revision_pins_accepted_attempt_and_delivers_new_verifier_commands(prepared_candidates):
+    runtime, sdk, sessions = prepared_candidates(count=2)
+    session, other_session = sessions
+    verify_candidate(runtime, sdk, session)
+    verify_candidate(runtime, sdk, other_session)
+    first, other = candidate_record(runtime, session), candidate_record(runtime, other_session)
+    run = runtime.search_run.state.read_run(session.run_id)
+    original = runtime.search_run.state.read_frozen_spec(run.frozen_spec_id)
+    command = ["python", "evaluator.py", "--revised-contract"]
+    revised = runtime.revise_candidate_spec(
+        session.agent_session_id, "tt-revision", original.frozen_spec_id, "Use revised evaluator arguments",
+        {"process_verifiers": [{"name": "score", "role": "ranking_signal", "command": command}]},
+    )
+    params = attempt_parameters(runtime, session, iteration=2)
+    submission = DeferredCandidateAttempt(
+        **{key: value for key, value in params.items() if key != "hypothesis"}, request_id="tt-accepted-v2",
+    )
+    accepted = SearchTools(runtime, candidate_attempt=submission).goal_plus_search_run_verifier(
+        run_id=session.run_id, candidate_id=session.candidate_id,
+        agent_session_id=session.agent_session_id, hypothesis=params["hypothesis"],
+    )
+    assert accepted["frozen_spec_id"] == revised.frozen_spec_id
+    assert SearchTools(runtime, candidate_attempt=submission).goal_plus_search_run_verifier(
+        run_id=session.run_id, candidate_id=session.candidate_id,
+        agent_session_id=session.agent_session_id, hypothesis=params["hypothesis"],
+    ) == accepted  # The host journal may not have received the first acknowledgement.
+    with pytest.raises(RuntimeError, match="VerifierInProgress"):
+        runtime.revise_candidate_spec(
+            session.agent_session_id, "too-early", revised.frozen_spec_id, "Change while accepted",
+            {"objective": "new objective"},
+        )
+    report = verify_candidate(runtime, sdk, session, iteration=2)
+    assert report.process_passed and report.frozen_spec_id == revised.frozen_spec_id
+    executions = [arguments for operation, arguments in sdk.operations if operation == "fs.run"]
+    assert executions[-1]["invocation"]["argv"][1:] == command[1:]
+    current = candidate_record(runtime, session)
+    assert current.iterations[:-1] == first.iterations
+    assert current.iterations[-1].settlement_receipt.frozen_spec_id == revised.frozen_spec_id
+    assert current.accepted_attempt is None
+    assert candidate_record(runtime, other_session) == other
 
 
 @pytest.mark.parametrize("mismatch", ["child", "snapshot", "inner_git"])

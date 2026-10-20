@@ -52,8 +52,7 @@ def bound_worker(tmp_path, monkeypatch):
             "candidate_id": task.candidate_id, "dispatch_index": 1,
             "thinkthread_id": "tt-bound-child", "fs_branch_id": "fsbranch-bound",
         }
-        params = {"run_id": run_id, "candidate_id": task.candidate_id,
-                  "agent_session_id": session.agent_session_id, "hypothesis": "Try one change"}
+        params = {"hypothesis": "Try one change"}
         return runtime, goal, job, params
 
     return create
@@ -61,17 +60,13 @@ def bound_worker(tmp_path, monkeypatch):
 
 def test_worker_proxy_accepts_only_one_stable_attempt_per_turn(bound_worker):
     runtime, _, job, params = bound_worker()
-    params["toolization_decision"] = {
-        "outcome": "not_applicable", "signals": [], "exclusion": "no_toolizable_material",
-        "rationale": "No reusable material was created.", "tool_names": [],
-    }
     accepted = dispatch_worker_tool(runtime.root_dir, job, "goal_plus_search_run_verifier", params, request_id="req-one")
     replayed = dispatch_worker_tool(runtime.root_dir, job, "goal_plus_search_run_verifier", params, request_id="req-one")
     assert accepted == replayed
     assert accepted["state"] == "accepted"
     assert accepted["attempt_id"].startswith("attempt_")
-    assert accepted["toolization_decision"] is None
-    assert runtime.list_iterations(params["run_id"], params["candidate_id"]) == []
+    assert "toolization_decision" not in accepted
+    assert runtime.list_iterations(job["run_id"], job["candidate_id"]) == []
     with pytest.raises(RuntimeError, match="reused with new content"):
         dispatch_worker_tool(runtime.root_dir, job, "goal_plus_search_run_verifier",
                               {**params, "hypothesis": "Different content"}, request_id="req-one")
@@ -92,17 +87,17 @@ def test_worker_proxy_checks_toolization_before_accepting_attempt(bound_worker):
         },
     })
     before_job = deepcopy(job)
-    before_run = runtime.search_run.state.read_run(params["run_id"])
-    with pytest.raises(RuntimeError, match="shared_dir.enabled=true"):
+    before_run = runtime.search_run.state.read_run(job["run_id"])
+    with pytest.raises(RuntimeError, match="Unexpected keyword argument"):
         dispatch_worker_tool(runtime.root_dir, job, "goal_plus_search_run_verifier", params, request_id="bad")
     assert job == before_job
-    assert runtime.search_run.state.read_run(params["run_id"]) == before_run
+    assert runtime.search_run.state.read_run(job["run_id"]) == before_run
     params.pop("toolization_decision")
     accepted = dispatch_worker_tool(runtime.root_dir, job, "goal_plus_search_run_verifier", params, request_id="corrected")
     assert accepted["state"] == "accepted"
     assert job["inner_git_attempt"] == params["_inner_git_attempt"]
-    assert accepted["toolization_decision"] == params.get("toolization_decision")
-    assert runtime.search_run.state.read_run(params["run_id"]) == before_run
+    assert "toolization_decision" not in accepted
+    assert runtime.search_run.state.read_run(job["run_id"]) == before_run
 
 
 @pytest.mark.parametrize("mismatch", ["child", "branch", "session", "generation", "promotion"])
@@ -115,9 +110,9 @@ def test_deferred_attempt_rejects_invalid_binding_without_acceptance(bound_worke
     elif mismatch == "session":
         params["agent_session_id"] = "agent-foreign"
     elif mismatch == "generation":
-        record = runtime.thinkthread_verification.state.read_candidate(params["run_id"], params["candidate_id"])
+        record = runtime.thinkthread_verification.state.read_candidate(job["run_id"], job["candidate_id"])
         record.execution_generation += 1
-        runtime.thinkthread_verification.state.write_candidate(params["run_id"], record)
+        runtime.thinkthread_verification.state.write_candidate(job["run_id"], record)
     else:
         params["scope"] = "promotion"
     before_job = deepcopy(job)
@@ -163,12 +158,12 @@ def test_worker_message_uses_common_context_and_rejects_peer_and_main_calls(tmp_
     job = {"agent_session_id": own.agent_session_id, "run_id": run_id, "candidate_id": own.candidate_id}
 
     result = dispatch_worker_tool(root, job, "goal_plus_search_get_agent_context",
-                                  {"agent_session_id": own.agent_session_id}, request_id="context")
+                                  {}, request_id="context")
     assert result["agent_session_id"] == own.agent_session_id
     assert result["candidate_task"]["workspace"] == str(own.workspace)
     before = deepcopy(job)
     before_run = runtime.search_run.state.read_run(run_id)
-    with pytest.raises(RuntimeError, match="GoalPlusSessionMismatch"):
+    with pytest.raises(RuntimeError, match="Unexpected keyword argument"):
         dispatch_worker_tool(root, job, "goal_plus_search_get_agent_context",
                               {"agent_session_id": peer.agent_session_id}, request_id="peer")
     with pytest.raises(RuntimeError, match="(Unknown|unknown|not found)"):
@@ -179,8 +174,7 @@ def test_worker_message_uses_common_context_and_rejects_peer_and_main_calls(tmp_
     # A Message envelope does not turn a local session into an admitted TT Child.
     with pytest.raises(RuntimeError, match="ThinkThread"):
         dispatch_worker_tool(root, job, "goal_plus_search_run_verifier", {
-            "run_id": run_id, "candidate_id": own.candidate_id,
-            "agent_session_id": own.agent_session_id, "hypothesis": "One candidate change",
+            "hypothesis": "One candidate change",
         }, request_id="invalid-workspace_provider")
     assert job == before
     assert runtime.search_run.state.read_run(run_id) == before_run
@@ -213,7 +207,7 @@ def test_shared_tool_message_reaches_common_facade_with_exact_snapshot(tmp_path,
     job = {"agent_session_id": "bound-session"}
     result = dispatch_worker_tool(
         tmp_path, job, "goal_plus_search_copy_shared_tool",
-        {"agent_session_id": "bound-session", "tool_id": "tool-one", "snapshot_hash": "a" * 64}, request_id="copy",
+        {"tool_id": "tool-one", "snapshot_hash": "a" * 64}, request_id="copy",
     )
     assert result == {"tool_id": "tool-one", "copied": True}
     assert calls == [("bound-session", "tool-one", "a" * 64)]

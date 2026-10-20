@@ -354,6 +354,8 @@ def test_search_freeze_spec_resolves_source_relative_artifacts(
     assert runtime.freeze_spec.call_args.kwargs == {"goal_plus_id": "gp_0001"}
     assert result == {
         "frozen_spec_id": "spec_123", "state": "frozen", "metric_name": "combined_score",
+        "spec_hash": "hash", "initial_context": "fresh", "llm_validation": "off",
+        "adaptive_search": False,
         "baseline": {"evaluation_completed": True, "passed": True, "score": 0.0} if with_baseline else None,
         "promotion_verifiers": [],
     }
@@ -365,10 +367,6 @@ def test_search_freeze_spec_resolves_source_relative_artifacts(
     (("strategy", "models", 0, "context_policy"), {}),
     (("strategy", "worker_budget", "on_exceed"), "interrupt"),
     (("shared_dir", "max_pending_revisions_per_family"), 1),
-    pytest.param(
-        ("strategy", "allocation", "policy"),
-        "priority_replace/v1",
-    ),
     (("strategy", "config"), {"global_evidence_mode": "auto"}),
 ])
 def test_freeze_input_rejects_runtime_owned_fields(path, value):
@@ -377,7 +375,7 @@ def test_freeze_input_rejects_runtime_owned_fields(path, value):
     spec = spec_dict()
     spec["strategy"] = {
         "models": [{"model": "gpt"}], "worker_budget": {"max_turns": 4}, "worker_launch": {},
-        "orchestration_mode": "adaptive_search", "allocation": {"policy": "swe_search_uct/v1"},
+        "initial_context": "fresh", "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}},
     }
     spec["promotion_verifiers"] = [dict(spec["process_verifiers"][0])]
     spec["shared_dir"] = {"enabled": True}
@@ -389,12 +387,23 @@ def test_freeze_input_rejects_runtime_owned_fields(path, value):
 
     with pytest.raises(ValidationError) as rejected:
         SearchTools(runtime, Mock()).goal_plus_search_freeze_spec("gp_0001", spec, [])
-    expected_location = path[:-1] if path == ("strategy", "allocation", "policy") else path
-    expected_type = "union_tag_invalid" if path == ("strategy", "allocation", "policy") else "extra_forbidden"
+    expected_location = path
+    expected_type = "extra_forbidden"
     assert [(error["loc"], error["type"]) for error in rejected.value.errors()] == [
         (expected_location, expected_type),
     ]
     runtime.freeze_spec.assert_not_called()
+
+
+def test_freeze_input_requires_canonical_nested_strategy():
+    spec = spec_dict()
+    spec["strategy"] = {"initial_context": "fork", "llm_validation": "off"}
+    assert SearchSpecInput.model_validate(spec).strategy.initial_context == "fork"
+    spec["initial_context"] = spec["strategy"].pop("initial_context")
+    with pytest.raises(ValidationError) as rejected:
+        SearchSpecInput.model_validate(spec)
+    assert any(error["loc"] == ("initial_context",) and error["type"] == "extra_forbidden"
+               for error in rejected.value.errors())
 
 
 @pytest.mark.parametrize("shared_dir", [
@@ -412,8 +421,8 @@ def test_freeze_input_preserves_choices_and_defaults_only_omitted_fields(shared_
         "worker_budget": {"max_runtime_seconds": 60},
         "worker_launch": {"model": "default-model", "reasoning_effort": "low"},
         "selection": {"ranking_keys": ["hard_score"], "ranking_tolerance": [0.1]},
-        "orchestration_mode": "adaptive_search",
-        "allocation": {"policy": "swe_search_uct/v1", "parameters": {"max_depth": 20}},
+        "initial_context": "fresh",
+        "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1", "parameters": {"max_depth": 20}}},
         "global_evidence_mode": "auto",
     }
     spec["shared_dir"] = shared_dir
@@ -783,6 +792,7 @@ def test_search_tools_delegate_runtime_calls_with_models() -> None:
     assert tools.goal_plus_search_report("run_1") == {
         "report_path": "/tmp/report.md",
         "html_report_path": "/tmp/report.html",
+        "bundle_path": "/tmp/report-bundle.zip",
     }
     assert tools.goal_plus_search_promote("run_1", "c001") == {
         "artifact_path": "/tmp/c001.patch",
@@ -876,6 +886,7 @@ def test_worker_verifier_injects_global_evidence_when_enabled() -> None:
     assert result["global_evidence_entry_count"] == 1
     runtime.get_global_evidence.assert_called_once_with(
         "agent_001",
+        compact=True,
         source="verifier_injected",
     )
 
@@ -903,6 +914,7 @@ def test_thinkthread_context_injects_deferred_global_evidence_when_enabled() -> 
     )
     runtime.get_global_evidence.assert_called_once_with(
         "agent_001",
+        compact=True,
         source="verifier_injected",
     )
 

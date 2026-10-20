@@ -1,12 +1,17 @@
 """Persist session identity in the existing Search layout."""
 
-from goal_plus.domain.search import AgentSessionRecord
+from goal_plus.domain.search import AgentSessionRecord, DispatchGroupState
 from goal_plus.infrastructure.state.candidate_queries import FileCandidateQueries
 from goal_plus.infrastructure.state.files import exclusive_file_lock, write_json
 from goal_plus.ports.state import CandidateRecord, RunRecord
 
 
 class FileCandidateSessionState(FileCandidateQueries):
+    def write_dispatch_group(self, run_id: str, group: DispatchGroupState) -> None:
+        run = self.read_run(run_id)
+        run.dispatch_group = group
+        write_json(self.run_dir(run_id) / "run.json", run.model_dump(mode="json"))
+
     def write_execution_generation(self, record: CandidateRecord) -> None:
         current = self.read_candidate(record.task.run_id, record.candidate_id)
         current = CandidateRecord.model_validate({
@@ -24,6 +29,7 @@ class FileCandidateSessionState(FileCandidateQueries):
         current.task.workspace_access.provider_handle = (
             record.task.workspace_access.provider_handle
         )
+        current.task.candidate_origin = record.task.candidate_origin
         directory = self.candidate_dir(run_id, record.candidate_id)
         write_json(directory / "candidate.json", current.model_dump(mode="json"))
         write_json(directory / "task.json", current.task.model_dump(mode="json"))

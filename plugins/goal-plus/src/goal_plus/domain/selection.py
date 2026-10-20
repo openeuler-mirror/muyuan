@@ -20,7 +20,7 @@ class SelectionSpec(SearchModel):
     ranking_keys: list[RankingKey] = Field(
         default_factory=lambda: ["hard_score"], min_length=1,
         json_schema_extra={"uniqueItems": True},
-        description="hard_score uses metric_name; quality_score uses LLM evaluation (not rolling_candidates). Not metric names.",
+        description="hard_score uses metric_name; quality_score uses LLM evaluation. Not metric names.",
     )
     ranking_tolerance: list[Annotated[float, Field(ge=0, allow_inf_nan=False)]] = Field(
         default_factory=lambda: [0.0], min_length=1,

@@ -13,6 +13,10 @@ Preserve original identities before retrying. For the complete repair loop, use
 | SDK import/fingerprint rejection | Inspect exact resolver entry and handshake result | A version label is insufficient; [check actual support](capabilities.md#establish-actual-support) |
 | Model/provider/credential rejection | Compare exact provider/model, allowlist and required credential names | Repair only the affected [authorization/configuration](capabilities/authorization.md); preserve model intent |
 | Provider transport failure | Read structured error, endpoint, certificate access and retryability | Configuration is not connectivity; [locate the failed boundary](workflows/diagnose.md#2-locate-the-failing-layer) |
+| Provider returns `server_error`/overloaded | Preserve the exact provider/model and request identity, then check the provider's bounded response and retryability | This is provider capacity/transport evidence; do not reinterpret it as a Goal Plus dispatch or fork/fresh defect |
+| `tt run` rejects a bare model | Check that `--model` is exactly `provider/model` and is allowed by the Profile | Use the admitted provider/model, for example `sub2api-openai/gpt-6-luna`; this failure is before Root startup |
+| Pi says its configuration directory is not real | Inspect inherited `PI_CODING_AGENT_DIR`, symlink target and Profile `configDirDefault` | Remove the stale override for a new managed run; do not diagnose Goal Plus or TT provider behavior yet |
+| System test is reported skipped | Check pytest output for `system tests require explicit --run-system-tests` | Rerun with `uv run pytest -n 0 --run-system-tests`; skipped is not passing evidence |
 
 ## Environment and permissions
 
@@ -47,6 +51,10 @@ Preserve original identities before retrying. For the complete repair loop, use
 | --- | --- | --- |
 | Verifier accepted/pending | Read original attempt and candidate_action | Follow [settlement instructions](capabilities/sessions.md#dispatch-and-observe-managed-work); accepted is not passed |
 | Message queued, bridge timeout or printing failure | Identify pre-send versus post-send failure and original request status | [Reconcile](capabilities/observation.md#reconcile-an-interrupted-call) before resending |
+| Child fails while loading the Goal Plus manifest | Compare `host_mcp_manifest` timing with dispatch identity binding | Allow schema-only discovery before binding; require the exact candidate identity for every real tool call |
+| `goal_plus_search_freeze_spec` reports `ValidationError`, `Extra inputs are not permitted`, or `ConflictingFreezeParameter` | Read `goal_plus_get_tool_schema("goal_plus_search_freeze_spec")`; verify `spec` is one complete nested SearchSpec and do not duplicate `spec.source_path` as the top-level compatibility argument | Remove stale fields from the payload and retry the same freeze request; this is Goal Plus schema admission, not a TT provider or Child startup failure |
+| AutoResearch-Git reports `inner Git HEAD does not match the settled ledger` | Read the child dispatch, attempt and settlement receipts before retrying; compare the child filesystem's `.git/goal-plus/state.json` with `git rev-parse HEAD` | Treat it as inner Git/continuation state until proven otherwise; do not blindly respawn or submit another provider operation when an attempt is unresolved |
+| Two real-host ST runs collide in `workspace/circle` or PTY | Check the pytest temp root and active `tt` state roots | Run these native Circle cases serially, or provide distinct `ST_THINKTHREAD_BASE_TMP` roots; independent state roots alone do not isolate pytest workspace creation |
 | OS signal exits Root or monitor stops tree | Check control used and retained native state | Use supported controls and [readiness recovery](capabilities/observation.md#native-readiness) |
 | TT stopped, Goal active; old Root fails readiness | Compare original Root/session/state root and actual Goal binding | [Recover the original host](capabilities/observation.md#native-readiness); new TUI/busy is not recovery |
 

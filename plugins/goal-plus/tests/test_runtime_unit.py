@@ -184,15 +184,17 @@ def test_file_search_runtime_defaults_to_gp_root(tmp_path: Path, monkeypatch: py
     assert not runtime.root_dir.exists()
 
 
-def test_freeze_spec_is_stable_and_copies_verifier(tmp_path: Path) -> None:
+def test_freeze_spec_is_stable_and_copies_verifier(tmp_path: Path, monkeypatch) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
     spec = spec_for(project)
 
     first = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
+    monkeypatch.setattr(runtime.search_bootstrap.clock, "timestamp", lambda: "2099-01-01T00:00:00Z")
     second = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
 
     assert first.frozen_spec_id == second.frozen_spec_id
+    assert first == second
     assert first.spec.strategy.inner_agent == "autoresearch"
     assert first.verifier_hashes["evaluator.py"] == sha256_file(project / "evaluator.py")
     assert Path(first.frozen_verifier_paths["evaluator.py"]).exists()
@@ -1360,8 +1362,16 @@ def test_git_tracked_task_skills_are_discovered_in_each_candidate_worktree(
         )
         assert all("Codex" not in instruction for instruction in task.instructions)
         assert "candidate_task" in session.launch["message"]
-        assert "task_local_skills_visible: review=" in session.launch["message"]
-        assert str(expected_skill) in session.launch["message"]
+        assert "task_local_skills_visible" not in session.launch["message"]
+        assert str(expected_skill) not in session.launch["message"]
+        assert any(
+            "candidate_task.task_skill_paths" in instruction
+            for instruction in task.instructions
+        )
+        assert all(
+            str(expected_skill) not in instruction
+            for instruction in task.instructions
+        )
         assert "untracked" not in session.launch["message"]
 
 
@@ -1379,7 +1389,7 @@ def test_no_git_tracked_task_skills_is_reported_explicitly(tmp_path: Path) -> No
     session = runtime.start_agent_session(run_id, task.candidate_id)
     assert task.task_skill_paths == []
     assert any("未发现 Git-tracked" in item for item in task.instructions)
-    assert "task_local_skills_visible: none" in session.launch["message"]
+    assert "task_local_skills_visible" not in session.launch["message"]
 
 
 def test_freeze_rejects_git_tracked_symlink_skill_entrypoint(tmp_path: Path) -> None:
@@ -1514,7 +1524,7 @@ def test_plan_next_and_start_batch_record_plan_metadata(tmp_path: Path) -> None:
     tasks = runtime.start_batch(run_id, plan.plan_id)
 
     assert plan.strategy.name == "random"
-    assert plan.strategy.orchestration_mode == "parallel_loops"
+    assert plan.strategy.initial_context == "fresh"
     assert plan.planned_k == 2
     assert [task.candidate_id for task in tasks] == ["c001", "c002"]
     assert tasks[0].plan_id == "plan_001"
@@ -1783,14 +1793,14 @@ def test_worker_instructions_match_enabled_capabilities(
     if adaptive:
         strategy.update(
             {
-                "orchestration_mode": "adaptive_search",
+                "initial_context": "fresh",
                 "worker_budget": {"max_runtime_seconds": 60},
                 "selection": {
                     "ranking_keys": ["quality_score", "hard_score"],
                     "ranking_tolerance": [0.05, 0.0],
                 },
                 "verifier": {"scores": ["progress_reward", "allocation_utility"]},
-                "allocation": {"policy": "swe_search_uct/v1"},
+                "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}},
             }
         )
     data = spec_for(project, max_parallel=1).model_dump(mode="json")
@@ -1808,8 +1818,11 @@ def test_worker_instructions_match_enabled_capabilities(
     task = runtime.start_batch(run_id, plan.plan_id)[0]
     instructions = "\n".join(task.instructions)
 
-    assert ("goal_plus_search_get_global_evidence" in instructions) is (mode == "manual")
+    assert ("goal_plus_search_get_global_evidence" in instructions) is (mode in {"manual", "auto"})
     assert ("global_evidence_snapshot" in instructions) is (mode == "auto")
+    if mode == "auto":
+        assert "按 (candidate_id, iteration) 合并" in instructions
+        assert "global_evidence_update" in instructions
     assert ("goal_plus_search_get_evidence_detail" in instructions) is supplemental
     assert ("success_threshold" in instructions) is threshold
     assert ("Verifier backlog 不阻塞当前 lane" in instructions) is adaptive
@@ -2743,7 +2756,8 @@ def test_redispatch_candidate_preserves_frozen_inner_agent(
     assert redispatched.workspace == first.workspace
     assert redispatched.launch["transport"] == "app-server"
     assert redispatched.agent_session_id in redispatched.launch["message"]
-    assert "state_level_resume" in redispatched.launch["message"]
+    redispatched_context = runtime.get_agent_context(redispatched.agent_session_id)
+    assert redispatched_context["resume"]["is_redispatch"] is True
 
     refreshed_candidate = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
     worker_policy = refreshed_candidate.task.strategy_metadata["worker_policy"]
@@ -2904,9 +2918,7 @@ def test_start_agent_session_accepts_one_dispatch_worker_budget(tmp_path: Path) 
     default_session = runtime.redispatch_candidate(run_id, task.candidate_id)
 
     assert long_session.launch["budget_control"]["max_runtime_seconds"] == 1800
-    assert "assigned_worker_budget={'max_runtime_seconds': 1800" in long_session.launch[
-        "prompt"
-    ]
+    assert "assigned_worker_budget" not in long_session.launch["prompt"]
     assert default_session.launch["budget_control"]["max_runtime_seconds"] == 600
     reloaded = runtime.search_run.state.read_frozen_spec(frozen.frozen_spec_id)
     assert reloaded.spec.strategy.worker_budget is not None
@@ -2914,7 +2926,7 @@ def test_start_agent_session_accepts_one_dispatch_worker_budget(tmp_path: Path) 
 
 
 @pytest.mark.codex
-def test_launch_keeps_candidate_proposal_when_main_directive_is_shared(
+def test_launch_keeps_candidate_proposal_in_context_without_duplicate_prose(
     tmp_path: Path,
 ) -> None:
     project = make_project(tmp_path)
@@ -2930,6 +2942,7 @@ def test_launch_keeps_candidate_proposal_when_main_directive_is_shared(
             CandidateProposal(
                 intent="explore scratch-resident batching",
                 hypothesis="reuse scratch slots across dependent operations",
+                expected_tradeoff="less memory, more setup",
                 instructions=["measure one complete batch before interleaving"],
             )
         ],
@@ -2941,11 +2954,22 @@ def test_launch_keeps_candidate_proposal_when_main_directive_is_shared(
         {"goal": "perform deep optimization"},
     )
 
-    assert "candidate_intent: explore scratch-resident batching" in session.launch[
-        "message"
-    ]
-    assert "candidate_hypothesis: reuse scratch slots" in session.launch["message"]
-    assert "main_directive.goal: perform deep optimization" in session.launch["message"]
+    launch_message = session.launch["message"]
+    assert launch_message.count("explore scratch-resident batching") == 1
+    for context_only in (
+        "reuse scratch slots across dependent operations",
+        "less memory, more setup",
+        "measure one complete batch before interleaving",
+        "perform deep optimization",
+    ):
+        assert context_only not in launch_message
+
+    task_context = runtime.get_agent_context(session.agent_session_id)["candidate_task"]
+    assert task_context["intent"] == "explore scratch-resident batching"
+    assert task_context["hypothesis"] == "reuse scratch slots across dependent operations"
+    assert task_context["expected_tradeoff"] == "less memory, more setup"
+    assert "measure one complete batch before interleaving" in task_context["instructions"]
+    assert task_context["main_goal"] == "perform deep optimization"
 
 
 @pytest.mark.codex
@@ -3348,12 +3372,12 @@ def test_plan_next_caps_batch_size_to_max_parallel(tmp_path: Path) -> None:
         runtime.plan_next(run_id, requested_k=4)
 
 
-def test_rolling_candidates_remains_llm_verifier_independent(
+def test_default_fresh_context_remains_llm_verifier_independent(
     tmp_path: Path,
 ) -> None:
     project = make_project(tmp_path)
     spec_data = spec_for(project).model_dump(mode="json")
-    spec_data["strategy"]["orchestration_mode"] = "rolling_candidates"
+    spec_data["strategy"]["initial_context"] = "fresh"
     runtime = FileSearchRuntime(tmp_path / ".search")
     frozen = runtime.freeze_spec(
         SearchSpec.model_validate(spec_data),
@@ -3363,7 +3387,7 @@ def test_rolling_candidates_remains_llm_verifier_independent(
     assert runtime.llm_verifier_enabled(run_id) is False
 
 
-def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
+def test_fixed_parallel_rejects_second_plan_and_reuses_initial_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3374,7 +3398,7 @@ def test_parallel_loops_rejects_second_plan_and_reuses_initial_candidates(
     spec_data["strategy"].update(
         {
             "name": "random",
-            "orchestration_mode": "parallel_loops",
+            "initial_context": "fresh",
         }
     )
     frozen = runtime.freeze_spec(
@@ -3519,7 +3543,7 @@ def test_get_agent_context_has_only_authoritative_worker_fields(tmp_path: Path) 
         "directive",
         "workspace",
         "workspace_access",
-        "orchestration_mode",
+        "initial_context",
         "llm_verifier_enabled",
         "run_budget",
     ):
@@ -3527,6 +3551,7 @@ def test_get_agent_context_has_only_authoritative_worker_fields(tmp_path: Path) 
     assert context["candidate_id"] == tasks[0].candidate_id
     assert set(context["candidate_task"]) == {
         "hypothesis",
+        "main_goal",
         "workspace",
         "allowed_files",
         "denied_files",
@@ -3665,7 +3690,7 @@ def test_git_worktree_start_batch_repairs_task_projection_after_candidate_record
 
 
 def test_start_batch_is_serialized_and_idempotent_for_same_plan(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
     project = make_project(tmp_path)
     runtime = FileSearchRuntime(tmp_path / ".search")
@@ -3692,6 +3717,11 @@ def test_start_batch_is_serialized_and_idempotent_for_same_plan(
         ["c001", "c002"],
     ]
     assert runtime.status(run_id).candidates_total == 2
+    started = runtime.search_run.state.read_plan(run_id, plan.plan_id)
+    assert started.started_at is not None
+    monkeypatch.setattr(runtime.search_run.clock, "timestamp", lambda: "2099-01-01T00:00:00Z")
+    runtime.start_batch(run_id, plan.plan_id)
+    assert runtime.search_run.state.read_plan(run_id, plan.plan_id).started_at == started.started_at
 
 
 def test_random_strategy_gen1_independent_bootstrap(tmp_path: Path) -> None:
@@ -3707,7 +3737,7 @@ def test_random_strategy_gen1_independent_bootstrap(tmp_path: Path) -> None:
     assert plan.strategy_trace["selection_rule"] == "独立源码分支"
     assert "parent_candidate_id" not in plan.strategy_trace
     assert len(plan.work_orders) == 2
-    assert all(wo.metadata["strategy"] == "parallel_loops" for wo in plan.work_orders)
+    assert all(wo.metadata["strategy"] == "random" for wo in plan.work_orders)
 
     tasks = runtime.start_batch(run_id, plan.plan_id)
     assert all(t.base_candidate_id is None for t in tasks)
@@ -3914,9 +3944,13 @@ def test_verifier_snapshot_preserves_later_worker_edits(tmp_path, monkeypatch, b
     assert context["iteration_count"] == 1
     assert context["verification"]["state"] == "needs_recovery"
     assert report.verification.state == "needs_recovery"
-    assert SearchTools(runtime).goal_plus_search_run_verifier(
+    queried = SearchTools(runtime).goal_plus_search_run_verifier(
         run_id, task.candidate_id, attempt_id=report.attempt_id, agent_session_id=session.agent_session_id,
-    ) == report.model_dump(mode="json")
+    )
+    assert queried["run_id"] == run_id
+    assert queried["candidate_id"] == task.candidate_id
+    assert queried["attempt_id"] == report.attempt_id
+    assert queried["verification"]["state"] == report.verification.state
     with pytest.raises(RuntimeError, match="VerifierRecoveryRequired"):
         runtime.run_verifier(run_id, task.candidate_id)
     before = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)

@@ -167,6 +167,16 @@ def test_two_candidates_continue_verify_select_and_publish_through_shared_mcp(tm
         runtime.candidate_sessions.bind_agent_handle(session["agent_session_id"], {
             "agent_harness": session["agent_harness"], "external_id": "controlled-" + session["agent_session_id"],
         })
+    for field, value in (
+        ("run_id", "peer-run"),
+        ("candidate_id", tasks[1]["candidate_id"]),
+        ("agent_session_id", sessions[1]["agent_session_id"]),
+    ):
+        with pytest.raises(RuntimeError, match="Unexpected keyword argument"):
+            bridges[0].call("goal_plus_search_run_verifier", {
+                field: value, "hypothesis": "cannot choose another caller identity",
+            })
+    assert all(not runtime.list_iterations(run_id, task["candidate_id"]) for task in tasks)
 
     for iteration in (1, 2):
         for lane, (task, session, bridge) in enumerate(zip(tasks, sessions, bridges)):
@@ -174,13 +184,12 @@ def test_two_candidates_continue_verify_select_and_publish_through_shared_mcp(tm
             if iteration == 2:
                 continued = runtime.continue_agent_session(session_id)
                 assert continued.agent_session_id == session_id
-            context = bridge.call("goal_plus_search_get_agent_context", {"agent_session_id": session_id})
+            context = bridge.call("goal_plus_search_get_agent_context", {})
             assert context["candidate_id"] == candidate_id
             score = iteration + lane * 10
             (Path(context["candidate_task"]["workspace"]) / "initial_program.py").write_text(f"VALUE = {score}\n")
             if lane == 0:
                 report = bridge.call("goal_plus_search_run_verifier", {
-                    "run_id": run_id, "candidate_id": candidate_id, "agent_session_id": session_id,
                     "hypothesis": "raise VALUE",
                 })
                 assert delivery.review(run_id, candidate_id).action == "reuse"

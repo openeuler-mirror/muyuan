@@ -49,9 +49,15 @@ def run_probe(report_path: Path) -> None:
         # peer Artifact Views; the Child itself is spawned from the peer baseline.
         workspace = Path.cwd()
         secret = f"annotator-secret-{uuid.uuid4().hex[:12]}"
+        listing_name = f"listing-proof-{uuid.uuid4().hex[:12]}.txt"
+        deleted_name = f"diff-proof-{uuid.uuid4().hex[:12]}.txt"
+        # This file is unchanged across snapshots, so only a directory listing
+        # supplies its random name. The peer-only file below appears only in diff.
+        (workspace / listing_name).write_text("unchanged listing evidence\n")
         (workspace / "solution.txt").write_text(f"score: 7\nnote: {secret}\n")
         target_snapshot = client.invoke("fs.snapshot.create", {"requestId": new_request_id()})["snapshotId"]
         (workspace / "solution.txt").write_text("score: 5\nnote: baseline\n")
+        (workspace / deleted_name).write_text("peer-only diff evidence\n")
         peer_snapshot = client.invoke("fs.snapshot.create", {"requestId": new_request_id()})["snapshotId"]
         router = ThinkThreadArtifactViewRouter(client, {
             "view-target": ArtifactRef(kind="fs_snapshot", id=target_snapshot, provider="thinkthread"),
@@ -62,11 +68,15 @@ def run_probe(report_path: Path) -> None:
         prompt = (
             "This is a minimal Evidence Annotation transport check through the real Goal Plus "
             "annotator MCP. Call goal_plus_thinkthread_annotation_next once to claim the single "
-            "admitted task. Inspect the authorized immutable Artifact Views: stat then pread "
-            "solution.txt on the target view, and diff the peer view against the target view. "
+            "admitted task. Inspect the authorized immutable Artifact Views: list the target "
+            "view root, stat then pread solution.txt on the target view, and diff the peer view "
+            "against the target view. Only list the target view; do not list the peer view. "
             "Then publish exactly one annotation with goal_plus_thinkthread_annotation_submit: "
             "the description must be one concise objective line quoting the complete note token "
-            "from the target solution.txt; supplemental_evaluation must contain at least one "
+            "from the target solution.txt, the full listing-proof-* filename from the target "
+            "directory listing, and the full diff-proof-* filename reported as deleted by the "
+            "peer-to-target diff. Do not omit or guess any token. The supplemental_evaluation "
+            "must contain at least one "
             "dimension with a numeric score. After publishing, call "
             "goal_plus_thinkthread_annotation_next again; when it reports idle, finish the turn "
             "immediately. Use only the six annotation tools; do not run commands, code, tests or "
@@ -84,8 +94,9 @@ def run_probe(report_path: Path) -> None:
         message_id = binding.initial_message_id
         report.update(stage="annotation_turn", child_id=binding.child_id)
         report_path.write_text(json.dumps(report))
-        state = {"next_calls": 0, "submitted": None}
+        state = {"next_calls": 0, "submitted": None, "view_calls": []}
         tools_by_request: dict[str, str] = {}
+        responses_by_request: dict[str, tuple[str, list[str]]] = {}
         observations: list[dict] = []
         inbound: list[str] = []
         deadline = time.monotonic() + 480
@@ -123,10 +134,19 @@ def run_probe(report_path: Path) -> None:
                     "goal_plus_thinkthread_annotation_next",
                     "goal_plus_thinkthread_annotation_submit",
                 }, f"Annotator Child called a non-annotation tool: {tool}"
-                assert request_hash(payload) == payload["content_sha256"]
-                tools_by_request.setdefault(payload["request_id"], tool)
-                result = _serve_annotation_tool(router, state, tool, payload["params"])
-                for chunk in response_payload(payload["request_id"], {"ok": True, "result": result}):
+                digest = request_hash(payload)
+                assert digest == payload["content_sha256"]
+                request_id = payload["request_id"]
+                cached = responses_by_request.get(request_id)
+                if cached is None:
+                    tools_by_request[request_id] = tool
+                    result = _serve_annotation_tool(router, state, tool, payload["params"])
+                    chunks = response_payload(request_id, {"ok": True, "result": result})
+                    responses_by_request[request_id] = (digest, chunks)
+                else:
+                    original_digest, chunks = cached
+                    assert digest == original_digest, "Annotation request id was reused with changed content"
+                for chunk in chunks:
                     client.invoke("message.send", {
                         "recipientThinkthreadId": binding.child_id, "text": chunk, "wake": False,
                         "replyToMessageId": message["messageId"],
@@ -159,6 +179,10 @@ def run_probe(report_path: Path) -> None:
         description = submitted.get("description")
         assert isinstance(description, str) and description.strip(), submitted
         assert secret in description, "Annotation description did not quote the target view evidence"
+        assert listing_name in description, "Annotation did not return the target directory listing evidence"
+        assert deleted_name in description, "Annotation did not return the deleted-path diff evidence"
+        assert ("goal_plus_thinkthread_artifact_view_list", {"view_id": "view-target", "path": "."}) in state["view_calls"]
+        assert ("goal_plus_thinkthread_artifact_view_diff", {"base_view_id": "view-peer", "target_view_id": "view-target"}) in state["view_calls"]
         supplemental = submitted.get("supplemental_evaluation")
         assert isinstance(supplemental, dict) and supplemental, "Annotation omitted its supplemental evaluation"
         tools = list(tools_by_request.values())
@@ -171,10 +195,17 @@ def run_probe(report_path: Path) -> None:
         stopped = driver.interrupt(binding.child_id, 10)
         assert stopped and stopped["executionState"] == "absent"
         assert (workspace / "solution.txt").read_text() == "score: 5\nnote: baseline\n", "Annotator changed Root workspace"
+        assert (workspace / listing_name).read_text() == "unchanged listing evidence\n"
+        assert (workspace / deleted_name).read_text() == "peer-only diff evidence\n"
         report.update(
             ok=True,
             tools=tools,
             view_reads=view_reads,
+            view_consumption={
+                "target_note": secret,
+                "target_listing": listing_name,
+                "deleted_diff_path": deleted_name,
+            },
             annotation={
                 "description": description,
                 "supplemental_evaluation": supplemental,
@@ -240,6 +271,8 @@ def _serve_annotation_tool(
             state["submitted"] = dict(params)
         return {"published": True}
     if tool == "goal_plus_thinkthread_artifact_view_list":
+        assert params["view_id"] == "view-target", "Peer listing would reveal the diff-only proof"
+        state["view_calls"].append((tool, {"view_id": params["view_id"], "path": str(params.get("path") or ".")}))
         return router.readdir(str(params["view_id"]), str(params.get("path") or "."))
     if tool == "goal_plus_thinkthread_artifact_view_stat":
         return router.stat(str(params["view_id"]), str(params.get("path") or "."))
@@ -249,6 +282,7 @@ def _serve_annotation_tool(
             offset=int(params.get("offset") or 0),
             length=int(params.get("length") or 64 * 1024),
         )
+    state["view_calls"].append((tool, {"base_view_id": params["base_view_id"], "target_view_id": params["target_view_id"]}))
     return router.diff(str(params["base_view_id"]), str(params["target_view_id"]))
 
 

@@ -41,6 +41,8 @@ class AnnotationContextSource(Protocol):
 
 
 class AnnotationContext(TypedDict):
+    frozen_spec_id: str
+    spec_hash: str
     run_id: str
     candidate_id: str
     iteration: int

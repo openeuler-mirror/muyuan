@@ -9,6 +9,7 @@ from contextlib import ExitStack
 from dataclasses import replace
 import subprocess
 import sys
+from uuid import uuid4
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,7 @@ def outer_backend():
 def sandbox_root(outer_backend):
     # Keep source sentinels outside Linux's private /tmp: a write to a private
     # namespace copy is permitted and must not be confused with a host write.
-    base = Path(__file__).resolve().parents[1] / ".tmp"
+    base = Path.cwd() / ".tmp"
     base.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="sandbox-test-", dir=base) as directory:
         yield Path(directory)
@@ -168,9 +169,9 @@ def test_outer_policy_rejects_root_and_resolves_symlink_cwd(tmp_path, platform, 
                                 platform=platform, which=lambda name: name)
 
 
-@pytest.mark.parametrize('fallback', [False, True])
+@pytest.mark.parametrize('explicit_root', [False, True])
 @pytest.mark.host_process
-def test_outer_scratch_write_boundary_and_cleanup(sandbox_root, monkeypatch, fallback):
+def test_outer_scratch_write_boundary_and_cleanup(sandbox_root, monkeypatch, explicit_root):
     tmp_path = sandbox_root
     from goal_plus.execution import sandbox as module
 
@@ -180,17 +181,19 @@ def test_outer_scratch_write_boundary_and_cleanup(sandbox_root, monkeypatch, fal
     runtime.mkdir()
     outside = tmp_path / 'outside'
     outside.write_text('before')
-    # Keep the host sentinel in /tmp too: neither backend should authorize all of it.
-    with tempfile.TemporaryDirectory(prefix='gp-outside-', dir='/tmp') as host_tmp:
-        host_target = Path(host_tmp) / 'outside'
-        host_target.write_text('before')
-        if fallback:
-            original = module.tempfile.TemporaryDirectory
-            def create(*args, **kwargs):
-                if kwargs.get('dir') == '/tmp':
-                    raise PermissionError(errno.EACCES, 'test: system tmp unavailable')
-                return original(*args, **kwargs)
-            monkeypatch.setattr(module.tempfile, 'TemporaryDirectory', create)
+    if explicit_root:
+        scratch_root = tmp_path / 'operational-scratch'
+        monkeypatch.setenv('GOAL_PLUS_TMPDIR', str(scratch_root))
+    else:
+        scratch_root = workspace / '.tmp'
+        monkeypatch.delenv('GOAL_PLUS_TMPDIR', raising=False)
+    # Keep a path in /tmp to exercise the private namespace boundary.  Do not
+    # create a host-side sentinel: shared /tmp can exhaust its inode quota even
+    # while it has plenty of bytes.  Linux should create this only in bwrap's
+    # private tmpfs; macOS should reject the write under its profile.
+    host_target = Path('/tmp') / f'goal-plus-sandbox-host-{uuid4().hex}'
+    host_target.unlink(missing_ok=True)
+    try:
         environment = dict(os.environ, TMPDIR='/nonexistent/inherited-temp')
         policy = ProcessSandbox(mode='read-only', backend='outer', workspace=workspace,
                                 writable_roots=(runtime,))
@@ -199,35 +202,52 @@ def test_outer_scratch_write_boundary_and_cleanup(sandbox_root, monkeypatch, fal
                                                         environment=environment, cleanup=cleanup)
             scratch = Path(environment['TMPDIR'])
             assert {environment[k] for k in ('TMPDIR', 'TMP', 'TEMP')} == {str(scratch)}
-            assert scratch.parent == ((workspace / '.gp/.tmp') if fallback else Path('/tmp').resolve())
+            assert scratch.parent == scratch_root.resolve()
+            assert scratch.parent != Path('/tmp').resolve()
             script = '''import json,sys,tempfile
 from pathlib import Path
+sys.path.insert(0, sys.argv[5])
+from goal_plus.temp import temporary_directory
 with tempfile.TemporaryFile() as f: f.write(b'ok')
 r={}
-for name, path in zip(('workspace','outside','runtime'), sys.argv[1:]):
+for name, path in zip(('workspace','outside','runtime','scratch_parent'), sys.argv[1:5]):
  try: Path(path).write_text('after'); r[name]='writable'
  except OSError as e: r[name]=e.errno
+try:
+ with temporary_directory(prefix='nested-') as nested:
+  Path(nested, 'probe').write_text('ok')
+ r['nested_scratch']='writable'
+except OSError as e: r['nested_scratch']=e.errno
 print(json.dumps(r))
 '''
             command = resolve_sandbox_command(
-                (sys.executable, '-c', script, str(workspace/'readonly'), str(outside), str(runtime/'allowed')),
+                (sys.executable, '-c', script, str(workspace/'readonly'), str(outside), str(runtime/'allowed'),
+                 str(scratch.parent/'unowned'), str(Path(__file__).resolve().parents[1]/'src')),
                 cwd=workspace, sandbox=policy)
             result = subprocess.run(command, cwd=workspace, env=environment, capture_output=True,
                                     text=True, timeout=15)
             assert result.returncode == 0, result.stderr
             assert json.loads(result.stdout) == {'workspace': errno.EPERM if sys.platform == 'darwin' else errno.EROFS,
                                                 'outside': errno.EPERM if sys.platform == 'darwin' else errno.EROFS,
-                                                'runtime': 'writable'}
-            # Global host tmp is denied on macOS and hidden on Linux.
+                                                'runtime': 'writable',
+                                                'scratch_parent': errno.EPERM if sys.platform == 'darwin' else errno.EROFS,
+                                                'nested_scratch': 'writable'}
+            assert environment['GOAL_PLUS_TMPDIR'] == str(scratch)
+            # macOS denies the write; Linux writes only into its private /tmp.
             command = resolve_sandbox_command((sys.executable, '-c',
                 'import sys; from pathlib import Path; Path(sys.argv[1]).write_text("escaped")', str(host_target)),
                 cwd=workspace, sandbox=policy)
             result = subprocess.run(command, cwd=workspace, env=environment, capture_output=True,
                                     text=True, timeout=15)
-            assert result.returncode != 0
-            assert host_target.read_text() == 'before'
+            if sys.platform == 'darwin':
+                assert result.returncode != 0
+            else:
+                assert result.returncode == 0, result.stderr
+            assert not host_target.exists()
         assert not scratch.exists()
         assert outside.read_text() == 'before'
+    finally:
+        host_target.unlink(missing_ok=True)
 
 
 @pytest.mark.host_process

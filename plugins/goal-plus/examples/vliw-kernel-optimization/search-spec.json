@@ -44,7 +44,7 @@
   ],
   "strategy": {
     "name": "agent_guided",
-    "orchestration_mode": "parallel_loops"
+    "initial_context": "fresh"
   },
   "workspace": {
     "provider": "git_worktree",

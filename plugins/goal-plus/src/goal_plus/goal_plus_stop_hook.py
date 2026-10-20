@@ -42,6 +42,8 @@ GOAL_PLUS_LIKE_PROMPT_RE = re.compile(
 DISABLE_VALUES = {"1", "true", "yes", "on"}
 STOP_HOOK_EVENT_SCHEMA_VERSION = 1
 STOP_HOOK_TEXT_LIMIT = 1024
+GOAL_CONTEXT_SCHEMA_VERSION = 1
+GOAL_CONTEXT_FULL_KEY = "goal_context_full_key"
 CODEX_COLLABORATION_HOOK_TOOLS = {
     f"collaboration{name}": name
     for name in (
@@ -945,6 +947,73 @@ def _goal_context(
     return f"{context}\n{role_model_context}" if role_model_context else context
 
 
+def _goal_context_key(record: Any) -> str:
+    """Return the persisted identity of the full Main context projection."""
+    return ":".join(
+        (
+            str(GOAL_CONTEXT_SCHEMA_VERSION),
+            str(record.goal_plus_id),
+            str(record.goal_revision),
+            str(record.control.version),
+        )
+    )
+
+
+def _goal_context_needs_full(record: Any) -> bool:
+    active = record.active_session
+    return active is None or active.metadata.get(GOAL_CONTEXT_FULL_KEY) != _goal_context_key(record)
+
+
+def _record_goal_context_delivery(
+    runtime: Any,
+    record: Any,
+    *,
+    session_id: str | None,
+) -> None:
+    if session_id is None or record.active_session is None:
+        return
+    try:
+        runtime.record_goal_context_delivery(
+            record.goal_plus_id,
+            session_id=session_id,
+            context_key=_goal_context_key(record),
+        )
+    except Exception:
+        # The host already received the context.  A failed observation write
+        # must not turn that successful delivery into a hook failure; the next
+        # turn will conservatively send the full projection again.
+        return
+
+
+def _goal_context_brief(record: Any) -> str:
+    """Build the small ordinary-turn projection after a full context."""
+    next_action = record.next_action
+    next_action_text = (
+        f"{next_action.kind}: {next_action.description}"
+        if next_action is not None
+        else "无"
+    )
+    active_dispatches = [
+        item
+        for item in record.work_items
+        if item.goal_revision == record.goal_revision
+        and item.status in {"launching", "active"}
+    ]
+    work_text = (
+        ", ".join(f"{item.work_item_id}={item.status}" for item in active_dispatches)
+        if active_dispatches
+        else "无"
+    )
+    return (
+        "Goal Plus 当前状态更新（完整目标已在本 session 上下文中）："
+        f"goal_plus_id={record.goal_plus_id}; status={record.status}; "
+        f"control={record.control.state}; stop_reason={record.control.reason}; "
+        f"goal_revision={record.goal_revision}; phase={record.phase}; "
+        f"next_action={next_action_text}; active_subagents={work_text}。"
+        "每轮读取 goal_plus_status 的 control、next_action 和 reconciliation。"
+    )
+
+
 def _emit_additional_context(
     event_name: str,
     context: str,
@@ -1125,14 +1194,17 @@ def _handle_role_pre_tool_use(
         return child
 
     try:
+        requested_session_ids = _runtime_agent_session_ids(
+            hook_input_codec.raw_tool_input(hook_input)
+        )
+        if agent_session_id is not None and not requested_session_ids:
+            requested_session_ids = [agent_session_id]
         for tool_name in tool_names:
             require_tool_role(
                 role,
                 tool_name,
                 caller_agent_session_id=agent_session_id,
-                requested_agent_session_ids=_runtime_agent_session_ids(
-                    hook_input_codec.raw_tool_input(hook_input)
-                ),
+                requested_agent_session_ids=requested_session_ids,
             )
     except PermissionError as exc:
         _emit_pre_tool_block(str(exc))
@@ -1268,10 +1340,15 @@ def _handle_user_prompt_submit(
                     event="user_prompt_submit",
                     context=hook_input,
                 )
+                needs_full = _goal_context_needs_full(record)
                 _emit_additional_context(
                     "UserPromptSubmit",
-                    _goal_context(record),
+                    _goal_context(record) if needs_full else _goal_context_brief(record),
                 )
+                if needs_full:
+                    _record_goal_context_delivery(
+                        runtime, record, session_id=session_id,
+                    )
             return
         terminal_goal_id = _select_session_goal_id(
             search_root,
@@ -1319,6 +1396,7 @@ def _handle_user_prompt_submit(
                 # The original user prompt already carries the message in this turn.
                 context += "\n先处理本次 resume 命令附带的用户补充信息，再继续原任务。"
             _emit_additional_context("UserPromptSubmit", context)
+            _record_goal_context_delivery(runtime, record, session_id=session_id)
         else:
             # continue=false would terminate an already running Codex turn.
             # Acknowledge controls through the normal input path instead.
@@ -1428,6 +1506,7 @@ def _handle_user_prompt_submit(
         initial_start=initial_start,
     )
     _emit_additional_context("UserPromptSubmit", goal_context)
+    _record_goal_context_delivery(runtime, record, session_id=session_id)
 
 
 def _handle_session_start(
@@ -1461,19 +1540,20 @@ def _handle_session_start(
         interaction="interactive",
     )
     if decision.decision in {"wait_for_user", "ask_user"}:
+        record = runtime.status(goal_id)
         _emit_additional_context(
             "SessionStart",
-            _goal_context(runtime.status(goal_id)),
+            _goal_context(record),
         )
+        _record_goal_context_delivery(runtime, record, session_id=session_id)
     elif hook_input.get("source") == "compact":
         # Compaction may drop the goal text from the transcript, and the next
         # turn can be a Stop continuation that no longer carries it.
         # _goal_context already embeds the MCP overview; re-appending it here
         # would duplicate the instructions on every compaction.
-        _emit_additional_context(
-            "SessionStart",
-            _goal_context(runtime.status(goal_id)),
-        )
+        record = runtime.status(goal_id)
+        _emit_additional_context("SessionStart", _goal_context(record))
+        _record_goal_context_delivery(runtime, record, session_id=session_id)
 
 
 def _handle_interrupt(
@@ -1846,6 +1926,7 @@ def _handle_pre_tool_use(
         "goal_plus_run_work_item",
         "goal_plus_record_work_event",
         "goal_plus_session_run",
+        "goal_plus_search_fork",
         "goal_plus_search_select",
         "spawn_agent",
     }
@@ -1859,7 +1940,7 @@ def _handle_pre_tool_use(
         from goal_plus.host_scope import (
             close_run_candidates,
             ensure_execution_scope,
-            execution_scope_for_run,
+            execution_scope_for_owner,
             goal_scope_activation_id,
             goal_scope_resume_nonce,
         )
@@ -1871,8 +1952,8 @@ def _handle_pre_tool_use(
         )
         record = runtime.authorization.require_scope_attachment(goal_id, attachment)
         native_config = codex_models.codex_native_model_config(hook_input)
-        current_scope = execution_scope_for_run(
-            root_dir=search_root, run_id=attachment.identity,
+        current_scope = execution_scope_for_owner(
+            root_dir=search_root, agent_harness="codex", owner_session_id=session_id,
         )
         activation_id = goal_scope_activation_id(record)
         activation_nonce = goal_scope_resume_nonce(record, current_scope)

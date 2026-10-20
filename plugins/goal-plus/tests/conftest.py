@@ -94,10 +94,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     configure_test_tmp(config)
-    # On shared machines /tmp/goal-plus-verifier-locks belongs to whichever
-    # user created it first, so other users cannot allocate their lock
-    # namespace. Keep test locks inside the checkout instead (.tmp is
-    # gitignored); an exported value still wins.
+    # A checkout-local basetemp is itself nested below the repository. Keep
+    # plain test projects there from accidentally inheriting the checkout's
+    # Git root; projects that create their own .git directory still resolve
+    # normally before this ceiling is reached.
+    os.environ.setdefault(
+        "GIT_CEILING_DIRECTORIES",
+        str(Path.cwd() / ".tmp"),
+    )
+    # Keep test locks inside the checkout instead of a shared host temporary
+    # namespace (.tmp is gitignored); an exported value still wins.
     os.environ.setdefault(
         "GOAL_PLUS_VERIFIER_RESOURCE_LOCK_DIR",
         str(Path(__file__).resolve().parents[1] / ".tmp" / "verifier-locks"),

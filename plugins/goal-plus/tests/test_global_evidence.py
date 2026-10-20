@@ -100,7 +100,7 @@ def test_snapshot_cleanup_preserves_annotation_but_marks_artifact_removed() -> N
         workspace_provider="thinkthread",
     )
     assert available["artifact_availability"] == "available"
-    assert available["reference_available"] is True
+    assert available["reference_available"] is False
     assert available["annotation_result_available"] is True
 
     removed = global_evidence_entry(
@@ -226,6 +226,52 @@ def test_global_evidence_is_immediate_and_view_is_late_bound(tmp_path: Path) -> 
         check=True,
     )
     assert _git(first[2], "show", f"{peer_commit}:initial_program.py") == "VALUE = 2"
+
+
+def test_compact_global_evidence_uses_full_delta_and_unchanged_deliveries(
+    tmp_path: Path,
+) -> None:
+    """The model-facing auto path does not resend the complete Evidence list."""
+    runtime, run_id, [candidate] = _search_with_candidates(tmp_path, 1)
+    candidate_id, session_id, workspace = candidate
+
+    initial = runtime.get_global_evidence(session_id, compact=True)
+    assert initial["delivery"] == "full"
+    assert initial["base_snapshot_id"] is None
+    assert initial["entries"] == []
+    assert initial["added"] == []
+    assert initial["entry_count"] == 0
+
+    unchanged = runtime.get_global_evidence(session_id, compact=True)
+    assert unchanged["delivery"] == "unchanged"
+    assert unchanged["unchanged"] is True
+    assert unchanged["snapshot_id"] == initial["snapshot_id"]
+    assert unchanged["entries"] == []
+
+    (workspace / "initial_program.py").write_text("VALUE = 3\n", encoding="utf-8")
+    runtime.run_verifier(
+        run_id,
+        candidate_id,
+        agent_session_id=session_id,
+        hypothesis="Raise the candidate value",
+    )
+    delta = runtime.get_global_evidence(session_id, compact=True)
+    assert delta["delivery"] == "delta"
+    assert delta["base_snapshot_id"] == unchanged["snapshot_id"]
+    assert delta["entry_count"] == 1
+    assert delta["entries"] == []
+    assert [(item["candidate_id"], item["iteration"]) for item in delta["added"]] == [
+        (candidate_id, 1)
+    ]
+    assert delta["changed"] == []
+    assert delta["removed"] == []
+
+    # The established explicit API remains a complete list for callers that
+    # did not opt into compact delivery.
+    explicit = runtime.get_global_evidence(session_id)
+    assert [(item["candidate_id"], item["iteration"]) for item in explicit] == [
+        (candidate_id, 1)
+    ]
 
 
 def test_external_evaluation_attaches_only_to_its_exact_evidence(

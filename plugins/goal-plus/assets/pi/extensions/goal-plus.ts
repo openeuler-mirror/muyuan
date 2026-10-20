@@ -78,6 +78,7 @@ const GOAL_PLUS_STATS_ENTRY_TYPE = "goal-plus-stats";
 const GOAL_PLUS_RUNTIME_ENTRY_TYPE = "goal-plus-runtime-start";
 const GOAL_PLUS_COMMAND_CONTEXT_TYPE = "goal-plus-command-context";
 const GOAL_PLUS_MUST_CONTINUE_TYPE = "goal-plus-must-continue";
+const GOAL_PLUS_FORK_CHECKPOINT_TYPE = "goal-plus-fork-checkpoint";
 const GOAL_PLUS_PROGRESS_WIDGET_KEY = "goal-plus-progress";
 let workspaceRoot: string | undefined;
 let sawContext = false;
@@ -464,6 +465,7 @@ async function ensureExecutionScope(
 		agent_harness: "pi",
 		goal_plus_id: activeGoalPlusId,
 		native_session_id: nativeSessionId,
+		native_session_file: ctx.sessionManager.getSessionFile(),
 		owner_session_id: `${activeGoalPlusId}:${ctx.cwd}`,
 		run_id: runId,
 		native_agent_config: nativeAgentConfig,
@@ -763,6 +765,7 @@ async function runThinkThreadWorkerToolSerial(
 		...THINKTHREAD_VERIFIER_TOOL_NAMES,
 		"goal_plus_search_get_agent_context",
 		"goal_plus_search_get_global_evidence",
+		"goal_plus_search_revise_spec",
 		"goal_plus_search_get_evidence_detail",
 		"goal_plus_search_read_shared_cache",
 		"goal_plus_search_append_shared_cache",
@@ -875,11 +878,11 @@ async function validateThinkThreadWorker(ctx: ExtensionContext): Promise<void> {
 		throw new Error("Goal Plus Candidate Child must have a Message-only Capability grant");
 	}
 	const metadata = latestDispatchMetadata(ctx);
-	await ensureThinkThreadWorkerRegistration(
-		client,
-		parentId,
-		metadata.registrationNonce,
-	);
+	// A fork starts its Child before the Parent's first retained dispatch.
+	// Tool execution acknowledges that exact dispatch before crossing the bridge.
+	if (metadata.registrationNonce) {
+		await ensureThinkThreadWorkerRegistration(client, parentId, metadata.registrationNonce);
+	}
 }
 
 function scopeThinkThreadWorkerTools(
@@ -2325,22 +2328,17 @@ function registerRuntimeTool(pi: ExtensionAPI, name: string, registered: Set<str
 					await ensureExecutionScope(pi, ctx, String(forwardedParams.goal_plus_id), currentPiNativeAgentConfig(pi, ctx));
 				}
 				const runId = stringFrom(forwardedParams.run_id);
-				if (runId && ["goal_plus_session_run", "goal_plus_search_select"].includes(name)) {
-					const scopeId = await ensureExecutionScope(
+				if (runId && [
+					"goal_plus_session_run",
+					"goal_plus_search_fork",
+					"goal_plus_search_select",
+				].includes(name)) {
+					await ensureExecutionScope(
 						pi,
 						ctx,
 						runId,
 						currentPiNativeAgentConfig(pi, ctx),
 					);
-					if (name === "goal_plus_search_select") {
-						const quiet = await runJsonCli(pi, commandCtx, "host_execution_scope_close_run", {
-							scope_id: scopeId,
-							run_id: runId,
-						});
-						if (!isRecord(quiet.details) || quiet.details.ok === false || quiet.details.active_count !== 0) {
-							throw new Error(String((isRecord(quiet.details) && quiet.details.error) || `Search run ${runId} still has active workers`));
-						}
-					}
 				}
 			}
 			const result = isThinkThreadWorker
@@ -2444,11 +2442,16 @@ function activateWorkerContext(
 	}
 	for (const tool of [
 		"goal_plus_search_get_global_evidence",
-		"goal_plus_search_reference_open",
 		"goal_plus_search_run_verifier",
 		"goal_plus_search_list_iterations",
 	]) {
 		registerRuntimeTool(pi, tool, registered);
+	}
+	if (isRecord(details.tool_capabilities) && details.tool_capabilities.references === true) {
+		registerRuntimeTool(pi, "goal_plus_search_reference_open", registered);
+	}
+	if (isRecord(details.tool_capabilities) && details.tool_capabilities.spec_revision === true) {
+		registerRuntimeTool(pi, "goal_plus_search_revise_spec", registered);
 	}
 	if (candidateTask.share_out_dir) {
 		registerRuntimeTool(pi, "goal_plus_search_stage_shared_tool", registered);
@@ -2470,6 +2473,7 @@ function activateWorkerContext(
 			agent_session_id: agentSessionId,
 			run_id: details.run_id,
 			candidate_id: details.candidate_id,
+			tool_capabilities: details.tool_capabilities,
 			execution_generation: details.execution_generation,
 			candidate_task: {
 				workspace,
@@ -2702,7 +2706,42 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 	const status = await refreshActiveGoal(pi, commandCtx, persist);
 	if (!isTerminalStatus(status?.status) && status?.goal_plus_id) {
 		// Turn boundary: keep the Search-run surfaces current for the still-running Goal.
-		observeSearchProgress(pi, ctx, status, await readMonitorSnapshot(pi, commandCtx, status));
+		const snapshot = await readMonitorSnapshot(pi, commandCtx, status);
+		observeSearchProgress(pi, ctx, status, snapshot);
+		// Fork preparation deliberately pauses at a completed-turn checkpoint.
+		// In headless mode the host must regain control so it can resume this same
+		// session; an interactive Pi session remains available for an explicit resume.
+		const runId = stringFrom(status.current_search_run_id);
+		const run = snapshot && isRecord(snapshot.run) ? snapshot.run : undefined;
+		const strategy = snapshot && isRecord(snapshot.strategy) ? snapshot.strategy : undefined;
+		const latestPlan = strategy && isRecord(strategy.latest_plan) ? strategy.latest_plan : undefined;
+		if (
+			stopReason === "stop"
+			&& status.status === "blocked"
+			&& runId && run?.run_id === runId && run.dispatch_group === null
+			&& strategy?.initial_context === "fork"
+			&& latestPlan?.status === "started"
+		) {
+			// Persist a run-scoped boundary after the preparation turn.  The
+			// direct adapter can select this marker's immutable ancestry. TT
+			// has no context selector and rejects new complete boundaries
+			// after preparation rather than silently forking later entries.
+			if (runId) {
+				const alreadyMarked = (ctx.sessionManager.getBranch() as unknown[]).some((entry) => {
+					if (!isRecord(entry) || entry.type !== "custom"
+						|| entry.customType !== GOAL_PLUS_FORK_CHECKPOINT_TYPE) return false;
+					const data = entry.data;
+					return isRecord(data) && data.run_id === runId;
+				});
+				if (!alreadyMarked) {
+					pi.appendEntry(GOAL_PLUS_FORK_CHECKPOINT_TYPE, {
+						version: 1, run_id: runId, goal_plus_id: status.goal_plus_id,
+						goal_revision: status.goal_revision, control_version: status.control?.version,
+					});
+				}
+			}
+			if (piHostInteraction(ctx) === "headless") ctx.shutdown();
+		}
 		return;
 	}
 	if (isTerminalStatus(status?.status)) {
@@ -2750,6 +2789,10 @@ async function settleMainGoal(pi: ExtensionAPI, ctx: ExtensionContext) {
 		// Retain history binding for summary and an explicit edit of complete.
 		goalPlusSessionAuthorized = false;
 		if (persist) persistGoalState(pi);
+		// Print/JSON hosts have no next user turn to drain after a terminal Goal.
+		// End the native session once reports and publication notifications are
+		// durable; interactive TUI sessions remain open for inspection.
+		if (piHostInteraction(ctx) === "headless") ctx.shutdown();
 	}
 }
 
@@ -2910,6 +2953,7 @@ export default async function (pi: ExtensionAPI) {
 		"goal_plus_search_list_history",
 		"goal_plus_search_plan_next",
 		"goal_plus_search_start_batch",
+		"goal_plus_search_fork",
 		"goal_plus_search_get_agent_observability",
 		"goal_plus_search_run_verifier",
 		"goal_plus_search_list_allocation_decisions",

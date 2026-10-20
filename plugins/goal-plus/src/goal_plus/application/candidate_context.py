@@ -3,6 +3,7 @@ from typing import Any
 from goal_plus.application.candidate_ranking import (
     best_iteration_record,
 )
+from goal_plus.application.candidate_spec import candidate_spec_id, iteration_spec_id
 from goal_plus.domain.evidence import (
     IterationRecord,
 )
@@ -18,6 +19,7 @@ from goal_plus.application.candidate_sessions import CandidateSessions
 from goal_plus.application.candidate_ledger import CandidateLedger
 from goal_plus.application.candidate_artifacts import CandidateArtifacts
 from goal_plus.application.references import ReferenceWorkspaces
+from goal_plus.domain.tool_catalog import CandidateToolCapabilities
 from goal_plus.application.shared_cache import SharedCache
 from goal_plus.application.shared_tools import SharedTools
 
@@ -36,6 +38,8 @@ def agent_iteration_context(iteration: IterationRecord) -> dict[str, Any]:
     )
     return {
         "iteration": iteration.iteration,
+        "frozen_spec_id": iteration.frozen_spec_id,
+        "spec_hash": iteration.spec_hash,
         "attempt_id": attempt_id,
         "score": iteration.score,
         "process_passed": iteration.process_passed,
@@ -89,8 +93,8 @@ class CandidateContext:
     def get_agent_context(self, agent_session_id: str) -> dict[str, Any]:
         session = self.sessions.session(agent_session_id)
         run = self.state.read_run(session.run_id)
-        frozen = self.state.read_frozen_spec(run.frozen_spec_id)
         record = self.state.read_candidate(session.run_id, session.candidate_id)
+        frozen = self.state.read_frozen_spec(candidate_spec_id(run, record))
         previous = self.state.read_agent_sessions(session.run_id)
         initialized = bool(
             record.results_ledger_artifact_ref or record.results_ledger_git_head
@@ -131,11 +135,22 @@ class CandidateContext:
             if frozen.spec.shared_cache.enabled
             else None
         )
+        specs = {frozen.frozen_spec_id: frozen}
+        projected_iterations = []
+        for iteration in record.iterations:
+            spec_id = iteration_spec_id(run, iteration)
+            if spec_id not in specs:
+                specs[spec_id] = self.state.read_frozen_spec(spec_id)
+            projected_iterations.append(iteration.model_copy(update={
+                "frozen_spec_id": spec_id,
+                "spec_hash": specs[spec_id].spec_hash,
+            }))
+        projected_record = record.model_copy(update={"iterations": projected_iterations})
         return project_candidate_context(
             CandidateContextInputs(
                 session,
                 frozen,
-                record,
+                projected_record,
                 previous,
                 projection,
                 results_path,
@@ -213,6 +228,17 @@ def project_candidate_context(inputs: CandidateContextInputs) -> dict[str, Any]:
         "denied_files": list(task.denied_files),
         "instructions": list(task.instructions),
     }
+    # Proposal metadata used to be sent in the launch prose.  Keep it in the
+    # authoritative context so the launch can remain a short wake-up message.
+    # The proposal instructions are already part of ``task.instructions`` and
+    # are therefore not copied into a second field here.
+    if task.proposal is not None and task.proposal.intent != task.hypothesis:
+        candidate_task["intent"] = task.proposal.intent
+    if task.proposal is not None and task.proposal.expected_tradeoff:
+        candidate_task["expected_tradeoff"] = task.proposal.expected_tradeoff
+    main_goal = session.directive.get("goal")
+    if isinstance(main_goal, str) and main_goal.strip():
+        candidate_task["main_goal"] = main_goal
     if not is_thinkthread:
         candidate_task["workspace"] = str(task.workspace)
     optional_task_fields = {
@@ -230,10 +256,13 @@ def project_candidate_context(inputs: CandidateContextInputs) -> dict[str, Any]:
         "execution_generation": session.execution_generation,
         "run_id": session.run_id,
         "candidate_id": session.candidate_id,
+        "frozen_spec_id": frozen.frozen_spec_id,
+        "spec_hash": frozen.spec_hash,
         "objective": frozen.spec.objective,
         "metric_name": frozen.spec.metric_name,
         "metric_direction": frozen.spec.metric_direction,
         "candidate_task": candidate_task,
+        "tool_capabilities": CandidateToolCapabilities.from_frozen(frozen).model_dump(mode="json"),
         "inner_agent": inner_agent,
         "results_tsv": str(results_tsv) if results_tsv is not None else None,
         "result_ledger_source": "gp",

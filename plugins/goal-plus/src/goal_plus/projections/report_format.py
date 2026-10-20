@@ -194,6 +194,8 @@ def is_better_score(value: float, current: float, direction: str) -> bool:
 
 
 def collect_session_scores(task: dict[str, Any], direction: str) -> dict[str, float]:
+    if ((task.get("statistics") or {}).get("scores") or {}).get("score_comparable") is False:
+        return {}
     scores: dict[str, float] = {}
     for candidate in task.get("candidates", []):
         for iteration in candidate.get("iterations", []):
@@ -213,6 +215,8 @@ def timeline_score_baseline(
     task: dict[str, Any],
 ) -> tuple[float | None, str | None]:
     scores = (task.get("statistics") or {}).get("scores") or {}
+    if scores.get("score_comparable") is False:
+        return None, None
     configured = finite_float(scores.get("baseline"))
     if configured is not None:
         return configured, "configured"

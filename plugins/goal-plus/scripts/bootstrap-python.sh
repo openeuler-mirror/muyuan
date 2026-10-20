@@ -10,7 +10,13 @@ if [[ -z "$goal_plus_uv" ]]; then
   goal_plus_uv="$goal_plus_home/bootstrap/bin/uv"
   if [[ ! -x "$goal_plus_uv" ]]; then
     mkdir -p "$goal_plus_home/bootstrap/bin"
-    goal_plus_download="$(mktemp)"
+    # Keep bootstrap downloads on the checkout's data filesystem. The host
+    # /tmp often has a small inode budget, while this repository already
+    # ignores .tmp for short-lived build artifacts. GOAL_PLUS_TMPDIR remains
+    # an explicit escape hatch for read-only checkouts.
+    goal_plus_tmp_root="${GOAL_PLUS_TMPDIR:-$PWD/.tmp}"
+    mkdir -p -- "$goal_plus_tmp_root"
+    goal_plus_download="$(mktemp "$goal_plus_tmp_root/goal-plus-download.XXXXXX")"
     trap 'rm -f "$goal_plus_download"' EXIT
     curl --fail --location --silent --show-error https://astral.sh/uv/0.11.6/install.sh -o "$goal_plus_download"
     UV_INSTALL_DIR="$goal_plus_home/bootstrap/bin" UV_NO_MODIFY_PATH=1 sh "$goal_plus_download"

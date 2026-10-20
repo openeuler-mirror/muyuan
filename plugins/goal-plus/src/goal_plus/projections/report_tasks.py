@@ -3,10 +3,57 @@ from __future__ import annotations
 
 from typing import Any
 
+from goal_plus.application.candidate_ranking import best_iteration_record
 from goal_plus.ports.report import ReportTaskInputs
+from goal_plus.projections.fork import dispatch_group_summary
 from goal_plus.projections.publication import publication_summary
 from goal_plus.projections.report_format import parse_epoch
 from goal_plus.projections.report_statistics import pi_dispatch_usage
+
+
+def _contract_changes(before: Any, after: Any, field: str) -> list[dict[str, Any]]:
+    if before == after:
+        return []
+    if isinstance(before, dict) and isinstance(after, dict):
+        return [
+            change
+            for key in sorted(before.keys() | after.keys())
+            for change in _contract_changes(before.get(key), after.get(key), f"{field}.{key}")
+        ]
+    return [{"field": field, "before": before, "after": after}]
+
+
+def _evaluation_contracts(inputs: ReportTaskInputs) -> list[dict[str, Any]]:
+    contracts = []
+    for index, frozen in enumerate(
+        sorted(inputs.frozen_specs.values(), key=lambda item: (item.created_at, item.frozen_spec_id)),
+        start=1,
+    ):
+        parent = inputs.frozen_specs.get(frozen.parent_frozen_spec_id)
+        changes = []
+        if parent is not None:
+            changes = _contract_changes(
+                parent.spec.model_dump(mode="json"), frozen.spec.model_dump(mode="json"), "spec"
+            ) + _contract_changes(parent.verifier_hashes, frozen.verifier_hashes, "verifier_hashes")
+        contracts.append({
+            **frozen.model_dump(mode="json"),
+            "alias": f"V{index}",
+            "changes": changes,
+            "usages": {
+                "initial": frozen.frozen_spec_id == inputs.run.frozen_spec_id,
+                "selected": frozen.frozen_spec_id == inputs.run.selected_frozen_spec_id,
+                "active_candidate_ids": [c.candidate_id for c in inputs.candidates if
+                    (c.active_frozen_spec_id or inputs.run.frozen_spec_id) == frozen.frozen_spec_id],
+                "revision_candidate_ids": [c.candidate_id for c in inputs.candidates if
+                    any(r.frozen_spec_id == frozen.frozen_spec_id for r in c.spec_revisions)],
+                "iterations": [{"candidate_id": c.candidate_id, "iteration": i.iteration}
+                    for c in inputs.candidates for i in c.iterations if
+                    (i.frozen_spec_id or inputs.run.frozen_spec_id) == frozen.frozen_spec_id],
+                "child_frozen_spec_ids": [item.frozen_spec_id for item in inputs.frozen_specs.values()
+                    if item.parent_frozen_spec_id == frozen.frozen_spec_id],
+            },
+        })
+    return contracts
 
 
 def task_details(
@@ -20,6 +67,7 @@ def task_details(
     sessions = inputs.sessions
     observations = inputs.observations
     verifier_enabled = frozen.spec.strategy.requires_llm_verifier
+    contracts = _evaluation_contracts(inputs)
     session_ids_by_candidate: dict[str, list[str]] = {}
     for session in sessions:
         session_ids_by_candidate.setdefault(session.candidate_id, []).append(
@@ -34,24 +82,30 @@ def task_details(
 
     candidate_payloads: list[dict[str, Any]] = []
     for candidate in candidates:
-        scored = [
-            iteration
-            for iteration in candidate.iterations
-            if iteration.process_passed is True
-            and iteration.score is not None
-            and not iteration.touched_denied_files
-            and not iteration.changed_outside_allowed
-        ]
-        best = None
-        if scored:
-            reverse = frozen.spec.metric_direction == "maximize"
-            best = sorted(scored, key=lambda item: item.score, reverse=reverse)[0]
+        active = inputs.candidate_specs[candidate.candidate_id]
+        best = best_iteration_record(candidate, active.spec.metric_direction)
+        score_report = candidate.score_report
+        if score_report is not None and (score_report.frozen_spec_id or run.frozen_spec_id) != active.frozen_spec_id:
+            score_report = None
         candidate_verifier_records = records_by_candidate.get(candidate.candidate_id, [])
         latest_verifier_record = (
             candidate_verifier_records[-1] if candidate_verifier_records else None
         )
         candidate_payload = {
             "candidate_id": candidate.candidate_id,
+            "frozen_spec_id": active.frozen_spec_id,
+            "spec_hash": active.spec_hash,
+            "active_frozen_spec_id": active.frozen_spec_id,
+            "active_spec_hash": active.spec_hash,
+            "metric_name": active.spec.metric_name,
+            "metric_direction": active.spec.metric_direction,
+            "latest_frozen_spec_id": (
+                candidate.score_report.frozen_spec_id or run.frozen_spec_id
+                if candidate.score_report is not None else None
+            ),
+            "latest_spec_hash": candidate.score_report.spec_hash if candidate.score_report else None,
+            "spec_revisions": [item.model_dump(mode="json") for item in candidate.spec_revisions],
+            "candidate_origin": candidate.task.candidate_origin.model_dump(mode="json") if candidate.task.candidate_origin else None,
             "status": candidate.status,
             "plan_id": candidate.task.plan_id,
             "parent_id": candidate.task.parent_id,
@@ -69,9 +123,9 @@ def task_details(
                 best.score
                 if best is not None
                 else (
-                    candidate.score_report.aggregate_score
-                    if candidate.score_report is not None
-                    and candidate.score_report.process_passed
+                    score_report.aggregate_score
+                    if score_report is not None
+                    and score_report.process_passed
                     else None
                 )
             ),
@@ -79,8 +133,8 @@ def task_details(
                 True
                 if best is not None
                 else (
-                    candidate.score_report.process_passed
-                    if candidate.score_report is not None
+                    score_report.process_passed
+                    if score_report is not None
                     else None
                 )
             ),
@@ -161,6 +215,7 @@ def task_details(
             "model_provenance": session.model_provenance,
             "agent_harness": session.agent_harness,
             "runtime_provider": session.runtime_provider,
+            "candidate_origin": session.candidate_origin.model_dump(mode="json") if session.candidate_origin else None,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
             "provider": execution.get("provider"),
@@ -249,7 +304,7 @@ def task_details(
                     continue
                 attributed_iterations.append(iteration)
             scored = [
-                iteration.score
+                iteration
                 for iteration in attributed_iterations
                 if iteration.process_passed is True
                 and iteration.score is not None
@@ -257,11 +312,13 @@ def task_details(
                 and not iteration.changed_outside_allowed
             ]
             dispatch_score = None
-            if scored:
+            score_spec_ids = {item.frozen_spec_id or run.frozen_spec_id for item in scored}
+            if len(score_spec_ids) == 1:
+                direction = inputs.iterations[(session.candidate_id, scored[0].iteration)]["metric_direction"]
                 dispatch_score = (
-                    min(scored)
-                    if frozen.spec.metric_direction == "minimize"
-                    else max(scored)
+                    min(item.score for item in scored)
+                    if direction == "minimize"
+                    else max(item.score for item in scored)
                 )
             processed_tokens, cost_usd = pi_dispatch_usage(dispatch.get("usage"))
             timed_out = bool(dispatch.get("timed_out"))
@@ -294,6 +351,8 @@ def task_details(
                         for iteration in attributed_iterations
                     ),
                     "score": dispatch_score,
+                    "frozen_spec_id": next(iter(score_spec_ids)) if len(score_spec_ids) == 1 else None,
+                    "score_comparable": len(score_spec_ids) <= 1,
                 }
             )
 
@@ -303,7 +362,8 @@ def task_details(
             "status": plan.status,
             "created_at": plan.created_at,
             "strategy": plan.strategy.name,
-            "orchestration_mode": plan.strategy.orchestration_mode,
+            "initial_context": plan.strategy.initial_context,
+            "adaptive_search": plan.strategy.adaptive_search_enabled,
             "requested_k": plan.requested_k,
             "planned_k": plan.planned_k,
             "remaining_budget": plan.remaining_budget,
@@ -322,9 +382,16 @@ def task_details(
         "is_report_run": run_id == report_run_id,
         "run": {**run.model_dump(mode="json"), **publication_summary(run)},
         "strategy": frozen.spec.strategy.model_dump(mode="json", exclude_none=True),
+        "dispatch_group": dispatch_group_summary(run.dispatch_group),
+        "evaluation_contracts": contracts,
+        "selected_contract": next((item for item in contracts if item["usages"]["selected"]), None),
         "frozen_spec": {
             "frozen_spec_id": frozen.frozen_spec_id,
             "spec_hash": frozen.spec_hash,
+            "parent_frozen_spec_id": frozen.parent_frozen_spec_id,
+            "revision_reason": frozen.revision_reason,
+            "dispatch_group_id": frozen.dispatch_group_id,
+            "dispatch_target_index": frozen.dispatch_target_index,
             "objective": frozen.spec.objective,
             "metric_name": frozen.spec.metric_name,
             "metric_direction": frozen.spec.metric_direction,

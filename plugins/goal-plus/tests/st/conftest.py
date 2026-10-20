@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._st_tmp import new_st_log_dir, new_st_run_dir
+from tests._st_tmp import new_st_log_dir, new_st_run_dir, st_tmp_root
 
 from .helpers.codex_runner import CodexRunner, find_codex
 from .hosts import (
@@ -28,7 +28,11 @@ PROMPTS_DIR = Path(__file__).parent / "prompts"
 def isolated_pi_config(monkeypatch):
     """Keep native model access while isolating package discovery and session writes."""
     source = Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser()
-    with tempfile.TemporaryDirectory(prefix="goal-plus-pi-st-config-") as directory:
+    config_root = st_tmp_root() / "pi-config"
+    config_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="goal-plus-pi-st-config-", dir=config_root
+    ) as directory:
         target = Path(directory)
         for name in ("auth.json", "models.json", "models-store.json"):
             if (source / name).is_file():
@@ -247,11 +251,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def st_project_root(request: pytest.FixtureRequest) -> Path:
     """Temporary project root for an ST run, under the ST scratch base.
 
-    The scratch base lives outside the checkout (see tests/_st_tmp.py): a
-    repo-local .tmp grew without bound and made the checkout look dirty to git.
-    Each scenario gets its own subdirectory keyed by the test node id so
-    parallel runs don't collide, and it is removed once the test finishes
-    unless the run is kept for debugging.
+    The scratch base defaults to ``$PWD/.tmp/st`` (see tests/_st_tmp.py) so
+    temporary state stays on the checkout's intended filesystem. Each scenario
+    gets its own subdirectory keyed by the test node id so parallel runs don't
+    collide, and it is removed once the test finishes unless the run is kept for
+    debugging.
     """
     project_root = new_st_run_dir(request, kind="st-runs")
 

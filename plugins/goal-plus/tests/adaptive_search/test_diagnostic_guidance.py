@@ -116,14 +116,14 @@ def test_parameter_boundaries(parameters):
 
 
 def test_strategy_registration_and_roundtrip():
-    config = dict(name="adaptive", orchestration_mode="adaptive_search",
-        allocation={"policy": "swe_search_uct/v1"},
-        verifier={"scores": list(result().scores)}, steering=policy().model_dump())
+    config = dict(name="adaptive", initial_context="fresh",
+        adaptive_search={"allocation": {"policy": "swe_search_uct/v1"}, "steering": policy().model_dump()},
+        verifier={"scores": list(result().scores)})
     parsed = StrategySpec.model_validate(config)
     assert StrategySpec.model_validate_json(parsed.model_dump_json()) == parsed
-    with pytest.raises(ValueError):
-        StrategySpec.model_validate({**config, "orchestration_mode": "parallel_loops"})
-    config["steering"]["delivery"].pop("mode")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        StrategySpec.model_validate({**config, "initial_context": "fork"})
+    config["adaptive_search"]["steering"]["delivery"].pop("mode")
     assert StrategySpec.model_validate(config).steering.delivery.mode == "apply"
 
 
@@ -132,7 +132,9 @@ def test_steering_only_record_is_routed_through_runtime_without_allocation(setup
     from goal_plus.runtime import FileSearchRuntime
 
     h = configure(setup)
-    h.state.frozen.spec.strategy = StrategySpec(steering=h.spec)
+    h.state.frozen.spec.strategy = StrategySpec(
+        initial_context="fresh", adaptive_search={"steering": h.spec}
+    )
     h.state.frozen.spec.budget = SimpleNamespace(max_parallel=2)
     # Steering-only consumption must not access Allocation or its Snapshot builder.
     adaptive = AdaptiveSearch(allocation=None, snapshots=None, steering=h.component)

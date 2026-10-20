@@ -2,13 +2,15 @@
 
 ST scenarios are expensive: each one drives a real host agent and writes runtime
 state, sessions and host logs.  They used to be created under
-``<repo>/.tmp/<kind>`` with ``tempfile.mkdtemp`` and were never removed, so the
-checkout-local ``.tmp`` grew without bound and made the checkout look dirty to
-git.
+the host's global tempfile directory with ``tempfile.mkdtemp``.  On shared
+machines that scatters a large number of inodes across a different mount and
+makes cleanup difficult to inspect.  Scratch now lives under the current
+checkout's ignored ``.tmp/st`` tree and is removed after each test unless the
+test failed or debugging is enabled.
 
 Two rules replace that:
 
-* scratch runs live *outside* the checkout, under a base that can be relocated
+* scratch runs live under ``$PWD/.tmp/st`` by default, and can be relocated
   with ``GOAL_PLUS_ST_TMP``; and
 * a run directory is removed once its test finishes, but is kept when the test
   failed or when ``GOAL_PLUS_TEST_DEBUG=1`` is set, so a failure stays
@@ -33,17 +35,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TMP_ENV = "GOAL_PLUS_ST_TMP"
 
 
-def _checkout_root() -> Path:
-    """Return the outermost directory at or above the repo holding a .git entry."""
-    found = REPO_ROOT
-    for candidate in (REPO_ROOT, *REPO_ROOT.parents):
-        if (candidate / ".git").exists():
-            found = candidate
-    return found
-
-
 def st_tmp_root() -> Path:
-    """Base directory for ST scratch space, kept outside the checkout.
+    """Base directory for ST scratch space.
 
     Override with ``GOAL_PLUS_ST_TMP`` when the default location is unsuitable
     (for example a machine whose checkout lives on a small partition).
@@ -51,10 +44,7 @@ def st_tmp_root() -> Path:
     override = os.environ.get(TMP_ENV)
     if override:
         return Path(override).expanduser().resolve()
-    checkout = _checkout_root()
-    if checkout.parent == checkout:
-        return (Path(tempfile.gettempdir()) / f"{REPO_ROOT.name}-st-tmp").resolve()
-    return (checkout.parent / f".{REPO_ROOT.name}-st-tmp").resolve()
+    return (Path.cwd() / ".tmp" / "st").resolve()
 
 
 def new_st_run_dir(request: pytest.FixtureRequest, *, kind: str) -> Path:

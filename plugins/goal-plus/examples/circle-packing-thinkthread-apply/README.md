@@ -83,7 +83,14 @@ tt run --profile goal-plus-pi --fs "$PWD/workspace"
 使用 GLM Flash 时，在上述 `tt run` 命令末尾追加
 `-- --model zai/glm-5.3-flash --thinking low`，让 Pi 选择模型；TT 自身的 `--model` 使用另一份
 模型注册表。显式指定 `--state-root` 时，目录必须在 Profile 的 checkout 读取授权范围之外，
-例如通过 `mktemp -d /tmp/goal-plus-circle-tt.XXXXXX` 创建，再将路径传给 `tt run`。
+例如在仓库当前目录的 `.tmp/` 下创建：
+
+```bash
+mkdir -p "$PWD/.tmp"
+tt_state_root=$(mktemp -d "$PWD/.tmp/goal-plus-circle-tt.XXXXXX")
+```
+
+再将 `"$tt_state_root"` 传给 `tt run`。
 
 基础 session 诊断默认采集；需要额外统计请求和返回大小时，在启动命令前增加
 `GOAL_PLUS_DEBUG=1`。结束后使用
@@ -113,6 +120,47 @@ Codex binding 当前使用 `inner_agent=common`。Codex prompt 只覆盖示例 S
 保留 ThinkThread workspace、K=2、Annotation 和 apply 合同；两个候选各提交一次确定性 hint
 即可进入选择和回写，不要求额外 improvement turn。不要通过 `tt run -- -p ...` 或追加 Codex
 参数切换模型，因为 Root 参数会被 candidate 继承；使用安装器的 `--codex-profile` 投影模型。
+
+## 运行 Fork Circle
+
+两端使用相同的 `fork` 上层流程。先准备 fork 版本的工作区；它把本例的
+`initial_context` 改为 `fork`、inner agent 改为 `common`，并要求分支 LLM 审计，
+其余 verifier、Annotation、K=2 和 apply 合同保留：
+
+```bash
+python3 prepare_workspace.py --fork --destination workspace-fork
+```
+
+按上面对应宿主的方式启动 TT Root，把 `--fs` 改为 `"$PWD/workspace-fork"`。在 Root TUI
+粘贴 [Pi fork prompt](pi-goal-prompt-fork.md) 或 [Codex fork prompt](codex-goal-prompt-fork.md)。
+第一个 Main turn 只完成 freeze、run、plan 和两候选 batch，然后标记 blocked 并返回 ready。
+此时尚未创建分支；必须等 native turn 完整结束，保证 checkpoint 包含当前任务和准备事实。
+
+第二次输入使用 [共同后续任务](fork-resume-task.md)：Pi 在它前面加 `/goal-plus resume` 和一个空格；
+Codex 先要求调用 `goal_plus_host_resume(goal_plus_id)`，再完成该后续任务。继续的是同一个
+Main session 和原 Goal，预算不会重置。Main 调用 `goal_plus_search_fork` 一次，从
+同一个完成边界创建两个独立 Child 和 private Fs，然后使用返回的 `agent_session_id` 与
+共同的 `goal_plus_session_*` 控制接口运行分支。
+
+每个 Child 首轮复制对应 hint 并验证；第二次独立交付只把 radius safety margin 从
+`1e-7` 改为 `5e-8`，保持有效且略提高分数。四次交付完成后关闭两分支，等待全部 required
+fork audit 和 Annotation，再 select、promotion、apply、Root 复验与 cleanup。该场景既
+检查 Main 上下文 fork，也检查 retained continuation，不能用 fresh spawn 代替。
+
+开发者真实验收复用现有两端 Circle fixture：
+
+```bash
+uv run pytest --run-system-tests -n 0 -s -q \
+  'tests/st_thinkthread/test_circle_main.py::test_native_pi_main_completes_circle_thinkthread_apply[fork]'
+uv run pytest --run-system-tests -n 0 -s -q \
+  tests/st_thinkthread/test_codex_circle_main.py::test_native_codex_main_completes_fork_circle_thinkthread_apply
+```
+
+系统测试在 provider state 和 Child 原生历史中核对实际继承的 Main 完成边界和上下文前缀、
+不同 private Fs，以及初始 Child 身份贯穿两次交付；同时核验不可变
+settlement/audit、exact-snapshot selection、独立 publication/apply 和关闭回执。正常用户
+运行仍依据完成卡和 Root verifier，无需手工读取内部状态。协议和恢复边界见
+[ThinkThread fork 支持](../../docs/agent-host-adapters.md#fork-支持范围)。
 
 ## 验收
 

@@ -51,11 +51,22 @@ class GoalReconciliation:
                 continue
             if state["state"] in {"promoted", "aborted", "failed"}:
                 continue
+            # Fork preparation fixes branch dispatch cardinality up front.
+            # Once a branch has one settled iteration, reconciliation must
+            # move the run toward audit/selection instead of treating it as a
+            # fresh-search candidate and dispatching another worker turn.
+            run_record = self.search.state.read_run(task.run_id)
+            fork_mode = run_record.dispatch_group is not None
             candidates = []
             for candidate in state["candidates"]:
                 recovery = candidate["recovery"]
                 step = "continue_candidate"
-                if recovery:
+                candidate_record = self.search.state.read_candidate(
+                    task.run_id, candidate["candidate_id"]
+                )
+                if fork_mode and candidate_record.iterations:
+                    step = "continue_search"
+                elif recovery:
                     current = [
                         s
                         for s in candidate["sessions"]

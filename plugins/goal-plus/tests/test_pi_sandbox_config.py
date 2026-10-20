@@ -38,6 +38,10 @@ def test_pi_candidate_copies_host_config_and_preserves_existing_session_config(
     result = native_candidate_input(root, session, scope, process_environment={})
     target = Path(result.process.environment["PI_CODING_AGENT_DIR"])
     assert target != source
+    command = result.process.command
+    session_dir = Path(command[command.index("--session-dir") + 1])
+    # Pi migrates loose JSONL files in its config home on the next startup.
+    assert target != session_dir
     assert (target / "auth.json").read_text() == auth
     assert (target / "auth.json").stat().st_mode & 0o777 == 0o600
     assert (target / "models.json").read_bytes() == (source / "models.json").read_bytes()

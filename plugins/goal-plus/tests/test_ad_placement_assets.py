@@ -117,7 +117,7 @@ def test_search_spec_matches_edgebench_submission_surface_and_public_tools() -> 
         ".goal-plus-verifiers/ad_local_score.py",
     ]
     assert spec.promotion_verifiers == []
-    assert spec.strategy.orchestration_mode == "parallel_loops"
+    assert spec.strategy.initial_context == "fresh"
     assert spec.workspace.provider == "git_worktree"
     assert "CPU-only" in spec.constraints["edgebench_alignment"]
     assert "离线" in spec.constraints["edgebench_alignment"]

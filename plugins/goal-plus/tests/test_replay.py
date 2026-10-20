@@ -167,14 +167,12 @@ def test_capture_preserves_visible_detail_and_provider_snapshot(
         def run(self, prompt: str, *, timeout: float):
             assert f"Selected Evidence: {peer_task.candidate_id}:1" in prompt
             detail = self.bridge.call("goal_plus_search_get_evidence_detail", {
-                "agent_session_id": session.agent_session_id,
                 "candidate_id": peer_task.candidate_id,
                 "iteration": 1,
             })
             assert (detail["candidate_id"], detail["iteration"]) == (peer_task.candidate_id, 1)
             assert detail["supplemental_evaluation"]["summary"] == "The change is useful."
             opened = self.bridge.call("goal_plus_search_reference_open", {
-                "agent_session_id": session.agent_session_id,
                 "source_candidate_id": peer_task.candidate_id,
                 "source_iteration": 1,
             })
@@ -363,10 +361,16 @@ def test_fork_excludes_original_turn_and_injects_raw_prefix(
         tmp_path / "replay" / "fork-points" / point.fork_point_id / "prefix.json"
     ).read_text(encoding="utf-8"))
     requests = []
+    scratch = tmp_path / ".tmp" / "replay"
+    monkeypatch.setenv("GOAL_PLUS_TMPDIR", str(scratch))
+    monkeypatch.setenv("GOAL_PLUS_PARENT_PRIVATE_STATE", "parent-only")
 
     class FakeRpc:
-        def __init__(self, *_args):
-            pass
+        def __init__(self, process, *_args):
+            scratch_dir = process.environment.get("GOAL_PLUS_TMPDIR")
+            parent_state = process.environment.get("GOAL_PLUS_PARENT_PRIVATE_STATE")
+            assert scratch_dir == str(scratch)
+            assert parent_state is None
 
         def request(self, request, *, timeout):
             requests.append(request)

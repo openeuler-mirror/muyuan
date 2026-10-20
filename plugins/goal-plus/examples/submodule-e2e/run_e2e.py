@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import runpy
 import subprocess
 import sys
@@ -14,6 +15,12 @@ from goal_plus.infrastructure.artifacts.submodules import inspect_submodules
 
 PREPARE = runpy.run_path(str(Path(__file__).with_name("prepare_workspace.py")))
 create_workspace = PREPARE["create_workspace"]
+
+
+def _temporary_root() -> Path:
+    root = Path(os.environ.get("GOAL_PLUS_TMPDIR") or Path.cwd() / ".tmp").expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
 
 
 def git(root: Path, *args: str) -> str:
@@ -41,7 +48,9 @@ def run_verifier(candidate: Path) -> dict[str, int]:
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="goal-plus-submodule-e2e-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="goal-plus-submodule-e2e-", dir=_temporary_root()
+    ) as directory:
         root = Path(directory)
         source = create_workspace(root / "source")
         source_root = Path(source["parent"])

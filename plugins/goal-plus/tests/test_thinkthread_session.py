@@ -1,19 +1,23 @@
 """Retained Child execution through common session control, without Search policy."""
 
-from contextlib import nullcontext
-from copy import deepcopy
-from dataclasses import replace
+import base64
 import json
 import threading
 import time
+from contextlib import nullcontext
+from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
 from goal_plus.execution.session_control import NativeSessionControl
-from goal_plus.execution.thinkthread_child import ChildDriver, TURN_QUIESCENCE_SECONDS
+from goal_plus.execution.thinkthread_child import TURN_QUIESCENCE_SECONDS, ChildDriver
 from goal_plus.execution.thinkthread_session import ThinkThreadSession
 from goal_plus.infrastructure.clock import SystemClock
-from goal_plus.ports.thinkthread_session import ThinkThreadSessionHooks, ThinkThreadSessionInput
+from goal_plus.ports.thinkthread_session import (
+    ThinkThreadSessionHooks,
+    ThinkThreadSessionInput,
+)
 from tests._thinkthread_sdk import StatefulAgentPosix
 
 
@@ -130,7 +134,12 @@ def test_codex_retired_child_respawns_from_settled_snapshot(codex_actor):
 
 
 def test_codex_retained_child_still_wakes_without_replacement(codex_actor):
+    from goal_plus.domain.tool_catalog import CandidateToolCapabilities
+
     actor, sdk, record, _, settled, bound = codex_actor
+    actor.config = replace(actor.config, tool_capabilities=CandidateToolCapabilities(
+        supplemental=True, shared_tools=False, shared_cache=True, references=False, spec_revision=False,
+    ))
     control = NativeSessionControl(actor)
     try:
         for number in (1, 2):
@@ -142,8 +151,38 @@ def test_codex_retained_child_still_wakes_without_replacement(codex_actor):
         assert sum(operation == "thinkthread.spawn" for operation, _ in sdk.operations) == 1
         assert not any(operation == "thinkthread.signal" for operation, _ in sdk.operations)
         assert [binding.child_id for binding in bound] == ["tt-child-1"]
+        dispatches = [
+            params["initialMessage"] if operation == "thinkthread.spawn" else params["text"]
+            for operation, params in sdk.operations
+            if operation == "thinkthread.spawn" or operation == "message.send" and params.get("wake") is True
+        ]
+        assert len(dispatches) == 2
+        for text in dispatches:
+            markers = [line for line in text.splitlines() if line.startswith("goal_plus_candidate_capabilities=")]
+            assert len(markers) == 1
+            encoded = markers[0].split("=", 1)[1].removesuffix(";")
+            assert json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))) == {
+                "supplemental": True, "shared_tools": False, "shared_cache": True, "references": False, "spec_revision": False,
+            }
     finally:
         control.close()
+
+
+@pytest.mark.parametrize("loss", ["stopped", "retired", "missing"])
+def test_fork_bound_codex_child_never_respawns_after_continuation_loss(codex_actor, loss):
+    actor, sdk, record, _, _, _ = codex_actor
+    assert actor.run("first retained attempt", timeout=10).native_session_id == "tt-child-1"
+    record["dispatch_provenance"] = {"checkpoint_id": "original-completed-turn"}
+    if loss == "stopped":
+        sdk.child("tt-child-1")["executionState"] = "absent"
+    elif loss == "retired":
+        record["child_retired"] = True
+    else:
+        sdk.children.clear()
+    with pytest.raises(RuntimeError, match="ForkContinuationUnavailable"):
+        actor.run("second retained attempt", timeout=10)
+    assert actor.native_session_id == "tt-child-1"
+    assert sum(operation == "thinkthread.spawn" for operation, _ in sdk.operations) == 1
 
 
 def test_common_controller_retains_child_for_two_exact_calls(child_actor):

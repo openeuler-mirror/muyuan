@@ -6,7 +6,6 @@ import re
 import shutil
 import subprocess
 import tarfile
-import tempfile
 from pathlib import Path
 from typing import Literal, Mapping
 
@@ -23,6 +22,7 @@ from goal_plus.ports.publication import (
     PromotionApplyResult,
 )
 from goal_plus.paths import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT
+from goal_plus.temp import temporary_directory
 
 IGNORED_NAMES = {
     ".git",
@@ -913,7 +913,7 @@ class GitPublication:
             for relative_path in changed_files
         ]
 
-        with tempfile.TemporaryDirectory(prefix="goal-plus-index-") as temporary:
+        with temporary_directory(prefix="goal-plus-index-") as temporary:
             index_path = Path(temporary) / "index"
             env = {**os.environ, "GIT_INDEX_FILE": str(index_path)}
             _git_run_env(repository, env, "read-tree", base_artifact_ref.id)

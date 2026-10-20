@@ -2,12 +2,23 @@
 
 from typing import Any
 
-from goal_plus.domain.search import CandidateTask, FrozenSpec, SearchPlan
+from goal_plus.domain.evidence import compact_metric_tree, same_json_value
 from goal_plus.domain.promotion import PromotionRecord
+from goal_plus.domain.search import CandidateTask, FrozenSpec, SearchPlan
 
 
 def frozen_spec_receipt(frozen: FrozenSpec) -> dict[str, Any]:
-    payload: dict[str, Any] = {"frozen_spec_id": frozen.frozen_spec_id, "state": "frozen"}
+    payload: dict[str, Any] = {
+        "frozen_spec_id": frozen.frozen_spec_id, "state": "frozen",
+        "spec_hash": frozen.spec_hash,
+        "initial_context": frozen.spec.strategy.initial_context,
+        "adaptive_search": frozen.spec.strategy.adaptive_search_enabled,
+        "llm_validation": frozen.spec.strategy.llm_validation,
+    }
+    for key in ("parent_frozen_spec_id", "revision_reason", "dispatch_group_id", "dispatch_target_index"):
+        value = getattr(frozen, key)
+        if value is not None:
+            payload[key] = value
     baseline = frozen.origin_verification
     payload.update(
         metric_name=frozen.spec.metric_name,
@@ -50,6 +61,11 @@ def candidate_task_receipt(task: CandidateTask) -> dict[str, Any]:
         payload["selected_model"] = task.selected_model.model_dump(mode="json", include={
             "model", "provider", "reasoning_effort", "service_tier",
         }, exclude_none=True)
+    for key in ("frozen_spec_id", "spec_hash", "llm_validation"):
+        if task.strategy_metadata.get(key) is not None:
+            payload[key] = task.strategy_metadata[key]
+    if task.candidate_origin is not None:
+        payload["candidate_origin"] = task.candidate_origin.model_dump(mode="json")
     return payload
 
 
@@ -72,17 +88,41 @@ def history_page(items: list[dict[str, Any]], offset: int, limit: int) -> dict[s
             "next_offset": offset + len(page) if offset + len(page) < len(items) else None}
 
 
+def compact_iteration_response(iteration: dict[str, Any]) -> dict[str, Any]:
+    """Drop a top-level metrics copy only when the settlement is identical.
+
+    ``SettlementReceipt.evidence.metrics`` is the authoritative receipt view.
+    The full iteration remains available from state/report paths; this only
+    trims the model-facing list response and keeps both copies on mismatch.
+    """
+
+    receipt = iteration.get("settlement_receipt")
+    evidence = receipt.get("evidence") if isinstance(receipt, dict) else None
+    receipt_metrics = evidence.get("metrics") if isinstance(evidence, dict) else None
+    iteration_metrics = iteration.get("metrics")
+    payload = dict(iteration)
+    if (
+        isinstance(receipt_metrics, dict)
+        and isinstance(iteration_metrics, dict)
+        and same_json_value(iteration_metrics, receipt_metrics)
+    ):
+        payload.pop("metrics", None)
+    elif isinstance(iteration_metrics, dict):
+        payload["metrics"] = compact_metric_tree(iteration_metrics)
+    return payload
+
+
 def search_history_summary(history: dict[str, Any]) -> dict[str, Any]:
     payload = {key: history[key] for key in (
-        "run_id", "state", "objective", "metric_name", "metric_direction",
+        "run_id", "frozen_spec_id", "state", "objective", "metric_name", "metric_direction",
         "best_candidate_id", "best_score", "total_candidates", "returned_candidates",
-        "top_n", "sort_by",
+        "top_n", "sort_by", "score_comparable", "effective_sort_by",
     ) if key in history}
     for key in (
         "source_run_id", "invalidated_at", "invalidation_reason",
         "invalidation_summary", "replacement_run_id",
     ):
-        if history.get(key):
+        if key in history:
             payload[key] = history[key]
     if history.get("inherited_research"):
         payload["inherited_research_available"] = True
@@ -95,9 +135,12 @@ def search_history_summary(history: dict[str, Any]) -> dict[str, Any]:
         ) if key in candidate}
         for key in (
             "best_git_head", "summary", "next_ideas", "blockers",
-            "key_metrics", "touched_denied_files", "changed_outside_allowed",
+            "touched_denied_files", "changed_outside_allowed",
+            "metrics", "metrics_omitted", "frozen_spec_id", "spec_hash", "llm_validation",
+            "active_frozen_spec_id", "active_spec_hash", "spec_revisions",
+            "metric_name", "metric_direction", "latest_frozen_spec_id", "latest_spec_hash",
         ):
-            if candidate.get(key):
+            if key in candidate:
                 row[key] = candidate[key]
 
         # A settled best can survive a failed or rolled-back latest attempt.

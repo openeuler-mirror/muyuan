@@ -2,12 +2,13 @@ import { pathToFileURL } from "node:url";
 import { dispatchMetadata, requestWorkerTool, THINKTHREAD_GOAL_PLUS_PROTOCOL as protocol, THINKTHREAD_WORKER_RPC_TIMEOUT_MS } from "../thinkthread-session-rpc.ts";
 
 // Only trusted Parent Messages provide the candidate binding. MCP arguments cannot select it.
-export async function workerBinding(client: any, parentId: string) {
+export async function workerBinding(client: any, parentId: string, timeoutMs = 0) {
     const self = await client.invoke("self", {});
     if (!parentId || self.parentThinkthreadId !== parentId
         || self.capabilities?.length !== 1 || self.capabilities[0].id !== "thinkthread.message") {
         throw new Error("Goal Plus tools require an authenticated Message-only Child");
     }
+    const deadline = Date.now() + timeoutMs;
     let cursor: string | undefined;
     let latest: any;
     do {
@@ -25,9 +26,28 @@ export async function workerBinding(client: any, parentId: string) {
             const binding = dispatchMetadata(message.text);
             if (!binding.dispatchNonce || !binding.registrationNonce || !binding.agentSessionId) continue;
             if (typeof message.messageId !== "string") throw new Error("Dispatch has no Message identity");
-            latest = {...binding, parentId, childId: self.thinkthreadId, messageId: message.messageId};
+            const encoded = [...message.text.matchAll(
+                /(?:^|\n)goal_plus_candidate_capabilities=([A-Za-z0-9_-]+);(?=\s|$)/g,
+            )].at(-1)?.[1];
+            let candidateCapabilities: unknown;
+            if (encoded !== undefined) {
+                const decoded = Buffer.from(encoded, "base64url");
+                if (decoded.toString("base64url") !== encoded) {
+                    throw new Error("Parent dispatch has invalid candidate capabilities encoding");
+                }
+                // The Python bridge validates the shared typed projection. This
+                // endpoint only decodes transport bytes from the bound Parent.
+                candidateCapabilities = JSON.parse(decoded.toString("utf8"));
+            }
+            latest = {...binding, candidateCapabilities, parentId, childId: self.thinkthreadId,
+                messageId: message.messageId};
         }
-        if (!page.hasMore) break;
+        if (!page.hasMore) {
+            if (latest || Date.now() >= deadline) break;
+            cursor = page.nextCursor;
+            await new Promise(resolve => setTimeout(resolve, 100));
+            continue;
+        }
         if (page.nextCursor === cursor) throw new Error("Parent Message cursor did not advance");
         cursor = page.nextCursor;
     } while (true);
@@ -49,7 +69,8 @@ const VERIFIER_TOOLS = new Set([
 ]);
 
 export async function workerOperation(client: any, parentId: string, request: any) {
-    const binding = await workerBinding(client, parentId);
+    const binding = await workerBinding(client, parentId,
+        request.operation === "binding" ? THINKTHREAD_WORKER_RPC_TIMEOUT_MS : 0);
     if (request.operation === "binding") return binding;
     if (request.operation !== "call" || request.params?.agent_session_id !== binding.agentSessionId) {
         throw new Error("MCP candidate binding does not match the current Parent dispatch");
@@ -66,7 +87,7 @@ export async function workerOperation(client: any, parentId: string, request: an
             : `ThinkThread Candidate Child annotation tool is not allowed: ${name}`);
     }
     if (typeof name !== "string" || !args || typeof args !== "object" || Array.isArray(args)
-        || (annotator || verifier ? "agent_session_id" in args : args.agent_session_id !== binding.agentSessionId)) {
+        || "agent_session_id" in args) {
         throw new Error(annotator
             ? "MCP annotation arguments must not select a session"
             : "MCP tool arguments do not match the bound candidate");
@@ -90,7 +111,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         const entry = process.env.GOAL_PLUS_AGENT_POSIX_SDK_ENTRY;
         if (!entry) throw new Error("The installed Agent POSIX SDK is required");
         const {AgentPosixClient} = await import(entry.startsWith("file:") ? entry : pathToFileURL(entry).href);
-        const result = await workerOperation(AgentPosixClient.fromEnv(), process.env.THINKTHREAD_PARENT_ID ?? "", JSON.parse(input));
+        const request = JSON.parse(input);
+        const operationResult = await workerOperation(AgentPosixClient.fromEnv(), process.env.THINKTHREAD_PARENT_ID ?? "", request);
+        // SDK operations return objects; Parent tool calls may return entry arrays.
+        const result = request.operation === "call" ? {toolResult: operationResult} : operationResult;
         process.stdout.write(JSON.stringify({ok: true, result}) + "\n");
     } catch (error) {
         process.stdout.write(JSON.stringify({ok: false, error: {

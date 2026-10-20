@@ -336,6 +336,10 @@ Agent 执行测试时直接使用以上命令；临时目录策略已默认生�
 不超过可用 CPU 的一半和 32 workers。真实 host ST 使用 `-n 0` 或 `-o addopts=''` 串行运行，
 避免 host lifecycle 相互干扰；Git lock contention 必须作为失败诊断，不通过放宽断言规避。
 
+启动真实宿主测试前先按 [Tests](tests/README.md) 的模型预检读取当前环境的 provider/model
+和认证状态；不要根据历史日志或模型名称猜测 provider。Pi 的 `ST_PI_MODEL` 必须来自
+`pi --list-models` 的可用项，显式指定的 provider 不会被本地默认 provider 覆盖。
+
 Markdown 改动必须运行 `markdownlint-cli2` 并检查受影响的相对链接。
 
 ## 调试与本地状态

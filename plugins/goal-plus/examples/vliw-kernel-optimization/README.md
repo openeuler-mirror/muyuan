@@ -124,7 +124,8 @@ git status --short -- workspace-template
 从本示例目录启动受支持的 Profile，state root 必须在 checkout 读取授权范围之外：
 
 ```bash
-tt_vliw_state=$(mktemp -d /tmp/goal-plus-vliw-tt.XXXXXX)
+mkdir -p "$PWD/.tmp"
+tt_vliw_state=$(mktemp -d "$PWD/.tmp/goal-plus-vliw-tt.XXXXXX")
 GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED=1 \
 GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED=1 \
 tt run --profile goal-plus-pi --fs "$PWD" --state-root "$tt_vliw_state" \

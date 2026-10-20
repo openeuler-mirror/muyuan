@@ -38,6 +38,27 @@ PI_HOST_COMMAND_NAMES = {
 
 PI_CONTROLLER_ONLY_CLOSEOUT_ENV = CONTROLLER_ONLY_CLOSEOUT_ENV
 PI_CLOSEOUT_TOOL_NAMES = CONTROLLER_ONLY_CLOSEOUT_TOOL_NAMES
+PI_SCHEMA_ONLY_CANDIDATE_ID = "schema-only"
+
+
+def _pi_manifest_binding() -> tuple[ToolCallerRole, str | None]:
+    """Return the binding used by Pi's schema discovery call.
+
+    A ThinkThread Child receives its Goal Plus candidate identity in the
+    authenticated dispatch message, not in the static Profile environment.
+    Manifest discovery happens before that message is delivered, so this one
+    schema-only read uses the existing unbound template identity. Runtime tool
+    calls still require the exact candidate identity through the Parent bridge.
+    """
+    role, caller_session_id = pi_caller_binding()
+    if (
+        role == "candidate"
+        and caller_session_id is None
+        and os.environ.get("THINKTHREAD_PARENT_ID")
+        and os.environ.get("GOAL_PLUS_AGENT_POSIX_SDK_ENTRY")
+    ):
+        return role, PI_SCHEMA_ONLY_CANDIDATE_ID
+    return role, caller_session_id
 
 
 def _pi_goal_plus_finalize_reports_tool(
@@ -78,12 +99,13 @@ def _host_execution_scope_open_tool(
         owner_session_id: str,
         run_id: str | None = None,
         native_agent_config: dict[str, Any] | None = None,
+        native_session_file: str | None = None,
         goal_plus_id: str | None = None,
         native_session_id: str | None = None,
     ) -> dict[str, Any]:
         from goal_plus.host_scope import (
             ensure_execution_scope,
-            execution_scope_for_run,
+            execution_scope_for_owner,
             goal_scope_activation_id,
             goal_scope_resume_nonce,
         )
@@ -100,8 +122,8 @@ def _host_execution_scope_open_tool(
                 binding.session_id != native_session_id or binding.state in {"detached", "stale"}
             ):
                 raise RuntimeError("MainSessionMismatch: execution scope requires the active native session")
-            current_scope = execution_scope_for_run(
-                root_dir=root_dir, run_id=run_id or goal_plus_id,
+            current_scope = execution_scope_for_owner(
+                root_dir=root_dir, agent_harness=agent_harness, owner_session_id=owner_session_id,
             )
             activation_id = goal_scope_activation_id(record)
             activation_nonce = goal_scope_resume_nonce(record, current_scope)
@@ -113,6 +135,7 @@ def _host_execution_scope_open_tool(
             owner_session_id=owner_session_id,
             run_id=run_id,
             native_agent_config=native_agent_config,
+            native_session_file=native_session_file,
             activation_id=activation_id,
             activation_nonce=activation_nonce,
         )
@@ -134,26 +157,6 @@ def _host_execution_scope_close_tool(
             root_dir=root_dir,
             scope_id=scope_id,
             reason=reason,
-            timeout_seconds=timeout_seconds,
-        )
-
-    return call
-
-
-def _host_execution_scope_close_run_tool(
-    root_dir: Path | str,
-) -> Callable[..., dict[str, Any]]:
-    def call(
-        scope_id: str,
-        run_id: str,
-        timeout_seconds: float = 5.0,
-    ) -> dict[str, Any]:
-        from goal_plus.host_scope import close_run_candidates
-
-        return close_run_candidates(
-            root_dir=root_dir,
-            scope_id=scope_id,
-            run_id=run_id,
             timeout_seconds=timeout_seconds,
         )
 
@@ -190,9 +193,6 @@ def _registry(root_dir: Path | str) -> dict[str, Callable[..., Any]]:
     )
     tools["host_execution_scope_open"] = _host_execution_scope_open_tool(root_dir)
     tools["host_execution_scope_close"] = _host_execution_scope_close_tool(root_dir)
-    tools["host_execution_scope_close_run"] = (
-        _host_execution_scope_close_run_tool(root_dir)
-    )
     tools["host_execution_scope_snapshot"] = (
         _host_execution_scope_snapshot_tool(root_dir)
     )
@@ -234,7 +234,8 @@ def call_pi_tool(
         tool_name,
         caller_agent_session_id=caller_session_id,
         requested_agent_session_ids=(
-            [requested_session] if isinstance(requested_session, str) else []
+            [requested_session] if isinstance(requested_session, str)
+            else [caller_session_id] if caller_session_id else []
         ),
     )
     if shared:
@@ -421,7 +422,12 @@ def main(argv: list[str] | None = None) -> int:
         if parsed.tool == "host_mcp_manifest":
             from goal_plus.mcp_client import mcp_manifest
 
-            result = mcp_manifest(parsed.root)
+            role, caller_session_id = _pi_manifest_binding()
+            result = mcp_manifest(
+                parsed.root,
+                caller_role=role,
+                caller_agent_session_id=caller_session_id,
+            )
         elif parsed.host_entrypoint:
             if not parsed.host_capability:
                 raise RuntimeError(

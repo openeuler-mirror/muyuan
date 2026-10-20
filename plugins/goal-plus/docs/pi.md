@@ -107,8 +107,17 @@ Root 内只有精确 Pi host command 能启动 Goal Plus。显式选择 ThinkThr
 /goal-plus workspace_provider=thinkthread max_parallel=2 <可度量目标>
 ```
 
-对应 SearchSpec 可使用 `orchestration_mode="parallel_loops"`，或在配置 Allocation/Steering policy 时使用 `adaptive_search`，并设置
+对应 SearchSpec 可省略 `strategy.adaptive_search` 使用默认固定并行，或配置该 policy 对象，并设置
 `workspace.provider="thinkthread"`；Pi 身份从 Main 会话解析，不另填 host/profile。
+`fork` 另使用共同 fork/session 接口，要求先完成准备回合并恢复同一 Main；已知 receipt
+恢复与 retained Child 控制已接线。准备 marker 只证明 completed turn；resume 恢复 Main
+授权与控制状态，fresh/fork 的选择和 candidate 启动由 Search/session 工具合同独立处理。
+真实 Circle 场景核验共同 native prefix、两个 retained Child 各续轮一次、hard verifier、
+audit/Annotation、selection、独立 publication/apply 与资源关闭。每次验收绑定实际安装 build；
+SDK exact checkpoint 证明与异常恢复仍有证据边界，见
+[Fork 支持范围](agent-host-adapters.md#fork-支持范围)。
+fresh/fork 的共同 session、receipt、continuation 和恢复图见
+[Candidate Dispatch：fresh 与 fork](candidate-dispatch.md)。
 普通 Pi 进程继续使用 `pi + direct + git_worktree`；两条路径不能混用，也不能在 preflight
 失败时 fallback。Codex 对应路径见 [Codex](codex.md#支持范围与验证)。
 
@@ -302,7 +311,7 @@ Search promotion 后，Pi 用 `goal_plus_record_search_result` 登记“搜索�
 
 ## Search Session 流程
 
-Pi Search 使用 `strategy.orchestration_mode="parallel_loops"` 和固定的初始 lane：
+Pi Search 默认使用 `initial_context="fresh"` 和固定的初始 lane：
 
 1. 只规划并物化一次初始 candidate；
 2. 用 `goal_plus_session_run` 准备候选并执行，保存返回的 session/call identity；
@@ -330,7 +339,7 @@ Pi ThinkThread 也使用共同 session 控制，底层单 Child actor 负责准�
 {
   "strategy": {
     "name": "random",
-    "orchestration_mode": "parallel_loops",
+    "initial_context": "fresh",
     "worker_budget": {
       "max_runtime_seconds": 600,
       "max_turns": 8
@@ -420,9 +429,11 @@ worker 始终把 `context.candidate_task.workspace` 作为文件与 shell 操作
 wrapper 启动目录。Pi worker 进程使用 `--no-context-files`，不会额外加载仓库级
 `AGENTS.md`/`CLAUDE.md`。任务局部 Skill 无需 spec 配置：runtime 只发现 source Git 已跟踪的
 `.agents/skills/<name>/SKILL.md`，并要求该 Skill 目录内所有文件都由 Git 跟踪；发现结果持久化，
-在 launch prompt 中明确列出，
-并通过 `candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径。worker 完整读取这份
-清单，不扫描 parent/global/plugin 或其他 candidate 中的 Skill。
+通过 `candidate_task.task_skill_paths` 返回当前 worktree 的绝对路径，作为唯一清单。launch prompt
+和 instructions 不展开路径；worker 按任务、角色和 provider 选择适用 Skill，选中后完整读取这份
+清单中的 `SKILL.md` 并显式遵循，只按需读取同目录资源。同一 session 中已完整加载且内容未变时
+复用；上下文被截断、压缩、缺失或文件变化时补读。仓外 Skill 继续由 host 管理；运行时不扫描或复制
+parent/global/plugin 或 peer candidate Skill。
 
 manual 模式下，worker 在第一次修改前读取 Global Evidence，之后按配置周期或停滞节点刷新；auto
 模式使用 verifier 自动注入的共享快照，independent 模式不提供 peer Evidence。worker 独立选择方向，
@@ -500,3 +511,9 @@ pytest --run-system-tests -n 0 -m "st and st_pi_rpc" \
 ```
 
 该场景通过共同 MCP 验证同 session 两轮候选交付、冷恢复、精确 Evidence 和资源关闭。
+
+2026-10-16 在 `examples/circle-packing-git-apply` 完成了一次 direct、非 ThinkThread
+Pi E2E，使用 `gpt-6-luna`、`low` reasoning。`c002` 被选中并 apply，公开 verifier
+报告 `valid=true`、恰好 26 个圆、`sum_radii=2.4475165877493406`，最后源码 Git
+worktree 保持干净。本次运行的报告保存在 checkout 本地
+`.tmp/e2e-circle-pi-gpt6luna-low-hinted-*` 目录；该目录属于运行证据，不纳入提交。

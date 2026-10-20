@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import shutil
 import sys
 import tempfile
@@ -12,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from goal_plus.ports.sandbox import ProcessSandbox
+from goal_plus.temp import temporary_root
 
 
 class SandboxUnavailable(RuntimeError):
@@ -67,23 +67,22 @@ def prepare_sandbox_environment(
 ) -> ProcessSandbox | None:
     """Give both outer launch paths an owned scratch directory and matching policy.
 
-    The caller owns cleanup until the direct process exits. Only temporary-directory
-    permission/unavailability errors select the local fallback; sandbox failures
-    never retry an unprotected command.
+    The caller owns cleanup until the direct process exits. Scratch preparation
+    failures propagate; sandbox failures never retry an unprotected command.
     """
     if sandbox is None or sandbox.backend == "native":
         return sandbox
     _validate_paths(cwd, sandbox)
-    try:
-        temporary = tempfile.TemporaryDirectory(prefix="goal-plus-", dir="/tmp")
-    except OSError as exc:
-        if exc.errno not in {errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOENT}:
-            raise
-        fallback = cwd / ".gp" / ".tmp"
-        fallback.mkdir(parents=True, exist_ok=True)
-        temporary = tempfile.TemporaryDirectory(prefix="goal-plus-", dir=fallback)
+    # Keep host scratch beside the active workspace. The process-wide /tmp
+    # namespace is often inode constrained on shared hosts and is not a
+    # reliable default for long-running candidate work.
+    temporary = tempfile.TemporaryDirectory(
+        prefix="goal-plus-", dir=str(temporary_root(cwd))
+    )
     directory = _normal_path(Path(cleanup.enter_context(temporary)))
-    for key in ("TMPDIR", "TMP", "TEMP"):
+    # Helpers inside the child must use this owned writable directory, not its
+    # read-only parent root selected by the host's operational override.
+    for key in ("TMPDIR", "TMP", "TEMP", "GOAL_PLUS_TMPDIR"):
         environment[key] = str(directory)
     return replace(sandbox, writable_roots=(*sandbox.writable_roots, directory))
 

@@ -12,7 +12,7 @@ from goal_plus.ports.state import (
     CandidateRecord,
     RunRecord,
 )
-from goal_plus.domain.evidence import IterationRecord
+from goal_plus.domain.evidence import IterationRecord, PRIVATE_METRIC_KEYS
 from goal_plus.domain.evidence_policy import artifact_iteration_eligible
 
 
@@ -195,6 +195,12 @@ def build_run_statistics(
     iterations = [
         iteration for candidate in candidates for iteration in candidate.iterations
     ]
+    score_spec_ids = {frozen.frozen_spec_id}
+    score_spec_ids.update(candidate.active_frozen_spec_id or run.frozen_spec_id for candidate in candidates)
+    score_spec_ids.update(iteration.frozen_spec_id or run.frozen_spec_id for iteration in iterations)
+    score_comparable = len(score_spec_ids) == 1
+    best_score = run.best_score if score_comparable else None
+    selected_score = run.selected_score if score_comparable else None
     observations = [
         observability_by_session.get(session.agent_session_id, {})
         for session in sessions
@@ -247,7 +253,7 @@ def build_run_statistics(
             for iteration in values
         )
         for values in session_iterations.values()
-    )
+    ) if score_comparable else None
     successful_candidates = sum(
         any(
             artifact_iteration_eligible(iteration)
@@ -255,7 +261,7 @@ def build_run_statistics(
             for iteration in candidate.iterations
         )
         for candidate in candidates
-    )
+    ) if score_comparable else None
 
     process_passed = sum(iteration.process_passed is True for iteration in iterations)
     process_failed = sum(iteration.process_passed is False for iteration in iterations)
@@ -359,7 +365,7 @@ def build_run_statistics(
         )
         break
 
-    target_reached = _reaches_target(run.best_score, target_score, direction)
+    target_reached = _reaches_target(best_score, target_score, direction)
     time_to_first_verifier = _first_elapsed(
         iterations,
         run_created_epoch=created_epoch,
@@ -383,7 +389,7 @@ def build_run_statistics(
                 > 0
             ),
         )
-        if baseline_score is not None
+        if baseline_score is not None and score_comparable
         else None
     )
     time_to_threshold = (
@@ -395,7 +401,7 @@ def build_run_statistics(
                 and _reaches_target(iteration.score, target_score, direction) is True
             ),
         )
-        if target_score is not None
+        if target_score is not None and score_comparable
         else None
     )
     selected_epoch = (
@@ -499,21 +505,24 @@ def build_run_statistics(
             ),
         },
         "scores": {
+            "frozen_spec_id": frozen.frozen_spec_id,
+            "score_comparable": score_comparable,
+            "frozen_spec_ids": sorted(score_spec_ids),
             "metric_name": frozen.spec.metric_name,
             "direction": direction,
             "baseline": baseline_score,
             "target": target_score,
-            "best": run.best_score,
-            "selected": run.selected_score,
+            "best": best_score,
+            "selected": selected_score,
             "best_improvement_from_baseline": _favorable_improvement(
-                run.best_score, baseline_score, direction
+                best_score, baseline_score, direction
             ),
             "selected_improvement_from_baseline": _favorable_improvement(
-                run.selected_score, baseline_score, direction
+                selected_score, baseline_score, direction
             ),
             "target_reached": target_reached,
             "successful_candidates": successful_candidates,
-            "candidate_success_rate": _rate(successful_candidates, len(candidates)),
+            "candidate_success_rate": _rate(successful_candidates, len(candidates)) if successful_candidates is not None else None,
         },
         "timing": {
             "time_to_first_verifier_seconds": time_to_first_verifier,
@@ -604,7 +613,7 @@ def build_run_statistics(
             "productive_sessions": productive_sessions,
             "productive_session_rate": _rate(productive_sessions, len(sessions)),
             "successful_sessions": successful_sessions,
-            "successful_session_rate": _rate(successful_sessions, len(sessions)),
+            "successful_session_rate": _rate(successful_sessions, len(sessions)) if successful_sessions is not None else None,
             "timed_out": timed_out,
             "runner_failed": runner_failed,
             "hosts": _counter(session.agent_harness for session in sessions),
@@ -641,7 +650,7 @@ def build_run_statistics(
                 iteration.agent_session_id is None for iteration in iterations
             ),
             "process_verifier_results": sum(
-                sum(not name.startswith("_") for name in iteration.metrics)
+                sum(name not in PRIVATE_METRIC_KEYS for name in iteration.metrics)
                 for iteration in iterations
             ),
             "process_passed": process_passed,
@@ -670,7 +679,7 @@ def build_run_statistics(
                 if cost is not None
                 and (
                     improvement := _favorable_improvement(
-                        run.best_score, baseline_score, direction
+                        best_score, baseline_score, direction
                     )
                 )
                 not in (None, 0)

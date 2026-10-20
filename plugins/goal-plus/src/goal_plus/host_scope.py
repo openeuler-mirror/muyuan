@@ -85,6 +85,7 @@ def ensure_execution_scope(
     owner_session_id: str,
     run_id: str | None = None,
     native_agent_config: dict[str, Any] | None = None,
+    native_session_file: str | None = None,
     activation_id: str | None = None,
     activation_nonce: str | None = None,
 ) -> dict[str, Any]:
@@ -92,6 +93,7 @@ def ensure_execution_scope(
         agent_harness=agent_harness, owner_session_id=owner_session_id,
         attachment=ScopeAttachment.from_id(run_id) if run_id is not None else None,
         native_agent_config=native_agent_config,
+        native_session_file=native_session_file,
         activation_id=activation_id,
         activation_nonce=activation_nonce,
     )
@@ -397,13 +399,24 @@ def _close_run_internal_drainers(
 @dataclass(frozen=True)
 class _HostScopeCleanupServices:
     root_dir: Path | str
+    close_native_sessions: Callable[[ScopeAttachment], None] | None = None
 
     def close_sessions(
         self, *, attachment: ScopeAttachment, scope_id: str, timeout_seconds: float,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        return _close_attachment_sessions(
+        errors = []
+        # Live controllers hold the TT invocation journal lock until their
+        # callbacks exit. Stop them before collecting durable cleanup facts.
+        if self.close_native_sessions is not None:
+            try:
+                self.close_native_sessions(attachment)
+            except Exception as exc:
+                errors.append(f"native-session:{type(exc).__name__}:{exc}")
+        snapshots, resource_errors = _close_attachment_sessions(
             root_dir=self.root_dir, attachment=attachment, scope_id=scope_id, timeout_seconds=timeout_seconds,
         )
+        errors.extend(resource_errors)
+        return snapshots, errors
 
     def close_drainers(self, *, run_id: str, timeout_seconds: float) -> list[str]:
         return _close_run_internal_drainers(
@@ -427,9 +440,10 @@ def close_execution_scope(
 
 
 def close_run_candidates(
-    *, root_dir: Path | str, scope_id: str, run_id: str, timeout_seconds: float = 5.0
+    *, root_dir: Path | str, scope_id: str, run_id: str, timeout_seconds: float = 5.0,
+    close_native_sessions: Callable[[ScopeAttachment], None] | None = None,
 ) -> dict[str, Any]:
-    return build_scope_cleanup(root_dir, _HostScopeCleanupServices(root_dir)).close_candidates(
+    return build_scope_cleanup(root_dir, _HostScopeCleanupServices(root_dir, close_native_sessions)).close_candidates(
         scope_id=scope_id, attachment=ScopeAttachment.from_id(run_id), timeout_seconds=timeout_seconds,
     )
 
@@ -445,6 +459,31 @@ def _codex_run_is_durably_quiescent(root_dir: Path | str, run_id: str, *, scope:
         if session.agent_harness != "codex":
             continue
         metadata = session.session_handle.metadata
+        if session.runtime_provider == "thinkthread":
+            from goal_plus.infrastructure.thinkthread_sessions import session_resource_path
+
+            try:
+                resource = load_json(session_resource_path(
+                    Path(root_dir).resolve(), str(scope["scope_id"]), session.agent_session_id,
+                ))
+            except (OSError, ValueError):
+                return False
+            # TT cleanup authenticates and releases the exact Child/private Fs
+            # pair before closing this receipt. Local recovery and process
+            # registrations cannot establish quiescence for that resource.
+            if (resource.get("cleanup_state") != "closed"
+                    or resource.get("status") != "stopped"
+                    or resource.get("scope_id") != scope["scope_id"]
+                    or resource.get("run_id") != run_id
+                    or resource.get("candidate_id") != session.candidate_id
+                    or resource.get("agent_session_id") != session.agent_session_id
+                    or resource.get("agent_harness") != session.agent_harness
+                    or not session.session_handle.external_id
+                    or resource.get("thinkthread_id") != session.session_handle.external_id
+                    or not metadata.get("fs_branch_id")
+                    or resource.get("fs_branch_id") != metadata["fs_branch_id"]):
+                return False
+            continue
         recovery = queries.recovery(run_id, session.candidate_id)
         if (
             recovery is not None and recovery.state == "restored"

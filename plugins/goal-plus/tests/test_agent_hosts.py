@@ -141,13 +141,13 @@ def test_thinkthread_adapter_payload_is_complete_for_pi_profile() -> None:
         short_intent="try",
         one_paragraph_idea="test an isolated branch",
         worker_budget={"max_runtime_seconds": 60},
-        worker_launch={ "model": "provider/model"},
+        worker_launch={},
     )
     assert launch["transport"] == "thinkthread"
     assert launch["profile"] == "self"
     assert launch["fs"] == "private"
     assert launch["capabilities"] == ["thinkthread.message"]
-    assert launch["model"] == {"provider": "provider", "model": "model"}
+    assert "model" not in launch
     assert "agent_session_id=agent-run-001" in launch["message"]
 
     continued = adapter.build_continue_payload(
@@ -178,6 +178,19 @@ def test_thinkthread_codex_adapter_accepts_exact_model_override() -> None:
         worker_launch={"model": "provider/model"},
     )
     assert launch["model"] == {"provider": "provider", "model": "model"}
+
+
+@pytest.mark.parametrize("continuation", [False, True])
+def test_thinkthread_pi_rejects_unsupported_model_override(continuation: bool) -> None:
+    adapter = candidate_launch_adapter("pi", "thinkthread")
+    method = adapter.build_continue_payload if continuation else adapter.build_launch_payload
+    arguments = {"external_id": "tt-child-1"} if continuation else {}
+    with pytest.raises(UnsupportedHostCapability, match="model override"):
+        method(
+            candidate_id="c001", agent_session_id="agent-run-001",
+            short_intent="try", one_paragraph_idea="test an exact model",
+            worker_launch={"model": "provider/model"}, **arguments,
+        )
 
 
 @pytest.mark.codex
@@ -304,7 +317,7 @@ def test_codex_adapter_builds_session_input() -> None:
     assert payload["transport"] == "app-server"
     assert not {"tool", "agent_type", "fork_turns", "task_name"}.intersection(payload)
     assert "agent_session_id=agent-0001" in payload["message"]
-    assert "assigned_worker_budget=host 默认值" in payload["message"]
+    assert "assigned_worker_budget" not in payload["message"]
 
 
 @pytest.mark.codex
@@ -418,7 +431,7 @@ def test_pi_rpc_adapter_builds_worker_payload() -> None:
     assert payload["continuation"] == "native_session"
     assert "goal_plus_search_get_agent_context" in payload["prompt"]
     assert "agent_session_id=agent_0001" in payload["prompt"]
-    assert "assigned_worker_budget={'max_runtime_seconds': 600" in payload["prompt"]
+    assert "assigned_worker_budget" not in payload["prompt"]
     assert payload["budget_control"] == {"max_runtime_seconds": 600}
 
 

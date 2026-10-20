@@ -20,6 +20,7 @@ from goal_plus.ports.candidate_host import ResolvedInnerAgentBinding
 _EXECUTION_BINDINGS: dict[tuple[AgentHarnessKind, AgentRuntimeProvider], AgentExecutionBinding] = {
     ("codex", "direct"): AgentExecutionBinding("codex", "direct", "codex-app-server-v1", AgentExecutionCapabilities(
         supports_model_discovery=True,
+        supports_fork=True,
         supports_model_override=True,
         supports_reasoning_effort=True,
         supports_service_tier=True,
@@ -30,6 +31,7 @@ _EXECUTION_BINDINGS: dict[tuple[AgentHarnessKind, AgentRuntimeProvider], AgentEx
         ),
     )),
     ("pi", "direct"): AgentExecutionBinding("pi", "direct", "pi-rpc-v1", AgentExecutionCapabilities(
+        supports_fork=True,
         supports_model_discovery=True,
         supports_model_override=True,
         supports_reasoning_effort=True,
@@ -40,6 +42,7 @@ _EXECUTION_BINDINGS: dict[tuple[AgentHarnessKind, AgentRuntimeProvider], AgentEx
         ),
     )),
     ("codex", "thinkthread"): AgentExecutionBinding("codex", "thinkthread", "thinkthread-v3-codex", AgentExecutionCapabilities(
+        supports_fork=True,
         search_enabled=True,
         # ThinkThread's spawn contract carries an exact provider/model ref;
         # the managed Profile/allowlist is the authority for which refs are
@@ -49,6 +52,7 @@ _EXECUTION_BINDINGS: dict[tuple[AgentHarnessKind, AgentRuntimeProvider], AgentEx
         supported_inner_agents=frozenset({INNER_AGENT_COMMON}),
     )),
     ("pi", "thinkthread"): AgentExecutionBinding("pi", "thinkthread", "thinkthread-v3-pi", AgentExecutionCapabilities(
+        supports_fork=True,
         search_enabled=True,
         supported_workspace_providers=frozenset({"thinkthread"}),
         supported_inner_agents=frozenset(

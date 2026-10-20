@@ -105,35 +105,36 @@ def thinkthread_submodule_paths(source: Path) -> list[str]:
     source = source.resolve()
     try:
         repository = Path(_text(source, "rev-parse", "--show-toplevel")).resolve()
-    except (SubmoduleCheckError, FileNotFoundError):
-        return []
-    if not source.is_relative_to(repository):
-        return []
+        source_prefix = source.relative_to(repository)
+    except (SubmoduleCheckError, FileNotFoundError, ValueError):
+        repository = None
 
     paths: set[str] = set()
-    try:
-        has_gitmodules = subprocess.run(
-            ["git", "cat-file", "-e", "HEAD:.gitmodules"],
-            cwd=repository,
-            capture_output=True,
-            check=False,
-        ).returncode == 0
-        if has_gitmodules:
-            paths.add(".gitmodules")
-        for path in _gitlinks(repository, "HEAD"):
-            paths.add(path)
-    except SubmoduleCheckError:
-        # A missing or not-yet-committed root tree is not a submodule. The
-        # root's own .git marker is intentionally ignored by this probe.
-        pass
+    if repository is not None:
+        try:
+            gitmodules_path = (source_prefix / ".gitmodules").as_posix()
+            has_gitmodules = subprocess.run(
+                ["git", "cat-file", "-e", f"HEAD:{gitmodules_path}"],
+                cwd=repository,
+                capture_output=True,
+                check=False,
+            ).returncode == 0
+            if has_gitmodules:
+                paths.add(".gitmodules")
+            tree = "HEAD" if not source_prefix.parts else f"HEAD:{source_prefix.as_posix()}"
+            paths.update(_gitlinks(repository, tree))
+        except SubmoduleCheckError:
+            # An untracked source subtree or not-yet-committed root tree has
+            # no committed submodules; still inspect its materialized files.
+            pass
 
-    for directory, names, files in os.walk(repository, followlinks=False):
+    for directory, names, files in os.walk(source, followlinks=False):
         current = Path(directory)
-        if current == repository:
+        if current == source:
             names[:] = [name for name in names if name != ".git"]
             continue
         if ".git" in names or ".git" in files:
-            paths.add(current.relative_to(repository).as_posix())
+            paths.add(current.relative_to(source).as_posix())
             names[:] = []
             continue
         names[:] = [name for name in names if name != ".git"]

@@ -17,6 +17,7 @@ from goal_plus.ports.publication import (
     ThinkThreadPublicationApply, PublicationVerification, PublicationSnapshotIntent,
 )
 from goal_plus.application.candidate_execution import require_run_not_invalidated
+from goal_plus.application.candidate_spec import iteration_spec_id
 from goal_plus.application.publication_contracts import publication_apply_intent
 
 
@@ -66,6 +67,8 @@ class ThinkThreadPublication:
                 item
                 for item in record.iterations
                 if item.iteration == run.selected_iteration
+                and iteration_spec_id(run, item) == frozen.frozen_spec_id
+                and (item.spec_hash is None or item.spec_hash == frozen.spec_hash)
                 and item.artifact_ref == selected_artifact_ref
                 and artifact_iteration_eligible(item)
                 and item.artifact_hash == run.selected_artifact_hash
@@ -151,6 +154,9 @@ class ThinkThreadPublication:
             publication_ref,
             iteration.iteration,
         )
+        promotion_report = promotion_report.model_copy(update={
+            "frozen_spec_id": frozen.frozen_spec_id, "spec_hash": frozen.spec_hash,
+        })
         if not promotion_report.promotion_passed:
             raise RuntimeError(
                 "cannot promote candidate without passing exact publication verification"
@@ -160,6 +166,7 @@ class ThinkThreadPublication:
             publication_ref,
         )
         provisional = PromotionRecord(
+            frozen_spec_id=frozen.frozen_spec_id, spec_hash=frozen.spec_hash,
             promotion_id=f"promotion_{candidate_id}",
             run_id=run.run_id,
             candidate_id=candidate_id,
@@ -229,6 +236,7 @@ class ThinkThreadPublication:
             record = self.state.read_candidate(run.run_id, candidate_id)
             record.promotion_report = promotion_report
             record.promotion_evidence = PromotionEvidence(
+                frozen_spec_id=frozen.frozen_spec_id, spec_hash=frozen.spec_hash,
                 candidate_id=candidate_id,
                 selected_artifact_ref=selected_artifact_ref,
                 artifact_ref=publication_ref,

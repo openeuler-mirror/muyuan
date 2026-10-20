@@ -87,7 +87,8 @@ class CandidateArtifacts:
             self.ledger.check(record, metric_name)
             preserved_files[RESULTS_TSV_RELATIVE_PATH] = render_results_tsv(
                 record.results_ledger,
-                metric_name,
+                record.results_ledger_metric_name or metric_name,
+                candidate_identity=(record.task.run_id, record.candidate_id) if record.spec_revisions else None,
             )
         artifact_ref = (
             revision

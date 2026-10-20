@@ -132,7 +132,7 @@ schema 合法但持续无法推进时，还需结合 Goal 状态和实际工具�
 session 的历史路径和 build 概要路径写入 `<runtime>/host-logs/session-diagnostics/pi-<hash>/index.json`，
 不复制原生历史。TT Root 的 runtime 位于其受管 session 目录，不能假定是目标工作区的 `.gp/`。
 
-开启 DEBUG 时，TT Candidate/Annotation Child 每次执行结束通过原有父子 Message 通道发送新增 native
+开启 DEBUG 时，TT Pi Candidate/Annotation Child 每次执行结束通过原有父子 Message 通道发送新增 native
 session entries。Root 校验已绑定的 Child 和 agent session，将批次保存到
 `<runtime>/host-logs/session-diagnostics/<child-id>/`，删除 Child 前再补收尾部消息。
 同一条归档流同时服务运行诊断和离线行为复盘；批次包含压缩校验、原生 session、stream、
@@ -149,6 +149,18 @@ session entries。Root 校验已绑定的 Child 和 agent session，将批次保
 发送复用官方 SDK，由限时 5 秒的独立 helper 执行；超时回收 helper，后续执行结束可重试同批。
 突然退出前尚未发送的尾部、外部删除整个 Root 后的 runtime 不在保留保证内。
 `collection_complete` 只表示当时已读完可用 Message 页，不证明 Child 所有尾部均已发送。
+
+TT Child 的原始历史按真实 harness 读取：Pi 使用 Child session 的 `active.jsonl`，Codex 使用
+Child session home 下的 `sessions/` rollout。Root runtime 的 `session/goal-plus` 与
+`session/home/goal-plus` 布局均可定位。DEBUG 下，释放前若 Root 可读取已绑定 Child 的原始
+JSONL，会将其连同内容哈希保存到诊断目录；Child 删除后重新导出可读该副本。没有 Message
+归档索引时，也可从已绑定的资源 journal 发现仍然可读的原始历史。Codex Child 有多个
+rollout 而不能唯一关联时保持 unknown，不按最新文件猜测。
+
+Codex TT 没有每轮 Message 原始历史发送。Root 无法跨隔离边界读取 Child 日志时，controller
+journal 只提供控制端 prompt/结果等事实，不能替代 Child 的 thinking、工具正文或 provider
+请求。原始日志、已保留副本和 Pi Message 批次分别保留其来源及覆盖范围；任一来源都不自动
+证明模型当时的完整请求或 compaction 后的有效窗口。
 
 分析器也接受上述单个 session 目录，可直接分析清理后保留的 Child 批次：
 
@@ -196,7 +208,7 @@ description/schema、调用参数、返回正文及字段占比，并列出宿�
 PYTHONPATH=src python scripts/check_session_instructions.py /path/to/session.jsonl \
   --agent-harness pi --overview /path/to/session-build/assets/goal-plus-instructions.txt \
   --context --token-encoding o200k_base --checkout-tools main \
-  --output /tmp/goal-plus-context.json
+  --output .tmp/goal-plus-context.json
 ```
 
 `--token-encoding` 需要环境中安装 `tiktoken`；不指定时仍统计精确 UTF-8 字节。
@@ -214,9 +226,9 @@ TT Child 的诊断归档目录同样可作为输入；报告只保存在本地�
 
 ## Agent 行为全量导出（GOAL_PLUS_DEBUG）
 
-session-diagnostics 归档现在保留完整 session entry，注入台账仍只保存哈希。需要逐行检查
+session-diagnostics 归档保留已收到的完整 session entry，注入台账仍只保存哈希。需要逐行检查
 Main/subagent 实际做了什么（长时间无输出、临时注入的
-prompt、工具调用与返回正文）时，使用本导出。它在导出时回读本地原生日志，内容完整，
+prompt、工具调用与返回正文）时，使用本导出。它回读仍可访问的原生日志与已保留的归档，
 属于显式 debug 通道，输出两种形式：
 
 - `index.html`：自包含离线页面，会话导航、类型配色、注入高亮、`⏸ gap`
@@ -227,8 +239,9 @@ HTML 中每个事件正文默认展开（`meta`/`context` 观测记录折叠）�
 `candidate c001`、`main` 这类标识区分各 lane，进入会话的真实 prompt 前有
 `▶ prompt #N · dispatch/continuation` 分界线。每个会话还给出内容足迹统计：按 kind+label
 分组的字符数与启发式 token 估算（CJK 约 1 token/字符、ASCII 约 4 字符/token，非计费口径），
-并区分进入模型上下文的事件与仅占磁盘的宿主记录，用于定位可删减的冗余。
-生成 `goal_plus_search_report` 时若本地已存在该导出，report.html 末尾会附上指向它的链接。
+并区分对话正文与宿主观测记录，用于检查历史文本体量。它不表示 provider 当前上下文、
+compaction 后的有效窗口、缓存命中或实际计费用量；重复的共同历史也不能按字符数直接
+解释为额外上下文成本。
 
 手动导出整个 runtime root，自动发现并合并 Pi Main 原生历史、Search candidate、TT Child
 诊断归档、controller journal、Codex rollout、time advisory，以及已采集的 direct
@@ -240,8 +253,9 @@ PYTHONPATH=src python scripts/export_agent_transcript.py --watch --interval 5 /p
 tail -F /path/to/project/.gp/host-logs/agent-transcript/events.jsonl
 ```
 
-输出默认写入 `<root>/host-logs/agent-transcript/`（每个会话一个子目录，内含
-`transcript.html`），`--watch` 在源文件变化时持续刷新，适合观察长时间运行的任务。也可以直读单个原始文件：
+输出默认写入 `<root>/host-logs/agent-transcript/`。每个会话子目录包含 `transcript.html`；
+导出根目录的 `manifest.json` 描述稳定 session anchor、原始身份、可用范围和报告互链。
+`--watch` 在源文件变化时持续刷新，适合观察长时间运行的任务。也可以直读单个原始文件：
 
 一次性推理记录位于 `<root>/host-logs/inference-transcripts/`，仅在宿主环境显式设置
 `GOAL_PLUS_DEBUG=1` 时采集。页面按 run、candidate、iteration、settlement、
@@ -252,8 +266,14 @@ Pi 一次性推理的 `message_start` / `message_update` 集中在默认折叠�
 顶层导航按 run/candidate 聚合，不逐条列出 Verifier/Annotator。同一候选的 worker session
 和推理调用位于候选索引；推理列表默认折叠，限定滚动高度，按迭代、settlement、角色和 task
 分组并保留所有 attempt。内嵌脚本仅提供迭代和角色筛选，关闭脚本仍可展开索引并访问全部记录。
+可验证关联的 session 会带稳定 anchor、run/candidate/iteration/report 链接、fork binding
+与 checkpoint 继承边界；只能通过时间邻近或最新 active 指针关联的记录保持 unknown。
 缺少目标身份或对应候选的推理保留在未关联索引中；完整正文和 JSONL 不受筛选影响。
 这些记录不创建原生 session，旧运行未采集的上下文不能从评分或总结中补造。
+Candidate Evidence 与 Worker Sessions 的上下文来源列表默认折叠，展开后保留全部来源链接；
+可验证的精确事件保留直接跳转。TT verifier 的 accepted 回包不代表已结算；只有后续 wake 中
+正式 CandidateAttemptFeedback 与 session、attempt、artifact 和评价版本全部匹配时，才关联
+该轮事件。没有后续 wake 或匹配证据时保持 unknown。
 
 ```bash
 PYTHONPATH=src python scripts/export_agent_transcript.py --pi /path/to/pi-session.jsonl --role main
@@ -269,29 +289,36 @@ HTML 正文截断上限；一次性推理记录不截断）、`--gap-seconds`（
 ```bash
 GOAL_PLUS_DEBUG=1 pi
 GOAL_PLUS_DEBUG=1 codex
-GOAL_PLUS_DEBUG=1 tt run --profile goal-plus-pi --fs <workspace> -- --model <provider/model>
+GOAL_PLUS_DEBUG=1 tt run --profile goal-plus-pi --fs <workspace> --model <provider/model>
 ```
 
 - Codex Stop/SubagentStop 保存当前原生历史的诊断索引，并刷新整个 runtime 的合并页面。
 - Pi 在 agent_end 保存原生历史索引并调用受管 Python 导出；Main 在 session_shutdown
   关闭 MCP 后再刷新一次，子进程退出不重复启动导出器；
   direct child 继承 Main 的 DEBUG 开关。
-- TT Child 经已有 Message 通道发送增量 session entry；Root 在完整批次归档后刷新页面，
-  释放前补收并导出。Root 无需访问兄弟 Child 目录，已收到的归档可用于释放后导出。
+- TT Pi Child 经已有 Message 通道发送增量 session entry；Root 在完整批次归档后刷新页面，
+  释放前补收并导出。已收到的批次不依赖兄弟 Child 目录，可用于释放后导出。
+- TT Codex/Pi 释放前还会保留 Root 可读取的原始历史副本；跨隔离边界不可读取时，不以
+  controller journal 代替全文。
 - 报告生成前刷新导出，`report.html` 可链接完整 `index.html`。
 - 合并导出按 runtime 加锁，保留所有已发现会话；失败只记录诊断，不改变业务结果。
 
 自动刷新发生在上述事件边界，并非逐 token 实时刷新。前面的离线导出命令仍可用于
 历史数据或自定义输出目录；`--watch` 仅是可选的手动观察方式，不是正常启动依赖。
+TT 日志用于事后复盘，中途缺失或未采集的正文保持 `partial/unavailable`。
+Main 通过原生 subagent/session 的 wait 观察执行完成；诊断归档的完整性不参与该完成判定。
 
 边界与限制：
 
 - 输出包含 prompt、工具参数、返回正文和模型思考，只保存在本地 host-logs，不要提交。
-- TT Child 视图来自 session-diagnostics 归档，包含完整归档期间已收到的 session entry；
-  如果 Child 在 flush 前突然退出，尾部仍可能显示为 partial。
+- TT Child 视图优先读取可用的原始历史或已校验的保留副本，再读取已收到的诊断批次；
+  Pi Child 在 flush 前突然退出时，未发送尾部仍可能缺失。Codex TT 的跨隔离全文采集不在
+  当前每轮 Message 归档范围内。
 - Pi Main 依赖原生历史仍存在（`session-diagnostics/pi-*/index.json` 的 history 指针）；
   Codex reasoning 摘要取决于 rollout 是否记录，缺失时不推测。
 - 导出器只读：不启动模型、不发送消息、不修改运行状态；与 monitor/audit 脚本可同时使用。
+- `manifest.json` 是导出时刻的只读导航索引，不是新的业务状态；其中的链接和覆盖范围只在
+  对应 report/context 事实可验证时写入，缺失或歧义保持 unknown。
 
 ## Candidate 执行链路导出
 
@@ -350,8 +377,9 @@ Codex 的 MCP server 进程也需要继承该环境变量；已启动的 server 
 {"event":"goal_plus_api_response_size","transport":"mcp","tool":"goal_plus_record_search_result","format":"json","bytes":430,"characters":378}
 ```
 
-- `mcp`：全部公开工具的返回值。JSON 按紧凑 UTF-8 序列化计数；字符串和
-  `TextContent` 按原文本计数，不包含 MCP envelope 或额外的 structured-content 副本。
+- `mcp`：全部公开工具的业务返回值按紧凑 JSON 的 UTF-8 序列化计数，不包含 MCP envelope。
+  服务端成功回包只发送一份文本 JSON，
+  具体格式见 [MCP 返回合同](api.md#session-与-context)。
 - `pi-cli`：全部 CLI 工具与 host-command 成功返回的实际 JSON 字节数，包含 `--pretty`
   格式化，不包含 stdout 的最后一个换行。
 - `pi-tool`：Pi 注册的 Goal Plus 工具最终结果按 JSON 序列化的字节数，覆盖 Pi 专有工具
@@ -470,6 +498,56 @@ run 生成一次 report。
 HTML 是生成时刻的静态视图。后续产生新的 hook event 或 observability 后，需要再次调用 `goal_plus_search_report` 才会更新。缺失数据保持
 `Not observed` 或列入 `unavailable_metrics` ，不会从 transcript prose 补造。
 
+### 离线可视化交付包
+
+每次成功调用 `goal_plus_search_report`，都会在 cleanup 和最终报告刷新后自动生成
+`runs/<run_id>/report-bundle.zip`，通过 `bundle_path` 返回；再次生成报告会原子替换该包。
+解压整个包后打开顶层 `index.html`，可进入结果报告和 Agent 会话页面。
+
+包内保留相对目录：
+
+```text
+index.html
+runs/<run_id>/report.html
+runs/<run_id>/report.md
+host-logs/agent-transcript/index.html
+host-logs/agent-transcript/manifest.json
+host-logs/agent-transcript/events.jsonl
+host-logs/agent-transcript/<session>/transcript.html
+```
+
+会话部分只包含已经导出的文件；正常运行需在启动时开启 `GOAL_PLUS_DEBUG=1`，报告前会
+自动刷新。未开启时仍可交付报告包，入口如实标记会话未导出；原生日志仍在时可先用
+前述离线命令显式补导出。每个 session 的 partial/unavailable 状态继续由原 manifest 和
+页面说明，包的存在不表示采集完整。
+
+为保留跨 run 导航，包会包含同一 runtime 中已生成的其他 run MD/HTML 报告；尚未生成的
+报告不代造。打包只读取报告和会话派生文件，不收集原始 host 日志、业务状态、锁、workspace
+或认证配置。它与现有会话导出一样保存在本地，不自动上传或提交。
+
+### 评价合同与分数轨迹
+
+每个 Search task 的 HTML 合同目录收集 run 初始、candidate active、每轮实际执行、所有
+已提交修订及其父版本、selected 版本，并沿父链读取完整 FrozenSpec。尚未执行的中间版本
+也保留。局部别名只辅助阅读，真实 ID、hash、时间、父版本、修订理由及 initial/active/used/
+selected 关联始终可查；缺失合同不从摘要补造。
+
+合同可展开 objective、metric/direction、candidate acceptance、process/promotion verifier
+命令、selection、source/workspace、edit surface、预算与完整结构化对象。字段差异分别展示
+SearchSpec 内容和冻结 verifier 文件哈希，命令/参数变化不等于冻结脚本字节变化。
+Evidence 表列出本轮合同、metric/direction 与 Git/artifact revision，并链接合同目录。
+Selected 区域使用持久化的选定合同、iteration 和精确 artifact，不以当前 active 版本代替。
+
+分数轨迹按准确 FrozenSpec ID 分组，最优值只比较该合同内的合格 Evidence。初始合同可显示
+原 baseline，其他合同不借用该 baseline；selected 点只出现在选定合同轨迹。
+同名 metric 不意味着分数可跨合同排名。混合版本仍展示生命周期和任务计数。
+
+软件版本与 report schema 描述生成器和页面结构；Goal revision 描述目标修订；FrozenSpec
+ID/hash 描述评价合同；native checkpoint/session 描述上下文与执行身份；Git/artifact revision
+描述交付内容，各类身份不互相替代。评价与选择合同见[共享平面](shared-plane.md#分支评价版本)。
+
+### 其他报告投影
+
 存在 candidate trace 时，HTML 的 `Cross-Candidate Reference Impact` 表把每条
 `reference.opened` 与该 candidate 随后的第一条 `verifier.settled` 关联，展示来源和后续
 iteration、commit、分数变化及双方 worker summary。Git workspace 另外只比较来源或后续
@@ -480,7 +558,7 @@ artifact 已不可用时保持 comparison unavailable。
 Goal Monitor 优先投影关联该 Goal 的最新 execution scope，缺失时才回退到所选 run 的
 scope。Git 报告的 publication 状态和 artifact 由持久 Promotion 补全投影，不写回或修复
 run。报告用例先检查关联 Goal 终态，再写 MD/HTML、执行 snapshot cleanup 并刷新
-lifecycle；纯 renderer 不执行状态转换。
+lifecycle，最后生成离线交付包；纯 renderer 不执行状态转换。
 
 普通终态验收到这里为止：`host_cleanup.state=complete` 表示临时 candidate/annotation Child、private
 branch 和未 pin snapshot 已按合同回收，durable `.gp` Evidence 与报告仍保留。不要遍历
@@ -542,7 +620,7 @@ context/provenance handle，不是 liveness record。
     └── promotion/
 ```
 
-新的 `parallel_loops` 和 `adaptive_search` run 在 `plans/` 下都只有一个初始 plan，但同一 candidate 可以有多个 session 和
+新的固定并行和 `adaptive_search` run 在 `plans/` 下都只有一个初始 plan，但同一 candidate 可以有多个 session 和
 iteration。
 
 ### Candidate 与 Verifier Evidence
@@ -666,7 +744,8 @@ pi --mode rpc --approve \
   -e <repo>/assets/pi/extensions/goal-plus.ts
 ```
 
-Pi native session 保存在 `.gp/host-sessions/pi/`。共同调用观测按准确 native handle 和
+Pi native session 保存在 `.gp/host-sessions/pi/`；宿主配置 home 使用其独立的 `pi-home/`
+子目录，避免 Pi 启动时将历史文件当作旧配置目录数据迁走。共同调用观测按准确 native handle 和
 invocation 写入既有 candidate provenance，不保存模型正文；用量缺失保持 unavailable。
 controller 丢失后按 [Search 恢复](search-recovery.md) 处理，不能凭 session 文件重连未知
 活跃执行。旧 `.gp/host-pools/pi/` 和 `pi-rpc-*.jsonl` 仅属于旧 worker 路径，不能作为新
@@ -707,7 +786,8 @@ artifact 原有文件、验证输出清理失败，或在 preflight/promotion �
 在 `verifier_workspace_outputs_cleaned`。
 
 worker 应立即停止并报告。main 修复 source-owned verifier，使临时输出使用
-`GOAL_PLUS_VERIFIER_TMPDIR`、`TMPDIR` 或 `tempfile`；并发 verifier 不能共享固定 `/tmp` 路径。
+`GOAL_PLUS_VERIFIER_TMPDIR`、`TMPDIR` 或当前工作目录的 `.tmp/`；并发 verifier 不能共享
+固定路径。需要改变默认 scratch 根时，使用 `GOAL_PLUS_TMPDIR`，不要依赖宿主全局 `/tmp`。
 随后重新 freeze 并创建新 run，复用任何 candidate state 前先确认 `cleanup_failures` 为空。
 
 ## 诊断工具与副作用
@@ -717,11 +797,15 @@ worker 应立即停止并报告。main 修复 source-owned verifier，使临时�
 | `goal_plus_monitor_snapshot(...)` | Goal/subagent dispatch、Search、session、host 和 feature plugin 的组合视图 |
 | `goal_plus_search_status(run_id)` | run state、candidate count 和 best score |
 | `goal_plus_search_list_history(run_id, top_n, sort_by)` | candidate ranking 和研究汇总 |
-| `goal_plus_search_list_iterations(agent_session_id)` | 当前 candidate 可能很大的完整 verifier history |
-| `goal_plus_search_get_agent_context(agent_session_id)` | 授权 context 初始化，可能初始化 ledger；不是纯只读查询 |
-| `goal_plus_search_get_global_evidence(agent_session_id)` | 当前可见 Evidence/View，并记录读取审计和执行既有 reconciliation |
-| `goal_plus_search_get_evidence_detail(agent_session_id, candidate_id, iteration)` | 按需 supplemental evaluation |
+| `goal_plus_search_list_iterations()` | 当前绑定 candidate 可能很大的完整 verifier history |
+| `goal_plus_search_get_agent_context()` | 候选 worker 读取宿主绑定的授权 context，可能初始化 ledger；不是纯只读查询 |
+| `goal_plus_search_get_global_evidence()` | 候选 worker 读取当前绑定 run 的 Evidence/View，并记录读取审计和执行既有 reconciliation |
+| `goal_plus_search_get_evidence_detail(candidate_id, iteration)` | 候选 worker 按需展开当前绑定 run 的 supplemental evaluation |
 | `goal_plus_search_get_agent_observability(agent_session_id)` | 单 session 的归一化 model、timing、usage 和 artifact Evidence |
+
+上表中带括号的候选工具签名是模型实际看到的 schema：candidate session 由可信宿主绑定，不能由模型
+自行填写。`agent_session_id` 仍保留在 Main/操作者的诊断查询中，用于跨候选定位日志和 host observation；
+这两个入口不要混用。
 
 一个典型的跨层结论是：“host session 已结束，host log 中没有 `goal_plus_search_run_verifier` ，同时 `candidate.json.iterations`
 为空。”这能证明 worker 没有自行结算；仅看到 assistant 声称已经验证，不能替代这两层 Evidence。

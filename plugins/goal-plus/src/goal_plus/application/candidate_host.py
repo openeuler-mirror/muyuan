@@ -2,22 +2,27 @@
 
 import base64
 import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
+
 from goal_plus.application.candidate_execution import require_run_not_invalidated
-from goal_plus.application.candidate_queries import CandidateHostQueries
 from goal_plus.application.candidate_ledger import (
     backfill_results_ledger_from_iterations,
     render_thinkthread_inner_git_results_tsv,
 )
-from goal_plus.domain.evidence import CandidateAttemptFeedback
+from goal_plus.application.candidate_queries import CandidateHostQueries
+from goal_plus.domain.evidence import (
+    CandidateAttemptFeedback,
+    verifier_feedback_projection,
+)
 from goal_plus.domain.search import CandidateTask, FrozenSpec
+from goal_plus.domain.tool_catalog import CandidateToolCapabilities
 from goal_plus.ports.candidate_host import (
+    PrepareContinuation,
+    ResolvedInnerAgentBinding,
     ThinkThreadContinuation,
     ThinkThreadSessionLaunch,
-    ResolvedInnerAgentBinding,
-    PrepareContinuation,
 )
-
 
 ATTEMPT_FEEDBACK_HEADER = "Goal Plus candidate attempt feedback (authoritative JSON):"
 
@@ -25,9 +30,12 @@ ATTEMPT_FEEDBACK_HEADER = "Goal Plus candidate attempt feedback (authoritative J
 def append_candidate_attempt_feedback(
     message: str,
     feedback: CandidateAttemptFeedback,
+    *, shared_tools_enabled: bool = True,
 ) -> str:
     payload = json.dumps(
-        feedback.model_dump(mode="json"),
+        verifier_feedback_projection(
+            feedback.model_dump(mode="json"), shared_tools_enabled=shared_tools_enabled,
+        ),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -89,7 +97,10 @@ class ThinkThreadCandidatePreparation:
                 "initial_results_base64": base64.b64encode(initial_results.encode("utf-8")).decode("ascii"),
                 "initial_result_count": len(record.results_ledger),
             }
-        return ThinkThreadSessionLaunch(session, root_id, base.id, inner_git_binding)
+        return ThinkThreadSessionLaunch(
+            session, root_id, base.id, inner_git_binding,
+            CandidateToolCapabilities.from_frozen(frozen),
+        )
 
 
     def prepare_thinkthread_continuation(
@@ -124,7 +135,12 @@ class ThinkThreadCandidatePreparation:
         )
         message = str(session.launch["message"])
         if attempt_feedback is not None:
-            message = append_candidate_attempt_feedback(message, attempt_feedback)
+            run = self.source.read_run(run_id)
+            frozen = self.source.read_frozen_spec(run.frozen_spec_id)
+            message = append_candidate_attempt_feedback(
+                message, attempt_feedback,
+                shared_tools_enabled=frozen.spec.shared_dir.enabled,
+            )
         return ThinkThreadContinuation(
             agent_session_id=session.agent_session_id,
             message=message,

@@ -15,6 +15,10 @@ continuation 主要指 Search candidate worker 的续跑。
 
 ## 统一运行模型
 
+Candidate 的 fresh/fork 总体生命周期、模式差异和持久状态图见
+[Candidate Dispatch：fresh 与 fork](candidate-dispatch.md)。本页只维护宿主 adapter 的
+provider 差异、能力矩阵和 native session 事实。
+
 `agent_harness` 表示 Codex/Pi 身份，`runtime_provider` 表示 direct/ThinkThread 执行托管，
 `workspace.provider` 表示 Copy/Git worktree/ThinkThread 文件空间。传输名 `pi-rpc` 只在
 具体 adapter 和进程标签中使用。装配先选择 runtime provider，direct 内再选择 harness；
@@ -39,6 +43,132 @@ interrupted 结果，平台将原生 abort 回报为 completed 时也不触发 v
 Adapter 返回的 launch payload 由可信 launcher 消费。Main 使用共同控制工具，
 不解释 native spawn 参数或补造身份 metadata。旧 pool DTO、派发队列和模型工具已删除。
 
+<a id="fork-adapter"></a>
+
+### Candidate dispatch adapter（fresh / fork）
+
+`strategy.initial_context=fork` 的语义由 Search 层统一定义，不随 Codex、Pi 或
+ThinkThread 改变；`fresh` 使用同一 adapter contract，只是不携带 parent checkpoint。
+公共流程是 frozen spec/preflight、准备 session target、provider operation、exact receipt、
+共同 session control、hard settlement、可选 LLM audit、selection、promotion 和 apply。
+Fork 模式还要求完整父 checkpoint 和 N 个隔离分支。
+父 Main 持有最终 apply 权限，candidate branch 只能提交结果和证据。
+
+Provider-neutral `ProviderDispatchAdapter` 提供 prepare、start 与 receipt recovery；内部 coordinator
+通过 `start_agent_session(..., session_mode="fresh"|"fork")` 复用 candidate session 生命周期。
+Receipt 关联 provider、父/分支
+opaque handle、checkpoint provenance、workspace 或 Fs attachment、capability/model/profile、
+request identity 和 cleanup 状态；Runtime 只做归属、代际、幂等和状态转换，不解析 provider
+payload。Codex app-server、Pi SessionManager 和 ThinkThread `thinkthread.fork` 是三个实现，
+不是三套 Search 状态机。缺少完整 checkpoint 或 receipt provenance 时 adapter 必须拒绝，不能
+退回 fresh `spawn` 并伪装成上下文 fork。
+
+当前 direct Codex/Pi 与 ThinkThread Codex/Pi adapter 都已接入该流程。仍处于 prepared 且没有
+越过 provider fence 的 group 会继续启动；submitted/unknown target 只重放完整持久 receipt，
+没有准确 outcome 时保持 fenced。共同 owner 保存不可变 launch provenance，
+并在全部 started branches 收到可信关闭事实后提交 group closed；provider 物理关闭语义不混同。
+Direct Pi 可从确定性的候选 session 文件恢复 provider receipt；Direct Codex 没有 provider 查询或
+journal 时保持 fail-closed，禁止通过重发创建未知分支。
+TT journal 重建、close callback 重放与冻结工具投影由无模型回归覆盖。Pi/Codex 的真实 TT
+Circle 场景核验完整派生、续轮、交付与关闭；验收记录绑定实际安装 build。
+ThinkThread Child 的 stop/destroy、Fs branch 清理和 Message delivery 细节留在 adapter 内部。
+
+### Fork 分支的启动消息与工作区
+
+Fork 继承父 Main 的完整 checkpoint，候选启动仍使用自己的工作合同。
+`goal_plus_search_fork` 只派生并绑定分支；Main 随后调用 `goal_plus_session_run` 时，host
+在继承的历史之后提交新的执行消息，内容为 **candidate launch 消息 + Main 本次 prompt**。
+它不会仅凭父历史中的角色和路径让分支开始工作，也不改写原有历史。
+
+Launch 消息只携带用于追踪的 `agent_session_id`、`candidate_id`、一句候选 intent，并要求先调用
+绑定的 `goal_plus_search_get_agent_context()`。worker budget 仍作为 host 控制字段传递，不重复放进
+模型消息；proposal 的 hypothesis、tradeoff 和 instructions 由 context 的
+`candidate_task` 统一返回。Direct 使用所选 inner-agent 的 prompt 资产说明候选角色；ThinkThread
+的 `common` 使用最小引导，完整行为要求放在返回的 `candidate_task.instructions`。因此没有一份
+跨宿主统一的 fork 专属 system prompt。
+Launch 拼接由 `infrastructure/artifacts/candidate_launch.py` 与 `agent_hosts.py` 负责，
+实际提交在 `session_host.py` 和 `infrastructure/thinkthread_sessions.py`。
+
+`get_agent_context` 的响应是当前工作合同，包含候选身份、目标、可交付修改范围、只读文件、
+instructions 和已启用能力。工作区按 provider 表达：
+
+| Provider | 模型获得的工作区说明 | Host 实际绑定 |
+| --- | --- | --- |
+| Direct Copy/Git | `candidate_task.workspace` 是候选本地路径，文件和 shell 操作显式使用该路径 | Codex fork 的 `cwd`、Pi fork 的 target cwd 及后续进程 cwd 均绑定候选 workspace |
+| ThinkThread | `workspace_access.logical_root='.'` 与 `source_subdir`，不暴露 runtime 的本地候选路径 | 从固定 baseline 派生独立 private Fs branch，并核对 Child/branch/baseline 归属 |
+
+ThinkThread 中路径字符串与父历史相同，不代表访问同一棵 live tree；文件操作落在当前
+Child 的 private 文件空间。Root live tree 和 sibling Child 不属于当前候选可见范围。
+候选合同由 `application/candidate_creation.py` 生成，公开响应由
+`application/candidate_context.py` 投影。
+
+工作区和执行权限还由可信 host 绑定与共同入口校验，不只依赖提示词。ThinkThread adapter
+在首次 wake 前发送 `wake=false` 的身份/能力绑定消息，不触发模型执行；正式 dispatch
+再携带 session identity 与 nonce，Child 工具桥从准确 Parent Message 取得绑定。
+继承历史中的 Main 工具调用或路径不授予当前候选 Main 权限。
+后续 dispatch 沿原分支执行，ThinkThread 将上一 attempt 的权威 verifier feedback 与
+continuation 指令一起送入同一 Child，不重新 fork。
+
+### Fork 完成边界与恢复
+
+Main 完成 freeze/create/plan/batch 后结束准备回合。共同 gate 要求准备事件晚于真实 batch
+完成；时间精度为秒，同秒不能证明先后时拒绝。已有 started plan 缺少完成事实时不补造，
+重放不改变实际 started_at。
+
+- Codex direct 核验同一 completed turn，原生 completedAt 必须晚于准备事件，不能选择旧 turn。
+- Pi direct 要求同 run marker，沿活动祖先物化选定 ancestry，排除后续 Main 消息与 inactive
+  branch，再使用 SessionManager.forkFrom。
+- TT 使用 fork_current_checkpoint/private_branch；Pi 以 final assistant stop 为 provider
+  边界，工具组 entry 不能证明 checkpoint 推进。整组派生前后的两次读取必须保持边界一致。
+
+所有分支固定共同 checkpoint、初始 FrozenSpec 与源码 baseline。共同 owner 严格核验
+Child/Fs、effective model/grants、预算与身份后才放行整组；派生与执行分开，首轮复用已派生的
+Child。已知 Child/Fs 后保存 journal；后续身份、grant 或领域提交失败时清理准确资源。
+未知 outcome 保持 fenced，不能重发 fork/spawn/wake 来伪造重放成功。
+
+Close 先 fence，再确认原调用静默和真实资源关闭。Launch receipt 不可变，close facts 独立；
+全部 started branches 有可信关闭事实后 group 才 closed。Partial/failed group 不因清理转成功。
+Direct 的 controller/RPC 收尾与 TT 的 retained turn 静默、Fs cleanup、Child destroy 各自记录。
+原 fork Child 丢失、被替换或 native context 无法证明保全时，不能从 snapshot fresh spawn 并
+沿用旧 fork provenance；当前由 Main 决定 successor work。
+
+TT SDK 没有 exact checkpoint selector/receipt；Root digest 只证明读取结果一致，JSONL leaf
+不证明 live active leaf。相同持久历史前缀不证明首模型请求的 system/tool projection 或
+compaction 后窗口相同，也不证明缓存命中、成本降低或求解质量改善。
+历史 Main 路径与角色不授予当前权限；Child 的工具、cwd、workspace、预算和可信 identity
+按 candidate 合同重绑，Main 保留编排与 apply 权限。
+
+Fresh/fork 决定首次上下文来源。Goal resume 恢复执行许可，native resume 打开已有会话；
+后续 session run 用新 call_id 沿原分支执行，不重新派生。恢复 artifact 不证明 native context 恢复。
+
+### Fork 支持范围
+
+Harness、runtime provider、workspace provider、inner agent、首次上下文和执行版本是独立维度。
+`common` 是 worker 行为，不能指代 direct provider。当前配置以 `initial_context=fork` 选择 fork，
+`fork` 与 `adaptive_search` 当前互斥；`fresh` 可以叠加 `adaptive_search`。
+
+| Harness / runtime | Workspace | Inner agent | Fork | 显式 worker model |
+| --- | --- | --- | --- | --- |
+| Codex / direct | Copy、Git worktree | common、autoresearch | 共同 adapter | 支持 |
+| Pi / direct | Copy、Git worktree | common、autoresearch | 共同 adapter | 支持 |
+| Codex / TT | TT private Fs | common | 真实 Circle 核验 Child 历史与 Fs | Profile allowlist 内 exact provider/model |
+| Pi / TT | TT private Fs | common、autoresearch | 真实 Circle 使用 common | Profile 默认模型，任务级 override 关闭 |
+
+TT 两端均不支持任务级 reasoning/service-tier override。Pi TT 的 launch/continue 使用同一
+能力准入。Copy 仅支持 artifact_only，Git worktree 与 TT 使用原 publication/apply。
+TT candidate Reference 尚无 provider 物化能力，目录隐藏 reference_open，调用以
+ReferenceUnavailable 拒绝；Annotation Artifact View 可用不代表 candidate Reference 可用。
+TT Shared Tool/shared_dir 的 freeze 继续拒绝；冻结 capability 统一投影 Codex MCP、TT bridge、
+Pi 激活与 context reload，不能通过目录伪报支持。
+
+TT Root Ultra delegation、独立 final check、Pi worker model override、fork + adaptive，
+以及可替换 Child 的 native-context restore 均未开放。两端 Circle 真实验收覆盖完成边界、
+两个独立 Child/Fs、原 Child 各两轮、hard settlement、required audit/Annotation、selection、
+独立 publication verifier、Root apply、Goal complete、报告和 cleanup；成功场景不证明全部
+unknown intent、丢回包或故障恢复。宿主特有范围见 [Codex](codex.md#支持范围与验证) 和 [Pi](pi.md)。
+
+### 执行与内部角色边界
+
 Direct native child 的 `SessionProcessInput` 默认携带 `ProcessSandbox` 合同；Codex 使用
 原生策略，Pi 使用 OS wrapper。文件写入范围、共享 runtime 例外、内部推理接线与支持表
 统一见 [Agent sandbox](sandbox.md)。该边界不替代 host callback 的领域授权。
@@ -48,7 +178,8 @@ Search runtime 不承担 worker supervisor 职责。session run 内部创建的�
 
 同一边界也适用于 Evidence Annotation 和 LLM Verifier。两者继承
 `FrozenSpec.agent_harness` 记录的 Main Agent 身份，Annotation 同时使用冻结的 runtime provider；
-LLM Verifier 使用 direct 执行，不接受独立身份选择；
+LLM Verifier 使用冻结 runtime provider 对应的执行器（direct 使用 structured inference，ThinkThread
+使用受限的 fresh private Child），不接受独立身份选择；
 Codex hook 或 Pi extension 从当前 native host 进程唤醒 run-scoped queue，
 内部子进程完整继承该进程配置。持久 profile 只记录 agent_harness/runtime_provider/model/reasoning/timeout 和
 `configuration_source="host_process"`，不复制外部连接或认证配置。执行器在调用模型前校验
@@ -58,7 +189,8 @@ launcher 写入的 host provenance，shared runtime/MCP 不提供备用启动路
 再检查 scope admission。Verifier、Evidence/context 读取和 Search status/select/invalidate/report
 的 post-tool 回调都可重扫持久队列；Codex worker-stop 和 TT controller 的既有唤醒继续保留。
 Pi 的可信 host command 只接受冻结的 Pi RPC 或 TT driver，TT 的 Root/capability 校验仍在
-原 driver 执行，不因此开启 Codex+TT 或 Adaptive+TT。
+原 driver 执行；Codex+TT 与 Adaptive+TT 的接线和真实宿主证据以支持矩阵和专项文档为准，
+不从 Codex+TT fork Circle 的通过推导其它 orchestration/host 组合。
 
 Search selection 只提交领域终态和内部 queue fence。模型关闭由 host pump 和既有
 scope cleanup 执行；清理失败保留句柄及错误，后续 host 调用重试。Annotation 与 Verifier
@@ -79,15 +211,15 @@ candidate workspace 和 `.gp` 内部路径都不是 candidate 工作目录。
 任务局部 Skill 采用固定约定，不进入 SearchSpec：只识别 source Git index 中
 `.agents/skills/<name>/SKILL.md`，且要求该 Skill 目录内所有文件都由 Git 跟踪。freeze 持久化
 发现结果；candidate context 通过 `candidate_task.task_skill_paths` 返回该 candidate 自己的
-绝对路径，launch message 同时输出 `task_local_skills_visible`。freeze/batch 的 Main 回执不
-重复技能清单或 candidate instructions。worker 完整读取清单中的
-`SKILL.md` 并显式遵循，只按需读取同目录资源。仓外 Skill 继续由 host 管理；运行时不扫描或复制
-parent/global/plugin 或 peer candidate Skill。
+绝对路径，作为唯一清单。launch message 和 instructions 不展开路径；worker 按当前任务、角色
+和 provider 选择适用 Skill，选中后完整读取 `SKILL.md` 并显式遵循，只按需读取同目录资源。
+同一 session 中已完整加载且内容未变时复用；上下文被截断、压缩、缺失或文件变化时补读。
+仓外 Skill 继续由 host 管理；运行时不扫描或复制 parent/global/plugin 或 peer candidate Skill。
 
 ## Inner Agent Binding
 
 `strategy.inner_agent` 是 host-neutral 的 worker 行为 adapter ID，不是 Codex/Pi 原生角色名。
-当前 Git 和 ThinkThread outer provider 都支持：
+已接入的 inner-agent 行为如下；各 harness/provider 组合以[支持范围](#fork-支持范围)为准：
 
 | ID | Dispatch 行为 | MCP 合同 | Workspace ledger projection |
 | --- | --- | --- | --- |
@@ -112,11 +244,11 @@ freeze/launch 前 fail closed。
 | 启动 | 共同 session run → app-server | 共同 session run → Pi RPC | 共同 session run 登记并创建 private Child | 同 Pi + ThinkThread |
 | Candidate 进程环境 | 宿主把冻结 `process_environment` 注入候选进程 | 同一宿主输入接线 | 由 ThinkThread Profile/Runtime 控制，不接受 candidate process environment | 同 Pi + ThinkThread |
 | 等待 | `goal_plus_session_wait_any` | 同一工具 | 同一工具 | 同一工具 |
-| 续跑 | `goal_plus_session_run` 复用 native session | 同一工具 | 同一工具，复用 Child/Session/branch | 同一工具；TERM 后 Child 不可复用，恢复走 destroy + respawn |
+| 续跑 | `goal_plus_session_run` 复用 native session | 同一工具 | 同一工具，复用 Child/Session/branch | 同一工具，复用原 Child；丢失原上下文时拒绝冒充续跑 |
 | Deadline | Application 预算 gate + 宿主执行限时 | 同一接线 | parent/controller watchdog | 同 Pi + ThinkThread |
-| 恢复 | `.gp` checkpoint/generation + scope 资源核验 | 同一恢复用例 | scope 资源日志、原 call_id/Message、独占 controller lease | 同 Pi + ThinkThread，复用受 Child 不可复用约束 |
+| 恢复 | `.gp` checkpoint/generation + scope 资源核验 | 同一恢复用例 | scope 资源日志、原 call_id/Message、独占 controller lease | 同 Pi + ThinkThread，保留原 Child/context 归属 |
 | Goal gate | 精确 `$goal-plus...` + hooks | 精确 `/goal-plus...` + extension events | 同 Pi gate + exact Profile preflight | Codex gate + exact Profile preflight；managed config 无 hooks，TT Root 无 Stop-hook 续跑 |
-| 模型发现 | app-server `model/list` | Pi RPC model catalog | Profile/default 或显式 provider/model | TT Profile allowlist；默认或显式 exact provider/model |
+| 模型发现 | app-server `model/list` | Pi RPC model catalog | Profile 默认模型，任务级 override 关闭 | TT Profile allowlist；默认或显式 exact provider/model |
 | Observability | native JSONL + metadata | `pi_metrics` + metadata | TT IDs + durable snapshot/request IDs | 同 Pi + ThinkThread |
 | Workspace | `copy`、`git_worktree` | `copy`、`git_worktree` | `thinkthread` | `thinkthread` |
 
@@ -126,7 +258,7 @@ freeze/launch 前 fail closed。
 
 当前可移植 planner 为 `agent_guided`（含 `agent`、`default`）和 `random`（含
 `random_mode`）。Codex/Pi RPC 的普通运行使用固定初始并行循环；Git worktree 可选
-`adaptive_search`。ThinkThread（Pi 与 Codex Profile）支持 `parallel_loops` 和
+`adaptive_search`。ThinkThread（Pi 与 Codex Profile）支持固定并行和
 `adaptive_search`，Codex
 ThinkThread 默认继承 Profile 模型；显式模型必须来自 Profile allowlist，并以 exact
 `provider/model` 传给 Child。harness/runtime/workspace 组合不匹配或 Profile preflight 失败时 runtime 在
@@ -170,7 +302,7 @@ ThinkThread verifier 使用相同锁目录和冻结 `resource_lock` 的精确字
 
 ## Candidate 循环
 
-新的 Codex/Pi spec 使用 `orchestration_mode="parallel_loops"`。一次 Search
+新的 Codex/Pi spec 默认使用 `initial_context="fresh"`。一次 Search
 run 只做一次初始规划，创建固定数量的 candidate lane：
 
 1. 启动全部初始 candidate；
@@ -334,7 +466,10 @@ revision 与 run 归属。匹配当前 activation 的 open scope 直接幂等追
 也不把 Goal 改为 `needs_user`。replacement run 经过同一合同，没有专用恢复分支。
 
 正常续跑优先复用 host 的 native session。工作区保持完整、仅需要 fresh context 时，使用
-可移植的 state redispatch：
+可移植的 state redispatch。以下 fresh context 流程仅适用于非 fork candidate；fork 的
+`new_session=true` 仍复用原绑定，原 native context 丢失时拒绝以 fresh session 冒用 fork provenance。
+
+非 fork candidate 的步骤为：
 
 1. 对原 candidate 调用 `goal_plus_session_run(new_session=true)`；
 2. host 确认空闲旧资源已清理后，在同一 workspace 创建新 generation 的 session；
@@ -350,8 +485,8 @@ generation、workspace、Evidence 和累计预算保持不变。新 call 不重�
 state redispatch；恢复失败不能隐式创建新会话。
 
 控制器重建读取持久 native handle 和最后成功观测的用量基线。旧 call 的完整结果不可用时
-明确报错，Main 检查领域状态后以新 call_id 继续，不进入 checkpoint recovery。原对话无法加载时，显式
-`new_session=true` 可直接接手现场，无需先恢复旧对话。
+明确报错，Main 检查领域状态后以新 call_id 继续，不进入 checkpoint recovery。原对话无法加载时，
+非 fork candidate 可显式使用 `new_session=true` 接手现场，无需先恢复旧对话。
 
 普通未验证修改保留在 workspace；pending verifier/settlement 须先处理完。
 显式恢复 checkpoint 时，使用 [Search 一致性恢复](search-recovery.md)：共享
@@ -391,5 +526,5 @@ asset、本文和对应测试。快速测试只验证 schema 和映射；真实 
 | 路径 | 验证内容 |
 | ------------------------------ | ------------------------------------------------------------------------ |
 | [session host ST](../tests/st/test_st_session_host.py) | Codex/Pi 同 session 双轮、准确 Evidence、冷恢复和资源关闭 |
-| [Main ST](../tests/st/test_st_unified_main.py) | 无旧控制 skill 的两端 Main、共同工具及 Search 流程 |
-| [TT ST](../tests/st_thinkthread/test_linux_v3.py) | retained Child、准确 Message、工具桥、snapshot 和清理；各场景进度见统一重构记录 |
+| [Main ST](../tests/st/test_st_unified_main.py) | 无旧控制 skill 的两端 Main、共同 Search/session 流程、连续评价修订与版本化 Global Evidence |
+| [TT ST](../tests/st_thinkthread/test_linux_v3.py) | retained Child、准确 Message、工具桥、snapshot 和清理；完整场景及证据边界见[支持范围](#fork-支持范围) |

@@ -39,6 +39,21 @@ class CandidateTrace:
     ) -> CandidateTraceSnapshot:
         return self.store.write_snapshot(self.identity(session), content)
 
+    def read_snapshot(
+        self, session: AgentSessionRecord, snapshot_id: str
+    ) -> CandidateTraceSnapshot:
+        """Read a previously returned snapshot for a session.
+
+        Snapshot reads stay behind the narrow trace facade so application code
+        does not reach into a concrete persistence adapter when constructing an
+        Evidence delta.  The store verifies the content hash on every read.
+        """
+        return self.store.read_snapshot(
+            session.run_id,
+            session.candidate_id,
+            snapshot_id,
+        )
+
     def record(
         self,
         session: AgentSessionRecord,

@@ -186,18 +186,17 @@ await assert.rejects(dispatchMessageId(client, "parent", nonce), /ambiguous/);
     [
         (
             "goal_plus_search_get_agent_context",
-            {"agent_session_id": "agent-1", "extra": True},
+            {"extra": True},
             "extra",
         ),
         (
             "goal_plus_search_get_global_evidence",
-            {},
+            {"agent_session_id": "agent-1"},
             "agent_session_id",
         ),
         (
             "goal_plus_search_get_evidence_detail",
             {
-                "agent_session_id": "agent-1",
                 "candidate_id": "c002",
                 "iteration": 0,
             },
@@ -205,15 +204,12 @@ await assert.rejects(dispatchMessageId(client, "parent", nonce), /ambiguous/);
         ),
         (
             "goal_plus_search_list_iterations",
-            {},
+            {"agent_session_id": "agent-1"},
             "agent_session_id",
         ),
         (
             "goal_plus_search_run_verifier",
             {
-                "run_id": "run_rpc",
-                "candidate_id": "c001",
-                "agent_session_id": "agent-1",
                 "hypothesis": "Try one change",
                 "toolization_decision": {"outcome": "not_needed"},
             },

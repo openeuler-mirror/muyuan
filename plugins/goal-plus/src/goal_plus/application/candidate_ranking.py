@@ -16,6 +16,7 @@ def record_ranking_score(
         return best_iteration.score
     if (
         record.score_report
+        and _matches_spec_id(record, record.score_report.frozen_spec_id, None)
         and record.score_report.process_passed
         and record.score_report.aggregate_score is not None
     ):
@@ -61,11 +62,13 @@ def records_by_created(records: list[CandidateRecord]) -> list[CandidateRecord]:
 def best_iteration_record(
     record: CandidateRecord,
     metric_direction: Literal["maximize", "minimize"],
+    *, frozen_spec_id: str | None = None,
 ) -> IterationRecord | None:
     scored = [
         iteration
         for iteration in record.iterations
         if iteration.process_passed is True
+        and _matches_spec(record, iteration, frozen_spec_id)
         and iteration.score is not None
         and not iteration.touched_denied_files
         and not iteration.changed_outside_allowed
@@ -84,11 +87,13 @@ def best_iteration_record(
 def best_artifact_iteration_record(
     record: CandidateRecord,
     metric_direction: Literal["maximize", "minimize"],
+    *, frozen_spec_id: str | None = None,
 ) -> IterationRecord | None:
     scored = [
         iteration
         for iteration in record.iterations
         if artifact_iteration_eligible(iteration)
+        and _matches_spec(record, iteration, frozen_spec_id)
         and iteration.disposition not in {"discard", "failure"}
     ]
     if not scored:
@@ -99,3 +104,15 @@ def best_artifact_iteration_record(
         key=lambda iteration: iteration.score,
         reverse=reverse,
     )[0]
+
+
+def _matches_spec(record: CandidateRecord, iteration: IterationRecord, frozen_spec_id: str | None) -> bool:
+    return _matches_spec_id(record, iteration.frozen_spec_id, frozen_spec_id)
+
+
+def _matches_spec_id(record: CandidateRecord, observed: str | None, frozen_spec_id: str | None) -> bool:
+    selected = frozen_spec_id or record.active_frozen_spec_id
+    if selected is None:
+        return True
+    legacy = record.spec_revisions[0].parent_frozen_spec_id if record.spec_revisions else selected
+    return (observed or legacy) == selected

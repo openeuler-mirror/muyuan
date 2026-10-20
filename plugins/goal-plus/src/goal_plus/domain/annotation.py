@@ -224,6 +224,8 @@ class GlobalEvidenceReadRecord(SearchModel):
         pattern=r"^[0-9a-f]{64}$",
     )
     source: Literal["explicit", "verifier_injected"] = "explicit"
+    frozen_spec_id: str | None = Field(default=None, min_length=1)
+    mode: Literal["manual", "auto", "independent"] | None = None
     candidate_verifier_iteration: int | None = Field(default=None, ge=1)
     run_verifier_iteration_count: int = Field(default=0, ge=0)
     evidence_count: int = Field(ge=0)
@@ -283,6 +285,8 @@ class EvidenceAnnotationTask(SearchModel):
     run_id: str = Field(min_length=1)
     candidate_id: str = Field(min_length=1)
     iteration: int = Field(ge=1)
+    frozen_spec_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     attempt_base_commit: str | None = Field(default=None, min_length=1)
     attempt_commit: str | None = Field(default=None, min_length=1)
     attempt_base_artifact_ref: ArtifactRef | None = Field(

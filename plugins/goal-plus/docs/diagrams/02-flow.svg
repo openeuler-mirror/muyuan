@@ -107,7 +107,7 @@
   <text x="61" y="1137">不合格返回工作；满足合同才终态</text>
   <path d="M200 1153V1190H430" class="flow"/>
   <text x="447" y="1197" class="heading">终态 Report / 持久通知 / 有 pins 的可重试清理</text>
-  <text x="40" y="1236" class="sub">支持组合保持现有边界：图中异步 Verifier/Allocation 仅适用于已启用的 Adaptive + Git worktree，不扩展 TT/Copy 组合。</text>
+  <text x="40" y="1236" class="sub">支持组合保持现有边界：图中异步 Verifier/Allocation 仅适用于已启用的 Adaptive + Git worktree/ThinkThread，不扩展 Copy 组合。</text>
   <style>.glossary text{font-size:17px}.glossary .term{font-size:19px;font-weight:700}.glossary .glossary-title{font-size:21px;font-weight:700}</style>
   <g class="glossary" transform="translate(0 1260)">
     <rect width="1400" height="405" fill="#f5f7f8"/>

@@ -26,8 +26,12 @@ class VerifierEnvironment:
         if configured_tmpdir:
             self.tmpdir = Path(configured_tmpdir)
         else:
+            fallback = Path(
+                os.environ.get("GOAL_PLUS_TMPDIR") or Path.cwd() / ".tmp"
+            ).expanduser()
+            fallback.mkdir(parents=True, exist_ok=True)
             self._temporary_directory = tempfile.TemporaryDirectory(
-                prefix="goal-plus-torch-cpu-"
+                prefix="goal-plus-torch-cpu-", dir=fallback
             )
             self.tmpdir = Path(self._temporary_directory.name)
         self.extension_dir = self.tmpdir / "torch_extensions"

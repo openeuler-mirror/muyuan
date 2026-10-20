@@ -13,6 +13,7 @@
 | 运行示例 | [Examples](../examples/README.md) |
 | 查询工具、字段、命令配置和返回结果 | [API](api.md) |
 | 理解 Goal 状态、授权和恢复 | [运行逻辑](runtime-logic.md)、[Search 恢复](search-recovery.md) |
+| Candidate fresh/fork 派发、评价版本与 ThinkThread 支持 | [统一派发合同](candidate-dispatch.md)、[宿主支持范围](agent-host-adapters.md#fork-支持范围)、[评价版本](shared-plane.md#分支评价版本) |
 | 理解 Search 与 Evidence | [共享平面](shared-plane.md)、[Adaptive Search](adaptive-search.md) |
 | 从历史 Evidence 列表创建反事实分支 | [Evidence Replay](evidence-replay.md) |
 | 修改 native session、scope 或宿主接线 | [Agent Host Adapters](agent-host-adapters.md) |
@@ -22,6 +23,8 @@
 | 修改普通任务委派 | [Ultra](ultra.md) |
 | 理解分层、状态 owner 与角色能力 | [架构图集](architecture.md)、[图集页面](architecture.html) |
 | 排障、查看日志、检查上下文概要 | [Runtime 调试](debugging-runtime.md) |
+| 阅读 Fork 上下文与评价版本的 HTML 报告 | [Runtime 调试](debugging-runtime.md#agent-行为全量导出goal_plus_debug)、[版本展示](debugging-runtime.md#评价合同与分数轨迹) |
+| 下载完整离线可视化交付件 | [报告包与 index.html](debugging-runtime.md#离线可视化交付包) |
 | 使用可选监控功能 | [Feature Plugins](feature-plugins.md) |
 | 了解 Pi 进度展示与终态卡 | [Pi](pi.md#progress-ui-实时展示) |
 | 选择测试和真实宿主验收 | [Tests](../tests/README.md) |
@@ -62,7 +65,9 @@
 | Snapshot、Allocation、Steering 与 Host 接线 | [Adaptive Search](adaptive-search.md) | LLM Verifier 定义评分生产；API 列工具和返回状态 |
 | Annotation queue、View、supplemental evaluation | [Evidence Annotator](evidence-annotator.md) | API 保留字段及可见性；Shared Plane 保留它对搜索的作用 |
 | Candidate checkpoint recovery | [Search 恢复](search-recovery.md) | Runtime Logic 链接；与 TT controller 接管明确区分 |
+| Candidate session/dispatch lifecycle（fresh/fork） | [统一派发合同](candidate-dispatch.md) | API 保留工具参数；宿主页保留 provider receipt、native session 和支持矩阵 |
 | Candidate Evidence 离线分叉 | [Evidence Replay](evidence-replay.md) | API 保留命令入口；与 checkpoint recovery 区分 |
+| Candidate fresh/fork 与 ThinkThread fork | [统一派发合同](candidate-dispatch.md)、[Host 接入与支持范围](agent-host-adapters.md)、[版本与结果](shared-plane.md#分支评价版本) | 宿主页保留 provider 差异与组合限制，调试文档说明历史采集和报告导航 |
 | 普通 delegation 的 attempt/rework/验收 | [Ultra](ultra.md) | API 保留工具合同；宿主页保留实际执行器行为 |
 | 参数、schema、生成的命令配置表 | [代码与生成器](../scripts/generate_command_config_docs.py)、[API](api.md) | 用户页给例子，不手抄整份 schema；生成区不手改 |
 | 日志位置、运行时布局、诊断操作 | [Runtime 调试](debugging-runtime.md) | 专项文档保留必要状态语义并链接排障入口 |

@@ -88,6 +88,7 @@ class ScopeRecord(TypedDict, total=False):
     run_ids: list[str]
     fenced_run_ids: list[str]
     native_agent_config: dict[str, str]
+    native_session_file: str
     created_at: str
     created_at_ns: int
     updated_at: str

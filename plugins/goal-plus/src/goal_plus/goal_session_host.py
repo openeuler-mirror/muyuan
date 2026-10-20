@@ -7,10 +7,11 @@ import threading
 from goal_plus.bootstrap import build_scope_process_registry
 from goal_plus.domain.agents import AgentHarnessKind
 from goal_plus.execution.native_session import CodexSession, PiSession
-from goal_plus.execution.scope import assert_scope_admission
+from goal_plus.execution.scope import assert_scope_admission, newest_scope
 from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_scope import (
     ensure_execution_scope,
+    execution_scope_for_owner,
     execution_scope_for_run,
     execution_scope_snapshot,
     goal_scope_activation_id,
@@ -39,17 +40,46 @@ class NativeGoalSessionHost:
         )
         scope = (execution_scope_snapshot(root_dir=self.root, scope_id=scope_id) if scope_id
                  else execution_scope_for_run(root_dir=self.root, run_id=goal_plus_id))
-        if scope_id is None and (scope is None or scope.get("state") == "closed"):
+        if scope_id is None and scope is None:
+            if self.agent_harness == "codex":
+                scope = execution_scope_for_owner(
+                    root_dir=self.root, agent_harness=self.agent_harness, owner_session_id=caller_id,
+                )
+            else:
+                # Pi's host-local owner key can differ from the native caller.
+                scope = newest_scope(
+                    candidate for task in record.search_tasks
+                    if (candidate := execution_scope_for_run(root_dir=self.root, run_id=task.run_id)) is not None
+                    and candidate.get("agent_harness") == self.agent_harness
+                    and str(candidate.get("activation_id", "")).startswith(f"{goal_plus_id}:")
+                )
+        if scope_id is None and scope is not None and str(scope.get("activation_id", "")).startswith(f"{goal_plus_id}:"):
+            current = execution_scope_for_owner(
+                root_dir=self.root, agent_harness=self.agent_harness, owner_session_id=scope["owner_session_id"],
+            )
+            if current is not None:
+                if not str(current.get("activation_id", "")).startswith(f"{goal_plus_id}:"):
+                    raise PermissionError("native Goal scope does not belong to the current Main activation")
+                scope = current
+        if scope is not None and scope.get("state") == "open" and (
+            scope.get("agent_harness") != self.agent_harness
+            or scope.get("activation_id") != goal_scope_activation_id(record)
+            or (self.agent_harness == "codex" and scope.get("owner_session_id") != caller_id)
+        ):
+            raise PermissionError("native Goal scope does not belong to the current Main activation")
+        if scope_id is None:
             # A ThinkThread Root has no PreToolUse stop hook, so the scope the
             # hook would have created for the Goal-role tool does not exist yet.
-            # A closed scope is replaced only after an explicit host resume.
+            # The owner's scope may only have Search attachments. Preserve its
+            # resume generation when attaching the Goal or replacing it.
             scope = ensure_execution_scope(
                 root_dir=self.root,
                 agent_harness=self.agent_harness,
-                owner_session_id=caller_id,
+                owner_session_id=scope["owner_session_id"] if scope else caller_id,
                 run_id=goal_plus_id,
                 activation_id=goal_scope_activation_id(record),
                 activation_nonce=goal_scope_resume_nonce(record, scope),
+                native_agent_config=scope.get("native_agent_config") if scope else None,
             )
         if scope is None:
             raise PermissionError("native Goal role requires a host execution scope")

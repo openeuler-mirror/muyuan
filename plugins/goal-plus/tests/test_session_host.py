@@ -23,7 +23,7 @@ from goal_plus.goal_plus import FileGoalPlusRuntime
 from goal_plus.host_scope import close_execution_scope, close_run_candidates, ensure_execution_scope, execution_scope_snapshot
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.domain.agents import WorkerBudget
-from goal_plus.domain.search import DevicePoolSpec
+from goal_plus.domain.search import AdaptiveSearchOptions, DevicePoolSpec
 from goal_plus.infrastructure.search_configuration import DEVICE_POOLS_ENV
 from goal_plus.infrastructure.native_session_inputs import native_candidate_input
 from goal_plus.infrastructure.state.resource_locks import VERIFIER_RESOURCE_LOCK_DIR_ENV
@@ -64,9 +64,12 @@ def hosted_candidate(request, tmp_path, monkeypatch):
 
         spec.workspace.provider = "git_worktree"
         spec.budget.max_candidates = 2
-        spec.strategy.orchestration_mode = "adaptive_search"
-        spec.strategy.allocation = SweSearchUctPolicySpec(policy="swe_search_uct/v1")
-        spec.strategy.verifier = VerifierSpec(scores=["progress_reward", "allocation_utility"])
+        spec.strategy = spec.strategy.model_copy(update={
+            "adaptive_search": AdaptiveSearchOptions(
+                allocation=SweSearchUctPolicySpec(policy="swe_search_uct/v1")
+            ),
+            "verifier": VerifierSpec(scores=["progress_reward", "allocation_utility"]),
+        })
     spec.device_pools = [DevicePoolSpec(pool_id="test")]
     spec.process_verifiers[0].resource_lock = "test:0"
     monkeypatch.setenv(DEVICE_POOLS_ENV, json.dumps({
@@ -417,6 +420,14 @@ def test_product_mcp_launch_two_calls_and_exact_delivery(hosted_candidate):
 
                 snapshot = execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])
                 assert not _codex_run_is_durably_quiescent(root, task.run_id, scope=snapshot)
+            selected = await client.call_tool(
+                "goal_plus_search_select", {"run_id": task.run_id},
+                meta={"threadId": goal.active_session.session_id},
+            )
+            assert json.loads(selected.content[0].text)["selected_candidate_id"] == task.candidate_id
+            snapshot = execution_scope_snapshot(root_dir=root, scope_id=scope["scope_id"])
+            assert task.run_id in snapshot["fenced_run_ids"]
+            assert actors[0].rpc.process.returncode is not None
 
     asyncio.run(exercise())
 

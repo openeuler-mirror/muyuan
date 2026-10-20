@@ -38,8 +38,11 @@ uv run pytest tests/test_installation_system.py --run-system-tests -n 0
 Direct Git/Copy worker 默认带 sandbox，不需要额外安装开关。安装器检测 Pi 的系统后端，
 缺失时提示但允许安装；受保护 worker 不会降级执行。安装器不自动安装系统依赖，
 完整设计、依赖步骤和支持表见 [Agent sandbox](sandbox.md)。
-macOS Pi 使用系统 `/usr/bin/sandbox-exec`；两端子进程临时目录优先放 `/tmp` 下的专属目录，
-不可用时退到 cwd 下的 `.gp/.tmp`，正常退出时清理，不需要额外安装开关。
+macOS Pi 使用系统 `/usr/bin/sandbox-exec`；两端子进程临时目录默认放当前工作目录的
+`.tmp/` 下，正常退出时清理，不需要额外安装开关。需要把 scratch 放到其他数据盘时，
+可显式设置 `GOAL_PLUS_TMPDIR`；该目录必须由调用方预先授权并可写。Codex Main、
+candidate 与 ThinkThread Codex 的 MCP 配置均转发该变量，供 MCP runtime scratch 和本地
+verifier 使用。ThinkThread snapshot 内的临时目录仍由 provider 的执行环境与权限决定。
 安装入口通过 uv 自动取得受管 Python 3.12；没有 uv 时将固定版本的 uv 安装到专属
 bootstrap 目录。无需激活 Conda/venv，`PYTHON` 不再选择安装目标。
 
@@ -112,6 +115,9 @@ Codex 安装还从 `$CODEX_HOME/config.toml` 的 `model_providers` 读取 `env_k
 `env_http_headers` 声明的变量名，加上 `OPENAI_API_KEY`，转发给负责启动原生 session 的
 MCP 服务。仅变量名进入受管 `.mcp.json` 和 build 指纹，不读取或保存密钥值；运行时由
 Codex 从启动环境传入。新增 provider 凭据变量后需重新安装以刷新白名单。
+ThinkThread Codex 的受管 MCP 白名单还转发 actor 运行时的 `CODEX_HOME`，供 candidate
+dispatch adapter 读取 fork checkpoint 对应的 actor rollout。它与受管模型配置目录 `CODEX_CONFIG_DIR` 分工不同；
+不得把安装时的用户 home 固定成 TT actor 的 native session home。
 Codex 缓存版本带有 build，安装后的 hook/MCP 使用 release 内 launcher 的绝对路径，
 因此已加载的启动命令不依赖会被 Codex 刷新清理的旧缓存；Pi extension 从自身包目录读取
 安装收据。两端都使用绝对 Python 路径、隔离模式及预期 build 校验，正常运行不从 `PATH`、

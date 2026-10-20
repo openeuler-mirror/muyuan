@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,14 @@ INJECTION_CUSTOM_TYPES = {
 }
 
 
+def _temporary_root() -> Path:
+    """Return the checkout-local scratch root used by this read-only audit."""
+    configured = os.environ.get("GOAL_PLUS_TMPDIR")
+    root = Path(configured).expanduser() if configured else Path.cwd() / ".tmp"
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
+
+
 def checkout_tool_manifest(role: str) -> dict:
     """List checkout schemas in a disposable root without invoking any tool or host."""
     import asyncio
@@ -57,7 +66,7 @@ def checkout_tool_manifest(role: str) -> dict:
         return {"tools": [{"name": tool.name, "description": tool.description,
                            "inputSchema": tool.parameters} for tool in tools]}
 
-    with TemporaryDirectory(prefix="goal-plus-schema-audit-") as root:
+    with TemporaryDirectory(prefix="goal-plus-schema-audit-", dir=_temporary_root()) as root:
         return asyncio.run(collect(Path(root)))
 
 

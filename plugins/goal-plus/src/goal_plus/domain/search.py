@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from enum import Enum
 import math
+from enum import Enum
 from pathlib import Path
 from typing import (
     Annotated,
@@ -12,6 +12,7 @@ from typing import (
 )
 
 from pydantic import (
+    ConfigDict,
     Field,
     StringConstraints,
     field_validator,
@@ -20,16 +21,15 @@ from pydantic import (
 
 from goal_plus.domain.adaptive.models import ExpansionSource
 from goal_plus.domain.adaptive.policy import AllocationPolicySpec, SteeringPolicySpec
-from goal_plus.domain.verifier import VerifierSpec
 from goal_plus.domain.agents import (
-    AgentSessionHandle,
     AgentHarnessKind,
     AgentRuntimeProvider,
-    validate_search_execution,
+    AgentSessionHandle,
     ModelSpec,
     SelectedModel,
     WorkerBudget,
     WorkerLaunchOptions,
+    validate_search_execution,
 )
 from goal_plus.domain.annotation import (
     EvidenceAnnotatorSpec,
@@ -39,16 +39,18 @@ from goal_plus.domain.annotation import (
 from goal_plus.domain.artifacts import (
     ArtifactRef,
     ExecutionScope,
+    WorkspaceAttachment,
     WorkspaceAccess,
-    WorkspaceProvider,
     WorkspaceCapacityEstimate,
     WorkspaceOperationTiming,
+    WorkspaceProvider,
     WorkspaceSpec,
 )
 from goal_plus.domain.base import SearchModel
-from goal_plus.domain.shared_tools import SharedDirSpec
-from goal_plus.domain.shared_cache import SharedCacheSpec
 from goal_plus.domain.selection import SelectionSpec
+from goal_plus.domain.shared_cache import SharedCacheSpec
+from goal_plus.domain.shared_tools import SharedDirSpec
+from goal_plus.domain.verifier import VerifierSpec
 
 CandidateAcceptanceCriterion = Annotated[
     str,
@@ -57,6 +59,56 @@ CandidateAcceptanceCriterion = Annotated[
 
 # Match the existing bounded preflight error excerpts; full output stays in logs.
 VERIFIER_ERROR_EXCERPT_CHARS = 2_000
+
+
+class UnsupportedDispatchState(ValueError):
+    """A persisted dispatch envelope is outside the active schema."""
+
+
+def validate_dispatch_state_payload(payload: dict[str, Any]) -> None:
+    """Inspect raw state before Pydantic can fill schema defaults."""
+    if "fork" in payload:
+        raise UnsupportedDispatchState(
+            "unsupported dispatch state: legacy top-level fork field; "
+            "recreate the run with dispatch_group"
+        )
+    raw = payload.get("dispatch_group")
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        raise UnsupportedDispatchState("unsupported dispatch state: envelope is not an object")
+    version = raw.get("schema_version")
+    if version != 2:
+        raise UnsupportedDispatchState(
+            "unsupported dispatch state schema: expected version 2; "
+            "older dispatch state must be discarded or recreated"
+        )
+    legacy_keys = {
+        "fork_group_id", "branch_index", "branch_native_session_id",
+        "forked_from_native_session_id", "fork_binding",
+    }
+    if legacy_keys.intersection(raw):
+        raise UnsupportedDispatchState(
+            "unsupported dispatch state: legacy Fork* fields; "
+            "recreate the dispatch group with canonical fields"
+        )
+
+
+def validate_candidate_dispatch_payload(payload: dict[str, Any]) -> None:
+    """Reject legacy candidate/session origin envelopes before decoding."""
+    if "fork_binding" in payload:
+        raise UnsupportedDispatchState(
+            "unsupported candidate dispatch schema: legacy fork_binding field; "
+            "recreate the candidate with candidate_origin"
+        )
+    if "candidate_origin" not in payload:
+        return
+    version = payload.get("dispatch_schema_version")
+    if version != 2:
+        raise UnsupportedDispatchState(
+            "unsupported candidate dispatch schema: expected version 2; "
+            "legacy candidate origin state must be recreated"
+        )
 
 
 class RunState(str, Enum):
@@ -92,8 +144,8 @@ class Budget(SearchModel):
         gt=0,
         description=(
             "一个 Search run 初始创建并实际并行工作的候选 Agent 数量。"
-            "parallel_loops 只创建这一组长期候选，后续继续已有 candidate/session；"
-            "adaptive_search 同时将其作为活跃 worker 上限。"
+            "固定并行执行只创建这一组长期候选，后续继续已有 candidate/session；"
+            "配置 adaptive_search policy 时同时将其作为活跃 worker 上限。"
         ),
     )
     max_candidates: int | None = Field(
@@ -127,18 +179,54 @@ class EditSurface(SearchModel):
     max_file_changes: int | None = Field(default=None, gt=0)
 
 
+class AdaptiveSearchOptions(SearchModel):
+    """Optional policy layer applied to the default fixed parallel lanes."""
+
+    allocation: AllocationPolicySpec | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    steering: SteeringPolicySpec | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def requires_policy(self) -> "AdaptiveSearchOptions":
+        if self.allocation is None and self.steering is None:
+            raise ValueError(
+                "strategy.adaptive_search requires allocation or steering"
+            )
+        return self
+
+
 class StrategyOptions(SearchModel):
     name: str = Field(
         default="agent_guided",
         description="agent_guided (aliases agent/default) requires proposals; random (alias random_mode) does not. Not a custom label.",
     )
-    orchestration_mode: Literal[
-        "rolling_candidates",
-        "parallel_loops",
-        "adaptive_search",
-    ] = Field(default="parallel_loops", description=(
-        "Defaults to adaptive_search when allocation or steering is supplied, otherwise parallel_loops."
-    ))
+    initial_context: Literal["fresh", "fork"] = Field(
+        default="fresh",
+        description=(
+            "The source of the first candidate context. fresh starts isolated candidates from the frozen source; "
+            "fork derives isolated branches from Main's completed checkpoint. The selected host "
+            "adapter must provide "
+            "a complete checkpoint and isolated branch receipt. Direct and ThinkThread adapters are wired; "
+            "ThinkThread native lifecycle still requires real supervisor evidence."
+        ),
+        json_schema_extra={
+            "enum": [
+                "fresh",
+                "fork",
+            ]
+        },
+    )
+    llm_validation: Literal["off", "advisory", "required"] = Field(
+        default="off",
+        description=(
+            "Fork-only intermediate LLM audit policy. Hard settlement remains authoritative."
+        ),
+    )
     inner_agent: str | None = Field(
         default=None,
         description=(
@@ -155,15 +243,36 @@ class StrategyOptions(SearchModel):
         exclude_if=lambda value: not value,
     )
     selection: SelectionSpec = Field(default_factory=SelectionSpec)
+    adaptive_search: AdaptiveSearchOptions | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Optional policy layer for score-driven allocation or steering. "
+            "When omitted, Search uses fixed initial parallel lanes and explicit Main continuation."
+        ),
+    )
     verifier: VerifierSpec | None = Field(
         default=None, exclude_if=lambda value: value is None,
         description="Optional extra scores; configured policies automatically add their required score keys.",
     )
-    allocation: AllocationPolicySpec | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-    steering: SteeringPolicySpec | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @property
+    def allocation(self) -> AllocationPolicySpec | None:
+        """Read the nested allocation policy for internal application owners."""
+        return self.adaptive_search.allocation if self.adaptive_search is not None else None
+
+    @property
+    def steering(self) -> SteeringPolicySpec | None:
+        """Read the nested steering policy for internal application owners."""
+        return self.adaptive_search.steering if self.adaptive_search is not None else None
+
+    @property
+    def adaptive_search_enabled(self) -> bool:
+        return self.adaptive_search is not None
+
+    @property
+    def fork_enabled(self) -> bool:
+        return self.initial_context == "fork"
 
     @field_validator("name")
     @classmethod
@@ -184,27 +293,25 @@ class StrategyOptions(SearchModel):
 
     @model_validator(mode="after")
     def search_mode_configuration_is_consistent(self) -> "StrategyOptions":
-        policies = [policy for policy in (self.allocation, self.steering) if policy is not None]
-        if policies and "orchestration_mode" not in self.model_fields_set:
-            self.orchestration_mode = "adaptive_search"
-        adaptive_search = self.orchestration_mode == "adaptive_search"
+        if self.llm_validation != "off" and self.initial_context != "fork":
+            raise ValueError(
+                "strategy.llm_validation requires strategy.initial_context=fork"
+            )
+        if self.initial_context == "fork" and self.adaptive_search is not None:
+            raise ValueError(
+                "strategy.initial_context=fork cannot be combined with "
+                "strategy.adaptive_search until fork successor dispatch is supported"
+            )
         if (
-            "quality_score" in self.selection.ranking_keys
-            and self.orchestration_mode == "rolling_candidates"
+            self.initial_context == "fork"
+            and self.llm_validation != "off"
+            and self.verifier is None
         ):
-            raise ValueError(
-                "quality_score selection requires parallel_loops or adaptive_search"
-            )
-        if adaptive_search and not policies:
-            raise ValueError(
-                "strategy.orchestration_mode=adaptive_search requires allocation or steering"
-            )
-        if self.allocation is not None and not adaptive_search:
-            raise ValueError("strategy.allocation requires adaptive_search")
-        if self.verifier is not None and self.orchestration_mode == "rolling_candidates":
-            raise ValueError("strategy.verifier requires parallel_loops or adaptive_search")
-        if self.steering is not None and not adaptive_search:
-            raise ValueError("strategy.steering requires adaptive_search")
+            # Fork audits use the existing LLM Verifier queue.  The audit is
+            # advisory at the score layer; selection applies the explicit
+            # required/advisory policy below.
+            self.verifier = VerifierSpec()
+        policies = [policy for policy in (self.allocation, self.steering) if policy is not None]
         if policies or "quality_score" in self.selection.ranking_keys:
             scores = list(self.verifier.scores) if self.verifier is not None else []
             for policy in policies:
@@ -351,7 +458,7 @@ class SearchSpec(SearchModel):
     @model_validator(mode="after")
     def strategy_extension_constraints_are_valid(self) -> "SearchSpec":
         if (
-            (self.strategy.allocation is not None or self.strategy.steering is not None)
+            self.strategy.adaptive_search_enabled
             and self.workspace.provider not in {"git_worktree", "thinkthread"}
         ):
             raise ValueError(
@@ -447,6 +554,36 @@ class BootstrapVerification(SearchModel):
             )
 
 
+class CandidateSpecRevisionInput(SearchModel):
+    """Evaluation changes within an existing candidate's authorization boundary."""
+
+    objective: str | None = Field(default=None, min_length=1)
+    metric_name: str | None = Field(default=None, min_length=1)
+    metric_direction: Literal["minimize", "maximize"] | None = None
+    candidate_acceptance: list[CandidateAcceptanceCriterion] | None = Field(default=None, max_length=32)
+    process_verifiers: list[VerifierCommand] | None = Field(default=None, min_length=1)
+    promotion_verifiers: list[VerifierCommand] | None = None
+    selection: SelectionSpec | None = None
+
+    @model_validator(mode="after")
+    def has_changes(self) -> "CandidateSpecRevisionInput":
+        if not self.model_dump(exclude_none=True):
+            raise ValueError("candidate spec revision requires evaluation changes")
+        return self
+
+
+class CandidateSpecRevision(SearchModel):
+    """One immutable candidate-owned revision request and its committed outcome."""
+
+    request_id: str = Field(min_length=1)
+    request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    parent_frozen_spec_id: str = Field(min_length=1)
+    frozen_spec_id: str = Field(min_length=1)
+    spec_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    revision_reason: str = Field(min_length=1)
+    created_at: str
+
+
 class FrozenSpec(SearchModel):
     frozen_spec_id: str
     spec_hash: str
@@ -464,6 +601,10 @@ class FrozenSpec(SearchModel):
     source_artifact_ref: ArtifactRef | None = None
     origin_verification: BootstrapVerification | None = None
     device_inventory: dict[str, DevicePoolInventory] = Field(default_factory=dict)
+    parent_frozen_spec_id: str | None = Field(default=None, min_length=1)
+    revision_reason: str | None = Field(default=None, min_length=1)
+    dispatch_group_id: str | None = Field(default=None, min_length=1)
+    dispatch_target_index: int | None = Field(default=None, ge=1)
     created_at: str
 
     @model_validator(mode="before")
@@ -478,7 +619,23 @@ class FrozenSpec(SearchModel):
     @model_validator(mode="after")
     def agent_harness_supports_workspace(self) -> "FrozenSpec":
         validate_search_execution(self.agent_harness, self.runtime_provider, self.spec.workspace.provider)
+        if self.dispatch_target_index is not None and self.dispatch_group_id is None:
+            raise ValueError("dispatch_target_index requires dispatch_group_id")
+        if self.revision_reason is not None and self.parent_frozen_spec_id is None:
+            raise ValueError("revision_reason requires parent_frozen_spec_id")
+        if self.parent_frozen_spec_id is not None and self.revision_reason is None:
+            raise ValueError("parent_frozen_spec_id requires revision_reason")
+        if self.parent_frozen_spec_id == self.frozen_spec_id:
+            raise ValueError("FrozenSpec cannot be its own parent")
         return self
+
+    @property
+    def fork_group_id(self) -> str | None:
+        return self.dispatch_group_id
+
+    @property
+    def fork_branch_index(self) -> int | None:
+        return self.dispatch_target_index
 
 
 class CandidateTask(SearchModel):
@@ -514,6 +671,7 @@ class CandidateTask(SearchModel):
         max_length=32,
     )
     process_environment: dict[str, str] = Field(default_factory=dict)
+    dispatch_schema_version: Literal[2] = 2
     instructions: list[str] = Field(default_factory=list)
     expected_artifacts: list[str] = Field(default_factory=list)
     stop_conditions: dict[str, Any] = Field(default_factory=dict)
@@ -524,6 +682,15 @@ class CandidateTask(SearchModel):
         exclude_if=lambda value: value is None,
     )
     model_provenance: dict[str, Any] = Field(default_factory=dict)
+    candidate_origin: "CandidateOrigin | None" = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @property
+    def fork_binding(self) -> "CandidateOrigin | None":
+        """Read-only compatibility view for in-memory callers."""
+        return self.candidate_origin
 
     @field_validator("acceptance", mode="before")
     @classmethod
@@ -538,6 +705,8 @@ class CandidateTask(SearchModel):
         if not isinstance(value, dict):
             return value
         payload = dict(value)
+        if "fork_binding" in payload:
+            raise ValueError("legacy fork_binding field is unsupported; use candidate_origin")
         payload.pop("shared_dir", None)
         if "execution_scope" not in payload:
             payload["execution_scope"] = (
@@ -559,7 +728,161 @@ class CandidateTask(SearchModel):
                 f"workspace provider {self.workspace_provider!r} requires "
                 f"execution_scope={expected!r}"
             )
+        if self.candidate_origin is not None and self.candidate_origin.workspace != self.workspace:
+            raise ValueError("candidate origin workspace must match candidate workspace")
         return self
+
+
+class CandidateOrigin(SearchModel):
+    """Immutable provenance shared by a fork task and its session record."""
+
+    model_config = ConfigDict(frozen=True)
+
+    dispatch_group_id: str = Field(min_length=1)
+    dispatch_target_index: int = Field(ge=1)
+    runtime_provider: AgentRuntimeProvider = "direct"
+    main_session_id: str | None = Field(default=None, min_length=1)
+    checkpoint_id: str = Field(min_length=1)
+    checkpoint_kind: str = Field(min_length=1)
+    parent_native_session_id: str = Field(min_length=1)
+    provider_session_id: str | None = Field(default=None, min_length=1)
+    frozen_spec_id: str = Field(min_length=1)
+    spec_hash: str = Field(min_length=1)
+    source_artifact_ref: ArtifactRef | None = None
+    workspace: Path
+    workspace_attachment: WorkspaceAttachment | None = None
+    worker_identity: dict[str, Any] = Field(default_factory=dict)
+    budget: dict[str, Any] = Field(default_factory=dict)
+    tool_capabilities: list[str] = Field(default_factory=list)
+    launch_receipt: dict[str, Any] = Field(default_factory=dict)
+    context_projection_digest: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_dispatch_names(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        legacy = {
+            "fork_group_id", "branch_index", "branch_native_session_id",
+            "forked_from_native_session_id",
+        }
+        if legacy.intersection(payload):
+            raise ValueError("legacy Fork* dispatch fields are unsupported")
+        return payload
+
+    @model_validator(mode="after")
+    def binding_is_well_formed(self) -> "CandidateOrigin":
+        if not self.worker_identity:
+            raise ValueError("fork binding requires worker identity")
+        if len(set(self.tool_capabilities)) != len(self.tool_capabilities):
+            raise ValueError("fork tool capabilities must be unique")
+        if self.provider_session_id == self.parent_native_session_id:
+            raise ValueError("dispatch target must not reuse the parent native session")
+        attachment = self.workspace_attachment
+        if attachment is not None:
+            if (attachment.provider == "thinkthread") != (self.runtime_provider == "thinkthread"):
+                raise ValueError("fork workspace attachment must match runtime provider")
+            if attachment.provider == "thinkthread":
+                if attachment.root_thinkthread_id != self.parent_native_session_id:
+                    raise ValueError("fork workspace attachment belongs to another Root")
+                if self.source_artifact_ref is None or attachment.baseline_snapshot_id != self.source_artifact_ref.id:
+                    raise ValueError("fork workspace attachment must retain its exact baseline")
+            elif attachment.path != self.workspace:
+                raise ValueError("fork local attachment must match candidate workspace")
+        return self
+
+    @property
+    def fork_group_id(self) -> str:
+        return self.dispatch_group_id
+
+    @property
+    def branch_index(self) -> int:
+        return self.dispatch_target_index
+
+    @property
+    def branch_native_session_id(self) -> str | None:
+        return self.provider_session_id
+
+
+class DispatchTargetState(SearchModel):
+    """Durable branch facts; host receipts are copied in, never inferred."""
+
+    dispatch_target_index: int = Field(ge=1)
+    candidate_id: str = Field(min_length=1)
+    agent_session_id: str = Field(min_length=1)
+    binding: CandidateOrigin
+    launch_state: Literal["prepared", "submitted", "unknown", "started", "failed", "cleaned"] = "prepared"
+    provider_session_id: str | None = Field(default=None, min_length=1)
+    failure: str | None = None
+    closed_at: str | None = None
+    audit_state: Literal["not_required", "pending", "completed", "failed"] = "not_required"
+    audit_record_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_dispatch_names(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        if {"branch_index", "branch_native_session_id"}.intersection(payload):
+            raise ValueError("legacy Fork* target fields are unsupported")
+        if "origin" in payload and "binding" not in payload:
+            payload["binding"] = payload.pop("origin")
+        return payload
+
+    @property
+    def branch_index(self) -> int:
+        return self.dispatch_target_index
+
+    @property
+    def branch_native_session_id(self) -> str | None:
+        return self.provider_session_id
+
+
+class DispatchGroupState(SearchModel):
+    """Run-owned fork group state used for replay and selection gates."""
+
+    dispatch_group_id: str = Field(min_length=1)
+    runtime_provider: AgentRuntimeProvider = "direct"
+    main_session_id: str | None = Field(default=None, min_length=1)
+    parent_native_session_id: str = Field(min_length=1)
+    checkpoint_id: str = Field(min_length=1)
+    checkpoint_kind: str = Field(min_length=1)
+    frozen_spec_id: str = Field(min_length=1)
+    llm_validation: Literal["off", "advisory", "required"] = "off"
+    schema_version: Literal[2] = 2
+    status: Literal["prepared", "submitted", "unknown", "started", "partial", "failed", "closed"] = "prepared"
+    targets: list[DispatchTargetState] = Field(default_factory=list)
+    failure: str | None = None
+    created_at: str
+    updated_at: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_dispatch_names(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        if "fork_group_id" in payload or "branches" in payload:
+            raise ValueError("legacy Fork* group fields are unsupported")
+        return payload
+
+    @property
+    def fork_group_id(self) -> str:
+        return self.dispatch_group_id
+
+    @property
+    def branches(self) -> list[DispatchTargetState]:
+        return self.targets
+
+    @property
+    def dispatch_targets(self) -> list[DispatchTargetState]:
+        return self.targets
+
+    @property
+    def session_mode(self) -> Literal["fork"]:
+        return "fork"
 
 
 class CandidateProposal(SearchModel):
@@ -596,6 +919,7 @@ class SearchPlan(SearchModel):
         exclude_if=lambda value: not value,
     )
     created_at: str
+    started_at: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class RunSummary(SearchModel):
@@ -671,9 +995,15 @@ class AgentSessionRecord(SearchModel):
         exclude_if=lambda value: value is None,
     )
     model_provenance: dict[str, Any] = Field(default_factory=dict)
+    dispatch_schema_version: Literal[2] = 2
+    session_mode: Literal["fresh", "fork"] = "fresh"
     workspace: Path
     launch: dict[str, Any] = Field(default_factory=dict)
     counters: dict[str, int] = Field(default_factory=dict)
+    candidate_origin: CandidateOrigin | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     global_evidence_reads: list[GlobalEvidenceReadRecord] = Field(
         default_factory=list
     )
@@ -681,12 +1011,21 @@ class AgentSessionRecord(SearchModel):
         default_factory=list
     )
 
+    @property
+    def fork_binding(self) -> "CandidateOrigin | None":
+        """Read-only compatibility view for in-memory host callers."""
+        return self.candidate_origin
+
     @model_validator(mode="before")
     @classmethod
     def resolve_execution_scope(cls, value: Any) -> Any:
-        if not isinstance(value, dict) or "execution_scope" in value:
+        if not isinstance(value, dict):
             return value
         payload = dict(value)
+        if "fork_binding" in payload:
+            raise ValueError("legacy fork_binding field is unsupported; use candidate_origin")
+        if "execution_scope" in payload:
+            return payload
         payload["execution_scope"] = (
             "thinkthread_private"
             if payload.get("runtime_provider") == "thinkthread"
@@ -707,6 +1046,20 @@ class AgentSessionRecord(SearchModel):
             self.session_handle.agent_harness, self.session_handle.runtime_provider
         ):
             raise ValueError("session handle must match agent harness and runtime provider")
+        if self.candidate_origin is not None:
+            if self.candidate_origin.runtime_provider != self.runtime_provider:
+                raise ValueError("fork binding runtime provider must match agent session")
+            if self.candidate_origin.workspace != self.workspace:
+                raise ValueError("fork binding workspace must match agent session workspace")
+            if (
+                self.candidate_origin.provider_session_id is not None
+                and self.session_handle.external_id is not None
+                and self.candidate_origin.provider_session_id
+                != self.session_handle.external_id
+            ):
+                raise ValueError(
+                    "fork binding native session must match the session handle"
+                )
         return self
 
 

@@ -170,3 +170,29 @@ def test_thinkthread_rejects_nested_git_marker_but_allows_root_marker(tmp_path: 
     assert paths == ["vendor/local"]
     with pytest.raises(ValueError, match="ThinkThreadSubmoduleUnsupported.*reason:.*vendor/local"):
         ensure_thinkthread_submodules_supported(root)
+
+
+def test_thinkthread_probe_is_limited_to_source_subtree(tmp_path: Path) -> None:
+    fixture = create_workspace(tmp_path / "fixture")
+    root = Path(fixture["parent"])
+    source = root / "tasks" / "circle"
+    source.mkdir(parents=True)
+    unrelated = root / "scratch" / "nested"
+    unrelated.mkdir(parents=True)
+    (unrelated / ".git").write_text("gitdir: /unrelated\n", encoding="utf-8")
+
+    assert thinkthread_submodule_paths(source) == []
+    ensure_thinkthread_submodules_supported(source)
+
+    nested = source / "vendor" / "local"
+    nested.mkdir(parents=True)
+    (nested / ".git").write_text("gitdir: /nested\n", encoding="utf-8")
+    assert thinkthread_submodule_paths(source) == ["vendor/local"]
+    with pytest.raises(ValueError, match="ThinkThreadSubmoduleUnsupported.*vendor/local"):
+        ensure_thinkthread_submodules_supported(source)
+
+    git(root, "submodule", "deinit", "-q", "-f", "modules/repo-b")
+    modules = root / "modules"
+    assert thinkthread_submodule_paths(modules) == ["repo-a", "repo-b"]
+    with pytest.raises(ValueError, match="ThinkThreadSubmoduleUnsupported.*repo-b"):
+        ensure_thinkthread_submodules_supported(modules)

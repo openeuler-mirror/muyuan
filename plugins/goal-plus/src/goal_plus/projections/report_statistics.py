@@ -64,6 +64,8 @@ def _timeline_performance(
     checkpoints: list[dict[str, Any]] = []
     for candidate in task.get("candidates", []):
         for iteration in candidate.get("iterations", []):
+            if scores.get("score_comparable") is False:
+                continue
             if iteration.get("process_passed") is not True:
                 continue
             score = finite_float(iteration.get("score"))
@@ -279,6 +281,8 @@ def build_timeline(
             )
             attempt_index = candidate_sessions.index(timeline_session_id) + 1
             score = finite_float(session.get("score"))
+            if task_scores.get("score_comparable") is False:
+                score = None
             if score is None and "score" not in session:
                 score = session_scores.get(session_id)
             score_improvement = None
@@ -688,9 +692,6 @@ def build_loop_agent_statistics(
             if isinstance(activity_events, list)
             else []
         )
-        direction = str(
-            (task.get("frozen_spec") or {}).get("metric_direction") or "maximize"
-        )
         candidate_session_ids = candidate_sessions.get((run_id, candidate_id), set())
         candidate_iterations = candidate.get("iterations") or []
         has_session_attribution = any(
@@ -699,7 +700,7 @@ def build_loop_agent_statistics(
             for iteration in candidate_iterations
         )
         iteration_rows = []
-        current_best: float | None = None
+        best_by_spec: dict[str | None, float] = {}
         previous_git_head: str | None = None
         for iteration in sorted(
             candidate_iterations,
@@ -721,13 +722,16 @@ def build_loop_agent_statistics(
             if isinstance(git_head, str) and git_head:
                 previous_git_head = git_head
             score = finite_float(item.get("score"))
+            spec_id = item.get("frozen_spec_id")
+            current_best = best_by_spec.get(spec_id)
+            direction = str(item.get("metric_direction") or candidate.get("metric_direction") or (task.get("frozen_spec") or {}).get("metric_direction") or "maximize")
             improved = False
             if item.get("process_passed") is True and score is not None:
                 improved = current_best is None or is_better_score(
                     score, current_best, direction
                 )
                 if improved:
-                    current_best = score
+                    best_by_spec[spec_id] = score
             item["_improved"] = improved
             iteration_rows.append(item)
 

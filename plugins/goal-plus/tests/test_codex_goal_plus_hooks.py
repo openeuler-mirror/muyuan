@@ -31,6 +31,7 @@ from goal_plus.tools import SearchTools
 from tests._runtime_helpers import (
     make_project,
     run_host_hook_inprocess,
+    spec_for,
     spec_with_strategy,
     start_host_verified_goal,
 )
@@ -297,13 +298,13 @@ def _codex_search_worker(
         payload["workspace"] = {"provider": "git_worktree"}
         payload["strategy"].update(
             {
-                "orchestration_mode": "adaptive_search",
+                "initial_context": "fresh",
                 "selection": {
                     "ranking_keys": ["quality_score", "hard_score"],
                     "ranking_tolerance": [0.05, 0.0],
                 },
                 "verifier": {"scores": ["progress_reward", "allocation_utility"]},
-                "allocation": {"policy": "swe_search_uct/v1"},
+                "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}},
             }
         )
     runtime = FileSearchRuntime(tmp_path / ".gp")
@@ -501,6 +502,29 @@ def test_ordinary_subagent_does_not_get_goal_plus_permission_banner(
 
     assert "GoalPlusRoleDenied" in _pre_tool_denial(result)
     assert "systemMessage" not in json.loads(result.stdout)
+
+
+def test_bound_candidate_pre_tool_uses_host_identity_when_arguments_omit_it(tmp_path: Path) -> None:
+    runtime, _, _, agent_session_id = _codex_search_worker(tmp_path)
+    runtime.bind_agent_handle(agent_session_id, {
+        "external_id": "worker-native", "metadata": {"transport": "app-server"},
+    })
+    event = {
+        "hook_event_name": "PreToolUse", "session_id": "worker-native",
+        "agent_type": "search_candidate_agent",
+        "tool_name": "mcp__goal_plus__goal_plus_search_get_agent_context",
+    }
+    allowed = _run_hook(
+        tmp_path, runtime.root_dir, {**event, "tool_input": {}},
+        GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID=agent_session_id,
+    )
+    assert allowed.stdout == ""
+    denied = _run_hook(
+        tmp_path, runtime.root_dir,
+        {**event, "tool_input": {"agent_session_id": "agent_peer"}},
+        GOAL_PLUS_CODEX_CANDIDATE_SESSION_ID=agent_session_id,
+    )
+    assert "GoalPlusSessionMismatch" in _pre_tool_denial(denied)
 
 
 def test_user_prompt_submit_uses_nested_thread_cwd_for_default_root(
@@ -985,7 +1009,8 @@ def test_codex_resume_message_does_not_relax_other_control_syntax(body: str) -> 
     assert hook_module._goal_plus_request({"prompt": f"$goal-plus {body}"})["action"] == "invalid"
 
 
-def test_codex_subagent_settlement_and_resume_reuse_scope(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scope_attachment", ["goal", "search"])
+def test_codex_subagent_settlement_and_resume_reuse_scope(tmp_path: Path, scope_attachment: str) -> None:
     search_root = tmp_path / ".gp"
     _run_hook(tmp_path, search_root, {
         "hook_event_name": "UserPromptSubmit",
@@ -997,11 +1022,21 @@ def test_codex_subagent_settlement_and_resume_reuse_scope(tmp_path: Path) -> Non
     runtime = FileGoalPlusRuntime(search_root)
     goal_id = next((search_root / "goal-plus").glob("gp_*/goal.json")).parent.name
     record = runtime.status(goal_id)
+    attachment_id = goal_id
+    if scope_attachment == "search":
+        project = make_project(tmp_path)
+        search = FileSearchRuntime(search_root)
+        frozen = search.freeze_spec(
+            spec_for(project), [project / "evaluator.py"],
+            goal_plus_id=goal_id, agent_harness="codex",
+        )
+        attachment_id = search.create_run(frozen.frozen_spec_id)
+        runtime.link_search_run(goal_id, frozen.frozen_spec_id, attachment_id)
     old_scope = ensure_execution_scope(
         root_dir=search_root,
         agent_harness="codex",
         owner_session_id="session-codex",
-        run_id=goal_id,
+        run_id=attachment_id,
         activation_id=f"{goal_id}:{record.control.version}",
         native_agent_config={"model": "gpt-5.6-sol", "reasoning_effort": "low"},
     )
@@ -1010,7 +1045,7 @@ def test_codex_subagent_settlement_and_resume_reuse_scope(tmp_path: Path) -> Non
         scope_id=old_scope["scope_id"],
         agent_id="/root/completed_worker",
         label="completed_worker",
-        run_id=goal_id,
+        run_id=attachment_id,
     )
     parent_transcript = tmp_path / "main.jsonl"
     _write_codex_rollout(parent_transcript, turn_id="turn-main")
@@ -2647,6 +2682,80 @@ def test_ordinary_prompt_preserves_same_session_authorization(
     assert FileGoalPlusRuntime(search_root).status(goal_id).hook_counters[
         "pre_tool_use"
     ] == 1
+
+
+def test_ordinary_goal_context_uses_full_then_brief_projection(
+    tmp_path: Path,
+) -> None:
+    search_root = tmp_path / ".gp"
+    started = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "turn_id": "start-turn",
+            "prompt": "$goal-plus Optimize model throughput",
+        },
+    )
+    full = _additional_context(started, "UserPromptSubmit")
+    assert "当前原始目标：Optimize model throughput" in full
+
+    runtime = FileGoalPlusRuntime(search_root)
+    record_path = next((search_root / "goal-plus").glob("gp_*/goal.json"))
+    goal_id = record_path.parent.name
+    record = runtime.status(goal_id)
+    assert record.active_session is not None
+    assert record.active_session.metadata[hook_module.GOAL_CONTEXT_FULL_KEY] == (
+        f"{hook_module.GOAL_CONTEXT_SCHEMA_VERSION}:{goal_id}:1:0"
+    )
+
+    first_ordinary = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "turn_id": "ordinary-1",
+            "prompt": "What is the current phase?",
+        },
+    )
+    first_brief = _additional_context(first_ordinary, "UserPromptSubmit")
+    assert "当前原始目标：" not in first_brief
+    assert "完整目标已在本 session 上下文中" in first_brief
+    assert goal_id in first_brief
+
+    second_ordinary = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "turn_id": "ordinary-2",
+            "prompt": "Continue checking the phase.",
+        },
+    )
+    second_brief = _additional_context(second_ordinary, "UserPromptSubmit")
+    assert second_brief == first_brief
+
+    edited = _run_hook(
+        tmp_path,
+        search_root,
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-codex",
+            "turn_id": "edit-turn",
+            "prompt": "$goal-plus edit Optimize model throughput and latency",
+        },
+    )
+    edited_full = _additional_context(edited, "UserPromptSubmit")
+    assert "当前原始目标：Optimize model throughput and latency" in edited_full
+    updated = runtime.status(goal_id)
+    assert updated.goal_revision == 2
+    assert updated.active_session is not None
+    assert updated.active_session.metadata[hook_module.GOAL_CONTEXT_FULL_KEY] == (
+        f"{hook_module.GOAL_CONTEXT_SCHEMA_VERSION}:{goal_id}:2:{updated.control.version}"
+    )
 
 
 def test_ordinary_prompt_does_not_reactivate_detached_session(tmp_path: Path) -> None:

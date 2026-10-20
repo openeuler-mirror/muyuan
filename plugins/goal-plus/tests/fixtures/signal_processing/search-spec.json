@@ -39,7 +39,7 @@
   },
   "strategy": {
     "name": "random",
-    "orchestration_mode": "parallel_loops",
+    "initial_context": "fresh",
     "inner_agent": "autoresearch",
     "worker_budget": {
       "max_runtime_seconds": 300,

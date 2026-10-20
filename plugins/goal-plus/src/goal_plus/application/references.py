@@ -9,6 +9,7 @@ from goal_plus.domain.artifacts import (
     ReferenceWorkspaceRecord,
 )
 from goal_plus.domain.serialization import canonical_json, sha256_text
+from goal_plus.domain.tool_catalog import CandidateToolCapabilities
 from goal_plus.application.candidate_sessions import CandidateSessions
 from goal_plus.application.candidate_trace import CandidateTrace
 from goal_plus.ports.references import ReferenceState, ReferenceWorkspace
@@ -77,6 +78,10 @@ class ReferenceWorkspaces:
             )
             run = self.state.read_run(session.run_id)
             frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+            if not CandidateToolCapabilities.from_frozen(frozen).references:
+                raise PermissionError(
+                    "ReferenceUnavailable: candidate Reference is unavailable for this workspace provider"
+                )
             if (
                 global_evidence_mode(frozen.spec.strategy.config) == "independent"
                 and candidate_id != session.candidate_id

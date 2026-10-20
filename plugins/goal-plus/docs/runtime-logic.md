@@ -10,6 +10,10 @@
 [宿主执行观察](../src/goal_plus/host_recovery.py)。具体恢复事务见
 [Search 一致性恢复](search-recovery.md)。真实测试入口见 [Tests](../tests/README.md)。
 
+Candidate 的 fresh/fork 派发共用一条 session 生命周期；模式差异、统一状态图和重启规则见
+[Candidate Dispatch：fresh 与 fork](candidate-dispatch.md)。本文只保留 Goal resume、
+Search recovery 与 Main reconciliation 的控制语义。
+
 ## 整体模型
 
 | 层次 | 恢复什么 | 不做什么 |
@@ -152,10 +156,13 @@ Plan 模式不应被自主 continuation 绕过。模式、busy、输入排队是
 
 Main 在启动、恢复，以及 worker 返回、报错、求助、需要作出搜索决策或接近预算时读取
 `goal_plus_status` 的最新输入、phase、next_action、work_items 和 reconciliation；需要整体
-概览时优先调用 `goal_plus_monitor_snapshot(detail=false)`。稳定探索期间把全部活跃调用放入
-同一次 `goal_plus_session_wait_any`，默认等待 900 秒，任一调用返回就处理；超时且全部仍为
-running 时继续 wait-any，不例行查 status/history、审查 diff、重算耗时或更新进度记录。启动和
-恢复阶段可以使用短等待。Main 可先做非 Search 工作，但不能遗忘必要恢复。
+概览时优先调用 `goal_plus_monitor_snapshot(detail=false)`。Codex host 在首次、revision/control
+变化或 compact 后发送完整 Goal context；普通轮次只发送 status、phase、next_action 和活跃派发
+摘要，避免重复携带原始目标、配置和 MCP 概要。显式 resume 仍发送完整 context 加
+reconciliation。稳定探索期间把全部活跃调用放入同一次 `goal_plus_session_wait_any`，默认等待
+900 秒，任一调用返回就处理；超时且全部仍为 running 时继续 wait-any，不例行查 status/history、
+审查 diff、重算耗时或更新进度记录。启动和恢复阶段可以使用短等待。Main 可先做非 Search 工作，
+但不能遗忘必要恢复。
 
 | 持久状态 | 下一步 |
 | --- | --- |

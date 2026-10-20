@@ -63,9 +63,12 @@
   },
   "strategy": {
     "name": "agent_guided",
-    "orchestration_mode": "adaptive_search",
+    "initial_context": "fresh",
     "worker_budget": {
       "max_runtime_seconds": 360
+    },
+    "adaptive_search": {
+      "allocation": {"policy": "swe_search_uct/v1"}
     },
     "selection": {
       "ranking_keys": [
@@ -79,9 +82,6 @@
     },
     "verifier": {
       "scores": ["progress_reward", "allocation_utility"]
-    },
-    "allocation": {
-      "policy": "swe_search_uct/v1"
     }
   },
   "constraints": {

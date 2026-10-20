@@ -52,7 +52,7 @@ def test_circle_packing_thinkthread_apply_example_is_deterministic(
     ).to_runtime_spec()
     assert spec.source_path == "."
     assert spec.budget.max_parallel == 2
-    assert spec.strategy.orchestration_mode == "parallel_loops"
+    assert spec.strategy.initial_context == "fresh"
     assert "worker_host" not in spec.strategy.model_dump()
     assert spec.strategy.inner_agent == "autoresearch"
     assert spec.strategy.worker_launch is None
@@ -158,9 +158,10 @@ def test_circle_packing_thinkthread_variant_prompts_bind_expected_modes() -> Non
         assert "sum_radii >= 2.4" in prompt
 
     assert "GOAL_PLUS_DEBUG=1" in llm
-    assert "orchestration_mode: parallel_loops" in llm
+    assert "initial_context: fresh" in llm
     assert "ranking_keys: [quality_score, hard_score]" in llm
-    assert "orchestration_mode: adaptive_search" in adaptive
+    assert "initial_context: fresh" in adaptive
+    assert "adaptive_search:" in adaptive
     assert "max_candidates: 4" in adaptive
     assert "policy: swe_search_uct/v1" in adaptive
     assert "policy: search_diagnostic_guidance/v1" in adaptive

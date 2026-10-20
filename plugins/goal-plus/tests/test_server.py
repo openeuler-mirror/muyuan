@@ -6,18 +6,22 @@ import subprocess
 import threading
 from pathlib import Path
 
+import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.utilities.json_schema import dereference_refs
-import pytest
 
+import goal_plus.server as server_module
 from goal_plus import __version__
 from goal_plus.goal_plus import FileGoalPlusRuntime
-import goal_plus.server as server_module
-from goal_plus.server import create_host_mcp, create_mcp
-from tests._fastmcp_helpers import tools_by_name
-from tests._runtime_helpers import create_candidate, make_project, start_host_verified_goal
 from goal_plus.runtime import FileSearchRuntime
+from goal_plus.server import create_host_mcp, create_mcp
 from goal_plus.tools import SearchTools
+from tests._fastmcp_helpers import tools_by_name
+from tests._runtime_helpers import (
+    create_candidate,
+    make_project,
+    start_host_verified_goal,
+)
 
 
 def test_host_main_mcp_requires_native_session_for_goal_tools(tmp_path: Path) -> None:
@@ -111,12 +115,43 @@ def test_ready_spec_draft_returns_actionable_tool_error_without_state_change(tmp
             }, raise_on_error=False)
             assert rejected.is_error
             text = "\n".join(item.text for item in rejected.content if item.type == "text")
+            assert "SearchSpecAdmissionError" in text
+            assert "goal_plus_get_tool_schema(\"goal_plus_search_freeze_spec\")" in text
+            assert "not a ThinkThread version error" in text
             assert "process_verifiers" in text
             assert goal_path.read_bytes() == before
+            for field, conflict in (
+                ("source_path", str(tmp_path / "other-source")),
+                ("workspace", {"provider": "copy"}),
+            ):
+                nested = dict(spec)
+                nested[field] = str(project) if field == "source_path" else {"provider": "git_worktree"}
+                rejected = await client.call_tool("goal_plus_search_freeze_spec", {
+                    "goal_plus_id": goal.goal_plus_id, "spec": nested,
+                    "verifier_artifact_paths": ["evaluator.py"], field: conflict,
+                }, raise_on_error=False)
+                assert rejected.is_error
+                assert "ConflictingFreezeParameter" in "\n".join(
+                    item.text for item in rejected.content if item.type == "text"
+                )
+                assert goal_path.read_bytes() == before
+            top_level_source_spec = dict(spec)
+            top_level_source_spec.pop("source_path")
             accepted = await client.call_tool("goal_plus_search_freeze_spec", {
-                "goal_plus_id": goal.goal_plus_id, "spec": spec, "verifier_artifact_paths": ["evaluator.py"],
+                "goal_plus_id": goal.goal_plus_id, "spec": top_level_source_spec, "verifier_artifact_paths": ["evaluator.py"],
+                "source_path": spec["source_path"],
             })
             assert not accepted.is_error
+            revised_spec = dict(spec)
+            revised_spec["candidate_acceptance"] = ["Preserve the measured baseline"]
+            revised = await client.call_tool("goal_plus_search_freeze_spec", {
+                "goal_plus_id": goal.goal_plus_id,
+                "spec": revised_spec,
+                "verifier_artifact_paths": ["evaluator.py"],
+                "parent_frozen_spec_id": json.loads(accepted.content[0].text)["frozen_spec_id"],
+                "revision_reason": "Clarify the branch acceptance contract",
+            })
+            assert not revised.is_error
 
     asyncio.run(exercise())
     assert runtime.status(goal.goal_plus_id).spec_draft is None
@@ -130,6 +165,27 @@ def test_create_mcp(tmp_path: Path) -> None:
     assert isinstance(mcp, FastMCP)
     assert mcp.version == __version__
     assert not runtime_root.exists()
+
+
+def test_remote_capabilities_cannot_override_local_frozen_visibility(tmp_path, monkeypatch):
+    from goal_plus.domain.tool_catalog import CandidateToolCapabilities
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("invalid capability binding opened domain state")
+
+    monkeypatch.setattr(server_module, "FileSearchRuntime", forbidden)
+    capabilities = CandidateToolCapabilities(supplemental=True, shared_tools=True, shared_cache=True, references=True, spec_revision=True)
+    with pytest.raises(ValueError, match="only by a trusted remote transport"):
+        create_mcp(
+            tmp_path / ".gp", caller_role="candidate", caller_agent_session_id="agent-1",
+            candidate_capabilities=capabilities,
+        )
+    with pytest.raises(ValueError, match="trusted frozen capabilities"):
+        create_mcp(
+            tmp_path / ".gp", caller_role="candidate", caller_agent_session_id="agent-1",
+            candidate_tool_call=lambda *_: None,
+        )
+    assert not (tmp_path / ".gp").exists()
 
 
 def test_controller_only_closeout_hides_tools_for_main_mcp(tmp_path, monkeypatch):
@@ -155,21 +211,27 @@ def test_tool_schema_returns_complete_registered_contract_without_state(tmp_path
     async def exercise():
         async with Client(create_mcp(root, caller_role="main")) as client:
             catalog = {tool.name: tool for tool in await client.list_tools()}
+            assert all(tool.output_schema is None for tool in catalog.values())
             for name in ("goal_plus_search_freeze_spec", "goal_plus_search_start_batch"):
                 response = await client.call_tool("goal_plus_get_tool_schema", {"tool_name": name})
+                assert response.structured_content is None
+                assert len(response.content) == 1
                 contract = json.loads(response.content[0].text)
-                assert contract == {
-                    "name": name,
-                    "description": catalog[name].description,
-                    "inputSchema": catalog[name].model_dump(by_alias=True)["inputSchema"],
-                }
                 if name == "goal_plus_search_freeze_spec":
+                    assert contract["name"] == name
+                    assert contract["description"] == catalog[name].description
                     spec = dereference_refs(contract["inputSchema"])["properties"]["spec"]["properties"]
                     verifier = spec["process_verifiers"]["items"]
                     assert {"name", "command"} <= set(verifier["required"])
                     assert verifier["properties"]["command"]["items"]["type"] == "string"
                     models = spec["strategy"]["properties"]["models"]["items"]["properties"]
                     assert {"model", "count", "reasoning_effort"} <= set(models)
+                else:
+                    assert contract == {
+                        "name": name,
+                        "description": catalog[name].description,
+                        "inputSchema": catalog[name].model_dump(by_alias=True)["inputSchema"],
+                    }
             for name in ("missing", "goal_plus_search_get_agent_context"):
                 rejected = await client.call_tool(
                     "goal_plus_get_tool_schema", {"tool_name": name}, raise_on_error=False,
@@ -193,7 +255,9 @@ def test_public_catalog_has_one_search_spec_and_no_removed_aliases(tmp_path):
     assert set(tools) <= PUBLIC_TOOL_NAMES
     assert SESSION_TOOL_NAMES <= set(tools)
     assert all(name.startswith("goal_plus_") for name in tools)
-    assert sum('"process_verifiers"' in json.dumps(tool.parameters) for tool in tools.values()) == 1
+    freeze_schema = tools["goal_plus_search_freeze_spec"].parameters
+    assert freeze_schema["properties"]["spec"]["type"] == "object"
+    assert "process_verifiers" not in freeze_schema["properties"]["spec"]
     assert {"run_id", "candidate_id", "call_id", "prompt", "timeout_seconds"} == set(tools["goal_plus_session_run"].parameters["required"])
     assert tools["goal_plus_search_list_allocation_decisions"].parameters["properties"]["status"]["default"] is None
     for name in ("goal_plus_session_open", "goal_plus_session_wake", "goal_plus_session_start",
@@ -310,6 +374,7 @@ def test_create_mcp_registers_search_runtime_tools(tmp_path: Path) -> None:
     assert set(tools) == {
         "goal_plus_get_tool_schema",
         "goal_plus_search_freeze_spec",
+        "goal_plus_search_revise_spec",
         "goal_plus_search_create",
         "goal_plus_search_status",
         "goal_plus_search_recovery_status",
@@ -412,26 +477,33 @@ def test_mcp_exposes_structured_triage_and_candidate_proposals(tmp_path: Path) -
     }
 
 
-def test_mcp_returns_large_worker_context_once_as_compact_text(
+@pytest.mark.parametrize("tool_name,arguments,payload", [
+    ("goal_plus_status", {"goal_plus_id": "gp_0001"}, {
+        "status": "active", "next_action": None, "count": 0, "enabled": False,
+        "description": "目标\nwith a quoted \"value\"", "items": [{"score": 1.5}],
+    }),
+    ("goal_plus_search_start_batch", {"run_id": "run_0001", "plan_id": "plan_001"},
+     [{"candidate_id": "c001", "workspace_provider": "git_worktree"}]),
+    ("goal_plus_search_start_batch", {"run_id": "run_0001", "plan_id": "plan_001"}, []),
+    ("goal_plus_search_get_agent_context", {"agent_session_id": "agent_001"}, {
+        "agent_session_id": "agent_001", "candidate_task": {"workspace": "candidate one"},
+    }),
+])
+def test_mcp_returns_business_result_once_as_compact_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    arguments: dict,
+    payload: dict | list,
 ) -> None:
-    payload = {
-        "agent_session_id": "agent_001",
-        "candidate_task": {"workspace": "/tmp/candidate one"},
-    }
+    facade = server_module.GoalPlusTools if tool_name == "goal_plus_status" else SearchTools
     monkeypatch.setattr(
-        server_module.SearchTools,
-        "goal_plus_search_get_agent_context",
-        lambda _self, _agent_session_id: payload,
+        facade, tool_name, lambda *_args, **_kwargs: payload,
     )
 
     async def call_context():
         async with Client(create_mcp(tmp_path / ".search")) as client:
-            return await client.call_tool(
-                "goal_plus_search_get_agent_context",
-                {"agent_session_id": "agent_001"},
-            )
+            return await client.call_tool(tool_name, arguments)
 
     result = asyncio.run(call_context())
 
@@ -513,11 +585,116 @@ def test_run_verifier_exposes_optional_agent_session_id(tmp_path: Path) -> None:
     ] == 1
 
 
+def test_candidate_verifier_schema_matches_frozen_shared_tools_capability(tmp_path: Path) -> None:
+    """Candidate wire schema and call gate must agree on Main-only fields."""
+    from jsonschema import Draft202012Validator
+
+    from goal_plus.domain.tool_catalog import CandidateToolCapabilities
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def forward(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        calls.append((name, arguments))
+        return {"accepted": True}
+
+    disabled = CandidateToolCapabilities(
+        supplemental=False, shared_tools=False, shared_cache=False,
+        references=False, spec_revision=False,
+    )
+    enabled = CandidateToolCapabilities(
+        supplemental=False, shared_tools=True, shared_cache=False,
+        references=False, spec_revision=False,
+    )
+
+    async def exercise() -> None:
+        async with Client(create_mcp(
+            tmp_path / "disabled", caller_role="candidate",
+            caller_agent_session_id="candidate-1", candidate_tool_call=forward,
+            candidate_capabilities=disabled,
+        )) as client:
+            tool = {
+                item.name: item for item in await client.list_tools()
+            }["goal_plus_search_run_verifier"]
+            assert "goal_plus_search_apply_promotion" not in {
+                item.name for item in await client.list_tools()
+            }
+            scope_validator = Draft202012Validator(tool.input_schema["properties"]["scope"])
+            assert scope_validator.is_valid("process")
+            assert not scope_validator.is_valid("promotion")
+            assert not {"run_id", "candidate_id", "agent_session_id"} & set(
+                tool.input_schema["properties"]
+            )
+            assert "toolization_decision" not in tool.input_schema["properties"]
+            denied = await client.call_tool(
+                "goal_plus_search_run_verifier",
+                {"scope": "promotion"},
+                raise_on_error=False,
+            )
+            assert denied.is_error
+            assert "scope" in "\n".join(
+                item.text for item in denied.content if item.type == "text"
+            )
+            decision = {
+                "outcome": "staged", "rationale": "Reusable parser",
+                "signals": ["parser_trace_or_comparator"], "tool_names": ["parser"],
+            }
+            denied = await client.call_tool(
+                "goal_plus_search_run_verifier",
+                {"toolization_decision": decision},
+                raise_on_error=False,
+            )
+            assert denied.is_error
+            assert "toolization_decision" in "\n".join(
+                item.text for item in denied.content if item.type == "text"
+            )
+            assert calls == []
+            accepted = await client.call_tool(
+                "goal_plus_search_run_verifier",
+                {"hypothesis": "Try the baseline"},
+            )
+            assert json.loads(accepted.content[0].text) == {"accepted": True}
+
+        async with Client(create_mcp(
+            tmp_path / "enabled", caller_role="candidate",
+            caller_agent_session_id="candidate-1", candidate_tool_call=forward,
+            candidate_capabilities=enabled,
+        )) as client:
+            tool = {
+                item.name: item for item in await client.list_tools()
+            }["goal_plus_search_run_verifier"]
+            scope_validator = Draft202012Validator(tool.input_schema["properties"]["scope"])
+            assert scope_validator.is_valid("process")
+            assert not scope_validator.is_valid("promotion")
+            assert "toolization_decision" in tool.input_schema["properties"]
+            assert not {"run_id", "candidate_id", "agent_session_id"} & set(
+                tool.input_schema["properties"]
+            )
+            accepted = await client.call_tool(
+                "goal_plus_search_run_verifier",
+                {"toolization_decision": decision},
+            )
+            assert json.loads(accepted.content[0].text) == {"accepted": True}
+
+    asyncio.run(exercise())
+    assert len(calls) == 2
+    assert calls[0][1]["scope"] == "process"
+    assert "toolization_decision" not in calls[0][1]
+    assert calls[1][1]["toolization_decision"]["outcome"] == "staged"
+
+
 def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) -> None:
     mcp = create_mcp(tmp_path / ".search")
     tools = asyncio.run(tools_by_name(mcp))
 
-    schema = tools["goal_plus_search_freeze_spec"].parameters
+    async def read_schema():
+        async with Client(mcp) as client:
+            response = await client.call_tool(
+                "goal_plus_get_tool_schema",
+                {"tool_name": "goal_plus_search_freeze_spec"},
+            )
+            return json.loads(response.content[0].text)["inputSchema"]
+
+    schema = asyncio.run(read_schema())
     spec_schema = dereference_refs(schema)["properties"]["spec"]
 
     assert set(spec_schema["required"]) >= {
@@ -545,22 +722,20 @@ def test_freeze_spec_exposes_complete_nested_search_spec_schema(tmp_path: Path) 
         "max_files_per_iteration", "max_path_entries_per_iteration", "max_depth", "max_bytes_per_iteration",
     }
     worker_defaults = strategy["properties"]["worker_launch"]
+    if "anyOf" in worker_defaults:
+        worker_defaults = worker_defaults["anyOf"][0]
     assert set(worker_defaults["properties"]) == {"model", "reasoning_effort", "service_tier"}
     assert "evidence_annotator" in strategy["properties"]
-    orchestration = strategy["properties"]["orchestration_mode"]
-    assert orchestration["default"] == "parallel_loops"
-    assert set(orchestration["enum"]) == {
-        "rolling_candidates",
-        "parallel_loops",
-        "adaptive_search",
-    }
+    initial_context = strategy["properties"]["initial_context"]
+    assert initial_context["default"] == "fresh"
+    assert set(initial_context["enum"]) == {"fresh", "fork"}
     assert "verifier" in strategy["properties"]
     selection = strategy["properties"]["selection"]["properties"]
     assert set(selection) == {"ranking_keys", "ranking_tolerance"}
     assert selection["ranking_keys"]["items"]["enum"] == ["hard_score", "quality_score"]
     allocation_policy_set = next(
         item
-        for item in strategy["properties"]["allocation"]["anyOf"]
+        for item in strategy["properties"]["adaptive_search"]["anyOf"][0]["properties"]["allocation"]["anyOf"]
         if "oneOf" in item
     )
     # FastMCP dereferencing drops the OpenAPI discriminator annotation;

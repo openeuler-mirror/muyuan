@@ -5,42 +5,60 @@ import asyncio
 import json
 import os
 import time
-from contextlib import asynccontextmanager
 from collections.abc import Callable, Collection, Mapping
+from contextlib import asynccontextmanager
 from functools import wraps
 from inspect import iscoroutinefunction, signature
 from pathlib import Path
-from typing import Annotated, Any, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from mcp.types import TextContent
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from goal_plus._version import __version__
-from goal_plus.goal_plus import FileGoalPlusRuntime
-from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
 from goal_plus.domain.adaptive.models import AllocationDecisionStatus
-from goal_plus.domain.search import CandidateProposal
-from goal_plus.domain.search_input import SearchSpecInput
-from goal_plus.tool_schema import compact_tool_schema
+from goal_plus.domain.agents import AgentHarnessKind, AgentRuntimeProvider
 from goal_plus.domain.goal import (
     GoalPlusFinalCheckerIdentity,
     GoalPlusStatus,
     GoalPlusTriage,
     GoalPlusWorkEventKind,
 )
+from goal_plus.domain.search import CandidateProposal, CandidateSpecRevisionInput
+from goal_plus.domain.search_input import (
+    SearchSpecInput,
+    format_search_spec_admission_error,
+)
 from goal_plus.domain.shared_tools import ToolizationDecision
-from goal_plus.paths import DEFAULT_RUNTIME_ROOT, host_assets_root
-from goal_plus.runtime import FileSearchRuntime
-from goal_plus.tools import GoalPlusTools, SearchTools, ToolCallerRole, require_tool_role
-from goal_plus.infrastructure.api_debug import api_debug_enabled, log_api_response_size
-from goal_plus.projections.goal_tools import GOAL_HISTORY_DEFAULT_LIMIT, GOAL_HISTORY_MAX_LIMIT
-from goal_plus.projections.session_tools import session_call_receipt
-from goal_plus.ports.session import FinalCheckRunner, SessionControlLookup, SessionLauncher, WorkItemRunner
-from goal_plus.ports.thinkthread_verification import DeferredCandidateAttempt
-from goal_plus.domain.tool_catalog import PUBLIC_TOOL_NAMES, CANDIDATE_CAPABILITIES
 from goal_plus.domain.tool_catalog import (
     CONTROLLER_ONLY_CLOSEOUT_ENV,
     CONTROLLER_ONLY_CLOSEOUT_TOOL_NAMES,
+    PUBLIC_TOOL_NAMES,
+    CandidateToolCapabilities,
+)
+from goal_plus.goal_plus import FileGoalPlusRuntime
+from goal_plus.infrastructure.api_debug import api_debug_enabled, log_api_response_size
+from goal_plus.mcp_output import json_tool
+from goal_plus.paths import DEFAULT_RUNTIME_ROOT, host_assets_root
+from goal_plus.ports.session import (
+    FinalCheckRunner,
+    SearchForkLauncher,
+    SessionControlLookup,
+    SessionLauncher,
+    WorkItemRunner,
+)
+from goal_plus.ports.thinkthread_verification import DeferredCandidateAttempt
+from goal_plus.projections.goal_tools import (
+    GOAL_HISTORY_DEFAULT_LIMIT,
+    GOAL_HISTORY_MAX_LIMIT,
+)
+from goal_plus.projections.session_tools import session_call_receipt
+from goal_plus.runtime import FileSearchRuntime
+from goal_plus.tool_schema import compact_tool_schema
+from goal_plus.tools import (
+    GoalPlusTools,
+    SearchTools,
+    ToolCallerRole,
+    require_tool_role,
 )
 
 if TYPE_CHECKING:
@@ -89,25 +107,15 @@ def _wait_any_receipts(
         time.sleep(min(SESSION_WAIT_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
 
 
-def _json_text(value: Any) -> TextContent:
-    return TextContent(
-        type="text",
-        text=json.dumps(value, ensure_ascii=False, separators=(",", ":")),
-    )
-
-
 def _debug_tool_response(function):
     def finish(result):
         if api_debug_enabled():
             try:
-                text = result.text if isinstance(result, TextContent) else result
                 log_api_response_size(
                     function.__name__,
-                    text if isinstance(text, str) else json.dumps(
-                        text, ensure_ascii=False, separators=(",", ":")
-                    ),
+                    json.dumps(result, ensure_ascii=False, separators=(",", ":")),
                     transport="mcp",
-                    format="text" if isinstance(text, str) else "json",
+                    format="json",
                 )
             except (TypeError, ValueError):
                 pass
@@ -146,15 +154,15 @@ def create_mcp(
     caller_final_check: "GoalPlusFinalCheckerIdentity | None" = None,
     session_controls: SessionControlLookup | None = None,
     session_launcher: SessionLauncher | None = None,
+    fork_launcher: SearchForkLauncher | None = None,
     final_checker: FinalCheckRunner | None = None,
     work_items: WorkItemRunner | None = None,
     candidate_attempt: DeferredCandidateAttempt | None = None,
     candidate_tool_call: Callable[[str, dict[str, Any]], Any] | None = None,
+    candidate_capabilities: CandidateToolCapabilities | None = None,
     excluded_tool_names: Collection[str] = (),
 ) -> FastMCP:
     from fastmcp import FastMCP
-    from fastmcp.tools import Tool
-    from fastmcp.utilities.json_schema import dereference_refs
 
     if (caller_role == "final_checker") != (caller_final_check is not None):
         raise ValueError("final checker MCP requires its host-bound check identity")
@@ -174,8 +182,14 @@ def create_mcp(
         raise ValueError("session control requires a trusted Main MCP binding")
     if session_launcher is not None and session_controls is None:
         raise ValueError("session launch requires session control")
+    if fork_launcher is not None and session_launcher is None:
+        raise ValueError("fork requires a trusted session launcher")
     if candidate_tool_call is not None and (caller_role != "candidate" or candidate_attempt is not None):
         raise ValueError("remote candidate tools require a bound candidate without local settlement")
+    if candidate_tool_call is not None and not isinstance(candidate_capabilities, CandidateToolCapabilities):
+        raise ValueError("remote candidate tools require trusted frozen capabilities")
+    if candidate_capabilities is not None and candidate_tool_call is None:
+        raise ValueError("candidate capabilities are supplied only by a trusted remote transport")
     excluded_tools = frozenset(excluded_tool_names)
     if (
         caller_role in {None, "main"}
@@ -190,9 +204,19 @@ def create_mcp(
         )
     runtime = FileSearchRuntime(root_dir) if candidate_tool_call is None else None
     goal_runtime = FileGoalPlusRuntime(root_dir) if candidate_tool_call is None else None
-    tools = SearchTools(runtime, goal_runtime, candidate_attempt=candidate_attempt) if runtime is not None else None
+    if runtime is not None:
+        if session_launcher is None:
+            tools = SearchTools(runtime, goal_runtime, candidate_attempt=candidate_attempt)
+        else:
+            tools = SearchTools(
+                runtime, goal_runtime, candidate_attempt=candidate_attempt,
+                session_launcher=session_launcher,
+                fork_launcher=fork_launcher,
+            )
+    else:
+        tools = None
     goal_tools = GoalPlusTools(goal_runtime) if goal_runtime is not None else None
-    capabilities = None
+    capabilities = candidate_capabilities
     if caller_agent_session_id and runtime is not None:
         try:
             session = runtime.candidate_sessions.session(caller_agent_session_id)
@@ -204,9 +228,7 @@ def create_mcp(
             frozen = runtime.queries.state.read_frozen_spec(
                 runtime.queries.state.read_run(session.run_id).frozen_spec_id
             )
-            capabilities = {"supplemental": frozen.supplemental_evaluation_enabled,
-                            "shared_tools": frozen.spec.shared_dir.enabled,
-                            "shared_cache": frozen.spec.shared_cache.enabled}
+            capabilities = CandidateToolCapabilities.from_frozen(frozen)
     @asynccontextmanager
     async def session_lifespan(server):
         try:
@@ -241,7 +263,10 @@ def create_mcp(
     )
 
     if codex_diagnostics is not None:
-        from goal_plus.infrastructure.runtime_info import RUNTIME_INFO_URI, runtime_info_title
+        from goal_plus.infrastructure.runtime_info import (
+            RUNTIME_INFO_URI,
+            runtime_info_title,
+        )
 
         @mcp.resource(
             RUNTIME_INFO_URI, name="goal_plus_runtime_info",
@@ -260,12 +285,24 @@ def create_mcp(
 
     def register_tool():
         def expose(function):
-            tool = Tool.from_function(function)
+            tool = json_tool(function)
+            if function.__name__ == "goal_plus_search_freeze_spec":
+                # Keep the transport envelope permissive. Some native clients
+                # validate model-produced arguments against tools/list before
+                # sending them, which would bypass the Goal Plus admission
+                # owner and hide its actionable schema diagnostic. The strict
+                # contract is served by goal_plus_get_tool_schema below.
+                tool.parameters.setdefault("properties", {})["spec"] = {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "description": (
+                        "Complete SearchSpec object. Read "
+                        "goal_plus_get_tool_schema for the strict contract."
+                    ),
+                }
             tool.parameters = compact_tool_schema(
                 tool.parameters, prune_additional_properties=True,
             )
-            if tool.output_schema is not None:
-                tool.output_schema = dereference_refs(tool.output_schema)
             mcp.add_tool(tool)
             return function
 
@@ -273,10 +310,10 @@ def create_mcp(
             if (
                 function.__name__ not in PUBLIC_TOOL_NAMES
                 or function.__name__ in excluded_tools
+                or (function.__name__ == "goal_plus_search_fork" and fork_launcher is None)
             ):
                 return function
-            capability = CANDIDATE_CAPABILITIES.get(function.__name__)
-            if capability and capabilities is not None and not capabilities[capability]:
+            if capabilities is not None and not capabilities.permits(function.__name__):
                 return function
             if caller_role is None:
                 return expose(function)
@@ -291,9 +328,45 @@ def create_mcp(
             except PermissionError:
                 return function
             tool_signature = signature(function)
+            model_signature = tool_signature
+            model_annotations = dict(function.__annotations__)
+            if caller_role == "candidate":
+                hidden_parameters = {"agent_session_id"}
+                if function.__name__ == "goal_plus_search_run_verifier":
+                    hidden_parameters.update({"run_id", "candidate_id"})
+                    if capabilities is not None and not capabilities.shared_tools:
+                        hidden_parameters.add("toolization_decision")
+                parameters = []
+                for parameter in tool_signature.parameters.values():
+                    if parameter.name in hidden_parameters:
+                        model_annotations.pop(parameter.name, None)
+                        continue
+                    if function.__name__ == "goal_plus_search_run_verifier" and parameter.name == "scope":
+                        parameter = parameter.replace(annotation=Literal["process"])
+                        model_annotations["scope"] = Literal["process"]
+                    parameters.append(parameter)
+                model_signature = tool_signature.replace(parameters=parameters)
 
             def check_call(*args, **kwargs):
-                arguments = tool_signature.bind(*args, **kwargs).arguments
+                bound = model_signature.bind(*args, **kwargs)
+                bound.apply_defaults()
+                arguments = dict(bound.arguments)
+                if caller_role == "candidate":
+                    arguments["agent_session_id"] = caller_agent_session_id
+                    if function.__name__ == "goal_plus_search_run_verifier" and runtime is not None:
+                        session = runtime.candidate_sessions.session(caller_agent_session_id)
+                        arguments.update(run_id=session.run_id, candidate_id=session.candidate_id)
+                if caller_role == "candidate" and function.__name__ == "goal_plus_search_run_verifier":
+                    if arguments.get("scope", "process") != "process":
+                        raise PermissionError(
+                            "GoalPlusRoleDenied: candidate verifier scope must be process"
+                        )
+                    if (
+                        capabilities is None or not capabilities.shared_tools
+                    ) and arguments.get("toolization_decision") is not None:
+                        raise PermissionError(
+                            "GoalPlusCapabilityDenied: toolization_decision requires shared_tools"
+                        )
                 requested_session = arguments.get("agent_session_id")
                 if caller_role == "main" and native_main_harness is not None:
                     goal_runtime.authorization.require_native_main_tool(
@@ -318,27 +391,46 @@ def create_mcp(
                         [requested_session] if isinstance(requested_session, str) else []
                     ),
                 )
+                return arguments
             if candidate_tool_call is not None:
                 @wraps(function)
                 def bound_call(*args, **kwargs):
-                    check_call(*args, **kwargs)
-                    arguments = tool_signature.bind(*args, **kwargs)
-                    arguments.apply_defaults()
-                    result = candidate_tool_call(
-                        function.__name__, TypeAdapter(Any).dump_python(dict(arguments.arguments), mode="json"),
+                    arguments = check_call(*args, **kwargs)
+                    # The Parent owns durable run/candidate resolution. The
+                    # transport already binds this Child's session separately.
+                    arguments.pop("agent_session_id")
+                    return candidate_tool_call(
+                        function.__name__, TypeAdapter(Any).dump_python(arguments, mode="json"),
                     )
-                    return (_json_text(result) if tool_signature.return_annotation in (TextContent, "TextContent")
-                            else result)
             elif iscoroutinefunction(function):
                 @wraps(function)
                 async def bound_call(*args, **kwargs):
-                    check_call(*args, **kwargs)
-                    return await function(*args, **kwargs)
+                    return await function(**check_call(*args, **kwargs))
             else:
                 @wraps(function)
                 def bound_call(*args, **kwargs):
-                    check_call(*args, **kwargs)
-                    return function(*args, **kwargs)
+                    return function(**check_call(*args, **kwargs))
+
+            # Specialize the actual callable as well as tools/list so schema
+            # validation rejects model-supplied caller identities.
+            bound_call.__signature__ = model_signature
+            bound_call.__annotations__ = model_annotations
+            if caller_role == "candidate" and function.__name__ == "goal_plus_search_run_verifier":
+                bound_call.__doc__ = (
+                    "提交本 candidate 的冻结 process verifier 并记录 Evidence；process_passed 不代表最终验收达标。\n\n"
+                    "提交时用 hypothesis 概括本轮实际尝试；宿主自动绑定当前 session、run 和 candidate。"
+                    "未提供 attempt_id 时提交修改；提供时只查询或等待原 process attempt，不重新提交或传 hypothesis。"
+                    "timeout_seconds 限制查询等待，不取消验证。wait_for_verifier 使用原 attempt_id 再次调用；"
+                    "end_turn 结束当前 turn，由宿主下一次 wake 交付结果。等待期间保持工作区不变。"
+                    "VerifierWorkspaceSideEffect 且 candidate_action=stop_and_report 表示冻结 verifier 基础设施失败，"
+                    "停止并报告，不清理 verifier 输出或重试。"
+                    "本地 attempt 中断且执行锁已释放时，可用原 attempt_id 和 retry=true 恢复验证与结算。"
+                )
+                if capabilities is None or capabilities.shared_tools:
+                    bound_call.__doc__ += (
+                        "\n启用 shared-dir 时可提交 toolization_decision；只记录 advisory，不改变评分或结算。"
+                        "查询已有 attempt 时不再传此决策。"
+                    )
 
             return expose(bound_call)
         return register
@@ -354,6 +446,36 @@ def create_mcp(
         tool = next((tool for tool in await mcp.list_tools() if tool.name == tool_name), None)
         if tool is None:
             raise ValueError(f"ToolSchemaUnavailable: tool is not registered: {tool_name}")
+        if tool_name == "goal_plus_search_freeze_spec":
+            # ``tools/list`` deliberately uses a permissive transport schema
+            # so malformed model payloads reach Goal Plus admission. Keep this
+            # read-only endpoint as the authoritative complete contract.
+            spec_schema = SearchSpecInput.model_json_schema()
+            definitions = spec_schema.pop("$defs", {})
+            strict_schema = {
+                "type": "object",
+                "additionalProperties": False,
+                "$defs": definitions,
+                "properties": {
+                    "goal_plus_id": {"type": "string"},
+                    "spec": spec_schema,
+                    "verifier_artifact_paths": {
+                        "type": "array", "items": {"type": "string"},
+                    },
+                    "source_path": {"type": ["string", "null"], "default": None},
+                    "workspace": {"type": ["object", "null"], "default": None},
+                    "parent_frozen_spec_id": {"type": ["string", "null"], "default": None},
+                    "revision_reason": {"type": ["string", "null"], "default": None},
+                },
+                "required": ["goal_plus_id", "spec", "verifier_artifact_paths"],
+            }
+            return {
+                "name": tool.name,
+                "description": tool.description,
+                "inputSchema": compact_tool_schema(
+                    strict_schema, prune_additional_properties=True,
+                ),
+            }
         return {"name": tool.name, "description": tool.description, "inputSchema": tool.parameters}
 
     if session_controls is not None:
@@ -467,8 +589,12 @@ def create_mcp(
     @_debug_tool_response
     def goal_plus_search_freeze_spec(
         goal_plus_id: str,
-        spec: SearchSpecInput,
+        spec: dict[str, Any],
         verifier_artifact_paths: list[str],
+        source_path: str | None = None,
+        workspace: dict[str, Any] | None = None,
+        parent_frozen_spec_id: str | None = None,
+        revision_reason: str | None = None,
     ) -> dict[str, Any]:
         """为当前 active Goal 冻结 SearchSpec 与 verifier 文件，不代表候选已达标。
 
@@ -486,9 +612,40 @@ def create_mcp(
         candidate_acceptance 只给 worker 文字要求，不自动执行验收；constraints 不下发。
         成功返回 frozen_spec_id、baseline 摘要及提升检查名称；baseline=null 表示尚未验证。
         将 frozen_spec_id 交给 goal_plus_search_create；失败不生成 FrozenSpec。
+        修订时可传 parent_frozen_spec_id、revision_reason；fork 父版本的分支
+        lineage 会自动继承。修订会生成新的不可变 FrozenSpec，不改写旧 run。
         参数声明不完整时，用 goal_plus_get_tool_schema 读取完整合同。
         """
-        return tools.goal_plus_search_freeze_spec(goal_plus_id, spec, verifier_artifact_paths)
+        if not isinstance(spec, dict):
+            raise ValueError(
+                "SearchSpecAdmissionError: spec must be an object. "
+                "Recommendation: call goal_plus_get_tool_schema(\"goal_plus_search_freeze_spec\") "
+                "and send the complete SearchSpec object under spec."
+            )
+        raw_spec = dict(spec)
+        for key, value in (("source_path", source_path), ("workspace", workspace)):
+            if value is None:
+                continue
+            if key in raw_spec and raw_spec[key] != value:
+                raise ValueError(
+                    f"ConflictingFreezeParameter: {key}; put {key} inside spec "
+                    "and remove the duplicate top-level argument"
+                )
+            raw_spec[key] = value
+        try:
+            parsed_spec = SearchSpecInput.model_validate(raw_spec)
+        except ValidationError as exc:
+            raise ValueError(format_search_spec_admission_error(raw_spec, exc)) from exc
+        if source_path is None and workspace is None:
+            return tools.goal_plus_search_freeze_spec(
+                goal_plus_id, parsed_spec, verifier_artifact_paths,
+                parent_frozen_spec_id, revision_reason,
+            )
+        payload = parsed_spec.model_dump(mode="json")
+        return tools.goal_plus_search_freeze_spec(
+            goal_plus_id, payload, verifier_artifact_paths,
+            parent_frozen_spec_id, revision_reason,
+        )
 
     @register_tool()
     @_debug_tool_response
@@ -625,7 +782,7 @@ def create_mcp(
     ) -> dict[str, Any]:
         """返回候选排名、验证结果、异常和当前 run 的研究摘要。
 
-        默认视图含 objective、key_metrics、latest 异常与研究汇总，足以分析当前进展；
+        默认视图含 objective、带 verifier 命名空间的 metrics、latest 异常与研究汇总，足以分析当前进展；
         detail=true 仅在需要宿主诊断或失效调查时使用，读取完整 session、日志路径、
         配置、研究与失效证据。完整 iteration 历史仍用 goal_plus_search_list_iterations。
         best 与 latest 验证结果不一致时单独返回 latest；未验证分数保持 null。
@@ -683,6 +840,22 @@ def create_mcp(
 
     @register_tool()
     @_debug_tool_response
+    def goal_plus_search_fork(
+        run_id: str,
+        checkpoint_id: Annotated[str, Field(min_length=1)] = "latest_completed",
+    ) -> dict[str, Any]:
+        """Create all provider-native branches from Main's completed checkpoint.
+
+        The trusted host adapter binds the parent session and provider receipt.
+        Branch workspaces, candidate sessions and identities are persisted
+        before launch; retries return the same fork group receipt. The current
+        adapter resolves the native boundary; Main does not choose a provider
+        checkpoint kind. Fresh spawn never substitutes for fork.
+        """
+        return tools.goal_plus_search_fork(run_id, checkpoint_id)
+
+    @register_tool()
+    @_debug_tool_response
     def goal_plus_search_get_agent_observability(
         agent_session_id: str,
     ) -> dict[str, Any]:
@@ -696,7 +869,7 @@ def create_mcp(
 
     @register_tool()
     @_debug_tool_response
-    def goal_plus_search_get_agent_context(agent_session_id: str) -> TextContent:
+    def goal_plus_search_get_agent_context(agent_session_id: str) -> dict[str, Any]:
         """Subagent 的首次调用，返回紧凑的权威工作合同。
 
         返回 run_id、candidate_id、workspace、candidate_task（含冻结验收合同与 candidate
@@ -704,21 +877,29 @@ def create_mcp(
         projection。由 subagent 调用，不由主
         agent 调用。subagent 必须把 prompt 提供的 id 只当作标签，并将此响应作为事实来源。
         """
-        return _json_text(tools.goal_plus_search_get_agent_context(agent_session_id))
+        return tools.goal_plus_search_get_agent_context(agent_session_id)
 
     @register_tool()
     @_debug_tool_response
     def goal_plus_search_get_global_evidence(
         agent_session_id: str,
-    ) -> TextContent:
+        known_snapshot_id: str | None = None,
+        compact: bool = False,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         """返回当前 run 的窄 Global Evidence 视图。
 
         每项只包含 candidate_id、iteration、score、keep/retain/discard/failure disposition、
         verifier attempt commit、可能延迟的客观 View，以及可选 supplemental evaluation
         的可用标记。任何 View 为 null 都不影响 verifier Evidence；worker 不需要等待，
-        可先依据 Evidence 独立探索。
+        可先依据 Evidence 独立探索。传入 ``compact=true`` 时返回带
+        ``snapshot_id`` 的 full/delta/unchanged envelope；``known_snapshot_id``
+        可用于显式指定增量基线。
         """
-        return _json_text(tools.goal_plus_search_get_global_evidence(agent_session_id))
+        return tools.goal_plus_search_get_global_evidence(
+            agent_session_id,
+            known_snapshot_id=known_snapshot_id,
+            compact=compact,
+        )
 
     @register_tool()
     @_debug_tool_response
@@ -790,26 +971,24 @@ def create_mcp(
         agent_session_id: str,
         candidate_id: str,
         iteration: Annotated[int, Field(ge=1)],
-    ) -> TextContent:
+    ) -> dict[str, Any]:
         """按需展开一条已结算 Evidence 的 supplemental evaluation。
 
         仅当 agent context 声明该能力已开启，且 Global Evidence 对目标行返回
         `supplemental_available=true` 时调用。目标必须属于同一 run；`independent` 模式只
         允许读取调用方自己的 candidate。返回内容不含 peer workspace、transcript 或推理。
         """
-        return _json_text(
-            tools.goal_plus_search_get_evidence_detail(
-                agent_session_id,
-                candidate_id,
-                iteration,
-            )
+        return tools.goal_plus_search_get_evidence_detail(
+            agent_session_id,
+            candidate_id,
+            iteration,
         )
 
     @register_tool()
     @_debug_tool_response
     def goal_plus_search_read_shared_cache(
         agent_session_id: str,
-    ) -> TextContent:
+    ) -> dict[str, Any]:
         """读取当前 run 的 shared cache 投影。
 
         返回 sections（操作者冻结的模板：key、标题、要求、cardinality、是否需要
@@ -817,9 +996,7 @@ def create_mcp(
         都可随时查阅，避免对同一问题重复探索。内容为追加式事实日志的读时投影，
         不包含 peer workspace、transcript 或推理。
         """
-        return _json_text(
-            tools.goal_plus_search_read_shared_cache(agent_session_id)
-        )
+        return tools.goal_plus_search_read_shared_cache(agent_session_id)
 
     @register_tool()
     @_debug_tool_response
@@ -829,7 +1006,7 @@ def create_mcp(
         content: Annotated[str, Field(min_length=1)],
         supersedes: str | None = None,
         evidence_ref: str | None = None,
-    ) -> TextContent:
+    ) -> dict[str, Any]:
         """向 shared cache 的一个 section 追加一条客观事实。
 
         content 会做空白归一化并受 max_content_chars 限制；requires_evidence 的
@@ -837,14 +1014,12 @@ def create_mcp(
         修正先前记录时传 supersedes=record_id：旧条目从投影中移除，新条目生效，
         但事实日志保持追加式。写入仅记录客观内容，不影响评分。
         """
-        return _json_text(
-            tools.goal_plus_search_append_shared_cache(
-                agent_session_id,
-                section,
-                content,
-                supersedes,
-                evidence_ref,
-            )
+        return tools.goal_plus_search_append_shared_cache(
+            agent_session_id,
+            section,
+            content,
+            supersedes,
+            evidence_ref,
         )
 
     @register_tool()
@@ -925,13 +1100,15 @@ def create_mcp(
         agent_session_id: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=GOAL_HISTORY_MAX_LIMIT)] = GOAL_HISTORY_DEFAULT_LIMIT,
-    ) -> TextContent:
+    ) -> dict[str, Any]:
         """返回当前 agent session 所属候选可能很大的完整 iteration 历史。
+
+        结算回执已含相同指标时，回复省略外层重复 metrics；持久化记录保持完整。
 
         candidate worker 只应查询 agent context 中自己的 run/candidate，并且仅在紧凑
         context、可选 ledger projection 和 Git 无法回答旧轮次的准确 verifier 事实时调用。
         """
-        return _json_text(tools.goal_plus_search_list_iterations(agent_session_id, offset, limit))
+        return tools.goal_plus_search_list_iterations(agent_session_id, offset, limit)
 
     @register_tool()
     @_debug_tool_response
@@ -966,10 +1143,35 @@ def create_mcp(
 
     @register_tool()
     @_debug_tool_response
-    def goal_plus_search_select(run_id: str) -> dict[str, Any]:
-        """按冻结 ranking keys/tolerance 选择 exact artifact；必需质量评分 pending 时等待队列完成。"""
+    def goal_plus_search_revise_spec(
+        agent_session_id: str,
+        request_id: Annotated[str, Field(min_length=1)],
+        parent_frozen_spec_id: str,
+        revision_reason: Annotated[str, Field(min_length=1)],
+        revision: CandidateSpecRevisionInput,
+    ) -> dict[str, Any]:
+        """仅修订自身分支的评价合同；同请求幂等，父版本必须仍为当前版本。
+
+        生成新的 FrozenSpec，后续 verifier 执行新版本；既有 Evidence 保留原版本。
+        可改 objective、metric、acceptance、verifier command/args 和 selection；
+        冻结 verifier 文件字节与 source/provider、权限、预算、模型和工具能力保持原合同。
+        不授予全局 freeze/create 或 Main apply 权限。Main 使用 frozen_spec_id 显式选择该版本结果。
+        """
+        return tools.goal_plus_search_revise_spec(
+            agent_session_id, request_id, parent_frozen_spec_id, revision_reason, revision,
+        )
+
+    @register_tool()
+    @_debug_tool_response
+    def goal_plus_search_select(run_id: str, frozen_spec_id: str | None = None) -> dict[str, Any]:
+        """按指定版本的 ranking keys/tolerance 选择 exact artifact；省略版本选择 run 初始合同。
+
+        不比较不同评价版本的分数；必需质量评分 pending 时等待队列完成。
+        """
         try:
-            return tools.goal_plus_search_select(run_id)
+            if session_launcher is not None:
+                session_launcher.close_candidates(run_id)
+            return tools.goal_plus_search_select(run_id, frozen_spec_id)
         finally:
             if session_launcher is not None:
                 session_launcher.wake_internal_agents(run_id)
@@ -977,7 +1179,7 @@ def create_mcp(
     @register_tool()
     @_debug_tool_response
     def goal_plus_search_report(run_id: str) -> dict[str, str]:
-        """生成最终 Markdown/HTML 报告；已链接的 Goal Plus 必须处于终态。"""
+        """生成最终 Markdown/HTML 与离线可视化 ZIP，返回 bundle_path；关联 Goal 必须处于终态。"""
         return tools.goal_plus_search_report(run_id)
 
     @register_tool()
@@ -1154,7 +1356,11 @@ def create_mcp(
         evidence: list[dict[str, Any]] | None = None,
         next_action: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """根据证据设置终态；Search 未记录提升结果时不能 complete。"""
+        """根据证据设置终态；Search 未记录提升结果时不能 complete。
+
+        evidence 引用 candidate_id/selected_candidate_id 时，当前修订必须已用
+        goal_plus_record_search_result 记录提升结果；native collab/subagent 或手工
+        执行不能替代 Search run，其候选事实会被拒绝。"""
         return goal_tools.goal_plus_set_status(
             goal_plus_id,
             status,
@@ -1176,16 +1382,16 @@ def create_host_mcp(
         return create_mcp(root_dir, caller_role=caller_role, caller_agent_session_id=caller_agent_session_id,
                           caller_final_check=caller_final_check,
                           excluded_tool_names=excluded_tool_names)
-    from goal_plus.session_host import NativeCandidateHost
-    from goal_plus.final_check_host import NativeFinalCheckHost
     from goal_plus.delegation_host import NativeDelegationHost
+    from goal_plus.final_check_host import NativeFinalCheckHost
+    from goal_plus.session_host import NativeCandidateHost
 
     sessions = NativeCandidateHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller)
     return create_mcp(
         root_dir,
         caller_role=caller_role,
         native_main_harness=agent_harness if caller_role == "main" else None,
-        session_controls=sessions, session_launcher=sessions,
+        session_controls=sessions, session_launcher=sessions, fork_launcher=sessions,
         final_checker=NativeFinalCheckHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller),
         work_items=NativeDelegationHost(root_dir, agent_harness=agent_harness, caller=native_mcp_caller),
         excluded_tool_names=excluded_tool_names,
@@ -1194,7 +1400,11 @@ def create_host_mcp(
 
 def create_codex_mcp(root_dir: str | Path = DEFAULT_RUNTIME_ROOT) -> FastMCP:
     import os
-    from goal_plus.codex_hook_input import CODEX_CANDIDATE_SESSION_ENV, CODEX_ORDINARY_ROLE_ENV
+
+    from goal_plus.codex_hook_input import (
+        CODEX_CANDIDATE_SESSION_ENV,
+        CODEX_ORDINARY_ROLE_ENV,
+    )
     from goal_plus.infrastructure.final_check_binding import declared_final_checker
 
     candidate_id = os.environ.get(CODEX_CANDIDATE_SESSION_ENV)
@@ -1205,14 +1415,20 @@ def create_codex_mcp(root_dir: str | Path = DEFAULT_RUNTIME_ROOT) -> FastMCP:
         if thinkthread_role not in {"main", "candidate", "annotator"} or any(item is not None for item in (candidate_id, checker, ordinary)):
             raise PermissionError("invalid or conflicting ThinkThread native role")
         if thinkthread_role == "main":
-            from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_main_mcp
+            from goal_plus.infrastructure.thinkthread_codex_tools import (
+                create_thinkthread_main_mcp,
+            )
 
             return create_thinkthread_main_mcp(root_dir)
         if thinkthread_role == "annotator":
-            from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_annotator_mcp
+            from goal_plus.infrastructure.thinkthread_codex_tools import (
+                create_thinkthread_annotator_mcp,
+            )
 
             return create_thinkthread_annotator_mcp()
-        from goal_plus.infrastructure.thinkthread_codex_tools import create_thinkthread_candidate_mcp
+        from goal_plus.infrastructure.thinkthread_codex_tools import (
+            create_thinkthread_candidate_mcp,
+        )
 
         return create_thinkthread_candidate_mcp()
     if sum(item is not None for item in (candidate_id, checker, ordinary)) > 1:

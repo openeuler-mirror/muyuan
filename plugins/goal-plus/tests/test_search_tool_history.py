@@ -26,12 +26,31 @@ def history():
             "agent_sessions": [{"session_handle": {"metadata": {"dispatches": []}}}],
             "strategy_metadata": {"worker_policy": {"inner_agent": "common"}},
             "key_metrics": {"score": 0.0, "request_id": "provider-request"},
+            "metrics": {"score": {"score": 0.0, "request_id": "provider-request"}},
             "log_paths": ["/private/log"], "latest_log_paths": ["/private/log"],
             "key_results": [], "research_summary": {"summary": "", "key_results": []},
         }],
         "feature_ledger": [], "pitfalls": [], "verifier_assessments": [],
         "research_rollup": {"feature_ledger": [], "pitfalls": [], "verifier_assessments": []},
     }
+
+
+@pytest.mark.parametrize("changes", [{}, {"returncode": 1}, {"returncode": False}])
+def test_iteration_reply_removes_only_exact_settlement_metric_copy(changes):
+    item = {
+        "iteration": 1,
+        "metrics": {"score": 2.0, "returncode": 0, **changes},
+        "settlement_receipt": {
+            "evidence": {"metrics": {"score": 2.0, "returncode": 0}}
+        },
+    }
+    runtime = Mock()
+    runtime.list_agent_iterations.return_value = [item]
+    before = deepcopy(item)
+    compacted, = SearchTools(runtime).goal_plus_search_list_iterations("agent-1")["items"]
+    assert ("metrics" not in compacted) is (not changes)
+    assert compacted["settlement_receipt"]["evidence"]["metrics"]["score"] == 2.0
+    assert item == before
 
 
 def test_history_default_is_stable_as_host_diagnostics_grow_and_detail_is_complete(history):
@@ -47,7 +66,9 @@ def test_history_default_is_stable_as_host_diagnostics_grow_and_detail_is_comple
         "candidate_id": "c001", "status": "evaluated", "intent": "baseline",
         "score": 0.0, "process_passed": True, "evidence_source": "best_iteration",
         "best_iteration": 1, "changed_files": ["program.py"], "best_git_head": "commit-1",
-        "key_metrics": {"score": 0.0, "request_id": "provider-request"},
+        "metrics": {"score": {"score": 0.0, "request_id": "provider-request"}},
+        "touched_denied_files": False, "changed_outside_allowed": False,
+        "summary": "", "blockers": [],
     }]
     assert "research_rollup" not in summary
     assert "worker_policy" not in summary

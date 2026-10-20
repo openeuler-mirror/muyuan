@@ -40,6 +40,164 @@ REPORT_SCHEMA_VERSION = 1
 REPORT_DOCUMENT_SCHEMA_VERSION = 1
 
 
+def render_report_bundle_index(run_id: str, has_transcripts: bool) -> str:
+    identity = escape(run_id, quote=True)
+    transcript = (
+        '<p><a href="host-logs/agent-transcript/index.html">Agent sessions</a> '
+        '— prompts, tool calls, results and per-session coverage.</p>'
+        if has_transcripts else
+        '<p>Agent sessions: not exported. Full histories require GOAL_PLUS_DEBUG=1 '
+        'during execution or an explicit offline export from retained logs.</p>'
+    )
+    return (
+        '<!doctype html><html lang="en"><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<title>Goal Plus report bundle</title>'
+        '<style>body{max-width:800px;margin:4rem auto;padding:0 1.5rem;'
+        'font:17px/1.6 system-ui;color:#172033}a{color:#245fce}</style>'
+        f'<h1>Goal Plus · {identity}</h1>'
+        f'<p><a href="runs/{identity}/report.html">Result report</a> · '
+        f'<a href="runs/{identity}/report.md">Markdown</a></p>'
+        f'{transcript}<p>Extract the complete archive before opening these pages. '
+        'The bundle includes existing reports from this runtime to preserve navigation.</p></html>'
+    )
+
+
+def _transcript_navigation(value: Any) -> str:
+    if not isinstance(value, dict):
+        return '<span class="footnote">Context not exported</span>'
+    sources = value.get("links") or []
+    links = "".join(
+        '<li>'
+        f'<a href="{escape(link["href"], quote=True)}">{escape(str(link.get("role") or "history"))} '
+        f'({escape(str(link.get("state") or "unknown"))})</a></li>'
+        for link in sources
+    )
+    reason = str(value.get("reason") or "")
+    state = escape(str(value.get("state") or "unknown"))
+    context = (f'<details class="transcript-context"><summary>Context ({len(sources)}) · {state}</summary>'
+               f'<ul>{links}</ul></details>' if sources else f'Context {state}')
+    # Exact settlement anchors are independently useful navigation; keep them
+    # accessible while the complete source inventory is collapsed.
+    exact = "".join(
+        f'<a class="transcript-event-link" href="{escape(link["href"], quote=True)}">Settlement</a>'
+        for link in sources if "-settlement-" in link["href"].partition("#")[2]
+    )
+    coverage = ('<span class="transcript-coverage">Exact event unknown</span>'
+                if value.get("event_state") == "unknown" else "")
+    return (f'<div class="footnote transcript-navigation" title="{escape(reason, quote=True)}">'
+            f'{exact}{context}{coverage}</div>')
+
+
+def _contract_link(task: dict[str, Any], frozen_spec_id: Any) -> str:
+    if not frozen_spec_id:
+        return "Unknown"
+    run_id = str(task.get("run_id") or "")
+    contract = next((item for item in task.get("evaluation_contracts") or []
+                     if item.get("frozen_spec_id") == frozen_spec_id), None)
+    label = f"{contract['alias']} · {frozen_spec_id}" if contract else str(frozen_spec_id)
+    if contract is None:
+        return escape(label)
+    return (f'<a href="#contract-{escape(run_id, quote=True)}-{escape(str(frozen_spec_id), quote=True)}">'
+            f"{escape(label)}</a>")
+
+
+def _render_evaluation_contracts(task: dict[str, Any]) -> str:
+    contracts = task.get("evaluation_contracts") or []
+    if not contracts:
+        return ""
+    run = task.get("run") or {}
+    selected = task.get("selected_contract")
+    selected_copy = "<p>No evaluation contract has been selected.</p>"
+    if selected is not None:
+        selected_spec = selected["spec"]
+        selected_copy = (
+            '<div class="summary-block"><h4>Selected evaluation contract</h4>'
+            f'<p>{_contract_link(task, selected["frozen_spec_id"])} · '
+            f'{escape_html(selected_spec.get("metric_name"))} ({escape_html(selected_spec.get("metric_direction"))})</p>'
+            f'<p>Candidate {escape_html(run.get("selected_candidate_id"))} · '
+            f'iteration {escape_html(run.get("selected_iteration"))} · '
+            f'hard score {escape_html(numeric_value(run.get("selected_hard_score")))} · '
+            f'selection score {escape_html(numeric_value(run.get("selected_score")))}</p>'
+            '<details><summary>Selected artifact identity</summary>'
+            f'<pre>{escape(json.dumps(run.get("selected_artifact_ref"), ensure_ascii=False, indent=2))}</pre>'
+            '</details></div>'
+        )
+    rows = []
+    details = []
+    for contract in contracts:
+        spec_id = contract["frozen_spec_id"]
+        spec = contract["spec"]
+        usages = contract["usages"]
+        associations = []
+        if usages["initial"]:
+            associations.append("initial")
+        if usages["selected"]:
+            associations.append("selected")
+        if usages["active_candidate_ids"]:
+            associations.append("active: " + ", ".join(usages["active_candidate_ids"]))
+        if usages["revision_candidate_ids"]:
+            associations.append("revision: " + ", ".join(usages["revision_candidate_ids"]))
+        if usages["iterations"]:
+            associations.append("used: " + ", ".join(
+                f'{item["candidate_id"]}/{item["iteration"]}' for item in usages["iterations"]
+            ))
+        if usages["child_frozen_spec_ids"]:
+            associations.append("parent of: " + ", ".join(usages["child_frozen_spec_ids"]))
+        rows.append(
+            f'<tr><td class="mono">{_contract_link(task, spec_id)}<br>{escape(contract["spec_hash"])}</td>'
+            f'<td>{escape("; ".join(associations))}</td>'
+            f'<td>{_contract_link(task, contract.get("parent_frozen_spec_id")) if contract.get("parent_frozen_spec_id") else "Initial"}</td>'
+            f'<td>{escape_html(contract.get("revision_reason"))}</td>'
+            f'<td>{escape_html(contract.get("created_at"))}</td></tr>'
+        )
+        changes = contract["changes"]
+        change_rows = "".join(
+            f'<tr><td><code>{escape(change["field"])}</code></td>'
+            f'<td><pre>{escape(json.dumps(change["before"], ensure_ascii=False, indent=2))}</pre></td>'
+            f'<td><pre>{escape(json.dumps(change["after"], ensure_ascii=False, indent=2))}</pre></td></tr>'
+            for change in changes
+        )
+        diff = (
+            '<div class="table-scroll"><table><thead><tr><th>Field</th><th>Parent</th><th>This contract</th></tr></thead>'
+            f'<tbody>{change_rows}</tbody></table></div>'
+            if changes else '<p>No changes to SearchSpec fields or frozen verifier byte hashes.</p>'
+        )
+        contract_sections = "".join(
+            f'<details><summary>{escape(label)}</summary><pre>{escape(json.dumps(value, ensure_ascii=False, indent=2))}</pre></details>'
+            for label, value in (
+                ("Candidate acceptance", spec.get("candidate_acceptance")),
+                ("Process verifier commands", spec.get("process_verifiers")),
+                ("Promotion verifier commands", spec.get("promotion_verifiers")),
+                ("Selection", (spec.get("strategy") or {}).get("selection")),
+                ("Source, workspace and edit surface", {key: spec.get(key) for key in ("source_path", "workspace", "edit_surface")}),
+                ("Budget", spec.get("budget")),
+                ("Frozen verifier byte hashes", contract.get("verifier_hashes")),
+            )
+        )
+        details.append(
+            f'<details class="summary-block" id="contract-{escape(str(task.get("run_id") or ""), quote=True)}-{escape(spec_id, quote=True)}">'
+            f'<summary>{escape(contract["alias"])} · {escape(spec_id)} · {escape_html(spec.get("metric_name"))} '
+            f'({escape_html(spec.get("metric_direction"))})</summary>'
+            f'<div><p>{escape_html(spec.get("objective"))}</p>'
+            f'<p>Hash: <code>{escape(contract["spec_hash"])}</code><br>'
+            f'Revision reason: {escape_html(contract.get("revision_reason"))}</p>'
+            f'{contract_sections}<h4>Changes from parent</h4>{diff}'
+            '<p>Verifier command fields and frozen file byte hashes are separate identities.</p>'
+            '<details><summary>Full FrozenSpec</summary>'
+            f'<pre>{escape(json.dumps({key: value for key, value in contract.items() if key not in {"alias", "changes", "usages"}}, ensure_ascii=False, indent=2))}</pre>'
+            '</details></div></details>'
+        )
+    return (
+        '<section class="subsection"><h3>Evaluation contracts</h3>'
+        f'{selected_copy}<p>V labels are local reading aliases. IDs and hashes identify the immutable contracts. '
+        'Scores are comparable only within the same contract.</p>'
+        '<div class="table-scroll"><table><thead><tr><th>Contract / hash</th><th>Usage</th>'
+        '<th>Parent</th><th>Revision reason</th><th>Created</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div>{"".join(details)}</section>'
+    )
+
+
 def _metric_card(label: str, value: str, detail: str = "", tone: str = "") -> str:
     return (
         '<div class="kpi">'
@@ -344,6 +502,8 @@ def _trajectory_score_axis(scores: list[float]) -> dict[str, Any]:
 def _search_trajectory_payload(task: dict[str, Any]) -> dict[str, Any] | None:
     statistics = task.get("statistics") or {}
     scores = statistics.get("scores") or {}
+    if scores.get("score_comparable") is False:
+        return None
     frozen = task.get("frozen_spec") or {}
     metric_name = str(scores.get("metric_name") or frozen.get("metric_name") or "score")
     metric_name = metric_name.replace("<", "").replace(">", "")
@@ -367,7 +527,10 @@ def _search_trajectory_payload(task: dict[str, Any]) -> dict[str, Any] | None:
                 {
                     "candidate_id": candidate_id,
                     "candidate_index": candidate_index,
-                    "selected": bool(candidate.get("selected")),
+                    "selected": bool(candidate.get("selected")) and (
+                        candidate.get("selected_iteration") is None
+                        or candidate["selected_iteration"] == (iteration.get("iteration") or iteration_index + 1)
+                    ),
                     "iteration": iteration.get("iteration") or iteration_index + 1,
                     "score": score,
                     "process_passed": iteration.get("process_passed") is True,
@@ -503,6 +666,44 @@ def _search_trajectory_payload(task: dict[str, Any]) -> dict[str, Any] | None:
         "global_best": {"calls": global_calls, "scores": global_scores},
         "selected_point": selected_point,
     }
+
+
+def _search_trajectory_payloads(task: dict[str, Any]) -> list[dict[str, Any]]:
+    contracts = task.get("evaluation_contracts") or []
+    if not contracts:
+        payload = _search_trajectory_payload(task)
+        return [payload] if payload is not None else []
+    run = task.get("run") or {}
+    initial_id = run.get("frozen_spec_id")
+    selected_id = run.get("selected_frozen_spec_id")
+    scores = (task.get("statistics") or {}).get("scores") or {}
+    payloads = []
+    for contract in contracts:
+        spec_id = contract["frozen_spec_id"]
+        spec = contract["spec"]
+        candidates = [
+            {**candidate, "selected": bool(candidate.get("selected")) and selected_id == spec_id,
+             "selected_iteration": run.get("selected_iteration"),
+             "iterations": [iteration for iteration in candidate.get("iterations") or []
+                            if (iteration.get("frozen_spec_id") or initial_id) == spec_id]}
+            for candidate in task.get("candidates") or []
+        ]
+        payload = _search_trajectory_payload({
+            "candidates": candidates,
+            "statistics": {"scores": {
+                "metric_name": spec["metric_name"], "direction": spec["metric_direction"],
+                "baseline": scores.get("baseline") if spec_id == initial_id else None,
+                "selected": run.get("selected_hard_score") if selected_id == spec_id else None,
+            }},
+        })
+        if payload is not None:
+            payload.update({
+                "frozen_spec_id": spec_id,
+                "title": f'Complete Search Trajectory · {contract["alias"]} · {spec_id}',
+                "export_name": f'{task.get("run_id")}-{spec_id}-trajectory',
+            })
+            payloads.append(payload)
+    return payloads
 
 
 def _render_search_trajectory(payload: dict[str, Any]) -> str:
@@ -1106,13 +1307,17 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
         )
         rows.append(
             f'<tr class="{escape(" ".join(row_classes), quote=True)}"'
+            + (f' id="{escape(str(item["report_anchor"]), quote=True)}"' if item.get("report_anchor") and not evidence_source else "")
+            +
             " data-evidence-row"
             f' data-candidate="{escape(candidate_id, quote=True)}"'
             f' data-disposition="{escape(disposition, quote=True)}"'
             f' data-view-state="{escape(view_state, quote=True)}">'
             f'<td class="mono">{escape_html(item.get("created_at"))}</td>'
             f'<td class="mono"><strong>{escape_html(candidate_id)}</strong></td>'
-            f'<td class="mono">{escape_html(item.get("iteration"))}</td>'
+            f'<td class="mono">{escape_html(item.get("iteration"))}{_transcript_navigation(item.get("transcript"))}</td>'
+            f'<td class="mono">{_contract_link(task, item.get("frozen_spec_id"))}<br>{escape_html(item.get("spec_hash"))}</td>'
+            f'<td>{escape_html(item.get("metric_name"))}<br>{escape_html(item.get("metric_direction"))}</td>'
             f'<td class="mono">{score_copy}</td>'
             f"{verifier_cell}"
             f"<td>{render_status(disposition)}</td>"
@@ -1125,6 +1330,20 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
             f"{escape_html(commit[:12] if commit else None)}</code></td>"
             "</tr>"
         )
+
+    evidence_columns = [
+        "time", "candidate", "iteration", "contract", "metric", "score",
+    ]
+    if verifier_enabled:
+        evidence_columns.append("quality")
+    evidence_columns.extend([
+        "settlement", "attempt", "objective", "toolization", "published-tools",
+        "adoption", "artifact",
+    ])
+    evidence_colgroup = "<colgroup>" + "".join(
+        f'<col class="evidence-col-{escape(name, quote=True)}">'
+        for name in evidence_columns
+    ) + "</colgroup>"
 
     return (
         "<div data-evidence-view>"
@@ -1149,12 +1368,13 @@ def _render_shared_evidence_view(task: dict[str, Any]) -> str:
         f'<div class="evidence-view-count" data-evidence-count aria-live="polite">{len(rows_payload)} of {len(rows_payload)} rows</div>'
         "</div></div>"
         '<div class="table-scroll evidence-view-scroll">'
-        '<table class="evidence-view-table"><thead><tr>'
-        "<th>Time</th><th>Candidate</th><th>Iteration</th><th>Score</th>"
+        f'<table class="evidence-view-table">{evidence_colgroup}<thead><tr>'
+        "<th>Time</th><th>Candidate</th><th>Iteration</th>"
+        "<th>Evaluation contract</th><th>Metric / direction</th><th>Score</th>"
         f"{'<th>Quality / adaptive metrics</th>' if verifier_enabled else ''}"
         "<th>Settlement</th><th>Worker attempt</th><th>Objective View</th>"
         "<th>Toolization Review</th><th>Published Tool View</th>"
-        "<th>Tool Adoption Summary</th><th>Revision</th>"
+        "<th>Tool Adoption Summary</th><th>Artifact revision</th>"
         f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
         '<p class="footnote">Decision evidence coverage counts durable verifier-backed iteration settlement. '
         "Worker attempt is the candidate-authored settled hypothesis. Objective View is the immutable "
@@ -1187,8 +1407,9 @@ def _render_candidates(task: dict[str, Any]) -> str:
                 f'<td class="mono">{escape_html(numeric_value(current_value.get("quality_score")))}</td>'
             )
         rows.append(
-            f'<tr class="{"selected-row" if candidate.get("selected") else ""}">'
-            f'<td class="mono"><strong>{escape_html(candidate.get("candidate_id"))}</strong></td>'
+            f'<tr id="{escape(str(candidate.get("report_anchor") or ""), quote=True)}" class="{"selected-row" if candidate.get("selected") else ""}">'
+            f'<td class="mono"><strong>{escape_html(candidate.get("candidate_id"))}</strong>{_transcript_navigation(candidate.get("transcript"))}</td>'
+            f'<td class="mono">{_contract_link(task, candidate.get("active_frozen_spec_id"))}<br>{escape_html(candidate.get("metric_name"))} ({escape_html(candidate.get("metric_direction"))})</td>'
             f"<td>{render_status('selected' if candidate.get('selected') else candidate.get('status'))}</td>"
             f"{verifier_cells}"
             f'<td class="mono">{escape_html(numeric_value(candidate.get("score")))}</td>'
@@ -1205,9 +1426,20 @@ def _render_candidates(task: dict[str, Any]) -> str:
         verifier_headers = (
             "<th>Allocation</th><th>Depth</th><th>Source</th><th>Latest quality</th>"
         )
+    columns = ["candidate", "contract", "status"]
+    if verifier_enabled:
+        columns.extend(["allocation", "depth", "source", "quality"])
+    columns.extend([
+        "final-score", "best-score", "process", "iterations", "sessions", "files", "hypothesis",
+    ])
+    colgroup = "<colgroup>" + "".join(
+        f'<col class="candidate-col-{name}">' for name in columns
+    ) + "</colgroup>"
     return (
-        '<div class="table-scroll"><table><thead><tr>'
-        f"<th>Candidate</th><th>Status</th>{verifier_headers}"
+        "<p>Scores use each candidate's active evaluation contract. Scores from different frozen specs are not compared.</p>"
+        '<div class="table-scroll"><table class="candidate-evidence-table">'
+        f"{colgroup}<thead><tr>"
+        f"<th>Candidate</th><th>Active contract</th><th>Status</th>{verifier_headers}"
         "<th>Final score</th><th>Best score</th><th>Process pass</th>"
         "<th>Iterations</th><th>Sessions</th><th>Changed files</th><th>Hypothesis</th>"
         f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
@@ -1297,6 +1529,7 @@ def _render_sessions(task: dict[str, Any]) -> str:
     if not sessions:
         return "<p>No worker sessions were persisted.</p>"
     rows = []
+    seen: set[str] = set()
     for session in sessions:
         terminal = session.get("terminal_state") or (
             "timed_out" if session.get("timed_out") else "unknown"
@@ -1304,9 +1537,12 @@ def _render_sessions(task: dict[str, Any]) -> str:
         dispatch_label = "{} / {}".format(
             session.get("dispatch_index"), session.get("dispatch_count")
         )
+        anchor = str(session.get("report_anchor") or "")
+        row_id = f' id="{escape(anchor, quote=True)}"' if anchor and anchor not in seen else ""
+        seen.add(anchor)
         rows.append(
-            "<tr>"
-            f'<td class="mono"><strong>{escape_html(session.get("agent_session_id"))}</strong></td>'
+            f"<tr{row_id}>"
+            f'<td class="mono"><strong>{escape_html(session.get("agent_session_id"))}</strong>{_transcript_navigation(session.get("transcript"))}</td>'
             f'<td class="mono">{escape_html(dispatch_label)}</td>'
             f'<td class="mono">{escape_html(session.get("candidate_id"))}</td>'
             f"<td>{escape_html(session.get('agent_harness'))}</td>"
@@ -1325,8 +1561,17 @@ def _render_sessions(task: dict[str, Any]) -> str:
             f'<td class="mono">{escape_html(session.get("latest_evidence_detail_read_at"))}</td>'
             "</tr>"
         )
+    columns = [
+        "session", "dispatch", "candidate", "harness", "runtime-provider", "model-provider", "model",
+        "terminal", "duration", "tokens", "cost", "verifier", "evidence", "injected", "detail",
+        "last-evidence", "last-detail",
+    ]
+    colgroup = "<colgroup>" + "".join(
+        f'<col class="session-col-{name}">' for name in columns
+    ) + "</colgroup>"
     return (
-        '<div class="table-scroll"><table><thead><tr>'
+        '<div class="table-scroll"><table class="worker-sessions-table">'
+        f"{colgroup}<thead><tr>"
         "<th>Session</th><th>Dispatch</th><th>Candidate</th><th>Harness</th><th>Runtime provider</th><th>Model provider</th><th>Model</th>"
         "<th>Terminal state</th><th>Duration</th><th>Processed tokens</th><th>Estimated cost</th><th>Verifier runs</th>"
         "<th>Evidence reads</th><th>Injected evidence</th><th>Detail reads</th><th>Last evidence read</th><th>Last detail read</th>"
@@ -1728,11 +1973,55 @@ def _render_artifact_lifecycle(task: dict[str, Any]) -> str:
     )
 
 
+def _render_fork(task: dict[str, Any]) -> str:
+    fork = task.get("dispatch_group")
+    if not isinstance(fork, dict):
+        return ""
+    facts = (
+        ("Group", fork.get("dispatch_group_id")),
+        ("Runtime provider", fork.get("runtime_provider")),
+        ("Main session", fork.get("main_session_id")),
+        ("Parent native session", fork.get("parent_native_session_id")),
+        ("Checkpoint", fork.get("checkpoint_id")),
+        ("Checkpoint kind", fork.get("checkpoint_kind")),
+        ("Frozen spec", fork.get("frozen_spec_id")),
+        ("Status", fork.get("status")),
+        ("Failure", fork.get("failure")),
+    )
+    details = "".join(
+        f'<div class="fact"><dt>{label}</dt><dd class="mono">{escape_html(value)}</dd></div>'
+        for label, value in facts
+    )
+    rows = []
+    for branch in fork.get("targets") or []:
+        binding = branch.get("binding") or {}
+        attachment = binding.get("workspace_attachment")
+        receipt = binding.get("launch_receipt")
+        rows.append(
+            "<tr>"
+            f"<td>{escape_html(branch.get('dispatch_target_index'))}</td>"
+            f"<td class=\"mono\">{escape_html(branch.get('candidate_id'))}<br>{escape_html(branch.get('agent_session_id'))}</td>"
+            f"<td class=\"mono\">{escape_html(branch.get('provider_session_id'))}</td>"
+            f"<td>{escape_html(branch.get('launch_state'))}<br>{escape_html(branch.get('failure'))}</td>"
+            f"<td>{escape_html(branch.get('closed_at'))}</td>"
+            f"<td>Audit: {escape_html(branch.get('audit_state'))}<br>{escape_html(branch.get('audit_record_id'))}</td>"
+            f"<td><details><summary>Attachment / receipt</summary><pre>{escape(json.dumps({'attachment': attachment, 'receipt': receipt}, ensure_ascii=False, indent=2))}</pre></details></td>"
+            "</tr>"
+        )
+    return (
+        '<section class="subsection"><h3>Fork</h3>'
+        f"<dl class=\"fact-grid\">{details}</dl>"
+        '<div class="table-scroll"><table><thead><tr>'
+        "<th>Branch</th><th>Candidate / session</th><th>Native session</th><th>Launch</th><th>Closed at</th><th>Audit</th><th>Workspace</th>"
+        f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>"
+    )
+
+
 def _render_task(
     task: dict[str, Any],
     index: int,
     *,
-    trajectory_payload: dict[str, Any] | None = None,
+    trajectory_payloads: list[dict[str, Any]] | None = None,
 ) -> str:
     run = task.get("run") or {}
     frozen = task.get("frozen_spec") or {}
@@ -1745,11 +2034,7 @@ def _render_task(
     )
     run_id = str(task.get("run_id") or f"task-{index}")
     selected = task.get("is_report_run")
-    trajectory = (
-        _render_search_trajectory(trajectory_payload)
-        if trajectory_payload is not None
-        else ""
-    )
+    trajectory = "".join(_render_search_trajectory(payload) for payload in trajectory_payloads or [])
     return (
         f'<article class="panel task-panel" data-run-id="{escape(run_id, quote=True)}" '
         f'id="task-{escape(run_id, quote=True)}" {"" if selected else "hidden"}>'
@@ -1763,7 +2048,8 @@ def _render_task(
         '<div class="task-metrics">'
         f'<div class="task-metric"><span class="kpi-label">Goal revision</span><strong>{escape_html(task.get("goal_revision"))}</strong></div>'
         f'<div class="task-metric"><span class="kpi-label">Strategy</span><strong>{escape_html((task.get("strategy") or {}).get("name"))}</strong></div>'
-        f'<div class="task-metric"><span class="kpi-label">Orchestration</span><strong>{escape_html((task.get("strategy") or {}).get("orchestration_mode"))}</strong></div>'
+        f'<div class="task-metric"><span class="kpi-label">Initial context</span><strong>{escape_html((task.get("strategy") or {}).get("initial_context"))}</strong></div>'
+        f'<div class="task-metric"><span class="kpi-label">Adaptive search</span><strong>{escape_html(str((task.get("strategy") or {}).get("adaptive_search")))}</strong></div>'
         f'<div class="task-metric"><span class="kpi-label">Baseline</span><strong class="mono">{escape_html(numeric_value(scores.get("baseline")))}</strong></div>'
         f'<div class="task-metric"><span class="kpi-label">Score target</span><strong class="mono">{escape(score_target_text)}</strong></div>'
         f'<div class="task-metric"><span class="kpi-label">Best / selected</span><strong class="mono">{escape_html(numeric_value(scores.get("best")))} / {escape_html(numeric_value(scores.get("selected")))}</strong></div>'
@@ -1776,6 +2062,8 @@ def _render_task(
         "</section>"
         '<section class="subsection"><h3>Bootstrap Verification</h3>'
         f"{_render_bootstrap_verification(task)}</section>"
+        f"{_render_evaluation_contracts(task)}"
+        f"{_render_fork(task)}"
         '<section class="subsection"><h3>Shared Evidence View</h3>'
         f"{_render_shared_evidence_view(task)}</section>"
         '<section class="subsection"><h3>Candidate Evidence</h3>'
@@ -1846,7 +2134,7 @@ def _render_agent_transcript_section(agent_transcript: Any) -> str:
     return f"""    <section id="agent-transcript" class="report-section">
       <h2>Agent Behavior Transcript</h2>
       <p><a class="mono" href="{escape(href)}">{escape(href)}</a></p>
-      <p class="footnote">Local debug export of the full main/subagent session histories, produced by scripts/export_agent_transcript.py. It may contain prompts and tool payloads, lives outside this report's normalized evidence, and only exists while kept under host-logs.</p>
+      <p class="footnote">Local debug export of available native histories and captured inference inputs, produced by scripts/export_agent_transcript.py. Collection coverage is stated per source; persistent text does not establish the current provider window or permissions.</p>
     </section>
 """
 
@@ -1871,7 +2159,7 @@ def render_html_report(
         (task for task in tasks if task.get("is_report_run")),
         tasks[-1] if tasks else {},
     )
-    selected_frozen = selected_task.get("frozen_spec") or {}
+    selected_frozen = (selected_task.get("selected_contract") or {}).get("spec") or selected_task.get("frozen_spec") or {}
     selected_stats = selected_task.get("statistics") or {}
     selected_scores = selected_stats.get("scores") or {}
     unavailable = total_statistics.get("unavailable_metrics") or []
@@ -1988,9 +2276,8 @@ def render_html_report(
     )
 
     trajectory_payloads = {
-        str(task.get("run_id")): payload
+        str(task.get("run_id")): _search_trajectory_payloads(task)
         for task in tasks
-        if (payload := _search_trajectory_payload(task)) is not None
     }
     plotly_script = f"<script>{plotly_javascript}</script>" if plotly_javascript else ""
 
@@ -2005,7 +2292,7 @@ def render_html_report(
         _render_task(
             task,
             index,
-            trajectory_payload=(
+            trajectory_payloads=(
                 trajectory_payloads.get(str(task.get("run_id")))
                 if plotly_javascript
                 else None
@@ -2033,6 +2320,8 @@ def render_html_report(
     )
     raw_payload = {
         "schema_version": data.get("schema_version"),
+        "goal_plus_version": data.get("goal_plus_version"),
+        "goal_plus_build": data.get("goal_plus_build"),
         "generated_at": data.get("generated_at"),
         "snapshot": snapshot,
         "search_tasks": tasks,
@@ -2146,7 +2435,7 @@ def render_html_report(
       </div>
       {metric_availability}
       <details class="summary-block"><summary>Complete normalized report data</summary><pre>{escape(json.dumps(raw_payload, indent=2, ensure_ascii=False, sort_keys=True))}</pre></details>
-      <p class="footnote">Goal Plus {escape(__version__)} · Schema goal-plus-report/v{REPORT_SCHEMA_VERSION}. This file is self-contained and generated from durable Goal Plus/Search state. Host-native transcripts remain external evidence and are summarized only through normalized observability.</p>
+      <p class="footnote">Goal Plus {escape(__version__)} · Build {escape_html(data.get("goal_plus_build") or "checkout / unbound")} · Schema goal-plus-report/v{REPORT_SCHEMA_VERSION}. This file is self-contained and generated from durable Goal Plus/Search state. Host-native transcripts remain external evidence and are summarized only through normalized observability.</p>
     </section>
 {agent_transcript_section}
   </main>

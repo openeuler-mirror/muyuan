@@ -6,6 +6,7 @@ from goal_plus.application.candidate_ranking import best_artifact_iteration_reco
 from goal_plus.ports.candidate_artifacts import CandidateArtifactState
 from goal_plus.application.candidate_execution import (
     require_worker_iteration_state,
+    require_fork_ready,
 )
 from goal_plus.domain.results_ledger import (
     valid_inner_git_head,
@@ -39,7 +40,8 @@ from goal_plus.ports.state import (
 from goal_plus.application.settlement_policy import iteration_disposition
 from goal_plus.application.candidate_settlement import CandidateSettlement
 from goal_plus.application.candidate_sessions import CandidateSessions
-from goal_plus.application.candidate_ledger import CandidateLedger
+from goal_plus.application.candidate_ledger import CandidateLedger, ledger_metric_name
+from goal_plus.application.candidate_spec import candidate_spec_id
 from goal_plus.application.shared_tools import SharedTools
 from goal_plus.application.goal_authorization import GoalAuthorization
 from goal_plus.ports.candidate_settlement import CandidateSettlementState, InnerGitSettlement
@@ -112,13 +114,16 @@ class ThinkThreadVerification:
                 run_id, candidate_id, submission.agent_session_id,
                 submission.thinkthread_id, submission.branch_id,
             )
-            frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+            frozen = self.state.read_frozen_spec(candidate_spec_id(run, record))
+            require_fork_ready(run, frozen, [record])
             decision = self.shared_tools.normalize_toolization_decision(
                 run_id=run_id, frozen=frozen, scope="process",
                 agent_session_id=submission.agent_session_id,
                 toolization_decision=toolization_decision,
             )
             prior = submission.prior
+            if prior is None and record.accepted_attempt is not None and record.accepted_attempt.request_id == submission.request_id:
+                prior = record.accepted_attempt
             if prior is not None:
                 if prior.request_id != submission.request_id:
                     raise RuntimeError("only one candidate attempt may be accepted per Child turn")
@@ -128,6 +133,10 @@ class ThinkThreadVerification:
                     or prior.hypothesis != hypothesis or prior.toolization_decision != decision
                 ):
                     raise ValueError("verifier request id was reused with new content")
+                if prior.frozen_spec_id is not None and (
+                    prior.frozen_spec_id != frozen.frozen_spec_id or prior.spec_hash != frozen.spec_hash
+                ):
+                    raise RuntimeError("CandidateSpecBindingMismatch: accepted attempt spec changed")
                 self._record_submission_trace(
                     session=self.candidate_sessions.state.read_agent_session(
                         submission.agent_session_id,
@@ -141,14 +150,19 @@ class ThinkThreadVerification:
                 self._validate_thinkthread_inner_git_attempt(record, submission.inner_git_attempt)
             elif submission.inner_git_attempt is not None:
                 raise PermissionError("private inner Git metadata is not allowed for this inner-agent binding")
+            if record.accepted_attempt is not None:
+                raise RuntimeError("VerifierInProgress: another accepted attempt is pending")
             accepted = CandidateAttemptAccepted(
                 attempt_id=submission.attempt_id, request_id=submission.request_id,
                 run_id=run_id, candidate_id=candidate_id, agent_session_id=submission.agent_session_id,
+                frozen_spec_id=frozen.frozen_spec_id, spec_hash=frozen.spec_hash,
                 hypothesis=hypothesis, toolization_decision=decision, accepted_at=self.clock.timestamp(),
                 message="The attempt was accepted. Its exact snapshot verifier will run after "
                 "this Child turn reaches a quiescent boundary. Finish the turn without "
                 "further writes; the exact ScoreReport will be injected into the next wake.",
             )
+            record.accepted_attempt = accepted
+            self.state.write_candidate(run_id, record)
             self._record_submission_trace(
                 session=self.candidate_sessions.state.read_agent_session(
                     submission.agent_session_id,
@@ -260,7 +274,18 @@ class ThinkThreadVerification:
                 run.run_id, settlement=True
             )
             require_worker_iteration_state(run, "verify ThinkThread attempt")
-            frozen = self.state.read_frozen_spec(run.frozen_spec_id)
+            record = self._bound_candidate(
+                run_id, candidate_id, agent_session_id, thinkthread_id, branch_id,
+            )
+            accepted = record.accepted_attempt
+            if accepted is not None and (accepted.attempt_id != attempt_id or accepted.agent_session_id != agent_session_id):
+                raise RuntimeError("VerifierInProgress: verification does not match the accepted attempt")
+            frozen = self.state.read_frozen_spec(
+                accepted.frozen_spec_id if accepted is not None and accepted.frozen_spec_id is not None
+                else candidate_spec_id(run, record)
+            )
+            if frozen.frozen_spec_id != candidate_spec_id(run, record):
+                raise RuntimeError("CandidateSpecBindingMismatch: accepted attempt spec changed")
             normalized_toolization_decision = (
                 self.shared_tools.normalize_toolization_decision(
                     run_id=run_id,
@@ -273,6 +298,7 @@ class ThinkThreadVerification:
             record = self._bound_candidate(
                 run_id, candidate_id, agent_session_id, thinkthread_id, branch_id,
             )
+            require_fork_ready(run, frozen, [record])
             for iteration in record.iterations:
                 provider = iteration.metrics.get("_candidate_attempt")
                 legacy = iteration.metrics.get("_thinkthread_settlement")
@@ -284,9 +310,9 @@ class ThinkThreadVerification:
                     else None
                 )
                 if recorded_id == attempt_id:
-                    if record.score_report is None:
+                    if record.score_report is None or record.score_report.attempt_id != attempt_id:
                         raise RuntimeError(
-                            "verified ThinkThread attempt is missing its score report"
+                            "VerifierAttemptUnavailable: use iteration history for an older settled attempt"
                         )
                     self.settlement.reconcile(run, frozen, record)
                     return record.score_report.model_copy(
@@ -458,7 +484,7 @@ class ThinkThreadVerification:
                 attempt_artifact_ref=attempt_ref,
                 source_relative_path=source_relative_path,
                 iteration=iteration_number,
-                metric_name=frozen.spec.metric_name,
+                metric_name=ledger_metric_name(record, frozen.spec.metric_name),
                 score=report.aggregate_score,
                 status="pass" if report.process_passed else "fail",
                 hypothesis=hypothesis,

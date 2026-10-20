@@ -17,6 +17,13 @@ import time
 
 import pytest
 
+from tests.st_thinkthread.fork_circle import (
+    assert_fork_evidence,
+    assert_fork_prepared,
+    assert_fork_not_terminally_failed,
+    capture_fork_provider_evidence,
+    native_preparation_context,
+)
 
 pytestmark = [pytest.mark.st, pytest.mark.st_codex, pytest.mark.thinkthread_linux]
 ROOT = Path(__file__).resolve().parents[2]
@@ -218,6 +225,7 @@ def run_codex_circle(
     bounded_iterations: int,
     annotation_required: bool,
     deadline_seconds: int,
+    fork: bool = False,
 ):
     for executable in ("tt", "codex", "node"):
         if not shutil.which(executable):
@@ -226,22 +234,32 @@ def run_codex_circle(
     workspace = base / "circle"
     example = ROOT / "examples/circle-packing-thinkthread-apply"
     subprocess.run(
-        [sys.executable, str(example / "prepare_workspace.py"), "--destination", str(workspace)],
+        [
+            sys.executable, str(example / "prepare_workspace.py"), "--destination", str(workspace),
+            *(["--fork"] if fork else []),
+        ],
         check=True, capture_output=True, text=True, timeout=30,
     )
     verifier = workspace / ".goal-plus-verifiers/circle_packing_score.py"
     verifier_bytes = verifier.read_bytes()
     profile = os.environ.get("ST_THINKTHREAD_CODEX_PROFILE", PROFILE)
     evidence = _host_evidence(profile)
+    resume_prompt = None
+    if fork:
+        prompt = (example / "codex-goal-prompt-fork.md").read_text().strip()
+        resume_prompt = (
+            "First call goal_plus_host_resume to resume this same Root session's existing Goal. "
+            + (example / "fork-resume-task.md").read_text().strip()
+        )
     command = [
         "tt", "run",
         "--profile", profile,
         "--fs", str(workspace),
         "--state-root", str(state_root),
     ]
-    agent_args = []
     if model := os.environ.get("ST_CODEX_MODEL"):
-        agent_args.extend(["--model", model])
+        command.extend(["--model", model])
+    agent_args = []
     if effort := os.environ.get("ST_CODEX_REASONING_EFFORT"):
         agent_args.extend(["-c", f'model_reasoning_effort="{effort}"'])
     if agent_args:
@@ -254,7 +272,11 @@ def run_codex_circle(
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
     log_path = state_root.parent / "native-main.log"
-    environment = {**os.environ, "TERM": "xterm-256color"}
+    environment = {
+        **{key: value for key, value in os.environ.items()
+           if key != "GOAL_PLUS_EVIDENCE_ANNOTATOR_DISABLED"},
+        "TERM": "xterm-256color",
+    }
     if annotation_required:
         environment["GOAL_PLUS_SUPPLEMENTAL_EVALUATION_ENABLED"] = "1"
         environment["GOAL_PLUS_SUPPLEMENTAL_EVALUATION_REQUIRED"] = "1"
@@ -271,6 +293,9 @@ def run_codex_circle(
     goal_path = None
     runtime_root = None
     root_id = None
+    preparation_evidence = None
+    preparation_context = None
+    provider_evidence = None
     try:
         with log_path.open("wb") as log:
             deadline = time.monotonic() + deadline_seconds
@@ -328,6 +353,25 @@ def run_codex_circle(
                 [goal_path] = goals
                 runtime_root = goal_path.parents[2]
                 goal = json.loads(goal_path.read_text())
+                assert_fork_not_terminally_failed(
+                    runtime_root, goal, resumed=preparation_evidence is not None,
+                )
+                if (
+                    resume_prompt is not None
+                    and preparation_evidence is None
+                    and goal["status"] == "blocked"
+                    and roots
+                    and root_state["sessionState"] == "ready"
+                ):
+                    preparation_evidence = assert_fork_prepared(runtime_root, goal)
+                    preparation_context = native_preparation_context(state_root, root_id, "codex")
+                    os.write(master, b"\x1b[200~" + resume_prompt.encode() + b"\x1b[201~")
+                    paste_at = now
+                    submitted = False
+                if preparation_context is not None and provider_evidence is None:
+                    provider_evidence = capture_fork_provider_evidence(
+                        runtime_root, state_root, root_id, "codex", preparation_context,
+                    )
                 scopes = [
                     json.loads(path.read_text())
                     for path in (runtime_root / "host-scopes").glob("*/scope.json")
@@ -374,6 +418,13 @@ def run_codex_circle(
             bounded_iterations=bounded_iterations,
             annotation_required=annotation_required,
         )
+        if fork:
+            assert preparation_evidence is not None and provider_evidence is not None
+            evidence_result["fork"] = assert_fork_evidence(
+                runtime_root, run_dir, root_id=root_id,
+                agent_harness="codex", preparation=preparation_evidence,
+                provider_evidence=provider_evidence,
+            )
         assert (run_dir / "report.md").is_file() and (run_dir / "report.html").is_file()
         assert verifier.read_bytes() == verifier_bytes
         verified = subprocess.run(
@@ -503,4 +554,17 @@ def test_native_codex_main_completes_circle_thinkthread_apply_k2_single_turn(thi
         bounded_iterations=1,
         annotation_required=True,
         deadline_seconds=int(os.environ.get("ST_CODEX_CIRCLE_TIMEOUT", "1500")),
+    )
+
+
+def test_native_codex_main_completes_fork_circle_thinkthread_apply(thinkthread_root):
+    """Two true forks, retained continuations, required audits, snapshot apply and cleanup."""
+    run_codex_circle(
+        thinkthread_root,
+        "",  # The runnable example supplies both completed-boundary Main turns.
+        expected_starts={"c001": RECTANGULAR_START, "c002": STAGGERED_START},
+        bounded_iterations=2,
+        annotation_required=True,
+        deadline_seconds=int(os.environ.get("ST_CODEX_CIRCLE_TIMEOUT", "2100")),
+        fork=True,
     )

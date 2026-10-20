@@ -39,7 +39,9 @@ def test_pi_tool_ownership_and_registration_gates(tmp_path, role, debug):
     if debug and role != "ordinary" and (role != "main" or os.environ.get("GOAL_PLUS_ID")):
         assert len(diagnostics) == 1
         expected = (
-            {"agent_session_id": "worker-session", "candidate_task": {"workspace": str(tmp_path)}}
+            {"agent_session_id": "worker-session", "candidate_task": {"workspace": str(tmp_path)},
+             "tool_capabilities": {"references": True, "spec_revision": True, "supplemental": False,
+                                   "shared_tools": False, "shared_cache": False}}
             if role == "worker" else
             {"status": "inactive", "reason": "no_active_goal",
              "message": "当前 Pi 会话不在 Goal Plus 任务中；Goal Plus 工具不可用。",
@@ -101,6 +103,13 @@ def test_pi_command_context_and_shared_work_item_forwarding(tmp_path):
     assert "work receipt checks passed" in result.stdout
 
 
+def test_pi_select_uses_common_host_closeout(tmp_path):
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": "main", "GOAL_PLUS_PI_SELECT_CLOSEOUT_TEST": "1",
+    })
+    assert "select closeout checks passed" in result.stdout
+
+
 @pytest.mark.parametrize("mode", ["tui", "rpc", "json"])
 def test_pi_runtime_display_needs_no_goal_or_model(tmp_path, mode):
     result = _run_env_script(tmp_path, {"GOAL_PLUS_PI_ROLE": "main", "GOAL_PLUS_PI_INFO_TEST": mode})
@@ -134,6 +143,21 @@ def test_pi_abort_notifies_user_of_paused_goal(tmp_path):
         "GOAL_PLUS_PI_ABORT_NOTIFY_TEST": "1",
     })
     assert "abort notify checks passed" in result.stdout
+
+
+@pytest.mark.parametrize("preparation", ["ready", "ordinary", "started", "unprepared"])
+def test_pi_main_persists_fork_boundary_only_after_settled_preparation(tmp_path, preparation):
+    pi = shutil.which("pi")
+    sdk = next((parent / "dist/core/session-manager.js" for parent in Path(pi).resolve().parents
+                if (parent / "dist/core/session-manager.js").is_file()), None) if pi else None
+    if sdk is None:
+        pytest.skip("The native Pi SessionManager SDK is required")
+    result = _run_env_script(tmp_path, {
+        "GOAL_PLUS_PI_ROLE": "main",
+        "GOAL_PLUS_PI_FORK_PREPARATION_TEST": preparation,
+        "GOAL_PLUS_PI_SESSION_MANAGER_MODULE": sdk.as_uri(),
+    })
+    assert "fork preparation checks passed" in result.stdout
 
 
 @pytest.mark.parametrize("mode", ["tui", "print", "json", "busy", "pending", "rejected"])
@@ -258,6 +282,12 @@ const mocks = {
     export async function runJsonCli(pi, ctx, name, args) {
       if (name === "host_mcp_manifest") return {details: globalThis.mcpManifest};
       globalThis.calls.push({name, args});
+      if (globalThis.selectCloseoutTest && name === "host_execution_scope_close_run") {
+        throw Error("An active invocation belongs to the persistent common host controller");
+      }
+      if (globalThis.selectCloseoutTest && name === "goal_plus_search_select") {
+        return {details: {selected_candidate_id: "c001"}};
+      }
       if (name === "goal_plus_status" && globalThis.statusFailure) {
         return {details: {ok: false, error: "fixture status failure", tool: name}};
       }
@@ -325,6 +355,61 @@ const ctx = {cwd, mode: "interactive", hasUI: false, isIdle: () => true,
 };
 await register(pi);
 assert.equal(commands.has('goal-plus-info'), process.env.GOAL_PLUS_PI_ROLE === 'main');
+if (process.env.GOAL_PLUS_PI_SELECT_CLOSEOUT_TEST === "1") {
+  globalThis.workReceiptTest = true;
+  globalThis.selectCloseoutTest = true;
+  ctx.sessionManager.getSessionFile = () => cwd + '/native-session.jsonl';
+  await commands.get("goal-plus").handler("fixture", ctx);
+  const result = await tools.get("goal_plus_search_select").execute("select", {run_id: "run_1"},
+    new AbortController().signal, undefined, ctx);
+  assert.equal(result.details.selected_candidate_id, "c001");
+  console.log("select closeout checks passed");
+  process.exit(0);
+}
+if (process.env.GOAL_PLUS_PI_FORK_PREPARATION_TEST) {
+  const preparation = process.env.GOAL_PLUS_PI_FORK_PREPARATION_TEST;
+  const {SessionManager} = await import(process.env.GOAL_PLUS_PI_SESSION_MANAGER_MODULE);
+  const session = SessionManager.create(cwd, cwd + "/native-session");
+  ctx.sessionManager = session;
+  ctx.mode = "tui";
+  pi.appendEntry = (type, data) => session.appendCustomEntry(type, data);
+  globalThis.workReceiptTest = true;
+  await commands.get("goal-plus").handler("fixture", ctx);
+  session.appendMessage({role: "user", content: "prepare", timestamp: 1});
+  const preparedId = session.appendMessage({role: "assistant", content: [{type: "text", text: "prepared"}],
+    api: "openai-responses", provider: "fixture", model: "fixture", stopReason: "stop", timestamp: 2});
+  globalThis.status = {...globalThis.status, status: "blocked", phase: "search",
+    current_search_run_id: "run_1", control: {state: "paused", version: 1},
+    next_action: {kind: "await_fork_checkpoint"}};
+  globalThis.monitorSnapshot = {ok: true,
+    goal_plus: {...globalThis.status},
+    run: {run_id: "run_1", state: "waiting_for_workers", candidates_total: 2,
+      dispatch_group: preparation === "started" ? {dispatch_group_id: "dispatch-1", schema_version: 2, status: "started", targets: []} : null},
+    strategy: {initial_context: preparation === "ordinary" ? "fresh" : "fork",
+      latest_plan: {status: preparation === "unprepared" ? "planned" : "started"}},
+    search_tasks: [{run_id: "run_1", is_current: true, state: "waiting_for_workers"}],
+  };
+  const markers = () => session.getBranch().filter(entry => entry.type === "custom"
+    && entry.customType === "goal-plus-fork-checkpoint");
+  await events.get("agent_end")({messages: [{role: "assistant", stopReason: "stop", content: []}]}, ctx);
+  assert.equal(markers().length, 0, "agent_end is inside the awaited native prompt lifecycle");
+  await events.get("agent_settled")({}, ctx);
+  const expected = preparation === "ready" ? 1 : 0;
+  assert.equal(markers().length, expected, "only a prepared fork run receives a boundary");
+  if (expected) {
+    assert.equal(markers()[0].data.run_id, "run_1");
+    const branch = session.getBranch(markers()[0].id);
+    assert.ok(branch.some(entry => entry.id === preparedId), "the marker retains the completed assistant");
+    const persisted = SessionManager.open(session.getSessionFile()).getBranch();
+    assert.equal(persisted.filter(entry => entry.type === "custom"
+      && entry.customType === "goal-plus-fork-checkpoint").length, 1,
+      "the preparation boundary must survive a native session reload");
+    await events.get("agent_settled")({}, ctx);
+    assert.equal(markers().length, 1, "repeated settlement must preserve the first preparation boundary");
+  }
+  console.log("fork preparation checks passed");
+  process.exit(0);
+}
 if (process.env.GOAL_PLUS_PI_RESUME_MESSAGE_TEST) {
   const mode = process.env.GOAL_PLUS_PI_RESUME_MESSAGE_TEST;
   ctx.mode = ["print", "json"].includes(mode) ? mode : "tui";
@@ -482,7 +567,16 @@ if (process.env.GOAL_PLUS_TT_SDK_TEST) {
   else if (mode === "capability") await assert.rejects(start, /Message-only Capability/);
   else if (mode === "interface") await assert.rejects(start, /missing invoke/);
   else {
+    ctx.sessionManager.getEntries = () => [
+      {type: "message", text: "registration_nonce=12345678-1234-1234-1234-123456789abc agent_session_id=agent_owned"},
+      {type: "custom", customType: "goal-plus-worker-context", data: {
+        agent_session_id: "agent_owned", candidate_task: {workspace: cwd},
+        tool_capabilities: {references: false, spec_revision: false, supplemental: false, shared_tools: false, shared_cache: false},
+      }},
+    ];
     await start();
+    assert.equal(tools.has("goal_plus_search_reference_open"), false,
+      "reloading candidate context must respect the frozen Reference capability");
     assert.equal(globalThis.registration.recipientThinkthreadId, "parent");
     assert.equal(JSON.parse(globalThis.registration.text).type, "registration");
   }
@@ -834,8 +928,11 @@ if (process.env.GOAL_PLUS_PI_ROLE !== "main") {
   if (process.env.GOAL_PLUS_PI_ROLE === "worker") {
     foreign("goal_plus_search_get_agent_context");
     assert.equal((await events.get("tool_call")(event("goal_plus_search_get_agent_context"), ctx)).block, true);
-    globalThis.status = {agent_session_id: "worker-session", candidate_task: {workspace: cwd}};
+    globalThis.status = {agent_session_id: "worker-session", candidate_task: {workspace: cwd},
+      tool_capabilities: {references: true, spec_revision: true, supplemental: false, shared_tools: false, shared_cache: false}};
     await call("goal_plus_search_get_agent_context"); // Only the registered callback activates context.
+    assert(tools.has("goal_plus_search_reference_open"));
+    assert(tools.has("goal_plus_search_revise_spec"));
     assert(tools.has("goal_plus_search_run_verifier")); // Dynamic tools also use the registration gate.
     for (const name of ["goal_plus_search_prepare_recovery", "search_emails", "write"]) {
       foreign(name);

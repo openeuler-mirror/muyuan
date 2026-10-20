@@ -42,9 +42,14 @@ not passed; do not submit another attempt or mutate an attempt awaiting settleme
 | Stop | End native execution while preserving supported retained state | Quiescence and task-owned external services |
 | Close | Release the session controller/resources | No further use of that closed controller |
 
-Retained Child reuse and any respawn are host decisions. Codex TT retirement after settlement can
-require respawn from the settled snapshot. `new_session=true` requests a fresh conversation; it
-does not restore a checkpoint. Distinguish candidate end_turn settlement from Main continuation:
+For a fork candidate, subsequent calls reuse the original Child and native context, including
+when `new_session=true` is supplied. If that context cannot continue, Main must choose successor
+work; a fresh Child from a snapshot cannot retain the original fork provenance.
+
+For a non-fork candidate, retained Child reuse and snapshot respawn are host decisions. Codex TT
+retirement after settlement can require respawn from the settled snapshot. `new_session=true`
+requests a fresh conversation; it does not restore a checkpoint.
+Distinguish candidate end_turn settlement from Main continuation:
 the latter requires the host mechanism listed in [support boundaries](../capabilities.md).
 
 Before selection, stop active work and confirm quiescence while retaining scopes needed for

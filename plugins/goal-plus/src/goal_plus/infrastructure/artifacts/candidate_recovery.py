@@ -18,6 +18,13 @@ class ProviderCandidateRecovery:
         self.root_dir = Path(root_dir).resolve()
 
     def require_recoverable(self, record: CandidateRecord) -> None:
+        if record.task.workspace_provider == "thinkthread":
+            checkpoint = record.results_ledger_artifact_ref
+            if checkpoint is None or checkpoint.kind != "fs_snapshot" or checkpoint.provider != "thinkthread":
+                raise RuntimeError(
+                    "RecoveryCheckpointUnavailable: ThinkThread recovery requires a settled fs_snapshot"
+                )
+            return
         require_local_backend(record.task.workspace_provider, "recover")
 
     def read_approval(self, recovery_id: str) -> dict[str, Any]:
@@ -30,6 +37,17 @@ class ProviderCandidateRecovery:
         recovery: CandidateRecovery,
         preserved_files: dict[str, str],
     ) -> ArtifactRef:
+        if record.task.workspace_provider == "thinkthread":
+            artifact = recovery.point.artifact_ref
+            if artifact.kind != "fs_snapshot" or artifact.provider != "thinkthread":
+                raise RuntimeError(
+                    "RecoveryArtifactProviderMismatch: ThinkThread recovery requires an fs_snapshot"
+                )
+            # ThinkThread workspaces are immutable private branches.  The host
+            # closes the old Child before this method is called; the next
+            # candidate session is created from this exact settled snapshot.
+            # There is no local tree to copy or reset here.
+            return artifact
         run_dir = self.root_dir / "runs" / record.task.run_id
         return LocalGitWorkspace(record.task.workspace_provider).recover(
             record.task.workspace,
@@ -49,6 +67,8 @@ class ProviderCandidateRecovery:
     def matches_checkpoint(
         self, record: CandidateRecord, expected: ArtifactRef, restored: ArtifactRef
     ) -> bool:
+        if record.task.workspace_provider == "thinkthread":
+            return expected == restored
         provider = LocalGitWorkspace(record.task.workspace_provider)
         managed = record.task.workspace_managed_root or record.task.workspace
         return not (
@@ -58,7 +78,9 @@ class ProviderCandidateRecovery:
 
     def has_unsettled_changes(
         self, record: CandidateRecord, expected: ArtifactRef
-    ) -> bool:
+    ) -> bool | None:
+        if record.task.workspace_provider == "thinkthread":
+            return None
         provider = LocalGitWorkspace(record.task.workspace_provider)
         managed = record.task.workspace_managed_root or record.task.workspace
         current = provider.current_artifact(managed)

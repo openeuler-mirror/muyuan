@@ -18,7 +18,7 @@
     "module_a.py must be changed to VALUE = 7.",
     "module_b.py must be changed to VALUE = 11."
   ],
-  "strategy": {"name": "agent_guided", "orchestration_mode": "parallel_loops", "inner_agent": "common", "global_evidence_mode": "manual"},
+  "strategy": {"name": "agent_guided", "initial_context": "fresh", "inner_agent": "common", "global_evidence_mode": "manual"},
   "workspace": {"provider": "git_worktree", "promotion_mode": "apply"},
   "constraints": {
     "success_threshold": 2,

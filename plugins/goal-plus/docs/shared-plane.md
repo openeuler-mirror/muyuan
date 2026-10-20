@@ -74,7 +74,7 @@ host-command invocation 继续保存原始输入 hash。ready SearchSpec draft �
 
 ## SearchSpec 与评价合同
 
-一个 `run_id` 绑定一份不可变的 `SearchSpec`。它至少包含：
+一个 `run_id` 绑定初始不可变 FrozenSpec；candidate 可在自身权限内创建后续评价版本。SearchSpec 至少包含：
 
 - 可度量的目标、`metric_name` 和方向；
 - `source_path` 与允许修改的文件范围；
@@ -107,8 +107,26 @@ SearchSpec 不包含预设软 rubric。这样 Spec Discovery 阶段不会因为 
 Annotation 跟随冻结的 Main 宿主身份。补充评价开关、目标 revision/hash、比较基线和
 上下文隔离见 [Evidence Annotator](evidence-annotator.md#比较基线与目标上下文)。
 
-冻结后的合同不能原地修改。确认 verifier 合同有误时，应先使当前 run 失效并停止其
-worker，再冻结修正后的 spec，创建 successor run。旧分数不能跨合同复用。
+冻结后的合同不能原地修改。确认 source、权限或冻结 verifier 文件合同有误时，先使当前
+run 失效并停止 worker，再冻结完整新合同并创建 successor run；旧分数不能跨合同复用。
+
+### 分支评价版本
+
+固定并行/fork candidate 可通过 `goal_plus_search_revise_spec` 创建自身不可变修订。
+窄 patch 支持 objective、metric、candidate_acceptance、verifier command/args 和 selection；
+source、edit surface、预算、模型、能力和冻结 verifier 字节继承父版本。
+可信 session、当前父版本、pending attempt/recovery、request identity 和幂等规则见
+[API](api.md#冻结合同与创建-run)。未绑定版本不授予执行权，另一分支和初始 fork binding 不随修订变化。
+
+本地 verification request 与 TT accepted attempt 固定本次执行版本；capture、硬验证、
+settlement、receipt、audit 与 Annotation 消费该版本，旧 Evidence 不重建。
+ForkAuditContext 分别保存初始派生版本和实际执行版本；audit 只消费已提交的不可变输入，
+不从活 transcript 补造历史，不修改 hard Evidence。旧 results.tsv 表头保持原值，
+它是操作投影；结构化 Evidence 才是每轮版本、metric 与分数的来源。
+
+Main 根据原始目标审查各版本的意义和覆盖范围，自验通过只是条件性证据。
+框架不强制中央评价合同、全局 scalar、统一复测或 N×N 跨分支互测。
+报告中的合同目录、版本差异及分合同轨迹见[报告说明](debugging-runtime.md#评价合同与分数轨迹)。
 
 ## 一次 Search Run
 
@@ -128,7 +146,7 @@ origin/relocation bootstrap result 单独保存在 FrozenSpec 和 RunRecord 中�
 计数或候选排名。relocation 失败会以 `verifier_target_mismatch` 自动 abort run，保留 `c001`
 供诊断，且不会启动 worker。
 
-`budget.max_parallel` 是 spec 的初始 candidate 数和实时 live-worker 上限 `K`。`parallel_loops`
+`budget.max_parallel` 是 spec 的初始 candidate 数和实时 live-worker 上限 `K`。固定并行
 只做一次初始分配，不按分数创建替代 candidate，也没有后续
 规划轮次。用户提供 `strategy.models` 时，runtime 在冻结前通过 host adapter 验证
 名称，并在初始 plan 中生成与 lane 一一对应的 `selected_models`：未写数量时轮转，
@@ -137,9 +155,9 @@ origin/relocation bootstrap result 单独保存在 FrozenSpec 和 RunRecord 中�
 
 ### Adaptive Search
 
-`strategy.orchestration_mode="adaptive_search"` 在 hard settlement 主流程上增加 LLM Verifier 评估和
+`strategy.adaptive_search` 在 hard settlement 主流程上增加 LLM Verifier 评估和
 确定性资源分配或软引导。它支持 `workspace.provider="git_worktree"` 或 `"thinkthread"`，allocation 与 steering 至少
-配置一个。提供任一 policy 时自动选择 adaptive_search，冻结前合并所需评分 key 并展开参数
+配置一个。配置 `strategy.adaptive_search` 后冻结前合并所需评分 key 并展开参数
 默认值。Verifier 通过 `scores` 独立选择额外注册指标，普通搜索同样可以启用；
 没有 Adaptive policy 时，Selection 使用 `quality_score` 仍补齐并冻结基础 Verifier 配置。
 仅使用 hard_score 且没有 policy/verifier 配置时关闭 LLM-Verifier。`budget.max_parallel` 是实时活跃 lane
@@ -265,7 +283,7 @@ run-wide 工具总数限制。
 不改变 score、verifier disposition、selection 或 promotion。实际 staging inventory 与现有
 publication settlement 始终是权威。
 
-main agent 不向 worker 提供后续技术方向。`parallel_loops` 优先续跑同一个原生 session；
+main agent 不向 worker 提供后续技术方向。固定并行 优先续跑同一个原生 session；
 redispatch 只用于恢复，并继续使用同一个 candidate 工作区、Git 历史、verifier 历史
 和有界 handoff。`adaptive_search` 只按 runtime 已持久化的 AllocationDecision 退休 candidate；
 worker、Verifier 和 host 都不能自行推断质量剪枝。
@@ -294,6 +312,11 @@ worker、Verifier 和 host 都不能自行推断质量剪枝。
   "supplemental_available": true
 }
 ```
+
+共享结果明确执行版本/hash、artifact、settlement、metric/direction 与输出来源。
+公共 metrics 保留 0、false、文本、对象、数组和合法的 `_coverage`，仅过滤私有 keys
+`_candidate_attempt`、`_thinkthread_settlement`。缺失或裁剪明确标记并提供 metrics_omitted，
+不当作零分；LLM bounded 输入仍受字段/总量预算限制，不把截断冒充完整字段。
 
 `artifact_availability` 区分 durable identity 与 provider 内容可访问性：`available`、
 `removal_pending`、`removed` 或 `unknown`。ThinkThread terminal cleanup 后仍保留 `artifact_ref` 和
@@ -327,11 +350,14 @@ worker verifier 原子消费 copy receipt。当前 schema 中的 `adopted_tools`
 
 ```text
 goal_plus_search_get_evidence_detail(
-  agent_session_id="<current-session>",
   candidate_id="c001",
   iteration=3
 )
 ```
+
+候选 worker 不传 `agent_session_id`：宿主已经把当前 candidate session 绑定到 MCP 调用，runtime
+会据此校验 run、candidate 和可见范围。`agent_session_id` 只在 Main/操作者的跨 session 诊断接口中
+显式出现。
 
 工具只解析调用方当前 run 的已结算 Evidence identity；`independent` 模式只允许读取自己
 candidate。返回完整 `supplemental_evaluation`，但不暴露 annotation 文件路径、peer
@@ -401,10 +427,13 @@ session 归属见 [Agent Host Adapters](agent-host-adapters.md)。
 
 ## 选择、Promotion 与失效
 
-run-wide best 从有效 iteration record 的硬 score 中计算，与各 candidate-local best 分开。
-`goal_plus_search_select` 不读取补充评价或 peer 比较来改变排名；硬分并列按原有稳定顺序选择。它将
-结果绑定到一个精确、通过验证的 worker Evidence commit。只有旧状态
-或当前产物没有对应 durable Evidence 时，parent 才补做 process verifier。
+Candidate-local best 只比较其评价版本内的有效 Evidence；混合版本 run 不显示跨合同的
+全局标量优劣。Main 调用 `goal_plus_search_select(run_id, frozen_spec_id=...)` 选择目标版本，
+省略时仅使用 run 初始合同。该版本内按冻结 ranking keys、容差与独立 gate 选择精确合格
+Evidence，不从自由文本补充评价或 peer 比较改变排名。
+selected_frozen_spec_id 随 iteration、精确 artifact 持久化；promotion 与独立 publication
+verifier 使用选定合同，即使 candidate 当前 active 版本已不同。Main 保留最终 apply 授权。
+只有旧状态或当前产物没有对应 durable Evidence 时，parent 才补做 process verifier。
 
 promotion 是独立的验收 gate。Runtime 会检出选中的不可变 revision，在
 `GOAL_PLUS_VERIFIER_PHASE=promotion` 下重跑配置的 promotion verifier，并把结果绑定
@@ -421,18 +450,18 @@ run。可以继承有界研究上下文，但不能继承旧分数或把旧 Evid
 
 `candidate.json` 中的 iteration record 是 Evidence 的事实来源。Annotation task 保存
 可选 View 及其执行状态。Global Evidence 在读取时即时投影，不是第二份可写共享账本。
-`best.json` 是当前 run 最优 verifier commit 的权威原子指针；严格改善或同分时更新，
+`best.json` 是当前 run 初始评价版本最优 verifier commit 的权威原子指针；严格改善或同分时更新，
 退化和失败不会覆盖它。同分 candidate 按最后完成结算的有效 commit 决定。
 
 ## 核心不变量
 
 - 并行工作开始前，先冻结 verifier 与编辑策略。
 - 隔离可写 candidate 工作区，只共享持久化事实和 Git object。
-- verifier-backed 严格改善或同分最新版本才能成为 candidate-local best。
+- 同一评价版本内 verifier-backed 严格改善或同分最新结果才能成为 candidate-local best。
 - 回滚、选择和 promotion 后，所有精确 attempt 仍可审计。
 - 客观 View 和补充评价不改变硬结算；显式 required supplemental 与 Adaptive confirmation 各有自己的 gate。
 - worker 生命周期和原生 transcript 不进入 Search runtime 状态。
-- 一份有效合同对应一个 run，successor run 不复用旧分数。
+- run 固定初始合同，candidate 修订与 Evidence 各自绑定精确版本；successor run 不复用旧分数。
 - 全局停止依据持久化状态，而不是单个 worker 的意见或 lease 到期。
 
 当前框架没有逐 iteration Global Plan、AtomicPlan admission、Search Space schema、

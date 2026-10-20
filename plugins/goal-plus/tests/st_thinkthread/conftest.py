@@ -71,8 +71,11 @@ def _output(command: list[str]) -> str:
 
 @pytest.fixture()
 def thinkthread_root(tmp_path: Path) -> Iterator[tuple[Path, Path]]:
-    workspace = tmp_path / "workspace"
-    state_root = tmp_path / "thinkthread-state"
+    configured_base = os.environ.get("ST_THINKTHREAD_BASE_TMP")
+    base = Path(configured_base).expanduser().resolve() if configured_base else tmp_path
+    base.mkdir(parents=True, exist_ok=True)
+    workspace = base / "workspace"
+    state_root = base / "thinkthread-state"
     workspace.mkdir()
     state_root.mkdir()
     yield workspace, state_root
@@ -138,13 +141,13 @@ def run_thinkthread_scenario(thinkthread_root: tuple[Path, Path]):
             "--state-root",
             str(state_root),
             "--detach",
-            "--",
-            "--extension",
-            str(harness / "controller-extension.ts"),
         ]
         if config["model"]:
             command.extend(["--model", config["model"]])
-        command.extend(["--thinking", config["thinking"]])
+        command.extend([
+            "--", "--extension", str(harness / "controller-extension.ts"),
+            "--thinking", config["thinking"],
+        ])
         started = subprocess.run(
             command,
             cwd=ROOT,

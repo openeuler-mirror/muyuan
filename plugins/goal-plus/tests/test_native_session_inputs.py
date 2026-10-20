@@ -38,6 +38,8 @@ def test_native_diagnostic_policy_reaches_internal_annotator(
         monkeypatch.setenv(key, "parent-only")
     monkeypatch.setenv("GOAL_PLUS_PI_DEV_ROOT", "installation-root")
     monkeypatch.setenv("GOAL_PLUS_PYTHON", "installation-python")
+    scratch_root = str(tmp_path / "operational-scratch")
+    monkeypatch.setenv("GOAL_PLUS_TMPDIR", scratch_root)
     monkeypatch.setenv("NATIVE_INPUT_TEST_MARKER", "keep")
     scope = {"agent_harness": harness, "native_agent_config": (
         {"model": "main-model", "reasoning_effort": "low"} if harness == "codex"
@@ -66,12 +68,14 @@ def test_native_diagnostic_policy_reaches_internal_annotator(
     assert environment["GOAL_PLUS_ROOT"] == str(tmp_path)
     assert environment["GOAL_PLUS_PI_DEV_ROOT"] == "installation-root"
     assert environment["GOAL_PLUS_PYTHON"] == "installation-python"
+    assert environment["GOAL_PLUS_TMPDIR"] == scratch_root
     assert environment["NATIVE_INPUT_TEST_MARKER"] == "keep"
     assert all(environment.get(key) != "parent-only" for key in parent_identity_keys)
 
     # Follow the worker -> internal-agent inheritance boundary to the real recorder factory.
     with patch.dict(os.environ, environment, clear=True):
         internal_environment = inherited_host_environment(harness)
+    assert internal_environment["GOAL_PLUS_TMPDIR"] == scratch_root
     with patch.dict(os.environ, internal_environment, clear=True):
         capture = _annotation_transcript({
             "runtime_root": str(tmp_path), "run_id": "run_1", "candidate_id": "c001",

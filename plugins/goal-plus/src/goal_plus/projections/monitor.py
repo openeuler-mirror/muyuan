@@ -27,7 +27,6 @@ from goal_plus.domain.goal import (
     GoalPlusRecord,
 )
 
-from goal_plus.domain.evidence import IterationRecord
 
 
 from goal_plus.application.artifact_availability import artifact_availability
@@ -133,7 +132,8 @@ def project_strategy(
         }
     return {
         "name": strategy.name,
-        "orchestration_mode": strategy.orchestration_mode,
+        "initial_context": strategy.initial_context,
+        "adaptive_search": strategy.adaptive_search_enabled,
         "agent_harness": frozen.agent_harness,
         "runtime_provider": frozen.runtime_provider,
         "max_parallel": frozen.spec.budget.max_parallel,
@@ -147,24 +147,6 @@ def project_strategy(
         or ("common" if frozen.runtime_provider == "thinkthread" else "autoresearch"),
         "latest_plan": latest_plan_payload,
     }
-
-
-def best_candidate_iteration(
-    candidate: CandidateRecord,
-    metric_direction: str,
-) -> IterationRecord | None:
-    scored = [
-        iteration
-        for iteration in candidate.iterations
-        if iteration.process_passed is True
-        and iteration.score is not None
-        and not iteration.touched_denied_files
-        and not iteration.changed_outside_allowed
-    ]
-    if not scored:
-        return None
-    reverse = metric_direction == "maximize"
-    return sorted(scored, key=lambda iteration: iteration.score, reverse=reverse)[0]
 
 
 def project_goal(record: GoalPlusRecord | None) -> dict[str, Any] | None:

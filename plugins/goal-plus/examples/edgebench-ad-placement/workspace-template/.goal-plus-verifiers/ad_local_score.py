@@ -31,8 +31,20 @@ def run_checked(command: list[str], *, cwd: Path, timeout: int) -> subprocess.Co
     return completed
 
 
+def _temporary_root() -> Path:
+    root = Path(
+        os.environ.get("GOAL_PLUS_VERIFIER_TMPDIR")
+        or os.environ.get("GOAL_PLUS_TMPDIR")
+        or Path.cwd() / ".tmp"
+    ).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
+
+
 def evaluate(workspace: Path) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="goal-plus-ad-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="goal-plus-ad-", dir=_temporary_root()
+    ) as temporary:
         temp = Path(temporary)
         seeds_file = temp / "seeds.txt"
         cases_dir = temp / "cases"

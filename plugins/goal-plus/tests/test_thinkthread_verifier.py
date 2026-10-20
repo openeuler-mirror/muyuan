@@ -240,7 +240,7 @@ def test_codex_verifier_mcp_only_exposes_input_and_submit(monkeypatch):
     from goal_plus.infrastructure.thinkthread_codex_tools import _verifier_mcp
 
     calls = []
-    transport = SimpleNamespace(invoke=lambda operation, params, **kwargs: calls.append(params) or {"accepted": True})
+    transport = SimpleNamespace(invoke=lambda operation, params, **kwargs: calls.append(params) or {"toolResult": {"accepted": True}})
     monkeypatch.setattr("goal_plus.server.native_mcp_caller", lambda: "native-verifier")
     mcp = _verifier_mcp(transport, "verifier-task")
 

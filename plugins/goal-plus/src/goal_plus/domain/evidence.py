@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from goal_plus.domain.verifier import VerifierSubmission
-
+import json
+import math
 from pathlib import Path
 from typing import (
     Any,
@@ -29,8 +29,179 @@ from goal_plus.domain.shared_tools import (
     ToolizationAdvisory,
     ToolizationDecision,
 )
+from goal_plus.domain.verifier import VerifierSubmission
 
 IterationDisposition = SettlementDisposition
+
+# These keys are added by trusted runtime adapters to carry provenance that is
+# useful for local reconciliation but must not be exposed as candidate-facing
+# metric data.  An underscore is otherwise a valid verifier metric name (for
+# example ``_coverage``), so prefix matching would silently discard business
+# values.
+PRIVATE_METRIC_KEYS = frozenset({"_candidate_attempt", "_thinkthread_settlement"})
+
+
+def same_json_value(left: Any, right: Any) -> bool:
+    """Compare JSON values without Python's bool/int/float coercion."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return set(left) == set(right) and all(
+            same_json_value(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            same_json_value(item, other) for item, other in zip(left, right)
+        )
+    return left == right
+
+
+def _finite_json_tree(value: Any) -> bool:
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, dict):
+        return all(_finite_json_tree(item) for item in value.values())
+    if isinstance(value, list):
+        return all(_finite_json_tree(item) for item in value)
+    return True
+
+
+def compact_verifier_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Drop a fully-covered JSON stdout tail from one metric object."""
+    tail = metrics.get("stdout_tail")
+    if not isinstance(tail, str):
+        return metrics
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("duplicate JSON fields")
+        return result
+
+    def invalid_constant(value: str) -> Any:
+        raise ValueError(value)
+
+    try:
+        decoded = json.loads(
+            tail, object_pairs_hook=unique_object, parse_constant=invalid_constant,
+        )
+    except (TypeError, ValueError):
+        return metrics
+    if not isinstance(decoded, dict) or not decoded or not _finite_json_tree(decoded) or not all(
+        key in metrics and key != "stdout_tail"
+        and same_json_value(value, metrics[key])
+        for key, value in decoded.items()
+    ):
+        return metrics
+    return {key: value for key, value in metrics.items() if key != "stdout_tail"}
+
+
+def compact_metric_tree(value: Any) -> Any:
+    """Recursively compact verifier metric objects without filtering fields."""
+    if isinstance(value, dict):
+        return {
+            key: compact_metric_tree(nested)
+            for key, nested in compact_verifier_metrics(value).items()
+        }
+    if isinstance(value, list):
+        return [compact_metric_tree(item) for item in value]
+    return value
+
+
+def public_metric_projection(metrics: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Keep JSON-safe verifier metrics while preserving zero/false/text values."""
+
+    omitted = False
+
+    def value(item: Any) -> Any:
+        nonlocal omitted
+        if item is None or isinstance(item, (str, bool, int)):
+            return item
+        if isinstance(item, float):
+            if math.isfinite(item):
+                return item
+            omitted = True
+            return None
+        if isinstance(item, dict):
+            result: dict[str, Any] = {}
+            for key, nested in compact_verifier_metrics(item).items():
+                if not isinstance(key, str):
+                    omitted = True
+                    continue
+                projected = value(nested)
+                if projected is not None or nested is None:
+                    result[key] = projected
+            return result
+        if isinstance(item, (list, tuple)):
+            return [value(nested) for nested in item]
+        omitted = True
+        return None
+
+    projected: dict[str, Any] = {}
+    for source, item in compact_verifier_metrics(metrics).items():
+        source_name = str(source)
+        if source_name in PRIVATE_METRIC_KEYS:
+            omitted = True
+            continue
+        projected_value = value(item)
+        if projected_value is not None or item is None:
+            projected[source_name] = projected_value
+    return projected, omitted
+
+
+def shared_tool_feedback_projection(payload: dict[str, Any], *, enabled: bool) -> dict[str, Any]:
+    """Omit known-empty optional tool fields only for a disabled capability."""
+    if enabled is not False:
+        return payload
+    empty: dict[str, Any] = {
+        "shared_tools": [], "shared_tool_errors": [],
+        "shared_tool_staging_dir": None, "shared_tool_staged_entries": [],
+        "shared_tool_staged_file_count": 0, "shared_tool_staged_bytes": 0,
+        "shared_tool_consumed_entries": [], "shared_tool_deduplicated_entries": [],
+        "shared_tool_publish_status": "not_staged",
+        "toolization_decision": None, "toolization_advisories": [],
+    }
+    return {
+        key: value for key, value in payload.items()
+        if key not in empty or not (
+            value is None or same_json_value(value, empty[key])
+        )
+    }
+
+
+def verifier_feedback_projection(
+    payload: dict[str, Any], *, shared_tools_enabled: bool = True,
+) -> dict[str, Any]:
+    """Remove only verifier log JSON already represented by its metrics.
+
+    Verifier logs remain persisted verbatim.  This projection is for a model
+    response only: a JSON object in ``stdout_tail`` is dropped when every
+    field is present in the same verifier result's metrics with the same JSON
+    type and value.  Truncated, mixed, scalar, malformed, or conflicting
+    output stays visible so diagnostics are never silently discarded.
+    """
+
+    projected = dict(shared_tool_feedback_projection(payload, enabled=shared_tools_enabled))
+    if isinstance(payload.get("score_report"), dict):
+        projected["score_report"] = verifier_feedback_projection(
+            payload["score_report"], shared_tools_enabled=shared_tools_enabled,
+        )
+    results = payload.get("verifier_results")
+    if not isinstance(results, list):
+        return projected
+    projected_results: list[Any] = []
+    for result in results:
+        if not isinstance(result, dict):
+            projected_results.append(result)
+            continue
+        item = dict(result)
+        metrics = item.get("metrics")
+        tail = metrics.get("stdout_tail") if isinstance(metrics, dict) else None
+        if isinstance(tail, str) and isinstance(metrics, dict):
+            item["metrics"] = compact_verifier_metrics(metrics)
+        projected_results.append(item)
+    projected["verifier_results"] = projected_results
+    return projected
 
 
 class VerifierResult(SearchModel):
@@ -53,6 +224,8 @@ class CandidateAttemptAccepted(SearchModel):
     run_id: str = Field(min_length=1)
     candidate_id: str = Field(min_length=1)
     agent_session_id: str = Field(min_length=1)
+    frozen_spec_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     hypothesis: str = Field(min_length=1)
     toolization_decision: ToolizationDecision | None = None
     accepted_at: str
@@ -70,6 +243,8 @@ class PendingVerification(SearchModel):
 class ScoreReport(SearchModel):
     run_id: str
     candidate_id: str
+    frozen_spec_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     parent_id: str | None = None
     validity_passed: bool
     process_passed: bool
@@ -148,6 +323,8 @@ class CandidateAttemptFeedback(SearchModel):
 class IterationRecord(SearchModel):
     verifier_submission: VerifierSubmission | None = None
     iteration: int
+    frozen_spec_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     settlement_sequence: int = Field(default=0, ge=0)
     settlement_id: str | None = Field(
         default=None,
@@ -239,6 +416,8 @@ class IterationRecord(SearchModel):
             return self
         if (
             self.settlement_id != receipt.settlement_id
+            or self.frozen_spec_id != receipt.frozen_spec_id
+            or self.spec_hash != receipt.spec_hash
             or self.iteration != receipt.iteration
             or self.artifact_ref != receipt.attempt_artifact_ref
             or self.attempt_base_artifact_ref != receipt.attempt_base_artifact_ref
@@ -256,6 +435,8 @@ class IterationRecord(SearchModel):
 class ResultLedgerEntry(SearchModel):
     source_run_id: str
     source_candidate_id: str
+    frozen_spec_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    spec_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     iteration: int | None = Field(default=None, ge=1)
     git_head: str | None = None
     ledger_git_head: str | None = None

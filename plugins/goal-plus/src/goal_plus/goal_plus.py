@@ -207,6 +207,19 @@ class FileGoalPlusRuntime:
     ) -> GoalPlusRecord:
         return self.goal_control.activate_session(goal_plus_id, session)
 
+    def record_goal_context_delivery(
+        self,
+        goal_plus_id: str,
+        *,
+        session_id: str,
+        context_key: str,
+    ) -> GoalPlusRecord:
+        return self.goal_control.record_goal_context_delivery(
+            goal_plus_id,
+            session_id=session_id,
+            context_key=context_key,
+        )
+
     def detach_session(
         self,
         goal_plus_id: str,

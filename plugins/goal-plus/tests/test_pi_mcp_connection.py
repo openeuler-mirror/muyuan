@@ -65,7 +65,7 @@ try {
     assert(!manifest.tools.some(tool => tool.name === "goal_plus_search_select"));
     const result = await connection.call("goal_plus_search_get_agent_context", {agent_session_id: "another-candidate"});
     assert.equal(result.details.ok, false);
-    assert.match(result.details.error, /GoalPlusSessionMismatch/);
+    assert.match(result.details.error, /Unexpected keyword argument/);
   } else {
     assert.equal(typeof manifest.instructions, "string");
     assert(manifest.instructions.includes("goal_plus_status"));

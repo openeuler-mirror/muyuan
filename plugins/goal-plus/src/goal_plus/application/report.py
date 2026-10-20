@@ -36,6 +36,7 @@ class Report:
         if cleanup["state"] != "not_applicable":
             self.output.write_markdown(inputs, self.queries.read_run(run_id))
             self.output.write_html(run_id)
+        self.output.write_bundle(run_id)
         return path
 
     def refresh_existing(self, run_id: str) -> None:

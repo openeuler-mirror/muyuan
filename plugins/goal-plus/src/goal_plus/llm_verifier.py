@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any, Sequence
 
+from goal_plus.domain.evidence import PRIVATE_METRIC_KEYS
 from goal_plus.domain.verifier import (
     QUALITY_CRITERIA,
     QUALITY_INSTRUCTIONS,
@@ -92,14 +93,13 @@ def _bounded_verifier_metrics(metrics: dict[str, Any]) -> tuple[dict[str, Any], 
     summary: dict[str, Any] = {}
     omitted = False
     for name, values in sorted(metrics.items()):
-        if name.startswith("_"):
+        if name in PRIVATE_METRIC_KEYS:
+            omitted = True
             continue
         if len(name) > 128 or not isinstance(values, dict):
             omitted = True
             continue
         for key, value in sorted(values.items()):
-            if key.startswith("_"):
-                continue
             if key in {"stdout_tail", "stderr_tail"}:
                 omitted = True
                 continue
@@ -254,6 +254,13 @@ class LlmVerifier:
             "artifact_manifest": receipt.evidence.attempt_changed_files,
             "bounded_artifact_diff": submission.artifact_diff,
         }
+        if submission.dispatch_audit_context is not None:
+            payload["dispatch_audit_context"] = submission.dispatch_audit_context.model_dump(mode="json")
+            payload["fork_audit_instructions"] = (
+                "Audit only checkpoint, branch identity, workspace, FrozenSpec lineage, "
+                "and exact artifact references in dispatch_audit_context. Treat hard_evidence "
+                "as authoritative; never mutate settlement, candidate, selection, or apply."
+            )
         if task.score_contract.diagnostics is not None:
             payload["diagnostic_references"] = diagnostic_references(task.input, task.subject)
         if task.input.cache_snapshot is not None:

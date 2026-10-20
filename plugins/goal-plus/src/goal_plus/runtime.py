@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from goal_plus.ports.candidate_creation import CandidateMaterialization
+from goal_plus.ports.candidate_verification import CandidateVerificationRequest
 from goal_plus.application.candidate_execution import (
     require_candidate_not_recovering,
     require_no_pending_verification,
@@ -26,6 +27,7 @@ from goal_plus.domain.search import (
     CandidateProposal,
     CandidateRecovery,
     CandidateTask,
+    CandidateSpecRevisionInput,
     FrozenSpec,
     RunSummary,
     SearchPlan,
@@ -67,6 +69,7 @@ class FileSearchRuntime:
         services = build_search_services(self.root_dir)
         self.verifiers = services.verifiers
         self.candidate_sessions = services.candidate_sessions
+        self.candidate_spec_revisions = services.candidate_spec_revisions
         self.research = services.research
         self.search_run = services.search_run
         self.artifacts = services.artifacts
@@ -202,11 +205,15 @@ class FileSearchRuntime:
         *,
         source: Literal["explicit", "verifier_injected"] = "explicit",
         verifier_attempt_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+        known_snapshot_id: str | None = None,
+        compact: bool = False,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         return self.evidence_reads.get_global_evidence(
             agent_session_id,
             source=source,
             verifier_attempt_id=verifier_attempt_id,
+            known_snapshot_id=known_snapshot_id,
+            compact=compact,
         )
 
     def get_evidence_detail(
@@ -221,6 +228,9 @@ class FileSearchRuntime:
 
     def should_inject_global_evidence_after_verifier(self, run_id: str) -> bool:
         return self.queries.should_inject_global_evidence_after_verifier(run_id)
+
+    def shared_dir_enabled(self, run_id: str) -> bool:
+        return self.queries.shared_dir_enabled(run_id)
 
     def run_verifier(
         self,
@@ -279,9 +289,7 @@ class FileSearchRuntime:
             if scope == "process":
                 run = self.search_run.state.read_run(run_id)
                 frozen = self.search_run.state.read_frozen_spec(run.frozen_spec_id)
-                adaptive_search_enabled = (
-                    frozen.spec.strategy.orchestration_mode == "adaptive_search"
-                )
+                adaptive_search_enabled = frozen.spec.strategy.adaptive_search_enabled
         if scope == "process" and (
             agent_session_id is not None or adaptive_search_enabled
         ):
@@ -368,9 +376,29 @@ class FileSearchRuntime:
         *,
         goal_plus_id: str | None = None,
         agent_harness: Literal["codex", "pi"] | None = None,
+        parent_frozen_spec_id: str | None = None,
+        revision_reason: str | None = None,
+        dispatch_group_id: str | None = None,
+        dispatch_target_index: int | None = None,
     ) -> FrozenSpec:
         return self.search_bootstrap.freeze(
-            spec, verifier_artifacts, goal_plus_id=goal_plus_id, agent_harness=agent_harness
+            spec,
+            verifier_artifacts,
+            goal_plus_id=goal_plus_id,
+            agent_harness=agent_harness,
+            parent_frozen_spec_id=parent_frozen_spec_id,
+            revision_reason=revision_reason,
+            dispatch_group_id=dispatch_group_id,
+            dispatch_target_index=dispatch_target_index,
+        )
+
+    def revise_candidate_spec(
+        self, agent_session_id: str, request_id: str, parent_frozen_spec_id: str,
+        revision_reason: str, revision: CandidateSpecRevisionInput | dict[str, Any],
+    ) -> FrozenSpec:
+        return self.candidate_spec_revisions.revise(
+            agent_session_id, request_id, parent_frozen_spec_id, revision_reason,
+            CandidateSpecRevisionInput.model_validate(revision),
         )
 
     def materialize_candidate(
@@ -385,9 +413,11 @@ class FileSearchRuntime:
         directive: dict[str, Any] | str | None = None,
         *,
         worker_budget: dict[str, Any] | None = None,
+        session_mode: Literal["fresh", "fork"] = "fresh",
     ) -> AgentSessionRecord:
         return self.candidate_sessions.start_agent_session(
-            run_id, candidate_id, directive, worker_budget=worker_budget
+            run_id, candidate_id, directive, worker_budget=worker_budget,
+            session_mode=session_mode,
         )
 
     def redispatch_candidate(
@@ -491,19 +521,20 @@ class FileSearchRuntime:
         client: AgentPosixSdkClient | None = None,
         recovery_deadline: float | None = None,
     ) -> ScoreReport:
-        return self.thinkthread_verification.verify(
-            run_id=run_id,
-            candidate_id=candidate_id,
-            agent_session_id=agent_session_id,
-            thinkthread_id=thinkthread_id,
-            branch_id=branch_id,
-            hypothesis=hypothesis,
-            attempt_id=attempt_id,
-            inner_git_attempt=inner_git_attempt,
-            toolization_decision=toolization_decision,
-            io=self.thinkthread_attempt_io(client),
-            recovery_deadline=recovery_deadline,
-        )
+        with self.settlement.state.lock_verifier(run_id, candidate_id, blocking=False):
+            return self.thinkthread_verification.verify(
+                run_id=run_id,
+                candidate_id=candidate_id,
+                agent_session_id=agent_session_id,
+                thinkthread_id=thinkthread_id,
+                branch_id=branch_id,
+                hypothesis=hypothesis,
+                attempt_id=attempt_id,
+                inner_git_attempt=inner_git_attempt,
+                toolization_decision=toolization_decision,
+                io=self.thinkthread_attempt_io(client),
+                recovery_deadline=recovery_deadline,
+            )
 
     def stage_shared_tool(
         self,
@@ -581,12 +612,17 @@ class FileSearchRuntime:
             source_iteration=source_iteration,
         )
 
-    def select(self, run_id: str) -> dict[str, Any]:
+    def select(self, run_id: str, *, frozen_spec_id: str | None = None) -> dict[str, Any]:
         from goal_plus.search_verification import resolve_verification_requests
 
         return resolve_verification_requests(
-            self.selection.select(run_id), self.run_verifier
+            self.selection.select(run_id, frozen_spec_id=frozen_spec_id), self.run_verifier,
+            recheck=self._verify_selection_request,
         )
+
+    def _verify_selection_request(self, request: CandidateVerificationRequest) -> ScoreReport:
+        with self.settlement.state.lock_verifier(request.run_id, request.candidate_id, blocking=False) as lease:
+            return self.verification.recheck_selection(request, execution_lock=lease)
 
     def select_for_controller(
         self,
@@ -605,6 +641,7 @@ class FileSearchRuntime:
                 controller_directive=directive,
             ),
             self.run_verifier,
+            recheck=self._verify_selection_request,
         )
 
     def main_agent_notifications(

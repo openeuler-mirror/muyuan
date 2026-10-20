@@ -45,7 +45,7 @@
   ],
   "strategy": {
     "name": "agent_guided",
-    "orchestration_mode": "parallel_loops",
+    "initial_context": "fresh",
     "inner_agent": "autoresearch",
     "evidence_annotator": {
       "timeout_seconds": 900

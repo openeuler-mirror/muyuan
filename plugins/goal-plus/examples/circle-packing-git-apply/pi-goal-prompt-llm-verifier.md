@@ -14,7 +14,7 @@ GOAL_PLUS_DEBUG=1
 不要把当前示例目录或其外层仓库当作 source。
 
 ```yaml
-strategy: {orchestration_mode: parallel_loops, selection: {ranking_keys: [quality_score, hard_score], ranking_tolerance: [0.05, 0.0]}}
+strategy: {initial_context: fresh, selection: {ranking_keys: [quality_score, hard_score], ranking_tolerance: [0.05, 0.0]}}
 ```
 
 验收：运行 `python workspace/.goal-plus-verifiers/circle_packing_score.py`。结果必须

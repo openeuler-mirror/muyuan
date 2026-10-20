@@ -963,10 +963,14 @@ def main(argv: list[str] | None = None) -> int:
     if output_dir.exists():
         raise FileExistsError(f"knowledge output already exists: {output_dir}")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
+    # Keep the staging tree on the output filesystem so the final rename
+    # remains atomic, while avoiding the host-wide /tmp inode pool.
+    staging_root = output_dir.parent / ".tmp"
+    staging_root.mkdir(parents=True, exist_ok=True)
     stage = Path(
         tempfile.mkdtemp(
             prefix=".goal-plus-ascendc-skills-",
-            dir=output_dir.parent,
+            dir=staging_root,
         )
     )
     try:

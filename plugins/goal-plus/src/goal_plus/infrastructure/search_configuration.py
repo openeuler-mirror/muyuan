@@ -129,6 +129,18 @@ class SearchConfiguration:
         requested = list(spec.strategy.models)
         if not requested:
             return spec
+        # ``default`` means that the native host/profile chooses the worker
+        # model.  A ThinkThread Pi Child inherits that profile and cannot
+        # receive a per-child model override, so keep the sentinel out of the
+        # frozen worker launch policy instead of resolving it into an exact
+        # model and rejecting an otherwise valid SearchSpec later.
+        capabilities = execution_binding(agent_harness, runtime_provider).capabilities
+        if (
+            not capabilities.supports_model_override
+            and all(model.model.strip().casefold() == "default" for model in requested)
+        ):
+            strategy = spec.strategy.model_copy(update={"models": []})
+            return spec.model_copy(update={"strategy": strategy})
         explicit_counts = [model.count is not None for model in requested]
         if any(explicit_counts) and not all(explicit_counts):
             raise ValueError(

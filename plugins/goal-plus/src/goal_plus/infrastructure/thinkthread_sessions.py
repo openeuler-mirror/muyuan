@@ -1,9 +1,9 @@
 """Candidate use cases and scope-local resource journals for the TT session actor."""
 
 import base64
+import json
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
-import json
 from pathlib import Path
 
 from pydantic import TypeAdapter
@@ -13,14 +13,24 @@ from goal_plus.execution.thinkthread_child import ChildDriver
 from goal_plus.execution.thinkthread_session import ThinkThreadSession
 from goal_plus.host_scope import execution_scope_admission
 from goal_plus.host_services import SearchHostService
-from goal_plus.infrastructure.clock import SystemClock
-from goal_plus.infrastructure.state.files import exclusive_file_lock, load_json, write_json
-from goal_plus.infrastructure.thinkthread_worker_rpc import receive_worker_messages
 from goal_plus.infrastructure.agent_transcript import debug_export_child_transcript
+from goal_plus.infrastructure.clock import SystemClock
 from goal_plus.infrastructure.session_diagnostics import collect_child_diagnostics
-from goal_plus.ports.thinkthread_session import ThinkThreadSessionHooks, ThinkThreadSessionInput
+from goal_plus.infrastructure.state.files import (
+    exclusive_file_lock,
+    load_json,
+    write_json,
+)
+from goal_plus.infrastructure.thinkthread_worker_rpc import receive_worker_messages
 from goal_plus.ports.session import SessionCallRequest, SessionInvocationResult
-from goal_plus.thinkthread_agent_posix import AgentPosixSdkClient, validate_thinkthread_root
+from goal_plus.ports.thinkthread_session import (
+    ThinkThreadSessionHooks,
+    ThinkThreadSessionInput,
+)
+from goal_plus.thinkthread_agent_posix import (
+    AgentPosixSdkClient,
+    validate_thinkthread_root,
+)
 
 
 def session_resource_path(root: Path, scope_id: str, identity: str) -> Path:
@@ -49,13 +59,23 @@ class ThinkThreadCandidateSession:
         if root.get("thinkthreadId") != prepared.root_thinkthread_id:
             raise PermissionError("ThinkThread session Root differs from its frozen source")
         self.path = session_resource_path(host.root, scope_id, identity)
+        # A fork provider operation is deliberately submitted after the
+        # shared candidate session identity is persisted.  Consequently its
+        # launch payload has no model override yet; the exact provider/model
+        # is part of the durable fork receipt.  Fresh sessions keep using the
+        # launch payload, while fork sessions must project that receipt model
+        # before validating or resuming their scope-local resource journal.
+        origin_receipt = self.session.candidate_origin.launch_receipt if self.session.candidate_origin else None
+        launch_model = self.session.launch.get("model")
+        receipt_model = origin_receipt.get("model") if isinstance(origin_receipt, dict) else None
+        effective_model = launch_model if launch_model is not None else receipt_model
         self.record = {
             "run_id": self.session.run_id, "candidate_id": self.session.candidate_id,
             "agent_session_id": identity, "scope_id": scope_id,
             "root_thinkthread_id": prepared.root_thinkthread_id,
             "baseline_snapshot_id": prepared.baseline_snapshot_id,
             "agent_harness": self.session.session_handle.agent_harness,
-            "model": self.session.launch.get("model"), "status": "prepared",
+            "model": effective_model, "status": "prepared",
         }
         self.inner_git_binding = prepared.inner_git_binding
         clock = SystemClock()
@@ -73,14 +93,33 @@ class ThinkThreadCandidateSession:
                             raise PermissionError("ThinkThread session resource identity changed")
                     if saved.get("cleanup_state") == "closed":
                         raise RuntimeError("ThinkThread session resources have been closed")
+                    fork = self.session.candidate_origin
+                    if fork is not None:
+                        provenance = saved.get("dispatch_provenance")
+                        expected = {"dispatch_group_id": fork.dispatch_group_id, "dispatch_target_index": fork.dispatch_target_index,
+                                    "main_session_id": fork.main_session_id, "checkpoint_id": fork.checkpoint_id,
+                                    "checkpoint_kind": fork.checkpoint_kind,
+                                    "context_projection_digest": fork.context_projection_digest,
+                                    "operation_id": fork.launch_receipt.get("request_id"),
+                                    "profile": fork.launch_receipt.get("profile")}
+                        attachment = fork.workspace_attachment
+                        if (not isinstance(provenance, dict)
+                                or any(provenance.get(key) != value for key, value in expected.items())
+                                or saved.get("launch_receipt") != fork.launch_receipt
+                                or saved.get("requested_capabilities") != ["thinkthread.message"]
+                                or saved.get("effective_capabilities") != fork.launch_receipt.get("provider_capabilities")
+                                or saved.get("effective_model") != fork.launch_receipt.get("model")
+                                or attachment is None or attachment.provider != "thinkthread"
+                                or saved.get("fs_branch_id") != attachment.fs_branch_id
+                                or saved.get("thinkthread_id") != fork.provider_session_id):
+                            raise PermissionError("ThinkThread fork resource provenance differs from its domain binding")
                     external_id = self.session.session_handle.external_id
                     replaced = saved.get("replaced_thinkthread_id")
-                    if external_id is not None and saved.get("thinkthread_id") != external_id:
-                        # A reaped Codex Child leaves the domain bound to the replaced
-                        # Child until the next invocation respawns and rebinds; the
-                        # journal may already name the fresh Child or none at all.
-                        if not (isinstance(replaced, dict) and replaced.get("thinkthread_id") == external_id):
-                            raise PermissionError("ThinkThread resource no longer belongs to this domain session")
+                    # Ordinary Codex continuation may rebind a reaped Child;
+                    # fork provenance above always requires the original Child.
+                    if (external_id is not None and saved.get("thinkthread_id") != external_id
+                            and not (isinstance(replaced, dict) and replaced.get("thinkthread_id") == external_id)):
+                        raise PermissionError("ThinkThread resource no longer belongs to this domain session")
                     if saved.get("thinkthread_id") is not None:
                         child = ChildDriver(self.client, clock).observe(saved["thinkthread_id"],
                             root_id=saved["root_thinkthread_id"], branch_id=saved["fs_branch_id"])
@@ -105,6 +144,8 @@ class ThinkThreadCandidateSession:
             ThinkThreadSessionInput(
                 prepared.root_thinkthread_id, prepared.baseline_snapshot_id, self.record["model"],
                 agent_harness=self.session.session_handle.agent_harness,
+                fork=self.session.candidate_origin is not None,
+                tool_capabilities=prepared.tool_capabilities,
             ),
             ChildDriver(self.client, clock, agent_harness=self.session.session_handle.agent_harness),
             clock, self.record,
@@ -303,7 +344,13 @@ def release_session_resource(path: Path, *, client=None, timeout: float = 5.0):
 def _release_session_resource(path: Path, *, client, timeout: float):
     record = load_json(path)
     if record.get("cleanup_state") == "closed":
+        _record_closed_fork_resource(path, record)
         return {"active_count": 0, "state": "closed"}
+    # A controller may disappear after provider admission, before it can save
+    # either a reply or an explicit unknown outcome.  The original started
+    # intent has the same unresolved ownership as a lost-reply outcome.
+    if record.get("fork_intent", {}).get("state") in {"started", "unknown"} and not record.get("thinkthread_id"):
+        raise RuntimeError("ThinkThread fork has an unresolved provider derivation; resource cleanup cannot claim completion")
     sdk = client or AgentPosixSdkClient()
     root = sdk.invoke("self")
     if root.get("parentThinkthreadId") is not None or root.get("thinkthreadId") != record["root_thinkthread_id"]:
@@ -314,6 +361,7 @@ def _release_session_resource(path: Path, *, client, timeout: float):
         ThinkThreadSessionInput(
             record["root_thinkthread_id"], record["baseline_snapshot_id"], record.get("model"),
             agent_harness=record.get("agent_harness", "pi"),
+            fork=record.get("dispatch_provenance") is not None,
         ),
         driver, clock, record,
         ThinkThreadSessionHooks(nullcontext, lambda value: _persist_resource(path, value), lambda _: None,
@@ -327,4 +375,16 @@ def _release_session_resource(path: Path, *, client, timeout: float):
                        branch_id=record["fs_branch_id"], timeout=timeout)
     record["cleanup_state"] = "closed"
     _persist_resource(path, record)
+    _record_closed_fork_resource(path, record)
     return {"active_count": 0, "state": "closed"}
+
+
+def _record_closed_fork_resource(path: Path, record: dict) -> None:
+    if record.get("dispatch_provenance") is None or record.get("thinkthread_id") is None:
+        return
+    from goal_plus.runtime import FileSearchRuntime
+
+    sessions = FileSearchRuntime(path.parents[3]).candidate_sessions
+    session = sessions.session(record["agent_session_id"], allow_stale=True)
+    if session.candidate_origin is not None and session.candidate_origin.provider_session_id is not None:
+        sessions.record_dispatch_close(record["agent_session_id"], record["thinkthread_id"])

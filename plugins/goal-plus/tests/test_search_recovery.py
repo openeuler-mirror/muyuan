@@ -9,7 +9,7 @@ import pytest
 from goal_plus.runtime import FileSearchRuntime
 from goal_plus.host_recovery import approve_recovery
 from goal_plus.tools import SearchTools
-from goal_plus.models import ArtifactRef, CandidateTask, RunState, SearchSpec
+from goal_plus.models import ArtifactRef, CandidateOrigin, CandidateTask, RunState, SearchSpec
 from goal_plus.workspaces import UnsupportedWorkspaceCapability
 from tests._runtime_helpers import make_project, spec_for, start_host_verified_goal
 
@@ -102,6 +102,42 @@ def native_recovery_resource(runtime, session, monkeypatch, *, status="finished"
     return scope
 
 
+def test_recovery_keeps_candidate_revision_scores_out_of_initial_run_ranking(tmp_path, monkeypatch):
+    from goal_plus.domain.search import StrategySpec
+
+    project = make_project(tmp_path)
+    spec = spec_for(project, max_parallel=1)
+    spec.strategy = StrategySpec(name="random", initial_context="fresh")
+    runtime = FileSearchRuntime(tmp_path / ".gp")
+    initial = runtime.freeze_spec(spec, [project / "evaluator.py"], agent_harness="codex")
+    run_id = runtime.create_run(initial.frozen_spec_id)
+    plan = runtime.plan_next(run_id, requested_k=1)
+    task = runtime.start_batch(run_id, plan.plan_id)[0]
+    runtime.run_verifier(run_id, task.candidate_id)
+    session = runtime.start_agent_session(run_id, task.candidate_id)
+    revised = runtime.revise_candidate_spec(
+        session.agent_session_id, "new-contract", initial.frozen_spec_id,
+        "Explore another score contract", {"process_verifiers": [{
+            "name": "revised", "role": "ranking_signal",
+            "command": ["python", "-c", "print('{\"combined_score\": 100}')"],
+        }]},
+    )
+    runtime.run_verifier(run_id, task.candidate_id)
+    state = runtime.candidate_creation.state
+    before = state.read_candidate(run_id, task.candidate_id)
+    assert before.iterations[-1].frozen_spec_id == revised.frozen_spec_id
+    assert state.read_run(run_id).best_score == 0.0
+    native_recovery_resource(runtime, session, monkeypatch)
+    recovery = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    approve_recovery(runtime.root_dir, recovery)
+    runtime.recover_candidate(run_id, task.candidate_id, recovery.recovery_id)
+    after = state.read_candidate(run_id, task.candidate_id)
+    assert after.active_frozen_spec_id == revised.frozen_spec_id
+    assert after.iterations == before.iterations
+    assert after.results_ledger == before.results_ledger
+    assert state.read_run(run_id).best_score == 0.0
+
+
 @pytest.mark.parametrize("tool", [
     "goal_plus_search_recovery_status", "goal_plus_search_prepare_recovery", "goal_plus_search_recover_candidate",
 ])
@@ -144,6 +180,11 @@ def test_recovery_status_exposes_unsettled_workspace_without_mutation(tmp_path):
     assert changed["unsettled_workspace_changes"] is True
     assert changed["checkpoint"] == before["checkpoint"]
     assert changed["recovery"] is None
+    task.workspace.rename(task.workspace.with_name("workspace-unavailable"))
+    unavailable = runtime.goal_plus_search_recovery_status(run_id)["candidates"][0]
+    assert unavailable["unsettled_workspace_changes"] is None
+    assert unavailable["workspace_inspection_error"]
+    assert unavailable["checkpoint"] == before["checkpoint"]
 
 
 def test_recovery_status_slim_by_default_and_full_with_detail(tmp_path):
@@ -352,8 +393,7 @@ def test_unsupported_recovery_provider_fails_before_fencing(tmp_path, monkeypatc
     assert runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id) == before
 
 
-def test_provider_neutral_recovery_accepts_snapshot_identity(tmp_path, monkeypatch):
-    """Contract fake only: this does not certify a working ThinkThread runtime."""
+def test_thinkthread_recovery_rebinds_the_settled_snapshot(tmp_path, monkeypatch):
     runtime, run_id, task = make_search(tmp_path)
     snapshot = ArtifactRef(kind="fs_snapshot", provider="thinkthread", id="snapshot-baseline")
     record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
@@ -378,21 +418,53 @@ def test_provider_neutral_recovery_accepts_snapshot_identity(tmp_path, monkeypat
     record.task = CandidateTask.model_validate(task_payload)
     record.results_ledger_artifact_ref = snapshot
     runtime.candidate_creation.state.write_candidate(run_id, record)
-    calls = []
-
-    def restore(record, recovery, preserved):
-        calls.append((record.task.workspace, recovery.point.artifact_ref, record.task.workspace_provider_handle))
-        return snapshot
-
-    workspace = runtime.recovery.workspace
-    monkeypatch.setattr(workspace, "require_recoverable", lambda _record: None)
-    monkeypatch.setattr(workspace, "restore", restore)
-    monkeypatch.setattr(workspace, "matches_checkpoint", lambda _record, expected, restored: expected == restored)
     monkeypatch.setattr(runtime.candidate_ledger.workspace, "check", lambda *_args: None)
     point = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
     result = runtime.recover_candidate(run_id, task.candidate_id, point.recovery_id)
     assert result.restored_artifact_ref == snapshot
-    assert calls == [(task.workspace, snapshot, {"child_id": "child-1"})]
+    rebound = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    assert rebound.task.base_artifact_ref == snapshot
+    assert rebound.task.workspace_base_revision == snapshot.id
+    assert rebound.task.workspace_provider_handle["base_snapshot_id"] == snapshot.id
+    assert rebound.task.workspace_access.provider_handle["base_snapshot_id"] == snapshot.id
+
+
+def test_fork_recovery_allows_new_session_while_origin_stays_immutable(tmp_path):
+    """A recovered fork may replace its provider continuation identity.
+
+    The dispatch receipt remains the candidate's immutable provenance; the
+    replacement session is admitted from the settled checkpoint generation.
+    """
+    runtime, run_id, task = make_search(tmp_path)
+    prepared = runtime.prepare_candidate_recovery(run_id, task.candidate_id)
+    restored = runtime.recover_candidate(run_id, task.candidate_id, prepared.recovery_id)
+
+    run = runtime.search_run.state.read_run(run_id)
+    record = runtime.candidate_creation.state.read_candidate(run_id, task.candidate_id)
+    origin = CandidateOrigin(
+        dispatch_group_id="dispatch_recovery",
+        dispatch_target_index=1,
+        runtime_provider="direct",
+        main_session_id="main-session",
+        checkpoint_id="checkpoint-1",
+        checkpoint_kind="message",
+        parent_native_session_id="main-native",
+        provider_session_id="old-provider-session",
+        frozen_spec_id=run.frozen_spec_id,
+        spec_hash=runtime.search_run.state.read_frozen_spec(run.frozen_spec_id).spec_hash,
+        source_artifact_ref=run.source_artifact_ref,
+        workspace=record.task.workspace,
+        worker_identity={"agent_session_id": "old-agent-session", "candidate_id": task.candidate_id},
+    )
+    record.task = record.task.model_copy(update={"candidate_origin": origin})
+    runtime.candidate_creation.state.write_candidate(run_id, record)
+
+    replacement = runtime.start_agent_session(run_id, task.candidate_id)
+    assert replacement.execution_generation == record.execution_generation
+    assert replacement.candidate_origin == origin
+    assert replacement.agent_session_id != origin.worker_identity["agent_session_id"]
+    assert replacement.candidate_origin.provider_session_id == "old-provider-session"
+    assert restored.state == "restored"
 
 
 def test_recovery_does_not_rollback_other_lanes_or_budget(tmp_path):
@@ -641,13 +713,13 @@ def test_adaptive_recovery_replays_settled_task_registration_idempotently(tmp_pa
     payload["workspace"] = {"provider": "git_worktree"}
     payload["strategy"].update(
         {
-            "orchestration_mode": "adaptive_search",
+            "initial_context": "fresh",
             "selection": {
                 "ranking_keys": ["quality_score", "hard_score"],
                 "ranking_tolerance": [0.05, 0.0],
             },
             "verifier": {"scores": ["progress_reward", "allocation_utility"]},
-            "allocation": {"policy": "swe_search_uct/v1"},
+            "adaptive_search": {"allocation": {"policy": "swe_search_uct/v1"}},
         }
     )
     runtime = FileSearchRuntime(tmp_path / ".gp")

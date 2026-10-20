@@ -14,6 +14,7 @@ from goal_plus.domain.search import (
     BootstrapVerification,
     DevicePoolInventory,
     FrozenSpec,
+    CandidateOrigin,
     SearchSpec,
 )
 
@@ -32,6 +33,7 @@ class FreezeInputs:
     task_skill_paths: list[str]
     source_artifact_ref: ArtifactRef | None
     origin_log_dir: Path
+    fork_supported: bool = False
 
 
 class FreezeSource(Protocol):
@@ -68,6 +70,8 @@ class BootstrapVerifiers(Protocol):
 
 
 class FrozenSpecState(Protocol):
+    def read(self, frozen_spec_id: str) -> FrozenSpec: ...
+    def read_candidate_origin(self, dispatch_group_id: str, dispatch_target_index: int) -> CandidateOrigin: ...
     def copy_verifiers(
         self, frozen_spec_id: str, entries: list[tuple[Path, str]]
     ) -> dict[str, str]: ...

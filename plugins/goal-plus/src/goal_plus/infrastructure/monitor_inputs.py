@@ -7,6 +7,7 @@ from typing import Any
 
 from goal_plus.bootstrap import build_goal_reconciliation
 from goal_plus.projections.publication import publication_summary
+from goal_plus.projections.fork import dispatch_group_summary
 from goal_plus.projections.monitor import (
     project_artifact_availability,
     project_evidence_reads,
@@ -898,7 +899,9 @@ def goal_plus_monitor_snapshot(
             ],
             "artifact_availability": project_artifact_availability(run),
             "host_cleanup": _host_cleanup_payload(root, run, frozen, candidates),
+            "dispatch_group": dispatch_group_summary(run.dispatch_group),
             "frozen_spec_id": run.frozen_spec_id,
+            "selected_frozen_spec_id": run.selected_frozen_spec_id,
             "created_at": run.created_at,
             "source_path": run.source_path,
             "source_artifact_ref": (
@@ -1035,6 +1038,10 @@ def goal_plus_monitor_snapshot(
             }
 
         for candidate in candidates:
+            active_spec_id = candidate.active_frozen_spec_id or run.frozen_spec_id
+            candidate_frozen = frozen if active_spec_id == frozen.frozen_spec_id else FrozenSpec.model_validate(
+                load_json(root / "specs" / active_spec_id / "frozen_spec.json")
+            )
             candidate_sessions = sessions_by_candidate.get(candidate.candidate_id, [])
             results_path = candidate.task.workspace / RESULTS_TSV_RELATIVE_PATH
             worker_policy = candidate.task.strategy_metadata.get("worker_policy", {})
@@ -1096,7 +1103,7 @@ def goal_plus_monitor_snapshot(
                 MonitorCandidateInputs(
                     candidate,
                     candidate_sessions,
-                    frozen.spec.metric_direction,
+                    candidate_frozen,
                     verifier_enabled,
                     verifier_records_by_candidate.get(candidate.candidate_id, []),
                     verifier_tasks_by_candidate.get(candidate.candidate_id, []),
