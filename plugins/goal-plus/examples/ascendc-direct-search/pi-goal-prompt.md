@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 workspace_provider=git_worktree promotion_mode=apply strategy=agent_guided Implement and optimize the CANNBench Level1 GELU task as an AscendC Direct Invoke operator.
+/goal-plus spawn_mode=fresh max_parallel=2 workspace_provider=git_worktree promotion_mode=apply strategy=agent_guided Implement and optimize the CANNBench Level1 GELU task as an AscendC Direct Invoke operator.
 
 The entire Goal Plus task must reach a terminal status within 60 minutes of
 creation. Do not start or continue candidate work after 50 minutes; reserve the

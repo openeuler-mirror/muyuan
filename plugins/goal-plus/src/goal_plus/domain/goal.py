@@ -168,6 +168,14 @@ class GoalPlusCommandConfig(SearchModel):
     mode: Literal["autonomous", "probe"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    spawn_mode: Literal["fresh", "fork"] | None = Field(
+        default=None,
+        description=(
+            "Optional Search spawn mode. When provided, it must match "
+            "SearchSpec.strategy.initial_context."
+        ),
+        exclude_if=lambda value: value is None,
+    )
     max_parallel: int | None = Field(
         default=None, gt=0, exclude_if=lambda value: value is None
     )

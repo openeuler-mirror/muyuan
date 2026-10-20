@@ -1,4 +1,4 @@
-/goal-plus mode=probe max_parallel=2 max_duration_seconds=1200 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided inner_agent=autoresearch 优化并应用当前工作区的 26 圆 Circle Packing 结果。
+/goal-plus spawn_mode=fresh mode=probe max_parallel=2 max_duration_seconds=1200 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided inner_agent=autoresearch 优化并应用当前工作区的 26 圆 Circle Packing 结果。
 
 完整采用当前目录的 `search-spec.json` 作为权威 SearchSpec，包括 `strategy.global_evidence_mode`、
 `strategy.evidence_annotator` 和 `constraints`，并冻结

@@ -209,6 +209,7 @@ token 开始就是自然语言目标：
 | Key | Value | Default（省略时） | 约束目标 |
 | --- | --- | --- | --- |
 | `mode` | `autonomous \| probe` | `autonomous` | 探索模式；省略时默认为 `autonomous`。 |
+| `spawn_mode` | `fresh \| fork` | 未设置；SearchSpec 默认使用 fork，需 fresh 时显式指定。 | 约束 `SearchSpec.strategy.initial_context`；fork 需要 Main 完成 checkpoint 后再派生分支。 |
 | `max_parallel` | `正整数` | 未设置；由 Agent 根据任务和资源决定。 | 约束 `SearchSpec.budget.max_parallel`。 |
 | `max_duration_seconds` | `正整数（秒）` | 未设置；不创建命令级外层 deadline。 | 从 Goal 创建时间起固定外层 deadline，覆盖 worker、verifier 和收尾边界。 |
 | `workspace_provider` | `copy \| git_worktree \| thinkthread` | 未设置；由 Agent 根据任务和 host 能力决定。 | 约束 `SearchSpec.workspace.provider`。 |
@@ -231,6 +232,9 @@ Goal Plus API 不接受 provider 配置、API key 或 endpoint。
 解析后的 `GoalPlusRecord.command_config` 是显式用户约束，配置 token 不再保留在
 `raw_goal` 中。freeze 准入校验完整 SearchSpec 与所有显式 command config，
 不再要求 ready draft。未知字段、非法枚举、非正整数和不一致的 worker count 仍由严格 schema 拒绝。
+需要固定 Search 初始派发方式时，在命令前缀中加入 `spawn_mode=fresh` 或
+`spawn_mode=fork`；它会约束 `SearchSpec.strategy.initial_context`。省略时仍由 Main
+根据 Search 场景调整 SearchSpec，缺省值为 `fork`。fork 还要求 Main 完成准备回合并由宿主提供 checkpoint fork 能力。
 `workers=A` 只约束模型，不要求 spec 省略 count；`workers=A*3` 才固定该模型的 count 为 3。
 spec 不填 count 时按 round-robin 分配；填写时必须全部填写，且总和等于 `max_parallel`。
 历史草稿通过 status detail 读取；未解决的评价问题使用 triage 记录。

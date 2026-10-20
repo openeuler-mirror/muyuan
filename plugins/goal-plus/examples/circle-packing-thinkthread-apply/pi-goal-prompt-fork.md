@@ -1,4 +1,4 @@
-/goal-plus mode=probe max_parallel=2 max_duration_seconds=1800 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided inner_agent=common Complete the fork Circle Packing task in search-spec.json.
+/goal-plus spawn_mode=fork mode=probe max_parallel=2 max_duration_seconds=1800 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided inner_agent=common Complete the fork Circle Packing task in search-spec.json.
 
 Use the complete SearchSpec prepared with `prepare_workspace.py --fork`:
 `strategy.initial_context=fork`, `strategy.inner_agent=common`, and

@@ -1,4 +1,4 @@
-/goal-plus mode=probe max_parallel=2 max_duration_seconds=600 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided 完整跑通当前 ThinkThread Root 中的猜数 Search smoke test。
+/goal-plus spawn_mode=fresh mode=probe max_parallel=2 max_duration_seconds=600 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided 完整跑通当前 ThinkThread Root 中的猜数 Search smoke test。
 
 问题：公开目标数是 1。只修改 `guess.py`，让它输出恰好一个整数；运行
 `python verify.py` 输出含 `guess_score` 的 JSON；分数为 `1-abs(1-输出值)`，越高越好。

@@ -354,7 +354,7 @@ def test_search_freeze_spec_resolves_source_relative_artifacts(
     assert runtime.freeze_spec.call_args.kwargs == {"goal_plus_id": "gp_0001"}
     assert result == {
         "frozen_spec_id": "spec_123", "state": "frozen", "metric_name": "combined_score",
-        "spec_hash": "hash", "initial_context": "fresh", "llm_validation": "off",
+        "spec_hash": "hash", "initial_context": "fork", "llm_validation": "off",
         "adaptive_search": False,
         "baseline": {"evaluation_completed": True, "passed": True, "score": 0.0} if with_baseline else None,
         "promotion_verifiers": [],

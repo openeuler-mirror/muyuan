@@ -5,7 +5,7 @@
 ## CSA
 
 ```text
-/goal-plus max_duration_seconds=3600 max_parallel=2 workspace_provider=thinkthread promotion_mode=artifact_only strategy=agent_guided
+/goal-plus spawn_mode=fresh max_duration_seconds=3600 max_parallel=2 workspace_provider=thinkthread promotion_mode=artifact_only strategy=agent_guided
 
 先阅读当前目录 README.md，按其中的环境与验收约定执行。
 将 https://github.com/hw-native-sys/pypto-lib.git 拉到 third_party/pypto-lib，固定并核对 commit b5df050ef2a2e04706b722874f66eb955bd6b4e3 作为 baseline；已有干净且版本一致的 checkout 则复用，不覆盖已有修改。
@@ -17,7 +17,7 @@
 ## MoE
 
 ```text
-/goal-plus max_duration_seconds=3600 max_parallel=2 workspace_provider=thinkthread promotion_mode=artifact_only strategy=agent_guided
+/goal-plus spawn_mode=fresh max_duration_seconds=3600 max_parallel=2 workspace_provider=thinkthread promotion_mode=artifact_only strategy=agent_guided
 
 先阅读当前目录 README.md，按其中的环境与验收约定执行。
 将 https://github.com/hw-native-sys/pypto-lib.git 拉到 third_party/pypto-lib，固定并核对 commit b5df050ef2a2e04706b722874f66eb955bd6b4e3 作为 baseline；已有干净且版本一致的 checkout 则复用，不覆盖已有修改。

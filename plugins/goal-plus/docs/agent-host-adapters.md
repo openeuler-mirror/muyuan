@@ -140,6 +140,8 @@ compaction 后窗口相同，也不证明缓存命中、成本降低或求解质
 
 Fresh/fork 决定首次上下文来源。Goal resume 恢复执行许可，native resume 打开已有会话；
 后续 session run 用新 call_id 沿原分支执行，不重新派生。恢复 artifact 不证明 native context 恢复。
+Host command 可用 `spawn_mode=fresh|fork` 显式约束 SearchSpec 的初始上下文；省略该命令配置时，
+Main 仍负责在 SearchSpec 中选择模式。
 
 ### Fork 支持范围
 
@@ -302,8 +304,9 @@ ThinkThread verifier 使用相同锁目录和冻结 `resource_lock` 的精确字
 
 ## Candidate 循环
 
-新的 Codex/Pi spec 默认使用 `initial_context="fresh"`。一次 Search
-run 只做一次初始规划，创建固定数量的 candidate lane：
+新的 Codex/Pi spec 默认使用 `initial_context="fork"`。需要从冻结 baseline 创建初始 candidate
+时显式使用 `spawn_mode=fresh` 和 `initial_context="fresh"`。Fork Search 先完成 Main 准备回合，
+再从完成 checkpoint 创建固定数量的 candidate lane：
 
 1. 启动全部初始 candidate；
 2. 用共同 session wait-any 等待首个完成的 invocation，并按 roster 处理其余调用；

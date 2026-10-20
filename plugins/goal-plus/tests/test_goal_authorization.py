@@ -49,6 +49,26 @@ def test_worker_command_only_constrains_explicit_counts(workers, count, accepted
     assert spec.model_dump_json() == before
 
 
+@pytest.mark.parametrize("requested, configured, accepted", [
+    ("fork", "fork", True),
+    ("fork", "fresh", False),
+])
+def test_spawn_mode_command_constrains_search_spec(requested, configured, accepted):
+    config = GoalPlusCommandConfig(spawn_mode=requested)
+    spec = SearchSpec(
+        objective="maximize score", metric_name="score", metric_direction="maximize",
+        source_path=".", edit_surface={"allow": ["candidate.py"]},
+        budget={"max_parallel": 2},
+        process_verifiers=[{"name": "score", "role": "ranking_signal", "command": ["python", "evaluator.py"]}],
+        strategy={"initial_context": configured},
+    )
+    if accepted:
+        validate_search_command_config(config, spec)
+    else:
+        with pytest.raises(ValueError, match="spawn_mode=fork"):
+            validate_search_command_config(config, spec)
+
+
 @pytest.mark.parametrize("action", ["goal_plus_search_create", "goal_plus_search_prepare_recovery", "goal_plus_gate", "bash"])
 def test_tool_matching_preserves_foreign_registration(action):
     assert tool_matches(action, action)  # Dedicated internal dispatcher.

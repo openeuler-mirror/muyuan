@@ -164,9 +164,16 @@ def validate_search_command_config(
         "promotion_mode": (config.promotion_mode, spec.workspace.promotion_mode),
         "strategy": (config.strategy, spec.strategy.name),
         "inner_agent": (config.inner_agent, spec.strategy.inner_agent),
+        "spawn_mode": (config.spawn_mode, spec.strategy.initial_context),
     }
     for name, (requested, configured) in checks.items():
         if requested is not None and requested != configured:
+            if name == "spawn_mode":
+                raise ValueError(
+                    "explicit command config spawn_mode="
+                    f"{requested} requires SearchSpec strategy.initial_context="
+                    f"{requested}; received {configured}"
+                )
             raise ValueError(
                 f"explicit command config {name}={requested} requires SearchSpec "
                 f"{name}={requested}; received {configured}"

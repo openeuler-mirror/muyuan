@@ -155,7 +155,7 @@ def spec_for(project: Path, *, max_parallel: int = 4, direction: str = "maximize
                     "timeout_seconds": 30,
                 }
             ],
-            "strategy": {"name": "random"},
+            "strategy": {"name": "random", "initial_context": "fresh"},
             "workspace": {"provider": "copy"},
         }
     )
@@ -168,7 +168,7 @@ def spec_with_strategy(
     max_parallel: int = 4,
 ) -> SearchSpec:
     data = spec_for(project, max_parallel=max_parallel).model_dump(mode="json")
-    data["strategy"] = strategy
+    data["strategy"] = {"initial_context": "fresh", **strategy}
     return SearchSpec.model_validate(data)
 
 

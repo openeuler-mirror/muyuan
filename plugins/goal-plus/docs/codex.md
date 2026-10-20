@@ -260,7 +260,7 @@ launch message 和 instructions 不展开路径；child 按任务、角色和 pr
 
 标准固定并行循环如下：
 
-1. freeze 时省略 `strategy.adaptive_search`（`initial_context` 默认是 `fresh`），只规划一次并启动全部初始 candidate；
+1. freeze 时省略 `strategy.adaptive_search`，未指定 `spawn_mode` 时 `initial_context` 默认是 `fork`；先完成 Main 准备回合并调用 `goal_plus_search_fork`，需要直接从 baseline 启动 candidate 时显式使用 `spawn_mode=fresh`；
 2. 对每个 candidate 用独立 `call_id` 调用 `goal_plus_session_run`；
 3. 把全部活跃调用放进同一次 `goal_plus_session_wait_any`，在首个完成的调用处收取结果；
    等待超时只返回仍在运行的 roster，不取消执行；

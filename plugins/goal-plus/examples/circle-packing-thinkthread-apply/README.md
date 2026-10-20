@@ -133,6 +133,8 @@ python3 prepare_workspace.py --fork --destination workspace-fork
 
 按上面对应宿主的方式启动 TT Root，把 `--fs` 改为 `"$PWD/workspace-fork"`。在 Root TUI
 粘贴 [Pi fork prompt](pi-goal-prompt-fork.md) 或 [Codex fork prompt](codex-goal-prompt-fork.md)。
+两个 fork prompt 都在命令前缀显式设置 `spawn_mode=fork`；Main 生成的 SearchSpec 必须将
+`strategy.initial_context` 设置为同样的 `fork`，否则 freeze 会被 command config 拒绝。
 第一个 Main turn 只完成 freeze、run、plan 和两候选 batch，然后标记 blocked 并返回 ready。
 此时尚未创建分支；必须等 native turn 完整结束，保证 checkpoint 包含当前任务和准备事实。
 

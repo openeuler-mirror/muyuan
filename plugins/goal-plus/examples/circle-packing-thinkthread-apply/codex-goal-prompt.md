@@ -1,7 +1,7 @@
 请先调用 `goal_plus_host_start`，将下面从 `mode=probe` 开始的完整任务原样作为
 `raw_goal`；启动后按 `goal_plus_status` 返回的当前状态和 `next_action` 推进。
 
-mode=probe max_parallel=2 max_duration_seconds=1200 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided inner_agent=common 优化并应用当前工作区的 26 圆 Circle Packing 结果。
+spawn_mode=fresh mode=probe max_parallel=2 max_duration_seconds=1200 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided inner_agent=common 优化并应用当前工作区的 26 圆 Circle Packing 结果。
 
 完整采用当前目录的 `search-spec.json` 作为权威 SearchSpec，包括
 `strategy.global_evidence_mode`、`strategy.evidence_annotator` 和 `constraints`；只把

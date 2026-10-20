@@ -99,6 +99,15 @@ GOAL_PLUS_COMMAND_OPTIONS = (
         choices=("autonomous", "probe"),
     ),
     GoalPlusCommandOption(
+        "spawn_mode",
+        "spawn_mode",
+        "fresh | fork",
+        "未设置；SearchSpec 默认使用 fork，需 fresh 时显式指定。",
+        "约束 `SearchSpec.strategy.initial_context`；fork 需要 Main 完成 checkpoint 后再派生分支。",
+        value_kind="choice",
+        choices=("fresh", "fork"),
+    ),
+    GoalPlusCommandOption(
         "max_parallel",
         "max_parallel",
         "正整数",

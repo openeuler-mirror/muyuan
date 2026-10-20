@@ -1,4 +1,4 @@
-/goal-plus max_parallel=2 max_duration_seconds=480 workspace_provider=git_worktree promotion_mode=artifact_only strategy=agent_guided 优化只读 VLIW 模板，并把结果保存在 `.gp/`。
+/goal-plus spawn_mode=fresh max_parallel=2 max_duration_seconds=480 workspace_provider=git_worktree promotion_mode=artifact_only strategy=agent_guided 优化只读 VLIW 模板，并把结果保存在 `.gp/`。
 <!-- markdownlint-disable-file MD013 MD041 -->
 
 问题：当前 `solution.py` 为自定义 VLIW/SIMD 机器生成指令程序。必须保持所有公开案例

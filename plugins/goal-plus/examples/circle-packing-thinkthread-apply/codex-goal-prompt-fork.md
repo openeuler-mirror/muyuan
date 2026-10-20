@@ -1,7 +1,7 @@
 First call `goal_plus_host_start`, passing the complete task below, from `mode=probe`
 onwards, as `raw_goal`. This is a ThinkThread Codex Root; use its trusted host tools.
 
-mode=probe max_parallel=2 max_duration_seconds=1800 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided inner_agent=common Complete the fork Circle Packing task in search-spec.json.
+spawn_mode=fork mode=probe max_parallel=2 max_duration_seconds=1800 workspace_provider=thinkthread promotion_mode=apply strategy=agent_guided inner_agent=common Complete the fork Circle Packing task in search-spec.json.
 
 Use the complete SearchSpec prepared with `prepare_workspace.py --fork`:
 `strategy.initial_context=fork`, `strategy.inner_agent=common`, and
